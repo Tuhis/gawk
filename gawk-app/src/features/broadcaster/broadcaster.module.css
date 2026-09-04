@@ -130,20 +130,10 @@
   background: color-mix(in srgb, var(--danger) 16%, transparent);
 }
 
+/* The shared <Toast> (src/ui) sits above a bottom control bar by default;
+   the broadcaster has no bar, so it rides lower. */
 .toast {
-  position: absolute;
   bottom: 1.5rem;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 25;
-  padding: 0.45rem 0.9rem;
-  font-size: var(--fs-sm);
-  color: var(--text);
-  background: var(--glass);
-  -webkit-backdrop-filter: var(--glass-blur);
-  backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--glass-border);
-  border-radius: 999px;
 }
 
 /* ── Settings sheet ── */

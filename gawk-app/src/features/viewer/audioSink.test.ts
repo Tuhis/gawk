@@ -782,3 +782,36 @@ describe('AudioSink playhead reference point', () => {
     sink.dispose();
   });
 });
+
+// R42 (docs/44 §4.7): an injected shared output. The sink must neither open
+// nor close a context it was handed, must route through the given
+// destination, and must let the owner register the worklet exactly once.
+describe('AudioSink with an injected output (R42 room mixing)', () => {
+  it('uses the shared context and destination, registers the worklet via the owner, and never closes it', async () => {
+    const posted: unknown[] = [];
+    stubWebAudio((msg) => posted.push(msg));
+    const context = new (globalThis as { AudioContext: new () => AudioContext }).AudioContext();
+    const destination = { connected: 0 } as unknown as AudioNode;
+    const ensureWorklet = vi.fn(() => Promise.resolve());
+    const created = vi.spyOn(globalThis as { AudioContext: new () => AudioContext }, 'AudioContext');
+
+    const sinkA = new AudioSink({}, undefined, { output: { context, destination, ensureWorklet } });
+    const sinkB = new AudioSink({}, undefined, { output: { context, destination, ensureWorklet } });
+    await sinkA.start(SAMPLE_RATE);
+    await sinkB.start(SAMPLE_RATE);
+
+    expect(created).not.toHaveBeenCalled();
+    expect(ensureWorklet).toHaveBeenCalledTimes(2);
+    expect((context as unknown as { audioWorklet: { addModule: unknown } }).audioWorklet.addModule).not.toHaveBeenCalled();
+    // Both gains feed the shared destination, not the context's own.
+    const gains = (context as unknown as { createGain: ReturnType<typeof vi.fn> }).createGain.mock.results;
+    expect(gains).toHaveLength(2);
+    for (const g of gains) expect((g.value as { connect: ReturnType<typeof vi.fn> }).connect).toHaveBeenCalledWith(destination);
+
+    for (let i = 0; i < 3; i++) sinkA.push(chunk(i * 20_000));
+    expect(posted.length).toBeGreaterThan(0);
+    sinkA.dispose();
+    sinkB.dispose();
+    expect((context as unknown as { close: ReturnType<typeof vi.fn> }).close).not.toHaveBeenCalled();
+  });
+});

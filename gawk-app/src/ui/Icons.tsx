@@ -153,3 +153,90 @@ export function CloseIcon(props: SVGProps<SVGSVGElement>) {
     </svg>
   );
 }
+
+// ── R42 (docs/44 §4.9): the room view's glyphs ──────────────────────────────
+
+// Two people — the header's people-and-chat toggle, the broadcaster's Room
+// button.
+export function PeopleIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3.5 19.5v-1a5.5 5.5 0 0 1 11 0v1" />
+      <path d="M15.5 5.5a3 3 0 0 1 0 5.6M17 13.2a5 5 0 0 1 3.5 4.8v1.5" />
+    </svg>
+  );
+}
+
+// Four cells — grid mode.
+export function GridIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="4" y="4" width="6.5" height="6.5" rx="1.2" />
+      <rect x="13.5" y="4" width="6.5" height="6.5" rx="1.2" />
+      <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.2" />
+      <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.2" />
+    </svg>
+  );
+}
+
+// One large cell with a small one inset — focus mode.
+export function FocusIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="4" y="5" width="16" height="14" rx="1.6" />
+      <rect x="12.5" y="8" width="5" height="4" rx="0.8" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+// A struck-through cell — hide videos.
+export function VideoOffIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4 7.5a1.5 1.5 0 0 1 1.5-1.5H14a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 14 18H5.5A1.5 1.5 0 0 1 4 16.5v-9Z" />
+      <path d="M15.5 10.5 20 8v8l-4.5-2.5" />
+      <path d="M3 3l18 18" />
+    </svg>
+  );
+}
+
+// A pencil — edit the nickname.
+export function EditIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4 20h4l10.5-10.5a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4 16v4Z" />
+      <path d="M13 7l4 4" />
+    </svg>
+  );
+}
+
+// An outward arrow in a frame — open this POV full-screen (a #/view/ link).
+export function OpenIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M14 4h6v6M20 4l-8 8" />
+      <path d="M19 14v4.5A1.5 1.5 0 0 1 17.5 20h-12A1.5 1.5 0 0 1 4 18.5v-12A1.5 1.5 0 0 1 5.5 5H10" />
+    </svg>
+  );
+}
+
+// A pin — keep the people-and-chat panel open while the chrome fades.
+export function PinIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M9 4h6l-1 6 3 3v1.5H7V13l3-3-1-6Z" />
+      <path d="M12 14.5V21" />
+    </svg>
+  );
+}
+
+// A monitor — the broadcaster's "change source" on their own tile.
+export function ScreenIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="3" y="5" width="18" height="12" rx="1.6" />
+      <path d="M9 20h6M12 17v3" />
+    </svg>
+  );
+}

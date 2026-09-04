@@ -53,7 +53,12 @@ export interface ConnectOptions {
   parityLevel?: 0 | 1;
 }
 
-export async function connectWebTransport(url: string, opts: ConnectOptions = {}): Promise<WebTransport> {
+// The WebTransportOptions every gawk session dials with. Shared with the R42
+// room control session (transport/room-session.ts), which carries no media
+// but must present the same dev-cert hash as the media sessions do — a room
+// that could not be joined on a local stack while its broadcasts could would
+// be a confusing half-failure.
+export function webTransportInit(opts: ConnectOptions = {}): WebTransportOptions {
   const init: WebTransportOptions = {
     // The whole design rides on datagrams — fail fast if the path can't do
     // them rather than silently falling back to nothing.
@@ -64,7 +69,11 @@ export async function connectWebTransport(url: string, opts: ConnectOptions = {}
   if (hash) {
     init.serverCertificateHashes = [{ algorithm: 'sha-256', value: hexToBytes(hash) }];
   }
-  const wt = new WebTransport(url, init);
+  return init;
+}
+
+export async function connectWebTransport(url: string, opts: ConnectOptions = {}): Promise<WebTransport> {
+  const wt = new WebTransport(url, webTransportInit(opts));
   await wt.ready;
   if (wt.datagrams.maxDatagramSize < MAX_DATAGRAM_SIZE) {
     // Handled condition, not a fault: packetizeFrame sizes chunks to the

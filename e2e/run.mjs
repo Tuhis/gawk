@@ -25,6 +25,15 @@
 //                             encode funnel from the broadcaster's own
 //                             diagnostics, then runs the unchanged viewer
 //                             scenario against the minted ID.
+//   node run.mjs --rooms      R42 RM4/RM5 (docs/44 §9) — the room view against
+//                             a real relay with -rooms and two gawk-pubsim
+//                             publishers (one mints the room, one attaches):
+//                             the grid shows both tiles advancing, a number
+//                             key focuses one, Hide videos closes every
+//                             /subscribe session (asserted on the relay's
+//                             per-broadcast subscriber count while the room's
+//                             control session stays), Leave. Skips cleanly
+//                             when the pubsim binary predates -room-new.
 //   node run.mjs --muxer-check
 //                             R22 MF1 (docs/27 Decision 10) — the production
 //                             fMP4 muxer's output must PLAY in a real Chrome
@@ -49,7 +58,7 @@
 // 2-core CI runner cannot promise 30 fps, but it can promise that frames
 // arrive, decode, and render, and that drops stay bounded.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import dgram from 'node:dgram';
 import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -69,6 +78,9 @@ const MUXER_CHECK = process.argv.includes('--muxer-check');
 // process and spends ~20 s of dwell waiting for a real batch to flush, so it
 // is its own CI step rather than a tax on every viewer run.
 const TELEMETRY_CHECK = process.argv.includes('--telemetry');
+// R42 (docs/44 §9 RM4/RM5): the rooms pass. Its own mode like --telemetry —
+// it needs the relay started with -rooms and two publishers of its own.
+const ROOMS_CHECK = process.argv.includes('--rooms');
 
 const RELAY_PORT = Number(process.env.GAWK_E2E_RELAY_PORT ?? 4433);
 const OPS_PORT = Number(process.env.GAWK_E2E_OPS_PORT ?? 2112);
@@ -1529,6 +1541,187 @@ async function assertRelaySide(opsUrl, expectedActive = 1) {
 }
 
 // ---------------------------------------------------------------------------
+// R42 rooms (docs/44 §9 RM4/RM5)
+// ---------------------------------------------------------------------------
+//
+// Everything else about rooms is unit-tested against fakes: the control
+// protocol against a scripted WebTransport, the room view against faked
+// control and media sessions. What only real processes can show is the
+// contract BETWEEN them — that a browser participant's tiles are ordinary
+// /subscribe sessions the relay counts like any other, that focus is a gain
+// change rather than a re-dial, and that Hide videos really does close every
+// media session while the room keeps the participant. The subscriber count
+// on /statusz is the load-bearing number: it is the relay's own view, not
+// the page's claim about itself.
+
+// Go's flag package prints usage on -h and exits 2; the flag's presence in
+// that usage is the version probe.
+function pubsimSupportsRooms() {
+  const res = spawnSync(PUBSIM_BIN, ['-h'], { encoding: 'utf8' });
+  return `${res.stdout ?? ''}${res.stderr ?? ''}`.includes('-room-new');
+}
+
+// Tile frame counters from the room view's data attributes: a map from the
+// tile's number-key index to its completed-frame count and variant.
+async function readTiles(page) {
+  return page.$$eval('[data-testid="room-tile"]', (els) =>
+    els.map((el) => ({
+      index: Number(el.getAttribute('data-broadcast-index')),
+      frames: Number(el.getAttribute('data-frames')),
+      variant: el.getAttribute('data-variant'),
+      status: el.getAttribute('data-status'),
+    })),
+  );
+}
+
+async function relayRooms(opsUrl) {
+  const st = await (await fetch(`${opsUrl}/statusz`)).json();
+  const active = Object.values(st.broadcasts ?? {}).filter((b) => b.publisherActive);
+  const rooms = Object.values(st.rooms ?? {});
+  return { active, rooms };
+}
+
+async function roomsPass({ relayUrl, certHash, opsUrl }) {
+  // Publisher A mints the room; B attaches by code. Both hold their room
+  // control session for the process lifetime, so the room's participant
+  // count is 2 + the browser.
+  const pubA = launch('pubsim-room-a', PUBSIM_BIN, [
+    '-url', relayUrl, '-insecure', '-duration', '300s', '-room-new', '-label', 'alpha', '-nick', 'alpha',
+  ]);
+  const idA = await waitForLine(pubA, /GAWK_PUBSIM_ID=([A-Z0-9]{6})/, 20_000, 'publisher A\'s broadcast code');
+  const code = await waitForLine(pubA, /^ROOM ([A-Z0-9]{6}) [0-9a-f]{32}$/m, 20_000, 'the minted room code');
+  log(`pubsim A publishing as ${idA}, minted a room`);
+  const pubB = launch('pubsim-room-b', PUBSIM_BIN, [
+    '-url', relayUrl, '-insecure', '-duration', '300s', '-room', code, '-label', 'bravo', '-nick', 'bravo',
+  ]);
+  const idB = await waitForLine(pubB, /GAWK_PUBSIM_ID=([A-Z0-9]{6})/, 20_000, 'publisher B\'s broadcast code');
+  log(`pubsim B publishing as ${idB}, attached to the room`);
+
+  await pollFor(
+    async () => {
+      const { rooms } = await relayRooms(opsUrl);
+      return rooms.some((r) => r.attachments === 2);
+    },
+    15_000,
+    500,
+    'the relay to show a room with both attachments',
+  );
+
+  const browser = await launchBrowser();
+  try {
+    const context = await newAppContext(browser, { relayUrl, certHash });
+    // The nickname prompt is unit-tested; the pass seeds one so the room
+    // dials on load, and pins grid so a stale mode preference cannot steer it.
+    await context.addInitScript(() => {
+      localStorage.setItem('gawk:nickname', 'e2e');
+      localStorage.setItem('gawk:room-mode', 'grid');
+    });
+    const page = await context.newPage();
+    wirePageLogs(page, 'console-rooms');
+    await page.goto(`${APP_URL}/#/room/${code}`);
+
+    // Grid: both tiles present and decoding. "Advancing" is two samples a
+    // gap apart, per tile — flow, never a rate (Decision 6).
+    await pollFor(
+      async () => {
+        const tiles = await readTiles(page);
+        return tiles.length === 2 && tiles.every((t) => t.variant === 'grid' && t.frames > 0);
+      },
+      45_000,
+      1000,
+      'both room tiles to decode their first frame',
+    );
+    const grid1 = await readTiles(page);
+    await sleep(SAMPLE_GAP_MS);
+    const grid2 = await readTiles(page);
+    for (const t1 of grid1) {
+      const t2 = grid2.find((t) => t.index === t1.index);
+      if (!t2 || t2.frames <= t1.frames) fail(`tile ${t1.index} stopped advancing in grid (${t1.frames} → ${t2?.frames})`);
+    }
+    log(`grid ok: tiles advanced ${grid1.map((t) => `${t.frames}`).join('/')} → ${grid2.map((t) => `${t.frames}`).join('/')}`);
+    const relayGrid = await relayRooms(opsUrl);
+    for (const b of relayGrid.active) {
+      if (b.subscribers < 1) fail(`relay shows ${b.subscribers} subscribers on an active broadcast while the grid shows it`);
+    }
+    writeFileSync(join(OUT, 'room-grid.png'), await page.screenshot());
+
+    // Focus by number key. The sessions persist across the switch (docs/44
+    // §4.7: audio follows the mode, media does not re-dial), so the newly
+    // focused tile keeps counting from where it was — within one keyframe
+    // interval it must have advanced, and the relay must still count both.
+    await page.keyboard.press('2');
+    await pollFor(
+      async () => {
+        const tiles = await readTiles(page);
+        const focused = tiles.find((t) => t.index === 2);
+        return focused?.variant === 'focus' && tiles.find((t) => t.index === 1)?.variant === 'small';
+      },
+      3_000,
+      100,
+      'tile 2 to take focus',
+    );
+    const focus1 = await readTiles(page);
+    await pollFor(
+      async () => {
+        const now = await readTiles(page);
+        return now.find((t) => t.index === 2).frames > focus1.find((t) => t.index === 2).frames;
+      },
+      5_000,
+      200,
+      'the focused tile to advance after the switch',
+    );
+    const relayFocus = await relayRooms(opsUrl);
+    for (const b of relayFocus.active) {
+      if (b.subscribers < 1) fail('focus re-dialed: an active broadcast lost its subscriber on the switch');
+    }
+    log('focus ok: key 2 focused tile 2 and it kept advancing');
+    writeFileSync(join(OUT, 'room-focus.png'), await page.screenshot());
+
+    // Hide videos: no tiles, and — the relay's word for it — zero
+    // subscribers on both broadcasts, while the room still counts the
+    // browser's control session among its participants.
+    const participantsBefore = relayFocus.rooms.find((r) => r.attachments === 2)?.participants ?? 0;
+    await page.getByRole('radio', { name: 'Hide videos' }).click();
+    await pollFor(async () => (await readTiles(page)).length === 0, 5_000, 200, 'the tiles to unmount');
+    await pollFor(
+      async () => {
+        const { active } = await relayRooms(opsUrl);
+        return active.length === 2 && active.every((b) => b.subscribers === 0);
+      },
+      15_000,
+      500,
+      'the relay to count zero subscribers on both broadcasts after Hide videos',
+    );
+    const { rooms: roomsHidden } = await relayRooms(opsUrl);
+    const room = roomsHidden.find((r) => r.attachments === 2);
+    if (!room) fail('the room disappeared from /statusz while a participant was in it');
+    if (room.participants !== participantsBefore) {
+      fail(`Hide videos changed the room's participant count (${participantsBefore} → ${room.participants}); the control session must stay`);
+    }
+    if (room.participants < 1) fail('the room counts no participants while the browser is in it');
+    log(`hide videos ok: zero subscribers on both broadcasts, room still holds ${room.participants} participant(s) (2 are the publishers)`);
+    writeFileSync(join(OUT, 'room-hidden.png'), await page.screenshot());
+
+    // Leave: the participant count drops by exactly one.
+    await page.getByRole('button', { name: 'Leave room' }).click();
+    await pollFor(async () => (await page.evaluate(() => window.location.hash)) === '#/', 5_000, 100, 'the leave to land home');
+    await pollFor(
+      async () => {
+        const { rooms } = await relayRooms(opsUrl);
+        const r = rooms.find((x) => x.attachments === 2);
+        return r != null && r.participants === participantsBefore - 1;
+      },
+      10_000,
+      500,
+      'the room to drop the browser participant after Leave',
+    );
+    log('leave ok: the room dropped one participant');
+  } finally {
+    await browser.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1543,6 +1736,14 @@ async function main() {
   // R22: the muxer check is self-contained — bundle, browser, verdict.
   if (MUXER_CHECK) {
     await muxerCheckScenario();
+    log('PASS');
+    return;
+  }
+
+  // R42: the rooms pass needs a pubsim that can mint. An older binary is a
+  // clean skip, not a failure — the contract is built beside this harness.
+  if (ROOMS_CHECK && !pubsimSupportsRooms()) {
+    log('SKIP: gawk-pubsim -h lists no -room-new; rebuild it from gawk-broadcast to run the rooms pass');
     log('PASS');
     return;
   }
@@ -1565,6 +1766,8 @@ async function main() {
     // without it, which is what makes the zero-request assertion in
     // browserScenario a real check.
     if (TELEMETRY_CHECK) relayArgs.push('-telemetry-key', TELEMETRY_KEY);
+    // R42: the room routes exist only with the flag on (docs/44 D17).
+    if (ROOMS_CHECK) relayArgs.push('-rooms');
     const relay = launch('relay', SERVER_BIN, relayArgs);
     // Decision 5: scrape the ephemeral dev cert's hash from the startup log
     // and seed it into the app's serverCertificateHashes setting.
@@ -1607,6 +1810,12 @@ async function main() {
       ]);
       await waitForHttp(`http://127.0.0.1:${TM_INGEST_PORT}/healthz`, 15_000, 'the telemetry ingest listener');
       log(`telemetry service up: ingest :${TM_INGEST_PORT}, read :${TM_READ_PORT}`);
+    }
+
+    if (ROOMS_CHECK) {
+      await roomsPass({ relayUrl, certHash, opsUrl });
+      log('PASS');
+      return;
     }
 
     if (!BROWSER_BROADCAST) {

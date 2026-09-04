@@ -32,7 +32,7 @@ import {
   type MseProbeResult,
 } from './msePresentation';
 import { WorkerViewerController } from './workerViewerController';
-import { AudioSink, audioSinkSupported } from './audioSink';
+import { AudioSink, audioSinkSupported, type AudioOutput } from './audioSink';
 import { AudioRateController, notePlayhead, resetAvSync } from '../../transport/av-sync';
 import { timeOriginMs } from '../../transport/time-sync';
 import {
@@ -81,6 +81,24 @@ export interface AudioState {
   // player is presenting the muxed audio track, so the same audio isn't heard
   // twice from two independently-clocked outputs.
   setSuppressed: (suppressed: boolean) => void;
+}
+
+// R42 (docs/44 §4.7): what a room tile needs that the single viewer does not.
+// Read through refs — none of these re-run the session effect.
+export interface ViewerConnectionOptions {
+  // The room's shared AudioContext + master gain. Absent ⇒ the sink owns its
+  // own context, exactly as before R42.
+  audioOutput?: AudioOutput;
+  // 'session': mute/volume are NOT read from or written to the persisted
+  // gawk:muted / gawk:volume keys — a tile's level is the room's business
+  // (gawk:room-volume:<id>, roomPrefs.ts) and the broadcaster's own tile
+  // starts muted without that becoming everyone's default.
+  audioPrefs?: 'persist' | 'session';
+  initialMuted?: boolean;
+  initialVolume?: number;
+  // The room's HMAC'd key (hex), stamped on this session's telemetry batches
+  // (docs/44 §4.10) — never the code.
+  roomKey?: string | null;
 }
 
 export interface ViewerConnectionState {
@@ -167,7 +185,11 @@ export function useViewerConnection(
   // effect's deps — engagement is in-band (leg dials + the 0x10 level
   // protocol), so this is a live flip like interpolation, never a reconnect.
   stripeMode: StripeMode = 'auto',
+  options: ViewerConnectionOptions = {},
 ): ViewerConnectionState {
+  const persistAudio = options.audioPrefs !== 'session';
+  const audioOutputRef = useRef(options.audioOutput ?? null);
+  audioOutputRef.current = options.audioOutput ?? null;
   // The relay address is a settings value exactly like the delivery mode above:
   // read through a SUBSCRIPTION, not getState(), so changing it re-runs the
   // session effect as a deliberate teardown + reconnect. Read imperatively it
@@ -212,8 +234,12 @@ export function useViewerConnection(
   // never constructs an AudioContext.
   const [audioPresent, setAudioPresent] = useState(false);
   const [audioNeedsGesture, setAudioNeedsGesture] = useState(false);
-  const [muted, setMutedState] = useState(loadMuted);
-  const [volume, setVolumeState] = useState(loadVolume);
+  const [muted, setMutedState] = useState(() =>
+    persistAudio ? loadMuted() : (options.initialMuted ?? false),
+  );
+  const [volume, setVolumeState] = useState(() =>
+    persistAudio ? loadVolume() : Math.max(0, Math.min(1, options.initialVolume ?? 1)),
+  );
   const sinkRef = useRef<AudioSink | null>(null);
   // One-shot latch for the per-packet hot path (see handleAudioChunk).
   const audioStartedRef = useRef(false);
@@ -263,6 +289,7 @@ export function useViewerConnection(
         },
       },
       profile,
+      audioOutputRef.current ? { output: audioOutputRef.current } : {},
     );
     sink.setMuted(mutedRef.current || suppressedRef.current);
     sink.setVolume(volumeRef.current);
@@ -337,13 +364,14 @@ export function useViewerConnection(
       mutedRef.current = next;
       applySinkMute();
       clearGestureBlock();
+      if (!persistAudio) return;
       try {
         localStorage.setItem(MUTED_KEY, next ? '1' : '0');
       } catch {
         // private mode etc. — the toggle still works for this session
       }
     },
-    [applySinkMute, clearGestureBlock],
+    [applySinkMute, clearGestureBlock, persistAudio],
   );
 
   const setAudioSuppressed = useCallback(
@@ -360,13 +388,14 @@ export function useViewerConnection(
       setVolumeState(v);
       sinkRef.current?.setVolume(v);
       clearGestureBlock();
+      if (!persistAudio) return;
       try {
         localStorage.setItem(VOLUME_KEY, String(v));
       } catch {
         // private mode etc.
       }
     },
-    [clearGestureBlock],
+    [clearGestureBlock, persistAudio],
   );
 
   const resumeAudio = useCallback(() => {
@@ -389,6 +418,12 @@ export function useViewerConnection(
   // already go through, so the worker and main-thread pipelines report
   // identically and neither one grows a collection path of its own.
   const telemetry = useTelemetryCollector<ViewerStats>('viewer');
+  // R42: the room key rides every batch of a tile session, whichever of the
+  // room's RoomState and the tile's 0x0D hello lands first.
+  const roomKey = options.roomKey ?? null;
+  useEffect(() => {
+    telemetry.setRoomKey(roomKey);
+  }, [telemetry, roomKey]);
 
   // R28: the collector's own id, mirrored into render state so the overlay can
   // show it. Deliberately NOT cleared when the session ends — a viewer reading
