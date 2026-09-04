@@ -214,19 +214,25 @@ STATIC_KEY=$(jq -r '.key' <<<"$STATE")
 # The claim: status.lease.holder names a pod, status.key equals the key the
 # participant saw, and that pod's /statusz publishes the room under it as
 # "home". The status writes are the RBAC's rooms/status grant in action.
+# HOMEPOD, not HOME: three kind runs in a row had every kubectl after this
+# point answered by the RUNNER'S OWN cluster (Forbidden for the ARC
+# service account; discovery listing only `bans`), because a variable named
+# HOME set to "" here left every child kubectl without ~/.kube/config and
+# it fell back to the in-cluster config. Never shadow HOME in a script that
+# shells out.
 end=$((SECONDS + DEADLINE))
-HOME=""
+HOMEPOD=""
 while true; do
-  HOME=$(room_field "$STATIC" '.status.lease.holder')
+  HOMEPOD=$(room_field "$STATIC" '.status.lease.holder')
   crkey=$(room_field "$STATIC" '.status.key')
-  if [ -n "$HOME" ] && [ "$crkey" = "$STATIC_KEY" ]; then break; fi
-  [ "$SECONDS" -ge "$end" ] && fail "static room CR status not written within ${DEADLINE}s (holder='$HOME' key='$crkey', want key $STATIC_KEY)"
+  if [ -n "$HOMEPOD" ] && [ "$crkey" = "$STATIC_KEY" ]; then break; fi
+  [ "$SECONDS" -ge "$end" ] && fail "static room CR status not written within ${DEADLINE}s (holder='$HOMEPOD' key='$crkey', want key $STATIC_KEY)"
   sleep 1
 done
-[ -n "${PORT[$HOME]-}" ] || fail "static room lease holder '$HOME' is not one of the relay pods (${PODS[*]})"
-statusz "$HOME" | jq -e --arg k "$STATIC_KEY" '.rooms[$k] | .role == "home" and .participants >= 1 and .kind == "static"' >/dev/null \
-  || fail "home pod $HOME does not publish $STATIC_KEY as a static home room on /statusz"
-echo "PASS: static room — first join claimed it on $HOME, status.key=$STATIC_KEY matches RoomState and /statusz (role home)"
+[ -n "${PORT[$HOMEPOD]-}" ] || fail "static room lease holder '$HOMEPOD' is not one of the relay pods (${PODS[*]})"
+statusz "$HOMEPOD" | jq -e --arg k "$STATIC_KEY" '.rooms[$k] | .role == "home" and .participants >= 1 and .kind == "static"' >/dev/null \
+  || fail "home pod $HOMEPOD does not publish $STATIC_KEY as a static home room on /statusz"
+echo "PASS: static room — first join claimed it on $HOMEPOD, status.key=$STATIC_KEY matches RoomState and /statusz (role home)"
 
 # A second joiner, wherever conntrack lands it. The home's roster reaching 2
 # is the whole claim: from the other pod that is one proxied control stream.
@@ -234,16 +240,16 @@ SECOND_LOG="$OUT/roomsim-static-second.out"
 "$ROOMSIM" -url "$RELAY_URL" -insecure -code e2eroom -nick second -duration 20s > "$SECOND_LOG" 2>&1 &
 SECOND_PID=$!
 end=$((SECONDS + 30))
-until statusz "$HOME" | jq -e --arg k "$STATIC_KEY" '.rooms[$k].participants >= 2' >/dev/null 2>&1; do
+until statusz "$HOMEPOD" | jq -e --arg k "$STATIC_KEY" '.rooms[$k].participants >= 2' >/dev/null 2>&1; do
   [ "$SECONDS" -ge "$end" ] && fail "the home pod never saw the second joiner ($(cat "$SECOND_LOG"))"
   sleep 1
 done
 other=""
-for p in "${PODS[@]}"; do [ "$p" != "$HOME" ] && other=$p; done
+for p in "${PODS[@]}"; do [ "$p" != "$HOMEPOD" ] && other=$p; done
 if statusz "$other" | jq -e --arg k "$STATIC_KEY" '.rooms[$k].role == "proxy"' >/dev/null 2>&1; then
-  echo "PASS: second joiner landed on $other and was PROXIED to $HOME (role proxy on $other, roster 2 on the home)"
+  echo "PASS: second joiner landed on $other and was PROXIED to $HOMEPOD (role proxy on $other, roster 2 on the home)"
 else
-  echo "PASS: second joiner landed on $HOME directly (roster 2 on the home); the proxy row is covered by the transport suite"
+  echo "PASS: second joiner landed on $HOMEPOD directly (roster 2 on the home); the proxy row is covered by the transport suite"
 fi
 wait "$SECOND_PID" 2>/dev/null || true
 
