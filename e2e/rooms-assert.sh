@@ -102,19 +102,47 @@ fail() {
     echo "--- $p /statusz rooms:" >&2
     statusz "$p" 2>/dev/null | jq '.rooms' >&2 || echo "(unreachable)" >&2
   done
-  kubectl -n "$NS" get rooms -o yaml >&2 2>&1 || true
+  kubectl -n "$NS" get "$ROOMS" -o yaml >&2 2>&1 || true
   ls "$OUT"/roomsim-*.out >/dev/null 2>&1 && tail -n 5 "$OUT"/roomsim-*.out >&2
+  # The relay's side of the story: the room lines from every pod, so a claim
+  # that never landed or an RBAC refusal is visible here and not only in the
+  # exported kind logs.
+  for p in "${PODS[@]}"; do
+    echo "--- $p room log lines:" >&2
+    kubectl -n "$NS" logs "$p" --tail=-1 2>/dev/null | grep -iE 'room|forbidden|lease' | tail -n 40 >&2 || true
+  done
   exit 1
 }
 
-# room_field <name> <jsonpath> — one status/spec field off the CR, "" if absent.
-room_field() { kubectl -n "$NS" get room "$1" -o jsonpath="$2" 2>/dev/null || true; }
+# The group-qualified resource name. `rooms` alone goes through kubectl's
+# discovery cache, which the supervised port-forward loops churn every
+# second; the first kind run saw "the server doesn't have a resource type
+# rooms" mid-step because of exactly that. The qualified name never does.
+ROOMS=rooms.gawk.ioio.fi
+
+# room_field <name> <jsonpath> — one status/spec field off the CR. Empty
+# only when the CR exists and the field is unset; a kubectl failure is
+# retried three times (a discovery/API blip) and then FAILS LOUDLY — it
+# must never read as "status not written yet" (PR #302 review).
+room_field() {
+  local err out
+  for _ in 1 2 3; do
+    if out=$(kubectl -n "$NS" get "$ROOMS" "$1" -o jsonpath="$2" 2>"$OUT/kubectl.err"); then
+      printf '%s' "$out"
+      return 0
+    fi
+    err=$(cat "$OUT/kubectl.err")
+    grep -q "NotFound" <<<"$err" && return 0
+    sleep 1
+  done
+  fail "kubectl get $ROOMS $1 failed: $err"
+}
 
 # first_state <roomsim stdout> — the first RoomState line, or "".
 first_state() { grep -m1 '"type":"state"' "$1" 2>/dev/null || true; }
 
 # ---------------------------------------------------------------- 1. the CRD
-kubectl -n "$NS" get rooms >/dev/null || fail "the Room CRD is not installed — rooms.enabled did not render it"
+kubectl -n "$NS" get "$ROOMS" >/dev/null || fail "the Room CRD is not installed — rooms.enabled did not render it"
 echo "PASS: kubectl get rooms resolves (the CRD is installed)"
 
 # ------------------------------------------------ 2. a static room, by kubectl
@@ -192,7 +220,7 @@ fi
 wait "$SECOND_PID" 2>/dev/null || true
 
 # ------------------------------------- 3. deleting the CR ends it: 4007
-kubectl -n "$NS" delete room "$STATIC"
+kubectl -n "$NS" delete "$ROOMS" "$STATIC"
 end=$((SECONDS + DEADLINE))
 until grep -q '"type":"close","code":4007' "$STATIC_LOG" 2>/dev/null; do
   [ "$SECONDS" -ge "$end" ] && fail "the static room's participant was not closed with 4007 after the CR was deleted ($(tail -n 3 "$STATIC_LOG"))"
