@@ -32,6 +32,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -234,13 +235,7 @@ func run(o options) int {
 	rsp, sess, err := d.Dial(dialCtx, o.url+o.path, nil)
 	dialCancel()
 	if err != nil {
-		if rsp != nil {
-			fmt.Fprintf(os.Stderr, "GAWK_ROOMSIM_DIAL_STATUS=%d\n", rsp.StatusCode)
-			fmt.Fprintf(os.Stderr, "gawk-roomsim: the relay refused the dial with %d: %v\n", rsp.StatusCode, err)
-			return exitDialRejected
-		}
-		fmt.Fprintf(os.Stderr, "gawk-roomsim: dial %s: %v\n", o.url, err)
-		return 1
+		return dialFailed(rsp, err, o.url, os.Stderr)
 	}
 	defer sess.CloseWithError(0, "roomsim done")
 
@@ -266,7 +261,7 @@ func run(o options) int {
 
 	enc := json.NewEncoder(os.Stdout)
 	readErr := make(chan error, 1)
-	go func() { readErr <- pump(stream, enc) }()
+	go func() { readErr <- pump(stream, enc, os.Stderr) }()
 
 	select {
 	case <-ctx.Done():
@@ -278,8 +273,22 @@ func run(o options) int {
 	}
 }
 
-// pump decodes records until the stream ends, printing each as JSON.
-func pump(stream io.Reader, enc *json.Encoder) error {
+// dialFailed maps a failed dial to the exit code and the stderr contract:
+// a relay that answered with an HTTP status is exit 3 plus the
+// GAWK_ROOMSIM_DIAL_STATUS line, anything else (nothing answered) is 1.
+func dialFailed(rsp *http.Response, err error, url string, errw io.Writer) int {
+	if rsp != nil {
+		fmt.Fprintf(errw, "GAWK_ROOMSIM_DIAL_STATUS=%d\n", rsp.StatusCode)
+		fmt.Fprintf(errw, "gawk-roomsim: the relay refused the dial with %d: %v\n", rsp.StatusCode, err)
+		return exitDialRejected
+	}
+	fmt.Fprintf(errw, "gawk-roomsim: dial %s: %v\n", url, err)
+	return 1
+}
+
+// pump decodes records until the stream ends, printing each as JSON on enc;
+// records of a type the sim does not print are noted on errw and skipped.
+func pump(stream io.Reader, enc *json.Encoder, errw io.Writer) error {
 	var hdr [wire.RoomRecordHeaderSize]byte
 	for {
 		if _, err := io.ReadFull(stream, hdr[:]); err != nil {
@@ -307,6 +316,12 @@ func pump(stream io.Reader, enc *json.Encoder) error {
 			}
 		case wire.TypeRoomEvent:
 			e, err := wire.ParseRoomEvent(buf)
+			if errors.Is(err, wire.ErrUnknownRoomKind) {
+				// A reserved (chat/voice) kind from a newer relay: readers skip
+				// it and keep their place in the sequence (wire/room.go).
+				fmt.Fprintf(errw, "gawk-roomsim: unknown event kind 0x%02x at seq %d skipped\n", e.Kind, e.Seq)
+				continue
+			}
 			if err != nil {
 				return err
 			}
@@ -314,7 +329,7 @@ func pump(stream io.Reader, enc *json.Encoder) error {
 				return err
 			}
 		default:
-			fmt.Fprintf(os.Stderr, "gawk-roomsim: unexpected record type 0x%02x ignored\n", buf[1])
+			fmt.Fprintf(errw, "gawk-roomsim: unexpected record type 0x%02x ignored\n", buf[1])
 		}
 	}
 }
@@ -335,12 +350,23 @@ func report(sess *webtransport.Session, err error, enc *json.Encoder) int {
 	}
 	// The way gawk-loadgen reads a close code: a session-level operation on
 	// a closed session fails with the peer's SessionError.
-	var se *webtransport.SessionError
-	if _, oerr := sess.OpenUniStream(); errors.As(oerr, &se) || errors.As(err, &se) {
-		_ = enc.Encode(closeJSON{Type: "close", Code: int64(se.ErrorCode), Reason: se.Message})
-		return 0
+	_, oerr := sess.OpenUniStream()
+	line, code := closeLine(oerr, err)
+	_ = enc.Encode(line)
+	if code != 0 {
+		fmt.Fprintf(os.Stderr, "gawk-roomsim: control session ended without an application close code: %v\n", err)
 	}
-	_ = enc.Encode(closeJSON{Type: "close", Code: -1, Reason: err.Error()})
-	fmt.Fprintf(os.Stderr, "gawk-roomsim: control session ended without an application close code: %v\n", err)
-	return 1
+	return code
+}
+
+// closeLine maps the session's post-close probe error (oerr) and the
+// stream read's error to the close line and the exit code: an application
+// close code found in either is the data (exit 0); none at all is a
+// transport death (code -1, exit 1).
+func closeLine(oerr, err error) (closeJSON, int) {
+	var se *webtransport.SessionError
+	if errors.As(oerr, &se) || errors.As(err, &se) {
+		return closeJSON{Type: "close", Code: int64(se.ErrorCode), Reason: se.Message}, 0
+	}
+	return closeJSON{Type: "close", Code: -1, Reason: err.Error()}, 1
 }
