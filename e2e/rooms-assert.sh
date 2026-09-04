@@ -62,13 +62,22 @@ fi
 # assert.sh, for the same reasons — and doubly so here, where step 5 kills a
 # pod out from under its forward on purpose.
 declare -A PORT
+# Each supervised forward gets its OWN kubectl cache directory and counts
+# its respawns to stderr (PR #302 review): a forward that keeps dying
+# respawns kubectl every second, and those background processes racing
+# the foreground's writes to ~/.kube/cache/discovery is the leading
+# explanation for two runs in which kubectl lost the `rooms` resource — and
+# `pods` — mid-step. With a private cache they cannot touch it, and the
+# counter says whether the race was ever plausible.
 forward() { # forward <pod> <local-port>
-  local pod=$1 port=$2 kid=
+  local pod=$1 port=$2 kid= n=0
   trap 'kill "$kid" 2>/dev/null; exit 0' TERM INT
   while true; do
-    kubectl -n "$NS" port-forward "pod/$pod" "$port:2112" >/dev/null 2>&1 &
+    kubectl --cache-dir="$OUT/kubectl-cache-$pod" -n "$NS" port-forward "pod/$pod" "$port:2112" >/dev/null 2>"$OUT/forward-$pod.err" &
     kid=$!
     wait "$kid" 2>/dev/null || true
+    n=$((n + 1))
+    echo "[forward $pod] kubectl port-forward exited (respawn #$n): $(tail -n 1 "$OUT/forward-$pod.err" 2>/dev/null)" >&2
     sleep 1
   done
 }
@@ -120,7 +129,9 @@ fail() {
   # exported kind logs.
   for p in "${PODS[@]}"; do
     echo "--- $p room log lines:" >&2
-    kubectl -n "$NS" logs "$p" --tail=-1 2>/dev/null | grep -iE 'room|forbidden|lease' | tail -n 40 >&2 || true
+    # kubectl's own error stays visible: an empty dump must mean "no
+    # room lines", never "kubectl logs failed" (PR #302 review).
+    kubectl -n "$NS" logs "$p" --tail=-1 2>&1 | grep -iE 'room|forbidden|lease|error' | tail -n 40 >&2 || true
   done
   exit 1
 }
