@@ -1172,6 +1172,29 @@ Add to it when a new gotcha lands in `docs/`.
   portal compromise with rooms on reads any Secret in the namespace. Keep
   gawk in a namespace that holds nothing else. ([docs/44](44-rooms.md) §11,
   `gawk-admin` chart `rbac.yaml`)
+- **"Is this broadcast known" is a fleet-wide question in cluster mode,
+  and the hub's lifecycle hooks fire on the origin pod, not the room's
+  home.** Mint, attach and the refresh poll asked only the local hub, so
+  on any pod other than the publisher's a live broadcast was 404 and an
+  off-pod attachment never went away or expired — the home pod's registry
+  never sees `OnPublisherClosed`/`OnBroadcastExpired` for it. The answer
+  is the origin lease (`Coordinator.Lookup`, served from the informer
+  cache — never a Get per attachment per second), and the poll is the
+  lifecycle for such an attachment. Two traps travel with that: an
+  informer cache that has not synced is *empty*, not "no leases", so
+  anything that turns "unknown" into an action must wait for the sync
+  (`WaitLeaseSync` gates `RunRefresh`); and the fleet-global viewer count
+  G lives on the origin, so an off-pod broadcast nobody local watches
+  reports 0 viewers. ([docs/44](44-rooms.md) §11.1)
+- **A drain's `Release` races the status writes the drain itself
+  triggers.** Closing the home's sessions makes them leave, the
+  `RoomEmpty` stamp is a status write on the same CR, and a `Release`
+  that treats a 409 as failure leaves the holder in place — the
+  reconnect then waits out the staleness window. Every status writer on
+  a CR retries a Conflict from a fresh Get; the fake dynamic client
+  enforces no resourceVersion CAS, so a fixture without the hand-rolled
+  reactor (`installCAS` / `installRoomCAS`) last-writer-wins and hides
+  exactly this. ([docs/44](44-rooms.md) §11.1)
 
 **CI / deployment**
 

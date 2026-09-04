@@ -680,6 +680,14 @@ the manual pass outcome.
   reaches other pods only through an edge session. Single-pod mode is
   byte-identical: no coordinator, local hub only, the hooks own the
   lifecycle.
+- **The drain's room-lease `Release` retries through a CAS conflict**
+  (found by the two-pod transport fixture once its pods ran a real drain):
+  the drain closes the home's sessions first, their leaving stamps
+  `emptySince` — a status write on the same CR — and `Release` lost that
+  race and gave up, logging "release failed during drain" with the holder
+  still in place, so the reconnecting participant waited out the
+  staleness window instead of adopting at once. It now re-reads and
+  retries like `patchStatus`.
 
 ### 11.2 Verified by
 
@@ -691,6 +699,7 @@ the manual pass outcome.
 | RM2 wrong token refused | `TestAttachRequiresProofAndGrant`, transport `TestRoomMintJoinAttachAndEnd` (bad proof → `CommandRejected`), `TestRoomJoinStatusVocabulary` (403s) |
 | RM2 grace survives a shorter reconnect | `TestEmptyGraceSurvivesAReconnectShorterThanIt` |
 | Fleet-wide broadcast source: mint on a pod other than the publisher's, away within the refresh interval, removed after the broadcast grace, CR rewritten (review, PR #302) | transport `TestRoomMintOnAnotherPodThanThePublisherFollowsTheLease` (two in-process pods, real coordinators on one fake clientset) and `TestRoomBroadcastsAnswersLocalHubThenOriginLease`; `cluster` `TestLookupServesTheLeaseCache`; `roomsrv` `TestRefreshExpiresUnknownAttachmentsInClusterMode`; `hub` `TestBroadcastStateReportsFleetGlobalViewers` (G, not the local count) |
+| Drain release survives a CAS conflict with a concurrent status write | `roomcluster` `TestReleaseRetriesThroughAConflict`; transport `TestRoomProxyPipesAndAdoptsAfterTheHomeDrains` under the fleet fixture's resourceVersion CAS reactor |
 | RM2 every knob reaches the registry | `TestRoomOptionsCarryAllKnobs`, `TestRoomKnobs`, `TestSanitizedCoversEveryConfigField` |
 | RM2 `-rooms` off byte-identical | `TestRoomsOffLeavesNoRoute` (no route, no `/statusz` section), the full pre-R42 suite green, chart "rooms off renders nothing" |
 | RM3 two claimants ⇒ one holder; stale generation loses; janitor | `internal/roomcluster/store_test.go` |

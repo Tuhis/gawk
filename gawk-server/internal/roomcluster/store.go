@@ -809,22 +809,35 @@ func (s *Store) stopRenew(code string) *heldLease {
 // staleness.
 func (s *Store) Release(ctx context.Context, code string) error {
 	s.stopRenew(code)
-	r, err := s.get(ctx, code)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+	// A Conflict is retried from a fresh Get, as patchStatus does (PR #302):
+	// the drain closes this pod's sessions first, and the RoomEmpty stamp
+	// their leaving triggers is a status write racing this one. Losing that
+	// CAS and giving up left the holder in place, so the reconnect had to
+	// wait out the staleness window instead of adopting at once.
+	var lastErr error
+	for range claimRetries {
+		r, err := s.get(ctx, code)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		l := r.Status.Lease
+		if l == nil || l.Holder != s.opts.PodName {
 			return nil
 		}
-		return err
-	}
-	l := r.Status.Lease
-	if l == nil || l.Holder != s.opts.PodName {
+		l.Holder, l.Addr = "", ""
+		if _, err := s.updateStatus(ctx, r); err != nil {
+			if apierrors.IsConflict(err) {
+				lastErr = err
+				continue
+			}
+			return unavailable(err)
+		}
 		return nil
 	}
-	l.Holder, l.Addr = "", ""
-	if _, err := s.updateStatus(ctx, r); err != nil {
-		return unavailable(err)
-	}
-	return nil
+	return fmt.Errorf("roomcluster: release retries exhausted: %w", apiError{lastErr})
 }
 
 // ReleaseAll releases every room lease this pod holds (drain).

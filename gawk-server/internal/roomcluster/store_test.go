@@ -546,6 +546,41 @@ func TestReleaseAllClearsHolderKeepsGeneration(t *testing.T) {
 	}
 }
 
+// Release must survive a CAS conflict (PR #302, found by the two-pod
+// transport fixture once it ran a real drain): the sessions the drain just
+// closed leave the room, and the RoomEmpty stamp that follows is a status
+// write racing the drain's Release for the same CR. patchStatus retries a
+// Conflict from a fresh Get; Release did not, so the loser logged "release
+// failed" and the lease stayed held — the reconnecting participant then
+// waited out the staleness window instead of adopting at once.
+func TestReleaseRetriesThroughAConflict(t *testing.T) {
+	client := newFakeDynamic(t, roomObject(t, staticCR("tuhisroom", nil)))
+	clock := newFakeClock()
+	a := newTestStore(t, client, "pod-a", clock, nil)
+	ctx := context.Background()
+	if err := a.Adopt(ctx, "tuhisroom"); err != nil {
+		t.Fatal(err)
+	}
+	// The concurrent writer, in miniature: the first status write after
+	// this point is told it lost the CAS, whatever version it carried.
+	var conflicts atomic.Int32
+	client.PrependReactor("update", "rooms", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if conflicts.Add(1) == 1 {
+			return true, nil, apierrors.NewConflict(rooms.GroupVersionResource.GroupResource(), "tuhisroom", errors.New("a RoomEmpty stamp landed first"))
+		}
+		return false, nil, nil
+	})
+	if err := a.Release(ctx, "tuhisroom"); err != nil {
+		t.Fatalf("Release through one conflict: %v", err)
+	}
+	if got := getRoom(t, client, "tuhisroom"); got.Status.Lease.Holder != "" || got.Status.Lease.Generation != 1 {
+		t.Fatalf("lease after a conflicted release = %+v, want empty holder at gen 1", got.Status.Lease)
+	}
+	if n := conflicts.Load(); n != 2 {
+		t.Fatalf("status writes = %d, want the conflicted one and its retry", n)
+	}
+}
+
 // The janitor deletes only dynamic rooms that are BOTH stale past the long
 // window AND empty longer than the grace — never static rooms, never a
 // fresh one. A stale room whose roster is unknown (emptySince unset: the

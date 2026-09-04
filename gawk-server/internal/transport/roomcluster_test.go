@@ -14,15 +14,19 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	coordv1 "k8s.io/api/coordination/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -88,6 +92,7 @@ func newRoomFleet(t *testing.T, objs ...runtime.Object) *roomFleet {
 	pool.AddCert(cert.Leaf)
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{rooms.GroupVersionResource: rooms.ListKind}, objs...)
+	installRoomCAS(client)
 	f := &roomFleet{client: client, cs: fake.NewClientset(), cert: cert, pool: pool,
 		clientTLS:      &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{"h3"}},
 		leaseWatches:   make(chan struct{}, 16),
@@ -102,6 +107,40 @@ func newRoomFleet(t *testing.T, objs ...runtime.Object) *roomFleet {
 		return true, w, nil
 	})
 	return f
+}
+
+// installRoomCAS gives the fake tracker the resourceVersion semantics the
+// real API server enforces on Room CRs (roomcluster's store tests carry
+// the same reactor): a create stamps "1", an update must present the
+// stored version or it is a Conflict, and a success bumps it. Without it
+// two status writers (the drain's Release and a RoomEmpty stamp from the
+// session that drain just closed) silently last-writer-win, and the
+// released lease can come back with its holder — a lost update the real
+// control plane rejects and the store's patchStatus retries through.
+func installRoomCAS(client *dynamicfake.FakeDynamicClient) {
+	var mu sync.Mutex
+	client.PrependReactor("create", "rooms", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		action.(k8stesting.CreateAction).GetObject().(*unstructured.Unstructured).SetResourceVersion("1")
+		return false, nil, nil
+	})
+	client.PrependReactor("update", "rooms", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		obj := action.(k8stesting.UpdateAction).GetObject().(*unstructured.Unstructured)
+		cur, err := client.Tracker().Get(rooms.GroupVersionResource, action.GetNamespace(), obj.GetName())
+		if err != nil {
+			return true, nil, apierrors.NewNotFound(rooms.GroupVersionResource.GroupResource(), obj.GetName())
+		}
+		curVersion := cur.(*unstructured.Unstructured).GetResourceVersion()
+		if obj.GetResourceVersion() != curVersion {
+			return true, nil, apierrors.NewConflict(rooms.GroupVersionResource.GroupResource(), obj.GetName(), errors.New("resourceVersion mismatch"))
+		}
+		n, _ := strconv.Atoi(curVersion)
+		obj.SetResourceVersion(strconv.Itoa(n + 1))
+		return false, nil, nil
+	})
 }
 
 // startRoomPod boots one pod with rooms, the R17 origin coordinator and
@@ -361,8 +400,7 @@ func TestRoomProxyPipesAndAdoptsAfterTheHomeDrains(t *testing.T) {
 	// home's own 4002 rides through the pipe), never 4007.
 	aCancel()
 	select {
-	case err := <-a.done:
-		t.Logf("DEBUG pod-a Run returned: %v; holding=%v", err, func() bool { _, h := a.store.Holding(code); return h }())
+	case <-a.done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("pod-a did not drain")
 	}
