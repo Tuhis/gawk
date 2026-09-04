@@ -616,6 +616,16 @@ the manual pass outcome.
 - **Windows: no create-secret field in the card** (the engine carries it,
   the shell passes empty; a `-room-create-secret` relay answers 403 and the
   status line says so), and the room session's lifetime is the broadcast's.
+- **The telemetry room key is shape-validated, not authenticated.** The
+  R28 session token binds broadcast key and role only, and a session can
+  enter a room after its token was minted, so `roomKey` on a batch is a
+  client-stated grouping hint (the R31 room view says so). Room resolve
+  rides the existing `POST /v1/resolve` with a `room` body and lower-cases
+  the code like `rooms.NormalizeCode`, so a room and a broadcast spelled the
+  same get different digests. `/v1/sessions` and `/v1/broadcasts` (the MCP
+  defaults) stay byte-identical; the key is on the session detail, the
+  history surface (`room=` filter, `GET /v1/history/rooms/{key}`) and the
+  live projection, all `omitempty`.
 - **Post-upgrade close codes 400 and 404 exist alongside 4007**: 400 for a
   session that broke the control protocol (no hello, malformed record),
   404 for a room that ended between the pre-upgrade check and the hello.
@@ -640,6 +650,14 @@ the manual pass outcome.
 | RM5 broadcaster attaches, appears in a roster, away then removal | `BroadcasterScreen.room.test.tsx`; the relay-side away/expiry path in `TestBroadcastLifecycleHooks` and the Go native integration test |
 | RM6 attach visible in another participant's `RoomState` | `gawk-broadcast/internal/engine/room_integration_test.go`, `crates/engine/tests/relay_integration.rs` (ignored; CI runs it on Linux) |
 | RM6 grant hand-off rewritten before first render | `App.room.test.tsx` |
+| RM7 portal API, CI migration gates, webhook carries no raw code | `gawk-admin/internal/api/rooms_test.go`, `internal/kube/rooms_test.go` (+ envtest against `crd-room.yaml`), `internal/notify/payload_test.go` `TestNoRawIDOrIPInAnyPayload` with a room-code poison; no migration was needed (`admin-migrations` unchanged) |
+| RM8 ingest unit test; UI groups a session with its room | `gawk-telemetry/internal/ingest/ingest_test.go` (roomKey shapes), `internal/readapi/rooms_test.go` + `TestR31DefaultsAreByteIdentical`, `ui/src/views/RoomView.test.tsx`, router tests |
+| RM9 docs | this section, `docs/gotchas.md` "Rooms (R42)", `docs/self-hosting.md` §10, `ROADMAP.md`; the §10 manual pass is **open** |
+
+### 11.3 Manual pass (§10)
+
+Not yet run on the reference deployment. Record each of the five steps
+here with the date and outcome when it is.
 
 ## 12. The design pass (done 2026-09-03)
 
