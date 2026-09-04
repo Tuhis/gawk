@@ -140,29 +140,9 @@ func run() error {
 		ro.PodName = os.Getenv("POD_NAME")
 		ro.Log = log
 		if cfg.ClusterMode {
-			// The four cluster seams (docs/44 §4.3, §4.5): the CR create is
-			// the code reservation; status writes follow the room's life.
-			ro.Reserve = func(ctx context.Context, room *rooms.Room) error {
-				if roomStore == nil {
-					return roomsrv.ErrUnavailable
-				}
-				return roomStore.Reserve(ctx, room)
-			}
-			ro.OnRoomEnded = func(code string, reason uint8) {
-				if roomStore != nil {
-					roomStore.RoomEnded(code, reason)
-				}
-			}
-			ro.OnRoomEmpty = func(code string, empty bool) {
-				if roomStore != nil {
-					roomStore.RoomEmpty(code, empty)
-				}
-			}
-			ro.OnAttachmentsChanged = func(code string, list []rooms.Attachment) {
-				if roomStore != nil {
-					roomStore.AttachmentsChanged(code, list)
-				}
-			}
+			// The store is built later (buildRooms below) and read through
+			// the closure, as the hub's lease hooks read coord.
+			wireRoomClusterSeams(&ro, func() *roomcluster.Store { return roomStore })
 		}
 		roomReg = roomsrv.NewRegistry(ro)
 	}
@@ -442,6 +422,50 @@ func roomOptions(cfg config.Config) roomsrv.Options {
 		MaxBroadcasts:   cfg.MaxRoomBroadcasts,
 		MaxParticipants: cfg.MaxRoomParticipants,
 		CreateSecret:    cfg.RoomCreateSecret,
+	}
+}
+
+// wireRoomClusterSeams installs the registry's cluster seams (docs/44 §4.3,
+// §4.5) on top of a store that may not exist yet: the CR create is the code
+// reservation (and Unreserve gives it back on the local re-check race),
+// the attach secret is read from the room's Secret per join, and the
+// status writes follow the room's life. Before the store exists the gates
+// fail closed and the notifications are no-ops. One function so a test can
+// prove every seam is wired (CODE-REVIEW.md: the R2 F1 blind spot).
+func wireRoomClusterSeams(ro *roomsrv.Options, store func() *roomcluster.Store) {
+	ro.Reserve = func(ctx context.Context, room *rooms.Room) error {
+		st := store()
+		if st == nil {
+			return roomsrv.ErrUnavailable
+		}
+		return st.Reserve(ctx, room)
+	}
+	ro.Unreserve = func(ctx context.Context, code string) {
+		if st := store(); st != nil {
+			st.Unreserve(ctx, code)
+		}
+	}
+	ro.AttachSecret = func(code string) (string, bool, error) {
+		st := store()
+		if st == nil {
+			return "", false, fmt.Errorf("%w: room store not installed", roomsrv.ErrUnavailable)
+		}
+		return st.AttachSecret(code)
+	}
+	ro.OnRoomEnded = func(code string, reason uint8) {
+		if st := store(); st != nil {
+			st.RoomEnded(code, reason)
+		}
+	}
+	ro.OnRoomEmpty = func(code string, empty bool) {
+		if st := store(); st != nil {
+			st.RoomEmpty(code, empty)
+		}
+	}
+	ro.OnAttachmentsChanged = func(code string, list []rooms.Attachment) {
+		if st := store(); st != nil {
+			st.AttachmentsChanged(code, list)
+		}
 	}
 }
 

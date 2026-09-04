@@ -223,7 +223,9 @@ func roomFrom(obj any) (*rooms.Room, error) {
 	case *unstructured.Unstructured:
 		var r rooms.Room
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(o.Object, &r); err != nil {
-			return nil, fmt.Errorf("room %q: %w", o.GetName(), err)
+			// No name in the text: the conversion error is logged as-is and
+			// the name is the code (docs/44 D16).
+			return nil, fmt.Errorf("room CR: %w", err)
 		}
 		return &r, nil
 	default:
@@ -240,6 +242,38 @@ func toUnstructured(r *rooms.Room) (*unstructured.Unstructured, error) {
 	return &unstructured.Unstructured{Object: raw}, nil
 }
 
+// describe renders an API error without the object name Kubernetes quotes
+// in its message (`rooms "k7xq2m" is forbidden`, `secrets "room-k7xq2m"
+// not found`): the name IS the code, and every store error ends up in a
+// log line (docs/44 D16). The reason and status code are what an operator
+// needs; the name is what they must not see.
+func describe(err error) string {
+	var st apierrors.APIStatus
+	if errors.As(err, &st) {
+		status := st.Status()
+		reason := string(status.Reason)
+		if reason == "" {
+			reason = "error"
+		}
+		return fmt.Sprintf("kubernetes api: %s (%d)", reason, status.Code)
+	}
+	return err.Error()
+}
+
+// apiError is an API error whose text is describe(err) and whose chain is
+// the original: errors.Is / apierrors.IsConflict still see through it,
+// only the message changes.
+type apiError struct{ err error }
+
+func (e apiError) Error() string { return describe(e.err) }
+func (e apiError) Unwrap() error { return e.err }
+
+// unavailable wraps an API failure as roomsrv.ErrUnavailable (503) without
+// the object name.
+func unavailable(err error) error {
+	return fmt.Errorf("%w: %w", roomsrv.ErrUnavailable, apiError{err})
+}
+
 // get reads the CR from the API (never the cache: every write path needs
 // the current resourceVersion).
 func (s *Store) get(ctx context.Context, code string) (*rooms.Room, error) {
@@ -248,7 +282,7 @@ func (s *Store) get(ctx context.Context, code string) (*rooms.Room, error) {
 		if apierrors.IsNotFound(err) {
 			return nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("%w: %v", roomsrv.ErrUnavailable, err)
+		return nil, unavailable(err)
 	}
 	return roomFrom(u)
 }
@@ -378,16 +412,16 @@ func (s *Store) Reserve(ctx context.Context, room *rooms.Room) error {
 	created, err := s.rooms().Create(ctx, u, metav1.CreateOptions{})
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("roomcluster: code taken: %w", err)
+			return fmt.Errorf("roomcluster: code taken: %w", apiError{err})
 		}
-		return fmt.Errorf("%w: %v", roomsrv.ErrUnavailable, err)
+		return unavailable(err)
 	}
 	// The status subresource drops status on create, so the lease is
 	// written in a second request against the created object's version.
 	cr.ResourceVersion = created.GetResourceVersion()
 	if _, err := s.updateStatus(ctx, cr); err != nil {
 		_ = s.rooms().Delete(ctx, cr.Name, metav1.DeleteOptions{})
-		return fmt.Errorf("%w: %v", roomsrv.ErrUnavailable, err)
+		return unavailable(err)
 	}
 	s.startRenew(cr.Name, 1)
 	s.opts.Log.Info("room reserved", "room_key", cr.Status.Key)
@@ -421,6 +455,36 @@ func (s *Store) RoomEnded(code string, _ uint8) {
 	})
 	if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
 		s.opts.Log.Warn("room end: delete failed", "room_key", s.opts.Obfuscate(code), "err", err)
+	}
+}
+
+// Unreserve is roomsrv.Options.Unreserve: Reserve created the CR and
+// started renewing its lease, then Mint found the code taken locally (an
+// adoption raced the mint). Give both back — the CR would otherwise count
+// against -max-rooms until the janitor's long window. The delete is fenced
+// on the version this pod wrote; a CR that moved since belongs to whoever
+// moved it, and one already gone is fine.
+func (s *Store) Unreserve(ctx context.Context, code string) {
+	norm, err := rooms.NormalizeCode(code)
+	if err != nil {
+		return
+	}
+	s.stopRenew(norm)
+	r, err := s.get(ctx, norm)
+	if err != nil {
+		if !errors.Is(err, ErrNotFound) {
+			s.opts.Log.Warn("room unreserve: get failed", "room_key", s.opts.Obfuscate(norm), "err", err)
+		}
+		return
+	}
+	if l := r.Status.Lease; l == nil || l.Holder != s.opts.PodName {
+		return
+	}
+	err = s.rooms().Delete(ctx, r.Name, metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{ResourceVersion: &r.ResourceVersion},
+	})
+	if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+		s.opts.Log.Warn("room unreserve: delete failed", "room_key", s.opts.Obfuscate(norm), "err", describe(err))
 	}
 }
 
@@ -482,11 +546,11 @@ func (s *Store) patchStatus(ctx context.Context, code string, fn func(*rooms.Roo
 				lastErr = err
 				continue
 			}
-			return fmt.Errorf("%w: %v", roomsrv.ErrUnavailable, err)
+			return unavailable(err)
 		}
 		return nil
 	}
-	return fmt.Errorf("roomcluster: status write retries exhausted: %w", lastErr)
+	return fmt.Errorf("roomcluster: status write retries exhausted: %w", apiError{lastErr})
 }
 
 // --- lease ------------------------------------------------------------
@@ -527,12 +591,12 @@ func (s *Store) Claim(ctx context.Context, code string, force bool) (int64, erro
 				lastErr = err
 				continue
 			}
-			return 0, fmt.Errorf("%w: %v", roomsrv.ErrUnavailable, err)
+			return 0, unavailable(err)
 		}
 		s.startRenew(norm, gen)
 		return gen, nil
 	}
-	return 0, fmt.Errorf("roomcluster: claim retries exhausted for room: %w", lastErr)
+	return 0, fmt.Errorf("roomcluster: claim retries exhausted for room: %w", apiError{lastErr})
 }
 
 // Adopt takes the room over (docs/44 §4.5 "Adoption"): claim the lease
@@ -572,6 +636,10 @@ func (s *Store) Adopt(ctx context.Context, code string) error {
 			s.opts.Log.Debug("room adopted with a local copy already present", "room_key", r.Status.Key)
 		}
 	default:
+		// The re-read CR's attachments seed the rebuilt room (docs/44 §4.3
+		// "rebuilt by the home pod on adoption"), as AdoptDynamic's do; the
+		// registry ignores them on a plain refresh of a room it holds.
+		def.Attachments = append([]rooms.Attachment(nil), r.Status.Attachments...)
 		if err := s.opts.Registry.UpsertStatic(def); err != nil {
 			s.stopRenew(norm)
 			return err
@@ -589,22 +657,54 @@ func (s *Store) staticDef(ctx context.Context, r *rooms.Room) (roomsrv.StaticRoo
 	if r.Spec.Kind == rooms.KindDynamic || r.Spec.AttachSecretRef == nil {
 		return def, nil
 	}
-	ref := r.Spec.AttachSecretRef
+	secret, err := s.readAttachSecret(ctx, r.Spec.AttachSecretRef)
+	if err != nil {
+		return def, err
+	}
+	def.AttachSecret = secret
+	return def, nil
+}
+
+// readAttachSecret reads one key of the referenced Secret. Errors name
+// neither the Secret (conventionally `room-<code>`) nor the key: they go to
+// logs and to the join's 503 (docs/44 D16).
+func (s *Store) readAttachSecret(ctx context.Context, ref *rooms.SecretKeyRef) (string, error) {
 	u, err := s.opts.Client.Resource(secretGVR).Namespace(s.opts.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 	if err != nil {
-		return def, fmt.Errorf("%w: attach secret %q: %v", roomsrv.ErrUnavailable, ref.Name, err)
+		return "", fmt.Errorf("%w: attach secret: %w", roomsrv.ErrUnavailable, apiError{err})
 	}
 	data, _, _ := unstructured.NestedMap(u.Object, "data")
 	enc, ok := data[ref.Key].(string)
 	if !ok {
-		return def, fmt.Errorf("%w: attach secret %q has no key %q", roomsrv.ErrUnavailable, ref.Name, ref.Key)
+		return "", fmt.Errorf("%w: attach secret: referenced key missing", roomsrv.ErrUnavailable)
 	}
 	raw, err := base64.StdEncoding.DecodeString(enc)
 	if err != nil {
-		return def, fmt.Errorf("%w: attach secret %q key %q: %v", roomsrv.ErrUnavailable, ref.Name, ref.Key, err)
+		return "", fmt.Errorf("%w: attach secret: referenced key is not base64", roomsrv.ErrUnavailable)
 	}
-	def.AttachSecret = string(raw)
-	return def, nil
+	return string(raw), nil
+}
+
+// AttachSecret is roomsrv.Options.AttachSecret: the attach secret of a
+// static room resolved AT JOIN TIME from its Secret (review finding A). The
+// portal rotates the Secret in place and never touches the CR, so a copy
+// taken at adoption would keep admitting the old value; reading per join
+// makes a rotation bind at the next join with no CR bump. A code without a
+// CR in the cache (a file-defined room) or a CR without a reference is
+// found=false — the registry's inline definition rules; a reference that
+// cannot be honoured is an error, and the join fails closed (503).
+func (s *Store) AttachSecret(code string) (string, bool, error) {
+	r, ok := s.cached(code)
+	if !ok || r.Spec.Kind == rooms.KindDynamic || r.Spec.AttachSecretRef == nil {
+		return "", false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	secret, err := s.readAttachSecret(ctx, r.Spec.AttachSecretRef)
+	if err != nil {
+		return "", false, err
+	}
+	return secret, true, nil
 }
 
 func (s *Store) startRenew(code string, generation int64) {
@@ -662,7 +762,7 @@ func (s *Store) renewOnce(ctx context.Context, code string, h *heldLease) error 
 	now := metav1.NewTime(s.now())
 	r.Status.Lease.RenewedAt = &now
 	if _, err := s.updateStatus(opCtx, r); err != nil {
-		return err
+		return unavailable(err)
 	}
 	return nil
 }
@@ -721,8 +821,10 @@ func (s *Store) Release(ctx context.Context, code string) error {
 		return nil
 	}
 	l.Holder, l.Addr = "", ""
-	_, err = s.updateStatus(ctx, r)
-	return err
+	if _, err := s.updateStatus(ctx, r); err != nil {
+		return unavailable(err)
+	}
+	return nil
 }
 
 // ReleaseAll releases every room lease this pod holds (drain).
@@ -745,9 +847,11 @@ func (s *Store) ReleaseAll(ctx context.Context) {
 // observe handles an added or updated CR: a held room whose lease now
 // names someone else is lost (the watch usually reports it before the
 // renew loop does), and a held static room whose SPEC changed is refreshed
-// in the registry (attach-secret rotation, display name). Status-only
-// updates — every renew is one — refresh nothing: a Secret read per renew
-// per room would be the informer's hot path.
+// in the registry (display name, limits, a changed Secret reference).
+// Secret ROTATION is not a spec change and needs none: the secret is read
+// per join (AttachSecret). Status-only updates — every renew is one —
+// refresh nothing: a Secret read per renew per room would be the
+// informer's hot path.
 func (s *Store) observe(oldObj, obj any) {
 	r, err := roomFrom(obj)
 	if err != nil {
@@ -846,11 +950,17 @@ func (s *Store) janitorLoop(ctx context.Context) {
 	}
 }
 
-// JanitorSweep runs one pass (docs/44 §4.5 "Janitor"): delete dynamic Room
-// CRs whose lease is stale past the long window AND whose emptySince is
-// older than the empty grace — and nothing else. Static CRs are never
-// janitored. Deletion is CAS-fenced on resourceVersion so a concurrent
-// adoption wins. Exported for tests.
+// JanitorSweep runs one pass (docs/44 §4.5 "Janitor") over dynamic Room
+// CRs whose lease is stale past the long window; static CRs are never
+// janitored. One whose emptySince is older than the empty grace is
+// deleted. One with NO emptySince — its home crashed while the room was
+// populated, so nobody stamped it — is stamped now (review finding C):
+// without the stamp it would never qualify while still counting against
+// -max-rooms. The stale lease alone is the evidence; a later pass deletes
+// it once the stamp has aged past the grace, unless an adoption revives it
+// first (Claim rewrites emptySince, the first join clears it). Both writes
+// are fenced on resourceVersion so a concurrent adoption wins. Exported for
+// tests.
 func (s *Store) JanitorSweep(ctx context.Context) {
 	now := s.now()
 	for _, obj := range s.informer.GetStore().List() {
@@ -861,18 +971,37 @@ func (s *Store) JanitorSweep(ctx context.Context) {
 		if !s.stale(r.Status.Lease, s.opts.StaleWindow) {
 			continue
 		}
-		if r.Status.EmptySince == nil || now.Sub(r.Status.EmptySince.Time) <= s.opts.EmptyGrace {
+		if r.Status.EmptySince == nil {
+			s.stampOrphan(ctx, r, now)
+			continue
+		}
+		if now.Sub(r.Status.EmptySince.Time) <= s.opts.EmptyGrace {
 			continue
 		}
 		err = s.rooms().Delete(ctx, r.Name, metav1.DeleteOptions{
 			Preconditions: &metav1.Preconditions{ResourceVersion: &r.ResourceVersion},
 		})
 		if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
-			s.opts.Log.Warn("room janitor delete failed", "room_key", r.Status.Key, "err", err)
+			s.opts.Log.Warn("room janitor delete failed", "room_key", r.Status.Key, "err", describe(err))
 			continue
 		}
 		if err == nil {
 			s.opts.Log.Info("room janitor deleted a stale empty room", "room_key", r.Status.Key)
 		}
 	}
+}
+
+// stampOrphan writes emptySince=now on a stale, unstamped dynamic CR from
+// the cached copy, so the fence is the version the janitor saw.
+func (s *Store) stampOrphan(ctx context.Context, r *rooms.Room, now time.Time) {
+	cr := r.DeepCopy()
+	stamp := metav1.NewTime(now)
+	cr.Status.EmptySince = &stamp
+	if _, err := s.updateStatus(ctx, cr); err != nil {
+		if !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			s.opts.Log.Warn("room janitor stamp failed", "room_key", r.Status.Key, "err", describe(err))
+		}
+		return
+	}
+	s.opts.Log.Info("room janitor stamped an orphaned room", "room_key", r.Status.Key)
 }

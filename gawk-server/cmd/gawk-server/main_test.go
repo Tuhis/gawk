@@ -18,9 +18,11 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
+	"github.com/Tuhis/gawk/gawk-server/internal/roomcluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
+	"github.com/Tuhis/gawk/gawk-server/rooms"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -386,4 +388,31 @@ func TestInstallRoomsReadsTheStatsSourceAfterTheInstall(t *testing.T) {
 	if src.Stats() == nil {
 		t.Fatal("the installed source reports no rooms map")
 	}
+}
+
+// R42 review (PR #302): every cluster seam of roomsrv.Options must reach
+// production — the R2 rule again. The registry grew Unreserve (give a
+// reservation back on the local re-check race) and AttachSecret (resolve a
+// static room's secret per join so a rotation needs no CR bump); a seam
+// left nil is a silent no-op in cluster mode while every unit test stays
+// green. Before the store exists the seams fail closed: Reserve and
+// AttachSecret refuse (ErrUnavailable), the notifications are no-ops.
+func TestRoomClusterSeamsAreAllWiredAndFailClosedWithoutAStore(t *testing.T) {
+	var ro roomsrv.Options
+	wireRoomClusterSeams(&ro, func() *roomcluster.Store { return nil })
+	if ro.Reserve == nil || ro.Unreserve == nil || ro.AttachSecret == nil ||
+		ro.OnRoomEnded == nil || ro.OnRoomEmpty == nil || ro.OnAttachmentsChanged == nil {
+		t.Fatalf("a cluster seam is unwired: %+v", ro)
+	}
+	if err := ro.Reserve(context.Background(), &rooms.Room{}); !errors.Is(err, roomsrv.ErrUnavailable) {
+		t.Errorf("Reserve without a store = %v, want ErrUnavailable", err)
+	}
+	if _, found, err := ro.AttachSecret("tuhisroom"); err == nil || found {
+		t.Errorf("AttachSecret without a store = found=%v err=%v, want an error (fail closed)", found, err)
+	}
+	// No panics on the nil store.
+	ro.Unreserve(context.Background(), "k7xq2m")
+	ro.OnRoomEnded("k7xq2m", 0)
+	ro.OnRoomEmpty("k7xq2m", true)
+	ro.OnAttachmentsChanged("k7xq2m", nil)
 }

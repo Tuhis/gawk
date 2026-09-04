@@ -548,7 +548,10 @@ func TestReleaseAllClearsHolderKeepsGeneration(t *testing.T) {
 
 // The janitor deletes only dynamic rooms that are BOTH stale past the long
 // window AND empty longer than the grace — never static rooms, never a
-// stale room with participants (emptySince unset), never a fresh one.
+// fresh one. A stale room whose roster is unknown (emptySince unset: the
+// home crashed while populated) is not deleted on this pass but STAMPED,
+// so a later pass can collect it (finding C; the two-pass path is
+// TestJanitorStampsOrphansThenDeletesThemAPassLater).
 func TestJanitorDeletesOnlyStaleAndEmptyDynamicRooms(t *testing.T) {
 	withListWatchReflector(t)
 	clock := newFakeClock()
@@ -559,7 +562,7 @@ func TestJanitorDeletesOnlyStaleAndEmptyDynamicRooms(t *testing.T) {
 	freshLease := &rooms.Lease{Holder: "pod-b", Generation: 1, RenewedAt: ptrTime(recent)}
 	client := newFakeDynamic(t,
 		roomObject(t, dynamicCR("garbage", staleLease, &old)),                                            // stale + empty past grace → deleted
-		roomObject(t, dynamicCR("stalebusy", staleLease, nil)),                                           // stale, roster unknown → kept for adoption
+		roomObject(t, dynamicCR("stalebusy", staleLease, nil)),                                           // stale, roster unknown → stamped, kept this pass
 		roomObject(t, dynamicCR("fresh", freshLease, &old)),                                              // live home → kept
 		roomObject(t, dynamicCR("justemptied", staleLease, &recent)),                                     // empty inside the grace → kept
 		roomObject(t, dynamicCR("released", &rooms.Lease{Generation: 2, RenewedAt: ptrTime(old)}, &old)), // drained and empty → deleted
@@ -582,6 +585,17 @@ func TestJanitorDeletesOnlyStaleAndEmptyDynamicRooms(t *testing.T) {
 			t.Errorf("%s was janitored: %v", name, err)
 		}
 	}
+	if got := getRoom(t, client, "stalebusy"); got.Status.EmptySince == nil || !got.Status.EmptySince.Time.Equal(now) {
+		t.Errorf("stalebusy.emptySince = %v, want stamped at %v so a later pass can collect it", got.Status.EmptySince, now)
+	}
+	for _, name := range []string{"fresh", "justemptied"} {
+		if got := getRoom(t, client, name); got.Status.EmptySince == nil || got.Status.EmptySince.Time.Equal(now) {
+			t.Errorf("%s.emptySince = %v; only an unstamped stale room is stamped", name, got.Status.EmptySince)
+		}
+	}
+	if got := getRoom(t, client, "tuhisroom"); got.Status.EmptySince != nil {
+		t.Errorf("a static room was stamped: %v", got.Status.EmptySince)
+	}
 }
 
 func ptrTime(t time.Time) *metav1.Time {
@@ -589,9 +603,12 @@ func ptrTime(t time.Time) *metav1.Time {
 	return &mt
 }
 
-// The informer: a held static room's spec edit (attach-secret rotation)
-// refreshes the registry; a CR deletion ends the room locally with the
-// operator reason; a foreign lease on a held room is a loss.
+// The informer: a held static room's spec edit (display name, a changed
+// Secret reference) refreshes the registry; a CR deletion ends the room
+// locally with the operator reason; a foreign lease on a held room is a
+// loss. Secret ROTATION needs no spec edit — the relay reads the Secret per
+// join (TestAttachSecretReadsTheSecretPerJoinSoARotationNeedsNoCRBump);
+// the rotated value here only shows the refresh re-reads it too.
 func TestInformerRefreshesHeldStaticRoomsAndEndsDeletedOnes(t *testing.T) {
 	withListWatchReflector(t)
 	client := newFakeDynamic(t,
@@ -621,7 +638,7 @@ func TestInformerRefreshesHeldStaticRoomsAndEndsDeletedOnes(t *testing.T) {
 		t.Fatalf("adopted static definition = %+v, want the Secret's attach secret", ups)
 	}
 
-	// Rotate the secret and bump the CR: the held room is refreshed.
+	// Rotate the secret and edit the spec: the held room is refreshed.
 	ri := client.Resource(rooms.GroupVersionResource).Namespace(testNamespace)
 	_, _ = client.Resource(secretGVR).Namespace(testNamespace).Update(ctx, secretObject("room-tuhisroom", map[string]string{"attachSecret": "rotated"}), metav1.UpdateOptions{})
 	cur, _ := ri.Get(ctx, "tuhisroom", metav1.GetOptions{})

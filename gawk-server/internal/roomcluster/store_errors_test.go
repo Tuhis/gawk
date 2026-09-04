@@ -153,8 +153,10 @@ func TestRoomFromAndCacheRejectMalformedObjects(t *testing.T) {
 	if got, err := roomFrom(typed); err != nil || got != typed {
 		t.Fatalf("roomFrom(typed) = %v, %v", got, err)
 	}
-	if _, err := roomFrom(brokenRoomObject("broken")); err == nil || !strings.Contains(err.Error(), `room "broken"`) {
-		t.Fatalf("roomFrom(broken unstructured) = %v, want a named conversion error", err)
+	// The conversion error is logged as-is; naming the CR in it would
+	// leak the code (docs/44 D16).
+	if _, err := roomFrom(brokenRoomObject("broken")); err == nil || strings.Contains(err.Error(), "broken") {
+		t.Fatalf("roomFrom(broken unstructured) = %v, want an unnamed conversion error", err)
 	}
 	if _, err := roomFrom("junk"); err == nil || !strings.Contains(err.Error(), "unexpected object type") {
 		t.Fatalf("roomFrom(string) = %v", err)

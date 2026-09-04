@@ -249,7 +249,9 @@ func (c *RoomClient) releaseSecret(ctx context.Context, room *rooms.Room) {
 
 // RotateSecret mints a fresh attach secret for a static room and returns it
 // once. Every client holding the previous value is refused at its next attach
-// (docs/44 D8; the relay reads the Secret through its informer).
+// (docs/44 D8): the relay reads the referenced Secret per join, so writing
+// the Secret in place is the whole rotation — no CR bump is needed, and none
+// is made (a spec edit would only re-home nothing and wake every informer).
 //
 // The Secret written is the one the CR REFERENCES — not necessarily
 // `room-<code>` — because a `kubectl apply`'d room may point anywhere in the
