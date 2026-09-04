@@ -60,7 +60,7 @@ feature set exists).
 | R39 | [Admin portal for moderation](#r39--admin-portal-for-moderation) | 🔧 designed 2026-08-20, **AP1–AP8 implemented 2026-08-20** — a fleet-wide kill that actually reaches every pod (`Ban` CRs the relays watch, close code 4006 terminal in all four wire mirrors, HTTP 451 on the publish path), durable ID/IP bans with longest-prefix CIDR matching, and **`gawk-admin`**: the fourth top-level module and fourth deployable — an OIDC-gated operator SPA over Postgres (the chart takes a connection to a database it does not create), horizontally scaled from v1 with leader-elected background work, signed multi-webhook notifications, and forward-only migrations applied by a Helm hook Job under an expand–contract policy CI enforces. Deliberately deviating from the sketch below, the portal is **internet-exposable behind OIDC** rather than internal-only, so a paged operator can judge and kill from a phone. Verified by the four modules' suites, `helm` render assertions, an image smoke run and a kind two-pod tier that applies a real `Ban` and watches both pods drop the broadcast. **Remaining: the manual pass on the reference deployment** — kill a real broadcast from a phone, end to end ([docs/42](docs/42-admin-moderation-portal.md) §11.3) |
 | R40 | [Automatic content flagging (NSFW keyframe screening)](#r40--automatic-content-flagging-nsfw-keyframe-screening) | 💡 proposed 2026-08-19, not started — no design doc yet; **depends on R39** (needs its kill/ban actuator) |
 | R41 | [Test coverage measurement and badges](#r41--test-coverage-measurement-and-badges) | 🔧 designed + **CV1–CV6 implemented 2026-09-02** — every component's job measures its own coverage, gates itself against a floor in `coverage-floors.json`, and pushes to `main` publish shields.io endpoints to an orphan `badges` branch (no third-party service, no token beyond `GITHUB_TOKEN`). Root README carries the size-weighted aggregate; each component README carries its own ([docs/43](docs/43-coverage-reporting.md)) |
-| R42 | [Rooms](#r42--rooms) | 🔧 designed 2026-09-03 (owner decisions D1–D20, chunks RM1–RM9) + **UI/UX design pass done 2026-09-03** in Claude Design — cinematic dock direction chosen, room view, states and phone frames drawn, private canvas linked from [docs/44](docs/44-rooms.md) §12; **not started**. Zero change to the media path; rooms are the first stateful control plane the fleet has needed |
+| R42 | [Rooms](#r42--rooms) | ✅ **implemented 2026-09-04** (RM1–RM9 in one PR): wire types 0x13–0x16 + close code 4007 in all four mirrors, single-pod relay + `Room` CRD cluster mode (home-pod lease, proxy, adoption, janitor, kind assert), SPA room view (grid / focus / hide videos, people panel, broadcaster Room panel), native attach on Linux and Windows, admin static-room CRUD + webhooks, telemetry room key. `-rooms` defaults off and off is byte-identical. Open: the §10 manual pass on the reference deployment ([docs/44](docs/44-rooms.md) §11) |
 
 ---
 
@@ -3620,10 +3620,11 @@ explicit hooks for both without building either.
 only); thumbnails for non-focused tiles (listed follow-up); accounts;
 cross-relay rooms; any change to the media wire.
 
-**Status**: designed 2026-09-03, chunks RM1–RM9, not started. The UI/UX
-design pass was done the same day in Claude Design ([docs/44](docs/44-rooms.md)
-§4.9 revision and §12); the canvas is a private artifact of the maintainer,
-linked from §12, and is the layout reference for RM4/RM5.
+**Status**: designed 2026-09-03; the UI/UX design pass was done the same
+day in Claude Design ([docs/44](docs/44-rooms.md) §4.9 revision and §12);
+**implemented 2026-09-04**, chunks RM1–RM9, with deviations and the
+verified-by table in [docs/44](docs/44-rooms.md) §11. Open: the §10 manual
+pass on the reference deployment.
 
 ---
 

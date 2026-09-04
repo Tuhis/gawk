@@ -1,8 +1,9 @@
 # R42 — Rooms (docs/44)
 
 **Status**: designed 2026-09-03 with the owner (decisions D1–D20 below);
-**UI/UX design pass done the same day** (§4.9 revision, §12); not started.
-Chunks RM1–RM9.
+**UI/UX design pass done the same day** (§4.9 revision, §12);
+**implemented 2026-09-04** (chunks RM1–RM9, §11). The manual pass on the
+reference deployment (§10) is open.
 
 ## 1. Purpose
 
@@ -246,7 +247,7 @@ message, with golden vectors.
 | Type | Name | Direction | Payload |
 |---|---|---|---|
 | `0x13` | `RoomHello` | client → relay | protocol version, nickname, client kind (web-viewer / web-broadcaster / native), requested capabilities bitmap |
-| `0x14` | `RoomState` | relay → client | full snapshot: code, kind, display name, capabilities, attachments (ID, label, live/away, viewer count), participants (ID, nickname, kind, flags), your participant ID, your grants (creator / attach-ok) |
+| `0x14` | `RoomState` | relay → client | full snapshot: code, kind, display name, capabilities, attachments (ID, label, live/away, viewer count), participants (ID, nickname, kind, flags), your participant ID, your grants (creator / attach-ok), the creator token (first snapshot after a mint only), and the room's **HMAC'd key** (RM8: the telemetry handle — a client cannot compute it, so the relay hands it over; revision 2026-09-04) |
 | `0x15` | `RoomEvent` | relay → client | one delta: participant joined / left / renamed / flags changed; attachment added / removed / live / away / viewer count; room ending (reason) |
 | `0x16` | `RoomCommand` | client → relay | attach (broadcast ID + resume token + label), detach (broadcast ID), set nickname, end room, resync; **reserved sub-ranges** for chat (`0x40–0x4F`) and voice (`0x50–0x5F`) |
 
@@ -254,7 +255,10 @@ message, with golden vectors.
   adoption or proxy re-establishment; clients replace, never merge.
 - `RoomEvent` carries a monotonically increasing sequence within the home
   pod's generation so a client can detect a missed delta and request a
-  fresh `RoomState` (`RoomCommand.resync`).
+  fresh `RoomState` (`RoomCommand.resync`). A `CommandRejected` is addressed
+  to one participant and carries the *current* sequence without advancing
+  it, so the others never see a gap; a gap is `seq > last + 1`, never
+  `seq <= last + 1` (implementation note, 2026-09-04).
 - Participant IDs are per-room, per-generation, opaque. Nicknames are
   display-only.
 - **Close code 4007 `RoomEnded`**: terminal for the room session only. The
@@ -522,8 +526,120 @@ Manual, milestone-closing, on the reference deployment:
 
 ## 11. Implementation status
 
-Not started. Fill in the way docs/42 §11 does: deviations from §4 with
-reasons, what is verified and by what, and the manual pass outcome.
+**Implemented 2026-09-04** (RM1–RM9; single PR). Written the way docs/42
+§11 is: deviations from §4 with reasons, what is verified and by what, and
+the manual pass outcome.
+
+### 11.1 Deviations from §4, with reasons
+
+- **`RoomState` carries the room's HMAC'd key** (§4.6 table, revision
+  2026-09-04). §4.10 wants telemetry sessions grouped by the HMAC'd room
+  key, and a client cannot compute an HMAC it does not hold the key for,
+  so the relay hands it over: the same 6-byte digest `TelemetryHello`
+  carries for a broadcast. The alternative — the client reporting the raw
+  code to telemetry for hashing there — would have put a joinable secret
+  on the ingest path, which is exactly what R28's obfuscated broadcast key
+  exists to avoid.
+- **`CommandRejected` does not advance the room sequence.** It is
+  addressed to one participant; giving it a sequence number would make
+  every other participant see a gap and resync. A gap is therefore
+  `seq > last + 1`, never `seq <= last + 1`.
+- **Creator tokens are domain-separated from resume tokens.** Room codes
+  come from the same alphabet and length as broadcast IDs, so an
+  unprefixed HMAC over the code would make a broadcast's resume token the
+  creator token of an identically named room. The prefix is
+  `gawk-room-creator-v1‖0x00`; the broadcast construction is untouched, so
+  every outstanding resume token keeps verifying.
+- **Mint gate order is broadcast-known (404) before proof (403).**
+  `/subscribe` already reveals whether an ID is live, so answering
+  existence before the token leaks nothing, and an expired broadcast's
+  still-valid token gets the honest answer.
+- **A wrong attach secret is refused at join (403), not at the first
+  attach.** §4.2 said "when one is required for the requested action"; a
+  broadcaster that typed the key wrong must learn it now, and §4.9's
+  "wrong attach secret" state needs a pre-upgrade status to render. A
+  viewer that presents no secret still joins.
+- **The room knobs cross `roomOptions`, not `hub.Options`.** RM2's
+  acceptance criterion said "every knob reaches `hub.Options` (the R2 test
+  shape)"; the room registry is its own object, so it has its own
+  carry-all mapping in `cmd/gawk-server/main.go` and its own
+  `TestRoomOptionsCarryAllKnobs`. The one room fact the hub needs — "is
+  this ID a live room code" — is `hub.Options.IDReserved`.
+- **`/statusz` gains its section through `ops.StatuszHandler`, not
+  `hub.RegistryStats`**, so the hub stays room-free; with `-rooms` off the
+  section is omitted and the document is byte-identical.
+- **The file source polls mtime and honours SIGHUP** rather than fsnotify,
+  the same deviation `-moderation-source=file` records (docs/42 §11).
+- **Static CRs are not upserted on every pod at CR add.** A static room
+  has no home until its first participant (§4.5), so the claiming pod
+  upserts it at first join; an informer *update* on a held static room
+  refreshes it, and a delete ends it everywhere with 4007 (reason
+  operator).
+- **Adoption after a crash is the stale-lease path**, exercised in kind by
+  a `--force` pod delete; the drain-release path is unit-tested.
+- **The `roomcluster` tests use a hand-rolled resourceVersion-CAS reactor**
+  on the fake dynamic client (the fake has none), not envtest.
+- **Native broadcasters send an idempotent `Attach` after a mint too.** The
+  minted attachment has no owner participant on the relay (RM2), so
+  without it a reconnected minter could not detach its own broadcast.
+- **Stopping a native broadcast does not detach it**; the tile shows
+  *away* until the broadcast grace expires, per §4.4. Joining a different
+  room detaches first (D1).
+- **`-room-create-secret` is never persisted by the native broadcasters**
+  (flag/env per run): it is the operator's invite, not a broadcaster
+  credential. "Open room view" on Linux needs `-app-url`, since that
+  broadcaster has no compiled-in app URL; the GUI shows a caption instead.
+- **The web broadcaster's own tile paints the local capture preview**, not
+  a self-`/subscribe`: no extra uplink, muted by construction. Native
+  broadcasts still appear as ordinary remote tiles. "Source" on the own
+  tile is stop + reclaim (the pipeline has no live re-capture API); Detach
+  keeps the broadcaster in the room as a participant.
+- **Grid degrades to focus below 720 px**; the people-and-chat panel is a
+  bottom sheet there. Master volume is per session; per-tile levels and
+  the room's playback preset persist per browser.
+- **The admin portal detects relay-ended dynamic rooms in its 60 s
+  reconcile sweep**, not through an informer (it has none; docs/42's
+  sweep is the precedent): up to one interval of webhook latency, and a
+  room that ends while no leader is sweeping is missed. Portal-ended rooms
+  are recorded inline with the operator as actor.
+- **`room.created` / `room.secret_rotated` webhooks carry no `roomKey`
+  until a pod has homed the room** — `status.key` is written by the home
+  pod — and never fall back to the code; their portal link is the bare
+  Rooms page. No migration was needed: the events table's `type` column is
+  unconstrained text.
+- **The portal refuses a static slug with the dynamic-code shape** (six
+  characters of the broadcast alphabet), a rule stricter than the relay's
+  own acceptance, so the join box stays unambiguous (D2's "link only").
+  `POST /rooms/{name}/end` on a static room is 409 ("a static room never
+  ends", D7) rather than an alias of delete; rotating the secret of a
+  secret-less static room *adds* the gate instead of failing.
+- **Windows: no create-secret field in the card** (the engine carries it,
+  the shell passes empty; a `-room-create-secret` relay answers 403 and the
+  status line says so), and the room session's lifetime is the broadcast's.
+- **Post-upgrade close codes 400 and 404 exist alongside 4007**: 400 for a
+  session that broke the control protocol (no hello, malformed record),
+  404 for a room that ended between the pre-upgrade check and the hello.
+  Neither is reconnected.
+
+### 11.2 Verified by
+
+| Criterion (§9) | Test |
+|---|---|
+| RM1 vectors byte-identical in four mirrors | `wire/room_test.go`, `wire.test.ts` "room control protocol", `wirecheck_test.go` `TestGoldenRoom*`, `crates/wire/tests/golden.rs` `golden_room_*`; close code 4007 in every constant-pin test |
+| RM1 `rooms` importable from `gawk-admin` | `gawk-admin/internal/kube` imports it; the `tidy` job |
+| RM2 mint disjoint from live broadcasts and vice versa | `roomsrv` `TestMintIsDisjointFromLiveBroadcasts`, transport `TestPublishNeverMintsALiveRoomCode` |
+| RM2 wrong token refused | `TestAttachRequiresProofAndGrant`, transport `TestRoomMintJoinAttachAndEnd` (bad proof → `CommandRejected`), `TestRoomJoinStatusVocabulary` (403s) |
+| RM2 grace survives a shorter reconnect | `TestEmptyGraceSurvivesAReconnectShorterThanIt` |
+| RM2 every knob reaches the registry | `TestRoomOptionsCarryAllKnobs`, `TestRoomKnobs`, `TestSanitizedCoversEveryConfigField` |
+| RM2 `-rooms` off byte-identical | `TestRoomsOffLeavesNoRoute` (no route, no `/statusz` section), the full pre-R42 suite green, chart "rooms off renders nothing" |
+| RM3 two claimants ⇒ one holder; stale generation loses; janitor | `internal/roomcluster/store_test.go` |
+| RM3 proxy and `/internal/room` vocabulary | `internal/transport/roomcluster_test.go` (two servers in-process) |
+| RM3 kind two-pod tier | `e2e/rooms-assert.sh` in the `e2e-cluster` job: static CR joinable on both pods, `status.key` written, CR delete → 4007, home pod killed → re-dialled joiner lands with attachments whole and the lease at a higher generation |
+| RM4 routing, modes, hide-videos closes every media session | `routing.test.ts`, `RoomScreen.test.tsx` (hide-videos: zero `/subscribe` sessions, control session kept), `room-session.test.ts`, `App.room.test.tsx` (`?rt=` hand-off before first render) |
+| RM4 browser E2E | `node e2e/run.mjs --rooms` (two pubsims, grid → focus by key → hide-videos asserted on the relay's subscriber counts) |
+| RM5 broadcaster attaches, appears in a roster, away then removal | `BroadcasterScreen.room.test.tsx`; the relay-side away/expiry path in `TestBroadcastLifecycleHooks` and the Go native integration test |
+| RM6 attach visible in another participant's `RoomState` | `gawk-broadcast/internal/engine/room_integration_test.go`, `crates/engine/tests/relay_integration.rs` (ignored; CI runs it on Linux) |
+| RM6 grant hand-off rewritten before first render | `App.room.test.tsx` |
 
 ## 12. The design pass (done 2026-09-03)
 

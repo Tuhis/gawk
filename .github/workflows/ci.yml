@@ -1498,6 +1498,26 @@ jobs:
           grep -q 'resources: \["leases"\]' <<<"$rbac"
           grep -q 'verbs: \["get", "create", "update"\]' <<<"$rbac"
 
+      - name: the admin Role grants rooms and Secrets only with rooms on (R42)
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          off=$(helm template "$chart" $ADMIN_PG)
+          # Default: the docs/42 §5 posture — no Secrets, no rooms, knob off.
+          ! grep -q 'resources: \["secrets"\]' <<<"$off"
+          ! grep -q 'resources: \["rooms"\]' <<<"$off"
+          grep -A1 'name: GAWK_ADMIN_ROOMS' <<<"$off" | grep -q 'value: "false"'
+          on=$(helm template "$chart" $ADMIN_PG --set rooms.enabled=true)
+          grep -q 'resources: \["rooms"\]' <<<"$on"
+          grep -q 'verbs: \["get", "list", "create", "update", "patch", "delete"\]' <<<"$on"
+          # Secrets: exactly the verbs create/rotate/delete need — never list or
+          # watch — and the posture-change comment stays in the rendered Role.
+          grep -q 'resources: \["secrets"\]' <<<"$on"
+          grep -q 'verbs: \["get", "create", "update", "delete"\]' <<<"$on"
+          ! grep -A2 'resources: \["secrets"\]' <<<"$on" | grep -qE '"list"|"watch"'
+          grep -q 'THE POSTURE CHANGE' <<<"$on"
+          grep -A1 'name: GAWK_ADMIN_ROOMS' <<<"$on" | grep -q 'value: "true"'
+
       - name: admin secrets render via both the literal and the Ref form
         run: |
           set -euo pipefail
@@ -2053,6 +2073,16 @@ jobs:
         working-directory: e2e
         env:
           GAWK_E2E_OUT_DIR: out-browser-broadcast
+      # R42 RM4 (docs/44 §9): the room view against a relay with -rooms and
+      # two gawk-pubsim broadcasts (one mints the room, one attaches): the
+      # grid shows both, a number key focuses within a keyframe window, and
+      # hide-videos drops every media session while the participant stays in
+      # the room — asserted on the relay's /statusz, not on the page.
+      - name: Run the rooms E2E (R42)
+        run: node run.mjs --rooms
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-rooms
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

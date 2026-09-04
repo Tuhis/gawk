@@ -19,7 +19,8 @@ your laptop in about five minutes with a self-signed certificate.
 7. [Broadcasting](#7-broadcasting)
 8. [Operating it](#8-operating-it)
 9. [`gawk-admin` — the moderation portal](#9-gawk-admin--the-moderation-portal-r39)
-10. [Troubleshooting](#10-troubleshooting)
+10. [Rooms (R42)](#10-rooms-r42)
+11. [Troubleshooting](#11-troubleshooting)
 
 ---
 
@@ -835,7 +836,76 @@ Two more things worth naming rather than discovering:
   is not a moderation tool — but on a day when it is the right one, it is
   there.
 
-## 10. Troubleshooting
+## 10. Rooms (R42)
+
+Optional, **off by default**, and off is byte-identical to a relay without
+the feature ([`docs/44`](44-rooms.md) D17). A room is a collection of
+broadcasts people join as participants: multi-POV watching with a roster.
+The media path is untouched; a room is control-plane state.
+
+Turn it on in the relay chart:
+
+```yaml
+rooms:
+  enabled: true
+  emptyGrace: "60s"        # keep longer than a client reconnect interval
+  maxRooms: 10
+  maxBroadcasts: 4
+  maxParticipants: 50
+  # createSecretRef: {name: gawk-room-invite, key: secret}   # optional gate on minting
+```
+
+That renders the `Room` CRD (kept on uninstall, like `Ban`), the room
+knobs, and — in cluster mode — a Role that lets the pods write `Room` CRs
+and read the Secrets static rooms reference. Dynamic rooms need nothing
+else: a broadcaster mints one from the broadcaster page (or
+`gawk-broadcast -room-new`), viewers type the six-character code into the
+same join box a broadcast code goes in. `-room-create-secret` (chart
+`rooms.createSecret`/`createSecretRef`) makes minting invite-only; static
+rooms are unaffected by it.
+
+**A static room** is a `Room` CR with a stable slug. The recipe by hand:
+
+```bash
+kubectl -n gawk create secret generic room-tuhisroom --from-literal=attachSecret=$(openssl rand -base64 18)
+kubectl -n gawk apply -f - <<'EOF'
+apiVersion: gawk.ioio.fi/v1alpha1
+kind: Room
+metadata: {name: tuhisroom}
+spec:
+  kind: static
+  displayCode: TuhisRoom
+  displayName: "Tuhis' room"
+  attachSecretRef: {name: room-tuhisroom, key: attachSecret}
+EOF
+```
+
+It is reachable at `https://<app>/#/room/TuhisRoom` on both pods the
+moment it exists; the first participant's pod becomes its home. Anyone
+with the link may watch; attaching a broadcast needs the attach secret
+(`gawk-broadcast -room TuhisRoom -room-attach-secret …`, or the key field
+in the broadcaster page's Room panel). Deleting the CR ends the room
+everywhere with close code 4007. With `gawk-admin` installed and its
+`rooms.enabled=true`, the portal's Rooms page does all of this — create,
+rotate the attach secret (shown once), end a dynamic room — but read
+[§9.7](#97-what-a-portal-compromise-yields)'s Secrets caveat in the admin
+chart's `rbac.yaml` first.
+
+**Without Kubernetes** (`docker compose`, a bare binary) static rooms come
+from `-rooms-file` / `GAWK_ROOMS_FILE`: a JSON array of
+`{"code": "TuhisRoom", "displayName": "…", "attachSecret": "…",
+"maxBroadcasts": 4}`, reloaded on change and on SIGHUP exactly like
+`-moderation-source=file`. Dynamic rooms are in-memory there and do not
+survive a restart.
+
+Observability: `/statusz` gains a `rooms` section keyed by the same HMAC'd
+handle broadcasts use (never the code), `gawk_rooms_live{kind}`,
+`gawk_room_participants{room}`, `gawk_room_attachments{room}` and
+`gawk_room_proxied_sessions`; telemetry sessions carry the room key so the
+R31 UI can list a room's sessions. Room codes are joinable secrets: they
+appear in no log at Info, no webhook, and no `/statusz`.
+
+## 11. Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|

@@ -1121,6 +1121,58 @@ Add to it when a new gotcha lands in `docs/`.
   for new code, not as a property the repo has: **do not build anything on the
   assumption that an aggregated pod log is free of joinable IDs.**
 
+**Rooms (R42)**
+
+- **Room codes share the broadcast-ID alphabet and length, so every
+  per-ID construction needs domain separation.** An unprefixed HMAC over
+  the code would make a broadcast's resume token the creator token of an
+  identically named room. The creator token is `HMAC(key,
+  "gawk-room-creator-v1" ‖ 0x00 ‖ code)`; the broadcast construction is
+  untouched. The same rule applies to the mint-time mirror check: the hub
+  never mints an ID that names a live room and the room registry never
+  mints a code that names a live broadcast (`hub.Options.IDReserved`).
+  ([docs/44](44-rooms.md) D3, §11)
+- **A client cannot compute an HMAC'd key it does not hold the key for.**
+  Anything that must be reported by a client under the fleet's obfuscated
+  identity — the telemetry room key — has to be handed to it in-band, which
+  is why `RoomState` carries the key. Do not "fix" this by letting clients
+  post raw codes for hashing server-side. ([docs/44](44-rooms.md) §11)
+- **A WebTransport session close discards unread stream data.**
+  webtransport-go's `CloseWithError` cancels reads on every stream, so a
+  record and the close that follows it can share a packet and the record is
+  lost. The room registry writes the `RoomEnding` record, then a close
+  sentinel *in order* on the writer goroutine, then waits a short settle
+  before the 4007 — the same shape as the drain window (docs/22). A
+  "send then immediately close" anywhere else on a stream has the same
+  bug. ([docs/44](44-rooms.md) §11)
+- **Per-participant events must not consume the room sequence.** A
+  `CommandRejected` goes to one participant; giving it a seq would make
+  every other client detect a gap and resync in lockstep. The rule is
+  "a gap is `seq > last + 1`", not "seq must increase by exactly one".
+  ([docs/44](44-rooms.md) §4.6)
+- **Read a `SetX` seam's result only after calling it.** The `/statusz`
+  rooms section was nil in production for a whole chunk because main read
+  the transport's stats source before `SetRooms` installed the registry —
+  every unit test constructed things in the other order. Any "install then
+  read" pair in `main.go` deserves a test against the real `Server`.
+  ([docs/44](44-rooms.md) §11)
+- **The relay's mux prefers a literal segment over a pattern**, so
+  `CONNECT /room/new` and `CONNECT /room/{code}` coexist without a reserved
+  character in the code alphabet — but only because `new` can never be a
+  valid code (lower-case, three letters short of a dynamic code, and not a
+  slug an operator would pick). Don't register a literal that a slug could
+  legitimately spell.
+- **A minted room's attachment has no owner participant.** The minting
+  session attached implicitly, so a reconnected minter cannot detach until
+  it re-attaches; both native broadcasters send an idempotent `Attach`
+  after every snapshot for that reason. ([docs/44](44-rooms.md) §11)
+- **Enabling rooms in `gawk-admin` is a Kubernetes-RBAC posture change**:
+  the portal needs `secrets` get/create/update/delete for attach-secret
+  Secrets, and RBAC has no per-name grant that survives a create, so a
+  portal compromise with rooms on reads any Secret in the namespace. Keep
+  gawk in a namespace that holds nothing else. ([docs/44](44-rooms.md) §11,
+  `gawk-admin` chart `rbac.yaml`)
+
 **CI / deployment**
 
 - **`-race` and a coverage profile in one `go test` run compound
