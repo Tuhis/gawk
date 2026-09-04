@@ -143,6 +143,17 @@ func PublishURL(relayURL, broadcastID, secret, resumeToken string) (string, erro
 
 // dialRelay is the production DialFunc.
 func dialRelay(ctx context.Context, rawURL, origin string, insecure bool) (RelaySession, int, error) {
+	sess, status, err := dialWebTransport(ctx, rawURL, origin, insecure)
+	if err != nil {
+		return nil, status, err
+	}
+	return wtSession{s: sess}, status, nil
+}
+
+// dialWebTransport is the one dial both the publisher session and the R42
+// room control session use — same TLS posture, same QUIC config, same
+// Origin — so a relay that accepts one accepts the other.
+func dialWebTransport(ctx context.Context, rawURL, origin string, insecure bool) (*webtransport.Session, int, error) {
 	d := &webtransport.Transport{
 		TLSClientConfig: &tls.Config{
 			// A native client trusts the homelab CA directly, so the
@@ -176,5 +187,5 @@ func dialRelay(ctx context.Context, rawURL, origin string, insecure bool) (Relay
 	if err != nil {
 		return nil, status, err
 	}
-	return wtSession{s: sess}, status, nil
+	return sess, status, nil
 }

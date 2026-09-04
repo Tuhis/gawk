@@ -212,6 +212,17 @@ type Config struct {
 	// §4.1.1's rule).
 	SelectedServer string `json:"selectedServer,omitempty"`
 
+	// Room (R42, docs/44 §4.8): the code or slug the broadcast attaches to
+	// on publish. Blank means no room.
+	Room string `json:"room,omitempty"`
+	// RoomAttachSecret is a static room's attach key. A credential, like
+	// the publish secret and the resume token: the 0600 file mode covers it.
+	RoomAttachSecret string `json:"roomAttachSecret,omitempty"`
+	// RoomLabel names this broadcast's tile in the room.
+	RoomLabel string `json:"roomLabel,omitempty"`
+	// Nickname is the roster name; blank uses the engine's default.
+	Nickname string `json:"nickname,omitempty"`
+
 	// Rung.
 	Width      int `json:"width,omitempty"`
 	Height     int `json:"height,omitempty"`

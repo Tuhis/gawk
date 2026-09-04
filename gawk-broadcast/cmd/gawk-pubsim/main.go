@@ -19,6 +19,16 @@
 //
 //	GAWK_PUBSIM_DIAL_STATUS=451
 //
+// R42 (docs/44, RM6): -room-new mints a room from the broadcast once its ID
+// and resume token are known and prints exactly one more stdout line —
+//
+//	ROOM AB2CD3 <creatorTokenHex>
+//
+// (the code upper-case, the creator token as 32 hex characters) — while
+// -room <CODE> attaches to an existing room and prints nothing extra on
+// stdout. Either way the room session is held for the process lifetime and
+// re-attaches on every resume; the browser E2E drives both.
+//
 // That line (and exit code 3) is what makes docs/42 D15 testable end to end.
 // The point of answering a banned publisher 451 rather than reusing 403 is
 // that a NATIVE broadcaster can read the status where a browser cannot — so a
@@ -34,12 +44,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/fixture"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/pubsim"
+	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
 // exitDialRejected is the exit code for "the relay refused the dial with an
@@ -99,7 +111,17 @@ func run() error {
 	// stay untouched.
 	fixtureName := flag.String("fixture", "default",
 		"committed clip to publish: default (320x240) or large (720p noise, >8-chunk deltas — the R30 striping fixture)")
+	// R42 rooms.
+	roomNew := flag.Bool("room-new", false, "mint a room from this broadcast and print `ROOM <CODE> <creatorTokenHex>` on stdout")
+	room := flag.String("room", "", "attach this broadcast to an existing room (code or slug)")
+	roomAttach := flag.String("room-attach-secret", "", "a static room's attach secret, for -room")
+	roomCreate := flag.String("room-create-secret", "", "the relay's room-create secret, for -room-new (env GAWK_ROOM_CREATE_SECRET)")
+	label := flag.String("label", "pubsim", "the broadcast's tile label in the room")
+	nick := flag.String("nick", "pubsim", "nickname in the room's roster")
 	flag.Parse()
+	if *roomCreate == "" {
+		*roomCreate = os.Getenv("GAWK_ROOM_CREATE_SECRET")
+	}
 
 	if *secret == "" {
 		*secret = os.Getenv("GAWK_SECRET")
@@ -150,15 +172,40 @@ func run() error {
 	endOnce := make(chan struct{}, 1)
 	sess := engine.New(
 		engine.Config{
-			RelayURL:      *url,
-			PublishSecret: *secret,
-			Insecure:      *insecure,
-			Media:         media,
+			RelayURL:         *url,
+			PublishSecret:    *secret,
+			Insecure:         *insecure,
+			Media:            media,
+			Room:             *room,
+			RoomNew:          *roomNew,
+			RoomAttachSecret: *roomAttach,
+			RoomCreateSecret: *roomCreate,
+			RoomLabel:        *label,
+			Nickname:         *nick,
 		},
 		engine.Callbacks{
 			OnBroadcastID: func(id string) {
 				// The one machine-readable line; harnesses scrape it.
 				fmt.Printf("GAWK_PUBSIM_ID=%s\n", id)
+			},
+			OnRoomCreated: func(code, creatorToken string) {
+				// The room's machine-readable line: the E2E reads the code
+				// and the grant off it.
+				fmt.Print(roomLine(code, creatorToken))
+			},
+			OnRoomState: func(st wire.RoomState) {
+				fmt.Fprintf(os.Stderr, "in room %s: %d broadcast(s), %d participant(s)\n", st.Code, len(st.Attachments), len(st.Participants))
+			},
+			OnRoomEvent: func(ev wire.RoomEvent) {
+				if ev.Kind == wire.RoomEventAttachmentAdded || ev.Kind == wire.RoomEventAttachmentUpdated {
+					fmt.Fprintf(os.Stderr, "room attachment %s live=%v\n", ev.Attachment.Label, ev.Attachment.Live)
+				}
+			},
+			OnRoomEnded: func(reason uint8) {
+				fmt.Fprintf(os.Stderr, "room ended (reason %d); the broadcast continues\n", reason)
+			},
+			OnRoomError: func(err error) {
+				fmt.Fprintln(os.Stderr, "gawk-pubsim: room:", err)
 			},
 			OnError: func(err error) {
 				fmt.Fprintln(os.Stderr, "gawk-pubsim:", err)
@@ -205,6 +252,13 @@ func run() error {
 		// publisher should have run until told to stop.
 		return errors.New("session ended unexpectedly")
 	}
+}
+
+// roomLine is the -room-new stdout contract: `ROOM <CODE> <creatorTokenHex>`
+// followed by a newline, the code upper-cased so a harness can compare it
+// without normalizing (dynamic codes are case-insensitive, docs/44 §4.2).
+func roomLine(code, creatorTokenHex string) string {
+	return fmt.Sprintf("ROOM %s %s\n", strings.ToUpper(code), creatorTokenHex)
 }
 
 func statsLoop(ctx context.Context, sess *engine.Session, every time.Duration) {

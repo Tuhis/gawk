@@ -54,6 +54,37 @@ type fakeSession struct {
 	cfg      engine.Config
 	stats    engine.Stats
 	stopped  bool
+
+	// R42: the room calls the app made, in order ("join:<code>:<secret>",
+	// "new:<label>", "leave").
+	roomMu    sync.Mutex
+	roomCalls []string
+}
+
+func (f *fakeSession) JoinRoom(code, secret string) error {
+	f.roomMu.Lock()
+	defer f.roomMu.Unlock()
+	f.roomCalls = append(f.roomCalls, "join:"+code+":"+secret)
+	return nil
+}
+
+func (f *fakeSession) NewRoom(label, createSecret string) error {
+	f.roomMu.Lock()
+	defer f.roomMu.Unlock()
+	f.roomCalls = append(f.roomCalls, "new:"+label)
+	return nil
+}
+
+func (f *fakeSession) LeaveRoom() {
+	f.roomMu.Lock()
+	defer f.roomMu.Unlock()
+	f.roomCalls = append(f.roomCalls, "leave")
+}
+
+func (f *fakeSession) rooms() []string {
+	f.roomMu.Lock()
+	defer f.roomMu.Unlock()
+	return append([]string(nil), f.roomCalls...)
 }
 
 func testApp(t *testing.T, fs *fakeSession, n notify.Notifier) (*App, *config.Config) {
