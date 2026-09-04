@@ -1812,13 +1812,7 @@ async function main() {
       log(`telemetry service up: ingest :${TM_INGEST_PORT}, read :${TM_READ_PORT}`);
     }
 
-    if (ROOMS_CHECK) {
-      await roomsPass({ relayUrl, certHash, opsUrl });
-      log('PASS');
-      return;
-    }
-
-    if (!BROWSER_BROADCAST) {
+    if (!BROWSER_BROADCAST && !ROOMS_CHECK) {
       const pubsim = launch('pubsim', PUBSIM_BIN, [
         '-url', relayUrl,
         '-insecure',
@@ -1838,6 +1832,15 @@ async function main() {
     cwd: APP_DIR,
   });
   await waitForHttp(APP_URL, 20_000, 'vite preview');
+
+  // R42 (docs/44 RM4): the room view needs the preview server above and its
+  // own publishers (two pubsims, one of which mints the room), so it runs
+  // here rather than inside the relay block.
+  if (ROOMS_CHECK) {
+    await roomsPass({ relayUrl, certHash, opsUrl });
+    log('PASS');
+    return;
+  }
 
   // Z5: the browser publishes. Same one-retry policy as the viewer scenario
   // (fresh browser, never the relay); a retry mints a fresh broadcast ID and
