@@ -4,7 +4,7 @@
 # x86_64-pc-windows-msvc with cargo-xwin. The component is Windows-only; the
 # CI for it does not have to be, and the reasons it used to be no longer hold:
 #
-#  * Tests: `cargo test --workspace` is 139 passed / 0 failed / 4 ignored on
+#  * Tests: `cargo test --workspace` is all passing / 5 ignored (the real-relay integration suite) on
 #    Linux — identical to a Windows run. The only Windows-exclusive tests are
 #    the three WARP ones in crates/capture/tests/warp.rs, and those already
 #    self-skipped on windows-latest (docs/38 F-6: the hosted runner's WARP has

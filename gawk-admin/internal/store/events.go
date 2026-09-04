@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -267,6 +268,10 @@ func SummarizeWithEnforcement(eventType string, targetType moderation.TargetType
 				" — the target is STILL banned"
 		}
 		return "a " + what + " ban was lifted by " + who
+	case EventRoomCreated, EventRoomEnded, EventRoomSecretRotated:
+		// Rooms have no enforcement grade: a CR write either landed or the
+		// mutation failed outright, there is no row ahead of it.
+		return SummarizeRoom(eventType, "", actor)
 	default:
 		// An unknown type gets a DIRECTION-FREE qualifier: with no idea
 		// whether the event asserts a ban or its lifting, "not enforced yet"
@@ -276,6 +281,55 @@ func SummarizeWithEnforcement(eventType string, targetType moderation.TargetType
 		}
 		return eventType
 	}
+}
+
+// SummarizeRoom is the one sentence for a room event (R42, docs/44 D20). It
+// names the room's KIND only — never its code, which is a joinable secret
+// exactly like a broadcast ID (docs/44 D16) — and never the attach secret.
+// Kind may be empty when the producer did not know it.
+func SummarizeRoom(eventType, kind, actor string) string {
+	what := "a room"
+	if kind != "" {
+		what = "a " + kind + " room"
+	}
+	who := actorOrOperator(actor)
+	switch eventType {
+	case EventRoomCreated:
+		return what + " was created by " + who
+	case EventRoomSecretRotated:
+		return "the attach secret of " + what + " was rotated by " + who
+	case EventRoomEnded:
+		if actor == "" || actor == "system" {
+			// The relay ended it: empty grace expired, or the creator ended
+			// it from the room view. Nobody in the portal did this.
+			return what + " ended"
+		}
+		if kind == "static" {
+			return what + " was deleted by " + who
+		}
+		return what + " was ended by " + who
+	default:
+		return eventType
+	}
+}
+
+// RoomEndedSince reports whether a room.ended event naming this room (by its
+// raw code under PayloadRoom) was recorded at or after since.
+//
+// It is the reconciler's deduplication: the portal records room.ended inline
+// when an operator ends a dynamic room, and the leader's next sweep then sees
+// the same CR vanish. Without this the audit trail would show every
+// operator-ended room ending twice — once attributed, once "system" — and
+// every webhook would page twice under distinct delivery IDs.
+func (s *Store) RoomEndedSince(ctx context.Context, room string, since time.Time) (bool, error) {
+	const q = `SELECT EXISTS (
+		SELECT 1 FROM moderation_events
+		WHERE type = $1 AND payload->>$2 = $3 AND occurred_at >= $4)`
+	var found bool
+	if err := s.pool.QueryRow(ctx, q, EventRoomEnded, PayloadRoom, room, since.UTC()).Scan(&found); err != nil {
+		return false, fmt.Errorf("store: room ended since: %w", err)
+	}
+	return found, nil
 }
 
 func actorOrOperator(actor string) string {

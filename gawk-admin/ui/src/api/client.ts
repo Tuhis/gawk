@@ -23,6 +23,9 @@ import type {
   KillResponse,
   Me,
   Relay,
+  Room,
+  RoomWithSecret,
+  CreateRoomRequest,
   Webhook,
   WebhookTestResult,
 } from './types.ts';
@@ -210,6 +213,33 @@ export class ApiClient {
   /** Test-send. Keyed by NAME, and works for config- and UI-sourced alike. */
   testWebhook(name: string): Promise<WebhookTestResult> {
     return this.post<WebhookTestResult>(`webhooks/${encodeURIComponent(name)}/test`, {});
+  }
+
+  // R42 rooms (docs/44 D20). Every route 404s when the deployment has rooms
+  // off; the shell consults `me.features.rooms` before offering the view.
+
+  async rooms(): Promise<Room[]> {
+    return (await this.json<{ rooms: Room[] }>('rooms')).rooms ?? [];
+  }
+
+  /** `201 {room, attachSecret?}` — the secret is shown once and never again. */
+  createRoom(req: CreateRoomRequest): Promise<RoomWithSecret> {
+    return this.post<RoomWithSecret>('rooms', req);
+  }
+
+  /** `200 {room, attachSecret}` — static rooms only (409 room_not_static). */
+  rotateRoomSecret(name: string): Promise<RoomWithSecret> {
+    return this.post<RoomWithSecret>(`rooms/${encodeURIComponent(name)}/rotate-secret`, {});
+  }
+
+  /** Deletes a room of either kind; for a dynamic room this IS "end room". */
+  async deleteRoom(name: string): Promise<void> {
+    await this.request(`rooms/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  }
+
+  /** The dynamic-only alias of delete (409 room_not_dynamic on a static room). */
+  async endRoom(name: string): Promise<void> {
+    await this.request(`rooms/${encodeURIComponent(name)}/end`, { method: 'POST' });
   }
 }
 

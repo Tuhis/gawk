@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
@@ -58,14 +59,28 @@ const testSummary = "test notification from the gawk-admin portal: this webhook 
 // a 12-hex key against a fleet-sized table.
 const portalPath = "/#/broadcasts"
 
+// roomsPortalPath is the deep link for a room event (R42): the rooms view,
+// filtered by the HMAC'd room key the same way broadcasts are by theirs.
+const roomsPortalPath = "/#/rooms"
+
 func portalURL(externalURL, broadcastKey string) string {
+	return deepLink(externalURL, portalPath, broadcastKey)
+}
+
+func deepLink(externalURL, path, key string) string {
 	if externalURL == "" {
 		return ""
 	}
-	if broadcastKey == "" {
-		return externalURL + portalPath
+	if key == "" {
+		return externalURL + path
 	}
-	return externalURL + portalPath + "?key=" + url.QueryEscape(broadcastKey)
+	return externalURL + path + "?key=" + url.QueryEscape(key)
+}
+
+// isRoomEvent reports whether an event type belongs to the room vocabulary
+// (store.EventRoom*), which deep-links to the rooms view.
+func isRoomEvent(eventType string) bool {
+	return strings.HasPrefix(eventType, "room.")
 }
 
 // Payload is the webhook body (docs/42 §4.10).
@@ -117,6 +132,13 @@ type Payload struct {
 	//     structural rather than becoming a per-field review (see
 	//     store.Event.EnforcementState).
 	Enforcement string `json:"enforcement,omitempty"`
+	// RoomKey is the fleet's HMAC'd handle for the room a room.* event is
+	// about (R42, docs/44 D16) — the Room CR's status.key, written by the
+	// home pod, never the joinable code. Absent when no pod has homed the
+	// room yet (the key is unknown, and the code is not a substitute) and on
+	// every non-room event. Read through store.Event.RoomKey, whose closed
+	// hex vocabulary is what lets a producer-written payload key cross here.
+	RoomKey string `json:"roomKey,omitempty"`
 }
 
 // buildPayload projects a persisted event onto the wire shape.
@@ -150,6 +172,14 @@ func buildPayload(ev store.Event, externalURL string) Payload {
 		Reason:       ev.PayloadString(store.PayloadReason),
 		Summary:      summary,
 		Enforcement:  string(enforcement),
+	}
+	if isRoomEvent(ev.Type) {
+		// Through the accessor, never as a raw string: it is what closes the
+		// vocabulary to a hex digest, so a room CODE written under the key by
+		// mistake is dropped here rather than paged out.
+		p.RoomKey = ev.RoomKey()
+		p.PortalURL = deepLink(externalURL, roomsPortalPath, p.RoomKey)
+		return p
 	}
 	p.PortalURL = portalURL(externalURL, ev.BroadcastKey)
 	return p

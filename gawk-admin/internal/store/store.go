@@ -128,6 +128,14 @@ const (
 	EventBanExpired      = "ban.expired"
 	EventBanRemoved      = "ban.removed"
 	EventContentFlag     = "content_flag.raised" // R40
+
+	// Room events (R42, docs/44 D20 / §9 RM7). room.ended is recorded both by
+	// the portal (an operator ended or deleted a room) and by the reconciler's
+	// sweep (the relay ended a dynamic room on its own — grace expiry or the
+	// creator); the two are deduplicated through RoomEndedSince.
+	EventRoomCreated       = "room.created"
+	EventRoomEnded         = "room.ended"
+	EventRoomSecretRotated = "room.secret_rotated"
 )
 
 // Payload keys that are safe to copy into a webhook body.
@@ -145,6 +153,20 @@ const (
 	// other two it cannot be turned into a channel for free text — a producer
 	// that wrote a raw ID under this key would find it dropped, not forwarded.
 	PayloadEnforcement = "enforcement"
+	// PayloadRoomKey carries the fleet's HMAC'd handle for a room (the Room
+	// CR's status.key, docs/44 D16) — the ONE form of a room's identity that
+	// may leave the deployment. It is webhook-safe by construction the way
+	// PayloadEnforcement is: the read side (Event.RoomKey) accepts only a hex
+	// digest, so a producer that wrote the joinable code under this key would
+	// find it dropped, not forwarded. The raw code, when the portal needs it,
+	// travels under PayloadRoom, which nothing copies out.
+	PayloadRoomKey = "roomKey"
+	// PayloadRoom is the room's raw code (the CR name). Portal and Postgres
+	// only — never a webhook (docs/44 D16, docs/42 D8).
+	PayloadRoom = "room"
+	// PayloadRoomKind is "static" or "dynamic". Not copied into a webhook
+	// either; the summary sentence already names the kind.
+	PayloadRoomKind = "kind"
 )
 
 // EnforcementState says whether the Kubernetes object that actually ENFORCES
@@ -204,6 +226,37 @@ func (e Event) EnforcementState() EnforcementState {
 		return EnforcementPending
 	}
 	return EnforcementInSync
+}
+
+// RoomKey returns the HMAC'd room key this event carries, or "".
+//
+// The vocabulary is CLOSED on the read side, like EnforcementState: only a
+// lower-case hex digest of 8–64 characters passes, so this accessor cannot
+// return a room code — the broadcast alphabet has no lower-case letters and a
+// static slug is refused unless it happens to be pure hex, which the producers
+// never write here (they write the code under PayloadRoom). That is what makes
+// PayloadRoomKey safe for internal/notify to copy into a webhook body.
+func (e Event) RoomKey() string {
+	key := e.PayloadString(PayloadRoomKey)
+	if !isHexKey(key) {
+		return ""
+	}
+	return key
+}
+
+// isHexKey reports whether s looks like a per-process HMAC digest as the relay
+// renders one: lower-case hex, an even length between 8 and 64.
+func isHexKey(s string) bool {
+	if n := len(s); n < 8 || n > 64 || n%2 != 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // PayloadString returns a top-level string field of the payload, or "".

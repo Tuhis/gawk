@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -231,6 +232,114 @@ func TestEventEnforcementStateIsAClosedVocabulary(t *testing.T) {
 			}
 			if got := ev.EnforcementState(); got != tc.want {
 				t.Fatalf("EnforcementState() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The room sentence names the KIND and nothing else (R42, docs/44 D16): a
+// room code is a joinable secret like a broadcast ID, so the one string that
+// is copied verbatim into every webhook must never be able to carry it.
+func TestSummarizeRoomNamesTheKindOnly(t *testing.T) {
+	cases := []struct {
+		eventType, kind, actor, want string
+	}{
+		{store.EventRoomCreated, "static", "op@example.com", "a static room was created by op@example.com"},
+		{store.EventRoomCreated, "", "", "a room was created by an operator"},
+		{store.EventRoomSecretRotated, "static", "op@example.com", "the attach secret of a static room was rotated by op@example.com"},
+		{store.EventRoomEnded, "dynamic", "op@example.com", "a dynamic room was ended by op@example.com"},
+		{store.EventRoomEnded, "static", "op@example.com", "a static room was deleted by op@example.com"},
+		{store.EventRoomEnded, "dynamic", "system", "a dynamic room ended"},
+		{store.EventRoomEnded, "dynamic", "", "a dynamic room ended"},
+	}
+	for _, tc := range cases {
+		if got := store.SummarizeRoom(tc.eventType, tc.kind, tc.actor); got != tc.want {
+			t.Errorf("SummarizeRoom(%s, %q, %q) = %q, want %q", tc.eventType, tc.kind, tc.actor, got, tc.want)
+		}
+	}
+	// The grading entry point routes room types here too, without an
+	// enforcement qualifier: a CR write has no "not enforced yet" state.
+	got := store.SummarizeWithEnforcement(store.EventRoomCreated, moderation.TargetBroadcastID, "", "op@example.com", store.EnforcementPending)
+	if got != "a room was created by op@example.com" {
+		t.Errorf("SummarizeWithEnforcement(room.created) = %q", got)
+	}
+}
+
+// Event.RoomKey is the room twin of EnforcementState's closed vocabulary: only
+// a lower-case hex digest passes, so a producer that wrote the CODE under the
+// webhook-safe key by mistake leaks nothing (docs/44 D16, docs/42 D8).
+func TestEventRoomKeyIsAClosedVocabulary(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{name: "no payload", payload: "", want: ""},
+		{name: "no roomKey", payload: `{"room":"tuhisroom"}`, want: ""},
+		{name: "the relay's 12-hex key", payload: `{"roomKey":"9c1d2e3f4a5b"}`, want: "9c1d2e3f4a5b"},
+		{name: "a 64-hex key", payload: `{"roomKey":"` + strings.Repeat("ab", 32) + `"}`, want: strings.Repeat("ab", 32)},
+		{name: "a dynamic room code", payload: `{"roomKey":"R7K3MX"}`, want: ""},
+		{name: "a static slug", payload: `{"roomKey":"tuhisroom"}`, want: ""},
+		{name: "upper-case hex", payload: `{"roomKey":"9C1D2E3F4A5B"}`, want: ""},
+		{name: "odd length", payload: `{"roomKey":"9c1d2e3f4a5"}`, want: ""},
+		{name: "too short", payload: `{"roomKey":"9c1d2e"}`, want: ""},
+		{name: "too long", payload: `{"roomKey":"` + strings.Repeat("ab", 33) + `"}`, want: ""},
+		{name: "not a string", payload: `{"roomKey":12345678}`, want: ""},
+		{name: "not JSON", payload: `nonsense`, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := store.Event{Type: store.EventRoomEnded}
+			if tc.payload != "" {
+				ev.Payload = json.RawMessage(tc.payload)
+			}
+			if got := ev.RoomKey(); got != tc.want {
+				t.Fatalf("RoomKey() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// RoomEndedSince is the reconciler's deduplication against the portal's own
+// inline room.ended (R42): it matches the raw code under PayloadRoom, the
+// room.ended type only, and the window's lower bound inclusively.
+func TestRoomEndedSince(t *testing.T) {
+	s := storetest.New(t)
+	ctx := t.Context()
+	at := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+
+	record := func(eventType, room string, when time.Time) {
+		t.Helper()
+		if _, err := s.AppendEvent(ctx, store.Event{
+			Type: eventType, Actor: "op@example.com", OccurredAt: when,
+			Payload: json.RawMessage(`{"room":"` + room + `","kind":"dynamic"}`),
+		}); err != nil {
+			t.Fatalf("AppendEvent: %v", err)
+		}
+	}
+	record(store.EventRoomEnded, "r7k3mx", at)
+	record(store.EventRoomCreated, "tuhisroom", at)
+
+	cases := []struct {
+		name  string
+		room  string
+		since time.Time
+		want  bool
+	}{
+		{"recorded at the bound", "r7k3mx", at, true},
+		{"recorded inside the window", "r7k3mx", at.Add(-time.Hour), true},
+		{"recorded before the window", "r7k3mx", at.Add(time.Second), false},
+		{"another room", "abc234", at.Add(-time.Hour), false},
+		{"a different event type for the room", "tuhisroom", at.Add(-time.Hour), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.RoomEndedSince(ctx, tc.room, tc.since)
+			if err != nil {
+				t.Fatalf("RoomEndedSince: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("RoomEndedSince(%q, %v) = %v, want %v", tc.room, tc.since, got, tc.want)
 			}
 		})
 	}

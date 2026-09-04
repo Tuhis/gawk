@@ -13,7 +13,14 @@
 
 import { useSyncExternalStore } from 'react';
 
-export type ViewName = 'broadcasts' | 'bans' | 'events' | 'relays' | 'webhooks' | 'not-found';
+export type ViewName =
+  | 'broadcasts'
+  | 'bans'
+  | 'events'
+  | 'relays'
+  | 'webhooks'
+  | 'rooms'
+  | 'not-found';
 
 export interface Route {
   view: ViewName;
@@ -23,12 +30,16 @@ export interface Route {
    * `?key=<broadcastKey>` — the pre-filled filter a webhook payload's
    * `portalUrl` carries (§4.10), so a paged operator lands on the offending
    * row rather than matching a 12-hex key against a fleet by eye. The HMAC'd
-   * key, never a raw ID (D8). Empty when the hash carries none.
+   * key, never a raw ID (D8). Empty when the hash carries none. Room events
+   * (R42) use the same shape on `#/rooms?key=<roomKey>`.
    */
   key: string;
 }
 
-const VIEWS: readonly ViewName[] = ['broadcasts', 'bans', 'events', 'relays', 'webhooks'];
+// `rooms` resolves whether or not the deployment serves it: a webhook's deep
+// link must land on the view, and the view itself is what says "not enabled"
+// when the API answers 404 — a not-found page would read as a broken link.
+const VIEWS: readonly ViewName[] = ['broadcasts', 'bans', 'events', 'relays', 'webhooks', 'rooms'];
 
 export function parseHash(hash: string): Route {
   const raw = hash.startsWith('#') ? hash.slice(1) : hash;

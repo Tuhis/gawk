@@ -116,6 +116,16 @@ func run(args []string, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+	// R42 rooms, only under -rooms (docs/44 D20). The chart derives that flag
+	// from the same rooms.enabled that widens the Role to Room CRs and
+	// Secrets, so a nil client here is also "no RBAC for it".
+	var roomClient *kube.RoomClient
+	if cfg.Rooms {
+		roomClient, err = kube.NewRoomClient(restCfg, cfg.Namespace)
+		if err != nil {
+			return err
+		}
+	}
 
 	// The dispatcher is constructed on every replica because Record runs
 	// inline on whichever one served the mutation; only its send LOOP is
@@ -125,12 +135,18 @@ func run(args []string, getenv func(string) string) error {
 		return err
 	}
 
-	reconciler, err := kube.NewReconciler(kube.ReconcilerOptions{
+	reconcilerOpts := kube.ReconcilerOptions{
 		Records: st,
 		Bans:    bans,
 		Log:     log,
 		Record:  dispatcher.Record,
-	})
+	}
+	if roomClient != nil {
+		// A typed nil in an interface field would be non-nil; only assign
+		// when there is a client.
+		reconcilerOpts.Rooms = roomClient
+	}
+	reconciler, err := kube.NewReconciler(reconcilerOpts)
 	if err != nil {
 		return err
 	}
@@ -144,7 +160,7 @@ func run(args []string, getenv func(string) string) error {
 		return err
 	}
 
-	a, err := api.New(api.Options{
+	apiOpts := api.Options{
 		Store:       st,
 		Projector:   reconciler,
 		Reconciler:  reconciler,
@@ -171,7 +187,11 @@ func run(args []string, getenv func(string) string) error {
 			},
 		}},
 		Log: log,
-	})
+	}
+	if roomClient != nil {
+		apiOpts.Rooms = roomClient
+	}
+	a, err := api.New(apiOpts)
 	if err != nil {
 		return err
 	}
