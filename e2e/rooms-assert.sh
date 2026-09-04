@@ -11,7 +11,7 @@
 #
 # What it proves, in order:
 #
-#   1. `kubectl get rooms` resolves — the CRD rooms.enabled renders is real.
+#   1. the API serves rooms.gawk.ioio.fi (raw discovery) — the CRD rooms.enabled renders is real.
 #   2. A STATIC room applied by kubectl is joinable through the load balancer
 #      with no home assigned in advance: the pod that receives the first join
 #      claims it (status.lease.holder names a relay pod), writes status.key,
@@ -102,7 +102,18 @@ fail() {
     echo "--- $p /statusz rooms:" >&2
     statusz "$p" 2>/dev/null | jq '.rooms' >&2 || echo "(unreachable)" >&2
   done
-  kubectl -n "$NS" get "$ROOMS" -o yaml >&2 2>&1 || true
+  kubectl get --raw "$ROOMS_API" 2>&1 | jq . >&2 || true
+  # Two kind runs in a row lost kubectl's discovery of `rooms` right after
+  # a CR write while the API kept serving it; this is the evidence the
+  # next occurrence needs — what the server says the group holds, what
+  # kubectl's discovery cache says, and the CRD's own status.
+  echo "--- discovery: /apis/gawk.ioio.fi/v1alpha1 resources:" >&2
+  kubectl get --raw /apis/gawk.ioio.fi/v1alpha1 2>&1 | jq -c '[.resources[].name]' >&2 || true
+  echo "--- kubectl api-resources --api-group=gawk.ioio.fi:" >&2
+  kubectl api-resources --api-group=gawk.ioio.fi 2>&1 >&2 || true
+  echo "--- crd rooms.gawk.ioio.fi status:" >&2
+  kubectl get crd rooms.gawk.ioio.fi -o jsonpath='{.status}' 2>&1 >&2 || true
+  echo >&2
   ls "$OUT"/roomsim-*.out >/dev/null 2>&1 && tail -n 5 "$OUT"/roomsim-*.out >&2
   # The relay's side of the story: the room lines from every pod, so a claim
   # that never landed or an RBAC refusal is visible here and not only in the
@@ -114,36 +125,42 @@ fail() {
   exit 1
 }
 
-# The group-qualified resource name. `rooms` alone goes through kubectl's
-# discovery cache, which the supervised port-forward loops churn every
-# second; the first kind run saw "the server doesn't have a resource type
-# rooms" mid-step because of exactly that. The qualified name never does.
-ROOMS=rooms.gawk.ioio.fi
+# Rooms are read and deleted through RAW API paths, never through
+# `kubectl get rooms`: two kind runs in a row had kubectl report "the
+# server doesn't have a resource type rooms" for the rest of the step —
+# even with the group-qualified name — seconds after `kubectl apply` had
+# created a Room and while the API served the group fine (`bans` in the
+# same group resolved at job end). Whatever kubectl's discovery does
+# there, the assert is about the relay, and the raw path asks the API
+# server directly; fail() dumps the discovery state for the next look.
+ROOMS_API="/apis/gawk.ioio.fi/v1alpha1/namespaces/$NS/rooms"
 
-# room_field <name> <jsonpath> — one status/spec field off the CR. Empty
-# only when the CR exists and the field is unset; a kubectl failure is
-# retried three times (a discovery/API blip) and then FAILS LOUDLY — it
-# must never read as "status not written yet" (PR #302 review).
+# room_field <name> <jq path> — one field off the CR (jq syntax, e.g.
+# '.status.lease.holder'). Empty when the CR exists and the field is unset;
+# an HTTP 404 (the CR is gone) is also empty; any other kubectl failure is
+# retried three times (an API blip) and then FAILS LOUDLY — it must never
+# read as "status not written yet" (PR #302 review).
 room_field() {
   local err out
   for _ in 1 2 3; do
-    if out=$(kubectl -n "$NS" get "$ROOMS" "$1" -o jsonpath="$2" 2>"$OUT/kubectl.err"); then
-      printf '%s' "$out"
+    if out=$(kubectl get --raw "$ROOMS_API/$1" 2>"$OUT/kubectl.err"); then
+      jq -r "$2 // empty" <<<"$out" | tr '\n' ' ' | sed 's/ *$//'
       return 0
     fi
     err=$(cat "$OUT/kubectl.err")
-    grep -q "NotFound" <<<"$err" && return 0
+    grep -q "NotFound\|404" <<<"$err" && return 0
     sleep 1
   done
-  fail "kubectl get $ROOMS $1 failed: $err"
+  fail "GET $ROOMS_API/$1 failed: $err"
 }
 
 # first_state <roomsim stdout> — the first RoomState line, or "".
 first_state() { grep -m1 '"type":"state"' "$1" 2>/dev/null || true; }
 
 # ---------------------------------------------------------------- 1. the CRD
-kubectl -n "$NS" get "$ROOMS" >/dev/null || fail "the Room CRD is not installed — rooms.enabled did not render it"
-echo "PASS: kubectl get rooms resolves (the CRD is installed)"
+kubectl get --raw /apis/gawk.ioio.fi/v1alpha1 | jq -e '.resources[] | select(.name=="rooms")' >/dev/null \
+  || fail "the Room CRD is not installed — rooms.enabled did not render it"
+echo "PASS: the API serves gawk.ioio.fi/v1alpha1 rooms (the CRD is installed)"
 
 # ------------------------------------------------ 2. a static room, by kubectl
 STATIC=e2eroom
@@ -189,8 +206,8 @@ STATIC_KEY=$(jq -r '.key' <<<"$STATE")
 end=$((SECONDS + DEADLINE))
 HOME=""
 while true; do
-  HOME=$(room_field "$STATIC" '{.status.lease.holder}')
-  crkey=$(room_field "$STATIC" '{.status.key}')
+  HOME=$(room_field "$STATIC" '.status.lease.holder')
+  crkey=$(room_field "$STATIC" '.status.key')
   if [ -n "$HOME" ] && [ "$crkey" = "$STATIC_KEY" ]; then break; fi
   [ "$SECONDS" -ge "$end" ] && fail "static room CR status not written within ${DEADLINE}s (holder='$HOME' key='$crkey', want key $STATIC_KEY)"
   sleep 1
@@ -220,7 +237,7 @@ fi
 wait "$SECOND_PID" 2>/dev/null || true
 
 # ------------------------------------- 3. deleting the CR ends it: 4007
-kubectl -n "$NS" delete "$ROOMS" "$STATIC"
+kubectl delete --raw "$ROOMS_API/$STATIC" >/dev/null
 end=$((SECONDS + DEADLINE))
 until grep -q '"type":"close","code":4007' "$STATIC_LOG" 2>/dev/null; do
   [ "$SECONDS" -ge "$end" ] && fail "the static room's participant was not closed with 4007 after the CR was deleted ($(tail -n 3 "$STATIC_LOG"))"
@@ -245,17 +262,17 @@ DYN=$(printf '%s' "$CODE" | tr '[:upper:]' '[:lower:]')
 
 end=$((SECONDS + DEADLINE))
 while true; do
-  kind=$(room_field "$DYN" '{.spec.kind}')
-  holder=$(room_field "$DYN" '{.status.lease.holder}')
-  att=$(room_field "$DYN" '{.status.attachments[*].broadcastID}')
+  kind=$(room_field "$DYN" '.spec.kind')
+  holder=$(room_field "$DYN" '.status.lease.holder')
+  att=$(room_field "$DYN" '[.status.attachments[]?.broadcastID] | join(" ")')
   if [ "$kind" = dynamic ] && [ -n "$holder" ] && [[ " $att " == *" $BID "* ]]; then break; fi
   [ "$SECONDS" -ge "$end" ] && fail "dynamic room CR $DYN not as minted within ${DEADLINE}s (kind='$kind' holder='$holder' attachments='$att', want $BID)"
   sleep 1
 done
 DYN_HOME=$holder
-DYN_GEN=$(room_field "$DYN" '{.status.lease.generation}')
+DYN_GEN=$(room_field "$DYN" '.status.lease.generation')
 [ -n "${PORT[$DYN_HOME]-}" ] || fail "dynamic room lease holder '$DYN_HOME' is not one of the relay pods"
-DYN_KEY=$(room_field "$DYN" '{.status.key}')
+DYN_KEY=$(room_field "$DYN" '.status.key')
 statusz "$DYN_HOME" | jq -e --arg k "$DYN_KEY" '.rooms[$k].role == "home" and .rooms[$k].attachments == 1' >/dev/null \
   || fail "home pod $DYN_HOME does not publish the dynamic room $DYN_KEY with its attachment"
 echo "PASS: dynamic room $DYN minted by pubsim — CR kind dynamic, attachment $BID, lease on $DYN_HOME (generation $DYN_GEN), key $DYN_KEY on /statusz"
@@ -284,8 +301,8 @@ while true; do
   [ "$SECONDS" -ge "$end" ] && fail "after ${DEADLINE}s and $attempt re-dials no joiner landed in $DYN with attachment $BID (last: $(cat "$LOG.err" "$LOG" 2>/dev/null | tail -n 3 | tr '\n' ' '))"
   sleep 2
 done
-NEW_HOME=$(room_field "$DYN" '{.status.lease.holder}')
-NEW_GEN=$(room_field "$DYN" '{.status.lease.generation}')
+NEW_HOME=$(room_field "$DYN" '.status.lease.holder')
+NEW_GEN=$(room_field "$DYN" '.status.lease.generation')
 [ -n "$NEW_HOME" ] && [ "$NEW_HOME" != "$DYN_HOME" ] || fail "the room was joinable but its lease still names the dead pod ($NEW_HOME)"
 [ "${NEW_GEN:-0}" -gt "${DYN_GEN:-0}" ] || fail "adoption did not bump the lease generation ($DYN_GEN -> $NEW_GEN)"
 if [ "$NEW_HOME" = "$SURVIVOR" ]; then
