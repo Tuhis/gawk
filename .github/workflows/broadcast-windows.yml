@@ -325,6 +325,18 @@ jobs:
       # megabytes of JSON to hand to an artifact nothing reads.
       - name: Coverage report
         run: cargo llvm-cov report --summary-only --json --output-path coverage-llvm.json
+      # The runner's _work is a 4 GiB memory-backed tmpfs (ioio runner spec),
+      # and the llvm-cov-instrumented target tree plus the relay Go build the
+      # integration tier makes fill it once the workspace is R42-sized: the
+      # coverage action then dies installing its Python into the tool cache
+      # with ENOSPC (runs 33864313980, 33890068024). The report above is the
+      # only thing the action needs, so the tree goes before it runs — the
+      # same reclaim the lint job does for the msvc debug tree.
+      - name: Reclaim the instrumented target tree
+        run: |
+          du -sh target 2>/dev/null || true
+          rm -rf target
+          df -h /home/runner/_work | tail -1
       - uses: ./.github/actions/coverage
         with:
           format: llvm-cov
