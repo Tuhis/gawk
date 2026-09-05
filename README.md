@@ -183,13 +183,18 @@ Frontend work — Vite with HMR, against the same relay:
 docker compose --profile app-dev up --scale app=0     # http://localhost:5173
 ```
 
-There are three optional compose profiles:
+There are four optional compose profiles:
 
 | Profile | For |
 |---|---|
 | `sim` | a live broadcast without screen-sharing anything (the join code is the `GAWK_PUBSIM_ID=` line in the logs) |
+| `rooms` | two synthetic broadcasters already in a room: open `http://localhost:8080/#/room/devroom` and add your own screen as a third POV from there |
 | `telemetry` | the optional diagnostics service, same-origin ingest; needs `GAWK_TELEMETRY_KEY` set too |
 | `app-dev` | Vite with HMR over a bind mount |
+
+Rooms are on in the stack (they are off by default in a real deployment);
+`devroom` is a static room defined in `dev/rooms/rooms.json`, and any live
+broadcast can mint a dynamic one from its Room panel.
 
 Prefer the `app-dev` profile over a bare `npm run dev` when the relay is in a
 container: it is served the generated `/config.js`, and a hand-run Vite is
