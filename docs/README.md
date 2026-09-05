@@ -47,6 +47,7 @@ Reading all forty-two is not the point. Three give you the shape of the system:
 | [`22`](22-relay-scale-out.md) | R17 — Scale-out & HA: origin/edge cascade, resume tokens |
 | [`23`](23-live-viewer-count.md) | R18 — Live viewer count, aggregated across pods |
 | [`26`](26-relay-dvr-buffer.md) | R21 — Relay DVR ring buffer for resilient viewers |
+| [`45`](45-relay-refusal-reasons.md) | R43 — Relay refusal reasons the browser can see (close codes 4008–4011) |
 
 ## Delivery and resilience
 
