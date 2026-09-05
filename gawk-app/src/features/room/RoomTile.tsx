@@ -1,16 +1,24 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import styles from './room.module.css';
 import { IconButton } from '../../ui/IconButton';
-import { EyeIcon, OpenIcon, SpeakerIcon, SpeakerMutedIcon } from '../../ui/Icons';
+import { OpenIcon, SpeakerIcon, SpeakerMutedIcon } from '../../ui/Icons';
 import { useViewerConnection } from '../viewer/useViewerConnection';
 import type { AudioOutput } from '../viewer/audioSink';
 import type { PlaybackConfig } from '../viewer/playbackPresets';
 import type { RoomAttachment } from '../../transport/wire';
-import { fmtWatching } from '../../lib/format';
 import { buildViewLink } from '../../lib/shareLink';
 import { loadTileVolume, saveTileVolume } from './roomPrefs';
 
 export type TileVariant = 'grid' | 'focus' | 'small';
+
+// Grid only: which stage edges the tile touches (RoomScreen computes it from
+// the tile's row). The label steps below the header band on a top-row tile
+// and the controls above the footer band on a bottom-row tile; the video
+// itself stays edge to edge.
+export interface TileEdges {
+  top: boolean;
+  bottom: boolean;
+}
 
 interface FrameProps {
   attachment: RoomAttachment;
@@ -19,6 +27,7 @@ interface FrameProps {
   // Position in the focus strip (small tiles only).
   stripIndex?: number;
   variant: TileVariant;
+  edges?: TileEdges;
   own: boolean;
   ownControls?: ReactNode;
   showChrome: boolean;
@@ -42,6 +51,7 @@ function TileFrame({
   index,
   stripIndex,
   variant,
+  edges,
   own,
   ownControls,
   showChrome,
@@ -63,6 +73,8 @@ function TileFrame({
       data-testid="room-tile"
       data-broadcast-index={index}
       data-variant={variant}
+      data-edge-top={edges?.top ? 'true' : undefined}
+      data-edge-bottom={edges?.bottom ? 'true' : undefined}
       data-own={own ? 'true' : undefined}
       data-focused={variant === 'focus' ? 'true' : undefined}
       data-status={status}
@@ -88,15 +100,12 @@ function TileFrame({
         <span className={styles.tileKey} aria-hidden="true">
           {index}
         </span>
+        {/* No per-POV viewer count here: the header carries the room's
+            totals and the panel the per-stream figure (docs/44 §4.9). */}
         <span className={styles.tileLabel} data-live={away ? 'false' : 'true'}>
           {attachment.label || broadcastId}
           {own && <span>· you</span>}
           {away && <span>· away</span>}
-          {!small && (
-            <span className={styles.tileWatching}>
-              <EyeIcon /> {fmtWatching(attachment.viewerCount)}
-            </span>
-          )}
         </span>
       </div>
 
@@ -133,6 +142,7 @@ interface Props {
   index: number;
   stripIndex?: number;
   variant: TileVariant;
+  edges?: TileEdges;
   config: PlaybackConfig;
   audioOutput: AudioOutput | null;
   // Focus mode: every non-focused tile is silenced through its sink, never
@@ -156,6 +166,7 @@ export function RoomTile({
   index,
   stripIndex,
   variant,
+  edges,
   config,
   audioOutput,
   suppressed,
@@ -253,6 +264,7 @@ export function RoomTile({
       index={index}
       stripIndex={stripIndex}
       variant={variant}
+      edges={edges}
       own={own}
       ownControls={ownControls}
       showChrome={showChrome}
@@ -271,6 +283,7 @@ interface OwnProps {
   index: number;
   stripIndex?: number;
   variant: TileVariant;
+  edges?: TileEdges;
   preview: MediaStream;
   ownControls?: ReactNode;
   showChrome: boolean;
@@ -286,6 +299,7 @@ export function OwnPreviewTile({
   index,
   stripIndex,
   variant,
+  edges,
   preview,
   ownControls,
   showChrome,
@@ -309,6 +323,7 @@ export function OwnPreviewTile({
       index={index}
       stripIndex={stripIndex}
       variant={variant}
+      edges={edges}
       own
       ownControls={ownControls}
       showChrome={showChrome}

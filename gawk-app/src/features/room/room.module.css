@@ -14,8 +14,13 @@
   cursor: default;
   --strip-w: 12rem;
   --strip-h: 6.75rem;
-  --strip-top: 4rem;
+  --strip-top: 4.5rem;
   --strip-gap: 0.5rem;
+  /* The bands the header and footer overlays occupy. Tile chrome on a stage
+     edge is offset by these so it never sits under the room's own chrome;
+     constant (not tied to the fade) so nothing jumps when the chrome hides. */
+  --chrome-top: 4.5rem;
+  --chrome-bottom: 4rem;
 }
 
 .pseudoFullscreen {
@@ -37,6 +42,22 @@
   grid-auto-rows: minmax(0, 1fr);
 }
 
+/* Video edge to edge in every mode — no band is reserved for the overlays.
+   Instead the chrome INSIDE a tile that touches a stage edge steps into the
+   free part of the band: a top-row tile's label sits below the header, a
+   bottom-row tile's controls above the footer (see --chrome-*). */
+.stage[data-mode='grid'] .tile[data-edge-top='true'] .tileHead {
+  top: var(--chrome-top);
+}
+
+.stage[data-mode='grid'] .tile[data-edge-bottom='true'] .tileFoot {
+  bottom: var(--chrome-bottom);
+}
+
+.stage[data-mode='grid'] .tile[data-edge-bottom='true'] .ownBar {
+  bottom: calc(var(--chrome-bottom) + 0.25rem);
+}
+
 .stage[data-panel='true'] {
   right: var(--panel-w, 340px);
 }
@@ -51,10 +72,34 @@
   outline: none;
 }
 
-.stage[data-mode='focus'] .tile[data-variant='focus'] {
+.stage[data-mode='focus'] .tile[data-variant='focus'],
+.stage[data-mode='hidden'] .tile[data-variant='focus'] {
   position: absolute;
   inset: 0;
 }
+
+/* The focused tile stays edge to edge (it IS the picture), so its label and
+   controls move into the bands the room chrome leaves free — level with the
+   small-tile strip at the top, above the footer at the bottom. */
+.stage[data-mode='focus'] .tile[data-variant='focus'] .tileHead,
+.stage[data-mode='hidden'] .tile[data-variant='focus'] .tileHead {
+  top: var(--strip-top);
+  left: 1rem;
+}
+
+.stage[data-mode='focus'] .tile[data-variant='focus'] .tileFoot,
+.stage[data-mode='hidden'] .tile[data-variant='focus'] .tileFoot {
+  bottom: var(--chrome-bottom);
+  right: 1rem;
+}
+
+.stage[data-mode='focus'] .tile[data-variant='focus'] .ownBar,
+.stage[data-mode='hidden'] .tile[data-variant='focus'] .ownBar {
+  bottom: calc(var(--chrome-bottom) + 0.25rem);
+}
+
+/* The broadcaster's "preview only" (docs/44 §4.8 revision 2026-09-05): the
+   own tile alone in the hidden stage mode, full bleed like a focused tile. */
 
 .stage[data-mode='focus'] .tile[data-variant='small'] {
   position: absolute;
@@ -87,6 +132,9 @@
   height: 100%;
   object-fit: contain;
   display: block;
+  /* The letterbox around a <video> is the element's own background, not the
+     tile's — paint it black or Chrome may show white there. */
+  background: #000;
 }
 
 /* The number key badge + label, top-left of the tile while the chrome shows. */
@@ -136,14 +184,6 @@
 
 .tileLabel[data-live='false'] {
   color: var(--warning);
-}
-
-.tileWatching {
-  color: var(--muted);
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-variant-numeric: tabular-nums;
 }
 
 /* Bottom-right per-tile controls: the volume pill (grid), open full-screen. */
@@ -430,7 +470,11 @@
   padding: 1.5rem;
 }
 
-.center[data-panel='true'] {
+.center[data-panel='true'],
+.header[data-panel='true'],
+.footer[data-panel='true'] {
+  /* The panel stays open (it no longer fades), so the overlays give it the
+     room: their right-hand controls must not end up underneath it. */
   right: var(--panel-w, 340px);
 }
 
@@ -589,9 +633,6 @@
   gap: 0.1rem;
 }
 
-.pinned {
-  color: var(--accent);
-}
 
 .section {
   display: flex;

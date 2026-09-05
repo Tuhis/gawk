@@ -302,6 +302,57 @@ on their own tile. Starting a broadcast from *inside* a room view (a
 participant who decides to stream) is the same flow in reverse and lands
 in the same state.
 
+**Revision 2026-09-05 — the room is chosen after the stream, or it
+waits.** A room can only be joined by a *live* broadcast: the attach is
+proven with the resume token, which does not exist before the relay has
+minted the ID. The first cut let the pre-start card's join-by-code
+navigate into the room view immediately — a page with no way to start
+the stream — and made "Start streaming here" re-open the Room panel with
+the code pre-filled, where the user then closed the panel to press
+Start and nothing joined. Settled:
+
+- The live page is the primary way in: press Start, then open the Room
+  control and make or join a room. *New room* stays disabled before the
+  stream exists (a room is made from a running broadcast, §4.4).
+- A room chosen **before** the stream is live becomes a *pending room*:
+  a chip on the pre-start card ("Joins room `CODE` when live", with a
+  dismiss), and the join fires by itself the moment the broadcast has
+  its ID and token. No panel to re-open, no code to re-type.
+- "Start streaming here" from a room hands over the room code **and the
+  nickname question already answered there** (a guest stays a guest;
+  `roomReturn.ts`), so the broadcaster page asks nothing and the tile
+  label defaults to that nickname. A grant the room link carried applies
+  through the same session-storage stash the link hand-off uses.
+
+**Revision 2026-09-05 (later the same day) — the broadcaster's room view
+is direction A of the design pass.** The first cut rendered the viewer's
+room view wholesale, with the broadcaster's controls squeezed into a glass
+bar on their own tile — a second page with a second set of Stop / Settings
+/ Stats. Three directions were drawn in Claude Design (§12) and **A** was
+chosen: *the room's stage under the broadcaster's own topbar*.
+
+- **The topbar is the live view's**, unchanged — LIVE · broadcast code ·
+  watching · badges | sending readout · Stats · Settings · Room · Stop —
+  plus a **room pill** beside the code (`devroom · 3 streaming · 2
+  watching`, the pending-room chip's accent tint so "in a room" reads the
+  same before and after the join). In a room the Room button toggles the
+  people panel, where Copy room link, Leave room and Detach live. Nothing
+  is duplicated; the own tile has no glass bar.
+- **The stage, footer and panel are the room view's** (`RoomView` with a
+  `header` prop; the broadcaster supplies the topbar and the room supplies
+  code, counts and the panel toggle through `RoomHeaderContext`). The
+  footer's layout modes are the broadcaster's too — this is the point: in
+  the common case a group of friends are *all* streaming, they want to
+  see everyone else equally and care least about their own preview, so
+  **Grid** is the mode that case lands on, with the broadcaster's own tile
+  one equal tile: the local preview (no `/subscribe` to yourself), accent
+  ring, muted. **Focus** with yourself focused is the plain live view.
+  The third mode reads **Preview only** for a broadcaster — their own
+  screen full bleed and no media sessions to the others (the same
+  persisted `hidden` mode as a viewer's hide-videos).
+- Dropped: the own-bar's "Change source" (Stop, then Start, re-picks the
+  source; it was never on the live view).
+
 **Native broadcasters**: `gawk-broadcast -room <code-or-slug>` (and the
 matching profile field / GUI card) attaches on publish and re-attaches on
 resume, holding the attach secret from the profile when the room is
@@ -357,7 +408,8 @@ viewer uses today. Concretely:
   viewer's control bar with a Grid / Focus / Hide videos segment beside
   the playback preset pill, a master volume, more, leave. Both fade.
 - **People and chat is an optional side panel**, opened from the header
-  and pinnable so it stays while the overlays fade. It holds the
+  and (revision 2026-09-05) it stays until closed rather than fading with
+  the overlays — the pin it first shipped with is gone. It holds the
   streaming list (per-POV viewer count, creator's detach), the roster
   with the reserved speaking slot per person, the reserved chat area and
   message input, nickname and the copy actions. On a phone it is a
@@ -381,6 +433,34 @@ viewer uses today. Concretely:
   resolves either kind of code, and no start-a-room action (§4.4).
 - Not drawn yet, left for RM4: the per-tile audio pick on a phone, the
   grid-to-focus breakpoint, and the empty static room.
+
+**Revision 2026-09-05 — after the first local pass.** Two corrections to
+the dock, both from using it with three POVs on the dev stack:
+
+- **The room's overlays never sit on a tile's chrome — and video stays
+  edge to edge.** The header's code-and-counts pills landed on top of the
+  top-row tiles' number badge and label, and the footer on the bottom
+  row's volume pills. A first fix letterboxed the grid under the bands
+  and was rejected (a black bar with the chrome hidden is exactly what
+  the dock is not). Settled: no band is reserved; the chrome *inside* a
+  tile that touches a stage edge is offset instead (`data-edge-top` /
+  `data-edge-bottom`, computed from the tile's row) — a top-row label
+  sits just below the header band, a bottom-row control pill just above
+  the footer band (`--chrome-top` / `--chrome-bottom`, constant so
+  nothing jumps when the chrome fades); the focused tile in focus mode
+  gets the same treatment, level with the small-tile strip.
+- **Counts are the room's, not the tile's.** The header reads
+  "N streaming · M watching" (M = participants who are not streaming); the
+  per-POV viewer count is gone from the tiles and lives only in the
+  people panel's streaming list, where it is detail rather than noise.
+- **The people panel is not chrome.** Opened, it stayed only while the
+  overlays showed unless pinned; a participant who opened it wanted to
+  look at it, so it now stays until closed and the pin is gone.
+- **One name.** The broadcaster's Room panel called its field "Your tile"
+  and asked for a tile label separately from the nickname the room view
+  would then prompt for. It is now "Your name": shown on the stream's
+  tile and in the people list, and it is the nickname the broadcaster
+  joins with (the hop from a room still wins when it carried one).
 
 ### 4.10 Knobs, Helm, observability
 
@@ -708,6 +788,8 @@ the manual pass outcome.
 | RM4 routing, modes, hide-videos closes every media session | `routing.test.ts`, `RoomScreen.test.tsx` (hide-videos: zero `/subscribe` sessions, control session kept), `room-session.test.ts`, `App.room.test.tsx` (`?rt=` hand-off before first render) |
 | RM4 browser E2E | `node e2e/run.mjs --rooms` (two pubsims, grid → focus by key → hide-videos asserted on the relay's subscriber counts) |
 | RM5 broadcaster attaches, appears in a roster, away then removal | `BroadcasterScreen.room.test.tsx`; the relay-side away/expiry path in `TestBroadcastLifecycleHooks` and the Go native integration test |
+| RM5 a room chosen before the stream waits and joins by itself; "start streaming here" carries the nickname, a guest stays a guest, nothing is asked twice (§4.8 revision 2026-09-05) | `BroadcasterScreen.room.test.tsx` (pending room from the stash and from join-by-code; dismiss), `RoomScreen.test.tsx` (the stash's shape, `presetNickname`), `roomReturn.test.ts` |
+| RM4 the dock's overlays and the tiles' chrome do not overlap; header carries the room totals (§4.9 revision 2026-09-05) | `room.module.css` bands; `RoomScreen.test.tsx` (`N streaming`, `M watching`); the dev stack's `--profile rooms` (docs/41 §4.5) is the three-POV fixture it was seen on |
 | RM6 attach visible in another participant's `RoomState` | `gawk-broadcast/internal/engine/room_integration_test.go`, `crates/engine/tests/relay_integration.rs` (ignored; CI runs it on Linux) |
 | RM6 grant hand-off rewritten before first render | `App.room.test.tsx` |
 | RM7 portal API, CI migration gates, webhook carries no raw code | `gawk-admin/internal/api/rooms_test.go`, `internal/kube/rooms_test.go` (+ envtest against `crd-room.yaml`), `internal/notify/payload_test.go` `TestNoRawIDOrIPInAnyPayload` with a room-code poison; no migration was needed (`admin-migrations` unchanged) |
@@ -741,3 +823,10 @@ app's real tokens, icons and control bar for the chrome). Decisions taken
 there are recorded in §4.9's dated revision; the hi-fi pass against the
 synced component library in the gawk Design System project is optional
 and, if done, is noted here with its own link.
+
+**Second pass, 2026-09-05 — the broadcaster in a room.** Three directions
+on one canvas — A "the room's stage under the broadcaster's topbar" (grid /
+focus / preview-only artboards, people panel open), B "a bottom room dock",
+C "split hero" — with the grid-first rationale in the canvas notes:
+<https://claude.ai/code/artifact/6d59bbf6-00e7-4dfc-8cd7-31eaa6a32992>.
+The owner chose A; §4.8's revision of the same day records what was built.

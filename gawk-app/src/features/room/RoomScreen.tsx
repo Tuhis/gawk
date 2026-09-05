@@ -14,6 +14,7 @@ import {
   LeaveIcon,
   MoreIcon,
   PeopleIcon,
+  ScreenIcon,
   SpeakerIcon,
   SpeakerMutedIcon,
   VideoOffIcon,
@@ -26,7 +27,13 @@ import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
 import { buildRoomLink } from '../../lib/shareLink';
 import { HOME } from '../../routing';
-import { ROOM_CLIENT_WEB_BROADCASTER, ROOM_CLIENT_WEB_VIEWER, type RoomAttachment } from '../../transport/wire';
+import {
+  ROOM_CLIENT_WEB_BROADCASTER,
+  ROOM_CLIENT_WEB_VIEWER,
+  ROOM_PARTICIPANT_FLAG_STREAMING,
+  type RoomAttachment,
+} from '../../transport/wire';
+import { fmtWatching } from '../../lib/format';
 import type { RoomTarget } from '../../transport/room-session';
 import { isDynamicRoom, isRoomCreator, mayAttach, useRoomStore } from '../../state/roomStore';
 import { ServerIndicator } from '../servers/ServerIndicator';
@@ -60,8 +67,24 @@ export interface OwnBroadcast {
   // the publisher die, and the attach is re-sent (idempotent) to be sure.
   attachEpoch: number;
   preview: MediaStream | null;
-  controls: ReactNode;
+  // Controls for the own tile's glass bar. Null renders no bar: the
+  // broadcaster page (docs/44 §4.8 revision 2026-09-05, direction A) keeps
+  // Stop / Settings / Stats in its own topbar and Detach in the panel.
+  controls: ReactNode | null;
   onDetach: () => void;
+}
+
+// What a custom header (RoomViewProps.header) gets from the room view: the
+// broadcaster page renders its own live topbar over the room's stage and
+// needs only the room's figures and the panel toggle from here.
+export interface RoomHeaderContext {
+  code: string;
+  streaming: number;
+  watching: number;
+  panelOpen: boolean;
+  togglePanel: () => void;
+  // The overlays' fade state; the header follows it.
+  showChrome: boolean;
 }
 
 export interface RoomViewProps {
@@ -73,6 +96,16 @@ export interface RoomViewProps {
   onLeave?: () => void;
   // Viewer only: "start streaming here" (docs/44 §4.8).
   onStartStreaming?: () => void;
+  // The nickname question already answered elsewhere — the broadcaster
+  // arriving from a room's "start streaming here" (roomReturn.ts). A string
+  // is the nickname; null means "a guest, and stay one"; undefined asks as
+  // usual (remembered nickname, else the prompt).
+  presetNickname?: string | null;
+  // Replaces the room's own header overlay (code · counts · copy · people ·
+  // fullscreen) — the broadcaster's topbar (direction A). It renders inside
+  // the stage's coordinate space; the panel offset and the fade are the
+  // caller's to apply from the context.
+  header?: (ctx: RoomHeaderContext) => ReactNode;
 }
 
 function useMediaMatch(query: string): boolean {
@@ -99,10 +132,10 @@ function bytesToHex(bytes: Uint8Array): string {
 
 // R42 (docs/44 §4.9 revision): the cinematic dock. Video edge to edge, a
 // header and a footer overlay that fade after the viewer's idle period, an
-// optional pinnable people-and-chat panel. Three modes: grid (every POV, all
+// optional people-and-chat panel that stays until closed. Three modes: grid (every POV, all
 // mixed), focus (one large + the rest small in a glass strip, focused audio
 // only), hide videos (no media sessions at all — the control session stays).
-export function RoomView({ target, grant = null, own = null, onLeave, onStartStreaming }: RoomViewProps) {
+export function RoomView({ target, grant = null, own = null, onLeave, onStartStreaming, presetNickname, header }: RoomViewProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const status = useRoomStore((s) => s.status);
   const snapshot = useRoomStore((s) => s.snapshot);
@@ -113,9 +146,12 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   const lastRemoval = useRoomStore((s) => s.lastRemoval);
   const clearRejection = useRoomStore((s) => s.clearRejection);
 
-  // D10: the nickname, asked once before the first dial and remembered.
-  const [nickname, setNicknameState] = useState<string | null>(loadNickname);
-  const [guest, setGuest] = useState(false);
+  // D10: the nickname, asked once before the first dial and remembered — or
+  // handed in by the hop from a room (presetNickname), which never asks.
+  const [nickname, setNicknameState] = useState<string | null>(() =>
+    presetNickname === undefined ? loadNickname() : presetNickname,
+  );
+  const [guest, setGuest] = useState(presetNickname === null);
   const [editingNick, setEditingNick] = useState(false);
   const ready = nickname !== null || guest;
 
@@ -194,6 +230,10 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     };
   }, []);
   const tilesShown = joined && effectiveMode !== 'hidden' && attachments.length > 0;
+  // A broadcaster's "hide videos" is "preview only": their own screen full
+  // bleed, no /subscribe to anyone (the bandwidth saver), the control
+  // session kept. Same persisted mode as a viewer's hide-videos.
+  const previewOnly = effectiveMode === 'hidden' && own?.preview != null && (joined || status === 'reconnecting');
   const audioOutput = useMemo(() => (tilesShown ? (mixerRef.current?.output() ?? null) : null), [tilesShown]);
   const [masterMuted, setMasterMuted] = useState(false);
   const [masterVolume, setMasterVolume] = useState(1);
@@ -223,10 +263,11 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     return () => clearInterval(t);
   }, [tilesShown]);
 
-  // The people-and-chat panel: open from the header, pinnable so it stays
-  // while the chrome fades; a bottom sheet on a phone (CSS).
+  // The people-and-chat panel: open from the header, and it STAYS open until
+  // closed — it is not chrome, it is a thing the participant asked to look
+  // at, so it does not fade with the overlays (revision 2026-09-05; the
+  // earlier pin-to-keep affordance is gone). A bottom sheet on a phone (CSS).
   const [panelOpen, setPanelOpen] = useState(false);
-  const [pinned, setPinned] = useState(false);
 
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [presetMenu, setPresetMenu] = useState<{ x: number; y: number } | null>(null);
@@ -258,11 +299,12 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
 
   const { isFullscreen, tier, toggle: toggleFullscreen } = useFullscreen(rootRef);
   useHotkey({ key: 'f' }, () => toggleFullscreen());
-  useWakeLock(tilesShown);
+  useWakeLock(tilesShown || previewOnly);
 
   const anyOverlayOpen = !!menu || !!presetMenu || editingNick;
-  const chromeVisible = useAutoHide(CONTROL_IDLE_MS, tilesShown && !anyOverlayOpen);
-  const showChrome = chromeVisible || !tilesShown || anyOverlayOpen;
+  const stageLive = tilesShown || previewOnly;
+  const chromeVisible = useAutoHide(CONTROL_IDLE_MS, stageLive && !anyOverlayOpen);
+  const showChrome = chromeVisible || !stageLive || anyOverlayOpen;
 
   const code = snapshot?.code ?? (target.kind === 'join' ? target.code : '');
   const roomKey = snapshot && snapshot.key.length > 0 ? bytesToHex(snapshot.key) : null;
@@ -293,15 +335,20 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     [commands, status],
   );
 
+  // The hop carries the nickname this participant already answered (a guest
+  // stays a guest), so the broadcaster page never asks again (docs/44 §4.8).
   const startStreaming = useCallback(() => {
-    if (code !== '') stashRoomReturn(code);
+    if (code !== '') stashRoomReturn({ code, nickname: guest ? null : nickname });
     onStartStreaming?.();
-  }, [code, onStartStreaming]);
+  }, [code, nickname, guest, onStartStreaming]);
 
   const creator = isRoomCreator(snapshot);
   const dynamic = isDynamicRoom(snapshot);
+  // The header's two totals: broadcasts on the stage, and the people in the
+  // room who are not streaming. Per-POV viewer counts stay in the panel.
   const streaming = attachments.length;
-  const people = snapshot?.participants.length ?? 0;
+  const watching =
+    snapshot?.participants.filter((p) => (p.flags & ROOM_PARTICIPANT_FLAG_STREAMING) === 0).length ?? 0;
 
   const presetItems: MenuItem[] = PRESETS.map((p) => ({
     label: p.label,
@@ -329,19 +376,21 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     commands.detach(own.broadcastId);
     own.onDetach();
   }, [own, commands]);
-  const ownControls = own ? (
-    <>
-      <span className={styles.ownBarLabel}>You</span>
-      {own.controls}
-      <IconButton label="Detach from room" onClick={detachOwn}>
-        <CloseIcon />
-      </IconButton>
-    </>
-  ) : null;
+  const ownControls =
+    own && own.controls ? (
+      <>
+        <span className={styles.ownBarLabel}>You</span>
+        {own.controls}
+        <IconButton label="Detach from room" onClick={detachOwn}>
+          <CloseIcon />
+        </IconButton>
+      </>
+    ) : null;
 
   // The stage: one flat list keyed by broadcast ID so a mode switch moves
   // tiles instead of remounting their media sessions. Hidden ⇒ no tiles.
   const cols = Math.max(1, Math.ceil(Math.sqrt(attachments.length)));
+  const rows = Math.max(1, Math.ceil(attachments.length / cols));
   let strip = 0;
   const tiles =
     !tilesShown
@@ -350,6 +399,14 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
           const isFocused = effectiveMode === 'focus' && focused?.broadcastId === a.broadcastId;
           const variant = effectiveMode === 'grid' ? 'grid' : isFocused ? 'focus' : 'small';
           const stripIndex = variant === 'small' ? strip++ : undefined;
+          // Which stage edges this grid tile touches: its label (top) and
+          // controls (bottom) step inside the header / footer bands there,
+          // so the video stays edge to edge and nothing sits under the
+          // room's own chrome (docs/44 §4.9 revision 2026-09-05).
+          const edges =
+            variant === 'grid'
+              ? { top: Math.floor(i / cols) === 0, bottom: Math.floor(i / cols) === rows - 1 }
+              : undefined;
           if (own && own.preview && a.broadcastId === own.broadcastId) {
             return (
               <OwnPreviewTile
@@ -358,6 +415,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
                 index={i + 1}
                 stripIndex={stripIndex}
                 variant={variant}
+                edges={edges}
                 preview={own.preview}
                 ownControls={ownControls}
                 showChrome={showChrome}
@@ -372,6 +430,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
               index={i + 1}
               stripIndex={stripIndex}
               variant={variant}
+              edges={edges}
               config={variant === 'small' ? smallConfig : mainConfig}
               audioOutput={audioOutput}
               suppressed={effectiveMode === 'focus' && !isFocused}
@@ -384,6 +443,25 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
           );
         });
 
+  // Preview only (broadcaster): the own tile alone, full bleed, in place of
+  // the hidden card. The attachment is what the roster says about us, or a
+  // stand-in while the relay has not listed us yet.
+  const ownAttachment =
+    own && (attachments.find((a) => a.broadcastId === own.broadcastId) ?? { broadcastId: own.broadcastId, label: own.label, live: true, viewerCount: 0 });
+  const previewTile =
+    previewOnly && own && own.preview && ownAttachment ? (
+      <OwnPreviewTile
+        key={own.broadcastId}
+        attachment={ownAttachment}
+        index={Math.max(1, attachments.findIndex((a) => a.broadcastId === own.broadcastId) + 1)}
+        variant="focus"
+        preview={own.preview}
+        ownControls={ownControls}
+        showChrome={showChrome}
+        onFocus={focus}
+      />
+    ) : null;
+
   const card = (title: string, body: string, actions?: ReactNode) => (
     <div className={styles.center} data-panel={panelOpen ? 'true' : 'false'}>
       <GlassPanel className={styles.card}>
@@ -393,8 +471,6 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
       </GlassPanel>
     </div>
   );
-
-  const panelVisible = panelOpen && (pinned || showChrome);
 
   return (
     <div
@@ -414,6 +490,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
         style={{ '--cols': cols } as CSSProperties}
       >
         {tiles}
+        {previewTile}
       </div>
 
       {(status === 'idle' || status === 'connecting') && ready && (
@@ -439,6 +516,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
       {status === 'ended' && card(endedCard(endReason).title, endedCard(endReason).body, <Button onClick={leave}>Leave</Button>)}
       {(joined || status === 'reconnecting') &&
         effectiveMode === 'hidden' &&
+        !previewOnly &&
         card(
           HIDDEN_CARD.title,
           HIDDEN_CARD.body,
@@ -480,7 +558,10 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
 
       {toast && <Toast>{toast}</Toast>}
 
-      <div className={[styles.header, showChrome ? '' : styles.headerHidden].join(' ')}>
+      {header ? (
+        header({ code, streaming, watching, panelOpen, togglePanel: () => setPanelOpen((o) => !o), showChrome })
+      ) : (
+      <div className={[styles.header, showChrome ? '' : styles.headerHidden].join(' ')} data-panel={panelOpen ? 'true' : 'false'}>
         <div className={styles.headerLeft}>
           <span className={styles.code} title="Room code">
             {code}
@@ -489,7 +570,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
             {streaming} streaming
           </span>
           <span className={styles.count}>
-            <PeopleIcon /> {people}
+            <PeopleIcon /> {fmtWatching(watching)}
           </span>
         </div>
         <div className={styles.headerRight}>
@@ -508,8 +589,9 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
           </IconButton>
         </div>
       </div>
+      )}
 
-      <div className={[styles.footer, showChrome ? '' : styles.footerHidden].join(' ')}>
+      <div className={[styles.footer, showChrome ? '' : styles.footerHidden].join(' ')} data-panel={panelOpen ? 'true' : 'false'}>
         <div className={styles.footerLeft}>
           <div className={styles.segment} role="radiogroup" aria-label="Layout">
             <button
@@ -538,7 +620,15 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
               className={styles.segmentBtn}
               onClick={() => setMode('hidden')}
             >
-              <VideoOffIcon /> Hide videos
+              {own?.preview ? (
+                <>
+                  <ScreenIcon /> Preview only
+                </>
+              ) : (
+                <>
+                  <VideoOffIcon /> Hide videos
+                </>
+              )}
             </button>
           </div>
           <button
@@ -604,12 +694,10 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
       </div>
 
       {panelOpen && snapshot && (
-        <div className={panelVisible ? '' : styles.chromeHidden} data-testid="room-panel-wrap">
+        <div data-testid="room-panel-wrap">
           <RoomPanel
             snapshot={snapshot}
             nickname={shownNickname}
-            pinned={pinned}
-            onPin={() => setPinned((p) => !p)}
             onClose={() => setPanelOpen(false)}
             onDetach={(id) => (own && id === own.broadcastId ? detachOwn() : commands.detach(id))}
             onSetNickname={submitNickname}

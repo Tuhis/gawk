@@ -541,3 +541,82 @@
   line-height: 1.5;
   color: var(--muted);
 }
+
+/* R42: the pending-room chip — a room chosen before the stream is live, shown
+   on the pre-start card and in the live topbar until the join fires. */
+.pendingRoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 100%;
+  padding: 0.3rem 0.35rem 0.3rem 0.7rem;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.pendingRoom code {
+  font-family: ui-monospace, monospace;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+/* R42 (docs/44 §4.8 revision 2026-09-05, direction A): the topbar over the
+   room's stage follows the room's chrome fade and leaves the open people
+   panel its width (the same --panel-w the room view uses). */
+.topbarHidden {
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.topbar {
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.topbar[data-panel='true'] {
+  right: var(--panel-w, 340px);
+}
+
+/* The room pill: the code pill's idiom (glass, mono code) with the
+   accent-tinted border the pending-room chip uses, so "in a room" reads the
+   same before and after the join. */
+.roomPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.7rem 0.2rem 0.6rem;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.roomPill > svg {
+  color: var(--accent);
+  font-size: 1.15em;
+}
+
+.roomPill code {
+  font-family: ui-monospace, monospace;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.pressed {
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.07);
+}

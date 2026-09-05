@@ -3,7 +3,7 @@ import styles from './room.module.css';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
-import { CloseIcon, CopyIcon, EditIcon, EyeIcon, OpenIcon, PinIcon } from '../../ui/Icons';
+import { CloseIcon, CopyIcon, EditIcon, EyeIcon, OpenIcon } from '../../ui/Icons';
 import {
   ROOM_CAP_CHAT,
   ROOM_CLIENT_NATIVE,
@@ -21,8 +21,6 @@ import { sanitizeNickname } from './roomPrefs';
 interface Props {
   snapshot: RoomState;
   nickname: string;
-  pinned: boolean;
-  onPin: () => void;
   onClose: () => void;
   onDetach: (broadcastId: string) => void;
   onSetNickname: (nickname: string) => void;
@@ -47,13 +45,11 @@ function kindLabel(kind: number, flags: number): string {
 // live/away, viewer count, open full-screen, the creator's detach), the
 // roster with its reserved speaking slot and the nickname edit, the reserved
 // chat area (rendered only when the room advertises the capability), and the
-// share actions. Pinnable so it stays while the overlays fade; a bottom
-// sheet on narrow screens (CSS).
+// share actions. Stays open until closed — it does not fade with the
+// overlays; a bottom sheet on narrow screens (CSS).
 export function RoomPanel({
   snapshot,
   nickname,
-  pinned,
-  onPin,
   onClose,
   onDetach,
   onSetNickname,
@@ -74,14 +70,6 @@ export function RoomPanel({
       <div className={styles.panelHead}>
         <span>{snapshot.displayName || 'People'}</span>
         <span className={styles.panelHeadActions}>
-          <IconButton
-            label={pinned ? 'Unpin panel' : 'Pin panel'}
-            aria-pressed={pinned}
-            className={pinned ? styles.pinned : undefined}
-            onClick={onPin}
-          >
-            <PinIcon />
-          </IconButton>
           <IconButton label="Close panel" onClick={onClose}>
             <CloseIcon />
           </IconButton>

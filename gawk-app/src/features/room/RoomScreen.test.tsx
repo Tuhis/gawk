@@ -191,6 +191,11 @@ describe('RoomScreen modes', () => {
     await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
     expect(screen.getByText('· away')).toBeTruthy();
     expect(screen.getByText('3 streaming')).toBeTruthy();
+    // The header carries the room's totals — watching = the participants
+    // who are not streaming (one of the two is) — and no tile carries a
+    // per-POV viewer count (that figure lives in the panel only).
+    expect(screen.getByText('1 watching')).toBeTruthy();
+    for (const t of tiles) expect(t.textContent).not.toMatch(/watching/);
     // The room key (never the code) is what tile telemetry is grouped by.
     expect(screen.getByTitle('Room code').textContent).toBe('AB2CD3');
   });
@@ -286,12 +291,35 @@ describe('RoomScreen people-and-chat panel', () => {
     expect(localStorage.getItem('gawk:nickname')).toBe('renamed');
   });
 
-  it('"start streaming here" stashes the code and hops to the broadcaster', async () => {
+  it('"start streaming here" stashes the code AND the nickname, then hops to the broadcaster', async () => {
     await joinAs('tuhis', { attachments: [] });
     expect(screen.getByText('Nobody is streaming yet')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
-    expect(sessionStorage.getItem('gawk:room-return')).toBe('AB2CD3');
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: 'tuhis' });
     expect(window.location.hash).toBe('#/broadcast');
+  });
+
+  it('a guest’s "start streaming here" hands over a null nickname, so the broadcaster asks nothing', async () => {
+    render(<RoomScreen code="AB2CD3" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Join as a guest' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ attachments: [] })));
+    fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: null });
+  });
+
+  it('presetNickname skips the prompt: a string dials with it, null joins as a guest', async () => {
+    const target = { kind: 'join', code: 'AB2CD3' } as const;
+    const { unmount } = render(<RoomView target={target} presetNickname="handed" />);
+    expect(screen.queryByRole('dialog', { name: 'Nickname' })).toBeNull();
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    expect(roomSessions[0].opts.nickname).toBe('handed');
+    unmount();
+    useRoomStore.getState().reset();
+    render(<RoomView target={target} presetNickname={null} />);
+    expect(screen.queryByRole('dialog', { name: 'Nickname' })).toBeNull();
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+    expect(roomSessions[1].opts.nickname).toBe('');
   });
 });
 
