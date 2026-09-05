@@ -89,6 +89,7 @@ vi.mock('../../transport/room-session', async (importActual) => ({
 }));
 
 import { BroadcasterScreen } from './BroadcasterScreen';
+import { BroadcastStartError } from '../../transport/broadcaster';
 import { acceptCurrentTerms } from '../terms/acceptance';
 import { useRoomStore } from '../../state/roomStore';
 import {
@@ -311,6 +312,47 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(roomSessions[0].opts.target).toEqual({ kind: 'join', code: 'TuhisRoom' });
     // The remembered nickname still applies on this path.
     expect(roomSessions[0].opts.nickname).toBe('tuhis');
+  });
+
+  it('after Stop → Start, a pending room waits for the NEW resume token before joining (review, PR #302)', async () => {
+    // Go live once (token delivered), then stop: the old latch must not
+    // vouch for the next session.
+    await goLive();
+    fireEvent.click(screen.getByRole('button', { name: /stop broadcast/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /start a stream/i })).toBeTruthy());
+    // A join chosen while stopped is pending.
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Room code' }), { target: { value: 'TuhisRoom' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join by code' }));
+    expect(screen.getByTestId('pending-room').textContent).toContain('TuhisRoom');
+    // Start reclaims the old ID first; the relay refuses (connect phase),
+    // so the page falls back to a mint — which resets the ID and the token
+    // it held. The minted session then reports its ID and goes live BEFORE
+    // its resume token arrives (the two ride separate uni streams; order
+    // unspecified). The pending room must wait for that token, or the
+    // broadcaster dials the room as a viewer with nothing to attach.
+    scripts.push(async () => {
+      throw new BroadcastStartError('connect', new Error('opening handshake failed'));
+    });
+    let deliverToken: (() => void) | null = null;
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('EF4GH5');
+      cbs.onSourceStream(fakeStream);
+      deliverToken = () => cbs.onResumeToken?.('d'.repeat(32));
+    });
+    fireEvent.click(screen.getByRole('button', { name: /start a stream/i }));
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    // Nothing to attach yet: no room session at all — in particular not a
+    // viewer-shaped one that the next stats tick would quietly upgrade.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(roomSessions).toHaveLength(0);
+    act(() => deliverToken?.());
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    expect(roomSessions[0].opts.clientKind).toBe(ROOM_CLIENT_WEB_BROADCASTER);
+    act(() => roomSessions[0].cbs.onState({ ...mintedState(), code: 'TuhisRoom', attachments: [] }));
+    expect(roomSessions[0].sent).toContainEqual(expect.objectContaining({ kind: 'attach', broadcastId: 'EF4GH5', resumeTokenHex: 'd'.repeat(32) }));
   });
 
   it('a pending room can be dismissed before the stream starts', async () => {

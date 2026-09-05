@@ -338,6 +338,11 @@ export function BroadcasterScreen() {
         log.warn('Reclaim failed, falling back to mint:', e);
         setBroadcastId(null);
         resumeTokenRef.current = null;
+        // The latch goes with the token (PR #302 review): the minted session
+        // reports its ID and goes live before its own token arrives, and a
+        // stale `true` here let a pending room dial as a viewer with nothing
+        // to attach.
+        setResumeReady(false);
         activeId = null;
       }
     }
