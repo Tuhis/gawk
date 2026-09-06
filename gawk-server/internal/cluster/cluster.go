@@ -426,32 +426,46 @@ func (c *Coordinator) EnterGrace(ctx context.Context, broadcastID string) error 
 // hub's OnPublisherStalled hook, fired once per transition. Holder-gated
 // like EnterGrace: only the holder-of-record may write it, and a missing
 // lease is a no-op (the broadcast ended in between). No write when the lease
-// already says what is asked.
+// already says what is asked. The Get + Update races the renew loop on the
+// same object, and the hub reports each transition exactly once, so a CAS
+// loss is retried here (PR #302 review) rather than left for the next
+// transition — a lost onset would show other pods' rooms a live tile for
+// the whole stall, a lost recovery an away tile until the next stall.
 func (c *Coordinator) SetStalled(ctx context.Context, broadcastID string, stalled bool) error {
-	lease, err := c.leases().Get(ctx, leaseName(broadcastID), metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
+	var lastErr error
+	for range claimRetries {
+		lease, err := c.leases().Get(ctx, leaseName(broadcastID), metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if parseOrigin(lease).Holder != c.opts.PodName {
 			return nil
 		}
-		return err
-	}
-	if parseOrigin(lease).Holder != c.opts.PodName {
+		if _, has := lease.Annotations[annotationStalledSince]; has == stalled {
+			return nil
+		}
+		updated := lease.DeepCopy()
+		if updated.Annotations == nil {
+			updated.Annotations = map[string]string{}
+		}
+		if stalled {
+			updated.Annotations[annotationStalledSince] = c.opts.Now().UTC().Format(time.RFC3339)
+		} else {
+			delete(updated.Annotations, annotationStalledSince)
+		}
+		if _, err := c.leases().Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
+			if apierrors.IsConflict(err) {
+				lastErr = err
+				continue // the renewer moved the object; re-read and stamp again
+			}
+			return err
+		}
 		return nil
 	}
-	if _, has := lease.Annotations[annotationStalledSince]; has == stalled {
-		return nil
-	}
-	updated := lease.DeepCopy()
-	if updated.Annotations == nil {
-		updated.Annotations = map[string]string{}
-	}
-	if stalled {
-		updated.Annotations[annotationStalledSince] = c.opts.Now().UTC().Format(time.RFC3339)
-	} else {
-		delete(updated.Annotations, annotationStalledSince)
-	}
-	_, err = c.leases().Update(ctx, updated, metav1.UpdateOptions{})
-	return err
+	return fmt.Errorf("cluster: stall stamp retries exhausted for %s: %w", broadcastID, lastErr)
 }
 
 // Delete removes the broadcast's lease (local grace-GC expired, or the

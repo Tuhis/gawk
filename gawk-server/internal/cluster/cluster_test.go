@@ -692,3 +692,49 @@ func TestLookupCarriesTheStallStamp(t *testing.T) {
 	}
 	waitFor(t, 15*time.Second, func() bool { _, _, stalled, _ := b.Lookup("K7XQ2M"); return !stalled }, "pod-b to see the re-claim clear the stamp")
 }
+
+// PR #302 review: SetStalled's Get + Update races the 5 s renew on the same
+// object. The hub reports each transition exactly once, so a CAS loss here
+// must be retried in place — otherwise a lost onset shows other pods' rooms
+// a live tile for the whole stall, and a lost recovery an away tile until
+// the next transition.
+func TestSetStalledRetriesThroughAConflict(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	ctx := context.Background()
+	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	conflicts := 2
+	cs.PrependReactor("update", "leases", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if conflicts > 0 {
+			conflicts--
+			return true, nil, apierrors.NewConflict(
+				schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"},
+				"gawk-bc-k7xq2m", errors.New("simulated renew race"))
+		}
+		return false, nil, nil
+	})
+	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled through conflicts: %v", err)
+	}
+	if conflicts != 0 {
+		t.Fatal("conflict reactor never fired")
+	}
+	lease, err := cs.CoordinationV1().Leases(a.opts.Namespace).Get(ctx, leaseName("K7XQ2M"), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, has := lease.Annotations[annotationStalledSince]; !has {
+		t.Fatal("stall stamp lost to a CAS conflict")
+	}
+	conflicts = 2
+	if err := a.SetStalled(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("SetStalled(false) through conflicts: %v", err)
+	}
+	lease, _ = cs.CoordinationV1().Leases(a.opts.Namespace).Get(ctx, leaseName("K7XQ2M"), metav1.GetOptions{})
+	if _, has := lease.Annotations[annotationStalledSince]; has {
+		t.Fatal("recovery stamp lost to a CAS conflict")
+	}
+}
