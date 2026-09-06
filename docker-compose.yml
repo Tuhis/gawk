@@ -108,6 +108,15 @@ services:
       # browser as an opaque "WebTransport connection rejected" (the relay
       # log has the real line: "hub: max concurrent broadcasts reached").
       GAWK_MAX_BROADCASTS: "${MAX_BROADCASTS:-20}"
+      # The connection rate limit is per SOURCE ADDRESS, and everything on the
+      # host — every browser tab, every headless check, and each of their
+      # R30 stripe legs — reaches the relay as the one Docker gateway
+      # address. The production 3/s, burst 10 refuses a single room view
+      # with three tiles (1 room dial + 3 × 5 media dials) and shows up as
+      # opaque handshake failures. Roomy here; the production value is the
+      # chart's.
+      GAWK_CONN_RATE_LIMIT: "${CONN_RATE_LIMIT:-50}"
+      GAWK_CONN_BURST_LIMIT: "${CONN_BURST_LIMIT:-200}"
       # 10 minutes rather than the production 60 s: a dynamic room here is
       # for poking at, and a browser reload should not end it.
       GAWK_ROOM_EMPTY_GRACE: "${ROOM_EMPTY_GRACE:-10m}"
