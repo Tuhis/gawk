@@ -289,10 +289,16 @@ type Config struct {
 	MaxIdleTimeout  time.Duration // QUIC idle timeout for all sessions
 	KeepAlivePeriod time.Duration // server-sent QUIC PING interval; 0 disables
 	BroadcastGrace  time.Duration // broadcast GC grace period after publisher disconnects
-	// PublisherStallTimeout: a connected publisher silent for this long is
-	// reported stalled (not live); silent for BroadcastGrace it is ended.
-	// 0 disables (docs/06 revision 2026-09-06).
+	// PublisherStallTimeout: a connected publisher from which no datagram
+	// at all arrives for this long (TimeSync and ClockMapping count — a
+	// paused game keeps pinging, a frozen page does not) is reported
+	// stalled (not live). 0 disables (docs/06 revision 2026-09-06). Must be
+	// >= ~90s to ride out Chrome's once-a-minute hidden-tab throttling.
 	PublisherStallTimeout time.Duration
+	// PublisherStallEnds: stalled for BroadcastGrace, the broadcast is ended
+	// with the terminal 4000 and its slot freed. Default off — the relay
+	// only reports the stall unless the operator opts in.
+	PublisherStallEnds bool
 }
 
 // ParseFlags parses args (without the program name) into a Config.
@@ -342,8 +348,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"suppress INFO logs for loopback /echo sessions (k8s exec probes)")
 	broadcastGrace := fs.String("broadcast-grace", env("GAWK_BROADCAST_GRACE", "5m"),
 		"broadcast GC grace period after publisher disconnects")
-	publisherStall := fs.String("publisher-stall-timeout", env("GAWK_PUBLISHER_STALL_TIMEOUT", "10s"),
-		"a connected publisher silent for this long is reported stalled (not live); silent for broadcast-grace it is ended; 0 disables")
+	publisherStall := fs.String("publisher-stall-timeout", env("GAWK_PUBLISHER_STALL_TIMEOUT", "90s"),
+		"a connected publisher that sends no datagram at all (not even TimeSync/ClockMapping) for this long is reported stalled (not live); 0 disables; keep >= 90s, a hidden Chrome tab pings once a minute")
+	publisherStallEnds := fs.Bool("publisher-stall-ends", envBool("GAWK_PUBLISHER_STALL_ENDS", false),
+		"end a broadcast stalled for broadcast-grace with the terminal 'broadcast ended' and free its slot (default: report only)")
 	maxBroadcasts := fs.String("max-broadcasts", env("GAWK_MAX_BROADCASTS", "5"),
 		"maximum concurrent broadcasts")
 	maxTotalSubs := fs.String("max-total-subscribers", env("GAWK_MAX_TOTAL_SUBSCRIBERS", "50"),
@@ -699,6 +707,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		BroadcastGrace:  graceDuration,
 
 		PublisherStallTimeout: stallDuration,
+		PublisherStallEnds:    *publisherStallEnds,
 	}, nil
 }
 

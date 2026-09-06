@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,6 +79,9 @@ type roomFleet struct {
 	// broadcastGrace is the hub's (and the lease's) grace; the lifecycle
 	// test shortens it before starting its pods.
 	broadcastGrace time.Duration
+	// publisherStall is the hub's PublisherStallTimeout (0 = the state is
+	// off, as in every test but the silent-publisher one).
+	publisherStall time.Duration
 }
 
 func newRoomFleet(t *testing.T, objs ...runtime.Object) *roomFleet {
@@ -180,6 +184,7 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 	)
 	r := hub.NewRegistry(discardLog, hub.Options{
 		MaxSubscribers: cfg.MaxSubscribers, BroadcastGrace: cfg.BroadcastGrace, StatsKey: cfg.StatsKey,
+		PublisherStallTimeout: f.publisherStall,
 		// Errors are dropped as main only logs them (and the hooks can fire
 		// during teardown, after the test has ended).
 		OnPublisherClosed: func(id string) {
@@ -189,6 +194,9 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 		OnBroadcastExpired: func(id string) {
 			_ = coord.Delete(context.Background(), id)
 			reg.BroadcastExpired(id)
+		},
+		OnPublisherStalled: func(id string, stalled bool) {
+			_ = coord.SetStalled(context.Background(), id, stalled)
 		},
 		IDReserved: func(id string) bool { return reg.Has(id) },
 	})
@@ -242,6 +250,7 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 	go store.Run(ctx)
 	waitFor(t, 15*time.Second, store.HasSynced, podName+" room informer sync")
 	go reg.RunRefresh(ctx)
+	go r.RunViewerCountPump(ctx) // also the stall sweep, as in main
 
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
@@ -603,7 +612,7 @@ func TestRoomMintOnAnotherPodThanThePublisherFollowsTheLease(t *testing.T) {
 	b := f.startRoomPod(t, ctx, "pod-b")
 
 	pub, id, tokenHex := dialPublisherHandshake(t, ctx, a.port, f.clientTLS)
-	waitFor(t, 15*time.Second, func() bool { _, _, ok := b.coord.Lookup(id); return ok }, "pod-b to see the origin lease")
+	waitFor(t, 15*time.Second, func() bool { _, _, _, ok := b.coord.Lookup(id); return ok }, "pod-b to see the origin lease")
 	if _, _, known := b.hub.BroadcastState(id); known {
 		t.Fatal("pod-b has a hub for a broadcast nobody there watches; the test would not exercise the lease path")
 	}
@@ -644,11 +653,96 @@ func TestRoomMintOnAnotherPodThanThePublisherFollowsTheLease(t *testing.T) {
 	if e := joiner.nextEvent(t, wire.RoomEventAttachmentRemoved); e.Reason != wire.RoomDetachReasonExpired {
 		t.Fatalf("joiner after the grace: %+v", e)
 	}
-	if _, _, ok := b.coord.Lookup(id); ok {
+	if _, _, _, ok := b.coord.Lookup(id); ok {
 		t.Fatal("the origin lease outlived the broadcast grace")
 	}
 	waitFor(t, 15*time.Second, func() bool { return len(f.roomCR(t, code).Status.Attachments) == 0 }, "the CR to drop the dead broadcast")
 	if len(b.reg.Attachments(code)) != 0 {
 		t.Fatalf("pod-b registry still lists %+v", b.reg.Attachments(code))
 	}
+}
+
+// nextAttachmentLive reads AttachmentUpdated events for id until one carries
+// live == want (viewer-count deltas for the same attachment are skipped).
+func (c *roomClient) nextAttachmentLive(t *testing.T, id string, want bool) {
+	t.Helper()
+	for {
+		e := c.nextEvent(t, wire.RoomEventAttachmentUpdated)
+		if e.Attachment.BroadcastID == id && e.Attachment.Live == want {
+			return
+		}
+	}
+}
+
+// The stall state crosses pods (PR #302 review, docs/44 §4.9): a publisher
+// on pod A whose page sends nothing at all — the session stays up, QUIC
+// keepalives answered — is stalled on A's hub, A stamps its lease, and a
+// room homed on B, which reads the attachment from the lease (no viewer
+// there) and later from its edge hub (a viewer there; the edge hub exempts
+// itself from local stall detection), shows the tile away within the
+// refresh interval and live again once the page pings again. "Silent" is
+// no datagrams: TimeSync alone — a paused game's page — keeps it live.
+func TestRoomOnAnotherPodShowsASilentPublisherAway(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	f := newRoomFleet(t)
+	f.publisherStall = 500 * time.Millisecond
+	a := f.startRoomPod(t, ctx, "pod-a")
+	b := f.startRoomPod(t, ctx, "pod-b")
+
+	pub, id, tokenHex := dialPublisherHandshake(t, ctx, a.port, f.clientTLS)
+	defer pub.CloseWithError(0, "")
+	// The publisher page's own loop: a TimeSync ping every 100 ms, no media
+	// (a static screen with no audio shared). Flipping pinging off is the
+	// page freezing with its session up.
+	var pinging atomic.Bool
+	pinging.Store(true)
+	go func() {
+		tick := time.NewTicker(100 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if pinging.Load() {
+					_ = pub.SendDatagram(wire.AppendTimeSync(nil, 1, 0))
+				}
+			}
+		}
+	}()
+	waitFor(t, 15*time.Second, func() bool { _, _, _, ok := b.coord.Lookup(id); return ok }, "pod-b to see the origin lease")
+
+	creator := openControl(t, ctx, b.url("/room/new?broadcast="+id+"&resume="+tokenHex+"&label=pc"), f.clientTLS, "tuhis")
+	if st := creator.nextState(t); len(st.Attachments) != 1 || !st.Attachments[0].Live {
+		t.Fatalf("mint on pod-b: attachments = %+v, want the pinging broadcast live", st.Attachments)
+	}
+	if _, _, known := b.hub.BroadcastState(id); known {
+		t.Fatal("pod-b has a hub for a broadcast nobody there watches; the first half would not exercise the lease path")
+	}
+
+	// Lease path: the page freezes, A stamps the lease, B's refresh reads it.
+	pinging.Store(false)
+	creator.nextAttachmentLive(t, id, false)
+	if _, _, stalled, _ := b.coord.Lookup(id); !stalled {
+		t.Fatal("the tile went away without the lease saying stalled")
+	}
+	if _, inGrace, _, _ := b.coord.Lookup(id); inGrace {
+		t.Fatal("a stalled publisher read as in grace: its session is up")
+	}
+	pinging.Store(true)
+	creator.nextAttachmentLive(t, id, true)
+
+	// Edge-hub path: a viewer on B pulls the broadcast from A, so B now has
+	// a hub for it — one whose "publisher" never stalls locally.
+	sub := dialSubscriber(t, ctx, b.port, id, f.clientTLS)
+	defer sub.CloseWithError(0, "")
+	waitFor(t, 15*time.Second, func() bool { _, _, known := b.hub.BroadcastState(id); return known }, "pod-b to build an edge hub")
+	pinging.Store(false)
+	creator.nextAttachmentLive(t, id, false)
+	if live, _, known := b.hub.BroadcastState(id); !known || !live {
+		t.Fatalf("pod-b's edge hub: live=%v known=%v — the away came from somewhere other than the lease", live, known)
+	}
+	pinging.Store(true)
+	creator.nextAttachmentLive(t, id, true)
 }

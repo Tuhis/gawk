@@ -525,7 +525,7 @@ func TestLookupServesTheLeaseCache(t *testing.T) {
 	clock := newFakeClock()
 	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
 	b := newTestCoordinator(t, cs, "pod-b", clock, nil)
-	if _, _, ok := b.Lookup("K7XQ2M"); ok || b.LeasesSynced() {
+	if _, _, _, ok := b.Lookup("K7XQ2M"); ok || b.LeasesSynced() {
 		t.Fatal("Lookup answered before the informer ran")
 	}
 	watching := leaseWatchRegistered(cs)
@@ -536,15 +536,15 @@ func TestLookupServesTheLeaseCache(t *testing.T) {
 	if !b.WaitLeaseSync(ctx) {
 		t.Fatal("WaitLeaseSync")
 	}
-	if _, _, ok := b.Lookup("K7XQ2M"); ok {
+	if _, _, _, ok := b.Lookup("K7XQ2M"); ok {
 		t.Fatal("Lookup found a lease nobody claimed")
 	}
 
 	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	waitFor(t, 15*time.Second, func() bool { _, _, ok := b.Lookup("k7xq2m"); return ok }, "pod-b to see the lease")
-	if origin, inGrace, _ := b.Lookup("k7xq2m"); origin.Holder != "pod-a" || origin.Generation != 1 || inGrace {
+	waitFor(t, 15*time.Second, func() bool { _, _, _, ok := b.Lookup("k7xq2m"); return ok }, "pod-b to see the lease")
+	if origin, inGrace, _, _ := b.Lookup("k7xq2m"); origin.Holder != "pod-a" || origin.Generation != 1 || inGrace {
 		t.Fatalf("live lease = %+v inGrace=%v, want pod-a gen 1, not in grace", origin, inGrace)
 	}
 
@@ -552,23 +552,23 @@ func TestLookupServesTheLeaseCache(t *testing.T) {
 	if err := a.EnterGrace(ctx, "K7XQ2M"); err != nil {
 		t.Fatalf("EnterGrace: %v", err)
 	}
-	waitFor(t, 15*time.Second, func() bool { _, inGrace, ok := b.Lookup("K7XQ2M"); return ok && inGrace }, "pod-b to see the grace stamp")
+	waitFor(t, 15*time.Second, func() bool { _, inGrace, _, ok := b.Lookup("K7XQ2M"); return ok && inGrace }, "pod-b to see the grace stamp")
 
 	// A crashed origin never stamps anything; its renewTime going stale is
 	// the same answer.
 	if _, err := a.Claim(ctx, "K7XQ2M", true); err != nil {
 		t.Fatalf("re-claim: %v", err)
 	}
-	waitFor(t, 15*time.Second, func() bool { _, inGrace, ok := b.Lookup("K7XQ2M"); return ok && !inGrace }, "pod-b to see the re-claim")
+	waitFor(t, 15*time.Second, func() bool { _, inGrace, _, ok := b.Lookup("K7XQ2M"); return ok && !inGrace }, "pod-b to see the re-claim")
 	clock.Advance(2 * b.opts.LeaseDuration)
-	if _, inGrace, ok := b.Lookup("K7XQ2M"); !ok || !inGrace {
+	if _, inGrace, _, ok := b.Lookup("K7XQ2M"); !ok || !inGrace {
 		t.Fatalf("stale renewTime: ok=%v inGrace=%v, want known and in grace", ok, inGrace)
 	}
 
 	if err := a.Delete(ctx, "K7XQ2M"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	waitFor(t, 15*time.Second, func() bool { _, _, ok := b.Lookup("K7XQ2M"); return !ok }, "pod-b to see the deletion")
+	waitFor(t, 15*time.Second, func() bool { _, _, _, ok := b.Lookup("K7XQ2M"); return !ok }, "pod-b to see the deletion")
 }
 
 // R17 post-review fix (PR #47, the 5-minute time bomb): a pod whose lease
@@ -622,4 +622,73 @@ func TestDeleteOnlyRemovesOwnLease(t *testing.T) {
 	if _, err := b.Resolve(ctx, "K7XQ2M"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("released lease not deletable: %v", err)
 	}
+}
+
+// The stall state travels on the origin Lease the way the grace does (PR
+// #302 review, docs/44 §4.9): the origin's hub hook stamps gawk/stalled-since
+// at the onset and clears it on recovery, Lookup reads it from the informer
+// cache, a fresh claim starts clean, and a pod that is not the holder cannot
+// stamp someone else's lease.
+func TestLookupCarriesTheStallStamp(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	b := newTestCoordinator(t, cs, "pod-b", clock, nil)
+	watching := leaseWatchRegistered(cs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.Run(ctx)
+	<-watching
+	if !b.WaitLeaseSync(ctx) {
+		t.Fatal("WaitLeaseSync")
+	}
+	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled on a lease that does not exist must be a no-op, got %v", err)
+	}
+	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, _, ok := b.Lookup("k7xq2m"); return ok }, "pod-b to see the lease")
+	if _, inGrace, stalled, _ := b.Lookup("k7xq2m"); inGrace || stalled {
+		t.Fatalf("fresh lease: inGrace=%v stalled=%v, want neither", inGrace, stalled)
+	}
+
+	// Not the holder: no stamp.
+	if err := b.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled by a non-holder: %v", err)
+	}
+	if _, _, stalled, _ := b.Lookup("K7XQ2M"); stalled {
+		t.Fatal("a non-holder stamped the origin's lease")
+	}
+
+	// Onset on the origin, seen on pod-b; still not in grace (the session
+	// is up), so the two states stay distinct.
+	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled(true): %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, stalled, ok := b.Lookup("K7XQ2M"); return ok && stalled }, "pod-b to see the stall stamp")
+	if _, inGrace, _, _ := b.Lookup("K7XQ2M"); inGrace {
+		t.Fatal("a stall stamp read as grace")
+	}
+	// Idempotent: a second onset is not a second write.
+	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled(true) again: %v", err)
+	}
+
+	// Recovery clears it.
+	if err := a.SetStalled(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("SetStalled(false): %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, stalled, ok := b.Lookup("K7XQ2M"); return ok && !stalled }, "pod-b to see the stall cleared")
+
+	// A stalled publisher's reclaim (a new session, a new stall clock)
+	// starts the lease clean, even if the hub hook has not yet said so.
+	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled(true): %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, stalled, _ := b.Lookup("K7XQ2M"); return stalled }, "pod-b to see the stall stamp")
+	if _, err := a.Claim(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, stalled, _ := b.Lookup("K7XQ2M"); return !stalled }, "pod-b to see the re-claim clear the stamp")
 }

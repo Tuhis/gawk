@@ -2,6 +2,7 @@ package hub
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,13 +20,19 @@ func chunk(t *testing.T, frameID uint32) []byte {
 }
 
 // The publisher stall state (docs/06 revision 2026-09-06): a connected
-// publisher that stops sending media is reported as not live after
-// PublisherStallTimeout, and its broadcast is ended after BroadcastGrace of
-// silence — the fix for a background broadcaster tab that held its slot and
-// a "live" room tile for five hours on zero frames.
+// publisher from which NO datagram at all arrives — not a video chunk, not a
+// keyframe stream, not the TimeSync/ClockMapping pings every broadcaster's
+// own loop sends while its page runs — is reported as not live after
+// PublisherStallTimeout. Ending it after BroadcastGrace of silence is the
+// opt-in PublisherStallEnds. The fix for a background broadcaster tab that
+// held its slot and a "live" room tile for five hours on zero datagrams.
 
-func stallRegistry(stall, grace time.Duration) *Registry {
-	return NewRegistry(discardLog, Options{PublisherStallTimeout: stall, BroadcastGrace: grace})
+func stallRegistry(stall, grace time.Duration, opt ...func(*Options)) *Registry {
+	o := Options{PublisherStallTimeout: stall, BroadcastGrace: grace}
+	for _, f := range opt {
+		f(&o)
+	}
+	return NewRegistry(discardLog, o)
 }
 
 func TestStalledPublisherIsNotLive(t *testing.T) {
@@ -40,7 +47,7 @@ func TestStalledPublisherIsNotLive(t *testing.T) {
 	if live, _, known := r.BroadcastState(id); !known || !live {
 		t.Fatalf("fresh publisher: live=%v known=%v, want live", live, known)
 	}
-	// Media keeps it live past the timeout.
+	// A datagram keeps it live past the timeout.
 	time.Sleep(20 * time.Millisecond)
 	p.HandleDatagram(chunk(t, 1))
 	time.Sleep(20 * time.Millisecond)
@@ -57,32 +64,45 @@ func TestStalledPublisherIsNotLive(t *testing.T) {
 	if !st.PublisherActive || !st.PublisherStalled {
 		t.Fatalf("stats: active=%v stalled=%v, want active and stalled", st.PublisherActive, st.PublisherStalled)
 	}
-	// Media returning un-stalls it.
+	// A datagram returning un-stalls it.
 	p.HandleDatagram(chunk(t, 2))
 	if live, _, _ := r.BroadcastState(id); !live {
 		t.Fatal("publisher that resumed sending still reads as not live")
 	}
 	if st := r.Stats().Broadcasts[r.ObfuscateID(id)]; st.PublisherStalled {
-		t.Fatal("stats still stalled after media returned")
+		t.Fatal("stats still stalled after a datagram returned")
 	}
 }
 
-func TestKeyframeAndAudioCountAsMedia(t *testing.T) {
+// Any publisher datagram counts, media or not: a paused game / static screen
+// sends no video (capture is damage-driven) and possibly no audio, but its
+// page's loop still sends TimeSync every 2 s and ClockMapping every 5 s —
+// that is exactly what separates it from a frozen page, whose QUIC
+// keepalives are answered by the browser's network process and nothing
+// else. TimeSync never reaches the hub (the transport answers it inline), so
+// the transport stamps it through NoteSeen.
+func TestAnyPublisherDatagramCountsAsSeen(t *testing.T) {
 	r := stallRegistry(30*time.Millisecond, time.Hour)
 	id, p, err := r.StartPublish("")
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	defer p.Close()
-	time.Sleep(40 * time.Millisecond)
-	if live, _, _ := r.BroadcastState(id); live {
+	stalled := func() bool {
+		time.Sleep(40 * time.Millisecond)
+		live, _, _ := r.BroadcastState(id)
+		return !live
+	}
+	if !stalled() {
 		t.Fatal("precondition: should be stalled")
 	}
 	ingestKeyframe(t, p, keyframeMsg(t, 1, "avc1.42E02A", "kf"))
 	if live, _, _ := r.BroadcastState(id); !live {
-		t.Fatal("a keyframe did not clear the stall")
+		t.Fatal("a keyframe stream did not clear the stall")
 	}
-	time.Sleep(40 * time.Millisecond)
+	if !stalled() {
+		t.Fatal("should have stalled again")
+	}
 	audio, err := wire.AppendAudioFrame(nil, wire.AudioFrameHeader{Seq: 1, TimestampUs: 1}, []byte{1, 2, 3})
 	if err != nil {
 		t.Fatalf("AppendAudioFrame: %v", err)
@@ -91,10 +111,24 @@ func TestKeyframeAndAudioCountAsMedia(t *testing.T) {
 	if live, _, _ := r.BroadcastState(id); !live {
 		t.Fatal("an audio frame did not clear the stall")
 	}
+	if !stalled() {
+		t.Fatal("should have stalled again")
+	}
+	p.HandleDatagram(wire.AppendClockMapping(nil, 1234))
+	if live, _, _ := r.BroadcastState(id); !live {
+		t.Fatal("a ClockMapping did not clear the stall: a static screen keeps sending those")
+	}
+	if !stalled() {
+		t.Fatal("should have stalled again")
+	}
+	p.NoteSeen() // the transport's TimeSync path
+	if live, _, _ := r.BroadcastState(id); !live {
+		t.Fatal("NoteSeen did not clear the stall")
+	}
 }
 
-func TestStallSweepEndsTheBroadcastAfterGrace(t *testing.T) {
-	r := stallRegistry(20*time.Millisecond, 60*time.Millisecond)
+func TestStallSweepEndsTheBroadcastAfterGraceWhenOptedIn(t *testing.T) {
+	r := stallRegistry(20*time.Millisecond, 60*time.Millisecond, func(o *Options) { o.PublisherStallEnds = true })
 	id, p, err := r.StartPublish("")
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
@@ -137,8 +171,84 @@ func TestStallSweepEndsTheBroadcastAfterGrace(t *testing.T) {
 	}
 }
 
+// The default (PR #302 review, option (a)): stall → away only. Past the
+// grace the broadcast is still held — away, not ended — and the slot stays
+// taken; the operator sees it on /statusz and has /internal/admin.
+func TestStallPastTheGraceWithoutTheKnobStaysAwayAndHeld(t *testing.T) {
+	r := stallRegistry(20*time.Millisecond, 40*time.Millisecond, func(o *Options) { o.MaxBroadcasts = 1 })
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	defer p.Close()
+	pc := &fakePublisherConn{}
+	if !p.BindConn(pc) {
+		t.Fatal("BindConn = false on a fresh publisher")
+	}
+	f := &fakeSender{}
+	if _, err := r.Subscribe(id, f); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	time.Sleep(70 * time.Millisecond) // well past stall + grace
+	r.SweepStalledPublishers(time.Now())
+	if _, closed := f.getCloseInfo(); closed {
+		t.Fatal("viewer closed: the stall ended the broadcast without -publisher-stall-ends")
+	}
+	if _, closed := pc.getCloseInfo(); closed {
+		t.Fatal("publisher session closed: the stall ended the broadcast without -publisher-stall-ends")
+	}
+	live, _, known := r.BroadcastState(id)
+	if !known || live {
+		t.Fatalf("live=%v known=%v, want known and away", live, known)
+	}
+	if err := r.CheckPublishNew(); !errors.Is(err, ErrMaxBroadcasts) {
+		t.Fatalf("slot released without the knob: CheckPublishNew = %v, want %v", err, ErrMaxBroadcasts)
+	}
+}
+
+// OnPublisherStalled is the cluster hook (docs/44 §4.9): fired by the sweep
+// on the onset and on recovery, outside the lock, once per transition — so
+// the origin can stamp its lease and other pods' rooms show the tile away.
+func TestStallSweepReportsTransitionsOnce(t *testing.T) {
+	var mu sync.Mutex
+	var calls []bool
+	r := stallRegistry(20*time.Millisecond, time.Hour, func(o *Options) {
+		o.OnPublisherStalled = func(_ string, stalled bool) {
+			mu.Lock()
+			calls = append(calls, stalled)
+			mu.Unlock()
+		}
+	})
+	_, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	defer p.Close()
+	got := func() []bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]bool(nil), calls...)
+	}
+	r.SweepStalledPublishers(time.Now())
+	if len(got()) != 0 {
+		t.Fatalf("hook fired on a fresh publisher: %v", got())
+	}
+	time.Sleep(30 * time.Millisecond)
+	r.SweepStalledPublishers(time.Now())
+	r.SweepStalledPublishers(time.Now())
+	if c := got(); len(c) != 1 || !c[0] {
+		t.Fatalf("after the onset, two sweeps: calls = %v, want [true]", c)
+	}
+	p.HandleDatagram(chunk(t, 1))
+	r.SweepStalledPublishers(time.Now())
+	r.SweepStalledPublishers(time.Now())
+	if c := got(); len(c) != 2 || c[1] {
+		t.Fatalf("after recovery, two sweeps: calls = %v, want [true false]", c)
+	}
+}
+
 func TestStallDisabledByZeroTimeout(t *testing.T) {
-	r := stallRegistry(0, 30*time.Millisecond)
+	r := stallRegistry(0, 30*time.Millisecond, func(o *Options) { o.PublisherStallEnds = true })
 	id, p, err := r.StartPublish("")
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)

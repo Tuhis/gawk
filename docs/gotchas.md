@@ -762,10 +762,15 @@ Add to it when a new gotcha lands in `docs/`.
   while its capture and encoder are stalled — on the macOS main-thread
   path a hidden tab's frames simply stop. Until 2026-09-06 that was "live"
   to the relay for as long as the tab existed: a slot held, a black room
-  tile marked live, five hours measured. Liveness now has a media input
-  (`-publisher-stall-timeout`, docs/06 revision 2026-09-06): away at 10 s
-  of silence, ended at the broadcast grace. When a "live" tile is black,
-  read `publisherStalled` on `/statusz` before suspecting the viewer.
+  tile marked live, five hours measured. Liveness now has a datagram input
+  (`-publisher-stall-timeout`, docs/06 revision 2026-09-06): away after
+  90 s with no datagram at all — TimeSync and ClockMapping count, so a
+  paused game or a static screen stays live and only a frozen page reads
+  as away — and ended at the broadcast grace only with the opt-in
+  `-publisher-stall-ends`. Do not shorten the timeout below ~90 s: Chrome
+  wakes a tab hidden for more than five minutes once a minute, and a
+  shorter value makes such a tab flap. When a "live" tile is black, read
+  `publisherStalled` on `/statusz` before suspecting the viewer.
 - **The same min-of-both rule bounds every in-cluster transient, and a
   cross-pod accounting assertion has to wait longer than that bound.** The
   edge dialer advertises `edgeIdleTimeout` (4 s) with 1 s keepalives, so an

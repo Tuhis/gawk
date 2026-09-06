@@ -62,6 +62,7 @@ type SanitizedConfig struct {
 	KeepAlivePeriod       string  `json:"keepAlivePeriod"`
 	BroadcastGrace        string  `json:"broadcastGrace"`
 	PublisherStallTimeout string  `json:"publisherStallTimeout"`
+	PublisherStallEnds    bool    `json:"publisherStallEnds"`
 
 	// Delivery modes.
 	DVRWindow                     string  `json:"dvrWindow"`
@@ -142,6 +143,7 @@ func (c Config) Sanitized() SanitizedConfig {
 		KeepAlivePeriod:       dur(c.KeepAlivePeriod),
 		BroadcastGrace:        dur(c.BroadcastGrace),
 		PublisherStallTimeout: dur(c.PublisherStallTimeout),
+		PublisherStallEnds:    c.PublisherStallEnds,
 
 		DVRWindow:                     dur(c.DVRWindow),
 		DVRMaxBytes:                   c.DVRMaxBytes,

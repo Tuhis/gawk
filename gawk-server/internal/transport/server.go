@@ -92,9 +92,10 @@ type ClusterCoordinator interface {
 	OriginGeneration(broadcastID string) (int64, bool)
 	// Lookup is Resolve's cached, non-blocking twin (R42): the broadcast's
 	// lease as the informer last saw it — ok false before the informer
-	// synced or with no lease at all, inGrace once the origin is away.
-	// The room refresh asks it for every off-pod attachment at 1 Hz.
-	Lookup(broadcastID string) (origin cluster.Origin, inGrace bool, ok bool)
+	// synced or with no lease at all, inGrace once the origin is away,
+	// stalled while the origin's publisher is connected but silent. The
+	// room refresh asks it for every off-pod attachment at 1 Hz.
+	Lookup(broadcastID string) (origin cluster.Origin, inGrace, stalled, ok bool)
 }
 
 // Server wraps a webtransport.Server with the gawk routes.
@@ -1055,6 +1056,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			log.Info("publisher session ended", "reason", sessionEndReason(r.Context(), err))
 			return
 		}
+		// Any datagram at all is the page's loop running — the stall clock
+		// (docs/06 revision 2026-09-06) is stamped here, before the TimeSync
+		// answer, because those pings never reach the hub.
+		pub.NoteSeen()
 		// TimeSync is a transport-level concern (the reply needs this session
 		// and the relay clock); everything else is the hub's.
 		if maybeAnswerTimeSync(sess, dgram, tsLimiter) {

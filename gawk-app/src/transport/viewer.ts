@@ -139,6 +139,10 @@ export const SESSION_STALL_MS = 15000;
 //   - A broadcast with no audio at all is not covered (audioEverActive gates
 //     the whole check). Nothing client-side can distinguish its wedge from its
 //     static screen; firing anyway would reconnect-loop on a paused game.
+//     (The relay's own publisher-stall state — docs/06 revision 2026-09-06 —
+//     answers a different question: no datagrams at all from the page,
+//     TimeSync and ClockMapping included. A static screen keeps pinging and
+//     is not stalled there either; only a frozen page is.)
 //   - A *resilient*-mode wedge is not covered either, for the same reason: audio
 //     rides datagrams there (docs/20 finding 5) and keeps arriving, which is
 //     also what a static screen looks like. Deep buffer is covered because R21

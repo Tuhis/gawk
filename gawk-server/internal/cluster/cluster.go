@@ -44,6 +44,12 @@ const (
 	annotationAddr          = "gawk/origin-addr"
 	annotationGeneration    = "gawk/origin-generation"
 	annotationGraceDeadline = "gawk/grace-deadline"
+	// annotationStalledSince is stamped by the origin when its publisher is
+	// connected but silent (hub stall, docs/06 revision 2026-09-06) and
+	// cleared when datagrams resume or the broadcast is re-claimed, so a
+	// room homed on another pod shows the tile away (docs/44 §4.9). Its
+	// value is informational (the onset, RFC3339); presence is the state.
+	annotationStalledSince = "gawk/stalled-since"
 )
 
 // Defaults (docs/22 Decision 8): renew every ~5 s with a 15 s lease duration
@@ -255,6 +261,8 @@ func (c *Coordinator) Claim(ctx context.Context, broadcastID string, force bool)
 		updated.Annotations[annotationAddr] = c.opts.AdvertiseAddr
 		updated.Annotations[annotationGeneration] = strconv.FormatInt(gen, 10)
 		delete(updated.Annotations, annotationGraceDeadline)
+		// A new publisher session starts a new stall clock (hub.claimPublisherLocked).
+		delete(updated.Annotations, annotationStalledSince)
 
 		if _, err := c.leases().Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
 			if apierrors.IsConflict(err) {
@@ -414,6 +422,38 @@ func (c *Coordinator) EnterGrace(ctx context.Context, broadcastID string) error 
 	return err
 }
 
+// SetStalled stamps (stalled) or clears the origin's stall annotation — the
+// hub's OnPublisherStalled hook, fired once per transition. Holder-gated
+// like EnterGrace: only the holder-of-record may write it, and a missing
+// lease is a no-op (the broadcast ended in between). No write when the lease
+// already says what is asked.
+func (c *Coordinator) SetStalled(ctx context.Context, broadcastID string, stalled bool) error {
+	lease, err := c.leases().Get(ctx, leaseName(broadcastID), metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if parseOrigin(lease).Holder != c.opts.PodName {
+		return nil
+	}
+	if _, has := lease.Annotations[annotationStalledSince]; has == stalled {
+		return nil
+	}
+	updated := lease.DeepCopy()
+	if updated.Annotations == nil {
+		updated.Annotations = map[string]string{}
+	}
+	if stalled {
+		updated.Annotations[annotationStalledSince] = c.opts.Now().UTC().Format(time.RFC3339)
+	} else {
+		delete(updated.Annotations, annotationStalledSince)
+	}
+	_, err = c.leases().Update(ctx, updated, metav1.UpdateOptions{})
+	return err
+}
+
 // Delete removes the broadcast's lease (local grace-GC expired, or the
 // broadcast ended for good). Cluster-wide "broadcast ended": every pod's
 // informer sees the deletion.
@@ -499,24 +539,29 @@ func (c *Coordinator) Resolve(ctx context.Context, broadcastID string) (Origin, 
 // informer has synced (LeasesSynced) and when no lease exists — the
 // fleet-wide "no such broadcast". inGrace is true once the origin stamped
 // a grace deadline (EnterGrace) or, the crash case that never stamps one,
-// once its renewTime went stale. A room's 1 Hz refresh asks this for every
-// attachment homed on another pod, which is why it must not be a Get.
-func (c *Coordinator) Lookup(broadcastID string) (origin Origin, inGrace bool, ok bool) {
+// once its renewTime went stale. stalled is the origin's stall stamp
+// (SetStalled): the publisher is connected but sending nothing, so the
+// broadcast is away without being in grace. A room's 1 Hz refresh asks this
+// for every attachment homed on another pod, which is why it must not be a
+// Get.
+func (c *Coordinator) Lookup(broadcastID string) (origin Origin, inGrace, stalled, ok bool) {
 	c.mu.Lock()
 	store := c.leaseStore
 	c.mu.Unlock()
 	if store == nil || !c.LeasesSynced() {
-		return Origin{}, false, false
+		return Origin{}, false, false, false
 	}
 	obj, exists, err := store.GetByKey(c.opts.Namespace + "/" + leaseName(broadcastID))
 	if err != nil || !exists {
-		return Origin{}, false, false
+		return Origin{}, false, false, false
 	}
 	lease, isLease := obj.(*coordv1.Lease)
 	if !isLease {
-		return Origin{}, false, false
+		return Origin{}, false, false, false
 	}
-	return parseOrigin(lease), lease.Annotations[annotationGraceDeadline] != "" || c.renewStale(lease), true
+	inGrace = lease.Annotations[annotationGraceDeadline] != "" || c.renewStale(lease)
+	_, stalled = lease.Annotations[annotationStalledSince]
+	return parseOrigin(lease), inGrace, stalled, true
 }
 
 // LeasesSynced reports whether the lease informer has completed its initial

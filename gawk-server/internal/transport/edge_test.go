@@ -540,6 +540,7 @@ type fakeCoordinator struct {
 type fakeLease struct {
 	origin  cluster.Origin
 	inGrace bool
+	stalled bool
 }
 
 func (f *fakeCoordinator) Claim(context.Context, string, bool) (int64, error) { return 0, nil }
@@ -547,9 +548,9 @@ func (f *fakeCoordinator) ReleaseAll(context.Context)                         {}
 func (f *fakeCoordinator) Resolve(context.Context, string) (cluster.Origin, error) {
 	return cluster.Origin{}, cluster.ErrNotFound
 }
-func (f *fakeCoordinator) Lookup(id string) (cluster.Origin, bool, bool) {
+func (f *fakeCoordinator) Lookup(id string) (cluster.Origin, bool, bool, bool) {
 	l, ok := f.leases[id]
-	return l.origin, l.inGrace, ok
+	return l.origin, l.inGrace, l.stalled, ok
 }
 func (f *fakeCoordinator) OriginGeneration(id string) (int64, bool) {
 	if id == f.heldID {

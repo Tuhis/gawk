@@ -27,7 +27,7 @@ func TestDefaults(t *testing.T) {
 		MaxIdleTimeout:        30 * time.Second,
 		KeepAlivePeriod:       10 * time.Second,
 		BroadcastGrace:        5 * time.Minute,
-		PublisherStallTimeout: 10 * time.Second,
+		PublisherStallTimeout: 90 * time.Second,
 		MaxBroadcasts:         5,
 		MaxTotalSubscribers:   50,
 		PublishSecret:         "",
@@ -103,16 +103,18 @@ func TestMetricsAddr(t *testing.T) {
 
 func TestEnvFallback(t *testing.T) {
 	getenv := envMap(map[string]string{
-		"GAWK_ADDR":             ":9999",
-		"GAWK_LOG_LEVEL":        "debug",
-		"GAWK_LOG_FORMAT":       "json",
-		"GAWK_MAX_SUBSCRIBERS":  "3",
-		"GAWK_DEV_CERT":         "true",
-		"GAWK_ALLOWED_ORIGINS":  "https://a.example, https://b.example",
-		"GAWK_MAX_IDLE_TIMEOUT": "45s",
-		"GAWK_KEEPALIVE_PERIOD": "5s",
-		"GAWK_QUIET_PROBE_LOGS": "true",
-		"GAWK_BROADCAST_GRACE":  "2m",
+		"GAWK_ADDR":                    ":9999",
+		"GAWK_LOG_LEVEL":               "debug",
+		"GAWK_LOG_FORMAT":              "json",
+		"GAWK_MAX_SUBSCRIBERS":         "3",
+		"GAWK_DEV_CERT":                "true",
+		"GAWK_ALLOWED_ORIGINS":         "https://a.example, https://b.example",
+		"GAWK_MAX_IDLE_TIMEOUT":        "45s",
+		"GAWK_KEEPALIVE_PERIOD":        "5s",
+		"GAWK_QUIET_PROBE_LOGS":        "true",
+		"GAWK_BROADCAST_GRACE":         "2m",
+		"GAWK_PUBLISHER_STALL_TIMEOUT": "20s",
+		"GAWK_PUBLISHER_STALL_ENDS":    "true",
 	})
 	cfg, err := ParseFlags(nil, getenv)
 	if err != nil {
@@ -149,15 +151,22 @@ func TestEnvFallback(t *testing.T) {
 	if cfg.BroadcastGrace != 2*time.Minute {
 		t.Errorf("BroadcastGrace = %v, want 2m", cfg.BroadcastGrace)
 	}
+	if cfg.PublisherStallTimeout != 20*time.Second {
+		t.Errorf("PublisherStallTimeout = %v, want 20s", cfg.PublisherStallTimeout)
+	}
+	if !cfg.PublisherStallEnds {
+		t.Error("PublisherStallEnds = false, want true from env")
+	}
 }
 
 func TestFlagOverridesEnv(t *testing.T) {
 	getenv := envMap(map[string]string{
-		"GAWK_ADDR":             ":9999",
-		"GAWK_LOG_LEVEL":        "error",
-		"GAWK_QUIET_PROBE_LOGS": "true",
+		"GAWK_ADDR":                 ":9999",
+		"GAWK_LOG_LEVEL":            "error",
+		"GAWK_QUIET_PROBE_LOGS":     "true",
+		"GAWK_PUBLISHER_STALL_ENDS": "true",
 	})
-	cfg, err := ParseFlags([]string{"-addr", ":1234", "-log-level", "warn", "-quiet-probe-logs=false", "-broadcast-grace", "10s"}, getenv)
+	cfg, err := ParseFlags([]string{"-addr", ":1234", "-log-level", "warn", "-quiet-probe-logs=false", "-broadcast-grace", "10s", "-publisher-stall-timeout", "5s", "-publisher-stall-ends=false"}, getenv)
 	if err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
@@ -172,6 +181,12 @@ func TestFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.BroadcastGrace != 10*time.Second {
 		t.Errorf("BroadcastGrace = %v, want 10s from flag override", cfg.BroadcastGrace)
+	}
+	if cfg.PublisherStallTimeout != 5*time.Second {
+		t.Errorf("PublisherStallTimeout = %v, want 5s from flag override", cfg.PublisherStallTimeout)
+	}
+	if cfg.PublisherStallEnds {
+		t.Error("PublisherStallEnds = true, want false from flag override")
 	}
 }
 

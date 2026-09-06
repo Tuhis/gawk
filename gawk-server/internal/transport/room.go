@@ -12,6 +12,7 @@ import (
 
 	"github.com/quic-go/webtransport-go"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/rooms"
@@ -64,6 +65,14 @@ func (s *Server) roomRegistry() *roomsrv.Registry { return s.rooms.Load() }
 // went stale) is known+away, no lease is unknown. Without cluster wiring
 // the answer stops at the local hub, byte-identical to single-pod R42.
 //
+// The origin's stall stamp (docs/06 revision 2026-09-06, docs/44 §4.9) is
+// read from the lease on both paths: an attachment answered from the lease
+// alone, and one answered by a local EDGE hub — its "publisher" is this
+// pod's pull from the origin and never stalls locally (hub.stalledLocked),
+// so the lease is the only place the origin's stall can reach it. The
+// origin pod's own hub is authoritative for its broadcasts: it flips at
+// read time, while the stamp lags the 1 Hz sweep and an API round-trip.
+//
 // The source reads the coordinator through the server's late-bound wiring,
 // so main can build the registry before SetCluster runs.
 func (s *Server) RoomBroadcasts() roomsrv.BroadcastSource { return roomBroadcasts{s} }
@@ -72,14 +81,19 @@ type roomBroadcasts struct{ s *Server }
 
 func (b roomBroadcasts) BroadcastState(id string) (roomsrv.BroadcastState, bool) {
 	live, viewers, known := b.s.registry.BroadcastState(id)
+	coord := b.s.clusterCoord()
 	if known {
+		if live && coord != nil {
+			if origin, _, stalled, ok := coord.Lookup(id); ok && stalled && !b.s.isOrigin(origin) {
+				live = false
+			}
+		}
 		return roomsrv.BroadcastState{Live: live, Viewers: viewers}, true
 	}
-	coord := b.s.clusterCoord()
 	if coord == nil {
 		return roomsrv.BroadcastState{}, false
 	}
-	origin, inGrace, ok := coord.Lookup(id)
+	origin, inGrace, stalled, ok := coord.Lookup(id)
 	if !ok {
 		return roomsrv.BroadcastState{}, false
 	}
@@ -88,7 +102,14 @@ func (b roomBroadcasts) BroadcastState(id string) (roomsrv.BroadcastState, bool)
 	// while someone here is watching — and then the local hub answered
 	// above. The viewer count is the one number that stays pod-local for
 	// an unwatched-here attachment (docs/44 §11.1).
-	return roomsrv.BroadcastState{Live: origin.Holder != "" && !inGrace}, true
+	return roomsrv.BroadcastState{Live: origin.Holder != "" && !inGrace && !stalled}, true
+}
+
+// isOrigin reports whether this pod holds the broadcast's origin lease —
+// the pod name SetCluster was given, read through the same wiring.
+func (s *Server) isOrigin(origin cluster.Origin) bool {
+	em := s.edgeManager()
+	return em != nil && origin.Holder == em.podName
 }
 
 // roomStatsSource lets the H3 /statusz route (built in New, before SetRooms

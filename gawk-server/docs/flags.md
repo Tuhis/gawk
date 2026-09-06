@@ -31,6 +31,8 @@ flag > env > default. All of them are also plumbed through the Helm chart's
 | `-max-idle-timeout` | `GAWK_MAX_IDLE_TIMEOUT` | `30s` |
 | `-keepalive-period` | `GAWK_KEEPALIVE_PERIOD` | `10s` (`0` disables) |
 | `-broadcast-grace` | `GAWK_BROADCAST_GRACE` | `5m` |
+| `-publisher-stall-timeout` | `GAWK_PUBLISHER_STALL_TIMEOUT` | `90s` (a connected publisher that sends no datagram at all for this long reads as away; `0` disables; keep ≥ 90s for hidden-tab throttling) |
+| `-publisher-stall-ends` | `GAWK_PUBLISHER_STALL_ENDS` | `false` (end a broadcast stalled for the grace with the terminal 4000 and free its slot) |
 | `-quiet-probe-logs` | `GAWK_QUIET_PROBE_LOGS` | `false` |
 | `-live-edge-audio-on-reliable-stream` | `GAWK_LIVE_EDGE_AUDIO_ON_RELIABLE_STREAM` | `false` |
 | `-parity-default` | `GAWK_PARITY_DEFAULT` | `2` (forward-parity symbols per delta frame; `0` disables fleet-wide) |

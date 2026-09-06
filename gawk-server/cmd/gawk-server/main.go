@@ -109,6 +109,19 @@ func run() error {
 				log.Warn("lease delete failed", "broadcast_id", id, "err", err)
 			}
 		}
+		// The stall state travels the same way (docs/44 §4.9): the origin
+		// stamps its Lease at the onset and clears it on recovery, so a room
+		// homed on another pod reads the tile away from Lookup.
+		hubOpts.OnPublisherStalled = func(id string, stalled bool) {
+			if coord == nil {
+				return
+			}
+			opCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := coord.SetStalled(opCtx, id, stalled); err != nil {
+				log.Warn("lease stall stamp failed", "broadcast_id", id, "stalled", stalled, "err", err)
+			}
+		}
 	}
 	if cfg.Rooms {
 		// Rooms need both lifecycle hooks in single-pod mode too (an
@@ -392,6 +405,7 @@ func logStartup(log *slog.Logger, cfg config.Config, version string) {
 		"keepalive_period", cfg.KeepAlivePeriod,
 		"broadcast_grace", cfg.BroadcastGrace,
 		"publisher_stall_timeout", cfg.PublisherStallTimeout,
+		"publisher_stall_ends", cfg.PublisherStallEnds,
 		"metrics_addr", cfg.MetricsAddr,
 		"stateless_reset_key_set", len(cfg.StatelessResetKey) > 0,
 		"resume_token_key_mode", resumeTokenKeyMode(cfg),
@@ -531,6 +545,7 @@ func registryOptions(cfg config.Config) hub.Options {
 		MaxSubscribers:                cfg.MaxSubscribers,
 		BroadcastGrace:                cfg.BroadcastGrace,
 		PublisherStallTimeout:         cfg.PublisherStallTimeout,
+		PublisherStallEnds:            cfg.PublisherStallEnds,
 		MaxBroadcasts:                 cfg.MaxBroadcasts,
 		MaxTotalSubscribers:           cfg.MaxTotalSubscribers,
 		MaxBandwidthBytes:             cfg.MaxBandwidthBytes,

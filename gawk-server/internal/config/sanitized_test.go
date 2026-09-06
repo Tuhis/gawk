@@ -43,7 +43,7 @@ var (
 		"DVRAudio", "LiveEdgeAudioOnReliableStream", "ParityDefault",
 		"StripedDelivery", "ModerationSource", "AdminOIDCIssuer",
 		"AdminOIDCAudience", "AdminOIDCRolesClaim", "AdminOIDCRole",
-		"MaxIdleTimeout", "KeepAlivePeriod", "BroadcastGrace", "PublisherStallTimeout",
+		"MaxIdleTimeout", "KeepAlivePeriod", "BroadcastGrace", "PublisherStallTimeout", "PublisherStallEnds",
 		"Rooms", "RoomEmptyGrace", "MaxRooms", "MaxRoomBroadcasts",
 		"MaxRoomParticipants", "RoomsFile",
 	}
