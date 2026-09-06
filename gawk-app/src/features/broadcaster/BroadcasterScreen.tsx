@@ -46,6 +46,7 @@ import { RoomView, type RoomHeaderContext } from '../room/RoomScreen';
 import type { RoomTarget } from '../../transport/room-session';
 import { parseGrant, readGrant, type RoomGrant } from '../room/grantHandoff';
 import { takeRoomReturn } from '../room/roomReturn';
+import { BACKGROUND_STOP_NOTE, BackgroundWatchdog } from './backgroundWatchdog';
 import { loadNickname } from '../room/roomPrefs';
 import { isValidRoomCode, parseRoomLink } from '../../lib/roomCode';
 import { MAX_ROOM_LABEL_LEN } from '../../transport/wire';
@@ -114,6 +115,11 @@ export function BroadcasterScreen() {
   const [error, setError] = useState<string | null>(null);
   const [broadcastId, setBroadcastId] = useState<string | null>(null);
   const [reclaimFailedNote, setReclaimFailedNote] = useState<string | null>(null);
+  // The hidden-tab watchdog (backgroundWatchdog.ts): the page ends its own
+  // broadcast after five minutes hidden with no frame encoded, and the note
+  // explains the stop on the card the broadcaster comes back to.
+  const watchdogRef = useRef(new BackgroundWatchdog());
+  const [backgroundStopNote, setBackgroundStopNote] = useState<string | null>(null);
   const [resumeAttempt, setResumeAttempt] = useState<number | null>(null);
   // R17 W2: the relay-minted resume token, kept next to the broadcast ID (a
   // ref, not state — nothing renders it) so a manual restart can reclaim.
@@ -224,6 +230,8 @@ export function BroadcasterScreen() {
     // Fresh sample window per broadcast: the pipeline's cumulative counters
     // restart at zero, and mixing sessions would poison the derived rates.
     diagRef.current = new DiagnosticsBuffer<BroadcastStats>();
+    watchdogRef.current.reset();
+    setBackgroundStopNote(null);
 
     const makeCallbacks = (afterFailedReclaim: boolean) => ({
       onSourceStream: (s: MediaStream) => {
@@ -241,6 +249,15 @@ export function BroadcasterScreen() {
         diagRef.current.push(next);
         telemetry.sample(next);
         setStats(next);
+        // Five minutes hidden with no frame encoded: this tab is the stale
+        // broadcaster the relay cannot tell from a paused game — end it here,
+        // where the difference is known (backgroundWatchdog.ts).
+        if (watchdogRef.current.sample(next.documentHidden === true, next.encodedFrames, Date.now())) {
+          telemetry.event('background-stop');
+          setBackgroundStopNote(BACKGROUND_STOP_NOTE);
+          setStatus('stopping');
+          void pipelineRef.current?.stop();
+        }
       },
       onBroadcastId: (id: string) => {
         setBroadcastId(id);
@@ -1012,6 +1029,11 @@ export function BroadcasterScreen() {
           )}
 
           {reclaimFailedNote && <p className={styles.note}>{reclaimFailedNote}</p>}
+          {backgroundStopNote && (
+            <p className={styles.note} role="status" data-testid="background-stop-note">
+              {backgroundStopNote}
+            </p>
+          )}
           {pendingRoomChip}
 
           <div className={styles.cardFoot}>

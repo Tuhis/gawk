@@ -461,6 +461,17 @@ the dock, both from using it with three POVs on the dev stack:
   would then prompt for. It is now "Your name": shown on the stream's
   tile and in the people list, and it is the nickname the broadcaster
   joins with (the hop from a room still wins when it carried one).
+- **The page ends a broadcast left in the background (2026-09-06).** The
+  relay cannot tell a tab that went to the background (capture stalled,
+  session kept alive by the browser's network process) from a paused game
+  on a static screen — capture is damage-driven, both send no video
+  (docs/19, docs/28, `viewer.ts`). The page can: `BackgroundWatchdog`
+  (`features/broadcaster/backgroundWatchdog.ts`) stops the broadcast after
+  **five minutes hidden with no frame encoded** — the incident's exact
+  shape — and the pre-start card says why when the tab comes back. Frames
+  still flowing while hidden (the worker-offload path) restart the span,
+  so a healthy background stream is never touched; a visible static screen
+  is never hidden, so never stopped (docs/30 §7 holds).
 - **Live means sending (2026-09-06).** An attachment's `live` flag came
   from "the publisher session is up", so a broadcaster tab left in the
   background — capture stalled, session answering keepalives — showed a
