@@ -391,6 +391,7 @@ func logStartup(log *slog.Logger, cfg config.Config, version string) {
 		"max_idle_timeout", cfg.MaxIdleTimeout,
 		"keepalive_period", cfg.KeepAlivePeriod,
 		"broadcast_grace", cfg.BroadcastGrace,
+		"publisher_stall_timeout", cfg.PublisherStallTimeout,
 		"metrics_addr", cfg.MetricsAddr,
 		"stateless_reset_key_set", len(cfg.StatelessResetKey) > 0,
 		"resume_token_key_mode", resumeTokenKeyMode(cfg),
@@ -529,6 +530,7 @@ func registryOptions(cfg config.Config) hub.Options {
 	return hub.Options{
 		MaxSubscribers:                cfg.MaxSubscribers,
 		BroadcastGrace:                cfg.BroadcastGrace,
+		PublisherStallTimeout:         cfg.PublisherStallTimeout,
 		MaxBroadcasts:                 cfg.MaxBroadcasts,
 		MaxTotalSubscribers:           cfg.MaxTotalSubscribers,
 		MaxBandwidthBytes:             cfg.MaxBandwidthBytes,

@@ -279,6 +279,16 @@ type Options struct {
 	// publisher disconnects, allowing it to be reclaimed. Defaults to 5 minutes.
 	BroadcastGrace time.Duration
 
+	// PublisherStallTimeout is how long a connected publisher may send no
+	// media (video chunks, keyframes, audio) before the broadcast is reported
+	// as STALLED: BroadcastState says not live (a room tile reads "away"),
+	// /statusz says publisherStalled. A stall that lasts BroadcastGrace ends
+	// the broadcast (4000 to everyone, the publisher included) — a session
+	// that is connected but silent for that long is holding a slot, not
+	// streaming (2026-09-06: a background broadcaster tab held its slot and
+	// its "live" tile for five hours on zero frames). 0 disables both.
+	PublisherStallTimeout time.Duration
+
 	MaxBroadcasts       int
 	MaxTotalSubscribers int
 	MaxBandwidthBytes   int64
@@ -447,6 +457,10 @@ type Stats struct {
 	KeyframeStreamsDropped    uint64 `json:"keyframeStreamsDropped"`  // sum of KeyframeDrops causes
 	KeyframeStreamsOversize   uint64 `json:"keyframeStreamsOversize"` // publisher streams rejected over MaxKeyframeBytes
 	GraceRemainingSeconds     int    `json:"graceRemainingSeconds"`   // 0 while publisher is active
+	// PublisherStalled: connected, but no media for PublisherStallTimeout;
+	// StalledSeconds is how long it has been silent (0 unless stalled).
+	PublisherStalled bool `json:"publisherStalled"`
+	StalledSeconds   int  `json:"stalledSeconds"`
 
 	// R9 additions (docs/13). Ingress = publisher→relay, egress = relay→
 	// subscribers; the lost counters come from the ingress window (ingress.go)
@@ -636,6 +650,14 @@ type broadcastHub struct {
 	generation uint64
 	graceTimer *time.Timer
 	graceStart time.Time
+	// lastMediaAt is when the publisher last delivered media (a video chunk,
+	// a keyframe, an audio frame) — the claim time until it does. Read by
+	// stalledLocked; TimeSync / ClockMapping / ViewerCount datagrams do NOT
+	// count, a page can keep those flowing with its capture stopped.
+	lastMediaAt time.Time
+	// stalledSince is set by the stall sweep the first time it sees the hub
+	// stalled (so the onset is logged once) and cleared when media returns.
+	stalledSince time.Time
 	// edge marks a hub as derived state (R17 W4): its "publisher" is this
 	// pod's upstream pull from the broadcast's origin, it is exempt from
 	// MaxBroadcasts, and it never idles in grace — the Lease is the liveness
@@ -1084,7 +1106,53 @@ func (r *Registry) BroadcastState(id string) (live bool, viewers int, known bool
 	if b.edge {
 		return b.publisherActive, b.edgeGlobalViewersLocked(), true
 	}
-	return b.publisherActive, int(b.globalViewersLocked()), true
+	return b.publisherActive && !b.stalledLocked(time.Now()), int(b.globalViewersLocked()), true
+}
+
+// stalledLocked reports whether the publisher is connected but has sent no
+// media for Options.PublisherStallTimeout (0 = never stalled). Caller holds
+// r.mu. Edge hubs never stall: their "publisher" is an upstream pull whose
+// liveness is the Lease (docs/22 Decision 10).
+func (b *broadcastHub) stalledLocked(now time.Time) bool {
+	t := b.registry.opts.PublisherStallTimeout
+	return t > 0 && b.publisherActive && !b.edge && now.Sub(b.lastMediaAt) > t
+}
+
+// SweepStalledPublishers is the stall lifecycle, ticked with the viewer-count
+// pump: logs a stall's onset once, and ends a broadcast whose publisher has
+// been stalled for BroadcastGrace — the same window an *absent* publisher
+// gets before its ID is GC'd, applied to a present-but-silent one. Ended
+// with the terminal 4000, so viewers see "broadcast ended" and the
+// broadcaster's page sees "the relay ended this broadcast" rather than a
+// resume loop against a session that would stall again.
+func (r *Registry) SweepStalledPublishers(now time.Time) {
+	type kick struct {
+		id     string
+		silent time.Duration
+	}
+	var kicks []kick
+	r.mu.Lock()
+	for id, b := range r.hubs {
+		if !b.stalledLocked(now) {
+			b.stalledSince = time.Time{}
+			continue
+		}
+		if b.stalledSince.IsZero() {
+			b.stalledSince = now
+			b.log.Warn("publisher stalled: connected, no media",
+				"silent", now.Sub(b.lastMediaAt).Truncate(time.Second), "ends_after", r.opts.BroadcastGrace)
+		}
+		if r.opts.BroadcastGrace > 0 && now.Sub(b.lastMediaAt) >= r.opts.BroadcastGrace {
+			kicks = append(kicks, kick{id: id, silent: now.Sub(b.lastMediaAt).Truncate(time.Second)})
+		}
+	}
+	r.mu.Unlock()
+	for _, k := range kicks {
+		reason := fmt.Sprintf("no media from the publisher for %s", k.silent)
+		if r.TerminateBroadcast(k.id, uint32(wire.CloseCodeBroadcastEnded), reason) {
+			r.log.Warn("stalled broadcast ended", "broadcast_id", k.id, "silent", k.silent)
+		}
+	}
 }
 
 // edgeGlobalViewersLocked is an edge hub's view of G: the cached ViewerCount
@@ -1149,6 +1217,10 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	// handle must not be attributed to it.
 	b.publisherSessionID = ""
 	b.generation++
+	// The stall clock starts at the claim: a publisher that connects and
+	// never sends is stalled from its first PublisherStallTimeout on.
+	b.lastMediaAt = time.Now()
+	b.stalledSince = time.Time{}
 
 	// Reset the keyframe cache on a new publisher session (frameIDs reset, the
 	// codec may differ). keyframeSeq is intentionally NOT reset so a keyframe
@@ -1365,6 +1437,7 @@ func (r *Registry) RunViewerCountPump(ctx context.Context) {
 			return
 		case now := <-t.C:
 			r.PumpViewerCounts(now)
+			r.SweepStalledPublishers(now)
 		}
 	}
 }
@@ -1747,6 +1820,11 @@ func (r *Registry) Stats() RegistryStats {
 		totals.StripeTransitions += stripeTransitions
 		totals.StripeLegsReaped += b.stripeLegsReaped
 
+		stalled := b.stalledLocked(time.Now())
+		stalledFor := 0
+		if stalled {
+			stalledFor = int(time.Since(b.lastMediaAt).Seconds())
+		}
 		var graceRemaining int
 		if !b.publisherActive && !b.graceStart.IsZero() {
 			rem := r.opts.BroadcastGrace - time.Since(b.graceStart)
@@ -1806,6 +1884,8 @@ func (r *Registry) Stats() RegistryStats {
 			KeyframeStreamsDropped:    kfDrops.Total(),
 			KeyframeStreamsOversize:   b.keyframeStreamsOversize,
 			GraceRemainingSeconds:     graceRemaining,
+			PublisherStalled:          stalled,
+			StalledSeconds:            stalledFor,
 			KeyframeDrops:             kfDrops,
 			SendErrors:                sendErrors,
 			IngressDatagramBytes:      b.ingressDatagramBytes,
@@ -2195,6 +2275,7 @@ func (p *Publisher) HandleDatagram(dgram []byte) {
 		// Verbatim fan-out, no caching — and deliberately no ingress-loss
 		// observation: the window assumes a single frameID space, and audio
 		// loss is concealed (and counted) viewer-side (docs/20 Decision 4).
+		p.noteMedia()
 		p.relayDatagram(dgram)
 	case wire.TypeAudioConfig:
 		if _, err := wire.ParseAudioConfig(dgram); err != nil {
@@ -2205,6 +2286,18 @@ func (p *Publisher) HandleDatagram(dgram []byte) {
 	default:
 		b.countBad()
 	}
+}
+
+// noteMedia stamps the stall clock for a media datagram that is relayed
+// verbatim (audio frames); video chunks and keyframes stamp it on their own
+// counted paths.
+func (p *Publisher) noteMedia() {
+	r := p.hub.registry
+	r.mu.Lock()
+	if !p.closed {
+		p.hub.lastMediaAt = time.Now()
+	}
+	r.mu.Unlock()
 }
 
 // relayViewerCount forwards an upstream origin's global viewer count to this
@@ -2335,6 +2428,7 @@ func (p *Publisher) onKeyframe(msg []byte, hdr wire.StreamFrameHeader) {
 	b.cachedKeyframeHasConfig = hdr.ConfigLen > 0
 	b.keyframeSeq++
 	seq := b.keyframeSeq
+	b.lastMediaAt = time.Now()
 	b.keyframeStreamsIn++
 	b.keyframeBytesIn += uint64(len(msg))
 	b.framesRelayed++
@@ -2455,6 +2549,7 @@ func (p *Publisher) relayVideoChunk(hdr wire.VideoChunkHeader, dgram []byte) {
 	if hdr.ChunkIndex == 0 {
 		b.framesRelayed++
 	}
+	b.lastMediaAt = time.Now()
 	b.ingressDatagramBytes += uint64(len(dgram))
 	fl, cl := b.ingress.observeChunk(hdr.FrameID, int(hdr.ChunkIndex), int(hdr.ChunkCount))
 	b.ingressFramesLost += fl

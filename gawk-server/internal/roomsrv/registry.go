@@ -855,7 +855,7 @@ func (p *Participant) attach(cmd wire.RoomCommand) {
 		// refresh the label, and re-flag the participant as streaming.
 		existing.ownerPID = p.id
 		if cmd.Label != "" {
-			existing.label = cmd.Label
+			existing.label = rm.uniqueLabelLocked(cmd.Label, existing.id)
 		}
 		existing.live, existing.viewers = state.Live, state.Viewers
 		r.broadcastLocked(rm, wire.RoomEvent{Kind: wire.RoomEventAttachmentUpdated, Attachment: existing.record()}, 0)
@@ -984,6 +984,37 @@ func (rm *room) uniqueNickLocked(nick string, self uint16) string {
 	}
 }
 
+// uniqueLabelLocked is uniqueNickLocked for tile labels: a label already on
+// another attachment in the room is suffixed " (n)". Two broadcasts from one
+// person — the broadcaster page feeds one name to both the nickname and the
+// label — would otherwise be two identical tiles (2026-09-06). An empty
+// label stays empty (the clients show the broadcast ID for it).
+func (rm *room) uniqueLabelLocked(label, self string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	label = truncate(label, wire.MaxRoomLabelLen)
+	taken := func(l string) bool {
+		for _, a := range rm.attachments {
+			if a.id != self && a.label == l {
+				return true
+			}
+		}
+		return false
+	}
+	if !taken(label) {
+		return label
+	}
+	for n := 2; ; n++ {
+		suffix := fmt.Sprintf(" (%d)", n)
+		cand := truncate(label, wire.MaxRoomLabelLen-len(suffix)) + suffix
+		if !taken(cand) {
+			return cand
+		}
+	}
+}
+
 func truncate(s string, max int) string {
 	for len(s) > max {
 		_, size := utf8.DecodeLastRuneInString(s)
@@ -993,6 +1024,7 @@ func truncate(s string, max int) string {
 }
 
 func (r *Registry) attachLocked(rm *room, id, label string, state BroadcastState, owner uint16) *attachment {
+	label = rm.uniqueLabelLocked(label, id)
 	a := &attachment{id: id, label: label, live: state.Live, viewers: state.Viewers, attachedAt: r.opts.Now(), ownerPID: owner}
 	rm.attachments = append(rm.attachments, a)
 	r.attached[id] = rm.code

@@ -38,6 +38,7 @@ func TestRegistryOptionsCarryAllLimits(t *testing.T) {
 	cfg := config.Config{
 		MaxSubscribers:                7,
 		BroadcastGrace:                42 * time.Second,
+		PublisherStallTimeout:         11 * time.Second,
 		MaxBroadcasts:                 9,
 		MaxTotalSubscribers:           33,
 		MaxBandwidthBytes:             1250000,
@@ -47,6 +48,7 @@ func TestRegistryOptionsCarryAllLimits(t *testing.T) {
 	want := hub.Options{
 		MaxSubscribers:                7,
 		BroadcastGrace:                42 * time.Second,
+		PublisherStallTimeout:         11 * time.Second,
 		MaxBroadcasts:                 9,
 		MaxTotalSubscribers:           33,
 		MaxBandwidthBytes:             1250000,

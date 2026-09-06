@@ -756,6 +756,16 @@ Add to it when a new gotcha lands in `docs/`.
   effective timeout is the min of both endpoints' advertised values and
   browsers advertise ~30s. The server-side keepalive (`-keepalive-period`)
   is the mechanism. ([docs/05](05-resilience-deploy.md))
+- **A connected publisher is not necessarily a sending one.** A broadcaster
+  tab in the background keeps its QUIC session alive (keepalives are
+  answered by the browser's network process, not by the page's JavaScript)
+  while its capture and encoder are stalled — on the macOS main-thread
+  path a hidden tab's frames simply stop. Until 2026-09-06 that was "live"
+  to the relay for as long as the tab existed: a slot held, a black room
+  tile marked live, five hours measured. Liveness now has a media input
+  (`-publisher-stall-timeout`, docs/06 revision 2026-09-06): away at 10 s
+  of silence, ended at the broadcast grace. When a "live" tile is black,
+  read `publisherStalled` on `/statusz` before suspecting the viewer.
 - **The same min-of-both rule bounds every in-cluster transient, and a
   cross-pod accounting assertion has to wait longer than that bound.** The
   edge dialer advertises `edgeIdleTimeout` (4 s) with 1 s keepalives, so an

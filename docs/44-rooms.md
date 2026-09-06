@@ -461,6 +461,21 @@ the dock, both from using it with three POVs on the dev stack:
   would then prompt for. It is now "Your name": shown on the stream's
   tile and in the people list, and it is the nickname the broadcaster
   joins with (the hop from a room still wins when it carried one).
+- **Live means sending (2026-09-06).** An attachment's `live` flag came
+  from "the publisher session is up", so a broadcaster tab left in the
+  background — capture stalled, session answering keepalives — showed a
+  black tile marked live for hours, and a second tab from the same person
+  produced a second tile with the *same label*. Two relay-side fixes,
+  neither a wire change: the hub's `BroadcastState` now reports a
+  connected-but-silent publisher as not live after
+  `-publisher-stall-timeout` (docs/06 revision 2026-09-06: away at 10 s,
+  ended at the broadcast grace), which the room registry's refresh turns
+  into the existing away state; and the registry de-duplicates attachment
+  **labels** the way it de-duplicates nicknames (D10) — `pc`, `pc (2)`,
+  `pc (3)` — at attach and at a relabelling re-attach
+  (`uniqueLabelLocked`). A client-side "no signal" tile state was
+  considered and dropped: the relay's stall state reaches every client,
+  natives included, within the same 10 s.
 
 ### 4.10 Knobs, Helm, observability
 
@@ -789,6 +804,7 @@ the manual pass outcome.
 | RM4 browser E2E | `node e2e/run.mjs --rooms` (two pubsims, grid → focus by key → hide-videos asserted on the relay's subscriber counts) |
 | RM5 broadcaster attaches, appears in a roster, away then removal | `BroadcasterScreen.room.test.tsx`; the relay-side away/expiry path in `TestBroadcastLifecycleHooks` and the Go native integration test |
 | RM5 a room chosen before the stream waits and joins by itself; "start streaming here" carries the nickname, a guest stays a guest, nothing is asked twice (§4.8 revision 2026-09-05) | `BroadcasterScreen.room.test.tsx` (pending room from the stash and from join-by-code; dismiss), `RoomScreen.test.tsx` (the stash's shape, `presetNickname`), `roomReturn.test.ts` |
+| Live means sending: a stalled publisher reads as away, ends at the grace; labels unique within a room (§4.9 revision 2026-09-06) | `internal/hub/stall_test.go` (not live after the timeout, media clears it, keyframes and audio count, ended with 4000 after the grace, slot freed, `0` disables, edge hubs exempt), `internal/roomsrv/label_test.go`, `TestRegistryOptionsCarryAllLimits`, config flag/env/bounds tests |
 | RM4 the dock's overlays and the tiles' chrome do not overlap; header carries the room totals (§4.9 revision 2026-09-05) | `room.module.css` bands; `RoomScreen.test.tsx` (`N streaming`, `M watching`); the dev stack's `--profile rooms` (docs/41 §4.5) is the three-POV fixture it was seen on |
 | RM6 attach visible in another participant's `RoomState` | `gawk-broadcast/internal/engine/room_integration_test.go`, `crates/engine/tests/relay_integration.rs` (ignored; CI runs it on Linux) |
 | RM6 grant hand-off rewritten before first render | `App.room.test.tsx` |

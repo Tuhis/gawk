@@ -92,6 +92,7 @@ ones a first install actually touches:
 | `-publish-secret` | (empty) | Require a secret to publish |
 | `-max-subscribers` / `-max-broadcasts` / `-max-total-subscribers` | 15 / 5 / 50 | Capacity limits |
 | `-keepalive-period` | `10s` | Keeps idle viewers connected while the broadcaster is away — this, not `-max-idle-timeout`, is the knob |
+| `-broadcast-grace` / `-publisher-stall-timeout` | `5m` / `10s` | How long an absent publisher keeps its ID; how long a connected one may send nothing before it reads as away (silent for the grace, its broadcast is ended). `0` disables the stall state |
 | `-metrics-addr` | `:2112` | Ops endpoint; the literal value `off` disables |
 | `-cluster-mode` | `false` | Multi-pod federation; requires `-internal-psk` and `-internal-server-name` |
 

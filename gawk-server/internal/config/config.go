@@ -289,6 +289,10 @@ type Config struct {
 	MaxIdleTimeout  time.Duration // QUIC idle timeout for all sessions
 	KeepAlivePeriod time.Duration // server-sent QUIC PING interval; 0 disables
 	BroadcastGrace  time.Duration // broadcast GC grace period after publisher disconnects
+	// PublisherStallTimeout: a connected publisher silent for this long is
+	// reported stalled (not live); silent for BroadcastGrace it is ended.
+	// 0 disables (docs/06 revision 2026-09-06).
+	PublisherStallTimeout time.Duration
 }
 
 // ParseFlags parses args (without the program name) into a Config.
@@ -338,6 +342,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"suppress INFO logs for loopback /echo sessions (k8s exec probes)")
 	broadcastGrace := fs.String("broadcast-grace", env("GAWK_BROADCAST_GRACE", "5m"),
 		"broadcast GC grace period after publisher disconnects")
+	publisherStall := fs.String("publisher-stall-timeout", env("GAWK_PUBLISHER_STALL_TIMEOUT", "10s"),
+		"a connected publisher silent for this long is reported stalled (not live); silent for broadcast-grace it is ended; 0 disables")
 	maxBroadcasts := fs.String("max-broadcasts", env("GAWK_MAX_BROADCASTS", "5"),
 		"maximum concurrent broadcasts")
 	maxTotalSubs := fs.String("max-total-subscribers", env("GAWK_MAX_TOTAL_SUBSCRIBERS", "50"),
@@ -475,6 +481,13 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	graceDuration, err := time.ParseDuration(*broadcastGrace)
 	if err != nil || graceDuration <= 0 {
 		return Config{}, fmt.Errorf("invalid broadcast-grace %q: want a positive duration", *broadcastGrace)
+	}
+	stallDuration, err := time.ParseDuration(*publisherStall)
+	if err != nil || stallDuration < 0 {
+		return Config{}, fmt.Errorf("invalid publisher-stall-timeout %q: want a non-negative duration (0 disables)", *publisherStall)
+	}
+	if stallDuration > graceDuration {
+		return Config{}, fmt.Errorf("publisher-stall-timeout %v must not exceed broadcast-grace %v", stallDuration, graceDuration)
 	}
 	parityDef, err := strconv.Atoi(*parityDefault)
 	if err != nil || parityDef < 0 || parityDef > wire.MaxParitySymbols {
@@ -684,6 +697,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		MaxIdleTimeout:  idleTimeout,
 		KeepAlivePeriod: keepalivePeriod,
 		BroadcastGrace:  graceDuration,
+
+		PublisherStallTimeout: stallDuration,
 	}, nil
 }
 

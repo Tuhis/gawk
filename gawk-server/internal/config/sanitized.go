@@ -50,17 +50,18 @@ type SanitizedConfig struct {
 	QuietProbeLogs bool   `json:"quietProbeLogs"`
 
 	// Limits.
-	MaxSubscribers       int     `json:"maxSubscribers"`
-	MaxBroadcasts        int     `json:"maxBroadcasts"`
-	MaxTotalSubscribers  int     `json:"maxTotalSubscribers"`
-	ConnRateLimit        float64 `json:"connRateLimit"`
-	ConnBurstLimit       int     `json:"connBurstLimit"`
-	MaxBandwidthBytes    int64   `json:"maxBandwidthBytes"`
-	MaxKeyframeBytes     int     `json:"maxKeyframeBytes"`
-	KeyframeWriteTimeout string  `json:"keyframeWriteTimeout"`
-	MaxIdleTimeout       string  `json:"maxIdleTimeout"`
-	KeepAlivePeriod      string  `json:"keepAlivePeriod"`
-	BroadcastGrace       string  `json:"broadcastGrace"`
+	MaxSubscribers        int     `json:"maxSubscribers"`
+	MaxBroadcasts         int     `json:"maxBroadcasts"`
+	MaxTotalSubscribers   int     `json:"maxTotalSubscribers"`
+	ConnRateLimit         float64 `json:"connRateLimit"`
+	ConnBurstLimit        int     `json:"connBurstLimit"`
+	MaxBandwidthBytes     int64   `json:"maxBandwidthBytes"`
+	MaxKeyframeBytes      int     `json:"maxKeyframeBytes"`
+	KeyframeWriteTimeout  string  `json:"keyframeWriteTimeout"`
+	MaxIdleTimeout        string  `json:"maxIdleTimeout"`
+	KeepAlivePeriod       string  `json:"keepAlivePeriod"`
+	BroadcastGrace        string  `json:"broadcastGrace"`
+	PublisherStallTimeout string  `json:"publisherStallTimeout"`
 
 	// Delivery modes.
 	DVRWindow                     string  `json:"dvrWindow"`
@@ -129,17 +130,18 @@ func (c Config) Sanitized() SanitizedConfig {
 		LogFormat:      c.LogFormat,
 		QuietProbeLogs: c.QuietProbeLogs,
 
-		MaxSubscribers:       c.MaxSubscribers,
-		MaxBroadcasts:        c.MaxBroadcasts,
-		MaxTotalSubscribers:  c.MaxTotalSubscribers,
-		ConnRateLimit:        c.ConnRateLimit,
-		ConnBurstLimit:       c.ConnBurstLimit,
-		MaxBandwidthBytes:    c.MaxBandwidthBytes,
-		MaxKeyframeBytes:     c.MaxKeyframeBytes,
-		KeyframeWriteTimeout: dur(c.KeyframeWriteTimeout),
-		MaxIdleTimeout:       dur(c.MaxIdleTimeout),
-		KeepAlivePeriod:      dur(c.KeepAlivePeriod),
-		BroadcastGrace:       dur(c.BroadcastGrace),
+		MaxSubscribers:        c.MaxSubscribers,
+		MaxBroadcasts:         c.MaxBroadcasts,
+		MaxTotalSubscribers:   c.MaxTotalSubscribers,
+		ConnRateLimit:         c.ConnRateLimit,
+		ConnBurstLimit:        c.ConnBurstLimit,
+		MaxBandwidthBytes:     c.MaxBandwidthBytes,
+		MaxKeyframeBytes:      c.MaxKeyframeBytes,
+		KeyframeWriteTimeout:  dur(c.KeyframeWriteTimeout),
+		MaxIdleTimeout:        dur(c.MaxIdleTimeout),
+		KeepAlivePeriod:       dur(c.KeepAlivePeriod),
+		BroadcastGrace:        dur(c.BroadcastGrace),
+		PublisherStallTimeout: dur(c.PublisherStallTimeout),
 
 		DVRWindow:                     dur(c.DVRWindow),
 		DVRMaxBytes:                   c.DVRMaxBytes,

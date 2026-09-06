@@ -474,3 +474,43 @@ always the intent.
 | End-to-end: token-bearing reclaim over a live session succeeds, first session sees remote 4004, subscriber attached before the takeover receives the new session's frames; tokenless claim stays 403 | `transport`: `TestReclaimSupersedesActivePublisher`; `engine`: `TestReclaimSupersedesAgainstRealRelay` |
 | A reclaim that fails its upgrade deposes nothing (incumbent stays active, no grace timer) | `transport`: `TestPublishActiveReclaimUpgradeFailureLeavesIncumbent` |
 | Constant parity Go ↔ TS | `wire.test.ts` constants test |
+
+## Revision (2026-09-06): a connected but silent publisher is stalled, then ended
+
+Decision 2's grace only ever ran when the publisher *session* ended. A
+session that stays up and sends nothing was "live" for as long as the
+browser kept answering keepalives — measured on 2026-09-06: a background
+broadcaster tab held its `MaxBroadcasts` slot and a room tile marked live
+for **five hours** on ~50 s of video, and its owner could not start a new
+stream because the relay was full (`hub: max concurrent broadcasts
+reached`). Liveness now has a second input, media:
+
+- **`-publisher-stall-timeout` / `GAWK_PUBLISHER_STALL_TIMEOUT`, default
+  `10s`, `0` disables.** A connected publisher that has delivered no media
+  (video chunk, keyframe stream, audio frame — TimeSync, ClockMapping and
+  ViewerCount datagrams do not count, a page keeps those flowing with its
+  capture stopped) for this long is **stalled**: `Registry.BroadcastState`
+  reports it not live (a room tile reads "away", docs/44 §4.7), `/statusz`
+  carries `publisherStalled` and `stalledSeconds`, and the relay logs the
+  onset once. The clock starts at the claim, so a publisher that connects
+  and never sends is stalled from its first timeout on. Media returning
+  clears it.
+- **Stalled for `-broadcast-grace`, the broadcast is ended** — the same
+  window an *absent* publisher gets before its ID is GC'd, applied to a
+  present-but-silent one — with the terminal 4000 to everyone, the
+  publisher included: viewers read "broadcast ended", the broadcaster's
+  page reads "the relay ended this broadcast" (not a resume loop against a
+  session that would stall again), and the slot is free. Swept once a
+  second alongside the viewer-count pump (`SweepStalledPublishers`).
+- The stall timeout must not exceed the grace (config rejects it); edge
+  hubs never stall (their liveness is the Lease, docs/22 Decision 10).
+  Plumbed through `registryOptions` and the chart
+  (`config.publisherStallTimeout`), asserted by
+  `TestRegistryOptionsCarryAllLimits`; the state itself by
+  `internal/hub/stall_test.go`.
+
+Rejected: a shorter end-of-stall than the grace. A gaming PC whose capture
+pauses (an alt-tab on the macOS main-thread path, a fullscreen switch) is
+the normal case, and the grace is the value already chosen for "how long
+do we keep a slot for a broadcaster who will be right back".
+

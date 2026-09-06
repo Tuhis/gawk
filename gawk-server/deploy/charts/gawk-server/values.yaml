@@ -340,6 +340,11 @@ config:
   # disconnects (the reclaim window); on expiry remaining viewers get a
   # terminal "broadcast ended" close. See docs/06-multi-broadcaster.md.
   broadcastGrace: 5m
+  # A connected publisher that sends no media for this long is reported
+  # stalled (rooms show the tile as away, /statusz says publisherStalled);
+  # silent for broadcastGrace it is ended with "broadcast ended". 0 disables.
+  # Must stay below broadcastGrace. See docs/06-multi-broadcaster.md.
+  publisherStallTimeout: 10s
   # Suppresses the INFO "session started"/"session ended" logs for the k8s
   # exec probe's own /echo sessions (fires every startup/liveness/readiness
   # probe period, forever). Real off-pod echo diagnostic use still logs

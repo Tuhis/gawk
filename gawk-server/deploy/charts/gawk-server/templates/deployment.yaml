@@ -370,6 +370,8 @@ spec:
               value: {{ .Values.config.keepalivePeriod | quote }}
             - name: GAWK_BROADCAST_GRACE
               value: {{ .Values.config.broadcastGrace | quote }}
+            - name: GAWK_PUBLISHER_STALL_TIMEOUT
+              value: {{ .Values.config.publisherStallTimeout | quote }}
             - name: GAWK_QUIET_PROBE_LOGS
               value: {{ .Values.config.quietProbeLogs | quote }}
             {{- with .Values.config.allowedOrigins }}
