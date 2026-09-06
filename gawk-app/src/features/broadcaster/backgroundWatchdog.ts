@@ -14,11 +14,22 @@
 // (the worker-offload path on Windows keeps encoding in the background —
 // that stream is fine and stays), and a visible static screen (never
 // hidden, never stopped — docs/30 §7).
+//
+// What it DOES catch beyond the background tab: a fully occluded window on
+// macOS, which Chrome also reports as hidden and where the main-thread path
+// already stops the frames (docs/16). A fullscreen game covering the browser
+// for five minutes therefore ends what was a frozen stream; within the
+// broadcast grace a restart reclaims the same code.
 
 export const BACKGROUND_STOP_MS = 5 * 60 * 1000;
 
+// "Hidden or covered": on macOS Chrome reports a fully occluded window as
+// hidden too — a fullscreen game over the browser — and on the main-thread
+// capture path that already freezes the stream, so the stop applies there as
+// well (review of PR #302). Within the broadcast grace a restart reclaims
+// the same code.
 export const BACKGROUND_STOP_NOTE =
-  'Stopped: the tab was in the background for 5 minutes with no video. Start again when you’re back.';
+  'Stopped: this window was hidden or covered for 5 minutes with no video. Start again when you’re back — within a few minutes you keep the same code.';
 
 // One sample per stats tick. Returns true exactly once, on the tick that
 // crosses the threshold; the caller stops the broadcast.

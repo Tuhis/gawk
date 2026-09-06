@@ -471,7 +471,12 @@ the dock, both from using it with three POVs on the dev stack:
   shape — and the pre-start card says why when the tab comes back. Frames
   still flowing while hidden (the worker-offload path) restart the span,
   so a healthy background stream is never touched; a visible static screen
-  is never hidden, so never stopped (docs/30 §7 holds).
+  is never hidden, so never stopped (docs/30 §7 holds). One case to know
+  on macOS: Chrome reports a **fully occluded window** as hidden too, and
+  on the main-thread capture path that already freezes the frames
+  (docs/16), so a fullscreen game covering the browser for five minutes
+  ends what was a frozen stream — within the broadcast grace a restart
+  reclaims the same code. Not a bug; the note names it.
 - **Live means sending (2026-09-06).** An attachment's `live` flag came
   from "the publisher session is up", so a broadcaster tab left in the
   background — capture stalled, session answering keepalives — showed a
