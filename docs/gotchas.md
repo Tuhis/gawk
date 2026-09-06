@@ -756,6 +756,21 @@ Add to it when a new gotcha lands in `docs/`.
   effective timeout is the min of both endpoints' advertised values and
   browsers advertise ~30s. The server-side keepalive (`-keepalive-period`)
   is the mechanism. ([docs/05](05-resilience-deploy.md))
+- **The same min-of-both rule bounds every in-cluster transient, and a
+  cross-pod accounting assertion has to wait longer than that bound.** The
+  edge dialer advertises `edgeIdleTimeout` (4 s) with 1 s keepalives, so an
+  origin↔edge session that loses its keepalives to a stalled runner is dead
+  on *both* ends within ~4 s and re-dialled after a jittered backoff of up to
+  2 s — a dip (or, for a session the origin upgraded but the edge abandoned,
+  a ghost) in the origin's `EdgeSessions` that can outlast a short window
+  while every pod is healthy. `TestMultiPodEdgePullE2E` gave that accounting
+  5 s and failed once in CI (2026-09-05, PR #302) with a message that named
+  no numbers; 25 local runs under `-race` and 30 under CI-like contention
+  never reproduced it. Cross-pod accounting waits now use
+  `waitForCascade` (`cascadeSettleBudget`, 15 s — twice the worst single
+  transient, inside the tests' 30 s contexts) and fail *with* the last
+  observed figures from both pods. Don't shorten it back to "it's usually
+  instant". ([docs/22](22-relay-scale-out.md) Decision 10)
 - **Hardware encoders don't surface backpressure via `encodeQueueSize`** —
   they drain frames without the queue growing past R4's `> 2` threshold, so
   the encode-queue rejection signal (auto-fallback's sole trigger) under-fires

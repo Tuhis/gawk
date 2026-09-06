@@ -277,6 +277,34 @@ func TestEdgePullUnderAllowedOrigins(t *testing.T) {
 // edge-pull from A (never from each other), the viewer is join-primed with a
 // byte-identical keyframe, live deltas flow through, and A's /statusz counts
 // edge sessions — not viewers.
+// cascadeSettleBudget is how long a cross-pod accounting assertion waits.
+// The one legitimate transient in this topology is an internal edge session
+// losing its keepalives to a stalled runner: it is reaped at edgeIdleTimeout
+// (4 s), re-dialled after a jittered backoff (≤ edgeRetryCap, 2 s) and
+// re-attached — a dip in the origin's edge count that can outlast a short
+// window while every pod is healthy. The budget covers that cycle with room
+// to spare and still sits inside the tests' 30 s contexts.
+const cascadeSettleBudget = 15 * time.Second
+
+// waitForCascade polls a cross-pod accounting condition until it holds or
+// the budget runs out, and then fails WITH the last observed figures — a
+// bare "timed out waiting for origin accounting" (CI 2026-09-05) says
+// nothing about which pod disagreed, or by how much.
+func waitForCascade(t *testing.T, check func() (ok bool, detail string), desc string) {
+	t.Helper()
+	deadline := time.Now().Add(cascadeSettleBudget)
+	for {
+		ok, detail := check()
+		if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s; last observed: %s", desc, detail)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestMultiPodEdgePullE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -360,14 +388,18 @@ deltaDone:
 
 	// Accounting (docs/22 Decisions 10/14): the origin counts TWO edge
 	// sessions and ZERO viewers; B's hub is role=edge with ONE viewer.
-	waitFor(t, 5*time.Second, func() bool {
+	// Waited for with the cascade's own budget (see waitForCascade): an
+	// internal session that lost its keepalives to a stalled CI runner is
+	// reaped at edgeIdleTimeout and re-attached after a jittered backoff,
+	// which a 5 s window could miss entirely (CI 2026-09-05, PR #302).
+	waitForCascade(t, func() (bool, string) {
 		st := podA.registry.Stats().Broadcasts[podA.registry.ObfuscateID(id)]
-		return st.EdgeSessions == 2 && st.Subscribers == 0 && st.Role == "origin"
-	}, "origin accounting (2 edges, 0 viewers)")
-	stB := podB.registry.Stats().Broadcasts[podB.registry.ObfuscateID(id)]
-	if stB.Role != "edge" || stB.Subscribers != 1 {
-		t.Errorf("pod-b hub = role %q, %d subscribers; want edge/1", stB.Role, stB.Subscribers)
-	}
+		stB := podB.registry.Stats().Broadcasts[podB.registry.ObfuscateID(id)]
+		ok := st.EdgeSessions == 2 && st.Subscribers == 0 && st.Role == "origin" &&
+			stB.Role == "edge" && stB.Subscribers == 1
+		return ok, fmt.Sprintf("A: role=%s edges=%d subs=%d; B: role=%s edges=%d subs=%d",
+			st.Role, st.EdgeSessions, st.Subscribers, stB.Role, stB.EdgeSessions, stB.Subscribers)
+	}, "origin accounting (A: origin, 2 edges, 0 viewers; B: edge, 1 viewer)")
 
 	// R18 (docs/23 Decision 5): the origin aggregates G = 2 — its own zero
 	// locals plus each edge's report of one real viewer; the edge sessions
@@ -486,10 +518,12 @@ func TestParitySurvivesEdgePull(t *testing.T) {
 	// on, the subscriber's uni streams are capabilities AND keyframe, in no
 	// guaranteed order (docs/34 deviation 2, docs/22 finding 9).
 	viewer := dialSubscriber(t, ctx, podB.port, id, clientTLS)
-	waitFor(t, 10*time.Second, func() bool {
+	waitForCascade(t, func() (bool, string) {
 		stA := podA.registry.Stats().Broadcasts[podA.registry.ObfuscateID(id)]
 		stB := podB.registry.Stats().Broadcasts[podB.registry.ObfuscateID(id)]
-		return stA.EdgeSessions == 1 && stB.Role == "edge" && stB.Subscribers == 1
+		ok := stA.EdgeSessions == 1 && stB.Role == "edge" && stB.Subscribers == 1
+		return ok, fmt.Sprintf("A: role=%s edges=%d subs=%d; B: role=%s edges=%d subs=%d",
+			stA.Role, stA.EdgeSessions, stA.Subscribers, stB.Role, stB.EdgeSessions, stB.Subscribers)
 	}, "edge pull attached with the viewer behind it")
 
 	// One delta and both of its symbols, exactly as a producer emits them.
