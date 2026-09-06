@@ -272,11 +272,6 @@ func TestEdgePullUnderAllowedOrigins(t *testing.T) {
 	}
 }
 
-// The W4 headline (in-process twin of the kind/k3s two-pod smoke, plus the
-// depth bound): a publisher on pod A, viewers on pods B and C. Both pods
-// edge-pull from A (never from each other), the viewer is join-primed with a
-// byte-identical keyframe, live deltas flow through, and A's /statusz counts
-// edge sessions — not viewers.
 // cascadeSettleBudget is how long a cross-pod accounting assertion waits.
 // The one legitimate transient in this topology is an internal edge session
 // losing its keepalives to a stalled runner: it is reaped at edgeIdleTimeout
@@ -305,6 +300,11 @@ func waitForCascade(t *testing.T, check func() (ok bool, detail string), desc st
 	}
 }
 
+// The W4 headline (in-process twin of the kind/k3s two-pod smoke, plus the
+// depth bound): a publisher on pod A, viewers on pods B and C. Both pods
+// edge-pull from A (never from each other), the viewer is join-primed with a
+// byte-identical keyframe, live deltas flow through, and A's /statusz counts
+// edge sessions — not viewers.
 func TestMultiPodEdgePullE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
