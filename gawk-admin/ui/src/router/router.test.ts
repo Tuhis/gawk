@@ -26,9 +26,17 @@ describe('portal routes (§4.9)', () => {
   });
 
   it('resolves every view', () => {
-    for (const view of ['broadcasts', 'bans', 'events', 'relays', 'webhooks'] as const) {
+    for (const view of ['broadcasts', 'bans', 'events', 'relays', 'webhooks', 'rooms'] as const) {
       expect(parseHash(href(view)).view).toBe(view);
     }
+  });
+
+  it('resolves the route a room webhook points at, key included (R42)', () => {
+    // `portalUrl` on a room.* event is `<external-url>/#/rooms?key=<roomKey>`
+    // — the HMAC'd key, never the code (docs/44 D16).
+    const route = parseHash('#/rooms?key=9c1d2e3f4a5b');
+    expect(route.view).toBe('rooms');
+    expect(route.key).toBe('9c1d2e3f4a5b');
   });
 
   it('names an unknown route instead of silently landing somewhere', () => {

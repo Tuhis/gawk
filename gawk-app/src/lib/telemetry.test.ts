@@ -675,3 +675,33 @@ describe('beacon content type (R37 D17)', () => {
     }
   });
 });
+
+// R42 (docs/44 §4.10, RM8): the HMAC'd room key rides every batch while set,
+// and only the key — the code never enters the collector at all.
+describe('TelemetryCollector — room key (R42)', () => {
+  it('stamps roomKey on every batch once set, in either order relative to begin()', () => {
+    const h = harness();
+    h.collector.setRoomKey('1a2b3c4d5e6f');
+    h.begin();
+    h.collector.event('x');
+    h.collector.flush();
+    expect(h.batches()[0].roomKey).toBe('1a2b3c4d5e6f');
+    h.collector.event('y');
+    h.collector.flush();
+    expect(h.batches()[1].roomKey).toBe('1a2b3c4d5e6f');
+    expect(h.sent.every((s) => !s.body.includes('AB2CD3'))).toBe(true);
+  });
+
+  it('is absent outside a room and after clearing', () => {
+    const h = harness();
+    h.begin();
+    h.collector.event('x');
+    h.collector.flush();
+    expect('roomKey' in h.batches()[0]).toBe(false);
+    h.collector.setRoomKey('1a2b3c4d5e6f');
+    h.collector.setRoomKey(null);
+    h.collector.event('y');
+    h.collector.flush();
+    expect('roomKey' in h.batches()[1]).toBe(false);
+  });
+});

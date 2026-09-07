@@ -17,6 +17,9 @@
 #   ./dev/certs.sh                    pick a different certificate lane
 #                                     (ACME on your own domain)
 #   docker compose --profile sim up   add a synthetic broadcaster
+#   docker compose --profile rooms up add two synthetic broadcasters in the
+#                                     static room `devroom` (R42):
+#                                     http://localhost:8080/#/room/devroom
 #
 # Images are BUILT FROM THIS CHECKOUT (D15) — a contributor runs the stack to
 # see their own change, so nothing here pulls ghcr.io/tuhis/*.
@@ -53,6 +56,11 @@ services:
     volumes:
       - ./certs:/certs
       - kube-pki:/kube:ro
+      # The static room definitions (R42, GAWK_ROOMS_FILE below). A directory
+      # rather than the file, so an editor's atomic-rename save is seen by
+      # the relay's mtime poll instead of leaving the container's bind mount
+      # pointing at the old inode.
+      - ./dev/rooms:/dev-rooms:ro
     environment:
       GAWK_CERT_FILE: /certs/cert.pem
       GAWK_KEY_FILE: /certs/key.pem
@@ -84,6 +92,34 @@ services:
       POD_NAMESPACE: gawk
       POD_NAME: relay-dev
       KUBECONFIG: /kube/kubeconfig
+      # R42 rooms (docs/44), ON here although the relay's own default is off
+      # (D17 keeps deployments byte-identical until an operator opts in; the
+      # dev stack's default `up` is the whole product). ROOMS= turns it off.
+      # Static rooms come from the file source — this stack runs the relay in
+      # single-pod mode, so there is no Room CR to watch — and dev/rooms.json
+      # defines one, `devroom`, with no attach secret: open
+      # ${APP_ORIGIN}/#/room/devroom. Dynamic rooms are minted from any live
+      # broadcast (the Room panel's "New room", or `--profile rooms` below).
+      GAWK_ROOMS: "${ROOMS-1}"
+      GAWK_ROOMS_FILE: /dev-rooms/rooms.json
+      # The relay's own cap is 5 concurrent broadcasts (docs/07). With the
+      # `rooms` profile holding three of them and a developer trying things
+      # from several tabs, that is hit within minutes and shows in the
+      # browser as an opaque "WebTransport connection rejected" (the relay
+      # log has the real line: "hub: max concurrent broadcasts reached").
+      GAWK_MAX_BROADCASTS: "${MAX_BROADCASTS:-20}"
+      # The connection rate limit is per SOURCE ADDRESS, and everything on the
+      # host — every browser tab, every headless check, and each of their
+      # R30 stripe legs — reaches the relay as the one Docker gateway
+      # address. The production 3/s, burst 10 refuses a single room view
+      # with three tiles (1 room dial + 3 × 5 media dials) and shows up as
+      # opaque handshake failures. Roomy here; the production value is the
+      # chart's.
+      GAWK_CONN_RATE_LIMIT: "${CONN_RATE_LIMIT:-50}"
+      GAWK_CONN_BURST_LIMIT: "${CONN_BURST_LIMIT:-200}"
+      # 10 minutes rather than the production 60 s: a dynamic room here is
+      # for poking at, and a browser reload should not end it.
+      GAWK_ROOM_EMPTY_GRACE: "${ROOM_EMPTY_GRACE:-10m}"
       # The machine credential for /internal/admin/* — gawk-admin's side of
       # it is GAWK_ADMIN_RELAY_ADMIN_TOKEN below, same value. A fixed default
       # is fine where both listeners are loopback-published dev surfaces.
@@ -328,6 +364,37 @@ services:
     # is no hash to pin and nothing outside this host to be fooled by it. It
     # must not spread to any other service or example.
     command: ["-url", "https://relay:4433", "-insecure", "-fps", "30"]
+    depends_on:
+      relay:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # "I want a room with several POVs in it, without screen-sharing anything."
+  #     docker compose --profile rooms up
+  # Two synthetic broadcasters attached to the static `devroom` room from
+  # dev/rooms/rooms.json (R42, docs/44) — open ${APP_ORIGIN}/#/room/devroom.
+  # Static rather than minted so the link is the same every time and needs
+  # no code copied out of a log; a third POV is your own browser broadcast,
+  # joined from the pre-start card's Room panel or the room's "Start
+  # streaming here". Same image and the same, single, -insecure rationale as
+  # `pubsim`; the labels are what the tiles show.
+  pubsim-a:
+    profiles: ["rooms"]
+    build:
+      context: .
+      dockerfile: dev/Dockerfile.pubsim
+    command: ["-url", "https://relay:4433", "-insecure", "-fps", "30", "-room", "devroom", "-label", "POV A", "-nick", "alice"]
+    depends_on:
+      relay:
+        condition: service_healthy
+    restart: unless-stopped
+
+  pubsim-b:
+    profiles: ["rooms"]
+    build:
+      context: .
+      dockerfile: dev/Dockerfile.pubsim
+    command: ["-url", "https://relay:4433", "-insecure", "-fps", "30", "-room", "devroom", "-label", "POV B", "-nick", "bob"]
     depends_on:
       relay:
         condition: service_healthy

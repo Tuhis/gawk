@@ -97,7 +97,7 @@ else
     fail "a bare \`up\` starts: $default_services(want: $want)"
 fi
 
-for p in sim telemetry app-dev tls; do
+for p in sim rooms telemetry app-dev tls; do
     case "$(dc config --profiles 2>/dev/null)" in
         *"$p"*) ok "the $p profile exists" ;;
         *)      fail "the $p profile is missing" ;;
@@ -110,7 +110,29 @@ in_profile() { # in_profile <profile> <service>
 
 check "the tls profile adds caddy"   in_profile tls caddy
 check "the sim profile adds pubsim"  in_profile sim pubsim
+check "the rooms profile adds pubsim-a" in_profile rooms pubsim-a
+check "the rooms profile adds pubsim-b" in_profile rooms pubsim-b
 check "the app-dev profile adds it"  in_profile app-dev app-dev
+
+# R42: rooms are on in the dev stack (the relay's own default is off, docs/44
+# D17), the static room the `rooms` profile's publishers attach to is defined
+# in the file the relay is pointed at, and both publishers name that room.
+if dc config 2>/dev/null | grep -q 'GAWK_ROOMS: "1"'; then
+    ok "rooms are on by default (GAWK_ROOMS=1)"
+else
+    fail "rooms are not on by default"
+fi
+rooms_file=$(dc config 2>/dev/null | sed -n 's/^ *GAWK_ROOMS_FILE: *//p' | tr -d '"')
+if grep -q '"code": *"devroom"' "$(dirname "$COMPOSE")/dev/rooms/rooms.json" 2>/dev/null && [ "$rooms_file" = /dev-rooms/rooms.json ]; then
+    ok "dev/rooms/rooms.json defines devroom and the relay reads it"
+else
+    fail "the relay's rooms file and dev/rooms/rooms.json disagree (GAWK_ROOMS_FILE=$rooms_file)"
+fi
+if [ "$(COMPOSE_PROFILES=rooms dc config 2>/dev/null | grep -c -- '- devroom')" = 2 ]; then
+    ok "both rooms-profile publishers attach to devroom"
+else
+    fail "the rooms-profile publishers do not both attach to devroom"
+fi
 check "telemetry does not start without its profile" \
     sh -c '! docker compose --env-file /dev/null config --services | grep -q "^telemetry$"'
 check "the telemetry profile adds telemetry" in_profile telemetry telemetry
@@ -125,13 +147,17 @@ else
     ok "the telemetry read listener is not published"
 fi
 
-# §5: -insecure appears exactly once in this milestone — the in-container Go
-# client on the compose network — and must not spread.
+# §5: -insecure belongs to exactly one kind of client — the in-container Go
+# publisher on the compose network (`pubsim` and, since R42, the `rooms`
+# profile's two copies of it) — and must not spread to any other service.
+# Asserted as "one per pubsim* service", so a third copy of the publisher is
+# fine and a first use anywhere else is not.
 insecure_hits=$(grep -v '^[[:space:]]*#' "$COMPOSE" | grep -c -- '-insecure' || true)
-if [ "$insecure_hits" -le 1 ]; then
-    ok "-insecure appears at most once outside comments"
+pubsim_services=$(COMPOSE_PROFILES=sim,rooms dc config --services 2>/dev/null | grep -c '^pubsim' || true)
+if [ "$insecure_hits" -le "$pubsim_services" ]; then
+    ok "-insecure appears only in the pubsim services ($insecure_hits of $pubsim_services)"
 else
-    fail "-insecure appears $insecure_hits times outside comments"
+    fail "-insecure appears $insecure_hits times outside comments for $pubsim_services pubsim services"
 fi
 
 # app-dev replaces the built frontend rather than running beside it; compose

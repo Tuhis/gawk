@@ -474,3 +474,92 @@ always the intent.
 | End-to-end: token-bearing reclaim over a live session succeeds, first session sees remote 4004, subscriber attached before the takeover receives the new session's frames; tokenless claim stays 403 | `transport`: `TestReclaimSupersedesActivePublisher`; `engine`: `TestReclaimSupersedesAgainstRealRelay` |
 | A reclaim that fails its upgrade deposes nothing (incumbent stays active, no grace timer) | `transport`: `TestPublishActiveReclaimUpgradeFailureLeavesIncumbent` |
 | Constant parity Go ↔ TS | `wire.test.ts` constants test |
+
+## Revision (2026-09-06): a connected but silent publisher is stalled — away, and only by opt-in ended
+
+Decision 2's grace only ever ran when the publisher *session* ended. A
+session that stays up and sends nothing was "live" for as long as the
+browser kept answering keepalives — measured on 2026-09-06: a background
+broadcaster tab held its `MaxBroadcasts` slot and a room tile marked live
+for **five hours** on ~50 s of video, and its owner could not start a new
+stream because the relay was full (`hub: max concurrent broadcasts
+reached`). Liveness now has a second input, the publisher's datagrams:
+
+- **`-publisher-stall-timeout` / `GAWK_PUBLISHER_STALL_TIMEOUT`, default
+  `90s`, `0` disables.** A connected publisher from which **no datagram at
+  all** has arrived for this long — no video chunk, keyframe stream or
+  audio frame, and no TimeSync or ClockMapping either — is **stalled**:
+  `Registry.BroadcastState` reports it not live (a room tile reads "away",
+  docs/44 §4.7), `/statusz` carries `publisherStalled` and
+  `stalledSeconds`, and the relay logs the onset once. The clock starts at
+  the claim, so a publisher that connects and never sends is stalled from
+  its first timeout on; any datagram clears it. The transport stamps the
+  clock for every datagram *before* answering TimeSync inline
+  (`Publisher.NoteSeen`, an atomic — no lock on the audio path), and the
+  keyframe ingest stamps it too.
+- **Why any datagram, not media.** Every broadcaster's own loop sends
+  TimeSync every 2 s and ClockMapping every 5 s for as long as its page
+  runs. Screen capture is damage-driven and stops entirely on a static
+  screen (docs/19, docs/28), and audio is optional on every broadcaster —
+  so a paused game or a menu screen with no audio shared delivers no
+  *media*, yet its page keeps pinging and is **not** stalled. A frozen or
+  suspended page delivers nothing: its QUIC keepalives are answered by the
+  browser's network process, not by its JavaScript. That is the line the
+  relay can actually see. It is a different question from the one docs/30
+  §7 and `viewer.ts`'s media-stall watchdog answer — those are about a
+  static *screen* (no video, maybe audio, page alive), which they rightly
+  decline to act on; the relay's stall is "no datagrams at all", so they
+  stand as written. Hidden-tab caveat: Chrome's intensive throttling wakes
+  a tab hidden for more than five minutes only once a minute, so the
+  timeout must stay ≥ 90 s or a hidden-but-alive tab flaps between live
+  and away — the default is set there, the flag help and the chart say
+  so. Ending a *hidden* tab's broadcast is the page's own job (it can see
+  `document.visibilityState`; the relay cannot) — the SPA handles that
+  case itself, in a separate change.
+- **`-publisher-stall-ends` / `GAWK_PUBLISHER_STALL_ENDS`, default
+  `false`.** Off, a stall is only ever *reported*: the tile and `/statusz`
+  stop lying, the held slot is visible to the operator, who has the admin
+  portal's terminate (docs/42). On, a broadcast stalled for
+  `-broadcast-grace` — the same window an *absent* publisher gets before
+  its ID is GC'd, applied to a present-but-silent one — is ended with the
+  terminal 4000 to everyone, the publisher included: viewers read
+  "broadcast ended", the broadcaster's page reads "the relay ended this
+  broadcast" (not a resume loop against a session that would stall
+  again), and the slot is free. Swept once a second alongside the
+  viewer-count pump (`SweepStalledPublishers`). With the any-datagram
+  definition ending is safe by construction — nothing a live page does
+  looks like a stall — but whether a silent slot should free itself is
+  still a judgement about the fleet, so it stays the operator's opt-in
+  (PR #302 review, option (a)).
+- **Cluster mode:** the stall crosses pods the way the grace does. The
+  origin's hub fires `OnPublisherStalled` once per transition; main's
+  cluster wiring stamps `gawk/stalled-since` on the origin Lease at the
+  onset and clears it on recovery (`Coordinator.SetStalled`, a fresh claim
+  clears it too), `Lookup` returns it from the informer cache, and
+  `roomBroadcasts.BroadcastState` reads it for an attachment answered from
+  the lease *and* for one answered by a local edge hub (whose "publisher"
+  is this pod's pull from the origin and never stalls locally). Pinned by
+  `TestLookupCarriesTheStallStamp` and
+  `TestRoomOnAnotherPodShowsASilentPublisherAway`.
+- The stall timeout must not exceed the grace (config rejects it); edge
+  hubs never stall (their liveness is the Lease, docs/22 Decision 10).
+  Both knobs are plumbed through `registryOptions` and the chart
+  (`config.publisherStallTimeout`, `config.publisherStallEnds`), asserted
+  by `TestRegistryOptionsCarryAllLimits`; the state itself by
+  `internal/hub/stall_test.go`.
+
+Rejected: (1) a media-only stall definition (the first cut of this
+revision). Without audio shared, a static screen — a paused game, a menu
+held for the grace — delivers exactly what a frozen page delivers, no
+media, and a relay that ended it would have ended the normal case;
+`viewer.ts` had already concluded the same for the client side ("firing
+anyway would reconnect-loop on a paused game"). The any-datagram definition
+is what separates the two. (2) Ending by default, even under the
+any-datagram definition: the relay sees *that* a page went silent, never
+why, and the default relay does not end a broadcast on that alone — the
+knob is there for fleets where a silent slot must free itself. (3) A
+shorter end-of-stall than the grace: a gaming PC whose capture pauses (an
+alt-tab on the macOS main-thread path, a fullscreen switch) is the normal
+case, and the grace is the value already chosen for "how long do we keep a
+slot for a broadcaster who will be right back".
+

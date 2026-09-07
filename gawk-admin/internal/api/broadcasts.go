@@ -31,6 +31,12 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 		Defaults struct {
 			KillCooldownSeconds int `json:"killCooldownSeconds"`
 		} `json:"defaults"`
+		// Features says which optional surfaces this deployment serves, so
+		// the SPA shows no navigation to a route that answers 404 (R42:
+		// rooms are default-off).
+		Features struct {
+			Rooms bool `json:"rooms"`
+		} `json:"features"`
 	}{
 		Email:   id.Email,
 		Subject: id.Subject,
@@ -38,6 +44,9 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 		Defaults: struct {
 			KillCooldownSeconds int `json:"killCooldownSeconds"`
 		}{KillCooldownSeconds: int(a.opts.Config.KillCooldown.Seconds())},
+		Features: struct {
+			Rooms bool `json:"rooms"`
+		}{Rooms: a.opts.Rooms != nil},
 	})
 }
 

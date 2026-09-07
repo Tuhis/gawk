@@ -10,6 +10,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
+	"github.com/Tuhis/gawk/gawk-server/rooms"
 )
 
 // DefaultInterval is the reconcile/janitor period (docs/42 §4.6: "one loop,
@@ -29,6 +30,23 @@ type Records interface {
 	ListBans(ctx context.Context, state string) ([]store.Ban, error)
 	CreateBan(ctx context.Context, b store.Ban) (store.Ban, error)
 	AppendEvent(ctx context.Context, e store.Event) (store.Event, error)
+	// RoomEndedSince is the room sweep's deduplication (R42): whether a
+	// room.ended naming this room was already recorded — by the portal, when
+	// an operator ended it — at or after since.
+	RoomEndedSince(ctx context.Context, room string, since time.Time) (bool, error)
+}
+
+// roomEndDedupWindow is how far back the room sweep looks for a portal-recorded
+// room.ended before recording its own. An hour is generous against a 60 s
+// sweep; a dynamic code re-minted within it (1 in 31⁶ per mint) would lose one
+// "system" event, which is the cheaper failure.
+const roomEndDedupWindow = time.Hour
+
+// roomSeen is what one sweep remembers about a dynamic room, so the next can
+// record its ending with the kind and key the CR no longer exists to supply.
+type roomSeen struct {
+	kind string
+	key  string
 }
 
 // ReconcilerOptions configure a Reconciler.
@@ -46,6 +64,10 @@ type ReconcilerOptions struct {
 	// and the portal feed, which docs/42 §4.10 explicitly allows ("zero
 	// configured webhooks is fine").
 	Record func(ctx context.Context, ev store.Event) (store.Event, error)
+	// Rooms, when set, adds the R42 room sweep: dynamic Room CRs that vanished
+	// since the previous sweep are recorded as room.ended (docs/44 D20). nil
+	// — rooms off — sweeps nothing and touches no Room CR.
+	Rooms RoomLister
 }
 
 // Reconciler converges the `bans` table and the Ban CRs in both directions.
@@ -62,6 +84,11 @@ type Reconciler struct {
 	opts ReconcilerOptions
 	log  *slog.Logger
 	kick chan struct{}
+
+	// rooms is the previous sweep's view of the dynamic Room CRs, keyed by
+	// name; nil until the first successful list. Owned by the sweep goroutine
+	// (Run is single-threaded), so no lock.
+	rooms map[string]roomSeen
 }
 
 // NewReconciler builds a Reconciler.
@@ -120,6 +147,97 @@ func (r *Reconciler) sweep(ctx context.Context) {
 	if err := r.ReconcileOnce(ctx); err != nil {
 		r.log.Warn("ban reconcile failed", "err", err)
 	}
+	if err := r.SweepRoomsOnce(ctx); err != nil {
+		r.log.Warn("room sweep failed", "err", err)
+	}
+}
+
+// SweepRoomsOnce runs one pass of the R42 room-end detection: every dynamic
+// room present at the previous pass and absent now has ended — the relay
+// deleted its CR on grace expiry or a creator's EndRoom (docs/44 §4.4) — and
+// is recorded as room.ended with actor "system".
+//
+// It is a DEVIATION from docs/44 D20's "every pod's informer sees it": the
+// portal has no informer, so a relay-ended room is noticed with up to one
+// sweep interval of latency (60 s), and one that ended while no leader was
+// sweeping (a restart, a handover) is not noticed at all — the first pass
+// after a start only seeds the baseline. A room the PORTAL ended is recorded
+// inline by the API with the operator as actor; RoomEndedSince keeps this pass
+// from recording it a second time.
+//
+// A no-op when ReconcilerOptions.Rooms is nil.
+func (r *Reconciler) SweepRoomsOnce(ctx context.Context) error {
+	if r.opts.Rooms == nil {
+		return nil
+	}
+	list, err := r.opts.Rooms.List(ctx)
+	if err != nil {
+		// Keep the baseline: a failed list says nothing about which rooms
+		// ended, and dropping it would mis-attribute the next pass.
+		return fmt.Errorf("list room CRs: %w", err)
+	}
+	now := make(map[string]roomSeen, len(list))
+	for _, obj := range list {
+		if obj.Err != nil || obj.Room.Spec.Kind != rooms.KindDynamic {
+			continue
+		}
+		now[obj.Name] = roomSeen{kind: obj.Room.Spec.Kind, key: obj.Room.Status.Key}
+	}
+	if r.rooms == nil {
+		r.rooms = now
+		return nil
+	}
+	for name, seen := range r.rooms {
+		if _, still := now[name]; still {
+			continue
+		}
+		r.emitRoomEnded(ctx, name, seen)
+	}
+	r.rooms = now
+	return nil
+}
+
+func (r *Reconciler) emitRoomEnded(ctx context.Context, name string, seen roomSeen) {
+	at := r.opts.Now()
+	already, err := r.opts.Records.RoomEndedSince(ctx, name, at.Add(-roomEndDedupWindow))
+	if err != nil {
+		// Without the record store the sweep cannot tell "the portal ended
+		// this" from "the relay did"; recording blind would double-page on
+		// every operator action. Skip it — the room stays out of the baseline
+		// either way, so this is one missed system event, not a loop.
+		r.log.Warn("checking for a recorded room end failed; not recording", "roomKey", seen.key, "err", err)
+		return
+	}
+	if already {
+		return
+	}
+	r.record(ctx, store.Event{
+		Type:       store.EventRoomEnded,
+		OccurredAt: at,
+		Actor:      "system",
+		Payload:    roomPayload(name, seen.kind, seen.key, store.SummarizeRoom(store.EventRoomEnded, seen.kind, "system")),
+	})
+	// The code is a joinable secret (docs/44 D16): the log names the key.
+	r.log.Info("dynamic room ended by the relay", "roomKey", seen.key)
+}
+
+// roomPayload is the portal-visible context for a room event: the raw code
+// under the portal-only key, the HMAC'd key under the one internal/notify
+// copies out (store.PayloadRoomKey), and the kind.
+func roomPayload(name, kind, key, summary string) json.RawMessage {
+	payload := map[string]any{
+		store.PayloadSummary:  summary,
+		store.PayloadRoom:     name,
+		store.PayloadRoomKind: kind,
+	}
+	if key != "" {
+		payload[store.PayloadRoomKey] = key
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return raw
 }
 
 // Project writes one ban row's CR: upsert while it is active, delete once it

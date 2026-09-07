@@ -67,6 +67,32 @@ type Config struct {
 	// stream is cancelled and the subscriber recovers at the next keyframe.
 	KeyframeWriteTimeout time.Duration
 
+	// Rooms enables the R42 room routes and registry (docs/44 D17). Off —
+	// the default — registers no /room/ route and constructs no registry, so
+	// every existing deployment is byte-identical until an operator turns it
+	// on.
+	Rooms bool
+	// RoomEmptyGrace is how long a dynamic room survives with no participant
+	// before it ends (docs/44 D7). Must exceed a client reconnect interval,
+	// or a pod drain would end every room it hosted.
+	RoomEmptyGrace time.Duration
+	// MaxRooms caps live dynamic rooms (per pod; fleet-wide in cluster mode,
+	// enforced at CR create).
+	MaxRooms int
+	// MaxRoomBroadcasts caps attachments per room; a static Room CR may
+	// override it in its spec.
+	MaxRoomBroadcasts int
+	// MaxRoomParticipants caps control sessions per room.
+	MaxRoomParticipants int
+	// RoomCreateSecret, when set, is required to mint a dynamic room — the
+	// hosted "paid / invited" gate (docs/44 D17). It rations creation, it is
+	// not identity, exactly like PublishSecret.
+	RoomCreateSecret string
+	// RoomsFile points at a JSON array of static room definitions
+	// (rooms.FileRoom) for deployments without a Kubernetes API (docs/44
+	// §4.3). Reloaded on change and SIGHUP like -moderation-source=file.
+	RoomsFile string
+
 	// MetricsAddr is the TCP listen address of the plain-HTTP ops endpoint
 	// (/metrics, /healthz, /readyz, /statusz). Empty disables it. This is
 	// separate from Addr because the WebTransport server is HTTP/3-over-UDP
@@ -263,6 +289,16 @@ type Config struct {
 	MaxIdleTimeout  time.Duration // QUIC idle timeout for all sessions
 	KeepAlivePeriod time.Duration // server-sent QUIC PING interval; 0 disables
 	BroadcastGrace  time.Duration // broadcast GC grace period after publisher disconnects
+	// PublisherStallTimeout: a connected publisher from which no datagram
+	// at all arrives for this long (TimeSync and ClockMapping count — a
+	// paused game keeps pinging, a frozen page does not) is reported
+	// stalled (not live). 0 disables (docs/06 revision 2026-09-06). Must be
+	// >= ~90s to ride out Chrome's once-a-minute hidden-tab throttling.
+	PublisherStallTimeout time.Duration
+	// PublisherStallEnds: stalled for BroadcastGrace, the broadcast is ended
+	// with the terminal 4000 and its slot freed. Default off — the relay
+	// only reports the stall unless the operator opts in.
+	PublisherStallEnds bool
 }
 
 // ParseFlags parses args (without the program name) into a Config.
@@ -312,6 +348,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"suppress INFO logs for loopback /echo sessions (k8s exec probes)")
 	broadcastGrace := fs.String("broadcast-grace", env("GAWK_BROADCAST_GRACE", "5m"),
 		"broadcast GC grace period after publisher disconnects")
+	publisherStall := fs.String("publisher-stall-timeout", env("GAWK_PUBLISHER_STALL_TIMEOUT", "90s"),
+		"a connected publisher that sends no datagram at all (not even TimeSync/ClockMapping) for this long is reported stalled (not live); 0 disables; keep >= 90s, a hidden Chrome tab pings once a minute")
+	publisherStallEnds := fs.Bool("publisher-stall-ends", envBool("GAWK_PUBLISHER_STALL_ENDS", false),
+		"end a broadcast stalled for broadcast-grace with the terminal 'broadcast ended' and free its slot (default: report only)")
 	maxBroadcasts := fs.String("max-broadcasts", env("GAWK_MAX_BROADCASTS", "5"),
 		"maximum concurrent broadcasts")
 	maxTotalSubs := fs.String("max-total-subscribers", env("GAWK_MAX_TOTAL_SUBSCRIBERS", "50"),
@@ -371,6 +411,20 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"operator display name advertised to server pickers over /echo (R37 wire 0x11); empty leaves the relay unnamed")
 	moderationSource := fs.String("moderation-source", env("GAWK_MODERATION_SOURCE", "off"),
 		"R39 ban source: off | k8s (Ban CRs in POD_NAMESPACE) | file:<path> (JSON array, reloaded on change and SIGHUP)")
+	roomsFlag := fs.Bool("rooms", envBool("GAWK_ROOMS", false),
+		"enable R42 rooms: the /room/ routes and the room registry; off is byte-identical to pre-R42")
+	roomEmptyGrace := fs.String("room-empty-grace", env("GAWK_ROOM_EMPTY_GRACE", "60s"),
+		"how long a dynamic room survives with no participant before it ends")
+	maxRooms := fs.String("max-rooms", env("GAWK_MAX_ROOMS", "10"),
+		"maximum live dynamic rooms (per pod; fleet-wide in cluster mode)")
+	maxRoomBroadcasts := fs.String("max-room-broadcasts", env("GAWK_MAX_ROOM_BROADCASTS", "4"),
+		"maximum broadcasts attached to one room (a static Room CR may override it)")
+	maxRoomParticipants := fs.String("max-room-participants", env("GAWK_MAX_ROOM_PARTICIPANTS", "50"),
+		"maximum control sessions in one room")
+	roomCreateSecret := fs.String("room-create-secret", env("GAWK_ROOM_CREATE_SECRET", ""),
+		"when set, required (as ?create=) to mint a dynamic room; static rooms are unaffected")
+	roomsFile := fs.String("rooms-file", env("GAWK_ROOMS_FILE", ""),
+		"JSON array of static room definitions for non-Kubernetes deployments; reloaded on change and SIGHUP")
 	adminAPIToken := fs.String("admin-api-token", env("GAWK_ADMIN_API_TOKEN", ""),
 		"static bearer token for the R39 admin API on the ops listener (/internal/admin/*); empty and no OIDC issuer leaves those routes unregistered (404)")
 	adminOIDCIssuer := fs.String("admin-oidc-issuer", env("GAWK_ADMIN_OIDC_ISSUER", ""),
@@ -435,6 +489,13 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	graceDuration, err := time.ParseDuration(*broadcastGrace)
 	if err != nil || graceDuration <= 0 {
 		return Config{}, fmt.Errorf("invalid broadcast-grace %q: want a positive duration", *broadcastGrace)
+	}
+	stallDuration, err := time.ParseDuration(*publisherStall)
+	if err != nil || stallDuration < 0 {
+		return Config{}, fmt.Errorf("invalid publisher-stall-timeout %q: want a non-negative duration (0 disables)", *publisherStall)
+	}
+	if stallDuration > graceDuration {
+		return Config{}, fmt.Errorf("publisher-stall-timeout %v must not exceed broadcast-grace %v", stallDuration, graceDuration)
 	}
 	parityDef, err := strconv.Atoi(*parityDefault)
 	if err != nil || parityDef < 0 || parityDef > wire.MaxParitySymbols {
@@ -563,6 +624,23 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		}
 	}
 
+	roomGrace, err := time.ParseDuration(*roomEmptyGrace)
+	if err != nil || roomGrace <= 0 {
+		return Config{}, fmt.Errorf("invalid room-empty-grace %q: want a positive duration", *roomEmptyGrace)
+	}
+	maxRoomsN, err := strconv.Atoi(*maxRooms)
+	if err != nil || maxRoomsN < 1 {
+		return Config{}, fmt.Errorf("invalid max-rooms %q: want a positive integer", *maxRooms)
+	}
+	maxRoomB, err := strconv.Atoi(*maxRoomBroadcasts)
+	if err != nil || maxRoomB < 1 {
+		return Config{}, fmt.Errorf("invalid max-room-broadcasts %q: want a positive integer", *maxRoomBroadcasts)
+	}
+	maxRoomP, err := strconv.Atoi(*maxRoomParticipants)
+	if err != nil || maxRoomP < 1 {
+		return Config{}, fmt.Errorf("invalid max-room-participants %q: want a positive integer", *maxRoomParticipants)
+	}
+
 	return Config{
 		Addr:           *addr,
 		CertFile:       *certFile,
@@ -604,6 +682,14 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		AdminOIDCRolesClaim: *adminOIDCRolesClaim,
 		AdminOIDCRole:       *adminOIDCRole,
 
+		Rooms:               *roomsFlag,
+		RoomEmptyGrace:      roomGrace,
+		MaxRooms:            maxRoomsN,
+		MaxRoomBroadcasts:   maxRoomB,
+		MaxRoomParticipants: maxRoomP,
+		RoomCreateSecret:    *roomCreateSecret,
+		RoomsFile:           strings.TrimSpace(*roomsFile),
+
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,
 		InternalPSK:        *internalPSK,
@@ -619,6 +705,9 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		MaxIdleTimeout:  idleTimeout,
 		KeepAlivePeriod: keepalivePeriod,
 		BroadcastGrace:  graceDuration,
+
+		PublisherStallTimeout: stallDuration,
+		PublisherStallEnds:    *publisherStallEnds,
 	}, nil
 }
 

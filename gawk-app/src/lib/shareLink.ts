@@ -7,10 +7,23 @@
 import { defaultServerUrl, useTransportStore } from '../state/transportStore';
 import { normalizeRelayOrigin } from './relayUrl';
 
-export function buildViewLink(broadcastId: string): string {
-  const base = `${window.location.origin}${window.location.pathname}#/view/${broadcastId}`;
+// The `?relay=…` suffix a link needs to name the resolved relay, or '' on the
+// deployment default. Shared by every link builder and by the R42 in-app
+// hops (#/join → #/room, room → #/broadcast) so a session on a non-default
+// relay stays on it across the hop.
+export function relayQuerySuffix(): string {
   const { serverUrl } = useTransportStore.getState();
   const resolved = normalizeRelayOrigin(serverUrl);
-  if (resolved === null || resolved === normalizeRelayOrigin(defaultServerUrl())) return base;
-  return `${base}?relay=${encodeURIComponent(resolved)}`;
+  if (resolved === null || resolved === normalizeRelayOrigin(defaultServerUrl())) return '';
+  return `?relay=${encodeURIComponent(resolved)}`;
+}
+
+export function buildViewLink(broadcastId: string): string {
+  return `${window.location.origin}${window.location.pathname}#/view/${broadcastId}${relayQuerySuffix()}`;
+}
+
+// R42 (docs/44 §4.9): the room link, same relay rule. Never carries a grant —
+// the `?rt=` hand-off is for a native broadcaster's own launch only.
+export function buildRoomLink(code: string): string {
+  return `${window.location.origin}${window.location.pathname}#/room/${encodeURIComponent(code)}${relayQuerySuffix()}`;
 }

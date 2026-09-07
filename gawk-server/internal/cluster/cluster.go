@@ -44,6 +44,12 @@ const (
 	annotationAddr          = "gawk/origin-addr"
 	annotationGeneration    = "gawk/origin-generation"
 	annotationGraceDeadline = "gawk/grace-deadline"
+	// annotationStalledSince is stamped by the origin when its publisher is
+	// connected but silent (hub stall, docs/06 revision 2026-09-06) and
+	// cleared when datagrams resume or the broadcast is re-claimed, so a
+	// room homed on another pod shows the tile away (docs/44 §4.9). Its
+	// value is informational (the onset, RFC3339); presence is the state.
+	annotationStalledSince = "gawk/stalled-since"
 )
 
 // Defaults (docs/22 Decision 8): renew every ~5 s with a 15 s lease duration
@@ -115,6 +121,12 @@ type Coordinator struct {
 
 	mu   sync.Mutex
 	held map[string]*heldLease
+	// leaseStore is the informer's cache, published by runInformer so
+	// Lookup can answer from it without an API round trip; nil until Run.
+	leaseStore cache.Store
+	// leaseSynced closes once the informer's initial list has landed in
+	// leaseStore — before that the cache is empty, not authoritative.
+	leaseSynced chan struct{}
 }
 
 type heldLease struct {
@@ -148,7 +160,7 @@ func New(opts Options) (*Coordinator, error) {
 	if opts.Log == nil {
 		opts.Log = slog.Default()
 	}
-	return &Coordinator{opts: opts, held: make(map[string]*heldLease)}, nil
+	return &Coordinator{opts: opts, held: make(map[string]*heldLease), leaseSynced: make(chan struct{})}, nil
 }
 
 // leaseName maps a broadcast ID onto a Lease name. Lease names must be
@@ -249,6 +261,8 @@ func (c *Coordinator) Claim(ctx context.Context, broadcastID string, force bool)
 		updated.Annotations[annotationAddr] = c.opts.AdvertiseAddr
 		updated.Annotations[annotationGeneration] = strconv.FormatInt(gen, 10)
 		delete(updated.Annotations, annotationGraceDeadline)
+		// A new publisher session starts a new stall clock (hub.claimPublisherLocked).
+		delete(updated.Annotations, annotationStalledSince)
 
 		if _, err := c.leases().Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
 			if apierrors.IsConflict(err) {
@@ -408,6 +422,52 @@ func (c *Coordinator) EnterGrace(ctx context.Context, broadcastID string) error 
 	return err
 }
 
+// SetStalled stamps (stalled) or clears the origin's stall annotation — the
+// hub's OnPublisherStalled hook, fired once per transition. Holder-gated
+// like EnterGrace: only the holder-of-record may write it, and a missing
+// lease is a no-op (the broadcast ended in between). No write when the lease
+// already says what is asked. The Get + Update races the renew loop on the
+// same object, and the hub reports each transition exactly once, so a CAS
+// loss is retried here (PR #302 review) rather than left for the next
+// transition — a lost onset would show other pods' rooms a live tile for
+// the whole stall, a lost recovery an away tile until the next stall.
+func (c *Coordinator) SetStalled(ctx context.Context, broadcastID string, stalled bool) error {
+	var lastErr error
+	for range claimRetries {
+		lease, err := c.leases().Get(ctx, leaseName(broadcastID), metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if parseOrigin(lease).Holder != c.opts.PodName {
+			return nil
+		}
+		if _, has := lease.Annotations[annotationStalledSince]; has == stalled {
+			return nil
+		}
+		updated := lease.DeepCopy()
+		if updated.Annotations == nil {
+			updated.Annotations = map[string]string{}
+		}
+		if stalled {
+			updated.Annotations[annotationStalledSince] = c.opts.Now().UTC().Format(time.RFC3339)
+		} else {
+			delete(updated.Annotations, annotationStalledSince)
+		}
+		if _, err := c.leases().Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
+			if apierrors.IsConflict(err) {
+				lastErr = err
+				continue // the renewer moved the object; re-read and stamp again
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("cluster: stall stamp retries exhausted for %s: %w", broadcastID, lastErr)
+}
+
 // Delete removes the broadcast's lease (local grace-GC expired, or the
 // broadcast ended for good). Cluster-wide "broadcast ended": every pod's
 // informer sees the deletion.
@@ -488,6 +548,59 @@ func (c *Coordinator) Resolve(ctx context.Context, broadcastID string) (Origin, 
 	return parseOrigin(lease), nil
 }
 
+// Lookup is Resolve's cached, non-blocking twin (R42, docs/44 §4.5): the
+// broadcast's lease as the informer last saw it. ok is false before the
+// informer has synced (LeasesSynced) and when no lease exists — the
+// fleet-wide "no such broadcast". inGrace is true once the origin stamped
+// a grace deadline (EnterGrace) or, the crash case that never stamps one,
+// once its renewTime went stale. stalled is the origin's stall stamp
+// (SetStalled): the publisher is connected but sending nothing, so the
+// broadcast is away without being in grace. A room's 1 Hz refresh asks this
+// for every attachment homed on another pod, which is why it must not be a
+// Get.
+func (c *Coordinator) Lookup(broadcastID string) (origin Origin, inGrace, stalled, ok bool) {
+	c.mu.Lock()
+	store := c.leaseStore
+	c.mu.Unlock()
+	if store == nil || !c.LeasesSynced() {
+		return Origin{}, false, false, false
+	}
+	obj, exists, err := store.GetByKey(c.opts.Namespace + "/" + leaseName(broadcastID))
+	if err != nil || !exists {
+		return Origin{}, false, false, false
+	}
+	lease, isLease := obj.(*coordv1.Lease)
+	if !isLease {
+		return Origin{}, false, false, false
+	}
+	inGrace = lease.Annotations[annotationGraceDeadline] != "" || c.renewStale(lease)
+	_, stalled = lease.Annotations[annotationStalledSince]
+	return parseOrigin(lease), inGrace, stalled, true
+}
+
+// LeasesSynced reports whether the lease informer has completed its initial
+// list, i.e. whether Lookup's "no lease" means anything.
+func (c *Coordinator) LeasesSynced() bool {
+	select {
+	case <-c.leaseSynced:
+		return true
+	default:
+		return false
+	}
+}
+
+// WaitLeaseSync blocks until the lease informer has synced or ctx ends;
+// false means ctx ended first. Callers that turn "unknown" into an action
+// (the room refresh's expiry) wait here before their first poll.
+func (c *Coordinator) WaitLeaseSync(ctx context.Context) bool {
+	select {
+	case <-c.leaseSynced:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // Held reports whether this pod currently believes it holds the broadcast's
 // lease at the given generation (the W4 generation fence for the internal
 // subscribe route).
@@ -528,6 +641,16 @@ func (c *Coordinator) runInformer(ctx context.Context) {
 		}),
 	)
 	informer := factory.Coordination().V1().Leases().Informer()
+	// The same cache serves Lookup (R42): publish it before the informer
+	// runs, and flag it authoritative once the initial list has landed.
+	c.mu.Lock()
+	c.leaseStore = informer.GetStore()
+	c.mu.Unlock()
+	go func() {
+		if cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+			close(c.leaseSynced)
+		}
+	}()
 	_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		DeleteFunc: func(obj any) {
 			lease, ok := obj.(*coordv1.Lease)

@@ -42,6 +42,11 @@ var allowedPayloadKeys = map[string]bool{
 	// store.Event.EnforcementState, and the poison planted under the same key
 	// in poisonedEvent below).
 	"enforcement": true,
+	// roomKey: the R42 edit. Admitted on the same terms as `enforcement` —
+	// store.Event.RoomKey closes the vocabulary to a hex digest, so a room
+	// CODE (the joinable secret, docs/44 D16) planted under this key is
+	// dropped rather than forwarded; see poisonRoomCode in poisonedEvent.
+	"roomKey": true,
 }
 
 // The values a payload must never contain. Each is planted somewhere an event
@@ -55,6 +60,12 @@ const (
 	poisonRawIPv6      = "2001:db8::dead:beef"
 	poisonIPv6CIDR     = "2001:db8::/64"
 	poisonOperatorNote = "kubectl-emergency-note"
+	// A dynamic room code has the broadcast-ID shape and IS a join
+	// capability (docs/44 D16); a static slug is one too, if less secret.
+	poisonRoomCode = "R7K3MX"
+	poisonRoomSlug = "tuhisroom"
+	// The one-time attach secret — never in any payload, ever (docs/44 §5).
+	poisonAttachSecret = "AttachSecretValue12345678"
 )
 
 // poisonedEvent is one event of the given type carrying a raw broadcast ID in
@@ -78,6 +89,14 @@ func poisonedEvent(eventType string) store.Event {
 		"v6Target":               poisonIPv6CIDR,
 		"operatorNote":           poisonOperatorNote,
 		"cooldownSeconds":        600,
+		// The room keys: the raw code under the portal-only key (as the
+		// producers write it), and — the trap — the raw code planted under
+		// the webhook-safe roomKey too. Only a hex digest may come out.
+		store.PayloadRoom:     poisonRoomCode,
+		store.PayloadRoomKind: "dynamic",
+		store.PayloadRoomKey:  poisonRoomCode,
+		"displayCode":         poisonRoomSlug,
+		"attachSecret":        poisonAttachSecret,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -103,7 +122,8 @@ func poisonedEvent(eventType string) store.Event {
 // producer that ships a new event type cannot also ship a payload leak by
 // forgetting to add a case to this test.
 func TestNoRawIDOrIPInAnyPayload(t *testing.T) {
-	poisons := []string{poisonRawID, poisonRawIPv4, poisonCIDR, poisonRawIPv6, poisonIPv6CIDR, poisonOperatorNote}
+	poisons := []string{poisonRawID, poisonRawIPv4, poisonCIDR, poisonRawIPv6, poisonIPv6CIDR, poisonOperatorNote,
+		poisonRoomCode, poisonRoomSlug, poisonAttachSecret}
 
 	for _, eventType := range allEventTypes(t) {
 		t.Run(eventType, func(t *testing.T) {
@@ -134,9 +154,18 @@ func TestNoRawIDOrIPInAnyPayload(t *testing.T) {
 				t.Errorf("schema = %v, want %q", m["schema"], PayloadSchema)
 			}
 			// The deep link filters by the HMAC'd key — still no raw ID (D8):
-			// the poisons check above runs over the URL too.
-			if m["portalUrl"] != "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e" {
-				t.Errorf("portalUrl = %v, want the key-filtered portal deep link", m["portalUrl"])
+			// the poisons check above runs over the URL too. A room event
+			// links to the rooms view; with the poisoned (non-hex) roomKey
+			// dropped, it carries no filter at all rather than the code.
+			wantURL := "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e"
+			if strings.HasPrefix(eventType, "room.") {
+				wantURL = "https://admin.example.com/#/rooms"
+				if _, leaked := m["roomKey"]; leaked {
+					t.Errorf("a non-hex roomKey (a raw room code) was forwarded: %v", m["roomKey"])
+				}
+			}
+			if m["portalUrl"] != wantURL {
+				t.Errorf("portalUrl = %v, want %q", m["portalUrl"], wantURL)
 			}
 		})
 	}
@@ -285,6 +314,84 @@ func TestPendingEnforcementCrossesIntoTheDelivery(t *testing.T) {
 	}
 }
 
+// roomEvent is one room event as internal/api and the reconciler record it:
+// the raw code under the portal-only key, the HMAC'd key under roomKey.
+func roomEvent(eventType, kind, key, actor string) store.Event {
+	payload := map[string]any{
+		store.PayloadSummary:  store.SummarizeRoom(eventType, kind, actor),
+		store.PayloadRoom:     poisonRoomCode,
+		store.PayloadRoomKind: kind,
+		"displayCode":         poisonRoomSlug,
+	}
+	if key != "" {
+		payload[store.PayloadRoomKey] = key
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return store.Event{
+		ID: 7, Type: eventType, Actor: actor,
+		OccurredAt: time.Date(2026, 9, 3, 18, 0, 0, 0, time.UTC),
+		Payload:    raw,
+	}
+}
+
+// TestRoomEventsCarryTheKeyAndLinkToTheRoomsView is RM7's acceptance row
+// (docs/44 §9): a webhook about a room carries the HMAC'd key ONLY — never the
+// code, never the attach secret — and deep-links to the rooms view filtered by
+// that key. When no pod has homed the room yet there is no key, and the payload
+// then carries no room identity at all rather than falling back to the code.
+func TestRoomEventsCarryTheKeyAndLinkToTheRoomsView(t *testing.T) {
+	for _, eventType := range []string{store.EventRoomCreated, store.EventRoomEnded, store.EventRoomSecretRotated} {
+		t.Run(eventType, func(t *testing.T) {
+			body, err := marshal(buildPayload(roomEvent(eventType, "static", "9c1d2e3f4a5b", "juho@example.com"),
+				"https://admin.example.com"))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(body, &m); err != nil {
+				t.Fatalf("payload is not JSON: %v", err)
+			}
+			if m["roomKey"] != "9c1d2e3f4a5b" {
+				t.Errorf("roomKey = %v, want the HMAC'd key", m["roomKey"])
+			}
+			if m["portalUrl"] != "https://admin.example.com/#/rooms?key=9c1d2e3f4a5b" {
+				t.Errorf("portalUrl = %v, want the key-filtered rooms deep link", m["portalUrl"])
+			}
+			if _, has := m["broadcastKey"]; has {
+				t.Errorf("a room event carried a broadcastKey: %s", body)
+			}
+			for _, p := range []string{poisonRoomCode, poisonRoomSlug, poisonAttachSecret} {
+				if strings.Contains(string(body), p) {
+					t.Errorf("payload leaked %q (docs/44 D16: the code is a joinable secret)\n%s", p, body)
+				}
+			}
+			summary, _ := m["summary"].(string)
+			if !strings.Contains(summary, "static room") {
+				t.Errorf("summary %q should name the kind and nothing more", summary)
+			}
+
+			// Not homed yet: no key, no filter, still no code.
+			unkeyed, err := marshal(buildPayload(roomEvent(eventType, "static", "", "juho@example.com"),
+				"https://admin.example.com"))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(unkeyed), "roomKey") {
+				t.Errorf("an unkeyed room event grew a roomKey: %s", unkeyed)
+			}
+			if !strings.Contains(string(unkeyed), `"portalUrl":"https://admin.example.com/#/rooms"`) {
+				t.Errorf("unkeyed portalUrl should be the bare rooms view: %s", unkeyed)
+			}
+			if strings.Contains(string(unkeyed), poisonRoomCode) {
+				t.Errorf("an unkeyed room event fell back to the code: %s", unkeyed)
+			}
+		})
+	}
+}
+
 // TestPortalURLOmittedWhenUnconfigured: an empty -external-url yields no
 // portalUrl rather than a link to nowhere.
 func TestPortalURLOmittedWhenUnconfigured(t *testing.T) {
@@ -322,7 +429,8 @@ func allEventTypes(t *testing.T) []string {
 	// These four are the R39 vocabulary (§4.6) and content_flag.raised is
 	// R40's reserved fifth; if any disappears, this test should be the thing
 	// that notices.
-	for _, want := range []string{"broadcast.killed", "ban.created", "ban.expired", "ban.removed", "content_flag.raised"} {
+	for _, want := range []string{"broadcast.killed", "ban.created", "ban.expired", "ban.removed", "content_flag.raised",
+		"room.created", "room.ended", "room.secret_rotated"} {
 		if !slices.Contains(types, want) {
 			t.Fatalf("event type %q not found in internal/store; parsed: %v", want, types)
 		}

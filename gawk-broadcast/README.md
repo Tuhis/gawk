@@ -99,6 +99,9 @@ The flags you'll actually set (run `-help` for the full list):
 -audio-app    when a window is shared, publish only this application's
               audio (its process binary, e.g. supertuxkart)
 -encoder      force one of vulkanh264enc, nvh264enc, vah264enc
+-room         attach the broadcast to a room (6-char code or a static
+              room's slug; env GAWK_ROOM) — see Rooms below
+-room-new     create a new room from this broadcast instead
 -v            verbose, including the GStreamer child's stderr
 ```
 
@@ -133,6 +136,37 @@ off` sends nothing; a self-hosted relay reports nowhere unless you point
 it at your own collector, since telemetry tokens are minted by the relay
 you connect to ([docs/33](../docs/33-telemetry-and-diagnostics.md)). The
 CLI prints where it reports on startup; the GUI shows it in settings.
+
+### Rooms
+
+A room ([docs/44](../docs/44-rooms.md)) shows several broadcasts side by
+side in the browser. The native broadcaster attaches its broadcast to one
+on publish and re-attaches on every resume; it never carries media for the
+room — only a small control session beside the publisher's.
+
+```
+-room <code-or-slug>    join a room and attach (env GAWK_ROOM)
+-room-new               mint a new room from this broadcast; prints the code
+                        and, with -app-url, an "open room view" link
+-room-attach-secret     a static room's attach secret (env GAWK_ROOM_ATTACH_SECRET)
+-room-create-secret     the relay's create secret, if it needs one for -room-new
+                        (env GAWK_ROOM_CREATE_SECRET; never saved)
+-room-label             the broadcast's tile label (env GAWK_ROOM_LABEL)
+-nick                   your name in the roster (env GAWK_NICK)
+```
+
+`room`, `roomAttachSecret`, `roomLabel` and `nickname` persist in the
+config file like everything else (the attach secret is a credential; the
+0600 file covers it, as it does the resume token). In the GUI the **Room**
+card takes a code, a slug or a pasted room link plus the attach secret:
+*Attach* remembers the room and joins now when live, *New room* mints one
+from the live broadcast, *Detach* leaves and forgets it, and *Open room
+view* launches the browser at `<app-url>/#/room/<CODE>?rt=<grant>` — the
+grant (creator token or attach secret) is handed to the page once and
+moved into session storage there. The card's status line follows the
+relay: joined, attached, away (reconnecting), ended, or the error as a
+sentence. A room ending never touches the broadcast; it keeps streaming on
+its own code.
 
 ### Terms of use
 

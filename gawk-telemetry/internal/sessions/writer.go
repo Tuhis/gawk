@@ -44,6 +44,11 @@ type Record struct {
 	SessionID    string `json:"sessionId"`
 	BroadcastKey string `json:"broadcastKey"`
 	Role         string `json:"role"`
+	// RoomKey (R42, RM8) repeats on every line for the same reason the three
+	// above do: a room's sessions are found with one filter over the glob.
+	// Omitted when the session was not in a room, so pre-R42 files and
+	// room-less sessions are byte-identical to before.
+	RoomKey string `json:"roomKey,omitempty"`
 
 	// Meta lines only.
 	App         *ingest.AppInfo `json:"app,omitempty"`
@@ -63,7 +68,9 @@ type Record struct {
 
 // Live is the in-memory state of one open session.
 type Live struct {
-	Ref          store.SessionRef
+	Ref store.SessionRef
+	// RoomKey is the HMAC'd room this session reported, or empty (R42, RM8).
+	RoomKey      string
 	Role         string
 	App          ingest.AppInfo
 	StartedAtMs  int64
@@ -171,12 +178,19 @@ func (w *Writer) Accept(a ingest.Accepted) error {
 				BroadcastKey: a.BroadcastKey,
 				SessionID:    a.SessionID,
 			},
+			RoomKey:     a.RoomKey,
 			Role:        a.Role,
 			App:         a.App,
 			StartedAtMs: a.StartedAtMs,
 			FirstSeen:   now,
 		}
 		w.live[a.SessionID] = s
+	}
+	// A room key that arrives on a LATER batch (a resumed session whose first
+	// batch was lost, or a client that only learned its room after its first
+	// flush) still attaches; a session never leaves a room by omitting it.
+	if s.RoomKey == "" && a.RoomKey != "" {
+		s.RoomKey = a.RoomKey
 	}
 	// Ingest is at-least-once: a POST the service processed but whose response
 	// was lost is retried by both collectors, and appending it again would
@@ -224,6 +238,7 @@ func (w *Writer) Accept(a ingest.Accepted) error {
 			Kind:         "meta",
 			SessionID:    a.SessionID,
 			BroadcastKey: a.BroadcastKey,
+			RoomKey:      snapshot.RoomKey,
 			Role:         a.Role,
 			App:          &app,
 			StartedAtMs:  a.StartedAtMs,
@@ -235,6 +250,7 @@ func (w *Writer) Accept(a ingest.Accepted) error {
 			Kind:         "sample",
 			SessionID:    a.SessionID,
 			BroadcastKey: a.BroadcastKey,
+			RoomKey:      snapshot.RoomKey,
 			Role:         a.Role,
 			TMs:          sm.TMs,
 			Stats:        sm.Stats,
@@ -246,6 +262,7 @@ func (w *Writer) Accept(a ingest.Accepted) error {
 			Kind:         "event",
 			SessionID:    a.SessionID,
 			BroadcastKey: a.BroadcastKey,
+			RoomKey:      snapshot.RoomKey,
 			Role:         a.Role,
 			TMs:          ev.TMs,
 			Event:        ev.Kind,

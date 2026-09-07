@@ -75,6 +75,28 @@ Blank settings mean "the default", resolved at use, never at save
 | Origin | `gawk-broadcast://windows` — the relay's `-allowed-origins` must include it |
 | Rung | 1080p60, 500 ms GOP, 12 Mbps peak VBR — the resolution is a bounding box: the stream keeps the source's aspect ratio inside it |
 
+## Rooms
+
+The **Room** card (R42, [docs/44](../docs/44-rooms.md) §4.8) attaches the
+running broadcast to a room, on a relay started with `-rooms`:
+
+| Field | Config key | Meaning |
+|---|---|---|
+| Room code or link | `room` | A dynamic code, a static slug, or a pasted `…/#/room/<CODE>` link; blank = no room. Joined on every start, re-attached on every resume. |
+| Attach key | `roomAttachSecret` | A static room's attach secret (DPAPI-wrapped like the publish secret) |
+| Tile label | `roomLabel` | What the tile is called in the room view |
+| Nickname | `nickname` | Your name in the room (blank = the relay picks one) |
+
+While live, **Attach** joins the room in the field, **New room** mints a
+dynamic room from this broadcast (the app is its creator), and
+**Detach** / **Leave room** removes the attachment and closes the room
+session — the broadcast itself keeps going. **Open room view** launches
+the browser at `<app URL>/#/room/<CODE>?rt=<grant>`, where the grant is
+the creator token of a room you minted or the static room's attach key;
+the SPA moves it out of the URL before rendering. A room ending (close
+code 4007) or a refused command shows in the card's status line and never
+touches the broadcast.
+
 ## Building
 
 Any host builds and tests the portable crates (wire, engine); the

@@ -135,6 +135,20 @@ func (f *fakeRecords) CreateBan(_ context.Context, b store.Ban) (store.Ban, erro
 	return f.insertLocked(b), nil
 }
 
+func (f *fakeRecords) RoomEndedSince(_ context.Context, room string, since time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.down {
+		return false, errRecordsDown
+	}
+	for _, e := range f.events {
+		if e.Type == store.EventRoomEnded && e.PayloadString(store.PayloadRoom) == room && !e.OccurredAt.Before(since) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (f *fakeRecords) AppendEvent(_ context.Context, e store.Event) (store.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

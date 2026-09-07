@@ -756,6 +756,36 @@ Add to it when a new gotcha lands in `docs/`.
   effective timeout is the min of both endpoints' advertised values and
   browsers advertise ~30s. The server-side keepalive (`-keepalive-period`)
   is the mechanism. ([docs/05](05-resilience-deploy.md))
+- **A connected publisher is not necessarily a sending one.** A broadcaster
+  tab in the background keeps its QUIC session alive (keepalives are
+  answered by the browser's network process, not by the page's JavaScript)
+  while its capture and encoder are stalled — on the macOS main-thread
+  path a hidden tab's frames simply stop. Until 2026-09-06 that was "live"
+  to the relay for as long as the tab existed: a slot held, a black room
+  tile marked live, five hours measured. Liveness now has a datagram input
+  (`-publisher-stall-timeout`, docs/06 revision 2026-09-06): away after
+  90 s with no datagram at all — TimeSync and ClockMapping count, so a
+  paused game or a static screen stays live and only a frozen page reads
+  as away — and ended at the broadcast grace only with the opt-in
+  `-publisher-stall-ends`. Do not shorten the timeout below ~90 s: Chrome
+  wakes a tab hidden for more than five minutes once a minute, and a
+  shorter value makes such a tab flap. When a "live" tile is black, read
+  `publisherStalled` on `/statusz` before suspecting the viewer.
+- **The same min-of-both rule bounds every in-cluster transient, and a
+  cross-pod accounting assertion has to wait longer than that bound.** The
+  edge dialer advertises `edgeIdleTimeout` (4 s) with 1 s keepalives, so an
+  origin↔edge session that loses its keepalives to a stalled runner is dead
+  on *both* ends within ~4 s and re-dialled after a jittered backoff of up to
+  2 s — a dip (or, for a session the origin upgraded but the edge abandoned,
+  a ghost) in the origin's `EdgeSessions` that can outlast a short window
+  while every pod is healthy. `TestMultiPodEdgePullE2E` gave that accounting
+  5 s and failed once in CI (2026-09-05, PR #302) with a message that named
+  no numbers; 25 local runs under `-race` and 30 under CI-like contention
+  never reproduced it. Cross-pod accounting waits now use
+  `waitForCascade` (`cascadeSettleBudget`, 15 s — twice the worst single
+  transient, inside the tests' 30 s contexts) and fail *with* the last
+  observed figures from both pods. Don't shorten it back to "it's usually
+  instant". ([docs/22](22-relay-scale-out.md) Decision 10)
 - **Hardware encoders don't surface backpressure via `encodeQueueSize`** —
   they drain frames without the queue growing past R4's `> 2` threshold, so
   the encode-queue rejection signal (auto-fallback's sole trigger) under-fires
@@ -1120,6 +1150,93 @@ Add to it when a new gotcha lands in `docs/`.
   construction (`moderation.CRName`). So treat "no raw IDs at Info+" as a rule
   for new code, not as a property the repo has: **do not build anything on the
   assumption that an aggregated pod log is free of joinable IDs.**
+
+**Rooms (R42)**
+
+- **Room codes share the broadcast-ID alphabet and length, so every
+  per-ID construction needs domain separation.** An unprefixed HMAC over
+  the code would make a broadcast's resume token the creator token of an
+  identically named room. The creator token is `HMAC(key,
+  "gawk-room-creator-v1" ‖ 0x00 ‖ code)`; the broadcast construction is
+  untouched. The same rule applies to the mint-time mirror check: the hub
+  never mints an ID that names a live room and the room registry never
+  mints a code that names a live broadcast (`hub.Options.IDReserved`).
+  ([docs/44](44-rooms.md) D3, §11)
+- **A client cannot compute an HMAC'd key it does not hold the key for.**
+  Anything that must be reported by a client under the fleet's obfuscated
+  identity — the telemetry room key — has to be handed to it in-band, which
+  is why `RoomState` carries the key. Do not "fix" this by letting clients
+  post raw codes for hashing server-side. ([docs/44](44-rooms.md) §11)
+- **A WebTransport session close discards unread stream data.**
+  webtransport-go's `CloseWithError` cancels reads on every stream, so a
+  record and the close that follows it can share a packet and the record is
+  lost. The room registry writes the `RoomEnding` record, then a close
+  sentinel *in order* on the writer goroutine, then waits a short settle
+  before the 4007 — the same shape as the drain window (docs/22). A
+  "send then immediately close" anywhere else on a stream has the same
+  bug. ([docs/44](44-rooms.md) §11)
+- **Per-participant events must not consume the room sequence.** A
+  `CommandRejected` goes to one participant; giving it a seq would make
+  every other client detect a gap and resync in lockstep. The rule is
+  "a gap is `seq > last + 1`", not "seq must increase by exactly one".
+  ([docs/44](44-rooms.md) §4.6)
+- **Read a `SetX` seam's result only after calling it.** The `/statusz`
+  rooms section was nil in production for a whole chunk because main read
+  the transport's stats source before `SetRooms` installed the registry —
+  every unit test constructed things in the other order. Any "install then
+  read" pair in `main.go` deserves a test against the real `Server`.
+  ([docs/44](44-rooms.md) §11)
+- **The relay's mux prefers a literal segment over a pattern**, so
+  `CONNECT /room/new` and `CONNECT /room/{code}` coexist without a reserved
+  character in the code alphabet — but only because `new` can never be a
+  valid code (lower-case, three letters short of a dynamic code, and not a
+  slug an operator would pick). Don't register a literal that a slug could
+  legitimately spell.
+- **A minted room's attachment has no owner participant.** The minting
+  session attached implicitly, so a reconnected minter cannot detach until
+  it re-attaches; both native broadcasters send an idempotent `Attach`
+  after every snapshot for that reason. ([docs/44](44-rooms.md) §11)
+- **Enabling rooms in `gawk-admin` is a Kubernetes-RBAC posture change**:
+  the portal needs `secrets` get/create/update/delete for attach-secret
+  Secrets, and RBAC has no per-name grant that survives a create, so a
+  portal compromise with rooms on reads any Secret in the namespace. Keep
+  gawk in a namespace that holds nothing else. ([docs/44](44-rooms.md) §11,
+  `gawk-admin` chart `rbac.yaml`)
+- **"Is this broadcast known" is a fleet-wide question in cluster mode,
+  and the hub's lifecycle hooks fire on the origin pod, not the room's
+  home.** Mint, attach and the refresh poll asked only the local hub, so
+  on any pod other than the publisher's a live broadcast was 404 and an
+  off-pod attachment never went away or expired — the home pod's registry
+  never sees `OnPublisherClosed`/`OnBroadcastExpired` for it. The answer
+  is the origin lease (`Coordinator.Lookup`, served from the informer
+  cache — never a Get per attachment per second), and the poll is the
+  lifecycle for such an attachment. Two traps travel with that: an
+  informer cache that has not synced is *empty*, not "no leases", so
+  anything that turns "unknown" into an action must wait for the sync
+  (`WaitLeaseSync` gates `RunRefresh`); and the fleet-global viewer count
+  G lives on the origin, so an off-pod broadcast nobody local watches
+  reports 0 viewers. ([docs/44](44-rooms.md) §11.1)
+- **A drain's `Release` races the status writes the drain itself
+  triggers.** Closing the home's sessions makes them leave, the
+  `RoomEmpty` stamp is a status write on the same CR, and a `Release`
+  that treats a 409 as failure leaves the holder in place — the
+  reconnect then waits out the staleness window. Every status writer on
+  a CR retries a Conflict from a fresh Get; the fake dynamic client
+  enforces no resourceVersion CAS, so a fixture without the hand-rolled
+  reactor (`installCAS` / `installRoomCAS`) last-writer-wins and hides
+  exactly this. ([docs/44](44-rooms.md) §11.1)
+
+- **Never name a shell variable `HOME` in an e2e script.** `rooms-assert.sh`
+  used `HOME` for the home pod and set it to `""`; every child `kubectl`
+  from that line on had no `~/.kube/config`, fell back to the runner pod's
+  in-cluster config and talked to the **host cluster** — where `rooms` is
+  "no such resource type", `bans` (which prod has) still resolves, kind's
+  pods do not exist and the raw path answers Forbidden for the ARC service
+  account. Three kind runs read as a broken CRD or a kubectl cache race
+  before the raw-path read carried the service-account name. The fix is a
+  rename; the lesson is that "kubectl sees a different cluster" is on the
+  list whenever a kind assert contradicts the relay's own logs.
+  ([docs/44](44-rooms.md) §11.2, PR #302)
 
 **CI / deployment**
 

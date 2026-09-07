@@ -109,6 +109,33 @@ func TestIngestAcceptsAValidBatch(t *testing.T) {
 	}
 }
 
+// R42 (RM8, docs/44 §4.10): the room key is OPTIONAL envelope. Absent and
+// empty both mean "no room" and must not be told apart; present, it is carried
+// through verbatim. It is a grouping hint, not an authenticated identity — the
+// token's tag does not cover it — which is why a valid token with a well-formed
+// roomKey is enough here and no second signature is looked for.
+func TestIngestCarriesAnOptionalRoomKey(t *testing.T) {
+	h := newHandler(t, &recordingSink{})
+	for name, override := range map[string]any{"absent": nil, "empty": ""} {
+		t.Run(name, func(t *testing.T) {
+			a, status, err := h.Validate(body(t, map[string]any{"roomKey": override}))
+			if err != nil {
+				t.Fatalf("Validate: %v (status %d)", err, status)
+			}
+			if a.RoomKey != "" {
+				t.Errorf("roomKey = %q, want empty", a.RoomKey)
+			}
+		})
+	}
+	a, status, err := h.Validate(body(t, map[string]any{"roomKey": "0a1b2c3d4e5f"}))
+	if err != nil {
+		t.Fatalf("Validate: %v (status %d)", err, status)
+	}
+	if a.RoomKey != "0a1b2c3d4e5f" {
+		t.Errorf("roomKey = %q, want 0a1b2c3d4e5f", a.RoomKey)
+	}
+}
+
 // The sessionId is the AUTHENTICATED one, taken from the verified token —
 // never from anything the client asserted alongside it.
 func TestIngestSessionIDComesFromTheToken(t *testing.T) {
@@ -166,6 +193,12 @@ func TestIngestRejectsEnvelopeViolations(t *testing.T) {
 		// obfuscated key fails here — which is the mechanism behind D8's
 		// claim, not merely a convention.
 		{"raw broadcast ID in the key field", body(t, map[string]any{"broadcastKey": "K7XQ2M"}), http.StatusBadRequest},
+		// R42 (RM8): the room key follows the broadcastKey shape rule, so a
+		// raw room CODE can no more be reported than a raw broadcast ID.
+		{"bad roomKey hex", body(t, map[string]any{"roomKey": "zzzzzzzzzzzz"}), http.StatusBadRequest},
+		{"short roomKey", body(t, map[string]any{"roomKey": "0a1b2c"}), http.StatusBadRequest},
+		{"raw room code in the roomKey field", body(t, map[string]any{"roomKey": "K7XQ2M"}), http.StatusBadRequest},
+		{"roomKey not a string", body(t, map[string]any{"roomKey": 12}), http.StatusBadRequest},
 		{"bad token hex", body(t, map[string]any{"token": "nothex"}), http.StatusUnauthorized},
 		{"short token", body(t, map[string]any{"token": viewerTok[:10]}), http.StatusUnauthorized},
 		{"token from another fleet", body(t, map[string]any{

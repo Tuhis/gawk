@@ -133,6 +133,23 @@ links:
   # the HMAC'd broadcast key so the portal never needs the relay's stats key.
   telemetryBaseUrl: ""
 
+# Room management (R42, docs/44 D20): static room CRUD, attach-secret
+# rotation and "end room" through Room CRs. Requires the RELAY chart's
+# rooms.enabled=true (which installs the Room CRD and the relay's own
+# read-only access to it).
+#
+# DEFAULT OFF, and the default is a security posture, not a feature flag:
+# turning it on widens this ServiceAccount's Role from "Ban CRs and a leader
+# Lease" (docs/42 §5) to ALSO Room CRs and — because a static room's attach
+# secret lives in a Kubernetes Secret the portal creates and rotates —
+# create/get/update/delete on `secrets` in the namespace. Kubernetes RBAC has
+# no per-name grant that survives a create, so a portal compromise with rooms
+# on can read every Secret in the namespace, not only `room-*`. Deploy
+# gawk-admin in a namespace holding nothing you would not hand to it. See
+# templates/rbac.yaml.
+rooms:
+  enabled: false
+
 config:
   # A plain "kill" is an ID ban with this cooldown (docs/42 D5): the
   # broadcaster auto-reclaims with its resume token within seconds, so a kill

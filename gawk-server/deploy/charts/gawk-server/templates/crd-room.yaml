@@ -1,0 +1,193 @@
+{{- if .Values.rooms.enabled }}
+# R42 (docs/44 §4.3, D4, D5): the Room custom resource. Static rooms are
+# written by gawk-admin or kubectl; dynamic rooms are created by the relay at
+# mint and carry everything another pod needs to adopt the room — code, kind,
+# creator-token fingerprint, attached broadcasts, the home-pod lease. Never the
+# participant list (D5: the roster is rebuilt from live control sessions).
+#
+# Ships in the RELAY chart next to crd-ban.yaml for the same reason the Ban CRD
+# does: the relay owns rooms and works without gawk-admin installed. Templated
+# (not crds/) so schema changes in later releases actually apply; kept on
+# uninstall so a chart removal never ends every live room.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: rooms.gawk.ioio.fi
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+  annotations:
+    # Uninstalling the relay chart must never delete live rooms: deleting the
+    # CRD cascades to every CR, and a static room's spec is operator
+    # configuration that would be gone for good.
+    "helm.sh/resource-policy": keep
+spec:
+  group: gawk.ioio.fi
+  scope: Namespaced
+  names:
+    plural: rooms
+    singular: room
+    kind: Room
+    listKind: RoomList
+    shortNames: [room]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      # A status subresource, UNLIKE Ban (docs/42 §4.2, which has none
+      # because relays only ever READ bans). Room has two writers with two
+      # authorities: spec belongs to whoever created the room (gawk-admin,
+      # kubectl, or the relay at mint), status belongs to the HOME POD only —
+      # the lease, attachments, emptySince, the HMAC'd key. Splitting them
+      # into separate endpoints is what lets an operator edit a static room's
+      # spec (rotate its attach secret, rename it) without racing the home
+      # pod's status writes, and lets the relay renew its lease every few
+      # seconds with resourceVersion CAS on the status alone. The relay's
+      # RBAC therefore carries rooms/status (rbac.yaml).
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            One room: a logical collection of broadcasts people join as
+            participants (docs/44). metadata.name is the normalized code —
+            a static slug lower-cased, or a dynamic six-character code
+            lower-cased.
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required: [kind]
+              properties:
+                kind:
+                  type: string
+                  enum: [static, dynamic]
+                  description: >-
+                    static rooms are preconfigured, reached by link, and exist
+                    while the CR does; dynamic rooms are minted by a publisher
+                    and end when empty past the grace.
+                displayCode:
+                  type: string
+                  minLength: 3
+                  maxLength: 32
+                  description: >-
+                    The code as configured ("TuhisRoom"); dynamic rooms omit
+                    it and display the upper-cased name.
+                displayName:
+                  type: string
+                  maxLength: 64
+                  description: Optional human title.
+                attachSecretRef:
+                  type: object
+                  description: >-
+                    Static only. The Secret key holding the attach secret a
+                    broadcaster must present to attach (docs/44 D8). Absent
+                    means anyone in the room may attach.
+                  required: [name, key]
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                    key:
+                      type: string
+                      minLength: 1
+                maxBroadcasts:
+                  type: integer
+                  minimum: 1
+                  description: Per-room override of -max-room-broadcasts.
+                integrations:
+                  type: object
+                  description: >-
+                    Reserved (docs/44 D18, §4.11): the voice bridge and chat
+                    mappings of later milestones. Empty in v1.
+                  properties:
+                    mumble:
+                      type: object
+                      properties:
+                        server:
+                          type: string
+                        channelPrefix:
+                          type: string
+            status:
+              type: object
+              description: Written only by the home pod.
+              properties:
+                creatorTokenFingerprint:
+                  type: string
+                  maxLength: 16
+                  description: >-
+                    Dynamic only: hex of the first 8 bytes of
+                    SHA-256(creator token). Never the token itself.
+                key:
+                  type: string
+                  maxLength: 12
+                  description: >-
+                    The fleet's HMAC'd handle for the code — the same key
+                    /statusz, metrics and telemetry use — so gawk-admin can
+                    name the room in webhooks and links without the code.
+                createdAt:
+                  type: string
+                  format: date-time
+                attachments:
+                  type: array
+                  description: >-
+                    Rebuilt by the home pod on adoption. Carries raw
+                    broadcast IDs: the Kubernetes API is internal.
+                  items:
+                    type: object
+                    required: [broadcastID]
+                    properties:
+                      broadcastID:
+                        type: string
+                      label:
+                        type: string
+                        maxLength: 32
+                      attachedAt:
+                        type: string
+                        format: date-time
+                lease:
+                  type: object
+                  description: >-
+                    The home-pod lease with the R17 origin-lease semantics
+                    (docs/22 Decision 8): holder = pod name, addr = the
+                    pod's dialable address for /internal/room proxying,
+                    generation bumped on every claim (a CAS fence for stale
+                    homes), renewedAt the staleness clock. An empty holder
+                    with a non-zero generation is a released lease (drain).
+                  required: [generation]
+                  properties:
+                    holder:
+                      type: string
+                    addr:
+                      type: string
+                    generation:
+                      type: integer
+                      format: int64
+                    renewedAt:
+                      type: string
+                      format: date-time
+                emptySince:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  description: >-
+                    Dynamic only: set by the home pod when the roster
+                    empties, cleared by the next join. The janitor deletes a
+                    dynamic room whose lease is stale past its long window
+                    AND whose emptySince is older than the empty grace.
+      # `kubectl get rooms` is the operator's view of the fleet's rooms: what
+      # kind each is, its code, and which pod homes it right now.
+      additionalPrinterColumns:
+        - name: Kind
+          type: string
+          jsonPath: .spec.kind
+        - name: Code
+          type: string
+          jsonPath: .spec.displayCode
+        - name: Home
+          type: string
+          jsonPath: .status.lease.holder
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+{{- end }}

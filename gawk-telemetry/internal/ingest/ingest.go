@@ -44,14 +44,18 @@ import (
 // first batch), and a `final` that was never sent must not read as false by
 // accident when the strict stance says the field is required.
 type Batch struct {
-	V            *int    `json:"v"`
-	Token        string  `json:"token"`
-	Role         string  `json:"role"`
-	BroadcastKey string  `json:"broadcastKey"`
-	Seq          *int    `json:"seq"`
-	Final        *bool   `json:"final"`
-	App          AppInfo `json:"app"`
-	StartedAtMs  *int64  `json:"startedAtMs"`
+	V            *int   `json:"v"`
+	Token        string `json:"token"`
+	Role         string `json:"role"`
+	BroadcastKey string `json:"broadcastKey"`
+	// RoomKey is R42's optional room handle (docs/44 §4.10, RM8): the relay's
+	// HMAC'd room code, the same 6-byte shape as BroadcastKey, sent only by a
+	// session that started inside a room. Absent or empty means "no room".
+	RoomKey     string  `json:"roomKey"`
+	Seq         *int    `json:"seq"`
+	Final       *bool   `json:"final"`
+	App         AppInfo `json:"app"`
+	StartedAtMs *int64  `json:"startedAtMs"`
 	// Stats stays RAW at envelope-decode time and is decoded separately below.
 	// That split is load-bearing, not stylistic: Go's JSON decoder ERRORS on a
 	// number that overflows float64, so decoding stats inline would let one
@@ -88,16 +92,19 @@ type AppInfo struct {
 type Accepted struct {
 	SessionID    string
 	BroadcastKey string
-	Role         string
-	Seq          int
-	Final        bool
-	Truncated    bool
-	App          AppInfo
-	StartedAtMs  int64
-	ReceivedAt   time.Time
-	Samples      []Sample
-	Events       []Event
-	Anomalies    schema.Anomalies
+	// RoomKey is empty for a session outside any room. When set it is 12 hex
+	// chars; see Validate for why it is shape-checked but not authenticated.
+	RoomKey     string
+	Role        string
+	Seq         int
+	Final       bool
+	Truncated   bool
+	App         AppInfo
+	StartedAtMs int64
+	ReceivedAt  time.Time
+	Samples     []Sample
+	Events      []Event
+	Anomalies   schema.Anomalies
 }
 
 // Sample is one sanitized stats observation.
@@ -314,6 +321,20 @@ func (h *Handler) Validate(body []byte) (Accepted, int, error) {
 		// tag is computed over it, so anything else fails below anyway.
 		return Accepted{}, http.StatusBadRequest, errors.New("invalid broadcastKey")
 	}
+	if b.RoomKey != "" {
+		// Same shape rule as broadcastKey, so a client can no more report a
+		// raw room code here than a raw broadcast ID above. Unlike
+		// broadcastKey, the room key is NOT covered by the token's tag: the
+		// token binds broadcastKey + role only (wire.MintTelemetrySessionToken),
+		// and a session may enter a room after it obtained the token. So this
+		// field is trusted only as a grouping HINT — shape-validated envelope,
+		// not an authenticated identity — and nothing downstream may treat it
+		// as proof of room membership.
+		roomKey, err := hex.DecodeString(b.RoomKey)
+		if err != nil || len(roomKey) != wire.RoomKeySize {
+			return Accepted{}, http.StatusBadRequest, errors.New("invalid roomKey")
+		}
+	}
 	token, err := hex.DecodeString(b.Token)
 	if err != nil || len(token) != wire.TelemetrySessionTokenSize {
 		return Accepted{}, http.StatusUnauthorized, errors.New("invalid token encoding")
@@ -374,6 +395,7 @@ func (h *Handler) Validate(body []byte) (Accepted, int, error) {
 	return Accepted{
 		SessionID:    sessionID,
 		BroadcastKey: b.BroadcastKey,
+		RoomKey:      b.RoomKey,
 		Role:         b.Role,
 		Seq:          *b.Seq,
 		Final:        *b.Final,

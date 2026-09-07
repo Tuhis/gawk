@@ -61,6 +61,68 @@ type Session interface {
 	Stop() error
 	Stats() engine.Stats
 	BroadcastID() string
+	// R42 rooms: join / mint / leave while live (docs/44 §4.8).
+	JoinRoom(code, attachSecret string) error
+	NewRoom(label, createSecret string) error
+	LeaveRoom()
+}
+
+// RoomStatus is the room card's state (R42, docs/44 §4.8 "GUI card").
+type RoomStatus int
+
+const (
+	// RoomNone: not in a room. cfg.Room may still name one to attach to on
+	// the next start (RoomInfo.Configured).
+	RoomNone RoomStatus = iota
+	// RoomJoining: dialling the room, or waiting for the attach proof.
+	RoomJoining
+	// RoomJoined: in the room, this broadcast not (yet) attached.
+	RoomJoined
+	// RoomAttached: this broadcast is attached and live.
+	RoomAttached
+	// RoomAway: attached, but the relay flags the broadcast away (a resume
+	// in flight, seen from the room's side).
+	RoomAway
+	// RoomEnded: the room ended; the broadcast continues on its own code.
+	RoomEnded
+	// RoomError: the room could not be joined or minted (RoomInfo.Error).
+	RoomError
+)
+
+func (s RoomStatus) String() string {
+	switch s {
+	case RoomJoining:
+		return "Joining the room…"
+	case RoomJoined:
+		return "In the room — not attached"
+	case RoomAttached:
+		return "Attached — live in the room"
+	case RoomAway:
+		return "Attached — away (reconnecting)"
+	case RoomEnded:
+		return "The room has ended"
+	case RoomError:
+		return "Room error"
+	default:
+		return "Not in a room"
+	}
+}
+
+// RoomInfo is what the room card renders.
+type RoomInfo struct {
+	Status RoomStatus
+	// Code is the room's display code while in one (or after it ended).
+	Code string
+	// Configured is cfg.Room: the room the next start attaches to.
+	Configured string
+	// CreatorToken (hex) is held after a mint this session: the grant the
+	// room-view link carries. Never persisted.
+	CreatorToken string
+	Participants int
+	Broadcasts   int
+	// Error is the last room failure as a sentence; cleared by the next
+	// attach/new/detach action.
+	Error string
 }
 
 // App holds the GUI's state machine.
@@ -115,6 +177,11 @@ type App struct {
 	// media is the live capture source, kept only so the mid-session switch
 	// has something to call. Nil outside a broadcast.
 	media any
+
+	// room is the R42 room card's state, derived from the engine's room
+	// callbacks (guarded by mu). The room session lives and dies with the
+	// broadcast session, so ended() resets it.
+	room RoomInfo
 }
 
 // AudioPrompt is the whose-audio card's state: what to list, and what is
@@ -440,6 +507,211 @@ func TermsLink(appURL string) string {
 	return strings.TrimSuffix(appURL, "/") + "/#/terms"
 }
 
+// RoomViewLink builds the "open room view" URL (docs/44 §4.8):
+// `#/room/<code>?rt=<grant>`, where the SPA moves the grant into session
+// storage and rewrites the hash before rendering — the one-shot pattern the
+// ?relay= link uses. Empty without an app URL (there is no default one on
+// Linux) or outside a room.
+func RoomViewLink(appURL, code, grant string) string {
+	if appURL == "" || code == "" {
+		return ""
+	}
+	link := strings.TrimSuffix(appURL, "/") + "/#/room/" + code
+	if grant != "" {
+		link += "?rt=" + grant
+	}
+	return link
+}
+
+// Room returns the room card's state.
+func (a *App) Room() RoomInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	r := a.room
+	r.Configured = a.cfg.Room
+	return r
+}
+
+// RoomViewLink is the room-view URL for the current room, carrying the
+// creator token from a mint this session, else the static room's attach
+// secret (the two grants docs/44 §4.8 names), else nothing.
+func (a *App) RoomViewLink() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	grant := a.room.CreatorToken
+	if grant == "" {
+		grant = a.cfg.RoomAttachSecret
+	}
+	return RoomViewLink(a.cfg.AppURL, a.room.Code, grant)
+}
+
+// AttachRoom joins a room by code or slug. While live the broadcast attaches
+// now; either way the room is remembered so the next start attaches to it
+// (the CLI's -room, the profile's `room` field). A pasted room link is
+// accepted too: the code is the last path segment.
+func (a *App) AttachRoom(codeOrLink, attachSecret string) {
+	code := roomCodeFromInput(codeOrLink)
+	if code == "" {
+		return
+	}
+	a.mu.Lock()
+	a.cfg.Room = code
+	a.cfg.RoomAttachSecret = strings.TrimSpace(attachSecret)
+	sess := a.sess
+	live := a.state == StateLive
+	a.room = RoomInfo{Code: code}
+	if live {
+		a.room.Status = RoomJoining
+	}
+	a.mu.Unlock()
+	if err := a.cfg.Save(); err != nil {
+		a.log.Warn("could not save config", "err", err)
+	}
+	a.invalidate()
+	if live && sess != nil {
+		// LeaveRoom (inside JoinRoom) waits for the detach ack; off the UI
+		// thread.
+		go func() {
+			if err := sess.JoinRoom(code, strings.TrimSpace(attachSecret)); err != nil {
+				a.roomFailed(err)
+			}
+		}()
+	}
+}
+
+// NewRoom mints a dynamic room from the live broadcast. Only meaningful
+// while live: a room is minted *from* a broadcast (docs/44 §4.4).
+func (a *App) NewRoom() {
+	a.mu.Lock()
+	sess := a.sess
+	live := a.state == StateLive
+	label := a.cfg.RoomLabel
+	if live {
+		a.room = RoomInfo{Status: RoomJoining}
+	}
+	a.mu.Unlock()
+	a.invalidate()
+	if !live || sess == nil {
+		return
+	}
+	go func() {
+		if err := sess.NewRoom(label, ""); err != nil {
+			a.roomFailed(err)
+		}
+	}()
+}
+
+// DetachRoom leaves the room and forgets it: the next start attaches to
+// nothing. The broadcast keeps publishing.
+func (a *App) DetachRoom() {
+	a.mu.Lock()
+	sess := a.sess
+	a.cfg.Room = ""
+	a.room = RoomInfo{}
+	a.mu.Unlock()
+	if err := a.cfg.Save(); err != nil {
+		a.log.Warn("could not save config", "err", err)
+	}
+	a.invalidate()
+	if sess != nil {
+		go sess.LeaveRoom()
+	}
+}
+
+// RoomCodeFromInput accepts a bare code/slug or a pasted room link
+// (…/#/room/<code>[?…]) and returns the code, trimmed. Exported for the
+// window's room field, which accepts both shapes.
+func RoomCodeFromInput(s string) string { return roomCodeFromInput(s) }
+
+func roomCodeFromInput(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "#/room/"); i >= 0 {
+		s = s[i+len("#/room/"):]
+	}
+	if i := strings.IndexAny(s, "?/"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+func (a *App) roomFailed(err error) {
+	a.mu.Lock()
+	a.room.Error = Message(err)
+	var rj *engine.RoomRejectError
+	if !errors.As(err, &rj) {
+		// A refused dial or a protocol failure: the room session is gone.
+		// A rejected command leaves it up, so the status stays.
+		a.room.Status = RoomError
+	}
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+// onRoomState applies a snapshot: replace, never merge (docs/44 §4.6).
+func (a *App) onRoomState(st wire.RoomState) {
+	a.mu.Lock()
+	a.room.Code = st.Code
+	a.room.Participants = len(st.Participants)
+	a.room.Broadcasts = len(st.Attachments)
+	a.room.Error = ""
+	a.room.Status = RoomJoined
+	for _, at := range st.Attachments {
+		if at.BroadcastID == a.id {
+			a.room.Status = attachmentStatus(at.Live)
+		}
+	}
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+func attachmentStatus(live bool) RoomStatus {
+	if live {
+		return RoomAttached
+	}
+	return RoomAway
+}
+
+// onRoomEvent applies one delta to what the card shows.
+func (a *App) onRoomEvent(ev wire.RoomEvent) {
+	a.mu.Lock()
+	own := ev.Attachment.BroadcastID != "" && ev.Attachment.BroadcastID == a.id
+	switch ev.Kind {
+	case wire.RoomEventParticipantJoined:
+		a.room.Participants++
+	case wire.RoomEventParticipantLeft:
+		if a.room.Participants > 0 {
+			a.room.Participants--
+		}
+	case wire.RoomEventAttachmentAdded:
+		a.room.Broadcasts++
+		if own {
+			a.room.Status = attachmentStatus(ev.Attachment.Live)
+		}
+	case wire.RoomEventAttachmentUpdated:
+		if own {
+			a.room.Status = attachmentStatus(ev.Attachment.Live)
+		}
+	case wire.RoomEventAttachmentRemoved:
+		if a.room.Broadcasts > 0 {
+			a.room.Broadcasts--
+		}
+		if own && a.room.Status != RoomEnded {
+			a.room.Status = RoomJoined
+		}
+	}
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+func (a *App) onRoomEnded() {
+	a.mu.Lock()
+	a.room.Status = RoomEnded
+	a.room.CreatorToken = ""
+	a.mu.Unlock()
+	a.invalidate()
+	a.notifier.Notify("Room ended", "Your broadcast continues on its own code.", notify.UrgencyNormal)
+}
+
 // Start begins a broadcast. id empty mints a new code; non-empty reclaims.
 func (a *App) Start(ctx context.Context, id string) {
 	a.mu.Lock()
@@ -457,6 +729,12 @@ func (a *App) Start(ctx context.Context, id string) {
 	a.audioLinks, a.audioLinksKnown = 0, false
 	a.prompt, a.answer = nil, nil
 	a.id = id
+	// R42: a configured room is joined on publish; the card shows the dial
+	// from the start rather than "not in a room" for the first second.
+	a.room = RoomInfo{}
+	if a.cfg.Room != "" {
+		a.room = RoomInfo{Status: RoomJoining, Code: a.cfg.Room}
+	}
 	a.mu.Unlock()
 	a.invalidate()
 
@@ -501,8 +779,25 @@ func (a *App) run(ctx context.Context, id string) {
 			ResumeToken:   resumeToken,
 			Origin:        a.cfg.Origin,
 			Media:         a.mediaConfig(),
+			// R42: the profile's room, attached on publish and re-attached
+			// on every resume (the engine owns that latch).
+			Room:             a.cfg.Room,
+			RoomAttachSecret: a.cfg.RoomAttachSecret,
+			RoomLabel:        a.cfg.RoomLabel,
+			Nickname:         a.cfg.Nickname,
 		},
 		engine.Callbacks{
+			OnRoomCreated: func(code, creatorToken string) {
+				a.mu.Lock()
+				a.room.Code = code
+				a.room.CreatorToken = creatorToken
+				a.mu.Unlock()
+				a.invalidate()
+			},
+			OnRoomState: a.onRoomState,
+			OnRoomEvent: a.onRoomEvent,
+			OnRoomEnded: func(uint8) { a.onRoomEnded() },
+			OnRoomError: a.roomFailed,
 			OnBroadcastID: func(bid string) {
 				a.mu.Lock()
 				a.id = bid
@@ -694,6 +989,9 @@ func (a *App) ended() {
 	a.prompt, a.answer = nil, nil
 	a.status = "Ready"
 	a.resuming = false
+	// The room session died with the broadcast session; the configured
+	// room (cfg.Room) survives for the next start.
+	a.room = RoomInfo{}
 	hadErr := a.lastErr != ""
 	a.mu.Unlock()
 	a.invalidate()
@@ -905,6 +1203,14 @@ func Message(err error) string {
 		// Decision 10's payoff: the browser cannot tell 401 from 404 from 409
 		// from a typo, because WebTransportError hides the status. We can.
 		return se.Message()
+	}
+	// R42: the room's two typed failures carry their own sentences.
+	if re, ok := engine.AsRoomError(err); ok {
+		return re.Message()
+	}
+	var rj *engine.RoomRejectError
+	if errors.As(err, &rj) {
+		return rj.Message()
 	}
 	return err.Error()
 }

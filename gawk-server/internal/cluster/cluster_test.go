@@ -512,6 +512,65 @@ func TestInformerCallbacks(t *testing.T) {
 	}
 }
 
+// Lookup (R42, PR #302 review) is the fleet-wide "is this broadcast known,
+// live, in grace" answer a room needs about an attachment homed on another
+// pod, served from the lease informer's cache so a 1 Hz refresh over every
+// attachment never costs an API Get. Before the informer has synced it
+// answers "unknown" (a pre-sync cache is empty, not authoritative); once
+// synced: a held, renewing lease is live; a grace stamp (or a renewTime
+// gone stale — the crash case, no stamp ever written) is in grace; a
+// deleted lease is unknown again.
+func TestLookupServesTheLeaseCache(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	b := newTestCoordinator(t, cs, "pod-b", clock, nil)
+	if _, _, _, ok := b.Lookup("K7XQ2M"); ok || b.LeasesSynced() {
+		t.Fatal("Lookup answered before the informer ran")
+	}
+	watching := leaseWatchRegistered(cs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.Run(ctx)
+	<-watching // see TestInformerCallbacks: the fake tracker replays nothing
+	if !b.WaitLeaseSync(ctx) {
+		t.Fatal("WaitLeaseSync")
+	}
+	if _, _, _, ok := b.Lookup("K7XQ2M"); ok {
+		t.Fatal("Lookup found a lease nobody claimed")
+	}
+
+	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, _, ok := b.Lookup("k7xq2m"); return ok }, "pod-b to see the lease")
+	if origin, inGrace, _, _ := b.Lookup("k7xq2m"); origin.Holder != "pod-a" || origin.Generation != 1 || inGrace {
+		t.Fatalf("live lease = %+v inGrace=%v, want pod-a gen 1, not in grace", origin, inGrace)
+	}
+
+	// The publisher goes away: pod-a stamps the grace deadline.
+	if err := a.EnterGrace(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("EnterGrace: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, inGrace, _, ok := b.Lookup("K7XQ2M"); return ok && inGrace }, "pod-b to see the grace stamp")
+
+	// A crashed origin never stamps anything; its renewTime going stale is
+	// the same answer.
+	if _, err := a.Claim(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, inGrace, _, ok := b.Lookup("K7XQ2M"); return ok && !inGrace }, "pod-b to see the re-claim")
+	clock.Advance(2 * b.opts.LeaseDuration)
+	if _, inGrace, _, ok := b.Lookup("K7XQ2M"); !ok || !inGrace {
+		t.Fatalf("stale renewTime: ok=%v inGrace=%v, want known and in grace", ok, inGrace)
+	}
+
+	if err := a.Delete(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, _, ok := b.Lookup("K7XQ2M"); return !ok }, "pod-b to see the deletion")
+}
+
 // R17 post-review fix (PR #47, the 5-minute time bomb): a pod whose lease
 // was force-taken reaches its local grace expiry later and calls Delete with
 // a stale opinion — it must NOT delete the new origin's actively-renewed
@@ -562,5 +621,120 @@ func TestDeleteOnlyRemovesOwnLease(t *testing.T) {
 	}
 	if _, err := b.Resolve(ctx, "K7XQ2M"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("released lease not deletable: %v", err)
+	}
+}
+
+// The stall state travels on the origin Lease the way the grace does (PR
+// #302 review, docs/44 §4.9): the origin's hub hook stamps gawk/stalled-since
+// at the onset and clears it on recovery, Lookup reads it from the informer
+// cache, a fresh claim starts clean, and a pod that is not the holder cannot
+// stamp someone else's lease.
+func TestLookupCarriesTheStallStamp(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	b := newTestCoordinator(t, cs, "pod-b", clock, nil)
+	watching := leaseWatchRegistered(cs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.Run(ctx)
+	<-watching
+	if !b.WaitLeaseSync(ctx) {
+		t.Fatal("WaitLeaseSync")
+	}
+	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled on a lease that does not exist must be a no-op, got %v", err)
+	}
+	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, _, ok := b.Lookup("k7xq2m"); return ok }, "pod-b to see the lease")
+	if _, inGrace, stalled, _ := b.Lookup("k7xq2m"); inGrace || stalled {
+		t.Fatalf("fresh lease: inGrace=%v stalled=%v, want neither", inGrace, stalled)
+	}
+
+	// Not the holder: no stamp.
+	if err := b.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled by a non-holder: %v", err)
+	}
+	if _, _, stalled, _ := b.Lookup("K7XQ2M"); stalled {
+		t.Fatal("a non-holder stamped the origin's lease")
+	}
+
+	// Onset on the origin, seen on pod-b; still not in grace (the session
+	// is up), so the two states stay distinct.
+	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled(true): %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, stalled, ok := b.Lookup("K7XQ2M"); return ok && stalled }, "pod-b to see the stall stamp")
+	if _, inGrace, _, _ := b.Lookup("K7XQ2M"); inGrace {
+		t.Fatal("a stall stamp read as grace")
+	}
+	// Idempotent: a second onset is not a second write.
+	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled(true) again: %v", err)
+	}
+
+	// Recovery clears it.
+	if err := a.SetStalled(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("SetStalled(false): %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, stalled, ok := b.Lookup("K7XQ2M"); return ok && !stalled }, "pod-b to see the stall cleared")
+
+	// A stalled publisher's reclaim (a new session, a new stall clock)
+	// starts the lease clean, even if the hub hook has not yet said so.
+	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled(true): %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, stalled, _ := b.Lookup("K7XQ2M"); return stalled }, "pod-b to see the stall stamp")
+	if _, err := a.Claim(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	waitFor(t, 15*time.Second, func() bool { _, _, stalled, _ := b.Lookup("K7XQ2M"); return !stalled }, "pod-b to see the re-claim clear the stamp")
+}
+
+// PR #302 review: SetStalled's Get + Update races the 5 s renew on the same
+// object. The hub reports each transition exactly once, so a CAS loss here
+// must be retried in place — otherwise a lost onset shows other pods' rooms
+// a live tile for the whole stall, and a lost recovery an away tile until
+// the next transition.
+func TestSetStalledRetriesThroughAConflict(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	ctx := context.Background()
+	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	conflicts := 2
+	cs.PrependReactor("update", "leases", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if conflicts > 0 {
+			conflicts--
+			return true, nil, apierrors.NewConflict(
+				schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"},
+				"gawk-bc-k7xq2m", errors.New("simulated renew race"))
+		}
+		return false, nil, nil
+	})
+	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
+		t.Fatalf("SetStalled through conflicts: %v", err)
+	}
+	if conflicts != 0 {
+		t.Fatal("conflict reactor never fired")
+	}
+	lease, err := cs.CoordinationV1().Leases(a.opts.Namespace).Get(ctx, leaseName("K7XQ2M"), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, has := lease.Annotations[annotationStalledSince]; !has {
+		t.Fatal("stall stamp lost to a CAS conflict")
+	}
+	conflicts = 2
+	if err := a.SetStalled(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("SetStalled(false) through conflicts: %v", err)
+	}
+	lease, _ = cs.CoordinationV1().Leases(a.opts.Namespace).Get(ctx, leaseName("K7XQ2M"), metav1.GetOptions{})
+	if _, has := lease.Annotations[annotationStalledSince]; has {
+		t.Fatal("recovery stamp lost to a CAS conflict")
 	}
 }

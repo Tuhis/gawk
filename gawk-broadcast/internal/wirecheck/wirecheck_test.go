@@ -3,6 +3,8 @@ package wirecheck
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/Tuhis/gawk/gawk-server/wire"
@@ -66,6 +68,49 @@ const (
 	goldenRelayIdentityHex       = "01110006312e34322e30096761776b20686f6d65"
 	goldenRelayIdentityNoNameHex = "01110006312e34322e3000"
 	goldenTelemetryEndpointHex   = "011200003068747470733a2f2f6761776b2e6578616d706c652e636f6d2f6170692f74656c656d657472792f76312f696e67657374"
+	// R42 rooms (docs/44 §4.6, last bullet). The native broadcaster is a room
+	// client at runtime: it SENDS RoomHello and the Attach/Detach commands and
+	// PARSES RoomState and RoomEvent, so most of these are coupling on
+	// messages this module really uses. The ones it never touches (the
+	// viewer-side commands, the web-only events) ride along by the same rule
+	// as the carrier/audio vectors above: every vector, every mirror.
+	//
+	// RoomHello: this module's first record on the room stream (protocol 1,
+	// clientKind web-broadcaster in the vector; native sends kind 2).
+	goldenRoomHelloHex = "0113010100057475686973"
+	// The uint16 length prefix every room record wears; framed by this module
+	// on send and stripped by it on receive.
+	goldenRoomRecordHex = "000b" + goldenRoomHelloHex
+	// RoomState: the snapshot this module parses on join and after Resync —
+	// dynamic (creator token present, one live attachment) and static (display
+	// name, no token) shapes.
+	goldenRoomStateDynamicHex = "0114" + "03" + "00" + "00000007" + "0001" +
+		"06355550345857" + "00" +
+		"10000102030405060708090a0b0c0d0e0f" +
+		"061a2b3c4d5e6f" +
+		"01" + "06414243444546" + "057475686973" + "01" + "00000003" +
+		"0001" + "0001" + "01" + "02" + "057475686973" + "00"
+	goldenRoomStateStaticHex = "0114" + "04" + "00" + "00000000" + "0002" +
+		"095475686973526f6f6d" + "0b54756869732720726f6f6d" + "00" + "00" + "00" +
+		"0001" + "0002" + "00" + "00" + "06766965776572" + "00"
+	// RoomEvent: parsed by this module's room supervisor. ParticipantJoined/
+	// Left drive the participant list; AttachmentUpdated/Removed are how it
+	// learns its own attachment aged out; RoomEnding precedes close 4007;
+	// CommandRejected is the answer to a refused Attach.
+	goldenRoomEventJoinedHex            = "011500000008" + "01" + "0003" + "02" + "02" + "027063" + "00"
+	goldenRoomEventLeftHex              = "011500000009" + "02" + "0003"
+	goldenRoomEventAttachmentUpdatedHex = "01150000000d" + "12" + "06414243444546" + "057475686973" + "00" + "0000000c"
+	goldenRoomEventAttachmentRemovedHex = "01150000000a" + "11" + "06414243444546" + "02"
+	goldenRoomEventEndingHex            = "01150000000b" + "20" + "02"
+	goldenRoomEventRejectedHex          = "01150000000c" + "30" + "01" + "01" + "09726f6f6d2066756c6c"
+	// RoomCommand: Attach (with this module's own resume token) and Detach are
+	// the two it sends; SetNickname/EndRoom/Resync are mirrored by rule.
+	goldenRoomCommandAttachHex = "0116" + "01" + "06414243444546" +
+		"10a0a1a2a3a4a5a6a7a8a9aaabacadaeaf" + "057475686973"
+	goldenRoomCommandDetachHex = "0116" + "02" + "06414243444546"
+	goldenRoomCommandNickHex   = "0116" + "03" + "057475686973"
+	goldenRoomCommandEndHex    = "011604"
+	goldenRoomCommandResyncHex = "011605"
 )
 
 func mustHex(t *testing.T, s string) []byte {
@@ -272,6 +317,25 @@ func TestWireConstants(t *testing.T) {
 		{"ViewerCountSize", wire.ViewerCountSize, 6},
 		{"AudioFrameHeaderSize", wire.AudioFrameHeaderSize, 16},
 		{"MaxAudioPayload", wire.MaxAudioPayload, 1184},
+		// R42 rooms (docs/44 D15): the four room control types this module
+		// speaks on the room stream, plus the bounds its own hello/commands
+		// must respect and its parsers enforce.
+		{"TypeRoomHello", wire.TypeRoomHello, 0x13},
+		{"TypeRoomState", wire.TypeRoomState, 0x14},
+		{"TypeRoomEvent", wire.TypeRoomEvent, 0x15},
+		{"TypeRoomCommand", wire.TypeRoomCommand, 0x16},
+		{"RoomProtocolVersion", wire.RoomProtocolVersion, 1},
+		{"RoomRecordHeaderSize", wire.RoomRecordHeaderSize, 2},
+		{"MaxRoomRecordSize", wire.MaxRoomRecordSize, 16384},
+		{"MaxRoomNicknameLen", wire.MaxRoomNicknameLen, 32},
+		{"MaxRoomCodeLen", wire.MaxRoomCodeLen, 32},
+		{"MaxRoomDisplayNameLen", wire.MaxRoomDisplayNameLen, 64},
+		{"MaxRoomLabelLen", wire.MaxRoomLabelLen, 32},
+		{"MaxRoomIdentityLen", wire.MaxRoomIdentityLen, 64},
+		{"MaxRoomRejectMessageLen", wire.MaxRoomRejectMessageLen, 128},
+		{"RoomCreatorTokenSize", wire.RoomCreatorTokenSize, 16},
+		{"RoomKeySize", wire.RoomKeySize, 6},
+		{"ResumeTokenSize", wire.ResumeTokenSize, 16},
 	} {
 		if c.got != c.want {
 			t.Errorf("wire.%s = %d, want %d — wire format changed; update the relay, both broadcasters and the viewer together", c.name, c.got, c.want)
@@ -304,6 +368,9 @@ func TestCloseCodeParity(t *testing.T) {
 		// R39 (docs/42 §4.4): the operator terminated the broadcast. Terminal
 		// for this publisher — see terminalForPublisher in the engine.
 		{"CloseCodeTerminatedByOperator", wire.CloseCodeTerminatedByOperator, 4006},
+		// R42 (docs/44 D15): the room ended. Sent on the room session, not
+		// the publish session — this module's broadcast survives it.
+		{"CloseCodeRoomEnded", wire.CloseCodeRoomEnded, 4007},
 	} {
 		if c.got != c.want {
 			t.Errorf("wire.%s = %d, want %d — close codes are wire-visible; update the relay, both broadcasters and the viewer together", c.name, c.got, c.want)
@@ -559,5 +626,185 @@ func TestParityFullPayloadFitsDatagram(t *testing.T) {
 	}
 	if len(got) > wire.MaxDatagramSize {
 		t.Errorf("full-payload parity datagram is %d bytes, exceeds MaxDatagramSize %d", len(got), wire.MaxDatagramSize)
+	}
+}
+
+// --- R42 rooms -------------------------------------------------------------
+
+// The expected structs, restated like the hex: the same values room_test.go
+// holds, never imported from it.
+var (
+	goldenRoomHello = wire.RoomHello{Protocol: 1, ClientKind: wire.RoomClientWebBroadcaster, Nickname: "tuhis"}
+
+	goldenRoomCreatorToken = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	goldenRoomResumeToken  = []byte{0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf}
+
+	goldenRoomStateDynamic = wire.RoomState{
+		Flags:        wire.RoomStateFlagDynamic | wire.RoomStateFlagCreator,
+		Seq:          7,
+		YourID:       1,
+		Code:         "5UP4XW",
+		CreatorToken: goldenRoomCreatorToken,
+		Key:          []byte{0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f},
+		Attachments:  []wire.RoomAttachment{{BroadcastID: "ABCDEF", Label: "tuhis", Live: true, ViewerCount: 3}},
+		Participants: []wire.RoomParticipant{{ID: 1, Kind: wire.RoomClientWebBroadcaster, Flags: wire.RoomParticipantFlagStreaming, Nickname: "tuhis"}},
+	}
+	goldenRoomStateStatic = wire.RoomState{
+		Flags:        wire.RoomStateFlagAttachOK,
+		YourID:       2,
+		Code:         "TuhisRoom",
+		DisplayName:  "Tuhis' room",
+		Participants: []wire.RoomParticipant{{ID: 2, Kind: wire.RoomClientWebViewer, Nickname: "viewer"}},
+	}
+)
+
+// RoomHello is the first record this module writes on a room stream.
+func TestGoldenRoomHello(t *testing.T) {
+	want := mustHex(t, goldenRoomHelloHex)
+	got, err := wire.AppendRoomHello(nil, goldenRoomHello)
+	if err != nil {
+		t.Fatalf("AppendRoomHello: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("RoomHello bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+	h, err := wire.ParseRoomHello(want)
+	if err != nil {
+		t.Fatalf("ParseRoomHello: %v", err)
+	}
+	if h != goldenRoomHello {
+		t.Errorf("ParseRoomHello = %+v, want %+v", h, goldenRoomHello)
+	}
+}
+
+// The record framing this module applies on send and strips on receive.
+func TestGoldenRoomRecord(t *testing.T) {
+	want := mustHex(t, goldenRoomRecordHex)
+	got, err := wire.AppendRoomRecord(nil, mustHex(t, goldenRoomHelloHex))
+	if err != nil {
+		t.Fatalf("AppendRoomRecord: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("room record drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+	n, err := wire.ParseRoomRecordLength(want)
+	if err != nil {
+		t.Fatalf("ParseRoomRecordLength: %v", err)
+	}
+	if n != 11 {
+		t.Errorf("ParseRoomRecordLength = %d, want 11", n)
+	}
+}
+
+// RoomState is parsed by this module on join and after every Resync.
+func TestGoldenRoomState(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hex  string
+		want wire.RoomState
+	}{
+		{"dynamic", goldenRoomStateDynamicHex, goldenRoomStateDynamic},
+		{"static", goldenRoomStateStaticHex, goldenRoomStateStatic},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := mustHex(t, tc.hex)
+			got, err := wire.AppendRoomState(nil, tc.want)
+			if err != nil {
+				t.Fatalf("AppendRoomState: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("RoomState bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+			}
+			s, err := wire.ParseRoomState(want)
+			if err != nil {
+				t.Fatalf("ParseRoomState: %v", err)
+			}
+			if !reflect.DeepEqual(s, tc.want) {
+				t.Errorf("ParseRoomState = %+v, want %+v", s, tc.want)
+			}
+		})
+	}
+}
+
+// RoomEvent is the relay→client stream this module's room supervisor reads.
+func TestGoldenRoomEvents(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hex  string
+		want wire.RoomEvent
+	}{
+		{"joined", goldenRoomEventJoinedHex, wire.RoomEvent{Seq: 8, Kind: wire.RoomEventParticipantJoined,
+			Participant: wire.RoomParticipant{ID: 3, Kind: wire.RoomClientNative, Flags: wire.RoomParticipantFlagStreaming, Nickname: "pc"}}},
+		{"left", goldenRoomEventLeftHex, wire.RoomEvent{Seq: 9, Kind: wire.RoomEventParticipantLeft, Participant: wire.RoomParticipant{ID: 3}}},
+		{"attachment updated", goldenRoomEventAttachmentUpdatedHex, wire.RoomEvent{Seq: 13, Kind: wire.RoomEventAttachmentUpdated,
+			Attachment: wire.RoomAttachment{BroadcastID: "ABCDEF", Label: "tuhis", ViewerCount: 12}}},
+		{"attachment removed", goldenRoomEventAttachmentRemovedHex, wire.RoomEvent{Seq: 10, Kind: wire.RoomEventAttachmentRemoved,
+			Attachment: wire.RoomAttachment{BroadcastID: "ABCDEF"}, Reason: wire.RoomDetachReasonExpired}},
+		{"ending", goldenRoomEventEndingHex, wire.RoomEvent{Seq: 11, Kind: wire.RoomEventRoomEnding, Reason: wire.RoomEndReasonCreator}},
+		{"rejected", goldenRoomEventRejectedHex, wire.RoomEvent{Seq: 12, Kind: wire.RoomEventCommandRejected,
+			Command: wire.RoomCommandAttach, Reason: wire.RoomRejectLimit, Message: "room full"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := mustHex(t, tc.hex)
+			got, err := wire.AppendRoomEvent(nil, tc.want)
+			if err != nil {
+				t.Fatalf("AppendRoomEvent: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("RoomEvent bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+			}
+			e, err := wire.ParseRoomEvent(want)
+			if err != nil {
+				t.Fatalf("ParseRoomEvent: %v", err)
+			}
+			if !reflect.DeepEqual(e, tc.want) {
+				t.Errorf("ParseRoomEvent = %+v, want %+v", e, tc.want)
+			}
+		})
+	}
+}
+
+// RoomCommand: Attach and Detach are the two this module sends.
+func TestGoldenRoomCommands(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hex  string
+		want wire.RoomCommand
+	}{
+		{"attach", goldenRoomCommandAttachHex, wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: "ABCDEF", ResumeToken: goldenRoomResumeToken, Label: "tuhis"}},
+		{"detach", goldenRoomCommandDetachHex, wire.RoomCommand{Kind: wire.RoomCommandDetach, BroadcastID: "ABCDEF"}},
+		{"nick", goldenRoomCommandNickHex, wire.RoomCommand{Kind: wire.RoomCommandSetNickname, Nickname: "tuhis"}},
+		{"end", goldenRoomCommandEndHex, wire.RoomCommand{Kind: wire.RoomCommandEndRoom}},
+		{"resync", goldenRoomCommandResyncHex, wire.RoomCommand{Kind: wire.RoomCommandResync}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := mustHex(t, tc.hex)
+			got, err := wire.AppendRoomCommand(nil, tc.want)
+			if err != nil {
+				t.Fatalf("AppendRoomCommand: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("RoomCommand bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+			}
+			c, err := wire.ParseRoomCommand(want)
+			if err != nil {
+				t.Fatalf("ParseRoomCommand: %v", err)
+			}
+			if !reflect.DeepEqual(c, tc.want) {
+				t.Errorf("ParseRoomCommand = %+v, want %+v", c, tc.want)
+			}
+		})
+	}
+}
+
+// The docs/44 §4.11 reserved kind ranges (events 0x40+, commands 0x50+):
+// this module's room reader must see ErrUnknownRoomKind and skip the record
+// rather than tear the session down, so the sentinel is pinned from here.
+func TestRoomReservedKinds(t *testing.T) {
+	if _, err := wire.ParseRoomEvent(mustHex(t, "0115000000014041")); !errors.Is(err, wire.ErrUnknownRoomKind) {
+		t.Errorf("reserved event kind 0x40: err = %v, want ErrUnknownRoomKind", err)
+	}
+	if _, err := wire.ParseRoomCommand(mustHex(t, "01165000")); !errors.Is(err, wire.ErrUnknownRoomKind) {
+		t.Errorf("reserved command kind 0x50: err = %v, want ErrUnknownRoomKind", err)
 	}
 }

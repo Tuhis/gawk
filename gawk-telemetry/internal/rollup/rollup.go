@@ -47,13 +47,17 @@ type Row struct {
 	// --- Identity ---
 	SessionID    string `json:"sessionId"`
 	BroadcastKey string `json:"broadcastKey"`
-	Role         string `json:"role"`
-	AppVersion   string `json:"appVersion,omitempty"`
-	Browser      string `json:"browser,omitempty"`
-	OS           string `json:"os,omitempty"`
-	StartedAt    int64  `json:"startedAt,omitempty"`
-	EndedAt      int64  `json:"endedAt,omitempty"`
-	DurationMs   int64  `json:"durationMs,omitempty"`
+	// RoomKey (R42, RM8) is the HMAC'd room the session reported itself in.
+	// Additive per rule 1: absent on every pre-R42 row and on every session
+	// outside a room, and a reader must treat both the same.
+	RoomKey    string `json:"roomKey,omitempty"`
+	Role       string `json:"role"`
+	AppVersion string `json:"appVersion,omitempty"`
+	Browser    string `json:"browser,omitempty"`
+	OS         string `json:"os,omitempty"`
+	StartedAt  int64  `json:"startedAt,omitempty"`
+	EndedAt    int64  `json:"endedAt,omitempty"`
+	DurationMs int64  `json:"durationMs,omitempty"`
 	// EndedCleanly distinguishes a session that said goodbye from one that
 	// simply stopped being heard from. Both are normal; only the second can
 	// also mean "the client died", which changes how much its last samples
@@ -249,6 +253,7 @@ func ConfigFields(role string) []string {
 type Input struct {
 	SessionID    string
 	BroadcastKey string
+	RoomKey      string
 	Role         string
 	AppVersion   string
 	Browser      string
@@ -284,6 +289,7 @@ func Compute(in Input) Row {
 	r := Row{
 		SessionID:       in.SessionID,
 		BroadcastKey:    in.BroadcastKey,
+		RoomKey:         in.RoomKey,
 		Role:            in.Role,
 		AppVersion:      in.AppVersion,
 		Browser:         in.Browser,

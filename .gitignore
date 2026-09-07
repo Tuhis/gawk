@@ -41,3 +41,10 @@ __pycache__/
 /gawk-telemetry/ui/coverage/
 coverage.out
 coverage-llvm.json
+
+# Built binaries: `go build` in a cmd dir drops one beside its main.go; CI builds into e2e/bin (ignored).
+/gawk-server/gawk-server
+/gawk-server/gawk-roomsim
+/gawk-server/gawk-echo
+/gawk-server/gawk-devcert
+/gawk-server/gawk-loadgen

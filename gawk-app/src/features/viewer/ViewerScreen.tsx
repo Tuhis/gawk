@@ -16,6 +16,7 @@ import {
   StatsIcon,
 } from '../../ui/Icons';
 import { ContextMenu, type MenuItem } from '../../ui/ContextMenu';
+import { Toast } from '../../ui/Toast';
 import { allowCustomRelays } from '../../config';
 import { StatsOverlay } from './StatsOverlay';
 import { ViewerSettingsPanel } from './ViewerSettingsPanel';
@@ -912,7 +913,7 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
         </button>
       )}
 
-      {copied && <div className={styles.toast}>Link copied</div>}
+      {copied && <Toast>Link copied</Toast>}
 
       <div className={[styles.controls, showControls ? '' : styles.controlsHidden].join(' ')}>
         <div className={styles.status}>

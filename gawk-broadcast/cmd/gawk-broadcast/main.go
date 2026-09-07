@@ -65,6 +65,14 @@ func run() error {
 		statsEvery = fs.Duration("stats", 5*time.Second, "how often to print a stats line (0 disables)")
 		telemetry  = fs.String("telemetry-url", "", "R28 telemetry ingest endpoint (env GAWK_TELEMETRY_URL); default "+config.DefaultTelemetryURL+" on the default relay, "+config.Off+" disables reporting")
 		showVer    = fs.Bool("version", false, "print the build version and exit")
+		// R42 rooms (docs/44 §4.8).
+		room         = fs.String("room", "", "attach the broadcast to this room: a 6-character code or a static room's slug (env GAWK_ROOM)")
+		roomNew      = fs.Bool("room-new", false, "create a new room from this broadcast instead of joining one (prints the code and the room-view link)")
+		roomAttach   = fs.String("room-attach-secret", "", "a static room's attach secret (env GAWK_ROOM_ATTACH_SECRET)")
+		roomCreate   = fs.String("room-create-secret", "", "the relay's room-create secret, if it requires one for -room-new (env GAWK_ROOM_CREATE_SECRET; never saved)")
+		roomLabel    = fs.String("room-label", "", "label for this broadcast's tile in the room (env GAWK_ROOM_LABEL)")
+		nickname     = fs.String("nick", "", "nickname in the room's roster (env GAWK_NICK; default "+engine.DefaultNickname+")")
+		roomCreateNC = "" // the create secret is per run: it never lands in the config file
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "gawk-broadcast — publish your screen to a gawk relay, with hardware encode.\n\n")
@@ -99,6 +107,14 @@ func run() error {
 	applyString(&cfg.Encoder, *encoder, os.Getenv("GAWK_ENCODER"))
 	applyString(&cfg.AudioDevice, *audioDev, os.Getenv("GAWK_AUDIO_DEVICE"))
 	applyString(&cfg.AudioApp, *audioApp, os.Getenv("GAWK_AUDIO_APP"))
+	// R42: the room fields persist like the rest (the attach secret is a
+	// credential the 0600 file already covers, same as the resume token);
+	// the create secret is the relay operator's invite and stays per run.
+	applyString(&cfg.Room, *room, os.Getenv("GAWK_ROOM"))
+	applyString(&cfg.RoomAttachSecret, *roomAttach, os.Getenv("GAWK_ROOM_ATTACH_SECRET"))
+	applyString(&cfg.RoomLabel, *roomLabel, os.Getenv("GAWK_ROOM_LABEL"))
+	applyString(&cfg.Nickname, *nickname, os.Getenv("GAWK_NICK"))
+	applyString(&roomCreateNC, *roomCreate, os.Getenv("GAWK_ROOM_CREATE_SECRET"))
 	// -audio defaults to true, so only an explicit -audio=false is an
 	// override: a bare run must not clear a config that says disableAudio.
 	if isFlagSet(fs, "audio") {
@@ -203,8 +219,36 @@ func run() error {
 			Origin:        cfg.Origin,
 			Insecure:      *insecure,
 			Media:         media,
+			// R42: -room joins, -room-new mints; both attach on publish and
+			// re-attach on every resume (the engine owns that).
+			Room:             cfg.Room,
+			RoomNew:          *roomNew,
+			RoomAttachSecret: cfg.RoomAttachSecret,
+			RoomCreateSecret: roomCreateNC,
+			RoomLabel:        cfg.RoomLabel,
+			Nickname:         cfg.Nickname,
 		},
 		engine.Callbacks{
+			OnRoomCreated: func(code, creatorToken string) {
+				fmt.Fprintf(os.Stderr, "\nRoom code: %s", code)
+				// Linux has no default app URL, so the room-view link (the
+				// grant hand-off docs/44 §4.8 describes) is printed only when
+				// one is configured — a bare code is still joinable by hand.
+				if link := roomViewLink(cfg.AppURL, code, creatorToken); link != "" {
+					fmt.Fprintf(os.Stderr, "   open room view: %s", link)
+				}
+				fmt.Fprintln(os.Stderr)
+			},
+			OnRoomState: func(st wire.RoomState) {
+				fmt.Fprintf(os.Stderr, "In room %s: %d broadcast(s), %d participant(s)\n", st.Code, len(st.Attachments), len(st.Participants))
+			},
+			OnRoomEnded: func(reason uint8) {
+				fmt.Fprintf(os.Stderr, "The room has ended (%s). The broadcast continues on its own code.\n", roomEndReason(reason))
+			},
+			OnRoomError: func(err error) {
+				reporter.Event("room-error", err.Error())
+				fmt.Fprintln(os.Stderr, "\nRoom: "+roomMessage(err))
+			},
 			OnBroadcastID: func(bid string) {
 				cfg.LastBroadcastID = bid
 				saveCfg()
@@ -423,6 +467,46 @@ func joinLink(appURL, id string) string {
 		return ""
 	}
 	return strings.TrimSuffix(appURL, "/") + "/#/view/" + id
+}
+
+// roomViewLink builds the "open room view" URL (docs/44 §4.8): the SPA moves
+// the grant in ?rt= into session storage and rewrites the hash before it
+// renders, the one-shot pattern the ?relay= link uses. Empty without an app
+// URL — there is no default one on Linux.
+func roomViewLink(appURL, code, grant string) string {
+	if appURL == "" || code == "" {
+		return ""
+	}
+	link := strings.TrimSuffix(appURL, "/") + "/#/room/" + code
+	if grant != "" {
+		link += "?rt=" + grant
+	}
+	return link
+}
+
+// roomMessage renders a room failure as a sentence; the two typed errors
+// carry their own, everything else is passed through.
+func roomMessage(err error) string {
+	if re, ok := engine.AsRoomError(err); ok {
+		return re.Message()
+	}
+	var rj *engine.RoomRejectError
+	if errors.As(err, &rj) {
+		return rj.Message()
+	}
+	return err.Error()
+}
+
+func roomEndReason(reason uint8) string {
+	switch reason {
+	case wire.RoomEndReasonEmpty:
+		return "it was empty"
+	case wire.RoomEndReasonCreator:
+		return "its creator ended it"
+	case wire.RoomEndReasonOperator:
+		return "the operator removed it"
+	}
+	return "no reason given"
 }
 
 // applyString sets dst to the first non-empty override, leaving the config

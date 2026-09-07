@@ -129,6 +129,47 @@ func TestFlatConfigIsMigratedIntoThePicker(t *testing.T) {
 	}
 }
 
+// R42's room card adds four pre-filled text fields — the exact widget class
+// that free-ran the window in 2026-07 — and a save path that normalises a
+// pasted room link to its code. Both are checked without a window: the
+// card's state machine itself is tested in internal/app.
+func TestRoomCardIsWiredAndIdle(t *testing.T) {
+	cfg := &config.Config{
+		RelayURL:         "https://relay.example.com",
+		AppURL:           "https://gawk.example.com",
+		Room:             "TuhisRoom",
+		RoomAttachSecret: "k",
+		RoomLabel:        "Desk",
+		Nickname:         "tuhis",
+	}
+	if got := idleFrames(t, cfg, 20); got != 0 {
+		t.Errorf("idle window with the room card pre-filled asked for an immediate redraw on %d frames, want 0", got)
+	}
+
+	a := gawkapp.New(gawkapp.Options{Config: cfg})
+	u := newUI(a, cfg)
+	if u.openURL == nil {
+		t.Fatal("the Open-room-view seam is not installed")
+	}
+	if u.roomCode.Text() != "TuhisRoom" || u.roomSecret.Text() != "k" || u.roomLabel.Text() != "Desk" || u.nickname.Text() != "tuhis" {
+		t.Errorf("room fields not pre-filled from the config: %q %q %q %q",
+			u.roomCode.Text(), u.roomSecret.Text(), u.roomLabel.Text(), u.nickname.Text())
+	}
+
+	// Save normalises a pasted link to its code and persists label + nick,
+	// so a room typed but not yet attached still attaches on the next start.
+	u.roomCode.SetText("https://gawk.example.com/#/room/AB2CD3?rt=ff00")
+	u.roomLabel.SetText(" Couch ")
+	u.nickname.SetText(" juho ")
+	u.save()
+	if cfg.Room != "AB2CD3" || cfg.RoomLabel != "Couch" || cfg.Nickname != "juho" {
+		t.Errorf("config after save = room %q label %q nick %q", cfg.Room, cfg.RoomLabel, cfg.Nickname)
+	}
+	if got := a.Room(); got.Status != gawkapp.RoomNone || got.Configured != "AB2CD3" {
+		t.Errorf("idle card = %+v, want not-in-a-room with the configured code", got)
+	}
+}
+
 func TestIdleWindowSchedulesNoRedraws(t *testing.T) {
 	const frames = 20
 

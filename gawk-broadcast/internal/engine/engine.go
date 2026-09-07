@@ -68,6 +68,24 @@ type Config struct {
 	Insecure bool
 	// Media is the capture/encode configuration.
 	Media MediaConfig
+
+	// Room (R42, docs/44 §4.8) names a room to attach the broadcast to on
+	// publish: a 6-character dynamic code or a static slug. Empty means no
+	// room. Ignored when RoomNew is set.
+	Room string
+	// RoomNew mints a new dynamic room from this broadcast once its ID and
+	// resume token are known, and joins it as creator (OnRoomCreated).
+	RoomNew bool
+	// RoomAttachSecret is a static room's attach key, presented on the join
+	// dial. Dynamic rooms need none.
+	RoomAttachSecret string
+	// RoomCreateSecret is the fleet's -room-create-secret, presented on a
+	// mint when the relay requires one.
+	RoomCreateSecret string
+	// RoomLabel names the broadcast's tile in the room (MaxRoomLabelLen).
+	RoomLabel string
+	// Nickname is the roster name; empty uses DefaultNickname.
+	Nickname string
 }
 
 // Callbacks mirror the browser's BroadcastCallbacks. All are optional; all are
@@ -122,6 +140,60 @@ type Callbacks struct {
 	// fleet-global in cluster mode; ~1 s cadence, change-driven. The "first
 	// viewer joined" moment is the 0 → ≥1 transition, derived by the shell.
 	OnViewerCount func(count uint32)
+
+	// The room callbacks (R42, docs/44 §4.8). None of them is session-fatal:
+	// the broadcast publishes on regardless of what its room does.
+
+	// OnRoomCreated fires once per NewRoom/Config.RoomNew, when the relay
+	// has minted the room: the display code and the creator token (hex —
+	// the grant "Open room view" hands to the SPA, docs/44 §4.8).
+	OnRoomCreated func(code, creatorTokenHex string)
+	// OnRoomState fires on every full snapshot (after each connect and
+	// resync). Replace, never merge.
+	OnRoomState func(state wire.RoomState)
+	// OnRoomEvent fires per delta, CommandRejected included (which also
+	// reaches OnRoomError as a *RoomRejectError).
+	OnRoomEvent func(event wire.RoomEvent)
+	// OnRoomEnded fires when the room is over (close code 4007, or the room
+	// ended before the join completed). reason is the RoomEndReason* from
+	// the preceding RoomEnding event, 0 when there was none. The room
+	// session is not reconnected; the broadcast is untouched.
+	OnRoomEnded func(reason uint8)
+	// OnRoomError reports a room failure: a *RoomError for a dial the relay
+	// refused for good or a protocol failure (the room session is then
+	// gone), or a *RoomRejectError for one refused command (the session
+	// stays up).
+	OnRoomError func(error)
+}
+
+func (c Callbacks) roomCreated(code, token string) {
+	if c.OnRoomCreated != nil {
+		c.OnRoomCreated(code, token)
+	}
+}
+
+func (c Callbacks) roomState(st wire.RoomState) {
+	if c.OnRoomState != nil {
+		c.OnRoomState(st)
+	}
+}
+
+func (c Callbacks) roomEvent(ev wire.RoomEvent) {
+	if c.OnRoomEvent != nil {
+		c.OnRoomEvent(ev)
+	}
+}
+
+func (c Callbacks) roomEnded(reason uint8) {
+	if c.OnRoomEnded != nil {
+		c.OnRoomEnded(reason)
+	}
+}
+
+func (c Callbacks) roomError(err error) {
+	if c.OnRoomError != nil {
+		c.OnRoomError(err)
+	}
 }
 
 func (c Callbacks) broadcastID(id string) {
@@ -196,6 +268,8 @@ type Options struct {
 	Clock Clock
 	// Dial defaults to dialRelay. Tests inject a fake session.
 	Dial DialFunc
+	// RoomDial defaults to dialRoom (R42). Tests inject a fake room session.
+	RoomDial RoomDialFunc
 	// MediaFactory defaults to the portal+GStreamer source. Tests inject a
 	// fake. The engine always calls it with its own Clock (Decision 6).
 	MediaFactory MediaSourceFactory
@@ -217,6 +291,7 @@ type Session struct {
 	cb           Callbacks
 	clock        Clock
 	dial         DialFunc
+	roomDial     RoomDialFunc
 	mediaFactory MediaSourceFactory
 	log          *slog.Logger
 
@@ -259,6 +334,13 @@ type Session struct {
 	// mu; known stays false until the relay's first push lands).
 	viewerCount      uint32
 	viewerCountKnown bool
+
+	// R42 room membership (guarded by mu): the current room client, if any,
+	// and the session context room clients are spawned under. roomCtx is
+	// set once the publisher session is up and cleared never — a stopped
+	// session refuses new rooms through `stopped`.
+	room    *roomClient
+	roomCtx context.Context
 }
 
 // New builds a Session. It performs no I/O; Start does.
@@ -268,6 +350,7 @@ func New(cfg Config, cb Callbacks, opts Options) *Session {
 		cb:            cb,
 		clock:         opts.Clock,
 		dial:          opts.Dial,
+		roomDial:      opts.RoomDial,
 		mediaFactory:  opts.MediaFactory,
 		log:           opts.Log,
 		statsInterval: opts.StatsInterval,
@@ -277,6 +360,9 @@ func New(cfg Config, cb Callbacks, opts Options) *Session {
 	}
 	if s.dial == nil {
 		s.dial = dialRelay
+	}
+	if s.roomDial == nil {
+		s.roomDial = dialRoom
 	}
 	if s.mediaFactory == nil {
 		// The engine deliberately knows nothing about GStreamer, PipeWire or
@@ -334,6 +420,7 @@ func (s *Session) Start(ctx context.Context) error {
 	s.setRelay(relay)
 	s.mu.Lock()
 	s.cancel = cancel
+	s.roomCtx = sessCtx
 	s.mu.Unlock()
 
 	if err := s.startLive(sessCtx, relay); err != nil {
@@ -412,6 +499,11 @@ func (s *Session) startLive(ctx context.Context, relay RelaySession) error {
 		defer s.wg.Done()
 		s.supervise(ctx, relay)
 	}()
+
+	// R42: the room, if the config asks for one. After the supervisor so
+	// the room goroutine's wg.Add never races an empty group, and after
+	// capture so a room is never held for a broadcast that failed to start.
+	s.startConfiguredRoom(ctx)
 	return nil
 }
 
@@ -513,6 +605,7 @@ func (s *Session) readServerMessage(ctx context.Context, str ReceiveStream) {
 		s.cfg.BroadcastID = id
 		s.mu.Unlock()
 		s.cb.broadcastID(id)
+		s.roomCredentialsChanged()
 	case wire.TypeResumeToken:
 		raw, err := wire.ParseResumeToken(buf)
 		if err != nil {
@@ -524,6 +617,9 @@ func (s *Session) readServerMessage(ctx context.Context, str ReceiveStream) {
 		s.cfg.ResumeToken = token
 		s.mu.Unlock()
 		s.cb.resumeToken(token)
+		// R42: half of the attach proof; the latch fires once both halves
+		// are in, whichever order they arrived.
+		s.roomCredentialsChanged()
 	case wire.TypeTelemetryHello:
 		// R28 (docs/33 D2): this session's telemetry identity. Parsed and
 		// handed out; the engine itself never collects or sends anything —
@@ -844,6 +940,11 @@ func (s *Session) teardown() {
 	s.mu.Unlock()
 	relay := s.currentRelay()
 
+	// R42: the room session first — leaving is a courtesy to the roster,
+	// and its goroutine is in wg, which Stop waits on. Never a Detach: the
+	// attachment outlives a participant on purpose (docs/44 §4.4), so a
+	// stopped broadcaster shows as "away" until the grace expires.
+	s.stopRoom()
 	if cancel != nil {
 		cancel()
 	}

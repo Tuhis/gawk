@@ -85,6 +85,13 @@ pub trait RelaySession: Send + Sync + 'static {
     fn receive_datagram(&self) -> BoxFuture<'_, Result<Vec<u8>, String>>;
     /// Resolves when the session dies, with the best available cause.
     fn closed(&self) -> BoxFuture<'_, SessionClose>;
+    /// Closes the session cleanly (application close code 0), the way the
+    /// Go engine's `Stop` does with `CloseWithError(0)`: the relay learns
+    /// the publisher left NOW — viewers see "streamer away", a room shows
+    /// the attachment as away — instead of at the QUIC idle timeout, which
+    /// is what a shell that still holds the session would otherwise get.
+    /// A no-op for a session with nothing to close.
+    fn close(&self) {}
 }
 
 /// Which phase a start failure happened in. The shells' "Start a new

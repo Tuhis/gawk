@@ -10,6 +10,7 @@ use crate::relay::{RelaySession, SessionClose, StartError, StartPhase, publish_u
 use crate::resume::{
     RESUME_WINDOW, ResumeBackoff, close_code_message, resume_terminal, terminal_for_publisher,
 };
+use crate::room::{self, Identity, RoomConfig, RoomDialer, RoomRequest, RoomSummary};
 use crate::sender::Sender;
 use crate::stats::Stats;
 use crate::timesync::{ClockMappingPublisher, TIME_SYNC_INTERVAL_MS, TimeSyncClient};
@@ -21,7 +22,7 @@ use tokio::sync::{mpsc, watch};
 
 /// Everything a session needs to start. URLs arrive RESOLVED (the config
 /// layer owns "blank means the default").
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SessionConfig {
     pub relay_url: String,
     /// Reclaim this code instead of minting, when non-empty.
@@ -32,6 +33,21 @@ pub struct SessionConfig {
     pub origin: String,
     /// Skip TLS verification — dev certs only.
     pub insecure: bool,
+    /// R42 rooms (docs/44 §4.8): join this code (or static slug) and attach
+    /// the broadcast on publish, re-attaching on every resume. Ignored when
+    /// `room_new` is set.
+    pub room_code: String,
+    /// Mint a new dynamic room from this broadcast once its identity is
+    /// known (`/room/new`).
+    pub room_new: bool,
+    /// A static room's attach key (presented on join).
+    pub room_attach_secret: String,
+    /// The relay's create secret (presented on a mint).
+    pub room_create_secret: String,
+    /// The tile label the attachment carries (bounded by the wire).
+    pub room_label: String,
+    /// The room nickname; empty lets the relay assign one.
+    pub nickname: String,
 }
 
 /// What the session tells its shell. The Go engine's `Callbacks`, as events.
@@ -64,6 +80,29 @@ pub enum EngineEvent {
     Resumed,
     /// The session is over; `error` is `None` for a clean stop.
     Ended { error: Option<String> },
+
+    // --- R42 rooms (docs/44 §4.8) — the room control session's events ---
+    /// The room's current picture: replaced from every snapshot, patched
+    /// from every delta. The shell renders it; it never merges.
+    RoomState(RoomSummary),
+    /// A `/room/new` mint succeeded: the code viewers join by and the
+    /// creator token (hex) — the grant the "Open room view" link carries.
+    RoomCreated {
+        code: String,
+        creator_token_hex: String,
+    },
+    /// The room now lists this broadcast.
+    RoomAttached,
+    /// The room no longer lists this broadcast (or this session left).
+    RoomDetached { reason: String },
+    /// The room control session is over for good: the room ended (4007),
+    /// the join was refused, or a reconnect gave up. Attached media sessions
+    /// have their own lifecycle and are untouched.
+    RoomEnded { reason: String },
+    /// The relay refused a room command (attach, detach…).
+    RoomRejected { reason: String, message: String },
+    /// The room control session is being redialed (attempt counter).
+    RoomReconnecting { attempt: u32 },
 }
 
 struct Shared {
@@ -74,14 +113,37 @@ struct Shared {
     resuming: bool,
 }
 
+/// One running room control session, owned by the publish session.
+struct RoomHandle {
+    stop: watch::Sender<bool>,
+    requests: mpsc::UnboundedSender<RoomRequest>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl RoomHandle {
+    fn stop(self) {
+        let _ = self.stop.send(true);
+        self.task.abort();
+    }
+}
+
 /// A live publisher session. Media pumps feed [`Session::sender`]; the shell
 /// consumes the event stream and calls [`Session::stop`] to end cleanly.
 pub struct Session {
+    cfg: SessionConfig,
     sender: Arc<Sender>,
     shared: Arc<Mutex<Shared>>,
     ts: Arc<TimeSyncClient>,
     stop_tx: watch::Sender<bool>,
     run: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The publish identity the room session attaches with (announce +
+    /// token, both known), re-published with a new generation on every
+    /// resume so the room re-attaches.
+    identity: watch::Sender<Option<Identity>>,
+    events: mpsc::UnboundedSender<EngineEvent>,
+    room: Arc<Mutex<Option<RoomHandle>>>,
+    room_dialer: Arc<dyn RoomDialer>,
+    rt: tokio::runtime::Handle,
 }
 
 impl std::fmt::Debug for Session {
@@ -128,8 +190,24 @@ impl Session {
         relay: Arc<dyn RelaySession>,
         clock: Arc<dyn Clock>,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<EngineEvent>) {
+        let dialer: Arc<dyn RoomDialer> = Arc::new(transport::WtRoomDialer {
+            origin: cfg.origin.clone(),
+            insecure: cfg.insecure,
+        });
+        Self::start_with_session_and_room_dialer(cfg, relay, clock, dialer)
+    }
+
+    /// [`Session::start_with_session`] with the room dial seam injected too,
+    /// so a test can script the room control session alongside the relay.
+    pub fn start_with_session_and_room_dialer(
+        cfg: SessionConfig,
+        relay: Arc<dyn RelaySession>,
+        clock: Arc<dyn Clock>,
+        room_dialer: Arc<dyn RoomDialer>,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<EngineEvent>) {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (stop_tx, stop_rx) = watch::channel(false);
+        let (identity_tx, _) = watch::channel(None);
         let sender = Arc::new(Sender::new(relay.clone(), clock.clone()));
         let ts = {
             let sender = sender.clone();
@@ -146,16 +224,23 @@ impl Session {
             resuming: false,
         }));
 
+        let room = Arc::new(Mutex::new(None));
         let session = Arc::new(Session {
+            cfg: cfg.clone(),
             sender: sender.clone(),
             shared: shared.clone(),
             ts: ts.clone(),
             stop_tx,
             run: Mutex::new(None),
+            identity: identity_tx.clone(),
+            events: events_tx.clone(),
+            room: room.clone(),
+            room_dialer,
+            rt: tokio::runtime::Handle::current(),
         });
 
         let run = tokio::spawn(run_loop(RunCtx {
-            cfg,
+            cfg: cfg.clone(),
             relay,
             sender,
             shared,
@@ -163,10 +248,91 @@ impl Session {
             clock,
             events: events_tx,
             stop: stop_rx,
+            identity: identity_tx,
+            room,
         }));
         *session.run.lock().unwrap() = Some(run);
 
+        // The configured room: joined (or minted) from the start, so the
+        // attach lands as soon as the identity does.
+        if cfg.room_new {
+            session.room_create();
+        } else if !cfg.room_code.is_empty() {
+            session.room_join(&cfg.room_code, &cfg.room_attach_secret, "");
+        }
+
         (session, events_rx)
+    }
+
+    /// Joins a room (a dynamic code or a static slug) and attaches this
+    /// broadcast once its identity is known; replaces any current room
+    /// session. `creator_token_hex` rejoins a room this app minted earlier
+    /// with the creator grant.
+    pub fn room_join(&self, code: &str, attach_secret: &str, creator_token_hex: &str) {
+        self.spawn_room(RoomConfig {
+            code: code.to_owned(),
+            attach_secret: attach_secret.to_owned(),
+            creator_token_hex: creator_token_hex.to_owned(),
+            ..self.room_config()
+        });
+    }
+
+    /// Mints a new dynamic room from this broadcast (once announce and
+    /// token are both known); replaces any current room session.
+    pub fn room_create(&self) {
+        self.spawn_room(RoomConfig {
+            code: String::new(),
+            ..self.room_config()
+        });
+    }
+
+    /// Detaches this broadcast (when attached) and leaves the room. A no-op
+    /// without a room session.
+    pub fn room_detach(&self) {
+        if let Some(h) = self.room.lock().unwrap().as_ref() {
+            let _ = h.requests.send(RoomRequest::Detach);
+        }
+    }
+
+    /// Ends the room control session without detaching — the attachment
+    /// then follows the broadcast's own lifecycle on the relay.
+    pub fn room_leave(&self) {
+        if let Some(h) = self.room.lock().unwrap().take() {
+            h.stop();
+        }
+    }
+
+    fn room_config(&self) -> RoomConfig {
+        RoomConfig {
+            relay_url: self.cfg.relay_url.clone(),
+            origin: self.cfg.origin.clone(),
+            insecure: self.cfg.insecure,
+            code: String::new(),
+            attach_secret: String::new(),
+            create_secret: self.cfg.room_create_secret.clone(),
+            creator_token_hex: String::new(),
+            label: self.cfg.room_label.clone(),
+            nickname: self.cfg.nickname.clone(),
+        }
+    }
+
+    fn spawn_room(&self, cfg: RoomConfig) {
+        self.room_leave();
+        let (stop, stop_rx) = watch::channel(false);
+        let (requests, requests_rx) = mpsc::unbounded_channel();
+        let task = self.rt.spawn(room::run_room(room::RoomCtx {
+            cfg,
+            dialer: self.room_dialer.clone(),
+            identity: self.identity.subscribe(),
+            events: self.events.clone(),
+            stop: stop_rx,
+            requests: requests_rx,
+        }));
+        *self.room.lock().unwrap() = Some(RoomHandle {
+            stop,
+            requests,
+            task,
+        });
     }
 
     /// The send surface for the media pumps.
@@ -198,8 +364,10 @@ impl Session {
     }
 
     /// Ends the broadcast: closes the sender to new keyframe writes, waits
-    /// for in-flight ones, then tears the session down. One event, one
-    /// teardown — the run loop emits `Ended` exactly once.
+    /// for in-flight ones, tears the session down, then closes the relay
+    /// connection explicitly (the Go engine's `CloseWithError(0)`) so the
+    /// relay sees the publisher leave now, not at the idle timeout. One
+    /// event, one teardown — the run loop emits `Ended` exactly once.
     pub async fn stop(&self) {
         let _ = self.stop_tx.send(true);
         self.sender.wait().await;
@@ -207,6 +375,7 @@ impl Session {
         if let Some(run) = run {
             let _ = run.await;
         }
+        self.sender.current_relay().close();
     }
 }
 
@@ -219,6 +388,8 @@ struct RunCtx {
     clock: Arc<dyn Clock>,
     events: mpsc::UnboundedSender<EngineEvent>,
     stop: watch::Receiver<bool>,
+    identity: watch::Sender<Option<Identity>>,
+    room: Arc<Mutex<Option<RoomHandle>>>,
 }
 
 enum ServeEnd {
@@ -226,28 +397,69 @@ enum ServeEnd {
     Closed(SessionClose),
 }
 
+/// Publishes the attach identity once BOTH halves are known. `generation`
+/// is the resume count: a resume re-publishes the same id/token under a new
+/// generation, which is what tells the room session to re-attach — the
+/// relay's attach ownership is per control session, and a resumed
+/// broadcaster must re-attach before it may detach (docs/44 §4.8).
+fn publish_identity(shared: &Mutex<Shared>, identity: &watch::Sender<Option<Identity>>) {
+    let sh = shared.lock().unwrap();
+    if sh.broadcast_id.is_empty() {
+        return;
+    }
+    let Some(token) = room::hex_decode(&sh.resume_token_hex) else {
+        return;
+    };
+    if token.len() != wire::RESUME_TOKEN_SIZE {
+        return;
+    }
+    let next = Identity {
+        broadcast_id: sh.broadcast_id.clone(),
+        resume_token: token,
+        generation: sh.resumes,
+    };
+    drop(sh);
+    identity.send_if_modified(|cur| {
+        if cur.as_ref() == Some(&next) {
+            return false;
+        }
+        *cur = Some(next);
+        true
+    });
+}
+
 async fn run_loop(mut ctx: RunCtx) {
+    let end = run_sessions(&mut ctx).await;
+    // The room control session lives exactly as long as the broadcast it
+    // attaches: without a publisher there is nothing to attach, and the
+    // attachment follows the broadcast's own grace on the relay.
+    if let Some(h) = ctx.room.lock().unwrap().take() {
+        h.stop();
+    }
+    let _ = ctx.events.send(end);
+}
+
+/// Serves and resumes until the session is over; returns the `Ended` event.
+async fn run_sessions(ctx: &mut RunCtx) -> EngineEvent {
     let mut relay = ctx.relay.clone();
     loop {
-        match serve_session(&mut ctx, relay.clone()).await {
+        match serve_session(ctx, relay.clone()).await {
             ServeEnd::Stopped => {
-                let _ = ctx.events.send(EngineEvent::Ended { error: None });
-                return;
+                return EngineEvent::Ended { error: None };
             }
             ServeEnd::Closed(close) => {
                 if let SessionClose::Code(code) = close
                     && terminal_for_publisher(code)
                 {
-                    let _ = ctx.events.send(EngineEvent::Ended {
+                    return EngineEvent::Ended {
                         error: Some(close_code_message(code)),
-                    });
-                    return;
+                    };
                 }
             }
         }
 
         // A recoverable loss: reclaim on a fresh session (docs/38 D5).
-        match resume(&mut ctx).await {
+        match resume(ctx).await {
             Ok(next) => {
                 ctx.sender.set_relay(next.clone());
                 // The relay dropped this broadcast's caches and the reclaim
@@ -260,20 +472,21 @@ async fn run_loop(mut ctx: RunCtx) {
                     sh.resuming = false;
                 }
                 let _ = ctx.events.send(EngineEvent::Resumed);
+                // R42: the same identity under a new generation — the room
+                // session re-attaches on the reclaimed broadcast.
+                publish_identity(&ctx.shared, &ctx.identity);
                 relay = next;
             }
             Err(None) => {
                 // stop() cancelled us mid-reclaim; it owns the ending.
-                let _ = ctx.events.send(EngineEvent::Ended { error: None });
-                return;
+                return EngineEvent::Ended { error: None };
             }
             Err(Some(msg)) => {
-                let _ = ctx.events.send(EngineEvent::Ended {
+                return EngineEvent::Ended {
                     error: Some(format!(
                         "lost the connection to the relay and could not resume: {msg}"
                     )),
-                });
-                return;
+                };
             }
         }
     }
@@ -311,6 +524,7 @@ async fn serve_session(ctx: &mut RunCtx, relay: Arc<dyn RelaySession>) -> ServeE
                         let sender = ctx.sender.clone();
                         let shared = ctx.shared.clone();
                         let events = ctx.events.clone();
+                        let identity = ctx.identity.clone();
                         stream_tasks.spawn(async move {
                             let read = tokio::time::timeout(
                                 Duration::from_millis(SERVER_STREAM_READ_TIMEOUT_MS),
@@ -318,7 +532,7 @@ async fn serve_session(ctx: &mut RunCtx, relay: Arc<dyn RelaySession>) -> ServeE
                             )
                             .await;
                             let Ok(Ok(msg)) = read else { return };
-                            handle_server_message(&msg, &sender, &shared, &events);
+                            handle_server_message(&msg, &sender, &shared, &events, &identity);
                         });
                     }
                     Err(_) => break ServeEnd::Closed(relay.closed().await),
@@ -351,15 +565,18 @@ fn handle_server_message(
     sender: &Sender,
     shared: &Mutex<Shared>,
     events: &mpsc::UnboundedSender<EngineEvent>,
+    identity: &watch::Sender<Option<Identity>>,
 ) {
     match dispatch_server_message(msg) {
         Ok(ServerMessage::Announce(id)) => {
             shared.lock().unwrap().broadcast_id = id.clone();
             let _ = events.send(EngineEvent::Announce { broadcast_id: id });
+            publish_identity(shared, identity);
         }
         Ok(ServerMessage::ResumeToken(token_hex)) => {
             shared.lock().unwrap().resume_token_hex = token_hex.clone();
             let _ = events.send(EngineEvent::ResumeToken { token_hex });
+            publish_identity(shared, identity);
         }
         Ok(ServerMessage::Capabilities(c)) => sender.apply_capabilities(c),
         Ok(ServerMessage::TelemetryHello {

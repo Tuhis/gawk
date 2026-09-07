@@ -83,6 +83,13 @@ type Config struct {
 	AppBaseURL       string // watch deep links; empty hides them
 	TelemetryBaseURL string // telemetry deep links; empty hides them
 
+	// Rooms enables R42's room management (docs/44 D20): the /api/v1/rooms
+	// routes, the rooms view and the reconciler's room sweep. Default OFF,
+	// like the relay's -rooms, and rendered from the chart's rooms.enabled —
+	// the same value that grants the Role its Room CR and Secret verbs, so
+	// the binary never serves routes its ServiceAccount cannot act on.
+	Rooms bool
+
 	// DevOIDCProxy, when non-empty, mounts a reverse proxy at /idp/ towards
 	// this base URL — the docs/41 compose lane's answer to the OIDC
 	// frontend/backchannel split: with the issuer set to <externalUrl>/idp,
@@ -168,6 +175,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"frontend base URL for watch deep links; empty hides them")
 	telemetryBaseURL := fs.String("telemetry-base-url", env("GAWK_ADMIN_TELEMETRY_BASE_URL", ""),
 		"telemetry UI base URL for deep links; empty hides them")
+	roomsOn := fs.String("rooms", env("GAWK_ADMIN_ROOMS", "false"),
+		"enable room management (R42, docs/44 D20): /api/v1/rooms, the rooms view and the room sweep; needs the chart's rooms.enabled RBAC")
 	logLevel := fs.String("log-level", env("GAWK_ADMIN_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logFormat := fs.String("log-format", env("GAWK_ADMIN_LOG_FORMAT", "text"), "log format: text|json")
 	devOIDCProxy := fs.String("dev-oidc-proxy", env("GAWK_ADMIN_DEV_OIDC_PROXY", ""),
@@ -208,6 +217,12 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid -kill-cooldown %q (want a positive duration, e.g. 10m)", *killCooldown)
 	}
 	cfg.KillCooldown = cooldown
+
+	rooms, err := strconv.ParseBool(strings.TrimSpace(*roomsOn))
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid -rooms %q (want true|false)", *roomsOn)
+	}
+	cfg.Rooms = rooms
 
 	hooks, err := parseStaticWebhooks(*staticWebhooks, getenv)
 	if err != nil {
@@ -357,6 +372,7 @@ func (c Config) LogAttrs() []any {
 		"staticWebhooks", strings.Join(names, ","),
 		"appBaseUrl", c.AppBaseURL,
 		"telemetryBaseUrl", c.TelemetryBaseURL,
+		"rooms", c.Rooms,
 		"logLevel", c.LogLevel.String(),
 		"logFormat", c.LogFormat,
 	}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseRoute } from './routing';
+import { hashWithoutGrant, parseRoute } from './routing';
 
 const noQuery = { relay: null, droppedParams: [] };
 
@@ -109,5 +109,62 @@ describe('parseRoute ?relay=', () => {
       view: 'redirect',
       to: '#/',
     });
+  });
+});
+
+// R42 (docs/44 D19): the room and join arms.
+describe('parseRoute rooms (R42)', () => {
+  it('maps #/room/<slug> to the room view, keeping the code as typed', () => {
+    expect(parseRoute('#/room/TuhisRoom')).toEqual({
+      view: 'room',
+      code: 'TuhisRoom',
+      grant: null,
+      ...noQuery,
+    });
+    expect(parseRoute('#/room/ab2cd3/')).toEqual({ view: 'room', code: 'ab2cd3', grant: null, ...noQuery });
+  });
+
+  it('carries ?relay= and the one-shot ?rt= grant on a room link', () => {
+    expect(parseRoute('#/room/AB2CD3?rt=0011&relay=https://relay.example.com:4433')).toEqual({
+      view: 'room',
+      code: 'AB2CD3',
+      grant: '0011',
+      relay: 'https://relay.example.com:4433',
+      droppedParams: [],
+    });
+    expect(parseRoute('#/room/AB2CD3?rt=')).toEqual({ view: 'room', code: 'AB2CD3', grant: null, ...noQuery });
+  });
+
+  it('redirects a malformed room code home', () => {
+    expect(parseRoute('#/room')).toEqual({ view: 'redirect', to: '#/' });
+    expect(parseRoute('#/room/')).toEqual({ view: 'redirect', to: '#/' });
+    expect(parseRoute('#/room/ab')).toEqual({ view: 'redirect', to: '#/' });
+    expect(parseRoute('#/room/has%20space')).toEqual({ view: 'redirect', to: '#/' });
+  });
+
+  it('maps #/join/<code> for broadcast-alphabet codes only, uppercased', () => {
+    expect(parseRoute('#/join/ab2cd3')).toEqual({ view: 'join', code: 'AB2CD3', ...noQuery });
+    expect(parseRoute('#/join/AB2CD3?relay=https://relay.example.com:4433')).toEqual({
+      view: 'join',
+      code: 'AB2CD3',
+      relay: 'https://relay.example.com:4433',
+      droppedParams: [],
+    });
+    // A static slug is link-only (docs/44 §4.2): the join box refuses it.
+    expect(parseRoute('#/join/TuhisRoom')).toEqual({ view: 'redirect', to: '#/' });
+    expect(parseRoute('#/join')).toEqual({ view: 'redirect', to: '#/' });
+  });
+});
+
+describe('hashWithoutGrant', () => {
+  it('strips only rt, keeping the path and every other parameter', () => {
+    expect(hashWithoutGrant('#/room/AB2CD3?rt=abc')).toBe('#/room/AB2CD3');
+    expect(hashWithoutGrant('#/room/AB2CD3?rt=abc&relay=https%3A%2F%2Fx.example')).toBe(
+      '#/room/AB2CD3?relay=https%3A%2F%2Fx.example',
+    );
+    expect(hashWithoutGrant('#/room/AB2CD3?relay=https%3A%2F%2Fx.example')).toBe(
+      '#/room/AB2CD3?relay=https%3A%2F%2Fx.example',
+    );
+    expect(hashWithoutGrant('#/room/AB2CD3')).toBe('#/room/AB2CD3');
   });
 });

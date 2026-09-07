@@ -6,7 +6,18 @@ import { useCodecMatrices, useSupportMatrix } from '../stream/useSupportMatrix';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
-import { CloseIcon, CopyIcon, EyeIcon, GearIcon, LeaveIcon, PlayIcon, StatsIcon, StopIcon } from '../../ui/Icons';
+import { Toast } from '../../ui/Toast';
+import {
+  CloseIcon,
+  CopyIcon,
+  EyeIcon,
+  GearIcon,
+  LeaveIcon,
+  PeopleIcon,
+  PlayIcon,
+  StatsIcon,
+  StopIcon,
+} from '../../ui/Icons';
 import { BroadcasterStatsOverlay } from './BroadcasterStatsOverlay';
 import { BroadcastStartError, type BroadcastSessionLike, type BroadcastStats } from '../../transport/broadcaster';
 import { readVisibility } from '../../lib/visibility';
@@ -30,6 +41,15 @@ import { useWakeLock } from '../../lib/useWakeLock';
 import { fmt, fmtWatching } from '../../lib/format';
 import { HOME } from '../../routing';
 import { log } from '../../lib/logger';
+// R42 RM5 (docs/44 §4.8): the Room panel and the in-page room view.
+import { RoomView, type RoomHeaderContext } from '../room/RoomScreen';
+import type { RoomTarget } from '../../transport/room-session';
+import { parseGrant, readGrant, type RoomGrant } from '../room/grantHandoff';
+import { takeRoomReturn } from '../room/roomReturn';
+import { BACKGROUND_STOP_NOTE, BackgroundWatchdog } from './backgroundWatchdog';
+import { loadNickname } from '../room/roomPrefs';
+import { isValidRoomCode, parseRoomLink } from '../../lib/roomCode';
+import { MAX_ROOM_LABEL_LEN } from '../../transport/wire';
 // R24 (docs/30): browser-aware capture & audio guidance — words + dismissible
 // reactive notes, gated on the real audio capability (never UA sniffing) and
 // never on the start path.
@@ -48,6 +68,15 @@ import {
 } from './captureGuidance';
 
 type Status = 'idle' | 'connecting' | 'broadcasting' | 'reconnecting' | 'stopping' | 'error';
+
+// R42: a room chosen before the broadcast is live, joined the moment it is.
+// `nickname` undefined ⇒ the room view asks / remembers as usual; a string
+// or null is an answer the hop from a room already has (roomReturn.ts).
+interface PendingRoom {
+  code: string;
+  grant: RoomGrant | null;
+  nickname: string | null | undefined;
+}
 
 // R15 (docs/20): system audio is unconditional on the production broadcaster
 // since 2026-07-23 — the experimental toggle is gone. capture.ts owns the
@@ -86,6 +115,11 @@ export function BroadcasterScreen() {
   const [error, setError] = useState<string | null>(null);
   const [broadcastId, setBroadcastId] = useState<string | null>(null);
   const [reclaimFailedNote, setReclaimFailedNote] = useState<string | null>(null);
+  // The hidden-tab watchdog (backgroundWatchdog.ts): the page ends its own
+  // broadcast after five minutes hidden with no frame encoded, and the note
+  // explains the stop on the card the broadcaster comes back to.
+  const watchdogRef = useRef(new BackgroundWatchdog());
+  const [backgroundStopNote, setBackgroundStopNote] = useState<string | null>(null);
   const [resumeAttempt, setResumeAttempt] = useState<number | null>(null);
   // R17 W2: the relay-minted resume token, kept next to the broadcast ID (a
   // ref, not state — nothing renders it) so a manual restart can reclaim.
@@ -102,6 +136,43 @@ export function BroadcasterScreen() {
   const [termsPrompt, setTermsPrompt] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [statsCopied, setStatsCopied] = useState(false);
+
+  // R42 RM5 (docs/44 §4.8): the Room panel. `roomTarget` set ⇒ the page
+  // renders the room view in place of the preview, with the publish session
+  // untouched in pipelineRef — no hash change, the broadcast never stops.
+  //
+  // A room can only be joined by a LIVE broadcast (the attach is proven with
+  // the resume token, which does not exist before the relay minted the ID),
+  // so a room chosen before the stream starts becomes `pendingRoom`: the
+  // page shows what it will join, and the join fires by itself the moment
+  // the broadcast is live. Two sources: a room's "start streaming here"
+  // (roomReturn.ts — carrying the nickname already answered there), and the
+  // Room panel's join-by-code / link used from the pre-start card.
+  const [roomReturn] = useState(takeRoomReturn);
+  const [pendingRoom, setPendingRoom] = useState<PendingRoom | null>(() =>
+    roomReturn ? { code: roomReturn.code, grant: readGrant(roomReturn.code), nickname: roomReturn.nickname } : null,
+  );
+  // The nickname to bring into the room view without asking: the hop's
+  // answer, else the room view asks / remembers as usual (undefined).
+  const [roomNickname, setRoomNickname] = useState<string | null | undefined>(() =>
+    roomReturn ? roomReturn.nickname : undefined,
+  );
+  const [roomCodeDraft, setRoomCodeDraft] = useState('');
+  const [roomPanelOpen, setRoomPanelOpen] = useState(false);
+  const [roomTarget, setRoomTarget] = useState<RoomTarget | null>(null);
+  const [roomGrant, setRoomGrant] = useState<RoomGrant | null>(null);
+  const [roomLabel, setRoomLabel] = useState(() => roomReturn?.nickname ?? loadNickname() ?? '');
+  // The resume token is a ref (nothing renders it); this mirrors "the token
+  // has arrived" for the pending-room effect below.
+  const [resumeReady, setResumeReady] = useState(false);
+  const [roomLinkDraft, setRoomLinkDraft] = useState('');
+  const [roomSecretDraft, setRoomSecretDraft] = useState('');
+  const [roomNote, setRoomNote] = useState<string | null>(null);
+  // Bumped on every publish auto-resume so the room view re-sends Attach.
+  const [attachEpoch, setAttachEpoch] = useState(0);
+  // Set by the own tile's Detach: the broadcast stays live and the
+  // broadcaster stays in the room as a participant; no re-attach follows.
+  const [ownDetached, setOwnDetached] = useState(false);
 
   // R24 (docs/30): audio capability answered once, by feature detection. Drives
   // the browser-aware copy and gates the runtime audio-missing note — Firefox
@@ -159,6 +230,8 @@ export function BroadcasterScreen() {
     // Fresh sample window per broadcast: the pipeline's cumulative counters
     // restart at zero, and mixing sessions would poison the derived rates.
     diagRef.current = new DiagnosticsBuffer<BroadcastStats>();
+    watchdogRef.current.reset();
+    setBackgroundStopNote(null);
 
     const makeCallbacks = (afterFailedReclaim: boolean) => ({
       onSourceStream: (s: MediaStream) => {
@@ -176,6 +249,15 @@ export function BroadcasterScreen() {
         diagRef.current.push(next);
         telemetry.sample(next);
         setStats(next);
+        // Five minutes hidden with no frame encoded: this tab is the stale
+        // broadcaster the relay cannot tell from a paused game — end it here,
+        // where the difference is known (backgroundWatchdog.ts).
+        if (watchdogRef.current.sample(next.documentHidden === true, next.encodedFrames, Date.now())) {
+          telemetry.event('background-stop');
+          setBackgroundStopNote(BACKGROUND_STOP_NOTE);
+          setStatus('stopping');
+          void pipelineRef.current?.stop();
+        }
       },
       onBroadcastId: (id: string) => {
         setBroadcastId(id);
@@ -185,6 +267,7 @@ export function BroadcasterScreen() {
       },
       onResumeToken: (token: string) => {
         resumeTokenRef.current = token;
+        setResumeReady(true);
       },
       // R17 W2 auto-resume: session death mid-broadcast is no longer
       // terminal — amber "reconnecting" until the transport re-attaches.
@@ -197,6 +280,9 @@ export function BroadcasterScreen() {
         telemetry.event('resumed');
         setResumeAttempt(null);
         setStatus('broadcasting');
+        // R42: the relay's grace GC may have dropped the attachment while the
+        // publisher was away; the room view re-sends Attach (idempotent).
+        setAttachEpoch((e) => e + 1);
       },
       onError: (err: Error) => {
         telemetry.event('error', err.message);
@@ -269,6 +355,11 @@ export function BroadcasterScreen() {
         log.warn('Reclaim failed, falling back to mint:', e);
         setBroadcastId(null);
         resumeTokenRef.current = null;
+        // The latch goes with the token (PR #302 review): the minted session
+        // reports its ID and goes live before its own token arrives, and a
+        // stale `true` here let a pending room dial as a viewer with nothing
+        // to attach.
+        setResumeReady(false);
         activeId = null;
       }
     }
@@ -415,6 +506,80 @@ export function BroadcasterScreen() {
 
   useHotkey(STATS_HOTKEY, () => setShowStats((s) => !s));
 
+  // R42 RM5: the three ways into a room from the broadcast page.
+  const live = status === 'broadcasting' || status === 'reconnecting';
+  const canMint = live && broadcastId !== null && resumeReady;
+  const enterRoom = useCallback((target: RoomTarget, grant: RoomGrant | null) => {
+    setRoomGrant(grant);
+    setOwnDetached(false);
+    setRoomNote(null);
+    setRoomPanelOpen(false);
+    setPendingRoom(null);
+    setRoomTarget(target);
+  }, []);
+  // A join chosen before the stream is live waits for it (see pendingRoom).
+  const joinRoom = useCallback(
+    (code: string, grant: RoomGrant | null) => {
+      if (canMint) {
+        enterRoom({ kind: 'join', code }, grant);
+        return;
+      }
+      setPendingRoom({ code, grant, nickname: undefined });
+      setRoomNote(null);
+      setRoomPanelOpen(false);
+    },
+    [canMint, enterRoom],
+  );
+  const newRoom = useCallback(() => {
+    const token = resumeTokenRef.current;
+    if (!canMint || !broadcastId || !token) {
+      setRoomNote('Start a stream first — a room is made from a running broadcast.');
+      return;
+    }
+    enterRoom({ kind: 'mint', broadcastId, resumeTokenHex: token, label: roomLabel.trim() }, null);
+  }, [canMint, broadcastId, roomLabel, enterRoom]);
+  const joinRoomByCode = useCallback(() => {
+    const code = roomCodeDraft.trim();
+    if (!isValidRoomCode(code)) {
+      setRoomNote('That doesn’t look like a room code.');
+      return;
+    }
+    // A grant a native launch stashed for this code (grantHandoff.ts) still
+    // applies; a typed attach secret wins.
+    const secret = roomSecretDraft.trim();
+    joinRoom(code, secret !== '' ? { kind: 'attach', secret } : readGrant(code));
+  }, [roomCodeDraft, roomSecretDraft, joinRoom]);
+  const joinRoomByLink = useCallback(() => {
+    const parsed = parseRoomLink(roomLinkDraft);
+    if (!parsed) {
+      setRoomNote('That doesn’t look like a room link.');
+      return;
+    }
+    const secret = roomSecretDraft.trim();
+    const grant: RoomGrant | null =
+      secret !== '' ? { kind: 'attach', secret } : parsed.grant ? parseGrant(parsed.grant) : readGrant(parsed.code);
+    joinRoom(parsed.code, grant);
+  }, [roomLinkDraft, roomSecretDraft, joinRoom]);
+  // The pending room joins the moment the broadcast is live: ID minted,
+  // resume token in hand (both arrive before onSourceStream flips the
+  // stage). The hop's nickname answer, if any, goes with it.
+  useEffect(() => {
+    if (!pendingRoom || !canMint) return;
+    if (pendingRoom.nickname !== undefined) setRoomNickname(pendingRoom.nickname);
+    enterRoom({ kind: 'join', code: pendingRoom.code }, pendingRoom.grant);
+  }, [pendingRoom, canMint, enterRoom]);
+  // Shown on the pre-start card and the live topbar while a join waits.
+  const pendingRoomChip = pendingRoom && (
+    <span className={styles.pendingRoom} role="status" data-testid="pending-room">
+      <PeopleIcon />
+      <span>
+        Joins room <code>{pendingRoom.code}</code> when live
+      </span>
+      <IconButton label="Don’t join the room" className={styles.hintDismiss} onClick={() => setPendingRoom(null)}>
+        <CloseIcon />
+      </IconButton>
+    </span>
+  );
   const running =
     status === 'connecting' ||
     status === 'broadcasting' ||
@@ -483,6 +648,248 @@ export function BroadcasterScreen() {
     </>
   );
 
+  // R42 RM5 (docs/44 §4.8, §4.9 "ways in"): the Room panel — the server
+  // picker's idiom (a topbar IconButton opening a glass sheet). New room
+  // needs a live broadcast with its resume token; join by code / link work
+  // from either stage and attach the broadcast once it is live.
+  const roomPanel = roomPanelOpen && (
+    <>
+      <div className={styles.scrim} onClick={() => setRoomPanelOpen(false)} />
+      <GlassPanel className={styles.settings} role="dialog" aria-label="Room">
+        <div className={styles.settingsHead}>
+          <span>Room</span>
+          <Button variant="ghost" onClick={() => setRoomPanelOpen(false)}>
+            Done
+          </Button>
+        </div>
+
+        <section className={styles.group}>
+          <h3 className={styles.groupTitle}>Your name</h3>
+          <p className={styles.settingsAudioNote}>Shown on your stream in the room and in its people list.</p>
+          <input
+            className={styles.modalInput}
+            value={roomLabel}
+            maxLength={MAX_ROOM_LABEL_LEN}
+            onChange={(e) => setRoomLabel(e.target.value)}
+            placeholder="your name"
+            aria-label="Your name"
+            autoComplete="nickname"
+            spellCheck={false}
+          />
+        </section>
+
+        <section className={styles.group}>
+          <h3 className={styles.groupTitle}>New room</h3>
+          <p className={styles.settingsAudioNote}>
+            {canMint
+              ? 'Make a room from this broadcast. Others join with the room code or link.'
+              : 'Start a stream first — a room is made from a running broadcast.'}
+          </p>
+          <Button onClick={newRoom} disabled={!canMint}>
+            <PeopleIcon /> New room
+          </Button>
+        </section>
+
+        <section className={styles.group}>
+          <h3 className={styles.groupTitle}>Join a room</h3>
+          <form
+            className={styles.modalForm}
+            onSubmit={(e) => {
+              e.preventDefault();
+              joinRoomByCode();
+            }}
+          >
+            <input
+              className={styles.modalInput}
+              value={roomCodeDraft}
+              onChange={(e) => setRoomCodeDraft(e.target.value)}
+              placeholder="room code"
+              aria-label="Room code"
+              autoCapitalize="characters"
+              spellCheck={false}
+            />
+            <Button type="submit" variant="secondary" disabled={roomCodeDraft.trim() === ''}>
+              Join by code
+            </Button>
+          </form>
+          <form
+            className={styles.modalForm}
+            onSubmit={(e) => {
+              e.preventDefault();
+              joinRoomByLink();
+            }}
+          >
+            <input
+              className={styles.modalInput}
+              value={roomLinkDraft}
+              onChange={(e) => setRoomLinkDraft(e.target.value)}
+              placeholder="room link"
+              aria-label="Room link"
+              spellCheck={false}
+            />
+            <input
+              type="password"
+              className={styles.modalInput}
+              value={roomSecretDraft}
+              onChange={(e) => setRoomSecretDraft(e.target.value)}
+              placeholder="attach secret (static rooms only)"
+              aria-label="Attach secret"
+              autoComplete="off"
+            />
+            <Button type="submit" variant="secondary" disabled={roomLinkDraft.trim() === ''}>
+              Use a room link
+            </Button>
+          </form>
+          {roomNote && <p className={styles.note}>{roomNote}</p>}
+          <p className={styles.settingsAudioNote}>
+            {canMint
+              ? 'Your broadcast joins the room as your tile; everyone else keeps their own code.'
+              : 'Your broadcast joins the room the moment it is live; everyone else keeps their own code.'}
+          </p>
+        </section>
+      </GlassPanel>
+    </>
+  );
+
+  // The live topbar — LIVE · code · watching · badges | sending · stats ·
+  // settings · room · stop — is the same element on the plain live stage
+  // and over the room's stage (docs/44 §4.8 revision 2026-09-05, direction
+  // A): in a room it gains the room pill and its Room button toggles the
+  // people panel instead of the join sheet, and it follows the room's
+  // chrome fade and panel offset.
+  const topbar = (room: RoomHeaderContext | null) => (
+    <div
+      className={[styles.topbar, room && !room.showChrome ? styles.topbarHidden : ''].join(' ')}
+      data-panel={room?.panelOpen ? 'true' : 'false'}
+    >
+      <div className={styles.left}>
+        <span className={styles.liveBadge}>
+          <span className={styles.liveDot} aria-hidden="true" />
+          LIVE
+        </span>
+        {broadcastId && (
+          <span className={styles.code}>
+            <code>{broadcastId}</code>
+            <IconButton label={copied ? 'Copied' : 'Copy join link'} onClick={handleCopy}>
+              <CopyIcon />
+            </IconButton>
+          </span>
+        )}
+        {status === 'reconnecting' && (
+          <span className={`${styles.badge} ${styles.warnBadge}`}>
+            Reconnecting{resumeAttempt != null ? ` (attempt ${resumeAttempt})` : ''}…
+          </span>
+        )}
+        {/* R18 (docs/23 Decision 7): the live audience figure, in the
+            topbar slot docs/10 reserved for it. */}
+        {stats?.viewerCount != null && (
+          <span className={`${styles.badge} ${styles.watchingBadge}`}>
+            <EyeIcon /> {fmtWatching(stats.viewerCount)}
+          </span>
+        )}
+        {room && (
+          <span className={styles.roomPill} title="Room" data-testid="room-pill">
+            <PeopleIcon />
+            <code>{room.code}</code>
+            <span>
+              {room.streaming} streaming · {fmtWatching(room.watching)}
+            </span>
+          </span>
+        )}
+        {renderAutoBadge(stats)}
+        {stats?.encoderPressure && (
+          <span className={`${styles.badge} ${styles.warnBadge}`}>
+            Can’t keep up at {selectionLabel(resolutionSelection)}
+          </span>
+        )}
+        {!room && pendingRoomChip}
+      </div>
+      <div className={styles.right}>
+        {encoderInfo && (
+          <span className={styles.sending}>
+            {encoderInfo.width}×{encoderInfo.height} @ {fmt(encoderInfo.framerate, 0)}
+          </span>
+        )}
+        <IconButton label={showStats ? 'Hide stats' : 'Show stats'} onClick={() => setShowStats((s) => !s)}>
+          <StatsIcon />
+        </IconButton>
+        <IconButton label="Settings" onClick={() => setSettingsOpen((o) => !o)}>
+          <GearIcon />
+        </IconButton>
+        {room ? (
+          <IconButton
+            label={room.panelOpen ? 'Hide people and chat' : 'People and chat'}
+            aria-pressed={room.panelOpen}
+            className={room.panelOpen ? styles.pressed : undefined}
+            onClick={room.togglePanel}
+          >
+            <PeopleIcon />
+          </IconButton>
+        ) : (
+          /* R42 RM5: the Room panel, in the server-picker idiom. */
+          <IconButton label="Room" onClick={() => setRoomPanelOpen((o) => !o)}>
+            <PeopleIcon />
+          </IconButton>
+        )}
+        <IconButton label="Stop broadcast" className={styles.stopBtn} onClick={handleStop} disabled={status === 'connecting'}>
+          <StopIcon />
+        </IconButton>
+      </div>
+    </div>
+  );
+
+  // R42 RM5 (direction A): the room's stage under the broadcaster's topbar.
+  // The preview <video> stays mounted (hidden) so its srcObject survives the
+  // hop back; the own tile paints the same stream. No own-tile glass bar —
+  // Stop / Settings / Stats are in the topbar, Detach is in the panel — and
+  // the room's footer carries the layout modes (grid, focus, preview only).
+  if (roomTarget) {
+    const own =
+      broadcastId && resumeTokenRef.current && !ownDetached
+        ? {
+            broadcastId,
+            resumeTokenHex: resumeTokenRef.current,
+            label: roomLabel.trim(),
+            attachEpoch,
+            preview: sourceStream,
+            controls: null,
+            onDetach: () => setOwnDetached(true),
+          }
+        : null;
+    return (
+      <div className={styles.root}>
+        <video ref={videoRef} className={styles.preview} muted playsInline hidden />
+        <RoomView
+          target={roomTarget}
+          grant={roomGrant}
+          own={own}
+          // The one name field: the hop's answer if there was one, else what
+          // was typed in the panel (also the tile label), else the room view
+          // asks / remembers as usual.
+          presetNickname={roomNickname !== undefined ? roomNickname : roomLabel.trim() || undefined}
+          header={topbar}
+          onLeave={() => setRoomTarget(null)}
+        />
+        {showStats && (
+          <BroadcasterStatsOverlay
+            stats={stats}
+            audioSupported={audioSupported}
+            encoderInfo={encoderInfo}
+            bitrateBps={(() => {
+              const bytesRate = diagRef.current.rate((s) => s.bytesSent);
+              return bytesRate == null ? null : bytesRate * 8;
+            })()}
+            onClose={() => setShowStats(false)}
+            onCopy={copyDiagnostics}
+            copied={statsCopied}
+          />
+        )}
+        {settingsPanel}
+        {showServerPicker && <ServerPickerPanel onClose={() => setShowServerPicker(false)} />}
+      </div>
+    );
+  }
+
   // R24 (docs/30 CG3): reactive live notes, read from signals that already
   // exist — stats.audioState (from the pipeline) and the preview stream's
   // capture surface (UI-local, fully optional-chained so a teardown race or a
@@ -500,56 +907,7 @@ export function BroadcasterScreen() {
       <div className={styles.root}>
         <video ref={videoRef} className={styles.preview} muted playsInline />
 
-        <div className={styles.topbar}>
-          <div className={styles.left}>
-            <span className={styles.liveBadge}>
-              <span className={styles.liveDot} aria-hidden="true" />
-              LIVE
-            </span>
-            {broadcastId && (
-              <span className={styles.code}>
-                <code>{broadcastId}</code>
-                <IconButton label={copied ? 'Copied' : 'Copy join link'} onClick={handleCopy}>
-                  <CopyIcon />
-                </IconButton>
-              </span>
-            )}
-            {status === 'reconnecting' && (
-              <span className={`${styles.badge} ${styles.warnBadge}`}>
-                Reconnecting{resumeAttempt != null ? ` (attempt ${resumeAttempt})` : ''}…
-              </span>
-            )}
-            {/* R18 (docs/23 Decision 7): the live audience figure, in the
-                topbar slot docs/10 reserved for it. */}
-            {stats?.viewerCount != null && (
-              <span className={`${styles.badge} ${styles.watchingBadge}`}>
-                <EyeIcon /> {fmtWatching(stats.viewerCount)}
-              </span>
-            )}
-            {renderAutoBadge(stats)}
-            {stats?.encoderPressure && (
-              <span className={`${styles.badge} ${styles.warnBadge}`}>
-                Can’t keep up at {selectionLabel(resolutionSelection)}
-              </span>
-            )}
-          </div>
-          <div className={styles.right}>
-            {encoderInfo && (
-              <span className={styles.sending}>
-                {encoderInfo.width}×{encoderInfo.height} @ {fmt(encoderInfo.framerate, 0)}
-              </span>
-            )}
-            <IconButton label={showStats ? 'Hide stats' : 'Show stats'} onClick={() => setShowStats((s) => !s)}>
-              <StatsIcon />
-            </IconButton>
-            <IconButton label="Settings" onClick={() => setSettingsOpen((o) => !o)}>
-              <GearIcon />
-            </IconButton>
-            <IconButton label="Stop broadcast" className={styles.stopBtn} onClick={handleStop} disabled={status === 'connecting'}>
-              <StopIcon />
-            </IconButton>
-          </div>
-        </div>
+        {topbar(null)}
 
         {(audioNote || windowNote) && (
           <div className={styles.hints}>
@@ -601,8 +959,9 @@ export function BroadcasterScreen() {
           />
         )}
 
-        {copied && <div className={styles.toast}>Join link copied</div>}
+        {copied && <Toast className={styles.toast}>Join link copied</Toast>}
         {settingsPanel}
+        {roomPanel}
         {showServerPicker && <ServerPickerPanel onClose={() => setShowServerPicker(false)} />}
         <ServerIndicator />
       </div>
@@ -670,10 +1029,19 @@ export function BroadcasterScreen() {
           )}
 
           {reclaimFailedNote && <p className={styles.note}>{reclaimFailedNote}</p>}
+          {backgroundStopNote && (
+            <p className={styles.note} role="status" data-testid="background-stop-note">
+              {backgroundStopNote}
+            </p>
+          )}
+          {pendingRoomChip}
 
           <div className={styles.cardFoot}>
             <Button variant="ghost" onClick={() => setSettingsOpen((o) => !o)}>
               <GearIcon /> Settings
+            </Button>
+            <Button variant="ghost" onClick={() => setRoomPanelOpen((o) => !o)}>
+              <PeopleIcon /> Room
             </Button>
             <Button variant="ghost" onClick={() => (window.location.hash = HOME)}>
               <LeaveIcon /> Home
@@ -682,6 +1050,7 @@ export function BroadcasterScreen() {
         </GlassPanel>
       </div>
       {settingsPanel}
+      {roomPanel}
 
       {termsPrompt && (
         <>

@@ -12,6 +12,7 @@
 use gawk_engine::clock::MonotonicClock;
 use gawk_engine::media::AccessUnit;
 use gawk_engine::relay::StartPhase;
+use gawk_engine::room::RoomConn as _;
 use gawk_engine::session::{EngineEvent, Session, SessionConfig};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -200,6 +201,7 @@ fn config(relay: &Relay, id: &str, token_hex: &str) -> SessionConfig {
         publish_secret: SECRET.into(),
         origin: gawk_engine::defaults::ORIGIN.into(),
         insecure: true,
+        ..SessionConfig::default()
     }
 }
 
@@ -377,6 +379,216 @@ async fn resume_survives_a_relay_restart() {
 
     session.stop().await;
     drop(relay);
+}
+
+/// A bare room participant for the test's second seat: the engine's
+/// transport adapter (dial + one control stream) driven by hand, so what it
+/// sees is the relay's RoomState, not the engine's summary of it.
+struct Participant {
+    conn: gawk_engine::transport::WtRoomConn,
+}
+
+impl Participant {
+    async fn join(relay: &Relay, code: &str) -> Participant {
+        let url = gawk_engine::room::room_url(&relay.url, code, "", "").unwrap();
+        let conn = gawk_engine::transport::dial_room(&url, gawk_engine::defaults::ORIGIN, true)
+            .await
+            .expect("room join dial");
+        let mut msg = Vec::new();
+        gawk_wire::append_room_hello(
+            &mut msg,
+            &gawk_wire::RoomHello {
+                protocol: gawk_wire::ROOM_PROTOCOL_VERSION,
+                client_kind: gawk_wire::ROOM_CLIENT_WEB_VIEWER,
+                want_caps: 0,
+                nickname: "second",
+            },
+        )
+        .unwrap();
+        let mut rec = Vec::new();
+        gawk_wire::append_room_record(&mut rec, &msg).unwrap();
+        conn.write(&rec).await.unwrap();
+        Participant { conn }
+    }
+
+    /// The next framed message (Version ‖ Type ‖ payload); `what` names
+    /// the record the caller is waiting for, for the timeout message.
+    async fn next(&self, what: &str) -> Vec<u8> {
+        let read = async {
+            let hdr = self.conn.read(gawk_wire::ROOM_RECORD_HEADER_SIZE).await?;
+            let n = gawk_wire::parse_room_record_length(&hdr).map_err(|e| e.to_string())?;
+            self.conn.read(n).await
+        };
+        tokio::time::timeout(Duration::from_secs(10), read)
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for a room record ({what})"))
+            .expect("room stream open")
+    }
+
+    /// Skips records until one RoomEvent satisfies `want`; returns its
+    /// (kind, reason). Bounded: a relay that never sends it fails the test
+    /// with `what`, not a hang.
+    async fn wait_event(
+        &self,
+        what: &str,
+        want: impl Fn(&gawk_wire::RoomEvent<'_>) -> bool,
+    ) -> (u8, u8) {
+        for _ in 0..40 {
+            let rec = self.next(what).await;
+            let Ok((_, t)) = gawk_wire::peek_type(&rec) else {
+                continue;
+            };
+            if t != gawk_wire::TYPE_ROOM_EVENT {
+                continue;
+            }
+            let Ok(ev) = gawk_wire::parse_room_event(&rec) else {
+                continue;
+            };
+            if want(&ev) {
+                return (ev.kind, ev.reason);
+            }
+        }
+        panic!("no room event matched within 40 records ({what})");
+    }
+}
+
+// RM6 (docs/44 §9): the native attach is visible to another participant.
+// The engine mints a room from its live broadcast (attach implicit), a bare
+// second participant joins by code and sees the attachment with the label
+// in ITS RoomState; stopping the publisher turns the attachment "away"
+// (AttachmentUpdated live=false) for that participant.
+#[tokio::test]
+#[ignore = "builds and runs the real gawk-server (cargo test -- --ignored)"]
+async fn a_native_attach_is_visible_to_a_second_room_participant() {
+    let relay = Relay::start(&["-publish-secret", SECRET, "-rooms"]);
+    let mut cfg = config(&relay, "", "");
+    cfg.room_new = true;
+    cfg.room_label = "Juho's PC".into();
+    cfg.nickname = "juho".into();
+    let (session, mut rx) = Session::start(cfg, Arc::new(MonotonicClock::new()))
+        .await
+        .unwrap();
+    let (id, _token) = collect_identity(&mut rx).await;
+
+    // The mint lands once the identity is known: code + creator token, and
+    // the first summary already lists this broadcast (attach is implicit).
+    let mut code = None;
+    let mut creator = String::new();
+    let mut listed = false;
+    while code.is_none() || !listed {
+        match next_event(&mut rx, "room created/state", 10).await {
+            EngineEvent::RoomCreated {
+                code: c,
+                creator_token_hex,
+            } => {
+                assert_eq!(creator_token_hex.len(), 32, "{creator_token_hex}");
+                code = Some(c);
+                creator = creator_token_hex;
+            }
+            EngineEvent::RoomState(s) => {
+                assert!(s.creator && s.dynamic && s.attach_ok, "{s:?}");
+                listed = s.has(&id);
+            }
+            EngineEvent::RoomEnded { reason } => panic!("room ended: {reason}"),
+            EngineEvent::RoomRejected { reason, message } => panic!("{reason}: {message}"),
+            _ => {}
+        }
+    }
+    let code = code.unwrap();
+    assert_eq!(code.len(), 6, "a dynamic code: {code}");
+
+    // A second seat joins by code: the relay's own snapshot lists the
+    // native attachment with its label, live.
+    let second = Participant::join(&relay, &code).await;
+    let snapshot = second.next("the second seat's RoomState").await;
+    let state = gawk_wire::parse_room_state(&snapshot).expect("first record is RoomState");
+    assert_eq!(state.code, code);
+    assert_eq!(state.attachments.len(), 1, "{state:?}");
+    assert_eq!(state.attachments[0].broadcast_id, id);
+    assert_eq!(state.attachments[0].label, "Juho's PC");
+    assert!(state.attachments[0].live);
+    assert_eq!(state.participants.len(), 2, "{state:?}");
+    // The native broadcaster is in the roster under its nickname and
+    // flagged streaming. The relay's mint attaches without an owner
+    // participant; the engine's ownership Attach after the mint claims it,
+    // and may land before or after the second seat's snapshot — accept it
+    // from either.
+    let streaming = |p: &gawk_wire::RoomParticipant<'_>| {
+        p.kind == gawk_wire::ROOM_CLIENT_NATIVE
+            && p.nickname == "juho"
+            && p.flags & gawk_wire::ROOM_PARTICIPANT_FLAG_STREAMING != 0
+    };
+    assert!(
+        state
+            .participants
+            .iter()
+            .any(|p| p.nickname == "juho" && p.kind == gawk_wire::ROOM_CLIENT_NATIVE),
+        "the native broadcaster is a participant: {state:?}"
+    );
+    if !state.participants.iter().any(streaming) {
+        second
+            .wait_event("the native participant flagged streaming", |ev| {
+                ev.kind == gawk_wire::ROOM_EVENT_PARTICIPANT_UPDATED && streaming(&ev.participant)
+            })
+            .await;
+    }
+
+    // The engine detaches: the attachment goes, reason publisher — possible
+    // only because the ownership attach made this session the attacher (a
+    // bare creator's detach would read as reason creator).
+    session.room_detach();
+    let (_, reason) = second
+        .wait_event("AttachmentRemoved after the detach", |ev| {
+            ev.kind == gawk_wire::ROOM_EVENT_ATTACHMENT_REMOVED && ev.attachment.broadcast_id == id
+        })
+        .await;
+    assert_eq!(
+        reason,
+        gawk_wire::ROOM_DETACH_REASON_PUBLISHER,
+        "detach reason"
+    );
+    loop {
+        match next_event(&mut rx, "RoomDetached", 10).await {
+            EngineEvent::RoomDetached { .. } => break,
+            EngineEvent::RoomState(_) => {}
+            other => panic!("{other:?} instead of RoomDetached"),
+        }
+    }
+
+    // …and joins again by code with the creator grant, through the live
+    // API: attached anew, live.
+    session.room_join(&code, "", &creator);
+    second
+        .wait_event("AttachmentAdded after the re-join", |ev| {
+            ev.kind == gawk_wire::ROOM_EVENT_ATTACHMENT_ADDED
+                && ev.attachment.broadcast_id == id
+                && ev.attachment.live
+        })
+        .await;
+    loop {
+        match next_event(&mut rx, "RoomAttached", 10).await {
+            EngineEvent::RoomAttached => break,
+            EngineEvent::RoomState(_) => {}
+            other => panic!("{other:?} instead of RoomAttached"),
+        }
+    }
+
+    // Stop the publisher: the attachment survives as "away" (docs/44 §4.4 —
+    // it outlives the participant until the broadcast grace expires). The
+    // second seat sees AttachmentUpdated live=false, never a removal.
+    session.stop().await;
+    let (kind, _) = second
+        .wait_event("AttachmentUpdated live=false after the stop", |ev| {
+            ev.attachment.broadcast_id == id
+                && (ev.kind == gawk_wire::ROOM_EVENT_ATTACHMENT_REMOVED
+                    || (ev.kind == gawk_wire::ROOM_EVENT_ATTACHMENT_UPDATED && !ev.attachment.live))
+        })
+        .await;
+    assert_eq!(
+        kind,
+        gawk_wire::ROOM_EVENT_ATTACHMENT_UPDATED,
+        "a stopped publisher is away, not detached (grace applies)"
+    );
 }
 
 // Gate 2b + the relay invariant: a newer publisher with a verified token

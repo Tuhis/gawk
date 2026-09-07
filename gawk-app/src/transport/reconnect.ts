@@ -5,6 +5,7 @@
 import {
   CLOSE_CODE_BROADCAST_ENDED,
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
+  CLOSE_CODE_ROOM_ENDED,
   CLOSE_CODE_SERVER_DRAINING,
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
 } from './wire';
@@ -35,6 +36,14 @@ const TERMINAL_PUBLISHER_CLOSE_CODES: ReadonlySet<number> = new Set([
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
 ]);
 
+// Close codes after which a ROOM CONTROL session must stay down (R42,
+// docs/44 §4.4): 4007 means the room ended — empty-grace expiry, a creator's
+// end, or the operator deleting the CR — and the participant's media sessions
+// have their own lifecycle. Every other close (a home-pod move, a drain, an
+// abrupt drop) is exactly what the room reconnect exists for: the roster is
+// rebuilt from live control sessions, so coming back IS the recovery.
+const TERMINAL_ROOM_CLOSE_CODES: ReadonlySet<number> = new Set([CLOSE_CODE_ROOM_ENDED]);
+
 // An abrupt drop (null/undefined close code) is never terminal — that is the
 // case reconnect exists for. Both are type predicates so a caller that needs
 // the code afterwards (to render its sentence) doesn't have to re-assert it.
@@ -44,6 +53,10 @@ export function isTerminalViewerClose(code: number | null | undefined): code is 
 
 export function isTerminalPublisherClose(code: number | null | undefined): code is number {
   return code != null && TERMINAL_PUBLISHER_CLOSE_CODES.has(code);
+}
+
+export function isTerminalRoomClose(code: number | null | undefined): code is number {
+  return code != null && TERMINAL_ROOM_CLOSE_CODES.has(code);
 }
 
 // The first retry after an *abrupt* session death (no close code — a crashed

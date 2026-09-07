@@ -1,7 +1,15 @@
 {{- if .Values.serviceAccount.create }}
-# gawk-admin's cluster permissions, in full. Two resources, namespaced, and
-# nothing else — which is the answer to "what does a portal compromise yield?"
-# (docs/42 §5): Ban CRUD and a leader Lease. No Secrets, no Pods, no exec.
+# gawk-admin's cluster permissions, in full. With rooms off (the default): two
+# resources, namespaced, and nothing else — which is the answer to "what does
+# a portal compromise yield?" (docs/42 §5): Ban CRUD and a leader Lease. No
+# Secrets, no Pods, no exec.
+#
+# With rooms.enabled (R42, docs/44 D20) that answer CHANGES: Room CRUD, and
+# create/get/update/delete on Secrets in the namespace — the attach secret of
+# a static room is a Kubernetes Secret the portal mints and rotates. This is
+# the one place the "No Secrets" posture is relaxed, it is opt-in, and it is
+# namespace-wide because RBAC cannot scope a create to a name pattern. The
+# values.yaml comment on `rooms:` says what an operator accepts by enabling it.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -45,6 +53,25 @@ rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "create", "update"]
+  {{- if .Values.rooms.enabled }}
+  # R42 rooms (docs/44 D20). Room CRs: the portal creates static rooms, patches
+  # a rotated attach-secret reference onto them, and deletes either kind — a
+  # dynamic room ends fleet-wide by CR deletion, which every relay pod's
+  # informer sees. `list` is the reconciler's room sweep; `watch` is not
+  # granted because the portal runs no informer.
+  - apiGroups: ["gawk.ioio.fi"]
+    resources: ["rooms"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # THE POSTURE CHANGE. A static room's attach secret is a Secret named
+  # room-<code> (docs/44 §4.3) that the portal creates at room creation,
+  # rewrites on rotation and deletes with the room. Only the verbs those three
+  # actions need; no `list`, no `watch` — but a `get` on a name the caller
+  # chooses is a read of any Secret in the namespace, and that is what
+  # enabling rooms grants to whoever holds this ServiceAccount's token.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "delete"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

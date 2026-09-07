@@ -120,6 +120,19 @@ export const TYPE_RELAY_IDENTITY = 0x11;
 // wins over the deployment's configured one (D15). Same trailing-bytes
 // tolerance and strict flags as RelayIdentity; never sent by clients.
 export const TYPE_TELEMETRY_ENDPOINT = 0x12;
+// Room control protocol (R42, docs/44 §4.6 / D15): four message types that
+// travel as length-prefixed records on ONE bidirectional stream per room
+// control session (CONNECT /room/{code}). Never datagrams; media never rides
+// this stream. Encoders/parsers live in the room section at the bottom.
+// RoomHello: client → relay, once, the first record on the stream.
+export const TYPE_ROOM_HELLO = 0x13;
+// RoomState: relay → client, a full snapshot — sent once after RoomHello and
+// again after any adoption or proxy re-establishment. Replace, never merge.
+export const TYPE_ROOM_STATE = 0x14;
+// RoomEvent: relay → client, one delta.
+export const TYPE_ROOM_EVENT = 0x15;
+// RoomCommand: client → relay.
+export const TYPE_ROOM_COMMAND = 0x16;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed
@@ -159,6 +172,14 @@ export const CLOSE_CODE_STRIPE_LEG_ORPHANED = 4005;
 // can be told a moderator ended the stream. Mirrored from Go
 // wire.CloseCodeTerminatedByOperator.
 export const CLOSE_CODE_TERMINATED_BY_OPERATOR = 4006;
+// Sent on a room CONTROL session when the room ends: empty-grace expiry, an
+// explicit end from a creator-token holder, or the operator deleting the Room
+// CR (R42, docs/44 §4.4). TERMINAL for the room session only — a client must
+// not reconnect to the room — while the participant's media sessions have
+// their own lifecycle and are untouched (docs/44 D1: attached broadcasts keep
+// streaming to anyone watching them directly). Never sent on a publish or
+// subscribe session. Mirrored from Go wire.CloseCodeRoomEnded.
+export const CLOSE_CODE_ROOM_ENDED = 4007;
 
 // Wire frameIds are uint32 and wrap; consumers must compare them with serial
 // arithmetic (RFC 1982 flavored), not `<`/`>`. `a` is ahead of `b` when the
@@ -1096,4 +1117,819 @@ function validateTelemetryEndpointUrl(url: string): void {
   if (parsed.protocol !== 'https:' || parsed.host === '') {
     throw new WireError('telemetry endpoint URL is not absolute https');
   }
+}
+
+// --- Room control protocol (R42, docs/44 §4.6) ------------------------------
+// Mirrors gawk-server/wire/room.go byte for byte; the layout comment there is
+// the spec. Four message types ride ONE bidirectional stream per room control
+// session as records of uint16 length (BE) ‖ Version ‖ Type ‖ payload — the
+// reliable-carrier record shape applied to a bidi stream. Media never rides
+// it: a participant's per-broadcast /subscribe sessions are untouched.
+//
+// Parsers are strict in the house style (exact length, reserved bits zero)
+// EXCEPT for the two forward-compatibility seams docs/44 §4.11 reserves on
+// purpose: an unknown RoomEvent / RoomCommand kind throws
+// RoomUnknownKindError (with the header fields filled in) so a reader can skip
+// the record — chat 0x40–0x4F and voice 0x50–0x5F are the reserved
+// sub-ranges — and the capability bitmaps are the advertise/request mechanism
+// for those later features.
+//
+// Layouts, after the common Version ‖ Type prefix:
+//
+//   0x13 RoomHello (client → relay, once, first record on the stream):
+//     byte 2   uint8 protocol      ROOM_PROTOCOL_VERSION
+//     byte 3   uint8 clientKind    ROOM_CLIENT_*
+//     byte 4   uint8 wantCaps      ROOM_CAP_* bitmap; bits 2-7 reserved (0)
+//     byte 5   uint8 nickLen       0..MAX_ROOM_NICKNAME_LEN
+//     bytes 6+ nickname            valid UTF-8
+//
+//   0x14 RoomState (relay → client, full snapshot; replace, never merge):
+//     byte 2   uint8 flags         ROOM_STATE_FLAG_* bitmap; bits 3-7 reserved
+//     byte 3   uint8 caps          ROOM_CAP_* bitmap advertised by the room
+//     4-7      uint32 seq          event sequence this snapshot is current at
+//     8-9      uint16 yourId       the receiving participant's ID
+//     10       uint8 codeLen       1..MAX_ROOM_CODE_LEN, then the display code
+//     ...      uint8 nameLen       0..MAX_ROOM_DISPLAY_NAME_LEN, then the name
+//     ...      uint8 tokenLen      0 or ROOM_CREATOR_TOKEN_SIZE, then the
+//                                  creator token — non-empty ONLY in the first
+//                                  snapshot after /room/new (docs/44 §4.4)
+//     ...      uint8 attachCount   then that many Attachment records
+//     ...      uint16 partCount    then that many Participant records
+//
+//     Attachment record:
+//       uint8 idLen + broadcast ID, uint8 labelLen + label,
+//       uint8 flags (ROOM_ATTACHMENT_FLAG_*), uint32 viewerCount
+//     Participant record:
+//       uint16 id, uint8 kind (ROOM_CLIENT_*), uint8 flags
+//       (ROOM_PARTICIPANT_FLAG_*), uint8 nickLen + nickname,
+//       uint8 identityLen + identity (reserved, empty in v1 — docs/44 §4.11)
+//
+//   0x15 RoomEvent (relay → client, one delta):
+//     2-5      uint32 seq          monotonic within the home pod's generation
+//     6        uint8 kind          ROOM_EVENT_* kind
+//     7+       payload by kind:
+//       ParticipantJoined / ParticipantUpdated: Participant record
+//       ParticipantLeft:                        uint16 id
+//       AttachmentAdded / AttachmentUpdated:    Attachment record
+//       AttachmentRemoved: uint8 idLen + broadcast ID, uint8 reason
+//       RoomEnding:        uint8 reason (ROOM_END_REASON_*)
+//       CommandRejected:   uint8 command kind, uint8 reason
+//                          (ROOM_REJECT_*), uint8 msgLen + message
+//
+//   0x16 RoomCommand (client → relay):
+//     byte 2   uint8 kind          ROOM_COMMAND_* kind
+//     3+       payload by kind:
+//       Attach:      uint8 idLen + broadcast ID, uint8 tokenLen
+//                    (RESUME_TOKEN_SIZE) + resume token, uint8 labelLen + label
+//       Detach:      uint8 idLen + broadcast ID
+//       SetNickname: uint8 nickLen + nickname
+//       EndRoom, Resync: no payload
+//
+// Parsers never copy: a returned creatorToken / resumeToken is a subarray
+// view of the input record.
+
+// The room control protocol version a RoomHello carries. Independent of the
+// datagram WIRE_VERSION byte so the control protocol can evolve (chat, voice)
+// without touching the media wire.
+export const ROOM_PROTOCOL_VERSION = 1;
+// The uint16 length prefix in front of every record on a room control stream.
+export const ROOM_RECORD_HEADER_SIZE = 2;
+// Bounds one record's framed bytes (Version ‖ Type ‖ payload — what the length
+// prefix counts): a reader must never allocate more than this from an
+// untrusted length. A RoomState for a full room is under 4 KiB.
+export const MAX_ROOM_RECORD_SIZE = 16384;
+// Participant nickname bound, in UTF-8 bytes.
+export const MAX_ROOM_NICKNAME_LEN = 32;
+// Room display code bound: a static slug is 3–32 characters (docs/44 §4.1); a
+// dynamic code is a broadcast-ID-length code.
+export const MAX_ROOM_CODE_LEN = 32;
+// A static room's optional display name bound.
+export const MAX_ROOM_DISPLAY_NAME_LEN = 64;
+// A broadcaster-chosen attachment label bound.
+export const MAX_ROOM_LABEL_LEN = 32;
+// The reserved participant identity field bound (docs/44 §4.11: a key
+// fingerprint later; empty in v1).
+export const MAX_ROOM_IDENTITY_LEN = 64;
+// A CommandRejected message bound.
+export const MAX_ROOM_REJECT_MESSAGE_LEN = 128;
+// Byte length of a dynamic room's creator token: the same truncated-HMAC
+// construction as the resume token (docs/44 D8), own domain-separation prefix.
+export const ROOM_CREATOR_TOKEN_SIZE = 16;
+// The room's HMAC'd key as carried in RoomState: the same 6-byte digest
+// TelemetryHello carries for a broadcast, so telemetry keys both the same way.
+export const ROOM_KEY_SIZE = 6;
+// Byte length of a broadcast resume token (R17 W2) as it appears inside a
+// RoomCommand Attach — the attach proof (docs/44 D9). 128 bits of HMAC-SHA256.
+export const RESUME_TOKEN_SIZE = 16;
+
+// Client kinds (RoomHello clientKind, Participant kind).
+export const ROOM_CLIENT_WEB_VIEWER = 0;
+export const ROOM_CLIENT_WEB_BROADCASTER = 1;
+export const ROOM_CLIENT_NATIVE = 2;
+const ROOM_CLIENT_KIND_MAX = ROOM_CLIENT_NATIVE;
+
+// Capability bits (RoomHello wantCaps, RoomState caps). Both reserved for
+// docs/44 §4.11's integrations; a v1 room advertises none.
+export const ROOM_CAP_CHAT = 0x01;
+export const ROOM_CAP_VOICE = 0x02;
+const ROOM_CAP_MASK = ROOM_CAP_CHAT | ROOM_CAP_VOICE;
+
+// RoomState flags.
+// Set for a dynamic room (clear: static).
+export const ROOM_STATE_FLAG_DYNAMIC = 0x01;
+// Set when the receiving participant presented a valid creator token (may
+// detach anyone, may end the room).
+export const ROOM_STATE_FLAG_CREATOR = 0x02;
+// Set when the receiving participant is allowed to attach (a dynamic room, or
+// a static room whose attach secret was presented or is unset).
+export const ROOM_STATE_FLAG_ATTACH_OK = 0x04;
+const ROOM_STATE_FLAG_MASK = ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR | ROOM_STATE_FLAG_ATTACH_OK;
+
+// Attachment flags. Live is set while the broadcast's publisher session is
+// up; clear means "broadcaster away" (within the broadcast grace).
+export const ROOM_ATTACHMENT_FLAG_LIVE = 0x01;
+const ROOM_ATTACHMENT_FLAG_MASK = ROOM_ATTACHMENT_FLAG_LIVE;
+
+// Participant flags.
+// Reserved for the voice integration (docs/44 §4.11), carried from day one so
+// the roster's speaking indicator does not need a wire change later.
+export const ROOM_PARTICIPANT_FLAG_SPEAKING = 0x01;
+// Set while the participant has at least one attached broadcast.
+export const ROOM_PARTICIPANT_FLAG_STREAMING = 0x02;
+const ROOM_PARTICIPANT_FLAG_MASK = ROOM_PARTICIPANT_FLAG_SPEAKING | ROOM_PARTICIPANT_FLAG_STREAMING;
+
+// RoomEvent kinds. 0x40–0x4F (chat) and 0x50–0x5F (voice) are reserved; the
+// parser throws RoomUnknownKindError for any kind it does not know.
+export const ROOM_EVENT_PARTICIPANT_JOINED = 0x01;
+export const ROOM_EVENT_PARTICIPANT_LEFT = 0x02;
+export const ROOM_EVENT_PARTICIPANT_UPDATED = 0x03;
+export const ROOM_EVENT_ATTACHMENT_ADDED = 0x10;
+export const ROOM_EVENT_ATTACHMENT_REMOVED = 0x11;
+export const ROOM_EVENT_ATTACHMENT_UPDATED = 0x12;
+export const ROOM_EVENT_ROOM_ENDING = 0x20;
+export const ROOM_EVENT_COMMAND_REJECTED = 0x30;
+
+// RoomCommand kinds. Same reserved sub-ranges as events.
+export const ROOM_COMMAND_ATTACH = 0x01;
+export const ROOM_COMMAND_DETACH = 0x02;
+export const ROOM_COMMAND_SET_NICKNAME = 0x03;
+export const ROOM_COMMAND_END_ROOM = 0x04;
+export const ROOM_COMMAND_RESYNC = 0x05;
+
+// RoomEndReason values (RoomEvent RoomEnding).
+export const ROOM_END_REASON_EMPTY = 1;
+export const ROOM_END_REASON_CREATOR = 2;
+export const ROOM_END_REASON_OPERATOR = 3;
+
+// RoomDetachReason values (RoomEvent AttachmentRemoved).
+export const ROOM_DETACH_REASON_PUBLISHER = 0;
+export const ROOM_DETACH_REASON_CREATOR = 1;
+export const ROOM_DETACH_REASON_EXPIRED = 2;
+export const ROOM_DETACH_REASON_ROOM_END = 3;
+
+// RoomRejectReason values (RoomEvent CommandRejected). Every distinct failure
+// a command can hit crosses the wire as its own reason, never a catch-all.
+// -max-room-broadcasts (or the CR's override) reached.
+export const ROOM_REJECT_LIMIT = 1;
+// The attach resume token does not verify.
+export const ROOM_REJECT_BAD_PROOF = 2;
+// The broadcast is unknown to the fleet, or the attachment to detach does not
+// exist.
+export const ROOM_REJECT_NOT_FOUND = 3;
+// The participant lacks the grant (attach without the attach secret,
+// detach-other / end without the creator token).
+export const ROOM_REJECT_FORBIDDEN = 4;
+// The broadcast is attached to another room (D1: at most one room per
+// broadcast).
+export const ROOM_REJECT_ALREADY_ATTACHED = 5;
+// The relay does not implement the command kind (a reserved chat/voice
+// command on a v1 relay).
+export const ROOM_REJECT_UNSUPPORTED = 6;
+// The command needs the API server and it is unreachable (docs/44 §6, fail
+// closed).
+export const ROOM_REJECT_UNAVAILABLE = 7;
+
+// Thrown by parseRoomEvent / parseRoomCommand (and refused by their encoders)
+// for a kind this implementation does not know — the docs/44 §4.11 reserved
+// ranges. Mirrors Go's ErrUnknownRoomKind: the header fields are filled in so
+// a reader can skip the record without losing its place in the sequence, and
+// a relay can answer ROOM_REJECT_UNSUPPORTED. `seq` is set for events only.
+export class RoomUnknownKindError extends WireError {
+  readonly kind: number;
+  readonly seq: number | undefined;
+
+  constructor(what: 'event' | 'command', kind: number, seq?: number) {
+    super(`unknown room ${what} kind 0x${kind.toString(16).padStart(2, '0')}`);
+    this.name = 'RoomUnknownKindError';
+    this.kind = kind;
+    this.seq = seq;
+  }
+}
+
+export interface RoomHello {
+  protocol: number; // ROOM_PROTOCOL_VERSION today
+  clientKind: number; // ROOM_CLIENT_*
+  wantCaps: number; // ROOM_CAP_* bitmap; 0 in v1 clients
+  nickname: string; // may be empty (the relay then assigns one)
+}
+
+// One attached broadcast as carried in RoomState and the attachment events.
+export interface RoomAttachment {
+  broadcastId: string;
+  label: string;
+  live: boolean;
+  viewerCount: number; // uint32
+}
+
+// One participant as carried in RoomState and the participant events.
+export interface RoomParticipant {
+  id: number; // uint16
+  kind: number; // ROOM_CLIENT_*
+  flags: number; // ROOM_PARTICIPANT_FLAG_* bitmap
+  nickname: string;
+  identity: string; // reserved (docs/44 §4.11); empty in v1
+}
+
+export interface RoomState {
+  flags: number; // ROOM_STATE_FLAG_* bitmap
+  caps: number; // ROOM_CAP_* bitmap
+  seq: number; // uint32
+  yourId: number; // uint16
+  code: string;
+  displayName: string;
+  // Empty except in the first snapshot after /room/new, where it is exactly
+  // ROOM_CREATOR_TOKEN_SIZE bytes. A view of the input record on parse.
+  creatorToken: Uint8Array;
+  // The room's HMAC'd key (ROOM_KEY_SIZE bytes) or empty — the /statusz and
+  // telemetry handle for the room, never the code. A view of the input.
+  key: Uint8Array;
+  attachments: RoomAttachment[];
+  participants: RoomParticipant[];
+}
+
+// A RoomEvent, discriminated by kind. Field names follow the Go struct; only
+// the fields the layout carries for that kind are present.
+export type RoomEvent =
+  | {
+      seq: number;
+      kind: typeof ROOM_EVENT_PARTICIPANT_JOINED | typeof ROOM_EVENT_PARTICIPANT_UPDATED;
+      participant: RoomParticipant;
+    }
+  | { seq: number; kind: typeof ROOM_EVENT_PARTICIPANT_LEFT; participant: { id: number } }
+  | {
+      seq: number;
+      kind: typeof ROOM_EVENT_ATTACHMENT_ADDED | typeof ROOM_EVENT_ATTACHMENT_UPDATED;
+      attachment: RoomAttachment;
+    }
+  | {
+      seq: number;
+      kind: typeof ROOM_EVENT_ATTACHMENT_REMOVED;
+      attachment: { broadcastId: string };
+      reason: number; // ROOM_DETACH_REASON_*
+    }
+  | { seq: number; kind: typeof ROOM_EVENT_ROOM_ENDING; reason: number } // ROOM_END_REASON_*
+  | {
+      seq: number;
+      kind: typeof ROOM_EVENT_COMMAND_REJECTED;
+      command: number; // the rejected command's ROOM_COMMAND_* kind
+      reason: number; // ROOM_REJECT_*
+      message: string; // human-readable detail
+    };
+
+// A RoomCommand, discriminated by kind.
+export type RoomCommand =
+  | {
+      kind: typeof ROOM_COMMAND_ATTACH;
+      broadcastId: string;
+      resumeToken: Uint8Array; // the attach proof, exactly RESUME_TOKEN_SIZE bytes
+      label: string;
+    }
+  | { kind: typeof ROOM_COMMAND_DETACH; broadcastId: string }
+  | { kind: typeof ROOM_COMMAND_SET_NICKNAME; nickname: string }
+  | { kind: typeof ROOM_COMMAND_END_ROOM }
+  | { kind: typeof ROOM_COMMAND_RESYNC };
+
+// --- record framing ---------------------------------------------------------
+
+// Frames one already-encoded room message (Version ‖ Type ‖ payload, as
+// produced by the encodeRoom* functions) as a length-prefixed record for a
+// room control stream.
+export function encodeRoomRecord(msg: Uint8Array): Uint8Array<ArrayBuffer> {
+  if (msg.length < 2 || msg.length > MAX_ROOM_RECORD_SIZE) {
+    throw new WireError(`invalid room record: ${msg.length} bytes, want 2-${MAX_ROOM_RECORD_SIZE}`);
+  }
+  const out = new Uint8Array(ROOM_RECORD_HEADER_SIZE + msg.length);
+  new DataView(out.buffer).setUint16(0, msg.length);
+  out.set(msg, ROOM_RECORD_HEADER_SIZE);
+  return out;
+}
+
+// Validates a room record's length prefix and returns the framed message
+// length. Exists so a stream reader never allocates from an unvalidated
+// length.
+export function parseRoomRecordLength(hdr: Uint8Array): number {
+  if (hdr.length < ROOM_RECORD_HEADER_SIZE) {
+    throw new WireError(`room record header too short: ${hdr.length} bytes, need ${ROOM_RECORD_HEADER_SIZE}`);
+  }
+  const n = (hdr[0] << 8) | hdr[1];
+  if (n < 2 || n > MAX_ROOM_RECORD_SIZE) {
+    throw new WireError(`invalid room record: length ${n}, want 2-${MAX_ROOM_RECORD_SIZE}`);
+  }
+  return n;
+}
+
+// Incremental record framing for a room control stream — the bidi-stream
+// twin of CarrierRecordParser: push() arbitrary read chunks (records span
+// chunk boundaries), get back complete framed messages (Version ‖ Type ‖
+// payload, ready for parseRoom*). Each returned record is a fresh copy owning
+// its buffer. Throws WireError on a zero/oversize declared length: framing
+// corruption, after which the stream cannot be resynchronized — abandon it.
+export class RoomRecordReader {
+  private pending: Uint8Array = new Uint8Array(0);
+
+  // True while a partial record is buffered — clean EOF with hasPartial()
+  // means the stream was truncated mid-record.
+  hasPartial(): boolean {
+    return this.pending.length > 0;
+  }
+
+  push(chunk: Uint8Array): Uint8Array<ArrayBuffer>[] {
+    let buf: Uint8Array;
+    if (this.pending.length === 0) {
+      buf = chunk;
+    } else {
+      buf = new Uint8Array(this.pending.length + chunk.length);
+      buf.set(this.pending, 0);
+      buf.set(chunk, this.pending.length);
+    }
+
+    const records: Uint8Array<ArrayBuffer>[] = [];
+    let offset = 0;
+    while (buf.length - offset >= ROOM_RECORD_HEADER_SIZE) {
+      const len = parseRoomRecordLength(buf.subarray(offset, offset + ROOM_RECORD_HEADER_SIZE));
+      if (buf.length - offset < ROOM_RECORD_HEADER_SIZE + len) break;
+      records.push(new Uint8Array(buf.subarray(offset + ROOM_RECORD_HEADER_SIZE, offset + ROOM_RECORD_HEADER_SIZE + len)));
+      offset += ROOM_RECORD_HEADER_SIZE + len;
+    }
+    // Copy the remainder: `chunk` may be reused by the caller's reader.
+    this.pending = new Uint8Array(buf.subarray(offset));
+    return records;
+  }
+}
+
+// --- shared field helpers ---------------------------------------------------
+
+export const BROADCAST_ID_LENGTH = 6;
+
+// Mirrors gawk-server/internal/broadcastid.Normalize: ASCII-uppercases, then
+// requires exactly BROADCAST_ID_LENGTH symbols from BROADCAST_ID_ALPHABET.
+// Only a-z are folded (Go's ToUpper maps runes 1:1; JS toUpperCase would turn
+// e.g. "ß" into "SS" and change the length).
+export function normalizeBroadcastId(id: string): string {
+  let out = '';
+  for (let i = 0; i < id.length; i++) {
+    const c = id.charCodeAt(i);
+    out += c >= 0x61 && c <= 0x7a ? String.fromCharCode(c - 0x20) : id[i];
+  }
+  if (out.length !== BROADCAST_ID_LENGTH) {
+    throw new WireError(`invalid broadcast id ${JSON.stringify(id)}: want ${BROADCAST_ID_LENGTH} characters`);
+  }
+  for (let i = 0; i < out.length; i++) {
+    if (BROADCAST_ID_ALPHABET.indexOf(out[i]) === -1) {
+      throw new WireError(`invalid character "${out[i]}" in broadcast ID ${JSON.stringify(id)}`);
+    }
+  }
+  return out;
+}
+
+const utf8Strict = new TextDecoder('utf-8', { fatal: true });
+
+// Bounds-checked cursor over one record. Every overrun throws the record's
+// WireError rather than reading past the end.
+class RoomReader {
+  private off = 2;
+  private readonly buf: Uint8Array;
+  private readonly what: string;
+
+  constructor(buf: Uint8Array, what: string) {
+    this.buf = buf;
+    this.what = what;
+  }
+
+  private fail(detail: string): never {
+    throw new WireError(`invalid ${this.what}: ${detail}`);
+  }
+
+  u8(): number {
+    if (this.off + 1 > this.buf.length) this.fail(`truncated at byte ${this.off}`);
+    return this.buf[this.off++];
+  }
+
+  u16(): number {
+    if (this.off + 2 > this.buf.length) this.fail(`truncated at byte ${this.off}`);
+    const v = (this.buf[this.off] << 8) | this.buf[this.off + 1];
+    this.off += 2;
+    return v;
+  }
+
+  u32(): number {
+    if (this.off + 4 > this.buf.length) this.fail(`truncated at byte ${this.off}`);
+    const v = new DataView(this.buf.buffer, this.buf.byteOffset, this.buf.byteLength).getUint32(this.off);
+    this.off += 4;
+    return v;
+  }
+
+  // A uint8-length-prefixed byte field, bounded by max. A view, not a copy.
+  bytes8(field: string, max: number): Uint8Array {
+    const n = this.u8();
+    if (n > max) this.fail(`${field} ${n} bytes, max ${max}`);
+    if (this.off + n > this.buf.length) this.fail(`${field} overruns record`);
+    const v = this.buf.subarray(this.off, this.off + n);
+    this.off += n;
+    return v;
+  }
+
+  // A uint8-length-prefixed UTF-8 string field, bounded by max.
+  str8(field: string, max: number): string {
+    const b = this.bytes8(field, max);
+    try {
+      return utf8Strict.decode(b);
+    } catch {
+      return this.fail(`${field} is not valid UTF-8`);
+    }
+  }
+
+  // A uint8-length-prefixed broadcast ID, normalized.
+  broadcastId(): string {
+    const b = this.bytes8('broadcast id', BROADCAST_ID_LENGTH);
+    let raw = '';
+    for (const byte of b) raw += String.fromCharCode(byte);
+    try {
+      return normalizeBroadcastId(raw);
+    } catch {
+      return this.fail(`broadcast id ${JSON.stringify(raw)}`);
+    }
+  }
+
+  attachment(): RoomAttachment {
+    const broadcastId = this.broadcastId();
+    const label = this.str8('label', MAX_ROOM_LABEL_LEN);
+    const flags = this.u8();
+    if ((flags & ~ROOM_ATTACHMENT_FLAG_MASK) !== 0) {
+      this.fail(`reserved attachment flag bits set (0x${flags.toString(16)})`);
+    }
+    const viewerCount = this.u32();
+    return { broadcastId, label, live: (flags & ROOM_ATTACHMENT_FLAG_LIVE) !== 0, viewerCount };
+  }
+
+  participant(): RoomParticipant {
+    const id = this.u16();
+    const kind = this.u8();
+    if (kind > ROOM_CLIENT_KIND_MAX) this.fail(`participant kind ${kind}`);
+    const flags = this.u8();
+    if ((flags & ~ROOM_PARTICIPANT_FLAG_MASK) !== 0) {
+      this.fail(`reserved participant flag bits set (0x${flags.toString(16)})`);
+    }
+    const nickname = this.str8('nickname', MAX_ROOM_NICKNAME_LEN);
+    const identity = this.str8('identity', MAX_ROOM_IDENTITY_LEN);
+    return { id, kind, flags, nickname, identity };
+  }
+
+  // Asserts the record was consumed exactly (house strictness).
+  done(): void {
+    if (this.off !== this.buf.length) this.fail(`${this.buf.length - this.off} trailing bytes`);
+  }
+}
+
+function checkRoomPrefix(msg: Uint8Array, msgType: number, minLen: number, what: string): void {
+  if (msg.length < minLen) {
+    throw new WireError(`message too short: ${msg.length} bytes, need at least ${minLen} for ${what}`);
+  }
+  if (msg[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${msg[0].toString(16)}`);
+  }
+  if (msg[1] !== msgType) {
+    throw new WireError(`unexpected message type 0x${msg[1].toString(16)}, want ${what}`);
+  }
+}
+
+// Growable byte sink for the variable-length room encoders.
+class RoomWriter {
+  private readonly bytes: number[] = [];
+  private readonly what: string;
+
+  constructor(what: string) {
+    this.what = what;
+  }
+
+  fail(detail: string): never {
+    throw new WireError(`invalid ${this.what}: ${detail}`);
+  }
+
+  u8(...v: number[]): void {
+    this.bytes.push(...v);
+  }
+
+  u16(v: number): void {
+    this.bytes.push((v >>> 8) & 0xff, v & 0xff);
+  }
+
+  u32(v: number): void {
+    this.bytes.push((v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff);
+  }
+
+  raw(b: Uint8Array): void {
+    for (const byte of b) this.bytes.push(byte);
+  }
+
+  str8(s: string, max: number, field: string): void {
+    // TextEncoder silently replaces a lone surrogate with U+FFFD; Go refuses
+    // the invalid string instead, so catch it before encoding.
+    if (/\p{Surrogate}/u.test(s)) this.fail(`${field} is not valid UTF-8`);
+    const b = new TextEncoder().encode(s);
+    if (b.length > max) this.fail(`${field} ${b.length} bytes, max ${max}`);
+    this.u8(b.length);
+    this.raw(b);
+  }
+
+  broadcastId(id: string): void {
+    let norm: string;
+    try {
+      norm = normalizeBroadcastId(id);
+    } catch {
+      return this.fail(`broadcast id ${JSON.stringify(id)}`);
+    }
+    this.u8(norm.length);
+    for (let i = 0; i < norm.length; i++) this.bytes.push(norm.charCodeAt(i));
+  }
+
+  attachment(a: RoomAttachment): void {
+    this.broadcastId(a.broadcastId);
+    this.str8(a.label, MAX_ROOM_LABEL_LEN, 'label');
+    this.u8(a.live ? ROOM_ATTACHMENT_FLAG_LIVE : 0);
+    this.u32(a.viewerCount);
+  }
+
+  participant(p: RoomParticipant): void {
+    if (p.kind > ROOM_CLIENT_KIND_MAX) this.fail(`participant kind ${p.kind}`);
+    if ((p.flags & ~ROOM_PARTICIPANT_FLAG_MASK) !== 0) {
+      this.fail(`reserved participant flag bits set (0x${p.flags.toString(16)})`);
+    }
+    this.u16(p.id);
+    this.u8(p.kind, p.flags);
+    this.str8(p.nickname, MAX_ROOM_NICKNAME_LEN, 'nickname');
+    this.str8(p.identity, MAX_ROOM_IDENTITY_LEN, 'identity');
+  }
+
+  finish(): Uint8Array<ArrayBuffer> {
+    return new Uint8Array(this.bytes);
+  }
+}
+
+// --- RoomHello (0x13) -------------------------------------------------------
+
+export function encodeRoomHello(h: RoomHello): Uint8Array<ArrayBuffer> {
+  const w = new RoomWriter('room hello');
+  if (h.protocol !== ROOM_PROTOCOL_VERSION) w.fail(`protocol ${h.protocol}, want ${ROOM_PROTOCOL_VERSION}`);
+  if (h.clientKind > ROOM_CLIENT_KIND_MAX) w.fail(`client kind ${h.clientKind}`);
+  if ((h.wantCaps & ~ROOM_CAP_MASK) !== 0) w.fail(`reserved capability bits set (0x${h.wantCaps.toString(16)})`);
+  w.u8(WIRE_VERSION, TYPE_ROOM_HELLO, h.protocol, h.clientKind, h.wantCaps);
+  w.str8(h.nickname, MAX_ROOM_NICKNAME_LEN, 'nickname');
+  return w.finish();
+}
+
+// Strict: exact length, known protocol version and client kind, reserved
+// capability bits zero.
+export function parseRoomHello(msg: Uint8Array): RoomHello {
+  checkRoomPrefix(msg, TYPE_ROOM_HELLO, 6, 'room hello');
+  const r = new RoomReader(msg, 'room hello');
+  const protocol = r.u8();
+  if (protocol !== ROOM_PROTOCOL_VERSION) {
+    throw new WireError(`invalid room hello: protocol ${protocol}, want ${ROOM_PROTOCOL_VERSION}`);
+  }
+  const clientKind = r.u8();
+  if (clientKind > ROOM_CLIENT_KIND_MAX) throw new WireError(`invalid room hello: client kind ${clientKind}`);
+  const wantCaps = r.u8();
+  if ((wantCaps & ~ROOM_CAP_MASK) !== 0) {
+    throw new WireError(`invalid room hello: reserved capability bits set (0x${wantCaps.toString(16)})`);
+  }
+  const nickname = r.str8('nickname', MAX_ROOM_NICKNAME_LEN);
+  r.done();
+  return { protocol, clientKind, wantCaps, nickname };
+}
+
+// --- RoomState (0x14) -------------------------------------------------------
+
+export function encodeRoomState(s: RoomState): Uint8Array<ArrayBuffer> {
+  const w = new RoomWriter('room state');
+  if ((s.flags & ~ROOM_STATE_FLAG_MASK) !== 0) w.fail(`reserved flag bits set (0x${s.flags.toString(16)})`);
+  if ((s.caps & ~ROOM_CAP_MASK) !== 0) w.fail(`reserved capability bits set (0x${s.caps.toString(16)})`);
+  if (s.code.length === 0) w.fail('empty code');
+  if (s.creatorToken.length !== 0 && s.creatorToken.length !== ROOM_CREATOR_TOKEN_SIZE) {
+    w.fail(`creator token ${s.creatorToken.length} bytes, want 0 or ${ROOM_CREATOR_TOKEN_SIZE}`);
+  }
+  if (s.key.length !== 0 && s.key.length !== ROOM_KEY_SIZE) {
+    w.fail(`key ${s.key.length} bytes, want 0 or ${ROOM_KEY_SIZE}`);
+  }
+  if (s.attachments.length > 255) w.fail(`${s.attachments.length} attachments, max 255`);
+  if (s.participants.length > 65535) w.fail(`${s.participants.length} participants, max 65535`);
+  w.u8(WIRE_VERSION, TYPE_ROOM_STATE, s.flags, s.caps);
+  w.u32(s.seq);
+  w.u16(s.yourId);
+  w.str8(s.code, MAX_ROOM_CODE_LEN, 'code');
+  w.str8(s.displayName, MAX_ROOM_DISPLAY_NAME_LEN, 'display name');
+  w.u8(s.creatorToken.length);
+  w.raw(s.creatorToken);
+  w.u8(s.key.length);
+  w.raw(s.key);
+  w.u8(s.attachments.length);
+  for (const a of s.attachments) w.attachment(a);
+  w.u16(s.participants.length);
+  for (const p of s.participants) w.participant(p);
+  const out = w.finish();
+  if (out.length > MAX_ROOM_RECORD_SIZE) w.fail(`${out.length} bytes exceeds MAX_ROOM_RECORD_SIZE`);
+  return out;
+}
+
+// Strict: exact length, reserved bits zero. creatorToken is a view of msg.
+export function parseRoomState(msg: Uint8Array): RoomState {
+  checkRoomPrefix(msg, TYPE_ROOM_STATE, 16, 'room state');
+  const r = new RoomReader(msg, 'room state');
+  const flags = r.u8();
+  if ((flags & ~ROOM_STATE_FLAG_MASK) !== 0) {
+    throw new WireError(`invalid room state: reserved flag bits set (0x${flags.toString(16)})`);
+  }
+  const caps = r.u8();
+  if ((caps & ~ROOM_CAP_MASK) !== 0) {
+    throw new WireError(`invalid room state: reserved capability bits set (0x${caps.toString(16)})`);
+  }
+  const seq = r.u32();
+  const yourId = r.u16();
+  const code = r.str8('code', MAX_ROOM_CODE_LEN);
+  if (code === '') throw new WireError('invalid room state: empty code');
+  const displayName = r.str8('display name', MAX_ROOM_DISPLAY_NAME_LEN);
+  const creatorToken = r.bytes8('creator token', ROOM_CREATOR_TOKEN_SIZE);
+  if (creatorToken.length !== 0 && creatorToken.length !== ROOM_CREATOR_TOKEN_SIZE) {
+    throw new WireError(
+      `invalid room state: creator token ${creatorToken.length} bytes, want 0 or ${ROOM_CREATOR_TOKEN_SIZE}`,
+    );
+  }
+  const key = r.bytes8('key', ROOM_KEY_SIZE);
+  if (key.length !== 0 && key.length !== ROOM_KEY_SIZE) {
+    throw new WireError(`invalid room state: key ${key.length} bytes, want 0 or ${ROOM_KEY_SIZE}`);
+  }
+  const attachments: RoomAttachment[] = [];
+  const n = r.u8();
+  for (let i = 0; i < n; i++) attachments.push(r.attachment());
+  const participants: RoomParticipant[] = [];
+  const m = r.u16();
+  for (let i = 0; i < m; i++) participants.push(r.participant());
+  r.done();
+  return { flags, caps, seq, yourId, code, displayName, creatorToken, key, attachments, participants };
+}
+
+// --- RoomEvent (0x15) -------------------------------------------------------
+
+// Unknown kinds are refused with RoomUnknownKindError: a relay only emits
+// what it implements.
+export function encodeRoomEvent(e: RoomEvent): Uint8Array<ArrayBuffer> {
+  const w = new RoomWriter('room event');
+  // Read the header before the switch: in the default branch TS has narrowed
+  // `e` to never, but a caller can still hand us an unknown kind at runtime.
+  const { seq, kind } = e as { seq: number; kind: number };
+  w.u8(WIRE_VERSION, TYPE_ROOM_EVENT);
+  w.u32(seq);
+  w.u8(kind);
+  switch (e.kind) {
+    case ROOM_EVENT_PARTICIPANT_JOINED:
+    case ROOM_EVENT_PARTICIPANT_UPDATED:
+      w.participant(e.participant);
+      break;
+    case ROOM_EVENT_PARTICIPANT_LEFT:
+      w.u16(e.participant.id);
+      break;
+    case ROOM_EVENT_ATTACHMENT_ADDED:
+    case ROOM_EVENT_ATTACHMENT_UPDATED:
+      w.attachment(e.attachment);
+      break;
+    case ROOM_EVENT_ATTACHMENT_REMOVED:
+      w.broadcastId(e.attachment.broadcastId);
+      w.u8(e.reason);
+      break;
+    case ROOM_EVENT_ROOM_ENDING:
+      w.u8(e.reason);
+      break;
+    case ROOM_EVENT_COMMAND_REJECTED:
+      w.u8(e.command, e.reason);
+      w.str8(e.message, MAX_ROOM_REJECT_MESSAGE_LEN, 'message');
+      break;
+    default:
+      throw new RoomUnknownKindError('event', kind, seq);
+  }
+  return w.finish();
+}
+
+// An unknown kind (including the reserved chat/voice ranges) throws
+// RoomUnknownKindError with seq and kind filled in, so a reader can skip it
+// without losing its place in the sequence.
+export function parseRoomEvent(msg: Uint8Array): RoomEvent {
+  checkRoomPrefix(msg, TYPE_ROOM_EVENT, 7, 'room event');
+  const r = new RoomReader(msg, 'room event');
+  const seq = r.u32();
+  const kind = r.u8();
+  let e: RoomEvent;
+  switch (kind) {
+    case ROOM_EVENT_PARTICIPANT_JOINED:
+    case ROOM_EVENT_PARTICIPANT_UPDATED:
+      e = { seq, kind, participant: r.participant() };
+      break;
+    case ROOM_EVENT_PARTICIPANT_LEFT:
+      e = { seq, kind, participant: { id: r.u16() } };
+      break;
+    case ROOM_EVENT_ATTACHMENT_ADDED:
+    case ROOM_EVENT_ATTACHMENT_UPDATED:
+      e = { seq, kind, attachment: r.attachment() };
+      break;
+    case ROOM_EVENT_ATTACHMENT_REMOVED:
+      e = { seq, kind, attachment: { broadcastId: r.broadcastId() }, reason: r.u8() };
+      break;
+    case ROOM_EVENT_ROOM_ENDING:
+      e = { seq, kind, reason: r.u8() };
+      break;
+    case ROOM_EVENT_COMMAND_REJECTED: {
+      const command = r.u8();
+      const reason = r.u8();
+      e = { seq, kind, command, reason, message: r.str8('message', MAX_ROOM_REJECT_MESSAGE_LEN) };
+      break;
+    }
+    default:
+      throw new RoomUnknownKindError('event', kind, seq);
+  }
+  r.done();
+  return e;
+}
+
+// --- RoomCommand (0x16) -----------------------------------------------------
+
+export function encodeRoomCommand(c: RoomCommand): Uint8Array<ArrayBuffer> {
+  const w = new RoomWriter('room command');
+  const { kind } = c as { kind: number };
+  w.u8(WIRE_VERSION, TYPE_ROOM_COMMAND, kind);
+  switch (c.kind) {
+    case ROOM_COMMAND_ATTACH:
+      if (c.resumeToken.length !== RESUME_TOKEN_SIZE) {
+        w.fail(`resume token ${c.resumeToken.length} bytes, want ${RESUME_TOKEN_SIZE}`);
+      }
+      w.broadcastId(c.broadcastId);
+      w.u8(c.resumeToken.length);
+      w.raw(c.resumeToken);
+      w.str8(c.label, MAX_ROOM_LABEL_LEN, 'label');
+      break;
+    case ROOM_COMMAND_DETACH:
+      w.broadcastId(c.broadcastId);
+      break;
+    case ROOM_COMMAND_SET_NICKNAME:
+      w.str8(c.nickname, MAX_ROOM_NICKNAME_LEN, 'nickname');
+      break;
+    case ROOM_COMMAND_END_ROOM:
+    case ROOM_COMMAND_RESYNC:
+      break; // no payload
+    default:
+      throw new RoomUnknownKindError('command', kind);
+  }
+  return w.finish();
+}
+
+// An unknown kind throws RoomUnknownKindError with kind filled in, so the
+// relay can answer ROOM_REJECT_UNSUPPORTED. resumeToken is a view of msg.
+export function parseRoomCommand(msg: Uint8Array): RoomCommand {
+  checkRoomPrefix(msg, TYPE_ROOM_COMMAND, 3, 'room command');
+  const r = new RoomReader(msg, 'room command');
+  const kind = r.u8();
+  let c: RoomCommand;
+  switch (kind) {
+    case ROOM_COMMAND_ATTACH: {
+      const broadcastId = r.broadcastId();
+      const resumeToken = r.bytes8('resume token', RESUME_TOKEN_SIZE);
+      if (resumeToken.length !== RESUME_TOKEN_SIZE) {
+        throw new WireError(`invalid room command: resume token ${resumeToken.length} bytes, want ${RESUME_TOKEN_SIZE}`);
+      }
+      c = { kind, broadcastId, resumeToken, label: r.str8('label', MAX_ROOM_LABEL_LEN) };
+      break;
+    }
+    case ROOM_COMMAND_DETACH:
+      c = { kind, broadcastId: r.broadcastId() };
+      break;
+    case ROOM_COMMAND_SET_NICKNAME:
+      c = { kind, nickname: r.str8('nickname', MAX_ROOM_NICKNAME_LEN) };
+      break;
+    case ROOM_COMMAND_END_ROOM:
+    case ROOM_COMMAND_RESYNC:
+      c = { kind };
+      break;
+    default:
+      throw new RoomUnknownKindError('command', kind);
+  }
+  r.done();
+  return c;
 }

@@ -290,8 +290,11 @@ type Timeline struct {
 	// axis for anything historical — is startedAtMs + tMs and cannot be
 	// recovered without this.
 	BroadcastKey string `json:"broadcastKey,omitempty"`
-	StartedAtMs  int64  `json:"startedAtMs,omitempty"`
-	EndedAtMs    int64  `json:"endedAtMs,omitempty"`
+	// RoomKey (R42, RM8) is the HMAC'd room this session reported, if any.
+	// Detail-only like BroadcastKey, so the MCP default stays byte-identical.
+	RoomKey     string `json:"roomKey,omitempty"`
+	StartedAtMs int64  `json:"startedAtMs,omitempty"`
+	EndedAtMs   int64  `json:"endedAtMs,omitempty"`
 	// ClockOffsetMs is the median of (service receive clock − client clock)
 	// across this session's stored lines. A client with a skewed clock is
 	// perfectly normal, and TH4 puts several of them on ONE axis — so the
@@ -427,6 +430,10 @@ func (a *API) GetSessionDetail(sessionID string, q SessionQuery) (*Timeline, err
 			continue
 		}
 		rec.Stats = nil
+		// The room key rides on every stored line (R42, RM8) but is published
+		// ONCE, on the detail envelope — never per event, where it would
+		// reach the MCP default that UD1 keeps byte-identical.
+		rec.RoomKey = ""
 		if tl.FromMs > 0 || tl.ToMs > 0 {
 			at := in.StartedAtMs + int64(rec.TMs)
 			if (tl.FromMs > 0 && at < tl.FromMs) || (tl.ToMs > 0 && at > tl.ToMs) {
@@ -438,6 +445,7 @@ func (a *API) GetSessionDetail(sessionID string, q SessionQuery) (*Timeline, err
 	if q.Detail {
 		tl.Step = step
 		tl.BroadcastKey = in.BroadcastKey
+		tl.RoomKey = in.RoomKey
 		tl.StartedAtMs = in.StartedAtMs
 		tl.EndedAtMs = in.EndedAtMs
 		tl.ClockOffsetMs = clockOffset(lines, in.StartedAtMs)
@@ -1285,6 +1293,18 @@ func (a *API) mountR31(mux *http.ServeMux) {
 		out, err := a.SearchBroadcasts(historyQueryOf(r, a.now()))
 		writeJSON(w, out, err)
 	})
+	// R42 (RM8) — one room's sessions. This is `/v1/history/sessions?room=`
+	// with the key in the path: the same page, filter, sort and coverage
+	// note, so a room is addressable by URL (curl, MCP prompts, the chip in
+	// the session view) without a second projection to keep in step. The
+	// grouping by broadcast is the client's; a key that matches nothing is an
+	// empty page, not a 404, exactly like an unknown `broadcast=` filter.
+	mux.HandleFunc("GET /v1/history/rooms/{key}", func(w http.ResponseWriter, r *http.Request) {
+		q := historyQueryOf(r, a.now())
+		q.RoomKey = r.PathValue("key")
+		out, err := a.SearchSessions(q)
+		writeJSON(w, out, err)
+	})
 	// TH4 — the broadcast timeline and its broadcast-scope verdict.
 	mux.HandleFunc("GET /v1/broadcasts/{key}", func(w http.ResponseWriter, r *http.Request) {
 		out, err := a.GetBroadcast(r.PathValue("key"), BroadcastQuery{
@@ -1414,7 +1434,8 @@ func historyQueryOf(r *http.Request, now time.Time) HistoryQuery {
 	q := r.URL.Query()
 	return HistoryQuery{
 		From: sinceOf(r, now), To: untilOf(r),
-		BroadcastKey: q.Get("broadcast"), Role: q.Get("role"), Verdict: q.Get("verdict"),
+		BroadcastKey: q.Get("broadcast"), RoomKey: q.Get("room"),
+		Role: q.Get("role"), Verdict: q.Get("verdict"),
 		Browser: q.Get("browser"), OS: q.Get("os"), AppVersion: q.Get("appVersion"),
 		DeliveryMode: q.Get("deliveryMode"),
 		HasFindings:  triBoolOf(r, "hasFindings"), Distrusted: triBoolOf(r, "distrusted"),

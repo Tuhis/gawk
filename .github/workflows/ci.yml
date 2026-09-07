@@ -1498,6 +1498,26 @@ jobs:
           grep -q 'resources: \["leases"\]' <<<"$rbac"
           grep -q 'verbs: \["get", "create", "update"\]' <<<"$rbac"
 
+      - name: the admin Role grants rooms and Secrets only with rooms on (R42)
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          off=$(helm template "$chart" $ADMIN_PG)
+          # Default: the docs/42 §5 posture — no Secrets, no rooms, knob off.
+          ! grep -q 'resources: \["secrets"\]' <<<"$off"
+          ! grep -q 'resources: \["rooms"\]' <<<"$off"
+          grep -A1 'name: GAWK_ADMIN_ROOMS' <<<"$off" | grep -q 'value: "false"'
+          on=$(helm template "$chart" $ADMIN_PG --set rooms.enabled=true)
+          grep -q 'resources: \["rooms"\]' <<<"$on"
+          grep -q 'verbs: \["get", "list", "create", "update", "patch", "delete"\]' <<<"$on"
+          # Secrets: exactly the verbs create/rotate/delete need — never list or
+          # watch — and the posture-change comment stays in the rendered Role.
+          grep -q 'resources: \["secrets"\]' <<<"$on"
+          grep -q 'verbs: \["get", "create", "update", "delete"\]' <<<"$on"
+          ! grep -A2 'resources: \["secrets"\]' <<<"$on" | grep -qE '"list"|"watch"'
+          grep -q 'THE POSTURE CHANGE' <<<"$on"
+          grep -A1 'name: GAWK_ADMIN_ROOMS' <<<"$on" | grep -q 'value: "true"'
+
       - name: admin secrets render via both the literal and the Ref form
         run: |
           set -euo pipefail
@@ -1671,6 +1691,74 @@ jobs:
           grep -q 'GAWK_ADMIN_OIDC_AUDIENCE' <<<"$oidc"
           # Ban RBAC must not depend on cluster mode: kills work single-pod too.
           helm template "$chart" --set moderation.enabled=true | grep -q 'resources: \["bans"\]'
+
+      # ---- R42 (docs/44 §4.10, RM3) ---------------------------------------
+      #
+      # The same two directions as telemetry and moderation. Off is the
+      # default and off must be byte-identical to a relay without the feature
+      # (docs/44 D17): no CRD, no RBAC, no GAWK_ROOM* env. The pattern is
+      # deliberately wide — `rooms\.gawk` catches the CRD name, `kind: Room`
+      # the CRD's kind and any stray CR, `GAWK_ROOM` every knob — with
+      # headroom: a future template that renders any of them on defaults
+      # fails here before it ships.
+      - name: relay chart with rooms off renders nothing room-related
+        run: |
+          set -euo pipefail
+          out=$(helm template gawk-server/deploy/charts/gawk-server)
+          if grep -qiE 'rooms\.gawk|kind: Room|GAWK_ROOM' <<<"$out"; then
+            echo "::error::rooms.enabled=false still renders room content"
+            grep -inE 'rooms\.gawk|kind: Room|GAWK_ROOM' <<<"$out"
+            exit 1
+          fi
+
+      - name: relay chart with rooms on renders the CRD, RBAC and the knobs
+        run: |
+          set -euo pipefail
+          chart=gawk-server/deploy/charts/gawk-server
+          # Rooms alone: the CRD and every knob, but NO Kubernetes client —
+          # a single-pod relay with rooms uses none (docs/44 §4.3), so the
+          # rooms Role must not render without clusterMode.
+          solo=$(helm template "$chart" --set rooms.enabled=true)
+          grep -q 'kind: CustomResourceDefinition' <<<"$solo"
+          grep -q 'name: rooms.gawk.ioio.fi' <<<"$solo"
+          # keep: uninstalling the relay chart must never end every live room.
+          grep -q '"helm.sh/resource-policy": keep' <<<"$solo"
+          # The status subresource is what lets the home pod CAS its lease
+          # without racing an operator's spec edit (crd-room.yaml).
+          grep -qE '^ +status: \{\}$' <<<"$solo"
+          # `kubectl get rooms` is the operator's view of the fleet's rooms.
+          for col in Kind Code Home Age; do grep -q "name: $col" <<<"$solo"; done
+          for env in GAWK_ROOMS GAWK_ROOM_EMPTY_GRACE GAWK_MAX_ROOMS GAWK_MAX_ROOM_BROADCASTS GAWK_MAX_ROOM_PARTICIPANTS; do
+            grep -q "name: $env$" <<<"$solo"
+          done
+          if grep -q 'resources: \["rooms"' <<<"$solo"; then
+            echo "::error::rooms RBAC rendered without clusterMode — a single-pod relay needs no k8s client"; exit 1
+          fi
+          # Rooms + cluster mode: the relay WRITES rooms and their status
+          # (mint = CR create, lease = status CAS, end = delete), reads the
+          # attach Secret it is pointed at, and still cannot write bans.
+          both=$(helm template "$chart" --set rooms.enabled=true --set config.clusterMode=true \
+                   --set moderation.enabled=true)
+          grep -A1 'resources: \["rooms", "rooms/status"\]' <<<"$both" \
+            | grep -q 'verbs: \["get", "list", "watch", "create", "update", "patch", "delete"\]'
+          grep -A1 'resources: \["secrets"\]' <<<"$both" | grep -q 'verbs: \["get"\]'
+          if grep -A1 'resources: \["secrets"\]' <<<"$both" | grep -qE '"(list|watch)"'; then
+            echo "::error::the relay Role can enumerate Secrets"; exit 1
+          fi
+          grep -A3 'resources: \["bans"\]' <<<"$both" | grep -q 'verbs: \["get", "list", "watch"\]'
+          # The lease advertises <podIP>:4433 for /internal/room proxying.
+          grep -qE 'name: POD_IP$' <<<"$both"
+          grep -qE 'name: POD_NAME$' <<<"$both"
+          grep -q 'POD_NAMESPACE' <<<"$both"
+          # The create-secret rides the same literal-or-ref plumbing as
+          # publishSecret, and the Ref form never leaks a literal.
+          lit=$(helm template "$chart" --set rooms.enabled=true --set rooms.createSecret=invite-only)
+          grep -A1 'name: GAWK_ROOM_CREATE_SECRET' <<<"$lit" | grep -q 'value: "invite-only"'
+          ref=$(helm template "$chart" --set rooms.enabled=true \
+                  --set rooms.createSecretRef.name=room-create --set rooms.createSecretRef.key=secret)
+          grep -A4 'name: GAWK_ROOM_CREATE_SECRET' <<<"$ref" | grep -q 'name: "room-create"'
+          if grep -q 'invite-only' <<<"$ref"; then echo "::error::the Ref form leaked a literal"; exit 1; fi
+          helm lint "$chart" --set rooms.enabled=true --set config.clusterMode=true
 
       # The admin API rides the ops listener and the per-pod headless Service
       # is gated on metrics.enabled — so a credential without that listener
@@ -1985,6 +2073,16 @@ jobs:
         working-directory: e2e
         env:
           GAWK_E2E_OUT_DIR: out-browser-broadcast
+      # R42 RM4 (docs/44 §9): the room view against a relay with -rooms and
+      # two gawk-pubsim broadcasts (one mints the room, one attaches): the
+      # grid shows both, a number key focuses within a keyframe window, and
+      # hide-videos drops every media session while the participant stays in
+      # the room — asserted on the relay's /statusz, not on the page.
+      - name: Run the rooms E2E (R42)
+        run: node run.mjs --rooms
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-rooms
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -2049,10 +2147,10 @@ jobs:
           if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
             sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
           fi
-      - name: Build the E2E toolchain (devcert, loadgen, pubsim)
+      - name: Build the E2E toolchain (devcert, loadgen, roomsim, pubsim)
         run: |
           mkdir -p e2e/bin e2e/out
-          (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen)
+          (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen ./cmd/gawk-roomsim)
           (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
       # Host networking and the in-cluster registry mirror — see the action.
       - uses: ./.github/actions/setup-buildx
@@ -2128,6 +2226,7 @@ jobs:
             --set config.maxTotalSubscribers=240 \
             --set moderation.enabled=true \
             --set moderation.adminApi.token="$ADMIN_API_TOKEN" \
+            --set rooms.enabled=true \
             --set-json 'extraEnv=[{"name":"SSL_CERT_FILE","value":"/tls/tls.crt"}]' \
             --wait --timeout 180s
       - name: Publish the fixture and spread synthetic viewers
@@ -2216,6 +2315,16 @@ jobs:
       # earlier would take the origin/edge split out from under cluster-assert.
       - name: Assert the fleet-wide kill, 451 enforcement and unban (R39)
         run: ./e2e/moderation-assert.sh gawk-e2e "$BROADCAST_ID" "$ADMIN_API_TOKEN" 90
+      # R42 RM3 (docs/44 §9): rooms on the real control plane — a static Room
+      # CR applied by kubectl joinable through the fleet, the home lease and
+      # status.key written under the chart's RBAC, and the adoption after the
+      # home pod is killed for real. AFTER moderation-assert, not right after
+      # cluster-assert: this tier deletes a relay pod, which would take the
+      # origin/edge split out from under the two tiers above it. It restores
+      # a two-Ready-pod fleet before returning, so the portal tier below
+      # starts from the state it expects.
+      - name: Assert rooms across the fleet — static CR, lease, adoption after a pod kill (R42)
+        run: ./e2e/rooms-assert.sh gawk-e2e 120
       # R39 (docs/42 §11.1's kind-tier row): the PORTAL half of the tier —
       # gawk-admin installed for real (waited install, so the migrate hook and
       # /readyz gate genuinely converge), a throwaway Postgres, a TEST-ONLY

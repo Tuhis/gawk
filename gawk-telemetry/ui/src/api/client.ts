@@ -132,6 +132,8 @@ export interface HistoryParams {
   fromMs?: number;
   toMs?: number;
   broadcast?: string;
+  /** R42: scope to one room's sessions (the HMAC'd room key). */
+  room?: string;
   role?: string;
   verdict?: string;
   browser?: string;
@@ -151,6 +153,7 @@ function historyQuery(p: HistoryParams): string {
     since: p.fromMs ? new Date(p.fromMs).toISOString() : undefined,
     to: p.toMs,
     broadcast: p.broadcast,
+    room: p.room,
     role: p.role,
     verdict: p.verdict,
     browser: p.browser,
@@ -352,6 +355,27 @@ export async function resolveCode(code: string): Promise<string | null> {
   if (res.status === 404 || res.status === 501) return null;
   if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status);
   return ((await res.json()) as { broadcastKey: string }).broadcastKey;
+}
+
+/**
+ * Resolve a ROOM code (R42) to the HMAC'd room key the page groups by. Same
+ * one-way, server-side posture as `resolveCode`; the server lower-cases (room
+ * codes double as CR names) where broadcast codes upper-case, so the two never
+ * share a digest even for the same six characters.
+ */
+export async function resolveRoom(room: string): Promise<string | null> {
+  const res = await fetch('v1/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ room }),
+  });
+  if (res.status === 404 || res.status === 501) return null;
+  if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status);
+  const body = (await res.json()) as { roomKey?: string };
+  // A backend predating R42 answers a `room` body with 400 (no code); one that
+  // ignores the field would return a broadcastKey and no roomKey — treat that
+  // as "not offered" rather than grouping by the wrong digest.
+  return body.roomKey ?? null;
 }
 
 /**

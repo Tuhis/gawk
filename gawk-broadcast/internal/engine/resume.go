@@ -91,6 +91,10 @@ func (s *Session) supervise(ctx context.Context, relay RelaySession) {
 		s.noteResumed()
 		s.log.Info("broadcast resumed", "broadcast_id", s.BroadcastID())
 		s.cb.resumed()
+		// R42: the relay's hub saw a new publisher session; the room
+		// attachment's ownership and live flag follow it (docs/44 §4.8
+		// "re-attaches on resume").
+		s.roomResumed()
 
 		// Nothing forces a keyframe here: the engine has no such control over
 		// the GStreamer child, and the 500 ms GOP (MediaConfig.GOPMs) means the

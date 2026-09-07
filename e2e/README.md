@@ -133,6 +133,38 @@ worker offload path doesn't engage headlessly (no worker MSTP, no track
 transfer — finding 12), so the broadcaster runs the main-thread pipeline;
 the placement is recorded, not asserted.
 
+## Rooms (R42)
+
+```sh
+cd e2e && node run.mjs --rooms
+```
+
+Its own mode, like `--telemetry`: the relay starts with `-rooms`, and two
+`gawk-pubsim` publishers stand in for two broadcasters — the first with
+`-room-new -label alpha` (it prints `ROOM <CODE> <creatorTokenHex>` on stdout,
+which the harness scrapes), the second with `-room <CODE> -label bravo`. A
+headless viewer then opens `#/room/<CODE>` with a seeded nickname and walks
+the three modes:
+
+| Step | Assertion (flow-shaped, docs/25 Decision 6) |
+|---|---|
+| Grid | two tiles, each tile's `data-frames` advancing across a ~5 s gap; every active broadcast on `/statusz` has ≥ 1 subscriber |
+| Key `2` | tile 2 becomes `data-variant="focus"`, tile 1 `small`, within 3 s; the focused tile keeps advancing and neither broadcast loses its subscriber — focus is a gain change, never a re-dial (docs/44 §4.7) |
+| Hide videos | no tiles; **both broadcasts read `subscribers: 0` on `/statusz`** while the `rooms` row still counts the same participants (the browser's control session stayed) |
+| Leave | the room's participant count drops by exactly one |
+
+The subscriber count is the relay's own view, which is why it is the
+load-bearing assertion: the unit suite proves the room view *opens no
+media session* in hide-videos against a fake, this proves the relay agrees.
+Note the participant count is 3 while everyone is in (both pubsims hold
+their room control session for the process lifetime), so the pass asserts
+"unchanged by Hide videos, minus one on Leave" rather than a literal 1.
+
+Skips cleanly (prints `SKIP` and passes) when `gawk-pubsim -h` lists no
+`-room-new` — rebuild it from `gawk-broadcast` first. Artifacts:
+`room-grid.png`, `room-focus.png`, `room-hidden.png`, `console-rooms.log`,
+`pubsim-room-{a,b}.log`.
+
 ## fMP4 muxer playback check (R22)
 
 ```sh

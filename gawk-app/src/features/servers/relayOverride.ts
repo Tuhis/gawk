@@ -23,7 +23,14 @@ export function applyRouteRelay(route: Route): void {
   // A new route is a new session: any foreign-telemetry disclosure belongs
   // to the session that produced it (D16).
   store.setForeignTelemetryActive(false);
-  if (route.view !== 'viewer' && route.view !== 'broadcaster') {
+  // R42: room links inherit the ?relay= grammar unchanged (docs/44 §3), and
+  // the join resolver carries it forward to whichever surface it lands on.
+  if (
+    route.view !== 'viewer' &&
+    route.view !== 'broadcaster' &&
+    route.view !== 'room' &&
+    route.view !== 'join'
+  ) {
     store.setSessionOverride(null);
     store.setRelayLinkNote(null);
     return;

@@ -19,26 +19,31 @@ func TestDefaults(t *testing.T) {
 		t.Fatalf("ParseFlags: %v", err)
 	}
 	want := Config{
-		Addr:                 ":4433",
-		DevCertHosts:         "localhost,127.0.0.1",
-		LogLevel:             slog.LevelInfo,
-		LogFormat:            "text",
-		MaxSubscribers:       15,
-		MaxIdleTimeout:       30 * time.Second,
-		KeepAlivePeriod:      10 * time.Second,
-		BroadcastGrace:       5 * time.Minute,
-		MaxBroadcasts:        5,
-		MaxTotalSubscribers:  50,
-		PublishSecret:        "",
-		ConnRateLimit:        3.0,
-		ConnBurstLimit:       10,
-		MaxBandwidthBytes:    0,
-		MaxKeyframeBytes:     8388608,
-		KeyframeWriteTimeout: time.Second,
-		DVRWindow:            3 * time.Second,
-		DVRMaxBytes:          24 << 20,
-		DVRMaxCatchup:        4,
-		DVRAudio:             true,
+		Addr:                  ":4433",
+		DevCertHosts:          "localhost,127.0.0.1",
+		LogLevel:              slog.LevelInfo,
+		LogFormat:             "text",
+		MaxSubscribers:        15,
+		MaxIdleTimeout:        30 * time.Second,
+		KeepAlivePeriod:       10 * time.Second,
+		BroadcastGrace:        5 * time.Minute,
+		PublisherStallTimeout: 90 * time.Second,
+		MaxBroadcasts:         5,
+		MaxTotalSubscribers:   50,
+		PublishSecret:         "",
+		ConnRateLimit:         3.0,
+		ConnBurstLimit:        10,
+		MaxBandwidthBytes:     0,
+		MaxKeyframeBytes:      8388608,
+		KeyframeWriteTimeout:  time.Second,
+		RoomEmptyGrace:        time.Minute,
+		MaxRooms:              10,
+		MaxRoomBroadcasts:     4,
+		MaxRoomParticipants:   50,
+		DVRWindow:             3 * time.Second,
+		DVRMaxBytes:           24 << 20,
+		DVRMaxCatchup:         4,
+		DVRAudio:              true,
 		// R29 (docs/34 §5.2): quality-first default, chart-overridable.
 		ParityDefault: 2,
 		// R30 (docs/35 §6): on by default — zero relay cost until a viewer
@@ -98,16 +103,18 @@ func TestMetricsAddr(t *testing.T) {
 
 func TestEnvFallback(t *testing.T) {
 	getenv := envMap(map[string]string{
-		"GAWK_ADDR":             ":9999",
-		"GAWK_LOG_LEVEL":        "debug",
-		"GAWK_LOG_FORMAT":       "json",
-		"GAWK_MAX_SUBSCRIBERS":  "3",
-		"GAWK_DEV_CERT":         "true",
-		"GAWK_ALLOWED_ORIGINS":  "https://a.example, https://b.example",
-		"GAWK_MAX_IDLE_TIMEOUT": "45s",
-		"GAWK_KEEPALIVE_PERIOD": "5s",
-		"GAWK_QUIET_PROBE_LOGS": "true",
-		"GAWK_BROADCAST_GRACE":  "2m",
+		"GAWK_ADDR":                    ":9999",
+		"GAWK_LOG_LEVEL":               "debug",
+		"GAWK_LOG_FORMAT":              "json",
+		"GAWK_MAX_SUBSCRIBERS":         "3",
+		"GAWK_DEV_CERT":                "true",
+		"GAWK_ALLOWED_ORIGINS":         "https://a.example, https://b.example",
+		"GAWK_MAX_IDLE_TIMEOUT":        "45s",
+		"GAWK_KEEPALIVE_PERIOD":        "5s",
+		"GAWK_QUIET_PROBE_LOGS":        "true",
+		"GAWK_BROADCAST_GRACE":         "2m",
+		"GAWK_PUBLISHER_STALL_TIMEOUT": "20s",
+		"GAWK_PUBLISHER_STALL_ENDS":    "true",
 	})
 	cfg, err := ParseFlags(nil, getenv)
 	if err != nil {
@@ -144,15 +151,22 @@ func TestEnvFallback(t *testing.T) {
 	if cfg.BroadcastGrace != 2*time.Minute {
 		t.Errorf("BroadcastGrace = %v, want 2m", cfg.BroadcastGrace)
 	}
+	if cfg.PublisherStallTimeout != 20*time.Second {
+		t.Errorf("PublisherStallTimeout = %v, want 20s", cfg.PublisherStallTimeout)
+	}
+	if !cfg.PublisherStallEnds {
+		t.Error("PublisherStallEnds = false, want true from env")
+	}
 }
 
 func TestFlagOverridesEnv(t *testing.T) {
 	getenv := envMap(map[string]string{
-		"GAWK_ADDR":             ":9999",
-		"GAWK_LOG_LEVEL":        "error",
-		"GAWK_QUIET_PROBE_LOGS": "true",
+		"GAWK_ADDR":                 ":9999",
+		"GAWK_LOG_LEVEL":            "error",
+		"GAWK_QUIET_PROBE_LOGS":     "true",
+		"GAWK_PUBLISHER_STALL_ENDS": "true",
 	})
-	cfg, err := ParseFlags([]string{"-addr", ":1234", "-log-level", "warn", "-quiet-probe-logs=false", "-broadcast-grace", "10s"}, getenv)
+	cfg, err := ParseFlags([]string{"-addr", ":1234", "-log-level", "warn", "-quiet-probe-logs=false", "-broadcast-grace", "10s", "-publisher-stall-timeout", "5s", "-publisher-stall-ends=false"}, getenv)
 	if err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
@@ -167,6 +181,12 @@ func TestFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.BroadcastGrace != 10*time.Second {
 		t.Errorf("BroadcastGrace = %v, want 10s from flag override", cfg.BroadcastGrace)
+	}
+	if cfg.PublisherStallTimeout != 5*time.Second {
+		t.Errorf("PublisherStallTimeout = %v, want 5s from flag override", cfg.PublisherStallTimeout)
+	}
+	if cfg.PublisherStallEnds {
+		t.Error("PublisherStallEnds = true, want false from flag override")
 	}
 }
 
@@ -202,6 +222,10 @@ func TestInvalidTimeouts(t *testing.T) {
 		{"-broadcast-grace", "later"},
 		{"-broadcast-grace", "0s"},
 		{"-broadcast-grace", "-5s"},
+		{"-publisher-stall-timeout", "soon"},
+		{"-publisher-stall-timeout", "-1s"},
+		{"-publisher-stall-timeout", "6m"},                            // > default grace
+		{"-broadcast-grace", "30s", "-publisher-stall-timeout", "1m"}, // stall > grace
 	}
 	for _, args := range bad {
 		if _, err := ParseFlags(args, noEnv); err == nil {
@@ -517,6 +541,58 @@ func TestModerationSource(t *testing.T) {
 // R39 AP3 (docs/42 §4.3 table, §9): the admin-API knobs parse from flag and
 // env with flag-over-env precedence, carry working defaults for the
 // authorization policy, and reject the two shapes that fail SILENTLY.
+// R42 (docs/44 §4.10): every room knob parses from flag and env, flag wins,
+// -rooms defaults off, and each limit refuses a non-positive value.
+func TestRoomKnobs(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"-rooms",
+		"-room-empty-grace", "90s",
+		"-max-rooms", "3",
+		"-max-room-broadcasts", "2",
+		"-max-room-participants", "7",
+		"-room-create-secret", "invite",
+		"-rooms-file", "/etc/gawk/rooms.json",
+	}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if !cfg.Rooms || cfg.RoomEmptyGrace != 90*time.Second || cfg.MaxRooms != 3 || cfg.MaxRoomBroadcasts != 2 ||
+		cfg.MaxRoomParticipants != 7 || cfg.RoomCreateSecret != "invite" || cfg.RoomsFile != "/etc/gawk/rooms.json" {
+		t.Errorf("flags not carried through: %+v", cfg)
+	}
+	cfg, err = ParseFlags(nil, envMap(map[string]string{
+		"GAWK_ROOMS":                 "true",
+		"GAWK_ROOM_EMPTY_GRACE":      "45s",
+		"GAWK_MAX_ROOMS":             "4",
+		"GAWK_MAX_ROOM_BROADCASTS":   "3",
+		"GAWK_MAX_ROOM_PARTICIPANTS": "8",
+		"GAWK_ROOM_CREATE_SECRET":    "env-invite",
+		"GAWK_ROOMS_FILE":            "/env/rooms.json",
+	}))
+	if err != nil {
+		t.Fatalf("ParseFlags(env): %v", err)
+	}
+	if !cfg.Rooms || cfg.RoomEmptyGrace != 45*time.Second || cfg.MaxRooms != 4 || cfg.MaxRoomBroadcasts != 3 ||
+		cfg.MaxRoomParticipants != 8 || cfg.RoomCreateSecret != "env-invite" || cfg.RoomsFile != "/env/rooms.json" {
+		t.Errorf("env fallback not honoured: %+v", cfg)
+	}
+	cfg, err = ParseFlags([]string{"-max-rooms", "9"}, envMap(map[string]string{"GAWK_MAX_ROOMS": "4"}))
+	if err != nil || cfg.MaxRooms != 9 {
+		t.Errorf("flag over env: %d, %v", cfg.MaxRooms, err)
+	}
+	if cfg.Rooms {
+		t.Error("-rooms must default off (docs/44 D17)")
+	}
+	for _, bad := range [][]string{
+		{"-room-empty-grace", "0s"}, {"-room-empty-grace", "soon"},
+		{"-max-rooms", "0"}, {"-max-room-broadcasts", "-1"}, {"-max-room-participants", "x"},
+	} {
+		if _, err := ParseFlags(bad, noEnv); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+}
+
 func TestAdminAPIKnobs(t *testing.T) {
 	cfg, err := ParseFlags([]string{
 		"-admin-api-token", "tok",

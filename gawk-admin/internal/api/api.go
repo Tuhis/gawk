@@ -142,6 +142,12 @@ type Options struct {
 	Reconciler Kicker
 	// Fleet enumerates relay pods. Required for /broadcasts and /relays.
 	Fleet Fleet
+	// Rooms manages Room CRs (R42). nil means rooms are OFF: no /rooms route
+	// is registered (the catch-all answers 404) and /me reports the feature
+	// absent, so the SPA shows no rooms view. main.go sets it only under
+	// -rooms, the value the chart derives from the same rooms.enabled that
+	// grants the Role its Room and Secret verbs.
+	Rooms Rooms
 	// Config carries the deep-link bases, the kill cooldown, the operator role
 	// and the chart-defined webhooks.
 	Config config.Config
@@ -227,6 +233,18 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("PUT /api/v1/webhooks/{id}", a.protect(a.handleUpdateWebhook))
 	mux.Handle("DELETE /api/v1/webhooks/{id}", a.protect(a.handleDeleteWebhook))
 	mux.Handle("POST /api/v1/webhooks/{name}/test", a.protect(a.handleTestWebhook))
+
+	// R42 rooms (docs/44 D20), only with the feature on: with it off the
+	// paths fall through to the catch-all's 404, exactly like R40's reserved
+	// route, so nothing can be reached that the ServiceAccount could not act
+	// on anyway.
+	if a.opts.Rooms != nil {
+		mux.Handle("GET /api/v1/rooms", a.protect(a.handleListRooms))
+		mux.Handle("POST /api/v1/rooms", a.protect(a.handleCreateRoom))
+		mux.Handle("POST /api/v1/rooms/{name}/rotate-secret", a.protect(a.handleRotateRoomSecret))
+		mux.Handle("POST /api/v1/rooms/{name}/end", a.protect(a.handleEndRoom))
+		mux.Handle("DELETE /api/v1/rooms/{name}", a.protect(a.handleDeleteRoom))
+	}
 
 	// The catch-all keeps unknown /api/v1 paths answering the documented error
 	// envelope instead of net/http's plain text — and it is how

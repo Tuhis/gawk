@@ -1,7 +1,7 @@
 //! The gawk wire format — fourth mirror (docs/38 D4).
 //!
-//! The source of truth is `gawk-server/wire/wire.go` (plus `parity.go` and
-//! `stripe.go`); the other mirrors are the TypeScript `wire.ts` and the Go
+//! The source of truth is `gawk-server/wire/wire.go` (plus `parity.go`,
+//! `stripe.go` and `room.go`); the other mirrors are the TypeScript `wire.ts` and the Go
 //! broadcaster's `internal/wirecheck`. This crate is a hand-written
 //! reimplementation with the golden vectors deliberately RESTATED in its
 //! tests, never shared or imported: an exported fixture the sides shared
@@ -16,7 +16,8 @@
 //!
 //! One documented divergence: codec strings are returned as `&str`, so a
 //! non-UTF-8 codec string is a parse error here where Go would carry the raw
-//! bytes. Every codec string gawk produces is ASCII.
+//! bytes. Every codec string gawk produces is ASCII. (The room parsers own
+//! their broadcast IDs, because Go returns those normalized — see `room.rs`.)
 
 #![forbid(unsafe_code)]
 
@@ -24,6 +25,7 @@ mod chunking;
 mod error;
 mod messages;
 mod parity;
+mod room;
 mod stripe;
 
 pub use chunking::{ChunkBudget, split_frame};
@@ -35,6 +37,7 @@ pub use parity::{
     append_parity_chunk, append_relay_capabilities, compute_parity, parse_parity_chunk,
     parse_relay_capabilities,
 };
+pub use room::*;
 pub use stripe::{
     MAX_STRIPE_LEGS, STRIPE_STATE_SIZE, StripeState, append_stripe_state, parse_stripe_state,
     stripe_ordinal,
@@ -64,6 +67,12 @@ pub const TYPE_RELAY_CAPABILITIES: u8 = 0x0F;
 pub const TYPE_STRIPE_STATE: u8 = 0x10;
 pub const TYPE_RELAY_IDENTITY: u8 = 0x11;
 pub const TYPE_TELEMETRY_ENDPOINT: u8 = 0x12;
+// Room control (R42, docs/44 D15): length-prefixed records on the room
+// control stream, never datagrams. Layouts and constants live in room.rs.
+pub const TYPE_ROOM_HELLO: u8 = 0x13;
+pub const TYPE_ROOM_STATE: u8 = 0x14;
+pub const TYPE_ROOM_EVENT: u8 = 0x15;
+pub const TYPE_ROOM_COMMAND: u8 = 0x16;
 
 // Size constants. A change to any of these is a protocol change, not a
 // tuning knob — the constants test pins every one.
@@ -112,6 +121,13 @@ pub const CLOSE_CODE_STRIPE_LEG_ORPHANED: u32 = 4005;
 /// broadcast. A publisher like this one must NOT auto-resume — the ID is
 /// banned for at least the kill cooldown, so a reclaim only collects a 451.
 pub const CLOSE_CODE_TERMINATED_BY_OPERATOR: u32 = 4006;
+/// Room CONTROL sessions only (R42, docs/44 §4.4): the room ended — empty-
+/// grace expiry, an explicit end from a creator-token holder, or the operator
+/// deleting the Room CR. TERMINAL for the room session only: a client must
+/// not reconnect to the room, while its media sessions have their own
+/// lifecycle and are untouched (attached broadcasts keep streaming to anyone
+/// watching them directly). Never sent on a publish or subscribe session.
+pub const CLOSE_CODE_ROOM_ENDED: u32 = 4007;
 
 /// The broadcast ID alphabet (gawk-server/internal/broadcastid): 31 symbols,
 /// no `0 O 1 I L`. IDs are 6 chars; announce parsing validates against this.

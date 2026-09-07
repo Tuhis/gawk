@@ -23,6 +23,8 @@ type fixture struct {
 	store  *store.Store
 	writer *sessions.Writer
 	now    time.Time
+	// roomKey, when set, is stamped on every session seed thereafter (R42).
+	roomKey string
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -68,7 +70,7 @@ func (f *fixture) seed(t *testing.T, sessionID, role string, stats []map[string]
 		}
 		final := end >= len(samples)
 		a := ingest.Accepted{
-			SessionID: sessionID, BroadcastKey: bkey, Role: role, Seq: seq, Final: final,
+			SessionID: sessionID, BroadcastKey: bkey, RoomKey: f.roomKey, Role: role, Seq: seq, Final: final,
 			App:         ingest.AppInfo{Version: "0.33.2", Surface: role, Browser: "Chrome 152", OS: "Windows"},
 			StartedAtMs: f.now.UnixMilli(), ReceivedAt: f.now,
 			Samples: chunk,

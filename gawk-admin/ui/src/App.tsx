@@ -10,6 +10,7 @@ import { BansView } from './views/BansView.tsx';
 import { BroadcastsView } from './views/BroadcastsView.tsx';
 import { EventsView } from './views/EventsView.tsx';
 import { RelaysView } from './views/RelaysView.tsx';
+import { RoomsView } from './views/RoomsView.tsx';
 import { WebhooksView } from './views/WebhooksView.tsx';
 import styles from './App.module.css';
 
@@ -20,6 +21,12 @@ const NAV: readonly { view: ViewName; label: string }[] = [
   { view: 'relays', label: 'Relays' },
   { view: 'webhooks', label: 'Webhooks' },
 ];
+
+// Rooms (R42) is default-off in the deployment, and the nav follows
+// `/api/v1/me`'s `features.rooms` rather than always offering a link to a
+// route that would 404. The route itself still resolves (a webhook deep link
+// must land somewhere that explains itself).
+const ROOMS_NAV = { view: 'rooms' as const, label: 'Rooms' };
 
 /**
  * The shell.
@@ -71,6 +78,7 @@ function Portal() {
   // documented default and the error on screen — a dead `/api/v1/me` should not
   // black out a moderation console.
   const probeSettled = me !== null || error !== null;
+  const nav = me?.features?.rooms ? [...NAV, ROOMS_NAV] : NAV;
 
   return (
     <div className={styles.app}>
@@ -81,7 +89,7 @@ function Portal() {
           <span className={styles.tag}>admin</span>
         </a>
         <nav className={styles.nav}>
-          {NAV.map((item) => (
+          {nav.map((item) => (
             <a
               key={item.view}
               className={route.view === item.view ? styles.navActive : styles.navLink}
@@ -139,6 +147,8 @@ function Routed({
       return <RelaysView />;
     case 'webhooks':
       return <WebhooksView />;
+    case 'rooms':
+      return <RoomsView initialFilter={filterKey} />;
     default:
       return (
         <section>

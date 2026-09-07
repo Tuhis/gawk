@@ -17,6 +17,7 @@ pub mod gate;
 pub mod media;
 pub mod relay;
 pub mod resume;
+pub mod room;
 pub mod sender;
 pub mod session;
 pub mod stats;
@@ -62,9 +63,82 @@ pub fn join_link(app_url: &str, broadcast_id: &str) -> String {
     format!("{}/#/view/{}", app_url.trim_end_matches('/'), broadcast_id)
 }
 
+/// Builds the room view link the "Open room view" button launches (docs/44
+/// §4.8): `<app-url>/#/room/<CODE>?rt=<grant>`, where the grant is the
+/// creator token (hex) of a room this session minted or a static room's
+/// attach key — the SPA moves it into session storage and rewrites the hash
+/// before rendering, the same one-shot pattern as `?relay=`. No grant ⇒ a
+/// plain participant link.
+pub fn room_link(app_url: &str, code: &str, grant: &str) -> String {
+    let base = format!("{}/#/room/{}", app_url.trim_end_matches('/'), code);
+    if grant.is_empty() {
+        return base;
+    }
+    let grant: String = url::form_urlencoded::byte_serialize(grant.as_bytes()).collect();
+    format!("{base}?rt={grant}")
+}
+
+/// Reads a room code out of what a user pasted into the Room card: a bare
+/// code or slug, or a room link (`…/#/room/CODE?rt=…`). Whitespace is
+/// trimmed; case is left to the relay (codes join case-insensitively).
+/// `None` for an empty or unusable input.
+pub fn parse_room_code(input: &str) -> Option<String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let code = match s.find("#/room/") {
+        Some(i) => &s[i + "#/room/".len()..],
+        None => s,
+    };
+    let code = code.split(['?', '/', '#']).next().unwrap_or("").trim();
+    if code.is_empty()
+        || code.len() > gawk_wire::MAX_ROOM_CODE_LEN
+        || !code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return None;
+    }
+    Some(code.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn room_link_carries_the_grant_as_rt() {
+        assert_eq!(
+            room_link("https://gawk.ioio.fi/", "K7XQ2M", ""),
+            "https://gawk.ioio.fi/#/room/K7XQ2M"
+        );
+        assert_eq!(
+            room_link("https://gawk.ioio.fi", "K7XQ2M", "deadbeef"),
+            "https://gawk.ioio.fi/#/room/K7XQ2M?rt=deadbeef"
+        );
+        // A static room's attach key can be anything; it is form-encoded.
+        assert_eq!(
+            room_link("https://gawk.ioio.fi", "lan-party", "k 3&y"),
+            "https://gawk.ioio.fi/#/room/lan-party?rt=k+3%26y"
+        );
+    }
+
+    #[test]
+    fn room_code_parses_from_a_code_or_a_link() {
+        assert_eq!(parse_room_code(" k7xq2m ").as_deref(), Some("k7xq2m"));
+        assert_eq!(parse_room_code("lan-party").as_deref(), Some("lan-party"));
+        assert_eq!(
+            parse_room_code("https://gawk.ioio.fi/#/room/K7XQ2M?rt=deadbeef").as_deref(),
+            Some("K7XQ2M")
+        );
+        assert_eq!(
+            parse_room_code("https://gawk.ioio.fi/#/room/lan-party").as_deref(),
+            Some("lan-party")
+        );
+        assert_eq!(parse_room_code(""), None);
+        assert_eq!(parse_room_code("https://gawk.ioio.fi/#/view/K7XQ2M"), None);
+        assert_eq!(parse_room_code("not a code"), None);
+        assert_eq!(parse_room_code(&"x".repeat(40)), None);
+    }
 
     #[test]
     fn defaults_point_at_production() {

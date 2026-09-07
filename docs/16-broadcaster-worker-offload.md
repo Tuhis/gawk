@@ -51,6 +51,16 @@ messages between them, media never crossing back.
    Treat worker-scope MSTP as a runtime capability to probe, never as a
    Chromium baseline. (`docs/gotchas.md`, and the BUGS.md entry on the silent
    fallback.)
+
+   **Consequence, 2026-09-06.** On that main-thread path a hidden document
+   stops the frames — and macOS Chrome reports a *fully occluded* window as
+   hidden too, so a fullscreen game covering the browser freezes the
+   stream while its relay session stays up. The page ends such a broadcast
+   after five minutes hidden with no frame encoded
+   (`features/broadcaster/backgroundWatchdog.ts`, docs/44 §4.8 revision
+   2026-09-06); within the broadcast grace a restart reclaims the same
+   code. The worker path is untouched: its frames keep flowing while
+   hidden, which restarts the watchdog's span.
 2. **`getDisplayMedia` stays on main; connect-before-picker ordering is
    preserved.** Acquisition needs the window scope + user gesture. The worker
    connects `/publish` first and only then asks main for capture
