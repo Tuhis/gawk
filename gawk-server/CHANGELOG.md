@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.26.0...gawk-server/v0.27.0) (2026-09-10)
+
+
+### Features
+
+* **r42:** rooms — multi-POV rooms over unchanged broadcasts (RM1–RM9) ([#302](https://github.com/Tuhis/gawk/issues/302)) ([e666f74](https://github.com/Tuhis/gawk/commit/e666f741d0b22624b9313b88d4dece022890200b))
+
 ## [0.26.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.25.0...gawk-server/v0.26.0) (2026-08-31)
 
 
