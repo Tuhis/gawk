@@ -62,6 +62,8 @@ feature set exists).
 | R41 | [Test coverage measurement and badges](#r41--test-coverage-measurement-and-badges) | 🔧 designed + **CV1–CV6 implemented 2026-09-02** — every component's job measures its own coverage, gates itself against a floor in `coverage-floors.json`, and pushes to `main` publish shields.io endpoints to an orphan `badges` branch (no third-party service, no token beyond `GITHUB_TOKEN`). Root README carries the size-weighted aggregate; each component README carries its own ([docs/43](docs/43-coverage-reporting.md)) |
 | R42 | [Rooms](#r42--rooms) | ✅ **implemented 2026-09-04** (RM1–RM9 in one PR): wire types 0x13–0x16 + close code 4007 in all four mirrors, single-pod relay + `Room` CRD cluster mode (home-pod lease, proxy, adoption, janitor, kind assert), SPA room view (grid / focus / hide videos, people panel, broadcaster Room panel), native attach on Linux and Windows, admin static-room CRUD + webhooks, telemetry room key. `-rooms` defaults off and off is byte-identical. Open: the §10 manual pass on the reference deployment ([docs/44](docs/44-rooms.md) §11) |
 | R43 | [Relay refusal reasons the browser can see](#r43--relay-refusal-reasons-the-browser-can-see) | 🔧 designed 2026-09-05, not started (RR1–RR5) — non-mandatory follow-up to R42: a refused `CONNECT`'s HTTP status is invisible to the WebTransport JS API, so every relay refusal reads "connection rejected" in the browser; answer policy refusals after the upgrade with new close codes 4008–4011 + a reason, keep rate limiting pre-upgrade ([docs/45](45-relay-refusal-reasons.md)) |
+| R44 | [App icons for the native broadcasters](#r44--app-icons-for-the-native-broadcasters) | 💡 proposed 2026-09-10, not started — no design doc yet; packaging + GUI only, zero wire/relay/pipeline change |
+| R45 | [Update notification and auto-update for the desktop broadcasters](#r45--update-notification-and-auto-update-for-the-desktop-broadcasters) | 💡 proposed 2026-09-10, not started — no design doc yet; phase 1 notify-only, phase 2 install-in-place gated on release signing |
 
 ---
 
@@ -3663,6 +3665,179 @@ relay decides — only how it says it.
 **Status**: designed 2026-09-05 ([docs/45](45-relay-refusal-reasons.md)),
 chunks RR1–RR5, not started. Non-mandatory; proposed as a follow-up PR to
 R42 because it changes relay behaviour every client depends on.
+
+---
+
+## R44 — App icons for the native broadcasters
+
+**Goal**: both desktop broadcasters carry the gawk lightning bolt — the
+same mark the web app uses as its favicon — as a proper application icon:
+in the window title bar, the taskbar/dock, the Windows Explorer file
+listing, and the Linux application launcher. Today neither app has any
+icon at all: the Gio window is title-only
+(`gawk-broadcast/cmd/gawk-broadcast-gui/main.go`), the Slint `MainWindow`
+declares no `icon`, and the EXE carries no resource. The only "icon" in
+either tree is the stock freedesktop `video-display` name the Linux
+notifier borrows.
+
+**Why this is wanted**: a nameless generic-window glyph in the taskbar is
+the first thing a friend sees after the SmartScreen prompt, and it reads as
+"unfinished". It is also the cheapest brand-consistency win available: the
+mark already exists, the web app already ships it, and nothing in the
+pipeline is touched.
+
+**Owner decisions (2026-09-10)**:
+
+- **Design: the flat bolt on a rounded purple tile.** One shared source
+  SVG — the bolt path lifted from `gawk-app/public/favicon.svg`, rendered
+  light on a `#863bff` rounded square. The favicon's glow layers (fifteen
+  blurred ellipses, `color(display-p3 …)` fills) do not survive icon
+  rasterizers and are not carried over; the web favicon itself stays as it
+  is. The tile is what keeps the mark legible at 16 px and on a dark
+  taskbar, which a bare bolt on transparent is not.
+- **One source of truth, generated derivatives checked in.** The SVG lives
+  once at the repo root (`assets/icon/`), and a script produces the PNG
+  size set, the `.ico` and any platform bundle from it. The PNG/ICO
+  outputs are committed so neither build needs an SVG rasterizer, but a CI
+  check regenerates them and fails on drift, the same shape as the wire
+  golden vectors.
+
+**Scope sketch**:
+
+- **Linux (`gawk-broadcast`)**. Gio exposes no window-icon option on X11
+  or Wayland; the desktop resolves the icon from the Wayland `app_id` /
+  X11 class hint through a `.desktop` entry and the hicolor icon theme.
+  So: set `gioui.org/app.ID` (today it defaults to `os.Args[0]`'s
+  basename, which is fragile), ship `gawk-broadcast.desktop` plus the
+  hicolor SVG/PNG set in the release tarball, and give INSTALL.md the
+  `~/.local/share/{applications,icons}` steps (or an `install-desktop`
+  helper). The D-Bus notifier switches from the stock `video-display`
+  name to the installed icon, with the stock name as fallback when the
+  desktop entry is not installed. The CLI binary and `gawk-pw-helper`
+  are untouched.
+- **Windows (`gawk-broadcast-windows`)**. Two separate surfaces: the
+  Slint `Window.icon` property covers the title bar and taskbar at
+  runtime (toolkit-level, cross-compile-safe), and an embedded resource
+  (`winresource`/`embed-resource` in the app crate's `build.rs`) covers
+  Explorer and the "unknown publisher" dialog. The resource step is the
+  one real risk: the build cross-compiles on Linux with cargo-xwin and
+  clang-cl (docs/38 D18), so it must go through `llvm-rc`, never
+  `rc.exe`; the design doc owns proving that in CI before anything else.
+- **Both**: no change to wire, relay, engine or viewer; icon files are
+  release assets, not runtime downloads.
+
+**Key design questions**: whether the Linux tarball should grow an
+`install-desktop` subcommand or stay a documented copy (a subcommand
+touches the same "known operator, no installer" posture as docs/19
+Decision 24); whether the tile colour needs a dark-theme variant; and
+whether the Gio `app.ID` change should land as a separate, earlier
+commit, since it changes what window managers key their per-app settings
+on.
+
+**Non-goals**: a tray icon (R14 Decision 15 / docs/38 OD7 — still
+deferred, and a launcher icon is not a tray icon); an installer, code
+signing or winget (docs/38 OD6/D17, and see R45 for where signing may
+return); redesigning the web favicon; macOS.
+
+**Status**: proposed 2026-09-10, not started — no design doc yet; chunk
+prefix `IC` reserved.
+
+---
+
+## R45 — Update notification and auto-update for the desktop broadcasters
+
+**Goal**: a broadcaster running `gawk-broadcast` or `gawk-broadcast-windows`
+learns that a newer release exists without visiting GitHub, and — in a
+second phase — can install it from inside the app. Today there is no
+version check anywhere: both apps show their own build in the window (R14
+V9, R34 WB9) and report the bare release to telemetry (R28), but nothing
+ever compares that against what is published. docs/38 lists auto-update as
+an explicit non-goal (OD6) and pencils in "a version-check toast" as a
+later convenience; this is that item, with its scope decided.
+
+**Why this is wanted**: the desktop apps are distributed as fixed-name
+GitHub Release assets that a friend downloads once and never again. Every
+fix to the encoder cascade, the portal path or the wire mirrors then takes
+effect only for people who happen to re-download, and the operator has no
+way to retire a broken build short of telling everyone in person. The
+relay side is redeployed automatically on every release; the client side
+is the one place a release does not reach.
+
+**Owner decisions (2026-09-10)**:
+
+- **Phased: notify first, install-in-place later.** Phase 1 ships the
+  check plus an "update available" notice in both GUIs (and a one-line
+  hint in the CLI's startup log) linking to the release page. Phase 2
+  — download, verify, replace, relaunch — is a separate set of chunks
+  gated on one prerequisite: **a release signing key**. Both binaries are
+  unsigned by design (docs/38 D17; the Linux release job's own comment),
+  which is acceptable for a manual download with a checksum but not for
+  code that replaces itself over a TLS-only trust chain. Phase 2 therefore
+  introduces detached minisign/ed25519 signatures over the release
+  assets, produced in CI from a repository secret, with the public key
+  compiled into the apps; D17's "unsigned by design" is revisited for
+  that phase only.
+- **Check on startup, default on, opt-out.** One request at launch, never
+  during a live broadcast, at most once a day (last-checked timestamp in
+  the existing settings store). `-no-update-check` /
+  `GAWK_NO_UPDATE_CHECK=1` and a GUI setting turn it off. This is the first
+  outbound call the apps make that is not to a relay and telemetry is
+  default-off, so the request must carry nothing identifying: a plain
+  `GET` for a static file, no version or ID in the URL or headers.
+  INSTALL.md and the R23 terms name it.
+
+**Scope sketch**:
+
+- **Version source: a static per-component manifest, not the GitHub API.**
+  `releases/latest` is wrong for a monorepo with per-component tags, and
+  the list endpoint is rate-limited unauthenticated. Instead the attach
+  job that already uploads the binaries also publishes a tiny
+  `<component>/latest.json` (version, tag, asset name, sha256, date) to
+  the orphan `badges` branch R41 already pushes shields.io endpoints to —
+  same token, same publish path, served raw over TLS with no API. The
+  relay's `RelayIdentity` extension point is explicitly **not** used: a
+  third-party relay must never steer which binary a broadcaster runs.
+- **Compare**: SemVer on the release part of the version string
+  (`internal/version` in Go, `version::RELEASE` in Rust); `+g<sha>` and
+  `.dirty` builds are compared on the release part only, so a dev build
+  of the current release is never nagged about itself.
+- **Phase 1 UI**: a dismissible line under the version badge in both GUIs
+  ("v1.14.0 available — release notes") that opens the browser; the CLI
+  logs once. Dismissal is per version.
+- **Phase 2 mechanics**, per platform. Windows is a single portable EXE
+  that cannot overwrite itself while running: download next to it as
+  `.new`, verify the signature and checksum, swap on exit and relaunch
+  (the `self-replace` pattern). Linux ships three binaries in one tarball
+  (`gawk-broadcast`, `gawk-broadcast-gui`, `gawk-pw-helper`) that must
+  move together — extract to a staging dir, verify, then rename the set
+  atomically; if the install dir is not writable (`/usr/local/bin`,
+  a distro-managed path), fall back to Phase 1 behaviour with the
+  command to run. Never replace while a broadcast is live.
+
+**Key design questions**: where the signing key lives and how it rotates
+(a compiled-in key means rotation is itself an update — ship two keys
+from day one, current + next); whether Phase 2 is on by default or
+"download ready, click to install" (recommendation: the latter — the
+app never restarts itself); how a bad release is retracted (the manifest
+is also the kill switch: republish it pointing at the previous version);
+and whether the Windows swap-on-exit helper survives SmartScreen for the
+freshly written EXE (the `Unblock` step from INSTALL.md may recur — this
+is the strongest argument for signing).
+
+**Non-goals**: winget, flatpak, AppImage, an MSI or any package-manager
+distribution — the portable-binary posture stands (docs/38 OD6, docs/19
+Decision 24); updating the browser app (the SPA is redeployed cluster-side
+on every release); a "minimum client version" the relay enforces
+(a compatibility break is handled by the wire mirrors' golden vectors and
+close codes, not by refusing old clients); any relay-driven update
+channel.
+
+**Depends on**: nothing hard. R44 is a natural sibling (both touch the
+same release packaging and INSTALL docs) and the two should land as
+separate PRs.
+
+**Status**: proposed 2026-09-10, not started — no design doc yet; chunk
+prefix `AU` reserved.
 
 ---
 
