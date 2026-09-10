@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.0.0...gawk-admin/v1.1.0) (2026-09-10)
+
+
+### Features
+
+* **r42:** rooms — multi-POV rooms over unchanged broadcasts (RM1–RM9) ([#302](https://github.com/Tuhis/gawk/issues/302)) ([e666f74](https://github.com/Tuhis/gawk/commit/e666f741d0b22624b9313b88d4dece022890200b))
+
 ## 1.0.0 (2026-08-31)
 
 

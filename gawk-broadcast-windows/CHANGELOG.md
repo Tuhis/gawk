@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-windows/v1.2.0...gawk-broadcast-windows/v1.3.0) (2026-09-10)
+
+
+### Features
+
+* **r42:** rooms — multi-POV rooms over unchanged broadcasts (RM1–RM9) ([#302](https://github.com/Tuhis/gawk/issues/302)) ([e666f74](https://github.com/Tuhis/gawk/commit/e666f741d0b22624b9313b88d4dece022890200b))
+
 ## [1.2.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-windows/v1.1.1...gawk-broadcast-windows/v1.2.0) (2026-08-31)
 
 
