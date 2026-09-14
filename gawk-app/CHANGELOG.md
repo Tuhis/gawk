@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.45.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.44.0...gawk-app/v0.45.0) (2026-09-14)
+
+
+### Features
+
+* **app:** point the sharing tips at the native broadcaster for per-app audio ([#318](https://github.com/Tuhis/gawk/issues/318)) ([621486e](https://github.com/Tuhis/gawk/commit/621486ef19fe9bb5d0d38169260c0909dfb22aaa))
+
 ## [0.44.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.43.0...gawk-app/v0.44.0) (2026-09-14)
 
 
