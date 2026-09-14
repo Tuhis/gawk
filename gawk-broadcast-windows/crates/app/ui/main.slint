@@ -111,7 +111,8 @@ export component MainWindow inherits Window {
     // the running session. Idle: the card says what the next start will do.
     in-out property <string> room-input: "";       // a code, a slug, or a room link
     in-out property <string> room-attach-key: "";
-    in-out property <string> room-label: "";
+    // The nickname also names the tile (one name, as on the web page) and
+    // may change while live: room-nickname-edited renames on the relay.
     in-out property <string> room-nickname: "";
     in property <bool> room-active: false;         // a room control session exists
     in property <bool> room-attached: false;
@@ -181,6 +182,8 @@ export component MainWindow inherits Window {
     callback switch-to-system-audio();
     callback room-attach();
     callback room-new();
+    callback room-nickname-edited();
+    callback room-nickname-accepted();   // Enter: rename now, no debounce
     callback room-detach();
     callback open-link(string);
     callback quit-confirmed();
@@ -514,37 +517,18 @@ export component MainWindow inherits Window {
                             root.settings-edited();
                         }
                     }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        VerticalLayout {
-                            spacing: 6px;
-                            Text {
-                                text: "Tile label";
-                                color: Palette.muted;
-                                font-size: 11px;
-                            }
-                            LineEdit {
-                                text <=> root.room-label;
-                                enabled: !root.busy;
-                                edited => {
-                                    root.settings-edited();
-                                }
-                            }
+                    Text {
+                        text: "Nickname (also names your tile)";
+                        color: Palette.muted;
+                        font-size: 11px;
+                    }
+                    LineEdit {
+                        text <=> root.room-nickname;
+                        edited => {
+                            root.room-nickname-edited();
                         }
-                        VerticalLayout {
-                            spacing: 6px;
-                            Text {
-                                text: "Nickname";
-                                color: Palette.muted;
-                                font-size: 11px;
-                            }
-                            LineEdit {
-                                text <=> root.room-nickname;
-                                enabled: !root.busy;
-                                edited => {
-                                    root.settings-edited();
-                                }
-                            }
+                        accepted => {
+                            root.room-nickname-accepted();
                         }
                     }
                     if !root.busy && root.room-input != "": Text {

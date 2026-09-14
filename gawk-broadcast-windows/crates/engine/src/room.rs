@@ -48,9 +48,10 @@ pub struct RoomConfig {
     /// `?creator=`; the session fills this in itself after a mint so its
     /// reconnects keep the creator grant.
     pub creator_token_hex: String,
-    /// The tile label the attachment carries.
-    pub label: String,
-    /// The RoomHello nickname (the relay assigns one when empty).
+    /// The RoomHello nickname (the relay assigns one when empty). It is
+    /// also the tile label the attachment (and a mint) carries: one name
+    /// feeds both, as on the web broadcaster page. Truncated separately to
+    /// each wire bound.
     pub nickname: String,
 }
 
@@ -163,10 +164,14 @@ pub trait RoomDialer: Send + Sync + 'static {
 }
 
 /// The shell's runtime requests to a running room session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoomRequest {
     /// Detach this broadcast (when attached) and leave the room.
     Detach,
+    /// Rename this participant while live: SetNickname on the wire, an
+    /// idempotent Attach with the new label when our broadcast is listed,
+    /// and every later hello (reconnect, mint) carries the new name.
+    SetNickname(String),
 }
 
 // --- URLs ----------------------------------------------------------------
@@ -400,7 +405,7 @@ pub(crate) async fn run_room(mut ctx: RoomCtx) {
             &ctx.cfg.relay_url,
             &id.broadcast_id,
             &hex_encode(&id.resume_token),
-            truncate_utf8(&ctx.cfg.label, wire::MAX_ROOM_LABEL_LEN),
+            truncate_utf8(&ctx.cfg.nickname, wire::MAX_ROOM_LABEL_LEN),
             &ctx.cfg.create_secret,
         )
     } else {
@@ -578,6 +583,11 @@ async fn serve_room(ctx: &mut RoomCtx, conn: Arc<dyn RoomConn>) -> Serve {
                             }
                         }
                     }
+                    Some(RoomRequest::SetNickname(nick)) => {
+                        if set_nickname(ctx, conn.as_ref(), &mut local, nick).await.is_err() {
+                            break Serve::Lost;
+                        }
+                    }
                     None => break Serve::Stopped,
                 }
             }
@@ -630,12 +640,40 @@ async fn maybe_attach(ctx: &RoomCtx, conn: &dyn RoomConn, local: &mut Local) -> 
         kind: wire::ROOM_COMMAND_ATTACH,
         broadcast_id: id.broadcast_id,
         resume_token: &id.resume_token,
-        label: truncate_utf8(&ctx.cfg.label, wire::MAX_ROOM_LABEL_LEN),
+        label: truncate_utf8(&ctx.cfg.nickname, wire::MAX_ROOM_LABEL_LEN),
         ..wire::RoomCommand::default()
     })
     .map_err(|_| ())?;
     conn.write(&rec).await.map_err(|_| ())?;
     local.attached_gen = Some(id.generation);
+    Ok(())
+}
+
+/// Applies a live rename: the config (every later hello and mint), the
+/// SetNickname command, and — when our broadcast is listed and identified —
+/// an idempotent Attach so the relay refreshes the tile label. `Err` = a
+/// write failed.
+async fn set_nickname(
+    ctx: &mut RoomCtx,
+    conn: &dyn RoomConn,
+    local: &mut Local,
+    nickname: String,
+) -> Result<(), ()> {
+    ctx.cfg.nickname = nickname;
+    if !local.joined {
+        return Ok(());
+    }
+    let rec = command_record(&wire::RoomCommand {
+        kind: wire::ROOM_COMMAND_SET_NICKNAME,
+        nickname: truncate_utf8(&ctx.cfg.nickname, wire::MAX_ROOM_NICKNAME_LEN),
+        ..wire::RoomCommand::default()
+    })
+    .map_err(|_| ())?;
+    conn.write(&rec).await.map_err(|_| ())?;
+    if local.ours_listed {
+        local.attached_gen = None;
+        maybe_attach(ctx, conn, local).await?;
+    }
     Ok(())
 }
 
@@ -1111,8 +1149,7 @@ mod tests {
             relay_url: "https://relay.example:4433".into(),
             code: "lan-party".into(),
             attach_secret: "k3y".into(),
-            label: "Juho's PC".into(),
-            nickname: "Juho".into(),
+            nickname: "Juho's PC".into(),
             ..RoomConfig::default()
         }
     }
@@ -1146,7 +1183,7 @@ mod tests {
         let hello_msg = relay.next().await;
         let hello = wire::parse_room_hello(&hello_msg).unwrap();
         assert_eq!(hello.client_kind, wire::ROOM_CLIENT_NATIVE);
-        assert_eq!(hello.nickname, "Juho");
+        assert_eq!(hello.nickname, "Juho's PC");
         assert_eq!(
             h.dialer.urls.lock().unwrap()[0],
             "https://relay.example:4433/room/lan-party?attach=k3y"
@@ -1454,6 +1491,72 @@ mod tests {
             1,
             "leaving is not a loss"
         );
+    }
+
+    // The nickname names the tile (the web broadcaster page feeds one name
+    // to both), and it can change while live: SetNickname on the wire, then
+    // an idempotent Attach carrying the new label when our broadcast is in
+    // the room, and every later hello (a reconnect) says the new name.
+    #[tokio::test(start_paused = true)]
+    async fn set_nickname_renames_relabels_and_sticks_across_a_reconnect() {
+        let (conn, mut relay) = scripted();
+        let (conn2, mut relay2) = scripted();
+        let mut h = Harness::start(join_cfg(), vec![Ok(conn), Ok(conn2)]);
+        relay.next().await; // hello
+        h.set_identity(0);
+        relay.send_state(&snapshot(1, vec![ours(true)]));
+        h.event().await;
+        assert_eq!(relay.next_command().await.kind, wire::ROOM_COMMAND_ATTACH);
+
+        h.requests
+            .send(RoomRequest::SetNickname("Kuusi".into()))
+            .unwrap();
+        let c = relay.next_command().await;
+        assert_eq!(c.kind, wire::ROOM_COMMAND_SET_NICKNAME);
+        assert_eq!(c.nickname, "Kuusi");
+        let c = relay.next_command().await;
+        assert_eq!(c.kind, wire::ROOM_COMMAND_ATTACH);
+        assert_eq!(c.broadcast_id, "K7XQ2M");
+        assert_eq!(c.label, "Kuusi");
+
+        relay.close(SessionClose::Abrupt("idle".into()));
+        assert_eq!(
+            h.event_not_state().await,
+            EngineEvent::RoomReconnecting { attempt: 1 }
+        );
+        let hello_msg = relay2.next().await;
+        let hello = wire::parse_room_hello(&hello_msg).unwrap();
+        assert_eq!(hello.nickname, "Kuusi");
+        h.stop.send(true).unwrap();
+        let _ = h.task.await;
+    }
+
+    #[tokio::test]
+    async fn set_nickname_before_the_attach_only_renames() {
+        let (conn, mut relay) = scripted();
+        let mut h = Harness::start(join_cfg(), vec![Ok(conn)]);
+        relay.next().await; // hello
+        relay.send_state(&snapshot(1, vec![]));
+        h.event().await;
+        h.requests
+            .send(RoomRequest::SetNickname("Kuusi".into()))
+            .unwrap();
+        let c = relay.next_command().await;
+        assert_eq!(c.kind, wire::ROOM_COMMAND_SET_NICKNAME);
+        assert_eq!(c.nickname, "Kuusi");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), relay.from_client.recv())
+                .await
+                .is_err(),
+            "no attach without a listed broadcast"
+        );
+        // The identity arriving later attaches under the new name.
+        h.set_identity(0);
+        let c = relay.next_command().await;
+        assert_eq!(c.kind, wire::ROOM_COMMAND_ATTACH);
+        assert_eq!(c.label, "Kuusi");
+        h.stop.send(true).unwrap();
+        let _ = h.task.await;
     }
 
     #[test]

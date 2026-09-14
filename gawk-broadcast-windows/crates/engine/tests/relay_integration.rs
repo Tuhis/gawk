@@ -463,8 +463,7 @@ async fn a_native_attach_is_visible_to_a_second_room_participant() {
     let relay = Relay::start(&["-publish-secret", SECRET, "-rooms"]);
     let mut cfg = config(&relay, "", "");
     cfg.room_new = true;
-    cfg.room_label = "Juho's PC".into();
-    cfg.nickname = "juho".into();
+    cfg.nickname = "Juho's PC".into();
     let (session, mut rx) = Session::start(cfg, Arc::new(MonotonicClock::new()))
         .await
         .unwrap();

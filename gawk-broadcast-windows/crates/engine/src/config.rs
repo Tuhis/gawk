@@ -90,9 +90,9 @@ pub struct Config {
     /// A static room's attach key — a credential (DPAPI-wrapped on Windows,
     /// like the publish secret).
     pub room_attach_secret: String,
-    /// The tile label this broadcast carries in a room (blank = none).
-    pub room_label: String,
-    /// The room nickname (blank = the relay assigns one).
+    /// The room nickname (blank = the relay assigns one); it also names
+    /// the tile. A pre-2026-09-14 profile's `roomLabel` key is ignored on
+    /// load (serde default) and gone after the next save.
     pub nickname: String,
 }
 
@@ -638,7 +638,6 @@ mod tests {
         let cfg = Config {
             room: "lan-party".into(),
             room_attach_secret: "k3y".into(),
-            room_label: "Juho's PC".into(),
             nickname: "Juho".into(),
             ..Default::default()
         };
@@ -650,8 +649,9 @@ mod tests {
             raw.contains("\"roomAttachSecret\": \"wrapped:k3y\""),
             "{raw}"
         );
-        assert!(raw.contains("\"roomLabel\": \"Juho's PC\""), "{raw}");
         assert!(raw.contains("\"nickname\": \"Juho\""), "{raw}");
+        // The nickname names the tile (2026-09-14): no separate label key.
+        assert!(!raw.contains("roomLabel"), "{raw}");
         assert!(
             !raw.contains("\"k3y\""),
             "attach key on disk in the clear: {raw}"
@@ -665,6 +665,28 @@ mod tests {
         migrate(&mut migrated);
         assert_eq!(migrated.room, "lan-party");
         assert_eq!(migrated.room_attach_secret, "k3y");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_profile_with_the_old_room_label_key_loads_and_drops_it() {
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-oldlabel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broadcast.json");
+        std::fs::write(
+            &path,
+            br#"{"room": "lan-party", "roomLabel": "Juho's PC", "nickname": "Juho"}"#,
+        )
+        .unwrap();
+        let (cfg, warn) = load(&path, &Plaintext);
+        assert!(warn.is_none());
+        assert_eq!(
+            (cfg.room.as_str(), cfg.nickname.as_str()),
+            ("lan-party", "Juho")
+        );
+        save(&path, &cfg, &Plaintext).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("roomLabel"), "{raw}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
