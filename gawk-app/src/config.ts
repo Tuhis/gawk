@@ -191,6 +191,13 @@ export function getTelemetryUrl(): string {
 // deployment — a fork that wants its own link edits it in the fork.
 export const SOURCE_URL = 'https://github.com/Tuhis/gawk';
 
+// R46 DL5 (docs/46 §6): the project site, and its Download section — the
+// native broadcasters are the one thing a user of this UI may need that the
+// UI itself cannot hand them. Constants for the same reason as SOURCE_URL:
+// they describe the project, not the deployment.
+export const SITE_URL = 'https://tuhis.github.io/gawk/';
+export const SITE_DOWNLOAD_URL = `${SITE_URL}#download`;
+
 // R23 (docs/29): terms & conditions. The version baked into this release; the
 // acknowledgment key stores whichever version a broadcaster last agreed to, so
 // an operator bumps config.termsVersion to re-prompt on a meaningful edit (D7).
