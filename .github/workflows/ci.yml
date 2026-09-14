@@ -106,6 +106,7 @@ jobs:
       e2e: ${{ steps.filter.outputs.e2e }}
       dev_stack: ${{ steps.filter.outputs.dev_stack }}
       coverage_tool: ${{ steps.filter.outputs.coverage_tool }}
+      release_tool: ${{ steps.filter.outputs.release_tool }}
       docker_any: ${{ steps.filter.outputs.docker_any }}
       docker_matrix: ${{ steps.filter.outputs.docker_matrix }}
     steps:
@@ -212,6 +213,11 @@ jobs:
           # floors file is the gate — an edit to either must run their tests
           # even when no component's code moved.
           coverage_tool=$(decide coverage_tool '^(tools/coverage/|coverage-floors\.json$)')
+          # R46 (docs/46): the release-manifest writer. Its own filter for the
+          # same reason: the file it writes is what the site's Download
+          # buttons point at, and the attach job only runs it on a release
+          # commit — a PR is the only place a broken writer can fail early.
+          release_tool=$(decide release_tool '^tools/releases/')
 
           # The docker matrix, filtered to the images whose inputs moved. It is
           # built HERE rather than declared in the `docker` job because a static
@@ -757,6 +763,7 @@ jobs:
       # `gh release download -p 'gawk-broadcast-linux-amd64.tar.gz'` work
       # against any release including the latest.
       - uses: ./.github/actions/attach-release-assets
+        id: attach
         with:
           component: gawk-broadcast
           dir: assets
@@ -764,6 +771,18 @@ jobs:
           # push; on a backfill it is the released commit this run rebuilt,
           # which is the only thing that re-aims the gate without weakening it.
           sha: ${{ needs.broadcast.outputs.sha }}
+      # R46 (docs/46): the "newest gawk-broadcast" pointer the project site's
+      # Download section reads. Only after a real attach — a manifest for a
+      # release with no binary on it would be a download button to a 404.
+      - uses: ./.github/actions/publish-release-manifest
+        if: steps.attach.outputs.attached == 'true'
+        with:
+          component: gawk-broadcast
+          dir: assets
+          primary: gawk-broadcast-linux-amd64.tar.gz
+          tag: ${{ steps.attach.outputs.tag }}
+          published-at: ${{ steps.attach.outputs.published_at }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   app:
     needs: changes
@@ -2569,6 +2588,20 @@ jobs:
         with:
           python-version: "3.14"
       - run: python3 -m unittest discover -s tools/coverage -v
+
+  # R46 (docs/46): the release-manifest writer's own tests. It runs for real
+  # only inside the attach jobs on a release commit, so this is the one place
+  # a PR can prove it still produces the shape the site reads.
+  release-tool:
+    needs: changes
+    if: needs.changes.outputs.release_tool == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - run: python3 -m unittest discover -s tools/releases -v
 
   # Publishes the badges the READMEs point at.
   #

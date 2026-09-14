@@ -16,7 +16,7 @@ Not a design doc, but in this directory:
 
 ## Where to start
 
-Reading all forty-five is not the point. Three give you the shape of the system:
+Reading all forty-six is not the point. Three give you the shape of the system:
 
 - [`03`](03-single-client-e2e.md) — the end-to-end path: hub, publish,
   subscribe, and the wire format everything else is built on.
@@ -99,6 +99,7 @@ Reading all forty-five is not the point. Three give you the shape of the system:
 | [`31`](31-quick-start-links.md) | R26 — Quick-start broadcast links |
 | [`40`](40-relay-server-picker.md) | R37 — Streamlined relay server picker |
 | [`44`](44-rooms.md) | R42 — Rooms: static and dynamic collections of broadcasts, joined as participants |
+| [`46`](46-site-downloads.md) | R46 — Download section on the project site, fed by per-component release manifests |
 
 ## Testing, telemetry, operations
 

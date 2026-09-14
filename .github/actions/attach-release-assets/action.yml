@@ -48,10 +48,27 @@ inputs:
     required: false
     default: ""
 
+# R46 (docs/46): the caller runs publish-release-manifest after this, gated on
+# `attached` — the manifest must describe a release this run actually put
+# bytes on, and the gate above is the only thing that knows. `tag` and
+# `published_at` are handed on rather than re-resolved so the manifest cannot
+# disagree with the upload about which release it describes.
+outputs:
+  attached:
+    description: "'true' when assets were uploaded to a release in this run; otherwise empty"
+    value: ${{ steps.attach.outputs.attached }}
+  tag:
+    description: the tag of the release the assets were attached to (empty when nothing was attached)
+    value: ${{ steps.attach.outputs.tag }}
+  published_at:
+    description: that release's published_at, RFC 3339 UTC (empty when nothing was attached)
+    value: ${{ steps.attach.outputs.published_at }}
+
 runs:
   using: composite
   steps:
     - uses: actions/github-script@v9
+      id: attach
       env:
         # Passed as env, never interpolated into the script body: a commit
         # message is attacker-controlled text and `${{ }}` inside `script:` is
@@ -166,3 +183,6 @@ runs:
             core.info(`uploaded ${name} (${data.length} bytes)`);
           }
           core.notice(`Attached ${files.length} asset(s) to ${tag}`);
+          core.setOutput('attached', 'true');
+          core.setOutput('tag', tag);
+          core.setOutput('published_at', release.data.published_at);
