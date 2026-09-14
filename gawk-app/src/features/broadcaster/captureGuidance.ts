@@ -32,16 +32,42 @@ export const WHOLE_SCREEN_TIP =
   'when you alt-tab or the game goes fullscreen. Pick a window only to show ' +
   'one app and keep the rest private.';
 
+// A tip line that may name the native apps. Whenever it does, the name is a
+// link to the download page (R46), so the copy carries the split rather than
+// the JSX: one home for the words, surfaces stay dumb renderers.
+export type TipCopy = { before: string; link?: string; after?: string };
+
 // Pre-start "Sharing tips" — the audio line, by browser capability.
-export const AUDIO_TIP: Record<AudioGuidance, string> = {
-  chromium:
-    'Audio is captured automatically — just tick “Share audio” (or “Share tab ' +
-    'audio”) in the picker. System audio works on Windows; on macOS or Linux, ' +
-    'share a browser tab to carry its sound.',
-  unsupported:
-    'Audio isn’t supported in this browser — you’ll stream video only. Use a ' +
-    'Chromium-based browser (Chrome, Edge) to include sound.',
+export const AUDIO_TIP: Record<AudioGuidance, TipCopy> = {
+  chromium: {
+    before:
+      'Audio is captured automatically — just tick “Share audio” (or “Share tab ' +
+      'audio”) in the picker. System audio works on Windows; on macOS or Linux, ' +
+      'share a browser tab to carry its sound.',
+  },
+  unsupported: {
+    before:
+      'Audio isn’t supported in this browser — you’ll stream video only. Use a ' +
+      'Chromium-based browser (Chrome, Edge) to include sound, or the ',
+    link: 'native broadcaster',
+    after: ' for Linux or Windows.',
+  },
 };
+
+// Pre-start "Sharing tips" — the native apps, for per-app audio. Not
+// browser-conditional: no browser picker can isolate one application’s sound.
+export const NATIVE_TIP: TipCopy = {
+  before: 'To stream just one game’s audio, use the ',
+  link: 'native broadcaster',
+  after:
+    ' for Linux or Windows — it captures a single application’s sound and ' +
+    'encodes in hardware.',
+};
+
+// The whole line as plain text (tests, and any surface without a link).
+export function tipText(copy: TipCopy): string {
+  return `${copy.before}${copy.link ?? ''}${copy.after ?? ''}`;
+}
 
 // The compact echo in the settings panel (same fact, fewer words).
 export const AUDIO_SETTINGS: Record<AudioGuidance, string> = {

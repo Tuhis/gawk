@@ -27,7 +27,7 @@ import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG, type CaptureConfig } from '../../media/types';
 import { encoderSettingsFromStore, useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 import { resolvedUrlIsDefault, useTransportStore } from '../../state/transportStore';
-import { allowCustomRelays, requiresPublishSecret } from '../../config';
+import { allowCustomRelays, requiresPublishSecret, SITE_DOWNLOAD_URL } from '../../config';
 import { ServerIndicator } from '../servers/ServerIndicator';
 import { ServerPickerPanel } from '../servers/ServerPickerPanel';
 import { acceptCurrentTerms, hasAcceptedCurrentTerms } from '../terms/acceptance';
@@ -64,6 +64,8 @@ import {
   HINT_AUDIO_MISSING_KEY,
   HINT_WINDOW_SHARE_KEY,
   isHintDismissed,
+  NATIVE_TIP,
+  type TipCopy,
   WHOLE_SCREEN_TIP,
 } from './captureGuidance';
 
@@ -89,6 +91,22 @@ const BROADCASTER_CAPTURE_CONFIG: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG, a
 function selectionLabel(selection: ResolutionSelection): string {
   if (selection === 'auto') return 'auto';
   return selection === 'native' ? 'native' : `${selection}p`;
+}
+
+// One tip line. When the copy names the native apps, the name is a link to
+// the download page — the only place this UI sends someone to fetch software.
+function TipLine({ copy }: { copy: TipCopy }) {
+  return (
+    <p className={styles.tipText}>
+      {copy.before}
+      {copy.link && (
+        <a href={SITE_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer">
+          {copy.link}
+        </a>
+      )}
+      {copy.after}
+    </p>
+  );
 }
 
 function serverHost(url: string): string {
@@ -1021,7 +1039,8 @@ export function BroadcasterScreen() {
                       clips the content during the transition. */}
                   <div className={styles.tipsInner}>
                     <p className={styles.tipText}>{WHOLE_SCREEN_TIP}</p>
-                    <p className={styles.tipText}>{AUDIO_TIP[guidance]}</p>
+                    <TipLine copy={AUDIO_TIP[guidance]} />
+                    <TipLine copy={NATIVE_TIP} />
                   </div>
                 </div>
               </div>

@@ -17,6 +17,8 @@ import {
   HINT_AUDIO_MISSING_KEY,
   HINT_WINDOW_SHARE_KEY,
   isHintDismissed,
+  NATIVE_TIP,
+  tipText,
   WINDOW_NOTE,
 } from './captureGuidance';
 
@@ -47,12 +49,21 @@ describe('audioGuidanceForBrowser (CG1.1)', () => {
   });
 
   it('selects distinct tip and settings copy per discriminant', () => {
-    expect(AUDIO_TIP.chromium).not.toBe(AUDIO_TIP.unsupported);
+    expect(tipText(AUDIO_TIP.chromium)).not.toBe(tipText(AUDIO_TIP.unsupported));
     expect(AUDIO_SETTINGS.chromium).not.toBe(AUDIO_SETTINGS.unsupported);
     // The unsupported copy names the fix (a Chromium browser); the chromium
     // copy names the picker action.
-    expect(AUDIO_TIP.unsupported).toMatch(/chromium/i);
-    expect(AUDIO_TIP.chromium).toMatch(/share audio/i);
+    expect(tipText(AUDIO_TIP.unsupported)).toMatch(/chromium/i);
+    expect(tipText(AUDIO_TIP.chromium)).toMatch(/share audio/i);
+  });
+
+  // Wherever the copy names the native apps it must hand the surface a link
+  // label to hang the download link on — the chromium line never does.
+  it('names the native apps as a link, for per-app audio and where audio is out', () => {
+    expect(NATIVE_TIP.link).toBeTruthy();
+    expect(tipText(NATIVE_TIP)).toMatch(/linux|windows/i);
+    expect(AUDIO_TIP.unsupported.link).toBeTruthy();
+    expect(AUDIO_TIP.chromium.link).toBeUndefined();
   });
 });
 
