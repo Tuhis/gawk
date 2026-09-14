@@ -261,6 +261,21 @@ async fn publishes_to_the_real_relay() {
     );
     assert_eq!(token.len(), 32, "16-byte token, hex-encoded: {token}");
 
+    // The relay's capabilities ride their own stream and arrive in no fixed
+    // order relative to the announce and the token (docs/22 finding 9); a
+    // delta burst fired before they land carries no parity and the R29
+    // assertions below would flake. Wait for them the way a real capture
+    // pipeline's first frames effectively do.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while session.stats().parity_level == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "capabilities never arrived: {:?}",
+            session.stats()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
     let sender = session.sender();
     sender.set_codec("avc1.42E02A");
     sender.send_video(keyframe(50_000, 1_000)).await;
@@ -514,14 +529,14 @@ async fn a_native_attach_is_visible_to_a_second_room_participant() {
     // from either.
     let streaming = |p: &gawk_wire::RoomParticipant<'_>| {
         p.kind == gawk_wire::ROOM_CLIENT_NATIVE
-            && p.nickname == "juho"
+            && p.nickname == "Juho's PC"
             && p.flags & gawk_wire::ROOM_PARTICIPANT_FLAG_STREAMING != 0
     };
     assert!(
         state
             .participants
             .iter()
-            .any(|p| p.nickname == "juho" && p.kind == gawk_wire::ROOM_CLIENT_NATIVE),
+            .any(|p| p.nickname == "Juho's PC" && p.kind == gawk_wire::ROOM_CLIENT_NATIVE),
         "the native broadcaster is a participant: {state:?}"
     );
     if !state.participants.iter().any(streaming) {
