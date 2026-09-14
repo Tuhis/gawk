@@ -54,13 +54,15 @@ import { BroadcasterScreen } from './BroadcasterScreen';
 import { BroadcastStartError, type BroadcastStats } from '../../transport/broadcaster';
 import { acceptCurrentTerms } from '../terms/acceptance';
 import { useTransportStore } from '../../state/transportStore';
-import { BUNDLED_TERMS_VERSION } from '../../config';
+import { BUNDLED_TERMS_VERSION, SITE_DOWNLOAD_URL } from '../../config';
 import {
   AUDIO_NOTE,
   AUDIO_SETTINGS,
   AUDIO_TIP,
   HINT_AUDIO_MISSING_KEY,
   HINT_WINDOW_SHARE_KEY,
+  NATIVE_TIP,
+  tipText,
   WHOLE_SCREEN_TIP,
   WINDOW_NOTE,
 } from './captureGuidance';
@@ -245,6 +247,15 @@ describe('BroadcasterScreen terms acknowledgment gate', () => {
 describe('BroadcasterScreen capture & audio guidance (R24)', () => {
   afterEach(disableChromiumAudio);
 
+  // The tips render as <p> lines whose linked copy spans several nodes, so
+  // assert on the assembled text, not a single text node.
+  const tipLines = () =>
+    Array.from(document.querySelectorAll('#sharing-tips p')).map((p) => p.textContent);
+  const downloadLinks = () =>
+    Array.from(document.querySelectorAll<HTMLAnchorElement>('#sharing-tips a')).filter(
+      (a) => a.getAttribute('href') === SITE_DOWNLOAD_URL,
+    );
+
   // ── CG2: pre-start "Sharing tips" ──
   it('CG2.1: the tips disclosure is present and collapsed by default', () => {
     render(<BroadcasterScreen />);
@@ -256,14 +267,29 @@ describe('BroadcasterScreen capture & audio guidance (R24)', () => {
     enableChromiumAudio();
     render(<BroadcasterScreen />);
     expect(screen.getByText(WHOLE_SCREEN_TIP)).toBeTruthy();
-    expect(screen.getByText(AUDIO_TIP.chromium)).toBeTruthy();
-    expect(screen.queryByText(AUDIO_TIP.unsupported)).toBeNull();
+    expect(tipLines()).toContain(tipText(AUDIO_TIP.chromium));
+    expect(tipLines()).not.toContain(tipText(AUDIO_TIP.unsupported));
   });
 
   it('CG2.2: shows the unsupported audio tip on Firefox (no audio globals)', () => {
     render(<BroadcasterScreen />);
-    expect(screen.getByText(AUDIO_TIP.unsupported)).toBeTruthy();
-    expect(screen.queryByText(AUDIO_TIP.chromium)).toBeNull();
+    expect(tipLines()).toContain(tipText(AUDIO_TIP.unsupported));
+    expect(tipLines()).not.toContain(tipText(AUDIO_TIP.chromium));
+  });
+
+  // The native pointer is browser-independent: per-app audio is out of reach
+  // for every browser picker, so it shows either way — and wherever the copy
+  // names the native apps it links to the download page.
+  it('CG2.2: shows the native per-app audio tip, linked, in either browser', () => {
+    const { unmount } = render(<BroadcasterScreen />);
+    expect(tipLines()).toContain(tipText(NATIVE_TIP));
+    // Firefox: the audio tip names them too, so both lines carry the link.
+    expect(downloadLinks()).toHaveLength(2);
+    unmount();
+    enableChromiumAudio();
+    render(<BroadcasterScreen />);
+    expect(tipLines()).toContain(tipText(NATIVE_TIP));
+    expect(downloadLinks()).toHaveLength(1);
   });
 
   it('CG2.3: toggling the tips fires no session (the Start path is untouched)', () => {
