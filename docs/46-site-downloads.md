@@ -1,8 +1,9 @@
 # R46 — Download section on the project site (docs/46)
 
-**Status**: designed and implemented 2026-09-14. Chunks **DL1–DL4** (`DL` =
-DownLoads; two-letter prefix per the R21+ convention). Site + CI only: no
-relay, wire, app or broadcaster code moves.
+**Status**: designed and implemented 2026-09-14. Chunks **DL1–DL5** (`DL` =
+DownLoads; two-letter prefix per the R21+ convention). Site + CI, plus two
+footer links in the SPA's landing page (DL5, §6): no relay, wire or
+broadcaster code moves.
 
 ## 1. Purpose
 
@@ -154,6 +155,7 @@ The `badges` branch after this holds, beside the coverage files,
 | **DL2** | The two current releases seeded (D7) | both manifests exist on `badges`, validate, and their checksums match the release pages' `SHA256SUMS` |
 | **DL3** | The `#download` section, nav link, styles, script | with the manifests reachable each card shows `vX.Y.Z · date · size`, a button whose `href` is the asset URL and the matching sha256; with `site.js` disabled (or the fetch blocked) each card still shows a button to the releases page and no checksum; the page passes at 400 px width without horizontal scroll |
 | **DL4** | This document, the ROADMAP row and entry, the docs index, the R45 entry pointing here for its manifest, `release-tool` CI job | present; `docs/README.md` lists this doc under Product surface; a change to `tools/releases/` runs the job |
+| **DL5** | Footer links from the web UI to the site (§6) | the landing footer reads About · Get the app · Terms of use · GitHub; About opens the site root and Get the app opens `#download`, both in a new tab with `rel="noopener noreferrer"`; `LandingPage.test.tsx` pins all of it |
 
 ## 5. Security considerations
 
@@ -168,3 +170,28 @@ The `badges` branch after this holds, beside the coverage files,
 - The manifest carries nothing about visitors; the fetch is a plain `GET`
   of a static file with no identifying parameter — the property R45 requires
   of the desktop apps' request, kept from day one.
+
+## 6. Links from the web UI (DL5, added 2026-09-14)
+
+The SPA's landing footer is the one place a user of the deployed app meets
+the project, and until now it offered only the terms and the source
+repository. It gains two quiet links, same weight as the existing pair:
+
+- **About** → the site root (`SITE_URL` in `config.ts`), for what gawk is
+  and how it works.
+- **Get the app** → `SITE_URL#download`, straight to the section this
+  document describes. Separate from About on purpose: the native
+  broadcasters are the one thing this UI may send someone to fetch, and a
+  link that lands on the hero and asks them to scroll is a link they will
+  not follow.
+
+Both are constants, not runtime config, for the reason `SOURCE_URL` is:
+they describe the project every deployment is built from, not the
+deployment. A fork that wants its own site edits them in the fork. Both
+open in a new tab with `rel="noopener noreferrer"` so the join card is
+never navigated away from. Order: About · Get the app · Terms of use ·
+GitHub — project first, obligations and source after.
+
+Not added: links from the viewer or broadcaster screens. Those surfaces are
+deliberately chrome-free (docs/10, docs/29's viewer "⋮" menu is the one
+concession) and someone already streaming has no need of the download.

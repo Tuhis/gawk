@@ -4,7 +4,7 @@ import { CodeInput } from './CodeInput';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { isValidBroadcastId } from '../../lib/broadcastId';
-import { SOURCE_URL } from '../../config';
+import { SITE_DOWNLOAD_URL, SITE_URL, SOURCE_URL } from '../../config';
 import { ServerChip } from '../servers/ServerChip';
 
 // The front door (docs/10 J2). Segmented code entry is the hero; a smaller
@@ -58,9 +58,24 @@ export function LandingPage() {
       </div>
 
       {/* R23 (docs/29): terms reachable from the front door, unobtrusively —
-          joined since the repository went public by a source link, which is the
-          same quiet weight and the only outbound link on the page. */}
+          joined since the repository went public by a source link, and since
+          R46 (docs/46 §6) by the project site and its Download section, the
+          latter because the native apps are the one thing this UI may send
+          someone to fetch. All the same quiet weight; the outbound ones open
+          a new tab so the join card is never lost. */}
       <footer className={styles.foot}>
+        <a href={SITE_URL} target="_blank" rel="noopener noreferrer">
+          About
+        </a>
+        <span className={styles.footSep} aria-hidden="true">
+          ·
+        </span>
+        <a href={SITE_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer">
+          Get the app
+        </a>
+        <span className={styles.footSep} aria-hidden="true">
+          ·
+        </span>
         <a href="#/terms">Terms of use</a>
         <span className={styles.footSep} aria-hidden="true">
           ·
