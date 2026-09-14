@@ -32,7 +32,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		AudioDevice:         "my-sink.monitor",
 		Room:                "TuhisRoom",
 		RoomAttachSecret:    "attach-k",
-		RoomLabel:           "Desk",
 		Nickname:            "tuhis",
 		Width:               1920,
 		Height:              1080,
@@ -59,7 +58,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		DisableAudio:        c.DisableAudio,
 		AudioDevice:         c.AudioDevice,
 		Room:                c.Room, RoomAttachSecret: c.RoomAttachSecret,
-		RoomLabel: c.RoomLabel, Nickname: c.Nickname,
+		Nickname: c.Nickname,
 		Servers: []ServerProfile{{
 			Name: "Migrated server", URL: "https://relay.example:4433", PublishSecret: "hunter2",
 		}},
@@ -540,5 +539,36 @@ func TestAPreR25ConfigMeansAudioOn(t *testing.T) {
 	}
 	if c.AudioDevice != "" {
 		t.Errorf("AudioDevice = %q, want empty (probe the cascade)", c.AudioDevice)
+	}
+}
+
+// The tile label used to be its own field; the nickname names the tile now
+// (the web broadcaster's rule). A profile written before that still loads —
+// the key is ignored — and the next save drops it.
+func TestOldTileLabelKeyIsIgnoredAndDropped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broadcast.json")
+	old := `{"room":"TuhisRoom","roomLabel":"Desk","nickname":"tuhis"}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Room != "TuhisRoom" || c.Nickname != "tuhis" {
+		t.Errorf("loaded room %q nickname %q", c.Room, c.Nickname)
+	}
+	if err := c.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "roomLabel") {
+		t.Errorf("the dropped key survived the save:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), `"nickname": "tuhis"`) && !strings.Contains(string(raw), `"nickname":"tuhis"`) {
+		t.Errorf("nickname not saved:\n%s", raw)
 	}
 }

@@ -151,11 +151,10 @@ room — only a small control session beside the publisher's.
 -room-attach-secret     a static room's attach secret (env GAWK_ROOM_ATTACH_SECRET)
 -room-create-secret     the relay's create secret, if it needs one for -room-new
                         (env GAWK_ROOM_CREATE_SECRET; never saved)
--room-label             the broadcast's tile label (env GAWK_ROOM_LABEL)
--nick                   your name in the roster (env GAWK_NICK)
+-nick                   your name in the roster and on your tile (env GAWK_NICK)
 ```
 
-`room`, `roomAttachSecret`, `roomLabel` and `nickname` persist in the
+`room`, `roomAttachSecret` and `nickname` persist in the
 config file like everything else (the attach secret is a credential; the
 0600 file covers it, as it does the resume token). In the GUI the **Room**
 card takes a code, a slug or a pasted room link plus the attach secret:

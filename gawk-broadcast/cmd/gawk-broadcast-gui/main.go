@@ -30,6 +30,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"gioui.org/app"
 	"gioui.org/io/clipboard"
@@ -166,11 +167,20 @@ type ui struct {
 	fpsPick dropdown
 
 	// R42's room card (docs/44 §4.8): code-or-link and attach-secret
-	// fields, the tile label and nickname, and the four actions.
+	// fields, the nickname (the one name: roster entry and tile label,
+	// editable while live), and the four actions.
 	roomCode   textInput
 	roomSecret textInput
-	roomLabel  textInput
 	nickname   textInput
+	// The nickname debounce (the Windows shell's rule): nickTyped is the
+	// trimmed text last seen in the field, nickDue when the pause since the
+	// last edit ends, lastNick the name last sent to the app. Sending per
+	// keystroke would cost the relay a SetNickname plus a re-Attach and
+	// every participant a roster event per character — the engine only
+	// coalesces sends already in flight.
+	nickTyped  string
+	nickDue    time.Time
+	lastNick   string
 	roomAttach widget.Clickable
 	roomDetach widget.Clickable
 	roomNew    widget.Clickable
@@ -217,8 +227,9 @@ func newUI(a *gawkapp.App, cfg *config.Config) *ui {
 	u.roomCode.SetText(cfg.Room)
 	u.roomSecret.SetText(cfg.RoomAttachSecret)
 	u.roomSecret.ed.Mask = '•'
-	u.roomLabel.SetText(cfg.RoomLabel)
 	u.nickname.SetText(cfg.Nickname)
+	u.nickname.ed.Submit = true // Enter applies the nickname at once
+	u.nickTyped, u.lastNick = cfg.Nickname, cfg.Nickname
 	u.openURL = openInBrowser
 	if cfg.BitrateBps > 0 {
 		u.bitrate.SetText(strconv.FormatFloat(float64(cfg.BitrateBps)/1e6, 'f', -1, 64))
@@ -491,6 +502,7 @@ func (u *ui) handleEvents(gtx layout.Context) {
 			u.openURL(link)
 		}
 	}
+	u.applyNickname(gtx)
 	if u.copyDia.Clicked(gtx) {
 		gtx.Execute(clipboard.WriteCmd{Type: "application/text", Data: io.NopCloser(strings.NewReader(u.app.Diagnostics()))})
 		u.copied = "Diagnostics copied"
@@ -525,14 +537,53 @@ func (u *ui) save() {
 	u.saveCfg()
 }
 
-// applyRoomFields copies the label and nickname fields into the config.
+// nickDebounce is how long typing must pause before the nickname is sent.
+const nickDebounce = 600 * time.Millisecond
+
+// applyNickname is the one live-editable room field: the nickname (roster
+// entry and tile label alike) is persisted on every edit and sent to the
+// app — which renames in place through the engine, no Save, no restart —
+// once typing has paused for nickDebounce, or at once on Enter. A send per
+// keystroke would be a SetNickname plus a re-Attach at the relay and a
+// roster event at every participant per character. The text is compared
+// against what was last seen rather than read as an editor event, so a
+// field pre-filled or set by a test needs no frame in between; Enter is
+// the editor's Submit event.
+func (u *ui) applyNickname(gtx layout.Context) {
+	now := gtx.Now
+	for {
+		ev, ok := u.nickname.ed.Update(gtx)
+		if !ok {
+			break
+		}
+		if _, submit := ev.(widget.SubmitEvent); submit {
+			u.nickDue = now
+		}
+	}
+	if nick := strings.TrimSpace(u.nickname.Text()); nick != u.nickTyped {
+		u.nickTyped = nick
+		u.cfg.Nickname = nick
+		u.saveCfg()
+		u.nickDue = now.Add(nickDebounce)
+		gtx.Execute(op.InvalidateCmd{At: u.nickDue})
+	}
+	if u.nickDue.IsZero() || now.Before(u.nickDue) {
+		return
+	}
+	u.nickDue = time.Time{}
+	if u.nickTyped != u.lastNick {
+		u.lastNick = u.nickTyped
+		u.app.SetNickname(u.nickTyped)
+	}
+}
+
+// applyRoomFields copies the nickname field into the config.
 func (u *ui) applyRoomFields() {
-	u.cfg.RoomLabel = strings.TrimSpace(u.roomLabel.Text())
 	u.cfg.Nickname = strings.TrimSpace(u.nickname.Text())
 }
 
-// saveRoomFields persists the label and nickname ahead of a room action, so
-// the engine's next attach or mint carries what the card shows.
+// saveRoomFields persists the nickname ahead of a room action, so the
+// engine's next attach or mint carries what the card shows.
 func (u *ui) saveRoomFields() {
 	u.applyRoomFields()
 	u.saveCfg()
@@ -950,15 +1001,7 @@ func (u *ui) roomCard(gtx layout.Context) layout.Dimensions {
 			}),
 			layout.Rigid(spacer(8)),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{}.Layout(gtx,
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-						return u.roomLabel.Layout(gtx, u.th, "Tile label")
-					}),
-					layout.Rigid(spacerW(8)),
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-						return u.nickname.Layout(gtx, u.th, "Nickname")
-					}),
-				)
+				return u.nickname.Layout(gtx, u.th, "Nickname (your name in the roster and on your tile)")
 			}),
 			layout.Rigid(spacer(10)),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {

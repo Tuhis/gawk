@@ -734,6 +734,20 @@ the manual pass outcome.
 - **Windows: no create-secret field in the card** (the engine carries it,
   the shell passes empty; a `-room-create-secret` relay answers 403 and the
   status line says so), and the room session's lifetime is the broadcast's.
+- **Native broadcasters: one name, changeable while live (revision
+  2026-09-14).** The natives shipped a separate "Tile label" next to the
+  nickname, and both were read once at start — a broadcaster who went live
+  and then clicked "New room" (the only time the button exists) found the
+  nickname field greyed out and got a relay-assigned `guest-N`. The web
+  broadcaster feeds one name to both the roster and the tile, so the
+  natives now do the same: the tile label field is gone, the attach label
+  and the mint `label` are the nickname, and the nickname field stays
+  editable while live — the engine sends `SetNickname` and, when the
+  broadcast is attached, an idempotent re-`Attach` carrying the new label
+  (the relay refreshes a label on re-attach, §4.8). `-room-label` /
+  `GAWK_ROOM_LABEL` and pubsim's `-label` are parsed as deprecated no-ops
+  with a warning; a profile still holding `roomLabel` loads and drops the
+  key on save.
 - **The telemetry room key is shape-validated, not authenticated.** The
   R28 session token binds broadcast key and role only, and a session can
   enter a room after its token was minted, so `roomKey` on a batch is a
@@ -831,6 +845,7 @@ the manual pass outcome.
 | RM4 the dock's overlays and the tiles' chrome do not overlap; header carries the room totals (§4.9 revision 2026-09-05) | `room.module.css` bands; `RoomScreen.test.tsx` (`N streaming`, `M watching`); the dev stack's `--profile rooms` (docs/41 §4.5) is the three-POV fixture it was seen on |
 | RM6 attach visible in another participant's `RoomState` | `gawk-broadcast/internal/engine/room_integration_test.go`, `crates/engine/tests/relay_integration.rs` (ignored; CI runs it on Linux) |
 | RM6 grant hand-off rewritten before first render | `App.room.test.tsx` |
+| RM6 natives: one name for roster and tile, changeable while live (§11.1 revision 2026-09-14) | Go `internal/engine/room_test.go` `TestSetNicknameRenamesRosterAndTileWhileAttached` (SetNickname, then Attach with the new label, reconnect hello carries it) and `TestSetNicknameBeforeAttachIsOnlyARename`; `internal/app/room_test.go` `TestSetNicknamePersistsAndRenamesLive`; `internal/config` `TestOldTileLabelKeyIsIgnoredAndDropped`; GUI `TestNicknameEditWhileLiveRenamesThroughTheApp`. Rust `crates/engine/src/room.rs` `set_nickname_renames_relabels_and_sticks_across_a_reconnect`, `set_nickname_before_the_attach_only_renames`; `config.rs` `a_profile_with_the_old_room_label_key_loads_and_drops_it`; both RM6 integration tests assert the nickname as the label |
 | RM7 portal API, CI migration gates, webhook carries no raw code | `gawk-admin/internal/api/rooms_test.go`, `internal/kube/rooms_test.go` (+ envtest against `crd-room.yaml`), `internal/notify/payload_test.go` `TestNoRawIDOrIPInAnyPayload` with a room-code poison; no migration was needed (`admin-migrations` unchanged) |
 | RM8 ingest unit test; UI groups a session with its room | `gawk-telemetry/internal/ingest/ingest_test.go` (roomKey shapes), `internal/readapi/rooms_test.go` + `TestR31DefaultsAreByteIdentical`, `ui/src/views/RoomView.test.tsx`, router tests |
 | RM9 docs | this section, `docs/gotchas.md` "Rooms (R42)", `docs/self-hosting.md` §10, `ROADMAP.md`; the §10 manual pass is **open** |

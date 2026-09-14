@@ -44,9 +44,9 @@ pub struct SessionConfig {
     pub room_attach_secret: String,
     /// The relay's create secret (presented on a mint).
     pub room_create_secret: String,
-    /// The tile label the attachment carries (bounded by the wire).
-    pub room_label: String,
-    /// The room nickname; empty lets the relay assign one.
+    /// The room nickname; empty lets the relay assign one. It also names
+    /// the tile (one name feeds both, as on the web broadcaster page) and
+    /// can change while live through [`Session::room_set_nickname`].
     pub nickname: String,
 }
 
@@ -111,6 +111,9 @@ struct Shared {
     viewer_count: Option<u32>,
     resumes: u64,
     resuming: bool,
+    /// The live room nickname: seeded from the config, replaced by
+    /// `room_set_nickname`, read by every room session this one spawns.
+    nickname: String,
 }
 
 /// One running room control session, owned by the publish session.
@@ -222,6 +225,7 @@ impl Session {
             viewer_count: None,
             resumes: 0,
             resuming: false,
+            nickname: cfg.nickname.clone(),
         }));
 
         let room = Arc::new(Mutex::new(None));
@@ -294,6 +298,18 @@ impl Session {
         }
     }
 
+    /// Renames this participant: the running room session (if any) sends
+    /// SetNickname and re-attaches with the new tile label, and every room
+    /// session spawned later joins under the new name.
+    pub fn room_set_nickname(&self, nickname: &str) {
+        self.shared.lock().unwrap().nickname = nickname.to_owned();
+        if let Some(h) = self.room.lock().unwrap().as_ref() {
+            let _ = h
+                .requests
+                .send(RoomRequest::SetNickname(nickname.to_owned()));
+        }
+    }
+
     /// Ends the room control session without detaching — the attachment
     /// then follows the broadcast's own lifecycle on the relay.
     pub fn room_leave(&self) {
@@ -311,8 +327,7 @@ impl Session {
             attach_secret: String::new(),
             create_secret: self.cfg.room_create_secret.clone(),
             creator_token_hex: String::new(),
-            label: self.cfg.room_label.clone(),
-            nickname: self.cfg.nickname.clone(),
+            nickname: self.shared.lock().unwrap().nickname.clone(),
         }
     }
 

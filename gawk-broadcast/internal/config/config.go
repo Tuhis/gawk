@@ -218,9 +218,10 @@ type Config struct {
 	// RoomAttachSecret is a static room's attach key. A credential, like
 	// the publish secret and the resume token: the 0600 file mode covers it.
 	RoomAttachSecret string `json:"roomAttachSecret,omitempty"`
-	// RoomLabel names this broadcast's tile in the room.
-	RoomLabel string `json:"roomLabel,omitempty"`
-	// Nickname is the roster name; blank uses the engine's default.
+	// Nickname is the one name the broadcaster carries in a room: the
+	// roster entry and the tile label alike (the web broadcaster page's
+	// rule). Blank uses the engine's default. A pre-2026-09 profile's
+	// separate `roomLabel` key is ignored on load and dropped on save.
 	Nickname string `json:"nickname,omitempty"`
 
 	// Rung.

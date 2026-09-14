@@ -84,8 +84,7 @@ running broadcast to a room, on a relay started with `-rooms`:
 |---|---|---|
 | Room code or link | `room` | A dynamic code, a static slug, or a pasted `…/#/room/<CODE>` link; blank = no room. Joined on every start, re-attached on every resume. |
 | Attach key | `roomAttachSecret` | A static room's attach secret (DPAPI-wrapped like the publish secret) |
-| Tile label | `roomLabel` | What the tile is called in the room view |
-| Nickname | `nickname` | Your name in the room (blank = the relay picks one) |
+| Nickname | `nickname` | Your name in the room, and what your tile is called (blank = the relay picks one). Editable while live: the roster and the tile follow. |
 
 While live, **Attach** joins the room in the field, **New room** mints a
 dynamic room from this broadcast (the app is its creator), and

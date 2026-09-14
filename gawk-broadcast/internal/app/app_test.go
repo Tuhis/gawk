@@ -56,7 +56,7 @@ type fakeSession struct {
 	stopped  bool
 
 	// R42: the room calls the app made, in order ("join:<code>:<secret>",
-	// "new:<label>", "leave").
+	// "new", "nick:<name>", "leave").
 	roomMu    sync.Mutex
 	roomCalls []string
 }
@@ -68,11 +68,17 @@ func (f *fakeSession) JoinRoom(code, secret string) error {
 	return nil
 }
 
-func (f *fakeSession) NewRoom(label, createSecret string) error {
+func (f *fakeSession) NewRoom(createSecret string) error {
 	f.roomMu.Lock()
 	defer f.roomMu.Unlock()
-	f.roomCalls = append(f.roomCalls, "new:"+label)
+	f.roomCalls = append(f.roomCalls, "new")
 	return nil
+}
+
+func (f *fakeSession) SetNickname(nick string) {
+	f.roomMu.Lock()
+	defer f.roomMu.Unlock()
+	f.roomCalls = append(f.roomCalls, "nick:"+nick)
 }
 
 func (f *fakeSession) LeaveRoom() {

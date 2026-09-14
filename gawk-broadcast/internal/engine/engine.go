@@ -82,9 +82,10 @@ type Config struct {
 	// RoomCreateSecret is the fleet's -room-create-secret, presented on a
 	// mint when the relay requires one.
 	RoomCreateSecret string
-	// RoomLabel names the broadcast's tile in the room (MaxRoomLabelLen).
-	RoomLabel string
-	// Nickname is the roster name; empty uses DefaultNickname.
+	// Nickname is the one name the broadcaster carries in a room — the
+	// roster entry and the tile label alike (the web broadcaster page's
+	// rule; docs/44 §4.9). Empty uses DefaultNickname. SetNickname changes
+	// it while live.
 	Nickname string
 }
 

@@ -142,6 +142,27 @@ struct Shell {
     /// Set when the user clicked Detach/Leave, so the RoomDetached that
     /// follows is read as "we left" rather than "the creator removed us".
     room_leaving: bool,
+    /// Debounces the live rename: `edited` fires per keystroke, and every
+    /// SetNickname costs the relay a re-Attach and every participant a
+    /// roster event, so the send waits until typing pauses (single-shot,
+    /// restarted per edit) or Enter is pressed. Persisting is not debounced.
+    nick_timer: slint::Timer,
+    /// The last nickname sent to the relay for this session — a flush that
+    /// would repeat it is skipped.
+    nick_sent: String,
+}
+
+/// Sends the current nickname to the running session unless it is the one
+/// already sent. Called from the debounce timer and from Enter.
+fn flush_nickname(sh: &mut Shell) {
+    let nick = sh.cfg.nickname.clone();
+    if nick == sh.nick_sent {
+        return;
+    }
+    if let Some(session) = sh.session.clone() {
+        session.room_set_nickname(&nick);
+    }
+    sh.nick_sent = nick;
 }
 
 fn creds() -> Box<dyn config::Credentials> {
@@ -250,6 +271,8 @@ fn main() {
         uplink_warned: false,
         room_grant: String::new(),
         room_leaving: false,
+        nick_timer: slint::Timer::default(),
+        nick_sent: String::new(),
     }));
 
     let ui = MainWindow::new().expect("create window");
@@ -361,7 +384,6 @@ fn seed_settings(ui: &MainWindow, cfg: &Config) {
     seed_server_fields(ui, cfg);
     ui.set_room_input(cfg.room.clone().into());
     ui.set_room_attach_key(cfg.room_attach_secret.clone().into());
-    ui.set_room_label(cfg.room_label.clone().into());
     ui.set_room_nickname(cfg.nickname.clone().into());
     ui.set_set_app_url(cfg.app_url.clone().into());
     ui.set_set_telemetry(cfg.telemetry_url.clone().into());
@@ -430,7 +452,6 @@ fn read_settings(ui: &MainWindow, cfg: &mut Config) {
     // at dial time, so the user sees what they pasted).
     cfg.room = ui.get_room_input().trim().to_string();
     cfg.room_attach_secret = ui.get_room_attach_key().trim().to_string();
-    cfg.room_label = ui.get_room_label().trim().to_string();
     cfg.nickname = ui.get_room_nickname().trim().to_string();
     cfg.app_url = ui.get_set_app_url().trim().to_string();
     cfg.telemetry_url = ui.get_set_telemetry().trim().to_string();
@@ -658,6 +679,34 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 ui.set_server_labels(ModelRc::new(VecModel::from(server_labels(&sh.cfg))));
                 refresh_captions(&ui, &sh.cfg);
             }
+        });
+    }
+    {
+        // The nickname persists like every other setting and, while a
+        // session exists, renames on the relay too (the tile label follows
+        // — one name feeds both, as on the web broadcaster page).
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_room_nickname_edited(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut sh = shell.borrow_mut();
+                read_settings(&ui, &mut sh.cfg);
+                save_config(&mut sh);
+                let flush_shell = shell.clone();
+                sh.nick_timer.start(
+                    slint::TimerMode::SingleShot,
+                    std::time::Duration::from_millis(600),
+                    move || flush_nickname(&mut flush_shell.borrow_mut()),
+                );
+            }
+        });
+    }
+    {
+        let shell = shell.clone();
+        ui.on_room_nickname_accepted(move || {
+            let mut sh = shell.borrow_mut();
+            sh.nick_timer.stop();
+            flush_nickname(&mut sh);
         });
     }
     {
@@ -956,9 +1005,9 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         room_new: false,
         room_attach_secret: sh.cfg.room_attach_secret.clone(),
         room_create_secret: String::new(),
-        room_label: sh.cfg.room_label.clone(),
         nickname: sh.cfg.nickname.clone(),
     };
+    sh.nick_sent = sh.cfg.nickname.clone();
     let clock: Arc<dyn gawk_engine::clock::Clock> = sh.clock.clone();
     let msg_tx = sh.msg_tx.clone();
     let rt_handle = sh.rt.handle().clone();

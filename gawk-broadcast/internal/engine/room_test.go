@@ -329,7 +329,7 @@ func TestRoomAttachWaitsForBothIDAndToken(t *testing.T) {
 	rd := newRoomDialer().accept(room)
 
 	states := make(chan wire.RoomState, 4)
-	s := New(Config{RelayURL: "https://relay.example", Room: "TuhisRoom", RoomLabel: "Desk", Nickname: "tuhis"},
+	s := New(Config{RelayURL: "https://relay.example", Room: "TuhisRoom", Nickname: "tuhis"},
 		Callbacks{OnRoomState: func(st wire.RoomState) { states <- st }},
 		roomTestOpts(sess, media, rd))
 	if err := s.Start(context.Background()); err != nil {
@@ -364,9 +364,10 @@ func TestRoomAttachWaitsForBothIDAndToken(t *testing.T) {
 	room.expectSilence(t, 150*time.Millisecond, "after the token alone")
 	sess.incoming <- announceStream(announceMsg(t, "K7M2QP"))
 
+	// One name, as on the web broadcaster page: the nickname is the tile label.
 	cmd := room.expectCommand(t, wire.RoomCommandAttach, 3*time.Second)
-	if cmd.BroadcastID != "K7M2QP" || !bytes.Equal(cmd.ResumeToken, testRawToken) || cmd.Label != "Desk" {
-		t.Errorf("attach = %+v, want K7M2QP / raw token / Desk", cmd)
+	if cmd.BroadcastID != "K7M2QP" || !bytes.Equal(cmd.ResumeToken, testRawToken) || cmd.Label != "tuhis" {
+		t.Errorf("attach = %+v, want K7M2QP / raw token / the nickname as label", cmd)
 	}
 	// Exactly one: a second credential arrival must not re-attach.
 	room.expectSilence(t, 150*time.Millisecond, "after the attach")
@@ -385,7 +386,7 @@ func TestRoomMintWaitsForCredentialsAndReportsCreatorToken(t *testing.T) {
 	rd := newRoomDialer().accept(room)
 
 	created := make(chan [2]string, 1)
-	s := New(Config{RelayURL: "https://relay.example", RoomNew: true, RoomLabel: "Desk", RoomCreateSecret: "invite"},
+	s := New(Config{RelayURL: "https://relay.example", RoomNew: true, Nickname: "Desk", RoomCreateSecret: "invite"},
 		Callbacks{OnRoomCreated: func(code, tok string) { created <- [2]string{code, tok} }},
 		roomTestOpts(sess, media, rd))
 	if err := s.Start(context.Background()); err != nil {
@@ -701,5 +702,96 @@ func TestLeaveRoomDetachesAndStopDoesNot(t *testing.T) {
 	}
 	if !room2.closed {
 		t.Error("Stop did not close the room session")
+	}
+}
+
+// One name feeds both the roster and the tile (the web broadcaster's rule),
+// and it can change while live: SetNickname renames the participant and,
+// when our broadcast is attached, re-attaches so the tile follows (the
+// relay refreshes the label on an idempotent re-attach). Every later hello
+// carries the new name.
+func TestSetNicknameRenamesRosterAndTileWhileAttached(t *testing.T) {
+	sess := newFakeSession()
+	media := newFakeMedia()
+	room1, room2 := newFakeRoomSession(), newFakeRoomSession()
+	rd := newRoomDialer().accept(room1).accept(room2)
+	sess.incoming <- announceStream(announceMsg(t, "K7M2QP"))
+	sess.incoming <- announceStream(tokenMsg(t))
+
+	s := New(Config{RelayURL: "https://relay.example", Room: "TuhisRoom", Nickname: "tuhis"}, Callbacks{}, roomTestOpts(sess, media, rd))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+
+	<-rd.dialed
+	if h := room1.expectHello(t); h.Nickname != "tuhis" {
+		t.Errorf("hello nickname = %q", h.Nickname)
+	}
+	room1.relayWrite(t, stateMsg(t, wire.RoomState{Seq: 1, YourID: 2, Code: "TuhisRoom"}))
+	if c := room1.expectCommand(t, wire.RoomCommandAttach, 3*time.Second); c.Label != "tuhis" {
+		t.Errorf("first attach label = %q, want the nickname", c.Label)
+	}
+
+	s.SetNickname("juho")
+	if c := room1.expectCommand(t, wire.RoomCommandSetNickname, 3*time.Second); c.Nickname != "juho" {
+		t.Errorf("rename = %+v, want nickname juho", c)
+	}
+	if c := room1.expectCommand(t, wire.RoomCommandAttach, 3*time.Second); c.BroadcastID != "K7M2QP" || !bytes.Equal(c.ResumeToken, testRawToken) || c.Label != "juho" {
+		t.Errorf("re-attach after the rename = %+v, want K7M2QP / raw token / juho", c)
+	}
+	room1.expectSilence(t, 150*time.Millisecond, "after the rename")
+
+	// A reconnect says hello with the new name and attaches with it.
+	room1.lost()
+	<-rd.dialed
+	if h := room2.expectHello(t); h.Nickname != "juho" {
+		t.Errorf("hello after the rename = %q, want juho", h.Nickname)
+	}
+	room2.relayWrite(t, stateMsg(t, wire.RoomState{Seq: 9, YourID: 5, Code: "TuhisRoom"}))
+	if c := room2.expectCommand(t, wire.RoomCommandAttach, 3*time.Second); c.Label != "juho" {
+		t.Errorf("attach after the reconnect = %+v, want label juho", c)
+	}
+}
+
+// Joined but not (yet) attached — the attach proof is still incomplete —
+// a rename is only a rename: no Attach may go out with half a proof.
+func TestSetNicknameBeforeAttachIsOnlyARename(t *testing.T) {
+	sess := newFakeSession()
+	media := newFakeMedia()
+	room := newFakeRoomSession()
+	rd := newRoomDialer().accept(room)
+
+	states := make(chan wire.RoomState, 4)
+	s := New(Config{RelayURL: "https://relay.example", Room: "TuhisRoom"},
+		Callbacks{OnRoomState: func(st wire.RoomState) { states <- st }},
+		roomTestOpts(sess, media, rd))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Stop()
+
+	<-rd.dialed
+	if h := room.expectHello(t); h.Nickname != DefaultNickname {
+		t.Errorf("hello nickname = %q, want the default", h.Nickname)
+	}
+	room.relayWrite(t, stateMsg(t, wire.RoomState{Seq: 1, YourID: 2, Code: "TuhisRoom"}))
+	select {
+	case <-states:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnRoomState never fired")
+	}
+	sess.incoming <- announceStream(tokenMsg(t)) // the ID never lands
+
+	s.SetNickname("juho")
+	if c := room.expectCommand(t, wire.RoomCommandSetNickname, 3*time.Second); c.Nickname != "juho" {
+		t.Errorf("rename = %+v", c)
+	}
+	room.expectSilence(t, 150*time.Millisecond, "after a rename with no attach proof")
+
+	// A blank name falls back to the default, never an empty hello.
+	s.SetNickname("  ")
+	if c := room.expectCommand(t, wire.RoomCommandSetNickname, 3*time.Second); c.Nickname != DefaultNickname {
+		t.Errorf("blank rename = %+v, want the default nickname", c)
 	}
 }
