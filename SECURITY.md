@@ -1,8 +1,9 @@
 # Security Policy
 
 `gawk` is a self-hosted, low-latency game-streaming stack (a Go relay, a web
-app, native Linux and Windows broadcasters, and an optional per-session
-diagnostics service). It is maintained by a single person as a side project,
+app, native Linux and Windows broadcasters, an optional per-session
+diagnostics service, and an optional moderation portal). It is maintained by a
+single person as a side project,
 on a best-effort basis. This document explains how to report a vulnerability
 and what you can reasonably expect in return.
 
@@ -67,7 +68,7 @@ maintainer make the call.
 ## Supported versions
 
 This is a solo project, so security fixes land on the **latest release of each
-component only**. The five components version independently
+component only**. The six components version independently
 ([SemVer](https://semver.org/); see `.release-please-manifest.json`):
 
 | Component                 | Supported            |
@@ -77,6 +78,7 @@ component only**. The five components version independently
 | `gawk-broadcast`           | Latest release only  |
 | `gawk-broadcast-windows`   | Latest release only  |
 | `gawk-telemetry`           | Latest release only  |
+| `gawk-admin`               | Latest release only  |
 
 Older tags do not receive backports. If you run a pinned version, plan to
 upgrade to pick up a fix. If a fix ever needs to reach an older line, that will
@@ -95,7 +97,8 @@ it is not yet available, please wait for it rather than disclosing publicly.)
 
 To help triage quickly, please include what you can:
 
-- The affected component and version (relay / app / broadcaster / telemetry).
+- The affected component and version (relay / app / broadcaster / telemetry /
+  admin).
 - A description of the issue and its impact under the threat model above.
 - Reproduction steps or a proof of concept (a minimal repro, config, or the
   relevant wire bytes are ideal).
