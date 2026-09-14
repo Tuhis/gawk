@@ -64,7 +64,7 @@ feature set exists).
 | R43 | [Relay refusal reasons the browser can see](#r43--relay-refusal-reasons-the-browser-can-see) | 🔧 designed 2026-09-05, not started (RR1–RR5) — non-mandatory follow-up to R42: a refused `CONNECT`'s HTTP status is invisible to the WebTransport JS API, so every relay refusal reads "connection rejected" in the browser; answer policy refusals after the upgrade with new close codes 4008–4011 + a reason, keep rate limiting pre-upgrade ([docs/45](45-relay-refusal-reasons.md)) |
 | R44 | [App icons for the native broadcasters](#r44--app-icons-for-the-native-broadcasters) | 💡 proposed 2026-09-10, not started — no design doc yet; packaging + GUI only, zero wire/relay/pipeline change |
 | R45 | [Update notification and auto-update for the desktop broadcasters](#r45--update-notification-and-auto-update-for-the-desktop-broadcasters) | 💡 proposed 2026-09-10, not started — no design doc yet; phase 1 notify-only, phase 2 install-in-place gated on release signing. Its version source (the per-component `latest.json` on the `badges` branch) shipped with R46 |
-| R46 | [Download section on the project site](#r46--download-section-on-the-project-site) | ✅ **implemented 2026-09-14** (DL1–DL4 in one PR): the attach jobs publish `releases/<component>/latest.json` to the `badges` branch after a successful attach, and the landing page's new Download section reads it — newest version, date, size, direct link and sha256 per platform, with a working no-script fallback ([docs/46](docs/46-site-downloads.md)) |
+| R46 | [Download section on the project site](#r46--download-section-on-the-project-site) | ✅ **implemented 2026-09-14** (DL1–DL4 in one PR): the attach jobs publish `releases/<component>/latest.json` to the `badges` branch after a successful attach, and the landing page's new Download section reads it — newest version, date, size, direct link and sha256 per platform, with a working no-script fallback. DL5 (same day): the SPA's landing footer links to the site and straight to that section ([docs/46](docs/46-site-downloads.md)) |
 
 ---
 
@@ -3873,13 +3873,14 @@ them to look for.
   release pages.
 
 **Chunks**: DL1 writer + action + attach wiring; DL2 seeding; DL3 the
-section; DL4 docs. Design and acceptance criteria:
+section; DL4 docs; DL5 the SPA landing footer's About / Get the app links
+(docs/46 §6). Design and acceptance criteria:
 [docs/46](docs/46-site-downloads.md).
 
-**Status**: implemented 2026-09-14 (DL1–DL4 in one PR). DL2 runs once the
-PR is merged: `manifest.py build` against the downloaded
-`gawk-broadcast/v1.13.0` and `gawk-broadcast-windows/v1.3.0` assets,
-pushed to `badges`.
+**Status**: implemented 2026-09-14 (DL1–DL4 in one PR, DL5 in a second).
+DL2 done the same day, after the merge: `manifest.py build` against the
+downloaded `gawk-broadcast/v1.13.0` and `gawk-broadcast-windows/v1.3.0`
+assets, pushed to `badges`; the live section fills in.
 
 ---
 
