@@ -70,8 +70,8 @@ func run() error {
 		roomNew      = fs.Bool("room-new", false, "create a new room from this broadcast instead of joining one (prints the code and the room-view link)")
 		roomAttach   = fs.String("room-attach-secret", "", "a static room's attach secret (env GAWK_ROOM_ATTACH_SECRET)")
 		roomCreate   = fs.String("room-create-secret", "", "the relay's room-create secret, if it requires one for -room-new (env GAWK_ROOM_CREATE_SECRET; never saved)")
-		roomLabel    = fs.String("room-label", "", "label for this broadcast's tile in the room (env GAWK_ROOM_LABEL)")
-		nickname     = fs.String("nick", "", "nickname in the room's roster (env GAWK_NICK; default "+engine.DefaultNickname+")")
+		roomLabel    = fs.String("room-label", "", "deprecated and ignored: the nickname (-nick) names the tile now")
+		nickname     = fs.String("nick", "", "your name in the room: the roster entry and the tile label (env GAWK_NICK; default "+engine.DefaultNickname+")")
 		roomCreateNC = "" // the create secret is per run: it never lands in the config file
 	)
 	fs.Usage = func() {
@@ -112,8 +112,11 @@ func run() error {
 	// the create secret is the relay operator's invite and stays per run.
 	applyString(&cfg.Room, *room, os.Getenv("GAWK_ROOM"))
 	applyString(&cfg.RoomAttachSecret, *roomAttach, os.Getenv("GAWK_ROOM_ATTACH_SECRET"))
-	applyString(&cfg.RoomLabel, *roomLabel, os.Getenv("GAWK_ROOM_LABEL"))
 	applyString(&cfg.Nickname, *nickname, os.Getenv("GAWK_NICK"))
+	// The tile label was its own flag until the nickname became the one
+	// name (the web broadcaster's rule). Still parsed so existing scripts
+	// keep running; it changes nothing.
+	roomLabelSet := *roomLabel != "" || os.Getenv("GAWK_ROOM_LABEL") != ""
 	applyString(&roomCreateNC, *roomCreate, os.Getenv("GAWK_ROOM_CREATE_SECRET"))
 	// -audio defaults to true, so only an explicit -audio=false is an
 	// override: a bare run must not clear a config that says disableAudio.
@@ -166,6 +169,9 @@ func run() error {
 		level = slog.LevelDebug
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	if roomLabelSet {
+		log.Warn("the nickname names the tile now; -room-label / GAWK_ROOM_LABEL is ignored (use -nick)")
+	}
 	// Which build is talking, in every log someone pastes into a bug report.
 	log.Info("gawk-broadcast", "version", version.String())
 
@@ -225,7 +231,6 @@ func run() error {
 			RoomNew:          *roomNew,
 			RoomAttachSecret: cfg.RoomAttachSecret,
 			RoomCreateSecret: roomCreateNC,
-			RoomLabel:        cfg.RoomLabel,
 			Nickname:         cfg.Nickname,
 		},
 		engine.Callbacks{

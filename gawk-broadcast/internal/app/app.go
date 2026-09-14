@@ -61,10 +61,12 @@ type Session interface {
 	Stop() error
 	Stats() engine.Stats
 	BroadcastID() string
-	// R42 rooms: join / mint / leave while live (docs/44 §4.8).
+	// R42 rooms: join / mint / leave while live (docs/44 §4.8), and the
+	// one name (roster nickname = tile label) changed while live.
 	JoinRoom(code, attachSecret string) error
-	NewRoom(label, createSecret string) error
+	NewRoom(createSecret string) error
 	LeaveRoom()
+	SetNickname(nick string)
 }
 
 // RoomStatus is the room card's state (R42, docs/44 §4.8 "GUI card").
@@ -585,7 +587,6 @@ func (a *App) NewRoom() {
 	a.mu.Lock()
 	sess := a.sess
 	live := a.state == StateLive
-	label := a.cfg.RoomLabel
 	if live {
 		a.room = RoomInfo{Status: RoomJoining}
 	}
@@ -595,10 +596,29 @@ func (a *App) NewRoom() {
 		return
 	}
 	go func() {
-		if err := sess.NewRoom(label, ""); err != nil {
+		if err := sess.NewRoom(""); err != nil {
 			a.roomFailed(err)
 		}
 	}()
+}
+
+// SetNickname changes the one name this broadcaster carries in a room — the
+// roster entry and the tile label alike, the web broadcaster page's rule.
+// Persisted like the other room fields; while live the running engine is
+// told too, so the rename reaches the room the broadcast is in right now.
+func (a *App) SetNickname(nick string) {
+	nick = strings.TrimSpace(nick)
+	a.mu.Lock()
+	a.cfg.Nickname = nick
+	sess := a.sess
+	live := a.state == StateLive
+	a.mu.Unlock()
+	if err := a.cfg.Save(); err != nil {
+		a.log.Warn("could not save config", "err", err)
+	}
+	if live && sess != nil {
+		sess.SetNickname(nick)
+	}
 }
 
 // DetachRoom leaves the room and forgets it: the next start attaches to
@@ -783,7 +803,6 @@ func (a *App) run(ctx context.Context, id string) {
 			// on every resume (the engine owns that latch).
 			Room:             a.cfg.Room,
 			RoomAttachSecret: a.cfg.RoomAttachSecret,
-			RoomLabel:        a.cfg.RoomLabel,
 			Nickname:         a.cfg.Nickname,
 		},
 		engine.Callbacks{

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"image"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 
 	gawkapp "github.com/Tuhis/gawk/gawk-broadcast/internal/app"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/pwproto"
 )
 
@@ -139,7 +142,6 @@ func TestRoomCardIsWiredAndIdle(t *testing.T) {
 		AppURL:           "https://gawk.example.com",
 		Room:             "TuhisRoom",
 		RoomAttachSecret: "k",
-		RoomLabel:        "Desk",
 		Nickname:         "tuhis",
 	}
 	if got := idleFrames(t, cfg, 20); got != 0 {
@@ -151,19 +153,19 @@ func TestRoomCardIsWiredAndIdle(t *testing.T) {
 	if u.openURL == nil {
 		t.Fatal("the Open-room-view seam is not installed")
 	}
-	if u.roomCode.Text() != "TuhisRoom" || u.roomSecret.Text() != "k" || u.roomLabel.Text() != "Desk" || u.nickname.Text() != "tuhis" {
-		t.Errorf("room fields not pre-filled from the config: %q %q %q %q",
-			u.roomCode.Text(), u.roomSecret.Text(), u.roomLabel.Text(), u.nickname.Text())
+	if u.roomCode.Text() != "TuhisRoom" || u.roomSecret.Text() != "k" || u.nickname.Text() != "tuhis" {
+		t.Errorf("room fields not pre-filled from the config: %q %q %q",
+			u.roomCode.Text(), u.roomSecret.Text(), u.nickname.Text())
 	}
 
-	// Save normalises a pasted link to its code and persists label + nick,
-	// so a room typed but not yet attached still attaches on the next start.
+	// Save normalises a pasted link to its code and persists the nickname
+	// (the one name: roster entry and tile label), so a room typed but not
+	// yet attached still attaches on the next start.
 	u.roomCode.SetText("https://gawk.example.com/#/room/AB2CD3?rt=ff00")
-	u.roomLabel.SetText(" Couch ")
 	u.nickname.SetText(" juho ")
 	u.save()
-	if cfg.Room != "AB2CD3" || cfg.RoomLabel != "Couch" || cfg.Nickname != "juho" {
-		t.Errorf("config after save = room %q label %q nick %q", cfg.Room, cfg.RoomLabel, cfg.Nickname)
+	if cfg.Room != "AB2CD3" || cfg.Nickname != "juho" {
+		t.Errorf("config after save = room %q nick %q", cfg.Room, cfg.Nickname)
 	}
 	if got := a.Room(); got.Status != gawkapp.RoomNone || got.Configured != "AB2CD3" {
 		t.Errorf("idle card = %+v, want not-in-a-room with the configured code", got)
@@ -221,3 +223,117 @@ func TestIdleWindowSchedulesNoRedraws(t *testing.T) {
 		}
 	})
 }
+
+// The nickname is the one field that stays editable while live: an edit is
+// persisted at once and, once typing has paused, applied through the app
+// (pushed to the running engine, which renames the participant and relabels
+// the tile) — no Save click, no restart. Not per keystroke: each send is a
+// SetNickname plus a re-Attach at the relay and a roster event at every
+// participant.
+func TestNicknameEditWhileLiveRenamesThroughTheApp(t *testing.T) {
+	cfg := &config.Config{AppURL: "https://gawk.example.com", Nickname: "tuhis"}
+	cfg.SetPath(filepath.Join(t.TempDir(), "broadcast.json"))
+	renames := make(chan string, 4)
+	fs := &renamingSession{renames: renames}
+	a := gawkapp.New(gawkapp.Options{
+		Config: cfg,
+		NewSession: func(engine.Config, engine.Callbacks, engine.Options) gawkapp.Session {
+			return fs
+		},
+	})
+	u := newUI(a, cfg)
+	a.Start(context.Background(), "")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if s, _ := a.State(); s == gawkapp.StateLive {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("never went live")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var (
+		r   input.Router
+		ops op.Ops
+	)
+	gtx := layout.Context{
+		Ops: &ops, Now: time.Unix(0, 0), Source: r.Source(),
+		Metric: unit.Metric{PxPerDp: 1, PxPerSp: 1}, Constraints: layout.Exact(image.Pt(460, 560)),
+	}
+	// Two keystrokes' worth of edits: persisted immediately, nothing sent.
+	u.nickname.SetText("juh")
+	u.handleEvents(gtx)
+	gtx.Now = gtx.Now.Add(200 * time.Millisecond)
+	u.nickname.SetText("juho")
+	u.handleEvents(gtx)
+	if cfg.Nickname != "juho" {
+		t.Errorf("config nickname = %q, want juho (persisted on edit)", cfg.Nickname)
+	}
+	select {
+	case got := <-renames:
+		t.Fatalf("the rename %q was sent while still typing", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// Still inside the pause after the last edit: nothing yet.
+	gtx.Now = gtx.Now.Add(nickDebounce / 2)
+	u.handleEvents(gtx)
+	select {
+	case got := <-renames:
+		t.Fatalf("the rename %q was sent before the pause ended", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// The pause ends: exactly one send, with the final text.
+	gtx.Now = gtx.Now.Add(nickDebounce)
+	u.handleEvents(gtx)
+	select {
+	case got := <-renames:
+		if got != "juho" {
+			t.Errorf("engine renamed to %q, want juho", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the nickname edit never reached the engine after the pause")
+	}
+	// Unchanged text is not re-sent on later frames.
+	gtx.Now = gtx.Now.Add(time.Second)
+	u.handleEvents(gtx)
+	select {
+	case got := <-renames:
+		t.Errorf("a later event pass re-sent the rename %q", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// Enter flushes without waiting: the editor's Submit event.
+	u.nickname.SetText("tuhis")
+	u.handleEvents(gtx)
+	select {
+	case got := <-renames:
+		t.Fatalf("the rename %q was sent before Enter", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	u.nickDue = gtx.Now // what a SubmitEvent does inside applyNickname
+	u.handleEvents(gtx)
+	select {
+	case got := <-renames:
+		if got != "tuhis" {
+			t.Errorf("engine renamed to %q on Enter, want tuhis", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Enter did not flush the nickname")
+	}
+}
+
+// renamingSession is the app's Session seam reduced to what the nickname
+// test needs: it goes live at once and records SetNickname.
+type renamingSession struct {
+	renames chan string
+}
+
+func (f *renamingSession) Start(context.Context) error        { return nil }
+func (f *renamingSession) Stop() error                        { return nil }
+func (f *renamingSession) Stats() engine.Stats                { return engine.Stats{} }
+func (f *renamingSession) BroadcastID() string                { return "K7M2QP" }
+func (f *renamingSession) JoinRoom(code, secret string) error { return nil }
+func (f *renamingSession) NewRoom(createSecret string) error  { return nil }
+func (f *renamingSession) LeaveRoom()                         {}
+func (f *renamingSession) SetNickname(nick string)            { f.renames <- nick }

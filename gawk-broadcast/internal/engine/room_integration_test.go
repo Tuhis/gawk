@@ -115,8 +115,9 @@ func (p *roomProbe) waitEvent(t *testing.T, what string, want func(wire.RoomEven
 }
 
 // The RM6 acceptance criterion against the real relay: a native broadcaster
-// mints a room from its broadcast, and its attachment — with its label — is
-// what a second participant's RoomState lists. Then the engine's own detach
+// mints a room from its broadcast, and its attachment — labelled with the
+// nickname, the one name a broadcaster carries — is what a second
+// participant's RoomState lists. Then the engine's own detach
 // and re-join, and finally the broadcaster stopping: the attachment stays,
 // flagged away (live=false), for the grace — never removed by a stop.
 func TestRoomMintAttachDetachAgainstRealRelay(t *testing.T) {
@@ -127,7 +128,7 @@ func TestRoomMintAttachDetachAgainstRealRelay(t *testing.T) {
 	roomErrs := make(chan error, 8)
 	sess := engine.New(
 		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig(),
-			RoomNew: true, RoomLabel: "Desk", Nickname: "native"},
+			RoomNew: true, Nickname: "native"},
 		engine.Callbacks{
 			OnRoomCreated: func(code, tok string) { created <- [2]string{code, tok} },
 			OnRoomError:   func(err error) { roomErrs <- err },
@@ -165,8 +166,8 @@ func TestRoomMintAttachDetachAgainstRealRelay(t *testing.T) {
 	if st.Flags&wire.RoomStateFlagDynamic == 0 {
 		t.Errorf("room is not flagged dynamic: flags=%#x", st.Flags)
 	}
-	if len(st.Attachments) != 1 || st.Attachments[0].BroadcastID != id || st.Attachments[0].Label != "Desk" || !st.Attachments[0].Live {
-		t.Fatalf("second participant sees attachments %+v, want the native broadcast %s labelled Desk, live", st.Attachments, id)
+	if len(st.Attachments) != 1 || st.Attachments[0].BroadcastID != id || st.Attachments[0].Label != "native" || !st.Attachments[0].Live {
+		t.Fatalf("second participant sees attachments %+v, want the native broadcast %s labelled with the nickname, live", st.Attachments, id)
 	}
 	// The native participant is in the roster and flagged streaming: the
 	// engine's ownership Attach after the mint may land before or after the
@@ -231,7 +232,7 @@ func TestRoomStaticAttachSecretAgainstRealRelay(t *testing.T) {
 	roomErrs := make(chan error, 8)
 	sess := engine.New(
 		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig(),
-			Room: "TuhisRoom", RoomAttachSecret: "wrong", RoomLabel: "Desk"},
+			Room: "TuhisRoom", RoomAttachSecret: "wrong", Nickname: "Desk"},
 		engine.Callbacks{OnRoomError: func(err error) { roomErrs <- err }},
 		engine.Options{MediaFactory: src.factory()},
 	)

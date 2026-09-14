@@ -116,8 +116,8 @@ func run() error {
 	room := flag.String("room", "", "attach this broadcast to an existing room (code or slug)")
 	roomAttach := flag.String("room-attach-secret", "", "a static room's attach secret, for -room")
 	roomCreate := flag.String("room-create-secret", "", "the relay's room-create secret, for -room-new (env GAWK_ROOM_CREATE_SECRET)")
-	label := flag.String("label", "pubsim", "the broadcast's tile label in the room")
-	nick := flag.String("nick", "pubsim", "nickname in the room's roster")
+	label := flag.String("label", "", "deprecated and ignored: the nickname (-nick) names the tile now")
+	nick := flag.String("nick", "pubsim", "the simulated broadcaster's name in the room: roster entry and tile label")
 	flag.Parse()
 	if *roomCreate == "" {
 		*roomCreate = os.Getenv("GAWK_ROOM_CREATE_SECRET")
@@ -152,6 +152,9 @@ func run() error {
 		level = slog.LevelDebug
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	if *label != "" {
+		log.Warn("the nickname names the tile now; -label is ignored (use -nick)")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -180,7 +183,6 @@ func run() error {
 			RoomNew:          *roomNew,
 			RoomAttachSecret: *roomAttach,
 			RoomCreateSecret: *roomCreate,
-			RoomLabel:        *label,
 			Nickname:         *nick,
 		},
 		engine.Callbacks{

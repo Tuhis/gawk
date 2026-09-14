@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/quic-go/webtransport-go"
 
@@ -302,7 +304,6 @@ type roomClient struct {
 	code         string // the configured code (join) or the minted display code
 	attachSecret string
 	createSecret string
-	label        string
 	creatorToken string // hex; set by a mint, presented on reconnect
 	stream       RoomStream
 	sess         RoomSession
@@ -314,9 +315,17 @@ type roomClient struct {
 	lastSeq     uint32
 	endReason   uint8
 	wmu         sync.Mutex
+
+	// rmu guards the rename coalescer (SetNickname): renaming while its
+	// goroutine runs, renameDirty when a newer name arrived meanwhile. Its
+	// own lock, so SetNickname can poke it under s.mu (rc.mu is taken
+	// before s.mu elsewhere, never after).
+	rmu         sync.Mutex
+	renaming    bool
+	renameDirty bool
 }
 
-func (s *Session) newRoomClient(parent context.Context, mode roomMode, code, attachSecret, label, createSecret string) *roomClient {
+func (s *Session) newRoomClient(parent context.Context, mode roomMode, code, attachSecret, createSecret string) *roomClient {
 	ctx, cancel := context.WithCancel(parent)
 	return &roomClient{
 		s:            s,
@@ -330,7 +339,6 @@ func (s *Session) newRoomClient(parent context.Context, mode roomMode, code, att
 		code:         code,
 		attachSecret: attachSecret,
 		createSecret: createSecret,
-		label:        label,
 	}
 }
 
@@ -339,9 +347,9 @@ func (s *Session) newRoomClient(parent context.Context, mode roomMode, code, att
 func (s *Session) startConfiguredRoom(ctx context.Context) {
 	switch {
 	case s.cfg.RoomNew:
-		s.startRoom(ctx, roomModeNew, "", "", s.cfg.RoomLabel, s.cfg.RoomCreateSecret)
+		s.startRoom(ctx, roomModeNew, "", "", s.cfg.RoomCreateSecret)
 	case s.cfg.Room != "":
-		s.startRoom(ctx, roomModeJoin, s.cfg.Room, s.cfg.RoomAttachSecret, s.cfg.RoomLabel, "")
+		s.startRoom(ctx, roomModeJoin, s.cfg.Room, s.cfg.RoomAttachSecret, "")
 	}
 }
 
@@ -349,14 +357,14 @@ func (s *Session) startConfiguredRoom(ctx context.Context) {
 // Under s.mu: a stopped session must not spawn goroutines, and the room
 // goroutine joins s.wg so Stop waits for it — the Add is safe because a live
 // session always has its supervisor in the group.
-func (s *Session) startRoom(ctx context.Context, mode roomMode, code, attachSecret, label, createSecret string) error {
+func (s *Session) startRoom(ctx context.Context, mode roomMode, code, attachSecret, createSecret string) error {
 	s.mu.Lock()
 	if s.stopped || s.cancel == nil {
 		s.mu.Unlock()
 		return errors.New("engine: session is not live")
 	}
 	old := s.room
-	rc := s.newRoomClient(ctx, mode, code, attachSecret, label, createSecret)
+	rc := s.newRoomClient(ctx, mode, code, attachSecret, createSecret)
 	s.room = rc
 	s.wg.Add(1)
 	s.mu.Unlock()
@@ -379,29 +387,61 @@ func (s *Session) JoinRoom(code, attachSecret string) error {
 	}
 	s.LeaveRoom()
 	s.mu.Lock()
-	ctx, label := s.roomCtx, s.cfg.RoomLabel
+	ctx := s.roomCtx
 	s.mu.Unlock()
 	if ctx == nil {
 		return errors.New("engine: session is not live")
 	}
-	return s.startRoom(ctx, roomModeJoin, code, attachSecret, label, "")
+	return s.startRoom(ctx, roomModeJoin, code, attachSecret, "")
 }
 
 // NewRoom mints a dynamic room from the live broadcast (once its ID and
 // resume token are known) and joins it as creator. The code and creator
-// token arrive through OnRoomCreated.
-func (s *Session) NewRoom(label, createSecret string) error {
+// token arrive through OnRoomCreated. The tile is labelled with the
+// nickname, as everywhere else.
+func (s *Session) NewRoom(createSecret string) error {
 	s.LeaveRoom()
 	s.mu.Lock()
 	ctx := s.roomCtx
-	if label == "" {
-		label = s.cfg.RoomLabel
-	}
 	s.mu.Unlock()
 	if ctx == nil {
 		return errors.New("engine: session is not live")
 	}
-	return s.startRoom(ctx, roomModeNew, "", "", label, createSecret)
+	return s.startRoom(ctx, roomModeNew, "", "", createSecret)
+}
+
+// SetNickname changes the one name this broadcaster carries in a room — the
+// roster nickname and the tile label alike, the web broadcaster page's rule
+// (docs/44 §4.9). It applies to every later hello, reconnect and mint, and
+// to the room the session is in right now: a SetNickname command renames
+// the participant, and if our broadcast is attached an idempotent re-attach
+// follows so the tile is relabelled (the relay refreshes the label on a
+// re-attach). Blank falls back to DefaultNickname.
+//
+// The wire work happens off the caller: a control-stream write blocks until
+// the relay reads it, and the shells call this from their UI loops.
+// Consecutive renames coalesce — the goroutine re-reads the name before
+// every send, so the relay always ends on the latest one.
+func (s *Session) SetNickname(nick string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.Nickname = strings.TrimSpace(nick)
+	rc := s.room
+	if rc == nil || s.stopped || s.cancel == nil {
+		return
+	}
+	rc.rmu.Lock()
+	rc.renameDirty = true
+	start := !rc.renaming
+	rc.renaming = true
+	rc.rmu.Unlock()
+	if start {
+		s.wg.Add(1) // a live session always has its supervisor in the group
+		go func() {
+			defer s.wg.Done()
+			rc.renameLoop()
+		}()
+	}
 }
 
 // LeaveRoom detaches the broadcast from its room (when attached) and closes
@@ -487,6 +527,49 @@ func (rc *roomClient) reattach() {
 	rc.gen++
 	rc.mu.Unlock()
 	rc.maybeAttach()
+}
+
+// renameLoop sends the current nickname on the live connection (if any)
+// and, when our broadcast is attached on it, re-attaches so the tile label
+// follows — once per SetNickname burst, until no newer name is pending.
+// Nothing is sent before the snapshot: the hello of the next connection
+// carries the name anyway, and an Attach needs the full proof. Bumping the
+// generation only when attachedGen == gen keeps the latch's "once per
+// generation" rule intact.
+func (rc *roomClient) renameLoop() {
+	for {
+		rc.rmu.Lock()
+		if !rc.renameDirty {
+			rc.renaming = false
+			rc.rmu.Unlock()
+			return
+		}
+		rc.renameDirty = false
+		rc.rmu.Unlock()
+
+		rc.mu.Lock()
+		connected := rc.stream != nil && rc.haveState
+		attached := connected && rc.attachedGen == rc.gen
+		if attached {
+			rc.gen++
+		}
+		rc.mu.Unlock()
+		if !connected || rc.ctx.Err() != nil {
+			continue
+		}
+		msg, err := wire.AppendRoomCommand(nil, wire.RoomCommand{Kind: wire.RoomCommandSetNickname, Nickname: rc.s.nickname()})
+		if err != nil {
+			rc.s.cb.roomError(&RoomError{Op: "join", Err: fmt.Errorf("bad nickname command: %w", err)})
+			continue
+		}
+		if err := rc.send(msg); err != nil {
+			rc.log.Debug("room rename not sent", "err", err)
+			continue
+		}
+		if attached {
+			rc.maybeAttach()
+		}
+	}
 }
 
 // stop ends the client: cancels its context (which unblocks the read loop
@@ -597,7 +680,7 @@ func (rc *roomClient) dialURL() (rawURL, op string, err error) {
 	relayURL := rc.s.relayURL()
 	if rc.mode == roomModeNew {
 		id, tok := rc.s.credentials()
-		u, err := RoomNewURL(relayURL, id, tok, rc.label, rc.createSecret)
+		u, err := RoomNewURL(relayURL, id, tok, rc.s.tileLabel(), rc.createSecret)
 		return u, "new", err
 	}
 	u, err := RoomURL(relayURL, rc.code, rc.attachSecret, rc.creatorToken)
@@ -819,14 +902,13 @@ func (rc *roomClient) maybeAttach() {
 		return
 	}
 	rc.attachedGen = rc.gen
-	label := rc.label
 	rc.mu.Unlock()
 
 	msg, err := wire.AppendRoomCommand(nil, wire.RoomCommand{
 		Kind:        wire.RoomCommandAttach,
 		BroadcastID: id,
 		ResumeToken: raw,
-		Label:       label,
+		Label:       rc.s.tileLabel(),
 	})
 	if err != nil {
 		rc.s.cb.roomError(&RoomError{Op: "join", Err: fmt.Errorf("bad attach command: %w", err)})
@@ -945,6 +1027,24 @@ func (s *Session) nickname() string {
 		return s.cfg.Nickname
 	}
 	return DefaultNickname
+}
+
+// tileLabel is the attachment label: the nickname, bounded by the wire's
+// label limit (the nickname's own bound is the smaller of the two today,
+// but the wire may move either).
+func (s *Session) tileLabel() string {
+	return truncateBytes(s.nickname(), wire.MaxRoomLabelLen)
+}
+
+// truncateBytes cuts s to at most n bytes on a rune boundary.
+func truncateBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 func (s *Session) relayURL() string {

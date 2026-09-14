@@ -126,11 +126,10 @@ func TestAttachRoomIdleThenLive(t *testing.T) {
 func TestNewRoomAndDetach(t *testing.T) {
 	fs := &fakeSession{}
 	a, cfg := liveApp(t, fs)
-	cfg.RoomLabel = "Desk"
 
 	a.NewRoom()
 	waitFor(t, func() bool { return len(fs.rooms()) == 1 }, "the mint")
-	if got := fs.rooms(); !reflect.DeepEqual(got, []string{"new:Desk"}) {
+	if got := fs.rooms(); !reflect.DeepEqual(got, []string{"new"}) {
 		t.Errorf("engine calls = %v", got)
 	}
 	fs.cb.OnRoomCreated("AB2CD3", strings.Repeat("ab", 16))
@@ -200,5 +199,40 @@ func TestRoomViewLinkGrants(t *testing.T) {
 	}
 	if got := roomCodeFromInput("TuhisRoom"); got != "TuhisRoom" {
 		t.Errorf("roomCodeFromInput(slug) = %q", got)
+	}
+}
+
+// One name, as on the web broadcaster page: the nickname is the roster
+// entry and the tile label, and it can change while live — persisted like
+// every other room field, and pushed to the running engine, which renames
+// the participant and relabels the tile. Idle, it is only persisted.
+func TestSetNicknamePersistsAndRenamesLive(t *testing.T) {
+	fs := &fakeSession{}
+	a, cfg := testApp(t, fs, notify.Discard{})
+
+	a.SetNickname(" juho ")
+	if cfg.Nickname != "juho" {
+		t.Errorf("nickname after an idle rename = %q, want juho (trimmed)", cfg.Nickname)
+	}
+	if got := fs.rooms(); len(got) != 0 {
+		t.Errorf("engine calls while idle = %v, want none", got)
+	}
+	reloaded, err := config.Load(cfg.Path())
+	if err != nil || reloaded.Nickname != "juho" {
+		t.Errorf("nickname not persisted: %q, %v", reloaded.Nickname, err)
+	}
+
+	a.Start(context.Background(), "")
+	waitFor(t, func() bool { s, _ := a.State(); return s == StateLive }, "going live")
+	if fs.cfg.Nickname != "juho" {
+		t.Errorf("engine started with nickname %q, want juho", fs.cfg.Nickname)
+	}
+	a.SetNickname("tuhis")
+	waitFor(t, func() bool { return len(fs.rooms()) == 1 }, "the live rename")
+	if got := fs.rooms(); !reflect.DeepEqual(got, []string{"nick:tuhis"}) {
+		t.Errorf("engine calls = %v", got)
+	}
+	if cfg.Nickname != "tuhis" {
+		t.Errorf("nickname after the live rename = %q", cfg.Nickname)
 	}
 }
