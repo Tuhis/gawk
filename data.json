@@ -34,7 +34,7 @@
     },
     "gawk-broadcast-windows": {
       "component": "gawk-broadcast-windows",
-      "covered": 6760,
+      "covered": 6762,
       "label": "broadcast-windows",
       "pct": 81.4,
       "total": 8304,
