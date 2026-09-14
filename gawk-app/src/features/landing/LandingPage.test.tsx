@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { LandingPage } from './LandingPage';
-import { SOURCE_URL } from '../../config';
+import { SITE_DOWNLOAD_URL, SITE_URL, SOURCE_URL } from '../../config';
 
 afterEach(cleanup);
 
@@ -37,5 +37,31 @@ describe('LandingPage footer', () => {
     expect(SOURCE_URL).toMatch(/^https:\/\/github\.com\//);
     expect(source.getAttribute('target')).toBe('_blank');
     expect(source.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+
+  // R46 DL5 (docs/46 §6): the project site and, separately, its Download
+  // section — the native apps are the one thing a user of this UI may need
+  // that the UI itself cannot give them. Same quiet weight as the other two.
+  it('links to the project site and straight to the app downloads, in new tabs', () => {
+    render(<LandingPage />);
+    const about = screen.getByRole('link', { name: 'About' });
+    expect(about.getAttribute('href')).toBe(SITE_URL);
+    expect(SITE_URL).toMatch(/^https:\/\/[^/]+\/gawk\/$/);
+    const download = screen.getByRole('link', { name: 'Get the app' });
+    expect(download.getAttribute('href')).toBe(SITE_DOWNLOAD_URL);
+    expect(SITE_DOWNLOAD_URL).toBe(`${SITE_URL}#download`);
+    for (const a of [about, download]) {
+      expect(a.getAttribute('target')).toBe('_blank');
+      expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+    }
+  });
+
+  it('orders the footer: about, download, terms, source', () => {
+    render(<LandingPage />);
+    const names = screen
+      .getAllByRole('link')
+      .filter((a) => a.closest('footer'))
+      .map((a) => a.textContent?.trim());
+    expect(names).toEqual(['About', 'Get the app', 'Terms of use', 'GitHub']);
   });
 });

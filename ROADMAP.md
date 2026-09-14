@@ -63,7 +63,8 @@ feature set exists).
 | R42 | [Rooms](#r42--rooms) | ✅ **implemented 2026-09-04** (RM1–RM9 in one PR): wire types 0x13–0x16 + close code 4007 in all four mirrors, single-pod relay + `Room` CRD cluster mode (home-pod lease, proxy, adoption, janitor, kind assert), SPA room view (grid / focus / hide videos, people panel, broadcaster Room panel), native attach on Linux and Windows, admin static-room CRUD + webhooks, telemetry room key. `-rooms` defaults off and off is byte-identical. Open: the §10 manual pass on the reference deployment ([docs/44](docs/44-rooms.md) §11) |
 | R43 | [Relay refusal reasons the browser can see](#r43--relay-refusal-reasons-the-browser-can-see) | 🔧 designed 2026-09-05, not started (RR1–RR5) — non-mandatory follow-up to R42: a refused `CONNECT`'s HTTP status is invisible to the WebTransport JS API, so every relay refusal reads "connection rejected" in the browser; answer policy refusals after the upgrade with new close codes 4008–4011 + a reason, keep rate limiting pre-upgrade ([docs/45](45-relay-refusal-reasons.md)) |
 | R44 | [App icons for the native broadcasters](#r44--app-icons-for-the-native-broadcasters) | 💡 proposed 2026-09-10, not started — no design doc yet; packaging + GUI only, zero wire/relay/pipeline change |
-| R45 | [Update notification and auto-update for the desktop broadcasters](#r45--update-notification-and-auto-update-for-the-desktop-broadcasters) | 💡 proposed 2026-09-10, not started — no design doc yet; phase 1 notify-only, phase 2 install-in-place gated on release signing |
+| R45 | [Update notification and auto-update for the desktop broadcasters](#r45--update-notification-and-auto-update-for-the-desktop-broadcasters) | 💡 proposed 2026-09-10, not started — no design doc yet; phase 1 notify-only, phase 2 install-in-place gated on release signing. Its version source (the per-component `latest.json` on the `badges` branch) shipped with R46 |
+| R46 | [Download section on the project site](#r46--download-section-on-the-project-site) | ✅ **implemented 2026-09-14** (DL1–DL4 in one PR): the attach jobs publish `releases/<component>/latest.json` to the `badges` branch after a successful attach, and the landing page's new Download section reads it — newest version, date, size, direct link and sha256 per platform, with a working no-script fallback. DL5 (same day): the SPA's landing footer links to the site and straight to that section ([docs/46](docs/46-site-downloads.md)) |
 
 ---
 
@@ -3837,7 +3838,49 @@ same release packaging and INSTALL docs) and the two should land as
 separate PRs.
 
 **Status**: proposed 2026-09-10, not started — no design doc yet; chunk
-prefix `AU` reserved.
+prefix `AU` reserved. **2026-09-14**: the version source sketched above
+now exists — R46 ships `releases/<component>/latest.json` on the `badges`
+branch, written by the attach jobs after a successful attach, with the
+shape in docs/46 D5 (version, tag, date, every asset's size and sha256).
+Phase 1 needs only the client half.
+
+---
+
+## R46 — Download section on the project site
+
+**Goal**: the landing page at https://tuhis.github.io/gawk/ offers the
+native broadcasters directly — one card per platform with the newest
+version, its date and size, a download button and the file's SHA-256 — and
+keeps itself current across releases without anyone touching `site/`.
+
+**Why this is wanted**: the native apps are the one part of gawk a user has
+to download, and the site did not offer them. The releases page holds six
+components' worth of tags, so "get the Linux app" meant knowing which of
+them to look for.
+
+**Owner decisions (2026-09-14)**:
+
+- **Version source: a per-component `latest.json` on the `badges` branch**
+  — the manifest R45 sketched, shipped now, written by the attach job that
+  already uploads the binaries and only after that upload succeeded. Not the
+  GitHub API (`releases/latest` names the wrong component; the list endpoint
+  is rate-limited per visitor), and not a Pages-time render (the release
+  commit lands minutes before its assets exist).
+- **On the landing page**, between "Run it" and "Browser support", plus a
+  nav link. No hero call-to-action: the hero stays on the browser-first pitch.
+- **The first two manifests are seeded from the shipped assets**, not from
+  a backfill rebuild, so the checksums stay those of the binaries on the
+  release pages.
+
+**Chunks**: DL1 writer + action + attach wiring; DL2 seeding; DL3 the
+section; DL4 docs; DL5 the SPA landing footer's About / Get the app links
+(docs/46 §6). Design and acceptance criteria:
+[docs/46](docs/46-site-downloads.md).
+
+**Status**: implemented 2026-09-14 (DL1–DL4 in one PR, DL5 in a second).
+DL2 done the same day, after the merge: `manifest.py build` against the
+downloaded `gawk-broadcast/v1.13.0` and `gawk-broadcast-windows/v1.3.0`
+assets, pushed to `badges`; the live section fills in.
 
 ---
 

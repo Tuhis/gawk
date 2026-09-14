@@ -23,6 +23,7 @@
         <a href="#pipeline" class="hide-sm">Architecture</a>
         <a href="#latency" class="hide-sm">Latency</a>
         <a href="#run">Run it</a>
+        <a href="#download">Download</a>
         <a href="docs.html">Docs</a>
         <a class="btn-outline-sm" href="https://github.com/Tuhis/gawk" target="_blank" rel="noopener">GitHub</a>
       </div>
@@ -221,6 +222,35 @@
     </div>
   </section>
 
+  <section id="download" class="section">
+    <h2>Get the app</h2>
+    <p class="section-lead">Broadcasting doesn't have to happen in a browser tab. The native apps use your graphics card directly, can share one window along with just that app's audio, and on Linux they're the only way to broadcast with hardware encoding. Viewers still need nothing but a browser.</p>
+
+    <div class="cards cards-2 dl-cards">
+      <div class="card dl" data-dl="gawk-broadcast">
+        <div class="dl-hd">
+          <h3>Linux</h3>
+          <span class="dl-tag">x86-64 · tar.gz</span>
+        </div>
+        <p class="dl-ver" data-dl-version>Latest release</p>
+        <a class="btn btn-primary dl-btn" data-dl-link href="https://github.com/Tuhis/gawk/releases?q=gawk-broadcast%2F" target="_blank" rel="noopener">Download for Linux <span aria-hidden="true">↓</span></a>
+        <p>Unpack it and run <code>gawk-broadcast-gui</code>. Needs glibc 2.34 or newer, a Wayland session and a hardware H.264 encoder; the INSTALL.md inside has the checklist and the list of shared libraries.</p>
+        <p class="dl-sum" data-dl-sum hidden><span>sha256</span><code data-dl-sha></code></p>
+      </div>
+      <div class="card dl" data-dl="gawk-broadcast-windows">
+        <div class="dl-hd">
+          <h3>Windows</h3>
+          <span class="dl-tag">x86-64 · portable .exe</span>
+        </div>
+        <p class="dl-ver" data-dl-version>Latest release</p>
+        <a class="btn btn-primary dl-btn" data-dl-link href="https://github.com/Tuhis/gawk/releases?q=gawk-broadcast-windows" target="_blank" rel="noopener">Download for Windows <span aria-hidden="true">↓</span></a>
+        <p>One file, nothing to install. It's unsigned, so SmartScreen will object the first time: <em>More info → Run anyway</em>, or untick <em>Unblock</em> in the file's properties. Needs Windows 10 or newer and a hardware H.264 encoder.</p>
+        <p class="dl-sum" data-dl-sum hidden><span>sha256</span><code data-dl-sha></code></p>
+      </div>
+    </div>
+    <p class="section-note">Neither binary is signed, so the checksum is the only integrity check you get. Each release also ships a <code>SHA256SUMS</code> file: <code>sha256sum -c SHA256SUMS</code> on Linux, <code>Get-FileHash</code> on Windows. Older versions and release notes are on the <a href="https://github.com/Tuhis/gawk/releases" target="_blank" rel="noopener">releases page</a>.</p>
+  </section>
+
   <section class="section">
     <h2>Browser support</h2>
     <p class="section-lead">Chromium first, and if a browser can't join, the app says so on load instead of failing quietly.</p>
@@ -242,7 +272,7 @@
         <span class="notes">It refuses the connection outright (<a href="https://github.com/Tuhis/gawk/blob/main/BUGS.md" target="_blank" rel="noopener">the details</a>), so the app checks on load and tells you. An iPhone playback path is built and documented, but nothing can reach it until this is fixed.</span>
       </div>
     </div>
-    <p>Broadcasting doesn't have to happen in a browser at all. There are <a href="https://github.com/Tuhis/gawk/blob/main/docs/19-linux-native-broadcaster.md" target="_blank" rel="noopener">native apps for Linux and Windows</a> that get more out of your graphics card and can share a single window along with just that app's audio. On Linux they're the way to broadcast, since browsers can't use the graphics card to encode there.</p>
+    <p>Broadcasting doesn't have to happen in a browser at all: the <a href="#download">native apps for Linux and Windows</a> get more out of your graphics card, and on Linux they're the way to broadcast, since browsers can't use the graphics card to encode there. The <a href="https://github.com/Tuhis/gawk/blob/main/docs/19-linux-native-broadcaster.md" target="_blank" rel="noopener">design notes</a> explain why.</p>
   </section>
 
   <section class="section">

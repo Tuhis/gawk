@@ -520,6 +520,7 @@ jobs:
           mv SHA256SUMS assets/
           ls -l assets
       - uses: ./.github/actions/attach-release-assets
+        id: attach
         with:
           component: gawk-broadcast-windows
           dir: assets
@@ -527,6 +528,18 @@ jobs:
           # there. On a backfill it is the commit `build` compiled, and the gate
           # still refuses unless the component's tag points at exactly it.
           sha: ${{ needs.build.outputs.sha }}
+      # R46 (docs/46): the "newest gawk-broadcast-windows" pointer the project
+      # site's Download section reads. Only after a real attach — a manifest
+      # for a release with no EXE on it would be a download button to a 404.
+      - uses: ./.github/actions/publish-release-manifest
+        if: steps.attach.outputs.attached == 'true'
+        with:
+          component: gawk-broadcast-windows
+          dir: assets
+          primary: gawk-broadcast-windows-x86_64.exe
+          tag: ${{ steps.attach.outputs.tag }}
+          published-at: ${{ steps.attach.outputs.published_at }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   # R41 (docs/43): this component's half of the badges branch.
   #

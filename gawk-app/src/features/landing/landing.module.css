@@ -106,8 +106,14 @@
 }
 
 /* R23: a quiet footer pinned below the card — the terms link, and since the
-   repository went public the source link beside it. Wraps on narrow viewports
-   rather than colliding with the card. */
+   repository went public the source link beside it; R46 adds the site links.
+   Wraps on narrow viewports rather than colliding with the card.
+
+   width: max-content, because an absolutely positioned box centred by
+   left:50% + translate only gets the right half of the viewport as its
+   shrink-to-fit width — with four links that wrapped at 400px and the top
+   line landed on the server chip. max-content lets the row use the full
+   max-width before flex-wrap takes over. */
 .foot {
   position: absolute;
   z-index: 1;
@@ -119,6 +125,7 @@
   justify-content: center;
   flex-wrap: wrap;
   gap: 0.5rem;
+  width: max-content;
   max-width: 92vw;
   font-size: var(--fs-xs);
 }

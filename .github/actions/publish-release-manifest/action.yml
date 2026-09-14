@@ -1,0 +1,120 @@
+# Publishes `releases/<component>/latest.json` to the orphan `badges` branch
+# (R46, docs/46) — the per-component "newest release" pointer that the project
+# site's Download section reads, and that the desktop apps' update check (R45)
+# will read after it.
+#
+# Why a static file on a branch and not the GitHub API: `releases/latest` is
+# meaningless in a monorepo whose six components tag separately (it names
+# whichever was created last), and the list endpoint is rate-limited per
+# visitor IP. raw.githubusercontent.com serves the branch over TLS with
+# permissive CORS and no quota, which is exactly what a public page and an
+# anonymous client both need. The branch already exists for the coverage
+# badges (docs/43 D1); this adds a second directory to it, nothing more.
+#
+# Runs right after attach-release-assets, and ONLY when that action attached
+# — the caller gates on its `attached` output. The manifest describes the
+# files in the same asset directory the attach action just uploaded, so the
+# checksums are those of the bytes on the release page.
+#
+# The push can race the coverage-badges writer on a release commit (ci.yml and
+# broadcast-windows.yml both publish to this branch, from four jobs). Hence the
+# same fetch-rewrite-retry loop as .github/actions/publish-coverage-badges:
+# this action's whole change is one file, so "rewrite" is a copy.
+name: Publish release manifest
+description: Write releases/<component>/latest.json to the badges branch for the release just attached.
+
+inputs:
+  component:
+    description: release-please component name, exactly as keyed in .release-please-manifest.json
+    required: true
+  dir:
+    description: the directory of files that were attached to the release
+    required: true
+  primary:
+    description: the asset name the download button points at (must be a file in `dir`)
+    required: true
+  tag:
+    description: the release tag the assets were attached to (attach-release-assets' `tag` output)
+    required: true
+  published-at:
+    description: the release's published_at (attach-release-assets' `published_at` output)
+    required: true
+  token:
+    description: Token used to push the badges branch
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: "3.14"
+    - name: Build the manifest
+      shell: bash
+      env:
+        COMPONENT: ${{ inputs.component }}
+        ASSET_DIR: ${{ inputs.dir }}
+        PRIMARY: ${{ inputs.primary }}
+        TAG: ${{ inputs.tag }}
+        PUBLISHED_AT: ${{ inputs.published-at }}
+      run: |
+        set -euo pipefail
+        # The version comes from the workspace manifest, the same place the
+        # attach gate resolved the tag from — on a backfill the caller has
+        # already swapped in the released commit's copy.
+        version=$(python3 -c 'import json,os,sys; print(json.load(open(".release-please-manifest.json"))[os.environ["COMPONENT"]])')
+        python3 tools/releases/manifest.py build \
+          --component "$COMPONENT" --version "$version" --tag "$TAG" \
+          --published-at "$PUBLISHED_AT" --asset-dir "$ASSET_DIR" --primary "$PRIMARY" \
+          --repo "$GITHUB_REPOSITORY" \
+          --out "$RUNNER_TEMP/release-manifest/latest.json"
+        cat "$RUNNER_TEMP/release-manifest/latest.json"
+    - name: Push it to the badges branch
+      shell: bash
+      env:
+        COMPONENT: ${{ inputs.component }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        checkout="${RUNNER_TEMP}/badges-branch-release"
+        remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+        manifest="$RUNNER_TEMP/release-manifest/latest.json"
+
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        # The coverage writer creates the branch on its first run and it has
+        # run on every push to main since R41, so an absent branch here is a
+        # broken repository rather than a first run — fail loudly instead of
+        # creating a second orphan history that its writer would then fight.
+        git clone --depth 1 --branch badges --quiet "$remote" "$checkout"
+
+        publish() {
+          mkdir -p "$checkout/releases/$COMPONENT"
+          cp "$manifest" "$checkout/releases/$COMPONENT/latest.json"
+        }
+        publish
+
+        cd "$checkout"
+        git add -A
+        # A re-run for the same release writes the same bytes (the tool's
+        # output is byte-stable), so the branch does not accrue empty commits.
+        if git diff --cached --quiet; then
+          echo "Manifest unchanged — no commit."
+          exit 0
+        fi
+
+        for attempt in 1 2 3 4 5; do
+          git commit -qm "chore(releases): $COMPONENT latest.json for ${GITHUB_SHA:0:7}"
+          if git push -q origin badges; then
+            echo "Published releases/$COMPONENT/latest.json"
+            exit 0
+          fi
+          echo "Push rejected (attempt $attempt) — folding in the concurrent update."
+          git fetch -q --depth 1 origin badges
+          git reset -q --hard FETCH_HEAD
+          publish
+          git add -A
+        done
+        echo "::error::could not push the badges branch after 5 attempts"
+        exit 1

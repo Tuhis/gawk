@@ -183,6 +183,23 @@ strong { color: var(--fg); font-weight: 500; }
 .term p { margin: 0; padding: 0 18px 20px; font-size: 13.5px; line-height: 1.65; color: var(--fg-2); }
 .term p code { font-family: var(--mono); color: var(--fg); }
 
+/* Download cards (R46). The version line, checksum and the button's target
+   are filled in by site.js from the per-component release manifest; without
+   it the card still works — the button goes to the releases page. */
+.dl-cards { margin-top: 36px; }
+.dl-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.dl-hd h3 { font-size: 20px; }
+.dl-tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-3); }
+.dl-ver { margin: 8px 0 0 !important; font-family: var(--mono); font-size: 13px; color: var(--fg-2) !important; }
+.dl-ver a { color: var(--fg-2); text-decoration: underline; text-decoration-color: var(--line-3); }
+.dl-ver a:hover { color: var(--fg); }
+.dl-btn { margin-top: 18px; }
+.dl p code { font-family: var(--mono); color: var(--fg); }
+.dl-sum { display: flex; align-items: baseline; gap: 10px; margin: 16px 0 0 !important; font-family: var(--mono); font-size: 11.5px; color: var(--fg-3) !important; }
+.dl-sum span { letter-spacing: 0.14em; text-transform: uppercase; flex: none; }
+.dl-sum code { color: var(--fg-3); overflow-wrap: anywhere; }
+.section-note code { font-family: var(--mono); color: var(--fg-2); }
+
 /* Browser support table */
 .table { margin-top: 32px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
 .row { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.8fr) minmax(0, 2.6fr); padding: 20px 22px; border-bottom: 1px solid var(--line); align-items: center; }

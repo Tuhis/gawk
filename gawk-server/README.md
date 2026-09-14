@@ -136,10 +136,11 @@ helm upgrade --install gawk-server oci://ghcr.io/tuhis/charts/gawk-server \
   --version <X.Y.Z> -n gawk -f my-values.yaml
 ```
 
-Values that must be set per install: `certificate.dnsNames`,
-`config.allowedOrigins` (the frontend's origin) and `imagePullSecrets` —
-see the comments in
+Values that must be set per install: `certificate.dnsNames` and
+`config.allowedOrigins` (the frontend's origin) — see the comments in
 [`deploy/charts/gawk-server/values.yaml`](deploy/charts/gawk-server/values.yaml).
+(`imagePullSecrets` is only needed if you mirror the images to a private
+registry; the published ones are public.)
 Full runbook: [`../docs/05-resilience-deploy.md`](../docs/05-resilience-deploy.md).
 
 `replicas` defaults to `1`; the chart refuses `replicas > 1` unless
