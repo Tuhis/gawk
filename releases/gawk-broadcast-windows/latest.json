@@ -1,0 +1,46 @@
+{
+  "asset": {
+    "name": "gawk-broadcast-windows-x86_64.exe",
+    "sha256": "7113744b70144ad29c6d5728b04588354e09c2c94928568fe0f7d3bf8c7e7b6e",
+    "size": 23937536,
+    "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.3.0/gawk-broadcast-windows-x86_64.exe"
+  },
+  "assets": {
+    "BUILD-INFO.txt": {
+      "sha256": "71664b1574ba7b7c00175a4c37b6d7bab2c6a32ecf8d31bfa04f510b0656dc0b",
+      "size": 403,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.3.0/BUILD-INFO.txt"
+    },
+    "INSTALL.md": {
+      "sha256": "3c30bb0e277fcb4a29e9aa7e8fb8dd1894ba4626aec03c633b0e9183e0ea48b9",
+      "size": 3711,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.3.0/INSTALL.md"
+    },
+    "LICENSE": {
+      "sha256": "31d34ab1effd9d99ecbc4feeb527b28d4624ddeaff93fd86c136fa0934ddce4f",
+      "size": 11344,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.3.0/LICENSE"
+    },
+    "SHA256SUMS": {
+      "sha256": "6866dbf63e6b7b77e21061859afe100a0ef6bb59cab2ee684d8262da0198c6eb",
+      "size": 431,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.3.0/SHA256SUMS"
+    },
+    "THIRD-PARTY-NOTICES.md": {
+      "sha256": "c55b6f9a21be1161ca0af42ccece4c47b5c87b1a9bac95ce404748441ceebe38",
+      "size": 357257,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.3.0/THIRD-PARTY-NOTICES.md"
+    },
+    "gawk-broadcast-windows-x86_64.exe": {
+      "sha256": "7113744b70144ad29c6d5728b04588354e09c2c94928568fe0f7d3bf8c7e7b6e",
+      "size": 23937536,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.3.0/gawk-broadcast-windows-x86_64.exe"
+    }
+  },
+  "component": "gawk-broadcast-windows",
+  "published_at": "2026-09-10T19:54:23Z",
+  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-windows/v1.3.0",
+  "schema": 1,
+  "tag": "gawk-broadcast-windows/v1.3.0",
+  "version": "1.3.0"
+}
