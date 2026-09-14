@@ -1089,8 +1089,8 @@ Postgres. Glass stays intact for every other broadcast on the fleet.
 All eight chunks landed on the same day the design did. This section is the
 record of what the design could not have known: §11.1 lists every deviation
 from §4 with its reason, §11.2 says what is verified and by what, §11.3 is the
-one pass that is still manual — **and it is the milestone-closing one** — and
-§11.4 says where to record its outcome.
+manual milestone-closing pass — **run and passed on 2026-09-14** — and §11.4
+says where its outcome is recorded.
 
 Per-chunk verification is not restated here: each chunk's acceptance-criteria
 cell in §9 is its contract, and the tests that discharge it live next to the
@@ -1208,16 +1208,38 @@ Automated, and gating every PR:
   map) — but the RBAC half shares the kind tier's gating: it runs on release
   PRs and dispatch, so a Role regression reaches `main` before it is caught,
   exactly like the 4006/451 assertions above.
-- **Everything in §11.3.**
 
-### 11.3 Still manual — the milestone-closing pass, step by step
+Manual, run once on the reference deployment (§11.3):
+
+- **The milestone-closing pass — run 2026-09-14, all eleven steps, no
+  deviations.** Portal on the phone in **Firefox** through the Keycloak
+  redirect flow (Keycloak current major, public client + PKCE, client role
+  `operator`); the broadcast killed was the **native Windows broadcaster**
+  (`gawk-broadcast-windows`). Everything behaved as §11.3 specifies: the
+  broadcast listed with working watch and telemetry deep links; the kill ended
+  every viewer with the moderator message, distinct from "broadcast ended";
+  the broadcaster stopped and did **not** auto-resume, and its reclaim was
+  refused with the native's *banned* wording (D15); the ntfy push arrived
+  carrying neither a raw broadcast ID nor an IP; `kubectl get bans` showed the
+  cooldown ban with its printer columns and a re-mint succeeded once it
+  expired; the IP ban refused a fresh mint from that address while a
+  broadcaster on a different address was unaffected; the unban restored
+  publishing and emptied `get bans`; the events view carried every action with
+  actor, reason, timestamp and its webhook deliveries; and removing the
+  `operator` role 403'd the portal at the next token refresh, i.e. at the
+  access-token lifetime (D17).
+
+### 11.3 The milestone-closing manual pass — done 2026-09-14
 
 **This is the verification §10 describes, and nothing else can stand in for
-it.** It needs the reference deployment, a real identity provider, a real
-broadcast and a phone — none of which a CI job or a working session can supply.
-It is not a known defect; it is the last mile.
+it** — it needs the reference deployment, a real identity provider, a real
+broadcast and a phone, none of which a CI job or a working session can supply.
+**It was run on 2026-09-14 and passed in full; the outcome is recorded in
+§11.2.** Nothing here is outstanding.
 
-Run it in this order and record the outcome where §11.4 says.
+The steps are kept as the re-run recipe: nothing automated covers this seam, so
+a change to the portal's auth flow, the kill path or the webhook payload is
+re-verified by running them again and amending §11.2.
 
 **Setup (once).**
 
@@ -1261,13 +1283,13 @@ Run it in this order and record the outcome where §11.4 says.
     refresh** — that horizon *is* the access-token lifetime (D17), and seeing it
     once is worth more than the paragraph that says so.
 
-**If a step fails**, the finding belongs in §11.2's "not covered" list or in
-`BUGS.md`, and — if it turns out to be a browser or Kubernetes behaviour rather
-than a gawk one — in `docs/gotchas.md`.
+**If a step fails on a re-run**, the finding belongs in §11.2's "not covered"
+list or in `BUGS.md`, and — if it turns out to be a browser or Kubernetes
+behaviour rather than a gawk one — in `docs/gotchas.md`.
 
-### 11.4 Where to record the outcome
+### 11.4 Where the outcome is recorded
 
-When the pass completes, add what was observed to §11.2 (client, device, IdP,
-and anything that behaved differently from the expectation above), strike §11.3,
-and move the `ROADMAP.md` R39 row from 🔧 to ✅ — that pass is the only thing
-still holding it.
+§11.2's "Manual, run once on the reference deployment" entry: client, device,
+IdP and anything that behaved differently from the expectations above. The
+2026-09-14 pass closed R39 — its `ROADMAP.md` row is ✅. A re-run amends that
+entry rather than adding a second one.
