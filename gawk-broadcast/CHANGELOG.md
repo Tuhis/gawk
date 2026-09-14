@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast/v1.13.0...gawk-broadcast/v1.14.0) (2026-09-14)
+
+
+### Features
+
+* **broadcasters:** nickname names the room tile and can change while live ([#316](https://github.com/Tuhis/gawk/issues/316)) ([067bc3d](https://github.com/Tuhis/gawk/commit/067bc3df1f01796f002ac55d6b67bb3f80e971f5))
+
 ## [1.13.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast/v1.12.0...gawk-broadcast/v1.13.0) (2026-09-10)
 
 
