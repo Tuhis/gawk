@@ -82,6 +82,8 @@ Reading all forty-six is not the point. Three give you the shape of the system:
 | [`28`](28-native-broadcaster-audio.md) | R25 — Native broadcaster audio |
 | [`39`](39-linux-app-sharing.md) | R35 — Single-app sharing (window + app audio) on Linux |
 | [`38`](38-windows-native-broadcaster.md) | R34 — Native **Windows** broadcaster |
+| [`47`](47-desktop-update-check.md) | R45 — Update notification for both desktop broadcasters (launch-time check of the R46 manifest) |
+| [`48`](48-signed-in-place-update.md) | R47 — Signed in-place update for both desktop broadcasters (minisign over `SHA256SUMS`, rename-swap install) |
 
 ## Audio
 
