@@ -113,6 +113,8 @@ Reading all forty-six is not the point. Three give you the shape of the system:
 | [`41`](41-local-dev-stack.md) | R38 — Local dev stack: `docker compose up`, two certificate lanes |
 | [`42`](42-admin-moderation-portal.md) | R39 — Admin portal for moderation: fleet-wide kill, durable bans, `gawk-admin` |
 | [`43`](43-coverage-reporting.md) | R41 — Test coverage measurement, per-component floors and badges |
+| [`49`](49-admin-openapi.md) | R48 — OpenAPI contract for the `gawk-admin` API: served, drift-checked, with an embedded Swagger UI page |
+| [`50`](50-rooms-read-api.md) | R49 — Rooms read API and room activity events: the `rooms-reader` role, `/internal/admin/rooms`, opt-in webhooks |
 
 ## Conventions
 
