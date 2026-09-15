@@ -66,6 +66,8 @@ feature set exists).
 | R45 | [Update notification for the desktop broadcasters](#r45--update-notification-for-the-desktop-broadcasters) | 🔧 designed 2026-09-15, not started (AU1–AU5) — a launch-time GET of the R46 `latest.json`, a dismissible "vX.Y.Z available" line under the version badge in both GUIs and one CLI log line; opt-out via config, `-no-update-check`, `GAWK_NO_UPDATE_CHECK=1`. Installing from inside the app is R47 ([docs/47](docs/47-desktop-update-check.md)) |
 | R46 | [Download section on the project site](#r46--download-section-on-the-project-site) | ✅ **implemented 2026-09-14** (DL1–DL4 in one PR): the attach jobs publish `releases/<component>/latest.json` to the `badges` branch after a successful attach, and the landing page's new Download section reads it — newest version, date, size, direct link and sha256 per platform, with a working no-script fallback. DL5 (same day): the SPA's landing footer links to the site and straight to that section ([docs/46](docs/46-site-downloads.md)) |
 | R47 | [Signed in-place update for the desktop broadcasters](#r47--signed-in-place-update-for-the-desktop-broadcasters) | 🔧 designed 2026-09-15, not started (SU1–SU5) — **depends on R45** and on a release signing key: minisign over `SHA256SUMS` in both attach jobs, two public keys compiled in, verify-then-rename-swap install on click, never while live ([docs/48](docs/48-signed-in-place-update.md)) |
+| R48 | [OpenAPI contract for the `gawk-admin` API](#r48--openapi-contract-for-the-gawk-admin-api) | 🔧 designed 2026-09-15, not started (OA1–OA4) — a hand-written OpenAPI 3.1 document for `/api/v1` and the outbound webhooks, embedded and served at `GET /api/v1/openapi.json`, held to the code by a two-way Go drift test and `redocly lint`, with an embedded Swagger UI page in the portal. The contract is the deliverable; no client is shipped ([docs/49](docs/49-admin-openapi.md)) |
+| R49 | [Rooms read API and room activity events](#r49--rooms-read-api-and-room-activity-events) | 🔧 designed 2026-09-15, not started (RA1–RA5) — **depends on R48** and R42: `GET /api/v1/rooms/{name}` with the live roster and attachment state (a new read-only `/internal/admin/rooms` on the relay ops listener, scraped by relayscan), a `rooms-reader` role for client-credentials service identities such as the planned Mumble bot, and opt-in `room.attached` / `room.detached` / `room.participant_joined` / `room.participant_left` webhook events with a per-webhook event filter ([docs/50](docs/50-rooms-read-api.md)) |
 
 ---
 
@@ -3920,6 +3922,114 @@ exist today.
 
 **Status**: designed 2026-09-15, not started — chunks SU1–SU5 in
 [docs/48](docs/48-signed-in-place-update.md).
+
+---
+
+## R48 — OpenAPI contract for the `gawk-admin` API
+
+**Goal**: `gawk-admin`'s `/api/v1` — and the signed webhooks it sends —
+described by a machine-readable OpenAPI 3.1 document that lives in the
+repository, is served by every deployment at `GET /api/v1/openapi.json`,
+and cannot drift from the handlers without failing `go test`. External
+software integrates against the document, not against the Go.
+
+**Why this is wanted**: the API has been real since R39 — bearer-JWT
+authenticated, a fixed error envelope, cursor pagination, three-outcome
+mutations — but its only consumer is the SPA in the same binary and its
+only description is the route table in docs/42 §4.7, which has already
+drifted from what shipped. The first external consumer is R49's Mumble
+bot, in its own repository; "read the handlers" is not a contract it can
+be built against.
+
+**Owner decisions (2026-09-15)**:
+
+- **Hand-written, in the repository, reviewed like code** — no generator,
+  no annotations, no new Go dependency in the auth-bearing module. The
+  three-outcome mutation grades and the "secrets never appear" rules are
+  prose either way.
+- **Served by `gawk-admin`**, unauthenticated like `/auth/config`, with
+  the deployment's base URL substituted; **an embedded Swagger UI page**
+  behind the normal login, with "try it out" against the in-memory token.
+- **The contract is the whole deliverable.** gawk ships no client package;
+  a consumer generates or hand-writes one from the document.
+
+**Scope sketch** ([docs/49](docs/49-admin-openapi.md) §2): the route
+registration becomes a declared table so a Go test can walk it in both
+directions — every route documented, every documented operation
+registered, every error `code` and event `type` in the enums, every
+example decoding into its handler's type with unknown fields refused;
+`redocly lint` in the `admin-ui` CI job; webhooks under OpenAPI 3.1's
+`webhooks` with the `X-Gawk-*` headers and the signature construction;
+`x-gawk-roles` per operation; `x-gawk-sensitive` marks on every response
+that may carry a raw ID, code or IP; `info.version` kept by release-please;
+an additive-only-within-v1 promise stated in the document itself; a
+self-hosting recipe for a service identity on the client-credentials grant.
+
+**Non-goals**: a generated client; describing the relay's
+`/internal/admin/*` (its contract is the `adminapi` Go package) or the
+telemetry ingest; a `/api/v2`; JSON-Schema-validating every response in
+tests (a dependency for a check the example round-trip mostly covers).
+
+**Status**: designed 2026-09-15, not started — chunks OA1–OA4 in
+[docs/49](docs/49-admin-openapi.md). R49 is written to depend on it.
+
+---
+
+## R49 — Rooms read API and room activity events
+
+**Goal**: external software — first, a Mumble bot in its own repository —
+can ask `gawk-admin` which rooms are live, who is in one and what is
+streaming there, receive a join link to post, and be told when a stream
+attaches or a person arrives. Two `GET`s, a read-only role, and four
+opt-in webhook events.
+
+**Why this is wanted**: R42 named a Mumble bridge as the first room
+integration and reserved hooks for it (docs/44 §4.11). Before a bridge,
+the useful and cheap thing is a bot that reads room state and posts into
+the voice channel — but today the only machine-readable room data is the
+`Room` CR, which by design never holds the roster, and the only API role
+is `operator`, which can kill and ban.
+
+**Owner decisions (2026-09-15)**:
+
+- **Full detail: attachments and the live roster.** The roster exists
+  only in the home pod, so the relay gains one read-only route on its
+  credential-gated ops listener (`/internal/admin/rooms`, the docs/42 §4.5
+  pattern) and relayscan scrapes it with the same 2 s cache.
+- **A new `rooms-reader` role**, granted to an OIDC client-credentials
+  service identity, that reaches exactly the two room `GET`s and `/me`;
+  the operator role is not handed to a bot.
+- **The raw room code and a join link are returned to that role** — a
+  scoped relaxation of docs/44 D16 on docs/42 D8's terms; posting a way in
+  is the bot's purpose.
+- **Poll now, plus webhooks**: `room.attached`, `room.detached`,
+  `room.participant_joined`, `room.participant_left`, produced by a
+  leader-side watcher diffing the merged view, **opt-in per webhook** so
+  the ops pager on an operator's phone never buzzes on a join.
+- **The bot lives elsewhere**; gawk ships the API and its OpenAPI
+  description (R48), nothing bot-specific.
+
+**Scope sketch** ([docs/50](docs/50-rooms-read-api.md) §2): `adminapi`
+room types shared between relay and portal (reuse, never mirror);
+`GET /api/v1/rooms` as summaries with counts and `live`,
+`GET /api/v1/rooms/{name}` with `attachments[]` and `participants[]`
+(nickname, kind, streaming, speaking, the reserved identity); a `Room`
+that no reachable pod is home for renders from the CR with `live: false`;
+a `category` column on events with a 72 h retention for activity rows and
+an `events` filter on webhooks (one expand-only migration); `nickname` and
+`label` as the only new webhook-safe payload keys — never a broadcast ID,
+room code or IP; the portal's Rooms view shows the same roster.
+
+**Non-goals**: the bridge itself, voice, chat; a server-push feed from
+`gawk-admin` (SSE noted as the next step if polling proves insufficient);
+a public relay route for bots; a static bot token; a generic `reader`
+role over every `GET`; storing the roster in the CR.
+
+**Depends on**: R48 (the document and its drift check exist before these
+routes land) and R42.
+
+**Status**: designed 2026-09-15, not started — chunks RA1–RA5 in
+[docs/50](docs/50-rooms-read-api.md).
 
 ---
 
