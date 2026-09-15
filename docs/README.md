@@ -115,6 +115,7 @@ Reading all forty-six is not the point. Three give you the shape of the system:
 | [`43`](43-coverage-reporting.md) | R41 — Test coverage measurement, per-component floors and badges |
 | [`49`](49-admin-openapi.md) | R48 — OpenAPI contract for the `gawk-admin` API: served, drift-checked, with an embedded Swagger UI page |
 | [`50`](50-rooms-read-api.md) | R49 — Rooms read API and room activity events: the `rooms-reader` role, `/internal/admin/rooms`, opt-in webhooks |
+| [`51`](51-relay-event-bus.md) | R50 — Relay event bus over NATS JetStream: lifecycle, participant, attachment and viewer events, consumed by `gawk-admin`; nothing polls |
 
 ## Conventions
 
