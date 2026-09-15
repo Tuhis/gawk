@@ -63,8 +63,9 @@ feature set exists).
 | R42 | [Rooms](#r42--rooms) | ✅ **implemented 2026-09-04** (RM1–RM9 in one PR): wire types 0x13–0x16 + close code 4007 in all four mirrors, single-pod relay + `Room` CRD cluster mode (home-pod lease, proxy, adoption, janitor, kind assert), SPA room view (grid / focus / hide videos, people panel, broadcaster Room panel), native attach on Linux and Windows, admin static-room CRUD + webhooks, telemetry room key. `-rooms` defaults off and off is byte-identical. Open: the §10 manual pass on the reference deployment ([docs/44](docs/44-rooms.md) §11) |
 | R43 | [Relay refusal reasons the browser can see](#r43--relay-refusal-reasons-the-browser-can-see) | 🔧 designed 2026-09-05, not started (RR1–RR5) — non-mandatory follow-up to R42: a refused `CONNECT`'s HTTP status is invisible to the WebTransport JS API, so every relay refusal reads "connection rejected" in the browser; answer policy refusals after the upgrade with new close codes 4008–4011 + a reason, keep rate limiting pre-upgrade ([docs/45](45-relay-refusal-reasons.md)) |
 | R44 | [App icons for the native broadcasters](#r44--app-icons-for-the-native-broadcasters) | 💡 proposed 2026-09-10, not started — no design doc yet; packaging + GUI only, zero wire/relay/pipeline change |
-| R45 | [Update notification and auto-update for the desktop broadcasters](#r45--update-notification-and-auto-update-for-the-desktop-broadcasters) | 💡 proposed 2026-09-10, not started — no design doc yet; phase 1 notify-only, phase 2 install-in-place gated on release signing. Its version source (the per-component `latest.json` on the `badges` branch) shipped with R46 |
+| R45 | [Update notification for the desktop broadcasters](#r45--update-notification-for-the-desktop-broadcasters) | 🔧 designed 2026-09-15, not started (AU1–AU5) — a launch-time GET of the R46 `latest.json`, a dismissible "vX.Y.Z available" line under the version badge in both GUIs and one CLI log line; opt-out via config, `-no-update-check`, `GAWK_NO_UPDATE_CHECK=1`. Installing from inside the app is R47 ([docs/47](docs/47-desktop-update-check.md)) |
 | R46 | [Download section on the project site](#r46--download-section-on-the-project-site) | ✅ **implemented 2026-09-14** (DL1–DL4 in one PR): the attach jobs publish `releases/<component>/latest.json` to the `badges` branch after a successful attach, and the landing page's new Download section reads it — newest version, date, size, direct link and sha256 per platform, with a working no-script fallback. DL5 (same day): the SPA's landing footer links to the site and straight to that section ([docs/46](docs/46-site-downloads.md)) |
+| R47 | [Signed in-place update for the desktop broadcasters](#r47--signed-in-place-update-for-the-desktop-broadcasters) | 🔧 designed 2026-09-15, not started (SU1–SU5) — **depends on R45** and on a release signing key: minisign over `SHA256SUMS` in both attach jobs, two public keys compiled in, verify-then-rename-swap install on click, never while live ([docs/48](docs/48-signed-in-place-update.md)) |
 
 ---
 
@@ -3745,16 +3746,18 @@ prefix `IC` reserved.
 
 ---
 
-## R45 — Update notification and auto-update for the desktop broadcasters
+## R45 — Update notification for the desktop broadcasters
 
 **Goal**: a broadcaster running `gawk-broadcast` or `gawk-broadcast-windows`
-learns that a newer release exists without visiting GitHub, and — in a
-second phase — can install it from inside the app. Today there is no
-version check anywhere: both apps show their own build in the window (R14
-V9, R34 WB9) and report the bare release to telemetry (R28), but nothing
-ever compares that against what is published. docs/38 lists auto-update as
-an explicit non-goal (OD6) and pencils in "a version-check toast" as a
-later convenience; this is that item, with its scope decided.
+learns that a newer release exists without visiting GitHub. Today there is
+no version check anywhere: both apps show their own build in the window
+(R14 V9, R34 WB9) and report the bare release to telemetry (R28), but
+nothing ever compares that against what is published. docs/38 lists
+auto-update as an explicit non-goal (OD6) and pencils in "a version-check
+toast" as a later convenience; this is that item, with its scope decided.
+Installing the update from inside the app was originally this milestone's
+second phase and is now **R47**, split out 2026-09-15 because it is gated
+on a release signing key that does not exist yet.
 
 **Why this is wanted**: the desktop apps are distributed as fixed-name
 GitHub Release assets that a friend downloads once and never again. Every
@@ -3766,18 +3769,10 @@ is the one place a release does not reach.
 
 **Owner decisions (2026-09-10)**:
 
-- **Phased: notify first, install-in-place later.** Phase 1 ships the
+- **Notify first, install-in-place later.** This milestone ships the
   check plus an "update available" notice in both GUIs (and a one-line
-  hint in the CLI's startup log) linking to the release page. Phase 2
-  — download, verify, replace, relaunch — is a separate set of chunks
-  gated on one prerequisite: **a release signing key**. Both binaries are
-  unsigned by design (docs/38 D17; the Linux release job's own comment),
-  which is acceptable for a manual download with a checksum but not for
-  code that replaces itself over a TLS-only trust chain. Phase 2 therefore
-  introduces detached minisign/ed25519 signatures over the release
-  assets, produced in CI from a repository secret, with the public key
-  compiled into the apps; D17's "unsigned by design" is revisited for
-  that phase only.
+  hint in the CLI's startup log) linking to the release page. Download,
+  verify, replace, relaunch is R47.
 - **Check on startup, default on, opt-out.** One request at launch, never
   during a live broadcast, at most once a day (last-checked timestamp in
   the existing settings store). `-no-update-check` /
@@ -3787,62 +3782,43 @@ is the one place a release does not reach.
   `GET` for a static file, no version or ID in the URL or headers.
   INSTALL.md and the R23 terms name it.
 
-**Scope sketch**:
+**Design** ([docs/47](docs/47-desktop-update-check.md)):
 
-- **Version source: a static per-component manifest, not the GitHub API.**
-  `releases/latest` is wrong for a monorepo with per-component tags, and
-  the list endpoint is rate-limited unauthenticated. Instead the attach
-  job that already uploads the binaries also publishes a tiny
-  `<component>/latest.json` (version, tag, asset name, sha256, date) to
-  the orphan `badges` branch R41 already pushes shields.io endpoints to —
-  same token, same publish path, served raw over TLS with no API. The
-  relay's `RelayIdentity` extension point is explicitly **not** used: a
+- **Version source**: the per-component `latest.json` R46 publishes to the
+  `badges` branch, at a compiled-in URL. Not the GitHub API (wrong release
+  in a monorepo, rate-limited), and not the relay's `RelayIdentity`: a
   third-party relay must never steer which binary a broadcaster runs.
-- **Compare**: SemVer on the release part of the version string
-  (`internal/version` in Go, `version::RELEASE` in Rust); `+g<sha>` and
-  `.dirty` builds are compared on the release part only, so a dev build
-  of the current release is never nagged about itself.
-- **Phase 1 UI**: a dismissible line under the version badge in both GUIs
-  ("v1.14.0 available — release notes") that opens the browser; the CLI
-  logs once. Dismissal is per version.
-- **Phase 2 mechanics**, per platform. Windows is a single portable EXE
-  that cannot overwrite itself while running: download next to it as
-  `.new`, verify the signature and checksum, swap on exit and relaunch
-  (the `self-replace` pattern). Linux ships three binaries in one tarball
-  (`gawk-broadcast`, `gawk-broadcast-gui`, `gawk-pw-helper`) that must
-  move together — extract to a staging dir, verify, then rename the set
-  atomically; if the install dir is not writable (`/usr/local/bin`,
-  a distro-managed path), fall back to Phase 1 behaviour with the
-  command to run. Never replace while a broadcast is live.
+- **Compare**: the `X.Y.Z` release part only (`version.Release` in Go,
+  `version::RELEASE` in Rust), strictly newer; `+g<sha>` and `.dirty`
+  builds are never nagged about their own release. Manifest validation
+  mirrors the site's (`schema`, component, version regex, URL prefixes);
+  any failure is "no update".
+- **UI**: a dismissible line under the version badge in both GUIs
+  ("v1.15.0 available — release notes") that opens the browser; the CLI
+  logs once. Dismissal is per version. No toast: KDE's portal and Focus
+  Assist both swallow them exactly when a broadcaster is at the keyboard.
+- **No new dependencies**: Go stdlib; the Rust side reuses `ureq` on
+  rustls in `gawk-engine`, so docs/38 D18's cross-compile surface is
+  untouched.
+- **Retraction**: republish the manifest at the previous version plus a
+  `fix:` release; the notice never says "downgrade".
 
-**Key design questions**: where the signing key lives and how it rotates
-(a compiled-in key means rotation is itself an update — ship two keys
-from day one, current + next); whether Phase 2 is on by default or
-"download ready, click to install" (recommendation: the latter — the
-app never restarts itself); how a bad release is retracted (the manifest
-is also the kill switch: republish it pointing at the previous version);
-and whether the Windows swap-on-exit helper survives SmartScreen for the
-freshly written EXE (the `Unblock` step from INSTALL.md may recur — this
-is the strongest argument for signing).
+**Non-goals**: downloading or installing anything (R47); winget, flatpak,
+AppImage, an MSI or any package-manager distribution — the portable-binary
+posture stands (docs/38 OD6, docs/19 Decision 24); updating the browser app
+(the SPA is redeployed cluster-side on every release); a "minimum client
+version" the relay enforces (a compatibility break is handled by the wire
+mirrors' golden vectors and close codes, not by refusing old clients); any
+relay-driven update channel.
 
-**Non-goals**: winget, flatpak, AppImage, an MSI or any package-manager
-distribution — the portable-binary posture stands (docs/38 OD6, docs/19
-Decision 24); updating the browser app (the SPA is redeployed cluster-side
-on every release); a "minimum client version" the relay enforces
-(a compatibility break is handled by the wire mirrors' golden vectors and
-close codes, not by refusing old clients); any relay-driven update
-channel.
-
-**Depends on**: nothing hard. R44 is a natural sibling (both touch the
+**Depends on**: R46 (shipped). R44 is a natural sibling (both touch the
 same release packaging and INSTALL docs) and the two should land as
 separate PRs.
 
-**Status**: proposed 2026-09-10, not started — no design doc yet; chunk
-prefix `AU` reserved. **2026-09-14**: the version source sketched above
-now exists — R46 ships `releases/<component>/latest.json` on the `badges`
-branch, written by the attach jobs after a successful attach, with the
-shape in docs/46 D5 (version, tag, date, every asset's size and sha256).
-Phase 1 needs only the client half.
+**Status**: designed 2026-09-15, not started — chunks AU1–AU5 in
+[docs/47](docs/47-desktop-update-check.md). One owner item is open before
+AU5: whether the one-sentence terms addition bumps `termsVersion`
+(docs/47 D12, recommendation: no).
 
 ---
 
@@ -3881,6 +3857,69 @@ section; DL4 docs; DL5 the SPA landing footer's About / Get the app links
 DL2 done the same day, after the merge: `manifest.py build` against the
 downloaded `gawk-broadcast/v1.13.0` and `gawk-broadcast-windows/v1.3.0`
 assets, pushed to `badges`; the live section fills in.
+
+---
+
+## R47 — Signed in-place update for the desktop broadcasters
+
+**Goal**: the "vX.Y.Z available" line R45 puts under the version badge
+becomes an **install and relaunch** button: the app downloads the newer
+release, verifies it, replaces itself and relaunches on click. This was
+R45's second phase, split out 2026-09-15.
+
+**Why this is wanted**: R45 removes "not knowing"; the manual download,
+unpack and replace that follows is still the step that keeps most fixes
+from reaching most people. The relay and the SPA are redeployed on every
+release; the desktop apps should be one click behind, not one afternoon.
+
+**Why it is separate**: trust. Both binaries are unsigned by design
+(docs/38 D17; the Linux release job's own comment), which is acceptable for
+a manual download from a page the user is looking at and not for code that
+replaces itself over a chain whose only anchor is TLS to GitHub — anyone
+who can write the `badges` branch could otherwise point every broadcaster
+at an arbitrary binary. So the release set gets a signature first.
+
+**Owner decisions (2026-09-10, carried over from R45)**:
+
+- **Gated on a release signing key.** Detached minisign/ed25519
+  signatures, produced in CI from a repository secret, verified against
+  public keys compiled into the apps; docs/38 D17's "unsigned by design"
+  is revisited for this milestone only.
+- **"Download ready, click to install."** The app never restarts itself;
+  the button is disabled while a broadcast is live.
+
+**Design** ([docs/48](docs/48-signed-in-place-update.md)):
+
+- **One signature over `SHA256SUMS`** (`SHA256SUMS.minisig`, attached by
+  both attach jobs and therefore listed in the R46 manifest with no writer
+  change), not per-asset and not over the manifest. **Two public keys
+  compiled in, current + next**, so rotation is an ordinary release.
+- **Verify before touching anything**: signature, then the asset's hash
+  against `SHA256SUMS`, then rename. Refuse any version ≤ the running
+  one, so a compromised manifest is a no-op rather than a rollback.
+- **Windows**: download `<exe>.new`, rename the running EXE to `.old`,
+  rename `.new` into place, relaunch, delete `.old` next start. No helper
+  process. Self-written files carry no Mark-of-the-Web, so SmartScreen is
+  expected not to re-prompt — an acceptance criterion to verify on a real
+  machine, not an assumption; if it fails, Windows stops at "download
+  ready".
+- **Linux**: staging dir beside the binaries, verify, rename all three
+  (`gawk-pw-helper` moves with the set); a non-writable directory falls
+  back to the R45 notice naming the tarball.
+- **No new crate** for verification: `ring` (already in the lockfile via
+  rustls) verifies ed25519; Go uses `crypto/ed25519`.
+
+**Non-goals**: Authenticode / a code-signing certificate (revisit only if
+the SmartScreen expectation fails); a helper updater binary; auto-restart;
+installing while live with a deferred relaunch; winget, flatpak, AppImage,
+MSI (docs/38 OD6, docs/19 Decision 24).
+
+**Depends on**: R45 (the check, compare, opt-out and notice are reused
+unchanged); a minisign key pair and two repository secrets, which do not
+exist today.
+
+**Status**: designed 2026-09-15, not started — chunks SU1–SU5 in
+[docs/48](docs/48-signed-in-place-update.md).
 
 ---
 
