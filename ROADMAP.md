@@ -66,6 +66,10 @@ feature set exists).
 | R45 | [Update notification for the desktop broadcasters](#r45--update-notification-for-the-desktop-broadcasters) | 🔧 designed 2026-09-15, not started (AU1–AU5) — a launch-time GET of the R46 `latest.json`, a dismissible "vX.Y.Z available" line under the version badge in both GUIs and one CLI log line; opt-out via config, `-no-update-check`, `GAWK_NO_UPDATE_CHECK=1`. Installing from inside the app is R47 ([docs/47](docs/47-desktop-update-check.md)) |
 | R46 | [Download section on the project site](#r46--download-section-on-the-project-site) | ✅ **implemented 2026-09-14** (DL1–DL4 in one PR): the attach jobs publish `releases/<component>/latest.json` to the `badges` branch after a successful attach, and the landing page's new Download section reads it — newest version, date, size, direct link and sha256 per platform, with a working no-script fallback. DL5 (same day): the SPA's landing footer links to the site and straight to that section ([docs/46](docs/46-site-downloads.md)) |
 | R47 | [Signed in-place update for the desktop broadcasters](#r47--signed-in-place-update-for-the-desktop-broadcasters) | 🔧 designed 2026-09-15, not started (SU1–SU5) — **depends on R45** and on a release signing key: minisign over `SHA256SUMS` in both attach jobs, two public keys compiled in, verify-then-rename-swap install on click, never while live ([docs/48](docs/48-signed-in-place-update.md)) |
+| R48 | [OpenAPI contract for the `gawk-admin` API](#r48--openapi-contract-for-the-gawk-admin-api) | 🔧 designed 2026-09-15, not started (OA1–OA4) — a hand-written OpenAPI 3.1 document for `/api/v1` (webhooks are R51's catalogue, revised 2026-09-16), embedded and served at `GET /api/v1/openapi.json`, held to the code by a two-way Go drift test and `redocly lint`, with an embedded Swagger UI page in the portal. The contract is the deliverable; no client is shipped ([docs/49](docs/49-admin-openapi.md)) |
+| R49 | [Rooms read API and room activity events](#r49--rooms-read-api-and-room-activity-events) | 🔧 designed 2026-09-15, revised 2026-09-16, not started (RA1–RA5) — **depends on R48, R50, R51** and R42: `GET /api/v1/rooms/{name}` with the live roster and attachment state (a new read-only `/internal/admin/rooms` on the relay ops listener, scraped by relayscan on request), a `rooms-reader` role for client-credentials service identities such as the planned Mumble bot, and opt-in `room.attached` / `room.detached` / `room.participant_joined` / `room.participant_left` webhook events with a per-webhook event filter, **sourced from the R50 bus — nothing polls** ([docs/50](docs/50-rooms-read-api.md)) |
+| R50 | [Relay event bus over NATS JetStream](#r50--relay-event-bus-over-nats-jetstream) | 🔧 designed 2026-09-16, not started (EB1–EB5) — the relay publishes broadcast and room lifecycle, participant, attachment and coalesced viewer-count events to an operator-provided NATS JetStream from its existing fan-out points, never blocking the media path; `gawk-admin`'s leader consumes a durable stream into the events feed with exactly-once ingest and retires the room sweep. **Optional, default off, off is byte-identical.** R49's activity webhooks depend on it ([docs/51](docs/51-relay-event-bus.md)) |
+| R51 | [Event contract: CloudEvents, JSON Schema, AsyncAPI](#r51--event-contract-cloudevents-json-schema-asyncapi) | 🔧 designed 2026-09-16, not started (EC1–EC4) — one CloudEvents 1.0 envelope for the R50 bus and the webhooks, one JSON Schema per event type in a public `gawk-server/events` package, an AsyncAPI 3.0 catalogue served by `gawk-admin`, Standard Webhooks delivery, and enforced naming/versioning/deprecation rules; **R50 EB1 and R49 RA4 depend on it** ([docs/52](docs/52-event-contract.md)) |
 
 ---
 
@@ -3920,6 +3924,239 @@ exist today.
 
 **Status**: designed 2026-09-15, not started — chunks SU1–SU5 in
 [docs/48](docs/48-signed-in-place-update.md).
+
+---
+
+## R48 — OpenAPI contract for the `gawk-admin` API
+
+**Goal**: `gawk-admin`'s `/api/v1` — and the signed webhooks it sends —
+described by a machine-readable OpenAPI 3.1 document that lives in the
+repository, is served by every deployment at `GET /api/v1/openapi.json`,
+and cannot drift from the handlers without failing `go test`. External
+software integrates against the document, not against the Go.
+
+**Why this is wanted**: the API has been real since R39 — bearer-JWT
+authenticated, a fixed error envelope, cursor pagination, three-outcome
+mutations — but its only consumer is the SPA in the same binary and its
+only description is the route table in docs/42 §4.7, which has already
+drifted from what shipped. The first external consumer is R49's Mumble
+bot, in its own repository; "read the handlers" is not a contract it can
+be built against.
+
+**Owner decisions (2026-09-15)**:
+
+- **Hand-written, in the repository, reviewed like code** — no generator,
+  no annotations, no new Go dependency in the auth-bearing module. The
+  three-outcome mutation grades and the "secrets never appear" rules are
+  prose either way.
+- **Served by `gawk-admin`**, unauthenticated like `/auth/config`, with
+  the deployment's base URL substituted; **an embedded Swagger UI page**
+  behind the normal login, with "try it out" against the in-memory token.
+- **The contract is the whole deliverable.** gawk ships no client package;
+  a consumer generates or hand-writes one from the document.
+
+**Scope sketch** ([docs/49](docs/49-admin-openapi.md) §2): the route
+registration becomes a declared table so a Go test can walk it in both
+directions — every route documented, every documented operation
+registered, every error `code` and event `type` in the enums, every
+example decoding into its handler's type with unknown fields refused;
+`redocly lint` in the `admin-ui` CI job; a link to the R51 event catalogue
+instead of an OpenAPI `webhooks` section (revised 2026-09-16);
+`x-gawk-roles` per operation; `x-gawk-sensitive` marks on every response
+that may carry a raw ID, code or IP; `info.version` kept by release-please;
+an additive-only-within-v1 promise stated in the document itself; a
+self-hosting recipe for a service identity on the client-credentials grant.
+
+**Non-goals**: a generated client; describing the relay's
+`/internal/admin/*` (its contract is the `adminapi` Go package) or the
+telemetry ingest; a `/api/v2`; JSON-Schema-validating every response in
+tests (a dependency for a check the example round-trip mostly covers).
+
+**Status**: designed 2026-09-15, not started — chunks OA1–OA4 in
+[docs/49](docs/49-admin-openapi.md). R49 is written to depend on it.
+
+---
+
+## R49 — Rooms read API and room activity events
+
+**Goal**: external software — first, a Mumble bot in its own repository —
+can ask `gawk-admin` which rooms are live, who is in one and what is
+streaming there, receive a join link to post, and be told when a stream
+attaches or a person arrives. Two `GET`s, a read-only role, and four
+opt-in webhook events.
+
+**Why this is wanted**: R42 named a Mumble bridge as the first room
+integration and reserved hooks for it (docs/44 §4.11). Before a bridge,
+the useful and cheap thing is a bot that reads room state and posts into
+the voice channel — but today the only machine-readable room data is the
+`Room` CR, which by design never holds the roster, and the only API role
+is `operator`, which can kill and ban.
+
+**Owner decisions (2026-09-15)**:
+
+- **Full detail: attachments and the live roster.** The roster exists
+  only in the home pod, so the relay gains one read-only route on its
+  credential-gated ops listener (`/internal/admin/rooms`, the docs/42 §4.5
+  pattern) and relayscan scrapes it with the same 2 s cache.
+- **A new `rooms-reader` role**, granted to an OIDC client-credentials
+  service identity, that reaches exactly the two room `GET`s and `/me`;
+  the operator role is not handed to a bot.
+- **The raw room code and a join link are returned to that role** — a
+  scoped relaxation of docs/44 D16 on docs/42 D8's terms; posting a way in
+  is the bot's purpose.
+- **Webhooks, sourced from the R50 bus** (revised 2026-09-16 — the
+  first draft's five-second poll-and-diff watcher was rejected: no
+  periodic polling): `room.attached`, `room.detached`,
+  `room.participant_joined`, `room.participant_left`, **opt-in per
+  webhook** so the ops pager on an operator's phone never buzzes on a
+  join. With the bus off, the read API works and the activity webhooks
+  never fire.
+- **The bot lives elsewhere**; gawk ships the API and its OpenAPI
+  description (R48), nothing bot-specific.
+
+**Scope sketch** ([docs/50](docs/50-rooms-read-api.md) §2): `adminapi`
+room types shared between relay and portal (reuse, never mirror);
+`GET /api/v1/rooms` as summaries with counts and `live`,
+`GET /api/v1/rooms/{name}` with `attachments[]` and `participants[]`
+(nickname, kind, streaming, speaking, the reserved identity); a `Room`
+that no reachable pod is home for renders from the CR with `live: false`;
+an `events` filter on webhooks (one expand-only migration) over the
+activity events R50 ingests, delivered as the bus event's CloudEvent with
+its sensitive properties stripped under the R51 contract (revised
+2026-09-16) — never a broadcast ID, room code or IP; the portal's Rooms
+view shows the same roster.
+
+**Non-goals**: the bridge itself, voice, chat; any periodic polling in
+`gawk-admin`; a server-push feed from `gawk-admin` (SSE noted as a later
+option); a public relay route for bots; a static bot token; a generic
+`reader` role over every `GET`; storing the roster in the CR.
+
+**Depends on**: R48 (the document and its drift check exist before these
+routes land), R50 (the activity events), R51 (the webhook format RA4
+delivers) and R42.
+
+**Status**: designed 2026-09-15, revised 2026-09-16, not started — chunks
+RA1–RA5 in [docs/50](docs/50-rooms-read-api.md). RA1–RA3 need only R48;
+RA4 waits for R50 and R51.
+
+---
+
+## R50 — Relay event bus over NATS JetStream
+
+**Goal**: the relay tells the rest of the system what is happening the
+moment it happens — a broadcast starts, stalls or ends, a room is minted
+or ends, a stream attaches, a person joins, a viewer count moves — by
+publishing to an operator-provided NATS JetStream. `gawk-admin` consumes
+the stream instead of scraping and sweeping; anything else the operator
+grants a credential to can consume it too. **Nothing polls.**
+
+**Why this is wanted**: everything the portal knows about live state it
+learns by asking — `relayscan` on request, the reconciler's room sweep
+once a minute — and the first draft of R49 turned that into events by
+polling the merged room view every five seconds and diffing. The owner
+rejected periodic polling outright (2026-09-16). The relay already fans
+every one of these transitions out to room participants and to the
+`Room` CR; the same points can publish to a bus, and then a Mumble bot, a
+webhook or a dashboard is one subscription away from the truth with no
+scrape in the loop.
+
+**Owner decisions (2026-09-16)**:
+
+- **Everything on the bus**: room lifecycle, attachment and participant
+  changes, broadcast lifecycle, *and* viewer-count and stall deltas
+  (coalesced to at most one per key per five seconds).
+- **JetStream, at-least-once**: a persisted stream with a day of history
+  and a durable consumer, so a portal restart or leadership move loses
+  nothing; `gawk-admin` deduplicates on a per-pod sequence for
+  exactly-once at the table.
+- **NATS is operator-provided**, URL and credential Secret in both
+  charts' values — the Postgres posture. **Default off everywhere; off is
+  byte-identical.**
+- **R49 keeps its events and takes them from here.**
+
+**Scope sketch** ([docs/51](docs/51-relay-event-bus.md) §2): one relay
+package owns the NATS client behind a non-blocking bounded channel, so
+the media path never waits and overflow is a counted drop; every message
+is a CloudEvent under the R51 contract (revised 2026-09-16); subjects carry
+HMAC'd keys, payloads carry raw IDs and codes (internal tier, like the
+CRs), never IPs; the home pod publishes room events and the origin pod
+broadcast events; `gawk-admin` creates the stream, consumes on the leader,
+ingests activity rows with a `source` unique key, retires the room sweep
+when the bus is on, and shows bus health on `/relays`; import-containment
+tests in both modules keep the client library in one package each;
+permission-scoped NATS users (publish-only for relays, one stream for the
+portal, subscribe-only for a direct consumer such as the bot).
+
+**Non-goals**: replacing `relayscan` with a bus-fed cache (the hook is
+there; its failure model deserves its own milestone); a NATS subchart;
+core NATS; blocking or retrying publishes in the relay; any HTTP push
+from the relay to the portal.
+
+**Depends on**: R42 for the room events; R48 for the events-feed
+contract changes; R51 for the envelope, schemas and catalogue (EB1 after
+EC1). R49's RA4 depends on this.
+
+**Status**: designed 2026-09-16, not started — chunks EB1–EB5 in
+[docs/51](docs/51-relay-event-bus.md).
+
+---
+
+## R51 — Event contract: CloudEvents, JSON Schema, AsyncAPI
+
+**Goal**: every event gawk emits — on the R50 bus and in a webhook — is a
+CloudEvents 1.0 event whose `data` has a published JSON Schema, listed in
+one AsyncAPI 3.0 catalogue that every deployment serves, delivered over
+HTTP per Standard Webhooks, under naming, versioning and deprecation rules
+that `go test` enforces. External software integrates against standards
+and a served document, not against gawk's envelope or its Go.
+
+**Why this is wanted**: R50 was about to give gawk a second hand-rolled
+event envelope beside the R39 webhook one, both documented in prose, with
+no schema files and no rule for change — and review of the R50 draft
+already caught one type string meaning two payload shapes. This is a
+public project; the owner's framing (2026-09-16) is longevity over quick
+wins. Webhooks have no production consumer yet, so the wire format can be
+replaced now at no cost, and only now.
+
+**Owner decisions (2026-09-16)**:
+
+- **CloudEvents 1.0, structured JSON, on both channels**, adopted as a
+  spec without its SDK; no gawk envelope, no extension attributes.
+- **One JSON Schema 2020-12 per event type in a new public
+  `gawk-server/events` package** (the `wire` posture: reuse, never mirror),
+  with sensitive properties marked so one schema serves the bus and its
+  webhook projection.
+- **AsyncAPI 3.0 as the catalogue and the registry**, hand-written beside
+  the schemas, linted in CI, served at `/api/v1/asyncapi.json`; a message's
+  presence under the `webhook` channel *is* webhook eligibility.
+- **Standard Webhooks replaces the `X-Gawk-*` headers and `sha256=`
+  signature**; nothing runs alongside.
+- **Rules with tests**: reverse-DNS types under `fi.ioio.gawk`, additive
+  within a type, a new versioned type for a breaking change with a
+  measurable deprecation window, and a Go drift gate in both modules with
+  a test-only validator.
+
+**Scope sketch** ([docs/52](docs/52-event-contract.md) §2): the envelope
+mapping (`id` = `<pod>:<seq>` on the bus, `source` per producer,
+`subject` = the HMAC'd key, `dataschema` = the schema `$id`); the schema
+package, `$id` scheme and the deferred site resolution; the AsyncAPI
+channels, `x-gawk-since`/`x-gawk-status`, the served bundle and the CI
+filter fix the R48 lint step also needs; the one-schema-two-projections
+rule; Standard Webhooks headers, signed material and the `whsec_` key
+rule; the lifecycle rules; the drift tests; and what moves in R48 D7,
+R49 D7 and R50 D3.
+
+**Non-goals**: `cloudevents/sdk-go`; binary content mode; a schema
+registry service or Protobuf/Avro; describing bus events in OpenAPI;
+making the schema `$id` resolve on the project site (deferred with its
+reason); signature-key rotation (the header format leaves room).
+
+**Depends on**: R48 OA1–OA2 (route table, `EventTypes` helpers, the
+serving package) before EC2–EC3; EC1 stands alone. R50 EB1 and R49 RA4
+depend on this.
+
+**Status**: designed 2026-09-16, not started — chunks EC1–EC4 in
+[docs/52](docs/52-event-contract.md).
 
 ---
 
