@@ -253,7 +253,7 @@ services:
   # stripped (the envtest trick), so the schema can never drift from the one
   # deployments install. Plain alpine (the config-gen image, already pulled):
   # the API accepts application/yaml, so no gigabyte kubectl image is needed
-  # for two idempotent POSTs.
+  # for a handful of idempotent POSTs.
   kube-bootstrap:
     image: alpine:3.21
     entrypoint: ["/bin/sh", "/dev-scripts/kube-bootstrap.sh"]
@@ -261,6 +261,7 @@ services:
       - kube-pki:/kube:ro
       - ./dev:/dev-scripts:ro
       - ./gawk-server/deploy/charts/gawk-server/templates/crd-ban.yaml:/bootstrap/crd-ban.yaml:ro
+      - ./gawk-server/deploy/charts/gawk-server/templates/crd-room.yaml:/bootstrap/crd-room.yaml:ro
     depends_on:
       kube-apiserver:
         condition: service_started

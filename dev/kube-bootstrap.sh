@@ -1,17 +1,17 @@
 #!/bin/sh
 # Seeds the dev control plane (docs/41 §4.8): waits for the apiserver, then
-# creates the namespace and installs the Ban CRD — the two objects the relay
-# and gawk-admin find pre-existing in every real cluster (the relay CHART
-# installs the CRD there; here there is no chart, so this stands in).
+# creates the namespace and installs the Ban and Room CRDs — the objects the
+# relay and gawk-admin find pre-existing in every real cluster (the relay CHART
+# installs them there; here there is no chart, so this stands in).
 #
 # Plain alpine + busybox wget, NO kubectl: the Kubernetes API accepts
 # application/yaml directly, and the kubectl-carrying images cost more than a
-# gigabyte for what is two idempotent POSTs — real money on the CI runners'
-# RAM-backed docker store. --no-check-certificate matches the kubeconfigs:
-# the apiserver self-signs at startup, and this loopback dev plane is not a
-# TLS trust exercise.
+# gigabyte for what is a handful of idempotent POSTs — real money on the CI
+# runners' RAM-backed docker store. --no-check-certificate matches the
+# kubeconfigs: the apiserver self-signs at startup, and this loopback dev
+# plane is not a TLS trust exercise.
 #
-# The CRD is the chart's OWN template with its few directive lines stripped —
+# Each CRD is the chart's OWN template with its few directive lines stripped —
 # the same trick gawk-admin's envtest tier uses — so a schema edit in the
 # chart is a schema edit here, never a drifting copy.
 set -eu
@@ -47,21 +47,37 @@ else
 fi
 
 CRD=/apis/apiextensions.k8s.io/v1/customresourcedefinitions
-if exists "$CRD/bans.gawk.ioio.fi"; then
-  echo "kube-bootstrap: the Ban CRD exists"
-else
-  sed '/{{/d' /bootstrap/crd-ban.yaml > /tmp/crd.yaml
-  req "$CRD" --header 'Content-Type: application/yaml' --post-file=/tmp/crd.yaml >/dev/null
-  echo "kube-bootstrap: the Ban CRD installed"
-fi
 
-i=0
-until req "$CRD/bans.gawk.ioio.fi" | tr -d ' \n' | grep -q '{"type":"Established","status":"True"'; do
-  i=$((i + 1))
-  if [ "$i" -gt 30 ]; then
-    echo "kube-bootstrap: the Ban CRD never became Established" >&2
-    exit 1
+# BOTH CRDs the relay chart installs, because both are objects gawk-admin
+# expects to find pre-existing. The Room one is not optional here just because
+# this stack's relay reads its static rooms from a file: with the CRD absent,
+# a gawk-admin started with -rooms answers 500 "internal" on every room route,
+# which reads as a bug in the portal rather than as a missing object.
+install_crd() { # install_crd <crd-name> <file> <label>
+  if exists "$CRD/$1"; then
+    echo "kube-bootstrap: the $3 CRD exists"
+  else
+    sed '/{{/d' "$2" > /tmp/crd.yaml
+    req "$CRD" --header 'Content-Type: application/yaml' --post-file=/tmp/crd.yaml >/dev/null
+    echo "kube-bootstrap: the $3 CRD installed"
   fi
-  sleep 2
-done
-echo "kube-bootstrap: namespace $NS and the Ban CRD are ready"
+}
+
+await_established() { # await_established <crd-name> <label>
+  i=0
+  until req "$CRD/$1" | tr -d ' \n' | grep -q '{"type":"Established","status":"True"'; do
+    i=$((i + 1))
+    if [ "$i" -gt 30 ]; then
+      echo "kube-bootstrap: the $2 CRD never became Established" >&2
+      exit 1
+    fi
+    sleep 2
+  done
+}
+
+install_crd bans.gawk.ioio.fi /bootstrap/crd-ban.yaml Ban
+install_crd rooms.gawk.ioio.fi /bootstrap/crd-room.yaml Room
+
+await_established bans.gawk.ioio.fi Ban
+await_established rooms.gawk.ioio.fi Room
+echo "kube-bootstrap: namespace $NS and the Ban and Room CRDs are ready"
