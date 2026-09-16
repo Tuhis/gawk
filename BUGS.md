@@ -923,6 +923,45 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
      a `sessions` query carries no partition predicate. The console already
      renders the view catalogue, so the hint has a home next to it.
 
+## Joining a gated static room without the attach secret silently never attaches
+
+- **Found**: 2026-09-16, by a broadcaster joining a static room whose attach
+  secret was required, with no secret typed. The stream was refused entry to
+  the room and nothing on screen said so. **Cause confirmed by inspection**
+  the same day.
+- **Impact**: the broadcaster lands in the room as an ordinary participant —
+  roster, chrome and all — while their own broadcast is simply not in it. No
+  toast, no card, no note; the only hint is the absence of their own tile,
+  which reads as "my stream is still starting". The broadcaster has no way to
+  learn that the room wanted a secret, and the one affordance that would fix
+  it (the `Attach secret` field on the broadcast page's room panel,
+  `BroadcasterScreen.tsx:753`) is behind them by then. This breaks docs/44
+  §4.9's rule that every relay state has a visible form.
+- **Cause** (confirmed, structural): the relay clears
+  `ROOM_STATE_FLAG_ATTACH_OK` in `RoomState` for a participant who presented
+  no valid attach grant to a gated static room, and `RoomScreen.tsx:175`
+  guards the own-broadcast attach on exactly that flag
+  (`mayAttach(snapshot)`, `roomStore.ts:119`). So no `RoomCommand Attach` is
+  ever sent, so the relay never answers `CommandRejected` /
+  `ROOM_REJECT_FORBIDDEN` — and that rejection is the *only* thing wired to
+  user-visible copy (`rejectionToast` in `roomCopy.ts`, shown by the
+  `lastRejection` effect at `RoomScreen.tsx:295`). The guard is right on the
+  wire — sending a command known to be refused is pointless — but it removed
+  the sole source of the explanation with nothing put in its place.
+  `attachOk` has no other reader in the app: grepping it finds only the
+  guard, so no copy anywhere mentions the state.
+- **Fix would start**: `gawk-app/src/features/room/RoomScreen.tsx`,
+  test-first in `RoomScreen.test.tsx` (a `RoomState` snapshot with
+  `ROOM_STATE_FLAG_ATTACH_OK` clear while `own` is set must render the
+  explanation). Keep the guard and give the state its own visible form rather
+  than firing a doomed command: a card or persistent pill for
+  "`joined && own && !attachOk`", worded as "this room needs an attach
+  secret — your stream isn't in it", with a way to supply the secret from
+  inside the room (re-dial with an `attach` grant) instead of sending the
+  broadcaster back to the broadcast page. `roomCopy.ts` is the single copy
+  point. Worth checking the viewer-side equivalent in the same pass — a
+  viewer with the flag clear has nothing to attach, so it should stay silent
+  there.
 
 (The Chrome 152 `WebTransport.getStats()` entry was resolved 2026-07-14: not
 a gawk defect — Chromium removed the API entirely; see the gotcha in
