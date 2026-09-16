@@ -1150,6 +1150,24 @@ Add to it when a new gotcha lands in `docs/`.
   construction (`moderation.CRName`). So treat "no raw IDs at Info+" as a rule
   for new code, not as a property the repo has: **do not build anything on the
   assumption that an aggregated pod log is free of joinable IDs.**
+- **`= ANY($1)` with an empty array matches nothing, so "no filter" cannot be
+  an empty array.** The `type` filter on `GET /api/v1/events` passes `NULL`
+  and tests `$3::text[] IS NULL OR type = ANY($3)`; an empty array would have
+  answered an empty feed to a caller who asked for everything — the same
+  reassuring lie a null `banState` exists to prevent on the broadcast view.
+  ([docs/49](49-admin-openapi.md))
+- **`swagger-ui-dist` depends on `@scarf/scarf`, which phones home from a
+  postinstall script** — on every `npm ci`, in CI and on every contributor's
+  machine. It is opt-in by default and `scarfSettings: { enabled: false }` in
+  `gawk-admin/ui/package.json` turns it off outright, but the general lesson is
+  the one worth keeping: **check `hasInstallScript` in the lockfile diff when a
+  new npm dependency lands.** ([docs/49](49-admin-openapi.md))
+- **`//go:embed` cannot reach outside its own directory**, so a file that has
+  to live at a module root for other tools (`redocly lint`,
+  release-please's `extra-files`, a human browsing the repository) needs a
+  one-line package *at that root* to embed it — `gawk-admin/contract.go` is
+  exactly that and nothing else. A symlink does not work either: embed refuses
+  them. ([docs/49](49-admin-openapi.md))
 
 **Rooms (R42)**
 

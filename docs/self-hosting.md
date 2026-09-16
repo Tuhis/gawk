@@ -836,6 +836,75 @@ Two more things worth naming rather than discovering:
   is not a moderation tool — but on a day when it is the right one, it is
   there.
 
+### 9.8 Using the API from your own software
+
+Everything the portal does, it does over `/api/v1` — and that API is described
+by an OpenAPI 3.1 document your deployment serves:
+
+```console
+$ curl -s https://admin.gawk.example.com/api/v1/openapi.json | jq '.info'
+```
+
+It needs no token (it is public in the repository anyway, at
+[`gawk-admin/openapi.yaml`](../gawk-admin/openapi.yaml)), it carries your own
+base URL in `servers[0].url`, and `x-gawk-build` names the binary that answered.
+Feed it to any generator you like — gawk ships no client package on purpose:
+the contract is the deliverable. Signed in as an operator, `#/api` in the portal
+renders the same document with a *Try it out* button wired to your own token.
+
+**What it promises.** `/api/v1` is additive within v1: fields and operations are
+added, never removed or retyped, and the `code` and `type` enums only grow.
+Write your client to ignore fields it does not know and to treat an unknown enum
+value as unknown. A removal would be a `/api/v2`, which does not exist.
+
+**Outbound events** — webhooks, and the bus where it is enabled — are not in
+this document; [§9.5](#95-webhooks) covers the signature, and the event
+catalogue is served beside the contract.
+
+#### A service identity for a bot
+
+A bot is not a person, so it does not do the browser flow. Give it its own
+**confidential client on the client-credentials grant**, in Keycloak:
+
+1. Create client `gawk-bot`: *Client authentication* **on**, *Standard flow*
+   **off**, *Service accounts roles* **on**. It has a client secret; that
+   secret is the bot's credential, so treat it like one.
+2. Client scopes → make sure the **audience** the portal validates (`aud`,
+   normally the `gawk-admin` client ID) lands in this client's tokens too.
+   Without it the portal answers `401`, correctly.
+3. Service account roles → assign the role the bot needs. Today that is
+   `operator`, which is the whole portal — kill and ban included. Give a bot
+   that role only when you mean it; R49 adds a read-only `rooms-reader`.
+
+Then:
+
+```console
+$ TOKEN=$(curl -s -X POST \
+    https://idp.example.com/realms/gawk/protocol/openid-connect/token \
+    -d grant_type=client_credentials \
+    -d client_id=gawk-bot -d client_secret="$GAWK_BOT_SECRET" | jq -r .access_token)
+
+$ curl -s -H "Authorization: Bearer $TOKEN" \
+    https://admin.gawk.example.com/api/v1/me | jq
+{
+  "email": "",
+  "subject": "service-account-gawk-bot",
+  "roles": ["operator"],
+  "defaults": { "killCooldownSeconds": 600 },
+  "features": { "rooms": true }
+}
+```
+
+`/api/v1/me` is the probe worth calling first: it proves the token is accepted
+*and* tells the bot which optional surfaces this deployment serves, so it offers
+nothing that would answer `404`.
+
+Two properties to design around, both of them consequences of
+[§9.3](#93-the-identity-provider) rather than of the bot: an access token is
+short-lived, so fetch a new one on `401` rather than caching one for a day; and
+revoking the bot means removing its service-account role or the client itself,
+which takes effect at its next token, not instantly.
+
 ## 10. Rooms (R42)
 
 Optional, **off by default**, and off is byte-identical to a relay without

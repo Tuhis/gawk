@@ -1,7 +1,7 @@
 # R48 — OpenAPI contract for the `gawk-admin` API (docs/49)
 
-**Status**: designed 2026-09-15; **not started**. Chunks **OA1–OA4** (`OA` =
-OpenAPI; two-letter prefix per the R21+ convention). `gawk-admin` only —
+**Status**: designed 2026-09-15; **shipped 2026-09-16** (OA1–OA4). Chunks
+**OA1–OA4** (`OA` = OpenAPI; two-letter prefix per the R21+ convention). `gawk-admin` only —
 its Go module, its SPA, its chart values and the self-hosting guide. Nothing
 here touches the relay, the wire format or any other module. **R49**
 ([docs/50](50-rooms-read-api.md)) is the first milestone that adds routes
@@ -115,6 +115,35 @@ What already exists, so the reader does not go looking:
 | **OA2** | `internal/openapi`: embed, YAML→JSON, `servers` rewrite, ETag; the `GET /api/v1/openapi.json` route; release-please `extra-files`; `redocly lint` in CI (D2, D4, D8) | Handler test: unauthenticated `GET` → 200 `application/json`, `servers[0].url` equals `-external-url`, `info.version` equals the embedded file's, security headers present, no `Set-Cookie`; a request with a bad bearer is still 200 (unauthenticated by design); `If-None-Match` → 304. CI: the lint step runs in `admin-ui` and a document with a dangling `$ref` fails it (checked once in a draft commit). The next release PR after merge bumps `info.version` via the `generic` marker (the same mechanism that bumps the charts' `Chart.yaml`), checked once when that PR opens. |
 | **OA3** | The SPA `#/api` view with embedded swagger-ui-dist, lazy chunk, token injection (D5) | `ApiView.test.tsx`: the view mounts, fetches `/api/v1/openapi.json` through the client, and the interceptor sets `Authorization: Bearer <token>` on a "try it out" request; `router.test.ts` covers `#/api`; the `internal/portal` no-external-assets test passes over the built bundle (no CDN); `npm run build` emits the swagger bundle as a separate chunk not referenced by the entry chunk; `licenses`/`notices` green. Manual on the docs/41 dev stack: log in, open API, expand `GET /api/v1/me`, execute, see the JSON. |
 | **OA4** | Docs: self-hosting §9.8 (bearer model, service identity recipe, additive-only promise), `gawk-admin/README.md`, `docs/README.md` index row, this document's status, the ROADMAP row and entry | Review. The recipe is executed once against the dev stack's fake IdP (`cmd/gawk-fakeidp`'s `/mint`, or Keycloak if the reference deployment is used) and the resulting token calls `GET /api/v1/me` successfully. |
+
+### What shipped (2026-09-16)
+
+All four chunks, in one PR, as designed — with three deviations worth naming
+rather than discovering:
+
+- **`GET /api/v1/events` gained the `?type=` filter** D3 (d) documents. It did
+  not exist: the design's drift check named a filter parameter the handler had
+  never had. Adding it was the smaller of the two honest options (owner
+  decision), so the enum is one vocabulary on both the parameter and the
+  response field, and R50 has only `category` left to add. It is repeated or
+  comma-separated, and an unknown name is `400`, never an empty page.
+- **The `flagger` entry in the route table does not exist yet.** D3 names
+  `requires: flagger` for R40's reserved route, but that route has no handler
+  to bind — the path is frozen and deliberately unregistered — so `Requires`
+  ships with `rooms` as its only value and R40 adds the second.
+- **The list envelopes became declared Go types.** They were `map[string]any`
+  literals, so (f)'s example round-trip had nothing to decode into. Naming them
+  is what turns the check into a check.
+
+Two things the design did not anticipate:
+
+- **`openapi.yaml` is embedded through a one-line root package**
+  (`gawk-admin/contract.go`), because `//go:embed` cannot reach outside its own
+  directory and the document belongs at the module root, where a reader,
+  `redocly lint` and release-please's `extra-files` all look for it.
+- **`swagger-ui-dist` pulls in `@scarf/scarf`**, whose postinstall script
+  reports installs home. `scarfSettings.enabled: false` in `ui/package.json`
+  turns it off for every contributor and every CI run.
 
 Success criterion, end to end: on the reference deployment, `curl
 https://<admin>/api/v1/openapi.json | openapi-generator-cli validate` (or
