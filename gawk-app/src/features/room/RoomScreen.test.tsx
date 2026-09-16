@@ -438,3 +438,111 @@ describe('RoomView with an own broadcast (RM5)', () => {
     expect(onDetach).toHaveBeenCalled();
   });
 });
+
+describe('a gated static room that refused the attach grant (D8)', () => {
+  // BUGS.md: the relay clears ATTACH_OK for a participant who brought no
+  // attach secret, the attach effect is guarded on that flag, so no Attach
+  // command is sent and no CommandRejected ever comes back. The state has to
+  // speak for itself.
+  const ownBroadcast = {
+    broadcastId: 'AAAAAA',
+    resumeTokenHex: 'b'.repeat(32),
+    label: 'mine',
+    attachEpoch: 0,
+    preview: null,
+    controls: null,
+    onDetach: () => {},
+  };
+  const renderOwn = () =>
+    render(
+      <RoomView target={{ kind: 'join', code: 'AB2CD3' }} own={ownBroadcast} presetNickname="tuhis" onLeave={() => {}} />,
+    );
+
+  it('says so instead of failing silently, and the typed secret re-dials with an attach grant', async () => {
+    renderOwn();
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(state({ flags: 0, attachments: [] })));
+
+    // The guard stands: sending a command the relay is bound to refuse is
+    // pointless — the copy is what was missing.
+    expect(room.sent).toEqual([]);
+    expect(screen.getByText('Your stream isn’t in this room')).toBeTruthy();
+    expect(screen.getByText(/needs an attach secret/)).toBeTruthy();
+    // And not the "nobody is streaming" card, which would be the wrong story.
+    expect(screen.queryByText('Nobody is streaming yet')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enter the secret' }));
+    fireEvent.change(screen.getByLabelText('Attach secret'), { target: { value: ' hunter2 ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
+
+    // A fresh dial: the grant rides RoomHello, so it cannot be a command.
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+    expect(roomSessions[1].opts.grant).toEqual({ kind: 'attach', secret: 'hunter2' });
+    expect(room.stopped).toBe(true);
+    // Nothing is kept until the relay has granted on it: a stashed typo would
+    // fail every reload with no field in sight to correct it.
+    expect(sessionStorage.getItem('gawk:room-grant:ab2cd3')).toBeNull();
+
+    act(() => roomSessions[1].cbs.onState(state({ flags: ROOM_STATE_FLAG_ATTACH_OK, attachments: [] })));
+    // Accepted, so now it rides a reload of this tab (grantHandoff.ts).
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-grant:ab2cd3') ?? 'null')).toEqual({
+      kind: 'attach',
+      secret: 'hunter2',
+    });
+    expect(roomSessions[1].sent).toContainEqual({
+      kind: 'attach',
+      broadcastId: 'AAAAAA',
+      resumeTokenHex: 'b'.repeat(32),
+      label: 'mine',
+    });
+    expect(screen.queryByText('Your stream isn’t in this room')).toBeNull();
+  });
+
+  it('with other POVs on the stage it is a pill, not a card over the video', async () => {
+    renderOwn();
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ flags: 0 })));
+    expect(screen.getAllByTestId('room-tile')).toHaveLength(3);
+    const pill = screen.getByTestId('attach-gated-pill');
+    expect(pill.textContent).toMatch(/needs an attach secret/);
+    fireEvent.click(pill);
+    expect(screen.getByLabelText('Attach secret')).toBeTruthy();
+  });
+
+  it('a refused secret says so, offers another instead of a reload, and re-dials even for the same one', async () => {
+    renderOwn();
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ flags: 0, attachments: [] })));
+    fireEvent.click(screen.getByRole('button', { name: 'Enter the secret' }));
+    fireEvent.change(screen.getByLabelText('Attach secret'), { target: { value: 'wrong' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+
+    // The relay refuses a wrong secret at join, and the browser cannot see
+    // WHICH status it was — 403 and 404 reach JS as one opaque failure, so
+    // the honest generic card is "not found or refused". Here we know a
+    // secret was just supplied, so the card names it.
+    act(() => roomSessions[1].cbs.onError({ kind: 'refused', message: 'Room not found or refused' }));
+    expect(screen.getByText('That secret didn’t work')).toBeTruthy();
+    expect(screen.queryByText('Room not found or refused')).toBeNull();
+    // Reload would kill the live broadcast this page is running.
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Back to my stream' })).toBeTruthy();
+
+    // Same secret again still re-dials (a typo may have been "fixed" back to
+    // it, or the room's secret rotated) — the nonce, not the grant, moves.
+    fireEvent.click(screen.getByRole('button', { name: 'Try another secret' }));
+    fireEvent.change(screen.getByLabelText('Attach secret'), { target: { value: 'wrong' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(3));
+    expect(roomSessions[2].opts.grant).toEqual({ kind: 'attach', secret: 'wrong' });
+  });
+
+  it('a viewer with nothing to attach stays silent', async () => {
+    await joinAs('tuhis', { flags: 0, attachments: [] });
+    expect(screen.getByText('Nobody is streaming yet')).toBeTruthy();
+    expect(screen.queryByText('Your stream isn’t in this room')).toBeNull();
+    expect(screen.queryByTestId('attach-gated-pill')).toBeNull();
+  });
+});

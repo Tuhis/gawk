@@ -34,6 +34,17 @@
 //                             per-broadcast subscriber count while the room's
 //                             control session stays), Leave. Skips cleanly
 //                             when the pubsim binary predates -room-new.
+//   node run.mjs --rooms-gated
+//                             R42 D8 — the gated static room, browser end to
+//                             end: the Z5 browser broadcaster joins a
+//                             -rooms-file room whose attach secret it does
+//                             NOT have, and must SAY so (the relay really
+//                             withholds ATTACH_OK, the room really lists the
+//                             participant with no attachment); then the
+//                             secret typed in the room re-dials and the
+//                             stream really attaches. This state sends no
+//                             command, so only a real relay proves the flag
+//                             — the unit tests can only fake the snapshot.
 //   node run.mjs --muxer-check
 //                             R22 MF1 (docs/27 Decision 10) — the production
 //                             fMP4 muxer's output must PLAY in a real Chrome
@@ -81,6 +92,15 @@ const TELEMETRY_CHECK = process.argv.includes('--telemetry');
 // R42 (docs/44 §9 RM4/RM5): the rooms pass. Its own mode like --telemetry —
 // it needs the relay started with -rooms and two publishers of its own.
 const ROOMS_CHECK = process.argv.includes('--rooms');
+// R42 (docs/44 D8, §11.1): the gated static room. Its own mode too — the
+// relay needs a -rooms-file source, and the publisher has to be the BROWSER
+// (the state only exists for a participant that brought a stream of its own).
+const ROOMS_GATED_CHECK = process.argv.includes('--rooms-gated');
+// The gated room the pass writes into that file. The code follows the
+// broadcast-ID alphabet like every room code; the secret is a fixture, not a
+// credential — it never leaves this harness's temp file.
+const GATED_ROOM_CODE = 'GATED1';
+const GATED_ROOM_SECRET = 'e2e-attach-secret';
 
 const RELAY_PORT = Number(process.env.GAWK_E2E_RELAY_PORT ?? 4433);
 const OPS_PORT = Number(process.env.GAWK_E2E_OPS_PORT ?? 2112);
@@ -1263,7 +1283,10 @@ function assertBroadcastFlow(d1, d2) {
 // headless *screen* capture grants but delivers black frames; *tab* capture
 // delivers real pixels — don't switch back to a desktop-source flag). Returns
 // the live browser (the broadcast must outlive this function) + the minted ID.
-async function broadcasterScenario({ relayUrl, certHash, attempt }) {
+// Z5's front half: a browser on the production broadcaster surface, LIVE with
+// a minted ID. Shared with the gated-rooms pass, which then keeps driving the
+// same page — so this returns it rather than closing over it.
+async function startBrowserBroadcast({ relayUrl, certHash, attempt }) {
   const browser = await launchBrowser([
     `--auto-select-tab-capture-source-by-title=${ANIM_TITLE}`,
   ]);
@@ -1291,7 +1314,16 @@ async function broadcasterScenario({ relayUrl, certHash, attempt }) {
     );
     const id = (await code.textContent()).trim();
     log(`browser broadcaster is LIVE as ${id}`);
+    return { browser, page, id };
+  } catch (err) {
+    await browser.close();
+    throw err;
+  }
+}
 
+async function broadcasterScenario({ relayUrl, certHash, attempt }) {
+  const { browser, page, id } = await startBrowserBroadcast({ relayUrl, certHash, attempt });
+  try {
     await page.getByRole('button', { name: 'Show stats' }).click();
     await page
       .locator('[role="dialog"][aria-label="Broadcast stats"]')
@@ -1721,6 +1753,99 @@ async function roomsPass({ relayUrl, certHash, opsUrl }) {
   }
 }
 
+// R42 D8 (docs/44 §11.1): the gated static room, against the real relay.
+//
+// This is the one room state no unit test can prove: it exists precisely
+// BECAUSE no command is sent, so there is nothing on the wire to assert — the
+// whole claim is "the relay withheld ATTACH_OK, and the UI said so". Faking
+// the snapshot proves the copy renders; only a real -rooms-file room proves
+// the flag arrives clear in the first place, that the participant is admitted
+// anyway (a watcher, not a refusal), and that the secret typed in the room
+// re-dials into a real attachment.
+async function roomsGatedPass({ relayUrl, certHash, opsUrl }) {
+  const { browser, page, id } = await startBrowserBroadcast({ relayUrl, certHash, attempt: 'gated' });
+  try {
+    // Join the gated room by code with NO secret — the reported flow.
+    await page.getByRole('button', { name: 'Room' }).click();
+    await page.getByRole('textbox', { name: 'Room code' }).fill(GATED_ROOM_CODE);
+    await page.getByRole('button', { name: 'Join by code' }).click();
+    // D10: the nickname is asked BEFORE the first dial, so nothing reaches
+    // the relay until it is answered. A guest is one click and keeps the
+    // pass free of a remembered-nickname side effect.
+    await page.getByRole('button', { name: 'Join as a guest' }).click();
+
+    // The room admits us: a participant with nothing attached. That pair of
+    // figures IS the bug's shape on the relay side.
+    const gatedRoom = async () => {
+      const { rooms } = await relayRooms(opsUrl);
+      return rooms.find((r) => r.participants >= 1) ?? null;
+    };
+    await pollFor(async () => (await gatedRoom()) != null, 20_000, 500, 'the relay to list the gated room with our participant');
+    const joined = await gatedRoom();
+    if (joined.attachments !== 0) {
+      fail(`the gated room attached the stream without the secret (attachments=${joined.attachments})`);
+    }
+
+    // …and the page says so, instead of sitting there looking normal.
+    await page
+      .getByText('Your stream isn’t in this room')
+      .waitFor({ state: 'visible', timeout: 10_000 });
+    const tiles = await readTiles(page);
+    if (tiles.length !== 0) fail(`gated out, but the stage shows ${tiles.length} tile(s)`);
+    log(`gated ok: in the room as a participant, 0 attachments, and the page says why (broadcast ${id})`);
+    writeFileSync(join(OUT, 'rooms-gated-card.png'), await page.screenshot());
+
+    // Scoped to the dialog: the broadcast page's own room panel carries an
+    // "Attach secret" field too, and it stays mounted behind the room view.
+    const secretDialog = page.locator('[role="dialog"][aria-label="Attach secret for this room"]');
+    const typeSecret = async (secret) => {
+      await page.getByRole('button', { name: 'Enter the secret' }).click();
+      await secretDialog.waitFor({ state: 'visible', timeout: 5_000 });
+      await secretDialog.getByLabel('Attach secret').fill(secret);
+      await secretDialog.getByRole('button', { name: 'Attach' }).click();
+    };
+
+    // A WRONG secret is a different state, and the relay decides it: a gated
+    // room refuses the grant at join (403, docs/44 §11.1), so the re-dial
+    // fails outright rather than landing us back in the room ungranted.
+    await typeSecret('not-the-secret');
+    await page.getByText('That secret didn’t work').waitFor({ state: 'visible', timeout: 15_000 });
+    // Never a page reload here: this page is running a live broadcast.
+    if (await page.getByRole('button', { name: 'Retry' }).isVisible().catch(() => false)) {
+      fail('the refused-secret card offers Retry, which reloads and kills the live broadcast');
+    }
+    log('wrong secret ok: the relay refused the re-dial, and the card names the secret');
+    writeFileSync(join(OUT, 'rooms-gated-wrong-secret.png'), await page.screenshot());
+
+    // …and the way out keeps the broadcast alive: another secret, no reload.
+    // (The card's other action returns to the live page; "Retry" — which
+    // reloads and would kill the broadcast — is deliberately not offered
+    // here.) This is also the right secret's path, so the attach below is
+    // reached from the refused state, not from a fresh join.
+    await page.getByRole('button', { name: 'Try another secret' }).click();
+    await secretDialog.waitFor({ state: 'visible', timeout: 5_000 });
+    await secretDialog.getByLabel('Attach secret').fill(GATED_ROOM_SECRET);
+    await secretDialog.getByRole('button', { name: 'Attach' }).click();
+    await pollFor(
+      async () => {
+        const r = await gatedRoom();
+        return r != null && r.attachments === 1;
+      },
+      20_000,
+      500,
+      'the relay to carry the attachment after the secret',
+    );
+    await pollFor(async () => (await readTiles(page)).length === 1, 15_000, 500, 'the own tile to appear on the stage');
+    if (await page.getByText('Your stream isn’t in this room').isVisible().catch(() => false)) {
+      fail('the gated copy is still on screen after the stream attached');
+    }
+    log('secret ok: the re-dial attached the stream and the gated copy is gone');
+    writeFileSync(join(OUT, 'rooms-gated-attached.png'), await page.screenshot());
+  } finally {
+    await browser.close();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -1767,7 +1892,18 @@ async function main() {
     // browserScenario a real check.
     if (TELEMETRY_CHECK) relayArgs.push('-telemetry-key', TELEMETRY_KEY);
     // R42: the room routes exist only with the flag on (docs/44 D17).
-    if (ROOMS_CHECK) relayArgs.push('-rooms');
+    if (ROOMS_CHECK || ROOMS_GATED_CHECK) relayArgs.push('-rooms');
+    // R42 D8: the static room, from the file source — the shape an operator
+    // writes where there is no Kubernetes API, and the only way to get a
+    // gated room without a cluster.
+    if (ROOMS_GATED_CHECK) {
+      const roomsFile = join(OUT, 'rooms.json');
+      writeFileSync(
+        roomsFile,
+        JSON.stringify([{ code: GATED_ROOM_CODE, displayName: 'Gated e2e room', attachSecret: GATED_ROOM_SECRET }]),
+      );
+      relayArgs.push('-rooms-file', roomsFile);
+    }
     const relay = launch('relay', SERVER_BIN, relayArgs);
     // Decision 5: scrape the ephemeral dev cert's hash from the startup log
     // and seed it into the app's serverCertificateHashes setting.
@@ -1812,7 +1948,7 @@ async function main() {
       log(`telemetry service up: ingest :${TM_INGEST_PORT}, read :${TM_READ_PORT}`);
     }
 
-    if (!BROWSER_BROADCAST && !ROOMS_CHECK) {
+    if (!BROWSER_BROADCAST && !ROOMS_CHECK && !ROOMS_GATED_CHECK) {
       const pubsim = launch('pubsim', PUBSIM_BIN, [
         '-url', relayUrl,
         '-insecure',
@@ -1838,6 +1974,14 @@ async function main() {
   // here rather than inside the relay block.
   if (ROOMS_CHECK) {
     await roomsPass({ relayUrl, certHash, opsUrl });
+    log('PASS');
+    return;
+  }
+
+  // R42 D8: the gated static room. Its publisher is the browser itself, so
+  // it needs the preview server too.
+  if (ROOMS_GATED_CHECK) {
+    await roomsGatedPass({ relayUrl, certHash, opsUrl });
     log('PASS');
     return;
   }

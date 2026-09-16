@@ -389,7 +389,9 @@ The canvas itself is the reference for RM4/RM5 and is linked from §12.
 - Nickname prompt on first join, remembered; editable from the roster.
 - Every state the relay can emit has a visible form: room ended (4007),
   broadcaster away, attachment removed, limit reached, wrong attach
-  secret.
+  secret, and — the quiet one, fixed 2026-09-17 — *no* attach secret,
+  where a gated static room admits the participant as a watcher and keeps
+  their stream out (§11.1's `ATTACH_OK` note).
 - Reserved space: a speaking indicator on participants and a chat panel
   slot, both hidden until their capabilities arrive (§4.11). The design
   pass should draw them so the v1 layout does not have to move later.
@@ -677,6 +679,32 @@ the manual pass outcome.
   broadcaster that typed the key wrong must learn it now, and §4.9's
   "wrong attach secret" state needs a pre-upgrade status to render. A
   viewer that presents no secret still joins.
+- **A guard that suppresses a command also suppresses its rejection, so
+  the *state* has to carry the copy** (the `ATTACH_OK` note; fixed
+  2026-09-17, was a `BUGS.md` entry). No secret at all is not the case
+  above: the join succeeds and `RoomState` simply arrives without
+  `ROOM_STATE_FLAG_ATTACH_OK`. `RoomScreen`'s attach effect is guarded on
+  that flag — correctly, sending a command the relay is bound to refuse is
+  pointless — so no `CommandRejected` ever came back, and
+  `CommandRejected` was the only thing wired to user-visible copy. The
+  broadcaster landed in the room with their stream silently left out. The
+  fix keeps the guard and gives the state its own visible form (card on an
+  empty stage, pill otherwise) plus a prompt for the secret; because the
+  grant rides `RoomHello`, supplying it is a **re-dial** — `useRoomSession`
+  therefore keys its dial on the grant's content as well as the target's.
+- **A *wrong* secret is a different state, and the browser cannot name it
+  from the error.** The relay refuses the grant at join (403, the bullet
+  above), but `WebTransportError` carries no HTTP status, so in JS a refused
+  secret and an unknown code are one opaque failure — the generic card is
+  therefore the hedged "Room not found or refused" (the same blindness the
+  viewer's join copy lives with). What the room view *does* know is that a
+  secret was just supplied, so that case gets its own copy naming the secret
+  while still allowing for the code. Two rules travel with it: the refused
+  card offers **another secret, never "Retry"** — Retry reloads the page,
+  which kills the live broadcast the participant brought — and re-submitting
+  the *same* secret must still re-dial (a rotated room secret, or a typo
+  "fixed" back to the same string), which is why the dial is also keyed on a
+  nonce and not on the grant alone.
 - **The room knobs cross `roomOptions`, not `hub.Options`.** RM2's
   acceptance criterion said "every knob reaches `hub.Options` (the R2 test
   shape)"; the room registry is its own object, so it has its own
@@ -842,6 +870,7 @@ the manual pass outcome.
 | RM5 broadcaster attaches, appears in a roster, away then removal | `BroadcasterScreen.room.test.tsx`; the relay-side away/expiry path in `TestBroadcastLifecycleHooks` and the Go native integration test |
 | RM5 a room chosen before the stream waits and joins by itself; "start streaming here" carries the nickname, a guest stays a guest, nothing is asked twice (§4.8 revision 2026-09-05) | `BroadcasterScreen.room.test.tsx` (pending room from the stash and from join-by-code; dismiss), `RoomScreen.test.tsx` (the stash's shape, `presetNickname`), `roomReturn.test.ts` |
 | Live means the page is running: a silent publisher reads as away fleet-wide, ends at the grace only by opt-in; labels unique within a room (§4.9 revision 2026-09-06) | `internal/hub/stall_test.go` (not live after the timeout, any datagram clears it — keyframe, audio, ClockMapping, the transport's TimeSync stamp — ended with 4000 after the grace only with `PublisherStallEnds`, held and away without it, transitions reported once, `0` disables, edge hubs exempt), `cluster`: `TestLookupCarriesTheStallStamp`, `transport`: `TestRoomOnAnotherPodShowsASilentPublisherAway` (lease path and edge-hub path), `internal/roomsrv/label_test.go`, `TestRegistryOptionsCarryAllLimits`, config flag/env/bounds tests |
+| RM5 a gated static room that withheld `ATTACH_OK` says so, and the secret typed in the room re-dials with an attach grant (§11.1, fixed 2026-09-17) | `RoomScreen.test.tsx` (card in place of the empty-room card and no `Attach` sent; pill with other POVs on the stage; the second dial's grant, the stash, then the attach once `ATTACH_OK` arrives; a viewer with nothing to attach stays silent) **and** `node e2e/run.mjs --rooms-gated` — the browser broadcaster against a real `-rooms-file` room: admitted with `attachments: 0` and the copy on screen, then a wrong secret really refused (its card names the secret and offers no reload), then `attachments: 1` and its own tile after the right one. The e2e lane is the load-bearing half: this state sends no command, so only a real relay proves the flag arrives clear — and it is what corrected the assumed error kind, which is `refused`, not `forbidden` |
 | RM4 the dock's overlays and the tiles' chrome do not overlap; header carries the room totals (§4.9 revision 2026-09-05) | `room.module.css` bands; `RoomScreen.test.tsx` (`N streaming`, `M watching`); the dev stack's `--profile rooms` (docs/41 §4.5) is the three-POV fixture it was seen on |
 | RM6 attach visible in another participant's `RoomState` | `gawk-broadcast/internal/engine/room_integration_test.go`, `crates/engine/tests/relay_integration.rs` (ignored; CI runs it on Linux) |
 | RM6 grant hand-off rewritten before first render | `App.room.test.tsx` |

@@ -549,6 +549,21 @@
   border-radius: 999px;
 }
 
+/* The same pill, but a button: the gated-out state (D8) is actionable —
+   clicking it asks for the attach secret. It does not fade with the chrome,
+   because it is the only thing saying why a stream is missing. */
+.gatedPill {
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: center;
+  max-width: min(90vw, 30rem);
+}
+
+.gatedPill:hover {
+  border-color: var(--accent);
+}
+
 .pulse {
   width: 8px;
   height: 8px;
