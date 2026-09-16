@@ -53,6 +53,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/config"
 	"github.com/Tuhis/gawk/gawk-admin/internal/identity"
+	"github.com/Tuhis/gawk/gawk-admin/internal/openapi"
 	"github.com/Tuhis/gawk/gawk-admin/internal/relayscan"
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
@@ -194,6 +195,11 @@ type Options struct {
 	// ReadyChecks run alongside the Postgres check in /readyz.
 	ReadyChecks []ReadyCheck
 
+	// Version is the build string, stamped at link time. It rides out on the
+	// served contract as x-gawk-build, so "which binary answered?" has an
+	// answer when the repository file and a deployment disagree.
+	Version string
+
 	Log *slog.Logger
 	// Clock is the time source; nil means time.Now.
 	Clock func() time.Time
@@ -203,6 +209,9 @@ type Options struct {
 type API struct {
 	opts Options
 	log  *slog.Logger
+
+	// contract is the served OpenAPI document, converted and rewritten once.
+	contract *openapi.Document
 
 	// readyMu guards the last readiness verdict, so the "refusing to serve"
 	// line is logged on transitions rather than once per probe — a kubelet
@@ -229,7 +238,18 @@ func New(opts Options) (*API, error) {
 	if opts.Tester == nil {
 		opts.Tester = unavailableTester{}
 	}
-	return &API{opts: opts, log: opts.Log}, nil
+	// A document that does not parse is a broken build, not a runtime
+	// condition — it is compiled in, so no deployment of this binary would
+	// ever serve a valid one. Refusing to construct the API is how that
+	// becomes a refusal to start rather than a 500 somebody finds later.
+	contract, err := openapi.New(openapi.Options{
+		ExternalURL: opts.Config.ExternalURL,
+		Version:     opts.Version,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &API{opts: opts, log: opts.Log, contract: contract}, nil
 }
 
 // RoleOperator is the SYMBOLIC name of the role a route requires, as the
@@ -285,6 +305,14 @@ type routeEntry struct {
 // the intended workflow: TestOpenAPIMatchesRoutes then fails until the
 // document describes it.
 var routeTable = []routeEntry{
+	// The contract itself, UNAUTHENTICATED — the one table entry with no roles
+	// (docs/49 D2). It lives here rather than on the outer mux because
+	// /api/v1/* is this package's subtree; registration order is irrelevant,
+	// since a Go 1.22 ServeMux picks the most specific pattern and this one
+	// beats the catch-all wherever it is added.
+	{Route{Method: "GET", Pattern: "/api/v1/openapi.json"},
+		func(a *API) http.HandlerFunc { return a.contract.Handler().ServeHTTP }},
+
 	{Route{Method: "GET", Pattern: "/api/v1/me", Roles: []string{RoleOperator}},
 		func(a *API) http.HandlerFunc { return a.handleMe }},
 

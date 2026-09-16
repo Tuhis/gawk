@@ -114,6 +114,32 @@ tags:
     description: Room custom resources (optional; off unless the deployment enables them).
 
 paths:
+  /api/v1/openapi.json:
+    get:
+      operationId: getOpenAPIDocument
+      tags: [identity]
+      summary: This document, as JSON, from the deployment that serves it.
+      description: |
+        Unauthenticated, like `/auth/config`: nothing here is secret, the
+        repository is public, and a client generator needs a URL it can fetch
+        before anyone has a token.
+
+        The copy served here is this file with `servers[0].url` rewritten to
+        the deployment's own base URL, and with a top-level `x-gawk-build`
+        naming the binary that answered. It is cacheable for five minutes and
+        carries an `ETag`; send `If-None-Match` and expect `304`.
+
+        The response body is an OpenAPI 3.1 document, so it is deliberately not
+        described by a schema here — that would be a second, worse copy of the
+        OpenAPI meta-schema.
+      x-gawk-roles: []
+      security: []
+      responses:
+        '200':
+          description: The document. `application/json`, with an `ETag`.
+        '304':
+          description: Your `If-None-Match` matched; the document has not changed.
+
   /api/v1/me:
     get:
       operationId: getMe

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -174,6 +175,36 @@ func TestRoutesAreBehindTheInjectedRoleCheck(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("the route table is empty: this test proved nothing")
+	}
+}
+
+// The contract is served through the /api/v1 mux, and it is the one route
+// there that a caller with no token — or a bad one — still gets (docs/49 D2).
+//
+// It matters that the request reaches it at all: the catch-all under the same
+// prefix answers 404 for everything it does not know, so a mis-registered
+// contract route would look exactly like a typo in the URL.
+func TestTheOpenAPIDocumentIsServedWithoutAToken(t *testing.T) {
+	h := newHarnessWithoutPostgres(t)
+	h.identity.Roles = []string{"someone-else"}
+
+	status, body := h.raw(http.MethodGet, "/api/v1/openapi.json", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /api/v1/openapi.json without the operator role = %d, want 200; body: %s", status, body)
+	}
+	if !strings.Contains(body, `"openapi"`) || !strings.Contains(body, "/api/v1/me") {
+		t.Fatalf("the served document does not look like the contract: %.200s", body)
+	}
+	// And it is not the catch-all's envelope: that body is exactly
+	// {"error":{…}}, which the contract — an object of `openapi`, `info`,
+	// `paths` — never is.
+	var envelope struct {
+		Error *struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &envelope); err == nil && envelope.Error != nil {
+		t.Fatalf("the contract route fell through to the catch-all: %.200s", body)
 	}
 }
 

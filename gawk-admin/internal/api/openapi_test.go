@@ -460,6 +460,11 @@ type opWiring struct {
 
 func wirings() map[string]opWiring {
 	return map[string]opWiring{
+		// The contract itself: an OpenAPI document, not a shape this package
+		// declares, so it is documented with no schema and has nothing to
+		// round-trip.
+		"GET /api/v1/openapi.json": {},
+
 		"GET /api/v1/me": {success: map[string]func() any{
 			"200": func() any { return &meJSON{} },
 		}},
