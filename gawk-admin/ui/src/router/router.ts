@@ -20,6 +20,7 @@ export type ViewName =
   | 'relays'
   | 'webhooks'
   | 'rooms'
+  | 'api'
   | 'not-found';
 
 export interface Route {
@@ -39,7 +40,15 @@ export interface Route {
 // `rooms` resolves whether or not the deployment serves it: a webhook's deep
 // link must land on the view, and the view itself is what says "not enabled"
 // when the API answers 404 — a not-found page would read as a broken link.
-const VIEWS: readonly ViewName[] = ['broadcasts', 'bans', 'events', 'relays', 'webhooks', 'rooms'];
+const VIEWS: readonly ViewName[] = [
+  'broadcasts',
+  'bans',
+  'events',
+  'relays',
+  'webhooks',
+  'rooms',
+  'api',
+];
 
 export function parseHash(hash: string): Route {
   const raw = hash.startsWith('#') ? hash.slice(1) : hash;

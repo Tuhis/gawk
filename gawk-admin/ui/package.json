@@ -4,6 +4,10 @@
   "license": "Apache-2.0",
   "version": "0.0.0",
   "type": "module",
+  "//scarfSettings": "swagger-ui-dist depends on @scarf/scarf, whose postinstall script reports installs home. Off here, for every contributor and every CI run (R48).",
+  "scarfSettings": {
+    "enabled": false
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -14,7 +18,8 @@
   },
   "dependencies": {
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "swagger-ui-dist": "5.33.0"
   },
   "devDependencies": {
     "@redocly/cli": "2.53.2",

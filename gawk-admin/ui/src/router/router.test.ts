@@ -26,7 +26,15 @@ describe('portal routes (§4.9)', () => {
   });
 
   it('resolves every view', () => {
-    for (const view of ['broadcasts', 'bans', 'events', 'relays', 'webhooks', 'rooms'] as const) {
+    for (const view of [
+      'broadcasts',
+      'bans',
+      'events',
+      'relays',
+      'webhooks',
+      'rooms',
+      'api',
+    ] as const) {
       expect(parseHash(href(view)).view).toBe(view);
     }
   });
@@ -37,6 +45,11 @@ describe('portal routes (§4.9)', () => {
     const route = parseHash('#/rooms?key=9c1d2e3f4a5b');
     expect(route.view).toBe('rooms');
     expect(route.key).toBe('9c1d2e3f4a5b');
+  });
+
+  it('resolves #/api, which is a bookmark a bot author keeps (R48)', () => {
+    expect(parseHash('#/api').view).toBe('api');
+    expect(href('api')).toBe('#/api');
   });
 
   it('names an unknown route instead of silently landing somewhere', () => {
