@@ -165,6 +165,31 @@ Skips cleanly (prints `SKIP` and passes) when `gawk-pubsim -h` lists no
 `room-grid.png`, `room-focus.png`, `room-hidden.png`, `console-rooms.log`,
 `pubsim-room-{a,b}.log`.
 
+## Gated static room (R42 D8)
+
+```sh
+cd e2e && node run.mjs --rooms-gated
+```
+
+The room state that nothing else can prove. A static room is gated by an
+attach secret; a participant who brings none is **admitted as a watcher** and
+gets a `RoomState` with `ATTACH_OK` clear. The client deliberately sends no
+`Attach` in that state, so there is no `CommandRejected` — nothing on the wire
+to assert, which is exactly how it once failed silently (`docs/44` §11.1).
+
+The relay here starts with `-rooms -rooms-file <written>`, the file source's
+hand-written shape, whose room carries an inline `attachSecret`. The publisher
+is the **browser** (the Z5 tab-capture broadcaster), because the state only
+exists for a participant that brought a stream of its own.
+
+| Step | Assertion |
+|---|---|
+| Join by code, no secret | the `rooms` row on `/statusz` lists our participant with `attachments: 0` — admitted, not refused — and the page shows "Your stream isn't in this room" with no tile on the stage |
+| Enter the secret | the re-dial carries the grant: `attachments: 1` on `/statusz`, the own tile appears, and the gated copy is gone |
+
+Artifacts: `rooms-gated-card.png`, `rooms-gated-attached.png`,
+`console-broadcaster-gated.log`.
+
 ## fMP4 muxer playback check (R22)
 
 ```sh

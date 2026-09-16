@@ -2102,6 +2102,17 @@ jobs:
         working-directory: e2e
         env:
           GAWK_E2E_OUT_DIR: out-rooms
+      # R42 D8 (docs/44 §11.1): the gated static room. The one room state that
+      # cannot be proven anywhere else — it exists BECAUSE no command is sent,
+      # so there is nothing on the wire for a unit test to assert. Here a real
+      # -rooms-file room withholds ATTACH_OK from a real browser broadcaster,
+      # which must say so, and the secret typed in the room must re-dial into
+      # a real attachment.
+      - name: Run the gated-rooms E2E (R42 D8)
+        run: node run.mjs --rooms-gated
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-rooms-gated
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -2111,6 +2122,8 @@ jobs:
             e2e/out-browser-broadcast/
             e2e/out-telemetry/
             e2e/out-muxer-check/
+            e2e/out-rooms/
+            e2e/out-rooms-gated/
           retention-days: 7
 
   # R20 tier 2 (docs/25 Decision 7): cluster-mode E2E — the real chart with
