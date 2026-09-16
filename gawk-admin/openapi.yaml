@@ -88,11 +88,14 @@ info:
     `message`. The codes are contract, not log text.
 
 servers:
+  # One line, deliberately: Swagger UI renders this inside the server picker,
+  # where a paragraph is unreadable. The explanation belongs in
+  # `info.description`, which has room for it.
+  #
+  # The URL here is a placeholder. The copy served at `/api/v1/openapi.json`
+  # carries the deployment's own `-external-url` instead.
   - url: https://admin.gawk.example
-    description: |
-      The deployment this document came from. In the copy served at
-      `/api/v1/openapi.json` this is rewritten to the deployment's own
-      external URL; in the repository copy it is a placeholder.
+    description: This deployment.
 
 security:
   - bearerAuth: []
@@ -203,7 +206,7 @@ paths:
                     viewersGlobal: 41
                     pods:
                       - pod: gawk-server-7c9f8b6d5-2xk4p
-                        role: home
+                        role: origin
                         viewersLocal: 24
                       - pod: gawk-server-7c9f8b6d5-q7v2n
                         role: edge
@@ -1349,7 +1352,11 @@ components:
         pod: { type: string }
         role:
           type: string
-          description: '`home` for the pod the publisher is connected to; `edge` for one pulling from it.'
+          enum: [origin, edge]
+          description: |
+            `origin` is the pod the publisher is connected to; `edge` is one
+            pulling from it. The same vocabulary the relay's own `/statusz`
+            uses.
         viewersLocal:
           type: integer
           format: int32

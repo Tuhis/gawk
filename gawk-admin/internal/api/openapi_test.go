@@ -665,7 +665,7 @@ func schemaFixtures() map[string]any {
 		Reason: "terms violation", Summary: "operator@example.org ended broadcast 9f2c41ab77de",
 		Deliveries: []deliveryJSON{delivery},
 	}
-	placement := podPlacementJSON{Pod: "gawk-server-7c9f8b6d5-2xk4p", Role: "home", ViewersLocal: 24}
+	placement := podPlacementJSON{Pod: "gawk-server-7c9f8b6d5-2xk4p", Role: "origin", ViewersLocal: 24}
 	links := linksJSON{Watch: "https://gawk.example/#/view/ABC234", Telemetry: "https://t.example/#/broadcast/9f2c41ab77de"}
 	banState := banStateJSON{Banned: true, Ban: &ban}
 	broadcast := broadcastJSON{

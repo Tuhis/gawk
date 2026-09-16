@@ -135,6 +135,26 @@ rather than discovering:
   literals, so (f)'s example round-trip had nothing to decode into. Naming them
   is what turns the check into a check.
 
+Verified against a running deployment (the docs/41 compose stack), which is
+where two errors the repository gates cannot see were found and fixed:
+
+- **`PodPlacement.role` was documented as `home`/`edge`. It is
+  `origin`/`edge`** — the relay's own `/statusz` vocabulary
+  (`adminapi.go:38`). Nothing in the repository could have caught it: D3 (f)
+  holds examples to Go *types*, and the field is a plain string. A live
+  response did.
+- **`servers[0].description` was a paragraph**, which Swagger UI renders inside
+  the server picker, where it is unreadable. It is one line now; the
+  explanation lives in `info.description`, which has room for it.
+
+The live pass that found them is worth repeating when this document changes
+substantially: mint a token from the dev stack's fake IdP, call every route,
+and validate each response against the *served* document with a JSON Schema
+validator. All 23 cases pass — every list and mutation route, both cursor
+shapes, the room routes, and the error envelopes for 400/404/409. It is not a
+CI gate: it needs a whole deployment with rows in it, and the `admin` job's
+Postgres-backed tests plus D3 cover the cheap half on every PR.
+
 Two things the design did not anticipate:
 
 - **`openapi.yaml` is embedded through a one-line root package**
