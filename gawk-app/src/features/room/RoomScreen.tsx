@@ -41,9 +41,19 @@ import { NicknamePrompt } from './NicknamePrompt';
 import { RoomPanel } from './RoomPanel';
 import { OwnPreviewTile, RoomTile } from './RoomTile';
 import { RoomAudioMixer } from './roomAudio';
-import { EMPTY_ROOM_CARD, HIDDEN_CARD, endedCard, errorCard, rejectionToast, removalToast } from './roomCopy';
+import {
+  ATTACH_GATED_CARD,
+  ATTACH_GATED_PILL,
+  EMPTY_ROOM_CARD,
+  HIDDEN_CARD,
+  endedCard,
+  errorCard,
+  rejectionToast,
+  removalToast,
+} from './roomCopy';
 import { loadNickname, loadRoomMode, loadRoomPreset, saveNickname, saveRoomMode, saveRoomPreset, type RoomMode } from './roomPrefs';
-import { readGrant, type RoomGrant } from './grantHandoff';
+import { readGrant, stashGrant, type RoomGrant } from './grantHandoff';
+import { AttachSecretPrompt } from './AttachSecretPrompt';
 import { stashRoomReturn } from './roomReturn';
 import { useRoomSession } from './useRoomSession';
 
@@ -155,11 +165,19 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   const [editingNick, setEditingNick] = useState(false);
   const ready = nickname !== null || guest;
 
+  // D8: a secret typed inside the room (the gated-static case below) wins
+  // over whatever grant we arrived with. The grant rides RoomHello, so this
+  // is a re-dial, not a command — useRoomSession keys its dial on it.
+  const [attachSecret, setAttachSecret] = useState<string | null>(null);
+  const [secretPromptOpen, setSecretPromptOpen] = useState(false);
+  const effectiveGrant: RoomGrant | null =
+    attachSecret === null ? grant : { kind: 'attach', secret: attachSecret };
+
   const commands = useRoomSession({
     target: ready ? target : null,
     nickname: nickname ?? '',
     clientKind: own ? ROOM_CLIENT_WEB_BROADCASTER : ROOM_CLIENT_WEB_VIEWER,
-    grant,
+    grant: effectiveGrant,
   });
 
   // RM5: attach (and re-attach) the broadcaster's own broadcast. Idempotent
@@ -175,6 +193,13 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     if (!joined || !attachOk || ownId === null || ownToken === null) return;
     commands.attach(ownId, ownToken, ownLabel);
   }, [joined, attachOk, ownId, ownToken, ownLabel, ownEpoch, commands]);
+
+  // D8: we are in a gated static room that withheld the attach grant, so the
+  // effect above sends nothing and our stream stays out of the room. No
+  // CommandRejected explains it (none was provoked), so this state is its own
+  // visible form — a card when the stage is empty, a pill otherwise, both
+  // offering the secret (BUGS.md, fixed 2026-09-17).
+  const gatedOut = joined && snapshot !== null && !attachOk && ownId !== null;
 
   // Layout mode, persisted; the grid degrades to focus on a narrow screen.
   const [mode, setModeState] = useState<RoomMode>(loadRoomMode);
@@ -369,6 +394,21 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     { label: 'Leave room', onSelect: leave },
   ];
 
+  // D8: the secret answers the gated-out state. Setting it re-dials, which is
+  // how a grant reaches the relay at all.
+  const submitAttachSecret = useCallback((secret: string) => {
+    setSecretPromptOpen(false);
+    setAttachSecret(secret);
+  }, []);
+  // Kept for this tab (grantHandoff.ts), like the one a room link carries, so
+  // a reload rejoins with it — but only once the relay has granted ATTACH_OK
+  // on it. Stashing a typo would make every reload fail the same way with no
+  // field in sight to correct it.
+  useEffect(() => {
+    if (attachSecret === null || !attachOk || code === '') return;
+    stashGrant(code, { kind: 'attach', secret: attachSecret });
+  }, [attachSecret, attachOk, code]);
+
   // Detaching the own broadcast: the command goes out here (the session is
   // this screen's), the owner then drops its `own` so no re-attach follows.
   const detachOwn = useCallback(() => {
@@ -462,6 +502,11 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
       />
     ) : null;
 
+  // The gated-out state takes the empty stage's card; with tiles (or in hide
+  // videos, where a card already owns the middle) it is a pill instead, so it
+  // never covers video.
+  const gatedCardShown = gatedOut && effectiveMode !== 'hidden' && attachments.length === 0;
+
   const card = (title: string, body: string, actions?: ReactNode) => (
     <div className={styles.center} data-panel={panelOpen ? 'true' : 'false'}>
       <GlassPanel className={styles.card}>
@@ -532,11 +577,31 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
       {(joined || status === 'reconnecting') &&
         effectiveMode !== 'hidden' &&
         attachments.length === 0 &&
+        !gatedOut &&
         card(
           EMPTY_ROOM_CARD.title,
           EMPTY_ROOM_CARD.body,
           onStartStreaming ? <Button onClick={startStreaming}>Start streaming here</Button> : undefined,
         )}
+      {/* D8: the gated-out state, in place of the empty-room card — "nobody
+          is streaming" would be the wrong story when it is our own stream
+          being kept out. */}
+      {gatedCardShown &&
+        card(
+          ATTACH_GATED_CARD.title,
+          ATTACH_GATED_CARD.body,
+          <Button onClick={() => setSecretPromptOpen(true)}>Enter the secret</Button>,
+        )}
+      {gatedOut && !gatedCardShown && (
+        <button
+          type="button"
+          className={[styles.topPill, styles.gatedPill].join(' ')}
+          data-testid="attach-gated-pill"
+          onClick={() => setSecretPromptOpen(true)}
+        >
+          {ATTACH_GATED_PILL}
+        </button>
+      )}
 
       {status === 'reconnecting' && retryNote && (
         <div className={styles.topPill}>
@@ -735,6 +800,9 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
       )}
       {editingNick && (
         <NicknamePrompt initial={shownNickname} editing onSubmit={submitNickname} onCancel={() => setEditingNick(false)} />
+      )}
+      {secretPromptOpen && (
+        <AttachSecretPrompt onSubmit={submitAttachSecret} onCancel={() => setSecretPromptOpen(false)} />
       )}
 
       <ServerIndicator />

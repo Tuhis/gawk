@@ -2,9 +2,9 @@
 // One session per mount, keyed on the target; every callback lands in the
 // store, and the hook hands back the commands. The session dials on mount
 // (an explicit event — CODE-REVIEW's effect rule), never on re-render: the
-// nickname, grant and target are read once at mount through refs and later
-// changes travel as commands (setNickname) or as a remount (the screen keys
-// itself on the code).
+// nickname is read at mount through a ref and a later change travels as a
+// command (setNickname), while the target and the grant are dial inputs — a
+// change of either is a deliberate re-dial, keyed on content below.
 
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { RoomSession, type RoomSessionGrant, type RoomTarget } from '../../transport/room-session';
@@ -48,6 +48,12 @@ export function useRoomSession({ target, nickname, clientKind, grant }: UseRoomS
   const targetKey = target === null ? '' : JSON.stringify(target);
   const targetRef = useRef(target);
   targetRef.current = target;
+
+  // The grant is the same kind of thing: content identity, and a CHANGE is a
+  // deliberate re-dial (a server change already is one). It has to be — the
+  // grant rides RoomHello, so a secret supplied inside the room cannot travel
+  // as a command (docs/44 D8; RoomView's gated-out state).
+  const grantKey = grant === null ? '' : JSON.stringify(grant);
 
   useEffect(() => {
     const store = useRoomStore.getState();
@@ -94,9 +100,10 @@ export function useRoomSession({ target, nickname, clientKind, grant }: UseRoomS
       if (sessionRef.current === session) sessionRef.current = null;
       session.stop();
     };
-    // targetKey stands in for `target` (content identity, see above).
+    // targetKey / grantKey stand in for `target` and `grant` (content
+    // identity, see above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetKey, serverUrl, certHashHex]);
+  }, [targetKey, grantKey, serverUrl, certHashHex]);
 
   const attach = useCallback((id: string, token: string, label: string) => {
     sessionRef.current?.attach(id, token, label);

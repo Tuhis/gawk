@@ -1226,6 +1226,19 @@ Add to it when a new gotcha lands in `docs/`.
   reactor (`installCAS` / `installRoomCAS`) last-writer-wins and hides
   exactly this. ([docs/44](44-rooms.md) §11.1)
 
+- **A guard that suppresses a doomed command also suppresses its
+  rejection, and a rejection was the only thing wired to copy.** A
+  broadcaster joining a gated static room with no attach secret is
+  admitted as a watcher: the join succeeds and `RoomState` simply arrives
+  without `ROOM_STATE_FLAG_ATTACH_OK`. The client's attach effect is
+  guarded on that flag — rightly — so no `Attach` went out, so no
+  `CommandRejected` came back, so nothing said why the broadcaster's own
+  stream was missing from the room they were standing in. Whenever a
+  client skips a command because a capability flag says it would be
+  refused, the *flag* now owes the user the sentence the rejection used to
+  carry. (And supplying the secret is a re-dial, not a command: the grant
+  rides `RoomHello`.) ([docs/44](44-rooms.md) §11.1)
+
 - **Never name a shell variable `HOME` in an e2e script.** `rooms-assert.sh`
   used `HOME` for the home pod and set it to `""`; every child `kubectl`
   from that line on had no `~/.kube/config`, fell back to the runner pod's

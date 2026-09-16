@@ -146,6 +146,18 @@ export const EMPTY_ROOM_CARD: Card = {
   body: 'You’re in the room. Streams appear here the moment someone attaches one.',
 };
 
+// A gated static room (D8) admitted us as a watcher but withheld the attach
+// grant, so ROOM_STATE_FLAG_ATTACH_OK is clear and the own broadcast is not
+// on the stage. Nothing on the wire says this: the attach is never sent, so
+// no CommandRejected comes back — which is exactly how it used to fail
+// silently. This copy is the state's visible form (docs/44 §4.9).
+export const ATTACH_GATED_CARD: Card = {
+  title: 'Your stream isn’t in this room',
+  body: 'This room needs an attach secret before it will carry your stream. You’re in the room and can watch; ask whoever set it up for the secret.',
+};
+
+export const ATTACH_GATED_PILL = 'Your stream isn’t in this room — it needs an attach secret';
+
 export const SHARE_CODE_NOTE = 'Anyone with the room code can also see the codes of the streams in it.';
 
 export const RECONNECTING_NOTE = 'Reconnecting to the room…';
