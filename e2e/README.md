@@ -185,10 +185,16 @@ exists for a participant that brought a stream of its own.
 | Step | Assertion |
 |---|---|
 | Join by code, no secret | the `rooms` row on `/statusz` lists our participant with `attachments: 0` — admitted, not refused — and the page shows "Your stream isn't in this room" with no tile on the stage |
-| Enter the secret | the re-dial carries the grant: `attachments: 1` on `/statusz`, the own tile appears, and the gated copy is gone |
+| A wrong secret | the relay refuses the re-dial at join; the card names the secret ("That secret didn't work") and offers **no Retry** — Retry reloads the page, which would kill the live broadcast this participant brought |
+| The right secret | the re-dial carries the grant: `attachments: 1` on `/statusz`, the own tile appears, and the gated copy is gone |
 
-Artifacts: `rooms-gated-card.png`, `rooms-gated-attached.png`,
-`console-broadcaster-gated.log`.
+The wrong-secret step is why this lane exists in the first place: it
+corrected an assumption the unit tests had happily encoded. A refused secret
+reaches JS as `refused`, not `forbidden` — `WebTransportError` carries no
+HTTP status, so 403 and 404 are indistinguishable in the browser.
+
+Artifacts: `rooms-gated-card.png`, `rooms-gated-wrong-secret.png`,
+`rooms-gated-attached.png`, `console-broadcaster-gated.log`.
 
 ## fMP4 muxer playback check (R22)
 

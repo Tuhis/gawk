@@ -1795,11 +1795,34 @@ async function roomsGatedPass({ relayUrl, certHash, opsUrl }) {
     log(`gated ok: in the room as a participant, 0 attachments, and the page says why (broadcast ${id})`);
     writeFileSync(join(OUT, 'rooms-gated-card.png'), await page.screenshot());
 
-    // The secret, typed from inside the room: a re-dial, then a real attach.
-    await page.getByRole('button', { name: 'Enter the secret' }).click();
     // Scoped to the dialog: the broadcast page's own room panel carries an
     // "Attach secret" field too, and it stays mounted behind the room view.
     const secretDialog = page.locator('[role="dialog"][aria-label="Attach secret for this room"]');
+    const typeSecret = async (secret) => {
+      await page.getByRole('button', { name: 'Enter the secret' }).click();
+      await secretDialog.waitFor({ state: 'visible', timeout: 5_000 });
+      await secretDialog.getByLabel('Attach secret').fill(secret);
+      await secretDialog.getByRole('button', { name: 'Attach' }).click();
+    };
+
+    // A WRONG secret is a different state, and the relay decides it: a gated
+    // room refuses the grant at join (403, docs/44 §11.1), so the re-dial
+    // fails outright rather than landing us back in the room ungranted.
+    await typeSecret('not-the-secret');
+    await page.getByText('That secret didn’t work').waitFor({ state: 'visible', timeout: 15_000 });
+    // Never a page reload here: this page is running a live broadcast.
+    if (await page.getByRole('button', { name: 'Retry' }).isVisible().catch(() => false)) {
+      fail('the refused-secret card offers Retry, which reloads and kills the live broadcast');
+    }
+    log('wrong secret ok: the relay refused the re-dial, and the card names the secret');
+    writeFileSync(join(OUT, 'rooms-gated-wrong-secret.png'), await page.screenshot());
+
+    // …and the way out keeps the broadcast alive: another secret, no reload.
+    // (The card's other action returns to the live page; "Retry" — which
+    // reloads and would kill the broadcast — is deliberately not offered
+    // here.) This is also the right secret's path, so the attach below is
+    // reached from the refused state, not from a fresh join.
+    await page.getByRole('button', { name: 'Try another secret' }).click();
     await secretDialog.waitFor({ state: 'visible', timeout: 5_000 });
     await secretDialog.getByLabel('Attach secret').fill(GATED_ROOM_SECRET);
     await secretDialog.getByRole('button', { name: 'Attach' }).click();

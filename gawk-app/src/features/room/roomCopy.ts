@@ -158,6 +158,17 @@ export const ATTACH_GATED_CARD: Card = {
 
 export const ATTACH_GATED_PILL = 'Your stream isn’t in this room — it needs an attach secret';
 
+// The dial we made WITH a secret came back refused. The browser cannot see
+// which status it was — `WebTransportError` carries no HTTP code, so 403
+// (wrong secret) and 404 (no such room) are one error in JS, the same
+// blindness the viewer's join copy hedges around. But we know something the
+// generic card does not: a secret was just supplied, which makes it the
+// likeliest cause and worth naming, while still allowing for the code.
+export const ATTACH_REFUSED_CARD: Card = {
+  title: 'That secret didn’t work',
+  body: 'The room refused it. Check the secret and try again — the room code could also be wrong. Your stream is still running either way.',
+};
+
 export const SHARE_CODE_NOTE = 'Anyone with the room code can also see the codes of the streams in it.';
 
 export const RECONNECTING_NOTE = 'Reconnecting to the room…';

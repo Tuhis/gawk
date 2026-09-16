@@ -510,6 +510,35 @@ describe('a gated static room that refused the attach grant (D8)', () => {
     expect(screen.getByLabelText('Attach secret')).toBeTruthy();
   });
 
+  it('a refused secret says so, offers another instead of a reload, and re-dials even for the same one', async () => {
+    renderOwn();
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ flags: 0, attachments: [] })));
+    fireEvent.click(screen.getByRole('button', { name: 'Enter the secret' }));
+    fireEvent.change(screen.getByLabelText('Attach secret'), { target: { value: 'wrong' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+
+    // The relay refuses a wrong secret at join, and the browser cannot see
+    // WHICH status it was — 403 and 404 reach JS as one opaque failure, so
+    // the honest generic card is "not found or refused". Here we know a
+    // secret was just supplied, so the card names it.
+    act(() => roomSessions[1].cbs.onError({ kind: 'refused', message: 'Room not found or refused' }));
+    expect(screen.getByText('That secret didn’t work')).toBeTruthy();
+    expect(screen.queryByText('Room not found or refused')).toBeNull();
+    // Reload would kill the live broadcast this page is running.
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Back to my stream' })).toBeTruthy();
+
+    // Same secret again still re-dials (a typo may have been "fixed" back to
+    // it, or the room's secret rotated) — the nonce, not the grant, moves.
+    fireEvent.click(screen.getByRole('button', { name: 'Try another secret' }));
+    fireEvent.change(screen.getByLabelText('Attach secret'), { target: { value: 'wrong' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(3));
+    expect(roomSessions[2].opts.grant).toEqual({ kind: 'attach', secret: 'wrong' });
+  });
+
   it('a viewer with nothing to attach stays silent', async () => {
     await joinAs('tuhis', { flags: 0, attachments: [] });
     expect(screen.getByText('Nobody is streaming yet')).toBeTruthy();

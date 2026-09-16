@@ -44,6 +44,7 @@ import { RoomAudioMixer } from './roomAudio';
 import {
   ATTACH_GATED_CARD,
   ATTACH_GATED_PILL,
+  ATTACH_REFUSED_CARD,
   EMPTY_ROOM_CARD,
   HIDDEN_CARD,
   endedCard,
@@ -170,6 +171,11 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   // is a re-dial, not a command — useRoomSession keys its dial on it.
   const [attachSecret, setAttachSecret] = useState<string | null>(null);
   const [secretPromptOpen, setSecretPromptOpen] = useState(false);
+  // Bumped on every submitted secret, so re-submitting the SAME one still
+  // re-dials: after a refused key that is the one thing the participant can
+  // usefully do (they may have fixed a typo back to the same string, or the
+  // room's secret may have been rotated since).
+  const [dialNonce, setDialNonce] = useState(0);
   const effectiveGrant: RoomGrant | null =
     attachSecret === null ? grant : { kind: 'attach', secret: attachSecret };
 
@@ -178,6 +184,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     nickname: nickname ?? '',
     clientKind: own ? ROOM_CLIENT_WEB_BROADCASTER : ROOM_CLIENT_WEB_VIEWER,
     grant: effectiveGrant,
+    dialNonce,
   });
 
   // RM5: attach (and re-attach) the broadcaster's own broadcast. Idempotent
@@ -200,6 +207,11 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   // visible form — a card when the stage is empty, a pill otherwise, both
   // offering the secret (BUGS.md, fixed 2026-09-17).
   const gatedOut = joined && snapshot !== null && !attachOk && ownId !== null;
+  // D8: the dial we made with a typed secret came back refused. The kind is
+  // hedged (no HTTP status reaches JS), but "a secret was just supplied and
+  // the join failed" is certain — enough to name the likely cause and to
+  // offer another attempt instead of a page reload.
+  const secretRefused = status === 'error' && attachSecret !== null;
 
   // Layout mode, persisted; the grid degrades to focus on a narrow screen.
   const [mode, setModeState] = useState<RoomMode>(loadRoomMode);
@@ -399,6 +411,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   const submitAttachSecret = useCallback((secret: string) => {
     setSecretPromptOpen(false);
     setAttachSecret(secret);
+    setDialNonce((n) => n + 1);
   }, []);
   // Kept for this tab (grantHandoff.ts), like the one a room link carries, so
   // a reload rejoins with it — but only once the relay has granted ATTACH_OK
@@ -549,13 +562,23 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
       {status === 'error' &&
         errorKind &&
         card(
-          errorCard(errorKind).title,
-          errorCard(errorKind).body,
+          secretRefused ? ATTACH_REFUSED_CARD.title : errorCard(errorKind).title,
+          secretRefused ? ATTACH_REFUSED_CARD.body : errorCard(errorKind).body,
           <>
-            <Button variant="secondary" onClick={() => window.location.reload()}>
-              Retry
-            </Button>
-            <Button onClick={leave}>Home</Button>
+            {secretRefused && (
+              <Button variant="secondary" onClick={() => setSecretPromptOpen(true)}>
+                Try another secret
+              </Button>
+            )}
+            {/* D8: "Retry" reloads the page, which kills a live broadcast —
+                so a participant that brought its own stream never gets it.
+                Leaving the room is the non-destructive way out for them. */}
+            {!secretRefused && ownId === null && (
+              <Button variant="secondary" onClick={() => window.location.reload()}>
+                Retry
+              </Button>
+            )}
+            <Button onClick={leave}>{ownId === null ? 'Home' : 'Back to my stream'}</Button>
           </>,
         )}
       {status === 'ended' && card(endedCard(endReason).title, endedCard(endReason).body, <Button onClick={leave}>Leave</Button>)}

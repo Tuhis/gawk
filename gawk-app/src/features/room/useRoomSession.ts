@@ -28,9 +28,13 @@ export interface UseRoomSessionArgs {
   nickname: string;
   clientKind: number;
   grant: RoomSessionGrant | null;
+  // Bump to force a re-dial with an unchanged target and grant — the "try
+  // that key again" case (docs/44 D8). Any change re-dials; the value itself
+  // means nothing.
+  dialNonce?: number;
 }
 
-export function useRoomSession({ target, nickname, clientKind, grant }: UseRoomSessionArgs): RoomCommands {
+export function useRoomSession({ target, nickname, clientKind, grant, dialNonce = 0 }: UseRoomSessionArgs): RoomCommands {
   // Same subscription discipline as useViewerConnection: a server change is
   // a deliberate re-dial, and the room's tiles re-dial with it.
   const serverUrl = useTransportStore((s) => s.serverUrl);
@@ -103,7 +107,7 @@ export function useRoomSession({ target, nickname, clientKind, grant }: UseRoomS
     // targetKey / grantKey stand in for `target` and `grant` (content
     // identity, see above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetKey, grantKey, serverUrl, certHashHex]);
+  }, [targetKey, grantKey, dialNonce, serverUrl, certHashHex]);
 
   const attach = useCallback((id: string, token: string, label: string) => {
     sessionRef.current?.attach(id, token, label);
