@@ -1,0 +1,1640 @@
+# The contract for gawk-admin's /api/v1 (R48, docs/49).
+#
+# HAND-WRITTEN AND REVIEWED LIKE CODE (D1). There is no generator: edit the
+# handler and this file in the same commit, and `go test ./internal/api/...`
+# says whether they still agree. TestOpenAPIMatchesRoutes walks the route table
+# and this document in both directions — every route documented, every
+# documented operation registered, every error code and event type in the
+# enums, every example decoding into its Go type with unknown fields refused.
+#
+# The served copy is this file as JSON at GET /api/v1/openapi.json, with
+# servers[0].url rewritten to the deployment's -external-url.
+openapi: 3.1.1
+
+info:
+  title: gawk-admin API
+  version: 1.1.0 # x-release-please-version
+  summary: Moderation and fleet-operations API for a gawk deployment.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  description: |
+    The HTTP API of `gawk-admin`, the moderation portal of a
+    [gawk](https://github.com/Tuhis/gawk) deployment. It is the surface the
+    portal SPA uses, and the one external software integrates against.
+
+    ## Authentication
+
+    Every operation except the served contract itself requires a bearer JWT
+    issued by the deployment's OIDC provider, in `Authorization: Bearer <token>`.
+    Authorization is by **role claim**: each operation declares the role it
+    needs under `x-gawk-roles`, and a valid token without that role is `403`.
+    There are no cookies and no session — a `Set-Cookie` on any response would
+    be a bug.
+
+    A service identity (a bot) uses the **client-credentials** grant against the
+    same provider and sends the resulting access token. `docs/self-hosting.md`
+    §9.8 has a worked recipe.
+
+    Unauthenticated bootstrap routes: `GET /auth/config` tells a browser which
+    issuer, client ID and audience to use, and `GET /api/v1/openapi.json` serves
+    this document.
+
+    ## What this API promises
+
+    `/api/v1` is **additive within v1**. Fields and operations are added; none
+    is ever removed or retyped, and the `code` and `type` enums only grow. A
+    removal would be a `/api/v2`, which does not exist and is not planned.
+    Write your client to ignore fields it does not know, and to treat an
+    unknown enum value as unknown rather than as an error.
+
+    ## Three-outcome mutations
+
+    A ban is two writes in two systems that cannot share a transaction: a
+    Postgres row and a Kubernetes enforcement object. The row is the commitment
+    point, so a mutation has three outcomes rather than two:
+
+    | Outcome | Status |
+    |---|---|
+    | Row written, enforcement object projected | `201 Created` (kill, create) / `204 No Content` (unban) |
+    | Row written, projection failed | `202 Accepted`, body carries the ban with `enforcement.inSync: false` |
+    | Row not written | `503` when Postgres is unreachable, `500` otherwise |
+
+    **`202` is a success.** The record is durable and a reconciler finishes the
+    job within a minute. Do not re-submit on a `202`: the retry will `409`
+    against the row that does exist.
+
+    ## Secrets, and what is sensitive
+
+    No response ever carries a webhook signing secret — the webhook schema has
+    nowhere to put one. A room's attach secret is returned exactly **once**, by
+    the operation that mints it, and is never readable again.
+
+    Responses marked `x-gawk-sensitive: true` may carry raw broadcast IDs, raw
+    room codes or publisher IP addresses. Those are joinable or personal and
+    reach this OIDC-gated surface deliberately; they must not be forwarded
+    anywhere that is not equally gated, and they never appear in an outbound
+    event.
+
+    ## Events
+
+    Outbound events — webhook deliveries and, where enabled, the NATS bus — are
+    **not** described here. Their catalogue is an AsyncAPI document served at
+    `/api/v1/asyncapi.json` by this same deployment.
+
+    ## Errors
+
+    Every error is `{"error": {"code", "message"}}`. Branch on `code`; show
+    `message`. The codes are contract, not log text.
+
+servers:
+  - url: https://admin.gawk.example
+    description: |
+      The deployment this document came from. In the copy served at
+      `/api/v1/openapi.json` this is rewritten to the deployment's own
+      external URL; in the repository copy it is a placeholder.
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: identity
+    description: Who the caller is, and what this deployment serves.
+  - name: broadcasts
+    description: The live fleet, and the actuator that ends a broadcast.
+  - name: bans
+    description: The enforcement record — the system of record for every ban.
+  - name: events
+    description: The audit and notification feed, with per-webhook delivery state.
+  - name: relays
+    description: Read-only effective configuration of each relay pod.
+  - name: webhooks
+    description: Outbound notification targets and their delivery test.
+  - name: rooms
+    description: Room custom resources (optional; off unless the deployment enables them).
+
+paths:
+  /api/v1/me:
+    get:
+      operationId: getMe
+      tags: [identity]
+      summary: The calling identity, the server-side defaults and the enabled features.
+      description: |
+        The authorization probe. A client calls it first: a `200` proves the
+        token carries the required role, and the body carries the operational
+        defaults a client should follow rather than hard-code.
+      x-gawk-roles: [operator]
+      responses:
+        '200':
+          description: The caller's identity and this deployment's defaults.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+              example:
+                email: operator@example.org
+                subject: 5f3c1f7a-0f77-4a1e-9a63-9f0c1b2d3e4f
+                roles: [operator]
+                defaults:
+                  killCooldownSeconds: 600
+                features:
+                  rooms: true
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/broadcasts:
+    get:
+      operationId: listBroadcasts
+      tags: [broadcasts]
+      summary: Every broadcast live on the relay fleet, with its ban state.
+      description: |
+        Merges each relay pod's view into one row per broadcast and joins the
+        enforcement record onto it.
+
+        `podsResolved` and `podsAnswered` make partial coverage visible: when
+        they differ, some pod did not answer and the list is incomplete. An
+        empty list from an unreachable fleet must not be read as "nothing is
+        broadcasting".
+
+        `banState` is `null` when it could not be determined — the moderation
+        database was unreachable — which means *unknown*, never *not banned*.
+      x-gawk-roles: [operator]
+      responses:
+        '200':
+          description: The fleet as of the most recent scan.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            Carries raw, joinable broadcast IDs and publisher IP addresses.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BroadcastsPage' }
+              example:
+                broadcasts:
+                  - id: ABC234
+                    key: 9f2c41ab77de
+                    publisherActive: true
+                    publisherRemoteIp: 203.0.113.7
+                    startedAt: '2026-09-16T09:12:04Z'
+                    viewersGlobal: 41
+                    pods:
+                      - pod: gawk-server-7c9f8b6d5-2xk4p
+                        role: home
+                        viewersLocal: 24
+                      - pod: gawk-server-7c9f8b6d5-q7v2n
+                        role: edge
+                        viewersLocal: 17
+                    links:
+                      watch: https://gawk.example/#/view/ABC234
+                      telemetry: https://telemetry.gawk.example/#/broadcast/9f2c41ab77de
+                    banState:
+                      banned: false
+                podsResolved: 3
+                podsAnswered: 3
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/broadcasts/{id}/kill:
+    post:
+      operationId: killBroadcast
+      tags: [broadcasts]
+      summary: End a broadcast and ban its ID for a cooldown.
+      description: |
+        A kill **is** a ban on the broadcast ID with an expiry. Without one the
+        broadcaster's own resume token reclaims the ID within seconds, so the
+        cooldown is what makes the kill stick long enough for the operator to
+        decide on a real ban.
+
+        `cooldownSeconds` defaults to the deployment's configured cooldown,
+        which `GET /api/v1/me` reports.
+
+        A double-clicked kill answers `409 duplicate_active` **with the ban
+        already in force**, so a client can show what is there rather than a
+        bare conflict.
+      x-gawk-roles: [operator]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The raw broadcast ID, as `GET /api/v1/broadcasts` reports it.
+          schema: { $ref: '#/components/schemas/BroadcastId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/KillRequest' }
+            example:
+              reason: repeated terms violations after a warning
+              cooldownSeconds: 900
+      responses:
+        '201':
+          description: The broadcast was ended and the ban is enforced.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            The ban's target may be a raw broadcast ID or a publisher CIDR.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KillResult' }
+              example:
+                ban:
+                  id: 1f1c2b3a-4d5e-4f60-8a91-0b2c3d4e5f60
+                  target: { type: broadcastId, value: ABC234 }
+                  state: active
+                  reason: repeated terms violations after a warning
+                  createdAt: '2026-09-16T09:31:00Z'
+                  createdBy: operator@example.org
+                  expiresAt: '2026-09-16T09:46:00Z'
+                  sourceBroadcastId: ABC234
+                  crName: bid-abc234
+        '202':
+          description: |
+            **A success.** The ban is recorded and durable; its Kubernetes
+            enforcement object could not be written yet and the reconciler
+            retries within a minute. Do not re-submit.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            The ban's target may be a raw broadcast ID or a publisher CIDR.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KillResult' }
+              example:
+                ban:
+                  id: 1f1c2b3a-4d5e-4f60-8a91-0b2c3d4e5f60
+                  target: { type: broadcastId, value: ABC234 }
+                  state: active
+                  reason: repeated terms violations after a warning
+                  createdAt: '2026-09-16T09:31:00Z'
+                  createdBy: operator@example.org
+                  expiresAt: '2026-09-16T09:46:00Z'
+                  sourceBroadcastId: ABC234
+                  enforcement:
+                    inSync: false
+                    detail: >-
+                      The ban is recorded but NOT enforced yet — its Kubernetes
+                      enforcement object could not be written; the reconciler
+                      retries within a minute, so do not re-submit.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: An active ban already covers this broadcast; it is returned with the error.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            The ban's target may be a raw broadcast ID or a publisher CIDR.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BanConflict' }
+              example:
+                error:
+                  code: duplicate_active
+                  message: this broadcast is already banned
+                ban:
+                  id: 1f1c2b3a-4d5e-4f60-8a91-0b2c3d4e5f60
+                  target: { type: broadcastId, value: ABC234 }
+                  state: active
+                  reason: repeated terms violations after a warning
+                  createdAt: '2026-09-16T09:31:00Z'
+                  createdBy: operator@example.org
+                  expiresAt: '2026-09-16T09:46:00Z'
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/bans:
+    get:
+      operationId: listBans
+      tags: [bans]
+      summary: The active ban set, or paged ban history.
+      description: |
+        `state=active` returns the **whole** active set, unpaged: it is bounded,
+        and callers reason over it as a set. `state=all` is history, which grows
+        forever, so it pages by the composite `(afterCreatedAt, afterId)`
+        cursor — both halves or neither.
+
+        `nextAfter` is always present and is `null` at the end of the feed
+        (always, for the active set).
+      x-gawk-roles: [operator]
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: Which set to return.
+          schema:
+            type: string
+            enum: [active, all]
+            default: active
+        - name: limit
+          in: query
+          required: false
+          description: |
+            Page size for `state=all`. Clamped to at most 500; anything
+            non-positive means the default.
+          schema: { type: integer, format: int32, default: 50, maximum: 500 }
+        - name: afterCreatedAt
+          in: query
+          required: false
+          description: The `nextAfter.createdAt` of the previous page. Send with `afterId` or not at all.
+          schema: { type: string, format: date-time }
+        - name: afterId
+          in: query
+          required: false
+          description: The `nextAfter.id` of the previous page. Send with `afterCreatedAt` or not at all.
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: One page of bans.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            A ban's target may be a raw broadcast ID or a publisher CIDR.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BansPage' }
+              example:
+                bans:
+                  - id: 1f1c2b3a-4d5e-4f60-8a91-0b2c3d4e5f60
+                    target: { type: ip, value: 203.0.113.0/24 }
+                    state: active
+                    reason: evading an ID ban
+                    createdAt: '2026-09-16T09:31:00Z'
+                    createdBy: operator@example.org
+                    expiresAt: null
+                    crName: ip-203-0-113-0-24
+                nextAfter: null
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      operationId: createBan
+      tags: [bans]
+      summary: Ban a broadcast ID or a publisher address range.
+      description: |
+        `target.value` may be the literal `publisher` for an IP ban, which asks
+        the server to resolve the live publisher's address itself; that form
+        requires `sourceBroadcastId`. Resolving server-side bans the address the
+        relay actually observed, not whatever a five-second-old table row said.
+
+        A bare address is widened to `prefixLength`, defaulting to `/32` for
+        IPv4 and `/64` for IPv6 — privacy-address rotation makes a `/128`
+        near-useless. A `prefixLength` that disagrees with a CIDR sent alongside
+        it is refused rather than reconciled.
+
+        `expiresAt: null` is a permanent ban.
+      x-gawk-roles: [operator]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBanRequest' }
+            example:
+              target: { type: ip, value: publisher, prefixLength: 24 }
+              expiresAt: '2026-10-16T09:31:00Z'
+              reason: evading an ID ban
+              sourceBroadcastId: ABC234
+      responses:
+        '201':
+          description: The ban is recorded and enforced.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            The ban's target may be a raw broadcast ID or a publisher CIDR.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ban' }
+              example:
+                id: 2a2d3e4f-5061-4728-9b3c-4d5e6f708192
+                target: { type: ip, value: 203.0.113.0/24 }
+                state: active
+                reason: evading an ID ban
+                createdAt: '2026-09-16T09:31:00Z'
+                createdBy: operator@example.org
+                expiresAt: '2026-10-16T09:31:00Z'
+                sourceBroadcastId: ABC234
+                crName: ip-203-0-113-0-24
+        '202':
+          description: |
+            **A success.** The ban is recorded and durable; its enforcement
+            object is not written yet and the reconciler retries. Do not
+            re-submit.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            The ban's target may be a raw broadcast ID or a publisher CIDR.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ban' }
+              example:
+                id: 2a2d3e4f-5061-4728-9b3c-4d5e6f708192
+                target: { type: ip, value: 203.0.113.0/24 }
+                state: active
+                reason: evading an ID ban
+                createdAt: '2026-09-16T09:31:00Z'
+                createdBy: operator@example.org
+                expiresAt: null
+                enforcement:
+                  inSync: false
+                  detail: >-
+                    The ban is recorded but NOT enforced yet — its Kubernetes
+                    enforcement object could not be written; the reconciler
+                    retries within a minute, so do not re-submit.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: An active ban already covers this target; it is returned with the error.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            The ban's target may be a raw broadcast ID or a publisher CIDR.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BanConflict' }
+              example:
+                error:
+                  code: duplicate_active
+                  message: an active ban already covers this target
+                ban:
+                  id: 2a2d3e4f-5061-4728-9b3c-4d5e6f708192
+                  target: { type: ip, value: 203.0.113.0/24 }
+                  state: active
+                  reason: evading an ID ban
+                  createdAt: '2026-09-16T09:31:00Z'
+                  createdBy: operator@example.org
+                  expiresAt: null
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/bans/{id}:
+    delete:
+      operationId: removeBan
+      tags: [bans]
+      summary: Lift a ban.
+      description: |
+        Idempotent: lifting an already-lifted ban still deletes the enforcement
+        object and still answers `204`, but records no second audit event.
+
+        The `202` here is the direction most easily misread — the record says
+        `removed` while the target is **still** enforced — so it answers with
+        the ban and the sentence that says so.
+      x-gawk-roles: [operator]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The ban's ID.
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: The ban is lifted and its enforcement object is gone.
+        '202':
+          description: |
+            **A success.** The ban is lifted in the record; its enforcement
+            object could not be deleted yet, so the target is still banned until
+            the reconciler retries. Do not re-submit.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            The ban's target may be a raw broadcast ID or a publisher CIDR.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ban' }
+              example:
+                id: 2a2d3e4f-5061-4728-9b3c-4d5e6f708192
+                target: { type: ip, value: 203.0.113.0/24 }
+                state: removed
+                reason: evading an ID ban
+                createdAt: '2026-09-16T09:31:00Z'
+                createdBy: operator@example.org
+                expiresAt: null
+                removedAt: '2026-09-16T11:02:13Z'
+                removedBy: operator@example.org
+                enforcement:
+                  inSync: false
+                  detail: >-
+                    The ban is lifted in the record but the target is STILL
+                    banned — its Kubernetes enforcement object could not be
+                    deleted; the reconciler retries within a minute, so do not
+                    re-submit.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/events:
+    get:
+      operationId: listEvents
+      tags: [events]
+      summary: The audit and notification feed, newest first.
+      description: |
+        Every event carries its per-webhook delivery state, because a failed
+        delivery has to be *seen*: this feed is the only place an operator
+        learns that the page they were counting on never arrived.
+
+        `nextAfterId` is always present and is `null` at the end of the feed. A
+        short page is the end; a cursor is handed out only when the page came
+        back full.
+      x-gawk-roles: [operator]
+      parameters:
+        - name: afterId
+          in: query
+          required: false
+          description: The previous page's `nextAfterId`. Absent or `0` starts at the newest event.
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: limit
+          in: query
+          required: false
+          description: Page size, clamped to at most 500.
+          schema: { type: integer, format: int32, default: 50, maximum: 500 }
+        - name: type
+          in: query
+          required: false
+          description: |
+            Restrict the page to these event types. Repeat the parameter
+            (`?type=ban.created&type=ban.removed`) or send one comma-separated
+            value (`?type=ban.created,ban.removed`); both are accepted. Absent
+            means every type. An unknown name is `400 bad_request` rather than
+            an empty page — a typo must not read as "nothing has happened".
+          explode: true
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/EventType' }
+      responses:
+        '200':
+          description: One page of the feed.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            `broadcastId` is the raw, joinable ID; portal-gated, never forwarded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventsPage' }
+              example:
+                events:
+                  - id: 4821
+                    type: broadcast.killed
+                    occurredAt: '2026-09-16T09:31:00Z'
+                    actor: operator@example.org
+                    broadcastKey: 9f2c41ab77de
+                    broadcastId: ABC234
+                    reason: repeated terms violations after a warning
+                    summary: operator@example.org ended broadcast 9f2c41ab77de
+                    deliveries:
+                      - webhookName: ops-pager
+                        state: delivered
+                        attempts: 1
+                        deliveredAt: '2026-09-16T09:31:01Z'
+                nextAfterId: 4821
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/relays:
+    get:
+      operationId: listRelays
+      tags: [relays]
+      summary: Each relay pod's effective configuration.
+      description: |
+        Read-only, and there is no write path: GitOps stays the only mutation
+        channel for relay configuration. This view exists for one question —
+        which pod has the stale flag? — and answers it from each pod's own
+        sanitized config, with secrets already redacted at the source.
+      x-gawk-roles: [operator]
+      responses:
+        '200':
+          description: One row per relay pod.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RelaysPage' }
+              example:
+                relays:
+                  - pod: gawk-server-7c9f8b6d5-2xk4p
+                    reachable: true
+                    version: 2.4.1
+                    config:
+                      maxIdleTimeout: 30s
+                      keepalivePeriod: 10s
+                      maxViewersPerBroadcast: 1000
+                  - pod: gawk-server-7c9f8b6d5-q7v2n
+                    reachable: false
+                    error: 'dial tcp 10.42.0.9:2112: connect: connection refused'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/webhooks:
+    get:
+      operationId: listWebhooks
+      tags: [webhooks]
+      summary: Every outbound notification target, from both sources.
+      description: |
+        Merges chart-defined webhooks (`source: config`, visible and testable
+        here but never editable) with portal-created ones (`source: ui`).
+
+        Neither carries its signing secret: the schema has no field for one.
+      x-gawk-roles: [operator]
+      responses:
+        '200':
+          description: Both sources, config first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhooksPage' }
+              example:
+                webhooks:
+                  - name: ops-pager
+                    url: https://pager.example.org/hooks/gawk
+                    enabled: true
+                    source: config
+                  - id: 7b8c9d0e-1f20-4314-8526-3748596a7b8c
+                    name: moderation-log
+                    url: https://log.example.org/gawk
+                    enabled: true
+                    source: ui
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    post:
+      operationId: createWebhook
+      tags: [webhooks]
+      summary: Create a portal-managed webhook.
+      description: |
+        `secret` is write-only and required: every webhook is signed with its
+        own key. It is never returned, so a client cannot round-trip one.
+
+        Names are unique across **both** sources, so a name a chart already
+        defines is `409 source_immutable`.
+      x-gawk-roles: [operator]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookRequest' }
+            example:
+              name: moderation-log
+              url: https://log.example.org/gawk
+              secret: a-long-random-string
+              enabled: true
+      responses:
+        '201':
+          description: The webhook was created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Webhook' }
+              example:
+                id: 7b8c9d0e-1f20-4314-8526-3748596a7b8c
+                name: moderation-log
+                url: https://log.example.org/gawk
+                enabled: true
+                source: ui
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/webhooks/{id}:
+    put:
+      operationId: updateWebhook
+      tags: [webhooks]
+      summary: Update a portal-managed webhook.
+      description: |
+        `secret` is optional here: an empty or absent value keeps the stored
+        key. A chart-defined webhook is `409 source_immutable` — it is
+        immutable here, not invisible.
+      x-gawk-roles: [operator]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The webhook's ID. A chart-defined webhook's *name* here is `409`, not `404`.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookRequest' }
+            example:
+              name: moderation-log
+              url: https://log.example.org/gawk/v2
+              enabled: false
+      responses:
+        '200':
+          description: The webhook as it now stands.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Webhook' }
+              example:
+                id: 7b8c9d0e-1f20-4314-8526-3748596a7b8c
+                name: moderation-log
+                url: https://log.example.org/gawk/v2
+                enabled: false
+                source: ui
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      operationId: deleteWebhook
+      tags: [webhooks]
+      summary: Delete a portal-managed webhook.
+      x-gawk-roles: [operator]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The webhook's ID. A chart-defined webhook's *name* here is `409`, not `404`.
+          schema: { type: string }
+      responses:
+        '204':
+          description: The webhook is gone.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/webhooks/{name}/test:
+    post:
+      operationId: testWebhook
+      tags: [webhooks]
+      summary: Send a synthetic signed delivery to one webhook.
+      description: |
+        Works for **both** sources: a chart-defined webhook is immutable here,
+        not untestable — an operator must be able to prove the paging pipe works
+        without a redeploy.
+
+        A non-2xx from the receiver is reported in the body with `ok: false`,
+        not as an HTTP error of this API: the call itself succeeded.
+      x-gawk-roles: [operator]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The webhook's name, from either source.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The test send was attempted; the body says how it went.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookTestResult' }
+              example:
+                ok: true
+                status: 204
+                deliveryId: 0198f3b2-7a41-7c9e-b1d3-5e6f708192a3
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/rooms:
+    get:
+      operationId: listRooms
+      tags: [rooms]
+      summary: Every room custom resource, static first.
+      description: |
+        Only served when this deployment enables rooms; otherwise the path
+        answers `404 not_found` like any unknown one. `GET /api/v1/me` reports
+        `features.rooms`.
+
+        A room whose custom resource could not be decoded is still listed, by
+        name, with an empty `kind`: an operator who cannot see a stuck object
+        cannot fix it.
+      x-gawk-roles: [operator]
+      x-gawk-requires: rooms
+      responses:
+        '200':
+          description: Both kinds of room.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            `name` and `code` are the raw, joinable room code.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomsPage' }
+              example:
+                rooms:
+                  - name: team-standup
+                    kind: static
+                    code: team-standup
+                    displayName: Team standup
+                    maxBroadcasts: 4
+                    attachments: 2
+                    homeHolder: gawk-server-7c9f8b6d5-2xk4p
+                    key: 3c7d91fe20ab
+                    createdAt: '2026-09-01T07:00:00Z'
+                    hasAttachSecret: true
+                    managed: true
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+    post:
+      operationId: createRoom
+      tags: [rooms]
+      summary: Create a static room.
+      description: |
+        Static rooms are link-only, so a code shaped like a six-character
+        dynamic code is refused: the join box would resolve it as one.
+
+        `withAttachSecret` mints an attach secret, returned **once** in this
+        response and never readable again.
+      x-gawk-roles: [operator]
+      x-gawk-requires: rooms
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRoomRequest' }
+            example:
+              code: team-standup
+              displayName: Team standup
+              maxBroadcasts: 4
+              withAttachSecret: true
+      responses:
+        '201':
+          description: The room was created. `attachSecret` is shown here and nowhere else, ever.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            Carries the raw room code and the one-time attach secret.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomWithSecret' }
+              example:
+                room:
+                  name: team-standup
+                  kind: static
+                  code: team-standup
+                  displayName: Team standup
+                  maxBroadcasts: 4
+                  attachments: 0
+                  createdAt: '2026-09-16T09:31:00Z'
+                  hasAttachSecret: true
+                  managed: true
+                attachSecret: s3cr3t-attach-key-shown-once
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /api/v1/rooms/{name}/rotate-secret:
+    post:
+      operationId: rotateRoomSecret
+      tags: [rooms]
+      summary: Mint a fresh attach secret for a static room.
+      description: |
+        The new secret is returned **once**. A dynamic room has no attach secret
+        — it is gated by its creator token — so rotation there is
+        `409 room_not_static`.
+      x-gawk-roles: [operator]
+      x-gawk-requires: rooms
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The room code.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Rotated. `attachSecret` is shown here and nowhere else, ever.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: |
+            Carries the raw room code and the one-time attach secret.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoomWithSecret' }
+              example:
+                room:
+                  name: team-standup
+                  kind: static
+                  code: team-standup
+                  attachments: 0
+                  hasAttachSecret: true
+                  managed: true
+                attachSecret: s3cr3t-rotated-key-shown-once
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /api/v1/rooms/{name}/end:
+    post:
+      operationId: endRoom
+      tags: [rooms]
+      summary: End a dynamic room.
+      description: |
+        The same action as deleting the room, restricted to dynamic rooms — for
+        a client that means "end" and would rather be told than delete a static
+        room by mistake. A static room never ends: `409 room_not_dynamic`.
+      x-gawk-roles: [operator]
+      x-gawk-requires: rooms
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The room code.
+          schema: { type: string }
+      responses:
+        '204':
+          description: The room is gone; every session in it was closed.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /api/v1/rooms/{name}:
+    delete:
+      operationId: deleteRoom
+      tags: [rooms]
+      summary: Delete a room of either kind.
+      description: |
+        For a dynamic room this is "end room": deleting the custom resource is
+        what every relay pod acts on, closing the sessions in it.
+      x-gawk-roles: [operator]
+      x-gawk-requires: rooms
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The room code.
+          schema: { type: string }
+      responses:
+        '204':
+          description: The room is gone.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        An OIDC-issued access token. The role the operation declares under
+        `x-gawk-roles` must be present in the token's role claim.
+
+  responses:
+    BadRequest:
+      description: The request was malformed or the target could not be resolved.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: bad_request
+              message: reason is required
+    Unauthorized:
+      description: No bearer token, or one this deployment will not accept.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: bad_request
+              message: a bearer token is required
+    Forbidden:
+      description: A valid token whose identity lacks the role this operation declares.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: bad_request
+              message: the operator role is required
+    NotFound:
+      description: No such object — or, for a feature this deployment does not serve, no such path.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: not_found
+              message: no such endpoint
+    Conflict:
+      description: The request is refused by the current state of the object.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: source_immutable
+              message: webhook ops-pager is defined by chart values and cannot be changed from the portal
+    Internal:
+      description: Something failed that the caller cannot fix by retrying differently.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: internal
+              message: internal error
+    Unavailable:
+      description: |
+        A dependency is unreachable. Retrying is the right response — and
+        enforcement of existing bans is unaffected either way.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: unavailable
+              message: the moderation database is unreachable; enforcement of existing bans is unaffected
+
+  schemas:
+    ErrorCode:
+      type: string
+      description: |
+        The machine-readable half of the error envelope. Branch on this, not on
+        `message`. The enum only ever grows; treat an unknown value as unknown.
+      enum:
+        - bad_request
+        - not_found
+        - duplicate_active
+        - duplicate_name
+        - source_immutable
+        - internal
+        - unavailable
+        - invalid_target
+        - ban_not_active
+        - room_exists
+        - room_not_static
+        - room_not_dynamic
+
+    ErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        message:
+          type: string
+          description: A human-readable sentence. Safe to show; not safe to parse.
+
+    Error:
+      type: object
+      description: The one error shape every failing operation answers with.
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorBody' }
+
+    EventType:
+      type: string
+      description: |
+        The type of a recorded event. The enum only ever grows; treat an unknown
+        value as unknown. `content_flag.raised` is allocated and not yet
+        produced.
+      enum:
+        - broadcast.killed
+        - ban.created
+        - ban.expired
+        - ban.removed
+        - content_flag.raised
+        - room.created
+        - room.ended
+        - room.secret_rotated
+
+    BroadcastId:
+      type: string
+      description: |
+        A raw, joinable broadcast ID — six characters of the broadcast alphabet.
+        Case-insensitive on input; normalized on output.
+      example: ABC234
+
+    BroadcastKey:
+      type: string
+      description: |
+        The fleet's HMAC'd handle for a broadcast. This is the form that may
+        leave the deployment: it is stable within a process's lifetime and
+        carries nothing joinable.
+      example: 9f2c41ab77de
+
+    Me:
+      type: object
+      description: The calling identity, plus what this deployment serves and defaults to.
+      required: [email, subject, roles, defaults, features]
+      properties:
+        email:
+          type: string
+          description: From the token, when it carries one. A service identity usually has none.
+        subject:
+          type: string
+          description: The token's `sub`. Always present; this is the stable identifier.
+        roles:
+          type: array
+          description: The roles this deployment recognized in the token.
+          items: { type: string }
+        defaults:
+          type: object
+          description: Operational numbers a client should follow rather than hard-code.
+          required: [killCooldownSeconds]
+          properties:
+            killCooldownSeconds:
+              type: integer
+              format: int32
+              description: The default cooldown a kill's ID ban is given.
+        features:
+          type: object
+          description: |
+            Optional surfaces this deployment serves. A client should offer no
+            navigation to a feature that is off — its routes answer `404`.
+          required: [rooms]
+          properties:
+            rooms:
+              type: boolean
+              description: Whether the `/api/v1/rooms` routes exist here.
+
+    BanTarget:
+      type: object
+      description: What a ban is against.
+      required: [type, value]
+      properties:
+        type:
+          type: string
+          enum: [broadcastId, ip]
+        value:
+          type: string
+          description: |
+            A broadcast ID, or a CIDR for an `ip` ban — always a prefix on
+            output, never a bare address.
+
+    Enforcement:
+      type: object
+      description: |
+        Whether the Kubernetes object that actually enforces this record is in
+        step with it. Present **only** on a `202`; its absence is the signal
+        that there is nothing to say.
+
+        `inSync` rather than `enforced` because it has to read correctly in both
+        directions: a pending create is recorded and not enforced; a pending
+        removal is lifted in the record while the target is still enforced.
+      required: [inSync]
+      properties:
+        inSync:
+          type: boolean
+        detail:
+          type: string
+          description: One sentence naming which way the two are out of step. Show it verbatim.
+
+    Ban:
+      type: object
+      description: One row of the enforcement record.
+      required: [id, target, state, reason, createdAt, createdBy, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        target: { $ref: '#/components/schemas/BanTarget' }
+        state:
+          type: string
+          enum: [active, expired, removed]
+        reason:
+          type: string
+          description: Operator-private context. It never leaves this API.
+        createdAt: { type: string, format: date-time }
+        createdBy:
+          type: string
+          description: The identity that created the ban, or `system` for one the janitor expired.
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            Explicitly `null` for a permanent ban, rather than omitted —
+            "permanent" is a fact a client renders.
+        removedAt: { type: string, format: date-time }
+        removedBy: { type: string }
+        sourceBroadcastId:
+          allOf:
+            - $ref: '#/components/schemas/BroadcastId'
+          description: The broadcast the ban was taken against, when there was one.
+        crName:
+          type: string
+          description: The name of the Kubernetes enforcement object. Deterministic from the target.
+        enforcement: { $ref: '#/components/schemas/Enforcement' }
+
+    BanConflict:
+      type: object
+      description: |
+        A `409` that is *about* a specific ban: the one already in force on that
+        target, returned so a client can show what is there rather than a bare
+        conflict.
+      required: [error, ban]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorBody' }
+        ban: { $ref: '#/components/schemas/Ban' }
+
+    BanCursor:
+      type: object
+      description: |
+        The composite history cursor. Both halves or neither: ban rows are
+        UUID-keyed, so a timestamp alone is not unique and a UUID alone does not
+        order.
+      required: [createdAt, id]
+      properties:
+        createdAt:
+          type: string
+          format: date-time
+          description: RFC 3339 with nanoseconds. Send it back verbatim.
+        id: { type: string, format: uuid }
+
+    BansPage:
+      type: object
+      required: [bans, nextAfter]
+      properties:
+        bans:
+          type: array
+          items: { $ref: '#/components/schemas/Ban' }
+        nextAfter:
+          oneOf:
+            - $ref: '#/components/schemas/BanCursor'
+            - type: 'null'
+          description: The cursor for the next page, or `null` at the end of the feed.
+
+    CreateBanRequest:
+      type: object
+      required: [target, reason]
+      properties:
+        target:
+          type: object
+          required: [type, value]
+          properties:
+            type:
+              type: string
+              enum: [broadcastId, ip]
+            value:
+              type: string
+              description: |
+                A broadcast ID, an address, a CIDR — or, for an `ip` ban, the
+                literal `publisher`, which asks the server to resolve the live
+                publisher's address itself. That form requires
+                `sourceBroadcastId`.
+            prefixLength:
+              type: integer
+              format: int32
+              description: |
+                The operator-confirmed prefix for an IP ban. Defaults to `32`
+                for IPv4 and `64` for IPv6. A value that disagrees with a CIDR
+                in `value` is refused rather than reconciled.
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+          description: RFC 3339, or `null`/absent for a permanent ban.
+        reason:
+          type: string
+          maxLength: 512
+          description: Required. Operator-private; it never leaves this API.
+        sourceBroadcastId:
+          allOf:
+            - $ref: '#/components/schemas/BroadcastId'
+          description: The broadcast this ban came from. Required when `target.value` is `publisher`.
+
+    KillRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          maxLength: 512
+          description: Required. Operator-private; it never leaves this API.
+        cooldownSeconds:
+          type: integer
+          format: int32
+          minimum: 1
+          description: |
+            How long the kill's ID ban lasts. Absent means the deployment's
+            default, which `GET /api/v1/me` reports.
+
+    KillResult:
+      type: object
+      description: |
+        Kill's envelope. It is `{ban}` rather than the ban itself so a client
+        parses one shape for both the `201` and the `202`.
+      required: [ban]
+      properties:
+        ban: { $ref: '#/components/schemas/Ban' }
+
+    PodPlacement:
+      type: object
+      description: One relay pod's view of a broadcast.
+      required: [pod, role, viewersLocal]
+      properties:
+        pod: { type: string }
+        role:
+          type: string
+          description: '`home` for the pod the publisher is connected to; `edge` for one pulling from it.'
+        viewersLocal:
+          type: integer
+          format: int32
+          description: Viewers attached to this pod alone.
+
+    BroadcastLinks:
+      type: object
+      description: |
+        Deep links, each omitted when its base URL is unconfigured — a dead link
+        is worse than no link.
+      properties:
+        watch: { type: string, format: uri }
+        telemetry: { type: string, format: uri }
+
+    BanState:
+      type: object
+      description: Whether an active ban already covers a broadcast.
+      required: [banned]
+      properties:
+        banned: { type: boolean }
+        ban:
+          allOf:
+            - $ref: '#/components/schemas/Ban'
+          description: |
+            The covering ban: the ID ban in preference to an IP ban, because
+            that is the one a re-kill would collide with.
+
+    Broadcast:
+      type: object
+      description: One broadcast, merged across every pod carrying it.
+      required: [id, key, publisherActive, viewersGlobal, pods, banState]
+      properties:
+        id: { $ref: '#/components/schemas/BroadcastId' }
+        key: { $ref: '#/components/schemas/BroadcastKey' }
+        publisherActive:
+          type: boolean
+          description: Whether a publisher session is attached right now.
+        publisherRemoteIp:
+          type: string
+          description: The address the relay observed. Absent when no publisher is attached.
+        startedAt: { type: string, format: date-time }
+        viewersGlobal:
+          type: integer
+          format: int32
+          description: Viewers across the whole fleet.
+        pods:
+          type: array
+          items: { $ref: '#/components/schemas/PodPlacement' }
+        links: { $ref: '#/components/schemas/BroadcastLinks' }
+        banState:
+          oneOf:
+            - $ref: '#/components/schemas/BanState'
+            - type: 'null'
+          description: |
+            `null` means *unknown* — the moderation database was unreachable —
+            never *not banned*.
+
+    BroadcastsPage:
+      type: object
+      required: [broadcasts, podsResolved, podsAnswered]
+      properties:
+        broadcasts:
+          type: array
+          items: { $ref: '#/components/schemas/Broadcast' }
+        podsResolved:
+          type: integer
+          format: int32
+          description: How many relay pods the scan found.
+        podsAnswered:
+          type: integer
+          format: int32
+          description: |
+            How many of them answered. When this is less than `podsResolved`,
+            the list is incomplete — say so rather than rendering it as the
+            whole fleet.
+
+    Delivery:
+      type: object
+      description: One webhook's attempt to deliver one event.
+      required: [webhookName, state, attempts]
+      properties:
+        webhookName: { type: string }
+        state:
+          type: string
+          enum: [pending, delivered, failed]
+          description: '`failed` is terminal: the retry budget is spent.'
+        attempts: { type: integer, format: int32 }
+        lastError: { type: string }
+        deliveredAt: { type: string, format: date-time }
+        nextAttemptAt: { type: string, format: date-time }
+
+    Event:
+      type: object
+      description: One row of the audit and notification feed.
+      required: [id, type, occurredAt, actor, deliveries]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Monotonic, and the cursor the feed pages by.
+        type: { $ref: '#/components/schemas/EventType' }
+        occurredAt: { type: string, format: date-time }
+        actor:
+          type: string
+          description: The identity that caused the event, or `system`.
+        broadcastKey: { $ref: '#/components/schemas/BroadcastKey' }
+        broadcastId:
+          allOf:
+            - $ref: '#/components/schemas/BroadcastId'
+          description: The raw ID. Present on this gated surface only; never on an outbound event.
+        reason: { type: string }
+        summary:
+          type: string
+          description: A one-sentence rendering of the event. Show it verbatim.
+        deliveries:
+          type: array
+          description: |
+            Per-webhook delivery state. This is the only place a failed
+            delivery becomes visible, so do not hide it.
+          items: { $ref: '#/components/schemas/Delivery' }
+
+    EventsPage:
+      type: object
+      required: [events, nextAfterId]
+      properties:
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/Event' }
+        nextAfterId:
+          type: [integer, 'null']
+          format: int64
+          description: |
+            The `afterId` for the next page, or `null` at the end of the feed.
+            A short page is the end; no cursor is handed out there.
+
+    Relay:
+      type: object
+      description: One relay pod's effective configuration, as the pod itself reports it.
+      required: [pod, reachable]
+      properties:
+        pod: { type: string }
+        reachable: { type: boolean }
+        version: { type: string }
+        config:
+          type: object
+          description: |
+            The pod's own sanitized configuration, with secrets already redacted
+            at the source. Free-form on purpose: it follows the relay's flags,
+            which are the relay's contract, not this API's.
+          additionalProperties: true
+        error:
+          type: string
+          description: Why the pod could not be scraped, or why its config could not be read.
+
+    RelaysPage:
+      type: object
+      required: [relays]
+      properties:
+        relays:
+          type: array
+          items: { $ref: '#/components/schemas/Relay' }
+
+    Webhook:
+      type: object
+      description: |
+        An outbound notification target. There is **no** secret field, for
+        either source: that is the strongest form of "secrets are never
+        returned" — there is nowhere to put one.
+      required: [name, url, enabled, source]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Present for a `ui` webhook only; a chart-defined one is not a row.
+        name: { type: string }
+        url: { type: string, format: uri }
+        enabled: { type: boolean }
+        source:
+          type: string
+          enum: [config, ui]
+          description: |
+            `config` is chart-defined: visible and testable here, never
+            editable. `ui` was created through this API.
+
+    WebhookRequest:
+      type: object
+      required: [name, url]
+      properties:
+        name:
+          type: string
+          description: Unique across both sources; a chart-defined name is `409 source_immutable`.
+        url: { type: string, format: uri }
+        secret:
+          type: string
+          description: |
+            Write-only, and never returned. Required on create — every webhook
+            is signed with its own key. On update, empty or absent keeps the
+            stored key.
+        enabled: { type: boolean }
+
+    WebhooksPage:
+      type: object
+      required: [webhooks]
+      properties:
+        webhooks:
+          type: array
+          items: { $ref: '#/components/schemas/Webhook' }
+
+    WebhookTestResult:
+      type: object
+      description: |
+        The outcome of a synthetic signed delivery. A non-2xx from the receiver
+        is reported here with `ok: false`, not as an HTTP error of this API —
+        the call itself succeeded.
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        status:
+          type: integer
+          format: int32
+          description: The receiver's HTTP status, when it answered at all.
+        error: { type: string }
+        deliveryId:
+          type: string
+          description: The delivery identifier the receiver saw, for matching against its own logs.
+
+    Room:
+      type: object
+      description: One room custom resource.
+      required: [name, kind, code, attachments, hasAttachSecret, managed]
+      properties:
+        name:
+          type: string
+          description: |
+            The custom resource's name — the normalized code. Raw and joinable,
+            like a broadcast ID.
+        kind:
+          type: string
+          enum: ['', static, dynamic]
+          description: Empty for a room whose custom resource could not be decoded.
+        code:
+          type: string
+          description: The display form of the code — the slug as configured, or the upper-cased dynamic code.
+        displayName: { type: string }
+        maxBroadcasts:
+          type: integer
+          format: int32
+          description: The per-room override; absent or `0` means the fleet default.
+        attachments:
+          type: integer
+          format: int32
+          description: How many broadcasts are attached right now.
+        homeHolder:
+          type: string
+          description: The pod holding the room's lease; empty until some pod has homed it.
+        key:
+          type: string
+          description: |
+            The fleet's HMAC'd handle for the room — the one form of a room's
+            identity that may leave the deployment. Empty until homed.
+        createdAt: { type: string, format: date-time }
+        emptySince:
+          type: string
+          format: date-time
+          description: When the room last became empty, for the grace-period sweep.
+        hasAttachSecret:
+          type: boolean
+          description: Whether a static room is gated. The secret itself has no field here.
+        managed:
+          type: boolean
+          description: |
+            `true` for a room this API created. A `kubectl apply`'d one is shown
+            and deletable, but marked as not ours.
+
+    RoomsPage:
+      type: object
+      required: [rooms]
+      properties:
+        rooms:
+          type: array
+          items: { $ref: '#/components/schemas/Room' }
+
+    CreateRoomRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: |
+            The slug. It must not have the six-character shape of a dynamic
+            code — static rooms are link-only, and the join box would resolve
+            such a slug as a typed code.
+        displayName: { type: string, maxLength: 128 }
+        maxBroadcasts:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 64
+          description: '`0` means the fleet default.'
+        withAttachSecret:
+          type: boolean
+          description: Mint an attach secret, returned once in the response.
+
+    RoomWithSecret:
+      type: object
+      description: The only shape that ever carries a room's attach secret.
+      required: [room]
+      properties:
+        room: { $ref: '#/components/schemas/Room' }
+        attachSecret:
+          type: string
+          description: |
+            Shown **once**, here. It is not stored anywhere this API can read it
+            back, so a client that loses it must rotate.

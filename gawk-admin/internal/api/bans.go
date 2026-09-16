@@ -65,7 +65,7 @@ func (a *API) handleListBans(w http.ResponseWriter, r *http.Request) {
 			a.fail(w, r, "list bans", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"bans": renderBans(bans), "nextAfter": nil})
+		writeJSON(w, http.StatusOK, bansPageJSON{Bans: renderBans(bans)})
 	case store.FilterAll:
 		// The limit is clamped HERE with the store's own rule, so the cursor
 		// below is computed against the limit that actually cut the rows —
@@ -80,17 +80,17 @@ func (a *API) handleListBans(w http.ResponseWriter, r *http.Request) {
 			a.fail(w, r, "list ban history", err)
 			return
 		}
-		var next any
+		var next *banCursorJSON
 		if len(bans) == limit && limit > 0 {
 			last := bans[len(bans)-1]
-			next = map[string]string{
+			next = &banCursorJSON{
 				// RFC3339Nano keeps the microseconds Postgres stores; a
 				// seconds-precision cursor would skip same-second siblings.
-				"createdAt": last.CreatedAt.UTC().Format(time.RFC3339Nano),
-				"id":        last.ID.String(),
+				CreatedAt: last.CreatedAt.UTC().Format(time.RFC3339Nano),
+				ID:        last.ID.String(),
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"bans": renderBans(bans), "nextAfter": next})
+		writeJSON(w, http.StatusOK, bansPageJSON{Bans: renderBans(bans), NextAfter: next})
 	default:
 		writeError(w, http.StatusBadRequest, CodeBadRequest, `state must be "active" or "all"`)
 	}
@@ -170,10 +170,7 @@ func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {
 	// Duplicate active target answers 409 WITH the existing ban, so the
 	// operator sees what is already in force (§4.7).
 	if existing, err := a.opts.Store.ActiveBanForTarget(r.Context(), target); err == nil {
-		writeJSON(w, http.StatusConflict, struct {
-			Error errorBody `json:"error"`
-			Ban   banJSON   `json:"ban"`
-		}{
+		writeJSON(w, http.StatusConflict, banConflictJSON{
 			Error: errorBody{Code: CodeDuplicateActive, Message: "an active ban already covers this target"},
 			Ban:   renderBan(existing),
 		})

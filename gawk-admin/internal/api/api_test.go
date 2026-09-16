@@ -137,17 +137,58 @@ func TestMeCarriesIdentityAndKillCooldownDefault(t *testing.T) {
 	}
 }
 
-// The injected role check gates every route. api never decides authorization
-// itself — but it must actually apply what auth hands it.
+// The injected role check gates every route that declares a role. api never
+// decides authorization itself — but it must actually apply what auth hands it.
+//
+// It walks the DECLARED table (R48 docs/49 D3), not a hand-written path list
+// and not a constructed mux: a route added to the table is checked here the
+// moment it is added, and a route whose registration is behind a feature this
+// harness has off is still checked — with rooms off its paths fall through to
+// the catch-all, which is a 404 rather than a 200, and that is what the
+// `wantOpen` arm below distinguishes.
 func TestRoutesAreBehindTheInjectedRoleCheck(t *testing.T) {
 	h := newHarnessWithoutPostgres(t)
 	h.identity.Roles = []string{"someone-else"}
 
-	for _, path := range []string{"/api/v1/me", "/api/v1/bans", "/api/v1/broadcasts", "/api/v1/webhooks", "/api/v1/events", "/api/v1/relays"} {
-		if status, _ := h.raw(http.MethodGet, path, nil); status != http.StatusForbidden {
-			t.Fatalf("GET %s without the operator role = %d, want 403", path, status)
+	checked := 0
+	for _, r := range api.RouteTable() {
+		if len(r.Roles) == 0 {
+			// Unauthenticated by design (the served OpenAPI document). It must
+			// NOT be a 403 — that is the whole claim.
+			status, _ := h.raw(r.Method, concretePath(r.Pattern), nil)
+			if status == http.StatusForbidden {
+				t.Fatalf("%s %s declares no roles but answered 403", r.Method, r.Pattern)
+			}
+			continue
 		}
+		want := http.StatusForbidden
+		if r.Requires == api.RequiresRooms {
+			// Not registered in this harness, so the catch-all answers.
+			want = http.StatusNotFound
+		}
+		status, _ := h.raw(r.Method, concretePath(r.Pattern), nil)
+		if status != want {
+			t.Fatalf("%s %s without the operator role = %d, want %d", r.Method, r.Pattern, status, want)
+		}
+		checked++
 	}
+	if checked == 0 {
+		t.Fatal("the route table is empty: this test proved nothing")
+	}
+}
+
+// concretePath fills a pattern's {placeholders} with a syntactically valid
+// stand-in. The value never reaches a handler — authorization refuses the
+// request first, which is the point — so any non-empty segment will do.
+func concretePath(pattern string) string {
+	out := []string{}
+	for _, seg := range strings.Split(pattern, "/") {
+		if strings.HasPrefix(seg, "{") {
+			seg = "placeholder"
+		}
+		out = append(out, seg)
+	}
+	return strings.Join(out, "/")
 }
 
 // Postgres down: mutations answer 503 (§6), not 500 — the operator should

@@ -24,29 +24,12 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 	if roles == nil {
 		roles = []string{}
 	}
-	writeJSON(w, http.StatusOK, struct {
-		Email    string   `json:"email"`
-		Subject  string   `json:"subject"`
-		Roles    []string `json:"roles"`
-		Defaults struct {
-			KillCooldownSeconds int `json:"killCooldownSeconds"`
-		} `json:"defaults"`
-		// Features says which optional surfaces this deployment serves, so
-		// the SPA shows no navigation to a route that answers 404 (R42:
-		// rooms are default-off).
-		Features struct {
-			Rooms bool `json:"rooms"`
-		} `json:"features"`
-	}{
-		Email:   id.Email,
-		Subject: id.Subject,
-		Roles:   roles,
-		Defaults: struct {
-			KillCooldownSeconds int `json:"killCooldownSeconds"`
-		}{KillCooldownSeconds: int(a.opts.Config.KillCooldown.Seconds())},
-		Features: struct {
-			Rooms bool `json:"rooms"`
-		}{Rooms: a.opts.Rooms != nil},
+	writeJSON(w, http.StatusOK, meJSON{
+		Email:    id.Email,
+		Subject:  id.Subject,
+		Roles:    roles,
+		Defaults: meDefaultsJSON{KillCooldownSeconds: int(a.opts.Config.KillCooldown.Seconds())},
+		Features: meFeaturesJSON{Rooms: a.opts.Rooms != nil},
 	})
 }
 
@@ -95,10 +78,10 @@ func (a *API) handleListBroadcasts(w http.ResponseWriter, r *http.Request) {
 	// without these an empty answer from an unreachable fleet would render as a
 	// reassuring "nothing is broadcasting" (the same honesty rule banState's
 	// null already enforces on the Postgres axis).
-	writeJSON(w, http.StatusOK, map[string]any{
-		"broadcasts":   out,
-		"podsResolved": snap.PodsResolved,
-		"podsAnswered": snap.PodsAnswered,
+	writeJSON(w, http.StatusOK, broadcastsPageJSON{
+		Broadcasts:   out,
+		PodsResolved: snap.PodsResolved,
+		PodsAnswered: snap.PodsAnswered,
 	})
 }
 
@@ -148,10 +131,7 @@ func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
 	// ban, so a double-clicked Kill shows the operator what is already in
 	// force instead of a bare conflict.
 	if existing, err := a.opts.Store.ActiveBanForTarget(r.Context(), target); err == nil {
-		writeJSON(w, http.StatusConflict, struct {
-			Error errorBody `json:"error"`
-			Ban   banJSON   `json:"ban"`
-		}{
+		writeJSON(w, http.StatusConflict, banConflictJSON{
 			Error: errorBody{Code: CodeDuplicateActive, Message: "this broadcast is already banned"},
 			Ban:   renderBan(existing),
 		})
@@ -201,13 +181,13 @@ func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
 	// way; `enforcement` is what tells it enforcement has not started.
 	if projErr != nil {
 		a.log.Error("projecting the kill ban to a Ban CR failed", "banId", created.ID, "err", projErr)
-		writeJSON(w, http.StatusAccepted, map[string]any{"ban": renderPendingBan(created, DetailBanPending)})
+		writeJSON(w, http.StatusAccepted, killResultJSON{Ban: renderPendingBan(created, DetailBanPending)})
 		return
 	}
 	// Ban reasons are operator-private context: Debug only (docs/42 §5).
 	a.log.Info("broadcast killed", "broadcastKey", key, "actor", id.Actor(), "cooldownSeconds", int(cooldown.Seconds()))
 	a.log.Debug("kill reason recorded", "broadcastKey", key, "reason", reason)
-	writeJSON(w, http.StatusCreated, map[string]any{"ban": renderBan(created)})
+	writeJSON(w, http.StatusCreated, killResultJSON{Ban: renderBan(created)})
 }
 
 // broadcastKey resolves a raw ID to its HMAC'd key through relayscan. Empty

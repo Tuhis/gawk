@@ -326,3 +326,97 @@ func renderBroadcast(agg relayscan.Aggregate, cfg linkConfig, banState *banState
 }
 
 type linkConfig struct{ app, telemetry string }
+
+// The LIST and single-object envelopes, as declared types.
+//
+// They were `map[string]any` literals in the handlers until R48: the shapes
+// were real contract — the SPA, and now an external consumer, parse them — but
+// nothing in Go named them, so nothing could be held to the OpenAPI document.
+// TestOpenAPIMatchesRoutes decodes every example in `openapi.yaml` into one of
+// these with unknown fields disallowed, which is only a check because the
+// types exist.
+//
+// Every cursor field is a POINTER with no `omitempty`: `null` is the "feed
+// exhausted" answer and it has to be PRESENT, or a client cannot tell an
+// exhausted feed from a server that never sent a cursor at all.
+
+// meJSON is the SPA's authorization probe, plus the server-side defaults it
+// pre-fills dialogs from.
+type meJSON struct {
+	Email   string   `json:"email"`
+	Subject string   `json:"subject"`
+	Roles   []string `json:"roles"`
+	// Defaults are the operational numbers a client should follow rather than
+	// hard-code: they track the deployment's flags.
+	Defaults meDefaultsJSON `json:"defaults"`
+	// Features says which optional surfaces this deployment serves, so a
+	// client offers no navigation to a route that answers 404 (R42: rooms are
+	// default-off).
+	Features meFeaturesJSON `json:"features"`
+}
+
+type meDefaultsJSON struct {
+	KillCooldownSeconds int `json:"killCooldownSeconds"`
+}
+
+type meFeaturesJSON struct {
+	Rooms bool `json:"rooms"`
+}
+
+// broadcastsPageJSON carries the coverage counters beside the rows so partial
+// coverage is VISIBLE: an empty answer from an unreachable fleet must not
+// render as a reassuring "nothing is broadcasting".
+type broadcastsPageJSON struct {
+	Broadcasts []broadcastJSON `json:"broadcasts"`
+	// PodsResolved is how many relay pods the scan found; PodsAnswered how
+	// many of them actually answered.
+	PodsResolved int `json:"podsResolved"`
+	PodsAnswered int `json:"podsAnswered"`
+}
+
+// killResultJSON is kill's `{ban}` envelope — the one single-object route that
+// does not answer the object itself (§4.7 pins it), so a client parses one
+// shape for both the 201 and the 202.
+type killResultJSON struct {
+	Ban banJSON `json:"ban"`
+}
+
+// banConflictJSON is the 409 that is ABOUT a specific ban: the one already in
+// force on that target, returned beside the error so the operator sees what is
+// already there instead of a bare conflict.
+type banConflictJSON struct {
+	Error errorBody `json:"error"`
+	Ban   banJSON   `json:"ban"`
+}
+
+// banCursorJSON is the composite history cursor. Both halves or neither: ban
+// rows are UUID-keyed, so a timestamp alone is not unique and a UUID alone
+// does not order (docs/42 §11.2).
+type banCursorJSON struct {
+	CreatedAt string `json:"createdAt"`
+	ID        string `json:"id"`
+}
+
+type bansPageJSON struct {
+	Bans      []banJSON      `json:"bans"`
+	NextAfter *banCursorJSON `json:"nextAfter"`
+}
+
+type eventsPageJSON struct {
+	Events []eventJSON `json:"events"`
+	// NextAfterID is the `afterId` for the next page, or null at the end of
+	// the feed.
+	NextAfterID *int64 `json:"nextAfterId"`
+}
+
+type relaysPageJSON struct {
+	Relays []relayJSON `json:"relays"`
+}
+
+type webhooksPageJSON struct {
+	Webhooks []webhookJSON `json:"webhooks"`
+}
+
+type roomsPageJSON struct {
+	Rooms []roomJSON `json:"rooms"`
+}

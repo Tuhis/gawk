@@ -72,6 +72,32 @@ const (
 	CodeNotActive       = "ban_not_active"
 )
 
+// allErrorCodes is the closed vocabulary of the envelope's `code` — every
+// constant above plus the room codes in rooms.go.
+//
+// It is a function over one list so the OpenAPI drift test can compare it with
+// the document's enum in both directions: a code the document does not know
+// fails, and an enum entry no constant declares fails too. Adding a constant
+// without adding it here is the one gap left, and the R48 doc's "an enum only
+// grows" promise (D9) is what makes that gap cheap: a forgotten entry is a
+// code a consumer was never promised, not one that silently changed meaning.
+func allErrorCodes() []string {
+	return []string{
+		CodeBadRequest,
+		CodeNotFound,
+		CodeDuplicateActive,
+		CodeDuplicateName,
+		CodeSourceImmutable,
+		CodeInternal,
+		CodeUnavailable,
+		CodeInvalidTarget,
+		CodeNotActive,
+		CodeRoomExists,
+		CodeRoomNotStatic,
+		CodeRoomNotDynamic,
+	}
+}
+
 // Projector writes one ban row's Ban CR. Implemented by *kube.Reconciler.
 //
 // It is called INLINE by every mutation, on whichever replica served the
@@ -206,6 +232,133 @@ func New(opts Options) (*API, error) {
 	return &API{opts: opts, log: opts.Log}, nil
 }
 
+// RoleOperator is the SYMBOLIC name of the role a route requires, as the
+// OpenAPI document's `x-gawk-roles` spells it.
+//
+// It is not the string the role check compares against: that is
+// Config.OperatorRole, which a deployment renames to match its IdP's claim.
+// The table names the role the API means; protect resolves it to the role this
+// deployment calls it. R49 adds `rooms-reader` beside it.
+const RoleOperator = "operator"
+
+// Features a route may require. A route whose Requires names a feature that is
+// off is NOT registered, so the catch-all answers its path with the documented
+// 404 envelope.
+const (
+	// RequiresRooms gates the R42 room routes on -rooms (Options.Rooms).
+	RequiresRooms = "rooms"
+)
+
+// Route describes one /api/v1 operation, and it is the DECLARED form of what
+// used to be a column of inline mux.Handle calls (R48, docs/49 D3).
+//
+// The point of the table is that a test can walk it in both directions against
+// `openapi.yaml`: every route documented, every documented operation
+// registered. TestOpenAPIMatchesRoutes walks THE TABLE, never a constructed
+// mux, so a test process that runs with rooms off still checks the room
+// routes — the contract is not a property of one process's feature flags.
+type Route struct {
+	// Method and Pattern are the two halves of a Go 1.22 ServeMux pattern.
+	// Pattern is absolute and its {placeholders} are spelled exactly as the
+	// OpenAPI path templates spell them.
+	Method, Pattern string
+	// Roles is the symbolic role set a caller needs. EMPTY means the route is
+	// unauthenticated — today only the served OpenAPI document — and the
+	// document says so with `x-gawk-roles: []`.
+	Roles []string
+	// Requires names the feature that must be on for this route to be
+	// registered; empty means always. It reaches the document as
+	// `x-gawk-requires`, so a consumer can tell which routes a given
+	// deployment serves.
+	Requires string
+}
+
+// routeEntry is a Route plus the handler it binds to. The handler is resolved
+// from the API rather than stored, so the table can be a package-level value
+// and RouteTable can hand out the description with no instance in hand.
+type routeEntry struct {
+	Route
+	handler func(*API) http.HandlerFunc
+}
+
+// routeTable is the whole of /api/v1. Adding a route here and nowhere else is
+// the intended workflow: TestOpenAPIMatchesRoutes then fails until the
+// document describes it.
+var routeTable = []routeEntry{
+	{Route{Method: "GET", Pattern: "/api/v1/me", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleMe }},
+
+	{Route{Method: "GET", Pattern: "/api/v1/broadcasts", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleListBroadcasts }},
+	{Route{Method: "POST", Pattern: "/api/v1/broadcasts/{id}/kill", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleKill }},
+
+	{Route{Method: "GET", Pattern: "/api/v1/bans", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleListBans }},
+	{Route{Method: "POST", Pattern: "/api/v1/bans", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleCreateBan }},
+	{Route{Method: "DELETE", Pattern: "/api/v1/bans/{id}", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleDeleteBan }},
+
+	{Route{Method: "GET", Pattern: "/api/v1/events", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleListEvents }},
+	{Route{Method: "GET", Pattern: "/api/v1/relays", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleListRelays }},
+
+	{Route{Method: "GET", Pattern: "/api/v1/webhooks", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleListWebhooks }},
+	{Route{Method: "POST", Pattern: "/api/v1/webhooks", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleCreateWebhook }},
+	{Route{Method: "PUT", Pattern: "/api/v1/webhooks/{id}", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleUpdateWebhook }},
+	{Route{Method: "DELETE", Pattern: "/api/v1/webhooks/{id}", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleDeleteWebhook }},
+	{Route{Method: "POST", Pattern: "/api/v1/webhooks/{name}/test", Roles: []string{RoleOperator}},
+		func(a *API) http.HandlerFunc { return a.handleTestWebhook }},
+
+	// R42 rooms (docs/44 D20), only with the feature on: with it off the paths
+	// fall through to the catch-all's 404, exactly like R40's reserved route,
+	// so nothing can be reached that the ServiceAccount could not act on
+	// anyway.
+	{Route{Method: "GET", Pattern: "/api/v1/rooms", Roles: []string{RoleOperator}, Requires: RequiresRooms},
+		func(a *API) http.HandlerFunc { return a.handleListRooms }},
+	{Route{Method: "POST", Pattern: "/api/v1/rooms", Roles: []string{RoleOperator}, Requires: RequiresRooms},
+		func(a *API) http.HandlerFunc { return a.handleCreateRoom }},
+	{Route{Method: "POST", Pattern: "/api/v1/rooms/{name}/rotate-secret", Roles: []string{RoleOperator}, Requires: RequiresRooms},
+		func(a *API) http.HandlerFunc { return a.handleRotateRoomSecret }},
+	{Route{Method: "POST", Pattern: "/api/v1/rooms/{name}/end", Roles: []string{RoleOperator}, Requires: RequiresRooms},
+		func(a *API) http.HandlerFunc { return a.handleEndRoom }},
+	{Route{Method: "DELETE", Pattern: "/api/v1/rooms/{name}", Roles: []string{RoleOperator}, Requires: RequiresRooms},
+		func(a *API) http.HandlerFunc { return a.handleDeleteRoom }},
+}
+
+// RouteTable is the declared /api/v1 surface, for the tests that hold the
+// OpenAPI document and the role check to it. The slice and its role slices are
+// copies: the table is a contract, not a place to write.
+func RouteTable() []Route {
+	out := make([]Route, 0, len(routeTable))
+	for _, e := range routeTable {
+		r := e.Route
+		r.Roles = append([]string(nil), e.Roles...)
+		out = append(out, r)
+	}
+	return out
+}
+
+// enabled reports whether this deployment serves a route with that Requires.
+func (a *API) enabled(requires string) bool {
+	switch requires {
+	case "":
+		return true
+	case RequiresRooms:
+		return a.opts.Rooms != nil
+	default:
+		// An unknown feature name is a programming error in the table, and
+		// refusing to serve the route is the safe half of it.
+		return false
+	}
+}
+
 // Routes returns the /api/v1 subtree with absolute patterns, so main.go can
 // mount it on the root mux alongside the portal SPA:
 //
@@ -216,34 +369,11 @@ func New(opts Options) (*API, error) {
 func (a *API) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.Handle("GET /api/v1/me", a.protect(a.handleMe))
-
-	mux.Handle("GET /api/v1/broadcasts", a.protect(a.handleListBroadcasts))
-	mux.Handle("POST /api/v1/broadcasts/{id}/kill", a.protect(a.handleKill))
-
-	mux.Handle("GET /api/v1/bans", a.protect(a.handleListBans))
-	mux.Handle("POST /api/v1/bans", a.protect(a.handleCreateBan))
-	mux.Handle("DELETE /api/v1/bans/{id}", a.protect(a.handleDeleteBan))
-
-	mux.Handle("GET /api/v1/events", a.protect(a.handleListEvents))
-	mux.Handle("GET /api/v1/relays", a.protect(a.handleListRelays))
-
-	mux.Handle("GET /api/v1/webhooks", a.protect(a.handleListWebhooks))
-	mux.Handle("POST /api/v1/webhooks", a.protect(a.handleCreateWebhook))
-	mux.Handle("PUT /api/v1/webhooks/{id}", a.protect(a.handleUpdateWebhook))
-	mux.Handle("DELETE /api/v1/webhooks/{id}", a.protect(a.handleDeleteWebhook))
-	mux.Handle("POST /api/v1/webhooks/{name}/test", a.protect(a.handleTestWebhook))
-
-	// R42 rooms (docs/44 D20), only with the feature on: with it off the
-	// paths fall through to the catch-all's 404, exactly like R40's reserved
-	// route, so nothing can be reached that the ServiceAccount could not act
-	// on anyway.
-	if a.opts.Rooms != nil {
-		mux.Handle("GET /api/v1/rooms", a.protect(a.handleListRooms))
-		mux.Handle("POST /api/v1/rooms", a.protect(a.handleCreateRoom))
-		mux.Handle("POST /api/v1/rooms/{name}/rotate-secret", a.protect(a.handleRotateRoomSecret))
-		mux.Handle("POST /api/v1/rooms/{name}/end", a.protect(a.handleEndRoom))
-		mux.Handle("DELETE /api/v1/rooms/{name}", a.protect(a.handleDeleteRoom))
+	for _, e := range routeTable {
+		if !a.enabled(e.Requires) {
+			continue
+		}
+		mux.Handle(e.Method+" "+e.Pattern, a.wrap(e.Route, e.handler(a)))
 	}
 
 	// The catch-all keeps unknown /api/v1 paths answering the documented error
@@ -254,11 +384,22 @@ func (a *API) Routes() http.Handler {
 	//
 	// It is unauthenticated on purpose: "this path does not exist" is not a
 	// secret, and requiring a token to learn it would only make the reserved
-	// route harder to verify.
+	// route harder to verify. It is not a table entry for the same reason it
+	// is not in the document: it is not an operation, it is the absence of one.
 	mux.Handle("/api/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, CodeNotFound, "no such endpoint")
 	}))
 	return mux
+}
+
+// wrap applies a table entry's authorization. An entry with no roles is served
+// bare — deliberately, and only for routes whose whole point is to be readable
+// before login; the document records it as `x-gawk-roles: []`.
+func (a *API) wrap(r Route, h http.HandlerFunc) http.Handler {
+	if len(r.Roles) == 0 {
+		return h
+	}
+	return a.protect(h)
 }
 
 // protect wraps a handler in the injected authentication and role check. Both

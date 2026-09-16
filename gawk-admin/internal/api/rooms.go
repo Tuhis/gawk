@@ -150,7 +150,7 @@ func (a *API) handleListRooms(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].CreatedAt > out[j].CreatedAt
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"rooms": out})
+	writeJSON(w, http.StatusOK, roomsPageJSON{Rooms: out})
 }
 
 // handleCreateRoom creates a static room (docs/44 D2, D4).

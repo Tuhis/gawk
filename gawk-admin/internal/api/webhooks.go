@@ -40,7 +40,7 @@ func (a *API) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 	for _, h := range rows {
 		out = append(out, webhookJSON{ID: h.ID.String(), Name: h.Name, URL: h.URL, Enabled: h.Enabled, Source: SourceUI})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"webhooks": out})
+	writeJSON(w, http.StatusOK, webhooksPageJSON{Webhooks: out})
 }
 
 func (a *API) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
