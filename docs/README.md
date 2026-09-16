@@ -16,7 +16,7 @@ Not a design doc, but in this directory:
 
 ## Where to start
 
-Reading all forty-six is not the point. Three give you the shape of the system:
+Reading all of them is not the point. Three give you the shape of the system:
 
 - [`03`](03-single-client-e2e.md) — the end-to-end path: hub, publish,
   subscribe, and the wire format everything else is built on.
