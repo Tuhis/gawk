@@ -633,8 +633,17 @@ func TestRoomEventGapTriggersResync(t *testing.T) {
 
 	room.relayWrite(t, eventMsg(t, wire.RoomEvent{Seq: 7, Kind: wire.RoomEventParticipantLeft, Participant: wire.RoomParticipant{ID: 9}}))
 	room.expectCommand(t, wire.RoomCommandResync, 2*time.Second)
-	if len(events) < 2 {
-		t.Errorf("OnRoomEvent fired %d times, want the rejection and the left event", len(events))
+	// Both events reach OnRoomEvent: the rejection, and the gap that provoked
+	// the Resync above. They are RECEIVED here, not counted — the callbacks
+	// run on the session's own goroutine, so sampling len(events) right after
+	// the Resync command raced the second one and read 1 under CI load
+	// (flaked on run 35151944191, passed 20/20 locally).
+	for i := 0; i < 2; i++ {
+		select {
+		case <-events:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("OnRoomEvent fired %d times, want the rejection and the left event", i)
+		}
 	}
 }
 
