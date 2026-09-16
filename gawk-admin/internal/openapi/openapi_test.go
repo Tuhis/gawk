@@ -119,6 +119,56 @@ func TestIfNoneMatchAnswers304(t *testing.T) {
 	}
 }
 
+// A deployment that renamed the operator role must serve a document naming the
+// role it actually expects.
+//
+// The repository file says `operator` because that is what the API means, but
+// `-operator-role` renames the claim value. A bot author reading the served
+// document and minting a token with `operator` on such a deployment would get
+// a 403 with nothing to explain it.
+func TestTheServedRolesAreThisDeploymentsClaimValues(t *testing.T) {
+	d := newDoc(t, openapi.Options{Roles: map[string]string{"operator": "gawk-mod"}})
+
+	var doc struct {
+		Paths map[string]map[string]struct {
+			Roles []string `json:"x-gawk-roles"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(d.JSON(), &doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	substituted, unauthenticated := 0, 0
+	for path, item := range doc.Paths {
+		for method, op := range item {
+			switch {
+			case len(op.Roles) == 0:
+				unauthenticated++
+			case op.Roles[0] == "gawk-mod":
+				substituted++
+			default:
+				t.Fatalf("%s %s still says %v; a token carrying that is refused here",
+					method, path, op.Roles)
+			}
+		}
+	}
+	if substituted == 0 {
+		t.Fatal("no operation carried a substituted role: the walk found nothing")
+	}
+	if unauthenticated != 1 {
+		t.Fatalf("%d operations declare no role, want exactly 1 (the contract itself)", unauthenticated)
+	}
+}
+
+// With no mapping — every deployment that kept the default — the document is
+// served exactly as written.
+func TestTheSymbolicRolesSurviveWithNoMapping(t *testing.T) {
+	d := newDoc(t, openapi.Options{})
+	if !strings.Contains(string(d.JSON()), `"x-gawk-roles":["operator"]`) {
+		t.Fatal("the served document does not carry the symbolic role it was written with")
+	}
+}
+
 // The ETag has to follow the SERVED bytes, not the embedded file: two
 // deployments of the same binary serve different documents, because
 // servers[0].url differs.

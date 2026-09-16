@@ -23,6 +23,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -145,11 +146,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	})
 
 	t.Run("error codes are the document's enum", func(t *testing.T) {
-		report(t, checkErrorCodes(doc, allErrorCodes()))
-	})
-
-	t.Run("allErrorCodes lists every Code constant", func(t *testing.T) {
-		report(t, checkErrorCodeConstants(t, allErrorCodes()))
+		report(t, checkErrorCodes(doc, declaredErrorCodes(t)))
 	})
 
 	t.Run("event types are the document's enum", func(t *testing.T) {
@@ -178,7 +175,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	})
 
 	t.Run("negative: a renamed error code fails", func(t *testing.T) {
-		renamed := append([]string(nil), allErrorCodes()...)
+		renamed := append([]string(nil), declaredErrorCodes(t)...)
 		renamed[0] = "bad_request_v2"
 		mustFail(t, checkErrorCodes(doc, renamed), "an error code the document does not know")
 	})
@@ -270,78 +267,119 @@ func sameSet(a, b []string) bool {
 
 // ---------------------------------------------------------------------- (c)
 
+// errorCodePackages are every package that writes a `code` into the envelope.
+//
+// There are two, and the second is the one R48's first cut shipped without:
+// internal/auth answers 401/403/429 on every protected route, which is the
+// FIRST failure a new integration meets — a missing, expired or unprivileged
+// token — and its codes never pass through internal/api at all. A check that
+// walked only this package called the document "held to the code" while
+// describing the most common failure path wrongly.
+var errorCodePackages = []string{".", "../auth"}
+
+// notUnderAPIv1 are codes a package declares that no /api/v1 response can
+// carry, with the reason. They are excluded from the document's enum on the
+// principle rule (b) already applies to paths: a served contract should not
+// describe an answer this API never gives.
+var notUnderAPIv1 = map[string]string{
+	// /auth/config's alone. Under /api/v1 a method mismatch matches the
+	// catch-all instead and answers 404 — asserted by
+	// TestAMethodMismatchIsTheCatchAlls404, so this exclusion cannot quietly
+	// become wrong.
+	"method_not_allowed": "only /auth/config, which this document does not describe",
+}
+
 func checkErrorCodes(doc *oasDoc, codes []string) []error {
 	documented, err := enumOf(doc, "ErrorCode")
 	if err != nil {
 		return []error{err}
 	}
 	return compareVocabularies("(c) error code", codes, documented,
-		"internal/api's Code* constants", "openapi.yaml's ErrorCode enum")
+		"the Code* constants of internal/api and internal/auth",
+		"openapi.yaml's ErrorCode enum")
 }
 
-// checkErrorCodeConstants closes the one gap a hand-written allErrorCodes
-// leaves: a Code* constant somebody added and forgot to list. It reads the
-// package's own source rather than trusting a second hand-written list.
-func checkErrorCodeConstants(t *testing.T, listed []string) []error {
+// declaredErrorCodes is the envelope's `code` vocabulary, DERIVED from the
+// source of every package that writes one rather than hand-listed.
+//
+// Derived, because a hand-written list is a second place to forget — and it
+// was forgotten: the first cut of this milestone carried one, and it was
+// missing every code internal/auth emits. Adding a `Code* = "..."` constant in
+// either package is now the whole of what it takes for the document to be held
+// to it.
+func declaredErrorCodes(t *testing.T) []string {
 	t.Helper()
-	entries, err := os.ReadDir(".")
+	seen := map[string]bool{}
+	out := []string{}
+	for _, pkg := range errorCodePackages {
+		for name, value := range constantsWithPrefix(t, pkg, "Code") {
+			if why, skip := notUnderAPIv1[value]; skip {
+				t.Logf("(c) %s.%s = %q is deliberately not documented: %s", pkg, name, value, why)
+				continue
+			}
+			if !seen[value] {
+				seen[value] = true
+				out = append(out, value)
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("found no Code* constants at all: this check would prove nothing")
+	}
+	sort.Strings(out)
+	return out
+}
+
+// constantsWithPrefix reads one package's source for `<prefix>Name = "value"`
+// constants.
+//
+// Source, not reflection: an unexported constant is contract too (internal/api
+// exports its codes, and nothing says the next package will), and a test that
+// imported both packages to read them would create exactly the coupling their
+// doc comments exist to prevent.
+func constantsWithPrefix(t *testing.T, dir, prefix string) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return []error{fmt.Errorf("reading the api package directory: %w", err)}
+		t.Fatalf("reading %s: %v", dir, err)
 	}
 	fset := token.NewFileSet()
-	declared := map[string]string{}
+	out := map[string]string{}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		f, err := parser.ParseFile(fset, name, nil, 0)
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
 		if err != nil {
-			return []error{fmt.Errorf("parsing %s: %w", name, err)}
+			t.Fatalf("parsing %s: %v", name, err)
 		}
 		for _, d := range f.Decls {
 			gd, ok := d.(*ast.GenDecl)
 			if !ok || gd.Tok != token.CONST {
 				continue
 			}
-			for _, s := range gd.Specs {
-				vs, ok := s.(*ast.ValueSpec)
+			for _, sp := range gd.Specs {
+				vs, ok := sp.(*ast.ValueSpec)
 				if !ok {
 					continue
 				}
 				for i, ident := range vs.Names {
-					if !strings.HasPrefix(ident.Name, "Code") || i >= len(vs.Values) {
+					if !strings.HasPrefix(ident.Name, prefix) || i >= len(vs.Values) {
 						continue
 					}
 					lit, ok := vs.Values[i].(*ast.BasicLit)
 					if !ok || lit.Kind != token.STRING {
 						continue
 					}
-					v, err := strconv.Unquote(lit.Value)
-					if err != nil {
-						continue
+					if v, err := strconv.Unquote(lit.Value); err == nil {
+						out[ident.Name] = v
 					}
-					declared[ident.Name] = v
 				}
 			}
 		}
 	}
-	if len(declared) == 0 {
-		return []error{fmt.Errorf("found no Code* constants at all: this check proved nothing")}
-	}
-	have := map[string]bool{}
-	for _, c := range listed {
-		have[c] = true
-	}
-	var errs []error
-	for name, value := range declared {
-		if !have[value] {
-			errs = append(errs, fmt.Errorf("(c) const %s = %q is not in allErrorCodes(), "+
-				"so nothing holds the document to it", name, value))
-		}
-	}
-	sortErrs(errs)
-	return errs
+	return out
 }
 
 // ---------------------------------------------------------------------- (d)
@@ -385,6 +423,16 @@ func checkEventTypes(doc *oasDoc, ops map[string]oasOp, types []string) []error 
 		errs = append(errs, fmt.Errorf("(d) GET /api/v1/events documents no `type` query parameter"))
 	}
 
+	// The OTHER half of D3 (d), and the half the parameter check cannot reach:
+	// the response's own `type` field must be the same enum. Without this,
+	// Event.type could be retyped to a bare string and every check here would
+	// stay green — the fixture pass stops at scalars, so it would not notice.
+	if ref := propertyRef(doc, "Event", "type"); ref != "#/components/schemas/EventType" {
+		errs = append(errs, fmt.Errorf(
+			"(d) Event.type is %q, want a $ref to EventType — the filter and the "+
+				"response field are one vocabulary, not two lists that agree today", ref))
+	}
+
 	// WebhookEventTypes is a SUBSET of AllEventTypes, by construction. R49 is
 	// where the two first differ; nothing may leave the subset behind.
 	all := map[string]bool{}
@@ -399,6 +447,25 @@ func checkEventTypes(doc *oasDoc, ops map[string]oasOp, types []string) []error 
 	}
 	sortErrs(errs)
 	return errs
+}
+
+// propertyRef returns the `$ref` a named schema's property carries, or "" when
+// it carries none — which is itself the answer a caller is usually checking
+// for.
+func propertyRef(doc *oasDoc, schema, property string) string {
+	raw, ok := doc.Components.Schemas[schema]
+	if !ok {
+		return ""
+	}
+	var s struct {
+		Properties map[string]struct {
+			Ref string `json:"$ref"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s.Properties[property].Ref
 }
 
 func enumOf(doc *oasDoc, schema string) ([]string, error) {

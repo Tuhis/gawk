@@ -32,6 +32,13 @@ info:
     There are no cookies and no session — a `Set-Cookie` on any response would
     be a bug.
 
+    **`x-gawk-roles` in the copy you are reading names the role this
+    deployment actually expects in the token.** The repository's copy of this
+    file names roles symbolically (`operator`), because the claim value is
+    configurable per deployment — `-operator-role` renames it. The served copy
+    substitutes the configured value, the same way it substitutes
+    `servers[0].url`, so what you read here is what your token must carry.
+
     A service identity (a bot) uses the **client-credentials** grant against the
     same provider and sends the resulting access token. `docs/self-hosting.md`
     §9.8 has a worked recipe.
@@ -79,8 +86,11 @@ info:
     ## Events
 
     Outbound events — webhook deliveries and, where enabled, the NATS bus — are
-    **not** described here. Their catalogue is an AsyncAPI document served at
-    `/api/v1/asyncapi.json` by this same deployment.
+    **not** described here, and are not described anywhere yet: their catalogue
+    is a separate AsyncAPI document that has not shipped. When it does it will
+    be served at `/api/v1/asyncapi.json` by this same deployment. Until then
+    that path answers `404`, and the webhook signature is documented for
+    receivers in `docs/self-hosting.md` §9.5.
 
     ## Errors
 
@@ -169,6 +179,7 @@ paths:
                   rooms: true
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /api/v1/broadcasts:
     get:
@@ -220,6 +231,7 @@ paths:
                 podsAnswered: 3
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
   /api/v1/broadcasts/{id}/kill:
@@ -304,6 +316,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '409':
           description: An active ban already covers this broadcast; it is returned with the error.
           x-gawk-sensitive: true
@@ -390,6 +403,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
     post:
       operationId: createBan
@@ -465,6 +479,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '409':
           description: An active ban already covers this target; it is returned with the error.
           x-gawk-sensitive: true
@@ -540,6 +555,7 @@ paths:
                     re-submit.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/Internal' }
@@ -611,6 +627,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
   /api/v1/relays:
@@ -644,6 +661,7 @@ paths:
                     error: 'dial tcp 10.42.0.9:2112: connect: connection refused'
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
   /api/v1/webhooks:
@@ -676,6 +694,7 @@ paths:
                     source: ui
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/Unavailable' }
     post:
       operationId: createWebhook
@@ -713,6 +732,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/Internal' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -757,6 +777,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/Internal' }
@@ -777,6 +798,7 @@ paths:
           description: The webhook is gone.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/Internal' }
@@ -813,6 +835,7 @@ paths:
                 deliveryId: 0198f3b2-7a41-7c9e-b1d3-5e6f708192a3
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
@@ -855,6 +878,7 @@ paths:
                     managed: true
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/Internal' }
     post:
@@ -903,6 +927,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/Internal' }
@@ -944,6 +969,7 @@ paths:
                 attachSecret: s3cr3t-rotated-key-shown-once
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/Internal' }
@@ -970,6 +996,7 @@ paths:
           description: The room is gone; every session in it was closed.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/Internal' }
@@ -995,6 +1022,7 @@ paths:
           description: The room is gone.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/Internal' }
 
@@ -1019,23 +1047,51 @@ components:
               code: bad_request
               message: reason is required
     Unauthorized:
-      description: No bearer token, or one this deployment will not accept.
+      description: |
+        No bearer token, or one this deployment will not accept — expired,
+        wrong audience, wrong issuer, bad signature. The body says only that;
+        which check failed is useful mainly to someone probing the boundary.
+
+        `idp_unavailable` is the other code this status carries: discovery has
+        not resolved yet, so no credential can be judged. It is a `401` rather
+        than a `5xx` because nothing is broken and retrying shortly is the
+        right reaction — and it does not spend the caller's failure budget.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
           example:
             error:
-              code: bad_request
-              message: a bearer token is required
+              code: unauthorized
+              message: a valid bearer token is required
     Forbidden:
-      description: A valid token whose identity lacks the role this operation declares.
+      description: |
+        A valid token whose identity lacks the role this operation declares
+        under `x-gawk-roles`. Granting the role is an identity-provider action;
+        re-authenticating changes nothing until it is granted.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
           example:
             error:
-              code: bad_request
-              message: the operator role is required
+              code: forbidden
+              message: this account does not hold the operator role
+    TooManyRequests:
+      description: |
+        Too many INVALID credentials from your address. The budget is spent on
+        rejected tokens only, so a client holding a valid one never meets this;
+        a client looping on an expired one will. Honour `Retry-After`, and fetch
+        a fresh token rather than retrying the same rejected one.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema: { type: integer, format: int32 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: rate_limited
+              message: too many invalid credentials; slow down
     NotFound:
       description: No such object — or, for a feature this deployment does not serve, no such path.
       content:
@@ -1081,7 +1137,17 @@ components:
       description: |
         The machine-readable half of the error envelope. Branch on this, not on
         `message`. The enum only ever grows; treat an unknown value as unknown.
+
+        The first four come from the authentication layer and can answer **any**
+        operation that declares a role, whatever it is otherwise doing. They are
+        the codes a new integration meets first.
       enum:
+        # From the authentication layer, on any operation with a role.
+        - unauthorized
+        - idp_unavailable
+        - forbidden
+        - rate_limited
+        # From the handlers.
         - bad_request
         - not_found
         - duplicate_active

@@ -73,32 +73,6 @@ const (
 	CodeNotActive       = "ban_not_active"
 )
 
-// allErrorCodes is the closed vocabulary of the envelope's `code` — every
-// constant above plus the room codes in rooms.go.
-//
-// It is a function over one list so the OpenAPI drift test can compare it with
-// the document's enum in both directions: a code the document does not know
-// fails, and an enum entry no constant declares fails too. Adding a constant
-// without adding it here is the one gap left, and the R48 doc's "an enum only
-// grows" promise (D9) is what makes that gap cheap: a forgotten entry is a
-// code a consumer was never promised, not one that silently changed meaning.
-func allErrorCodes() []string {
-	return []string{
-		CodeBadRequest,
-		CodeNotFound,
-		CodeDuplicateActive,
-		CodeDuplicateName,
-		CodeSourceImmutable,
-		CodeInternal,
-		CodeUnavailable,
-		CodeInvalidTarget,
-		CodeNotActive,
-		CodeRoomExists,
-		CodeRoomNotStatic,
-		CodeRoomNotDynamic,
-	}
-}
-
 // Projector writes one ban row's Ban CR. Implemented by *kube.Reconciler.
 //
 // It is called INLINE by every mutation, on whichever replica served the
@@ -245,6 +219,9 @@ func New(opts Options) (*API, error) {
 	contract, err := openapi.New(openapi.Options{
 		ExternalURL: opts.Config.ExternalURL,
 		Version:     opts.Version,
+		// The served copy names the roles THIS deployment expects, not the
+		// symbolic ones the repository file carries (docs/49 D6).
+		Roles: map[string]string{RoleOperator: opts.Config.OperatorRole},
 	})
 	if err != nil {
 		return nil, err

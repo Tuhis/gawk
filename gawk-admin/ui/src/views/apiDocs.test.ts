@@ -40,8 +40,21 @@ describe('the API page’s Swagger UI configuration (R48, docs/49 D5)', () => {
     const node = document.createElement('div');
     const opts = swaggerOptions(node, () => 'token-abc');
     expect(opts.url).toBe(OPENAPI_URL);
-    expect(OPENAPI_URL.startsWith('/')).toBe(true);
+    // RELATIVE, like every path in client.ts: a leading slash would make this
+    // the one page that breaks under an Ingress sub-path.
+    expect(OPENAPI_URL.startsWith('/')).toBe(false);
+    expect(OPENAPI_URL).toBe('api/v1/openapi.json');
     expect(opts.domNode).toBe(node);
+    // The sub-path claim, as arithmetic rather than assertion: under an
+    // Ingress that mounts the portal at /admin/, the relative URL resolves
+    // inside the deployment. A leading slash would resolve to the origin root
+    // and 404 — and only on this page, since the rest of the SPA is relative.
+    expect(new URL(OPENAPI_URL, 'https://host.example/admin/#/api').pathname).toBe(
+      '/admin/api/v1/openapi.json',
+    );
+    expect(new URL(OPENAPI_URL, 'https://host.example/#/api').pathname).toBe(
+      '/api/v1/openapi.json',
+    );
     // Swagger UI's default POSTs the document to an online validator for a
     // badge. The CSP would block it; this is what makes it not happen at all.
     expect(opts.validatorUrl).toBeNull();

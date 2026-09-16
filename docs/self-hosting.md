@@ -858,8 +858,10 @@ Write your client to ignore fields it does not know and to treat an unknown enum
 value as unknown. A removal would be a `/api/v2`, which does not exist.
 
 **Outbound events** — webhooks, and the bus where it is enabled — are not in
-this document; [§9.5](#95-webhooks) covers the signature, and the event
-catalogue is served beside the contract.
+this document, and have no machine-readable catalogue yet: that is a separate
+AsyncAPI document which has not shipped. Until it does,
+[§9.5](#95-webhooks) is the description a receiver needs, and
+`/api/v1/asyncapi.json` answers `404`.
 
 #### A service identity for a bot
 
@@ -872,9 +874,15 @@ A bot is not a person, so it does not do the browser flow. Give it its own
 2. Client scopes → make sure the **audience** the portal validates (`aud`,
    normally the `gawk-admin` client ID) lands in this client's tokens too.
    Without it the portal answers `401`, correctly.
-3. Service account roles → assign the role the bot needs. Today that is
-   `operator`, which is the whole portal — kill and ban included. Give a bot
-   that role only when you mean it; R49 adds a read-only `rooms-reader`.
+3. Service account roles → assign the role the bot needs. Today that is the
+   **operator role**, which is the whole portal — kill and ban included. Give a
+   bot that role only when you mean it; R49 adds a read-only `rooms-reader`.
+
+   The claim value is `operator` unless you renamed it with `-operator-role`
+   (`oidc.operatorRole` in the chart). You never have to guess which: the
+   document your deployment serves states the value it expects, per operation,
+   under `x-gawk-roles` — the repository copy names roles symbolically, the
+   served copy names yours.
 
 Then:
 

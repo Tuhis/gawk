@@ -39,6 +39,19 @@ type Options struct {
 	// x-gawk-build so a version mismatch between the repository file and a
 	// served copy can be traced to the binary that answered.
 	Version string
+	// Roles maps each SYMBOLIC role name in the document's `x-gawk-roles` to
+	// the claim value this deployment actually expects.
+	//
+	// The repository's copy says `operator` because that is what the API
+	// means; the claim value is configurable (`-operator-role`), so on a
+	// deployment that renamed it, a bot author following the repository copy
+	// would mint a token with the wrong role and get a 403 with no hint why.
+	// Substituting here is the same move `servers[0].url` makes: everything
+	// deployment-specific in the served copy is what that deployment expects.
+	//
+	// An unmapped symbolic name is left as written — R49's `rooms-reader` is
+	// not configurable, so it needs no entry.
+	Roles map[string]string
 }
 
 // Document is the served contract: JSON bytes and the ETag of those bytes.
@@ -88,6 +101,7 @@ func New(opts Options) (*Document, error) {
 	if opts.Version != "" {
 		doc["x-gawk-build"] = opts.Version
 	}
+	substituteRoles(doc, opts.Roles)
 
 	out, err := json.Marshal(doc)
 	if err != nil {
@@ -99,6 +113,52 @@ func New(opts Options) (*Document, error) {
 		etag:    `"` + hex.EncodeToString(sum[:]) + `"`,
 		version: version,
 	}, nil
+}
+
+// substituteRoles rewrites every operation's `x-gawk-roles` from the symbolic
+// names the repository file carries to the claim values this deployment
+// expects.
+//
+// It walks `paths` rather than taking a list of operations, because the one
+// thing worse than an unsubstituted role is a substitution that misses an
+// operation somebody added later: a walk cannot be forgotten.
+func substituteRoles(doc map[string]any, roles map[string]string) {
+	if len(roles) == 0 {
+		return
+	}
+	paths, ok := doc["paths"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, item := range paths {
+		operations, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, op := range operations {
+			fields, ok := op.(map[string]any)
+			if !ok {
+				continue
+			}
+			declared, ok := fields["x-gawk-roles"].([]any)
+			if !ok {
+				continue
+			}
+			out := make([]any, 0, len(declared))
+			for _, r := range declared {
+				name, ok := r.(string)
+				if !ok {
+					out = append(out, r)
+					continue
+				}
+				if actual, mapped := roles[name]; mapped && actual != "" {
+					name = actual
+				}
+				out = append(out, name)
+			}
+			fields["x-gawk-roles"] = out
+		}
+	}
 }
 
 func infoVersion(doc map[string]any) (string, bool) {

@@ -553,7 +553,7 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 			// This costs the caller nothing: the failure is ours, so it does
 			// not spend their invalid-credential budget.
 			a.log.Debug("request refused while the issuer is unresolved", "path", r.URL.Path)
-			writeError(w, http.StatusUnauthorized, "idp_unavailable",
+			writeError(w, http.StatusUnauthorized, CodeIDPUnavailable,
 				"the identity provider is not reachable yet; retry shortly")
 			return
 		}
@@ -620,12 +620,12 @@ func (a *Auth) RequireRole(role string) func(http.Handler) http.Handler {
 				// Only reachable by wiring RequireRole without Middleware:
 				// a programming error, not a client error (identity.go).
 				a.log.Error("RequireRole reached without an authenticated identity; check the middleware wiring", "path", r.URL.Path)
-				writeError(w, http.StatusInternalServerError, "internal", "authentication middleware is not wired")
+				writeError(w, http.StatusInternalServerError, CodeInternal, "authentication middleware is not wired")
 				return
 			}
 			if !id.HasRole(role) {
 				a.log.Debug("role missing", "role", role, "subject", id.Subject)
-				writeError(w, http.StatusForbidden, "forbidden", "this account does not hold the "+role+" role")
+				writeError(w, http.StatusForbidden, CodeForbidden, "this account does not hold the "+role+" role")
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -650,7 +650,7 @@ func (a *Auth) ConfigHandler() http.Handler {
 		setSecurityHeaders(w, a.csp)
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
-			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use GET")
+			writeError(w, http.StatusMethodNotAllowed, CodeMethodNotAllowed, "use GET")
 			return
 		}
 		writeJSON(w, http.StatusOK, authConfig{
@@ -678,13 +678,13 @@ func (a *Auth) denyCredential(w http.ResponseWriter, r *http.Request, cause erro
 		// Debug: the IP must not appear above Debug (docs/42 §5).
 		a.log.Debug("invalid credentials rate-limited", "ip", ip, "path", r.URL.Path)
 		w.Header().Set("Retry-After", "1")
-		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many invalid credentials; slow down")
+		writeError(w, http.StatusTooManyRequests, CodeRateLimited, "too many invalid credentials; slow down")
 		return
 	}
 	a.log.Debug("rejected credential", "ip", ip, "path", r.URL.Path, "err", cause)
 	// The client learns nothing beyond "not accepted": which check failed is
 	// useful only to someone probing the boundary. The detail is in the log.
-	writeError(w, http.StatusUnauthorized, "unauthorized", "a valid bearer token is required")
+	writeError(w, http.StatusUnauthorized, CodeUnauthorized, "a valid bearer token is required")
 }
 
 // bearerToken extracts the credential. A missing or malformed Authorization
@@ -716,6 +716,45 @@ func clientIP(r *http.Request) string {
 	}
 	return host
 }
+
+// The `code` values this package writes into the error envelope.
+//
+// They are CONTRACT, exactly like internal/api's own Code* constants, and for
+// the same reason: a client branches on `code`. They matter more than most,
+// because these are the codes a caller meets FIRST — a missing, expired or
+// unprivileged token is the failure every new integration hits before it ever
+// reaches a handler.
+//
+// They are declared here rather than shared with internal/api because the two
+// packages deliberately do not import each other (see this package's doc
+// comment). What holds them together is a test: R48's OpenAPI drift check
+// derives its `ErrorCode` enum by walking the `Code*` constants of BOTH
+// packages, so a code added here without a line in `openapi.yaml` fails
+// `go test`. Named constants are what make that walk possible — as string
+// literals at the call sites, these were invisible to it, and the document
+// shipped without them.
+const (
+	// CodeUnauthorized: no credential, or one this deployment will not accept.
+	// Deliberately says nothing about WHICH check failed.
+	CodeUnauthorized = "unauthorized"
+	// CodeIDPUnavailable: discovery has not resolved yet, so no credential can
+	// be judged. A 401 rather than a 500 — nothing is broken, and retrying is
+	// the right reaction.
+	CodeIDPUnavailable = "idp_unavailable"
+	// CodeForbidden: a VALID token whose identity lacks the required role.
+	CodeForbidden = "forbidden"
+	// CodeRateLimited: too many invalid credentials from one address. Carries
+	// Retry-After.
+	CodeRateLimited = "rate_limited"
+	// CodeMethodNotAllowed is /auth/config's alone. It cannot appear under
+	// /api/v1: a method mismatch there matches the catch-all instead and
+	// answers 404 (TestAMethodMismatchIsTheCatchAlls404), which is why the
+	// OpenAPI document does not list it.
+	CodeMethodNotAllowed = "method_not_allowed"
+	// CodeInternal: the middleware is not wired. A programming error, not a
+	// client one. internal/api declares the same value for its own 500s.
+	CodeInternal = "internal"
+)
 
 // apiError is the error envelope docs/42 §4.7 specifies for the portal API.
 // internal/api renders the same shape for its own errors; the two are

@@ -151,30 +151,77 @@ func TestRoutesAreBehindTheInjectedRoleCheck(t *testing.T) {
 	h := newHarnessWithoutPostgres(t)
 	h.identity.Roles = []string{"someone-else"}
 
+	// With rooms OFF, their five routes are not registered at all, so the
+	// catch-all answers them and this harness can say nothing about their role
+	// check. The second pass below is where they are actually covered — and it
+	// is the reason this test does not simply expect 404 for them and call the
+	// table "walked".
+	withRooms := newHarnessWithoutPostgres(t, withRoomsEnabled())
+	withRooms.identity.Roles = []string{"someone-else"}
+
 	checked := 0
 	for _, r := range api.RouteTable() {
+		path := concretePath(r.Pattern)
+
 		if len(r.Roles) == 0 {
 			// Unauthenticated by design (the served OpenAPI document). It must
 			// NOT be a 403 — that is the whole claim.
-			status, _ := h.raw(r.Method, concretePath(r.Pattern), nil)
-			if status == http.StatusForbidden {
+			if status, _ := h.raw(r.Method, path, nil); status == http.StatusForbidden {
 				t.Fatalf("%s %s declares no roles but answered 403", r.Method, r.Pattern)
 			}
 			continue
 		}
-		want := http.StatusForbidden
+
+		// Every route that declares a role answers 403 without it — on the
+		// harness that actually registers it.
+		harness := h
 		if r.Requires == api.RequiresRooms {
-			// Not registered in this harness, so the catch-all answers.
-			want = http.StatusNotFound
+			harness = withRooms
 		}
-		status, _ := h.raw(r.Method, concretePath(r.Pattern), nil)
-		if status != want {
-			t.Fatalf("%s %s without the operator role = %d, want %d", r.Method, r.Pattern, status, want)
+		if status, body := harness.raw(r.Method, path, nil); status != http.StatusForbidden {
+			t.Fatalf("%s %s without the %v role = %d, want 403; body: %s",
+				r.Method, r.Pattern, r.Roles, status, body)
 		}
 		checked++
 	}
 	if checked == 0 {
 		t.Fatal("the route table is empty: this test proved nothing")
+	}
+
+	// And with the feature off they are unreachable rather than unprotected —
+	// the other half of the claim, and what makes rooms default-off mean
+	// something.
+	for _, r := range api.RouteTable() {
+		if r.Requires != api.RequiresRooms {
+			continue
+		}
+		if status, _ := h.raw(r.Method, concretePath(r.Pattern), nil); status != http.StatusNotFound {
+			t.Fatalf("%s %s with rooms off = %d, want the catch-all's 404", r.Method, r.Pattern, status)
+		}
+	}
+}
+
+// A method mismatch under /api/v1 is the catch-all's 404, never a 405.
+//
+// This is what lets the OpenAPI document leave `method_not_allowed` out of its
+// error enum: that code is /auth/config's alone. If Go's ServeMux ever started
+// answering 405 here instead, the document would be describing an answer it no
+// longer gives, and this test is what would say so.
+func TestAMethodMismatchIsTheCatchAlls404(t *testing.T) {
+	h := newHarnessWithoutPostgres(t)
+	for _, c := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/me"},
+		{http.MethodDelete, "/api/v1/broadcasts"},
+		{http.MethodPatch, "/api/v1/bans"},
+		{http.MethodPut, "/api/v1/events"},
+	} {
+		status, body := h.raw(c.method, c.path, nil)
+		if status != http.StatusNotFound {
+			t.Fatalf("%s %s = %d, want 404; body: %s", c.method, c.path, status, body)
+		}
+		if !strings.Contains(body, api.CodeNotFound) {
+			t.Fatalf("%s %s answered %d without the error envelope: %s", c.method, c.path, status, body)
+		}
 	}
 }
 

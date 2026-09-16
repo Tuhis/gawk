@@ -8,11 +8,15 @@
 // test the bundle.
 
 /**
- * Where the contract is served. RELATIVE, like every path in `client.ts`: the
- * page is served by the binary that answers it, so this works identically on
- * `/`, on a port-forward and under an Ingress sub-path.
+ * Where the contract is served.
+ *
+ * RELATIVE — no leading slash — exactly like `client.ts`'s `BASE` and for the
+ * same reason: `vite.config.ts` sets `base: './'`, so the whole SPA works
+ * wherever it is mounted, and a root-absolute path here would make this one
+ * page the only thing that breaks under an Ingress sub-path. Both the document
+ * fetch and the link below would go to the origin root and 404.
  */
-export const OPENAPI_URL = '/api/v1/openapi.json';
+export const OPENAPI_URL = 'api/v1/openapi.json';
 
 /** The shape of a request Swagger UI hands to `requestInterceptor`. */
 export interface SwaggerRequest {
@@ -62,9 +66,7 @@ export function swaggerOptions(
     url: OPENAPI_URL,
     domNode,
     validatorUrl: null,
-    // The operator navigated here from the portal's own nav; a second
-    // top bar with a spec-URL box would only invite loading someone
-    // else's document into this page.
+    // The methods this API uses. There is no PATCH anywhere in /api/v1.
     supportedSubmitMethods: ['get', 'post', 'put', 'delete'],
     docExpansion: 'list',
     defaultModelsExpandDepth: 0,

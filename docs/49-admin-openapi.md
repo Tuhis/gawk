@@ -155,6 +155,32 @@ shapes, the room routes, and the error envelopes for 400/404/409. It is not a
 CI gate: it needs a whole deployment with rows in it, and the `admin` job's
 Postgres-backed tests plus D3 cover the cheap half on every PR.
 
+**Review round 2 found the gap that mattered most** (PR #323): the enum held
+only `internal/api`'s codes, so it was missing every code `internal/auth`
+writes — `unauthorized`, `idp_unavailable`, `forbidden`, `rate_limited` — and
+the 401/403 examples said `bad_request`, which no such response ever carries.
+The API's most common failure, a missing or expired token, was the one it
+described wrongly, and D9's "the enum only grows" would have been broken on
+day one. The drift check could not see it: it parsed one package, and auth's
+codes were string literals.
+
+Three changes, together: `internal/auth` names its codes as `Code*` constants
+(they are contract, exactly like `internal/api`'s); the hand-written
+`allErrorCodes()` is **gone**, replaced by a derivation that walks the `Code*`
+constants of both packages, so the list cannot be short again; and `429` is
+documented on every operation that declares a role. `method_not_allowed` is
+deliberately excluded — it is `/auth/config`'s alone, and a method mismatch
+under `/api/v1` matches the catch-all and answers 404
+(`TestAMethodMismatchIsTheCatchAlls404` pins that, so the exclusion cannot
+quietly become wrong).
+
+The same round also moved D6 from prose to behaviour: **the served copy now
+substitutes `x-gawk-roles`** with this deployment's configured claim value, the
+way it already substituted `servers[0].url`. The repository file names roles
+symbolically (`operator`); a deployment that set `-operator-role` serves a
+document naming what its tokens must actually carry, so a bot author never has
+to guess.
+
 Two things the design did not anticipate:
 
 - **`openapi.yaml` is embedded through a one-line root package**
