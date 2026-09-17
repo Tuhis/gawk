@@ -575,8 +575,11 @@ ALLOWED_LICENSES = {
 # node_modules, so the lockfile's `license` field is all it has, and a package
 # that simply forgot the field is indistinguishable from one with no license at
 # all. The renderer has no such gap — Package classifies from the text when
-# nothing is declared — so this only ever feeds the gate and keeps the two
-# halves saying the same thing.
+# nothing is declared — but collect_npm applies this table too, so the two
+# halves agree by construction: `decko` renders as `MIT` in the "as declared"
+# column because that is what its LICENSE says, rather than as whatever the
+# classifier made of the text. Without that, the gate and the notices file
+# could disagree about the same package.
 #
 # **Every entry is a license somebody opened the file and read**, and the
 # comment says what it said. That is the whole bar: this table must never

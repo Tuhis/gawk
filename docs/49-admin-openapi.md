@@ -94,8 +94,8 @@ What already exists, so the reader does not go looking:
 - **Swagger UI** for the SPA page — it can execute a request, which Redoc
   cannot, and that is why it was chosen first. Reversed 2026-09-17 on how the
   page reads (D5). Its npm footprint was the smaller of the two by a wide
-  margin (2 redistributed packages against Redoc's 117), which is the one
-  thing that got worse.
+  margin (two redistributed packages against Redoc's hundred-odd), which is
+  the one thing that got worse.
 
 ## 3. Where it plugs in
 
@@ -218,11 +218,16 @@ without documenting it fails `go test` before it reaches CI.
   Swagger UI it replaced there is no token to inject (D5, revised
   2026-09-17). `ApiView.test.tsx` asserts the session is never even asked
   for one.
-- **Redoc's dependency tree is 117 redistributed packages** against
-  `swagger-ui-dist`'s 2, and that is the real cost of D5's reversal. All
-  of it is permissive — 95 MIT, 10 ISC, 9 BSD, 1 Apache-2.0, 1 Python-2.0,
-  and `dompurify` dual `MPL-2.0 OR Apache-2.0` where Apache-2.0 is taken.
-  Nothing is copyleft-only, source-available or field-restricted.
+- **Redoc's dependency tree is two orders of magnitude larger** than
+  `swagger-ui-dist`'s two packages, and that is the real cost of D5's
+  reversal. The exact tally is in
+  [`gawk-admin/ui/THIRD-PARTY-NOTICES.md`](../gawk-admin/ui/THIRD-PARTY-NOTICES.md),
+  which is generated and moves with every bump; the part that does not
+  move is the shape of it. **All of it is permissive and none of it is
+  copyleft**: MIT, ISC and BSD but for a handful — one Apache-2.0, one
+  Python-2.0 (`argparse`, via js-yaml), and `dompurify` dual
+  `MPL-2.0 OR Apache-2.0`, where Apache-2.0 is the one taken. Nothing is
+  copyleft-only, source-available or field-restricted.
   Three packages needed `NPM_LICENSE_OVERRIDES` in
   `tools/licenses/gen-notices.py` because their npm metadata is wrong, not
   because their licences are: `decko` and `stickyfill` ship an MIT LICENSE

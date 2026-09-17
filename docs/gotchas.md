@@ -1162,7 +1162,15 @@ Add to it when a new gotcha lands in `docs/`.
   machine, opt-OUT rather than opt-in. gawk no longer ships it (R48's API page
   moved to Redoc, which does not depend on it), and that is luck rather than
   diligence: nothing in CI would have caught it.
-  ([docs/49](49-admin-openapi.md))
+
+  What "checked" looks like, from the dependency that replaced it: Redoc
+  brings **`core-js`**, which also sets `hasInstallScript`. Its postinstall
+  requires `fs`, `os` and `path` and nothing else — no network module, no
+  `child_process` — and prints a funding banner, writing a marker file so it
+  prints once. `ADBLOCK=1`, `DISABLE_OPENCOLLECTIVE=1` or a quiet
+  `npm_config_loglevel` silence it. Benign, and the notices generator installs
+  with `--ignore-scripts` regardless. Read the script; do not infer from the
+  package's reputation. ([docs/49](49-admin-openapi.md))
 - **`//go:embed` cannot reach outside its own directory**, so a file that has
   to live at a module root for other tools (`redocly lint`,
   release-please's `extra-files`, a human browsing the repository) needs a
