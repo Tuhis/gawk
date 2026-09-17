@@ -744,14 +744,14 @@ paths:
         Updates a portal-managed webhook. An empty or absent `secret` keeps
         the stored one.
 
-        A chart-defined webhook cannot be edited here; addressing one returns
-        `409` with code `source_immutable`.
+        A chart-defined webhook has no ID and cannot be edited here. Putting
+        its name in the `id` slot returns `409` with code `source_immutable`.
       x-gawk-roles: [operator]
       parameters:
         - name: id
           in: path
           required: true
-          description: The webhook ID.
+          description: The webhook ID, or a chart-defined webhook's name, which returns `409`.
           schema: { type: string }
       requestBody:
         required: true
@@ -787,15 +787,15 @@ paths:
       tags: [webhooks]
       summary: Delete a webhook
       description: |
-        Deletes a portal-managed webhook. A chart-defined webhook cannot be
-        deleted here; addressing one returns `409` with code
-        `source_immutable`.
+        Deletes a portal-managed webhook. A chart-defined webhook has no ID
+        and cannot be deleted here. Putting its name in the `id` slot returns
+        `409` with code `source_immutable`.
       x-gawk-roles: [operator]
       parameters:
         - name: id
           in: path
           required: true
-          description: The webhook ID.
+          description: The webhook ID, or a chart-defined webhook's name, which returns `409`.
           schema: { type: string }
       responses:
         '204':
