@@ -11,12 +11,12 @@ script for what counts as a dependency here and why.
 
 **Scope:** `package-lock.json` entries without `dev: true`.
 
-## Summary — 117 packages
+## Summary — 118 packages
 
 | License (as declared) | Packages |
 |---|---:|
 | `MIT` | 95 |
-| `ISC` | 10 |
+| `ISC` | 11 |
 | `BSD-3-Clause` | 8 |
 | `(MPL-2.0 OR Apache-2.0)` | 1 |
 | `Apache-2.0` | 1 |
@@ -141,6 +141,7 @@ script for what counts as a dependency here and why.
 | `yaml` | 1.10.3 | `ISC` | Copyright 2018 Eemeli Aro <eemeli@gmail.com> |
 | `yaml` | 1.10.3 | `ISC` | Copyright 2018 Eemeli Aro <eemeli@gmail.com> |
 | `yaml` | 1.10.3 | `ISC` | Copyright 2018 Eemeli Aro <eemeli@gmail.com> |
+| `yaml` | 2.9.1 | `ISC` | — |
 | `yaml-ast-parser` | 0.0.43 | `Apache-2.0` | Copyright 2015 (c) MuleSoft, Inc |
 | `yargs` | 17.7.3 | `MIT` | Copyright 2010 James Halliday (mail@substack.net); Modified work Copyright 2014 Contributors (ben@npmjs.com) |
 | `yargs-parser` | 21.1.1 | `ISC` | Copyright (c) 2016, Contributors |
