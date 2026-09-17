@@ -20,6 +20,10 @@
 #   docker compose --profile rooms up add two synthetic broadcasters in the
 #                                     static room `devroom` (R42):
 #                                     http://localhost:8080/#/room/devroom
+#   ADMIN_ROOMS=1 docker compose up   also serve the portal's Rooms view, for
+#                                     working on it (R42/R48). See the admin
+#                                     service for what it does and does not
+#                                     reach.
 #
 # Images are BUILT FROM THIS CHECKOUT (D15) — a contributor runs the stack to
 # see their own change, so nothing here pulls ghcr.io/tuhis/*.
@@ -333,6 +337,18 @@ services:
       GAWK_ADMIN_RELAY_SCAN_TARGET: relay
       GAWK_ADMIN_RELAY_ADMIN_TOKEN: "${RELAY_ADMIN_TOKEN:-gawk-dev-admin-token}"
       GAWK_ADMIN_NAMESPACE: gawk
+      # The portal's Rooms view and its /api/v1/rooms routes (R42 D20), OFF by
+      # default here as they are in the chart. `ADMIN_ROOMS=1 docker compose up`
+      # turns them on, which is the quick way to work on that view: create,
+      # list, rotate a secret and delete, against the Room CRD kube-bootstrap
+      # seeds.
+      #
+      # What it reaches is the control plane, not this stack's relay: the
+      # portal writes Room CRs, and the relay here is single-pod, so it takes
+      # its static rooms from dev/rooms.json (GAWK_ROOMS_FILE above) and
+      # watches no CRs. `devroom` is the one to join; a room created in the
+      # portal is a CR with no relay behind it.
+      GAWK_ADMIN_ROOMS: "${ADMIN_ROOMS-false}"
       GAWK_ADMIN_DEV_OIDC_PROXY: "http://fakeidp:8080"
       GAWK_ADMIN_APP_BASE_URL: "${APP_ORIGIN:-http://localhost:8080}"
       GAWK_ADMIN_LOG_LEVEL: "${LOG_LEVEL:-info}"
