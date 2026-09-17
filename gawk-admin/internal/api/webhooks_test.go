@@ -135,7 +135,7 @@ func TestWebhookCRUDLifecycle(t *testing.T) {
 		t.Fatalf("updated = %+v", updated)
 	}
 	full, err := h.store.GetWebhookByName(t.Context(), "ntfy")
-	if err != nil || full.Secret != "s3cr3t" {
+	if err != nil || full.Secret != "czNjcjN0" {
 		t.Fatalf("secret after a secret-less update = %q (err=%v)", full.Secret, err)
 	}
 
