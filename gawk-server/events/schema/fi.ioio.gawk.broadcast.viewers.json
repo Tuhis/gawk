@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.viewers.json",
+  "title": "Viewer count",
+  "description": "The viewer count changed. Coalesced: at most one per broadcast per interval, and only on change. Published by both roles — the origin knows the global count, each edge only its own local one. The `data` of a `fi.ioio.gawk.broadcast.viewers` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "broadcastId": {
+      "$ref": "common.json#/$defs/broadcastId",
+      "x-gawk-sensitive": true
+    },
+    "broadcastKey": {
+      "$ref": "common.json#/$defs/broadcastKey"
+    },
+    "role": {
+      "$ref": "common.json#/$defs/broadcastRole"
+    },
+    "viewersLocal": {
+      "$ref": "common.json#/$defs/count",
+      "description": "Viewers on the publishing pod."
+    },
+    "viewersGlobal": {
+      "$ref": "common.json#/$defs/count",
+      "description": "Viewers across the fleet, as the origin computes it from the edge leases. An edge reports what it last learned from the origin."
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "broadcastKey",
+    "role",
+    "viewersLocal",
+    "viewersGlobal"
+  ]
+}

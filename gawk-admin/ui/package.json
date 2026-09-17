@@ -20,6 +20,7 @@
     "yaml": "2.9.1"
   },
   "devDependencies": {
+    "@asyncapi/cli": "6.1.0",
     "@redocly/cli": "2.53.2",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",

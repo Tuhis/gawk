@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.closed.json",
+  "title": "Room closed",
+  "description": "The home pod closed a room: the grace period after its last participant ran out, its creator ended it, or an operator did. The `data` of a `fi.ioio.gawk.room.closed` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "roomCode": {
+      "$ref": "common.json#/$defs/roomCode",
+      "x-gawk-sensitive": true
+    },
+    "roomKey": {
+      "$ref": "common.json#/$defs/roomKey"
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "grace",
+        "creator",
+        "operator"
+      ]
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "roomKey",
+    "reason"
+  ]
+}

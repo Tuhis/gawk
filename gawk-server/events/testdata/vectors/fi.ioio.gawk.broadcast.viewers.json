@@ -1,0 +1,17 @@
+{
+  "specversion": "1.0",
+  "id": "relay-0:4711",
+  "source": "/gawk/relay/relay-0",
+  "type": "fi.ioio.gawk.broadcast.viewers",
+  "subject": "3f9a1c2b4d5e",
+  "time": "2026-09-17T12:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.viewers.json",
+  "data": {
+    "broadcastId": "ABC234",
+    "broadcastKey": "3f9a1c2b4d5e",
+    "role": "edge",
+    "viewersLocal": 12,
+    "viewersGlobal": 340
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.created.json",
+  "title": "Room created",
+  "description": "An operator created a static room in the portal (R42). The room key is absent until a relay pod has homed the room. The `data` of a `fi.ioio.gawk.room.created` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "common.json#/$defs/actor"
+    },
+    "roomKey": {
+      "$ref": "common.json#/$defs/roomKey"
+    },
+    "roomCode": {
+      "$ref": "common.json#/$defs/roomCode",
+      "x-gawk-sensitive": true
+    },
+    "kind": {
+      "$ref": "common.json#/$defs/roomKind"
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "actor"
+  ]
+}

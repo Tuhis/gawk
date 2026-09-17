@@ -190,8 +190,12 @@ jobs:
           # in the UI job.
           # openapi.yaml is in the filter because `redocly lint` runs in THIS
           # job (R48 D4): a PR that changes only the contract would otherwise
-          # never run the step that lints it.
-          admin_ui=$(decide     admin_ui     '^gawk-admin/(ui/|internal/portal/|openapi\.yaml$)')
+          # never run the step that lints it. gawk-server/events/ is in it for
+          # the same reason (R51, docs/52 D3): `asyncapi validate` over the
+          # event catalogue runs here too, and a schema or catalogue change
+          # would otherwise never meet the step that checks it against the
+          # standard.
+          admin_ui=$(decide     admin_ui     '^gawk-admin/(ui/|internal/portal/|openapi\.yaml$)|^gawk-server/events/')
           # `go mod tidy` resolves the import graph, so any .go file can untidy a
           # module — not just a manifest.
           tidy=$(decide         tidy         '(^|/)go\.(mod|sum)$|\.go$')
@@ -1052,6 +1056,13 @@ jobs:
       # to a generator.
       - name: the OpenAPI contract is a valid OpenAPI document
         run: npx --no-install redocly lint ../openapi.yaml --config ../redocly.yaml
+      # The event catalogue, the same way (R51, docs/52 D3): the Go drift
+      # tests in gawk-server/events hold it to the code, this holds it to the
+      # AsyncAPI 3.0 standard, including every `$ref` into schema/ resolving.
+      # The CLI is a dev dependency of this SPA rather than a global install so
+      # its version is pinned by the lockfile like redocly's is.
+      - name: the event catalogue is a valid AsyncAPI document
+        run: npx --no-install asyncapi validate ../../gawk-server/events/asyncapi.yaml
       - run: npm run test:coverage
       - uses: ./.github/actions/coverage
         with:
