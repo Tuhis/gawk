@@ -1183,7 +1183,7 @@ func TestEventsFeedPagesPastTheStoreClamp(t *testing.T) {
 // the row unchanged — but recording unconditionally on top of that writes a
 // SECOND ban.removed row and sends a second signed delivery to every enabled
 // webhook, each with its own delivery ID because the event ID differs. Receiver
-// -side dedup on X-Gawk-Delivery cannot catch that, so the on-call phone buzzes
+// -side dedup on webhook-id cannot catch that, so the on-call phone buzzes
 // twice and the audit trail shows one ban lifted twice, possibly by two actors.
 func TestARepeatedUnbanRecordsAndPagesOnlyOnce(t *testing.T) {
 	h := newHarness(t)

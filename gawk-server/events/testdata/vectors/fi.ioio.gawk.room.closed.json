@@ -1,0 +1,15 @@
+{
+  "specversion": "1.0",
+  "id": "relay-0:4711",
+  "source": "/gawk/relay/relay-0",
+  "type": "fi.ioio.gawk.room.closed",
+  "subject": "9c1d2e3f4a5b",
+  "time": "2026-09-17T12:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.closed.json",
+  "data": {
+    "roomCode": "R7K3MX",
+    "roomKey": "9c1d2e3f4a5b",
+    "reason": "creator"
+  }
+}

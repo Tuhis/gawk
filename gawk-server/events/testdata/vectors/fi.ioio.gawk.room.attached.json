@@ -1,0 +1,17 @@
+{
+  "specversion": "1.0",
+  "id": "relay-0:4711",
+  "source": "/gawk/relay/relay-0",
+  "type": "fi.ioio.gawk.room.attached",
+  "subject": "9c1d2e3f4a5b",
+  "time": "2026-09-17T12:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.attached.json",
+  "data": {
+    "roomCode": "R7K3MX",
+    "roomKey": "9c1d2e3f4a5b",
+    "broadcastId": "ABC234",
+    "broadcastKey": "3f9a1c2b4d5e",
+    "label": "main stage & lobby"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.participant_updated.json",
+  "title": "Participant updated",
+  "description": "A participant's nickname, streaming or speaking state changed. The `data` of a `fi.ioio.gawk.room.participant_updated` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "roomCode": {
+      "$ref": "common.json#/$defs/roomCode",
+      "x-gawk-sensitive": true
+    },
+    "roomKey": {
+      "$ref": "common.json#/$defs/roomKey"
+    },
+    "participantId": {
+      "$ref": "common.json#/$defs/participantId"
+    },
+    "nickname": {
+      "$ref": "common.json#/$defs/nickname"
+    },
+    "clientKind": {
+      "$ref": "common.json#/$defs/clientKind"
+    },
+    "streaming": {
+      "type": "boolean"
+    },
+    "speaking": {
+      "type": "boolean"
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "roomKey",
+    "participantId",
+    "clientKind",
+    "streaming",
+    "speaking"
+  ]
+}

@@ -69,7 +69,7 @@ feature set exists).
 | R48 | [OpenAPI contract for the `gawk-admin` API](#r48--openapi-contract-for-the-gawk-admin-api) | ✅ shipped 2026-09-16 (OA1–OA4) — a hand-written OpenAPI 3.1 document for `/api/v1` (webhooks are R51's catalogue, revised 2026-09-16), embedded and served at `GET /api/v1/openapi.json`, held to the code by a two-way Go drift test and `redocly lint`, with an embedded Redoc page at `#/api`. The contract is the deliverable; no client is shipped ([docs/49](docs/49-admin-openapi.md)) |
 | R49 | [Rooms read API and room activity events](#r49--rooms-read-api-and-room-activity-events) | 🔧 designed 2026-09-15, revised 2026-09-16, not started (RA1–RA5) — **depends on R48, R50, R51** and R42: `GET /api/v1/rooms/{name}` with the live roster and attachment state (a new read-only `/internal/admin/rooms` on the relay ops listener, scraped by relayscan on request), a `rooms-reader` role for client-credentials service identities such as the planned Mumble bot, and opt-in `room.attached` / `room.detached` / `room.participant_joined` / `room.participant_left` webhook events with a per-webhook event filter, **sourced from the R50 bus — nothing polls** ([docs/50](docs/50-rooms-read-api.md)) |
 | R50 | [Relay event bus over NATS JetStream](#r50--relay-event-bus-over-nats-jetstream) | 🔧 designed 2026-09-16, not started (EB1–EB5) — the relay publishes broadcast and room lifecycle, participant, attachment and coalesced viewer-count events to an operator-provided NATS JetStream from its existing fan-out points, never blocking the media path; `gawk-admin`'s leader consumes a durable stream into the events feed with exactly-once ingest and retires the room sweep. **Optional, default off, off is byte-identical.** R49's activity webhooks depend on it ([docs/51](docs/51-relay-event-bus.md)) |
-| R51 | [Event contract: CloudEvents, JSON Schema, AsyncAPI](#r51--event-contract-cloudevents-json-schema-asyncapi) | 🔧 designed 2026-09-16, not started (EC1–EC4) — one CloudEvents 1.0 envelope for the R50 bus and the webhooks, one JSON Schema per event type in a public `gawk-server/events` package, an AsyncAPI 3.0 catalogue served by `gawk-admin`, Standard Webhooks delivery, and enforced naming/versioning/deprecation rules; **R50 EB1 and R49 RA4 depend on it** ([docs/52](docs/52-event-contract.md)) |
+| R51 | [Event contract: CloudEvents, JSON Schema, AsyncAPI](#r51--event-contract-cloudevents-json-schema-asyncapi) | ✅ shipped 2026-09-17 (EC1–EC4) — one CloudEvents 1.0 envelope for the R50 bus and the webhooks, one JSON Schema per event type in the public `gawk-server/events` package (22 types, golden vectors, drift tests), an AsyncAPI 3.0 catalogue served by `gawk-admin` at `/api/v1/asyncapi.json` with the schemas under `/api/v1/schemas/events/`, Standard Webhooks delivery replacing the `X-Gawk-*` headers, and naming/versioning/deprecation rules `go test` enforces; **R50 EB1 and R49 RA4 build on it** ([docs/52](docs/52-event-contract.md)) |
 
 ---
 
@@ -4160,8 +4160,8 @@ reason); signature-key rotation (the header format leaves room).
 serving package) before EC2–EC3; EC1 stands alone. R50 EB1 and R49 RA4
 depend on this.
 
-**Status**: designed 2026-09-16, not started — chunks EC1–EC4 in
-[docs/52](docs/52-event-contract.md).
+**Status**: shipped 2026-09-17 (EC1–EC4); what landed and the decisions
+taken on the way are in [docs/52](docs/52-event-contract.md) §7.
 
 ---
 

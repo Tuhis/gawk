@@ -23,7 +23,7 @@ the relay enforces bans on its own, from `Ban` custom resources that a
 | `internal/relayscan` | Headless-DNS pod discovery + the relay's `/internal/admin/*` scrape. |
 | `internal/auth` | OIDC JWT validation (cached JWKS) and role authorization. |
 | `internal/api` | `/api/v1`. |
-| `internal/openapi` | Serves `openapi.yaml` at `/api/v1/openapi.json`, with this deployment's base URL substituted. |
+| `internal/openapi` | Serves `openapi.yaml` at `/api/v1/openapi.json` with this deployment's base URL substituted, and the event contract (`gawk-server/events`) at `/api/v1/asyncapi.json` and `/api/v1/schemas/events/`. |
 | `internal/portal` | The SPA, embedded with `go:embed`. |
 | `ui/` | That SPA (Vite + React + TypeScript + CSS modules). |
 | `openapi.yaml` | The `/api/v1` contract. Hand-written, embedded, and held to the handlers by `go test`. |
@@ -58,6 +58,21 @@ enums, a role that disagrees, or an example that no longer decodes into its Go
 type each fail `go test ./internal/api/...` before CI ever sees them. **Edit the
 handler and the document in the same commit.** `redocly lint` in the `admin-ui`
 job checks the other half — that the document is valid OpenAPI.
+
+**Outbound events are a second contract**, in the format built for them:
+every webhook delivery (and every R50 bus message) is a CloudEvents 1.0 event
+whose `data` has a JSON Schema, listed in an AsyncAPI 3.0 catalogue. Both live
+in the public `gawk-server/events` package and are served by this binary at
+`/api/v1/asyncapi.json` and `/api/v1/schemas/events/<type>.json`, unauthenticated
+like the OpenAPI document. Deliveries are signed per Standard Webhooks
+(`webhook-id`, `webhook-timestamp`, `webhook-signature`); the secret is base64
+with an optional `whsec_` prefix, decoded to the key exactly as the reference
+libraries do. The drift gates
+are `go test` in both modules (`gawk-server/events` holds the types, schemas,
+vectors and catalogue together; `internal/notify` holds the store's event
+vocabulary and the projection to them) and `asyncapi validate` in the
+`admin-ui` job. Design and rules: [`docs/52`](../docs/52-event-contract.md);
+receiver recipe: [`docs/self-hosting.md` §9.5](../docs/self-hosting.md).
 
 ## Build
 

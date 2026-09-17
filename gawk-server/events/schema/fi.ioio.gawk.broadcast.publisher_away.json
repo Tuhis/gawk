@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.publisher_away.json",
+  "title": "Publisher away",
+  "description": "The publisher stopped delivering frames; viewers are being held on the keepalive until it returns or the grace period ends. The `data` of a `fi.ioio.gawk.broadcast.publisher_away` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "broadcastId": {
+      "$ref": "common.json#/$defs/broadcastId",
+      "x-gawk-sensitive": true
+    },
+    "broadcastKey": {
+      "$ref": "common.json#/$defs/broadcastKey"
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "broadcastKey"
+  ]
+}

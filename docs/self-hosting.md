@@ -736,8 +736,10 @@ says so in the UI rather than implying otherwise.
 ### 9.5 Webhooks
 
 Chart-defined webhooks stay GitOps-reviewable and are immutable in the portal;
-operator-created ones live in Postgres and can be added from a phone. Both are
-signed with HMAC-SHA256, each with its own key.
+operator-created ones live in Postgres and can be added from a phone. Every
+delivery is a [CloudEvents 1.0](https://cloudevents.io/) event, signed per
+[Standard Webhooks](https://www.standardwebhooks.com/) with that webhook's own
+key (R51, [docs/52](52-event-contract.md)).
 
 ```yaml
 notifications:
@@ -749,23 +751,128 @@ notifications:
 
 The signing key never appears in your values file: the chart renders the
 webhook's *name*, its URL and the *name of an environment variable*, and wires
-that variable from your Secret.
+that variable from your Secret. **The secret is base64, with or without the
+`whsec_` prefix** — the form every Standard Webhooks library takes: it strips
+the optional prefix and decodes the rest, and so does gawk, so the decoded
+bytes are the key on both sides. Make one with `openssl rand -base64 32`; a
+value that is not base64 is refused at startup rather than signed with. The
+portal generates `whsec_` secrets when you create a webhook there and shows
+the secret exactly once. Whichever spelling you use, paste the same string
+into your receiver's library.
+
+**What arrives** — one `POST` per event per enabled webhook, retried at +5 s,
++30 s, +2 m and +10 m before the delivery is marked failed in the portal's
+events view:
+
+```
+POST <webhookUrl>
+Content-Type: application/cloudevents+json
+webhook-id: 3c2e21c2-5f9a-5242-9ecd-5871bb85c4ac
+webhook-timestamp: 1755702245
+webhook-signature: v1,NZgDeVu2pXZkmgQVJh9HOy6/Ln0V0HOo6oTRGvLhL9Q=
+
+{ "specversion": "1.0",
+  "id": "3c2e21c2-5f9a-5242-9ecd-5871bb85c4ac",
+  "source": "/gawk/admin",
+  "type": "fi.ioio.gawk.broadcast.killed",
+  "subject": "3f9a1c2b4d5e",
+  "time": "2026-08-20T15:04:05Z",
+  "datacontenttype": "application/json",
+  "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.killed.json",
+  "data": {
+    "actor": "juho@example.com",
+    "broadcastKey": "3f9a1c2b4d5e",
+    "portalUrl": "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e",
+    "reason": "terms violation",
+    "summary": "broadcast 3f9a1c2b4d5e was terminated by juho@example.com" } }
+```
+
+`webhook-signature` is `v1,` + base64 of HMAC-SHA256 over
+`webhook-id + "." + webhook-timestamp + "." + body`, with the key being the
+base64-decoded secret. `webhook-id` is the event's id; a retry repeats it, so it is your
+idempotency key. Every event type, with the schema of its `data`, is in the
+catalogue your deployment serves at `/api/v1/asyncapi.json`
+([§9.8](#98-using-the-api-from-your-own-software)); `data.summary` is one human
+sentence for a receiver that renders nothing else, and `data.portalUrl` is a
+deep link into the portal.
 
 **What your receiver must do**, and none of it is optional:
 
 - **Verify the signature** before parsing anything. An unverified webhook
   endpoint is an endpoint anyone who learns its URL can page you from — and
   with a URL that appears in a values file, in Helm history and in your CI
-  logs, assume they can.
-- **Reject stale timestamps.** The signed material includes a timestamp;
-  refuse a delivery where `|now − timestamp| > 300 s`. Without that check a
-  captured request replays forever, signature and all.
-- **Treat the payload as sensitive.** Payloads deliberately carry **no raw
-  broadcast ID and no IP** — only the HMAC'd broadcast key and a link back to
-  the portal, because webhooks transit third-party push infrastructure and a
-  raw ID is a join capability. But they **do carry ban reasons**, which are
-  free operator text and routinely hold context you would not publish. Send
-  them to a channel you would be comfortable having read.
+  logs, assume they can. Any Standard Webhooks library does this; so does the
+  snippet below.
+- **Reject stale timestamps.** The signed material includes the timestamp;
+  refuse a delivery where `|now − webhook-timestamp| > 300 s`. Without that
+  check a captured request replays forever, signature and all.
+- **Dispatch on `type`, and treat what you do not know as unknown.** New event
+  types, new properties and new enum values arrive without notice; a breaking
+  change is a new type beside the old one, never a changed one
+  ([docs/52](52-event-contract.md) D6).
+- **Treat the payload as sensitive.** Deliveries deliberately carry **no raw
+  broadcast ID, no room code and no IP** — only the HMAC'd keys and a link back
+  to the portal, because webhooks transit third-party push infrastructure and
+  a raw ID is a join capability. But they **do carry ban reasons**, room
+  labels and participant nicknames, which are free text and routinely hold
+  context you would not publish. Send them to a channel you would be
+  comfortable having read.
+
+A complete receiver, standard library only — verified against a real delivery
+from the dispatcher and a wrong-key delivery it must refuse:
+
+```python
+#!/usr/bin/env python3
+"""A minimal gawk webhook receiver: Standard Webhooks verification, then the
+body as a CloudEvent. Standard library only. Run it, point a webhook at it,
+press *Send test* in the portal."""
+import base64
+import hashlib
+import hmac
+import json
+import os
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+SECRET = os.environ["GAWK_WEBHOOK_SECRET"]  # exactly as configured, whsec_ or not
+
+
+def signing_key(secret: str) -> bytes:
+    # The Standard Webhooks rule: optional whsec_ prefix, then base64.
+    return base64.b64decode(secret.removeprefix("whsec_"))
+
+
+def verify(headers, body: bytes, tolerance=300):
+    msg_id, ts = headers["webhook-id"], headers["webhook-timestamp"]
+    if abs(time.time() - int(ts)) > tolerance:
+        raise ValueError("stale webhook-timestamp")
+    expected = hmac.new(signing_key(SECRET), f"{msg_id}.{ts}.".encode() + body, hashlib.sha256).digest()
+    for entry in headers["webhook-signature"].split():
+        version, _, sig = entry.partition(",")
+        if version == "v1" and hmac.compare_digest(base64.b64decode(sig), expected):
+            return json.loads(body)
+    raise ValueError("no v1 signature matched")
+
+
+class Receiver(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        try:
+            event = verify(self.headers, body)
+        except (KeyError, ValueError) as err:
+            self.send_response(401)
+            self.end_headers()
+            print("rejected:", err)
+            return
+        # webhook-id is your idempotency key: a retry repeats it.
+        print(event["type"], event["id"], event["data"].get("summary"))
+        self.send_response(204)
+        self.end_headers()
+
+
+if __name__ == "__main__":
+    HTTPServer(("127.0.0.1", 8099), Receiver).serve_forever()
+```
 
 ### 9.6 Break-glass: banning with `kubectl`
 
@@ -859,10 +966,20 @@ Write your client to ignore fields it does not know and to treat an unknown enum
 value as unknown. A removal would be a `/api/v2`, which does not exist.
 
 **Outbound events** — webhooks, and the bus where it is enabled — are not in
-this document, and have no machine-readable catalogue yet: that is a separate
-AsyncAPI document which has not shipped. Until it does,
-[§9.5](#95-webhooks) is the description a receiver needs, and
-`/api/v1/asyncapi.json` answers `404`.
+this document. They have their own, in the format built for event channels:
+an AsyncAPI 3.0 catalogue at `/api/v1/asyncapi.json`, listing every event as
+a CloudEvents message, with the JSON Schema of each event's `data` served
+under `/api/v1/schemas/events/`. Both need no token, like the OpenAPI
+document, and both are held to the code by `go test` in the same way. The
+AsyncAPI ecosystem has generators and validators for them; the rules the
+catalogue follows — additive within a type, a new versioned type for a
+breaking change, a measured deprecation window — are in
+[docs/52](52-event-contract.md). [§9.5](#95-webhooks) is how a delivery is
+signed.
+
+```console
+$ curl -s https://admin.gawk.example.com/api/v1/asyncapi.json | jq '.channels.webhook.messages | keys'
+```
 
 #### A service identity for a bot
 

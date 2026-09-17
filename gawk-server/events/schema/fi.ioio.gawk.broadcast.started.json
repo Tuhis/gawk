@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.started.json",
+  "title": "Broadcast started",
+  "description": "A relay pod took a broadcast live: the origin when the publisher connected, an edge when it began pulling. The `data` of a `fi.ioio.gawk.broadcast.started` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "broadcastId": {
+      "$ref": "common.json#/$defs/broadcastId",
+      "x-gawk-sensitive": true
+    },
+    "broadcastKey": {
+      "$ref": "common.json#/$defs/broadcastKey"
+    },
+    "role": {
+      "$ref": "common.json#/$defs/broadcastRole"
+    },
+    "startedAt": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "broadcastKey",
+    "role",
+    "startedAt"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.ban.created.json",
+  "title": "Ban created",
+  "description": "A ban was created, on a broadcast ID or on a publisher address. A ban on an address carries no broadcast identity, and the address itself is never in any event. The `data` of a `fi.ioio.gawk.ban.created` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "common.json#/$defs/actor"
+    },
+    "broadcastKey": {
+      "$ref": "common.json#/$defs/broadcastKey"
+    },
+    "broadcastId": {
+      "$ref": "common.json#/$defs/broadcastId",
+      "x-gawk-sensitive": true
+    },
+    "reason": {
+      "$ref": "common.json#/$defs/reason"
+    },
+    "enforcement": {
+      "$ref": "common.json#/$defs/enforcement"
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "actor"
+  ]
+}

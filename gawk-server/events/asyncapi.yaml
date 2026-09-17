@@ -1,0 +1,675 @@
+# The gawk event catalogue (R51, docs/52 D3).
+#
+# This is the registry of every event a gawk deployment emits: on the NATS
+# bus (R50) and in webhook deliveries (R39, R49). It is hand-written and
+# reviewed like code — the same posture as gawk-admin/openapi.yaml — and held
+# to the Go source by `go test ./events/...` in gawk-server (docs/52 D7):
+# every message here has a `Type*` constant, a schema file and a golden
+# vector, and vice versa. `asyncapi validate` in CI checks it against the
+# AsyncAPI 3.0 standard.
+#
+# Conventions:
+#   - One message per event type, in components.messages, referenced from
+#     each channel it travels on. **A message is webhook-eligible if and only
+#     if it is listed under the `webhook` channel** — that line, not a Go
+#     list, is the rule a receiver reads.
+#   - `x-gawk-since` names the milestone that shipped the type;
+#     `x-gawk-status` is `stable` or `deprecated`; a deprecated message also
+#     carries `x-gawk-sunset` (a date) and keeps being emitted until then.
+#   - A schema property marked `x-gawk-sensitive: true` is present on the
+#     bus and stripped from every webhook delivery (docs/52 D4).
+#
+# The served copy (GET /api/v1/asyncapi.json on any gawk-admin deployment)
+# has the `./schema/…` references rewritten to that deployment's
+# /api/v1/schemas/events/… URLs.
+asyncapi: 3.0.0
+
+info:
+  title: gawk events
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  externalDocs:
+    description: The design and the rules this document follows (docs/52).
+    url: https://github.com/Tuhis/gawk/blob/main/docs/52-event-contract.md
+  description: |
+    Every event [gawk](https://github.com/Tuhis/gawk) emits is a
+    [CloudEvents 1.0](https://cloudevents.io/) event in the JSON structured
+    format (`application/cloudevents+json`), on both channels described here.
+    Its `data` is described by one JSON Schema 2020-12 document per event
+    type, referenced from each message below and served beside this document.
+
+    ## The envelope
+
+    | Attribute | Value |
+    |---|---|
+    | `specversion` | `1.0` |
+    | `id` | Unique per `source`. On the bus `<pod>:<seq>`; for a portal-originated moderation event a UUIDv5 over its row; for a test send a fresh UUID. A retried webhook delivery repeats the `id`: it is your idempotency key. |
+    | `source` | `/gawk/relay/<pod>` for a relay-published event, `/gawk/admin` for a portal-originated one. |
+    | `type` | `fi.ioio.gawk.<scope>.<event>` — see *Types* below. |
+    | `subject` | The HMAC'd key of the broadcast or room the event is about; absent for an event about neither. |
+    | `time` | RFC 3339, UTC. |
+    | `datacontenttype` | `application/json` |
+    | `dataschema` | The `$id` of the schema `data` conforms to. |
+    | `data` | The typed payload. |
+
+    There are no extension attributes. When gawk-admin forwards a bus event
+    to a webhook it forwards the same `id`, `source`, `type`, `subject` and
+    `time` — it is an intermediary, not a new producer — and only `data`
+    changes, by projection (below).
+
+    ## Types, versions and change
+
+    - A type is `fi.ioio.gawk.<scope>.<event>`; the NATS subject's last
+      token is `<event>`.
+    - A schema is **additive within a type**: properties are only added,
+      only as optional; an enumerated vocabulary may grow. Nothing is
+      removed, renamed or retyped. **Treat unknown properties, unknown types
+      and unknown enum values as unknown**, never as errors. An additive
+      revision keeps `type` and `dataschema`: no schema closes
+      `additionalProperties`, so an event validated against the schema you
+      were built with keeps validating, and the current schema is always
+      served at the same URL.
+    - An incompatible change is a **new type** with a version suffix
+      (`….participant_joined.v2`) and a new schema. The old type keeps being
+      emitted, marked `x-gawk-status: deprecated` with an `x-gawk-sunset`
+      date, for at least two `gawk-server` minor releases and never less
+      than 90 days before it is removed.
+
+    ## The two projections of `data`
+
+    A bus event carries every property of its schema, including the ones
+    marked `x-gawk-sensitive: true` (raw broadcast IDs, room codes — the bus
+    is internal infrastructure). A webhook delivery of the same event
+    carries the schema **minus every sensitive property, plus `summary` and
+    `portalUrl`**, which every schema declares optional and only gawk-admin
+    sets. Same `type`, same `dataschema`, same required set. No event on
+    either channel ever carries a publisher IP address.
+
+    ## Receiving webhooks
+
+    Deliveries follow [Standard Webhooks](https://www.standardwebhooks.com/):
+    verify `webhook-signature` (`v1,<base64 HMAC-SHA256>` over
+    `webhook-id.webhook-timestamp.body`) with your webhook's secret, reject
+    a `webhook-timestamp` more than 300 seconds from now, then parse the
+    body as a CloudEvent and dispatch on `type`. The secret is base64 with an
+    optional `whsec_` prefix, and the decoded bytes are the key — the rule
+    every Standard Webhooks library applies, so the string you configure in
+    gawk is the string you hand your library. `docs/self-hosting.md` §9.5
+    has a verifier.
+
+defaultContentType: application/cloudevents+json
+
+servers:
+  nats:
+    host: nats.gawk.example:4222
+    protocol: nats
+    description: |
+      The operator-provided NATS JetStream the relay publishes to (R50,
+      docs/51). Optional and off by default; the placeholder host stands for
+      whatever the deployment's `-eventbus-url` names. Not reachable from
+      outside the deployment.
+  receiver:
+    host: receiver.example
+    protocol: https
+    description: |
+      Your webhook receiver. The placeholder stands for each configured
+      webhook's URL; gawk-admin posts to it over HTTPS.
+
+channels:
+  bus:
+    address: 'gawk.{scope}.{key}.{event}'
+    title: The relay event bus
+    summary: Relay-published lifecycle, participant, attachment and viewer-count events.
+    description: |
+      One JetStream subject per (scope, key, event): a consumer subscribes to
+      `gawk.room.>` for every room event, to `gawk.room.<key>.>` for one
+      room, or to `gawk.>` for everything. Each message carries a
+      `Content-Type: application/cloudevents+json` header (the CloudEvents
+      NATS binding's structured-mode signal) and a `Nats-Msg-Id` equal to
+      the CloudEvents `id`, which JetStream deduplicates on inside its
+      window and gawk-admin deduplicates on forever.
+
+      Moderation events (`broadcast.killed`, `ban.*`, `room.created`,
+      `room.ended`, `room.secret_rotated`) are portal-originated and do not
+      travel here; the bus carries what the relay observes.
+
+      The bus is produced from R50 on; this catalogue fixes its types first
+      so the producer and its consumers are written against one contract.
+    servers:
+      - $ref: '#/servers/nats'
+    parameters:
+      scope:
+        description: The `<scope>` segment of the event type.
+        enum: [broadcast, room]
+      key:
+        description: The HMAC'd key of the broadcast or room — the event's `subject`.
+      event:
+        description: The `<event>` segment of the event type.
+    messages:
+      broadcastStarted:
+        $ref: '#/components/messages/broadcastStarted'
+      broadcastPublisherAway:
+        $ref: '#/components/messages/broadcastPublisherAway'
+      broadcastPublisherBack:
+        $ref: '#/components/messages/broadcastPublisherBack'
+      broadcastEnded:
+        $ref: '#/components/messages/broadcastEnded'
+      broadcastViewers:
+        $ref: '#/components/messages/broadcastViewers'
+      roomOpened:
+        $ref: '#/components/messages/roomOpened'
+      roomClosed:
+        $ref: '#/components/messages/roomClosed'
+      roomAttached:
+        $ref: '#/components/messages/roomAttached'
+      roomDetached:
+        $ref: '#/components/messages/roomDetached'
+      roomAttachmentUpdated:
+        $ref: '#/components/messages/roomAttachmentUpdated'
+      roomParticipantJoined:
+        $ref: '#/components/messages/roomParticipantJoined'
+      roomParticipantLeft:
+        $ref: '#/components/messages/roomParticipantLeft'
+      roomParticipantUpdated:
+        $ref: '#/components/messages/roomParticipantUpdated'
+    # The AsyncAPI NATS binding (v0.1.0) describes only a queue group, so the
+    # JetStream shape is stated here. It is R50's to keep true.
+    x-gawk-jetstream:
+      stream: gawk-events
+      subjects: ['gawk.>']
+      retention: limits
+      dedupWindow: 2m
+      consumer:
+        name: gawk-admin
+        durable: true
+        ackPolicy: explicit
+        ackWait: 30s
+
+  webhook:
+    address: '{url}'
+    title: Webhook deliveries
+    summary: Events gawk-admin posts to each configured webhook.
+    description: |
+      One HTTPS `POST` per event per enabled webhook, retried at +5 s,
+      +30 s, +2 m and +10 m before the delivery is marked failed (visible in
+      the portal's events view). The body is the CloudEvent with the
+      projected `data` (no sensitive properties; `summary` and `portalUrl`
+      added).
+
+      **A message is listed here if and only if it can be delivered to a
+      webhook.** The moderation events always are; R49 makes the room
+      activity events opt-in per webhook. `webhook.test` is what the
+      portal's *Send test* button sends and travels nowhere else.
+
+      Headers on every delivery:
+
+      | Header | Value |
+      |---|---|
+      | `Content-Type` | `application/cloudevents+json` |
+      | `webhook-id` | The CloudEvents `id`. Repeated on every retry of the same event. |
+      | `webhook-timestamp` | Unix seconds at send time. Reject if more than 300 s from now. |
+      | `webhook-signature` | `v1,<base64(HMAC-SHA256(key, webhook-id + "." + webhook-timestamp + "." + body))>`. Space-separated multiple signatures are permitted by the format; gawk sends one. |
+    servers:
+      - $ref: '#/servers/receiver'
+    parameters:
+      url:
+        description: The webhook's configured URL.
+    messages:
+      broadcastKilled:
+        $ref: '#/components/messages/broadcastKilled'
+      banCreated:
+        $ref: '#/components/messages/banCreated'
+      banExpired:
+        $ref: '#/components/messages/banExpired'
+      banRemoved:
+        $ref: '#/components/messages/banRemoved'
+      contentFlagRaised:
+        $ref: '#/components/messages/contentFlagRaised'
+      roomCreated:
+        $ref: '#/components/messages/roomCreated'
+      roomEnded:
+        $ref: '#/components/messages/roomEnded'
+      roomSecretRotated:
+        $ref: '#/components/messages/roomSecretRotated'
+      webhookTest:
+        $ref: '#/components/messages/webhookTest'
+    x-gawk-webhook-headers:
+      $ref: '#/components/schemas/standardWebhooksHeaders'
+
+operations:
+  publishToBus:
+    action: send
+    channel:
+      $ref: '#/channels/bus'
+    title: The relay publishes an event
+    summary: Each relay pod publishes the events it is the authority for (docs/51 D4).
+    messages:
+      - $ref: '#/channels/bus/messages/broadcastStarted'
+      - $ref: '#/channels/bus/messages/broadcastPublisherAway'
+      - $ref: '#/channels/bus/messages/broadcastPublisherBack'
+      - $ref: '#/channels/bus/messages/broadcastEnded'
+      - $ref: '#/channels/bus/messages/broadcastViewers'
+      - $ref: '#/channels/bus/messages/roomOpened'
+      - $ref: '#/channels/bus/messages/roomClosed'
+      - $ref: '#/channels/bus/messages/roomAttached'
+      - $ref: '#/channels/bus/messages/roomDetached'
+      - $ref: '#/channels/bus/messages/roomAttachmentUpdated'
+      - $ref: '#/channels/bus/messages/roomParticipantJoined'
+      - $ref: '#/channels/bus/messages/roomParticipantLeft'
+      - $ref: '#/channels/bus/messages/roomParticipantUpdated'
+  deliverWebhook:
+    action: send
+    channel:
+      $ref: '#/channels/webhook'
+    title: gawk-admin delivers an event to a webhook
+    summary: One signed POST per event per enabled webhook, with retries.
+    bindings:
+      http:
+        method: POST
+        bindingVersion: 0.3.0
+    messages:
+      - $ref: '#/channels/webhook/messages/broadcastKilled'
+      - $ref: '#/channels/webhook/messages/banCreated'
+      - $ref: '#/channels/webhook/messages/banExpired'
+      - $ref: '#/channels/webhook/messages/banRemoved'
+      - $ref: '#/channels/webhook/messages/contentFlagRaised'
+      - $ref: '#/channels/webhook/messages/roomCreated'
+      - $ref: '#/channels/webhook/messages/roomEnded'
+      - $ref: '#/channels/webhook/messages/roomSecretRotated'
+      - $ref: '#/channels/webhook/messages/webhookTest'
+
+components:
+  schemas:
+    cloudEvent:
+      title: CloudEvents 1.0 envelope, JSON structured format
+      description: |
+        The attributes every gawk event carries. Each message below fixes
+        `type` and references the schema of `data`. The CloudEvents
+        project's own envelope schema is vendored beside this document as
+        `cloudevents.json`.
+      type: object
+      required: [specversion, id, source, type, time, datacontenttype, dataschema, data]
+      properties:
+        specversion:
+          type: string
+          const: '1.0'
+        id:
+          type: string
+          minLength: 1
+        source:
+          type: string
+          minLength: 1
+          description: '`/gawk/relay/<pod>` or `/gawk/admin`.'
+        type:
+          type: string
+          pattern: '^fi\.ioio\.gawk\.[a-z_]+\.[a-z_]+(\.v[2-9][0-9]*)?$'
+        subject:
+          type: string
+          pattern: '^(?:[0-9a-f]{2}){4,32}$'
+          description: The HMAC'd key of the broadcast or room; absent for an event about neither.
+        time:
+          type: string
+          format: date-time
+        datacontenttype:
+          type: string
+          const: application/json
+        dataschema:
+          type: string
+          format: uri
+        data:
+          type: object
+    standardWebhooksHeaders:
+      title: Standard Webhooks delivery headers
+      type: object
+      required: [webhook-id, webhook-timestamp, webhook-signature]
+      properties:
+        webhook-id:
+          type: string
+          description: The CloudEvents `id`; repeated on retries.
+        webhook-timestamp:
+          type: string
+          pattern: '^[0-9]+$'
+          description: Unix seconds at send time.
+        webhook-signature:
+          type: string
+          pattern: '^v1,[A-Za-z0-9+/]+=*( v1,[A-Za-z0-9+/]+=*)*$'
+          description: '`v1,<base64 HMAC-SHA256>` over `id.timestamp.body`.'
+
+  messages:
+    # ---- moderation (portal-originated) -----------------------------------
+    broadcastKilled:
+      name: fi.ioio.gawk.broadcast.killed
+      title: Broadcast killed
+      summary: An operator ended a broadcast everywhere on the fleet.
+      x-gawk-since: R51
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.broadcast.killed
+              data:
+                $ref: './schema/fi.ioio.gawk.broadcast.killed.json'
+    banCreated:
+      name: fi.ioio.gawk.ban.created
+      title: Ban created
+      summary: A ban was created on a broadcast ID or a publisher address.
+      x-gawk-since: R51
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.ban.created
+              data:
+                $ref: './schema/fi.ioio.gawk.ban.created.json'
+    banExpired:
+      name: fi.ioio.gawk.ban.expired
+      title: Ban expired
+      summary: A ban reached its expiry.
+      x-gawk-since: R51
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.ban.expired
+              data:
+                $ref: './schema/fi.ioio.gawk.ban.expired.json'
+    banRemoved:
+      name: fi.ioio.gawk.ban.removed
+      title: Ban removed
+      summary: An operator lifted a ban.
+      x-gawk-since: R51
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.ban.removed
+              data:
+                $ref: './schema/fi.ioio.gawk.ban.removed.json'
+    contentFlagRaised:
+      name: fi.ioio.gawk.content_flag.raised
+      title: Content flag raised
+      summary: Reserved for R40; not produced yet.
+      x-gawk-since: R51
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.content_flag.raised
+              data:
+                $ref: './schema/fi.ioio.gawk.content_flag.raised.json'
+    roomCreated:
+      name: fi.ioio.gawk.room.created
+      title: Room created
+      summary: An operator created a static room.
+      x-gawk-since: R51
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.created
+              data:
+                $ref: './schema/fi.ioio.gawk.room.created.json'
+    roomEnded:
+      name: fi.ioio.gawk.room.ended
+      title: Room ended
+      summary: A room ended, by an operator or by the relay.
+      x-gawk-since: R51
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.ended
+              data:
+                $ref: './schema/fi.ioio.gawk.room.ended.json'
+    roomSecretRotated:
+      name: fi.ioio.gawk.room.secret_rotated
+      title: Room secret rotated
+      summary: An operator rotated a static room's attach secret.
+      x-gawk-since: R51
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.secret_rotated
+              data:
+                $ref: './schema/fi.ioio.gawk.room.secret_rotated.json'
+
+    # ---- bus (relay-published, from R50) -----------------------------------
+    broadcastStarted:
+      name: fi.ioio.gawk.broadcast.started
+      title: Broadcast started
+      summary: A relay pod took a broadcast live.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.broadcast.started
+              data:
+                $ref: './schema/fi.ioio.gawk.broadcast.started.json'
+    broadcastPublisherAway:
+      name: fi.ioio.gawk.broadcast.publisher_away
+      title: Publisher away
+      summary: The publisher stalled; viewers are held on the keepalive.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.broadcast.publisher_away
+              data:
+                $ref: './schema/fi.ioio.gawk.broadcast.publisher_away.json'
+    broadcastPublisherBack:
+      name: fi.ioio.gawk.broadcast.publisher_back
+      title: Publisher back
+      summary: The publisher resumed.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.broadcast.publisher_back
+              data:
+                $ref: './schema/fi.ioio.gawk.broadcast.publisher_back.json'
+    broadcastEnded:
+      name: fi.ioio.gawk.broadcast.ended
+      title: Broadcast ended
+      summary: The broadcast is gone from the fleet.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.broadcast.ended
+              data:
+                $ref: './schema/fi.ioio.gawk.broadcast.ended.json'
+    broadcastViewers:
+      name: fi.ioio.gawk.broadcast.viewers
+      title: Viewer count
+      summary: The viewer count changed (coalesced).
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.broadcast.viewers
+              data:
+                $ref: './schema/fi.ioio.gawk.broadcast.viewers.json'
+    roomOpened:
+      name: fi.ioio.gawk.room.opened
+      title: Room opened
+      summary: The home pod took a room live.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.opened
+              data:
+                $ref: './schema/fi.ioio.gawk.room.opened.json'
+    roomClosed:
+      name: fi.ioio.gawk.room.closed
+      title: Room closed
+      summary: The home pod closed a room.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.closed
+              data:
+                $ref: './schema/fi.ioio.gawk.room.closed.json'
+    roomAttached:
+      name: fi.ioio.gawk.room.attached
+      title: Broadcast attached to a room
+      summary: A broadcast joined a room's tiles.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.attached
+              data:
+                $ref: './schema/fi.ioio.gawk.room.attached.json'
+    roomDetached:
+      name: fi.ioio.gawk.room.detached
+      title: Broadcast detached from a room
+      summary: A broadcast left a room's tiles.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.detached
+              data:
+                $ref: './schema/fi.ioio.gawk.room.detached.json'
+    roomAttachmentUpdated:
+      name: fi.ioio.gawk.room.attachment_updated
+      title: Attachment updated
+      summary: An attached broadcast's live state or viewer count changed (coalesced).
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.attachment_updated
+              data:
+                $ref: './schema/fi.ioio.gawk.room.attachment_updated.json'
+    roomParticipantJoined:
+      name: fi.ioio.gawk.room.participant_joined
+      title: Participant joined
+      summary: A participant joined or rejoined a room.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.participant_joined
+              data:
+                $ref: './schema/fi.ioio.gawk.room.participant_joined.json'
+    roomParticipantLeft:
+      name: fi.ioio.gawk.room.participant_left
+      title: Participant left
+      summary: A participant left a room.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.participant_left
+              data:
+                $ref: './schema/fi.ioio.gawk.room.participant_left.json'
+    roomParticipantUpdated:
+      name: fi.ioio.gawk.room.participant_updated
+      title: Participant updated
+      summary: A participant's nickname, streaming or speaking state changed.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.participant_updated
+              data:
+                $ref: './schema/fi.ioio.gawk.room.participant_updated.json'
+
+    # ---- delivery-only ------------------------------------------------------
+    webhookTest:
+      name: fi.ioio.gawk.webhook.test
+      title: Webhook test
+      summary: The portal's synthetic test send; never on the bus, never a row.
+      x-gawk-since: R51
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.webhook.test
+              data:
+                $ref: './schema/fi.ioio.gawk.webhook.test.json'

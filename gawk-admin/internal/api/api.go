@@ -186,6 +186,11 @@ type API struct {
 
 	// contract is the served OpenAPI document, converted and rewritten once.
 	contract *openapi.Document
+	// catalogue and schemas are the event contract (R51, docs/52 D3): the
+	// AsyncAPI document and one JSON Schema per event type, embedded from
+	// gawk-server/events and rewritten once to this deployment's URLs.
+	catalogue *openapi.Document
+	schemas   *openapi.SchemaSet
 
 	// readyMu guards the last readiness verdict, so the "refusing to serve"
 	// line is logged on transitions rather than once per probe — a kubelet
@@ -216,17 +221,39 @@ func New(opts Options) (*API, error) {
 	// condition — it is compiled in, so no deployment of this binary would
 	// ever serve a valid one. Refusing to construct the API is how that
 	// becomes a refusal to start rather than a 500 somebody finds later.
-	contract, err := openapi.New(openapi.Options{
+	docOpts := openapi.Options{
 		ExternalURL: opts.Config.ExternalURL,
 		Version:     opts.Version,
 		// The served copy names the roles THIS deployment expects, not the
 		// symbolic ones the repository file carries (docs/49 D6).
 		Roles: map[string]string{RoleOperator: opts.Config.OperatorRole},
-	})
+	}
+	contract, err := openapi.New(docOpts)
 	if err != nil {
 		return nil, err
 	}
-	return &API{opts: opts, log: opts.Log, contract: contract}, nil
+	catalogue, err := openapi.NewAsyncAPI(docOpts)
+	if err != nil {
+		return nil, err
+	}
+	schemas, err := openapi.NewSchemas(docOpts)
+	if err != nil {
+		return nil, err
+	}
+	return &API{opts: opts, log: opts.Log, contract: contract, catalogue: catalogue, schemas: schemas}, nil
+}
+
+// handleGetEventSchema serves one data schema by its file name
+// (`<type>.json` or `common.json`), or the documented 404 envelope for a name
+// that is no schema. The document itself is served by the same cacheable
+// handler the other contract documents use.
+func (a *API) handleGetEventSchema(w http.ResponseWriter, r *http.Request) {
+	doc, ok := a.schemas.Lookup(r.PathValue("name"))
+	if !ok {
+		writeError(w, http.StatusNotFound, CodeNotFound, "no such event schema")
+		return
+	}
+	doc.Handler().ServeHTTP(w, r)
 }
 
 // RoleOperator is the SYMBOLIC name of the role a route requires, as the
@@ -289,6 +316,13 @@ var routeTable = []routeEntry{
 	// beats the catch-all wherever it is added.
 	{Route{Method: "GET", Pattern: "/api/v1/openapi.json"},
 		func(a *API) http.HandlerFunc { return a.contract.Handler().ServeHTTP }},
+	// The event contract (R51, docs/52 D3), unauthenticated on the same
+	// argument: the catalogue and the schemas are public files in the
+	// repository, and a receiver author's first command is `curl`.
+	{Route{Method: "GET", Pattern: "/api/v1/asyncapi.json"},
+		func(a *API) http.HandlerFunc { return a.catalogue.Handler().ServeHTTP }},
+	{Route{Method: "GET", Pattern: "/api/v1/schemas/events/{name}"},
+		func(a *API) http.HandlerFunc { return a.handleGetEventSchema }},
 
 	{Route{Method: "GET", Pattern: "/api/v1/me", Roles: []string{RoleOperator}},
 		func(a *API) http.HandlerFunc { return a.handleMe }},

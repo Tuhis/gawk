@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.publisher_back.json",
+  "title": "Publisher back",
+  "description": "The publisher resumed delivering frames. The `data` of a `fi.ioio.gawk.broadcast.publisher_back` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "broadcastId": {
+      "$ref": "common.json#/$defs/broadcastId",
+      "x-gawk-sensitive": true
+    },
+    "broadcastKey": {
+      "$ref": "common.json#/$defs/broadcastKey"
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "broadcastKey"
+  ]
+}

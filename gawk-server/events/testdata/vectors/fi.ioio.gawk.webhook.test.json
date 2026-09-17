@@ -1,0 +1,13 @@
+{
+  "specversion": "1.0",
+  "id": "0f2c6a3e-8d41-4b9a-b7c2-5e1d3f4a6b8c",
+  "source": "/gawk/admin",
+  "type": "fi.ioio.gawk.webhook.test",
+  "time": "2026-09-17T12:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.webhook.test.json",
+  "data": {
+    "summary": "test notification from the gawk-admin portal: this webhook is configured correctly",
+    "portalUrl": "https://admin.example.com/#/broadcasts"
+  }
+}

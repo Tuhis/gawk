@@ -15,8 +15,8 @@ func withStaticWebhooks() harnessOption {
 	return withConfig(func(c *config.Config) {
 		disabled := false
 		c.StaticWebhooks = []config.StaticWebhook{
-			{Name: "paging", URL: "https://ntfy.example/gawk", SecretEnv: "PAGING_SECRET", Secret: "chart-secret"},
-			{Name: "parked", URL: "https://parked.example/gawk", SecretEnv: "PARKED_SECRET", Secret: "s", Enabled: &disabled},
+			{Name: "paging", URL: "https://ntfy.example/gawk", SecretEnv: "PAGING_SECRET", Secret: "Y2hhcnQtc2VjcmV0"},
+			{Name: "parked", URL: "https://parked.example/gawk", SecretEnv: "PARKED_SECRET", Secret: "cw==", Enabled: &disabled},
 		}
 	})
 }
@@ -28,7 +28,7 @@ func TestListWebhooksMergesBothSourcesWithoutSecrets(t *testing.T) {
 
 	var created wireWebhook
 	h.decode(http.MethodPost, "/api/v1/webhooks", map[string]any{
-		"name": "team-chat", "url": "https://chat.example/hook", "secret": "ui-secret", "enabled": true,
+		"name": "team-chat", "url": "https://chat.example/hook", "secret": "dWktc2VjcmV0", "enabled": true,
 	}, http.StatusCreated, &created)
 	if created.Source != api.SourceUI || created.ID == "" {
 		t.Fatalf("created = %+v", created)
@@ -40,7 +40,7 @@ func TestListWebhooksMergesBothSourcesWithoutSecrets(t *testing.T) {
 	}
 	// The strongest check available: no secret VALUE and no secret FIELD
 	// appears anywhere in the response, for either source (§4.7).
-	for _, forbidden := range []string{"chart-secret", "ui-secret", "secret"} {
+	for _, forbidden := range []string{"Y2hhcnQtc2VjcmV0", "dWktc2VjcmV0", "cw==", "secret"} {
 		if strings.Contains(strings.ToLower(raw), forbidden) {
 			t.Fatalf("webhook list leaks %q: %s", forbidden, raw)
 		}
@@ -83,7 +83,7 @@ func TestWritesToConfigWebhooksAreRefused(t *testing.T) {
 		body   any
 	}{
 		{"create with a config name", http.MethodPost, "/api/v1/webhooks",
-			map[string]any{"name": "paging", "url": "https://elsewhere.example", "secret": "x", "enabled": true}},
+			map[string]any{"name": "paging", "url": "https://elsewhere.example", "secret": "eA==", "enabled": true}},
 		{"update by config name", http.MethodPut, "/api/v1/webhooks/paging",
 			map[string]any{"name": "paging", "url": "https://elsewhere.example", "enabled": false}},
 		{"delete by config name", http.MethodDelete, "/api/v1/webhooks/paging", nil},
@@ -101,7 +101,7 @@ func TestWritesToConfigWebhooksAreRefused(t *testing.T) {
 	// unique across both sources, and the database cannot see the config half.
 	var created wireWebhook
 	h.decode(http.MethodPost, "/api/v1/webhooks", map[string]any{
-		"name": "team-chat", "url": "https://chat.example/hook", "secret": "s", "enabled": true,
+		"name": "team-chat", "url": "https://chat.example/hook", "secret": "cw==", "enabled": true,
 	}, http.StatusCreated, &created)
 	code := h.errorCode(http.MethodPut, "/api/v1/webhooks/"+created.ID, map[string]any{
 		"name": "paging", "url": "https://chat.example/hook", "enabled": true,
@@ -116,12 +116,12 @@ func TestWebhookCRUDLifecycle(t *testing.T) {
 
 	var created wireWebhook
 	h.decode(http.MethodPost, "/api/v1/webhooks", map[string]any{
-		"name": "ntfy", "url": "https://ntfy.example/gawk", "secret": "s3cr3t", "enabled": true,
+		"name": "ntfy", "url": "https://ntfy.example/gawk", "secret": "czNjcjN0", "enabled": true,
 	}, http.StatusCreated, &created)
 
 	// A duplicate UI name is a different conflict from a config collision.
 	if code := h.errorCode(http.MethodPost, "/api/v1/webhooks", map[string]any{
-		"name": "ntfy", "url": "https://other.example", "secret": "x", "enabled": true,
+		"name": "ntfy", "url": "https://other.example", "secret": "eA==", "enabled": true,
 	}, http.StatusConflict); code != api.CodeDuplicateName {
 		t.Fatalf("duplicate UI name code = %q", code)
 	}
@@ -135,7 +135,7 @@ func TestWebhookCRUDLifecycle(t *testing.T) {
 		t.Fatalf("updated = %+v", updated)
 	}
 	full, err := h.store.GetWebhookByName(t.Context(), "ntfy")
-	if err != nil || full.Secret != "s3cr3t" {
+	if err != nil || full.Secret != "czNjcjN0" {
 		t.Fatalf("secret after a secret-less update = %q (err=%v)", full.Secret, err)
 	}
 
@@ -152,9 +152,13 @@ func TestWebhookValidation(t *testing.T) {
 		name string
 		body map[string]any
 	}{
-		{"blank name", map[string]any{"name": "  ", "url": "https://x.example", "secret": "s", "enabled": true}},
-		{"relative url", map[string]any{"name": "a", "url": "/hook", "secret": "s", "enabled": true}},
+		{"blank name", map[string]any{"name": "  ", "url": "https://x.example", "secret": "cw==", "enabled": true}},
+		{"relative url", map[string]any{"name": "a", "url": "/hook", "secret": "cw==", "enabled": true}},
 		{"missing secret on create", map[string]any{"name": "a", "url": "https://x.example", "enabled": true}},
+		// The Standard Webhooks key rule (docs/52 D5): a secret that does
+		// not decode as base64 could never verify at any receiver.
+		{"undecodable whsec_ secret", map[string]any{"name": "a", "url": "https://x.example", "secret": "whsec_not base64!", "enabled": true}},
+		{"a secret that is not base64", map[string]any{"name": "a", "url": "https://x.example", "secret": "hunter2", "enabled": true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -166,7 +170,7 @@ func TestWebhookValidation(t *testing.T) {
 	// An unknown field is rejected rather than silently ignored: on an
 	// enforcement API a mistyped knob must not quietly take a default.
 	if code := h.errorCode(http.MethodPost, "/api/v1/webhooks", map[string]any{
-		"name": "a", "url": "https://x.example", "secret": "s", "enabled": true, "enabledd": true,
+		"name": "a", "url": "https://x.example", "secret": "cw==", "enabled": true, "enabledd": true,
 	}, http.StatusBadRequest); code != api.CodeBadRequest {
 		t.Fatalf("unknown-field code = %q", code)
 	}
@@ -179,7 +183,7 @@ func TestTestSendWorksForBothSources(t *testing.T) {
 
 	var created wireWebhook
 	h.decode(http.MethodPost, "/api/v1/webhooks", map[string]any{
-		"name": "team-chat", "url": "https://chat.example/hook", "secret": "s", "enabled": true,
+		"name": "team-chat", "url": "https://chat.example/hook", "secret": "cw==", "enabled": true,
 	}, http.StatusCreated, &created)
 
 	for _, name := range []string{"paging", "team-chat"} {

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.content_flag.raised.json",
+  "title": "Content flag raised",
+  "description": "Reserved for R40 (docs/42 §4.11): a content flag was raised on a broadcast. Nothing produces it yet; the type is fixed so the vocabulary exists before anything does. The `data` of a `fi.ioio.gawk.content_flag.raised` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "common.json#/$defs/actor"
+    },
+    "broadcastKey": {
+      "$ref": "common.json#/$defs/broadcastKey"
+    },
+    "broadcastId": {
+      "$ref": "common.json#/$defs/broadcastId",
+      "x-gawk-sensitive": true
+    },
+    "reason": {
+      "$ref": "common.json#/$defs/reason"
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "actor"
+  ]
+}

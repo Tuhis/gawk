@@ -45,13 +45,20 @@ func (c *fakeClock) Advance(d time.Duration) {
 // capture is one request a webhook receiver saw, kept whole so a test can
 // verify the signature exactly as a real receiver would.
 type capture struct {
-	path        string
-	event       string
-	delivery    string
+	path string
+	// id, timestamp and signature are the three Standard Webhooks headers.
+	id          string
 	timestamp   string
 	signature   string
 	contentType string
 	body        []byte
+}
+
+// eventType is the CloudEvents `type` of the captured body.
+func (c capture) eventType(t *testing.T) string {
+	t.Helper()
+	typ, _ := c.payloadOf(t)["type"].(string)
+	return typ
 }
 
 // payloadOf decodes a captured body into a generic map, so a test can assert
@@ -86,8 +93,7 @@ func newReceiver(t *testing.T) *receiver {
 		body, _ := io.ReadAll(req.Body)
 		c := capture{
 			path:        req.URL.Path,
-			event:       req.Header.Get(HeaderEvent),
-			delivery:    req.Header.Get(HeaderDelivery),
+			id:          req.Header.Get(HeaderID),
 			timestamp:   req.Header.Get(HeaderTimestamp),
 			signature:   req.Header.Get(HeaderSignature),
 			contentType: req.Header.Get("Content-Type"),

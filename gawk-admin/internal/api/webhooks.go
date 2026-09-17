@@ -195,6 +195,16 @@ func (a *API) validateWebhook(w http.ResponseWriter, req webhookRequest, create 
 			"secret is required: every webhook is signed with its own key")
 		return "", false
 	}
+	if req.Secret != "" {
+		// The Standard Webhooks key rule (docs/52 D5): a secret that does
+		// not base64-decode (after the optional whsec_ prefix) could never
+		// verify at any receiver's library, so it is refused here rather
+		// than signed with forever.
+		if _, err := config.SigningKey(req.Secret); err != nil {
+			writeError(w, http.StatusBadRequest, CodeBadRequest, err.Error())
+			return "", false
+		}
+	}
 	return name, true
 }
 

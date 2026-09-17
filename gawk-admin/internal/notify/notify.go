@@ -6,14 +6,17 @@
 // Four rules shape everything here.
 //
 //   - **D8 is absolute: no raw broadcast ID and no IP address ever reaches a
-//     payload.** Webhooks transit third-party push infrastructure
+//     delivery.** Webhooks transit third-party push infrastructure
 //     (ntfy/Slack/Matrix) and a raw broadcast ID is a join capability. The
 //     receiver gets the HMAC'd key and a portal link; acting requires logging
-//     in. The mechanism is structural — Payload has no field to put either in,
-//     and only the payload keys store declares webhook-safe
-//     (store.PayloadReason, store.PayloadSummary, store.PayloadEnforcement)
-//     are copied out of an event's jsonb; the third of those is read through
-//     an accessor with a closed vocabulary, so it cannot carry free text.
+//     in. Since R51 the mechanism is the event contract's (docs/52 D4): a
+//     delivery is a CloudEvent whose `data` is the type's schema minus every
+//     property marked `x-gawk-sensitive`, projected by `project` from the
+//     marks the schema file carries; and the only row payload keys that
+//     reach it are the ones store closes the vocabulary of
+//     (store.PayloadReason, store.PayloadSummary, store.PayloadEnforcement,
+//     store.PayloadRoomKey) plus the room code, which the projection strips.
+//     IPs are in no event at all.
 //   - **The dispatcher is leader-only, and correctness does not depend on
 //     that.** Run is started from kube.Election.OnLeading (D16), but claims go
 //     through FOR UPDATE SKIP LOCKED, so two dispatchers overlapping across a
@@ -46,11 +49,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/Tuhis/gawk/gawk-admin/internal/api"
 	"github.com/Tuhis/gawk/gawk-admin/internal/config"
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
+
+	"github.com/Tuhis/gawk/gawk-server/events"
 )
 
 // retrySchedule is docs/42 §4.10's ladder: attempts at +5 s, +30 s, +2 m,
@@ -92,15 +95,6 @@ const (
 // maxDrainRounds bounds one Run iteration so a large backlog cannot turn the
 // dispatch loop into an unyielding hot loop.
 const maxDrainRounds = 50
-
-// deliveryNamespace derives X-Gawk-Delivery from a delivery row's ID.
-//
-// Deriving rather than generating makes the header STABLE across retries,
-// which is what lets a receiver deduplicate: the same (event, webhook) always
-// announces the same delivery UUID, so a receiver that already acted on
-// attempt 2 can ignore attempt 3 after its own 200 was lost. A fresh UUID per
-// attempt would make every retry look like a new page.
-var deliveryNamespace = uuid.MustParse("1f2c7a54-3b8e-4d61-9c0a-5e7d8f2b1a63")
 
 // errWebhookGone marks a delivery whose webhook no longer exists or has been
 // disabled. It is terminal, not retryable: retrying cannot make a deleted
@@ -362,14 +356,21 @@ func (d *Dispatcher) deliver(ctx context.Context, del store.Delivery, r resoluti
 		d.finish(ctx, del, fmt.Errorf("loading event %d: %w", del.EventID, err), errors.Is(err, store.ErrNotFound))
 		return
 	}
-	body, err := marshal(buildPayload(ev, d.opts.Config.ExternalURL))
+	event, err := buildEvent(ev, d.opts.Config.ExternalURL)
 	if err != nil {
-		// Unrenderable payload: retrying cannot fix it.
+		// Unrenderable event: retrying cannot fix it.
+		d.finish(ctx, del, err, true)
+		return
+	}
+	body, err := events.Marshal(event)
+	if err != nil {
 		d.finish(ctx, del, err, true)
 		return
 	}
 
-	status, err := d.send(ctx, r.target, ev.Type, DeliveryID(del.ID), body)
+	// The event's id is the webhook-id, so every retry of this row — and
+	// every other webhook's delivery of the same event — repeats it.
+	status, err := d.send(ctx, r.target, event.ID, body)
 	if err != nil {
 		d.log.Warn("webhook delivery failed", "webhook", r.target.name, "source", r.target.source,
 			"deliveryId", del.ID, "eventId", del.EventID, "attempts", del.Attempts, "status", status, "err", err)
@@ -423,13 +424,6 @@ func retryDelay(attempts int) (time.Duration, bool) {
 	return retrySchedule[idx], true
 }
 
-// DeliveryID is the X-Gawk-Delivery value for a delivery row: a UUID derived
-// from the row ID, so every retry of the same (event, webhook) repeats it and
-// a receiver can deduplicate.
-func DeliveryID(rowID int64) string {
-	return uuid.NewSHA1(deliveryNamespace, []byte(strconv.FormatInt(rowID, 10))).String()
-}
-
 // resolve turns a webhook name into its URL and signing secret, looking in the
 // chart-defined set first and the database second.
 //
@@ -458,9 +452,17 @@ func (d *Dispatcher) resolve(ctx context.Context, name string) (target, error) {
 	return target{name: row.Name, url: row.URL, secret: row.Secret, source: api.SourceUI}, nil
 }
 
-// send posts one signed payload and reports the HTTP status (0 when the
-// request never completed).
-func (d *Dispatcher) send(ctx context.Context, t target, eventType, deliveryID string, body []byte) (int, error) {
+// send posts one signed event and reports the HTTP status (0 when the
+// request never completed). id is the CloudEvents id, which rides out as
+// webhook-id and inside the signed material (docs/52 D5).
+func (d *Dispatcher) send(ctx context.Context, t target, id string, body []byte) (int, error) {
+	// The key rule ran when this secret was configured, so this cannot fail
+	// for a secret that got here — but a failure is still not a crash: it is
+	// a delivery that fails with its reason in last_error.
+	key, err := config.SigningKey(t.secret)
+	if err != nil {
+		return 0, fmt.Errorf("webhook %s: %w", t.name, err)
+	}
 	ctx, cancel := context.WithTimeout(ctx, d.opts.RequestTimeout)
 	defer cancel()
 
@@ -470,10 +472,9 @@ func (d *Dispatcher) send(ctx context.Context, t target, eventType, deliveryID s
 	}
 	ts := d.now().UTC().Unix()
 	req.Header.Set("Content-Type", ContentType)
-	req.Header.Set(HeaderEvent, eventType)
-	req.Header.Set(HeaderDelivery, deliveryID)
+	req.Header.Set(HeaderID, id)
 	req.Header.Set(HeaderTimestamp, strconv.FormatInt(ts, 10))
-	req.Header.Set(HeaderSignature, Sign(t.secret, ts, body))
+	req.Header.Set(HeaderSignature, Sign(key, id, ts, body))
 
 	resp, err := d.client.Do(req)
 	if err != nil {
@@ -497,8 +498,8 @@ func (d *Dispatcher) send(ctx context.Context, t target, eventType, deliveryID s
 	return resp.StatusCode, fmt.Errorf("receiver answered %s", resp.Status)
 }
 
-// TestWebhook sends a synthetic signed `test` event and returns the outcome.
-// It satisfies api.Tester.
+// TestWebhook sends a synthetic signed `fi.ioio.gawk.webhook.test` event and
+// returns the outcome. It satisfies api.Tester.
 //
 // It writes nothing to Postgres — no event row, no delivery row — because a
 // test is not a moderation action; the audit trail must not fill with probes.
@@ -516,13 +517,16 @@ func (d *Dispatcher) TestWebhook(ctx context.Context, name string) (api.TestResu
 		// is a successful test with a failing outcome.
 		return api.TestResult{}, err
 	}
-	body, err := marshal(testPayload(d.now(), d.opts.Config.ExternalURL))
+	event := testEvent(d.now(), d.opts.Config.ExternalURL)
+	body, err := events.Marshal(event)
 	if err != nil {
 		return api.TestResult{}, err
 	}
-	deliveryID := uuid.New().String()
-	status, sendErr := d.send(ctx, t, EventTest, deliveryID, body)
-	result := api.TestResult{OK: sendErr == nil, Status: status, DeliveryID: deliveryID}
+	// The result's deliveryId is the event's id — what the receiver saw as
+	// webhook-id — so an operator can match the portal's answer to the
+	// receiver's log.
+	status, sendErr := d.send(ctx, t, event.ID, body)
+	result := api.TestResult{OK: sendErr == nil, Status: status, DeliveryID: event.ID}
 	if sendErr != nil {
 		result.Error = sendErr.Error()
 		d.log.Warn("webhook test send failed", "webhook", name, "source", t.source, "status", status, "err", sendErr)

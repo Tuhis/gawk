@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.attachment_updated.json",
+  "title": "Attachment updated",
+  "description": "An attached broadcast's live state or viewer count changed. Coalesced like broadcast.viewers. The `data` of a `fi.ioio.gawk.room.attachment_updated` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "roomCode": {
+      "$ref": "common.json#/$defs/roomCode",
+      "x-gawk-sensitive": true
+    },
+    "roomKey": {
+      "$ref": "common.json#/$defs/roomKey"
+    },
+    "broadcastId": {
+      "$ref": "common.json#/$defs/broadcastId",
+      "x-gawk-sensitive": true
+    },
+    "broadcastKey": {
+      "$ref": "common.json#/$defs/broadcastKey"
+    },
+    "live": {
+      "type": "boolean"
+    },
+    "viewers": {
+      "$ref": "common.json#/$defs/count"
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "roomKey",
+    "broadcastKey",
+    "live",
+    "viewers"
+  ]
+}

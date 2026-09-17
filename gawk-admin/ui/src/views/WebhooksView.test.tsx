@@ -78,7 +78,7 @@ describe('the merged list (§4.10, D9)', () => {
     );
   });
 
-  it('never displays a secret, for either source', async () => {
+  it('never displays an existing secret, for either source', async () => {
     mount([FROM_CONFIG, FROM_PORTAL]);
     await screen.findByText('discord');
     fireEvent.click(within(rowFor('discord')).getByRole('button', { name: 'Edit' }));
@@ -126,15 +126,24 @@ describe('test-send (§4.10)', () => {
 });
 
 describe('CRUD on portal-created webhooks (§4.7)', () => {
-  it('creates one, sending the secret write-only', async () => {
+  it('creates one with a generated whsec_ secret, shown exactly once (docs/52 D5)', async () => {
     const session = mount([]);
     await waitFor(() => expect(session.calls.length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole('button', { name: 'Add webhook' }));
+    // The create form arrives with a Standard Webhooks secret already
+    // generated and VISIBLE: this is the one moment the operator can copy it
+    // into the receiver, so it is a text field, not a password field.
+    const secretField = screen.getByLabelText(/Signing secret/) as HTMLInputElement;
+    expect(secretField.type).toBe('text');
+    const generated = secretField.value;
+    expect(generated).toMatch(/^whsec_[A-Za-z0-9+/]{32}$/);
+    // 24 random bytes: base64 of that is 32 characters with no padding.
+    expect(atob(generated.slice('whsec_'.length)).length).toBe(24);
+
     fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'pager' } });
     fireEvent.change(screen.getByLabelText('URL'), {
       target: { value: 'https://pager.example/hook' },
     });
-    fireEvent.change(screen.getByLabelText(/Signing secret/), { target: { value: 's3cret' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => {
@@ -149,8 +158,45 @@ describe('CRUD on portal-created webhooks (§4.7)', () => {
       name: 'pager',
       url: 'https://pager.example/hook',
       enabled: true,
-      secret: 's3cret',
+      secret: generated,
     });
+    // Exactly once: the form is gone after the save, and nothing on the page
+    // shows the secret again.
+    await waitFor(() => expect(screen.queryByLabelText(/Signing secret/)).toBeNull());
+    expect(document.body.textContent).not.toContain(generated);
+  });
+
+  it('lets the operator replace the generated secret with their own', async () => {
+    const session = mount([]);
+    await waitFor(() => expect(session.calls.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Add webhook' }));
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: 'pager' } });
+    fireEvent.change(screen.getByLabelText('URL'), {
+      target: { value: 'https://pager.example/hook' },
+    });
+    fireEvent.change(screen.getByLabelText(/Signing secret/), { target: { value: 'czNjcmV0' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(
+        session.calls.some((c) => c.path === 'api/v1/webhooks' && c.init.method === 'POST'),
+      ).toBe(true);
+    });
+    const post = session.calls.find(
+      (c) => c.path === 'api/v1/webhooks' && c.init.method === 'POST',
+    );
+    expect((bodyOf(post!) as { secret?: string }).secret).toBe('czNjcmV0');
+  });
+
+  it('generates a different secret for every create form', async () => {
+    const session = mount([]);
+    await waitFor(() => expect(session.calls.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Add webhook' }));
+    const first = (screen.getByLabelText(/Signing secret/) as HTMLInputElement).value;
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add webhook' }));
+    const second = (screen.getByLabelText(/Signing secret/) as HTMLInputElement).value;
+    expect(second).not.toBe(first);
   });
 
   it('omits the secret on edit when the field is left blank, so it is kept', async () => {

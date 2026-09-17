@@ -21,9 +21,12 @@ import ui from '../styles/ui.module.css';
  * whole point of showing a config row at all — an operator wiring up ntfy
  * needs to prove the pipe works without a redeploy.
  *
- * Secrets are never displayed, for either source. The API does not return them
- * (§4.7), so there is nothing to render; the editor's secret field is
- * write-only and blank on every open.
+ * Secrets are shown exactly once: when the portal creates a webhook it
+ * generates a Standard Webhooks `whsec_` secret (docs/52 D5) and displays it
+ * in the create form for the operator to paste into the receiver — the one
+ * moment the two sides can be given the same string. The API never returns a
+ * secret (§4.7), so there is nothing to render afterwards; the edit form's
+ * secret field is write-only and blank on every open.
  */
 export function WebhooksView() {
   const api = useApi();
@@ -252,6 +255,17 @@ export function WebhooksView() {
   );
 }
 
+/**
+ * A fresh Standard Webhooks secret: `whsec_` + base64 of 24 random bytes,
+ * the form every verifier library decodes itself (docs/52 D5). WebCrypto,
+ * like pkce.ts — no dependency, and nothing the server has to be told.
+ */
+function generateSecret(): string {
+  const buf = new Uint8Array(24);
+  crypto.getRandomValues(buf);
+  return 'whsec_' + btoa(String.fromCharCode(...buf));
+}
+
 function WebhookEditor({
   webhook,
   onCancel,
@@ -266,9 +280,11 @@ function WebhookEditor({
   const api = useApi();
   const [name, setName] = useState(webhook?.name ?? '');
   const [url, setUrl] = useState(webhook?.url ?? '');
-  // Always blank: the API never returns a secret, and an editor that showed one
-  // would be the only place in the system where a signing key is on screen.
-  const [secret, setSecret] = useState('');
+  // On CREATE the secret is generated here and shown, once, so the operator
+  // can paste it into the receiver; on EDIT it is blank, because the API
+  // never returns a secret and an editor that showed one would be the only
+  // place in the system where a signing key is on screen after creation.
+  const [secret, setSecret] = useState(() => (webhook ? '' : generateSecret()));
   const [enabled, setEnabled] = useState(webhook?.enabled ?? true);
   const [busy, setBusy] = useState(false);
 
@@ -307,12 +323,15 @@ function WebhookEditor({
       </div>
       <div className={ui.field}>
         <label htmlFor="wh-secret">
-          Signing secret {webhook ? '(leave blank to keep the current one)' : ''}
+          {webhook
+            ? 'Signing secret (base64, leave blank to keep the current one)'
+            : 'Signing secret (generated; copy it into the receiver now — it is never shown again)'}
         </label>
         <input
           id="wh-secret"
-          type="password"
-          autoComplete="new-password"
+          type={webhook ? 'password' : 'text'}
+          autoComplete="off"
+          spellCheck={false}
           value={secret}
           onChange={(e) => setSecret(e.target.value)}
         />

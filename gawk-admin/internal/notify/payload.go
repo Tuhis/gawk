@@ -1,10 +1,9 @@
 package notify
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -12,51 +11,66 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
+
+	"github.com/Tuhis/gawk/gawk-server/events"
 )
 
-// The wire contract of a webhook delivery (docs/42 §4.10). These are the exact
-// strings a receiver matches on, so they are constants here and nowhere else.
+// The wire contract of a webhook delivery: Standard Webhooks headers around a
+// CloudEvents body (docs/52 D1, D5). These are the exact strings a receiver
+// matches on, so they are constants here and nowhere else.
 const (
-	HeaderEvent     = "X-Gawk-Event"
-	HeaderDelivery  = "X-Gawk-Delivery"
-	HeaderTimestamp = "X-Gawk-Timestamp"
-	HeaderSignature = "X-Gawk-Signature"
+	// HeaderID carries the CloudEvents `id`, repeated on every retry of the
+	// same event: the receiver's idempotency key.
+	HeaderID = "webhook-id"
+	// HeaderTimestamp is Unix seconds at send time.
+	HeaderTimestamp = "webhook-timestamp"
+	// HeaderSignature is `v1,<base64>` — see Sign.
+	HeaderSignature = "webhook-signature"
 
-	// ContentType is fixed: every payload is JSON.
-	ContentType = "application/json"
+	// ContentType is the body's media type: a CloudEvent in JSON structured
+	// format.
+	ContentType = events.ContentType
 
-	// PayloadSchema names the payload shape. It is versioned so R40's
-	// content-flag events can extend the body without silently changing what
-	// an existing receiver parses.
-	PayloadSchema = "gawk.moderation-event.v1"
-
-	// SignaturePrefix labels the algorithm inside X-Gawk-Signature, so a
-	// future second algorithm is distinguishable rather than ambiguous.
-	SignaturePrefix = "sha256="
+	// SignatureVersion labels the scheme inside webhook-signature. The
+	// header format permits space-separated multiple signatures, which is
+	// where a key rotation would go; nothing here sends more than one.
+	SignatureVersion = "v1"
 )
-
-// EventTest is the type of the synthetic event POST /webhooks/{name}/test
-// sends (§4.7). It is deliberately NOT a store event type: a test send writes
-// no row to moderation_events, because a test is not a moderation action and
-// must not pollute the audit trail.
-const EventTest = "test"
 
 // testSummary is the one sentence a test delivery carries. A test send exists
-// to prove the pipe end to end — including that the receiver renders `summary`
-// — so it must read like a real notification on a phone, not like an empty
-// probe.
+// to prove the pipe end to end — including that the receiver renders
+// `summary` — so it must read like a real notification on a phone, not like
+// an empty probe.
 const testSummary = "test notification from the gawk-admin portal: this webhook is configured correctly"
 
-// portalPath is the route every payload's portalUrl points at (§4.10's
-// example, and `ui/src/router/router.ts`, which pins `#/broadcasts` as the
-// default route precisely so a cold click from a push notification lands
-// somewhere real).
+// eventNamespace derives the CloudEvents `id` of a portal-originated event
+// from its moderation_events row id (docs/52 D1).
+//
+// Deriving rather than generating makes the id STABLE across retries and
+// across receivers: the same event announces the same id to every webhook on
+// every attempt, so a receiver that already acted on attempt 2 can ignore
+// attempt 3 after its own 200 was lost, and two receivers can agree they saw
+// one event. A fresh UUID per attempt would make every retry look like a new
+// page.
+var eventNamespace = uuid.MustParse("5b3f0c2e-9a7d-4f16-8e21-c4d0a6b7e8f9")
+
+// EventID is the CloudEvents `id` — and the webhook-id — of the event
+// recorded in the given moderation_events row.
+func EventID(rowID int64) string {
+	return uuid.NewSHA1(eventNamespace, []byte(strconv.FormatInt(rowID, 10))).String()
+}
+
+// portalPath is the route every broadcast-scoped delivery's portalUrl points
+// at (`ui/src/router/router.ts` pins `#/broadcasts` as the default route
+// precisely so a cold click from a push notification lands somewhere real).
 //
 // An event that names a broadcast appends `?key=<broadcastKey>` — the HMAC'd
-// key, never the raw ID (D8) — which the portal reads as a pre-filled filter,
-// so a paged operator lands ON the offending row instead of visually matching
-// a 12-hex key against a fleet-sized table.
+// key, never the raw ID (docs/42 D8) — which the portal reads as a pre-filled
+// filter, so a paged operator lands ON the offending row instead of visually
+// matching a 12-hex key against a fleet-sized table.
 const portalPath = "/#/broadcasts"
 
 // roomsPortalPath is the deep link for a room event (R42): the rooms view,
@@ -77,162 +91,169 @@ func deepLink(externalURL, path, key string) string {
 	return externalURL + path + "?key=" + url.QueryEscape(key)
 }
 
-// isRoomEvent reports whether an event type belongs to the room vocabulary
+// isRoomEvent reports whether a row type belongs to the room vocabulary
 // (store.EventRoom*), which deep-links to the rooms view.
-func isRoomEvent(eventType string) bool {
-	return strings.HasPrefix(eventType, "room.")
+func isRoomEvent(rowType string) bool {
+	return strings.HasPrefix(rowType, "room.")
 }
 
-// Payload is the webhook body (docs/42 §4.10).
+// buildEvent renders a persisted moderation event as the CloudEvent a
+// webhook receives: the envelope of docs/52 D1 around the D4 projection of
+// the type's data.
 //
-// **What is missing from this struct is the point.** There is no field for a
-// raw broadcast ID and none for an IP address, so D8's "no raw ID and no IP
-// ever appears in a payload" is enforced by the type rather than by a rule
-// somebody has to remember: a webhook body cannot carry what the struct cannot
-// hold. The same trick guards secrets in api.webhookJSON.
-//
-// Reason is the deliberate exception to "nothing else crosses": ban reasons are
-// operator-private context that the operator chose to route to this receiver
-// (§5, "webhooks carry them ... the self-hosting doc warns that the webhook
-// receiver sees reasons").
-type Payload struct {
-	Schema     string `json:"schema"`
-	Type       string `json:"type"`
-	OccurredAt string `json:"occurredAt"`
-	Actor      string `json:"actor"`
-	// BroadcastKey is the HMAC'd key — never the joinable ID (D8).
-	BroadcastKey string `json:"broadcastKey,omitempty"`
-	Reason       string `json:"reason,omitempty"`
-	// PortalURL is how the receiver acts: the notification carries no
-	// capability, only a link to a surface that demands a login.
-	PortalURL string `json:"portalUrl,omitempty"`
-	// Summary is one human sentence so a dumb webhook-to-push bridge (ntfy)
-	// needs no templating (§4.10). Never omitempty: a receiver that renders
-	// only `summary` must never receive a body without it.
-	Summary string `json:"summary"`
-	// Enforcement is "pending" when the Kubernetes object that would MAKE this
-	// event true had not been written when it was recorded — and is absent
-	// otherwise. An event is a statement of something that happened, so a
-	// delivery announcing a kill the relays were never told about has to say
-	// so; `summary` already reads as pending, and this is the machine-readable
-	// half of the same fact.
-	//
-	// A bare string from a CLOSED vocabulary (store.EnforcementState), not an
-	// object mirroring the HTTP API's {inSync, detail}:
-	//
-	//   - Absence means in sync, exactly as it does on the HTTP ban body. That
-	//     keeps every existing receiver's bytes unchanged and makes this an
-	//     additive field — which is why the schema string does not move.
-	//   - `detail` is portal copy ("the reconciler retries within a minute, so
-	//     do not re-submit") addressed to the operator holding the mutation's
-	//     response. A push notification's human half is `summary`; shipping a
-	//     second sentence would give a dumb bridge two competing texts.
-	//   - A closed scalar vocabulary cannot carry a raw ID or an address the
-	//     way a free-form string or a nested object could, so D8 stays
-	//     structural rather than becoming a per-field review (see
-	//     store.Event.EnforcementState).
-	Enforcement string `json:"enforcement,omitempty"`
-	// RoomKey is the fleet's HMAC'd handle for the room a room.* event is
-	// about (R42, docs/44 D16) — the Room CR's status.key, written by the
-	// home pod, never the joinable code. Absent when no pod has homed the
-	// room yet (the key is unknown, and the code is not a substitute) and on
-	// every non-room event. Read through store.Event.RoomKey, whose closed
-	// hex vocabulary is what lets a producer-written payload key cross here.
-	RoomKey string `json:"roomKey,omitempty"`
-}
-
-// buildPayload projects a persisted event onto the wire shape.
-//
-// It copies exactly four things out of the event — type, time, actor and the
-// HMAC'd key — plus the three payload keys store declares webhook-safe
-// (store.PayloadReason, store.PayloadSummary, store.PayloadEnforcement).
-// Everything else in the event's jsonb is portal-only: it may hold raw IDs,
-// addresses and CIDRs.
-func buildPayload(ev store.Event, externalURL string) Payload {
+// It is the one place a moderation_events row becomes an event. The typed
+// data is built FULL first — including the raw broadcast ID or room code the
+// row carries, exactly as the relay would put them on the bus — and then
+// projected, so that a portal-originated event and a bus event take the same
+// path to a receiver, and so the projection (not this function's memory) is
+// what keeps a raw identifier out of a delivery. Everything else in the row's
+// jsonb is portal-only: it may hold addresses and CIDRs, and nothing here
+// reads it except through the accessors store closes the vocabulary of.
+func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
+	typ, ok := events.ModerationType(ev.Type)
+	if !ok {
+		// A row type the contract does not know is a bug in whichever
+		// producer wrote it — never something to invent a type for.
+		return events.Event{}, fmt.Errorf("notify: no event type for row type %q", ev.Type)
+	}
 	// Read through the accessor, never as a raw string: it is what closes the
 	// vocabulary, so this field can only ever be "" or "pending" whatever a
 	// producer wrote into the payload.
-	enforcement := ev.EnforcementState()
+	enforcement := string(ev.EnforcementState())
 	summary := ev.PayloadString(store.PayloadSummary)
 	if summary == "" {
 		// Every event written by internal/api and internal/kube carries a
 		// summary already. This fallback exists so an event from some future
-		// producer still satisfies "summary present on every payload" — and it
-		// calls the ONE summariser (store.SummarizeWithEnforcement) rather
-		// than growing a second one that could drift into naming a raw ID, or
-		// into claiming an enforcement that has not started.
-		summary = store.SummarizeWithEnforcement(ev.Type, "", ev.BroadcastKey, ev.Actor, enforcement)
+		// producer still satisfies "summary present on every delivery" — and
+		// it calls the ONE summariser (store.SummarizeWithEnforcement) rather
+		// than growing a second one that could drift into naming a raw ID.
+		summary = store.SummarizeWithEnforcement(ev.Type, "", ev.BroadcastKey, ev.Actor, ev.EnforcementState())
 	}
-	p := Payload{
-		Schema:       PayloadSchema,
-		Type:         ev.Type,
-		OccurredAt:   ev.OccurredAt.UTC().Format(time.RFC3339),
-		Actor:        ev.Actor,
-		BroadcastKey: ev.BroadcastKey,
-		Reason:       ev.PayloadString(store.PayloadReason),
-		Summary:      summary,
-		Enforcement:  string(enforcement),
-	}
+	reason := ev.PayloadString(store.PayloadReason)
+
+	var (
+		data     any
+		subject  string
+		delivery events.Delivery
+	)
 	if isRoomEvent(ev.Type) {
 		// Through the accessor, never as a raw string: it is what closes the
 		// vocabulary to a hex digest, so a room CODE written under the key by
 		// mistake is dropped here rather than paged out.
-		p.RoomKey = ev.RoomKey()
-		p.PortalURL = deepLink(externalURL, roomsPortalPath, p.RoomKey)
-		return p
+		roomKey := ev.RoomKey()
+		// The raw code IS read here — it is a bus-tier property of the
+		// contract and the projection strips it — but only from the key the
+		// producers write it under.
+		roomCode := ev.PayloadString(store.PayloadRoom)
+		kind := ev.PayloadString(store.PayloadRoomKind)
+		subject = roomKey
+		delivery = events.Delivery{Summary: summary, PortalURL: deepLink(externalURL, roomsPortalPath, roomKey)}
+		switch typ {
+		case events.TypeRoomCreated:
+			data = events.RoomCreatedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, Kind: kind}
+		case events.TypeRoomEnded:
+			data = events.RoomEndedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, Kind: kind, Reason: reason}
+		case events.TypeRoomSecretRotated:
+			data = events.RoomSecretRotatedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, Kind: kind}
+		default:
+			return events.Event{}, fmt.Errorf("notify: no data shape for %s", typ)
+		}
+	} else {
+		subject = ev.BroadcastKey
+		delivery = events.Delivery{Summary: summary, PortalURL: portalURL(externalURL, ev.BroadcastKey)}
+		switch typ {
+		case events.TypeBroadcastKilled:
+			data = events.BroadcastKilledData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID, Reason: reason, Enforcement: enforcement}
+		case events.TypeBanCreated:
+			data = events.BanCreatedData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID, Reason: reason, Enforcement: enforcement}
+		case events.TypeBanExpired:
+			data = events.BanExpiredData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID, Reason: reason, Enforcement: enforcement}
+		case events.TypeBanRemoved:
+			data = events.BanRemovedData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID, Reason: reason, Enforcement: enforcement}
+		case events.TypeContentFlagRaised:
+			data = events.ContentFlagRaisedData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID, Reason: reason}
+		default:
+			return events.Event{}, fmt.Errorf("notify: no data shape for %s", typ)
+		}
 	}
-	p.PortalURL = portalURL(externalURL, ev.BroadcastKey)
-	return p
+	full := events.New(typ, EventID(ev.ID), events.SourceAdmin, subject, ev.OccurredAt.UTC(), data)
+	return project(full, delivery)
 }
 
-// testPayload is the synthetic body of a test send.
-func testPayload(now time.Time, externalURL string) Payload {
-	p := Payload{
-		Schema:     PayloadSchema,
-		Type:       EventTest,
-		OccurredAt: now.UTC().Format(time.RFC3339),
-		Actor:      "gawk-admin",
-		Summary:    testSummary,
+// project is the webhook projection of docs/52 D4: the same event with every
+// property its schema marks `x-gawk-sensitive` removed from `data`, and the
+// two delivery-added properties filled in. Nothing else changes — same `id`,
+// `source`, `type`, `subject`, `time` and `dataschema` — because a webhook
+// delivery of a bus event is the same event to a consumer that sees both.
+//
+// It is driven by the schema's marks rather than by a Go list, so adding a
+// sensitive property without marking it fails the fixture test in
+// contract_test.go (it leaks), not a reviewer's memory. R49 delivers bus
+// events through this same function.
+func project(full events.Event, delivery events.Delivery) (events.Event, error) {
+	sensitive, err := events.SensitiveProperties(full.Type)
+	if err != nil {
+		return events.Event{}, err
 	}
-	p.PortalURL = portalURL(externalURL, "")
-	return p
+	// Through JSON rather than reflection: the marks name JSON property
+	// names, and this is the one representation in which they are exactly
+	// the keys.
+	raw, err := json.Marshal(full.Data)
+	if err != nil {
+		return events.Event{}, fmt.Errorf("notify: encoding %s data: %w", full.Type, err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return events.Event{}, fmt.Errorf("notify: %s data is not an object: %w", full.Type, err)
+	}
+	for _, name := range sensitive {
+		delete(data, name)
+	}
+	if delivery.Summary != "" {
+		data["summary"] = delivery.Summary
+	}
+	if delivery.PortalURL != "" {
+		data["portalUrl"] = delivery.PortalURL
+	}
+	projected := full
+	projected.Data = data
+	return projected, nil
 }
 
-// marshal renders a payload to the exact bytes that are both sent and signed.
-//
-// HTML escaping is off: `summary` and `reason` are human sentences that end up
-// in a push notification, and a receiver that forwards the field verbatim
-// should show "spam & abuse" rather than the default encoder's
-// "spam \u0026 abuse". The encoder's trailing newline is stripped so the signed
-// material is the JSON value itself.
-func marshal(p Payload) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(p); err != nil {
-		return nil, fmt.Errorf("notify: marshal payload: %w", err)
-	}
-	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+// testEvent is the synthetic event of a test send: `fi.ioio.gawk.webhook.test`
+// from `/gawk/admin`, with a fresh id (a test is not a moderation action and
+// has no row to derive one from), about no broadcast and no room.
+func testEvent(now time.Time, externalURL string) events.Event {
+	return events.New(events.TypeWebhookTest, uuid.New().String(), events.SourceAdmin, "", now.UTC(),
+		events.WebhookTestData{Delivery: events.Delivery{
+			Summary:   testSummary,
+			PortalURL: portalURL(externalURL, ""),
+		}})
 }
 
-// Sign returns the X-Gawk-Signature value for a body: the hex HMAC-SHA256 of
-// `timestamp + "." + body` under that webhook's own secret (docs/42 §4.10).
+// Sign returns the webhook-signature value for a delivery: the Standard
+// Webhooks construction, `v1,` + base64(HMAC-SHA256(key, id + "." +
+// timestamp + "." + body)).
 //
-// **The timestamp is inside the signed material, not merely alongside it.**
-// That is what makes the receiver's replay window enforceable: an attacker who
-// captures a delivery cannot re-date it, because moving the timestamp
-// invalidates the signature. A signature over the body alone would let a
-// replayed kill notification look fresh forever.
+// **The id and the timestamp are inside the signed material, not merely
+// alongside it.** The timestamp is what makes the receiver's replay window
+// enforceable — an attacker who captures a delivery cannot re-date it,
+// because moving the timestamp invalidates the signature — and the id is what
+// keeps a captured delivery from being re-identified as a different event.
 //
-// Exported because the self-hosting guidance documents this construction and
-// receivers reimplement it; keeping one Go definition means the documented
-// vector and the shipped signer cannot drift.
-func Sign(secret string, timestamp int64, body []byte) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	// Written in three pieces rather than concatenated: identical bytes, no
-	// copy of a body that may be kilobytes.
+// key is what config.SigningKey derives from the webhook's secret. Exported
+// because the self-hosting guidance documents this construction and receivers
+// verify it with off-the-shelf Standard Webhooks libraries; keeping one Go
+// definition beside a pinned vector means the documented construction and the
+// shipped signer cannot drift.
+func Sign(key []byte, id string, timestamp int64, body []byte) string {
+	mac := hmac.New(sha256.New, key)
+	// Written in pieces rather than concatenated: identical bytes, no copy
+	// of a body that may be kilobytes.
+	mac.Write([]byte(id))
+	mac.Write([]byte("."))
 	mac.Write([]byte(strconv.FormatInt(timestamp, 10)))
 	mac.Write([]byte("."))
 	mac.Write(body)
-	return SignaturePrefix + hex.EncodeToString(mac.Sum(nil))
+	return SignatureVersion + "," + base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }

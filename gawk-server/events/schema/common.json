@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/common.json",
+  "title": "Shared definitions of the gawk event contract",
+  "description": "Definitions every data schema in this directory `$ref`s. Vocabularies (enums) only grow; treat an unknown value as unknown (docs/52 D6 b).",
+  "$defs": {
+    "hexKey": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{2}){4,32}$",
+      "description": "A fleet HMAC'd handle: lower-case hex of even length, 8 to 64 characters. Stable for the lifetime of the relay's key, never reversible to the identifier it hides."
+    },
+    "broadcastKey": {
+      "$ref": "#/$defs/hexKey",
+      "description": "The HMAC'd handle of a broadcast. The one broadcast identity that may leave a deployment."
+    },
+    "roomKey": {
+      "$ref": "#/$defs/hexKey",
+      "description": "The HMAC'd handle of a room (docs/44 D16). The one room identity that may leave a deployment."
+    },
+    "broadcastId": {
+      "type": "string",
+      "pattern": "^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{6}$",
+      "description": "A raw, joinable broadcast ID: six characters of the broadcast alphabet. Only ever on the bus; never in a webhook delivery."
+    },
+    "roomCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "A raw, joinable room code: a dynamic room's six-character code or a static room's slug. Only ever on the bus; never in a webhook delivery."
+    },
+    "displayCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The code as shown to participants. Joinable, so treated exactly like roomCode."
+    },
+    "roomKind": {
+      "type": "string",
+      "enum": [
+        "static",
+        "dynamic"
+      ],
+      "description": "Whether the room is an operator-created static room or a participant-created dynamic one."
+    },
+    "clientKind": {
+      "type": "string",
+      "enum": [
+        "web-viewer",
+        "web-broadcaster",
+        "native"
+      ],
+      "description": "What kind of client a participant is (the wire protocol's RoomHello clientKind)."
+    },
+    "broadcastRole": {
+      "type": "string",
+      "enum": [
+        "origin",
+        "edge"
+      ],
+      "description": "Which side of the relay cascade the publishing pod plays for the broadcast."
+    },
+    "enforcement": {
+      "type": "string",
+      "enum": [
+        "pending"
+      ],
+      "description": "Present, as `pending`, when the Kubernetes object that would make this moderation event true had not been written when it was recorded; absent when record and enforcement agree. A reconciler completes the enforcement within about a minute."
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Who did it: an operator's identity as the identity provider names it, or `system`."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Free text. For a moderation event, the operator's reason; for a lifecycle event, a closed word the type's schema enumerates."
+    },
+    "nickname": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "A participant's chosen display name: free user text."
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "A room tile's label: free user text."
+    },
+    "participantId": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535,
+      "description": "The room-scoped participant id the roster uses. Not a join capability."
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339, UTC."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One human sentence describing the event, so a receiver that renders nothing else still shows something meaningful. Added by gawk-admin on webhook delivery; never set by the relay."
+    },
+    "portalUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "A deep link into the gawk-admin portal, filtered by the HMAC'd key. It carries no capability: acting requires logging in. Added by gawk-admin on webhook delivery; never set by the relay."
+    }
+  }
+}

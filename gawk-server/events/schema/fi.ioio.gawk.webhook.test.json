@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.webhook.test.json",
+  "title": "Webhook test",
+  "description": "The synthetic event `POST /api/v1/webhooks/{name}/test` sends to prove the pipe end to end. It is about no broadcast and no room, writes no row, and is never on the bus. The `data` of a `fi.ioio.gawk.webhook.test` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  }
+}

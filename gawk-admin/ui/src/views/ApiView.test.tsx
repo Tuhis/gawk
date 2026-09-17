@@ -14,7 +14,7 @@ vi.mock('redoc', () => ({
 }));
 
 import ApiView from './ApiView.tsx';
-import { OPENAPI_URL } from './apiDocs.ts';
+import { ASYNCAPI_URL, OPENAPI_URL } from './apiDocs.ts';
 import { json, renderWithSession, stubSession } from '../testing/harness.tsx';
 
 afterEach(() => {
@@ -41,6 +41,16 @@ describe('the API page (R48, docs/49 D5)', () => {
     mount();
     const link = (await screen.findByText('openapi.json')) as HTMLAnchorElement;
     expect(link.getAttribute('href')).toBe(OPENAPI_URL);
+    expect(link.getAttribute('href')?.startsWith('/')).toBe(false);
+  });
+
+  // The event contract is a link, not a rendering (docs/52 §2, Rejected):
+  // the AsyncAPI renderer is a large bundle for a page that already embeds
+  // Redoc, and the catalogue reads fine raw.
+  it('links to the event catalogue, relatively', async () => {
+    mount();
+    const link = (await screen.findByText('asyncapi.json')) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe(ASYNCAPI_URL);
     expect(link.getAttribute('href')?.startsWith('/')).toBe(false);
   });
 
