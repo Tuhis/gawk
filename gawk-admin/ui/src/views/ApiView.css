@@ -1,0 +1,24 @@
+/* Two corrections to what Redoc renders, both CSP-driven (R48, docs/49 D5).
+ *
+ * This file is imported by ApiView.tsx, so it rides in the lazily-loaded API
+ * chunk rather than the entry bundle — the moderation views never fetch it.
+ *
+ * Plain CSS, not a module: Redoc's DOM is not ours to add class names to, so
+ * these have to be global selectors, and they are written to survive its
+ * generated styled-components class names (`sc-hAcEkO jlPVAz` today, something
+ * else after any Redoc upgrade). `!important` because Redoc sets the same
+ * properties from an injected <style> that may come after this one.
+ */
+
+/* The "API docs by Redocly" badge draws its logo from cdn.redoc.ly. The
+ * portal's CSP (`img-src 'self' data:`) blocks it, which is the correct
+ * outcome and an ugly one: a console error on every page load, for a
+ * decoration. The attribution TEXT stays — dropping the credit is not the
+ * goal, and the anchor is untouched; only the off-origin fetch goes.
+ *
+ * `:has()` rather than the generated parent class name, so a Redoc upgrade
+ * that reshuffles its hashes does not silently restore the request. */
+div:has(> a[href^="https://redocly.com/redoc/"]) {
+  background-image: none !important;
+  padding-left: 0 !important;
+}

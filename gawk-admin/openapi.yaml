@@ -98,9 +98,9 @@ info:
     `message`. The codes are contract, not log text.
 
 servers:
-  # One line, deliberately: Swagger UI renders this inside the server picker,
-  # where a paragraph is unreadable. The explanation belongs in
-  # `info.description`, which has room for it.
+  # One line, deliberately: a renderer puts this next to the URL, where a
+  # paragraph is unreadable. The explanation belongs in `info.description`,
+  # which has room for it.
   #
   # The URL here is a placeholder. The copy served at `/api/v1/openapi.json`
   # carries the deployment's own `-external-url` instead.

@@ -328,7 +328,8 @@ def collect_npm(project: str) -> list[Package]:
     for path, entry in sorted(runtime.items()):
         name = re.sub(r"^.*node_modules/", "", path)
         root = cwd / path
-        out.append(Package(name, entry.get("version", ""), entry.get("license"), root))
+        declared = NPM_LICENSE_OVERRIDES.get(name) or entry.get("license")
+        out.append(Package(name, entry.get("version", ""), declared, root))
     if had_node_modules:
         # Put back what was there: a working tree that could `npm run build`
         # before this script ran must still be able to afterwards. On a fresh
@@ -557,8 +558,43 @@ ALLOWED_LICENSES = {
     "ISC",
     "MIT",
     "MIT-0",
+    # The PSF license, as `argparse` (a js-yaml dependency) declares it. It is
+    # permissive — "nonexclusive, royalty-free, world-wide license to
+    # reproduce, analyze, test, perform and/or display publicly, prepare
+    # derivative works, distribute" — with a notice-retention requirement this
+    # file satisfies. Not copyleft. Added 2026-09-17 with R48's Redoc page.
+    "Python-2.0",
     "Unlicense",
     "Zlib",
+}
+
+# Packages whose npm metadata is wrong or missing, mapped to the license their
+# own shipped LICENSE file states.
+#
+# This exists because `check()` cannot read license TEXT: it runs in CI with no
+# node_modules, so the lockfile's `license` field is all it has, and a package
+# that simply forgot the field is indistinguishable from one with no license at
+# all. The renderer has no such gap — Package classifies from the text when
+# nothing is declared — so this only ever feeds the gate and keeps the two
+# halves saying the same thing.
+#
+# **Every entry is a license somebody opened the file and read**, and the
+# comment says what it said. That is the whole bar: this table must never
+# become a way to wave a dependency through. Anything not listed here still
+# fails the gate, which is the behaviour that catches a real copyleft arrival.
+# Prefer fixing it upstream; these three are long-dormant packages.
+NPM_LICENSE_OVERRIDES = {
+    # LICENSE: "The MIT License (MIT) / Copyright (c) 2017 Jason Miller".
+    # package.json omits the `license` field entirely.
+    "decko": "MIT",
+    # LICENSE: "The MIT License (MIT) / Copyright (c) 2014 Oleg Korsunsky /
+    # Copyright (c) 2014 Automattic Inc." Same omission; the copy webpack
+    # inlines into Redoc's bundle carries the same notice in its banner.
+    "stickyfill": "MIT",
+    # Declares the non-SPDX string "BSD". The text is the three-clause form —
+    # it carries "The name of the author may not be used to endorse or promote
+    # products derived from this software".
+    "url-template": "BSD-3-Clause",
 }
 
 
@@ -610,8 +646,8 @@ def check() -> int:
             if not path or entry.get("dev"):
                 continue  # build tooling is not redistributed
             checked += 1
-            declared = entry.get("license")
             name = re.sub(r"^.*node_modules/", "", path)
+            declared = NPM_LICENSE_OVERRIDES.get(name) or entry.get("license")
             if not declared:
                 failures.append(f"{project}: {name} declares no license")
             elif not expression_allowed(declared):

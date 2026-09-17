@@ -1156,12 +1156,13 @@ Add to it when a new gotcha lands in `docs/`.
   answered an empty feed to a caller who asked for everything — the same
   reassuring lie a null `banState` exists to prevent on the broadcast view.
   ([docs/49](49-admin-openapi.md))
-- **`swagger-ui-dist` depends on `@scarf/scarf`, which phones home from a
-  postinstall script** — on every `npm ci`, in CI and on every contributor's
-  machine. It is opt-in by default and `scarfSettings: { enabled: false }` in
-  `gawk-admin/ui/package.json` turns it off outright, but the general lesson is
-  the one worth keeping: **check `hasInstallScript` in the lockfile diff when a
-  new npm dependency lands.** ([docs/49](49-admin-openapi.md))
+- **Check `hasInstallScript` in the lockfile diff when a new npm dependency
+  lands.** `swagger-ui-dist` depends on `@scarf/scarf`, which phones home from
+  a postinstall script — on every `npm ci`, in CI and on every contributor's
+  machine, opt-OUT rather than opt-in. gawk no longer ships it (R48's API page
+  moved to Redoc, which does not depend on it), and that is luck rather than
+  diligence: nothing in CI would have caught it.
+  ([docs/49](49-admin-openapi.md))
 - **`//go:embed` cannot reach outside its own directory**, so a file that has
   to live at a module root for other tools (`redocly lint`,
   release-please's `extra-files`, a human browsing the repository) needs a

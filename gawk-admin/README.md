@@ -45,9 +45,9 @@ Two things about the module are worth knowing before you build it:
 
 `/api/v1` is described by [`openapi.yaml`](openapi.yaml), an OpenAPI 3.1
 document every deployment serves at `GET /api/v1/openapi.json` (unauthenticated,
-with its own base URL substituted) and renders at `#/api` in the portal, with a
-*Try it out* button wired to your token. Generate a client from it in whatever
-language you like — gawk ships none on purpose. The recipe for a service
+with its own base URL and role names substituted) and renders at `#/api` in the
+portal, as a browsable reference. Generate a client from it in whatever language
+you like — gawk ships none on purpose. The recipe for a service
 identity, and what the API promises not to break, are in
 [`docs/self-hosting.md` §9.8](../docs/self-hosting.md).
 

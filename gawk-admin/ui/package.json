@@ -4,10 +4,7 @@
   "license": "Apache-2.0",
   "version": "0.0.0",
   "type": "module",
-  "//scarfSettings": "swagger-ui-dist depends on @scarf/scarf, whose postinstall script reports installs home. Off here, for every contributor and every CI run (R48).",
-  "scarfSettings": {
-    "enabled": false
-  },
+  "//yaml": "Redoc's browser build statically imports `yaml` but declares it only as an OPTIONAL PEER, so whether it resolves depends on hoisting: it did on a developer machine and did not in the image build. Declared as a direct dependency so the build is deterministic rather than lucky.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -19,7 +16,8 @@
   "dependencies": {
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "swagger-ui-dist": "5.33.0"
+    "redoc": "2.5.4",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@redocly/cli": "2.53.2",

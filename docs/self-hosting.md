@@ -850,7 +850,8 @@ It needs no token (it is public in the repository anyway, at
 base URL in `servers[0].url`, and `x-gawk-build` names the binary that answered.
 Feed it to any generator you like — gawk ships no client package on purpose:
 the contract is the deliverable. Signed in as an operator, `#/api` in the portal
-renders the same document with a *Try it out* button wired to your own token.
+renders the same document as a browsable reference. It does not execute
+calls — the `curl` recipe below is how you try one.
 
 **What it promises.** `/api/v1` is additive within v1: fields and operations are
 added, never removed or retyped, and the `code` and `type` enums only grow.

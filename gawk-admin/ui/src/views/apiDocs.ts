@@ -1,11 +1,18 @@
-// The Swagger UI configuration, separated from the view that mounts it (R48,
-// docs/49 D5).
+// The Redoc configuration, separated from the view that mounts it (R48,
+// docs/49 D5, revised 2026-09-17).
 //
-// It is its own module because the two things worth testing here — that the
-// caller's token is attached to a "Try it out" request, and that nothing
-// off-origin is ever fetched — are properties of this object, not of React.
-// Asserting them against a 1.6 MB third-party bundle rendered in jsdom would
-// test the bundle.
+// It is its own module because the thing worth testing here — that the page
+// reads this deployment's own document and nothing off-origin — is a property
+// of this object, not of React. Asserting it against a 1.1 MB third-party
+// bundle rendered in jsdom would test the bundle.
+//
+// **There is no token here, and that is the point of the change.** Swagger UI
+// executed requests, so it had to be handed the operator's access token
+// through a `requestInterceptor`, with a same-origin guard so a misconfigured
+// `-external-url` could not leak it. Redoc renders and does not execute, so
+// the token never reaches the third-party bundle at all. The page lost "Try it
+// out"; it also lost the only reason a third-party script in the
+// security-critical SPA ever saw a credential.
 
 /**
  * Where the contract is served.
@@ -14,64 +21,52 @@
  * same reason: `vite.config.ts` sets `base: './'`, so the whole SPA works
  * wherever it is mounted, and a root-absolute path here would make this one
  * page the only thing that breaks under an Ingress sub-path. Both the document
- * fetch and the link below would go to the origin root and 404.
+ * fetch and the link on the page would go to the origin root and 404.
  */
 export const OPENAPI_URL = 'api/v1/openapi.json';
 
-/** The shape of a request Swagger UI hands to `requestInterceptor`. */
-export interface SwaggerRequest {
-  url: string;
-  headers?: Record<string, string>;
-  [key: string]: unknown;
-}
-
 /**
- * Attaches the caller's bearer token to a same-origin request.
+ * The options handed to `Redoc.init`.
  *
- * Two rules, and the second is the one worth writing down: the token goes on
- * requests to THIS origin and nowhere else. Swagger UI will happily execute a
- * request against whatever `servers[0].url` says, and a deployment whose
- * `-external-url` has been pointed somewhere else must not become a way to
- * hand an operator's access token to that somewhere else.
- */
-export function authorizeRequest(req: SwaggerRequest, token: string | null): SwaggerRequest {
-  if (!token || !isSameOrigin(req.url)) return req;
-  return { ...req, headers: { ...(req.headers ?? {}), Authorization: `Bearer ${token}` } };
-}
-
-function isSameOrigin(url: string): boolean {
-  if (typeof window === 'undefined') return false;
-  try {
-    return new URL(url, window.location.href).origin === window.location.origin;
-  } catch {
-    // An unparseable URL is not this origin.
-    return false;
-  }
-}
-
-/**
- * The options handed to `SwaggerUIBundle`.
+ * Each of these is either a default worth pinning or a deliberate narrowing:
  *
- * `validatorUrl: null` is not cosmetic. Swagger UI's default is to POST the
- * document to an online validator for a badge — an off-origin request from the
- * security-critical portal, which the CSP (`default-src 'self'`) would block
- * anyway, leaving a broken badge where the explanation should be. The document
- * is linted in CI; the page does not need a second opinion from the internet.
+ *   - `hideDownloadButton` is FALSE. Fetching the raw document is exactly what
+ *     a bot author came to do, and the served copy is the one carrying this
+ *     deployment's base URL and role names.
+ *   - `expandResponses: '200,201'` puts the success shape on screen without a
+ *     click, which is the shape somebody is reading for.
+ *   - `nativeScrollbars` avoids Redoc's custom scrollbar, which fights the
+ *     portal's own scrolling on a phone — and the portal is read from one
+ *     (docs/42 §10).
  */
-export function swaggerOptions(
-  domNode: HTMLElement,
-  token: () => string | null,
-): Record<string, unknown> {
+export function redocOptions(): Record<string, unknown> {
   return {
-    url: OPENAPI_URL,
-    domNode,
-    validatorUrl: null,
-    // The methods this API uses. There is no PATCH anywhere in /api/v1.
-    supportedSubmitMethods: ['get', 'post', 'put', 'delete'],
-    docExpansion: 'list',
-    defaultModelsExpandDepth: 0,
-    persistAuthorization: false,
-    tryItOutEnabled: true,
-    requestInterceptor: (req: SwaggerRequest) => authorizeRequest(req, token()),
+    // OFF, and not by preference: Redoc builds its search index in a worker
+    // created from a `blob:` URL, and the portal's CSP is `default-src
+    // 'self'` with no `worker-src`, so the browser refuses it and logs a
+    // violation on every visit. The alternative is widening the CSP of the
+    // page that holds an operator's access token to get search on a
+    // documentation page (docs/42 §4.8 treats that CSP as load-bearing), and
+    // that is the wrong way round. The sidebar lists every operation, and
+    // the browser's own find-in-page works on the rendered document.
+    disableSearch: true,
+    hideDownloadButton: false,
+    expandResponses: '200,201',
+    nativeScrollbars: true,
+    // Redoc renders `x-gawk-sensitive`, `x-gawk-roles` and `x-gawk-requires`
+    // as extension rows rather than hiding them, which is what we want: they
+    // are the parts of the document a consumer most needs to see.
+    showExtensions: true,
+    // The portal's own type scale, so the page does not read as a foreign
+    // document embedded in it.
+    theme: {
+      typography: {
+        fontSize: '15px',
+        fontFamily: 'inherit',
+        headings: { fontFamily: 'inherit' },
+        code: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+      },
+      sidebar: { width: '14rem' },
+    },
   };
 }

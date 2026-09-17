@@ -179,10 +179,11 @@ func (d *Document) JSON() []byte { return d.json }
 // Handler serves the document.
 //
 // It is cacheable — five minutes, plus an ETag — because it changes only when
-// the binary does, and a generator or a Swagger UI page re-fetches it on every
-// load. That is the opposite of the portal's `no-store` rule, and deliberately
-// so: a stale broadcast list is a stale kill button, while a stale contract is
-// a contract, and this one is immutable for the life of the process.
+// the binary does, and a generator or the portal's API page re-fetches it on
+// every load. That is the opposite of the portal's `no-store` rule, and
+// deliberately so: a stale broadcast list is a stale kill button, while a stale
+// contract is a contract, and this one is immutable for the life of the
+// process.
 func (d *Document) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
