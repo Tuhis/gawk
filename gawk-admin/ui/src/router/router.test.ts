@@ -52,6 +52,32 @@ describe('portal routes (§4.9)', () => {
     expect(href('api')).toBe('#/api');
   });
 
+  // Redoc owns location.hash while the API page is mounted: its scroll spy
+  // rewrites the fragment to #tag/<tag>/operation/<id> as the reader scrolls.
+  // Without this the next read of the hash — a reload, a bookmark, a pasted
+  // link, the Back button — resolves to `not-found`, and the page the reader
+  // was on disappears. Verified in a browser before it was fixed: scrolling
+  // the API page rewrote the hash to `#tag/identity/operation/getMe`.
+  it('resolves the fragments Redoc writes on the API page (R48)', () => {
+    for (const hash of [
+      '#tag/identity/operation/getMe',
+      '#tag/bans/operation/listBans',
+      '#operation/killBroadcast',
+      '#section/Authentication',
+      '#tag/rooms',
+    ]) {
+      expect(parseHash(hash).view, hash).toBe('api');
+    }
+  });
+
+  it('still names a genuinely unknown route, Redoc or not', () => {
+    // The allowance is three known fragment roots, not "anything unknown is
+    // the API page" — that would swallow every typo and dead deep link.
+    expect(parseHash('#tagged/thing').view).toBe('not-found');
+    expect(parseHash('#operations/killBroadcast').view).toBe('not-found');
+    expect(parseHash('#sections/auth').view).toBe('not-found');
+  });
+
   it('names an unknown route instead of silently landing somewhere', () => {
     const route = parseHash('#/nonsense');
     expect(route.view).toBe('not-found');

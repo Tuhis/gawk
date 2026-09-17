@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { RedocStandalone } from 'redoc';
 
 import { OPENAPI_URL, readPalette, redocOptions } from './apiDocs.ts';
@@ -26,6 +26,38 @@ function subscribeToScheme(onChange: () => void) {
 function currentScheme(): 'light' | 'dark' {
   if (typeof window === 'undefined' || !window.matchMedia) return 'dark';
   return window.matchMedia(schemeQuery).matches ? 'light' : 'dark';
+}
+
+/** Module-level so `onLoaded` keeps one identity across renders. */
+function logRenderError(error?: Error) {
+  if (error) {
+    // Redoc renders its own error panel; this is for the console, where
+    // somebody debugging a sub-path deployment will look.
+    console.error('the API contract could not be rendered', error);
+  }
+}
+
+/**
+ * Redoc, themed once per mount.
+ *
+ * The options are built in a `useState` INITIALISER, not on every render, and
+ * that is load-bearing rather than tidy. Redoc's `StoreBuilder` memoises
+ * `new AppStore(spec, specUrl, options)` on `[resolvedSpec, specUrl, options]`
+ * BY REFERENCE, so a fresh options object re-normalises the whole document and
+ * hands Redoc a new store: expanded responses collapse, the sidebar selection
+ * resets, the page jumps. A child cannot promise its parent will not re-render
+ * — `Portal` re-renders on every hash change and every session transition, and
+ * renders `<ApiView />` fresh each time — so the options have to be pinned
+ * here, where nothing above can reach them.
+ *
+ * `ApiView` remounts this with `key={scheme}`, which is what re-reads the
+ * palette when the OS flips between light and dark.
+ */
+function ThemedRedoc() {
+  const [options] = useState(() => redocOptions(readPalette()));
+  return (
+    <RedocStandalone specUrl={OPENAPI_URL} options={options} onLoaded={logRenderError} />
+  );
 }
 
 /**
@@ -57,13 +89,6 @@ function currentScheme(): 'light' | 'dark' {
 export default function ApiView() {
   const scheme = useSyncExternalStore(subscribeToScheme, currentScheme, () => 'dark');
 
-  // Read on every render rather than memoised. This component re-renders only
-  // when the scheme changes, the read is one `getComputedStyle`, and the
-  // alternative — a `useMemo` keyed on `scheme` that never mentions it — is a
-  // cache whose invalidation the linter is right to distrust. `readPalette`
-  // asks the document what it is painting NOW, which is the whole point.
-  const options = redocOptions(readPalette());
-
   return (
     <section>
       <div className={ui.head}>
@@ -78,21 +103,10 @@ export default function ApiView() {
       {/* The wrapper scopes ApiView.css: those overrides reach into Redoc's
           own DOM, and must not leak into the portal's views. */}
       <div className="gawk-redoc">
-        <RedocStandalone
-          // Remounting on a scheme change is deliberate: Redoc resolves its
-          // theme when it initialises, so handing the same instance new
-          // options would leave half the page on the old palette.
-          key={scheme}
-          specUrl={OPENAPI_URL}
-          options={options}
-          onLoaded={(error) => {
-            if (error) {
-              // Redoc renders its own error panel; this is for the console,
-              // where somebody debugging a sub-path deployment will look.
-              console.error('the API contract could not be rendered', error);
-            }
-          }}
-        />
+        {/* Remounting on a scheme change is deliberate: Redoc resolves its
+            theme when it initialises, so handing the same instance new options
+            would leave half the page on the old palette. */}
+        <ThemedRedoc key={scheme} />
       </div>
     </section>
   );

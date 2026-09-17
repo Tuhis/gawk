@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Redoc is ~1 MB of prebuilt JavaScript and spawns a worker. Mounting it in
@@ -42,6 +42,33 @@ describe('the API page (R48, docs/49 D5)', () => {
     const link = (await screen.findByText('openapi.json')) as HTMLAnchorElement;
     expect(link.getAttribute('href')).toBe(OPENAPI_URL);
     expect(link.getAttribute('href')?.startsWith('/')).toBe(false);
+  });
+
+  // Redoc's StoreBuilder memoises `new AppStore(spec, specUrl, options)` on
+  // those three BY REFERENCE, so a fresh options object on a parent re-render
+  // re-normalises the document and resets the sidebar and every expanded
+  // response. `Portal` re-renders on every hash change and session
+  // transition, so this is not hypothetical.
+  it('hands Redoc the same options object across re-renders', async () => {
+    // Rendered WITHOUT the session provider, deliberately: this page needs no
+    // session, and re-rendering the same element type is what exercises the
+    // property — `renderWithSession`'s `rerender` would replace the tree shape
+    // and remount, which proves nothing.
+    const { rerender } = render(<ApiView />);
+    await screen.findByText('API');
+
+    rerender(<ApiView />);
+    rerender(<ApiView />);
+    await screen.findByText('API');
+
+    // `mounted` records every RENDER of the renderer, so more than one here is
+    // the point: the parent re-rendered, and the options object survived it by
+    // identity. A fresh object on each render is what rebuilds Redoc's store.
+    expect(mounted.length).toBeGreaterThan(1);
+    for (const render of mounted) {
+      expect(render.options).toBe(mounted[0].options);
+      expect(render.specUrl).toBe(mounted[0].specUrl);
+    }
   });
 
   // The page reads the contract; it never acts on the caller's behalf. Redoc
