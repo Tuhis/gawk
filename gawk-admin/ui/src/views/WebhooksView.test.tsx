@@ -174,7 +174,7 @@ describe('CRUD on portal-created webhooks (§4.7)', () => {
     fireEvent.change(screen.getByLabelText('URL'), {
       target: { value: 'https://pager.example/hook' },
     });
-    fireEvent.change(screen.getByLabelText(/Signing secret/), { target: { value: 's3cret' } });
+    fireEvent.change(screen.getByLabelText(/Signing secret/), { target: { value: 'czNjcmV0' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => {
@@ -185,7 +185,7 @@ describe('CRUD on portal-created webhooks (§4.7)', () => {
     const post = session.calls.find(
       (c) => c.path === 'api/v1/webhooks' && c.init.method === 'POST',
     );
-    expect((bodyOf(post!) as { secret?: string }).secret).toBe('s3cret');
+    expect((bodyOf(post!) as { secret?: string }).secret).toBe('czNjcmV0');
   });
 
   it('generates a different secret for every create form', async () => {

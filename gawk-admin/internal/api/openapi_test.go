@@ -784,7 +784,7 @@ func schemaFixtures() map[string]any {
 		"Relay":             relay,
 		"RelaysPage":        relaysPageJSON{Relays: []relayJSON{relay}},
 		"Webhook":           webhook,
-		"WebhookRequest":    webhookRequest{Name: "moderation-log", URL: "https://log.example.org/gawk", Secret: "k", Enabled: true},
+		"WebhookRequest":    webhookRequest{Name: "moderation-log", URL: "https://log.example.org/gawk", Secret: "aw==", Enabled: true},
 		"WebhooksPage":      webhooksPageJSON{Webhooks: []webhookJSON{webhook}},
 		"WebhookTestResult": TestResult{OK: false, Status: 502, Error: "502 Bad Gateway", DeliveryID: "d-1"},
 		"Room":              room,

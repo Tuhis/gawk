@@ -751,12 +751,14 @@ notifications:
 
 The signing key never appears in your values file: the chart renders the
 webhook's *name*, its URL and the *name of an environment variable*, and wires
-that variable from your Secret. **The secret may be either form Standard
-Webhooks libraries accept**: a `whsec_<base64>` string, whose decoded bytes are
-the key, or any other string, used as the key verbatim. The portal generates
-`whsec_` secrets when you create a webhook there and shows the secret exactly
-once. Whichever form you use, paste the same string into your receiver's
-library; it applies the same rule.
+that variable from your Secret. **The secret is base64, with or without the
+`whsec_` prefix** — the form every Standard Webhooks library takes: it strips
+the optional prefix and decodes the rest, and so does gawk, so the decoded
+bytes are the key on both sides. Make one with `openssl rand -base64 32`; a
+value that is not base64 is refused at startup rather than signed with. The
+portal generates `whsec_` secrets when you create a webhook there and shows
+the secret exactly once. Whichever spelling you use, paste the same string
+into your receiver's library.
 
 **What arrives** — one `POST` per event per enabled webhook, retried at +5 s,
 +30 s, +2 m and +10 m before the delivery is marked failed in the portal's
@@ -786,8 +788,8 @@ webhook-signature: v1,NZgDeVu2pXZkmgQVJh9HOy6/Ln0V0HOo6oTRGvLhL9Q=
 ```
 
 `webhook-signature` is `v1,` + base64 of HMAC-SHA256 over
-`webhook-id + "." + webhook-timestamp + "." + body`, with the key derived as
-above. `webhook-id` is the event's id; a retry repeats it, so it is your
+`webhook-id + "." + webhook-timestamp + "." + body`, with the key being the
+base64-decoded secret. `webhook-id` is the event's id; a retry repeats it, so it is your
 idempotency key. Every event type, with the schema of its `data`, is in the
 catalogue your deployment serves at `/api/v1/asyncapi.json`
 ([§9.8](#98-using-the-api-from-your-own-software)); `data.summary` is one human
@@ -836,9 +838,8 @@ SECRET = os.environ["GAWK_WEBHOOK_SECRET"]  # exactly as configured, whsec_ or n
 
 
 def signing_key(secret: str) -> bytes:
-    if secret.startswith("whsec_"):
-        return base64.b64decode(secret[len("whsec_"):])
-    return secret.encode()
+    # The Standard Webhooks rule: optional whsec_ prefix, then base64.
+    return base64.b64decode(secret.removeprefix("whsec_"))
 
 
 def verify(headers, body: bytes, tolerance=300):

@@ -207,8 +207,8 @@ func TestStaticWebhooks(t *testing.T) {
 	env := minimal()
 	env["GAWK_ADMIN_STATIC_WEBHOOKS"] = `[{"name":"ntfy","url":"https://ntfy.example.com/gawk","secretEnv":"NTFY_SECRET"},
 	                                      {"name":"parked","url":"https://x.example.com/h","secretEnv":"X_SECRET","enabled":false}]`
-	env["NTFY_SECRET"] = "hunter2"
-	env["X_SECRET"] = "hunter3"
+	env["NTFY_SECRET"] = "aHVudGVyMg=="
+	env["X_SECRET"] = "aHVudGVyMw=="
 
 	cfg, err := ParseFlags(nil, envFrom(env))
 	if err != nil {
@@ -217,7 +217,7 @@ func TestStaticWebhooks(t *testing.T) {
 	if len(cfg.StaticWebhooks) != 2 {
 		t.Fatalf("got %d static webhooks, want 2", len(cfg.StaticWebhooks))
 	}
-	if cfg.StaticWebhooks[0].Secret != "hunter2" {
+	if cfg.StaticWebhooks[0].Secret != "aHVudGVyMg==" {
 		t.Errorf("secret not resolved from its env var: %q", cfg.StaticWebhooks[0].Secret)
 	}
 	if !cfg.StaticWebhooks[0].IsEnabled() {
@@ -229,7 +229,7 @@ func TestStaticWebhooks(t *testing.T) {
 
 	// The signing key must never be reachable through the value that gets
 	// logged or rendered; the config carries only the env var's NAME.
-	if strings.Contains(strings.Join(asStrings(cfg.LogAttrs()), " "), "hunter2") {
+	if strings.Contains(strings.Join(asStrings(cfg.LogAttrs()), " "), "aHVudGVyMg==") {
 		t.Error("a webhook signing secret reached the startup log")
 	}
 }
@@ -246,22 +246,25 @@ func TestStaticWebhookRejections(t *testing.T) {
 	for name, raw := range cases {
 		env := minimal()
 		env["GAWK_ADMIN_STATIC_WEBHOOKS"] = raw
-		env["S"] = "sekrit"
+		env["S"] = "c2Vrcml0"
 		if _, err := ParseFlags(nil, envFrom(env)); err == nil {
 			t.Errorf("%s: ParseFlags succeeded, want an error", name)
 		}
 	}
 }
 
-// A whsec_ secret is decoded by every Standard Webhooks library (docs/52 D5),
-// so one that does not decode can never verify anywhere: refusing to start is
-// the visible outcome, and a decodable one is accepted as-is.
+// Every Standard Webhooks library base64-decodes the secret (after an optional
+// whsec_ prefix; docs/52 D5), so one that does not decode can never verify
+// anywhere: refusing to start is the visible outcome, and a decodable one is
+// accepted as-is.
 func TestStaticWebhookSecretRule(t *testing.T) {
 	env := minimal()
 	env["GAWK_ADMIN_STATIC_WEBHOOKS"] = `[{"name":"a","url":"https://x/y","secretEnv":"S"}]`
-	env["S"] = "whsec_not base64!"
-	if _, err := ParseFlags(nil, envFrom(env)); !errors.Is(err, ErrInvalidSecret) {
-		t.Fatalf("an undecodable whsec_ secret parsed: %v", err)
+	for _, bad := range []string{"whsec_not base64!", "hunter2"} {
+		env["S"] = bad
+		if _, err := ParseFlags(nil, envFrom(env)); !errors.Is(err, ErrInvalidSecret) {
+			t.Fatalf("an undecodable secret %q parsed: %v", bad, err)
+		}
 	}
 	env["S"] = "whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRYX"
 	cfg, err := ParseFlags(nil, envFrom(env))

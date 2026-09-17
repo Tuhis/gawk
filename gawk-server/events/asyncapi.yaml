@@ -93,10 +93,11 @@ info:
     verify `webhook-signature` (`v1,<base64 HMAC-SHA256>` over
     `webhook-id.webhook-timestamp.body`) with your webhook's secret, reject
     a `webhook-timestamp` more than 300 seconds from now, then parse the
-    body as a CloudEvent and dispatch on `type`. A secret that starts with
-    `whsec_` is base64 after the prefix and the decoded bytes are the key;
-    any other secret string is the key verbatim — the rule every Standard
-    Webhooks library applies. `docs/self-hosting.md` §9.5 has a verifier.
+    body as a CloudEvent and dispatch on `type`. The secret is base64 with an
+    optional `whsec_` prefix, and the decoded bytes are the key — the rule
+    every Standard Webhooks library applies, so the string you configure in
+    gawk is the string you hand your library. `docs/self-hosting.md` §9.5
+    has a verifier.
 
 defaultContentType: application/cloudevents+json
 

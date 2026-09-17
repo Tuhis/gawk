@@ -65,8 +65,9 @@ whose `data` has a JSON Schema, listed in an AsyncAPI 3.0 catalogue. Both live
 in the public `gawk-server/events` package and are served by this binary at
 `/api/v1/asyncapi.json` and `/api/v1/schemas/events/<type>.json`, unauthenticated
 like the OpenAPI document. Deliveries are signed per Standard Webhooks
-(`webhook-id`, `webhook-timestamp`, `webhook-signature`); the secret is either
-a `whsec_<base64>` string or any other string used verbatim. The drift gates
+(`webhook-id`, `webhook-timestamp`, `webhook-signature`); the secret is base64
+with an optional `whsec_` prefix, decoded to the key exactly as the reference
+libraries do. The drift gates
 are `go test` in both modules (`gawk-server/events` holds the types, schemas,
 vectors and catalogue together; `internal/notify` holds the store's event
 vocabulary and the projection to them) and `asyncapi validate` in the

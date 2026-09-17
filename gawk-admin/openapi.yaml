@@ -778,7 +778,7 @@ paths:
             example:
               name: moderation-log
               url: https://log.example.org/gawk
-              secret: a-long-random-string
+              secret: whsec_pJb4v3Q2u2G7S5dGm1bIqE7yq5c4Ht9R
               enabled: true
       responses:
         '201':

@@ -128,7 +128,7 @@ func TestSignatureVectors(t *testing.T) {
 	}{
 		{
 			name:      "the golden delivery",
-			secret:    "gawk-webhook-secret",
+			secret:    "Z2F3ay13ZWJob29rLXNlY3JldA==",
 			id:        goldenID,
 			timestamp: goldenTimestamp,
 			body:      goldenBody,
@@ -139,7 +139,7 @@ func TestSignatureVectors(t *testing.T) {
 			// different MAC. This pins "the timestamp is inside the signed
 			// material".
 			name:      "one second later, same body",
-			secret:    "gawk-webhook-secret",
+			secret:    "Z2F3ay13ZWJob29rLXNlY3JldA==",
 			id:        goldenID,
 			timestamp: goldenTimestamp + 1,
 			body:      goldenBody,
@@ -148,15 +148,15 @@ func TestSignatureVectors(t *testing.T) {
 		{
 			// Each webhook signs with ITS OWN secret (docs/42 D9).
 			name:      "a different webhook's secret",
-			secret:    "a-different-secret",
+			secret:    "YS1kaWZmZXJlbnQtc2VjcmV0",
 			id:        goldenID,
 			timestamp: goldenTimestamp,
 			body:      goldenBody,
 			want:      "Fy2vyCOi2nt8uOVf5j5tlxqWaVoQzFeAX6So9YuXZck=",
 		},
 		{
-			// The whsec_ rule (D5): the key is the base64-DECODED bytes
-			// after the prefix, which is what a Standard Webhooks library
+			// The key rule (D5): the key is the base64-DECODED bytes after
+			// the optional prefix, which is what a Standard Webhooks library
 			// derives from the same string.
 			name:      "a whsec_ secret signs with the decoded bytes",
 			secret:    whsecSecret,
@@ -166,8 +166,19 @@ func TestSignatureVectors(t *testing.T) {
 			want:      "3EBhhBteJnZ2JvArrmynf3riuIfh6yqODdc0gggRZ/E=",
 		},
 		{
+			// The prefix is optional and changes nothing: the same base64
+			// without it is the same key and the same signature — exactly
+			// what the reference libraries compute for either spelling.
+			name:      "the same secret without the prefix signs identically",
+			secret:    "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+			id:        goldenID,
+			timestamp: goldenTimestamp,
+			body:      goldenBody,
+			want:      "3EBhhBteJnZ2JvArrmynf3riuIfh6yqODdc0gggRZ/E=",
+		},
+		{
 			name:      "minimal",
-			secret:    "s",
+			secret:    "cw==", // "s"
 			id:        "a",
 			timestamp: 0,
 			body:      "{}",
@@ -187,34 +198,36 @@ func TestSignatureVectors(t *testing.T) {
 		})
 	}
 
-	// The derivation matters: signing with the whsec_ STRING verbatim is a
+	// The derivation matters: signing with the secret STRING verbatim is a
 	// different MAC (openssl over the same material with the string as the
-	// key), and a receiver that decoded the prefix would reject it.
+	// key), and a receiver's library — which always decodes — would reject
+	// it. This is the PR #327 review finding, pinned.
 	verbatim := Sign([]byte(whsecSecret), goldenID, goldenTimestamp, []byte(goldenBody))
 	if verbatim != SignatureVersion+",Jf94dVQSMaYNwdpiXoeCKJXFpG1p+CtUvE+HHUdHyGo=" {
 		t.Fatalf("the verbatim-key control vector moved: %s", verbatim)
 	}
 	if key, _ := config.SigningKey(whsecSecret); Sign(key, goldenID, goldenTimestamp, []byte(goldenBody)) == verbatim {
-		t.Fatal("SigningKey did not decode the whsec_ secret: it signed with the string verbatim")
+		t.Fatal("SigningKey did not decode the secret: it signed with the string verbatim")
 	}
 }
 
+// TestSigningKeyRule: strip an optional whsec_ prefix, then ALWAYS decode
+// base64 — exactly what the Standard Webhooks reference libraries do, so the
+// operator can paste one string into both sides. Nothing is ever used
+// verbatim, and a secret that is not base64 is refused where it is
+// configured, never signed with.
 func TestSigningKeyRule(t *testing.T) {
-	key, err := config.SigningKey(whsecSecret)
-	if err != nil || string(key) != string(whsecKey) {
-		t.Fatalf("SigningKey(whsec_…) = %x, %v; want the decoded bytes", key, err)
+	for _, secret := range []string{whsecSecret, "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX"} {
+		key, err := config.SigningKey(secret)
+		if err != nil || string(key) != string(whsecKey) {
+			t.Fatalf("SigningKey(%q) = %x, %v; want the decoded bytes", secret, key, err)
+		}
 	}
-	key, err = config.SigningKey("gawk-webhook-secret")
-	if err != nil || string(key) != "gawk-webhook-secret" {
-		t.Fatalf("SigningKey(raw) = %q, %v; want the string verbatim", key, err)
+	// `openssl rand -base64 32`, the form the docs tell an operator to use.
+	if key, err := config.SigningKey("q0Y8Xz6pQm2Jv7Lw3Nc9Rt5Ub1Ye4Ka8Hd0Sf2Gi6Xo="); err != nil || len(key) != 32 {
+		t.Fatalf("a 32-byte base64 secret: %x, %v", key, err)
 	}
-	// An empty secret is a misconfiguration, not a crash: HMAC is defined
-	// for it and the delivery still goes out signed (with a signature the
-	// receiver will reject).
-	if key, err := config.SigningKey(""); err != nil || len(key) != 0 {
-		t.Fatalf("SigningKey(\"\") = %q, %v", key, err)
-	}
-	for _, bad := range []string{"whsec_", "whsec_not base64!", "whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRY"} {
+	for _, bad := range []string{"", "whsec_", "gawk-webhook-secret", "hunter2", "whsec_not base64!", "whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRY"} {
 		if _, err := config.SigningKey(bad); !errors.Is(err, config.ErrInvalidSecret) {
 			t.Errorf("SigningKey(%q) = %v, want ErrInvalidSecret", bad, err)
 		}
@@ -222,21 +235,19 @@ func TestSigningKeyRule(t *testing.T) {
 }
 
 // verifyIndependently is the receiver's side of the contract, written from
-// the Standard Webhooks specification text rather than from Sign: split the
-// header on spaces, take every `v1,<base64>` entry, HMAC-SHA256 the key over
-// `id.timestamp.body`, and accept if any entry matches in constant time.
+// the Standard Webhooks specification text rather than from Sign: derive the
+// key as the reference libraries do (optional whsec_ prefix, then base64),
+// split the header on spaces, take every `v1,<base64>` entry, HMAC-SHA256
+// the key over `id.timestamp.body`, and accept if any entry matches in
+// constant time.
 // Nothing here calls Sign, so a change to the signed material makes this fail
 // rather than agree.
 func verifyIndependently(t *testing.T, secret, idHeader, timestampHeader, signatureHeader string, body []byte) bool {
 	t.Helper()
-	var key []byte
-	if encoded, ok := strings.CutPrefix(secret, "whsec_"); ok {
-		var err error
-		if key, err = base64.StdEncoding.DecodeString(encoded); err != nil {
-			t.Fatalf("secret %q is not a whsec_ secret: %v", secret, err)
-		}
-	} else {
-		key = []byte(secret)
+	// The libraries' rule: optional prefix, then always decode.
+	key, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(secret, "whsec_"))
+	if err != nil {
+		t.Fatalf("secret %q is not base64: %v", secret, err)
 	}
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(idHeader + "." + timestampHeader + "."))
@@ -265,7 +276,7 @@ func verifyIndependently(t *testing.T, secret, idHeader, timestampHeader, signat
 func TestVerifyIndependentlyAcceptsAndRejects(t *testing.T) {
 	body := []byte(goldenBody)
 	ts := strconv.FormatInt(goldenTimestamp, 10)
-	for _, secret := range []string{"gawk-webhook-secret", whsecSecret} {
+	for _, secret := range []string{"Z2F3ay13ZWJob29rLXNlY3JldA==", whsecSecret} {
 		key, _ := config.SigningKey(secret)
 		sig := Sign(key, goldenID, goldenTimestamp, body)
 
@@ -286,16 +297,16 @@ func TestVerifyIndependentlyAcceptsAndRejects(t *testing.T) {
 		if verifyIndependently(t, secret, goldenID, ts, sig, append(append([]byte(nil), body...), ' ')) {
 			t.Fatal("the signature survived a modified body")
 		}
-		if verifyIndependently(t, "a-different-secret", goldenID, ts, sig, body) {
+		if verifyIndependently(t, "YS1kaWZmZXJlbnQtc2VjcmV0", goldenID, ts, sig, body) {
 			t.Fatal("a different secret verified the signature")
 		}
 	}
 	// The format permits several space-separated signatures; a receiver
 	// accepts if any verifies. Sign sends one, but the verifier must be
 	// written for the format.
-	key, _ := config.SigningKey("gawk-webhook-secret")
+	key, _ := config.SigningKey("Z2F3ay13ZWJob29rLXNlY3JldA==")
 	both := "v1,AAAA " + Sign(key, goldenID, goldenTimestamp, body)
-	if !verifyIndependently(t, "gawk-webhook-secret", goldenID, ts, both, body) {
+	if !verifyIndependently(t, "Z2F3ay13ZWJob29rLXNlY3JldA==", goldenID, ts, both, body) {
 		t.Fatal("a multi-signature header with one valid entry was rejected")
 	}
 }

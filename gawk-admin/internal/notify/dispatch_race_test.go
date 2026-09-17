@@ -73,11 +73,11 @@ func TestTwoDispatchersNeverDoubleSend(t *testing.T) {
 	cfg := config.Config{
 		ExternalURL: "https://admin.example.com",
 		StaticWebhooks: []config.StaticWebhook{
-			{Name: "chart-pager", URL: rec.url("/chart-pager"), SecretEnv: "S", Secret: "chart-secret"},
-			{Name: "chart-matrix", URL: rec.url("/chart-matrix"), SecretEnv: "S2", Secret: "matrix-secret"},
+			{Name: "chart-pager", URL: rec.url("/chart-pager"), SecretEnv: "S", Secret: "Y2hhcnQtc2VjcmV0"},
+			{Name: "chart-matrix", URL: rec.url("/chart-matrix"), SecretEnv: "S2", Secret: "bWF0cml4LXNlY3JldA=="},
 		},
 	}
-	mustCreateWebhook(t, stA, "ui-slack", rec.url("/ui-slack"), "ui-secret", true)
+	mustCreateWebhook(t, stA, "ui-slack", rec.url("/ui-slack"), "dWktc2VjcmV0", true)
 
 	// BatchSize 1 keeps one dispatcher from swallowing the whole queue in a
 	// single claim, so both really race for rows.

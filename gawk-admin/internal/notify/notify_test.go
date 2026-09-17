@@ -52,13 +52,13 @@ func TestFanOutAcrossBothSourcesEachWithItsOwnSecret(t *testing.T) {
 	st := newStore(t)
 	rec := newReceiver(t)
 
-	const chartSecret, uiSecret = "chart-defined-secret", "ui-created-secret"
+	const chartSecret, uiSecret = "Y2hhcnQtZGVmaW5lZC1zZWNyZXQ=", "dWktY3JlYXRlZC1zZWNyZXQ="
 	cfg := config.Config{
 		ExternalURL: "https://admin.example.com",
 		StaticWebhooks: []config.StaticWebhook{
 			{Name: "chart-pager", URL: rec.url("/chart-pager"), SecretEnv: "PAGER_SECRET", Secret: chartSecret},
 			{Name: "chart-parked", URL: rec.url("/chart-parked"), SecretEnv: "PARKED_SECRET",
-				Secret: "parked-secret", Enabled: enabled(false)},
+				Secret: "cGFya2VkLXNlY3JldA==", Enabled: enabled(false)},
 		},
 	}
 	mustCreateWebhook(t, st, "ui-slack", rec.url("/ui-slack"), uiSecret, true)
@@ -175,7 +175,7 @@ func TestRecordQueuesExactlyOnce(t *testing.T) {
 	st := newStore(t)
 	rec := newReceiver(t)
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
-		{Name: "pager", URL: rec.url("/pager"), SecretEnv: "S", Secret: "secret"},
+		{Name: "pager", URL: rec.url("/pager"), SecretEnv: "S", Secret: "c2VjcmV0"},
 	}}
 	d := newDispatcher(t, st, cfg, nil)
 
@@ -233,7 +233,7 @@ func TestRetryScheduleAndTerminalFailure(t *testing.T) {
 	st.Now = clk.Now
 
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
-		{Name: "pager", URL: rec.url("/pager"), SecretEnv: "S", Secret: "secret"},
+		{Name: "pager", URL: rec.url("/pager"), SecretEnv: "S", Secret: "c2VjcmV0"},
 	}}
 	d := newDispatcher(t, st, cfg, func(o *Options) { o.Now = clk.Now })
 
@@ -318,10 +318,10 @@ func TestEventsViewRendersDeliveryState(t *testing.T) {
 		ExternalURL:  "https://admin.example.com",
 		OperatorRole: "operator",
 		StaticWebhooks: []config.StaticWebhook{
-			{Name: "chart-pager", URL: good.url("/pager"), SecretEnv: "S", Secret: "chart-secret"},
+			{Name: "chart-pager", URL: good.url("/pager"), SecretEnv: "S", Secret: "Y2hhcnQtc2VjcmV0"},
 		},
 	}
-	mustCreateWebhook(t, st, "ui-broken", bad.url("/broken"), "ui-secret", true)
+	mustCreateWebhook(t, st, "ui-broken", bad.url("/broken"), "dWktc2VjcmV0", true)
 
 	d := newDispatcher(t, st, cfg, nil)
 	_ = mustRecord(t, d, killEvent("ZXQ7K2"))
@@ -394,9 +394,9 @@ func TestDeletedOrDisabledWebhookEndsDeliveryTerminally(t *testing.T) {
 	rec := newReceiver(t)
 
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
-		{Name: "chart-pager", URL: rec.url("/chart-pager"), SecretEnv: "S", Secret: "chart-secret"},
+		{Name: "chart-pager", URL: rec.url("/chart-pager"), SecretEnv: "S", Secret: "Y2hhcnQtc2VjcmV0"},
 	}}
-	mustCreateWebhook(t, st, "ui-slack", rec.url("/ui-slack"), "ui-secret", true)
+	mustCreateWebhook(t, st, "ui-slack", rec.url("/ui-slack"), "dWktc2VjcmV0", true)
 
 	d := newDispatcher(t, st, cfg, nil)
 	ev := mustRecord(t, d, killEvent("ZXQ7K2"))
@@ -437,7 +437,7 @@ func TestTestWebhookForBothSources(t *testing.T) {
 	st := newStore(t)
 	rec := newReceiver(t)
 
-	const chartSecret, uiSecret = "chart-secret", "ui-secret"
+	const chartSecret, uiSecret = "Y2hhcnQtc2VjcmV0", "dWktc2VjcmV0"
 	cfg := config.Config{
 		ExternalURL: "https://admin.example.com",
 		StaticWebhooks: []config.StaticWebhook{
@@ -497,7 +497,7 @@ func TestTestWebhookReportsAReceiverRejection(t *testing.T) {
 	rec := newReceiver(t)
 	rec.setStatus(http.StatusForbidden, "bad signature")
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
-		{Name: "chart-pager", URL: rec.url("/chart-pager"), SecretEnv: "S", Secret: "chart-secret"},
+		{Name: "chart-pager", URL: rec.url("/chart-pager"), SecretEnv: "S", Secret: "Y2hhcnQtc2VjcmV0"},
 	}}
 	d := newDispatcher(t, deadStore(t), cfg, nil)
 
@@ -523,7 +523,7 @@ func TestTestWebhookOnADisabledWebhook(t *testing.T) {
 	rec := newReceiver(t)
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
 		{Name: "chart-parked", URL: rec.url("/chart-parked"), SecretEnv: "S",
-			Secret: "chart-secret", Enabled: enabled(false)},
+			Secret: "Y2hhcnQtc2VjcmV0", Enabled: enabled(false)},
 	}}
 	d := newDispatcher(t, deadStore(t), cfg, nil)
 
@@ -555,7 +555,7 @@ func TestCrossOriginRedirectIsRefused(t *testing.T) {
 	defer redirector.Close()
 
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
-		{Name: "chart-pager", URL: redirector.URL + "/pager", SecretEnv: "S", Secret: "chart-secret"},
+		{Name: "chart-pager", URL: redirector.URL + "/pager", SecretEnv: "S", Secret: "Y2hhcnQtc2VjcmV0"},
 	}}
 	d := newDispatcher(t, deadStore(t), cfg, nil)
 
@@ -594,7 +594,7 @@ func TestSameOriginRedirectIsFollowed(t *testing.T) {
 	defer srv.Close()
 
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
-		{Name: "chart-pager", URL: srv.URL + "/pager", SecretEnv: "S", Secret: "chart-secret"},
+		{Name: "chart-pager", URL: srv.URL + "/pager", SecretEnv: "S", Secret: "Y2hhcnQtc2VjcmV0"},
 	}}
 	d := newDispatcher(t, deadStore(t), cfg, nil)
 
@@ -671,7 +671,7 @@ func TestReadErrorBody(t *testing.T) {
 // criterion: the header a real receiver reads is the one inside the MAC.
 func TestSignedTimestampOnTheWire(t *testing.T) {
 	rec := newReceiver(t)
-	const secret = "chart-secret"
+	const secret = "Y2hhcnQtc2VjcmV0"
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
 		{Name: "chart-pager", URL: rec.url("/chart-pager"), SecretEnv: "S", Secret: secret},
 	}}
@@ -707,7 +707,7 @@ func TestRunDeliversOnKickAndStopsWithItsContext(t *testing.T) {
 	st := newStore(t)
 	rec := newReceiver(t)
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
-		{Name: "pager", URL: rec.url("/pager"), SecretEnv: "S", Secret: "secret"},
+		{Name: "pager", URL: rec.url("/pager"), SecretEnv: "S", Secret: "c2VjcmV0"},
 	}}
 	// A poll interval far longer than the test: anything delivered here was
 	// delivered because of the Kick, not because a tick came round.
@@ -752,7 +752,7 @@ func TestTransportErrorDoesNotLeakTheWebhookURLPath(t *testing.T) {
 	// case whose error carries the URL.
 	const secretPath = "/services/T00000000/B00000000/xxxxSECRETxxxx"
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
-		{Name: "chart-pager", URL: "http://127.0.0.1:1" + secretPath, SecretEnv: "S", Secret: "chart-secret"},
+		{Name: "chart-pager", URL: "http://127.0.0.1:1" + secretPath, SecretEnv: "S", Secret: "Y2hhcnQtc2VjcmV0"},
 	}}
 	d := newDispatcher(t, deadStore(t), cfg, func(o *Options) { o.RequestTimeout = 2 * time.Second })
 

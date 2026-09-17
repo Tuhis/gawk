@@ -324,7 +324,7 @@ function WebhookEditor({
       <div className={ui.field}>
         <label htmlFor="wh-secret">
           {webhook
-            ? 'Signing secret (leave blank to keep the current one)'
+            ? 'Signing secret (base64, leave blank to keep the current one)'
             : 'Signing secret (generated; copy it into the receiver now — it is never shown again)'}
         </label>
         <input
