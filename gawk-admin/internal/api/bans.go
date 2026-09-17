@@ -256,7 +256,7 @@ func (a *API) handleDeleteBan(w http.ResponseWriter, r *http.Request) {
 	// idempotent, so recording unconditionally writes a second ban.removed row
 	// and sends a second signed delivery to every enabled webhook — under a
 	// distinct delivery ID, because the event ID differs, so receiver-side
-	// dedup on X-Gawk-Delivery cannot catch it. The audit trail would show the
+	// dedup on webhook-id cannot catch it. The audit trail would show the
 	// same ban lifted twice, possibly by two different actors.
 	if lifted {
 		a.record(r.Context(), store.Event{

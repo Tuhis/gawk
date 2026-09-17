@@ -15,6 +15,8 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/api"
 	"github.com/Tuhis/gawk/gawk-admin/internal/config"
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
+
+	"github.com/Tuhis/gawk/gawk-server/events"
 )
 
 // killEvent is a realistic broadcast.killed event: an HMAC'd key on the row, a
@@ -105,22 +107,28 @@ func TestFanOutAcrossBothSourcesEachWithItsOwnSecret(t *testing.T) {
 		if c.contentType != ContentType {
 			t.Errorf("%s: Content-Type = %q, want %q", path, c.contentType, ContentType)
 		}
-		if c.event != store.EventBroadcastKilled {
-			t.Errorf("%s: %s = %q, want %q", path, HeaderEvent, c.event, store.EventBroadcastKilled)
+		if got := c.eventType(t); got != events.TypeBroadcastKilled {
+			t.Errorf("%s: body type = %q, want %q", path, got, events.TypeBroadcastKilled)
 		}
-		if want := DeliveryID(rows[names[path]].ID); c.delivery != want {
-			t.Errorf("%s: %s = %q, want %q (derived from the delivery row so retries repeat it)",
-				path, HeaderDelivery, c.delivery, want)
+		// webhook-id is the EVENT's id — derived from the event row, so
+		// retries repeat it and both webhooks announce the same id for the
+		// same event (docs/52 D1).
+		if want := EventID(rows[names[path]].EventID); c.id != want {
+			t.Errorf("%s: %s = %q, want %q (derived from the event row so retries repeat it)",
+				path, HeaderID, c.id, want)
 		}
-		if !verifyIndependently(t, secret, c.timestamp, c.signature, c.body) {
-			t.Errorf("%s: an independent HMAC over timestamp+\".\"+body did not verify", path)
+		if body := c.payloadOf(t); body["id"] != c.id {
+			t.Errorf("%s: webhook-id %q != the body's id %v", path, c.id, body["id"])
+		}
+		if !verifyIndependently(t, secret, c.id, c.timestamp, c.signature, c.body) {
+			t.Errorf("%s: an independent Standard Webhooks verifier did not accept the delivery", path)
 		}
 		// Each webhook signs with ITS OWN secret (D9): the other's must fail.
 		for otherPath, otherSecret := range secrets {
 			if otherPath == path {
 				continue
 			}
-			if verifyIndependently(t, otherSecret, c.timestamp, c.signature, c.body) {
+			if verifyIndependently(t, otherSecret, c.id, c.timestamp, c.signature, c.body) {
 				t.Errorf("%s verified under %s's secret: the webhooks are not signed independently", path, otherPath)
 			}
 		}
@@ -129,11 +137,12 @@ func TestFanOutAcrossBothSourcesEachWithItsOwnSecret(t *testing.T) {
 			t.Errorf("%s: the raw broadcast ID reached the wire: %s", path, c.body)
 		}
 		payload := c.payloadOf(t)
-		if payload["broadcastKey"] != "3f9a1c2b4d5e" {
-			t.Errorf("%s: broadcastKey = %v, want the HMAC'd key", path, payload["broadcastKey"])
+		data, _ := payload["data"].(map[string]any)
+		if data["broadcastKey"] != "3f9a1c2b4d5e" || payload["subject"] != "3f9a1c2b4d5e" {
+			t.Errorf("%s: broadcastKey = %v, subject = %v, want the HMAC'd key", path, data["broadcastKey"], payload["subject"])
 		}
-		if s, _ := payload["summary"].(string); strings.TrimSpace(s) == "" {
-			t.Errorf("%s: no summary in the payload", path)
+		if s, _ := data["summary"].(string); strings.TrimSpace(s) == "" {
+			t.Errorf("%s: no summary in the delivery", path)
 		}
 	}
 
@@ -454,20 +463,18 @@ func TestTestWebhookForBothSources(t *testing.T) {
 			t.Fatalf("%s: receiver saw %d test deliveries, want 1", name, len(got))
 		}
 		c := got[0]
-		if c.event != EventTest {
-			t.Errorf("%s: %s = %q, want %q", name, HeaderEvent, c.event, EventTest)
+		if c.id != result.DeliveryID {
+			t.Errorf("%s: header webhook-id %q != reported %q", name, c.id, result.DeliveryID)
 		}
-		if c.delivery != result.DeliveryID {
-			t.Errorf("%s: header delivery id %q != reported %q", name, c.delivery, result.DeliveryID)
-		}
-		if !verifyIndependently(t, secret, c.timestamp, c.signature, c.body) {
+		if !verifyIndependently(t, secret, c.id, c.timestamp, c.signature, c.body) {
 			t.Errorf("%s: the test delivery is not signed with that webhook's secret", name)
 		}
 		payload := c.payloadOf(t)
-		if payload["type"] != EventTest {
-			t.Errorf("%s: payload type = %v, want %q", name, payload["type"], EventTest)
+		if payload["type"] != events.TypeWebhookTest {
+			t.Errorf("%s: payload type = %v, want %q", name, payload["type"], events.TypeWebhookTest)
 		}
-		if s, _ := payload["summary"].(string); strings.TrimSpace(s) == "" {
+		data, _ := payload["data"].(map[string]any)
+		if s, _ := data["summary"].(string); strings.TrimSpace(s) == "" {
 			t.Errorf("%s: the test payload carries no summary", name)
 		}
 	}
@@ -684,10 +691,10 @@ func TestSignedTimestampOnTheWire(t *testing.T) {
 	if delta := time.Since(time.Unix(ts, 0)); delta > time.Minute || delta < -time.Minute {
 		t.Errorf("%s is %s away from now; a receiver's ±300 s replay window would reject it", HeaderTimestamp, delta)
 	}
-	if !verifyIndependently(t, secret, c.timestamp, c.signature, c.body) {
-		t.Fatal("the signature does not verify over the header timestamp")
+	if !verifyIndependently(t, secret, c.id, c.timestamp, c.signature, c.body) {
+		t.Fatal("the signature does not verify over the header id and timestamp")
 	}
-	if verifyIndependently(t, secret, strconv.FormatInt(ts+1, 10), c.signature, c.body) {
+	if verifyIndependently(t, secret, c.id, strconv.FormatInt(ts+1, 10), c.signature, c.body) {
 		t.Fatal("re-dating the delivery kept the signature valid: the timestamp is not in the signed material")
 	}
 }

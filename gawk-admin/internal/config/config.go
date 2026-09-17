@@ -332,6 +332,11 @@ func parseStaticWebhooks(raw string, getenv func(string) string) ([]StaticWebhoo
 			return nil, fmt.Errorf("-static-webhooks[%s]: secretEnv is required so the signing key never sits in configuration", h.Name)
 		}
 		h.Secret = getenv(h.SecretEnv)
+		if _, err := SigningKey(h.Secret); err != nil {
+			// A whsec_ secret that does not decode can never verify at any
+			// receiver (docs/52 D5); refusing to start is the visible outcome.
+			return nil, fmt.Errorf("-static-webhooks[%s]: environment variable %s: %w", h.Name, h.SecretEnv, err)
+		}
 		if h.Secret == "" {
 			return nil, fmt.Errorf("-static-webhooks[%s]: environment variable %s is empty", h.Name, h.SecretEnv)
 		}

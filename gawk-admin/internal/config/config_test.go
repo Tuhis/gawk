@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -249,6 +250,28 @@ func TestStaticWebhookRejections(t *testing.T) {
 		if _, err := ParseFlags(nil, envFrom(env)); err == nil {
 			t.Errorf("%s: ParseFlags succeeded, want an error", name)
 		}
+	}
+}
+
+// A whsec_ secret is decoded by every Standard Webhooks library (docs/52 D5),
+// so one that does not decode can never verify anywhere: refusing to start is
+// the visible outcome, and a decodable one is accepted as-is.
+func TestStaticWebhookSecretRule(t *testing.T) {
+	env := minimal()
+	env["GAWK_ADMIN_STATIC_WEBHOOKS"] = `[{"name":"a","url":"https://x/y","secretEnv":"S"}]`
+	env["S"] = "whsec_not base64!"
+	if _, err := ParseFlags(nil, envFrom(env)); !errors.Is(err, ErrInvalidSecret) {
+		t.Fatalf("an undecodable whsec_ secret parsed: %v", err)
+	}
+	env["S"] = "whsec_AAECAwQFBgcICQoLDA0ODxAREhMUFRYX"
+	cfg, err := ParseFlags(nil, envFrom(env))
+	if err != nil {
+		t.Fatalf("a valid whsec_ secret was refused: %v", err)
+	}
+	// Stored as written: the derivation happens at signing time, never here
+	// (the secret is a derivation input, not something re-encoded).
+	if cfg.StaticWebhooks[0].Secret != env["S"] {
+		t.Fatalf("secret was rewritten to %q", cfg.StaticWebhooks[0].Secret)
 	}
 }
 

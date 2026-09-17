@@ -125,12 +125,13 @@ func TestTwoDispatchersNeverDoubleSend(t *testing.T) {
 		t.Fatal("the two dispatchers never had requests in flight simultaneously: the SKIP LOCKED race was not exercised")
 	}
 
-	// Exactly once, per delivery row: the header carries the row's derived
-	// UUID, so counting distinct values against total requests catches both a
-	// double-send and a lost send.
+	// Exactly once, per delivery row: webhook-id is the event's derived UUID
+	// and the path is the webhook, so (path, id) names the row, and counting
+	// distinct pairs against total requests catches both a double-send and a
+	// lost send.
 	seen := map[string]int{}
 	for _, c := range rec.captures() {
-		seen[c.delivery]++
+		seen[c.path+" "+c.id]++
 	}
 	if len(rec.captures()) != wantDeliveries {
 		t.Errorf("receiver saw %d requests, want %d (one per queued delivery)", len(rec.captures()), wantDeliveries)

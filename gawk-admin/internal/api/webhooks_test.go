@@ -155,6 +155,9 @@ func TestWebhookValidation(t *testing.T) {
 		{"blank name", map[string]any{"name": "  ", "url": "https://x.example", "secret": "s", "enabled": true}},
 		{"relative url", map[string]any{"name": "a", "url": "/hook", "secret": "s", "enabled": true}},
 		{"missing secret on create", map[string]any{"name": "a", "url": "https://x.example", "enabled": true}},
+		// The Standard Webhooks key rule (docs/52 D5): a whsec_ secret that
+		// does not decode could never verify at any receiver.
+		{"undecodable whsec_ secret", map[string]any{"name": "a", "url": "https://x.example", "secret": "whsec_not base64!", "enabled": true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

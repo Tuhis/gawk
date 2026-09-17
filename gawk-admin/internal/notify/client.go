@@ -41,7 +41,7 @@ var errCrossOriginRedirect = errors.New("refusing to follow a redirect to a diff
 //     to stall the whole notification pipe.
 //   - **No cross-origin redirects.** net/http strips Authorization across
 //     hosts but forwards every other header, so a webhook URL that 302s
-//     elsewhere would hand X-Gawk-Signature — a valid MAC under the
+//     elsewhere would hand webhook-signature — a valid MAC under the
 //     operator's key — to a host the operator never configured. Same-origin
 //     hops (http→https on the same host, a trailing-slash canonicalization)
 //     stay allowed because they are the same trust boundary the operator
