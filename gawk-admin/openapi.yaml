@@ -51,9 +51,10 @@ info:
     Service identities use the client-credentials grant against the same
     provider. `docs/self-hosting.md` §9.8 has a worked example.
 
-    Two routes need no token: `GET /auth/config` returns the issuer, client ID
-    and audience a browser client needs, and `GET /api/v1/openapi.json`
-    returns this document.
+    The routes that need no token: `GET /auth/config` returns the issuer,
+    client ID and audience a browser client needs; `GET /api/v1/openapi.json`
+    returns this document; `GET /api/v1/asyncapi.json` and
+    `GET /api/v1/schemas/events/{name}` return the event contract.
 
     ## Compatibility
 
@@ -91,10 +92,15 @@ info:
 
     ## Events
 
-    Outbound events (webhook deliveries and, where enabled, the NATS bus) are
-    not described here. Their catalogue will be an AsyncAPI document served at
-    `/api/v1/asyncapi.json`; until it ships that path returns `404`. The
-    webhook signature scheme is documented in `docs/self-hosting.md` §9.5.
+    Outbound events — webhook deliveries and, where enabled, the NATS bus —
+    are not described here. They are one contract in the format built for
+    event channels: an **AsyncAPI 3.0 catalogue** this deployment serves at
+    [`/api/v1/asyncapi.json`](asyncapi.json), listing every event as a
+    CloudEvents 1.0 message whose `data` has a JSON Schema served under
+    `/api/v1/schemas/events/`. Webhook deliveries follow Standard Webhooks;
+    `docs/self-hosting.md` §9.5 has a verifier. The `type` enum below is the
+    stored event vocabulary of the audit feed, which is a different (shorter)
+    set of names from the CloudEvents `type`s in the catalogue.
 
     ## Errors
 
@@ -171,6 +177,65 @@ paths:
           description: The document.
         '304':
           description: Not modified.
+
+  /api/v1/asyncapi.json:
+    get:
+      operationId: getAsyncAPIDocument
+      tags: [identity]
+      summary: Get the event catalogue
+      description: |
+        Returns the event contract as an AsyncAPI 3.0 document: every event
+        this deployment can emit, on the NATS bus and in webhook deliveries,
+        as CloudEvents 1.0 messages. The references to each event's data
+        schema point at this deployment's `/api/v1/schemas/events/` URLs, and
+        a top-level `x-gawk-build` names the binary that served it.
+
+        No authentication is required. The response is cacheable for five
+        minutes and carries an `ETag`; send `If-None-Match` to get `304`.
+
+        The body is an AsyncAPI document and is not described by a schema
+        here.
+      x-gawk-roles: []
+      security: []
+      responses:
+        '200':
+          description: The catalogue.
+        '304':
+          description: Not modified.
+
+  /api/v1/schemas/events/{name}:
+    get:
+      operationId: getEventSchema
+      tags: [identity]
+      summary: Get one event data schema
+      description: |
+        Returns the JSON Schema 2020-12 document that describes the `data` of
+        one event type, by its file name (`<type>.json`, for example
+        `fi.ioio.gawk.broadcast.killed.json`), or the shared definitions file
+        `common.json`. The schema's `$id` is the identifier the event's
+        `dataschema` attribute carries; its references to sibling files are
+        rewritten to this deployment's URLs.
+
+        No authentication is required. The response is cacheable for five
+        minutes and carries an `ETag`; send `If-None-Match` to get `304`.
+
+        The body is a JSON Schema document and is not described by a schema
+        here.
+      x-gawk-roles: []
+      security: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The schema file name, `.json` included.
+          schema: { type: string }
+          example: fi.ioio.gawk.broadcast.killed.json
+      responses:
+        '200':
+          description: The schema.
+        '304':
+          description: Not modified.
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/me:
     get:

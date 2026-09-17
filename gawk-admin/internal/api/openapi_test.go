@@ -531,6 +531,10 @@ func wirings() map[string]opWiring {
 		// declares, so it is documented with no schema and has nothing to
 		// round-trip.
 		"GET /api/v1/openapi.json": {},
+		// The event contract (R51): an AsyncAPI document and JSON Schema
+		// files, likewise not shapes this package declares.
+		"GET /api/v1/asyncapi.json":         {},
+		"GET /api/v1/schemas/events/{name}": {},
 
 		"GET /api/v1/me": {success: map[string]func() any{
 			"200": func() any { return &meJSON{} },

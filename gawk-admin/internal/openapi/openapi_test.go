@@ -155,8 +155,8 @@ func TestTheServedRolesAreThisDeploymentsClaimValues(t *testing.T) {
 	if substituted == 0 {
 		t.Fatal("no operation carried a substituted role: the walk found nothing")
 	}
-	if unauthenticated != 1 {
-		t.Fatalf("%d operations declare no role, want exactly 1 (the contract itself)", unauthenticated)
+	if unauthenticated != 3 {
+		t.Fatalf("%d operations declare no role, want exactly 3 (the two contracts and the event schemas)", unauthenticated)
 	}
 }
 

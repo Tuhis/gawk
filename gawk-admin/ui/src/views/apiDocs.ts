@@ -24,6 +24,15 @@
 export const OPENAPI_URL = 'api/v1/openapi.json';
 
 /**
+ * Where the event contract is served (R51, docs/52 D3): the AsyncAPI
+ * catalogue of every event this deployment emits. Relative for the same
+ * reason as OPENAPI_URL. The page only links to it — the AsyncAPI renderer
+ * is a large bundle for a page that already embeds Redoc, and the document
+ * reads fine raw (docs/52 §2, Rejected).
+ */
+export const ASYNCAPI_URL = 'api/v1/asyncapi.json';
+
+/**
  * The portal's palette, as the page is actually painting it.
  *
  * READ FROM THE LIVE CSS VARIABLES rather than restated here, because

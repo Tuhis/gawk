@@ -1,7 +1,7 @@
 import { useState, useSyncExternalStore } from 'react';
 import { RedocStandalone } from 'redoc';
 
-import { OPENAPI_URL, readPalette, redocOptions } from './apiDocs.ts';
+import { ASYNCAPI_URL, OPENAPI_URL, readPalette, redocOptions } from './apiDocs.ts';
 import ui from '../styles/ui.module.css';
 import './ApiView.css';
 
@@ -97,6 +97,10 @@ export default function ApiView() {
           the contract this deployment serves —{' '}
           <a href={OPENAPI_URL} target="_blank" rel="noreferrer">
             openapi.json
+          </a>
+          ; its events —{' '}
+          <a href={ASYNCAPI_URL} target="_blank" rel="noreferrer">
+            asyncapi.json
           </a>
         </span>
       </div>
