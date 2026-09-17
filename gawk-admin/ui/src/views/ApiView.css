@@ -1,24 +1,112 @@
-/* Two corrections to what Redoc renders, both CSP-driven (R48, docs/49 D5).
+/* What Redoc's theme cannot reach (R48, docs/49 D5).
+ *
+ * `apiDocs.ts` drives Redoc's own theme from the portal's CSS variables, and
+ * that covers most of the page. These are the leftovers: places where Redoc
+ * hard-codes a colour its ThemeInterface does not expose. Every one was found
+ * by measuring composited text contrast against the canvas in a real browser,
+ * in dark mode, and every one was below 4.5:1 — several were invisible
+ * (black on near-black, light-on-white).
  *
  * This file is imported by ApiView.tsx, so it rides in the lazily-loaded API
  * chunk rather than the entry bundle — the moderation views never fetch it.
  *
- * Plain CSS, not a module: Redoc's DOM is not ours to add class names to, so
- * these have to be global selectors, and they are written to survive its
- * generated styled-components class names (`sc-hAcEkO jlPVAz` today, something
- * else after any Redoc upgrade). `!important` because Redoc sets the same
- * properties from an injected <style> that may come after this one.
+ * Plain CSS, not a module: Redoc's DOM is not ours to add class names to. The
+ * selectors are structural on purpose — tag names, `.redoc-markdown`, and
+ * react-tabs' own stable class names — never Redoc's generated
+ * styled-components hashes (`sc-iqsgXZ dOsXip` today, something else after any
+ * upgrade). `!important` because Redoc sets these from an injected <style>
+ * that may come after this one.
+ *
+ * Everything is scoped under `.gawk-redoc`, the wrapper ApiView puts around
+ * the renderer, so none of it can leak into the portal's own views.
  */
 
-/* The "API docs by Redocly" badge draws its logo from cdn.redoc.ly. The
- * portal's CSP (`img-src 'self' data:`) blocks it, which is the correct
- * outcome and an ugly one: a console error on every page load, for a
- * decoration. The attribution TEXT stays — dropping the credit is not the
- * goal, and the anchor is untouched; only the off-origin fetch goes.
+/* Section headings: "Authorizations:", "path Parameters", "REQUEST BODY
+ * SCHEMA", and the media-type span inside them ("application/json", which
+ * Redoc paints BLACK — 1.07:1 on the portal's canvas, i.e. invisible). */
+.gawk-redoc h5,
+.gawk-redoc h5 span,
+.gawk-redoc h5 + div > span {
+  color: var(--muted) !important;
+}
+
+/* Markdown tables from `info.description` — the three-outcome matrix. Redoc
+ * gives them a light surface and inherits the themed light text onto it, which
+ * is 1.21:1: white on white. */
+.gawk-redoc .redoc-markdown table,
+.gawk-redoc .redoc-markdown thead,
+.gawk-redoc .redoc-markdown tbody,
+.gawk-redoc .redoc-markdown tr {
+  background: transparent !important;
+}
+
+.gawk-redoc .redoc-markdown th,
+.gawk-redoc .redoc-markdown td {
+  background: transparent !important;
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+}
+
+.gawk-redoc .redoc-markdown th {
+  color: var(--muted) !important;
+}
+
+.gawk-redoc .redoc-markdown tr:nth-child(2n) td {
+  background: var(--surface-1) !important;
+}
+
+/* The Payload / Response sample tab strip. Redoc's selected tab takes the
+ * theme's TEXT colour as its background, so the label lands on its own colour
+ * — 1:1, perfectly invisible.
+ *
+ * These use the `--code-*` tokens, not the scheme's surfaces, because the tabs
+ * sit ON the sample panel, which is dark in both schemes (see apiDocs.ts). */
+.gawk-redoc .react-tabs__tab {
+  background: var(--code-surface) !important;
+  color: var(--code-muted) !important;
+  border-color: var(--code-surface) !important;
+}
+
+/* The selected tab takes the sample body's own colour, so it reads as
+ * continuous with the block below it — the ordinary tab metaphor — and its
+ * label gets the darker surface to sit on, which is what carries the status
+ * colours past 4.5:1. */
+.gawk-redoc .react-tabs__tab--selected {
+  background: var(--code-bg) !important;
+  color: var(--code-text) !important;
+}
+
+/* The status chips in that strip (201, 400, 429 …). Redoc colours them from
+ * `colors.responses.*`, which the theme points at the SCHEME's status colours
+ * — correct for the response accordions in the middle panel, wrong here, where
+ * they sit on the always-dark sample panel: light mode put #cf222e on
+ * near-black at 3.68:1. `tab-success`/`tab-error` are Redoc's own semantic
+ * class names, not generated hashes. */
+.gawk-redoc .react-tabs__tab-list .tab-success {
+  color: var(--code-ok) !important;
+}
+
+.gawk-redoc .react-tabs__tab-list .tab-error {
+  color: var(--code-danger) !important;
+}
+
+.gawk-redoc .react-tabs__tab-list .tab-redirect {
+  color: var(--code-warning) !important;
+}
+
+.gawk-redoc .react-tabs__tab-list .tab-info {
+  color: var(--code-accent) !important;
+}
+
+/* The "API docs by Redocly" badge draws its logo from cdn.redoc.ly. The CSP
+ * blocks it, which is the correct outcome and an ugly one: a console error on
+ * every page load, for a decoration. `vite.config.ts` strips the URL from the
+ * bundle; this removes the empty box it leaves behind. The attribution TEXT
+ * stays — dropping the credit is not the goal.
  *
  * `:has()` rather than the generated parent class name, so a Redoc upgrade
- * that reshuffles its hashes does not silently restore the request. */
-div:has(> a[href^="https://redocly.com/redoc/"]) {
+ * that reshuffles its hashes does not silently restore the gap. */
+.gawk-redoc div:has(> a[href^="https://redocly.com/redoc/"]) {
   background-image: none !important;
   padding-left: 0 !important;
 }

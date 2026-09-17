@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
-import { OPENAPI_URL, redocOptions } from './apiDocs.ts';
+import { OPENAPI_URL, readPalette, redocOptions } from './apiDocs.ts';
 
 describe('the API page’s Redoc configuration (R48, docs/49 D5)', () => {
   it('reads the document from this deployment, by a relative path', () => {
@@ -54,5 +54,54 @@ describe('the API page’s Redoc configuration (R48, docs/49 D5)', () => {
     for (const value of Object.values(redocOptions())) {
       expect(typeof value).not.toBe('function');
     }
+  });
+
+  // Redoc ships a light theme and paints NO background on its middle panel,
+  // so untouched it renders #333 prose straight onto the portal's near-black
+  // canvas. Measured in a browser, that was 1.07:1 — invisible. The theme is
+  // driven from the portal's own CSS variables so the page follows it into
+  // either scheme.
+  it('themes Redoc from the portal\u2019s palette, not Redoc\u2019s defaults', () => {
+    const portal = { ...readPalette(), text: '#abcdef', surface1: '#123456' };
+    const theme = redocOptions(portal).theme as Record<string, any>;
+
+    expect(theme.colors.text.primary).toBe('#abcdef');
+    expect(theme.sidebar.backgroundColor).toBe('#123456');
+    // Redoc's own default, which must not survive.
+    expect(JSON.stringify(theme)).not.toContain('#333');
+  });
+
+  // The sample panel is DARK IN BOTH SCHEMES: Redoc syntax-highlights the JSON
+  // with token colours chosen against a dark background, and pointing this at
+  // the portal's light surfaces put 102 elements of white-on-white on the page
+  // in light mode.
+  it('keeps the sample panel on the scheme-independent code surfaces', () => {
+    const light = {
+      ...readPalette(),
+      bg: '#ffffff',
+      surface1: '#f2f4f7',
+      surface2: '#eceff3',
+      text: '#14161a',
+      codeBg: '#0a0b0d',
+      codeSurface: '#171920',
+      codeText: '#e8eaed',
+    };
+    const theme = redocOptions(light).theme as Record<string, any>;
+
+    expect(theme.rightPanel.backgroundColor).toBe('#171920');
+    expect(theme.rightPanel.textColor).toBe('#e8eaed');
+    expect(theme.codeBlock.backgroundColor).toBe('#0a0b0d');
+    // The light scheme's surfaces must not reach the sample panel.
+    expect(theme.rightPanel.backgroundColor).not.toBe(light.surface2);
+    expect(theme.codeBlock.backgroundColor).not.toBe(light.bg);
+  });
+
+  it('falls back to the dark palette when no stylesheet is loaded', () => {
+    // jsdom resolves no CSS variables here, which is the same situation as a
+    // stylesheet that has not applied yet. The page must still theme itself.
+    const palette = readPalette();
+    expect(palette.text).toBeTruthy();
+    expect(palette.codeSurface).toBeTruthy();
+    expect(redocOptions(palette).theme).toBeTruthy();
   });
 });
