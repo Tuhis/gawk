@@ -140,6 +140,12 @@ func TestNoExternalAssetReferences(t *testing.T) {
 		for _, forbidden := range []string{
 			"cdn.jsdelivr", "unpkg.com", "cdnjs.", "fonts.googleapis", "fonts.gstatic",
 			"esm.sh", "@import url(http",
+			// R48: Redoc's "API docs by Redocly" badge draws its logo from
+			// this CDN. The CSP blocks it, so nothing leaked — but it was a
+			// real off-origin request from the portal, found only because a
+			// browser pass read the console. views/ApiView.css removes it;
+			// this is what keeps a Redoc upgrade from bringing it back.
+			"cdn.redoc.ly",
 		} {
 			if strings.Contains(string(body), forbidden) {
 				t.Errorf("%s references %q", p, forbidden)

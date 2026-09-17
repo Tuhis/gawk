@@ -1112,7 +1112,7 @@ func waitForEvent(t *testing.T, h *harness, typ string) store.Event {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		events, err := h.store.ListEvents(context.Background(), 0, 50)
+		events, err := h.store.ListEvents(context.Background(), store.EventQuery{Limit: 50})
 		if err == nil {
 			for _, e := range events {
 				if e.Type == typ {
@@ -1208,7 +1208,7 @@ func TestARepeatedUnbanRecordsAndPagesOnlyOnce(t *testing.T) {
 		t.Fatalf("a repeated unban paged every webhook receiver %d times", removals)
 	}
 
-	events, err := h.store.ListEvents(t.Context(), 0, 50)
+	events, err := h.store.ListEvents(t.Context(), store.EventQuery{Limit: 50})
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -1231,6 +1231,68 @@ func TestARepeatedUnbanRecordsAndPagesOnlyOnce(t *testing.T) {
 	for _, b := range all.Bans {
 		if b.ID == ban.ID && b.RemovedBy != "op@example.com" {
 			t.Fatalf("removedBy = %q after a replayed unban", b.RemovedBy)
+		}
+	}
+}
+
+// --- GET /events?type= (R48) ------------------------------------------
+
+// An unknown type is a 400, not an empty page.
+//
+// `type=ban.create` — singular, the typo a bot author makes once — would
+// otherwise answer 200 with no events, which reads as "nothing has happened".
+// That is the same reassuring lie a null banState exists to prevent on the
+// broadcast view, and it is why the filter validates at all.
+//
+// It needs no database: validation runs before the query, which is itself the
+// property worth pinning — a rejected filter must not cost a round trip.
+func TestEventTypeFilterRejectsAnUnknownType(t *testing.T) {
+	h := newHarnessWithoutPostgres(t)
+
+	for _, q := range []string{"type=ban.create", "type=ban.created,ban.remove", "type=whatever"} {
+		status, body := h.raw(http.MethodGet, "/api/v1/events?"+q, nil)
+		if status != http.StatusBadRequest {
+			t.Fatalf("GET /api/v1/events?%s = %d, want 400; body: %s", q, status, body)
+		}
+		if !strings.Contains(body, api.CodeBadRequest) {
+			t.Fatalf("GET /api/v1/events?%s body = %s, want code %q", q, body, api.CodeBadRequest)
+		}
+		// The message names the vocabulary, so the fix does not need the docs.
+		if !strings.Contains(body, store.EventBanCreated) {
+			t.Fatalf("the 400 for %q does not say what the legal values are: %s", q, body)
+		}
+	}
+}
+
+// The filter narrows the feed, in both spellings a client library produces for
+// one enum-valued query parameter.
+func TestEventTypeFilterNarrowsTheFeed(t *testing.T) {
+	h := newHarness(t)
+	for _, tpe := range []string{store.EventBanCreated, store.EventBroadcastKilled, store.EventBanRemoved} {
+		if _, err := h.store.AppendEvent(t.Context(), store.Event{Type: tpe, Actor: "op@example.com"}); err != nil {
+			t.Fatalf("AppendEvent(%s): %v", tpe, err)
+		}
+	}
+
+	for _, c := range []struct {
+		name, query string
+		want        int
+	}{
+		{"no filter", "", 3},
+		{"one type", "?type=broadcast.killed", 1},
+		{"repeated", "?type=ban.created&type=ban.removed", 2},
+		{"comma-separated", "?type=ban.created,ban.removed", 2},
+		{"a repeat of one type is not a doubled page", "?type=ban.created&type=ban.created", 1},
+	} {
+		var page struct {
+			Events []struct {
+				Type string `json:"type"`
+			} `json:"events"`
+			NextAfterID *int64 `json:"nextAfterId"`
+		}
+		h.decode(http.MethodGet, "/api/v1/events"+c.query, nil, http.StatusOK, &page)
+		if len(page.Events) != c.want {
+			t.Fatalf("%s: %d events, want %d", c.name, len(page.Events), c.want)
 		}
 	}
 }

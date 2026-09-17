@@ -33,7 +33,7 @@ func TestAppendAndPageEvents(t *testing.T) {
 	}
 
 	// Newest first.
-	page, err := s.ListEvents(ctx, 0, 2)
+	page, err := s.ListEvents(ctx, store.EventQuery{Limit: 2})
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}
@@ -45,23 +45,77 @@ func TestAppendAndPageEvents(t *testing.T) {
 	}
 
 	// The cursor is the last ID of the previous page: strictly older rows.
-	page2, err := s.ListEvents(ctx, page[1].ID, 2)
+	page2, err := s.ListEvents(ctx, store.EventQuery{AfterID: page[1].ID, Limit: 2})
 	if err != nil {
 		t.Fatalf("ListEvents(page2): %v", err)
 	}
 	if len(page2) != 2 || page2[0].ID != ids[2] || page2[1].ID != ids[1] {
 		t.Fatalf("second page = %v", eventIDs(page2))
 	}
-	page3, err := s.ListEvents(ctx, page2[1].ID, 2)
+	page3, err := s.ListEvents(ctx, store.EventQuery{AfterID: page2[1].ID, Limit: 2})
 	if err != nil {
 		t.Fatalf("ListEvents(page3): %v", err)
 	}
 	if len(page3) != 1 || page3[0].ID != ids[0] {
 		t.Fatalf("third page = %v", eventIDs(page3))
 	}
-	last, err := s.ListEvents(ctx, page3[0].ID, 2)
+	last, err := s.ListEvents(ctx, store.EventQuery{AfterID: page3[0].ID, Limit: 2})
 	if err != nil || len(last) != 0 {
 		t.Fatalf("page past the oldest event = %v (err=%v)", eventIDs(last), err)
+	}
+}
+
+// The `type` filter (R48): an empty Types is the WHOLE feed, not an empty one.
+// That is the whole reason the query passes NULL rather than an empty array —
+// `= ANY('{}')` is false for every row, so an empty array would silently answer
+// "nothing has happened" to a caller who asked for everything.
+func TestListEventsFiltersByType(t *testing.T) {
+	s := storetest.New(t)
+	ctx := t.Context()
+
+	for _, tpe := range []string{store.EventBanCreated, store.EventBroadcastKilled, store.EventBanRemoved} {
+		if _, err := s.AppendEvent(ctx, store.Event{Type: tpe, Actor: "op@example.com"}); err != nil {
+			t.Fatalf("AppendEvent(%s): %v", tpe, err)
+		}
+	}
+
+	all, err := s.ListEvents(ctx, store.EventQuery{})
+	if err != nil {
+		t.Fatalf("ListEvents(no filter): %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("no filter returned %d events, want all 3", len(all))
+	}
+
+	one, err := s.ListEvents(ctx, store.EventQuery{Types: []string{store.EventBroadcastKilled}})
+	if err != nil {
+		t.Fatalf("ListEvents(one type): %v", err)
+	}
+	if len(one) != 1 || one[0].Type != store.EventBroadcastKilled {
+		t.Fatalf("one-type filter = %+v, want a single broadcast.killed", one)
+	}
+
+	two, err := s.ListEvents(ctx, store.EventQuery{
+		Types: []string{store.EventBanCreated, store.EventBanRemoved},
+	})
+	if err != nil {
+		t.Fatalf("ListEvents(two types): %v", err)
+	}
+	if len(two) != 2 {
+		t.Fatalf("two-type filter returned %d events, want 2", len(two))
+	}
+	for _, e := range two {
+		if e.Type == store.EventBroadcastKilled {
+			t.Fatalf("the filter let a %s through", e.Type)
+		}
+	}
+
+	none, err := s.ListEvents(ctx, store.EventQuery{Types: []string{store.EventRoomCreated}})
+	if err != nil {
+		t.Fatalf("ListEvents(unmatched type): %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("a type with no rows returned %d events", len(none))
 	}
 }
 

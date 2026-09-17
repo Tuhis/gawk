@@ -166,6 +166,7 @@ func run(args []string, getenv func(string) string) error {
 		Reconciler:  reconciler,
 		Fleet:       scanner,
 		Config:      cfg,
+		Version:     version,
 		Authn:       authn.Middleware,
 		RequireRole: authn.RequireRole,
 		Recorder:    dispatcher,

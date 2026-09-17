@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { lazy, Suspense, useCallback } from 'react';
 
 import { useApi, useSession, useSessionState } from './auth/AuthContext.tsx';
 import type { Me } from './api/types.ts';
@@ -14,6 +14,12 @@ import { RoomsView } from './views/RoomsView.tsx';
 import { WebhooksView } from './views/WebhooksView.tsx';
 import styles from './App.module.css';
 
+// Swagger UI is ~1.6 MB. It is lazily imported so the moderation views — the
+// ones an operator opens on a phone, in a hurry — do not pay for a page they
+// may never visit (R48, docs/49 D5). The chunk is fetched on first navigation
+// to #/api and never before.
+const ApiView = lazy(() => import('./views/ApiView.tsx'));
+
 const NAV: readonly { view: ViewName; label: string }[] = [
   { view: 'broadcasts', label: 'Broadcasts' },
   { view: 'bans', label: 'Bans' },
@@ -27,6 +33,11 @@ const NAV: readonly { view: ViewName; label: string }[] = [
 // route that would 404. The route itself still resolves (a webhook deep link
 // must land somewhere that explains itself).
 const ROOMS_NAV = { view: 'rooms' as const, label: 'Rooms' };
+
+// The API reference is last, and unconditional: the contract it renders is the
+// same one this deployment serves unauthenticated, so there is no feature to
+// gate it on (R48, docs/49 D5).
+const API_NAV = { view: 'api' as const, label: 'API' };
 
 /**
  * The shell.
@@ -78,7 +89,7 @@ function Portal() {
   // documented default and the error on screen — a dead `/api/v1/me` should not
   // black out a moderation console.
   const probeSettled = me !== null || error !== null;
-  const nav = me?.features?.rooms ? [...NAV, ROOMS_NAV] : NAV;
+  const nav = [...NAV, ...(me?.features?.rooms ? [ROOMS_NAV] : []), API_NAV];
 
   return (
     <div className={styles.app}>
@@ -149,6 +160,12 @@ function Routed({
       return <WebhooksView />;
     case 'rooms':
       return <RoomsView initialFilter={filterKey} />;
+    case 'api':
+      return (
+        <Suspense fallback={<p className={styles.dim}>Loading the API reference…</p>}>
+          <ApiView />
+        </Suspense>
+      );
     default:
       return (
         <section>

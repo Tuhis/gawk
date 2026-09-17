@@ -146,14 +146,40 @@ func ClampEventLimit(limit int) int {
 	return limit
 }
 
-// ListEvents returns the feed newest-first. afterID is the cursor: 0 starts at
-// the newest event, otherwise only events strictly OLDER than that ID are
-// returned — "after" in feed order, which is descending ID.
-func (s *Store) ListEvents(ctx context.Context, afterID int64, limit int) ([]Event, error) {
-	limit = ClampEventLimit(limit)
-	const q = `SELECT ` + eventColumns + ` FROM moderation_events
-		WHERE ($1 = 0 OR id < $1) ORDER BY id DESC LIMIT $2`
-	rows, err := s.pool.Query(ctx, q, afterID, limit)
+// EventQuery is one page request against the feed.
+//
+// A struct rather than three positional arguments because the feed grows
+// filters (R50 adds `category`), and a caller that means "the newest page of
+// room events" should not have to pass a zero it does not care about in a
+// position it cannot name.
+type EventQuery struct {
+	// AfterID is the cursor: 0 starts at the newest event, otherwise only
+	// events strictly OLDER than that ID are returned — "after" in feed order,
+	// which is descending ID.
+	AfterID int64
+	// Limit is clamped by ClampEventLimit; 0 means DefaultEventLimit.
+	Limit int
+	// Types restricts the page to these event types. Empty means every type.
+	// Values are validated by the caller against IsEventType — an unknown name
+	// here would simply return nothing, which reads as "no such events" rather
+	// than "no such event type".
+	Types []string
+}
+
+// ListEvents returns the feed newest-first.
+func (s *Store) ListEvents(ctx context.Context, q EventQuery) ([]Event, error) {
+	limit := ClampEventLimit(q.Limit)
+	// $3 is NULL for "every type" rather than an empty array: `= ANY('{}')` is
+	// false for every row, so an empty array would silently answer an empty
+	// feed instead of the whole one.
+	var types any
+	if len(q.Types) > 0 {
+		types = q.Types
+	}
+	const sql = `SELECT ` + eventColumns + ` FROM moderation_events
+		WHERE ($1 = 0 OR id < $1) AND ($3::text[] IS NULL OR type = ANY($3))
+		ORDER BY id DESC LIMIT $2`
+	rows, err := s.pool.Query(ctx, sql, q.AfterID, limit, types)
 	if err != nil {
 		return nil, fmt.Errorf("store: list events: %w", err)
 	}

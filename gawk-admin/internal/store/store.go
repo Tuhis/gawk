@@ -138,6 +138,55 @@ const (
 	EventRoomSecretRotated = "room.secret_rotated"
 )
 
+// AllEventTypes is the closed vocabulary of `type` values a moderation_events
+// row may carry: the enum of the `type` filter on GET /api/v1/events and of
+// the `type` field on every event it returns (R48 docs/49 D3).
+//
+// It is a FUNCTION returning a fresh slice rather than an exported slice
+// variable, because a package-level slice is writable by any importer and this
+// one is a contract the OpenAPI drift test holds the document to.
+//
+// Order is the order a reader expects to meet them in, not alphabetical:
+// enforcement first, then rooms. R50 appends the ingested activity types here
+// (docs/51); R49 is where WebhookEventTypes first differs from this list.
+func AllEventTypes() []string {
+	return []string{
+		EventBroadcastKilled,
+		EventBanCreated,
+		EventBanExpired,
+		EventBanRemoved,
+		EventContentFlag,
+		EventRoomCreated,
+		EventRoomEnded,
+		EventRoomSecretRotated,
+	}
+}
+
+// WebhookEventTypes is the subset of AllEventTypes the dispatcher may forward
+// to a webhook.
+//
+// Today it is the whole vocabulary — every stored event is a moderation event
+// and every moderation event pages someone. It exists as its own helper
+// because the two stop being the same list at R49 (docs/50 D6), when R50's
+// ingested activity events become stored-but-not-forwarded by default, and
+// because docs/52 D7 holds THIS list — not AllEventTypes — equal to the
+// AsyncAPI `webhook` channel's messages.
+func WebhookEventTypes() []string {
+	return AllEventTypes()
+}
+
+// IsEventType reports whether t is in the closed vocabulary. The API validates
+// a `type` filter value with it, so an unknown name is a 400 rather than a
+// silently empty page.
+func IsEventType(t string) bool {
+	for _, known := range AllEventTypes() {
+		if known == t {
+			return true
+		}
+	}
+	return false
+}
+
 // Payload keys that are safe to copy into a webhook body.
 //
 // This is a security boundary, not a convenience: Payload may carry raw

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -137,17 +138,135 @@ func TestMeCarriesIdentityAndKillCooldownDefault(t *testing.T) {
 	}
 }
 
-// The injected role check gates every route. api never decides authorization
-// itself — but it must actually apply what auth hands it.
+// The injected role check gates every route that declares a role. api never
+// decides authorization itself — but it must actually apply what auth hands it.
+//
+// It walks the DECLARED table (R48 docs/49 D3), not a hand-written path list
+// and not a constructed mux: a route added to the table is checked here the
+// moment it is added, and a route whose registration is behind a feature this
+// harness has off is still checked — with rooms off its paths fall through to
+// the catch-all, which is a 404 rather than a 200, and that is what the
+// `wantOpen` arm below distinguishes.
 func TestRoutesAreBehindTheInjectedRoleCheck(t *testing.T) {
 	h := newHarnessWithoutPostgres(t)
 	h.identity.Roles = []string{"someone-else"}
 
-	for _, path := range []string{"/api/v1/me", "/api/v1/bans", "/api/v1/broadcasts", "/api/v1/webhooks", "/api/v1/events", "/api/v1/relays"} {
-		if status, _ := h.raw(http.MethodGet, path, nil); status != http.StatusForbidden {
-			t.Fatalf("GET %s without the operator role = %d, want 403", path, status)
+	// With rooms OFF, their five routes are not registered at all, so the
+	// catch-all answers them and this harness can say nothing about their role
+	// check. The second pass below is where they are actually covered — and it
+	// is the reason this test does not simply expect 404 for them and call the
+	// table "walked".
+	withRooms := newHarnessWithoutPostgres(t, withRoomsEnabled())
+	withRooms.identity.Roles = []string{"someone-else"}
+
+	checked := 0
+	for _, r := range api.RouteTable() {
+		path := concretePath(r.Pattern)
+
+		if len(r.Roles) == 0 {
+			// Unauthenticated by design (the served OpenAPI document). It must
+			// NOT be a 403 — that is the whole claim.
+			if status, _ := h.raw(r.Method, path, nil); status == http.StatusForbidden {
+				t.Fatalf("%s %s declares no roles but answered 403", r.Method, r.Pattern)
+			}
+			continue
+		}
+
+		// Every route that declares a role answers 403 without it — on the
+		// harness that actually registers it.
+		harness := h
+		if r.Requires == api.RequiresRooms {
+			harness = withRooms
+		}
+		if status, body := harness.raw(r.Method, path, nil); status != http.StatusForbidden {
+			t.Fatalf("%s %s without the %v role = %d, want 403; body: %s",
+				r.Method, r.Pattern, r.Roles, status, body)
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("the route table is empty: this test proved nothing")
+	}
+
+	// And with the feature off they are unreachable rather than unprotected —
+	// the other half of the claim, and what makes rooms default-off mean
+	// something.
+	for _, r := range api.RouteTable() {
+		if r.Requires != api.RequiresRooms {
+			continue
+		}
+		if status, _ := h.raw(r.Method, concretePath(r.Pattern), nil); status != http.StatusNotFound {
+			t.Fatalf("%s %s with rooms off = %d, want the catch-all's 404", r.Method, r.Pattern, status)
 		}
 	}
+}
+
+// A method mismatch under /api/v1 is the catch-all's 404, never a 405.
+//
+// This is what lets the OpenAPI document leave `method_not_allowed` out of its
+// error enum: that code is /auth/config's alone. If Go's ServeMux ever started
+// answering 405 here instead, the document would be describing an answer it no
+// longer gives, and this test is what would say so.
+func TestAMethodMismatchIsTheCatchAlls404(t *testing.T) {
+	h := newHarnessWithoutPostgres(t)
+	for _, c := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/me"},
+		{http.MethodDelete, "/api/v1/broadcasts"},
+		{http.MethodPatch, "/api/v1/bans"},
+		{http.MethodPut, "/api/v1/events"},
+	} {
+		status, body := h.raw(c.method, c.path, nil)
+		if status != http.StatusNotFound {
+			t.Fatalf("%s %s = %d, want 404; body: %s", c.method, c.path, status, body)
+		}
+		if !strings.Contains(body, api.CodeNotFound) {
+			t.Fatalf("%s %s answered %d without the error envelope: %s", c.method, c.path, status, body)
+		}
+	}
+}
+
+// The contract is served through the /api/v1 mux, and it is the one route
+// there that a caller with no token — or a bad one — still gets (docs/49 D2).
+//
+// It matters that the request reaches it at all: the catch-all under the same
+// prefix answers 404 for everything it does not know, so a mis-registered
+// contract route would look exactly like a typo in the URL.
+func TestTheOpenAPIDocumentIsServedWithoutAToken(t *testing.T) {
+	h := newHarnessWithoutPostgres(t)
+	h.identity.Roles = []string{"someone-else"}
+
+	status, body := h.raw(http.MethodGet, "/api/v1/openapi.json", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET /api/v1/openapi.json without the operator role = %d, want 200; body: %s", status, body)
+	}
+	if !strings.Contains(body, `"openapi"`) || !strings.Contains(body, "/api/v1/me") {
+		t.Fatalf("the served document does not look like the contract: %.200s", body)
+	}
+	// And it is not the catch-all's envelope: that body is exactly
+	// {"error":{…}}, which the contract — an object of `openapi`, `info`,
+	// `paths` — never is.
+	var envelope struct {
+		Error *struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &envelope); err == nil && envelope.Error != nil {
+		t.Fatalf("the contract route fell through to the catch-all: %.200s", body)
+	}
+}
+
+// concretePath fills a pattern's {placeholders} with a syntactically valid
+// stand-in. The value never reaches a handler — authorization refuses the
+// request first, which is the point — so any non-empty segment will do.
+func concretePath(pattern string) string {
+	out := []string{}
+	for _, seg := range strings.Split(pattern, "/") {
+		if strings.HasPrefix(seg, "{") {
+			seg = "placeholder"
+		}
+		out = append(out, seg)
+	}
+	return strings.Join(out, "/")
 }
 
 // Postgres down: mutations answer 503 (§6), not 500 — the operator should

@@ -1,0 +1,22 @@
+# Lint rules for openapi.yaml (R48, docs/49 D4).
+#
+# The Go drift test checks the document against the CODE; this checks it
+# against the STANDARD. A dangling $ref or a missing operationId would
+# otherwise surface only when a consumer fed the file to a generator.
+#
+# It lives here, beside the document, rather than in ui/ — the CI step that
+# runs it happens to have node, but the configuration belongs to the contract.
+extends:
+  - recommended
+
+rules:
+  # Every operation needs a name a generated client can use as a method name.
+  operation-operationId: error
+  # A component nothing references is either dead or a $ref that was meant to
+  # point at it and does not. Both are drift.
+  no-unused-components: error
+  # `operation-4xx-response` stays at its default (a warning) rather than being
+  # promoted or switched off. It is right about every operation but one:
+  # `GET /api/v1/openapi.json` is unauthenticated and always registered, so it
+  # genuinely has no 4xx, and inventing one to quiet a linter would be a lie in
+  # the contract. The warning it prints for that operation is expected.

@@ -1,7 +1,7 @@
 # R48 — OpenAPI contract for the `gawk-admin` API (docs/49)
 
-**Status**: designed 2026-09-15; **not started**. Chunks **OA1–OA4** (`OA` =
-OpenAPI; two-letter prefix per the R21+ convention). `gawk-admin` only —
+**Status**: designed 2026-09-15; **shipped 2026-09-16** (OA1–OA4). Chunks
+**OA1–OA4** (`OA` = OpenAPI; two-letter prefix per the R21+ convention). `gawk-admin` only —
 its Go module, its SPA, its chart values and the self-hosting guide. Nothing
 here touches the relay, the wire format or any other module. **R49**
 ([docs/50](50-rooms-read-api.md)) is the first milestone that adds routes
@@ -63,7 +63,7 @@ What already exists, so the reader does not go looking:
 | D2 | **The document is embedded and served by `gawk-admin` at `GET /api/v1/openapi.json`, unauthenticated, with `servers[0].url` rewritten to the deployment's `-external-url` at serve time.** YAML is the source; the served form is JSON (converted once at start-up with `sigs.k8s.io/yaml`, already in the module graph via client-go). `Cache-Control: public, max-age=300`, an `ETag` of the bytes. | A bot author's first command is `curl https://admin…/api/v1/openapi.json`; generator tooling fetches a URL. Nothing in the document is deployment-specific except the base URL, and nothing in it is secret: the repository is public, so the route surface already is. Unauthenticated matches `/auth/config`, the other bootstrap route, and lets the D5 page load the document before login. The security headers wrap it like everything else (`auth.SecurityHeaders` is mux-level). |
 | D3 | **A Go test is the drift gate, both directions.** `Routes()` builds from a declared table (`method`, `pattern`, `roles`, `requires`, handler) instead of inline `mux.Handle` calls, where `requires` names the feature that must be on for the entry to be registered (`rooms` for the R42/R49 routes, `flagger` for R40's reserved route, empty for the rest — today's `a.opts.Rooms != nil` guard at `api.go:240`, moved into data). **The test walks the table, never a constructed mux**, so it is independent of which features the test process enables; it loads `openapi.yaml` and asserts: (a) every table entry has a matching `paths.<pattern>.<method>`, with `{id}` placeholders equal; (b) every operation in the document has a table entry — no documented-but-missing route — and an operation whose entry has a `requires` carries the matching `x-gawk-requires`, so a consumer can tell which routes a given deployment serves; (c) every `Code*` constant appears in the error schema's `code` enum and vice versa; (d) the `type` enum of `GET /api/v1/events` — its filter parameter and the response's `type` field — equals `store.AllEventTypes()` and vice versa; which of those may reach a webhook is not this document's question: `store.WebhookEventTypes()`, the subset the dispatcher forwards and the R49 `events` filter validates against, is held equal to the AsyncAPI `webhook` channel by docs/52 D7 (revised 2026-09-16; the first draft checked a webhook schema here); (e) each operation's `x-gawk-roles` matches the table's roles; (f) every response example in the document decodes into the handler's Go response type with `DisallowUnknownFields`, and every request example into its request type. | The R2 lesson in API form: a contract nobody is forced to update is a contract that lies. (f) is the cheap, dependency-free half of schema validation: an example that names a field the struct lost fails, and a struct that gains a field the example lacks is caught by a second pass that marshals a fully-populated fixture and asserts every key appears in the schema's `properties`. Full JSON-Schema validation would need `kin-openapi`; it is listed in §2 Rejected with the reason. |
 | D4 | **The document is also linted as OpenAPI in CI**, by `@redocly/cli lint` run from the `admin-ui` job (a pinned devDependency in `ui/package.json`, so the lockfile fixes the version). Ruleset: `recommended`, plus `operation-operationId` and `no-unused-components` as errors. | D3 checks the document against the code; this checks the document against the standard. A malformed `$ref` or a missing `operationId` would otherwise surface only when someone feeds the file to a generator. The UI job already has node and runs lint; no new job, no new runner image. **The job's path filter must be widened** (`ci.yml:191` matches `gawk-admin/(ui|internal/portal)/` only), or a PR that changes only `openapi.yaml` never runs the step that lints it — found by docs/52 D3, fixed in EC1 or OA2, whichever lands first. |
-| D5 | **The SPA gets an "API" view at `#/api`, behind the normal login, rendering the served document with an embedded `swagger-ui-dist`, lazily loaded.** The in-memory access token is injected via `requestInterceptor` so "Try it out" works against the deployment the page came from; the token is never written anywhere. The bundle is a separate Vite chunk imported on first navigation, so the moderation views' load cost is unchanged. | A bot author needs to *try* a call with their own token before writing code, and an operator wants to see what a `rooms-reader` token (R49) can and cannot do. Swagger UI over Redoc because Redoc cannot execute requests. Embedded, never a CDN: the portal's CSP is `default-src 'self'` and the no-external-assets test enforces it (docs/42 §4.8); Apache-2.0, so the `licenses` and `notices` jobs need a notices entry, nothing more. The view is behind login because it is a page of the admin portal, not because the document is secret (D2). |
+| D5 | **The SPA gets an "API" view at `#/api`, behind the normal login, rendering the served document with an embedded **Redoc**, lazily loaded.** *(Revised 2026-09-17; the first cut used `swagger-ui-dist` for its "Try it out" button.)* The bundle is a separate Vite chunk imported on first navigation, so the moderation views' load cost is unchanged. **No credential reaches it**: Redoc renders and does not execute, so there is no token to inject and no same-origin guard to get right. | The page is read far more often than it is used as a REPL, and it has to read well — owner decision 2026-09-17, overriding the first cut's reasoning that executing a call mattered more than the layout. `curl` with a client-credentials token (self-hosting §9.8) is what replaced "Try it out", and it is what a bot author ends up writing anyway. The swap also removed the one reason a third-party bundle in the security-critical SPA was ever handed an access token. Embedded, never a CDN: the portal's CSP is `default-src 'self'` and the no-external-assets test enforces it (docs/42 §4.8). The view is behind login because it is a page of the admin portal, not because the document is secret (D2). |
 | D6 | **Roles are declared per operation with `x-gawk-roles: [operator]`** (R49 adds `rooms-reader` to its routes), and the single security scheme is `bearerAuth` (`http`, `bearer`, `bearerFormat: JWT`). The `info.description` states the authentication model in three sentences: OIDC-issued JWT, roles in the token, no cookies. | OpenAPI has no vocabulary for "which role"; an extension key is the honest way to say it, and D3 (e) keeps it true. A generated client sees one bearer scheme, which is exactly the shape a client-credentials bot implements. |
 | D7 | **Outbound webhooks are not described in the OpenAPI document.** *(Revised 2026-09-16; the first draft put them under OpenAPI 3.1's top-level `webhooks` with the `X-Gawk-*` headers and the `Sign()` construction.)* They are one channel of the event contract in [docs/52](52-event-contract.md): a CloudEvents body, Standard Webhooks headers, one JSON Schema per event type and an AsyncAPI 3.0 catalogue served at `/api/v1/asyncapi.json`. This document's `info.description` links to that URL, and 3.1 is kept for its JSON Schema 2020-12 alignment, not for `webhooks`. | The R50 bus made the webhook body one projection of an event that also travels on NATS; OpenAPI can describe an HTTP delivery but has no vocabulary for a subject or a stream, so describing webhooks here would have split one event across two documents in two formats. One catalogue, in the format built for event channels, with the drift tests of docs/52 D7 holding it to the code. |
 | D8 | **`info.version` is the `gawk-admin` release version**, maintained by release-please's `extra-files` with `type: generic` — a `# x-release-please-version` marker comment on the `version:` line, exactly the updater every existing `extra-files` entry in `release-please-config.json` already uses (the charts' `Chart.yaml`, the broadcasters' `version.go`, the Windows `Cargo.toml`). The served document carries the same value; `x-gawk-build` carries the ldflags build string. | A consumer reading the repository file and one fetching it from a deployment must agree on which version they are looking at. The `generic` updater is proven in this repository on YAML, Go and TOML files, so no fallback is designed; the `yaml`/`jsonpath` updater was the first draft and was dropped because it would have been the one unverified piece of release automation in the chunk. |
@@ -91,7 +91,11 @@ What already exists, so the reader does not go looking:
   second description would be the mirror CLAUDE.md forbids.
 - **Documenting `gawk-telemetry`'s ingest** — a different module with its
   own posture (docs/33); not this milestone.
-- **Redoc** for the SPA page — read-only; no "try it" (D5).
+- **Swagger UI** for the SPA page — it can execute a request, which Redoc
+  cannot, and that is why it was chosen first. Reversed 2026-09-17 on how the
+  page reads (D5). Its npm footprint was the smaller of the two by a wide
+  margin (two redistributed packages against Redoc's hundred-odd), which is
+  the one thing that got worse.
 
 ## 3. Where it plugs in
 
@@ -102,8 +106,8 @@ What already exists, so the reader does not go looking:
 | Event types | `internal/store/store.go:126-138`; no helper enumerates them today | **Two new helpers**: `store.AllEventTypes()` (every row type; the enum of the `type` filter on `GET /events`) and `store.WebhookEventTypes()`, the webhook-eligible subset (equal to `AllEventTypes()` until R49 D8 adds stored-but-not-forwarded activity types). D3 (d) reads the first; the dispatcher's filter (R49) and the docs/52 D7 catalogue test hold the second to the AsyncAPI `webhook` channel. |
 | The document | — | **New** `gawk-admin/openapi.yaml` (3.1): every route in §4.7 of docs/42 as shipped (§11.1 deviations included), the rooms routes, the schemas, examples, `x-gawk-roles`, `x-gawk-sensitive`; no `webhooks` section (D7) — a link to `/api/v1/asyncapi.json` in `info.description`. |
 | Serving | `cmd/gawk-admin/main.go:205-224` mux; `internal/portal` embed pattern | **New** `internal/openapi` package: `//go:embed openapi.yaml`, YAML→JSON once, `servers` rewrite, `Handler()`; registered as a table entry `GET /api/v1/openapi.json` **inside `Routes()`** (the `/api/v1/` prefix is mounted on the outer mux via `a.Routes()` at `main.go:207`, so that is where any `/api/v1/*` route lives) with empty `roles`, which `Routes()` translates to **no `protect()` wrapper** — the one such entry, and the drift test's (e) documents it as `x-gawk-roles: []`. Registration order is irrelevant: the Go 1.22+ `ServeMux` picks the most specific pattern, so the exact route wins over the `/api/v1/` catch-all wherever it is added. |
-| SPA | `ui/src/router/router.ts:42` `VIEWS`; `ui/src/views/*`; `ui/src/api/client.ts` token holder | `api` added to `VIEWS`; **new** `views/ApiView.tsx` with a `React.lazy` import of the swagger-ui bundle; `requestInterceptor` reads the token from the same holder `client.ts` uses; nav link. |
-| CI | `admin-ui` job (`ci.yml:1029`) | One step: `npx redocly lint openapi.yaml` from `gawk-admin/ui` with `../openapi.yaml`. `licenses`/`notices`: the swagger-ui-dist entry. |
+| SPA | `ui/src/router/router.ts:42` `VIEWS`; `ui/src/views/*` | `api` added to `VIEWS`; **new** `views/ApiView.tsx`, lazily imported by `App.tsx`, rendering `<RedocStandalone>`; `views/apiDocs.ts` holds the options and the relative document URL; nav link. No token holder is involved. |
+| CI | `admin-ui` job (`ci.yml:1029`) | One step: `npx redocly lint openapi.yaml` from `gawk-admin/ui` with `../openapi.yaml`. `licenses`/`notices`: Redoc's tree (§5). |
 | Release automation | `release-please-config.json` `extra-files`, all `type: generic` | One more `generic` entry for `gawk-admin/openapi.yaml`, with the `# x-release-please-version` marker on its `info.version` line (D8). |
 | Docs | docs/self-hosting §9; `gawk-admin/README.md` | §9.8 "Using the API from your own software": where the document is, the bearer model, a Keycloak client-credentials recipe for a service identity, the additive-only promise. README: one paragraph and the `#/api` page. |
 
@@ -113,8 +117,85 @@ What already exists, so the reader does not go looking:
 |---|---|---|
 | **OA1** | The route table refactor; `openapi.yaml` covering every shipped route, error code and event type; the two `EventTypes` helpers; the D3 drift test | `go test ./internal/api/...` green with the new `TestOpenAPIMatchesRoutes` covering (a)–(f); deliberately deleting one route from the document, or renaming one `Code*` constant, or adding a field to `roomJSON` without touching the document, each fails the test (asserted once by hand in the PR description, and kept as three `t.Run` negative cases against an in-memory mutated copy). `TestRoutesAreBehindTheInjectedRoleCheck` still passes over the table, and both tests pass with `Rooms == nil` in the test options (the table, not the mux, is what they walk). Every example in the document decodes into its Go type with unknown fields disallowed. |
 | **OA2** | `internal/openapi`: embed, YAML→JSON, `servers` rewrite, ETag; the `GET /api/v1/openapi.json` route; release-please `extra-files`; `redocly lint` in CI (D2, D4, D8) | Handler test: unauthenticated `GET` → 200 `application/json`, `servers[0].url` equals `-external-url`, `info.version` equals the embedded file's, security headers present, no `Set-Cookie`; a request with a bad bearer is still 200 (unauthenticated by design); `If-None-Match` → 304. CI: the lint step runs in `admin-ui` and a document with a dangling `$ref` fails it (checked once in a draft commit). The next release PR after merge bumps `info.version` via the `generic` marker (the same mechanism that bumps the charts' `Chart.yaml`), checked once when that PR opens. |
-| **OA3** | The SPA `#/api` view with embedded swagger-ui-dist, lazy chunk, token injection (D5) | `ApiView.test.tsx`: the view mounts, fetches `/api/v1/openapi.json` through the client, and the interceptor sets `Authorization: Bearer <token>` on a "try it out" request; `router.test.ts` covers `#/api`; the `internal/portal` no-external-assets test passes over the built bundle (no CDN); `npm run build` emits the swagger bundle as a separate chunk not referenced by the entry chunk; `licenses`/`notices` green. Manual on the docs/41 dev stack: log in, open API, expand `GET /api/v1/me`, execute, see the JSON. |
+| **OA3** | The SPA `#/api` view with embedded Redoc, lazy chunk (D5) | `ApiView.test.tsx`: the view mounts, hands Redoc the relative document URL, and is handed **no** token — the session is never asked for one; `apiDocs.test.ts` pins the relative URL's sub-path resolution; `router.test.ts` covers `#/api`; the `internal/portal` no-external-assets test passes over the built bundle (no CDN); `npm run build` emits Redoc as a separate chunk not referenced by the entry chunk; `licenses`/`notices` green. Manual on the docs/41 dev stack: log in, open API, read `GET /api/v1/me`. |
 | **OA4** | Docs: self-hosting §9.8 (bearer model, service identity recipe, additive-only promise), `gawk-admin/README.md`, `docs/README.md` index row, this document's status, the ROADMAP row and entry | Review. The recipe is executed once against the dev stack's fake IdP (`cmd/gawk-fakeidp`'s `/mint`, or Keycloak if the reference deployment is used) and the resulting token calls `GET /api/v1/me` successfully. |
+
+### What shipped (2026-09-16)
+
+All four chunks, in one PR, as designed — with three deviations worth naming
+rather than discovering:
+
+- **`GET /api/v1/events` gained the `?type=` filter** D3 (d) documents. It did
+  not exist: the design's drift check named a filter parameter the handler had
+  never had. Adding it was the smaller of the two honest options (owner
+  decision), so the enum is one vocabulary on both the parameter and the
+  response field, and R50 has only `category` left to add. It is repeated or
+  comma-separated, and an unknown name is `400`, never an empty page.
+- **The `flagger` entry in the route table does not exist yet.** D3 names
+  `requires: flagger` for R40's reserved route, but that route has no handler
+  to bind — the path is frozen and deliberately unregistered — so `Requires`
+  ships with `rooms` as its only value and R40 adds the second.
+- **The list envelopes became declared Go types.** They were `map[string]any`
+  literals, so (f)'s example round-trip had nothing to decode into. Naming them
+  is what turns the check into a check.
+
+Verified against a running deployment (the docs/41 compose stack), which is
+where two errors the repository gates cannot see were found and fixed:
+
+- **`PodPlacement.role` was documented as `home`/`edge`. It is
+  `origin`/`edge`** — the relay's own `/statusz` vocabulary
+  (`adminapi.go:38`). Nothing in the repository could have caught it: D3 (f)
+  holds examples to Go *types*, and the field is a plain string. A live
+  response did.
+- **`servers[0].description` was a paragraph**, which Swagger UI renders inside
+  the server picker, where it is unreadable. It is one line now; the
+  explanation lives in `info.description`, which has room for it.
+
+The live pass that found them is worth repeating when this document changes
+substantially: mint a token from the dev stack's fake IdP, call every route,
+and validate each response against the *served* document with a JSON Schema
+validator. All 23 cases pass — every list and mutation route, both cursor
+shapes, the room routes, and the error envelopes for 400/404/409. It is not a
+CI gate: it needs a whole deployment with rows in it, and the `admin` job's
+Postgres-backed tests plus D3 cover the cheap half on every PR.
+
+**Review round 2 found the gap that mattered most** (PR #323): the enum held
+only `internal/api`'s codes, so it was missing every code `internal/auth`
+writes — `unauthorized`, `idp_unavailable`, `forbidden`, `rate_limited` — and
+the 401/403 examples said `bad_request`, which no such response ever carries.
+The API's most common failure, a missing or expired token, was the one it
+described wrongly, and D9's "the enum only grows" would have been broken on
+day one. The drift check could not see it: it parsed one package, and auth's
+codes were string literals.
+
+Three changes, together: `internal/auth` names its codes as `Code*` constants
+(they are contract, exactly like `internal/api`'s); the hand-written
+`allErrorCodes()` is **gone**, replaced by a derivation that walks the `Code*`
+constants of both packages, so the list cannot be short again; and `429` is
+documented on every operation that declares a role. `method_not_allowed` is
+deliberately excluded — it is `/auth/config`'s alone, and a method mismatch
+under `/api/v1` matches the catch-all and answers 404
+(`TestAMethodMismatchIsTheCatchAlls404` pins that, so the exclusion cannot
+quietly become wrong).
+
+The same round also moved D6 from prose to behaviour: **the served copy now
+substitutes `x-gawk-roles`** with this deployment's configured claim value, the
+way it already substituted `servers[0].url`. The repository file names roles
+symbolically (`operator`); a deployment that set `-operator-role` serves a
+document naming what its tokens must actually carry, so a bot author never has
+to guess.
+
+Two things the design did not anticipate:
+
+- **`openapi.yaml` is embedded through a one-line root package**
+  (`gawk-admin/contract.go`), because `//go:embed` cannot reach outside its own
+  directory and the document belongs at the module root, where a reader,
+  `redocly lint` and release-please's `extra-files` all look for it.
+- **`swagger-ui-dist` pulled in `@scarf/scarf`**, whose postinstall script
+  reports installs home, and which needed `scarfSettings.enabled: false` in
+  `ui/package.json` to silence. Moot since D5's reversal: Redoc does not
+  depend on it, and the setting is gone. The lesson it taught is in
+  `docs/gotchas.md` and still applies to the next npm dependency.
 
 Success criterion, end to end: on the reference deployment, `curl
 https://<admin>/api/v1/openapi.json | openapi-generator-cli validate` (or
@@ -132,9 +213,28 @@ without documenting it fails `go test` before it reaches CI.
 - **The API page runs a third-party bundle inside the security-critical
   SPA.** It is embedded (CSP `'self'`), version-pinned by the lockfile,
   loaded only on the API view, and rendered from a document the same
-  binary embeds — no user-supplied spec is ever loaded. The token reaches
-  it through the same in-memory holder the rest of the SPA uses and is
-  never persisted (docs/42 §4.8 D17 holds).
+  binary serves — no user-supplied spec is ever loaded. **It is handed no
+  credential at all**: Redoc renders and does not execute, so unlike the
+  Swagger UI it replaced there is no token to inject (D5, revised
+  2026-09-17). `ApiView.test.tsx` asserts the session is never even asked
+  for one.
+- **Redoc's dependency tree is two orders of magnitude larger** than
+  `swagger-ui-dist`'s two packages, and that is the real cost of D5's
+  reversal. The exact tally is in
+  [`gawk-admin/ui/THIRD-PARTY-NOTICES.md`](../gawk-admin/ui/THIRD-PARTY-NOTICES.md),
+  which is generated and moves with every bump; the part that does not
+  move is the shape of it. **All of it is permissive and none of it is
+  copyleft**: MIT, ISC and BSD but for a handful — one Apache-2.0, one
+  Python-2.0 (`argparse`, via js-yaml), and `dompurify` dual
+  `MPL-2.0 OR Apache-2.0`, where Apache-2.0 is the one taken. Nothing is
+  copyleft-only, source-available or field-restricted.
+  Three packages needed `NPM_LICENSE_OVERRIDES` in
+  `tools/licenses/gen-notices.py` because their npm metadata is wrong, not
+  because their licences are: `decko` and `stickyfill` ship an MIT LICENSE
+  and omit the manifest field, and `url-template` declares the non-SPDX
+  "BSD" over three-clause text. Each override records what the file says.
+  `Python-2.0` (argparse, via js-yaml) went on the allowlist proper — it
+  is a distinct licence, not a metadata bug.
 - **Sensitivity marks are documentation, not enforcement.** A route
   marked `x-gawk-sensitive` is still gated by the same role check it was
   yesterday; the mark tells the consumer what they are receiving.

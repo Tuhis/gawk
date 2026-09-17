@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 )
@@ -42,7 +43,14 @@ func (a *API) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	// and the feed reports an end it has not reached.
 	limit = store.ClampEventLimit(limit)
 
-	events, err := a.opts.Store.ListEvents(r.Context(), afterID, limit)
+	types, ok := eventTypesParam(w, q["type"])
+	if !ok {
+		return
+	}
+
+	events, err := a.opts.Store.ListEvents(r.Context(), store.EventQuery{
+		AfterID: afterID, Limit: limit, Types: types,
+	})
 	if err != nil {
 		a.fail(w, r, "list events", err)
 		return
@@ -68,9 +76,43 @@ func (a *API) handleListEvents(w http.ResponseWriter, r *http.Request) {
 	// nextAfterId is present only when the page came back full — a short page
 	// is the end of the feed, and handing out a cursor there would make the UI
 	// fetch an empty page to discover it.
-	body := map[string]any{"events": out, "nextAfterId": nil}
+	body := eventsPageJSON{Events: out}
 	if len(events) == limit && len(events) > 0 {
-		body["nextAfterId"] = events[len(events)-1].ID
+		last := events[len(events)-1].ID
+		body.NextAfterID = &last
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// eventTypesParam reads the `type` filter: repeated (`?type=a&type=b`) or
+// comma-separated (`?type=a,b`), the two forms every client library produces
+// for one enum-valued query parameter.
+//
+// An unknown name is a 400 rather than an empty page, and that is the whole
+// reason the filter validates at all: `type=ban.create` (singular, a typo a
+// bot author makes once) would otherwise answer 200 with no events, which
+// reads as "nothing has happened" — the same reassuring lie a null banState
+// exists to prevent on the broadcast view.
+func eventTypesParam(w http.ResponseWriter, raw []string) ([]string, bool) {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, v := range raw {
+		for _, t := range strings.Split(v, ",") {
+			t = strings.TrimSpace(t)
+			if t == "" {
+				continue
+			}
+			if !store.IsEventType(t) {
+				writeError(w, http.StatusBadRequest, CodeBadRequest,
+					"type must be one of "+strings.Join(store.AllEventTypes(), ", "))
+				return nil, false
+			}
+			if _, dup := seen[t]; dup {
+				continue
+			}
+			seen[t] = struct{}{}
+			out = append(out, t)
+		}
+	}
+	return out, true
 }

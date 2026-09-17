@@ -204,7 +204,7 @@ func TestAppendEventAndEnqueueRollsBackTheEventOnAFailedEnqueue(t *testing.T) {
 		t.Fatal("AppendEventAndEnqueue with an unstorable webhook name did not error")
 	}
 
-	evs, err := s.ListEvents(ctx, 0, 10)
+	evs, err := s.ListEvents(ctx, store.EventQuery{Limit: 10})
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}

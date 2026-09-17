@@ -31,5 +31,5 @@ func (a *API) handleListRelays(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, row)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"relays": out})
+	writeJSON(w, http.StatusOK, relaysPageJSON{Relays: out})
 }

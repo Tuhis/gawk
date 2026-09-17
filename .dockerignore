@@ -1,0 +1,27 @@
+# Build context exclusions for the images that build from the REPOSITORY ROOT:
+# gawk-admin and gawk-telemetry (both `replace` gawk-server, so their context
+# has to span two modules — docs/42 D13), plus the dev stack's fakeidp and
+# pubsim images. `gawk-app` builds from its own directory and has its own
+# .dockerignore; `gawk-server` needs none.
+#
+# node_modules is here because leaving it out is a real, reproducible break,
+# not tidiness. Both root-context UI stages do:
+#
+#     COPY <component>/ui/package.json <component>/ui/package-lock.json ./
+#     RUN npm ci
+#     COPY <component>/ui/ ./
+#
+# so a node_modules in the working tree is copied OVER the one `npm ci` just
+# built — with the host's ownership and permission bits. On a machine where
+# those bits do not survive the copy, the build dies at `sh: tsc: Permission
+# denied`, which names neither the cause nor the fix. Anyone who has run
+# `npm ci` before `docker compose up` hits it.
+#
+# Deliberately NOT excluded here, unlike gawk-app's:
+#
+#   *.md     — the admin and telemetry images COPY their THIRD-PARTY-NOTICES.md
+#              into the final stage. Attribution ships with the binary.
+#   dist     — each Dockerfile's `COPY --from=ui` lands after the source copy
+#              and overwrites a locally-built bundle, so a stale one cannot
+#              reach the image.
+**/node_modules

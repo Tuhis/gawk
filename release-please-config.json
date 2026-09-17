@@ -67,6 +67,10 @@
         {
           "type": "generic",
           "path": "deploy/charts/gawk-admin/Chart.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "openapi.yaml"
         }
       ]
     }

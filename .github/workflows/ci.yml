@@ -188,7 +188,10 @@ jobs:
           # Mirrors telemetry_ui: the no-external-assets assertion lives in
           # internal/portal but can only run against a built bundle, so it is
           # in the UI job.
-          admin_ui=$(decide     admin_ui     '^gawk-admin/(ui|internal/portal)/')
+          # openapi.yaml is in the filter because `redocly lint` runs in THIS
+          # job (R48 D4): a PR that changes only the contract would otherwise
+          # never run the step that lints it.
+          admin_ui=$(decide     admin_ui     '^gawk-admin/(ui/|internal/portal/|openapi\.yaml$)')
           # `go mod tidy` resolves the import graph, so any .go file can untidy a
           # module — not just a manifest.
           tidy=$(decide         tidy         '(^|/)go\.(mod|sum)$|\.go$')
@@ -1042,6 +1045,13 @@ jobs:
           cache-dependency-path: gawk-admin/ui/package-lock.json
       - run: npm ci
       - run: npm run lint
+      # The contract is linted as OpenAPI here, beside the SPA that renders it:
+      # the drift test in the `admin` job checks the document against the CODE,
+      # and this checks it against the STANDARD. A dangling $ref or a missing
+      # operationId would otherwise surface only when a consumer fed the file
+      # to a generator.
+      - name: the OpenAPI contract is a valid OpenAPI document
+        run: npx --no-install redocly lint ../openapi.yaml --config ../redocly.yaml
       - run: npm run test:coverage
       - uses: ./.github/actions/coverage
         with:

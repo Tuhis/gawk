@@ -1150,6 +1150,33 @@ Add to it when a new gotcha lands in `docs/`.
   construction (`moderation.CRName`). So treat "no raw IDs at Info+" as a rule
   for new code, not as a property the repo has: **do not build anything on the
   assumption that an aggregated pod log is free of joinable IDs.**
+- **`= ANY($1)` with an empty array matches nothing, so "no filter" cannot be
+  an empty array.** The `type` filter on `GET /api/v1/events` passes `NULL`
+  and tests `$3::text[] IS NULL OR type = ANY($3)`; an empty array would have
+  answered an empty feed to a caller who asked for everything — the same
+  reassuring lie a null `banState` exists to prevent on the broadcast view.
+  ([docs/49](49-admin-openapi.md))
+- **Check `hasInstallScript` in the lockfile diff when a new npm dependency
+  lands.** `swagger-ui-dist` depends on `@scarf/scarf`, which phones home from
+  a postinstall script — on every `npm ci`, in CI and on every contributor's
+  machine, opt-OUT rather than opt-in. gawk no longer ships it (R48's API page
+  moved to Redoc, which does not depend on it), and that is luck rather than
+  diligence: nothing in CI would have caught it.
+
+  What "checked" looks like, from the dependency that replaced it: Redoc
+  brings **`core-js`**, which also sets `hasInstallScript`. Its postinstall
+  requires `fs`, `os` and `path` and nothing else — no network module, no
+  `child_process` — and prints a funding banner, writing a marker file so it
+  prints once. `ADBLOCK=1`, `DISABLE_OPENCOLLECTIVE=1` or a quiet
+  `npm_config_loglevel` silence it. Benign, and the notices generator installs
+  with `--ignore-scripts` regardless. Read the script; do not infer from the
+  package's reputation. ([docs/49](49-admin-openapi.md))
+- **`//go:embed` cannot reach outside its own directory**, so a file that has
+  to live at a module root for other tools (`redocly lint`,
+  release-please's `extra-files`, a human browsing the repository) needs a
+  one-line package *at that root* to embed it — `gawk-admin/contract.go` is
+  exactly that and nothing else. A symlink does not work either: embed refuses
+  them. ([docs/49](49-admin-openapi.md))
 
 **Rooms (R42)**
 

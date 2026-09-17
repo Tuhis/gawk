@@ -23,8 +23,10 @@ the relay enforces bans on its own, from `Ban` custom resources that a
 | `internal/relayscan` | Headless-DNS pod discovery + the relay's `/internal/admin/*` scrape. |
 | `internal/auth` | OIDC JWT validation (cached JWKS) and role authorization. |
 | `internal/api` | `/api/v1`. |
+| `internal/openapi` | Serves `openapi.yaml` at `/api/v1/openapi.json`, with this deployment's base URL substituted. |
 | `internal/portal` | The SPA, embedded with `go:embed`. |
 | `ui/` | That SPA (Vite + React + TypeScript + CSS modules). |
+| `openapi.yaml` | The `/api/v1` contract. Hand-written, embedded, and held to the handlers by `go test`. |
 | `deploy/` | Dockerfile + Helm chart. |
 
 Two things about the module are worth knowing before you build it:
@@ -38,6 +40,24 @@ Two things about the module are worth knowing before you build it:
 - The Go build **does not depend on npm**. A fresh clone compiles and runs; the
   portal then serves a page that says the bundle was never built. Build the UI
   when you want the UI.
+
+## The API is a contract
+
+`/api/v1` is described by [`openapi.yaml`](openapi.yaml), an OpenAPI 3.1
+document every deployment serves at `GET /api/v1/openapi.json` (unauthenticated,
+with its own base URL and role names substituted) and renders at `#/api` in the
+portal, as a browsable reference. Generate a client from it in whatever language
+you like — gawk ships none on purpose. The recipe for a service
+identity, and what the API promises not to break, are in
+[`docs/self-hosting.md` §9.8](../docs/self-hosting.md).
+
+It is hand-written, and the reason that is safe is `TestOpenAPIMatchesRoutes`:
+it walks the declared route table and the document in both directions, so a
+route added without documenting it, an error code or event type outside the
+enums, a role that disagrees, or an example that no longer decodes into its Go
+type each fail `go test ./internal/api/...` before CI ever sees them. **Edit the
+handler and the document in the same commit.** `redocly lint` in the `admin-ui`
+job checks the other half — that the document is valid OpenAPI.
 
 ## Build
 

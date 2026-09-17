@@ -54,6 +54,25 @@
   --warning: #d0a215;
   --ok: #30a46c;
 
+  /* ── Code surfaces: DARK IN BOTH SCHEMES, deliberately ──
+     A syntax-highlighted sample panel carries token colours (string, number,
+     key) chosen against a dark background; on a light panel the light ones
+     vanish. So these three are defined once and NOT redefined under
+     `prefers-color-scheme: light`, and a light-mode reader gets a dark code
+     panel — which is the common pattern, and what Redoc's own samples assume
+     (R48, docs/49 D5). */
+  --code-bg: #0a0b0d;
+  --code-surface: #171920;
+  --code-text: #e8eaed;
+  --code-muted: #9aa1ad;
+  /* Status colours FOR THAT DARK PANEL. They mirror the dark scheme's
+     --ok/--danger/--warning/--accent above, and stay put in light mode for the
+     same reason the surfaces do: the panel under them does not change. */
+  --code-ok: #30a46c;
+  --code-danger: #e5484d;
+  --code-warning: #d0a215;
+  --code-accent: #6b8afe;
+
   --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 

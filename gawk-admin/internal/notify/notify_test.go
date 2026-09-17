@@ -198,7 +198,7 @@ func TestZeroWebhooksStillRecordsTheEvent(t *testing.T) {
 		t.Fatalf("DispatchOnce = %d, %v; want 0, nil", n, err)
 	}
 
-	events, err := st.ListEvents(ctx, 0, 10)
+	events, err := st.ListEvents(ctx, store.EventQuery{Limit: 10})
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestTestWebhookForBothSources(t *testing.T) {
 
 	// A test send is not a moderation action: nothing lands in the audit
 	// trail or the delivery queue.
-	events, err := st.ListEvents(ctx, 0, 10)
+	events, err := st.ListEvents(ctx, store.EventQuery{Limit: 10})
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}

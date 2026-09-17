@@ -15,8 +15,37 @@ import react from '@vitejs/plugin-react';
 //    embedded-assets rule is a hard constraint here, not a preference — and a
 //    Go test asserts it against the built output.
 //  * Stable, unhashed filenames (see below).
+/**
+ * Redoc's bundle hard-codes one off-origin URL: the logo of its "API docs by
+ * Redocly" badge, on `cdn.redoc.ly`. The portal's CSP blocks the request, so
+ * nothing ever leaked — but the reference was real, and a browser pass found
+ * it as a console error on every visit to `#/api` (R48, docs/49 D5).
+ *
+ * Blocking it at the CSP is not enough for this repository: `internal/portal`'s
+ * no-external-assets test greps the BUILT OUTPUT for CDN hosts, because the
+ * rule is "nothing off-origin is referenced", not "nothing off-origin
+ * succeeds". So the reference is removed here, at build time, and the test
+ * lists `cdn.redoc.ly` like any other CDN.
+ *
+ * The attribution itself is untouched — `views/ApiView.css` leaves the "API
+ * docs by Redocly" link exactly where Redoc puts it and only drops the image.
+ * Replacing the URL with an empty `data:` URI rather than deleting it keeps
+ * the surrounding CSS valid whatever shape it is in.
+ */
+function stripRedocCdnLogo() {
+  const url = 'https://cdn.redoc.ly/redoc/logo-mini.svg';
+  return {
+    name: 'gawk:strip-redoc-cdn-logo',
+    apply: 'build' as const,
+    transform(code: string, id: string) {
+      if (!id.includes('redoc') || !code.includes(url)) return null;
+      return { code: code.split(url).join('data:,'), map: null };
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), stripRedocCdnLogo()],
   base: './',
   build: {
     // Straight into the Go package that embeds it. `go:embed` cannot reach a

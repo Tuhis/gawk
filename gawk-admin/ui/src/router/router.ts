@@ -20,6 +20,7 @@ export type ViewName =
   | 'relays'
   | 'webhooks'
   | 'rooms'
+  | 'api'
   | 'not-found';
 
 export interface Route {
@@ -39,7 +40,33 @@ export interface Route {
 // `rooms` resolves whether or not the deployment serves it: a webhook's deep
 // link must land on the view, and the view itself is what says "not enabled"
 // when the API answers 404 — a not-found page would read as a broken link.
-const VIEWS: readonly ViewName[] = ['broadcasts', 'bans', 'events', 'relays', 'webhooks', 'rooms'];
+const VIEWS: readonly ViewName[] = [
+  'broadcasts',
+  'bans',
+  'events',
+  'relays',
+  'webhooks',
+  'rooms',
+  'api',
+];
+
+/**
+ * Fragment roots Redoc writes on the API page (R48).
+ *
+ * Redoc owns `location.hash` while it is mounted: its scroll spy
+ * `replaceState`s the fragment to `#tag/<tag>/operation/<id>` as the reader
+ * scrolls, and a sidebar click `pushState`s the same shape. Neither fires
+ * `hashchange`, so the view does not vanish underneath — but the address bar
+ * has left `#/api`, and without this the next thing to READ the hash (a
+ * reload, a bookmark, a pasted link, the Back button) would resolve it to
+ * `not-found`.
+ *
+ * Redoc offers no way to turn that off — nothing in its options touches the
+ * hash — so the router recognises the shapes instead. That also makes a
+ * shared `#tag/…` link work as a link: Redoc reads `location.hash` itself on
+ * mount and scrolls to the operation.
+ */
+const REDOC_FRAGMENTS: readonly string[] = ['tag', 'operation', 'section'];
 
 export function parseHash(hash: string): Route {
   const raw = hash.startsWith('#') ? hash.slice(1) : hash;
@@ -49,6 +76,7 @@ export function parseHash(hash: string): Route {
   if (segments.length === 0) return { view: 'broadcasts', path: pathPart, key };
   const head = segments[0] as ViewName;
   if (VIEWS.includes(head)) return { view: head, path: pathPart, key };
+  if (REDOC_FRAGMENTS.includes(segments[0])) return { view: 'api', path: pathPart, key };
   // Named, not silently redirected: a link that lands nowhere should say so
   // rather than look like it worked.
   return { view: 'not-found', path: pathPart, key };

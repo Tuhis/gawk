@@ -144,6 +144,15 @@ func withRooms(f *fakeRooms, rec *memoryRecorder) harnessOption {
 	}
 }
 
+// withRoomsEnabled registers the room routes with a client no handler reaches.
+//
+// It is for the tests that care only whether a route EXISTS and what guards it
+// — the role check refuses before any handler runs — so they need the feature
+// on rather than a working Rooms implementation.
+func withRoomsEnabled() harnessOption {
+	return withRooms(newFakeRooms(), &memoryRecorder{})
+}
+
 // The wire shape, declared independently so a rename fails a test.
 type wireRoom struct {
 	Name            string `json:"name"`

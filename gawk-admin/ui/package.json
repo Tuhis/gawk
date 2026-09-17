@@ -4,6 +4,7 @@
   "license": "Apache-2.0",
   "version": "0.0.0",
   "type": "module",
+  "//yaml": "Redoc's browser build statically imports `yaml` but declares it only as an OPTIONAL PEER, so whether it resolves depends on hoisting: it did on a developer machine and did not in the image build. Declared as a direct dependency so the build is deterministic rather than lucky.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -14,9 +15,12 @@
   },
   "dependencies": {
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "redoc": "2.5.4",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
+    "@redocly/cli": "2.53.2",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^26.0.0",
