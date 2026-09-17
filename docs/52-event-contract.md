@@ -1,7 +1,8 @@
 # R51 — Event contract: CloudEvents envelope, JSON Schema data, AsyncAPI document (docs/52)
 
-**Status**: designed 2026-09-16; **not started**. Chunks **EC1–EC4** (`EC` =
-Event Contract). Cross-cutting by design: a new **public** package in
+**Status**: designed 2026-09-16; **shipped 2026-09-17 (EC1–EC4)**. Chunks
+**EC1–EC4** (`EC` = Event Contract). What landed, and where it differs from
+the design below: §7. Cross-cutting by design: a new **public** package in
 `gawk-server`, a rewrite of the webhook wire format in `gawk-admin`, one
 served document, and the rules that every later event has to follow. It is
 numbered after R50 but **lands before R50's relay publisher and before
@@ -205,3 +206,56 @@ AsyncAPI document rather than the OpenAPI `webhooks`.
   tests list what is missing.
 - **Retiring one**: mark `deprecated` with a sunset, keep emitting through
   the window, remove after; the test refuses a sunset in the past.
+
+## 7. What shipped (2026-09-17)
+
+EC1–EC4 landed as designed, with these decisions taken during implementation:
+
+- **Property names** for every `data` shape are fixed in
+  `gawk-server/events/data.go` and its schemas: `broadcastId` / `broadcastKey`,
+  `roomCode` / `roomKey`, `displayCode`, `participantId`, `clientKind`
+  (`web-viewer` | `web-broadcaster` | `native`), `role` (`origin` | `edge`),
+  `enforcement` (`pending`), and the closed `reason` vocabularies of
+  `broadcast.ended` (`gc` | `killed` | `replaced`) and `room.closed` (`grace`
+  | `creator` | `operator`). The marks: `broadcastId`, `roomCode` and
+  `displayCode` are the sensitive properties; `participantId` is a
+  room-scoped roster id and is not. 22 types: 8 moderation, 13 bus, 1
+  webhook-only test.
+- **Schema file names carry the full type** (`schema/fi.ioio.gawk.room.attached.json`),
+  so `$id`, file name and served path are one string; the serving route is
+  `GET /api/v1/schemas/events/{name}` with the `.json` inside the segment,
+  because a Go 1.22 mux wildcard has to be a whole segment.
+- **The golden vectors are embedded and exported** (`events.Vectors`,
+  `events.Vector(type)`), pretty-printed with two-space indent; the D7 test
+  holds each file byte-identical to its Go fixture in both renderings (the
+  compact wire form and the indented file). They double as the examples a
+  consumer tests a parser against.
+- **`x-gawk-since`** is `R51` for the moderation and test types (the
+  CloudEvents form is new here) and `R50` for the bus types, whose producers
+  R50 wires; the bus channel's description says so. AsyncAPI **3.0.0** has no
+  `info.summary` (a 3.1 field) — `asyncapi validate` rejects it.
+- **The webhook channel equals the image of `store.WebhookEventTypes()` plus
+  `fi.ioio.gawk.webhook.test`**, which is webhook-only and no row; the
+  gawk-admin D7 test states the rule that way.
+- **The key rule lives in `config.SigningKey`** (both webhook sources reach
+  it: chart-defined secrets are checked at parse time and refuse to start, a
+  portal-created `whsec_` secret that does not decode is a `400`), and the
+  dispatcher derives the key at every send. A test send's `id` is a fresh
+  UUID (there is no row to derive one from); a moderation event's is
+  `EventID(rowID)`, UUIDv5 in a fixed namespace, and `TestResult.deliveryId`
+  now reports the event id the receiver saw as `webhook-id`.
+- **The portal's create form generates a `whsec_` secret** (24 random bytes)
+  and shows it, once, in a text field; the edit form stays blank and
+  write-only.
+- **Served copies rewrite only `$ref`s**: the catalogue's `./schema/…` and a
+  schema's `common.json#…` become the deployment's
+  `/api/v1/schemas/events/…` URLs (absolute under `-external-url`,
+  root-relative without one); `$id` is never rewritten. The served catalogue
+  was validated with `asyncapi validate` against the served URL.
+- **The CI filter** `admin_ui` now also matches `gawk-server/events/`, and
+  the `admin-ui` job runs `asyncapi validate` after `redocly lint`; the CLI
+  is a pinned dev dependency of the admin SPA. The JSON Schema validator
+  entered both Go modules as a test-only dependency, containment-tested in
+  each.
+- **The §9.5 verifier** was executed as a receiver against a real dispatcher
+  test send (accepted) and a wrong-key send (refused with 401).

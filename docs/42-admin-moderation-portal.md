@@ -635,6 +635,18 @@ The dialog also always states the NAT-collateral caveat in one sentence.
 
 ### 4.10 Webhook notifications
 
+> **Superseded 2026-09-17 by [docs/52](52-event-contract.md) D1, D4 and D5
+> (R51).** The wire format below — the `gawk.moderation-event.v1` body and the
+> `X-Gawk-*` headers with a `sha256=` signature — is what R39 shipped and is
+> kept here as history. Since R51 a delivery is a CloudEvents 1.0 event whose
+> `data` is the type's schema minus its sensitive properties plus `summary`
+> and `portalUrl`, with Standard Webhooks headers (`webhook-id`,
+> `webhook-timestamp`, `webhook-signature: v1,<base64>`) and the `whsec_`
+> key rule. Nothing runs alongside. Everything else in this section — the two
+> sources, the leader-only dispatcher, the retry ladder, D8 and the `summary`
+> and `enforcement` semantics — still holds; self-hosting §9.5 has the
+> current shape and a verifier.
+
 Webhooks come from two places (D9): **chart values** —
 `notifications.webhooks: [{name, url, secretRef}]`, rendered into the
 `-static-webhooks` knob with secrets staying in k8s Secrets, visible but

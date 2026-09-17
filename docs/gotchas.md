@@ -1390,3 +1390,8 @@ Add to it when a new gotcha lands in `docs/`.
   renew loop. Gate the first mutation on the watch actually being registered
   (`leaseWatchRegistered` in `internal/cluster/cluster_test.go`); raising the
   wait deadline can never fix a lost event.
+- **AsyncAPI 3.0.0 has no `info.summary`** — it is a 3.1 field, and
+  `asyncapi validate` fails the whole document on it (`Property "summary" is
+  not expected to be here`) while accepting `summary` on channels and
+  operations. The catalogue pins `asyncapi: 3.0.0` on purpose (docs/52 D3);
+  put the one-liner in `description`. ([docs/52](52-event-contract.md) EC1)

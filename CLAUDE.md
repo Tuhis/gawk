@@ -128,9 +128,11 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
 - `gawk-admin` — optional moderation portal (R39); the **fourth** top-level Go
   module and fourth deployable, **default off everywhere**. It `replace`s
   `gawk-server` for its public packages — `moderation` (D13), `oidcroles`,
-  `adminapi` (the `/internal/admin/*` response types) and, since R42,
-  `rooms` (the `Room` CR types and code rules; same reason `wire` is
-  public: reuse, never mirror) — so its **image builds from the repo root**.
+  `adminapi` (the `/internal/admin/*` response types), since R42 `rooms`
+  (the `Room` CR types and code rules) and, since R51, `events` (the
+  CloudEvents envelope, every event's `data` type, the JSON Schemas, the
+  AsyncAPI catalogue and the golden vectors; same reason `wire` is public:
+  reuse, never mirror) — so its **image builds from the repo root**.
   A semantic change to any of those packages needs a `gawk-admin`-scoped
   commit in the same PR (`CONTRIBUTING.md` has the release-coupling rule). Two prohibitions travel
   with it: the relay's `/internal/admin/*` routes may carry **raw broadcast IDs
