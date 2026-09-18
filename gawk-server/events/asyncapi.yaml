@@ -168,6 +168,8 @@ channels:
         $ref: '#/components/messages/roomDetached'
       roomAttachmentUpdated:
         $ref: '#/components/messages/roomAttachmentUpdated'
+      roomHomeChanged:
+        $ref: '#/components/messages/roomHomeChanged'
       roomParticipantJoined:
         $ref: '#/components/messages/roomParticipantJoined'
       roomParticipantLeft:
@@ -611,6 +613,33 @@ components:
                 const: fi.ioio.gawk.room.attachment_updated
               data:
                 $ref: './schema/fi.ioio.gawk.room.attachment_updated.json'
+    roomHomeChanged:
+      name: fi.ioio.gawk.room.home_changed
+      title: Room home changed
+      summary: A pod adopted a room another pod was serving — the room moved, it did not end.
+      description: |
+        Published by the NEW home, whose name is the event's `source`. Follow
+        this to track where a room lives: a pod that loses a room because it is
+        being deleted may publish nothing at all, so the departures on the old
+        side (`room.participant_left` with `reason: home_moved`) are best-effort
+        while this is not.
+
+        What a consumer sees around a re-home: zero or more
+        `room.participant_left` with `reason: home_moved` from the old home,
+        then this, then `room.attached` per stream and
+        `room.participant_joined` with `rejoin: true` as the people reconnect.
+        No `room.closed` and no `room.opened` — the room never stopped.
+      x-gawk-since: R50
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.home_changed
+              data:
+                $ref: './schema/fi.ioio.gawk.room.home_changed.json'
     roomParticipantJoined:
       name: fi.ioio.gawk.room.participant_joined
       title: Participant joined

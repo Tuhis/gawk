@@ -133,13 +133,17 @@ func fixtures() map[string]Event {
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey,
 			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Live: true, Viewers: 7,
 		}),
+		TypeRoomHomeChanged: bus(TypeRoomHomeChanged, fixtureRoomKey, RoomHomeChangedData{
+			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, Kind: RoomKindDynamic,
+			PreviousPod: "relay-1",
+		}),
 		TypeRoomParticipantJoined: bus(TypeRoomParticipantJoined, fixtureRoomKey, RoomParticipantJoinedData{
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, ParticipantID: 3, Nickname: "tuhis",
 			ClientKind: ClientKindWebBroadcaster, Streaming: true, Speaking: false, Rejoin: true,
 		}),
 		TypeRoomParticipantLeft: bus(TypeRoomParticipantLeft, fixtureRoomKey, RoomParticipantLeftData{
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, ParticipantID: 3, Nickname: "tuhis",
-			ClientKind: ClientKindWebBroadcaster,
+			ClientKind: ClientKindWebBroadcaster, Reason: ParticipantLeftHomeMoved,
 		}),
 		TypeRoomParticipantUpdated: bus(TypeRoomParticipantUpdated, fixtureRoomKey, RoomParticipantUpdatedData{
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, ParticipantID: 3, Nickname: "tuhis <3",

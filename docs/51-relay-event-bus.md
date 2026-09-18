@@ -26,14 +26,31 @@ alone would look for them in the wrong place:
   with no participants to notify — a mint's first broadcast, an adoption's
   re-attach — and a consumer that learned about streams only there would never
   see them.
-- **A re-home is a first-class fact, not an inference.** `Registry.ReleaseHome`
-  publishes a `room.participant_left` for each participant and suppresses the
-  `room.closed` that the `EndRoom` behind it would otherwise produce (D9). The
-  transport calls it when the home lease is lost. D9's `reason: home_moved`
-  did **not** ship: `room.participant_left` has no `reason` property in R51's
-  schema, and the rejoin half — `participant_joined` with `rejoin: true` on the
-  new home — already tells a consumer that wants to suppress the pair what it
-  needs. Adding the property later is an additive schema change (docs/52 D6 b).
+- **A re-home is a first-class fact, not an inference — and the contract grew
+  to say it.** D9 asked for `reason: home_moved` on the departures; R51's
+  first cut of `room.participant_left` had no `reason` at all, so R50 added
+  one (`left` | `timeout` | `room_ended` | `home_moved`) and a **new bus type**,
+  `room.home_changed`, published by the pod that ADOPTS the room. Both are
+  additive under docs/52 D6 (b), and both landed while nothing consumed the
+  contract, which is the window for it.
+
+  Why the new type rather than the departures alone: a pod that loses a room
+  because it is being *deleted* may publish nothing at all, so the old side is
+  best-effort. The adopting pod is the one participant in a re-home that is
+  certain to be alive, and its `source` names the new home. A consumer
+  tracking where a room lives follows that.
+
+  What a re-home looks like on the bus: zero or more
+  `room.participant_left{reason: home_moved}` from the old home, then
+  `room.home_changed` from the new one, then `room.attached` per stream and
+  `room.participant_joined{rejoin: true}` as the people reconnect. No
+  `room.closed` and no `room.opened` — the room never stopped.
+
+  The reasons come from the room and the session rather than from each caller:
+  `ReleaseHome` and `EndRoom` mark the room, an eviction marks the session, and
+  the one leave path attaches whichever applies when the session actually goes.
+  The room's reason outranks the session's — "the room ended" explains a
+  departure better than "its control queue overflowed".
 - **The feed's `type` vocabulary split in two.** R51 holds
   `store.AllEventTypes()` equal to the contract's moderation row table, so the
   ingested activity types live in `store.ActivityEventTypes()` and

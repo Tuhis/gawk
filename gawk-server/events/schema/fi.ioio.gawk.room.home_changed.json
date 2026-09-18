@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.home_changed.json",
+  "title": "Room home changed",
+  "description": "A pod adopted a room another pod was serving: the room moved, it did not end. Published by the NEW home, so the event's `source` names it — follow this rather than the departures on the old side, because a pod that loses a room by being deleted publishes nothing at all. The `data` of a `fi.ioio.gawk.room.home_changed` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "roomCode": {
+      "$ref": "common.json#/$defs/roomCode",
+      "x-gawk-sensitive": true
+    },
+    "roomKey": {
+      "$ref": "common.json#/$defs/roomKey"
+    },
+    "kind": {
+      "$ref": "common.json#/$defs/roomKind"
+    },
+    "previousPod": {
+      "type": "string",
+      "description": "The pod that held the home lease before this one, as the Room record named it. Absent when the lease was already released or the record is gone."
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "roomKey"
+  ]
+}

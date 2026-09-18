@@ -48,6 +48,7 @@ const (
 	EventBroadcastPublisherBack = "broadcast.publisher_back"
 	EventBroadcastEnded         = "broadcast.ended"
 	EventRoomOpened             = "room.opened"
+	EventRoomHomeChanged        = "room.home_changed"
 	EventRoomAttached           = "room.attached"
 	EventRoomDetached           = "room.detached"
 	EventRoomParticipantJoined  = "room.participant_joined"
@@ -64,6 +65,7 @@ func ActivityEventTypes() []string {
 		EventBroadcastPublisherBack,
 		EventBroadcastEnded,
 		EventRoomOpened,
+		EventRoomHomeChanged,
 		EventRoomAttached,
 		EventRoomDetached,
 		EventRoomParticipantJoined,
@@ -207,6 +209,11 @@ func SummarizeActivity(eventType, key string, data map[string]any) string {
 		default:
 			return what + " ended"
 		}
+	case EventRoomHomeChanged:
+		if prev := str("previousPod"); prev != "" {
+			return room + " moved to this pod from " + prev
+		}
+		return room + " moved to another pod"
 	case EventRoomOpened:
 		kind := str("kind")
 		if kind != "" {
@@ -220,7 +227,19 @@ func SummarizeActivity(eventType, key string, data map[string]any) string {
 	case EventRoomParticipantJoined:
 		return nickOr("someone", str("nickname")) + " joined " + room
 	case EventRoomParticipantLeft:
-		return nickOr("someone", str("nickname")) + " left " + room
+		// Three of the four reasons are not departures at all, and a feed that
+		// rendered them as one would read as an exodus every time a pod rolls.
+		who := nickOr("someone", str("nickname"))
+		switch str("reason") {
+		case events.ParticipantLeftHomeMoved:
+			return who + " is reconnecting to " + room + "'s new pod"
+		case events.ParticipantLeftRoomEnded:
+			return who + " was disconnected when " + room + " ended"
+		case events.ParticipantLeftTimeout:
+			return who + " stopped responding and was dropped from " + room
+		default:
+			return who + " left " + room
+		}
 	case EventRoomParticipantUpdated:
 		return nickOr("a participant", str("nickname")) + " changed in " + room
 	default:

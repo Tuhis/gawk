@@ -1259,6 +1259,7 @@ components:
         - broadcast.publisher_back
         - broadcast.ended
         - room.opened
+        - room.home_changed
         - room.attached
         - room.detached
         - room.participant_joined

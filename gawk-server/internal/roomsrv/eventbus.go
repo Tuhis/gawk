@@ -85,21 +85,10 @@ func (r *Registry) busEventLocked(rm *room, ev wire.RoomEvent) {
 			Speaking:      ev.Participant.Flags&wire.RoomParticipantFlagSpeaking != 0,
 		})
 	case wire.RoomEventParticipantLeft:
-		// The wire event carries only the id — the participant is out of the
-		// map by the time some callers reach here — so the nickname and kind
-		// are best-effort. A re-home publishes its own left events first,
-		// before this path runs.
-		var nick string
-		kind := events.ClientKindWebViewer
-		if p := rm.participants[ev.Participant.ID]; p != nil {
-			nick, kind = p.nick, clientKind(p.kind)
-		}
-		r.emitLocked(events.TypeRoomParticipantLeft, rm.code, events.RoomParticipantLeftData{
-			RoomCode: rm.code, RoomKey: key,
-			ParticipantID: int(ev.Participant.ID),
-			Nickname:      nick,
-			ClientKind:    kind,
-		})
+		// Published by the leave path, for the same reason an attach is
+		// published by attachLocked: the wire event carries only the id, and
+		// the record that knows the nickname, the client kind and WHY the
+		// session ended is out of the roster by the time this runs.
 	case wire.RoomEventAttachmentAdded:
 		// Published by attachLocked, the funnel every attach goes through —
 		// including the ones with no participants to notify.
@@ -121,6 +110,42 @@ func (r *Registry) busEventLocked(rm *room, ev wire.RoomEvent) {
 			Viewers:      int(ev.Attachment.ViewerCount),
 		})
 	}
+}
+
+// busParticipantLeftLocked publishes one departure, with the reason the room
+// or the session recorded.
+//
+// The room's reason outranks the session's: "the room ended" explains a
+// departure better than "its control queue overflowed", and during a re-home
+// it is the only one that is true — nobody left.
+func (r *Registry) busParticipantLeftLocked(rm *room, p *Participant) {
+	reason := events.ParticipantLeft
+	switch {
+	case rm.leaveReason != "":
+		reason = rm.leaveReason
+	case p.leaveReason != "":
+		reason = p.leaveReason
+	}
+	r.emitLocked(events.TypeRoomParticipantLeft, rm.code, events.RoomParticipantLeftData{
+		RoomCode:      rm.code,
+		RoomKey:       r.opts.Obfuscate(rm.code),
+		ParticipantID: int(p.id),
+		Nickname:      p.nick,
+		ClientKind:    clientKind(p.kind),
+		Reason:        reason,
+	})
+}
+
+// busHomeChangedLocked publishes a room's arrival on THIS pod after an
+// adoption: the room moved, it did not open. previousPod is whoever the Room
+// record last named as home, or empty when the lease was already released.
+func (r *Registry) busHomeChangedLocked(rm *room, previousPod string) {
+	r.emitLocked(events.TypeRoomHomeChanged, rm.code, events.RoomHomeChangedData{
+		RoomCode:    rm.code,
+		RoomKey:     r.opts.Obfuscate(rm.code),
+		Kind:        rm.kind,
+		PreviousPod: previousPod,
+	})
 }
 
 // busRoomOpenedLocked publishes a room's birth. Both kinds: a static room's
@@ -179,14 +204,19 @@ func closeReason(reason uint8) string {
 }
 
 // ReleaseHome is what a pod calls when it loses a room's home lease: the room
-// is moving, not ending. It publishes one `room.participant_left` per
-// participant — the other half of the new home's `participant_joined` with
-// `rejoin: true` — and marks the room so the `EndRoom` that follows publishes
-// no `room.closed`.
+// is moving, not ending.
 //
-// A consumer that wants to suppress the pair can, on the rejoin flag; one that
-// does not sees the truth. Inferring an adoption from a poll diff was what the
-// first R49 draft had to do, and this exists so nobody has to.
+// It publishes nothing itself. It marks the room, and the ordinary leave path
+// then reports each departure as `home_moved` when that session actually
+// goes — one funnel, real timing, no events invented for people who may
+// already be gone. The same mark suppresses the `room.closed` that the
+// `EndRoom` behind it would otherwise produce: a re-homed room did not close.
+//
+// The honest limit: a pod losing a room because it is being DELETED may never
+// run this at all, so these departures are best-effort. The signal a consumer
+// should actually follow is `room.home_changed`, published by the pod that
+// ADOPTS the room — the one participant in a re-home that is certain to be
+// alive (docs/51 D9).
 func (r *Registry) ReleaseHome(code string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -195,16 +225,5 @@ func (r *Registry) ReleaseHome(code string) {
 		return
 	}
 	rm.releasing = true
-	if r.opts.OnEvent == nil {
-		return
-	}
-	key := r.opts.Obfuscate(rm.code)
-	for id, p := range rm.participants {
-		r.emitLocked(events.TypeRoomParticipantLeft, rm.code, events.RoomParticipantLeftData{
-			RoomCode: rm.code, RoomKey: key,
-			ParticipantID: int(id),
-			Nickname:      p.nick,
-			ClientKind:    clientKind(p.kind),
-		})
-	}
+	rm.leaveReason = events.ParticipantLeftHomeMoved
 }

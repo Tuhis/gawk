@@ -219,8 +219,15 @@ EC1–EC4 landed as designed, with these decisions taken during implementation:
   `broadcast.ended` (`gc` | `killed` | `replaced`) and `room.closed` (`grace`
   | `creator` | `operator`). The marks: `broadcastId`, `roomCode` and
   `displayCode` are the sensitive properties; `participantId` is a
-  room-scoped roster id and is not. 22 types: 8 moderation, 13 bus, 1
+  room-scoped roster id and is not. 23 types: 8 moderation, 14 bus, 1
   webhook-only test.
+
+  *Dated note, 2026-09-18 (R50).* The bus set grew by one and one property
+  while R50 wired the producers, which is the window this was designed to be
+  changed in: `room.home_changed` (a room adopted by another pod — it moved,
+  it did not end) and an optional `reason` on `room.participant_left`
+  (`left` | `timeout` | `room_ended` | `home_moved`). Both are additive under
+  D6 (b): a new type, and an optional property with a closed vocabulary.
 - **Schema file names carry the full type** (`schema/fi.ioio.gawk.room.attached.json`),
   so `$id`, file name and served path are one string; the serving route is
   `GET /api/v1/schemas/events/{name}` with the `.json` inside the segment,

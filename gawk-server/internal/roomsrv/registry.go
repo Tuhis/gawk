@@ -28,6 +28,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Tuhis/gawk/gawk-server/events"
 	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
 	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
 	"github.com/Tuhis/gawk/gawk-server/rooms"
@@ -213,6 +214,13 @@ type room struct {
 	// releasing marks a room this pod is handing to a new home. The end that
 	// follows is a re-home, not a close, and publishes no room.closed.
 	releasing bool
+	// leaveReason explains, on the R50 bus, why this room's participants are
+	// leaving: the room ended under them, or it moved to another pod. Empty
+	// means they are leaving on their own. Set before the sessions are closed
+	// and read by the leave path, so one funnel emits every departure with
+	// the truth attached rather than each caller synthesising its own
+	// (docs/51 D9).
+	leaveReason string
 }
 
 type attachment struct {
@@ -630,6 +638,10 @@ type Participant struct {
 	outbox    chan []byte
 	closed    chan struct{}
 	leaveOnce sync.Once
+	// leaveReason is this session's own reason, when it is not leaving of its
+	// own accord: an eviction. The room's reason outranks it — "the room
+	// ended" explains a departure better than "its queue overflowed".
+	leaveReason string
 	// closeCode / closeReason are what the writer closes with when it
 	// reaches the nil sentinel closeAfterDrain queued; set before the
 	// sentinel is sent, read after it is received (the channel orders them).
@@ -717,6 +729,10 @@ func (p *Participant) Leave() {
 		if cur, ok := rm.participants[p.id]; ok && cur == p {
 			delete(rm.participants, p.id)
 			r.broadcastLocked(rm, wire.RoomEvent{Kind: wire.RoomEventParticipantLeft, Participant: wire.RoomParticipant{ID: p.id}}, 0)
+			// The bus event is published here rather than from the fan-out
+			// funnel: p is the only thing that still knows the nickname, the
+			// client kind and why this session ended.
+			r.busParticipantLeftLocked(rm, p)
 		}
 		nowEmpty := !rm.ended && len(rm.participants) == 0
 		if nowEmpty {
@@ -779,6 +795,9 @@ func (p *Participant) enqueueLocked(rec []byte) {
 	case p.outbox <- rec:
 	default:
 		p.reg.log.Warn("room participant unresponsive, evicting", "room_key", p.reg.opts.Obfuscate(p.room.code), "participant", p.id)
+		// Called under the registry lock, which is also what the leave path
+		// takes — so this is set before any Leave() can read it.
+		p.leaveReason = events.ParticipantLeftTimeout
 		go p.conn.Close(wire.CloseCodeSubscriberUnresponsive, "control queue overflow")
 	}
 }
@@ -1186,6 +1205,12 @@ func (r *Registry) EndRoom(code string, reason uint8) {
 		return
 	}
 	rm.ended = true
+	// The participants are about to be closed; they are not leaving, the room
+	// is ending under them. A re-home has already said its own piece and is
+	// not overwritten.
+	if rm.leaveReason == "" {
+		rm.leaveReason = events.ParticipantLeftRoomEnded
+	}
 	r.clearEmptyGraceLocked(rm)
 	delete(r.rooms, norm)
 	for _, a := range rm.attachments {
@@ -1422,6 +1447,15 @@ func (r *Registry) AdoptDynamic(cr *rooms.Room) bool {
 	}
 	r.rooms[norm] = rm
 	r.startEmptyGraceLocked(rm)
+	// The room arrived here from somewhere else. Say so on the bus: this is
+	// the one event in a re-home that a consumer can rely on, because the pod
+	// that LOST the room may have been deleted without publishing anything
+	// (docs/51 D9). status.lease.holder still names it, when the record has it.
+	var previousPod string
+	if cr.Status.Lease != nil {
+		previousPod = cr.Status.Lease.Holder
+	}
+	r.busHomeChangedLocked(rm, previousPod)
 	return true
 }
 

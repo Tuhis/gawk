@@ -4,8 +4,11 @@ import (
 	"sync"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/Tuhis/gawk/gawk-server/events"
 	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
+	"github.com/Tuhis/gawk/gawk-server/rooms"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -153,28 +156,139 @@ func TestRefreshPublishesAttachmentUpdates(t *testing.T) {
 	}
 }
 
-// TestReleaseHomeSaysTheRoomMoved is the publishing half of docs/51 D9: when a
-// pod loses the home lease the room is MOVING, so its participants leave with
-// reason home_moved and no room.closed is published at all. A consumer that
-// saw a close here would think a live room had ended.
-func TestReleaseHomeSaysTheRoomMoved(t *testing.T) {
+// TestLeaveSaysWhy walks the four ways a participant's session ends. Only the
+// first is somebody leaving; the other three are the room happening to them,
+// and a consumer that announced "tuhis left" for a pod rollout would be lying
+// (docs/51 D9).
+func TestLeaveSaysWhy(t *testing.T) {
+	t.Run("on their own", func(t *testing.T) {
+		f, rec := busFixture(t)
+		res := f.mint(t, "ABCDEF")
+		p, _ := f.join(t, res.Code, "tuhis", Grants{Creator: true, AttachOK: true}, res.CreatorToken)
+
+		p.Leave()
+
+		left := rec.only(events.TypeRoomParticipantLeft)
+		if len(left) != 1 {
+			t.Fatalf("got %d room.participant_left, want 1: %v", len(left), rec.types())
+		}
+		d := left[0].Data.(events.RoomParticipantLeftData)
+		if d.Reason != events.ParticipantLeft {
+			t.Errorf("reason = %q, want %q", d.Reason, events.ParticipantLeft)
+		}
+		// The record is gone from the roster by now; the event still carries it.
+		if d.ParticipantID != int(p.ID()) || d.Nickname != "tuhis" {
+			t.Errorf("participant_left data = %+v", d)
+		}
+	})
+
+	t.Run("the room ended under them", func(t *testing.T) {
+		f, rec := busFixture(t)
+		res := f.mint(t, "ABCDEF")
+		p, _ := f.join(t, res.Code, "tuhis", Grants{Creator: true, AttachOK: true}, res.CreatorToken)
+
+		f.reg.EndRoom(res.Code, wire.RoomEndReasonCreator)
+		p.Leave() // what the transport does once the session is closed
+
+		left := rec.only(events.TypeRoomParticipantLeft)
+		if len(left) != 1 {
+			t.Fatalf("got %d room.participant_left, want 1", len(left))
+		}
+		if d := left[0].Data.(events.RoomParticipantLeftData); d.Reason != events.ParticipantLeftRoomEnded {
+			t.Errorf("reason = %q, want %q — a room.closed precedes it", d.Reason, events.ParticipantLeftRoomEnded)
+		}
+	})
+
+	t.Run("the room moved", func(t *testing.T) {
+		f, rec := busFixture(t)
+		res := f.mint(t, "ABCDEF")
+		p, _ := f.join(t, res.Code, "tuhis", Grants{Creator: true, AttachOK: true}, res.CreatorToken)
+
+		// What the transport does on losing the home lease: mark, close the
+		// sessions, end the room here.
+		f.reg.ReleaseHome(res.Code)
+		p.Leave()
+		f.reg.EndRoom(res.Code, wire.RoomEndReasonOperator)
+
+		left := rec.only(events.TypeRoomParticipantLeft)
+		if len(left) != 1 {
+			t.Fatalf("got %d room.participant_left, want 1", len(left))
+		}
+		if d := left[0].Data.(events.RoomParticipantLeftData); d.Reason != events.ParticipantLeftHomeMoved {
+			t.Errorf("reason = %q, want %q — nobody left, the room moved", d.Reason, events.ParticipantLeftHomeMoved)
+		}
+		// And a moved room did not close: a consumer seeing a close here would
+		// think a live room had ended.
+		if closed := rec.only(events.TypeRoomClosed); len(closed) != 0 {
+			t.Errorf("a re-homed room published %d room.closed events, want none", len(closed))
+		}
+	})
+
+	t.Run("evicted", func(t *testing.T) {
+		f, rec := busFixture(t)
+		res := f.mint(t, "ABCDEF")
+		f.join(t, res.Code, "tuhis", Grants{Creator: true, AttachOK: true}, res.CreatorToken)
+
+		// A participant with no writer draining it, so the overflow is the
+		// test's and not a race with the drain: one slot, two records.
+		f.reg.mu.Lock()
+		rm := f.reg.rooms[res.Code]
+		evicted := &Participant{
+			reg: f.reg, room: rm, conn: newFakeConn(), id: 99, nick: "stalled",
+			outbox: make(chan []byte, 1), closed: make(chan struct{}),
+		}
+		evicted.enqueueLocked([]byte("first"))
+		evicted.enqueueLocked([]byte("overflows"))
+		got := evicted.leaveReason
+		f.reg.busParticipantLeftLocked(rm, evicted)
+		f.reg.mu.Unlock()
+
+		if got != events.ParticipantLeftTimeout {
+			t.Fatalf("an evicted session recorded %q, want %q", got, events.ParticipantLeftTimeout)
+		}
+		left := rec.only(events.TypeRoomParticipantLeft)
+		if len(left) != 1 {
+			t.Fatalf("got %d room.participant_left, want 1", len(left))
+		}
+		d := left[0].Data.(events.RoomParticipantLeftData)
+		if d.Reason != events.ParticipantLeftTimeout || d.Nickname != "stalled" {
+			t.Errorf("participant_left data = %+v", d)
+		}
+	})
+}
+
+// TestAdoptionAnnouncesTheMove is the other half of docs/51 D9, and the half a
+// consumer can actually rely on: the pod that ADOPTS a room publishes
+// room.home_changed. The pod that lost it may have been deleted without
+// publishing anything at all.
+func TestAdoptionAnnouncesTheMove(t *testing.T) {
 	f, rec := busFixture(t)
-	res := f.mint(t, "ABCDEF")
-	p, _ := f.join(t, res.Code, "tuhis", Grants{Creator: true, AttachOK: true}, res.CreatorToken)
-
-	f.reg.ReleaseHome(res.Code)
-	left := rec.only(events.TypeRoomParticipantLeft)
-	if len(left) != 1 {
-		t.Fatalf("got %d room.participant_left, want one per participant", len(left))
+	cr := &rooms.Room{
+		ObjectMeta: metav1.ObjectMeta{Name: "pf4tzn"},
+		Spec:       rooms.RoomSpec{Kind: rooms.KindDynamic},
+		Status: rooms.RoomStatus{
+			Lease: &rooms.Lease{Holder: "relay-1", Generation: 3},
+		},
 	}
-	d := left[0].Data.(events.RoomParticipantLeftData)
-	if d.ParticipantID != int(p.ID()) || d.Nickname != "tuhis" {
-		t.Errorf("participant_left data = %+v", d)
+	if !f.reg.AdoptDynamic(cr) {
+		t.Fatal("AdoptDynamic refused the room")
 	}
 
-	f.reg.EndRoom(res.Code, wire.RoomEndReasonOperator)
-	if closed := rec.only(events.TypeRoomClosed); len(closed) != 0 {
-		t.Errorf("a re-homed room published %d room.closed events, want none", len(closed))
+	moved := rec.only(events.TypeRoomHomeChanged)
+	if len(moved) != 1 {
+		t.Fatalf("got %d room.home_changed, want 1: %v", len(moved), rec.types())
+	}
+	d := moved[0].Data.(events.RoomHomeChangedData)
+	if d.RoomCode != "pf4tzn" || d.Kind != rooms.KindDynamic {
+		t.Errorf("home_changed data = %+v", d)
+	}
+	if d.PreviousPod != "relay-1" {
+		t.Errorf("previousPod = %q, want the lease holder the record named", d.PreviousPod)
+	}
+	// An adoption is not a birth: room.opened would tell a consumer a new room
+	// appeared, and none did.
+	if opened := rec.only(events.TypeRoomOpened); len(opened) != 0 {
+		t.Errorf("an adoption published %d room.opened events, want none", len(opened))
 	}
 }
 

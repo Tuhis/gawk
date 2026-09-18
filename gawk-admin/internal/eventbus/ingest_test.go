@@ -267,3 +267,58 @@ func TestIngestSkipsWhatItDoesNotStore(t *testing.T) {
 		t.Errorf("a delta reached the store: %+v", rows.appended)
 	}
 }
+
+// TestSummariesTellTheReasonsApart: three of the four ways a session ends are
+// not departures, and a feed that rendered them all as "left" would read as an
+// exodus every time a pod rolls.
+func TestSummariesTellTheReasonsApart(t *testing.T) {
+	seen := map[string]bool{}
+	for _, reason := range []string{
+		events.ParticipantLeft,
+		events.ParticipantLeftTimeout,
+		events.ParticipantLeftRoomEnded,
+		events.ParticipantLeftHomeMoved,
+	} {
+		summary := store.SummarizeActivity(store.EventRoomParticipantLeft, "aa11bb22cc33",
+			map[string]any{"nickname": "tuhis", "reason": reason})
+		if seen[summary] {
+			t.Errorf("reason %q reads the same as another: %q", reason, summary)
+		}
+		seen[summary] = true
+	}
+}
+
+// TestHomeChangedSummaryNamesThePodItCameFrom: the one fact an operator
+// reading the feed wants from a re-home is where the room went, and from
+// where.
+func TestHomeChangedSummaryNamesThePodItCameFrom(t *testing.T) {
+	with := store.SummarizeActivity(store.EventRoomHomeChanged, "aa11bb22cc33",
+		map[string]any{"previousPod": "relay-1"})
+	if !strings.Contains(with, "relay-1") {
+		t.Errorf("summary = %q, want the previous pod named", with)
+	}
+	without := store.SummarizeActivity(store.EventRoomHomeChanged, "aa11bb22cc33", map[string]any{})
+	if without == "" || strings.Contains(without, "relay-1") {
+		t.Errorf("summary without a previous pod = %q", without)
+	}
+}
+
+// TestHomeChangedIsStored: a room moving pods is a discrete, low-rate fact
+// worth a row — unlike the coalesced deltas.
+func TestHomeChangedIsStored(t *testing.T) {
+	ev := busEvent(t, events.TypeRoomHomeChanged, "aa11bb22cc33",
+		events.RoomHomeChangedData{
+			RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33",
+			Kind: events.RoomKindDynamic, PreviousPod: "relay-1",
+		})
+	row, stored := activityRow(ev)
+	if !stored {
+		t.Fatal("room.home_changed is not stored")
+	}
+	if row.Type != store.EventRoomHomeChanged || row.Category != store.CategoryActivity {
+		t.Errorf("row = %+v", row)
+	}
+	if p := payloadOf(t, row); p[store.PayloadRoom] != "pf4tzn" {
+		t.Errorf("payload does not name the room: %v", p)
+	}
+}
