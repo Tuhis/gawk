@@ -918,6 +918,19 @@ Add to it when a new gotcha lands in `docs/`.
   scrambled queued frames to reference soup; a static screen (drained
   channel) stayed sharp. `-race` catches it outright.
   ([docs/19](19-linux-native-broadcaster.md))
+- **Gio has no window-icon API on Linux; `app.ID` is the whole mechanism.**
+  The desktop resolves the icon from the Wayland `app_id` / X11 class hint
+  through a desktop entry of the same name, so `gioui.org/app.ID`, the
+  entry's file name, its `Icon=` and `StartupWMClass=` and the hicolor icon
+  file name must all be identical — a mismatch in any one shows the stock
+  icon with no error anywhere. Gio's default ID is the binary's basename,
+  so a renamed binary used to change the window's identity. Set it in the
+  main package's `init`, not `-ldflags -X` (a plain `go build` must ship it
+  too). ([docs/53](53-app-icons.md) D3)
+- **A notification naming an icon the theme cannot resolve shows no icon at
+  all**, not a stock one — the notifier looks the app icon up in the XDG
+  data dirs first and falls back to `video-display`.
+  ([docs/53](53-app-icons.md) D5)
 
 **Native Windows broadcaster (R34)**
 
@@ -939,6 +952,17 @@ Add to it when a new gotcha lands in `docs/`.
 - **Vendored libopus needs `CMAKE_POLICY_VERSION_MINIMUM=3.5`** under
   CMake 4, or the build script dies before compiling a line.
   ([docs/38](38-windows-native-broadcaster.md) F-7)
+- **`lld-link` and `link.exe` take a compiled `.res` as a plain input** —
+  no `rc.exe`, `llvm-rc` or resource crate is needed to give the EXE an
+  icon once the `.res` exists, which is why the icon's `.res` is a
+  generated, committed derivative like the `.ico`. GNU `ld` does not (it
+  needs `windres`), so the link arg is emitted for msvc only.
+  ([docs/53](53-app-icons.md) D7)
+- **Slint embeds `@image-url` files for Rust output by default**, so the
+  window icon can live outside the crate; `SLINT_EMBED_RESOURCES=false` in
+  the environment would turn it into an absolute build-machine path inside
+  the shipped binary. Nothing sets it; do not.
+  ([docs/53](53-app-icons.md) §6)
 
 **Single-application audio on Linux (R35)**
 

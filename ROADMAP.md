@@ -62,7 +62,7 @@ feature set exists).
 | R41 | [Test coverage measurement and badges](#r41--test-coverage-measurement-and-badges) | 🔧 designed + **CV1–CV6 implemented 2026-09-02** — every component's job measures its own coverage, gates itself against a floor in `coverage-floors.json`, and pushes to `main` publish shields.io endpoints to an orphan `badges` branch (no third-party service, no token beyond `GITHUB_TOKEN`). Root README carries the size-weighted aggregate; each component README carries its own ([docs/43](docs/43-coverage-reporting.md)) |
 | R42 | [Rooms](#r42--rooms) | ✅ **implemented 2026-09-04** (RM1–RM9 in one PR): wire types 0x13–0x16 + close code 4007 in all four mirrors, single-pod relay + `Room` CRD cluster mode (home-pod lease, proxy, adoption, janitor, kind assert), SPA room view (grid / focus / hide videos, people panel, broadcaster Room panel), native attach on Linux and Windows, admin static-room CRUD + webhooks, telemetry room key. `-rooms` defaults off and off is byte-identical. Open: the §10 manual pass on the reference deployment ([docs/44](docs/44-rooms.md) §11) |
 | R43 | [Relay refusal reasons the browser can see](#r43--relay-refusal-reasons-the-browser-can-see) | 🔧 designed 2026-09-05, not started (RR1–RR5) — non-mandatory follow-up to R42: a refused `CONNECT`'s HTTP status is invisible to the WebTransport JS API, so every relay refusal reads "connection rejected" in the browser; answer policy refusals after the upgrade with new close codes 4008–4011 + a reason, keep rate limiting pre-upgrade ([docs/45](45-relay-refusal-reasons.md)) |
-| R44 | [App icons for the native broadcasters](#r44--app-icons-for-the-native-broadcasters) | 💡 proposed 2026-09-10, not started — no design doc yet; packaging + GUI only, zero wire/relay/pipeline change |
+| R44 | [App icons for the native broadcasters](#r44--app-icons-for-the-native-broadcasters) | 🔧 designed + **IC1–IC5 implemented 2026-09-18** — one SVG (`assets/icon/gawk.svg`) with a Go generator whose PNG/ICO/RES derivatives are committed and pixel-drift-checked in CI; Linux gets `app.ID` + a desktop entry and hicolor set in the tarball with `install-desktop.sh`, and the notifier uses the icon when installed; Windows gets Slint `Window.icon` plus a `.res` linked directly (no resource compiler), with CI walking the EXE's resource tree to prove it landed. **Remaining: the on-desktop manual pass** (docs/53 §4). Packaging + GUI only, zero wire/relay/pipeline change ([docs/53](docs/53-app-icons.md)) |
 | R45 | [Update notification for the desktop broadcasters](#r45--update-notification-for-the-desktop-broadcasters) | 🔧 designed 2026-09-15, not started (AU1–AU5) — a launch-time GET of the R46 `latest.json`, a dismissible "vX.Y.Z available" line under the version badge in both GUIs and one CLI log line; opt-out via config, `-no-update-check`, `GAWK_NO_UPDATE_CHECK=1`. Installing from inside the app is R47 ([docs/47](docs/47-desktop-update-check.md)) |
 | R46 | [Download section on the project site](#r46--download-section-on-the-project-site) | ✅ **implemented 2026-09-14** (DL1–DL4 in one PR): the attach jobs publish `releases/<component>/latest.json` to the `badges` branch after a successful attach, and the landing page's new Download section reads it — newest version, date, size, direct link and sha256 per platform, with a working no-script fallback. DL5 (same day): the SPA's landing footer links to the site and straight to that section ([docs/46](docs/46-site-downloads.md)) |
 | R47 | [Signed in-place update for the desktop broadcasters](#r47--signed-in-place-update-for-the-desktop-broadcasters) | 🔧 designed 2026-09-15, not started (SU1–SU5) — **depends on R45** and on a release signing key: minisign over `SHA256SUMS` in both attach jobs, two public keys compiled in, verify-then-rename-swap install on click, never while live ([docs/48](docs/48-signed-in-place-update.md)) |
@@ -3745,8 +3745,17 @@ deferred, and a launcher icon is not a tray icon); an installer, code
 signing or winget (docs/38 OD6/D17, and see R45 for where signing may
 return); redesigning the web favicon; macOS.
 
-**Status**: proposed 2026-09-10, not started — no design doc yet; chunk
-prefix `IC` reserved.
+**Design** ([docs/53](docs/53-app-icons.md)): decisions D1–D10 settle the
+key questions above — the tarball ships `share/` + `install-desktop.sh`
+rather than a subcommand (D4); one tile, no dark variant (D1); the Gio
+`app.ID` change is its own commit inside the PR (D3). The Windows resource
+goes through **no resource compiler at all**: a generated `.res` is a
+committed derivative and the linker takes it directly (D7), with CI
+verifying the EXE's resource tree (D8).
+
+**Status**: designed + **IC1–IC5 implemented 2026-09-18**. Remaining: the
+on-desktop manual pass in docs/53 §4 (GNOME/KDE launcher and taskbar;
+Explorer, the publisher dialog and the taskbar on Windows).
 
 ---
 

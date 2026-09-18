@@ -112,6 +112,10 @@ on:
     paths:
       - "gawk-broadcast-windows/**"
       - "gawk-server/wire/**"
+      # R44 (docs/53 D7/D8): the EXE links assets/icon/gawk.res and the
+      # build job verifies the resource landed with tools/icon.
+      - "assets/icon/**"
+      - "tools/icon/**"
       - ".github/actions/rust-windows-preflight/**"
       - ".github/actions/coverage/**"
       - ".github/actions/publish-coverage-badges/**"
@@ -122,6 +126,10 @@ on:
     paths:
       - "gawk-broadcast-windows/**"
       - "gawk-server/wire/**"
+      # R44 (docs/53 D7/D8): the EXE links assets/icon/gawk.res and the
+      # build job verifies the resource landed with tools/icon.
+      - "assets/icon/**"
+      - "tools/icon/**"
       - ".github/actions/rust-windows-preflight/**"
       - ".github/actions/coverage/**"
       - ".github/actions/publish-coverage-badges/**"
@@ -377,6 +385,15 @@ jobs:
       # BUILD-INFO.txt asks testers to report codegen differences against.
       - name: Build (release)
         run: cargo xwin build --release --target "$WINDOWS_TARGET"
+
+      # R44 (docs/53 D8): the icon reaches Explorer through a .res that
+      # build.rs hands the linker as a plain input — no resource compiler in
+      # the cross toolchain. A linker that silently dropped it would leave
+      # the EXE looking exactly like before, so ask the binary: walk its
+      # resource directory and require RT_GROUP_ICON + RT_ICON. `go -C`
+      # because this directory is not a Go module and tools/icon is.
+      - name: The EXE carries the icon resource
+        run: go -C ../tools/icon run . verify-exe "$PWD/target/${WINDOWS_TARGET}/release/gawk-broadcast.exe"
 
       - name: Assemble artifact
         run: |

@@ -262,6 +262,35 @@ Settings persist to `~/.config/gawk/broadcast.json`, mode `0600` — it holds th
 publish secret, a credential that lets anyone who reads it publish under your
 broadcaster identity, so treat the file accordingly.
 
+## Launcher entry and icon (optional)
+
+Run from the terminal, the window shows up in the taskbar with a generic
+glyph, because nothing tells the desktop what it is. The tarball carries the
+fix: a launcher entry and the gawk icon, plus a script that installs both
+into your own user account (no root, no packages):
+
+```sh
+./install-desktop.sh              # into ~/.local/share (or $XDG_DATA_HOME)
+./install-desktop.sh --uninstall  # takes exactly those files back out
+```
+
+After that, `gawk broadcast` is in your application launcher, the window and
+the taskbar carry the bolt, and the app's notifications use it too. The
+script writes the absolute path of the `gawk-broadcast-gui` it sits next to
+into the entry, so **run it from the directory you unpacked into and keep
+the files there** — move them and run it again.
+
+If you would rather do it by hand, it is two copies and one edit (this
+plain form assumes the path has no spaces or quotes; the script handles
+the desktop entry's escaping rules for any path):
+
+```sh
+cp -r share/applications share/icons ~/.local/share/
+sed -i "s|^Exec=.*|Exec=$PWD/gawk-broadcast-gui|" ~/.local/share/applications/fi.ioio.gawk.broadcast.desktop
+```
+
+Nothing else changes: the app runs identically with or without the entry.
+
 ## When it doesn't work
 
 The failure worth reporting most is **"no hardware encoder"**: it means the

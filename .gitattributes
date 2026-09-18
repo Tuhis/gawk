@@ -1,0 +1,6 @@
+# Generated icon derivatives (R44, docs/53 D2): regenerate with
+# `go run ./tools/icon generate`, never hand-edit. Hidden from diffs and
+# from language statistics; the drift check in CI is what keeps them honest.
+assets/icon/png/*.png  -diff linguist-generated=true
+assets/icon/gawk.ico   -diff linguist-generated=true
+assets/icon/gawk.res   -diff linguist-generated=true

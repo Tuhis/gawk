@@ -124,6 +124,13 @@ Quirks that will bite you:
   a `/usr/bin/clang-cl` shim carrying `-mssse3 -msse4.1` (or libopus
   fails), and the MSVC SDK. All three are baked into the CI runner image —
   see docs/38 D18 before reproducing it by hand.
+- **The EXE's icon is a linked `.res`, not a compiled `.rc`.**
+  `crates/app/build.rs` hands `assets/icon/gawk.res` (generated from the
+  shared SVG by `go run ./tools/icon generate`, committed) straight to the
+  linker on msvc targets; lld-link and link.exe both take it as an input, so
+  there is no `rc.exe`/`llvm-rc` step to install. The window's own icon is
+  `Window.icon` in `ui/main.slint`, embedded by slint-build. CI checks the
+  resource actually landed (`tools/icon verify-exe`) — docs/53.
 
 ## Layout
 

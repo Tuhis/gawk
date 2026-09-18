@@ -145,11 +145,13 @@ cd gawk-admin             && go vet ./... && go test ./...   # Postgres-backed
 cd gawk-admin/ui          && npm ci && npm run lint && npm test && npm run build
 cd gawk-broadcast-windows && cargo test --workspace && \
                              cargo xwin clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+cd tools/icon             && go test ./... && go run . check   # after editing assets/icon/gawk.svg:
+                                                               # go run . generate, commit the derivatives
 ```
 
-Every Go module must also be `go mod tidy`-clean — the `tidy` job checks all
-four independently, because a bump in one module can leave another (which
-reaches it through a local `replace`) with a stale graph.
+Every Go module must also be `go mod tidy`-clean — the `tidy` job checks each
+one independently (`tools/icon` included), because a bump in one module can
+leave another (which reaches it through a local `replace`) with a stale graph.
 
 The native Windows broadcaster cross-compiles from Linux with
 [cargo-xwin](https://github.com/rust-cross/cargo-xwin); see

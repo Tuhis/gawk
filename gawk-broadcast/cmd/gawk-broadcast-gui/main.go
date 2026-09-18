@@ -46,6 +46,7 @@ import (
 
 	gawkapp "github.com/Tuhis/gawk/gawk-broadcast/internal/app"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/desktop"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/gst"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/notify"
@@ -73,6 +74,17 @@ var (
 	colDanger  = rgb(0x8b, 0x2c, 0x2c) // stop
 	colError   = rgb(0xff, 0xa5, 0x9e) // error text
 )
+
+// The window's identity on the desktop (R44, docs/53 D3). Gio has no
+// window-icon API on Linux: the compositor resolves the icon from this ID via
+// the desktop entry of the same name, so this one assignment is the whole
+// mechanism. In init rather than a -ldflags -X so that a plain
+// `go build ./cmd/...` ships the right identity too; it runs after Gio's own
+// init (dependency order) and before any window exists, which is the only
+// ordering Gio requires.
+func init() {
+	app.ID = desktop.AppID
+}
 
 func main() {
 	cfgPath, err := config.DefaultPath()
@@ -105,7 +117,7 @@ func main() {
 
 func loop(w *app.Window, cfg *config.Config) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	n := notify.New()
+	n := notify.New(desktop.IconName())
 
 	a := gawkapp.New(gawkapp.Options{
 		Config:   cfg,

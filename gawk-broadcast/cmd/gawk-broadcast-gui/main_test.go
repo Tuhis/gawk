@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"gioui.org/app"
 	"gioui.org/io/input"
 	"gioui.org/layout"
 	"gioui.org/op"
@@ -14,6 +15,7 @@ import (
 
 	gawkapp "github.com/Tuhis/gawk/gawk-broadcast/internal/app"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/config"
+	"github.com/Tuhis/gawk/gawk-broadcast/internal/desktop"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
 	"github.com/Tuhis/gawk/gawk-broadcast/internal/pwproto"
 )
@@ -337,3 +339,13 @@ func (f *renamingSession) JoinRoom(code, secret string) error { return nil }
 func (f *renamingSession) NewRoom(createSecret string) error  { return nil }
 func (f *renamingSession) LeaveRoom()                         {}
 func (f *renamingSession) SetNickname(nick string)            { f.renames <- nick }
+
+// The desktop resolves the window's icon from app.ID via a desktop entry of
+// the same name (R44, docs/53 D3); internal/desktop holds the entry to the
+// constant, and this holds the window to it. Gio's default is the binary's
+// base name, which is whatever the tester renamed the file to.
+func TestWindowAnnouncesTheDesktopAppID(t *testing.T) {
+	if app.ID != desktop.AppID {
+		t.Fatalf("app.ID = %q, want %q", app.ID, desktop.AppID)
+	}
+}

@@ -107,6 +107,7 @@ jobs:
       dev_stack: ${{ steps.filter.outputs.dev_stack }}
       coverage_tool: ${{ steps.filter.outputs.coverage_tool }}
       release_tool: ${{ steps.filter.outputs.release_tool }}
+      icon: ${{ steps.filter.outputs.icon }}
       docker_any: ${{ steps.filter.outputs.docker_any }}
       docker_matrix: ${{ steps.filter.outputs.docker_matrix }}
     steps:
@@ -169,7 +170,9 @@ jobs:
           # local tree, and gawk-broadcast's relay_integration_test builds the
           # real relay binary — so a relay change is a change to both of them.
           server=$(decide       server       '^gawk-server/')
-          broadcast=$(decide    broadcast    '^(gawk-broadcast|gawk-server)/')
+          # assets/icon is in the broadcast filter because the tarball's
+          # share/ tree is assembled from it (R44, docs/53 D4).
+          broadcast=$(decide    broadcast    '^(gawk-broadcast|gawk-server|assets/icon)/')
           telemetry=$(decide    telemetry    '^(gawk-telemetry|gawk-server)/')
           # gawk-app/src/transport/wire.test.ts is the TS wire mirror. Its golden
           # vectors are restated, never imported, so a relay wire change must run
@@ -225,6 +228,11 @@ jobs:
           # buttons point at, and the attach job only runs it on a release
           # commit — a PR is the only place a broken writer can fail early.
           release_tool=$(decide release_tool '^tools/releases/')
+          # R44 (docs/53 D2): the icon's generated derivatives are committed
+          # and drift-checked against the SVG. The check runs on any edit to
+          # either side, because the failure it catches is "edited the SVG
+          # and forgot to regenerate" — or the reverse.
+          icon=$(decide         icon         '^(assets/icon/|tools/icon/)')
 
           # The docker matrix, filtered to the images whose inputs moved. It is
           # built HERE rather than declared in the `docker` job because a static
@@ -463,7 +471,8 @@ jobs:
             libpipewire-0.3-dev \
             pipewire pipewire-bin wireplumber dbus \
             gstreamer1.0-tools gstreamer1.0-pipewire gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good || {
+            gstreamer1.0-plugins-good \
+            desktop-file-utils || {
               echo "::error::Build dependencies could not be installed — the Ubuntu archives look unreachable from this runner, not a change in this PR"
               exit 1
             }
@@ -534,6 +543,67 @@ jobs:
           mkdir -p dist
           # -trimpath keeps build paths out of the binary handed to someone else.
           go build -trimpath -o dist/ ./cmd/...
+      # R44 (docs/53 D4): the launcher entry and the hicolor icon set ride in
+      # the tarball as share/, next to install-desktop.sh. Assembled by the
+      # one script that owns the layout, from the committed icon derivatives
+      # (the `icon` job is what keeps those honest against the SVG).
+      - name: Assemble the desktop entry and icons
+        run: desktop/assemble-share.sh ../assets/icon dist
+      # Asked of the script, not assumed of it: run the install against a
+      # scratch XDG_DATA_HOME, check the entry validates (desktop-file-utils)
+      # and points at the binary by absolute path, then check the uninstall
+      # takes exactly its own files back out. This is the only place the
+      # script runs before a user does.
+      - name: The desktop entry installs, validates and uninstalls
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d)
+          # Installed from a copy of dist/ under a directory name carrying
+          # every character the Exec= quoting has to survive — a space, `&`
+          # (sed's "the match"), `"`, `$` and a backslash. The runner's own
+          # $PWD is clean, which is how the first version's sed-based rewrite
+          # passed this step while mangling any real path with one of these
+          # in it (PR #328 review). In its own temp dir, not under $scratch,
+          # so the leftover check below can stay a plain find (a backslash
+          # in the name would defeat a -path glob).
+          base=$(mktemp -d)
+          unpacked="$base/a&b \"c\" \$d \\e"
+          mkdir -p "$unpacked"
+          cp -R dist/. "$unpacked/"
+          # A `%` in the path is unlaunchable through GLib whatever the
+          # spelling (it resolves the binary from the unexpanded argument),
+          # so the script must refuse it rather than install a dead entry.
+          dead="$base/100%"
+          mkdir -p "$dead"
+          cp -R dist/. "$dead/"
+          if XDG_DATA_HOME="$scratch" "$dead/install-desktop.sh" 2>/dev/null; then
+            echo "::error::install-desktop.sh accepted a path containing '%', which no launcher can start"; exit 1
+          fi
+          test ! -e "$scratch/applications/fi.ioio.gawk.broadcast.desktop"
+          XDG_DATA_HOME="$scratch" "$unpacked/install-desktop.sh"
+          entry="$scratch/applications/fi.ioio.gawk.broadcast.desktop"
+          desktop-file-validate "$entry"
+          # The expected line, spelled out by hand rather than derived with
+          # the script's own escaping: `"`, `$` and `\` each behind TWO
+          # backslashes (key-file unescape, then Exec quoting — the spec's
+          # "four backslashes for a literal backslash"), `&` and the space
+          # untouched. desktop-file-validate above is the independent judge
+          # of the same line.
+          want='Exec="'"$base"'/a&b \\"c\\" \\$d \\\\e/gawk-broadcast-gui"'
+          grep -qxF -- "$want" "$entry" || {
+            echo "::error::Exec= is not the correctly quoted absolute path of the installed binary:"
+            echo "want: $want"; echo "got:  $(grep '^Exec=' "$entry")"; exit 1; }
+          for size in 16x16 24x24 32x32 48x48 64x64 128x128 256x256; do
+            test -f "$scratch/icons/hicolor/$size/apps/fi.ioio.gawk.broadcast.png" || {
+              echo "::error::$size icon did not install"; exit 1; }
+          done
+          test -f "$scratch/icons/hicolor/scalable/apps/fi.ioio.gawk.broadcast.svg"
+          XDG_DATA_HOME="$scratch" "$unpacked/install-desktop.sh" --uninstall
+          # The refresh tools write their own caches (gtk-update-icon-cache:
+          # icon-theme.cache, update-desktop-database: mimeinfo.cache); those
+          # are the desktop's, not the script's, and are the only files allowed.
+          left=$(find "$scratch" -type f ! -name icon-theme.cache ! -name mimeinfo.cache)
+          if [ -n "$left" ]; then echo "::error::uninstall left files behind:"; echo "$left"; exit 1; fi
       # Recorded, not guessed: INSTALL.md's library list has to match what the
       # binary actually links, and the glibc floor decides whether it starts at
       # all on the tester's distro.
@@ -734,9 +804,13 @@ jobs:
           # audio (R35) and looks for it next to itself, so a tarball without
           # it ships a feature that silently degrades to system audio on every
           # machine that downloads it.
+          # install-desktop.sh and share/ are the launcher entry + icon set
+          # (R44, docs/53 D4); the script must keep its executable bit for the
+          # same reason the binaries must.
+          chmod +x staging/install-desktop.sh
           tar -czf assets/gawk-broadcast-linux-amd64.tar.gz \
             -C staging gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt \
-            THIRD-PARTY-NOTICES.md LICENSE
+            THIRD-PARTY-NOTICES.md LICENSE install-desktop.sh share
           # Asked of the tarball, not assumed of the command above: the R2
           # question ("does it actually reach production?") applied to the one
           # file whose absence is invisible until a user tries the feature.
@@ -752,7 +826,10 @@ jobs:
           # for. No pipeline, no SIGPIPE, and one decompression instead of five.
           listing=$(tar -tzf assets/gawk-broadcast-linux-amd64.tar.gz)
           for want in gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt \
-                      THIRD-PARTY-NOTICES.md LICENSE; do
+                      THIRD-PARTY-NOTICES.md LICENSE install-desktop.sh \
+                      share/applications/fi.ioio.gawk.broadcast.desktop \
+                      share/icons/hicolor/scalable/apps/fi.ioio.gawk.broadcast.svg \
+                      share/icons/hicolor/256x256/apps/fi.ioio.gawk.broadcast.png; do
             grep -qxF -- "$want" <<<"$listing" || {
               echo "::error::$want is missing from the release tarball"
               exit 1
@@ -1277,7 +1354,7 @@ jobs:
           cache: false
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-broadcast gawk-telemetry gawk-admin; do
+          for mod in gawk-server gawk-broadcast gawk-telemetry gawk-admin tools/icon; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
@@ -2636,6 +2713,30 @@ jobs:
         with:
           python-version: "3.14"
       - run: python3 -m unittest discover -s tools/releases -v
+
+  # R44 (docs/53 D2): the application icon has one source, assets/icon/gawk.svg,
+  # and committed derivatives (the PNG set, the .ico, the .res the Windows
+  # EXE links) that neither broadcaster's build can regenerate — so this is
+  # the job that proves they still match it. Pixels are compared, not bytes,
+  # so a Go release changing compress/flate is not drift; an edited shape is.
+  icon:
+    needs: changes
+    if: needs.changes.outputs.icon == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: tools/icon
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: tools/icon/go.mod
+          cache-dependency-path: tools/icon/go.sum
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+      - name: The committed derivatives match the SVG
+        run: go run . check
 
   # Publishes the badges the READMEs point at.
   #

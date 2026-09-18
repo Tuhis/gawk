@@ -47,8 +47,6 @@ const (
 
 	// appName is what the notification is attributed to.
 	appName = "gawk-broadcast"
-	// icon is a stock freedesktop icon name; no assets to ship.
-	icon = "video-display"
 )
 
 // Notifier sends desktop notifications. One method, so the transport is
@@ -63,6 +61,9 @@ type Notifier interface {
 type dbusNotifier struct {
 	conn *dbus.Conn
 	obj  dbus.BusObject
+	// icon is a freedesktop icon name: the app's own when its desktop entry
+	// is installed, a stock one otherwise (internal/desktop decides).
+	icon string
 	// id lets us replace our own previous notification rather than stack them
 	// up: a broadcaster who starts and stops five times should not accumulate
 	// five popups.
@@ -72,12 +73,16 @@ type dbusNotifier struct {
 // New connects to the session bus. It returns a no-op Notifier rather than an
 // error when there is no bus: a missing notification daemon must never stop a
 // broadcast, and the CLI has no use for popups at all.
-func New() Notifier {
+//
+// icon is the freedesktop icon name to attach (R44, docs/53 D5); the caller
+// passes desktop.IconName(), which is the app's own icon when the desktop
+// entry is installed and a stock name otherwise.
+func New(icon string) Notifier {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return Discard{}
 	}
-	return &dbusNotifier{conn: conn, obj: conn.Object(busName, objectPath)}
+	return &dbusNotifier{conn: conn, obj: conn.Object(busName, objectPath), icon: icon}
 }
 
 func (n *dbusNotifier) Notify(summary, body string, urgency Urgency) {
@@ -93,7 +98,7 @@ func (n *dbusNotifier) Notify(summary, body string, urgency Urgency) {
 	call := n.obj.Call(iface+".Notify", 0,
 		appName,
 		n.id, // replaces_id
-		icon,
+		n.icon,
 		summary,
 		body,
 		[]string{}, // actions
