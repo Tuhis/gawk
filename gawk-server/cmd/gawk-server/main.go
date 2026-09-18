@@ -185,6 +185,9 @@ func run() error {
 	bus, err = eventbus.New(eventbus.Options{
 		URL:            cfg.EventBusURL,
 		CredsFile:      cfg.EventBusCredsFile,
+		TLSCertFile:    cfg.EventBusTLSCert,
+		TLSKeyFile:     cfg.EventBusTLSKey,
+		CAFile:         cfg.EventBusCAFile,
 		SubjectPrefix:  cfg.EventBusSubjectPrefix,
 		Pod:            podIdentity(),
 		ViewerInterval: cfg.EventBusViewerInterval,

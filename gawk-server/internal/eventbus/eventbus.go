@@ -82,6 +82,17 @@ type Options struct {
 	// CredsFile is an NKey/JWT .creds file. The relay's NATS user needs
 	// publish permission on <SubjectPrefix>.> and nothing else (docs/51 D6).
 	CredsFile string
+	// TLSCertFile / TLSKeyFile are a client certificate, the other way a NATS
+	// deployment identifies a workload: with `verify_and_map`, the subject DN
+	// of this certificate IS the NATS username, so the identity is the cert
+	// rather than a secret to distribute. cert-manager writes exactly these
+	// two files (plus the CA) into one Secret.
+	TLSCertFile string
+	TLSKeyFile  string
+	// CAFile is the CA to verify the SERVER against. A bus on a private CA —
+	// which is the sane way to run one, since the bus is internal — needs it;
+	// without it the platform trust store is used.
+	CAFile string
 	// SubjectPrefix is the first subject token; default "gawk".
 	SubjectPrefix string
 	// Pod names this process in the CloudEvents source and id.
@@ -184,16 +195,16 @@ func New(opts Options) (*Publisher, error) {
 	if opts.CredsFile != "" {
 		connOpts = append(connOpts, nats.UserCredentials(opts.CredsFile))
 	}
-	if opts.Insecure && wantsTLS(opts.URL) {
-		// Only when the URL actually asks for TLS. nats.Secure REQUIRES it:
-		// applied to a plain nats:// server it makes every handshake fail, and
-		// the client hides that in its reconnect loop — connections pile up
-		// unnamed, nothing is ever published, and the only symptom is silence.
-		// The flag means "do not verify the certificate", which is not a thing
-		// a connection without one can do.
-		p.log.Warn("event bus TLS verification is DISABLED (-eventbus-insecure): " +
-			"local development only, never a deployment")
-		connOpts = append(connOpts, nats.Secure(&tls.Config{InsecureSkipVerify: true})) //nolint:gosec // the flag's whole purpose, warned about at every start
+	if opts.TLSCertFile != "" && opts.TLSKeyFile != "" {
+		connOpts = append(connOpts, nats.ClientCert(opts.TLSCertFile, opts.TLSKeyFile))
+	}
+	if opts.CAFile != "" {
+		connOpts = append(connOpts, nats.RootCAs(opts.CAFile))
+	}
+	if opts.Insecure {
+		p.log.Warn("event bus TLS certificate verification is DISABLED " +
+			"(-eventbus-insecure): local development only, never a deployment")
+		connOpts = append(connOpts, insecureSkipVerify())
 	}
 
 	nc, err := nats.Connect(opts.URL, connOpts...)
@@ -380,8 +391,22 @@ func (p *Publisher) publishedInc() {
 	}
 }
 
-// wantsTLS reports whether a NATS URL asks for a TLS connection. Plain
-// nats:// does not, and -eventbus-insecure has nothing to skip there.
-func wantsTLS(url string) bool {
-	return strings.HasPrefix(url, "tls://") || strings.HasPrefix(url, "wss://")
+// insecureSkipVerify relaxes certificate verification WITHOUT requiring TLS.
+//
+// nats.Secure does both, and the difference is not cosmetic: applied to a
+// plain nats:// server it makes every handshake fail, and the client buries
+// that in its reconnect loop — connections pile up unnamed, nothing is ever
+// published, and the only symptom is silence. It also matters the other way
+// round, because a NATS that requires TLS may still be dialled as nats://:
+// the client upgrades from the server's INFO, TLS is not implied by the
+// scheme. So the switch must say only what it means — do not verify — and
+// leave whether TLS happens to the server.
+func insecureSkipVerify() nats.Option {
+	return func(o *nats.Options) error {
+		if o.TLSConfig == nil {
+			o.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		o.TLSConfig.InsecureSkipVerify = true //nolint:gosec // the flag's whole purpose, warned about at every start
+		return nil
+	}
 }

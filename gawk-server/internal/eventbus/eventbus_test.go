@@ -356,16 +356,19 @@ func TestInsecureDoesNotForceTLSOnAPlainURL(t *testing.T) {
 	}
 }
 
-// TestWantsTLS pins which URLs the insecure switch may touch at all.
-func TestWantsTLS(t *testing.T) {
-	for url, want := range map[string]bool{
-		"nats://nats:4222": false,
-		"nats://localhost": false,
-		"tls://nats:4222":  true,
-		"wss://nats:443":   true,
-	} {
-		if got := wantsTLS(url); got != want {
-			t.Errorf("wantsTLS(%q) = %v, want %v", url, got, want)
-		}
+// TestInsecureNeverRequiresTLS: the switch relaxes verification, it does not
+// demand a TLS handshake. nats.Secure does both, and that is what broke the
+// plain compose lane; it would also break a TLS-requiring server dialled as
+// nats://, which is the spelling NATS itself documents.
+func TestInsecureNeverRequiresTLS(t *testing.T) {
+	var o nats.Options
+	if err := insecureSkipVerify()(&o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Secure {
+		t.Error("the insecure switch turned TLS on")
+	}
+	if o.TLSConfig == nil || !o.TLSConfig.InsecureSkipVerify {
+		t.Errorf("verification was not relaxed: %+v", o.TLSConfig)
 	}
 }

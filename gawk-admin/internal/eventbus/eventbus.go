@@ -60,7 +60,28 @@ const (
 type Options struct {
 	URL       string
 	CredsFile string
-	Stream    string
+	// TLSCertFile / TLSKeyFile are a client certificate — the other way a NATS
+	// deployment identifies a workload. With `verify_and_map` the subject DN
+	// of this certificate IS the NATS username, so there is no secret to
+	// distribute and a renewal changes nothing. CAFile verifies the server,
+	// which a bus on its own private CA requires.
+	TLSCertFile string
+	TLSKeyFile  string
+	CAFile      string
+	Stream      string
+	// ManageStream lets this portal create and update the stream and its
+	// durable consumer, which is the default and what a self-hosted install
+	// wants (docs/51 D2: the consumer owns the retention).
+	//
+	// Set it false where the JetStream objects are declared elsewhere — a
+	// NACK Stream/Consumer CR reconciled from git, say. Such a deployment
+	// grants workloads no `$JS.API.>` at all, so trying to manage them does
+	// not merely duplicate the operator's intent, it fails forever against a
+	// permission that will never be given. The portal then BINDS to what is
+	// there and consumes it.
+	ManageStream bool
+	// ConsumerName is the durable to use; empty means ConsumerName.
+	ConsumerName string
 	// MaxBytes and Replicas are the stream's limits; zero means the server's
 	// default for replicas and 256 MiB for bytes.
 	MaxBytes int64
@@ -176,11 +197,16 @@ func New(ctx context.Context, opts Options) (*Consumer, error) {
 	if opts.CredsFile != "" {
 		connOpts = append(connOpts, nats.UserCredentials(opts.CredsFile))
 	}
-	if opts.Insecure && wantsTLS(opts.URL) {
-		// Only when the URL actually asks for TLS — see wantsTLS.
-		opts.Log.Warn("event bus TLS verification is DISABLED (-eventbus-insecure): " +
-			"local development only, never a deployment")
-		connOpts = append(connOpts, nats.Secure(insecureTLS()))
+	if opts.TLSCertFile != "" && opts.TLSKeyFile != "" {
+		connOpts = append(connOpts, nats.ClientCert(opts.TLSCertFile, opts.TLSKeyFile))
+	}
+	if opts.CAFile != "" {
+		connOpts = append(connOpts, nats.RootCAs(opts.CAFile))
+	}
+	if opts.Insecure {
+		opts.Log.Warn("event bus TLS certificate verification is DISABLED " +
+			"(-eventbus-insecure): local development only, never a deployment")
+		connOpts = append(connOpts, insecureSkipVerify())
 	}
 	nc, err := nats.Connect(opts.URL, connOpts...)
 	if err != nil {
@@ -242,7 +268,17 @@ func (c *Consumer) ensureStream(ctx context.Context) error {
 		Discard:   jetstream.DiscardOld,
 		Replicas:  c.opts.Replicas,
 	}
-	stream, err := c.js.CreateOrUpdateStream(ctx, cfg)
+	var (
+		stream jetstream.Stream
+		err    error
+	)
+	if c.opts.ManageStream {
+		stream, err = c.js.CreateOrUpdateStream(ctx, cfg)
+	} else {
+		// Somebody else declares it. Bind, and wait for them if it is not
+		// there yet — the retry loop above is the same either way.
+		stream, err = c.js.Stream(ctx, c.opts.Stream)
+	}
 	if err != nil {
 		return fmt.Errorf("eventbus: ensure stream %s: %w", c.opts.Stream, err)
 	}
@@ -268,7 +304,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
-	if err := c.awaitStream(ctx); err != nil {
+	var err error
+	if err = c.awaitStream(ctx); err != nil {
 		return err
 	}
 	if c.stream == nil {
@@ -276,15 +313,27 @@ func (c *Consumer) Run(ctx context.Context) error {
 		// to consume from and nothing to report: the next leader picks this up.
 		return nil
 	}
-	cons, err := c.stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
-		Durable:       ConsumerName,
-		AckPolicy:     jetstream.AckExplicitPolicy,
-		AckWait:       AckWait,
-		DeliverPolicy: jetstream.DeliverAllPolicy,
-		MaxDeliver:    -1,
-	})
+	name := c.opts.ConsumerName
+	if name == "" {
+		name = ConsumerName
+	}
+	var cons jetstream.Consumer
+	if c.opts.ManageStream {
+		cons, err = c.stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+			Durable:       name,
+			AckPolicy:     jetstream.AckExplicitPolicy,
+			AckWait:       AckWait,
+			DeliverPolicy: jetstream.DeliverAllPolicy,
+			MaxDeliver:    -1,
+		})
+	} else {
+		// Declared elsewhere, with its own delivery rules. Binding rather than
+		// asserting them is the point: the operator's CR is the truth, and a
+		// portal that "corrected" it would fight its reconciler every loop.
+		cons, err = c.stream.Consumer(ctx, name)
+	}
 	if err != nil {
-		return fmt.Errorf("eventbus: ensure consumer: %w", err)
+		return fmt.Errorf("eventbus: ensure consumer %s: %w", name, err)
 	}
 	sub, err := cons.Consume(func(msg jetstream.Msg) {
 		c.handle(ctx, msg)

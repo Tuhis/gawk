@@ -162,13 +162,18 @@ func run(args []string, getenv func(string) string) error {
 	// leader-only is what keeps per-subject ordering and reuses the election
 	// the dispatcher already runs on. A nil consumer is the off switch.
 	bus, err := eventbus.New(ctx, eventbus.Options{
-		URL:       cfg.EventBusURL,
-		CredsFile: cfg.EventBusCredsFile,
-		Stream:    cfg.EventBusStream,
-		MaxBytes:  cfg.EventBusMaxBytes,
-		Replicas:  cfg.EventBusReplicas,
-		Insecure:  cfg.EventBusInsecure,
-		Log:       log,
+		URL:          cfg.EventBusURL,
+		CredsFile:    cfg.EventBusCredsFile,
+		TLSCertFile:  cfg.EventBusTLSCert,
+		TLSKeyFile:   cfg.EventBusTLSKey,
+		CAFile:       cfg.EventBusCAFile,
+		ManageStream: cfg.EventBusManageStream,
+		ConsumerName: cfg.EventBusConsumer,
+		Stream:       cfg.EventBusStream,
+		MaxBytes:     cfg.EventBusMaxBytes,
+		Replicas:     cfg.EventBusReplicas,
+		Insecure:     cfg.EventBusInsecure,
+		Log:          log,
 		Ingest: &eventbus.StoreIngester{
 			Store:          st,
 			ConfigWebhooks: dispatcher.ConfigWebhookNames(),

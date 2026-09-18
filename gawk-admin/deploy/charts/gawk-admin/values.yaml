@@ -213,14 +213,43 @@ notifications:
 # stateful thing's upgrade story.
 eventbus:
   url: ""
-  # The portal's NATS credential, an NKey/JWT .creds file from a Secret:
+  # ONE of the two ways a NATS deployment identifies this portal.
+  #
+  # 1. A client CERTIFICATE. With `verify_and_map` on the server the subject DN
+  #    IS the NATS username, so the identity is the cert and cert-manager
+  #    renewal changes nothing:
+  #      tlsSecretRef: {name: gawk-admin-nats-tls}
+  #    The same Secret's ca.crt verifies the SERVER, which a bus on its own
+  #    private CA requires.
+  tlsSecretRef: {}
+  tlsCertKey: tls.crt
+  tlsKeyKey: tls.key
+  tlsCAKey: ca.crt
+  #
+  # 2. An NKey/JWT .creds file:
   #   kubectl -n gawk create secret generic gawk-admin-nats \
   #     --from-file=user.creds=./admin.creds
   #   credsSecretRef: {name: gawk-admin-nats, key: user.creds}
   credsSecretRef: {}
-  # The stream this portal creates and consumes. It owns the retention, which
-  # is why it — and not the relays — creates it.
+  # The stream this portal consumes.
   stream: GAWK_EVENTS
+  # Whether this portal CREATES and updates that stream and its durable
+  # consumer. True is the self-hosted shape: the consumer owns the retention,
+  # so it owns the object (docs/51 D2).
+  #
+  # Set false where JetStream objects are declared in git and reconciled by a
+  # controller (NACK Stream/Consumer CRs, for instance). Such a deployment
+  # grants workloads no JetStream API at all, so managing them here is not a
+  # duplicate of the operator's intent — it is a retry loop against a
+  # permission that will never be given. The portal then binds to what is
+  # there, with the delivery rules the operator declared.
+  #
+  # With it off, `stream` and `consumer` must name the declared objects, and
+  # maxBytes/replicas below are ignored — they describe a stream this chart is
+  # no longer creating.
+  manageStream: true
+  # Durable consumer name; empty uses the binary's default (gawk-admin).
+  consumer: ""
   # Stream size limit in bytes (discard old) and replicas (0 = server default).
   maxBytes: 268435456
   replicas: 0

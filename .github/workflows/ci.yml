@@ -1704,6 +1704,28 @@ jobs:
             echo "::error::the insecure switch reached a chart"; exit 1
           fi
 
+          # mTLS: the shape a NATS with verify_and_map needs, where the client
+          # certificate's subject DN IS the username. Both charts mount the
+          # cert-manager Secret and point the binary at all three files.
+          mtls=$(helm template "$relay" --set eventbus.url=nats://nats:4222 \
+                   --set eventbus.tlsSecretRef.name=gawk-server-nats-tls)
+          grep -A1 'name: GAWK_EVENTBUS_TLS_CERT' <<<"$mtls" | grep -q '/etc/gawk/nats-tls/tls.crt'
+          grep -A1 'name: GAWK_EVENTBUS_CA_FILE' <<<"$mtls" | grep -q '/etc/gawk/nats-tls/ca.crt'
+          grep -q 'secretName: gawk-server-nats-tls' <<<"$mtls"
+
+          mtlsA=$(helm template "$admin" $ADMIN_PG --set eventbus.url=nats://nats:4222 \
+                    --set eventbus.tlsSecretRef.name=gawk-admin-nats-tls \
+                    --set eventbus.manageStream=false --set eventbus.consumer=gawk-admin)
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_TLS_KEY' <<<"$mtlsA" | grep -q '/etc/gawk/nats-tls/tls.key'
+          grep -q 'secretName: gawk-admin-nats-tls' <<<"$mtlsA"
+          # And the deployment where a controller owns the JetStream objects:
+          # the portal must be able to bind rather than create, or it retries
+          # forever against a permission it will never be granted.
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_MANAGE_STREAM' <<<"$mtlsA" | grep -q 'value: "false"'
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_CONSUMER' <<<"$mtlsA" | grep -q 'value: "gawk-admin"'
+          # Default is still "this portal owns its stream".
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_MANAGE_STREAM' <<<"$onA" | grep -q 'value: "true"'
+
       - name: admin secrets render via both the literal and the Ref form
         run: |
           set -euo pipefail

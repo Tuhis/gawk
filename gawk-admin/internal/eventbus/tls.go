@@ -2,23 +2,27 @@ package eventbus
 
 import (
 	"crypto/tls"
-	"strings"
+
+	"github.com/nats-io/nats.go"
 )
 
-// insecureTLS backs -eventbus-insecure: the docs/41 compose lane only. It is a
-// flag with no chart value, it warns at every start, and it lives in its own
-// file so a grep for InsecureSkipVerify lands on the comment that says why.
-func insecureTLS() *tls.Config {
-	return &tls.Config{InsecureSkipVerify: true} //nolint:gosec // the flag's whole purpose
-}
-
-// wantsTLS reports whether a NATS URL asks for a TLS connection.
+// insecureSkipVerify backs -eventbus-insecure: the docs/41 compose lane only.
+// It is a flag with no chart value, it warns at every start, and it lives in
+// its own file so a grep for InsecureSkipVerify lands on the comment that says
+// why.
 //
-// nats.Secure REQUIRES TLS rather than merely relaxing it, so applying it to a
-// plain nats:// server makes every handshake fail — and the client hides that
-// in its reconnect loop, so the portal just never receives anything. The flag
-// means "do not verify the certificate", which a connection without one cannot
-// do.
-func wantsTLS(url string) bool {
-	return strings.HasPrefix(url, "tls://") || strings.HasPrefix(url, "wss://")
+// It relaxes verification WITHOUT requiring TLS. nats.Secure does both, and
+// the difference is not cosmetic: applied to a plain nats:// server it makes
+// every handshake fail and the client buries that in its reconnect loop —
+// the portal simply never receives anything. It matters the other way round
+// too, because a NATS that requires TLS may still be dialled as nats://: the
+// client upgrades from the server's INFO, TLS is not implied by the scheme.
+func insecureSkipVerify() nats.Option {
+	return func(o *nats.Options) error {
+		if o.TLSConfig == nil {
+			o.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		o.TLSConfig.InsecureSkipVerify = true //nolint:gosec // the flag's whole purpose
+		return nil
+	}
 }

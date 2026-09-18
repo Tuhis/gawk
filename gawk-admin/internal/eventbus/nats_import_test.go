@@ -23,6 +23,8 @@ func TestOnlyTheEventBusImportsNATS(t *testing.T) {
 	allowed := map[string]bool{
 		"internal/eventbus/eventbus.go":      true,
 		"internal/eventbus/eventbus_test.go": true,
+		// The insecure switch is a nats.Option, so it lives with the client.
+		"internal/eventbus/tls.go": true,
 	}
 
 	scanned, offenders := walkImports(t, moduleRoot, forbidden, allowed)

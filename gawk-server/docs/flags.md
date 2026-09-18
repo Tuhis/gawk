@@ -59,6 +59,8 @@ deployment must not be able to turn TLS verification off by setting one
 | `-admin-oidc-role` | `GAWK_ADMIN_OIDC_ROLE` | `operator` (may not be blank once OIDC is configured) |
 | `-eventbus-url` | `GAWK_EVENTBUS_URL` | (empty = the R50 event bus is off entirely) |
 | `-eventbus-creds-file` | `GAWK_EVENTBUS_CREDS_FILE` | (empty; path to a NATS `.creds` file) |
+| `-eventbus-tls-cert` / `-eventbus-tls-key` | `GAWK_EVENTBUS_TLS_CERT` / `_KEY` | (empty; a client certificate — with `verify_and_map` its subject DN is the NATS user) |
+| `-eventbus-ca-file` | `GAWK_EVENTBUS_CA_FILE` | (empty = platform trust store; set for a bus on a private CA) |
 | `-eventbus-subject-prefix` | `GAWK_EVENTBUS_SUBJECT_PREFIX` | `gawk` |
 | `-eventbus-viewer-interval` | `GAWK_EVENTBUS_VIEWER_INTERVAL` | `5s` |
 | `-eventbus-insecure` | `GAWK_EVENTBUS_INSECURE` | `false` (local development only; warns at startup) |

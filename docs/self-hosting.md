@@ -1224,7 +1224,68 @@ and room codes** — the same tier as the `Room` and `Ban` CRs — so the bus is
 internal infrastructure and must never be routed publicly. No IP address is
 ever published.
 
-### 12.5 A direct subscriber
+### 12.5 A bus you already run
+
+The recipe above is the simple case: a NATS installed for gawk, users in a
+config file, the portal creating its own stream. A shared bus usually looks
+different, and both differences are chart values rather than forks.
+
+**Client certificates instead of credentials.** A NATS with
+`verify_and_map: true` takes the client certificate's subject DN *as* the
+username — there is no password or `.creds` file anywhere, and renewal changes
+nothing because the DN does not change. Issue one certificate per workload from
+the bus's own CA (never a public issuer), grant the DN in the server's
+`accounts`, and point the charts at the Secret:
+
+```yaml
+# gawk-server values                # gawk-admin values
+eventbus:                           eventbus:
+  url: "nats://nats.nats.svc:4222"    url: "nats://nats.nats.svc:4222"
+  tlsSecretRef:                       tlsSecretRef:
+    name: gawk-server-nats-tls          name: gawk-admin-nats-tls
+```
+
+`nats://` is correct even for a TLS-only bus: the client upgrades from the
+server's INFO, TLS is not implied by the scheme. The same Secret's `ca.crt`
+verifies the server, so a private CA needs no other wiring. `tls.crt` /
+`tls.key` / `ca.crt` are cert-manager's names and the chart's defaults; override
+`tlsCertKey` / `tlsKeyKey` / `tlsCAKey` if yours differ.
+
+The permissions each identity needs, and the one that is easy to miss:
+
+| Identity | publish | subscribe |
+|---|---|---|
+| relay | `gawk.>` (or your `subjectPrefix`) | `_INBOX.>` |
+| portal | `$JS.API.CONSUMER.>` | `_INBOX.>`, `gawk.>` |
+
+**`subscribe: _INBOX.>` is required even for the relay, which only publishes.**
+A JetStream publish acknowledgement comes back over a reply inbox; without it
+the publish does not fail, it hangs — and the relay, which never waits on the
+bus, simply counts drops.
+
+**Streams declared elsewhere.** If your JetStream objects are reconciled from
+git (NACK `Stream` / `Consumer` CRs, say), the portal must not create them: such
+a deployment grants workloads no JetStream API at all, so the portal would
+retry forever against a permission it will never be given. Turn its management
+off and name what exists:
+
+```yaml
+eventbus:
+  manageStream: false
+  stream: GAWK_EVENTS
+  consumer: gawk-admin
+```
+
+It then binds and consumes, with the delivery rules your CR declares —
+`maxBytes` and `replicas` are ignored, because they describe a stream the chart
+is no longer creating. The stream needs `subjects: ["gawk.>"]` (matching
+`subjectPrefix`) and a `maxAge` that is your catch-up window; the consumer
+wants explicit acks and, on a memory-backed bus, a `deliverPolicy` you have
+thought about — a restart that loses cursors replays whatever the stream still
+holds, which is safe here because ingest deduplicates on the event id, but it
+is not free.
+
+### 12.6 A direct subscriber
 
 You can give a third consumer — a bot, a dashboard — its own NATS user with
 subscribe-only permission on a filter such as `gawk.room.>`, without involving
@@ -1232,7 +1293,7 @@ subscribe-only permission on a filter such as `gawk.room.>`, without involving
 portal's own consumer has for those subjects, raw room codes included. It is
 your grant to make; make it deliberately.
 
-### 12.6 Turning it off
+### 12.7 Turning it off
 
 Unset `eventbus.url` on both charts. The portal's room sweep resumes, activity
 events stop, and the stream can be deleted at your leisure. Nothing else

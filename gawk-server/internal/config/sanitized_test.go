@@ -53,6 +53,10 @@ var (
 		// a path is a secret, but because the setness rendering is the honest
 		// answer to "is a credential configured?".
 		"EventBusURL", "EventBusSubjectPrefix", "EventBusViewerInterval", "EventBusInsecure",
+		// Paths to the client identity and the CA, not the material itself:
+		// which file a pod was told to authenticate with is exactly what an
+		// operator needs when a fleet disagrees about who it is.
+		"EventBusTLSCert", "EventBusTLSKey", "EventBusCAFile",
 	}
 )
 

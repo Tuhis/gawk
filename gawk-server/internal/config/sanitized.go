@@ -98,6 +98,12 @@ type SanitizedConfig struct {
 	EventBusSubjectPrefix  string `json:"eventBusSubjectPrefix"`
 	EventBusViewerInterval string `json:"eventBusViewerInterval"`
 	EventBusInsecure       bool   `json:"eventBusInsecure"`
+	// The client identity and the CA: paths, not material. Rendered as
+	// themselves — knowing WHICH file a pod was told to use is the point when
+	// a fleet disagrees about who it authenticates as.
+	EventBusTLSCert string `json:"eventBusTlsCert"`
+	EventBusTLSKey  string `json:"eventBusTlsKey"`
+	EventBusCAFile  string `json:"eventBusCaFile"`
 
 	// Moderation (R39).
 	ModerationSource    string `json:"moderationSource"`
@@ -180,6 +186,9 @@ func (c Config) Sanitized() SanitizedConfig {
 		EventBusSubjectPrefix:  c.EventBusSubjectPrefix,
 		EventBusViewerInterval: dur(c.EventBusViewerInterval),
 		EventBusInsecure:       c.EventBusInsecure,
+		EventBusTLSCert:        c.EventBusTLSCert,
+		EventBusTLSKey:         c.EventBusTLSKey,
+		EventBusCAFile:         c.EventBusCAFile,
 
 		ModerationSource:    c.ModerationSource,
 		AdminOIDCIssuer:     c.AdminOIDCIssuer,

@@ -289,6 +289,15 @@ spec:
             - name: GAWK_EVENTBUS_CREDS_FILE
               value: /etc/gawk/nats/{{ .Values.eventbus.credsSecretRef.key }}
             {{- end }}
+            {{- if .Values.eventbus.tlsSecretRef.name }}
+            # mTLS: the subject DN of this certificate is the NATS user.
+            - name: GAWK_EVENTBUS_TLS_CERT
+              value: /etc/gawk/nats-tls/{{ .Values.eventbus.tlsCertKey }}
+            - name: GAWK_EVENTBUS_TLS_KEY
+              value: /etc/gawk/nats-tls/{{ .Values.eventbus.tlsKeyKey }}
+            - name: GAWK_EVENTBUS_CA_FILE
+              value: /etc/gawk/nats-tls/{{ .Values.eventbus.tlsCAKey }}
+            {{- end }}
             {{- end }}
             {{- if .Values.moderation.enabled }}
             # R39 (docs/42 §4.3): where this pod reads enforcement from.
@@ -409,6 +418,14 @@ spec:
               mountPath: /etc/gawk/nats
               readOnly: true
             {{- end }}
+            {{- if and .Values.eventbus.url .Values.eventbus.tlsSecretRef.name }}
+            # The NATS client certificate (R50). cert-manager rewrites this
+            # Secret in place on renewal and the subject DN does not change, so
+            # nothing here restarts.
+            - name: nats-tls
+              mountPath: /etc/gawk/nats-tls
+              readOnly: true
+            {{- end }}
           # The server is HTTP/3-only (UDP) — kubelet can't probe it with
           # httpGet/tcpSocket, so all probes exec the bundled gawk-echo
           # against localhost. No -cert-hash: verification is skipped,
@@ -447,4 +464,9 @@ spec:
         - name: nats-creds
           secret:
             secretName: {{ .Values.eventbus.credsSecretRef.name }}
+        {{- end }}
+        {{- if and .Values.eventbus.url .Values.eventbus.tlsSecretRef.name }}
+        - name: nats-tls
+          secret:
+            secretName: {{ .Values.eventbus.tlsSecretRef.name }}
         {{- end }}

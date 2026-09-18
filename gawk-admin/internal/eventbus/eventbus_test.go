@@ -80,7 +80,9 @@ func newConsumer(t *testing.T, url string, ing Ingester) *Consumer {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := New(ctx, Options{URL: url, Ingest: ing})
+	// ManageStream on: the self-hosted shape, where this portal owns the
+	// stream. TestBindsToAStreamItDoesNotOwn covers the other one.
+	c, err := New(ctx, Options{URL: url, Ingest: ing, ManageStream: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,13 +333,21 @@ func TestAnUnreachableBusDoesNotStopThePortal(t *testing.T) {
 	}
 }
 
-// TestInsecureSkipsVerification pins what -eventbus-insecure actually does:
-// it is the docs/41 compose lane's switch, it has no chart value, and it warns
-// at every start — so the one thing it must not do is quietly become the
-// default.
-func TestInsecureSkipsVerification(t *testing.T) {
-	if !insecureTLS().InsecureSkipVerify {
-		t.Error("the insecure switch does not skip verification")
+// TestInsecureNeverRequiresTLS pins what -eventbus-insecure does and, as
+// importantly, what it does not: relax verification, never demand a handshake.
+// nats.Secure does both, and that is what broke the plain compose lane — and
+// would equally break a TLS-requiring server dialled as nats://, which is the
+// spelling NATS itself documents.
+func TestInsecureNeverRequiresTLS(t *testing.T) {
+	var o nats.Options
+	if err := insecureSkipVerify()(&o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Secure {
+		t.Error("the insecure switch turned TLS on")
+	}
+	if o.TLSConfig == nil || !o.TLSConfig.InsecureSkipVerify {
+		t.Errorf("verification was not relaxed: %+v", o.TLSConfig)
 	}
 	if (Options{}).Insecure {
 		t.Error("Insecure defaults to true")
@@ -353,7 +363,7 @@ func TestInsecureDoesNotForceTLSOnAPlainURL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	c, err := New(ctx, Options{URL: url, Insecure: true})
+	c, err := New(ctx, Options{URL: url, Insecure: true, ManageStream: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,15 +374,48 @@ func TestInsecureDoesNotForceTLSOnAPlainURL(t *testing.T) {
 	}
 }
 
-// TestWantsTLS pins which URLs the insecure switch may touch at all.
-func TestWantsTLS(t *testing.T) {
-	for url, want := range map[string]bool{
-		"nats://nats:4222": false,
-		"tls://nats:4222":  true,
-		"wss://nats:443":   true,
-	} {
-		if got := wantsTLS(url); got != want {
-			t.Errorf("wantsTLS(%q) = %v, want %v", url, got, want)
-		}
+// TestBindsToAStreamItDoesNotOwn is the deployment where JetStream objects are
+// declared in git and reconciled by a controller: workloads there are granted
+// no JetStream API at all, so a portal that insisted on creating the stream
+// would retry against a permission it will never be given. With ManageStream
+// off it binds to what is there — and to the durable the operator declared,
+// with the operator's delivery rules, rather than asserting its own over them.
+func TestBindsToAStreamItDoesNotOwn(t *testing.T) {
+	url := runNATS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// Stand in for the controller: the stream and the durable exist already.
+	owner := newConsumer(t, url, nil)
+	if err := owner.ensureStream(ctx); err != nil {
+		t.Fatal(err)
 	}
+	if _, err := owner.stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		Durable:   "declared-elsewhere",
+		AckPolicy: jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ing := &fakeIngest{}
+	c, err := New(ctx, Options{URL: url, Ingest: ing, ConsumerName: "declared-elsewhere"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	if c.opts.ManageStream {
+		t.Fatal("ManageStream must be opt-in, not the zero value")
+	}
+
+	publish(t, url, "pod-a:1", events.TypeRoomOpened, "aa11bb22cc33",
+		events.RoomOpenedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", Kind: events.RoomKindDynamic})
+
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	go func() {
+		if err := c.Run(runCtx); err != nil {
+			t.Error(err)
+		}
+	}()
+	waitFor(t, "the bound consumer to deliver", func() bool { return ing.count() == 1 })
 }

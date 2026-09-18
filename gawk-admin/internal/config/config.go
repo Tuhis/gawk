@@ -96,9 +96,27 @@ type Config struct {
 	// makes "off is byte-identical" true.
 	EventBusURL       string
 	EventBusCredsFile string
-	EventBusStream    string
-	EventBusMaxBytes  int64
-	EventBusReplicas  int
+	// EventBusTLSCert / EventBusTLSKey are a client certificate, the other way
+	// a NATS deployment identifies a workload: with `verify_and_map` the
+	// subject DN IS the NATS username. EventBusCAFile verifies the server,
+	// which a bus on its own private CA requires.
+	EventBusTLSCert string
+	EventBusTLSKey  string
+	EventBusCAFile  string
+	EventBusStream  string
+	// EventBusManageStream lets this portal create and update the stream and
+	// its durable consumer (the default, and what docs/51 D2 describes).
+	//
+	// Off where the JetStream objects are declared elsewhere and reconciled
+	// from git — a NACK Stream/Consumer CR, say. Such a deployment grants
+	// workloads no JetStream API at all, so managing them is not a duplicate
+	// of the operator's intent but a retry loop against a permission that will
+	// never be granted. The portal then binds and consumes.
+	EventBusManageStream bool
+	// EventBusConsumer is the durable to use; empty means the built-in name.
+	EventBusConsumer string
+	EventBusMaxBytes int64
+	EventBusReplicas int
 	// EventBusInsecure skips NATS TLS verification: the docs/41 compose lane
 	// only, no chart value, warns at every start.
 	EventBusInsecure bool
@@ -195,6 +213,16 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"R50 NATS JetStream URL to consume relay events from; empty disables the bus")
 	eventBusCredsFile := fs.String("eventbus-creds-file", env("GAWK_ADMIN_EVENTBUS_CREDS_FILE", ""),
 		"path to the NATS .creds file for the portal's stream user")
+	eventBusTLSCert := fs.String("eventbus-tls-cert", env("GAWK_ADMIN_EVENTBUS_TLS_CERT", ""),
+		"client certificate for NATS mTLS; with verify_and_map its subject DN is the NATS user")
+	eventBusTLSKey := fs.String("eventbus-tls-key", env("GAWK_ADMIN_EVENTBUS_TLS_KEY", ""),
+		"private key for -eventbus-tls-cert")
+	eventBusCAFile := fs.String("eventbus-ca-file", env("GAWK_ADMIN_EVENTBUS_CA_FILE", ""),
+		"CA bundle verifying the NATS server; empty uses the platform trust store")
+	eventBusManageStream := fs.String("eventbus-manage-stream", env("GAWK_ADMIN_EVENTBUS_MANAGE_STREAM", "true"),
+		"create and update the stream and its durable consumer; false binds to objects an operator declares (e.g. NACK CRs)")
+	eventBusConsumer := fs.String("eventbus-consumer", env("GAWK_ADMIN_EVENTBUS_CONSUMER", ""),
+		"durable consumer name; empty uses the built-in default")
 	eventBusStream := fs.String("eventbus-stream", env("GAWK_ADMIN_EVENTBUS_STREAM", "GAWK_EVENTS"),
 		"JetStream stream this portal creates and consumes")
 	eventBusMaxBytes := fs.String("eventbus-max-bytes", env("GAWK_ADMIN_EVENTBUS_MAX_BYTES", "268435456"),
@@ -256,6 +284,20 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 	cfg.EventBusURL = strings.TrimSpace(*eventBusURL)
 	cfg.EventBusCredsFile = strings.TrimSpace(*eventBusCredsFile)
+	cfg.EventBusTLSCert = strings.TrimSpace(*eventBusTLSCert)
+	cfg.EventBusTLSKey = strings.TrimSpace(*eventBusTLSKey)
+	cfg.EventBusCAFile = strings.TrimSpace(*eventBusCAFile)
+	cfg.EventBusConsumer = strings.TrimSpace(*eventBusConsumer)
+	if (cfg.EventBusTLSCert == "") != (cfg.EventBusTLSKey == "") {
+		// Half a client identity authenticates as nobody, and the failure is a
+		// silent reconnect loop rather than an error.
+		return Config{}, fmt.Errorf("-eventbus-tls-cert and -eventbus-tls-key must be set together")
+	}
+	manageStream, err := strconv.ParseBool(strings.TrimSpace(*eventBusManageStream))
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid -eventbus-manage-stream %q (want true|false)", *eventBusManageStream)
+	}
+	cfg.EventBusManageStream = manageStream
 	cfg.EventBusStream = strings.TrimSpace(*eventBusStream)
 	if cfg.EventBusStream == "" {
 		return Config{}, fmt.Errorf("invalid -eventbus-stream: want a stream name")
@@ -441,6 +483,9 @@ func (c Config) LogAttrs() []any {
 		"eventBusUrl", c.EventBusURL,
 		"eventBusCredsFile", set(c.EventBusCredsFile),
 		"eventBusStream", c.EventBusStream,
+		"eventBusManageStream", c.EventBusManageStream,
+		"eventBusTlsCert", c.EventBusTLSCert,
+		"eventBusCaFile", c.EventBusCAFile,
 		"eventBusInsecure", c.EventBusInsecure,
 		"activityRetention", c.ActivityRetention.String(),
 		"logLevel", c.LogLevel.String(),
