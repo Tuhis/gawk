@@ -70,7 +70,7 @@ feature set exists).
 | R49 | [Rooms read API and room activity events](#r49--rooms-read-api-and-room-activity-events) | 🔧 designed 2026-09-15, revised 2026-09-16, not started (RA1–RA5) — **depends on R48, R50, R51** and R42: `GET /api/v1/rooms/{name}` with the live roster and attachment state (a new read-only `/internal/admin/rooms` on the relay ops listener, scraped by relayscan on request), a `rooms-reader` role for client-credentials service identities such as the planned Mumble bot, and opt-in `room.attached` / `room.detached` / `room.participant_joined` / `room.participant_left` webhook events with a per-webhook event filter, **sourced from the R50 bus — nothing polls** ([docs/50](docs/50-rooms-read-api.md)) |
 | R50 | [Relay event bus over NATS JetStream](#r50--relay-event-bus-over-nats-jetstream) | 🔧 designed 2026-09-16, not started (EB1–EB5) — the relay publishes broadcast and room lifecycle, participant, attachment and coalesced viewer-count events to an operator-provided NATS JetStream from its existing fan-out points, never blocking the media path; `gawk-admin`'s leader consumes a durable stream into the events feed with exactly-once ingest and retires the room sweep. **Optional, default off, off is byte-identical.** R49's activity webhooks depend on it ([docs/51](docs/51-relay-event-bus.md)) |
 | R51 | [Event contract: CloudEvents, JSON Schema, AsyncAPI](#r51--event-contract-cloudevents-json-schema-asyncapi) | ✅ shipped 2026-09-17 (EC1–EC4) — one CloudEvents 1.0 envelope for the R50 bus and the webhooks, one JSON Schema per event type in the public `gawk-server/events` package (22 types, golden vectors, drift tests), an AsyncAPI 3.0 catalogue served by `gawk-admin` at `/api/v1/asyncapi.json` with the schemas under `/api/v1/schemas/events/`, Standard Webhooks delivery replacing the `X-Gawk-*` headers, and naming/versioning/deprecation rules `go test` enforces; **R50 EB1 and R49 RA4 build on it** ([docs/52](docs/52-event-contract.md)) |
-| R52 | [Native macOS broadcaster](#r52--native-macos-broadcaster) | 💡 proposed 2026-09-18 with owner decisions OD1–OD10 taken, not started — no design doc yet; Rust in a shared desktop workspace (`gawk-broadcast-windows` → `gawk-broadcast-desktop`, MB0 is the rename), ScreenCaptureKit video + per-app audio via the system picker, VideoToolbox low-latency H.264, macOS 14+ Apple Silicon, Developer ID + notarization, built on `macos-latest`; chunk prefix `MB` reserved |
+| R52 | [Native macOS broadcaster](#r52--native-macos-broadcaster) | 🔧 designed 2026-09-18 (owner decisions OD1–OD10), not started (MB0–MB8) — Rust in a shared desktop workspace (`gawk-broadcast-windows` → `gawk-broadcast-desktop`, MB0 is the rename and lands alone), ScreenCaptureKit video + per-app audio via the system picker, VideoToolbox low-latency H.264 with an app-forced 500 ms GOP, macOS 14+ Apple Silicon, Developer ID + notarization from CI secrets, built on `macos-latest`; per-distribution release manifests keep R45 and the site card untouched ([docs/53](docs/53-macos-native-broadcaster.md)) |
 
 ---
 
@@ -4256,7 +4256,7 @@ the version gates that decide the floor:
 |---|---|---|
 | OD1 | Code shape | **One shared Cargo workspace, two binaries.** `gawk-broadcast-windows/` is renamed **`gawk-broadcast-desktop/`**; `wire`, `engine` and the portable halves of `audio` (Opus, framer, level meter) are shared; `capture`/`encode`/the platform half of `audio` grow `cfg(target_os = "macos")` siblings or sibling crates; `app` splits into the Windows and macOS shells. One workspace version, one release-please component (`gawk-broadcast-desktop/vX.Y.Z`), one changelog — **a Windows-only fix bumps the macOS binary too, and that is accepted.** |
 | OD2 | Rename sequencing | **MB0, a pure rename landed as its own PR before any macOS code**: zero behaviour change, the Windows artifact byte-identical modulo the embedded path/name strings, every reference (workflow, release-please, R46 manifest path, site card, docs/38, CLAUDE.md, INSTALL) updated in that one PR. |
-| OD3 | Signing and distribution | **Apple Developer ID + notarization**, from the first artifact. Owner enrols in the Apple Developer Program; the certificate and notarytool credentials are repository secrets used only in the release job; PRs from forks build unsigned and attach nothing (the existing gate). Distributed as a notarized, stapled `.app` in a `.dmg` or `.zip` on the GitHub Release, listed on the R46 download card. |
+| OD3 | Signing and distribution | **Apple Developer ID + notarization**, from the first release artifact. The signing certificate and notarization credentials are repository secrets used only in the release job (an App Store Connect API key, so nothing identifying ever appears in the tree or the logs); PRs build ad-hoc-signed test bundles and attach nothing (the existing gate). Distributed as a notarized, stapled `.app` in a `.zip` on the GitHub Release, listed on the R46 download card. |
 | OD4 | CI host | **GitHub-hosted `macos-latest` (Apple Silicon), path-filtered** — the one deliberate exception to docs/38 D18's "everything on the self-hosted Linux runners". Free and unlimited on a public repo, has the SDK, `codesign` and `notarytool` natively, and avoids the Xcode SLA grey zone of extracting the SDK onto Linux. Host-side lint/tests of the portable crates keep running on the Linux runners in the existing job. |
 | OD5 | Floor and architecture | **macOS 14 (Sonoma)+, Apple Silicon only.** 14.0 brings the system picker, 13+ brings SCK audio, 14.2's process taps are runtime-checked if ever needed. Intel Macs are pointed at the browser broadcaster (which hardware-encodes there); no universal binary and no x86_64 verification surface. |
 | OD6 | Picker | **The system `SCContentSharingPicker`**, not an in-app picker: Apple's own window/app/display dialog, reported exempt from the Sequoia re-approval prompt. Unlike Windows D6 this is a product trade-off, not forced: the picker's `SCContentFilter` already carries the app, so per-app audio works without a PID. What it costs is the Windows GUI's in-app thumbnails-and-repick; `allowsRepicking` covers re-pick. |
@@ -4310,33 +4310,16 @@ the version gates that decide the floor:
   `docs/gotchas.md` entries for the TCC/signing and SCK pool rules,
   `docs/self-hosting.md` untouched.
 
-**Key design questions** (for the design doc):
-
-- **Bindings**: `objc2-*` crates directly (unsafe FFI, but complete and
-  maintained by the objc2 project) versus `cidre` (ergonomic, one API for
-  everything we need, single-author). Recommendation to be argued in the
-  doc: `objc2-*`, on the CLAUDE.md "don't depend on what one person can
-  abandon" instinct, with the unsafe surface confined to the three
-  platform crates.
-- **How R47's in-place update works for a bundle.** The Windows
-  rename-swap moves one file; a notarized `.app` is a directory whose
-  quarantine and signature must survive the swap. Probably: download the
-  `.zip`, verify minisign + sha256, `ditto` into `<app>.new`, rename-swap
-  the bundle, relaunch — verified on hardware, with "download ready, here
-  is the file" as the fallback exactly as docs/48 D5 pre-registers.
-- **Whether the Sequoia picker exemption is real.** Apple has not
-  documented it; it is the reason for OD6 and goes on the verification
-  register, with the in-app picker as the recorded plan B if the prompt
-  appears anyway.
-- **SCK pool depth vs. encoder in-flight**: what `queueDepth` and
-  `MaxInFlight` pin keeps 60 fps without stalls, measured, not assumed.
-- **Where the system-picker UX puts "share my whole desktop"**: the picker
-  offers display mode; whether the app pre-selects a mode or always shows
-  the full dialog.
-- The Origin: Linux sends `gawk-broadcast://native`, Windows
-  `gawk-broadcast://windows` (docs/38 D19); `gawk-broadcast://macos` in the
-  relay's default allowlist is the one permitted production-side change, as
-  in R34.
+**Design** ([docs/53](docs/53-macos-native-broadcaster.md)) — the open
+questions the proposal listed, resolved there: bindings are the `objc2-*`
+framework crates with `cidre` as the named fallback (D3); the R47 install
+becomes a verified bundle swap with "download ready" as the fallback
+(D17); the Sequoia picker exemption is a verification-register item, not
+an assumption (V-1); the 500 ms GOP under low-latency mode is forced by
+the app frame by frame (D7, V-3); the R46 manifests stay **per
+distribution** (`gawk-broadcast-windows`, `gawk-broadcast-macos`) so the
+rename touches neither R45's URL nor the existing site card (D14); the
+origin is `gawk-broadcast://macos` (D16).
 
 **Non-goals**: software encode; HEVC/AV1 (viewer list is H.264-first, and
 AV1 encode does not exist on Apple hardware); HDR capture (macOS 15+, a
@@ -4349,13 +4332,13 @@ broadcaster.
 
 **Depends on**: R34 (the workspace it extends). R44 (icons) supplies the
 `.icns`; R45/R47 both say "both GUIs" and become "all three" — their docs
-get a dated note when MB lands, not before. Needs the Apple Developer
-Program enrolment (OD3) before the first signed artifact; MB0–MB5 can start
-without it.
+get a dated note when MB lands, not before. The signing secrets (docs/53
+D13) are needed before MB7's first signed artifact; MB0–MB6 do not need
+them.
 
-**Status**: proposed + owner decisions OD1–OD10 taken 2026-09-18, not
-started — no design doc yet; chunk prefix `MB` reserved (MB0 = the
-rename).
+**Status**: designed 2026-09-18 (owner decisions OD1–OD10), not started —
+chunks MB0–MB8 in [docs/53](docs/53-macos-native-broadcaster.md); MB0 is
+the rename and lands alone.
 
 ---
 
