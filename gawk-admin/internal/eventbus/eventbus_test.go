@@ -263,3 +263,33 @@ func TestDecodeRejectsNonCloudEvents(t *testing.T) {
 		t.Error("a non-object data decoded")
 	}
 }
+
+// TestNewFailsWhenTheStreamCannotBeEnsured: the portal OWNS the stream, so a
+// URL it cannot reach is a startup error rather than a consumer that quietly
+// never receives anything. (The relay's publisher takes the opposite view on
+// purpose — it must never fail to start because its telemetry sink is down.)
+func TestNewFailsWhenTheStreamCannotBeEnsured(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := New(ctx, Options{URL: "nats://127.0.0.1:1"})
+	if err == nil {
+		c.Close()
+		t.Fatal("New succeeded against a port with no NATS on it")
+	}
+	if c != nil {
+		t.Error("New returned both an error and a consumer")
+	}
+}
+
+// TestInsecureSkipsVerification pins what -eventbus-insecure actually does:
+// it is the docs/41 compose lane's switch, it has no chart value, and it warns
+// at every start — so the one thing it must not do is quietly become the
+// default.
+func TestInsecureSkipsVerification(t *testing.T) {
+	if !insecureTLS().InsecureSkipVerify {
+		t.Error("the insecure switch does not skip verification")
+	}
+	if (Options{}).Insecure {
+		t.Error("Insecure defaults to true")
+	}
+}
