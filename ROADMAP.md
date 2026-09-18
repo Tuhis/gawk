@@ -70,7 +70,7 @@ feature set exists).
 | R49 | [Rooms read API and room activity events](#r49--rooms-read-api-and-room-activity-events) | 🔧 designed 2026-09-15, revised 2026-09-16, not started (RA1–RA5) — **depends on R48, R50, R51** and R42: `GET /api/v1/rooms/{name}` with the live roster and attachment state (a new read-only `/internal/admin/rooms` on the relay ops listener, scraped by relayscan on request), a `rooms-reader` role for client-credentials service identities such as the planned Mumble bot, and opt-in `room.attached` / `room.detached` / `room.participant_joined` / `room.participant_left` webhook events with a per-webhook event filter, **sourced from the R50 bus — nothing polls** ([docs/50](docs/50-rooms-read-api.md)) |
 | R50 | [Relay event bus over NATS JetStream](#r50--relay-event-bus-over-nats-jetstream) | 🔧 designed 2026-09-16, not started (EB1–EB5) — the relay publishes broadcast and room lifecycle, participant, attachment and coalesced viewer-count events to an operator-provided NATS JetStream from its existing fan-out points, never blocking the media path; `gawk-admin`'s leader consumes a durable stream into the events feed with exactly-once ingest and retires the room sweep. **Optional, default off, off is byte-identical.** R49's activity webhooks depend on it ([docs/51](docs/51-relay-event-bus.md)) |
 | R51 | [Event contract: CloudEvents, JSON Schema, AsyncAPI](#r51--event-contract-cloudevents-json-schema-asyncapi) | ✅ shipped 2026-09-17 (EC1–EC4) — one CloudEvents 1.0 envelope for the R50 bus and the webhooks, one JSON Schema per event type in the public `gawk-server/events` package (22 types, golden vectors, drift tests), an AsyncAPI 3.0 catalogue served by `gawk-admin` at `/api/v1/asyncapi.json` with the schemas under `/api/v1/schemas/events/`, Standard Webhooks delivery replacing the `X-Gawk-*` headers, and naming/versioning/deprecation rules `go test` enforces; **R50 EB1 and R49 RA4 build on it** ([docs/52](docs/52-event-contract.md)) |
-| R52 | [Native macOS broadcaster](#r52--native-macos-broadcaster) | 🔧 designed 2026-09-18 (owner decisions OD1–OD10), not started (MB0–MB8) — Rust in a shared desktop workspace (`gawk-broadcast-windows` → `gawk-broadcast-desktop`, MB0 is the rename and lands alone), ScreenCaptureKit video + per-app audio via the system picker, VideoToolbox low-latency H.264 with an app-forced 500 ms GOP, macOS 14+ Apple Silicon, Developer ID + notarization from CI secrets, built on `macos-latest`; per-distribution release manifests keep R45 and the site card untouched ([docs/53](docs/53-macos-native-broadcaster.md)) |
+| R52 | [Native macOS broadcaster](#r52--native-macos-broadcaster) | 🔧 designed 2026-09-18 (owner decisions OD1–OD10), not started (MB0–MB8) — Rust in a shared desktop workspace (`gawk-broadcast-windows` → `gawk-broadcast-desktop`, MB0 is the rename and lands alone), ScreenCaptureKit video + per-app audio via the system picker, VideoToolbox low-latency H.264 with an app-forced 500 ms GOP, macOS 14+ Apple Silicon, Developer ID + notarization from CI secrets, built on `macos-latest`; per-distribution release manifests keep R45 and the site card untouched ([docs/54](docs/54-macos-native-broadcaster.md)) |
 
 ---
 
@@ -4314,12 +4314,12 @@ the version gates that decide the floor:
   line, and published to `releases/gawk-broadcast-desktop/latest.json` as a
   second platform asset. `cargo-deny` and the notices gate cover the new
   crates.
-- **Docs**: `docs/53-macos-native-broadcaster.md` (design + chunks
+- **Docs**: `docs/54-macos-native-broadcaster.md` (design + chunks
   MB0–MB8 + an on-hardware verification register), INSTALL section,
   `docs/gotchas.md` entries for the TCC/signing and SCK pool rules,
   `docs/self-hosting.md` untouched.
 
-**Design** ([docs/53](docs/53-macos-native-broadcaster.md)) — the open
+**Design** ([docs/54](docs/54-macos-native-broadcaster.md)) — the open
 questions the proposal listed, resolved there: bindings are the `objc2-*`
 framework crates with `cidre` as the named fallback (D3); the R47 install
 becomes a verified bundle swap with "download ready" as the fallback
@@ -4341,12 +4341,12 @@ broadcaster.
 
 **Depends on**: R34 (the workspace it extends). R44 (icons) supplies the
 `.icns`; R45/R47 both say "both GUIs" and become "all three" — their docs
-get a dated note when MB lands, not before. The signing secrets (docs/53
+get a dated note when MB lands, not before. The signing secrets (docs/54
 D13) are needed before MB7's first signed artifact; MB0–MB6 do not need
 them.
 
 **Status**: designed 2026-09-18 (owner decisions OD1–OD10), not started —
-chunks MB0–MB8 in [docs/53](docs/53-macos-native-broadcaster.md); MB0 is
+chunks MB0–MB8 in [docs/54](docs/54-macos-native-broadcaster.md); MB0 is
 the rename and lands alone.
 
 ---
