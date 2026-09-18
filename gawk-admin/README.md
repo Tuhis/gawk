@@ -198,6 +198,11 @@ view and pruned by `-activity-retention` (the audit trail never is). Ingest is
 exactly-once: every row carries the bus message's CloudEvents id in a unique
 `source` column, so a redelivery writes nothing and is acked anyway.
 
+Turning it on cannot take the portal down: the consumer connects in the
+background and the leader retries the stream, so an unreachable or
+misconfigured NATS leaves the feed empty and everything else working. `GET
+/api/v1/relays`' `bus` section is where that shows.
+
 Two consequences worth knowing before turning it on:
 
 - The reconciler's once-a-minute **room sweep is retired** while the bus is on.

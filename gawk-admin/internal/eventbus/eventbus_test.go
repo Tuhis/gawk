@@ -62,6 +62,20 @@ func (f *fakeIngest) types() []string {
 	return out
 }
 
+// leading is newConsumer plus what the leader does first: create the stream.
+// Publishing before it exists is a counted drop by design (docs/51 §6), which
+// is realistic but not what these tests are about.
+func leading(t *testing.T, url string, ing Ingester) *Consumer {
+	t.Helper()
+	c := newConsumer(t, url, ing)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.ensureStream(ctx); err != nil {
+		t.Fatalf("create the stream: %v", err)
+	}
+	return c
+}
+
 func newConsumer(t *testing.T, url string, ing Ingester) *Consumer {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -120,14 +134,23 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// TestEnsureStreamIsIdempotent: two replicas may both start before either wins
-// the election, and a restart after a limit change must apply it. Creating the
-// stream is therefore an update, never a failure.
+// TestEnsureStreamIsIdempotent: two leaders may overlap across a handover, and
+// a restart after a limit change must apply it. Creating the stream is
+// therefore an update, never a failure.
+//
+// The stream is created by the LEADER (awaitStream, from Run), not at
+// construction: a portal must start whether or not NATS is up.
 func TestEnsureStreamIsIdempotent(t *testing.T) {
 	url := runNATS(t)
 	c := newConsumer(t, url, nil)
-
 	ctx := context.Background()
+
+	if c.stream != nil {
+		t.Error("the stream was created before anything was elected leader")
+	}
+	if err := c.ensureStream(ctx); err != nil {
+		t.Fatal(err)
+	}
 	info, err := c.stream.Info(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -138,8 +161,8 @@ func TestEnsureStreamIsIdempotent(t *testing.T) {
 	}
 
 	second := newConsumer(t, url, nil)
-	if second == nil {
-		t.Fatal("a second start failed where it should have updated")
+	if err := second.ensureStream(ctx); err != nil {
+		t.Fatalf("a second ensure failed where it should have updated: %v", err)
 	}
 }
 
@@ -148,7 +171,7 @@ func TestEnsureStreamIsIdempotent(t *testing.T) {
 func TestConsumesAndIngestsOnce(t *testing.T) {
 	url := runNATS(t)
 	ing := &fakeIngest{}
-	c := newConsumer(t, url, ing)
+	c := leading(t, url, ing)
 
 	publish(t, url, "pod-a:1", events.TypeRoomOpened, "aa11bb22cc33",
 		events.RoomOpenedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", Kind: events.RoomKindDynamic})
@@ -187,7 +210,7 @@ func TestConsumesAndIngestsOnce(t *testing.T) {
 func TestDeltasAreNotStored(t *testing.T) {
 	url := runNATS(t)
 	ing := &fakeIngest{}
-	c := newConsumer(t, url, ing)
+	c := leading(t, url, ing)
 
 	publish(t, url, "pod-a:1", events.TypeBroadcastViewers, "3f9a1c4e7b2d",
 		events.BroadcastViewersData{BroadcastID: "k7m2q9", BroadcastKey: "3f9a1c4e7b2d",
@@ -213,7 +236,7 @@ func TestDeltasAreNotStored(t *testing.T) {
 func TestGapsAreCounted(t *testing.T) {
 	url := runNATS(t)
 	ing := &fakeIngest{}
-	c := newConsumer(t, url, ing)
+	c := leading(t, url, ing)
 
 	publish(t, url, "pod-a:1", events.TypeRoomOpened, "aa11bb22cc33",
 		events.RoomOpenedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", Kind: events.RoomKindDynamic})
@@ -264,20 +287,47 @@ func TestDecodeRejectsNonCloudEvents(t *testing.T) {
 	}
 }
 
-// TestNewFailsWhenTheStreamCannotBeEnsured: the portal OWNS the stream, so a
-// URL it cannot reach is a startup error rather than a consumer that quietly
-// never receives anything. (The relay's publisher takes the opposite view on
-// purpose — it must never fail to start because its telemetry sink is down.)
-func TestNewFailsWhenTheStreamCannotBeEnsured(t *testing.T) {
+// TestAnUnreachableBusDoesNotStopThePortal: the portal's job is moderation,
+// and the bus is an optional feed into it. A NATS that is down, still starting
+// or refusing the credential must not keep the portal from serving — that
+// would take the ban pipe down with the feed, for a subsystem that is off by
+// default.
+//
+// The relay's publisher takes the same view for the same reason, and CI found
+// this the hard way: making it fatal put the dev stack's portal in a restart
+// loop the moment the bus was switched on.
+func TestAnUnreachableBusDoesNotStopThePortal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	c, err := New(ctx, Options{URL: "nats://127.0.0.1:1"})
-	if err == nil {
-		c.Close()
-		t.Fatal("New succeeded against a port with no NATS on it")
+	if err != nil {
+		t.Fatalf("New against a port with no NATS on it: %v", err)
 	}
-	if c != nil {
-		t.Error("New returned both an error and a consumer")
+	if c == nil {
+		t.Fatal("no consumer")
+	}
+	defer c.Close()
+
+	// It says so rather than pretending: an operator looking at /relays sees
+	// that the stream is not there.
+	h := c.Health(ctx)
+	if h == nil || h.Error == "" {
+		t.Errorf("health = %+v, want an error explaining the silence", h)
+	}
+
+	// And Run keeps trying rather than returning: it gives up only when this
+	// replica stops being the leader.
+	runCtx, stop := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer stop()
+	done := make(chan error, 1)
+	go func() { done <- c.Run(runCtx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run returned %v; losing leadership is not a failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("Run did not return when leadership ended")
 	}
 }
 

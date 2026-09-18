@@ -73,6 +73,12 @@ the PR review (#329):
   the counters are registered only when `-eventbus-url` is set. An always-zero
   series would claim a subsystem that is not there, and "is it configured?" is
   answered by the config view and by `/relays`' bus section.
+- **An unreachable bus never stops `gawk-admin` from serving.** The consumer
+  connects in the background and the leader retries the stream until it exists;
+  the portal's job is moderation, and a feed that is off by default must not be
+  able to take the ban pipe down with it. CI found this the direct way — making
+  it fatal put the dev stack's portal in a restart loop the moment the bus was
+  switched on.
 - **The feed's `type` vocabulary split in two.** R51 holds
   `store.AllEventTypes()` equal to the contract's moderation row table, so the
   ingested activity types live in `store.ActivityEventTypes()` and

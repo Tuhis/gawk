@@ -1200,8 +1200,11 @@ eventbus:
   credsSecretRef: { name: gawk-admin-nats, key: user.creds }
 ```
 
-Order does not matter. A relay publishing before the stream exists drops and
-counts; the portal creates the stream at its next start.
+Order does not matter, and neither does NATS being up. A relay publishing
+before the stream exists drops and counts; the portal's elected leader creates
+the stream as soon as it can reach NATS, retrying until it can. A bus that is
+down, misconfigured or refusing the credential never stops the portal itself
+from serving — moderation does not depend on the feed.
 
 ### 12.4 Is it alive?
 

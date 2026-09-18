@@ -138,13 +138,19 @@ type PodState struct {
 	Gaps int `json:"gaps"`
 }
 
-// New connects and ensures the stream and the durable consumer exist. An empty
-// URL returns (nil, nil): every method on a nil *Consumer is a no-op, which is
-// what makes "off is byte-identical" true.
+// New connects. An empty URL returns (nil, nil): every method on a nil
+// *Consumer is a no-op, which is what makes "off is byte-identical" true.
 //
-// Ensuring is idempotent — a second start updates the stream rather than
-// failing — because two replicas may both start before either wins the
-// election, and a restart after a limit change must apply it.
+// It does NOT wait for NATS, and a bus that is down is not a startup error.
+// The portal's job is moderation; the bus is an optional feed into it, and a
+// portal that refused to serve because NATS was unreachable would take the ban
+// pipe down with it. The client reconnects in the background, Run keeps trying
+// to create the stream, and /relays' bus section is where an operator sees
+// that it has not happened yet.
+//
+// The stream is still THIS side's to own (docs/51 D2) — the relays only
+// publish — it is just created on the leader, once there is something to
+// create it on.
 func New(ctx context.Context, opts Options) (*Consumer, error) {
 	if opts.URL == "" {
 		return nil, nil
@@ -193,11 +199,35 @@ func New(ctx context.Context, opts Options) (*Consumer, error) {
 		live: map[string]LiveEntry{},
 		pods: map[string]PodState{},
 	}
-	if err := c.ensureStream(ctx); err != nil {
-		nc.Close()
-		return nil, err
-	}
 	return c, nil
+}
+
+// awaitStream keeps trying to create the stream until it exists or the leader
+// stops being one.
+//
+// NATS may be unreachable, still starting, or refusing this credential; none
+// of those is worth giving up over, and none of them should have stopped the
+// portal from serving in the first place. Each failure is logged once per
+// retry so an operator watching the log sees why the feed is quiet.
+func (c *Consumer) awaitStream(ctx context.Context) error {
+	const retry = 5 * time.Second
+	for {
+		err := c.ensureStream(ctx)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			// Leadership moved or the process is stopping: not an error worth
+			// reporting, the next leader will do this.
+			return nil
+		}
+		c.log.Warn("event bus stream not ready, retrying", "stream", c.opts.Stream, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(retry):
+		}
+	}
 }
 
 // ensureStream creates or updates GAWK_EVENTS with the documented limits.
@@ -235,6 +265,14 @@ func (c *Consumer) Close() {
 // rebuilt consumer costs work and loses nothing.
 func (c *Consumer) Run(ctx context.Context) error {
 	if c == nil {
+		return nil
+	}
+	if err := c.awaitStream(ctx); err != nil {
+		return err
+	}
+	if c.stream == nil {
+		// Leadership ended while the stream was still out of reach. Nothing
+		// to consume from and nothing to report: the next leader picks this up.
 		return nil
 	}
 	cons, err := c.stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
@@ -357,6 +395,13 @@ func (c *Consumer) Health(ctx context.Context) *Health {
 		h.Pods = append(h.Pods, st)
 	}
 	c.mu.Unlock()
+	if c.stream == nil {
+		// Configured, not yet established: the leader is still trying, or
+		// this replica is not the leader. Either way the feed is not flowing
+		// and the operator should see that rather than a blank.
+		h.Error = "stream not created yet"
+		return h
+	}
 	if info, err := c.stream.Info(ctx); err == nil {
 		h.Messages = info.State.Msgs
 		h.Bytes = info.State.Bytes
