@@ -76,6 +76,11 @@ component TabButton inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "gawk-broadcast";
+    // The title-bar and taskbar icon (R44, docs/53 D6): the shared mark,
+    // embedded into the binary by slint-build (its default for Rust output),
+    // so the EXE stays a single file. Explorer's icon is a separate surface —
+    // the linked resource from build.rs — and both come from the same SVG.
+    icon: @image-url("../../../../assets/icon/png/gawk-256.png");
     background: Palette.bg;
     preferred-width: 520px;
     preferred-height: 760px;
