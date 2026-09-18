@@ -95,6 +95,29 @@ func (n xmlNode) attr(name string) (string, bool) {
 	return "", false
 }
 
+// allowedAttrs is the per-element attribute allowlist. Everything the
+// renderer would ignore is rejected rather than tolerated, because gawk.svg
+// is also installed as the scalable icon and drawn by the desktop's real SVG
+// engine: an `opacity`, `stroke`, `fill-rule`, `style` or a `transform` on a
+// shape would change that rendering while `check` stayed green — the exact
+// drift D2 exists to prevent.
+var allowedAttrs = map[string]map[string]bool{
+	"svg":  {"xmlns": true, "width": true, "height": true, "viewBox": true},
+	"g":    {"transform": true},
+	"rect": {"x": true, "y": true, "width": true, "height": true, "rx": true, "ry": true, "fill": true},
+	"path": {"d": true, "fill": true},
+}
+
+func checkAttrs(n xmlNode) error {
+	allowed := allowedAttrs[n.XMLName.Local]
+	for _, a := range n.Attrs {
+		if !allowed[a.Name.Local] || a.Name.Space != "" {
+			return fmt.Errorf("svg: <%s %s=…>: attribute is outside the supported subset (it would change how the desktop draws the scalable icon but not how tools/icon renders it)", n.XMLName.Local, a.Name.Local)
+		}
+	}
+	return nil
+}
+
 // ParseSVG parses the icon subset described at the top of this file.
 func ParseSVG(data []byte) (*Document, error) {
 	var root xmlNode
@@ -103,6 +126,9 @@ func ParseSVG(data []byte) (*Document, error) {
 	}
 	if root.XMLName.Local != "svg" {
 		return nil, fmt.Errorf("svg: root element is <%s>, want <svg>", root.XMLName.Local)
+	}
+	if err := checkAttrs(root); err != nil {
+		return nil, err
 	}
 	doc := &Document{}
 	vb, ok := root.attr("viewBox")
@@ -136,6 +162,12 @@ func ParseSVG(data []byte) (*Document, error) {
 
 func (doc *Document) walk(nodes []xmlNode, m affine) error {
 	for _, n := range nodes {
+		if allowedAttrs[n.XMLName.Local] == nil {
+			return fmt.Errorf("svg: unsupported element <%s>", n.XMLName.Local)
+		}
+		if err := checkAttrs(n); err != nil {
+			return err
+		}
 		switch n.XMLName.Local {
 		case "g":
 			gm := m
@@ -229,8 +261,10 @@ func parseRect(n xmlNode, m affine) (Shape, error) {
 	if w <= 0 || h <= 0 {
 		return Shape{}, fmt.Errorf("svg: <rect> without a positive width and height")
 	}
-	if ry, ok := n.attr("ry"); ok && strings.TrimSpace(ry) != strconv.FormatFloat(rx, 'f', -1, 64) {
-		return Shape{}, fmt.Errorf("svg: <rect ry=%q>: only ry == rx is supported", ry)
+	if ry, err := numAttr(n, "ry", rx); err != nil {
+		return Shape{}, err
+	} else if ry != rx {
+		return Shape{}, fmt.Errorf("svg: <rect rx=%g ry=%g>: only ry == rx is supported", rx, ry)
 	}
 	rx = math.Min(rx, math.Min(w, h)/2)
 	pb := pathBuilder{m: m}
@@ -429,6 +463,11 @@ func parsePathData(d string, m affine) ([]Op, error) {
 			sc.i++
 		} else if cmd == 0 {
 			return nil, fmt.Errorf("svg: path data must start with a command")
+		} else if cmd == 'Z' || cmd == 'z' {
+			// Closepath takes no arguments and repeats nothing, so a number
+			// here is malformed — and without this branch nothing would be
+			// consumed and the loop would never advance.
+			return nil, fmt.Errorf("svg: path data: number after closepath at offset %d", sc.i)
 		} else if cmd == 'M' {
 			cmd = 'L' // implicit lineto after a moveto
 		} else if cmd == 'm' {
