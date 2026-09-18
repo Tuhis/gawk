@@ -82,7 +82,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`28`](28-native-broadcaster-audio.md) | R25 — Native broadcaster audio |
 | [`39`](39-linux-app-sharing.md) | R35 — Single-app sharing (window + app audio) on Linux |
 | [`38`](38-windows-native-broadcaster.md) | R34 — Native **Windows** broadcaster |
-| [`53`](53-macos-native-broadcaster.md) | R52 — Native macOS broadcaster: ScreenCaptureKit + VideoToolbox in the shared Rust desktop workspace, system picker, Developer ID + notarization |
+| [`54`](54-macos-native-broadcaster.md) | R52 — Native macOS broadcaster: ScreenCaptureKit + VideoToolbox in the shared Rust desktop workspace, system picker, Developer ID + notarization |
 | [`47`](47-desktop-update-check.md) | R45 — Update notification for both desktop broadcasters (launch-time check of the R46 manifest) |
 | [`48`](48-signed-in-place-update.md) | R47 — Signed in-place update for both desktop broadcasters (minisign over `SHA256SUMS`, rename-swap install) |
 | [`53`](53-app-icons.md) | R44 — App icons for both desktop broadcasters: one SVG, generated + drift-checked derivatives, Gio `app.ID` + desktop entry, Slint `Window.icon` + a linked `.res` |
