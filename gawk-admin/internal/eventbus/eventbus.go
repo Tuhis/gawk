@@ -404,11 +404,9 @@ func decode(body []byte) (Event, error) {
 	return ev, nil
 }
 
+// isDelta names the two coalesced, high-rate types the relay publishes. They
+// update the live view and are never stored: a write every five seconds per
+// live thing, for data nobody audits, is not an audit trail (docs/51 D5).
 func isDelta(typ string) bool {
-	for _, t := range events.DeltaTypes() {
-		if t == typ {
-			return true
-		}
-	}
-	return false
+	return typ == events.TypeBroadcastViewers || typ == events.TypeRoomAttachmentUpdated
 }

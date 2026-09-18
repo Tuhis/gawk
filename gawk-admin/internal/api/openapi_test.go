@@ -150,7 +150,7 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	})
 
 	t.Run("event types are the document's enum", func(t *testing.T) {
-		report(t, checkEventTypes(doc, ops, store.AllEventTypes()))
+		report(t, checkEventTypes(doc, ops, store.FeedEventTypes()))
 	})
 
 	t.Run("every example decodes into its Go type", func(t *testing.T) {

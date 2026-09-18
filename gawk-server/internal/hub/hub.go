@@ -1388,7 +1388,7 @@ func (r *Registry) TakeOverPublish(id string) (string, *Publisher, error) {
 	// because it was replaced, and a new one started. A consumer that saw
 	// only "started" twice could not tell a reconnect from a duplicate.
 	if superseded {
-		r.busEnded(normID, events.ReasonReplaced)
+		r.busEnded(normID, events.BroadcastEndedReplaced)
 	}
 	r.busStarted(normID)
 
@@ -1481,12 +1481,11 @@ func (r *Registry) PumpViewerCounts(now time.Time) {
 		// every tick.
 		local := b.externalHumansLocked()
 		if b.edge {
-			r.busViewers(b.id, local, nil, true)
+			r.busViewers(b.id, local, 0, true)
 			continue
 		}
 		g := b.globalViewersLocked()
-		globalForBus := int(g)
-		r.busViewers(b.id, local, &globalForBus, false)
+		r.busViewers(b.id, local, int(g), false)
 		if b.viewerCountEverEmitted && g == b.lastViewerCount &&
 			now.Sub(b.lastViewerCountEmitAt) < ViewerCountKeepalive {
 			continue
@@ -2238,9 +2237,9 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 	// and its teardown is not the broadcast ending (R17 W4). force is the
 	// admin-kill path, which is a different fact from the grace GC.
 	if !edge {
-		busReason := events.ReasonGC
+		busReason := events.BroadcastEndedGC
 		if force {
-			busReason = events.ReasonKilled
+			busReason = events.BroadcastEndedKilled
 		}
 		r.busEnded(id, busReason)
 	}

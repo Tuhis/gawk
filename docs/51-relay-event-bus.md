@@ -15,25 +15,31 @@ catalogue; EB1 depends on its EC1.
 
 ## 0. What shipped (2026-09-18)
 
-As designed, with three things worth recording because a reader of the design
+As designed, with four things worth recording because a reader of the design
 alone would look for them in the wrong place:
 
-- **EB1's schemas, vectors and catalogue entries shipped as R51's EC1**, which
-  is what EB1 depended on. `gawk-server/events` is the contract package; the
-  relay's `internal/eventbus` imports it and encodes nothing itself.
+- **The contract package is R51's, shipped before this** ([docs/52](52-event-contract.md),
+  EC1–EC4). `internal/eventbus` imports `gawk-server/events` for the envelope
+  and the data types and encodes nothing itself; EB1 shipped no schemas.
 - **Attachment events are published from `attachLocked`, not from
   `broadcastLocked`.** The participant-facing funnel misses exactly the attaches
   with no participants to notify — a mint's first broadcast, an adoption's
   re-attach — and a consumer that learned about streams only there would never
   see them.
 - **A re-home is a first-class fact, not an inference.** `Registry.ReleaseHome`
-  publishes `participant_left{reason: home_moved}` for each participant and
-  suppresses the `room.closed` that the `EndRoom` behind it would otherwise
-  produce (D9). The transport calls it when the home lease is lost.
-
-Not shipped here, and still R51's: the webhook side of the contract
-(Standard Webhooks, the sensitive-field projection) and the served
-documents — so `internal/notify` still sends the R39 format.
+  publishes a `room.participant_left` for each participant and suppresses the
+  `room.closed` that the `EndRoom` behind it would otherwise produce (D9). The
+  transport calls it when the home lease is lost. D9's `reason: home_moved`
+  did **not** ship: `room.participant_left` has no `reason` property in R51's
+  schema, and the rejoin half — `participant_joined` with `rejoin: true` on the
+  new home — already tells a consumer that wants to suppress the pair what it
+  needs. Adding the property later is an additive schema change (docs/52 D6 b).
+- **The feed's `type` vocabulary split in two.** R51 holds
+  `store.AllEventTypes()` equal to the contract's moderation row table, so the
+  ingested activity types live in `store.ActivityEventTypes()` and
+  `store.FeedEventTypes()` is the union the `?type=` filter and the OpenAPI
+  enum use. An activity row is never delivered to a webhook, which is why it
+  needs no CloudEvents mapping of its own.
 
 ## 1. Purpose
 

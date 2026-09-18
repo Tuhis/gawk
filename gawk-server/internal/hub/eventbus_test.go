@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -26,7 +27,8 @@ func (b *busRecorder) types() []string {
 	defer b.mu.Unlock()
 	out := make([]string, len(b.evs))
 	for i, ev := range b.evs {
-		out[i] = events.SchemaName(ev.Type)
+		// "broadcast.started", not the bare "started" events.Name gives.
+		out[i] = strings.TrimPrefix(ev.Type, events.TypePrefix)
 	}
 	return out
 }
@@ -83,10 +85,10 @@ func TestBroadcastLifecycleOnTheBus(t *testing.T) {
 		t.Fatalf("event sequence = %v, want %v", got, want)
 	}
 	ended := rec.only(events.TypeBroadcastEnded)
-	if d := ended[0].Data.(events.BroadcastEndedData); d.Reason != events.ReasonReplaced {
+	if d := ended[0].Data.(events.BroadcastEndedData); d.Reason != events.BroadcastEndedReplaced {
 		t.Errorf("first end reason = %q, want replaced", d.Reason)
 	}
-	if d := ended[1].Data.(events.BroadcastEndedData); d.Reason != events.ReasonGC {
+	if d := ended[1].Data.(events.BroadcastEndedData); d.Reason != events.BroadcastEndedGC {
 		t.Errorf("second end reason = %q, want gc", d.Reason)
 	}
 	// The subject is the HMAC'd key; the raw joinable ID stays in the body,
@@ -95,7 +97,7 @@ func TestBroadcastLifecycleOnTheBus(t *testing.T) {
 	if started[0].Key != r.ObfuscateID(id) || started[0].Key == id {
 		t.Errorf("subject = %q, want the obfuscated key of %q", started[0].Key, id)
 	}
-	if d := started[0].Data.(events.BroadcastStartedData); d.ID != id || d.Role != events.RoleOrigin {
+	if d := started[0].Data.(events.BroadcastStartedData); d.BroadcastID != id || d.Role != events.RoleOrigin {
 		t.Errorf("started data = %+v", d)
 	}
 }
@@ -116,7 +118,7 @@ func TestKillIsNotAGC(t *testing.T) {
 	if len(ended) != 1 {
 		t.Fatalf("got %d broadcast.ended, want 1", len(ended))
 	}
-	if d := ended[0].Data.(events.BroadcastEndedData); d.Reason != events.ReasonKilled {
+	if d := ended[0].Data.(events.BroadcastEndedData); d.Reason != events.BroadcastEndedKilled {
 		t.Errorf("end reason = %q, want killed", d.Reason)
 	}
 }
@@ -141,7 +143,9 @@ func TestEdgePublishesOnlyItsOwnViewers(t *testing.T) {
 		t.Fatalf("got %d broadcast.viewers, want 1: %v", len(viewers), rec.types())
 	}
 	d := viewers[0].Data.(events.BroadcastViewersData)
-	if d.Role != events.RoleEdge || d.ViewersGlobal != nil || d.ID != id {
+	// An edge reports its own count under both properties: the schema requires
+	// viewersGlobal, and a zero there would read as "nobody is watching".
+	if d.Role != events.RoleEdge || d.ViewersGlobal != d.ViewersLocal || d.BroadcastID != id {
 		t.Errorf("viewers data = %+v", d)
 	}
 }

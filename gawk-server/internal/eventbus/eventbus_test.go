@@ -119,8 +119,8 @@ func TestPublishesCloudEvents(t *testing.T) {
 		Type: events.TypeRoomParticipantJoined,
 		Key:  "aa11bb22cc33",
 		Time: time.Date(2026, 9, 18, 9, 30, 0, 0, time.UTC),
-		Data: events.RoomParticipantData{Code: "pf4tzn", Key: "aa11bb22cc33",
-			ParticipantID: 7, Nickname: "tuhis", ClientKind: events.ClientWebBroadcaster},
+		Data: events.RoomParticipantJoinedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33",
+			ParticipantID: 7, Nickname: "tuhis", ClientKind: events.ClientKindWebBroadcaster},
 	})
 
 	msg := firstMessage(t, js, "gawk.room.aa11bb22cc33.participant_joined")
@@ -142,11 +142,11 @@ func TestPublishesCloudEvents(t *testing.T) {
 	}
 	// The body is byte-identical to the contract package's encoding of the
 	// same event, with the id the publisher assigned.
-	want, err := events.Marshal(events.New(ce["id"].(string), events.RelaySource("pod-a"),
-		events.TypeRoomParticipantJoined, "aa11bb22cc33",
+	want, err := events.Marshal(events.New(events.TypeRoomParticipantJoined,
+		ce["id"].(string), events.SourceRelay("pod-a"), "aa11bb22cc33",
 		time.Date(2026, 9, 18, 9, 30, 0, 0, time.UTC),
-		events.RoomParticipantData{Code: "pf4tzn", Key: "aa11bb22cc33",
-			ParticipantID: 7, Nickname: "tuhis", ClientKind: events.ClientWebBroadcaster}))
+		events.RoomParticipantJoinedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33",
+			ParticipantID: 7, Nickname: "tuhis", ClientKind: events.ClientKindWebBroadcaster}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestSequenceIsMonotonicPerPod(t *testing.T) {
 	p, _ := newTestPublisher(t, url, nil)
 	for i := 0; i < 5; i++ {
 		p.Publish(Event{Type: events.TypeBroadcastStarted, Key: "3f9a1c4e7b2d",
-			Data: events.BroadcastStartedData{ID: "k7m2q9", Key: "3f9a1c4e7b2d", Role: events.RoleOrigin}})
+			Data: events.BroadcastStartedData{BroadcastID: "k7m2q9", BroadcastKey: "3f9a1c4e7b2d", Role: events.RoleOrigin}})
 	}
 	ids := collectIDs(t, js, "gawk.broadcast.>", 5)
 	for i := 1; i < len(ids); i++ {
@@ -187,7 +187,7 @@ func TestPublishNeverBlocks(t *testing.T) {
 	start := time.Now()
 	for i := 0; i < 5000; i++ {
 		p.Publish(Event{Type: events.TypeBroadcastViewers, Key: "3f9a1c4e7b2d",
-			Data: events.BroadcastViewersData{ID: "k7m2q9", Key: "3f9a1c4e7b2d",
+			Data: events.BroadcastViewersData{BroadcastID: "k7m2q9", BroadcastKey: "3f9a1c4e7b2d",
 				Role: events.RoleOrigin, ViewersLocal: i}})
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
@@ -205,7 +205,7 @@ func TestMissingStreamCountsAsDrop(t *testing.T) {
 	url := runNATS(t)
 	p, m := newTestPublisher(t, url, nil)
 	p.Publish(Event{Type: events.TypeBroadcastStarted, Key: "3f9a1c4e7b2d",
-		Data: events.BroadcastStartedData{ID: "k7m2q9", Key: "3f9a1c4e7b2d", Role: events.RoleOrigin}})
+		Data: events.BroadcastStartedData{BroadcastID: "k7m2q9", BroadcastKey: "3f9a1c4e7b2d", Role: events.RoleOrigin}})
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

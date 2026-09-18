@@ -15,7 +15,7 @@ func TestCoalescer(t *testing.T) {
 	t0 := time.Date(2026, 9, 18, 9, 30, 0, 0, time.UTC)
 	viewers := func(n int) Event {
 		return Event{Type: events.TypeBroadcastViewers, Key: "3f9a1c4e7b2d",
-			Data: events.BroadcastViewersData{ID: "k7m2q9", Key: "3f9a1c4e7b2d",
+			Data: events.BroadcastViewersData{BroadcastID: "k7m2q9", BroadcastKey: "3f9a1c4e7b2d",
 				Role: events.RoleOrigin, ViewersLocal: n}}
 	}
 
@@ -66,7 +66,7 @@ func TestCoalescerIsPerKey(t *testing.T) {
 	now := time.Now()
 	for _, key := range []string{"aaa", "bbb"} {
 		ev := Event{Type: events.TypeBroadcastViewers, Key: key,
-			Data: events.BroadcastViewersData{Key: key, ViewersLocal: 1}}
+			Data: events.BroadcastViewersData{BroadcastKey: key, ViewersLocal: 1}}
 		if _, ok := c.offer(ev, now); !ok {
 			t.Errorf("%s: first value withheld", key)
 		}

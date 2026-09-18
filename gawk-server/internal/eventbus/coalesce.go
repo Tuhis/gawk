@@ -35,9 +35,12 @@ type coalesced struct {
 }
 
 func newCoalescer(interval time.Duration) *coalescer {
-	deltas := make(map[string]bool)
-	for _, t := range events.DeltaTypes() {
-		deltas[t] = true
+	deltas := map[string]bool{
+		// The two coalesced types. Named here rather than read from the
+		// contract package because "is this high-rate?" is a property of how
+		// the RELAY publishes a type, not of the type's schema.
+		events.TypeBroadcastViewers:      true,
+		events.TypeRoomAttachmentUpdated: true,
 	}
 	return &coalescer{
 		interval: interval,

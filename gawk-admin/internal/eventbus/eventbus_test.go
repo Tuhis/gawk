@@ -86,7 +86,7 @@ func publish(t *testing.T, url, id, typ, subject string, data any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := events.Marshal(events.New(id, events.RelaySource("pod-a"), typ, subject, time.Now(), data))
+	body, err := events.Marshal(events.New(typ, id, events.SourceRelay("pod-a"), subject, time.Now(), data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func publish(t *testing.T, url, id, typ, subject string, data any) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := js.PublishMsg(ctx, &nats.Msg{
-		Subject: "gawk." + scope + "." + subject + "." + events.SchemaName(typ),
+		Subject: "gawk." + scope + "." + subject + "." + events.Name(typ),
 		Data:    body,
 		Header: nats.Header{
 			"Content-Type": []string{events.ContentType},
@@ -151,9 +151,9 @@ func TestConsumesAndIngestsOnce(t *testing.T) {
 	c := newConsumer(t, url, ing)
 
 	publish(t, url, "pod-a:1", events.TypeRoomOpened, "aa11bb22cc33",
-		events.RoomOpenedData{Code: "pf4tzn", Key: "aa11bb22cc33", Kind: events.KindDynamic})
+		events.RoomOpenedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", Kind: events.RoomKindDynamic})
 	publish(t, url, "pod-a:2", events.TypeRoomParticipantJoined, "aa11bb22cc33",
-		events.RoomParticipantData{Code: "pf4tzn", Key: "aa11bb22cc33", ParticipantID: 7})
+		events.RoomParticipantJoinedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", ParticipantID: 7})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -189,10 +189,9 @@ func TestDeltasAreNotStored(t *testing.T) {
 	ing := &fakeIngest{}
 	c := newConsumer(t, url, ing)
 
-	global := 317
 	publish(t, url, "pod-a:1", events.TypeBroadcastViewers, "3f9a1c4e7b2d",
-		events.BroadcastViewersData{ID: "k7m2q9", Key: "3f9a1c4e7b2d",
-			Role: events.RoleOrigin, ViewersLocal: 42, ViewersGlobal: &global})
+		events.BroadcastViewersData{BroadcastID: "k7m2q9", BroadcastKey: "3f9a1c4e7b2d",
+			Role: events.RoleOrigin, ViewersLocal: 42, ViewersGlobal: 317})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -217,9 +216,9 @@ func TestGapsAreCounted(t *testing.T) {
 	c := newConsumer(t, url, ing)
 
 	publish(t, url, "pod-a:1", events.TypeRoomOpened, "aa11bb22cc33",
-		events.RoomOpenedData{Code: "pf4tzn", Key: "aa11bb22cc33", Kind: events.KindDynamic})
+		events.RoomOpenedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", Kind: events.RoomKindDynamic})
 	publish(t, url, "pod-a:9", events.TypeRoomDetached, "aa11bb22cc33",
-		events.RoomAttachmentData{Code: "pf4tzn", Key: "aa11bb22cc33", BroadcastID: "k7m2q9"})
+		events.RoomDetachedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", BroadcastID: "k7m2q9"})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

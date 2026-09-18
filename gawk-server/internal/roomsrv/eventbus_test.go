@@ -73,7 +73,7 @@ func TestRoomLifecycleOnTheBus(t *testing.T) {
 		t.Errorf("subject = %q, want the obfuscated key", opened[0].Key)
 	}
 	data := opened[0].Data.(events.RoomOpenedData)
-	if data.Code != res.Code || data.Kind != "dynamic" || data.DisplayCode != res.Display {
+	if data.RoomCode != res.Code || data.Kind != "dynamic" || data.DisplayCode != res.Display {
 		t.Errorf("room.opened data = %+v", data)
 	}
 
@@ -82,7 +82,7 @@ func TestRoomLifecycleOnTheBus(t *testing.T) {
 	if len(att) != 1 {
 		t.Fatalf("got %d room.attached, want 1", len(att))
 	}
-	if d := att[0].Data.(events.RoomAttachmentData); d.BroadcastID != "ABCDEF" || d.Label != "pc" {
+	if d := att[0].Data.(events.RoomAttachedData); d.BroadcastID != "ABCDEF" || d.Label != "pc" {
 		t.Errorf("room.attached data = %+v", d)
 	}
 
@@ -91,20 +91,20 @@ func TestRoomLifecycleOnTheBus(t *testing.T) {
 	if len(joined) != 1 {
 		t.Fatalf("got %d room.participant_joined, want 1", len(joined))
 	}
-	jd := joined[0].Data.(events.RoomParticipantData)
+	jd := joined[0].Data.(events.RoomParticipantJoinedData)
 	if jd.ParticipantID != int(p.ID()) || jd.Nickname != "tuhis" || jd.Rejoin {
 		t.Errorf("participant_joined data = %+v", jd)
 	}
-	if jd.ClientKind != events.ClientWebViewer {
+	if jd.ClientKind != events.ClientKindWebViewer {
 		t.Errorf("clientKind = %q, want the wire kind's name", jd.ClientKind)
 	}
 
 	p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandSetNickname, Nickname: "renamed"})
-	upd := rec.only(events.TypeRoomParticipantUpdate)
+	upd := rec.only(events.TypeRoomParticipantUpdated)
 	if len(upd) == 0 {
 		t.Fatal("a rename produced no room.participant_updated")
 	}
-	if d := upd[len(upd)-1].Data.(events.RoomParticipantData); d.Nickname != "renamed" {
+	if d := upd[len(upd)-1].Data.(events.RoomParticipantUpdatedData); d.Nickname != "renamed" {
 		t.Errorf("participant_updated data = %+v", d)
 	}
 
@@ -113,7 +113,7 @@ func TestRoomLifecycleOnTheBus(t *testing.T) {
 	if len(closed) != 1 {
 		t.Fatalf("got %d room.closed, want 1: %v", len(closed), rec.types())
 	}
-	if d := closed[0].Data.(events.RoomClosedData); d.Reason != events.ReasonCreator {
+	if d := closed[0].Data.(events.RoomClosedData); d.Reason != events.RoomClosedCreator {
 		t.Errorf("room.closed reason = %q, want creator", d.Reason)
 	}
 }
@@ -130,7 +130,7 @@ func TestDetachIsPublished(t *testing.T) {
 	if len(det) != 1 {
 		t.Fatalf("got %d room.detached, want 1: %v", len(det), rec.types())
 	}
-	if d := det[0].Data.(events.RoomAttachmentData); d.BroadcastID != "ABCDEF" || d.Code != res.Code {
+	if d := det[0].Data.(events.RoomDetachedData); d.BroadcastID != "ABCDEF" || d.RoomCode != res.Code {
 		t.Errorf("room.detached data = %+v", d)
 	}
 }
@@ -168,7 +168,7 @@ func TestReleaseHomeSaysTheRoomMoved(t *testing.T) {
 		t.Fatalf("got %d room.participant_left, want one per participant", len(left))
 	}
 	d := left[0].Data.(events.RoomParticipantLeftData)
-	if d.Reason != events.ReasonHomeMoved || d.ParticipantID != int(p.ID()) || d.Nickname != "tuhis" {
+	if d.ParticipantID != int(p.ID()) || d.Nickname != "tuhis" {
 		t.Errorf("participant_left data = %+v", d)
 	}
 

@@ -38,18 +38,18 @@ func (r *Registry) busStarted(id string) {
 		return
 	}
 	r.emitEvent(events.TypeBroadcastStarted, id, events.BroadcastStartedData{
-		ID:        id,
-		Key:       r.ObfuscateID(id),
-		Role:      events.RoleOrigin,
-		StartedAt: time.Now().UTC().Truncate(time.Second),
+		BroadcastID:  id,
+		BroadcastKey: r.ObfuscateID(id),
+		Role:         events.RoleOrigin,
+		StartedAt:    time.Now().UTC().Truncate(time.Second).Format(time.RFC3339),
 	})
 }
 
 // busEnded publishes a broadcast's removal with why it went:
 //
-//	replaced — a token-bearing reclaim superseded the session
-//	killed   — an operator ended it (R39)
 //	gc       — the grace period expired with no publisher
+//	killed   — an operator ended it (R39)
+//	replaced — a token-bearing reclaim superseded the session
 //
 // The three are distinct because a consumer acts differently on each: a
 // replacement is a broadcaster reconnecting, a kill is enforcement, a gc is
@@ -59,9 +59,9 @@ func (r *Registry) busEnded(id, reason string) {
 		return
 	}
 	r.emitEvent(events.TypeBroadcastEnded, id, events.BroadcastEndedData{
-		ID:     id,
-		Key:    r.ObfuscateID(id),
-		Reason: reason,
+		BroadcastID:  id,
+		BroadcastKey: r.ObfuscateID(id),
+		Reason:       reason,
 	})
 }
 
@@ -71,31 +71,36 @@ func (r *Registry) busStalled(id string, stalled bool) {
 	if r.opts.OnEvent == nil {
 		return
 	}
-	typ := events.TypeBroadcastPublisherBack
+	key := r.ObfuscateID(id)
 	if stalled {
-		typ = events.TypeBroadcastPublisherAway
+		r.emitEvent(events.TypeBroadcastPublisherAway, id, events.BroadcastPublisherAwayData{
+			BroadcastID: id, BroadcastKey: key})
+		return
 	}
-	r.emitEvent(typ, id, events.BroadcastPublisherData{ID: id, Key: r.ObfuscateID(id)})
+	r.emitEvent(events.TypeBroadcastPublisherBack, id, events.BroadcastPublisherBackData{
+		BroadcastID: id, BroadcastKey: key})
 }
 
 // busViewers publishes a viewer count. The publisher coalesces these to at
 // most one per broadcast per interval and only on change, so this may be
 // called on every pump tick.
 //
-// An edge pod reports only what it can know — its own local count — and says
+// An edge pod reports what it can know — its own local count — and says
 // role: edge, which is how a consumer tells the fleet-wide number (origin,
-// with viewersGlobal) from a per-pod one.
-func (r *Registry) busViewers(id string, local int, global *int, edge bool) {
+// with viewersGlobal) from a per-pod one. An edge's viewersGlobal is its local
+// count rather than a number it made up: the schema requires the property, and
+// zero would read as "nobody is watching".
+func (r *Registry) busViewers(id string, local, global int, edge bool) {
 	if r.opts.OnEvent == nil {
 		return
 	}
 	role := events.RoleOrigin
 	if edge {
-		role, global = events.RoleEdge, nil
+		role, global = events.RoleEdge, local
 	}
 	r.emitEvent(events.TypeBroadcastViewers, id, events.BroadcastViewersData{
-		ID:            id,
-		Key:           r.ObfuscateID(id),
+		BroadcastID:   id,
+		BroadcastKey:  r.ObfuscateID(id),
 		Role:          role,
 		ViewersLocal:  local,
 		ViewersGlobal: global,

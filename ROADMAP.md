@@ -4112,9 +4112,8 @@ contract changes; R51 for the envelope, schemas and catalogue (EB1 after
 EC1). R49's RA4 depends on this.
 
 **Status**: ✅ shipped 2026-09-18 — EB1–EB5, in
-[docs/51](docs/51-relay-event-bus.md). One deviation from the design, recorded
-there: EB1's schemas, vectors and catalogue entries landed as R51's EC1, which
-is what EB1 depended on, so the two shipped together.
+[docs/51](docs/51-relay-event-bus.md) (§0 lists where the implementation
+departs from the design). It publishes R51's contract, which shipped first.
 
 ---
 

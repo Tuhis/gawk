@@ -24,7 +24,6 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -277,8 +276,8 @@ func (p *Publisher) send(ev Event) {
 	if at.IsZero() {
 		at = p.now()
 	}
-	id := p.opts.Pod + ":" + strconv.FormatUint(p.seq, 10)
-	ce := events.New(id, events.RelaySource(p.opts.Pod), ev.Type, ev.Key, at, ev.Data)
+	id := events.BusID(p.opts.Pod, p.seq)
+	ce := events.New(ev.Type, id, events.SourceRelay(p.opts.Pod), ev.Key, at, ev.Data)
 	body, err := events.Marshal(ce)
 	if err != nil {
 		p.drop(DropEncode)

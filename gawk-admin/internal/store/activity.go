@@ -200,9 +200,9 @@ func SummarizeActivity(eventType, key string, data map[string]any) string {
 		return "the broadcaster of " + what + " is back"
 	case EventBroadcastEnded:
 		switch str("reason") {
-		case events.ReasonKilled:
+		case events.BroadcastEndedKilled:
 			return what + " was ended by an operator"
-		case events.ReasonReplaced:
+		case events.BroadcastEndedReplaced:
 			return "the publisher of " + what + " was replaced"
 		default:
 			return what + " ended"
@@ -220,9 +220,6 @@ func SummarizeActivity(eventType, key string, data map[string]any) string {
 	case EventRoomParticipantJoined:
 		return nickOr("someone", str("nickname")) + " joined " + room
 	case EventRoomParticipantLeft:
-		if str("reason") == events.ReasonHomeMoved {
-			return nickOr("someone", str("nickname")) + " left " + room + " (the room moved to another pod)"
-		}
 		return nickOr("someone", str("nickname")) + " left " + room
 	case EventRoomParticipantUpdated:
 		return nickOr("a participant", str("nickname")) + " changed in " + room

@@ -150,31 +150,6 @@ const (
 // enforcement first, then rooms. R50 appends the ingested activity types here
 // (docs/51); R49 is where WebhookEventTypes first differs from this list.
 func AllEventTypes() []string {
-	// R50 appends the ingested activity types: they are stored rows, so they
-	// are `type` filter values and appear on the feed. WebhookEventTypes does
-	// NOT grow with them — R49 is where four of them become webhook-eligible.
-	return append([]string{
-		EventBroadcastKilled,
-		EventBanCreated,
-		EventBanExpired,
-		EventBanRemoved,
-		EventContentFlag,
-		EventRoomCreated,
-		EventRoomEnded,
-		EventRoomSecretRotated,
-	}, ActivityEventTypes()...)
-}
-
-// WebhookEventTypes is the subset of AllEventTypes the dispatcher may forward
-// to a webhook.
-//
-// Today it is the whole vocabulary — every stored event is a moderation event
-// and every moderation event pages someone. It exists as its own helper
-// because the two stop being the same list at R49 (docs/50 D6), when R50's
-// ingested activity events become stored-but-not-forwarded by default, and
-// because docs/52 D7 holds THIS list — not AllEventTypes — equal to the
-// AsyncAPI `webhook` channel's messages.
-func WebhookEventTypes() []string {
 	return []string{
 		EventBroadcastKilled,
 		EventBanCreated,
@@ -187,11 +162,37 @@ func WebhookEventTypes() []string {
 	}
 }
 
+// FeedEventTypes is every `type` a row on GET /api/v1/events may carry: the
+// moderation vocabulary plus R50's ingested activity types (docs/51 D5).
+//
+// It is deliberately NOT AllEventTypes: that one is the MODERATION row table,
+// which R51's contract holds equal to events.ModerationRowTypes() so every
+// row type maps to exactly one CloudEvents type and can be delivered to a
+// webhook. An activity row is never delivered — it is ingested from the bus,
+// which already carries the CloudEvent — so it belongs to the feed's
+// vocabulary and to no other.
+func FeedEventTypes() []string {
+	return append(AllEventTypes(), ActivityEventTypes()...)
+}
+
+// WebhookEventTypes is the subset of AllEventTypes the dispatcher may forward
+// to a webhook.
+//
+// Today it is the whole vocabulary — every stored event is a moderation event
+// and every moderation event pages someone. It exists as its own helper
+// because the two stop being the same list at R49 (docs/50 D6), when R50's
+// ingested activity events become stored-but-not-forwarded by default, and
+// because docs/52 D7 holds THIS list — not AllEventTypes — equal to the
+// AsyncAPI `webhook` channel's messages.
+func WebhookEventTypes() []string {
+	return AllEventTypes()
+}
+
 // IsEventType reports whether t is in the closed vocabulary. The API validates
 // a `type` filter value with it, so an unknown name is a 400 rather than a
 // silently empty page.
 func IsEventType(t string) bool {
-	for _, known := range AllEventTypes() {
+	for _, known := range FeedEventTypes() {
 		if known == t {
 			return true
 		}
