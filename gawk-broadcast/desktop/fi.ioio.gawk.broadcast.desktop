@@ -1,0 +1,20 @@
+[Desktop Entry]
+# The launcher entry for the native Linux broadcaster (R44, docs/53).
+#
+# The file name, Icon= and StartupWMClass= are all the app ID the window
+# announces (gioui.org/app.ID, set in cmd/gawk-broadcast-gui); the desktop
+# matches them exactly, so internal/desktop's test holds them to the constant.
+# Exec= is relative here and rewritten to an absolute path by
+# install-desktop.sh, because the binary is wherever the tarball was unpacked.
+Type=Application
+Version=1.5
+Name=gawk broadcast
+GenericName=Screen broadcaster
+Comment=Share your screen to viewers at sub-500ms latency
+Exec=gawk-broadcast-gui
+Icon=fi.ioio.gawk.broadcast
+Terminal=false
+Categories=AudioVideo;Video;Network;
+Keywords=stream;broadcast;screen;share;game;
+StartupWMClass=fi.ioio.gawk.broadcast
+StartupNotify=false
