@@ -117,7 +117,7 @@ func main() {
 
 func loop(w *app.Window, cfg *config.Config) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	n := notify.New()
+	n := notify.New(desktop.IconName())
 
 	a := gawkapp.New(gawkapp.Options{
 		Config:   cfg,
