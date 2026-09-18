@@ -214,6 +214,11 @@ func (d *Dispatcher) Record(ctx context.Context, ev store.Event) (store.Event, e
 // D9 merge the store cannot see, because config webhooks are never rows. The
 // UI-created half, and the config-wins collision rule, live in the store's
 // transaction; resolve() applies the same precedence again at send time.
+// ConfigWebhookNames is configNames for callers outside this package — R50's
+// bus ingest, which writes its own rows and therefore needs the same
+// chart-defined half of the D9 merge that Record passes.
+func (d *Dispatcher) ConfigWebhookNames() []string { return d.configNames() }
+
 func (d *Dispatcher) configNames() []string {
 	var names []string
 	for _, h := range d.opts.Config.StaticWebhooks {

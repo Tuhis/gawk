@@ -90,6 +90,22 @@ type Config struct {
 	// the binary never serves routes its ServiceAccount cannot act on.
 	Rooms bool
 
+	// EventBus* configure the R50 consumer (docs/51 D6). Operator-provided
+	// NATS, default off: an empty URL means no client, no stream, no activity
+	// rows — and the reconciler's room sweep keeps running, which is what
+	// makes "off is byte-identical" true.
+	EventBusURL       string
+	EventBusCredsFile string
+	EventBusStream    string
+	EventBusMaxBytes  int64
+	EventBusReplicas  int
+	// EventBusInsecure skips NATS TLS verification: the docs/41 compose lane
+	// only, no chart value, warns at every start.
+	EventBusInsecure bool
+	// ActivityRetention is how long ingested activity rows are kept. The audit
+	// trail (moderation rows) is never pruned by it.
+	ActivityRetention time.Duration
+
 	// DevOIDCProxy, when non-empty, mounts a reverse proxy at /idp/ towards
 	// this base URL — the docs/41 compose lane's answer to the OIDC
 	// frontend/backchannel split: with the issuer set to <externalUrl>/idp,
@@ -175,6 +191,20 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"frontend base URL for watch deep links; empty hides them")
 	telemetryBaseURL := fs.String("telemetry-base-url", env("GAWK_ADMIN_TELEMETRY_BASE_URL", ""),
 		"telemetry UI base URL for deep links; empty hides them")
+	eventBusURL := fs.String("eventbus-url", env("GAWK_ADMIN_EVENTBUS_URL", ""),
+		"R50 NATS JetStream URL to consume relay events from; empty disables the bus")
+	eventBusCredsFile := fs.String("eventbus-creds-file", env("GAWK_ADMIN_EVENTBUS_CREDS_FILE", ""),
+		"path to the NATS .creds file for the portal's stream user")
+	eventBusStream := fs.String("eventbus-stream", env("GAWK_ADMIN_EVENTBUS_STREAM", "GAWK_EVENTS"),
+		"JetStream stream this portal creates and consumes")
+	eventBusMaxBytes := fs.String("eventbus-max-bytes", env("GAWK_ADMIN_EVENTBUS_MAX_BYTES", "268435456"),
+		"stream size limit in bytes (discard old)")
+	eventBusReplicas := fs.String("eventbus-replicas", env("GAWK_ADMIN_EVENTBUS_REPLICAS", "0"),
+		"stream replicas; 0 leaves the server's default")
+	eventBusInsecure := fs.String("eventbus-insecure", env("GAWK_ADMIN_EVENTBUS_INSECURE", "false"),
+		"skip NATS TLS verification (local development only; warns at startup)")
+	activityRetention := fs.String("activity-retention", env("GAWK_ADMIN_ACTIVITY_RETENTION", "72h"),
+		"how long ingested activity events are kept; moderation events are never pruned")
 	roomsOn := fs.String("rooms", env("GAWK_ADMIN_ROOMS", "false"),
 		"enable room management (R42, docs/44 D20): /api/v1/rooms, the rooms view and the room sweep; needs the chart's rooms.enabled RBAC")
 	logLevel := fs.String("log-level", env("GAWK_ADMIN_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
@@ -223,6 +253,33 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid -rooms %q (want true|false)", *roomsOn)
 	}
 	cfg.Rooms = rooms
+
+	cfg.EventBusURL = strings.TrimSpace(*eventBusURL)
+	cfg.EventBusCredsFile = strings.TrimSpace(*eventBusCredsFile)
+	cfg.EventBusStream = strings.TrimSpace(*eventBusStream)
+	if cfg.EventBusStream == "" {
+		return Config{}, fmt.Errorf("invalid -eventbus-stream: want a stream name")
+	}
+	maxBytes, err := strconv.ParseInt(strings.TrimSpace(*eventBusMaxBytes), 10, 64)
+	if err != nil || maxBytes < 0 {
+		return Config{}, fmt.Errorf("invalid -eventbus-max-bytes %q (want a non-negative integer)", *eventBusMaxBytes)
+	}
+	cfg.EventBusMaxBytes = maxBytes
+	replicas, err := strconv.Atoi(strings.TrimSpace(*eventBusReplicas))
+	if err != nil || replicas < 0 {
+		return Config{}, fmt.Errorf("invalid -eventbus-replicas %q (want a non-negative integer)", *eventBusReplicas)
+	}
+	cfg.EventBusReplicas = replicas
+	busInsecure, err := strconv.ParseBool(strings.TrimSpace(*eventBusInsecure))
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid -eventbus-insecure %q (want true|false)", *eventBusInsecure)
+	}
+	cfg.EventBusInsecure = busInsecure
+	retention, err := time.ParseDuration(strings.TrimSpace(*activityRetention))
+	if err != nil || retention <= 0 {
+		return Config{}, fmt.Errorf("invalid -activity-retention %q (want a positive duration, e.g. 72h)", *activityRetention)
+	}
+	cfg.ActivityRetention = retention
 
 	hooks, err := parseStaticWebhooks(*staticWebhooks, getenv)
 	if err != nil {
@@ -379,6 +436,13 @@ func (c Config) LogAttrs() []any {
 		"appBaseUrl", c.AppBaseURL,
 		"telemetryBaseUrl", c.TelemetryBaseURL,
 		"rooms", c.Rooms,
+		// The creds PATH is not a secret; whether one is configured is the
+		// question an operator debugging a silent bus is asking.
+		"eventBusUrl", c.EventBusURL,
+		"eventBusCredsFile", set(c.EventBusCredsFile),
+		"eventBusStream", c.EventBusStream,
+		"eventBusInsecure", c.EventBusInsecure,
+		"activityRetention", c.ActivityRetention.String(),
 		"logLevel", c.LogLevel.String(),
 		"logFormat", c.LogFormat,
 	}

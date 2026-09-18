@@ -411,6 +411,34 @@ type eventsPageJSON struct {
 
 type relaysPageJSON struct {
 	Relays []relayJSON `json:"relays"`
+	// Bus is the R50 event bus's health, absent when no bus is configured —
+	// which is how this route says "not configured" rather than "quiet". It
+	// exists so an operator can see the bus is alive BEFORE anything depends
+	// on it (docs/51 D7).
+	Bus *busJSON `json:"bus,omitempty"`
+}
+
+// busJSON mirrors eventbus.Health. A local type, like every other row here, so
+// the wire shape is decided in this file and the OpenAPI drift test holds one
+// document to one struct.
+type busJSON struct {
+	Stream    string       `json:"stream"`
+	Connected bool         `json:"connected"`
+	Messages  uint64       `json:"messages"`
+	Bytes     uint64       `json:"bytes"`
+	Pods      []busPodJSON `json:"pods,omitempty"`
+	Error     string       `json:"error,omitempty"`
+}
+
+type busPodJSON struct {
+	Pod      string `json:"pod"`
+	LastSeen string `json:"lastSeen"`
+	LastSeq  uint64 `json:"lastSeq"`
+	// Gaps counts sequence jumps seen for this pod: events the relay dropped
+	// (its own counters say why) or that expired unread. Reported rather than
+	// repaired — a consumer that needs the truth after a gap reconciles
+	// against the read API (docs/51 D1).
+	Gaps int `json:"gaps"`
 }
 
 type webhooksPageJSON struct {

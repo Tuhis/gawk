@@ -760,6 +760,9 @@ func schemaFixtures() map[string]any {
 	prefix := 24
 	cooldown := 900
 
+	busPod := busPodJSON{Pod: "gawk-server-0", LastSeen: "2026-09-18T09:30:00Z", LastSeq: 1051, Gaps: 0}
+	bus := busJSON{Stream: "GAWK_EVENTS", Connected: true, Messages: 4210, Bytes: 918273,
+		Pods: []busPodJSON{busPod}, Error: "stream info timed out"}
 	return map[string]any{
 		"Error":             errorEnvelope{Error: errorBody{Code: CodeBadRequest, Message: "reason is required"}},
 		"ErrorBody":         errorBody{Code: CodeBadRequest, Message: "reason is required"},
@@ -782,7 +785,9 @@ func schemaFixtures() map[string]any {
 		"Event":             event,
 		"EventsPage":        eventsPageJSON{Events: []eventJSON{event}, NextAfterID: &nextID},
 		"Relay":             relay,
-		"RelaysPage":        relaysPageJSON{Relays: []relayJSON{relay}},
+		"RelaysPage":        relaysPageJSON{Relays: []relayJSON{relay}, Bus: &bus},
+		"EventBusHealth":    bus,
+		"EventBusPod":       busPod,
 		"Webhook":           webhook,
 		"WebhookRequest":    webhookRequest{Name: "moderation-log", URL: "https://log.example.org/gawk", Secret: "aw==", Enabled: true},
 		"WebhooksPage":      webhooksPageJSON{Webhooks: []webhookJSON{webhook}},

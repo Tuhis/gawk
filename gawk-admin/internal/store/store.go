@@ -150,7 +150,10 @@ const (
 // enforcement first, then rooms. R50 appends the ingested activity types here
 // (docs/51); R49 is where WebhookEventTypes first differs from this list.
 func AllEventTypes() []string {
-	return []string{
+	// R50 appends the ingested activity types: they are stored rows, so they
+	// are `type` filter values and appear on the feed. WebhookEventTypes does
+	// NOT grow with them — R49 is where four of them become webhook-eligible.
+	return append([]string{
 		EventBroadcastKilled,
 		EventBanCreated,
 		EventBanExpired,
@@ -159,7 +162,7 @@ func AllEventTypes() []string {
 		EventRoomCreated,
 		EventRoomEnded,
 		EventRoomSecretRotated,
-	}
+	}, ActivityEventTypes()...)
 }
 
 // WebhookEventTypes is the subset of AllEventTypes the dispatcher may forward
@@ -172,7 +175,16 @@ func AllEventTypes() []string {
 // because docs/52 D7 holds THIS list — not AllEventTypes — equal to the
 // AsyncAPI `webhook` channel's messages.
 func WebhookEventTypes() []string {
-	return AllEventTypes()
+	return []string{
+		EventBroadcastKilled,
+		EventBanCreated,
+		EventBanExpired,
+		EventBanRemoved,
+		EventContentFlag,
+		EventRoomCreated,
+		EventRoomEnded,
+		EventRoomSecretRotated,
+	}
 }
 
 // IsEventType reports whether t is in the closed vocabulary. The API validates
@@ -261,6 +273,14 @@ type Event struct {
 	// Payload is free-form context. See the PayloadReason/PayloadSummary
 	// comment above before forwarding any of it anywhere.
 	Payload json.RawMessage
+	// Category is CategoryModeration (what an operator did) or
+	// CategoryActivity (what the fleet did, ingested from the R50 bus).
+	// Empty on a value being written means moderation.
+	Category string
+	// Source is the CloudEvents id of the bus message an activity row came
+	// from, and the UNIQUE key that makes ingest exactly-once. Empty for every
+	// portal-originated row.
+	Source string
 }
 
 // EnforcementState reports how the producer graded this event's enforcement.

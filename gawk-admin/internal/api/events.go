@@ -48,8 +48,20 @@ func (a *API) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// R50: the feed carries two categories now. An unfiltered request answers
+	// with BOTH, because a cursor that silently hid half the rows would page
+	// past events the caller can see in the UI; the SPA sends the filter.
+	category := q.Get("category")
+	switch category {
+	case "", store.CategoryModeration, store.CategoryActivity:
+	default:
+		writeError(w, http.StatusBadRequest, CodeBadRequest,
+			"category must be moderation or activity")
+		return
+	}
+
 	events, err := a.opts.Store.ListEvents(r.Context(), store.EventQuery{
-		AfterID: afterID, Limit: limit, Types: types,
+		AfterID: afterID, Limit: limit, Types: types, Category: category,
 	})
 	if err != nil {
 		a.fail(w, r, "list events", err)

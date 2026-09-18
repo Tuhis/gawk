@@ -11,7 +11,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/moderation"
 )
 
-const eventColumns = `id, type, occurred_at, actor, broadcast_key, broadcast_id, payload`
+const eventColumns = `id, type, occurred_at, actor, broadcast_key, broadcast_id, payload, category, source`
 
 // DefaultEventLimit / MaxEventLimit bound the audit feed page size. A caller
 // asking for a million rows gets MaxEventLimit, not an OOM.
@@ -89,43 +89,8 @@ func (s *Store) AppendEventAndEnqueue(ctx context.Context, e Event, configNames 
 		return Event{}, fmt.Errorf("store: append event: %w", err)
 	}
 
-	seen := make(map[string]struct{}, len(configNames))
-	names := make([]string, 0, len(configNames))
-	for _, n := range configNames {
-		if _, dup := seen[n]; dup {
-			continue
-		}
-		seen[n] = struct{}{}
-		names = append(names, n)
-	}
-	rows, err := tx.Query(ctx, `SELECT name FROM webhooks WHERE enabled = true`)
-	if err != nil {
-		return Event{}, fmt.Errorf("store: append event: list webhooks: %w", err)
-	}
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			rows.Close()
-			return Event{}, fmt.Errorf("store: append event: list webhooks: %w", err)
-		}
-		if _, dup := seen[n]; dup {
-			continue
-		}
-		seen[n] = struct{}{}
-		names = append(names, n)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return Event{}, fmt.Errorf("store: append event: list webhooks: %w", err)
-	}
-
-	now := s.now().UTC()
-	for _, name := range names {
-		if _, err := tx.Exec(ctx, `INSERT INTO webhook_deliveries (event_id, webhook_name, state, attempts, next_attempt_at)
-			VALUES ($1,$2,'pending',0,$3) ON CONFLICT (event_id, webhook_name) DO NOTHING`,
-			out.ID, name, now); err != nil {
-			return Event{}, fmt.Errorf("store: append event: enqueue deliveries: %w", err)
-		}
+	if err := s.enqueueDeliveriesTx(ctx, tx, out.ID, configNames); err != nil {
+		return Event{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -164,6 +129,11 @@ type EventQuery struct {
 	// here would simply return nothing, which reads as "no such events" rather
 	// than "no such event type".
 	Types []string
+	// Category restricts the page to moderation or activity rows (R50). Empty
+	// means every category: the handler, not the store, decides what an
+	// unfiltered request defaults to, because "the audit trail" and "the
+	// firehose" are a UI choice.
+	Category string
 }
 
 // ListEvents returns the feed newest-first.
@@ -178,8 +148,9 @@ func (s *Store) ListEvents(ctx context.Context, q EventQuery) ([]Event, error) {
 	}
 	const sql = `SELECT ` + eventColumns + ` FROM moderation_events
 		WHERE ($1 = 0 OR id < $1) AND ($3::text[] IS NULL OR type = ANY($3))
+		  AND ($4 = '' OR category = $4)
 		ORDER BY id DESC LIMIT $2`
-	rows, err := s.pool.Query(ctx, sql, q.AfterID, limit, types)
+	rows, err := s.pool.Query(ctx, sql, q.AfterID, limit, types, q.Category)
 	if err != nil {
 		return nil, fmt.Errorf("store: list events: %w", err)
 	}
@@ -207,14 +178,19 @@ func (s *Store) GetEvent(ctx context.Context, id int64) (Event, error) {
 
 func scanEvent(row pgx.Row) (Event, error) {
 	var (
-		e       Event
-		key     *string
-		id      *string
-		payload []byte
+		e        Event
+		key      *string
+		id       *string
+		payload  []byte
+		category *string
+		source   *string
 	)
-	if err := row.Scan(&e.ID, &e.Type, &e.OccurredAt, &e.Actor, &key, &id, &payload); err != nil {
+	if err := row.Scan(&e.ID, &e.Type, &e.OccurredAt, &e.Actor, &key, &id, &payload,
+		&category, &source); err != nil {
 		return Event{}, err
 	}
+	e.Category = derefString(category)
+	e.Source = derefString(source)
 	e.BroadcastKey = derefString(key)
 	e.BroadcastID = derefString(id)
 	e.OccurredAt = e.OccurredAt.UTC()
@@ -363,4 +339,54 @@ func actorOrOperator(actor string) string {
 		return "an operator"
 	}
 	return actor
+}
+
+// enqueueDeliveriesTx writes one pending delivery row per enabled webhook,
+// inside the caller's transaction.
+//
+// configNames are the enabled CHART-defined webhooks, which are not rows; the
+// enabled UI-created set is read INSIDE the transaction so a concurrent
+// webhook edit cannot split the decision from the write. A UI name shadowed by
+// a config name yields one delivery row — the queue is keyed by name, and the
+// dispatcher signs with the config secret (docs/42 D9).
+func (s *Store) enqueueDeliveriesTx(ctx context.Context, tx pgx.Tx, eventID int64, configNames []string) error {
+	seen := make(map[string]struct{}, len(configNames))
+	names := make([]string, 0, len(configNames))
+	for _, n := range configNames {
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		names = append(names, n)
+	}
+	rows, err := tx.Query(ctx, `SELECT name FROM webhooks WHERE enabled = true`)
+	if err != nil {
+		return fmt.Errorf("store: append event: list webhooks: %w", err)
+	}
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			rows.Close()
+			return fmt.Errorf("store: append event: list webhooks: %w", err)
+		}
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		names = append(names, n)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: append event: list webhooks: %w", err)
+	}
+
+	now := s.now().UTC()
+	for _, name := range names {
+		if _, err := tx.Exec(ctx, `INSERT INTO webhook_deliveries (event_id, webhook_name, state, attempts, next_attempt_at)
+			VALUES ($1,$2,'pending',0,$3) ON CONFLICT (event_id, webhook_name) DO NOTHING`,
+			eventID, name, now); err != nil {
+			return fmt.Errorf("store: append event: enqueue deliveries: %w", err)
+		}
+	}
+	return nil
 }

@@ -665,6 +665,14 @@ paths:
           schema:
             type: array
             items: { $ref: '#/components/schemas/EventType' }
+        - name: category
+          in: query
+          required: false
+          description: |
+            Only return rows of this category: `moderation` (the audit trail)
+            or `activity` (what the fleet did, ingested from the relay event
+            bus). Absent returns both.
+          schema: { $ref: '#/components/schemas/EventCategory' }
       responses:
         '200':
           description: One page of events.
@@ -1232,6 +1240,11 @@ components:
         The type of a recorded event. The enum only grows; treat unknown
         values as unknown. `content_flag.raised` is reserved and not yet
         produced.
+
+        The first eight are moderation events — what an operator did. The
+        rest are activity events ingested from the relay event bus (R50),
+        present only on a deployment with the bus configured; filter with
+        the `category` query parameter rather than by listing types.
       enum:
         - broadcast.killed
         - ban.created
@@ -1241,6 +1254,27 @@ components:
         - room.created
         - room.ended
         - room.secret_rotated
+        - broadcast.started
+        - broadcast.publisher_away
+        - broadcast.publisher_back
+        - broadcast.ended
+        - room.opened
+        - room.attached
+        - room.detached
+        - room.participant_joined
+        - room.participant_left
+        - room.participant_updated
+
+    EventCategory:
+      type: string
+      description: |
+        Which kind of row an event is: `moderation` is the audit trail of
+        operator actions, `activity` is what the fleet did, ingested from the
+        relay event bus (R50). Activity rows exist only where the bus is
+        configured, and are pruned by age.
+      enum:
+        - moderation
+        - activity
 
     BroadcastId:
       type: string
@@ -1600,6 +1634,57 @@ components:
         relays:
           type: array
           items: { $ref: '#/components/schemas/Relay' }
+        bus:
+          allOf:
+            - $ref: '#/components/schemas/EventBusHealth'
+          description: |
+            The relay event bus's health (R50). Absent when no bus is
+            configured — which distinguishes "not configured" from "quiet".
+
+    EventBusHealth:
+      type: object
+      description: |
+        Whether the NATS JetStream the relays publish to is alive, and what
+        this portal has heard from each publishing pod. Read it before relying
+        on anything the bus feeds.
+      required: [stream, connected, messages, bytes]
+      properties:
+        stream: { type: string }
+        connected:
+          type: boolean
+          description: Whether this portal's NATS connection is up.
+        messages:
+          type: integer
+          format: int64
+          description: Messages currently retained in the stream.
+        bytes:
+          type: integer
+          format: int64
+        pods:
+          type: array
+          items: { $ref: '#/components/schemas/EventBusPod' }
+        error:
+          type: string
+          description: Why the stream could not be inspected, when it could not.
+
+    EventBusPod:
+      type: object
+      required: [pod, lastSeen, lastSeq, gaps]
+      properties:
+        pod: { type: string }
+        lastSeen: { type: string, format: date-time }
+        lastSeq:
+          type: integer
+          format: int64
+          description: The last per-pod sequence this portal ingested.
+        gaps:
+          type: integer
+          format: int32
+          description: |
+            Sequence jumps observed for this pod: events the relay dropped
+            (its own counters say why) or that expired unread. Reported, not
+            repaired — reconcile against the read API if you need the truth
+            after one.
 
     Webhook:
       type: object
