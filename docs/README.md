@@ -84,6 +84,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`38`](38-windows-native-broadcaster.md) | R34 — Native **Windows** broadcaster |
 | [`47`](47-desktop-update-check.md) | R45 — Update notification for both desktop broadcasters (launch-time check of the R46 manifest) |
 | [`48`](48-signed-in-place-update.md) | R47 — Signed in-place update for both desktop broadcasters (minisign over `SHA256SUMS`, rename-swap install) |
+| [`53`](53-app-icons.md) | R44 — App icons for both desktop broadcasters: one SVG, generated + drift-checked derivatives, Gio `app.ID` + desktop entry, Slint `Window.icon` + a linked `.res` |
 
 ## Audio
 

@@ -26,7 +26,9 @@ The binary is unsigned on purpose (known-operator distribution, no
 certificate money spent on a test build). On first run Windows shows
 "Windows protected your PC" — click **More info → Run anyway**. If the
 button is missing: right-click the exe → Properties → tick **Unblock** →
-OK, then run it again.
+OK, then run it again. The exe carries the gawk icon (a white bolt on a
+purple tile), so Explorer and that dialog show it; a plain generic icon
+means you have a different or damaged file.
 
 ## First broadcast
 
