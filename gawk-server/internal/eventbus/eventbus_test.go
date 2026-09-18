@@ -331,3 +331,41 @@ func TestPublishDropsWhenTheDrainIsStuck(t *testing.T) {
 		t.Errorf("counted %d overflow drops, want %d", got, 10_000-cap(p.ch))
 	}
 }
+
+// TestInsecureDoesNotForceTLSOnAPlainURL is a regression test for a failure
+// with no error message anywhere: nats.Secure REQUIRES TLS rather than merely
+// relaxing it, so applying it to a plain nats:// server made every handshake
+// fail, and the client buried that in its reconnect loop. Connections piled up
+// unnamed on the server, nothing was ever published, and the only symptom was
+// silence — the docs/41 compose lane, which is the one lane the flag exists
+// for, published nothing at all.
+func TestInsecureDoesNotForceTLSOnAPlainURL(t *testing.T) {
+	url, js := withStream(t)
+	p, m := newTestPublisher(t, url, func(o *Options) { o.Insecure = true })
+
+	p.Publish(Event{Type: events.TypeBroadcastStarted, Key: "3f9a1c4e7b2d",
+		Data: events.BroadcastStartedData{BroadcastID: "k7m2q9", BroadcastKey: "3f9a1c4e7b2d",
+			Role: events.RoleOrigin}})
+
+	msg := firstMessage(t, js, "gawk.broadcast.3f9a1c4e7b2d.started")
+	if len(msg.Data()) == 0 {
+		t.Fatal("no event arrived")
+	}
+	if got := m.drops(DropPublish); got != 0 {
+		t.Errorf("%d publishes failed against a plain server with -eventbus-insecure set", got)
+	}
+}
+
+// TestWantsTLS pins which URLs the insecure switch may touch at all.
+func TestWantsTLS(t *testing.T) {
+	for url, want := range map[string]bool{
+		"nats://nats:4222": false,
+		"nats://localhost": false,
+		"tls://nats:4222":  true,
+		"wss://nats:443":   true,
+	} {
+		if got := wantsTLS(url); got != want {
+			t.Errorf("wantsTLS(%q) = %v, want %v", url, got, want)
+		}
+	}
+}

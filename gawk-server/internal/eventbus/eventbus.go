@@ -184,7 +184,13 @@ func New(opts Options) (*Publisher, error) {
 	if opts.CredsFile != "" {
 		connOpts = append(connOpts, nats.UserCredentials(opts.CredsFile))
 	}
-	if opts.Insecure {
+	if opts.Insecure && wantsTLS(opts.URL) {
+		// Only when the URL actually asks for TLS. nats.Secure REQUIRES it:
+		// applied to a plain nats:// server it makes every handshake fail, and
+		// the client hides that in its reconnect loop — connections pile up
+		// unnamed, nothing is ever published, and the only symptom is silence.
+		// The flag means "do not verify the certificate", which is not a thing
+		// a connection without one can do.
 		p.log.Warn("event bus TLS verification is DISABLED (-eventbus-insecure): " +
 			"local development only, never a deployment")
 		connOpts = append(connOpts, nats.Secure(&tls.Config{InsecureSkipVerify: true})) //nolint:gosec // the flag's whole purpose, warned about at every start
@@ -372,4 +378,10 @@ func (p *Publisher) publishedInc() {
 	if p.metrics != nil {
 		p.metrics.Published()
 	}
+}
+
+// wantsTLS reports whether a NATS URL asks for a TLS connection. Plain
+// nats:// does not, and -eventbus-insecure has nothing to skip there.
+func wantsTLS(url string) bool {
+	return strings.HasPrefix(url, "tls://") || strings.HasPrefix(url, "wss://")
 }

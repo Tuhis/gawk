@@ -343,3 +343,36 @@ func TestInsecureSkipsVerification(t *testing.T) {
 		t.Error("Insecure defaults to true")
 	}
 }
+
+// TestInsecureDoesNotForceTLSOnAPlainURL: the same regression as the relay's.
+// nats.Secure REQUIRES TLS, so on a plain nats:// server it broke every
+// handshake — and because the client retries silently, the portal's only
+// symptom was a stream that never appeared and a feed that stayed empty.
+func TestInsecureDoesNotForceTLSOnAPlainURL(t *testing.T) {
+	url := runNATS(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	c, err := New(ctx, Options{URL: url, Insecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+
+	if err := c.ensureStream(ctx); err != nil {
+		t.Fatalf("the leader could not create its stream against a plain server: %v", err)
+	}
+}
+
+// TestWantsTLS pins which URLs the insecure switch may touch at all.
+func TestWantsTLS(t *testing.T) {
+	for url, want := range map[string]bool{
+		"nats://nats:4222": false,
+		"tls://nats:4222":  true,
+		"wss://nats:443":   true,
+	} {
+		if got := wantsTLS(url); got != want {
+			t.Errorf("wantsTLS(%q) = %v, want %v", url, got, want)
+		}
+	}
+}

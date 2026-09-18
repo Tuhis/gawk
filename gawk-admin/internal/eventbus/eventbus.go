@@ -176,7 +176,8 @@ func New(ctx context.Context, opts Options) (*Consumer, error) {
 	if opts.CredsFile != "" {
 		connOpts = append(connOpts, nats.UserCredentials(opts.CredsFile))
 	}
-	if opts.Insecure {
+	if opts.Insecure && wantsTLS(opts.URL) {
+		// Only when the URL actually asks for TLS — see wantsTLS.
 		opts.Log.Warn("event bus TLS verification is DISABLED (-eventbus-insecure): " +
 			"local development only, never a deployment")
 		connOpts = append(connOpts, nats.Secure(insecureTLS()))
