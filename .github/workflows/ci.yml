@@ -2178,7 +2178,12 @@ jobs:
           # The relay is publishing: the counters exist only when the bus is
           # configured (EB1), so their presence is itself the assertion that
           # the knob reached the process.
-          curl -fsS http://127.0.0.1:2112/metrics | grep -q gawk_eventbus_published_total
+          # A here-string, not `curl | grep -q`: grep exits at its first match,
+          # curl's next write gets EPIPE, and pipefail reports the success as a
+          # failure (docs/gotchas.md). The metrics body is big enough to hit it
+          # every time.
+          relay_metrics=$(curl -fsS http://127.0.0.1:2112/metrics)
+          grep -q gawk_eventbus_published_total <<<"$relay_metrics"
 
           # Somebody joins the stack's static room, speaking the wire a browser
           # participant speaks. The consumer runs on the elected leader, so the
@@ -2200,7 +2205,8 @@ jobs:
             echo "::error::a room join never reached the portal's activity feed over the bus"
             docker compose logs nats | tail -30
             docker compose logs admin | tail -60
-            curl -fsS http://127.0.0.1:2112/metrics | grep gawk_eventbus || true
+            curl -fsS http://127.0.0.1:2112/metrics > /tmp/relay-metrics.txt || true
+            grep gawk_eventbus /tmp/relay-metrics.txt || true
             exit 1
           fi
 
