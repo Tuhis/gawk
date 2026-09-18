@@ -95,6 +95,7 @@ ones a first install actually touches:
 | `-broadcast-grace` / `-publisher-stall-timeout` | `5m` / `90s` | How long an absent publisher keeps its ID; how long a connected one may send no datagram at all before it reads as away (`0` disables). `-publisher-stall-ends` (default off) additionally ends a broadcast stalled for the grace |
 | `-metrics-addr` | `:2112` | Ops endpoint; the literal value `off` disables |
 | `-cluster-mode` | `false` | Multi-pod federation; requires `-internal-psk` and `-internal-server-name` |
+| `-eventbus-url` | (empty) | Publish lifecycle events to a NATS JetStream (R50). Off by default; the media path never waits for it |
 
 The full table — including DVR, forward parity, telemetry and cluster
 keys — with notes on the non-obvious ones:

@@ -189,6 +189,26 @@ kubectl -n production port-forward svc/gawk-admin 8090:8090
 Remember to add the dev origin to the IdP client's redirect URIs, or the
 authorization request is refused before it ever reaches us.
 
+## The event bus (R50)
+
+Optional, off by default. With `-eventbus-url` set, the elected leader consumes
+the relays' NATS JetStream and ingests what it publishes as **activity** rows —
+a second category beside the moderation audit trail, filterable in the Events
+view and pruned by `-activity-retention` (the audit trail never is). Ingest is
+exactly-once: every row carries the bus message's CloudEvents id in a unique
+`source` column, so a redelivery writes nothing and is acked anyway.
+
+Two consequences worth knowing before turning it on:
+
+- The reconciler's once-a-minute **room sweep is retired** while the bus is on.
+  A room's end now arrives from the relay that ended it, with its reason, and
+  is recorded as the same `room.ended` row a webhook receiver has always got.
+- Activity types are **not** webhook-eligible. Ingesting a thousand joins pages
+  nobody.
+
+Setup, including the two scoped NATS users:
+[`docs/self-hosting.md`](../docs/self-hosting.md) §12.
+
 ## Deploy
 
 Chart in `deploy/charts/gawk-admin`, image `ghcr.io/tuhis/gawk-admin`, chart at

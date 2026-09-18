@@ -938,6 +938,10 @@ Two more things worth naming rather than discovering:
   webhooks, because their secrets are rows. Chart-defined webhooks keep their
   keys in Kubernetes Secrets and never enter the database; use those for the
   channel that matters.
+- **A relay's NATS credential yields the ability to publish plausible events**
+  (§12), which the portal records as *activity* — never as a moderation event,
+  never as a ban — and which a webhook may forward. It yields nothing else: the
+  relay's user can publish and cannot read the stream or reconfigure it.
 - **Rotating `config.resumeTokenKey` revokes every resume token fleet-wide**,
   instantly, for every broadcaster. It is the largest hammer in the box and it
   is not a moderation tool — but on a day when it is the right one, it is
@@ -1130,3 +1134,103 @@ maps metric signatures to causes.
 Still stuck, or something here is wrong or missing? Open an issue — a
 self-hosting report is a genuinely useful bug, since the reference deployment
 cannot exercise every cluster shape.
+
+## 12. The event bus (NATS) — R50
+
+Optional, off by default, and off is byte-identical to a deployment without
+it. Turn it on when you want something other than a human refreshing the
+portal to know what the fleet is doing: the relays publish a broadcast
+starting, a room opening, a person joining, a stream attaching — the moment it
+happens — and `gawk-admin` consumes them into its Events view. Nothing polls.
+
+**gawk does not ship NATS.** Same posture as Postgres (§9.1): the charts do
+not own a stateful thing's upgrade story. Install it yourself, once.
+
+### 12.1 Install NATS with JetStream
+
+```sh
+helm repo add nats https://nats-io.github.io/k8s/helm/charts/
+helm upgrade --install nats nats/nats -n gawk \
+  --set config.jetstream.enabled=true \
+  --set config.jetstream.fileStore.pvc.size=5Gi
+```
+
+That is a single-server JetStream with a PVC. Clustering, TLS and
+authentication are NATS's own documentation, not gawk's — but the two accounts
+below are the part that matters here.
+
+### 12.2 Two users, scoped
+
+Give each side exactly what it needs, in your NATS config or operator setup:
+
+- **The relays**: publish on `gawk.>` and nothing else. A compromised relay can
+  then publish noise; it cannot read the stream or reconfigure it.
+- **`gawk-admin`**: the JetStream API and consume permission on the one stream.
+  It creates `GAWK_EVENTS`, owns its retention and runs the durable consumer.
+
+```
+authorization {
+  users = [
+    { user: gawk-relay, password: "…", permissions: { publish: ["gawk.>"], subscribe: [] } }
+    { user: gawk-admin, password: "…", permissions: {
+        publish: ["$JS.API.>"], subscribe: ["_INBOX.>", "$JS.API.>", "gawk.>"] } }
+  ]
+}
+```
+
+With NKey/JWT credentials instead, put each `.creds` file in a Secret and point
+the charts at it:
+
+```sh
+kubectl -n gawk create secret generic gawk-relay-nats --from-file=user.creds=./relay.creds
+kubectl -n gawk create secret generic gawk-admin-nats --from-file=user.creds=./admin.creds
+```
+
+### 12.3 Point both charts at it
+
+```yaml
+# gawk-server values
+eventbus:
+  url: "tls://nats.gawk.svc:4222"
+  credsSecretRef: { name: gawk-relay-nats, key: user.creds }
+
+# gawk-admin values
+eventbus:
+  url: "tls://nats.gawk.svc:4222"
+  credsSecretRef: { name: gawk-admin-nats, key: user.creds }
+```
+
+Order does not matter. A relay publishing before the stream exists drops and
+counts; the portal creates the stream at its next start.
+
+### 12.4 Is it alive?
+
+- `GET /api/v1/relays` has a `bus` section: last message and sequence gaps per
+  publishing pod, and the stream's own state.
+- On a relay: `gawk_eventbus_published_total` climbing, and
+  `gawk_eventbus_dropped_total{reason}` not.
+- From a shell with a subscribe credential:
+
+```sh
+nats sub 'gawk.>'
+nats stream info GAWK_EVENTS
+```
+
+Subjects carry the fleet's HMAC'd keys only. **Payloads carry raw broadcast IDs
+and room codes** — the same tier as the `Room` and `Ban` CRs — so the bus is
+internal infrastructure and must never be routed publicly. No IP address is
+ever published.
+
+### 12.5 A direct subscriber
+
+You can give a third consumer — a bot, a dashboard — its own NATS user with
+subscribe-only permission on a filter such as `gawk.room.>`, without involving
+`gawk-admin` at all. Know what you are granting: the same visibility the
+portal's own consumer has for those subjects, raw room codes included. It is
+your grant to make; make it deliberately.
+
+### 12.6 Turning it off
+
+Unset `eventbus.url` on both charts. The portal's room sweep resumes, activity
+events stop, and the stream can be deleted at your leisure. Nothing else
+changes — which is the point of it being optional.

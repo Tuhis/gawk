@@ -1,6 +1,6 @@
 # R50 — Relay event bus over NATS JetStream (docs/51)
 
-**Status**: designed 2026-09-16; **not started**. Chunks **EB1–EB5** (`EB` =
+**Status**: designed 2026-09-16; **shipped 2026-09-18** (EB1–EB5). Chunks **EB1–EB5** (`EB` =
 Event Bus). Touches `gawk-server` (a publisher package, hooks at the
 existing fan-out points, knobs, chart values), `gawk-admin` (a consumer,
 one migration, the events feed, chart values) and the docs. No wire
@@ -12,6 +12,28 @@ still works and its activity webhooks simply never fire. **The message
 format is R51's** ([docs/52](52-event-contract.md), revised 2026-09-16):
 CloudEvents 1.0 structured JSON, one JSON Schema per type, an AsyncAPI
 catalogue; EB1 depends on its EC1.
+
+## 0. What shipped (2026-09-18)
+
+As designed, with three things worth recording because a reader of the design
+alone would look for them in the wrong place:
+
+- **EB1's schemas, vectors and catalogue entries shipped as R51's EC1**, which
+  is what EB1 depended on. `gawk-server/events` is the contract package; the
+  relay's `internal/eventbus` imports it and encodes nothing itself.
+- **Attachment events are published from `attachLocked`, not from
+  `broadcastLocked`.** The participant-facing funnel misses exactly the attaches
+  with no participants to notify — a mint's first broadcast, an adoption's
+  re-attach — and a consumer that learned about streams only there would never
+  see them.
+- **A re-home is a first-class fact, not an inference.** `Registry.ReleaseHome`
+  publishes `participant_left{reason: home_moved}` for each participant and
+  suppresses the `room.closed` that the `EndRoom` behind it would otherwise
+  produce (D9). The transport calls it when the home lease is lost.
+
+Not shipped here, and still R51's: the webhook side of the contract
+(Standard Webhooks, the sensitive-field projection) and the served
+documents — so `internal/notify` still sends the R39 format.
 
 ## 1. Purpose
 

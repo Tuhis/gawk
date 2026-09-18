@@ -54,6 +54,11 @@ flag > env > default. All of them are also plumbed through the Helm chart's
 | `-admin-oidc-audience` | `GAWK_ADMIN_OIDC_AUDIENCE` | (empty; must be set together with `-admin-oidc-issuer`) |
 | `-admin-oidc-roles-claim` | `GAWK_ADMIN_OIDC_ROLES_CLAIM` | `resource_access.{audience}.roles` (`{audience}` substituted; may not be blank once OIDC is configured) |
 | `-admin-oidc-role` | `GAWK_ADMIN_OIDC_ROLE` | `operator` (may not be blank once OIDC is configured) |
+| `-eventbus-url` | `GAWK_EVENTBUS_URL` | (empty = the R50 event bus is off entirely) |
+| `-eventbus-creds-file` | `GAWK_EVENTBUS_CREDS_FILE` | (empty; path to a NATS `.creds` file) |
+| `-eventbus-subject-prefix` | `GAWK_EVENTBUS_SUBJECT_PREFIX` | `gawk` |
+| `-eventbus-viewer-interval` | `GAWK_EVENTBUS_VIEWER_INTERVAL` | `5s` |
+| `-eventbus-insecure` | `GAWK_EVENTBUS_INSECURE` | `false` (local development only; warns at startup) |
 | `-rooms` | `GAWK_ROOMS` | `false` |
 | `-room-empty-grace` | `GAWK_ROOM_EMPTY_GRACE` | `60s` |
 | `-max-rooms` | `GAWK_MAX_ROOMS` | `10` |
@@ -119,6 +124,19 @@ reports to *that* deployment's collector, where its token is rejected and
 the diagnostics are lost; with it, those sessions land in yours. An invalid
 URL fails startup rather than silently advertising nothing. See
 [`docs/self-hosting.md`](../../docs/self-hosting.md) §8.
+
+**`-eventbus-url`** turns on the R50 event bus
+([docs/51](../../docs/51-relay-event-bus.md)): this pod publishes broadcast and
+room lifecycle events to an operator-provided NATS JetStream. Empty — the
+default — builds no client, starts no goroutine and leaves the relay
+byte-identical to one predating R50. It never affects the media path: a hook
+does one non-blocking channel send, and a full queue, an unreachable server or
+a missing stream are counted in `gawk_eventbus_dropped_total{reason}` rather
+than waited on. Subjects carry the fleet's HMAC'd keys; payloads carry raw
+broadcast IDs and room codes, so the bus is internal-tier and must never be
+routed publicly. `-eventbus-insecure` skips NATS TLS verification and exists
+for the docs/41 compose lane only; it has no chart value and warns at every
+start. Setup: [`docs/self-hosting.md`](../../docs/self-hosting.md) §12.
 
 **`-moderation-source`** selects where R39 bans come from
 ([docs/42](../../docs/42-admin-moderation-portal.md) §4.3). `off` — the
