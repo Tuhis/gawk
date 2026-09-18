@@ -370,6 +370,11 @@ func (s *Server) HandleRoomLeaseLost(code string) {
 		_ = sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeServerDraining), "room re-homed")
 	}
 	if reg := s.roomRegistry(); reg != nil {
+		// Say on the bus that the room is MOVING before tearing it down here:
+		// one participant_left{reason: home_moved} each, and no room.closed
+		// from the EndRoom below (docs/51 D9). Without this a consumer sees a
+		// live room end and its people vanish, which is not what happened.
+		reg.ReleaseHome(norm)
 		reg.EndRoom(norm, wire.RoomEndReasonOperator)
 	}
 }

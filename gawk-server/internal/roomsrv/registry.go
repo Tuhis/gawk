@@ -29,6 +29,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
+	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
 	"github.com/Tuhis/gawk/gawk-server/rooms"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -143,6 +144,11 @@ type Options struct {
 	// seams (RM3): a store reacts to them to delete the CR, stamp
 	// emptySince, or rewrite status.attachments. All optional, all called
 	// OUTSIDE the registry lock.
+	// OnEvent, when set, receives one R50 bus event per transition this pod
+	// publishes (docs/51 D4). It MUST NOT block — it is called under the
+	// registry lock, and the publisher's contract is a non-blocking send.
+	// Only the HOME pod has the room, so each fact is published once.
+	OnEvent              func(eventbus.Event)
 	OnRoomEnded          func(code string, reason uint8)
 	OnRoomEmpty          func(code string, empty bool)
 	OnAttachmentsChanged func(code string, attachments []rooms.Attachment)
@@ -200,6 +206,13 @@ type room struct {
 	// (a Join stopped it too late, a Leave re-armed) must not fire.
 	emptyGen uint64
 	ended    bool
+	// adopted marks a room this pod took over from another home (RM3): the
+	// participants that reconnect here are rejoining, and their bus events
+	// say so instead of looking like new arrivals (docs/51 D9).
+	adopted bool
+	// releasing marks a room this pod is handing to a new home. The end that
+	// follows is a re-home, not a close, and publishes no room.closed.
+	releasing bool
 }
 
 type attachment struct {
@@ -580,6 +593,7 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 		r.rooms[norm] = rm
 		r.attachLocked(rm, id, req.Label, state, 0)
 		r.startEmptyGraceLocked(rm)
+		r.busRoomOpenedLocked(rm)
 		r.mu.Unlock()
 		r.log.Info("room minted", "room_key", r.opts.Obfuscate(norm), "broadcast_key", r.opts.Obfuscate(id))
 		r.notifyAttachments(rm)
@@ -1028,6 +1042,12 @@ func (r *Registry) attachLocked(rm *room, id, label string, state BroadcastState
 	a := &attachment{id: id, label: label, live: state.Live, viewers: state.Viewers, attachedAt: r.opts.Now(), ownerPID: owner}
 	rm.attachments = append(rm.attachments, a)
 	r.attached[id] = rm.code
+	// Published HERE rather than beside the participant-facing
+	// AttachmentAdded event, because this is the funnel every attach goes
+	// through: a mint's first broadcast and an adoption's re-attach have no
+	// participants to notify yet, and a consumer that learned about streams
+	// only from the notify path would never see them.
+	r.busAttachedLocked(rm, a)
 	return a
 }
 
@@ -1059,6 +1079,9 @@ func (r *Registry) broadcastLocked(rm *room, ev wire.RoomEvent, skip uint16) {
 		}
 		p.enqueueLocked(framed)
 	}
+	// The same transition, onto the R50 bus. One funnel for both audiences:
+	// a second list of transitions would be a second list to keep in step.
+	r.busEventLocked(rm, ev)
 }
 
 func (r *Registry) stateRecordLocked(rm *room, p *Participant) []byte {
@@ -1169,6 +1192,7 @@ func (r *Registry) EndRoom(code string, reason uint8) {
 		delete(r.attached, a.id)
 	}
 	r.broadcastLocked(rm, wire.RoomEvent{Kind: wire.RoomEventRoomEnding, Reason: reason}, 0)
+	r.busRoomClosedLocked(rm, reason)
 	parts := make([]*Participant, 0, len(rm.participants))
 	for _, p := range rm.participants {
 		parts = append(parts, p)
@@ -1382,6 +1406,10 @@ func (r *Registry) AdoptDynamic(cr *rooms.Room) bool {
 		code: norm, display: rooms.DisplayCode(cr), kind: rooms.KindDynamic,
 		creatorFP: cr.Status.CreatorTokenFingerprint, createdAt: r.opts.Now(),
 		nextPID: 1, participants: make(map[uint16]*Participant),
+		// This room is not being born here; the participants that dial this
+		// pod are rejoining, and their bus events say so (docs/51 D9). No
+		// room.opened is published for an adoption for the same reason.
+		adopted: true,
 	}
 	if cr.Status.CreatedAt != nil {
 		rm.createdAt = cr.Status.CreatedAt.Time

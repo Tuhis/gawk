@@ -88,7 +88,14 @@ func run() error {
 	// wiring step in cluster mode and nil otherwise. The registry's cluster
 	// seams and the hub's mirror check close over it, nil-safe like coord.
 	var roomStore *roomcluster.Store
+	// R50: the bus publisher is constructed below, after the metrics registry
+	// that the hub registry needs. The hooks close over the variable — the
+	// same late-binding the cluster hooks use — and a nil publisher's Publish
+	// is a no-op, so the window before it exists is safe rather than guarded.
+	var bus *eventbus.Publisher
+	busHook := func(ev eventbus.Event) { bus.Publish(ev) }
 	hubOpts := registryOptions(cfg)
+	hubOpts.OnEvent = busHook
 	if cfg.ClusterMode {
 		hubOpts.OnPublisherClosed = func(id string) {
 			if coord == nil {
@@ -168,7 +175,7 @@ func run() error {
 	// relay predating R50. The counters are registered either way, so an
 	// operator can tell "configured and silent" from "not configured".
 	busMetrics := metrics.NewEventBusMetrics(promReg)
-	bus, err := eventbus.New(eventbus.Options{
+	bus, err = eventbus.New(eventbus.Options{
 		URL:            cfg.EventBusURL,
 		CredsFile:      cfg.EventBusCredsFile,
 		SubjectPrefix:  cfg.EventBusSubjectPrefix,
@@ -196,6 +203,7 @@ func run() error {
 		// review) — read late-bound, so the registry can exist before it.
 		ro.Broadcasts = srv.RoomBroadcasts()
 		ro.Obfuscate = r.ObfuscateID
+		ro.OnEvent = busHook
 		ro.PodName = os.Getenv("POD_NAME")
 		ro.Log = log
 		if cfg.ClusterMode {

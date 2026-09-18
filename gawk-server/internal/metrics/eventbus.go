@@ -3,7 +3,12 @@ package metrics
 import "github.com/prometheus/client_golang/prometheus"
 
 // EventBusMetrics is the relay's honest signal about the R50 event bus
-// (docs/51 D1, §6). The bus is telemetry about the deployment, so it is
+// (docs/51 D1, §6). It satisfies eventbus.Metrics; the drop REASONS are
+// declared there, beside the code that decides them, because internal/eventbus
+// must not import this package (metrics imports roomsrv, and roomsrv hands the
+// bus its events).
+//
+// The bus is telemetry about the deployment, so it is
 // governed by the relay's first rule — drop rather than stall — and every drop
 // is counted with a reason instead of retried. "Drops climbing" is a NATS
 // problem; nothing on the media path waits for it.
@@ -11,22 +16,6 @@ type EventBusMetrics struct {
 	published prometheus.Counter
 	dropped   *prometheus.CounterVec
 }
-
-// Drop reasons. A new one is cheap; conflating two is not.
-const (
-	// DropQueueFull: the bounded channel was full when a hook fired. The
-	// publisher is slower than the transitions, or NATS is unreachable and
-	// the drain goroutine is blocked on backpressure.
-	DropQueueFull = "queue_full"
-	// DropPublish: the async publish itself failed, including "no response
-	// from stream" — which is what a relay publishing before gawk-admin has
-	// created GAWK_EVENTS looks like (docs/51 §6: order does not matter).
-	DropPublish = "publish"
-	// DropEncode: the event could not be marshalled. A bug, not an operational
-	// condition; counted rather than panicking, because a malformed event must
-	// not take the relay down.
-	DropEncode = "encode"
-)
 
 // NewEventBusMetrics builds and registers the bus counters. They are
 // registered even when the bus is off, so an operator can tell "configured and

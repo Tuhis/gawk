@@ -5,16 +5,15 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	natstest "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/Tuhis/gawk/gawk-server/events"
-	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 )
 
 // runNATS starts an embedded JetStream server for the test and returns its URL.
@@ -56,10 +55,46 @@ func withStream(t *testing.T) (url string, js jetstream.JetStream) {
 	return url, js
 }
 
-func newTestPublisher(t *testing.T, url string, tweak func(*Options)) (*Publisher, *metrics.EventBusMetrics, prometheus.Gatherer) {
+// countingMetrics is the test's Metrics. internal/metrics implements the same
+// interface for production, but this package must not import it: metrics
+// imports hub and roomsrv, which hand THIS package their events.
+type countingMetrics struct {
+	mu        sync.Mutex
+	published int
+	dropped   map[string]int
+}
+
+func newCountingMetrics() *countingMetrics {
+	return &countingMetrics{dropped: map[string]int{}}
+}
+
+func (m *countingMetrics) Published() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.published++
+}
+
+func (m *countingMetrics) Dropped(reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dropped[reason]++
+}
+
+func (m *countingMetrics) drops(reason string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dropped[reason]
+}
+
+func (m *countingMetrics) sent() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.published
+}
+
+func newTestPublisher(t *testing.T, url string, tweak func(*Options)) (*Publisher, *countingMetrics) {
 	t.Helper()
-	reg := prometheus.NewRegistry()
-	m := metrics.NewEventBusMetrics(reg)
+	m := newCountingMetrics()
 	opts := Options{URL: url, Pod: "pod-a", Metrics: m, ViewerInterval: 50 * time.Millisecond}
 	if tweak != nil {
 		tweak(&opts)
@@ -69,36 +104,7 @@ func newTestPublisher(t *testing.T, url string, tweak func(*Options)) (*Publishe
 		t.Fatal(err)
 	}
 	t.Cleanup(p.Close)
-	return p, m, reg
-}
-
-func counter(t *testing.T, g prometheus.Gatherer, name string, label string) float64 {
-	t.Helper()
-	families, err := g.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var total float64
-	for _, f := range families {
-		if f.GetName() != name {
-			continue
-		}
-		for _, m := range f.GetMetric() {
-			if label != "" {
-				match := false
-				for _, l := range m.GetLabel() {
-					if l.GetValue() == label {
-						match = true
-					}
-				}
-				if !match {
-					continue
-				}
-			}
-			total += m.GetCounter().GetValue()
-		}
-	}
-	return total
+	return p, m
 }
 
 // TestPublishesCloudEvents is the shape check a consumer depends on: the
@@ -107,7 +113,7 @@ func counter(t *testing.T, g prometheus.Gatherer, name string, label string) flo
 // exactly what events.Marshal produces — this package adds no encoding.
 func TestPublishesCloudEvents(t *testing.T) {
 	url, js := withStream(t)
-	p, _, reg := newTestPublisher(t, url, nil)
+	p, m := newTestPublisher(t, url, nil)
 
 	p.Publish(Event{
 		Type: events.TypeRoomParticipantJoined,
@@ -147,8 +153,8 @@ func TestPublishesCloudEvents(t *testing.T) {
 	if string(msg.Data()) != string(want) {
 		t.Errorf("body\n got: %s\nwant: %s", msg.Data(), want)
 	}
-	if n := counter(t, reg, "gawk_eventbus_published_total", ""); n != 1 {
-		t.Errorf("published_total = %v, want 1", n)
+	if n := m.sent(); n != 1 {
+		t.Errorf("published = %d, want 1", n)
 	}
 }
 
@@ -156,7 +162,7 @@ func TestPublishesCloudEvents(t *testing.T) {
 // issues must be ordered and gap-free within its own run.
 func TestSequenceIsMonotonicPerPod(t *testing.T) {
 	url, js := withStream(t)
-	p, _, _ := newTestPublisher(t, url, nil)
+	p, _ := newTestPublisher(t, url, nil)
 	for i := 0; i < 5; i++ {
 		p.Publish(Event{Type: events.TypeBroadcastStarted, Key: "3f9a1c4e7b2d",
 			Data: events.BroadcastStartedData{ID: "k7m2q9", Key: "3f9a1c4e7b2d", Role: events.RoleOrigin}})
@@ -176,7 +182,7 @@ func TestPublishNeverBlocks(t *testing.T) {
 	// No stream, queue of one, and a publisher whose drain goroutine is busy:
 	// what matters is that Publish returns, not that anything arrives.
 	url := runNATS(t)
-	p, _, reg := newTestPublisher(t, url, func(o *Options) { o.QueueSize = 1 })
+	p, m := newTestPublisher(t, url, func(o *Options) { o.QueueSize = 1 })
 
 	start := time.Now()
 	for i := 0; i < 5000; i++ {
@@ -187,7 +193,7 @@ func TestPublishNeverBlocks(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("5000 hooks took %v — a hook must not wait on the bus", elapsed)
 	}
-	if n := counter(t, reg, "gawk_eventbus_dropped_total", metrics.DropQueueFull); n == 0 {
+	if m.drops(DropQueueFull) == 0 {
 		t.Error("overflow was not counted")
 	}
 }
@@ -197,13 +203,13 @@ func TestPublishNeverBlocks(t *testing.T) {
 // is a counter, not a retry queue.
 func TestMissingStreamCountsAsDrop(t *testing.T) {
 	url := runNATS(t)
-	p, _, reg := newTestPublisher(t, url, nil)
+	p, m := newTestPublisher(t, url, nil)
 	p.Publish(Event{Type: events.TypeBroadcastStarted, Key: "3f9a1c4e7b2d",
 		Data: events.BroadcastStartedData{ID: "k7m2q9", Key: "3f9a1c4e7b2d", Role: events.RoleOrigin}})
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if counter(t, reg, "gawk_eventbus_dropped_total", metrics.DropPublish) > 0 {
+		if m.drops(DropPublish) > 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

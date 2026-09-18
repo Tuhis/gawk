@@ -33,7 +33,30 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/Tuhis/gawk/gawk-server/events"
-	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
+)
+
+// Metrics counts what reaches the bus and what does not. internal/metrics
+// implements it; a nil Metrics is fine, and so is a typed nil behind it —
+// every method there is nil-safe.
+type Metrics interface {
+	Published()
+	Dropped(reason string)
+}
+
+// Drop reasons. A new one is cheap; conflating two is not.
+const (
+	// DropQueueFull: the bounded channel was full when a hook fired. The
+	// publisher is slower than the transitions, or NATS is unreachable and the
+	// drain goroutine is blocked on backpressure.
+	DropQueueFull = "queue_full"
+	// DropPublish: the async publish itself failed, including "no response
+	// from stream" — which is what a relay publishing before gawk-admin has
+	// created GAWK_EVENTS looks like (docs/51 §6: order does not matter).
+	DropPublish = "publish"
+	// DropEncode: the event could not be marshalled. A bug, not an operational
+	// condition; counted rather than panicking, because a malformed event must
+	// not take the relay down.
+	DropEncode = "encode"
 )
 
 // Event is what a hook hands the bus: the fact, and nothing about identity.
@@ -75,7 +98,7 @@ type Options struct {
 	// is a flag with no chart value and it warns at every start.
 	Insecure bool
 	Logger   *slog.Logger
-	Metrics  *metrics.EventBusMetrics
+	Metrics  Metrics
 	// Now is injectable for tests.
 	Now func() time.Time
 }
@@ -97,7 +120,7 @@ type Publisher struct {
 	nc      *nats.Conn
 	js      jetstream.JetStream
 	log     *slog.Logger
-	metrics *metrics.EventBusMetrics
+	metrics Metrics
 	now     func() time.Time
 
 	seq uint64 // only touched by the drain goroutine
@@ -176,7 +199,7 @@ func New(opts Options) (*Publisher, error) {
 		func(_ jetstream.JetStream, msg *nats.Msg, err error) {
 			// Includes "no response from stream": a relay publishing before
 			// gawk-admin has created GAWK_EVENTS. Counted, not retried.
-			p.metrics.Dropped(metrics.DropPublish)
+			p.drop(DropPublish)
 			p.warn("event bus publish failed", "subject", msg.Subject, "err", err)
 		}))
 	if err != nil {
@@ -200,7 +223,7 @@ func (p *Publisher) Publish(ev Event) {
 	select {
 	case p.ch <- ev:
 	default:
-		p.metrics.Dropped(metrics.DropQueueFull)
+		p.drop(DropQueueFull)
 		p.warn("event bus queue full, dropping event", "type", ev.Type)
 	}
 }
@@ -258,7 +281,7 @@ func (p *Publisher) send(ev Event) {
 	ce := events.New(id, events.RelaySource(p.opts.Pod), ev.Type, ev.Key, at, ev.Data)
 	body, err := events.Marshal(ce)
 	if err != nil {
-		p.metrics.Dropped(metrics.DropEncode)
+		p.drop(DropEncode)
 		p.warn("event bus encode failed", "type", ev.Type, "err", err)
 		return
 	}
@@ -274,7 +297,7 @@ func (p *Publisher) send(ev Event) {
 		},
 	}
 	if _, err := p.js.PublishMsgAsync(msg); err != nil {
-		p.metrics.Dropped(metrics.DropPublish)
+		p.drop(DropPublish)
 		p.warn("event bus publish rejected", "subject", msg.Subject, "err", err)
 		return
 	}
@@ -282,7 +305,7 @@ func (p *Publisher) send(ev Event) {
 	// goroutine and only failures are distinguishable there. published minus
 	// dropped{publish} is what an operator compares against the stream's
 	// message count.
-	p.metrics.Published()
+	p.publishedInc()
 }
 
 // subject is <prefix>.<scope>.<key>.<event> — the shape that shows up in NATS
@@ -336,4 +359,18 @@ func randomSeqStart() uint64 {
 	// Leave room to count without wrapping; the value only has to be unlikely
 	// to collide with the previous process's range.
 	return binary.BigEndian.Uint64(b[:]) >> 16
+}
+
+// drop and publishedInc tolerate a nil Metrics, so a caller that wants no
+// counters passes none rather than a stub.
+func (p *Publisher) drop(reason string) {
+	if p.metrics != nil {
+		p.metrics.Dropped(reason)
+	}
+}
+
+func (p *Publisher) publishedInc() {
+	if p.metrics != nil {
+		p.metrics.Published()
+	}
 }
