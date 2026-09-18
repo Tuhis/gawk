@@ -351,6 +351,16 @@ jobs:
       # rather than incrementing — which is also why the mode `atomic` exists
       # to fix (a lost increment under parallelism) cannot change this answer.
       - run: go test -covermode=set -coverprofile=coverage.out ./...
+      # Nothing after this point compiles, and the Go build cache is worth
+      # gigabytes by now — while the coverage action's setup-python unpacks
+      # ~450MB of interpreter into the runner's tool cache on the same volume.
+      # On the self-hosted runners that is the difference between passing and
+      # `No space left on device`, which is where both of these jobs died in
+      # runs 35315043704 and 35315939106 with every test already green.
+      # The MODULE cache is left alone: setup-go saves it, and re-downloading
+      # it next run would cost far more than it frees.
+      - name: Free the Go build cache before the coverage toolchain
+        run: go clean -cache
       - uses: ./.github/actions/coverage
         with:
           format: go
@@ -1100,6 +1110,16 @@ jobs:
             echo "::error::the envtest tests SKIPPED — KUBEBUILDER_ASSETS did not reach them, so the Lease/CRD tier proved nothing"
             exit 1
           fi
+      # Nothing after this point compiles, and the Go build cache is worth
+      # gigabytes by now — while the coverage action's setup-python unpacks
+      # ~450MB of interpreter into the runner's tool cache on the same volume.
+      # On the self-hosted runners that is the difference between passing and
+      # `No space left on device`, which is where both of these jobs died in
+      # runs 35315043704 and 35315939106 with every test already green.
+      # The MODULE cache is left alone: setup-go saves it, and re-downloading
+      # it next run would cost far more than it frees.
+      - name: Free the Go build cache before the coverage toolchain
+        run: go clean -cache
       - uses: ./.github/actions/coverage
         with:
           format: go
