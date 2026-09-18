@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.15.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast/v1.14.0...gawk-broadcast/v1.15.0) (2026-09-18)
+
+
+### Features
+
+* **broadcasters:** R44 — app icons for the native broadcasters (IC1–IC5) ([#328](https://github.com/Tuhis/gawk/issues/328)) ([2de0c20](https://github.com/Tuhis/gawk/commit/2de0c20cf310cb1a42062eb1d259fd4561c0c2f3))
+
+
+### Bug Fixes
+
+* **gawk-app:** say when a gated room keeps your stream out, and take the secret ([#325](https://github.com/Tuhis/gawk/issues/325)) ([b6d7849](https://github.com/Tuhis/gawk/commit/b6d7849ad83714a5b882e519373b7c8a159463a7))
+
 ## [1.14.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast/v1.13.0...gawk-broadcast/v1.14.0) (2026-09-14)
 
 
