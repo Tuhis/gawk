@@ -51,6 +51,14 @@ entry="$share/applications/$APP_ID.desktop"
 gui="$here/gawk-broadcast-gui"
 [ -f "$entry" ] || { echo "$entry not found — run this from the unpacked release directory" >&2; exit 1; }
 [ -x "$gui" ] || { echo "$gui is not an executable next to this script" >&2; exit 1; }
+# A `%` in the path cannot be launched through the freedesktop stack at
+# all: GLib resolves the binary from the *unexpanded* Exec= argument, so
+# `%%` looks for a file literally named that and a single `%` is mangled as
+# a field code — either way the entry is silently dropped. Refusing beats
+# installing an entry the desktop will never show (PR #328 review).
+case "$gui" in
+  *%*) echo "cannot install a launcher entry from a directory whose path contains '%' ($here): desktop entries cannot launch it. Move the folder and run this again." >&2; exit 1 ;;
+esac
 
 mkdir -p "$apps"
 # Exec= must be absolute: nothing puts the unpacked directory on PATH. The
@@ -60,15 +68,16 @@ mkdir -p "$apps"
 # quoting rules applied, under which `"`, `` ` ``, `$` and `\` are
 # backslash-escaped. So each of those needs TWO backslashes in the file —
 # the spec's own example is four backslashes for one literal backslash and
-# `\\$` for a dollar — and `%` is doubled so a launcher does not read it as
-# a field code. A space is merely the common case for a Downloads folder.
-# The line is then appended with printf, not substituted with sed: a sed
-# replacement re-interprets `&`, `\` and the delimiter, which is exactly how
-# the first version of this script mangled any path containing one. Key
-# order inside the group is irrelevant.
-# Backslashes first (one becomes four), then the other three (each gains
-# two), then `%`; in this order the added backslashes are never re-escaped.
-quoted=$(printf '%s' "$gui" | sed -e 's/\\/\\\\\\\\/g' -e 's/["`$]/\\\\&/g' -e 's/%/%%/g')
+# `\\$` for a dollar. (`%` is refused above; see there.) A space is merely
+# the common case for a Downloads folder. The line is then appended with
+# printf, not substituted with sed: a sed replacement re-interprets `&`,
+# `\` and the delimiter, which is exactly how the first version of this
+# script mangled any path containing one. Key order inside the group is
+# irrelevant. Backslashes first (one becomes four), then the other three
+# (each gains two); in this order the added backslashes are never
+# re-escaped. Verified against desktop-file-validate and a real GLib
+# launch in the PR #328 review.
+quoted=$(printf '%s' "$gui" | sed -e 's/\\/\\\\\\\\/g' -e 's/["`$]/\\\\&/g')
 { grep -v '^Exec=' "$entry"; printf 'Exec="%s"\n' "$quoted"; } > "$apps/$APP_ID.desktop"
 chmod 644 "$apps/$APP_ID.desktop"
 

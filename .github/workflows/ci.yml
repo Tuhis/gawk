@@ -560,27 +560,36 @@ jobs:
           scratch=$(mktemp -d)
           # Installed from a copy of dist/ under a directory name carrying
           # every character the Exec= quoting has to survive — a space, `&`
-          # (sed's "the match"), `"`, `$`, a backslash and `%` (a desktop
-          # field code). The runner's own $PWD is clean, which is how the
-          # first version's sed-based rewrite passed this step while mangling
-          # any real path with one of these in it (PR #328 review).
-          # In its own temp dir, not under $scratch, so the leftover check
-          # below can stay a plain find (a backslash in the name would defeat
-          # a -path glob).
+          # (sed's "the match"), `"`, `$` and a backslash. The runner's own
+          # $PWD is clean, which is how the first version's sed-based rewrite
+          # passed this step while mangling any real path with one of these
+          # in it (PR #328 review). In its own temp dir, not under $scratch,
+          # so the leftover check below can stay a plain find (a backslash
+          # in the name would defeat a -path glob).
           base=$(mktemp -d)
-          unpacked="$base/a&b \"c\" \$d \\e 100%"
+          unpacked="$base/a&b \"c\" \$d \\e"
           mkdir -p "$unpacked"
           cp -R dist/. "$unpacked/"
+          # A `%` in the path is unlaunchable through GLib whatever the
+          # spelling (it resolves the binary from the unexpanded argument),
+          # so the script must refuse it rather than install a dead entry.
+          dead="$base/100%"
+          mkdir -p "$dead"
+          cp -R dist/. "$dead/"
+          if XDG_DATA_HOME="$scratch" "$dead/install-desktop.sh" 2>/dev/null; then
+            echo "::error::install-desktop.sh accepted a path containing '%', which no launcher can start"; exit 1
+          fi
+          test ! -e "$scratch/applications/fi.ioio.gawk.broadcast.desktop"
           XDG_DATA_HOME="$scratch" "$unpacked/install-desktop.sh"
           entry="$scratch/applications/fi.ioio.gawk.broadcast.desktop"
           desktop-file-validate "$entry"
           # The expected line, spelled out by hand rather than derived with
           # the script's own escaping: `"`, `$` and `\` each behind TWO
           # backslashes (key-file unescape, then Exec quoting — the spec's
-          # "four backslashes for a literal backslash"), `%` doubled, `&` and
-          # the space untouched. desktop-file-validate above is the
-          # independent judge of the same line.
-          want='Exec="'"$base"'/a&b \\"c\\" \\$d \\\\e 100%%/gawk-broadcast-gui"'
+          # "four backslashes for a literal backslash"), `&` and the space
+          # untouched. desktop-file-validate above is the independent judge
+          # of the same line.
+          want='Exec="'"$base"'/a&b \\"c\\" \\$d \\\\e/gawk-broadcast-gui"'
           grep -qxF -- "$want" "$entry" || {
             echo "::error::Exec= is not the correctly quoted absolute path of the installed binary:"
             echo "want: $want"; echo "got:  $(grep '^Exec=' "$entry")"; exit 1; }
