@@ -27,11 +27,18 @@ fn emit_icon_resource() {
     if os != "windows" || env != "msvc" {
         return;
     }
+    // Absolute via CARGO_MANIFEST_DIR, but NOT canonicalized: on a Windows
+    // host canonicalize() yields a verbatim `\\?\C:\…` path, which link.exe
+    // does not reliably accept (LNK1181) — rustc and the cc crate both strip
+    // that prefix before invoking the linker for the same reason. The `..`
+    // components are fine for lld-link and link.exe alike.
     let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
-    let res = Path::new(&manifest)
-        .join("../../../assets/icon/gawk.res")
-        .canonicalize()
-        .expect("assets/icon/gawk.res is missing — run `go run ./tools/icon generate`");
+    let res = Path::new(&manifest).join("../../../assets/icon/gawk.res");
+    assert!(
+        res.exists(),
+        "{} is missing — run `go run ./tools/icon generate`",
+        res.display()
+    );
     println!("cargo::rerun-if-changed={}", res.display());
     println!("cargo::rustc-link-arg-bins={}", res.display());
 }
