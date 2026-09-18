@@ -280,7 +280,9 @@ script writes the absolute path of the `gawk-broadcast-gui` it sits next to
 into the entry, so **run it from the directory you unpacked into and keep
 the files there** — move them and run it again.
 
-If you would rather do it by hand, it is two copies and one edit:
+If you would rather do it by hand, it is two copies and one edit (this
+plain form assumes the path has no spaces or quotes; the script handles
+the desktop entry's escaping rules for any path):
 
 ```sh
 cp -r share/applications share/icons ~/.local/share/

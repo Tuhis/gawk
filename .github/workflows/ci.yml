@@ -575,9 +575,12 @@ jobs:
           entry="$scratch/applications/fi.ioio.gawk.broadcast.desktop"
           desktop-file-validate "$entry"
           # The expected line, spelled out by hand rather than derived with
-          # the script's own escaping: `"`, `$` and `\` backslash-escaped,
-          # `%` doubled, `&` and the space untouched.
-          want='Exec="'"$base"'/a&b \"c\" \$d \\e 100%%/gawk-broadcast-gui"'
+          # the script's own escaping: `"`, `$` and `\` each behind TWO
+          # backslashes (key-file unescape, then Exec quoting — the spec's
+          # "four backslashes for a literal backslash"), `%` doubled, `&` and
+          # the space untouched. desktop-file-validate above is the
+          # independent judge of the same line.
+          want='Exec="'"$base"'/a&b \\"c\\" \\$d \\\\e 100%%/gawk-broadcast-gui"'
           grep -qxF -- "$want" "$entry" || {
             echo "::error::Exec= is not the correctly quoted absolute path of the installed binary:"
             echo "want: $want"; echo "got:  $(grep '^Exec=' "$entry")"; exit 1; }
