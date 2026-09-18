@@ -100,7 +100,7 @@ empty off Windows (`cfg(windows)`). What changes:
 | `wire` | unchanged | unchanged — the fourth mirror serves both binaries; G5 is inherited |
 | `engine` | unchanged | unchanged, except `defaults` gains the macOS origin, kind and asset-name constants beside the Windows ones |
 | `audio` | unchanged | portable half unchanged; `wasapi.rs` stays `cfg(windows)`; a new `sck.rs` is `cfg(target_os = "macos")` |
-| `capture` | unchanged | Windows modules stay `cfg(windows)`; new `sck.rs` + `picker.rs` (macOS) under `cfg(target_os = "macos")`; `gate.rs`/`fit.rs` (portable) are shared |
+| `capture` | unchanged | `wgc.rs`/`d3d.rs`/`qpc.rs` stay `cfg(windows)`; `gate.rs`/`fit.rs` (portable) are shared; **`picker.rs` is portable today and stays so** — it is the Windows in-app picker's alt-tab eligibility filter, kept host-testable on purpose (docs/38 D6), and macOS never calls it. The macOS modules are `sck.rs` + **`sck_picker.rs`** (the `SCContentSharingPicker` observer) under `cfg(target_os = "macos")` — a distinct name, because a second `picker` module in the same crate would collide with the unconditional one |
 | `encode` | unchanged | `mft.rs` stays `cfg(windows)`; new `vt.rs` (macOS); `h264.rs` (SPS parse, Annex-B) and `cascade.rs` are shared |
 | `app` | unchanged | **split**: `app-windows` (the existing crate, renamed) and `app-macos`. Shared `.slint` files move to `crates/ui/` and both shells import them; platform cards differ (§6). |
 
@@ -148,7 +148,7 @@ project" by its own README). `objc2-*` is chosen:
   author and no stability promise.
 - The API surface we need is small (one stream, one compression session,
   one picker, one notification center) and the raw bindings' `unsafe` is
-  confined to `capture::sck`, `capture::picker`, `encode::vt` and
+  confined to `capture::sck`, `capture::sck_picker`, `encode::vt` and
   `audio::sck`. Everything above those modules is safe Rust, like `wgc.rs`
   and `mft.rs` today with the `windows` crate.
 - Panics cannot cross the Objective-C callback boundary (it is `extern "C"`
@@ -164,7 +164,7 @@ one crate.
 
 ### D4 — Capture: one `SCStream` from the system picker's filter, `420v`, VFR pass-through
 
-- **Picker** (OD6): `SCContentSharingPicker.shared` with a configuration of
+- **Picker** (OD6, `capture::sck_picker`): `SCContentSharingPicker.shared` with a configuration of
   `allowedPickerModes = [singleWindow, singleApplication, singleDisplay]`,
   `allowsChangingSelectedContent = true` (re-pick without stopping), our own
   bundle in `excludedBundleIDs`. The observer receives an `SCContentFilter`;
@@ -535,9 +535,9 @@ gawk-broadcast-desktop/
     wire/                 # unchanged: the fourth mirror, both binaries
     engine/               # unchanged: session, send policy, resume, timesync,
                           #   telemetry, update; platform constants in defaults
-    capture/              # gate.rs, fit.rs shared
-                          #   windows: wgc.rs, d3d.rs, picker.rs, qpc.rs
-                          #   macos:   sck.rs (SCStream), picker.rs (SCContentSharingPicker)
+    capture/              # gate.rs, fit.rs, picker.rs (Windows alt-tab filter, portable) shared
+                          #   windows: wgc.rs, d3d.rs, qpc.rs
+                          #   macos:   sck.rs (SCStream), sck_picker.rs (SCContentSharingPicker)
     encode/               # h264.rs (SPS parse, AVCC→Annex-B), cascade.rs shared
                           #   windows: mft.rs      macos: vt.rs
     audio/                # framer, opusenc, level, toc shared
