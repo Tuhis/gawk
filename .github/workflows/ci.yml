@@ -569,7 +569,10 @@ jobs:
           done
           test -f "$scratch/icons/hicolor/scalable/apps/fi.ioio.gawk.broadcast.svg"
           XDG_DATA_HOME="$scratch" dist/install-desktop.sh --uninstall
-          left=$(find "$scratch" -type f ! -name icon-theme.cache)
+          # The refresh tools write their own caches (gtk-update-icon-cache:
+          # icon-theme.cache, update-desktop-database: mimeinfo.cache); those
+          # are the desktop's, not the script's, and are the only files allowed.
+          left=$(find "$scratch" -type f ! -name icon-theme.cache ! -name mimeinfo.cache)
           if [ -n "$left" ]; then echo "::error::uninstall left files behind:"; echo "$left"; exit 1; fi
       # Recorded, not guessed: INSTALL.md's library list has to match what the
       # binary actually links, and the glibc floor decides whether it starts at
