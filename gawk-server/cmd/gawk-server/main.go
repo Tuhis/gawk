@@ -22,6 +22,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
+	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/moderationsrc"
@@ -160,6 +161,27 @@ func run() error {
 	// which is how an operator tells "no bans" from "no moderation".
 	bans := moderation.NewSet()
 	promReg.MustRegister(metrics.NewModerationCollector(bans))
+
+	// R50 event bus (docs/51). Constructed before anything can produce an
+	// event and closed last; with -eventbus-url unset New returns a nil
+	// publisher, every hook is a no-op and the process is byte-identical to a
+	// relay predating R50. The counters are registered either way, so an
+	// operator can tell "configured and silent" from "not configured".
+	busMetrics := metrics.NewEventBusMetrics(promReg)
+	bus, err := eventbus.New(eventbus.Options{
+		URL:            cfg.EventBusURL,
+		CredsFile:      cfg.EventBusCredsFile,
+		SubjectPrefix:  cfg.EventBusSubjectPrefix,
+		Pod:            podIdentity(),
+		ViewerInterval: cfg.EventBusViewerInterval,
+		Insecure:       cfg.EventBusInsecure,
+		Logger:         log,
+		Metrics:        busMetrics,
+	})
+	if err != nil {
+		return fmt.Errorf("event bus: %w", err)
+	}
+	defer bus.Close()
 
 	// The WebTransport (UDP) server and the ops (TCP) listener run together;
 	// either one failing tears the other down.
@@ -781,4 +803,17 @@ func logCertIdentity(log *slog.Logger, leaf *x509.Certificate, msg, remedy strin
 			"remedy", remedy,
 		)
 	}
+}
+
+// podIdentity names this process in every event's source and id (docs/51 D3).
+// POD_NAME in a cluster; the hostname otherwise, so a single-node deployment's
+// events are still attributable and its ids still unique per producer.
+func podIdentity() string {
+	if name := os.Getenv("POD_NAME"); name != "" {
+		return name
+	}
+	if host, err := os.Hostname(); err == nil && host != "" {
+		return host
+	}
+	return "gawk-server"
 }

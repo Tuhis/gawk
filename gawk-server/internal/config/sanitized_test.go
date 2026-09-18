@@ -22,6 +22,7 @@ import (
 // some later milestone from being published by omission.
 var (
 	secretFields = []string{
+		"EventBusCredsFile",
 		"PublishSecret",
 		"InternalPSK",
 		"StatsKey",
@@ -46,6 +47,12 @@ var (
 		"MaxIdleTimeout", "KeepAlivePeriod", "BroadcastGrace", "PublisherStallTimeout", "PublisherStallEnds",
 		"Rooms", "RoomEmptyGrace", "MaxRooms", "MaxRoomBroadcasts",
 		"MaxRoomParticipants", "RoomsFile",
+		// R50: the bus URL, prefix, interval and the insecure switch are
+		// operational facts an operator debugging a silent bus needs to see.
+		// The creds FILE PATH is classified secret-bearing below — not because
+		// a path is a secret, but because the setness rendering is the honest
+		// answer to "is a credential configured?".
+		"EventBusURL", "EventBusSubjectPrefix", "EventBusViewerInterval", "EventBusInsecure",
 	}
 )
 
