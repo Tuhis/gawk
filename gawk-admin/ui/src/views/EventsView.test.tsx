@@ -17,9 +17,47 @@ function event(id: number, over: Partial<ModerationEvent> = {}): ModerationEvent
     broadcastKey: '3f9a1c2b4d5e',
     broadcastId: 'ABC123',
     reason: 'terms violation',
+    category: 'moderation',
     ...over,
   };
 }
+
+describe('the activity filter (R50)', () => {
+  // The feed defaults to the audit trail: with the event bus on, a busy fleet
+  // writes far more activity than moderation, and an operator who opened this
+  // page to see what an OPERATOR did should not have to scroll past a thousand
+  // joins to find it.
+  it('asks for moderation rows by default and for activity on request', async () => {
+    const session = stubSession((path) =>
+      path.startsWith('api/v1/events')
+        ? json({
+            events: path.includes('category=activity')
+              ? [event(9, { type: 'room.participant_joined', category: 'activity', actor: 'system' })]
+              : [event(9)],
+            nextAfterId: null,
+          })
+        : json({}),
+    );
+    renderWithSession(<EventsView />, session);
+    await screen.findByText('broadcast.killed');
+    expect(session.calls.some((c) => c.path.includes('category=moderation'))).toBe(true);
+
+    fireEvent.change(screen.getByLabelText('Event category'), { target: { value: 'activity' } });
+    await screen.findByText('room.participant_joined');
+    expect(session.calls.some((c) => c.path.includes('category=activity'))).toBe(true);
+    expect(screen.getByText('activity')).toBeTruthy();
+  });
+
+  it('says where activity comes from when there is none', async () => {
+    const session = stubSession((path) =>
+      path.startsWith('api/v1/events') ? json({ events: [], nextAfterId: null }) : json({}),
+    );
+    renderWithSession(<EventsView />, session);
+    await screen.findByText(/No moderation events yet/);
+    fireEvent.change(screen.getByLabelText('Event category'), { target: { value: 'activity' } });
+    await screen.findByText(/relay event bus/);
+  });
+});
 
 describe('the audit feed (§4.9)', () => {
   it('renders the newest events with actor and type', async () => {

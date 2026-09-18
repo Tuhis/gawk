@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
@@ -422,4 +424,27 @@ func TestRoomClusterSeamsAreAllWiredAndFailClosedWithoutAStore(t *testing.T) {
 	ro.OnRoomEnded("k7xq2m", 0)
 	ro.OnRoomEmpty("k7xq2m", true)
 	ro.OnAttachmentsChanged("k7xq2m", nil)
+}
+
+// R50's headline promise is that a deployment without a bus is byte-identical
+// to one predating it, and EB1's acceptance criteria name /metrics next to
+// /statusz. So the counters are registered only when a bus is configured: an
+// always-zero gawk_eventbus_* series would claim a subsystem that is not
+// there.
+func TestEventBusMetricsAreOnlyBuiltWhenTheBusIs(t *testing.T) {
+	off := prometheus.NewRegistry()
+	if m := eventBusMetrics(config.Config{}, off); m != nil {
+		t.Error("the bus counters were built with no -eventbus-url")
+	}
+	if n := testutil.CollectAndCount(off); n != 0 {
+		t.Errorf("a relay with the bus off exports %d gawk_eventbus_* series, want none", n)
+	}
+
+	on := prometheus.NewRegistry()
+	if m := eventBusMetrics(config.Config{EventBusURL: "nats://nats:4222"}, on); m == nil {
+		t.Fatal("no counters with a bus configured")
+	}
+	if n := testutil.CollectAndCount(on); n == 0 {
+		t.Error("a configured bus exports no counters")
+	}
 }

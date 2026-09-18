@@ -181,6 +181,52 @@ rooms:
   # clusterMode. Without clusterMode a rooms-enabled relay uses no
   # Kubernetes client at all.
 
+# R50 (docs/51): publish broadcast and room lifecycle events to an
+# operator-provided NATS JetStream. OPTIONAL and OFF by default — with url
+# empty the relay builds no client, starts no goroutine and is byte-identical
+# to a deployment predating R50.
+#
+# gawk does not ship NATS: the charts do not own a stateful thing's upgrade
+# story (the Postgres posture). Install it yourself (self-hosting §12), give
+# this relay a PUBLISH-ONLY user on gawk.> and give gawk-admin its own.
+#
+# Subjects carry the fleet's HMAC'd keys; PAYLOADS carry raw broadcast IDs and
+# room codes, like the Room and Ban CRs — so the bus is internal-tier
+# infrastructure and must never be routed publicly.
+eventbus:
+  # NATS URL; empty disables the bus entirely. `nats://` is correct even for a
+  # TLS-only bus — the client upgrades from the server's INFO, TLS is not
+  # implied by the scheme.
+  url: ""
+  # ONE of the two ways a NATS deployment identifies this relay.
+  #
+  # 1. A client CERTIFICATE (tlsSecretRef). With `verify_and_map` on the
+  #    server, the certificate's subject DN IS the NATS username — so the
+  #    identity is the cert, there is no secret to distribute, and cert-manager
+  #    renewal changes nothing. Point this at a Certificate's Secret; the keys
+  #    default to what cert-manager writes:
+  #      tlsSecretRef: {name: gawk-server-nats-tls}
+  #    The same Secret's ca.crt is used to verify the SERVER, which is required
+  #    when the bus runs on its own private CA (it should).
+  tlsSecretRef: {}
+  #    Key names inside that Secret, if they are not cert-manager's defaults.
+  tlsCertKey: tls.crt
+  tlsKeyKey: tls.key
+  tlsCAKey: ca.crt
+  #
+  # 2. An NKey/JWT .creds file:
+  #   kubectl -n gawk create secret generic gawk-relay-nats \
+  #     --from-file=user.creds=./relay.creds
+  # then set: credsSecretRef: {name: gawk-relay-nats, key: user.creds}
+  credsSecretRef: {}
+  # First token of every subject: <prefix>.<scope>.<key>.<event>. Two fleets
+  # can share one NATS account by taking different prefixes.
+  subjectPrefix: gawk
+  # Viewer-count and attachment deltas are coalesced to at most one per key per
+  # interval, and published only on change — a thousand-viewer broadcast must
+  # not be a thousand messages a second.
+  viewerInterval: "5s"
+
 certificate:
   # cert-manager Certificate for the relay's public name. The server's
   # tlsutil.Reloader picks up renewals on the fly — no pod restart needed.

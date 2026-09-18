@@ -56,6 +56,12 @@ type ReconcilerOptions struct {
 	Log     *slog.Logger
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// SkipRoomSweep retires the once-a-minute room-end detection: with the
+	// R50 event bus on, the relay publishes a room's end with its reason and
+	// gawk-admin ingests it within a second, so inferring the same fact from a
+	// CR that vanished between two passes would record it twice (docs/51 D5).
+	// The ban reconcile is unaffected — that is enforcement, not detection.
+	SkipRoomSweep bool
 	// Interval is the sweep period; 0 means DefaultInterval.
 	Interval time.Duration
 	// Record persists an event together with its webhook fan-out in one
@@ -146,6 +152,12 @@ func (r *Reconciler) Kick() {
 func (r *Reconciler) sweep(ctx context.Context) {
 	if err := r.ReconcileOnce(ctx); err != nil {
 		r.log.Warn("ban reconcile failed", "err", err)
+	}
+	if r.opts.SkipRoomSweep {
+		// R50 (docs/51 D5): the relay publishes room.closed with its own
+		// reason, so inferring an end from a CR that vanished between two
+		// passes is redundant — and inference is what this milestone retires.
+		return
 	}
 	if err := r.SweepRoomsOnce(ctx); err != nil {
 		r.log.Warn("room sweep failed", "err", err)

@@ -119,7 +119,8 @@ func fixtures() map[string]Event {
 			CreatedAt: "2026-09-17T12:00:00Z",
 		}),
 		TypeRoomClosed: bus(TypeRoomClosed, fixtureRoomKey, RoomClosedData{
-			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, Reason: RoomClosedCreator,
+			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, Kind: RoomKindDynamic,
+			Reason: RoomClosedCreator,
 		}),
 		TypeRoomAttached: bus(TypeRoomAttached, fixtureRoomKey, RoomAttachedData{
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey,
@@ -133,13 +134,17 @@ func fixtures() map[string]Event {
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey,
 			BroadcastID: fixtureBroadcastID, BroadcastKey: fixtureBroadcastKey, Live: true, Viewers: 7,
 		}),
+		TypeRoomHomeChanged: bus(TypeRoomHomeChanged, fixtureRoomKey, RoomHomeChangedData{
+			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, Kind: RoomKindDynamic,
+			PreviousPod: "relay-1",
+		}),
 		TypeRoomParticipantJoined: bus(TypeRoomParticipantJoined, fixtureRoomKey, RoomParticipantJoinedData{
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, ParticipantID: 3, Nickname: "tuhis",
 			ClientKind: ClientKindWebBroadcaster, Streaming: true, Speaking: false, Rejoin: true,
 		}),
 		TypeRoomParticipantLeft: bus(TypeRoomParticipantLeft, fixtureRoomKey, RoomParticipantLeftData{
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, ParticipantID: 3, Nickname: "tuhis",
-			ClientKind: ClientKindWebBroadcaster,
+			ClientKind: ClientKindWebBroadcaster, Reason: ParticipantLeftHomeMoved,
 		}),
 		TypeRoomParticipantUpdated: bus(TypeRoomParticipantUpdated, fixtureRoomKey, RoomParticipantUpdatedData{
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, ParticipantID: 3, Nickname: "tuhis <3",

@@ -35,12 +35,12 @@ script for what counts as a dependency here and why.
 | `github.com/quic-go/qpack` | v0.6.0 | `MIT` | Copyright 2019 Marten Seemann |
 | `github.com/quic-go/quic-go` | v0.61.0 | `MIT` | Copyright (c) 2016 the quic-go authors & Google, Inc |
 | `github.com/quic-go/webtransport-go` | v0.12.0 | `MIT` | Copyright 2022 Marten Seemann |
-| `golang.org/x/crypto` | v0.54.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/crypto` | v0.57.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/exp/shiny` | v0.0.0-20250408133849-7e4ce0ab07d0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/image` | v0.26.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/net` | v0.57.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/sys` | v0.47.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
-| `golang.org/x/text` | v0.40.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/net` | v0.58.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/sys` | v0.48.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
+| `golang.org/x/text` | v0.42.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 
 ## License texts
 

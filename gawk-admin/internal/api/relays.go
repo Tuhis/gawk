@@ -1,6 +1,9 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 // handleListRelays is the read-only effective-config view (D10).
 //
@@ -31,5 +34,27 @@ func (a *API) handleListRelays(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, row)
 	}
-	writeJSON(w, http.StatusOK, relaysPageJSON{Relays: out})
+	writeJSON(w, http.StatusOK, relaysPageJSON{Relays: out, Bus: a.busHealth(r)})
+}
+
+// busHealth renders the R50 bus section, or nil when no bus is configured.
+func (a *API) busHealth(r *http.Request) *busJSON {
+	if a.opts.Bus == nil {
+		return nil
+	}
+	h := a.opts.Bus.Health(r.Context())
+	if h == nil {
+		return nil
+	}
+	out := &busJSON{Stream: h.Stream, Connected: h.Connected,
+		Messages: h.Messages, Bytes: h.Bytes, Error: h.Error}
+	for _, p := range h.Pods {
+		out.Pods = append(out.Pods, busPodJSON{
+			Pod:      p.Pod,
+			LastSeen: p.LastSeen.UTC().Format(time.RFC3339),
+			LastSeq:  p.LastSeq,
+			Gaps:     p.Gaps,
+		})
+	}
+	return out
 }

@@ -28,6 +28,7 @@ import type {
   CreateRoomRequest,
   Webhook,
   WebhookTestResult,
+  EventCategory,
 } from './types.ts';
 
 /**
@@ -179,9 +180,10 @@ export class ApiClient {
    * only when this page came back full — so null means exhausted, and the view
    * stops offering "Load older" rather than paging into an empty response.
    */
-  async events(afterId?: number, limit = 50): Promise<EventPage> {
+  async events(afterId?: number, limit = 50, category?: EventCategory): Promise<EventPage> {
     const qs = new URLSearchParams({ limit: String(limit) });
     if (afterId !== undefined) qs.set('afterId', String(afterId));
+    if (category) qs.set('category', category);
     const page = await this.json<EventPage>(`events?${qs.toString()}`);
     return { events: page.events ?? [], nextAfterId: page.nextAfterId ?? null };
   }

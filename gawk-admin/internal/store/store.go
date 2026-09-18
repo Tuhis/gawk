@@ -162,6 +162,19 @@ func AllEventTypes() []string {
 	}
 }
 
+// FeedEventTypes is every `type` a row on GET /api/v1/events may carry: the
+// moderation vocabulary plus R50's ingested activity types (docs/51 D5).
+//
+// It is deliberately NOT AllEventTypes: that one is the MODERATION row table,
+// which R51's contract holds equal to events.ModerationRowTypes() so every
+// row type maps to exactly one CloudEvents type and can be delivered to a
+// webhook. An activity row is never delivered — it is ingested from the bus,
+// which already carries the CloudEvent — so it belongs to the feed's
+// vocabulary and to no other.
+func FeedEventTypes() []string {
+	return append(AllEventTypes(), ActivityEventTypes()...)
+}
+
 // WebhookEventTypes is the subset of AllEventTypes the dispatcher may forward
 // to a webhook.
 //
@@ -179,7 +192,7 @@ func WebhookEventTypes() []string {
 // a `type` filter value with it, so an unknown name is a 400 rather than a
 // silently empty page.
 func IsEventType(t string) bool {
-	for _, known := range AllEventTypes() {
+	for _, known := range FeedEventTypes() {
 		if known == t {
 			return true
 		}
@@ -261,6 +274,14 @@ type Event struct {
 	// Payload is free-form context. See the PayloadReason/PayloadSummary
 	// comment above before forwarding any of it anywhere.
 	Payload json.RawMessage
+	// Category is CategoryModeration (what an operator did) or
+	// CategoryActivity (what the fleet did, ingested from the R50 bus).
+	// Empty on a value being written means moderation.
+	Category string
+	// Source is the CloudEvents id of the bus message an activity row came
+	// from, and the UNIQUE key that makes ingest exactly-once. Empty for every
+	// portal-originated row.
+	Source string
 }
 
 // EnforcementState reports how the producer graded this event's enforcement.

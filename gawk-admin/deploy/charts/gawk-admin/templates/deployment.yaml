@@ -122,6 +122,40 @@ spec:
               {{- end }}
             {{- end }}
             {{- end }}
+            {{- if .Values.eventbus.url }}
+            # R50 (docs/51): the event bus. With eventbus.url unset none of
+            # these exist, no stream is created and the room sweep keeps
+            # running — the deployment is byte-identical to a pre-R50 one.
+            - name: GAWK_ADMIN_EVENTBUS_URL
+              value: {{ .Values.eventbus.url | quote }}
+            - name: GAWK_ADMIN_EVENTBUS_STREAM
+              value: {{ .Values.eventbus.stream | quote }}
+            - name: GAWK_ADMIN_EVENTBUS_MAX_BYTES
+              value: {{ .Values.eventbus.maxBytes | quote }}
+            - name: GAWK_ADMIN_EVENTBUS_REPLICAS
+              value: {{ .Values.eventbus.replicas | quote }}
+            - name: GAWK_ADMIN_ACTIVITY_RETENTION
+              value: {{ .Values.eventbus.activityRetention | quote }}
+            - name: GAWK_ADMIN_EVENTBUS_MANAGE_STREAM
+              value: {{ .Values.eventbus.manageStream | quote }}
+            {{- with .Values.eventbus.consumer }}
+            - name: GAWK_ADMIN_EVENTBUS_CONSUMER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.eventbus.credsSecretRef.name }}
+            - name: GAWK_ADMIN_EVENTBUS_CREDS_FILE
+              value: /etc/gawk/nats/{{ .Values.eventbus.credsSecretRef.key }}
+            {{- end }}
+            {{- if .Values.eventbus.tlsSecretRef.name }}
+            # mTLS: the subject DN of this certificate is the NATS user.
+            - name: GAWK_ADMIN_EVENTBUS_TLS_CERT
+              value: /etc/gawk/nats-tls/{{ .Values.eventbus.tlsCertKey }}
+            - name: GAWK_ADMIN_EVENTBUS_TLS_KEY
+              value: /etc/gawk/nats-tls/{{ .Values.eventbus.tlsKeyKey }}
+            - name: GAWK_ADMIN_EVENTBUS_CA_FILE
+              value: /etc/gawk/nats-tls/{{ .Values.eventbus.tlsCAKey }}
+            {{- end }}
+            {{- end }}
             - name: GAWK_ADMIN_LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
             - name: GAWK_ADMIN_LOG_FORMAT
@@ -149,3 +183,33 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if and .Values.eventbus.url (or .Values.eventbus.credsSecretRef.name .Values.eventbus.tlsSecretRef.name) }}
+          # The NATS credential (R50). Read-only, named by the Secret's own
+          # keys, so rotating either is a Secret update — and cert-manager
+          # rewrites a certificate Secret in place without changing the subject
+          # DN, so a renewal restarts nothing.
+          volumeMounts:
+            {{- if .Values.eventbus.credsSecretRef.name }}
+            - name: nats-creds
+              mountPath: /etc/gawk/nats
+              readOnly: true
+            {{- end }}
+            {{- if .Values.eventbus.tlsSecretRef.name }}
+            - name: nats-tls
+              mountPath: /etc/gawk/nats-tls
+              readOnly: true
+            {{- end }}
+          {{- end }}
+      {{- if and .Values.eventbus.url (or .Values.eventbus.credsSecretRef.name .Values.eventbus.tlsSecretRef.name) }}
+      volumes:
+        {{- if .Values.eventbus.credsSecretRef.name }}
+        - name: nats-creds
+          secret:
+            secretName: {{ .Values.eventbus.credsSecretRef.name }}
+        {{- end }}
+        {{- if .Values.eventbus.tlsSecretRef.name }}
+        - name: nats-tls
+          secret:
+            secretName: {{ .Values.eventbus.tlsSecretRef.name }}
+        {{- end }}
+      {{- end }}

@@ -1,6 +1,6 @@
 # R50 — Relay event bus over NATS JetStream (docs/51)
 
-**Status**: designed 2026-09-16; **not started**. Chunks **EB1–EB5** (`EB` =
+**Status**: designed 2026-09-16; **shipped 2026-09-18** (EB1–EB5). Chunks **EB1–EB5** (`EB` =
 Event Bus). Touches `gawk-server` (a publisher package, hooks at the
 existing fan-out points, knobs, chart values), `gawk-admin` (a consumer,
 one migration, the events feed, chart values) and the docs. No wire
@@ -12,6 +12,79 @@ still works and its activity webhooks simply never fire. **The message
 format is R51's** ([docs/52](52-event-contract.md), revised 2026-09-16):
 CloudEvents 1.0 structured JSON, one JSON Schema per type, an AsyncAPI
 catalogue; EB1 depends on its EC1.
+
+## 0. What shipped (2026-09-18)
+
+As designed, with the departures below worth recording because a reader of the
+design alone would look for them in the wrong place. The last four came out of
+the PR review (#329):
+
+- **The contract package is R51's, shipped before this** ([docs/52](52-event-contract.md),
+  EC1–EC4). `internal/eventbus` imports `gawk-server/events` for the envelope
+  and the data types and encodes nothing itself; EB1 shipped no schemas.
+- **Attachment events are published from `attachLocked`, not from
+  `broadcastLocked`.** The participant-facing funnel misses exactly the attaches
+  with no participants to notify — a mint's first broadcast, an adoption's
+  re-attach — and a consumer that learned about streams only there would never
+  see them.
+- **A re-home is a first-class fact, not an inference — and the contract grew
+  to say it.** D9 asked for `reason: home_moved` on the departures; R51's
+  first cut of `room.participant_left` had no `reason` at all, so R50 added
+  one (`left` | `timeout` | `room_ended` | `home_moved`) and a **new bus type**,
+  `room.home_changed`, published by the pod that ADOPTS the room. Both are
+  additive under docs/52 D6 (b), and both landed while nothing consumed the
+  contract, which is the window for it.
+
+  Why the new type rather than the departures alone: a pod that loses a room
+  because it is being *deleted* may publish nothing at all, so the old side is
+  best-effort. The adopting pod is the one participant in a re-home that is
+  certain to be alive, and its `source` names the new home. A consumer
+  tracking where a room lives follows that.
+
+  What a re-home looks like on the bus: zero or more
+  `room.participant_left{reason: home_moved}` from the old home, then
+  `room.home_changed` from the new one, then `room.attached` per stream and
+  `room.participant_joined{rejoin: true}` as the people reconnect. No
+  `room.closed` and no `room.opened` — the room never stopped.
+
+  The reasons come from the room and the session rather than from each caller:
+  `ReleaseHome` and `EndRoom` mark the room, an eviction marks the session, and
+  the one leave path attaches whichever applies when the session actually goes.
+  The room's reason outranks the session's — "the room ended" explains a
+  departure better than "its control queue overflowed".
+- **`room.opened` fires for a static room at its FIRST ATTACH**, which is the
+  moment R51's schema names. A static room is a definition, loaded on every pod
+  at every start, so announcing it at definition time would fire once per pod
+  per restart and mean nothing; it is announced once per room, not per 0→1
+  attachment transition, or a room whose streams come and go would open
+  repeatedly without ever closing.
+- **`broadcast.ended`'s reason comes from the close code, not from how the hub
+  was removed.** The stall sweep removes a hub as forcefully as an operator's
+  kill does, and reporting that as `killed` would read an automatic timeout as
+  enforcement — the one reason a consumer is meant to escalate. Close code 4006
+  is the operator's, and only the operator's.
+- **`rejoin` is a window, not a flag.** A sticky "this room was adopted" would
+  report every arrival for the rest of the room's life as a reconnection. The
+  window is the deployment's own empty-grace (floored at a minute), and it is a
+  heuristic by necessity: the roster does not travel with a room and the new
+  home re-issues participant ids, so no pod can know which arriving sessions
+  were there before.
+- **`/metrics` is byte-identical with the bus off**, as EB1's criteria require:
+  the counters are registered only when `-eventbus-url` is set. An always-zero
+  series would claim a subsystem that is not there, and "is it configured?" is
+  answered by the config view and by `/relays`' bus section.
+- **An unreachable bus never stops `gawk-admin` from serving.** The consumer
+  connects in the background and the leader retries the stream until it exists;
+  the portal's job is moderation, and a feed that is off by default must not be
+  able to take the ban pipe down with it. CI found this the direct way — making
+  it fatal put the dev stack's portal in a restart loop the moment the bus was
+  switched on.
+- **The feed's `type` vocabulary split in two.** R51 holds
+  `store.AllEventTypes()` equal to the contract's moderation row table, so the
+  ingested activity types live in `store.ActivityEventTypes()` and
+  `store.FeedEventTypes()` is the union the `?type=` filter and the OpenAPI
+  enum use. An activity row is never delivered to a webhook, which is why it
+  needs no CloudEvents mapping of its own.
 
 ## 1. Purpose
 

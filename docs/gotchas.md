@@ -1419,3 +1419,21 @@ Add to it when a new gotcha lands in `docs/`.
   not expected to be here`) while accepting `summary` on channels and
   operations. The catalogue pins `asyncapi: 3.0.0` on purpose (docs/52 D3);
   put the one-liner in `description`. ([docs/52](52-event-contract.md) EC1)
+- **Turning the event bus on for `gawk-admin` retires the room sweep
+  immediately — before a single event has been consumed.** `-eventbus-url` is
+  the switch for both, so a portal pointed at a NATS the relays are *not*
+  publishing to stops recording `room.ended` altogether: the sweep that used to
+  infer it from a vanished CR is gone, and nothing arrives to replace it. Turn
+  the bus on for the relays first, or at the same time, and check the `bus`
+  section of `GET /api/v1/relays` before assuming a quiet feed means a quiet
+  fleet. The reverse order is harmless: a relay publishing before the stream
+  exists counts `gawk_eventbus_dropped_total{reason="publish"}` and the portal
+  creates the stream at its next start.
+
+  The same applies for as long as the bus is *broken*, not just misordered: a
+  wrong URL, a rejected credential or a NATS outage leaves the sweep retired
+  and nothing arriving, with no automatic fallback — that is the design
+  (docs/51 rejects polling as a backstop), so the `bus` section of
+  `GET /api/v1/relays` and `gawk_eventbus_dropped_total` are what tell you,
+  and they are worth an alert if you depend on room lifecycle rows.
+  ([docs/51](51-relay-event-bus.md) D5, D7, self-hosting §12)

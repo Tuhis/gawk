@@ -183,7 +183,7 @@ Frontend work — Vite with HMR, against the same relay:
 docker compose --profile app-dev up --scale app=0     # http://localhost:5173
 ```
 
-There are four optional compose profiles:
+There are five optional compose profiles:
 
 | Profile | For |
 |---|---|
@@ -191,6 +191,7 @@ There are four optional compose profiles:
 | `rooms` | two synthetic broadcasters already in a room: open `http://localhost:8080/#/room/devroom` and add your own screen as a third POV from there |
 | `telemetry` | the optional diagnostics service, same-origin ingest; needs `GAWK_TELEMETRY_KEY` set too |
 | `app-dev` | Vite with HMR over a bind mount |
+| `bus` | NATS with JetStream, so the relay's event bus and the portal's activity feed work end to end: `EVENTBUS_URL=nats://nats:4222 docker compose --profile bus up` |
 
 Rooms are on in the stack (they are off by default in a real deployment);
 `devroom` is a static room defined in `dev/rooms/rooms.json`, and any live

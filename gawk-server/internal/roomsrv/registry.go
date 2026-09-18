@@ -28,7 +28,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Tuhis/gawk/gawk-server/events"
 	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
+	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
 	"github.com/Tuhis/gawk/gawk-server/rooms"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -42,6 +44,10 @@ const (
 	// DefaultRefreshInterval is how often attachment live/viewer state is
 	// re-read from the hub and pushed as AttachmentUpdated deltas.
 	DefaultRefreshInterval = time.Second
+	// minRejoinWindow floors how long after an adoption an arrival still
+	// reads as a reconnection (docs/51 D9), so a deployment with a tiny
+	// empty-grace does not make the window meaningless.
+	minRejoinWindow = 60 * time.Second
 	// outboxDepth bounds the per-participant record queue. Control traffic
 	// is tiny; a participant that cannot drain 256 records is not reading.
 	outboxDepth = 256
@@ -143,6 +149,11 @@ type Options struct {
 	// seams (RM3): a store reacts to them to delete the CR, stamp
 	// emptySince, or rewrite status.attachments. All optional, all called
 	// OUTSIDE the registry lock.
+	// OnEvent, when set, receives one R50 bus event per transition this pod
+	// publishes (docs/51 D4). It MUST NOT block — it is called under the
+	// registry lock, and the publisher's contract is a non-blocking send.
+	// Only the HOME pod has the room, so each fact is published once.
+	OnEvent              func(eventbus.Event)
 	OnRoomEnded          func(code string, reason uint8)
 	OnRoomEmpty          func(code string, empty bool)
 	OnAttachmentsChanged func(code string, attachments []rooms.Attachment)
@@ -200,6 +211,31 @@ type room struct {
 	// (a Join stopped it too late, a Leave re-armed) must not fire.
 	emptyGen uint64
 	ended    bool
+	// rejoinUntil marks how long arrivals at a room this pod ADOPTED are
+	// reported as reconnections rather than new people (docs/51 D9).
+	//
+	// A deadline rather than a flag, because it has to end: a sticky "this
+	// room was adopted" would report every arrival for the rest of the room's
+	// life as a rejoin, including somebody opening the join link an hour
+	// later. It is a heuristic and says so — the roster does not travel with
+	// the room, participant ids are re-issued by the new home, so no pod can
+	// know which of the arriving sessions were there before. The window is
+	// the deployment's own statement about how long a reconnect takes: the
+	// empty-grace it already keeps a room alive for.
+	rejoinUntil time.Time
+	// openedPublished records that this room's room.opened has been published,
+	// so a static room announces itself once rather than on every attach.
+	openedPublished bool
+	// releasing marks a room this pod is handing to a new home. The end that
+	// follows is a re-home, not a close, and publishes no room.closed.
+	releasing bool
+	// leaveReason explains, on the R50 bus, why this room's participants are
+	// leaving: the room ended under them, or it moved to another pod. Empty
+	// means they are leaving on their own. Set before the sessions are closed
+	// and read by the leave path, so one funnel emits every departure with
+	// the truth attached rather than each caller synthesising its own
+	// (docs/51 D9).
+	leaveReason string
 }
 
 type attachment struct {
@@ -580,6 +616,8 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 		r.rooms[norm] = rm
 		r.attachLocked(rm, id, req.Label, state, 0)
 		r.startEmptyGraceLocked(rm)
+		rm.openedPublished = true
+		r.busRoomOpenedLocked(rm)
 		r.mu.Unlock()
 		r.log.Info("room minted", "room_key", r.opts.Obfuscate(norm), "broadcast_key", r.opts.Obfuscate(id))
 		r.notifyAttachments(rm)
@@ -616,6 +654,10 @@ type Participant struct {
 	outbox    chan []byte
 	closed    chan struct{}
 	leaveOnce sync.Once
+	// leaveReason is this session's own reason, when it is not leaving of its
+	// own accord: an eviction. The room's reason outranks it — "the room
+	// ended" explains a departure better than "its queue overflowed".
+	leaveReason string
 	// closeCode / closeReason are what the writer closes with when it
 	// reaches the nil sentinel closeAfterDrain queued; set before the
 	// sentinel is sent, read after it is received (the channel orders them).
@@ -703,6 +745,10 @@ func (p *Participant) Leave() {
 		if cur, ok := rm.participants[p.id]; ok && cur == p {
 			delete(rm.participants, p.id)
 			r.broadcastLocked(rm, wire.RoomEvent{Kind: wire.RoomEventParticipantLeft, Participant: wire.RoomParticipant{ID: p.id}}, 0)
+			// The bus event is published here rather than from the fan-out
+			// funnel: p is the only thing that still knows the nickname, the
+			// client kind and why this session ended.
+			r.busParticipantLeftLocked(rm, p)
 		}
 		nowEmpty := !rm.ended && len(rm.participants) == 0
 		if nowEmpty {
@@ -765,6 +811,9 @@ func (p *Participant) enqueueLocked(rec []byte) {
 	case p.outbox <- rec:
 	default:
 		p.reg.log.Warn("room participant unresponsive, evicting", "room_key", p.reg.opts.Obfuscate(p.room.code), "participant", p.id)
+		// Called under the registry lock, which is also what the leave path
+		// takes — so this is set before any Leave() can read it.
+		p.leaveReason = events.ParticipantLeftTimeout
 		go p.conn.Close(wire.CloseCodeSubscriberUnresponsive, "control queue overflow")
 	}
 }
@@ -1028,6 +1077,22 @@ func (r *Registry) attachLocked(rm *room, id, label string, state BroadcastState
 	a := &attachment{id: id, label: label, live: state.Live, viewers: state.Viewers, attachedAt: r.opts.Now(), ownerPID: owner}
 	rm.attachments = append(rm.attachments, a)
 	r.attached[id] = rm.code
+	// A static room has no birth of its own — it is a definition, loaded on
+	// every pod at every start — so the contract puts its room.opened at its
+	// first attach, which is when it becomes a thing to watch (the schema
+	// says exactly that). Once per room here, not per 0→1 transition, or a
+	// room whose streams come and go would open again and again without ever
+	// closing.
+	if rm.kind == rooms.KindStatic && !rm.openedPublished {
+		rm.openedPublished = true
+		r.busRoomOpenedLocked(rm)
+	}
+	// Published HERE rather than beside the participant-facing
+	// AttachmentAdded event, because this is the funnel every attach goes
+	// through: a mint's first broadcast and an adoption's re-attach have no
+	// participants to notify yet, and a consumer that learned about streams
+	// only from the notify path would never see them.
+	r.busAttachedLocked(rm, a)
 	return a
 }
 
@@ -1059,6 +1124,9 @@ func (r *Registry) broadcastLocked(rm *room, ev wire.RoomEvent, skip uint16) {
 		}
 		p.enqueueLocked(framed)
 	}
+	// The same transition, onto the R50 bus. One funnel for both audiences:
+	// a second list of transitions would be a second list to keep in step.
+	r.busEventLocked(rm, ev)
 }
 
 func (r *Registry) stateRecordLocked(rm *room, p *Participant) []byte {
@@ -1163,12 +1231,19 @@ func (r *Registry) EndRoom(code string, reason uint8) {
 		return
 	}
 	rm.ended = true
+	// The participants are about to be closed; they are not leaving, the room
+	// is ending under them. A re-home has already said its own piece and is
+	// not overwritten.
+	if rm.leaveReason == "" {
+		rm.leaveReason = events.ParticipantLeftRoomEnded
+	}
 	r.clearEmptyGraceLocked(rm)
 	delete(r.rooms, norm)
 	for _, a := range rm.attachments {
 		delete(r.attached, a.id)
 	}
 	r.broadcastLocked(rm, wire.RoomEvent{Kind: wire.RoomEventRoomEnding, Reason: reason}, 0)
+	r.busRoomClosedLocked(rm, reason)
 	parts := make([]*Participant, 0, len(rm.participants))
 	for _, p := range rm.participants {
 		parts = append(parts, p)
@@ -1383,18 +1458,47 @@ func (r *Registry) AdoptDynamic(cr *rooms.Room) bool {
 		creatorFP: cr.Status.CreatorTokenFingerprint, createdAt: r.opts.Now(),
 		nextPID: 1, participants: make(map[uint16]*Participant),
 	}
+	// This room is not being born here; the participants that dial this pod
+	// within the window are rejoining, and their bus events say so
+	// (docs/51 D9). No room.opened is published for an adoption: the room did
+	// not open, it moved.
+	rm.rejoinUntil = r.opts.Now().Add(r.rejoinWindow())
 	if cr.Status.CreatedAt != nil {
 		rm.createdAt = cr.Status.CreatedAt.Time
 	}
+	r.rooms[norm] = rm
+	// The room arrived here from somewhere else. Say so BEFORE the streams
+	// that came with it: room.home_changed, then a room.attached per stream,
+	// then the rejoining participants — the order is how a consumer tells a
+	// re-home from an ordinary attach (docs/51 D9). This is also the one
+	// event in a re-home a consumer can rely on, because the pod that LOST
+	// the room may have been deleted without publishing anything;
+	// status.lease.holder still names it, when the record has it.
+	var previousPod string
+	if cr.Status.Lease != nil {
+		previousPod = cr.Status.Lease.Holder
+	}
+	r.busHomeChangedLocked(rm, previousPod)
 	for i := range states {
 		if _, taken := r.attached[states[i].id]; taken {
 			continue
 		}
 		r.attachLocked(rm, states[i].id, states[i].label, states[i].state, 0)
 	}
-	r.rooms[norm] = rm
 	r.startEmptyGraceLocked(rm)
 	return true
+}
+
+// rejoinWindow is how long after an adoption an arrival still reads as a
+// reconnection. The empty-grace is the deployment's own answer to "how long
+// does a client take to come back" (docs/44 D7 says to keep it longer than a
+// reconnect interval), with a floor so a zero or tiny grace does not make the
+// window meaningless.
+func (r *Registry) rejoinWindow() time.Duration {
+	if g := r.opts.EmptyGrace; g > minRejoinWindow {
+		return g
+	}
+	return minRejoinWindow
 }
 
 // RoomStats is one row of the /statusz rooms section, keyed by the HMAC'd

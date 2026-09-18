@@ -39,6 +39,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/api"
 	"github.com/Tuhis/gawk/gawk-admin/internal/auth"
 	"github.com/Tuhis/gawk/gawk-admin/internal/config"
+	"github.com/Tuhis/gawk/gawk-admin/internal/eventbus"
 	"github.com/Tuhis/gawk/gawk-admin/internal/kube"
 	"github.com/Tuhis/gawk/gawk-admin/internal/notify"
 	"github.com/Tuhis/gawk/gawk-admin/internal/portal"
@@ -140,6 +141,11 @@ func run(args []string, getenv func(string) string) error {
 		Bans:    bans,
 		Log:     log,
 		Record:  dispatcher.Record,
+		// R50 (docs/51 D5): with the bus on, a room's end arrives from the
+		// relay that ended it, with its reason, within a second — so the
+		// once-a-minute sweep that inferred it from a vanished CR is retired.
+		// With the bus off it runs exactly as before.
+		SkipRoomSweep: cfg.EventBusURL != "",
 	}
 	if roomClient != nil {
 		// A typed nil in an interface field would be non-nil; only assign
@@ -150,6 +156,34 @@ func run(args []string, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+
+	// R50: the bus consumer. Constructed on every replica (it creates the
+	// stream, which is idempotent) but CONSUMED only on the leader, below —
+	// leader-only is what keeps per-subject ordering and reuses the election
+	// the dispatcher already runs on. A nil consumer is the off switch.
+	bus, err := eventbus.New(ctx, eventbus.Options{
+		URL:          cfg.EventBusURL,
+		CredsFile:    cfg.EventBusCredsFile,
+		TLSCertFile:  cfg.EventBusTLSCert,
+		TLSKeyFile:   cfg.EventBusTLSKey,
+		CAFile:       cfg.EventBusCAFile,
+		ManageStream: cfg.EventBusManageStream,
+		ConsumerName: cfg.EventBusConsumer,
+		Stream:       cfg.EventBusStream,
+		MaxBytes:     cfg.EventBusMaxBytes,
+		Replicas:     cfg.EventBusReplicas,
+		Insecure:     cfg.EventBusInsecure,
+		Log:          log,
+		Ingest: &eventbus.StoreIngester{
+			Store:          st,
+			ConfigWebhooks: dispatcher.ConfigWebhookNames(),
+			Notify:         dispatcher.Kick,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	defer bus.Close()
 
 	scanner, err := relayscan.New(relayscan.Options{
 		Resolve: relayscan.DNSResolver(cfg.RelayScanTarget, cfg.RelayOpsPort),
@@ -165,6 +199,7 @@ func run(args []string, getenv func(string) string) error {
 		Projector:   reconciler,
 		Reconciler:  reconciler,
 		Fleet:       scanner,
+		Bus:         busHealth(bus),
 		Config:      cfg,
 		Version:     version,
 		Authn:       authn.Middleware,
@@ -242,6 +277,15 @@ func run(args []string, getenv func(string) string) error {
 			// FOR UPDATE SKIP LOCKED, so even a leadership handover that
 			// briefly overlaps cannot double-send.
 			go dispatcher.Run(ctx)
+			// The bus consumer is the third singleton: one durable consumer,
+			// on the leader, so ordering per subject is not something two
+			// replicas have to agree about.
+			go func() {
+				if err := bus.Run(ctx); err != nil && ctx.Err() == nil {
+					log.Warn("event bus consumer stopped", "err", err)
+				}
+			}()
+			go pruneActivity(ctx, st, cfg.ActivityRetention, log)
 			reconciler.Run(ctx)
 		},
 		// A clean shutdown hands the Lease over rather than making the next
@@ -351,4 +395,41 @@ func newLogger(cfg config.Config) *slog.Logger {
 		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
 	}
 	return slog.New(slog.NewTextHandler(os.Stderr, opts))
+}
+
+// pruneActivity ages out ingested activity rows on the leader.
+//
+// Hourly, not on every write: the retention is a floor on what an operator can
+// still look at, not a promise about the exact second a row disappears. It
+// never touches moderation rows — the audit trail is the one thing in that
+// table nobody is allowed to age out.
+func pruneActivity(ctx context.Context, st *store.Store, retention time.Duration, log *slog.Logger) {
+	if retention <= 0 {
+		return
+	}
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		n, err := st.PruneActivityEvents(ctx, time.Now().Add(-retention))
+		if err != nil && ctx.Err() == nil {
+			log.Warn("activity prune failed", "err", err)
+		} else if n > 0 {
+			log.Info("pruned activity events", "rows", n, "olderThan", retention.String())
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// busHealth avoids handing the API a typed nil: a nil *eventbus.Consumer in an
+// interface field is a non-nil interface, and /relays would then render an
+// empty bus section on a deployment that has no bus.
+func busHealth(bus *eventbus.Consumer) api.BusHealth {
+	if bus == nil {
+		return nil
+	}
+	return bus
 }
