@@ -70,6 +70,7 @@ feature set exists).
 | R49 | [Rooms read API and room activity events](#r49--rooms-read-api-and-room-activity-events) | 🔧 designed 2026-09-15, revised 2026-09-16, not started (RA1–RA5) — **depends on R48, R50, R51** and R42: `GET /api/v1/rooms/{name}` with the live roster and attachment state (a new read-only `/internal/admin/rooms` on the relay ops listener, scraped by relayscan on request), a `rooms-reader` role for client-credentials service identities such as the planned Mumble bot, and opt-in `room.attached` / `room.detached` / `room.participant_joined` / `room.participant_left` webhook events with a per-webhook event filter, **sourced from the R50 bus — nothing polls** ([docs/50](docs/50-rooms-read-api.md)) |
 | R50 | [Relay event bus over NATS JetStream](#r50--relay-event-bus-over-nats-jetstream) | 🔧 designed 2026-09-16, not started (EB1–EB5) — the relay publishes broadcast and room lifecycle, participant, attachment and coalesced viewer-count events to an operator-provided NATS JetStream from its existing fan-out points, never blocking the media path; `gawk-admin`'s leader consumes a durable stream into the events feed with exactly-once ingest and retires the room sweep. **Optional, default off, off is byte-identical.** R49's activity webhooks depend on it ([docs/51](docs/51-relay-event-bus.md)) |
 | R51 | [Event contract: CloudEvents, JSON Schema, AsyncAPI](#r51--event-contract-cloudevents-json-schema-asyncapi) | ✅ shipped 2026-09-17 (EC1–EC4) — one CloudEvents 1.0 envelope for the R50 bus and the webhooks, one JSON Schema per event type in the public `gawk-server/events` package (22 types, golden vectors, drift tests), an AsyncAPI 3.0 catalogue served by `gawk-admin` at `/api/v1/asyncapi.json` with the schemas under `/api/v1/schemas/events/`, Standard Webhooks delivery replacing the `X-Gawk-*` headers, and naming/versioning/deprecation rules `go test` enforces; **R50 EB1 and R49 RA4 build on it** ([docs/52](docs/52-event-contract.md)) |
+| R52 | [Native macOS broadcaster](#r52--native-macos-broadcaster) | 💡 proposed 2026-09-18 with owner decisions OD1–OD10 taken, not started — no design doc yet; Rust in a shared desktop workspace (`gawk-broadcast-windows` → `gawk-broadcast-desktop`, MB0 is the rename), ScreenCaptureKit video + per-app audio via the system picker, VideoToolbox low-latency H.264, macOS 14+ Apple Silicon, Developer ID + notarization, built on `macos-latest`; chunk prefix `MB` reserved |
 
 ---
 
@@ -4162,6 +4163,199 @@ depend on this.
 
 **Status**: shipped 2026-09-17 (EC1–EC4); what landed and the decisions
 taken on the way are in [docs/52](docs/52-event-contract.md) §7.
+
+---
+
+## R52 — Native macOS broadcaster
+
+**Goal**: a macOS counterpart to `gawk-broadcast` (R14, Linux) and
+`gawk-broadcast-windows` (R34) with the same two capture modes — **share one
+application** (its window plus only that app's audio) or **share the whole
+desktop** (plus system audio) — hardware video encode only, and the same
+engine semantics the relay and viewer already know. Zero relay, wire-format
+or viewer change; the protocol does not change, only who else speaks it.
+
+**Why**: the same driver as R34, not R14. WebCodecs already hardware-encodes
+on macOS, so the browser broadcaster is fine for encode; what it cannot do
+is capture fidelity — `getDisplayMedia` on macOS gives whole-screen or one
+window with **no per-application audio** (Chrome's macOS system-audio share
+is whole-system at best, and only on screen share), and the browser's picker
+means alt-tabbing out of a fullscreen game. macOS has had exactly the APIs
+that close this gap for a while and no browser surfaces them:
+ScreenCaptureKit can scope both video *and audio* to one application, and
+VideoToolbox exposes a dedicated low-latency hardware encoder mode. R34's
+non-goals said macOS "would need its own ScreenCaptureKit research to earn a
+separate item"; this is that research, and the item.
+
+**Research summary (2026-09-18)** — the facts the design doc builds on, with
+the version gates that decide the floor:
+
+- **Capture: ScreenCaptureKit** (macOS 12.3+). `SCContentFilter` scopes a
+  stream to one window (`desktopIndependentWindow`, follows the window
+  across displays), one application, or one display. Frames arrive as
+  IOSurface-backed `CVPixelBuffer`s (BGRA, or `420v`/`420f` 4:2:0 straight
+  from the compositor, i.e. **the colour conversion the Windows app does on
+  a D3D11 VideoProcessor is free here**), with `minimumFrameInterval` and a
+  `queueDepth` of 3–8 surfaces the app must hand back within
+  `(queueDepth − 1) / fps` or capture stalls. An occluded window is captured
+  in full; a **minimized** window pauses delivery (same landing as docs/38
+  D6: last frame stays up, GUI hint). A static screen yields `.idle`
+  frames, so the VFR/drop-only discipline of R14 Decision 13 applies
+  unchanged. HDR capture (`captureDynamicRange`) is macOS 15+ and out of
+  day-one scope. macOS has no exclusive-fullscreen mode: fullscreen Metal
+  games are ordinary windows and SCK is how OBS captures them.
+- **Audio: ScreenCaptureKit on the same stream** (`capturesAudio`, macOS
+  13+). Audio filters at the *application* level — a window filter yields
+  its owning app's audio, which is precisely mode 1. Reliable app scoping
+  since 14.4. Format is read from the buffer's ASBD (Float32 48 kHz in the
+  field, never assumed). The alternative, **Core Audio process taps**
+  (`AudioHardwareCreateProcessTap`, macOS 14.2+), takes a flat PID list
+  with no tree following and a second TCC prompt; it is the pre-registered
+  fallback if the on-hardware pass finds a game whose audio escapes the SCK
+  app filter, not day-one scope.
+- **Encode: VideoToolbox** with
+  `kVTVideoEncoderSpecification_EnableLowLatencyRateControl` (macOS 11.3+):
+  always hardware, one-in-one-out, no B-frames or lookahead, High profile,
+  plus `RealTime`, `AverageBitRate`, `MaxKeyFrameInterval`,
+  `AllowFrameReordering = false` and forced IDR on request. It takes SCK's
+  `CVPixelBuffer` directly — **zero-copy from compositor to encoder**.
+  Output is AVCC with SPS/PPS in the `CMFormatDescription`; the app writes
+  Annex-B itself and derives `avc1.PPCCLL` from the SPS, exactly like
+  docs/38 D10. Known knob trap (Apple DTS, 2025): VBR is incompatible with
+  low-latency mode and CBR is only partially supported; ABR via
+  `AverageBitRate` (+ `DataRateLimits`) is the mode to trial. HEVC
+  low-latency exists on Apple Silicon but the viewer's negotiated list is
+  H.264 → VP9 → VP8, so H.264 only. **AV1 hardware encode does not exist on
+  any Apple Silicon** through M5 (decode only) — don't go looking.
+- **Permissions and signing are load-bearing, not packaging polish.** The
+  Screen Recording TCC grant is bound to the app's code-signing identity:
+  an unsigned or ad-hoc-signed build gets a *new* identity every rebuild,
+  so every update re-prompts (or, per field reports on Sequoia, is silently
+  denied). Sequoia also removed the Control-click "Open" override for
+  unsigned apps, and adds a periodic "bypass the system picker" re-approval
+  dialog for apps that select content themselves — apps that use
+  `SCContentSharingPicker` are reported exempt. A Developer ID + notarized
+  app therefore isn't optional here the way Authenticode was on Windows
+  (docs/38 D17).
+- **WebTransport client**: `wtransport`/`quinn` are tested on macOS; the
+  vendored `wtransport` patch (docs/38 OD13) carries over. There is no
+  credible Swift WebTransport client (Network.framework's `NWProtocolQUIC`
+  is raw QUIC; the one Swift library requires macOS 26 and is a reference
+  implementation), which is what keeps the Windows language decision valid
+  here too.
+- **Rust bindings**: the `objc2-*` framework crates (`screen-capture-kit`,
+  `video-toolbox`, `core-media`, `core-video`) are the auto-generated,
+  Apple-complete option; `cidre` covers all of SCK + VT + Core Audio under
+  one API but is a single-author research project; the safe
+  `screencapturekit` crate bridges through Swift. Slint's macOS backend
+  (winit + Skia/Metal) is production-grade, so the R34 GUI carries over.
+
+**Owner decisions (2026-09-18)**:
+
+| # | Decision | Choice |
+|---|---|---|
+| OD1 | Code shape | **One shared Cargo workspace, two binaries.** `gawk-broadcast-windows/` is renamed **`gawk-broadcast-desktop/`**; `wire`, `engine` and the portable halves of `audio` (Opus, framer, level meter) are shared; `capture`/`encode`/the platform half of `audio` grow `cfg(target_os = "macos")` siblings or sibling crates; `app` splits into the Windows and macOS shells. One workspace version, one release-please component (`gawk-broadcast-desktop/vX.Y.Z`), one changelog — **a Windows-only fix bumps the macOS binary too, and that is accepted.** |
+| OD2 | Rename sequencing | **MB0, a pure rename landed as its own PR before any macOS code**: zero behaviour change, the Windows artifact byte-identical modulo the embedded path/name strings, every reference (workflow, release-please, R46 manifest path, site card, docs/38, CLAUDE.md, INSTALL) updated in that one PR. |
+| OD3 | Signing and distribution | **Apple Developer ID + notarization**, from the first artifact. Owner enrols in the Apple Developer Program; the certificate and notarytool credentials are repository secrets used only in the release job; PRs from forks build unsigned and attach nothing (the existing gate). Distributed as a notarized, stapled `.app` in a `.dmg` or `.zip` on the GitHub Release, listed on the R46 download card. |
+| OD4 | CI host | **GitHub-hosted `macos-latest` (Apple Silicon), path-filtered** — the one deliberate exception to docs/38 D18's "everything on the self-hosted Linux runners". Free and unlimited on a public repo, has the SDK, `codesign` and `notarytool` natively, and avoids the Xcode SLA grey zone of extracting the SDK onto Linux. Host-side lint/tests of the portable crates keep running on the Linux runners in the existing job. |
+| OD5 | Floor and architecture | **macOS 14 (Sonoma)+, Apple Silicon only.** 14.0 brings the system picker, 13+ brings SCK audio, 14.2's process taps are runtime-checked if ever needed. Intel Macs are pointed at the browser broadcaster (which hardware-encodes there); no universal binary and no x86_64 verification surface. |
+| OD6 | Picker | **The system `SCContentSharingPicker`**, not an in-app picker: Apple's own window/app/display dialog, reported exempt from the Sequoia re-approval prompt. Unlike Windows D6 this is a product trade-off, not forced: the picker's `SCContentFilter` already carries the app, so per-app audio works without a PID. What it costs is the Windows GUI's in-app thumbnails-and-repick; `allowsRepicking` covers re-pick. |
+| OD7 | Audio API | **ScreenCaptureKit audio on the same `SCStream`** (one permission, one clock, one capture stack); Core Audio process taps are the pre-registered fallback, taken only on on-hardware evidence. |
+| OD8 | Encode | **VideoToolbox low-latency H.264 only**, trial-gated per the docs/38 D9 cascade discipline (a session is accepted only after a real trial encode meets the invariants table). No software rung: with no hardware encoder the app refuses with the R34-style message. |
+| OD9 | GUI | **Slint** (the R34 shell's `.slint` files reused; platform-specific cards differ). Notifications via `UNUserNotificationCenter`; no tray icon, no global hotkeys, no microphone (docs/38 OD7/OD8 stand). |
+| OD10 | Telemetry, terms, update check | In scope day one, mirroring the Windows shell: R28 reporter, TC5 terms posture, and the R45 notice / R47 install (R47's rename-swap is replaced by a notarized bundle swap — see key questions). |
+
+**Scope sketch**:
+
+- **MB0 — the rename.** `gawk-broadcast-windows/` → `gawk-broadcast-desktop/`
+  with the workspace, workflow (`broadcast-desktop.yml`), release-please
+  component, `coverage-floors.json` key, R46 manifest path, site download
+  card, THIRD-PARTY-NOTICES, docs/38 and CLAUDE.md all updated; the Windows
+  EXE keeps its file name. Acceptance: the Windows job is green, the
+  artifact still runs on the gaming PC, a docs-only PR still doesn't
+  trigger the job.
+- **Workspace split.** `crates/app` → `crates/app-windows` + `crates/app-macos`
+  (two `[[bin]]`s, each `cfg`-gated so `cargo test --workspace` on any host
+  still runs the portable halves); `capture`/`encode`/`audio` gain macOS
+  backends behind the same `VideoSource`/`AudioSource`/encoder seams the
+  engine already talks to. The engine port is **not** repeated: D5's parity
+  table is inherited by construction, and that is the whole point of OD1.
+- **Capture**: `SCStream` from the picker's filter; `420v` pixel format
+  requested first (no conversion stage), BGRA as the fallback if a trial
+  shows VT rejecting it; `minimumFrameInterval` = 1/fps; `queueDepth` sized
+  from the encoder's in-flight budget with the docs/38 ring-soundness pin
+  restated for SCK's pool; cursor via `showsCursor`; timestamps from the
+  sample buffer's presentation time on the `mach_absolute_time` clock —
+  D7's "one clock end to end" holds with the host clock swapped.
+- **Encode**: `VTCompressionSession` with low-latency rate control; the
+  trial checks the D9 invariants (no reordering, IDR spacing at 500 ms,
+  parameter sets emitted before every IDR or prepended from the format
+  description, ≤ 1 frame internal latency, forced IDR honoured). Frames
+  never leave the GPU until the encoded AU comes back.
+- **Audio**: SCK audio → the shared Opus framer under R25's contract
+  verbatim; mode 1 is the app filter, mode 2 is the display filter with
+  `excludeCurrentProcessAudio`. Audio never fails a broadcast (D8).
+- **GUI**: the Windows information architecture with the picker card
+  replaced by a "Choose what to share…" button that opens the system
+  picker and a live thumbnail from the stream itself.
+- **Packaging and CI**: a `.app` bundle assembled in CI (`Info.plist` with
+  `NSScreenCaptureUsageDescription`, the R44 `.icns` once it exists,
+  hardened runtime), signed with Developer ID, notarized and stapled,
+  attached to the release beside the Windows EXE with its own `SHA256SUMS`
+  line, and published to `releases/gawk-broadcast-desktop/latest.json` as a
+  second platform asset. `cargo-deny` and the notices gate cover the new
+  crates.
+- **Docs**: `docs/53-macos-native-broadcaster.md` (design + chunks
+  MB0–MB8 + an on-hardware verification register), INSTALL section,
+  `docs/gotchas.md` entries for the TCC/signing and SCK pool rules,
+  `docs/self-hosting.md` untouched.
+
+**Key design questions** (for the design doc):
+
+- **Bindings**: `objc2-*` crates directly (unsafe FFI, but complete and
+  maintained by the objc2 project) versus `cidre` (ergonomic, one API for
+  everything we need, single-author). Recommendation to be argued in the
+  doc: `objc2-*`, on the CLAUDE.md "don't depend on what one person can
+  abandon" instinct, with the unsafe surface confined to the three
+  platform crates.
+- **How R47's in-place update works for a bundle.** The Windows
+  rename-swap moves one file; a notarized `.app` is a directory whose
+  quarantine and signature must survive the swap. Probably: download the
+  `.zip`, verify minisign + sha256, `ditto` into `<app>.new`, rename-swap
+  the bundle, relaunch — verified on hardware, with "download ready, here
+  is the file" as the fallback exactly as docs/48 D5 pre-registers.
+- **Whether the Sequoia picker exemption is real.** Apple has not
+  documented it; it is the reason for OD6 and goes on the verification
+  register, with the in-app picker as the recorded plan B if the prompt
+  appears anyway.
+- **SCK pool depth vs. encoder in-flight**: what `queueDepth` and
+  `MaxInFlight` pin keeps 60 fps without stalls, measured, not assumed.
+- **Where the system-picker UX puts "share my whole desktop"**: the picker
+  offers display mode; whether the app pre-selects a mode or always shows
+  the full dialog.
+- The Origin: Linux sends `gawk-broadcast://native`, Windows
+  `gawk-broadcast://windows` (docs/38 D19); `gawk-broadcast://macos` in the
+  relay's default allowlist is the one permitted production-side change, as
+  in R34.
+
+**Non-goals**: software encode; HEVC/AV1 (viewer list is H.264-first, and
+AV1 encode does not exist on Apple hardware); HDR capture (macOS 15+, a
+follow-up rung); Intel Macs and a universal binary (OD5); microphone, tray
+icon, global hotkeys (docs/38 OD7/OD8); Mac App Store distribution and the
+sandbox it requires; an in-app picker (OD6 — plan B only); Core Audio
+process taps (OD7 — fallback only); any relay, wire-format or viewer change
+beyond the origin-allowlist line; sharing code with the Go Linux
+broadcaster.
+
+**Depends on**: R34 (the workspace it extends). R44 (icons) supplies the
+`.icns`; R45/R47 both say "both GUIs" and become "all three" — their docs
+get a dated note when MB lands, not before. Needs the Apple Developer
+Program enrolment (OD3) before the first signed artifact; MB0–MB5 can start
+without it.
+
+**Status**: proposed + owner decisions OD1–OD10 taken 2026-09-18, not
+started — no design doc yet; chunk prefix `MB` reserved (MB0 = the
+rename).
 
 ---
 
