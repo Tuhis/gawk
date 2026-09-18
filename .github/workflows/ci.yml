@@ -2190,8 +2190,12 @@ jobs:
           # join is retried until the feed shows it or the budget runs out.
           seen=0
           for attempt in $(seq 6); do
+            # -origin because the stack sets -allowed-origins, and this dial
+            # arrives from outside the container, where the loopback bypass
+            # does not apply — the same reason gawk-echo is given one above.
             (cd gawk-server && go run ./cmd/gawk-roomsim \
-              -url https://127.0.0.1:4433 -insecure -code devroom -nick ci-bus -duration 3s) \
+              -url https://127.0.0.1:4433 -insecure -origin http://localhost:8080 \
+              -code devroom -nick ci-bus -duration 3s) \
               > roomsim.out 2>&1 || { cat roomsim.out; exit 1; }
             for i in $(seq 10); do
               body=$(curl -fsS -H "Authorization: Bearer $TOKEN" \
