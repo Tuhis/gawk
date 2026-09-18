@@ -558,17 +558,35 @@ jobs:
         run: |
           set -euo pipefail
           scratch=$(mktemp -d)
-          XDG_DATA_HOME="$scratch" dist/install-desktop.sh
+          # Installed from a copy of dist/ under a directory name carrying
+          # every character the Exec= quoting has to survive — a space, `&`
+          # (sed's "the match"), `"`, `$`, a backslash and `%` (a desktop
+          # field code). The runner's own $PWD is clean, which is how the
+          # first version's sed-based rewrite passed this step while mangling
+          # any real path with one of these in it (PR #328 review).
+          # In its own temp dir, not under $scratch, so the leftover check
+          # below can stay a plain find (a backslash in the name would defeat
+          # a -path glob).
+          base=$(mktemp -d)
+          unpacked="$base/a&b \"c\" \$d \\e 100%"
+          mkdir -p "$unpacked"
+          cp -R dist/. "$unpacked/"
+          XDG_DATA_HOME="$scratch" "$unpacked/install-desktop.sh"
           entry="$scratch/applications/fi.ioio.gawk.broadcast.desktop"
           desktop-file-validate "$entry"
-          grep -q "^Exec=\"$PWD/dist/gawk-broadcast-gui\"$" "$entry" || {
-            echo "::error::Exec= is not the absolute path of the installed binary:"; grep '^Exec=' "$entry"; exit 1; }
+          # The expected line, spelled out by hand rather than derived with
+          # the script's own escaping: `"`, `$` and `\` backslash-escaped,
+          # `%` doubled, `&` and the space untouched.
+          want='Exec="'"$base"'/a&b \"c\" \$d \\e 100%%/gawk-broadcast-gui"'
+          grep -qxF -- "$want" "$entry" || {
+            echo "::error::Exec= is not the correctly quoted absolute path of the installed binary:"
+            echo "want: $want"; echo "got:  $(grep '^Exec=' "$entry")"; exit 1; }
           for size in 16x16 24x24 32x32 48x48 64x64 128x128 256x256; do
             test -f "$scratch/icons/hicolor/$size/apps/fi.ioio.gawk.broadcast.png" || {
               echo "::error::$size icon did not install"; exit 1; }
           done
           test -f "$scratch/icons/hicolor/scalable/apps/fi.ioio.gawk.broadcast.svg"
-          XDG_DATA_HOME="$scratch" dist/install-desktop.sh --uninstall
+          XDG_DATA_HOME="$scratch" "$unpacked/install-desktop.sh" --uninstall
           # The refresh tools write their own caches (gtk-update-icon-cache:
           # icon-theme.cache, update-desktop-database: mimeinfo.cache); those
           # are the desktop's, not the script's, and are the only files allowed.

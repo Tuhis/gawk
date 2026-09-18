@@ -54,10 +54,15 @@ gui="$here/gawk-broadcast-gui"
 
 mkdir -p "$apps"
 # Exec= must be absolute: nothing puts the unpacked directory on PATH. The
-# path is quoted for the desktop entry's own escaping rules (a space in the
-# path is the common case for a Downloads folder).
-quoted=$(printf '%s' "$gui" | sed 's/[\\"`$]/\\&/g')
-sed "s|^Exec=.*|Exec=\"$quoted\"|" "$entry" > "$apps/$APP_ID.desktop"
+# path is quoted for the desktop entry's own rules — inside double quotes
+# `"`, `` ` ``, `$` and `\` are backslash-escaped, and `%` is doubled so a
+# launcher does not read it as a field code (a space is merely the common
+# case for a Downloads folder). The line is then appended with printf, not
+# substituted with sed: a sed replacement re-interprets `&`, `\` and the
+# delimiter, which is exactly how the first version of this script mangled
+# any path containing one. Key order inside the group is irrelevant.
+quoted=$(printf '%s' "$gui" | sed -e 's/[\\"`$]/\\&/g' -e 's/%/%%/g')
+{ grep -v '^Exec=' "$entry"; printf 'Exec="%s"\n' "$quoted"; } > "$apps/$APP_ID.desktop"
 chmod 644 "$apps/$APP_ID.desktop"
 
 n=0
@@ -72,4 +77,5 @@ done
 
 refresh
 echo "installed the $APP_ID launcher entry ($n icon files) into $data"
-echo "Exec: $gui"
+# printf, not echo: dash's echo interprets backslash escapes in the path.
+printf 'Exec: %s\n' "$gui"
