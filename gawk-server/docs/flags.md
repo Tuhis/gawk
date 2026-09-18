@@ -2,7 +2,10 @@
 
 Every flag has a `GAWK_*` environment fallback; precedence is
 flag > env > default. All of them are also plumbed through the Helm chart's
-`values.yaml` (see the comments there for the chart-side names).
+`values.yaml` (see the comments there for the chart-side names), with one
+deliberate exception: `-eventbus-insecure` has no chart value, because a
+deployment must not be able to turn TLS verification off by setting one
+(docs/51 D6).
 
 | Flag | Env | Default |
 |------|-----|---------|

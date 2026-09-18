@@ -72,3 +72,35 @@ func TestCoalescerIsPerKey(t *testing.T) {
 		}
 	}
 }
+
+// TestCoalescerForgetsAValueThatWasRevertedis the case a monotonic counter
+// never produces and a viewer count produces constantly: 5 → 6 → 5 inside one
+// interval. The 6 was held; by the time the interval elapses it is a number
+// the broadcast no longer has, and publishing it would leave the consumer
+// wrong until something else moved.
+func TestCoalescerForgetsAValueThatWasReverted(t *testing.T) {
+	const interval = 5 * time.Second
+	t0 := time.Date(2026, 9, 18, 9, 30, 0, 0, time.UTC)
+	viewers := func(n int) Event {
+		return Event{Type: events.TypeBroadcastViewers, Key: "3f9a1c4e7b2d",
+			Data: events.BroadcastViewersData{BroadcastID: "k7m2q9", BroadcastKey: "3f9a1c4e7b2d",
+				Role: events.RoleOrigin, ViewersLocal: n}}
+	}
+
+	c := newCoalescer(interval)
+	if _, ok := c.offer(viewers(5), t0); !ok {
+		t.Fatal("the first value was withheld")
+	}
+	if _, ok := c.offer(viewers(6), t0.Add(time.Second)); ok {
+		t.Fatal("a change inside the interval was published immediately")
+	}
+	// ...and back again, still inside the interval.
+	if _, ok := c.offer(viewers(5), t0.Add(2*time.Second)); ok {
+		t.Fatal("a value equal to the last published one was published again")
+	}
+
+	if out := c.flush(t0.Add(interval)); len(out) != 0 {
+		got := out[0].Data.(events.BroadcastViewersData).ViewersLocal
+		t.Fatalf("flush published viewersLocal %d, but the count is back to what was already published", got)
+	}
+}

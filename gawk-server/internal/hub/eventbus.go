@@ -47,13 +47,17 @@ func (r *Registry) busStarted(id string) {
 
 // busEnded publishes a broadcast's removal with why it went:
 //
-//	gc       — the grace period expired with no publisher
-//	killed   — an operator ended it (R39)
+//	gc       — it ended on its own: the grace expired with no publisher, or
+//	           the publisher went silent past it
+//	killed   — an OPERATOR ended it (R39 close code 4006)
 //	replaced — a token-bearing reclaim superseded the session
 //
 // The three are distinct because a consumer acts differently on each: a
-// replacement is a broadcaster reconnecting, a kill is enforcement, a gc is
-// the ordinary end of a stream.
+// replacement is a broadcaster reconnecting, a kill is enforcement somebody
+// should see, a gc is the ordinary end of a stream. That is why the automatic
+// stall timeout is a gc even though it removes the hub the same forceful way
+// an operator does — the code it closes with is the difference, and the only
+// one that reads as enforcement is the operator's.
 func (r *Registry) busEnded(id, reason string) {
 	if r.opts.OnEvent == nil {
 		return

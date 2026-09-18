@@ -15,8 +15,9 @@ catalogue; EB1 depends on its EC1.
 
 ## 0. What shipped (2026-09-18)
 
-As designed, with four things worth recording because a reader of the design
-alone would look for them in the wrong place:
+As designed, with the departures below worth recording because a reader of the
+design alone would look for them in the wrong place. The last four came out of
+the PR review (#329):
 
 - **The contract package is R51's, shipped before this** ([docs/52](52-event-contract.md),
   EC1–EC4). `internal/eventbus` imports `gawk-server/events` for the envelope
@@ -51,6 +52,27 @@ alone would look for them in the wrong place:
   the one leave path attaches whichever applies when the session actually goes.
   The room's reason outranks the session's — "the room ended" explains a
   departure better than "its control queue overflowed".
+- **`room.opened` fires for a static room at its FIRST ATTACH**, which is the
+  moment R51's schema names. A static room is a definition, loaded on every pod
+  at every start, so announcing it at definition time would fire once per pod
+  per restart and mean nothing; it is announced once per room, not per 0→1
+  attachment transition, or a room whose streams come and go would open
+  repeatedly without ever closing.
+- **`broadcast.ended`'s reason comes from the close code, not from how the hub
+  was removed.** The stall sweep removes a hub as forcefully as an operator's
+  kill does, and reporting that as `killed` would read an automatic timeout as
+  enforcement — the one reason a consumer is meant to escalate. Close code 4006
+  is the operator's, and only the operator's.
+- **`rejoin` is a window, not a flag.** A sticky "this room was adopted" would
+  report every arrival for the rest of the room's life as a reconnection. The
+  window is the deployment's own empty-grace (floored at a minute), and it is a
+  heuristic by necessity: the roster does not travel with a room and the new
+  home re-issues participant ids, so no pod can know which arriving sessions
+  were there before.
+- **`/metrics` is byte-identical with the bus off**, as EB1's criteria require:
+  the counters are registered only when `-eventbus-url` is set. An always-zero
+  series would claim a subsystem that is not there, and "is it configured?" is
+  answered by the config view and by `/relays`' bus section.
 - **The feed's `type` vocabulary split in two.** R51 holds
   `store.AllEventTypes()` equal to the contract's moderation row table, so the
   ingested activity types live in `store.ActivityEventTypes()` and

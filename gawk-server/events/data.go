@@ -247,6 +247,11 @@ type RoomOpenedData struct {
 type RoomClosedData struct {
 	RoomCode string `json:"roomCode,omitempty"`
 	RoomKey  string `json:"roomKey"`
+	// Kind is RoomKindStatic or RoomKindDynamic, as room.opened carries it.
+	// gawk-admin's room.ended row has always named the kind, and the sentence
+	// it renders says it ("a dynamic room ended"), so an end that did not
+	// carry it would read worse than the poll it replaced.
+	Kind string `json:"kind,omitempty"`
 	// Reason is RoomClosedGrace, RoomClosedCreator or RoomClosedOperator.
 	Reason string `json:"reason"`
 	Delivery

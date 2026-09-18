@@ -126,7 +126,8 @@ func TestDeltasAndUnknownTypesAreNotRows(t *testing.T) {
 // sweep be retired without a webhook receiver seeing any change.
 func TestRoomClosedBecomesTheSweepsRow(t *testing.T) {
 	ev := busEvent(t, events.TypeRoomClosed, "aa11bb22cc33",
-		events.RoomClosedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", Reason: events.RoomClosedGrace})
+		events.RoomClosedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33",
+			Kind: events.RoomKindDynamic, Reason: events.RoomClosedGrace})
 
 	row := roomClosedRow(ev)
 	if row.Type != store.EventRoomEnded {
@@ -144,6 +145,12 @@ func TestRoomClosedBecomesTheSweepsRow(t *testing.T) {
 	}
 	if p[store.PayloadReason] != events.RoomClosedGrace {
 		t.Errorf("reason = %v, want the relay's own", p[store.PayloadReason])
+	}
+	// The sweep's row always named the kind, and the sentence it renders says
+	// it ("a dynamic room ended"). Dropping it would make the replacement read
+	// worse than the poll it replaced.
+	if p[store.PayloadRoomKind] != events.RoomKindDynamic {
+		t.Errorf("kind = %v, want the kind the sweep always wrote", p[store.PayloadRoomKind])
 	}
 	if summary, _ := p[store.PayloadSummary].(string); summary == "" {
 		t.Error("no summary: every receiver is promised one sentence")

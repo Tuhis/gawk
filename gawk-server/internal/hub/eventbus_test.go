@@ -166,3 +166,30 @@ func TestStallTransitionsReachTheBus(t *testing.T) {
 		t.Errorf("stall events = %v", got)
 	}
 }
+
+// TestSilentPublisherEndsAsGCNotKilled: the stall sweep removes a hub the same
+// forceful way an operator's kill does, and for a while it reported the same
+// reason. They are not the same fact — `killed` is the one a consumer is meant
+// to escalate — and the close code is what tells them apart.
+func TestSilentPublisherEndsAsGCNotKilled(t *testing.T) {
+	rec := &busRecorder{}
+	r := NewRegistry(discardLog, Options{OnEvent: rec.hook})
+	id, _, err := r.StartPublish("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// What SweepStalledPublishers does for a publisher silent past the grace.
+	if !r.TerminateBroadcast(id, uint32(wire.CloseCodeBroadcastEnded), "no datagrams from the publisher for 5m") {
+		t.Fatal("the stall kick did not remove the hub")
+	}
+
+	ended := rec.only(events.TypeBroadcastEnded)
+	if len(ended) != 1 {
+		t.Fatalf("got %d broadcast.ended, want 1", len(ended))
+	}
+	if d := ended[0].Data.(events.BroadcastEndedData); d.Reason != events.BroadcastEndedGC {
+		t.Errorf("an automatic stall timeout reported %q; only an operator's kill is %q",
+			d.Reason, events.BroadcastEndedKilled)
+	}
+}

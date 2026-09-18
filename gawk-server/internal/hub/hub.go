@@ -2234,11 +2234,16 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 		r.opts.OnBroadcastExpired(id)
 	}
 	// Origin only, like the lease delete above: an edge hub is derived state,
-	// and its teardown is not the broadcast ending (R17 W4). force is the
-	// admin-kill path, which is a different fact from the grace GC.
+	// and its teardown is not the broadcast ending (R17 W4).
+	//
+	// The reason comes from the CLOSE CODE, not from `force`: the stall sweep
+	// also removes forcefully (a publisher silent past the grace), and calling
+	// that a kill would report an automatic timeout as enforcement — the one
+	// reason a consumer is expected to escalate. 4006 is the operator's, and
+	// only the operator's (R39, docs/42 §4.3).
 	if !edge {
 		busReason := events.BroadcastEndedGC
-		if force {
+		if code == uint32(wire.CloseCodeTerminatedByOperator) {
 			busReason = events.BroadcastEndedKilled
 		}
 		r.busEnded(id, busReason)

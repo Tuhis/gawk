@@ -3,6 +3,8 @@ package eventbus
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -293,4 +295,39 @@ func seqOf(t *testing.T, id string) int {
 		t.Fatalf("id %q: %v", id, err)
 	}
 	return seq
+}
+
+// TestPublishDropsWhenTheDrainIsStuck is the D1 guarantee tested structurally,
+// with no server in it at all: a publisher whose drain goroutine is not
+// running (a NATS that accepts and never acks looks exactly like this from the
+// hook's side) still returns immediately, and counts what it threw away.
+//
+// The server-backed TestPublishNeverBlocks exercises the same rule against a
+// bus that fails fast. This one holds it when the bus fails SLOWLY, which is
+// the case a future change to the drain path could quietly break.
+func TestPublishDropsWhenTheDrainIsStuck(t *testing.T) {
+	m := newCountingMetrics()
+	// Built by hand rather than through New: there is no drain goroutine, so
+	// the queue fills and stays full.
+	p := &Publisher{
+		ch:      make(chan Event, 2),
+		metrics: m,
+		now:     time.Now,
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	start := time.Now()
+	for i := 0; i < 10_000; i++ {
+		p.Publish(Event{Type: events.TypeBroadcastViewers, Key: "3f9a1c4e7b2d",
+			Data: events.BroadcastViewersData{BroadcastKey: "3f9a1c4e7b2d", ViewersLocal: i}})
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("10k hooks against a stuck drain took %v — a hook must never wait on the bus", elapsed)
+	}
+	if len(p.ch) != cap(p.ch) {
+		t.Errorf("queue holds %d of %d: the test did not actually fill it", len(p.ch), cap(p.ch))
+	}
+	if got := m.drops(DropQueueFull); got != 10_000-cap(p.ch) {
+		t.Errorf("counted %d overflow drops, want %d", got, 10_000-cap(p.ch))
+	}
 }

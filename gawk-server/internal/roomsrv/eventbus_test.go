@@ -3,6 +3,7 @@ package roomsrv
 import (
 	"sync"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -50,14 +51,30 @@ func (b *busRecorder) only(typ string) []eventbus.Event {
 
 func busFixture(t *testing.T) (*fixture, *busRecorder) {
 	t.Helper()
+	f, rec, _ := busFixtureAt(t, nil)
+	return f, rec
+}
+
+// busFixtureAt is busFixture with a clock the test moves, for the rules that
+// are about time passing.
+func busFixtureAt(t *testing.T, now *time.Time) (*fixture, *busRecorder, func(time.Duration)) {
+	t.Helper()
 	rec := &busRecorder{}
 	f := newFixture(t, func(o *Options) {
 		o.OnEvent = rec.hook
 		// A fixed obfuscator: the assertions are about WHICH identity travels,
 		// not about the HMAC.
 		o.Obfuscate = func(s string) string { return "key-" + s }
+		if now != nil {
+			o.Now = func() time.Time { return *now }
+		}
 	})
-	return f, rec
+	advance := func(d time.Duration) {
+		if now != nil {
+			*now = now.Add(d)
+		}
+	}
+	return f, rec, advance
 }
 
 // TestRoomLifecycleOnTheBus walks a room's whole life and checks each
@@ -301,4 +318,126 @@ func TestNoHookNoWork(t *testing.T) {
 	f.reg.Refresh()
 	f.reg.ReleaseHome(res.Code)
 	f.reg.EndRoom(res.Code, wire.RoomEndReasonCreator)
+}
+
+// TestRejoinStopsBeingTrue: the rejoin flag marks the wave of people coming
+// back after a re-home. It has to end — a room that was adopted an hour ago
+// reporting every new arrival as a reconnection is worse than not marking
+// them at all, because a consumer suppressing "joined" for rejoins would then
+// never announce anyone again.
+func TestRejoinStopsBeingTrue(t *testing.T) {
+	now := time.Date(2026, 9, 18, 9, 0, 0, 0, time.UTC)
+	f, rec, advance := busFixtureAt(t, &now)
+
+	cr := &rooms.Room{
+		ObjectMeta: metav1.ObjectMeta{Name: "pf4tzn"},
+		Spec:       rooms.RoomSpec{Kind: rooms.KindDynamic},
+		Status:     rooms.RoomStatus{Lease: &rooms.Lease{Holder: "relay-1", Generation: 3}},
+	}
+	if !f.reg.AdoptDynamic(cr) {
+		t.Fatal("AdoptDynamic refused the room")
+	}
+
+	// The wave: somebody reconnecting right after the move.
+	f.join(t, "pf4tzn", "tuhis", Grants{}, nil)
+	joined := rec.only(events.TypeRoomParticipantJoined)
+	if len(joined) != 1 {
+		t.Fatalf("got %d joins, want 1", len(joined))
+	}
+	if d := joined[0].Data.(events.RoomParticipantJoinedData); !d.Rejoin {
+		t.Error("the reconnect wave is not marked as rejoining")
+	}
+
+	// Long after: a stranger with the join link is not coming back.
+	advance(2 * time.Hour)
+	f.join(t, "pf4tzn", "stranger", Grants{}, nil)
+	joined = rec.only(events.TypeRoomParticipantJoined)
+	if len(joined) != 2 {
+		t.Fatalf("got %d joins, want 2", len(joined))
+	}
+	if d := joined[1].Data.(events.RoomParticipantJoinedData); d.Rejoin {
+		t.Error("a join two hours after the adoption still claims to be a reconnection")
+	}
+}
+
+// TestAdoptionAnnouncesTheMoveBeforeItsStreams: the order is the signal. A
+// consumer that saw room.attached first would have to decide what an attach to
+// a room it has never heard of means; home_changed first answers that.
+func TestAdoptionAnnouncesTheMoveBeforeItsStreams(t *testing.T) {
+	f, rec := busFixture(t)
+	f.bc.set("ABCDEF", BroadcastState{Live: true, Viewers: 2})
+	cr := &rooms.Room{
+		ObjectMeta: metav1.ObjectMeta{Name: "pf4tzn"},
+		Spec:       rooms.RoomSpec{Kind: rooms.KindDynamic},
+		Status: rooms.RoomStatus{
+			Lease:       &rooms.Lease{Holder: "relay-1", Generation: 3},
+			Attachments: []rooms.Attachment{{BroadcastID: "ABCDEF", Label: "pc"}},
+		},
+	}
+	if !f.reg.AdoptDynamic(cr) {
+		t.Fatal("AdoptDynamic refused the room")
+	}
+
+	types := rec.types()
+	if len(types) < 2 {
+		t.Fatalf("an adoption with one attachment published %v", types)
+	}
+	if types[0] != events.TypeRoomHomeChanged {
+		t.Errorf("first event was %s, want the move itself", types[0])
+	}
+	if types[1] != events.TypeRoomAttached {
+		t.Errorf("second event was %s, want the stream that came with it", types[1])
+	}
+}
+
+// TestStaticRoomOpensOnItsFirstAttach: a static room is a definition, loaded
+// on every pod at every start, so its room.opened is at the moment it becomes
+// a thing to watch — and exactly once, or a room whose streams come and go
+// would open repeatedly without ever closing.
+func TestStaticRoomOpensOnItsFirstAttach(t *testing.T) {
+	f, rec := busFixture(t)
+	f.bc.set("ABCDEF", BroadcastState{Live: true, Viewers: 1})
+	f.bc.set("BCDEFG", BroadcastState{Live: true, Viewers: 1})
+
+	if err := f.reg.UpsertStatic(StaticRoom{Code: "team", DisplayName: "Team"}); err != nil {
+		t.Fatal(err)
+	}
+	if opened := rec.only(events.TypeRoomOpened); len(opened) != 0 {
+		t.Fatalf("loading a definition published %d room.opened — it fires on every pod at every start", len(opened))
+	}
+
+	p, _ := f.join(t, "team", "tuhis", Grants{AttachOK: true}, nil)
+	p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: "ABCDEF",
+		ResumeToken: f.tokens.MintResume("ABCDEF"), Label: "pc"})
+
+	opened := rec.only(events.TypeRoomOpened)
+	if len(opened) != 1 {
+		t.Fatalf("got %d room.opened after the first attach, want 1: %v", len(opened), rec.types())
+	}
+	if d := opened[0].Data.(events.RoomOpenedData); d.Kind != rooms.KindStatic {
+		t.Errorf("room.opened data = %+v, want the static kind", d)
+	}
+
+	p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: "BCDEFG",
+		ResumeToken: f.tokens.MintResume("BCDEFG"), Label: "laptop"})
+	if opened := rec.only(events.TypeRoomOpened); len(opened) != 1 {
+		t.Errorf("a second attach opened the room again: %d room.opened", len(opened))
+	}
+}
+
+// TestRoomClosedCarriesTheKind: the row gawk-admin writes from this event has
+// always named the kind, and the sentence it renders says it. An end that did
+// not carry it would read worse than the poll it replaced.
+func TestRoomClosedCarriesTheKind(t *testing.T) {
+	f, rec := busFixture(t)
+	res := f.mint(t, "ABCDEF")
+	f.reg.EndRoom(res.Code, wire.RoomEndReasonCreator)
+
+	closed := rec.only(events.TypeRoomClosed)
+	if len(closed) != 1 {
+		t.Fatalf("got %d room.closed, want 1", len(closed))
+	}
+	if d := closed[0].Data.(events.RoomClosedData); d.Kind != rooms.KindDynamic {
+		t.Errorf("room.closed data = %+v, want the kind", d)
+	}
 }

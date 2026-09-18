@@ -1662,6 +1662,48 @@ jobs:
           grep -q 'THE POSTURE CHANGE' <<<"$on"
           grep -A1 'name: GAWK_ADMIN_ROOMS' <<<"$on" | grep -q 'value: "true"'
 
+      - name: the event bus renders on both charts, and renders nothing when off (R50)
+        run: |
+          set -euo pipefail
+          relay=gawk-server/deploy/charts/gawk-server
+          admin=gawk-admin/deploy/charts/gawk-admin
+
+          # Off is the default, and "off is byte-identical" is the milestone's
+          # headline promise: not one EVENTBUS variable, not one mount.
+          for rendered in "$(helm template "$relay")" "$(helm template "$admin" $ADMIN_PG)"; do
+            if grep -q 'EVENTBUS' <<<"$rendered"; then
+              echo "::error::a chart rendered an eventbus knob with the bus off"; exit 1
+            fi
+            if grep -q 'nats-creds' <<<"$rendered"; then
+              echo "::error::a chart mounted the NATS credential with the bus off"; exit 1
+            fi
+          done
+
+          on=$(helm template "$relay" --set eventbus.url=tls://nats:4222 \
+                 --set eventbus.credsSecretRef.name=relay-nats \
+                 --set eventbus.credsSecretRef.key=user.creds)
+          grep -A1 'name: GAWK_EVENTBUS_URL' <<<"$on" | grep -q 'value: "tls://nats:4222"'
+          grep -A1 'name: GAWK_EVENTBUS_SUBJECT_PREFIX' <<<"$on" | grep -q 'value: "gawk"'
+          grep -A1 'name: GAWK_EVENTBUS_VIEWER_INTERVAL' <<<"$on" | grep -q 'value: "5s"'
+          grep -A1 'name: GAWK_EVENTBUS_CREDS_FILE' <<<"$on" | grep -q '/etc/gawk/nats/user.creds'
+          grep -q 'secretName: relay-nats' <<<"$on"
+
+          onA=$(helm template "$admin" $ADMIN_PG --set eventbus.url=tls://nats:4222 \
+                  --set eventbus.credsSecretRef.name=admin-nats \
+                  --set eventbus.credsSecretRef.key=user.creds)
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_URL' <<<"$onA" | grep -q 'value: "tls://nats:4222"'
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_STREAM' <<<"$onA" | grep -q 'value: "GAWK_EVENTS"'
+          grep -A1 'name: GAWK_ADMIN_ACTIVITY_RETENTION' <<<"$onA" | grep -q 'value: "72h"'
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_CREDS_FILE' <<<"$onA" | grep -q '/etc/gawk/nats/user.creds'
+          grep -q 'secretName: admin-nats' <<<"$onA"
+
+          # -eventbus-insecure is deliberately NOT a chart value (docs/51 D6):
+          # it exists for the compose lane, and a deployment must not be able
+          # to turn TLS verification off by setting a value.
+          if grep -q 'EVENTBUS_INSECURE' <<<"$on$onA"; then
+            echo "::error::the insecure switch reached a chart"; exit 1
+          fi
+
       - name: admin secrets render via both the literal and the Ref form
         run: |
           set -euo pipefail
@@ -2102,6 +2144,75 @@ jobs:
           # And the native publisher was told WHY (D15's readable close).
           grep -q 'terminated by the server operator' dev-pubsim.out
           echo "portal lane: every property held"
+
+      # R50 (docs/51 EB4): the milestone's end-to-end claim, on the one lane
+      # that has every piece — a relay publishing, a NATS to publish to, and a
+      # portal consuming. Somebody joins a room over real wire and the join
+      # shows up in the portal's activity feed, having travelled
+      # relay → JetStream → the leader's consumer → Postgres → the API.
+      #
+      # Turning the bus on recreates relay and admin with EVENTBUS_URL set;
+      # `--wait` holds until NATS is healthy and both are back up, and the
+      # portal creates the stream during start-up, so by the time /readyz
+      # answers there is somewhere for the relay's events to land.
+      - name: A room join travels the event bus into the portal's activity feed
+        run: |
+          set -euo pipefail
+          echo "EVENTBUS_URL=nats://nats:4222" >> .env
+          docker compose --profile bus up -d --build --wait
+          for i in $(seq 30); do curl -fsS http://127.0.0.1:8088/readyz >/dev/null && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8088/readyz
+
+          # A fresh token: this step is its own shell.
+          verifier="ci-bus-$RANDOM$RANDOM"
+          challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+          loc=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+            "http://127.0.0.1:8088/idp/authorize?response_type=code&client_id=gawk-admin-spa&redirect_uri=http://localhost:8088/&scope=openid&state=s1&nonce=n1&code_challenge=$challenge&code_challenge_method=S256")
+          code=$(printf '%s' "$loc" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
+          TOKEN=$(curl -fsS -X POST http://127.0.0.1:8088/idp/token \
+            --data-urlencode grant_type=authorization_code --data-urlencode "code=$code" \
+            --data-urlencode redirect_uri=http://localhost:8088/ \
+            --data-urlencode client_id=gawk-admin-spa \
+            --data-urlencode "code_verifier=$verifier" | jq -r .access_token)
+
+          # The relay is publishing: the counters exist only when the bus is
+          # configured (EB1), so their presence is itself the assertion that
+          # the knob reached the process.
+          curl -fsS http://127.0.0.1:2112/metrics | grep -q gawk_eventbus_published_total
+
+          # Somebody joins the stack's static room, speaking the wire a browser
+          # participant speaks. The consumer runs on the elected leader, so the
+          # join is retried until the feed shows it or the budget runs out.
+          seen=0
+          for attempt in $(seq 6); do
+            (cd gawk-server && go run ./cmd/gawk-roomsim \
+              -url https://127.0.0.1:4433 -insecure -code devroom -nick ci-bus -duration 3s) \
+              > roomsim.out 2>&1 || { cat roomsim.out; exit 1; }
+            for i in $(seq 10); do
+              body=$(curl -fsS -H "Authorization: Bearer $TOKEN" \
+                'http://127.0.0.1:8088/api/v1/events?category=activity&limit=50') || { sleep 1; continue; }
+              if grep -q '"room.participant_joined"' <<<"$body"; then seen=1; break; fi
+              sleep 1
+            done
+            [ "$seen" = 1 ] && break
+          done
+          if [ "$seen" != 1 ]; then
+            echo "::error::a room join never reached the portal's activity feed over the bus"
+            docker compose logs nats | tail -30
+            docker compose logs admin | tail -60
+            curl -fsS http://127.0.0.1:2112/metrics | grep gawk_eventbus || true
+            exit 1
+          fi
+
+          # The row is the bus's, not a poll's: it carries the source id the
+          # relay stamped, and the feed's two categories stay separate.
+          curl -fsS -H "Authorization: Bearer $TOKEN" \
+            'http://127.0.0.1:8088/api/v1/events?category=activity&limit=50' \
+            | jq -e '.events[] | select(.type == "room.participant_joined") | select(.category == "activity")' >/dev/null
+          curl -fsS -H "Authorization: Bearer $TOKEN" \
+            'http://127.0.0.1:8088/api/v1/events?category=moderation&limit=50' \
+            | jq -e '[.events[] | select(.category != "moderation")] | length == 0' >/dev/null
+          echo "bus lane: a join travelled relay -> JetStream -> portal"
 
       - name: The certificate survives a restart (the re-paste loop, gone)
         run: |

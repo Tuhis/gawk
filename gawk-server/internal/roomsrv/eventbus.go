@@ -69,11 +69,13 @@ func (r *Registry) busEventLocked(rm *room, ev wire.RoomEvent) {
 			ClientKind:    clientKind(ev.Participant.Kind),
 			Streaming:     ev.Participant.Flags&wire.RoomParticipantFlagStreaming != 0,
 			Speaking:      ev.Participant.Flags&wire.RoomParticipantFlagSpeaking != 0,
-			// A join into a room this pod adopted is a re-announcement, not a
-			// new person: the publisher knows, so it says so rather than
-			// leaving every consumer to infer it from a left/join pair
-			// (docs/51 D9).
-			Rejoin: rm.adopted,
+			// A join into a room this pod adopted, while the reconnect window
+			// is open, is a re-announcement rather than a new person: the
+			// publisher says so instead of leaving every consumer to infer it
+			// from a left/join pair (docs/51 D9). The window closes, or every
+			// arrival for the rest of the room's life would claim to be a
+			// reconnection.
+			Rejoin: r.rejoiningLocked(rm),
 		})
 	case wire.RoomEventParticipantUpdated:
 		r.emitLocked(events.TypeRoomParticipantUpdated, rm.code, events.RoomParticipantUpdatedData{
@@ -112,6 +114,17 @@ func (r *Registry) busEventLocked(rm *room, ev wire.RoomEvent) {
 	}
 }
 
+// rejoiningLocked reports whether an arrival right now still counts as
+// somebody coming back after a re-home.
+//
+// It is a heuristic and the schema says so: the roster does not travel with a
+// room, the new home re-issues participant ids, so no pod can know which of
+// the arriving sessions were here before. What it can know is that the room
+// moved a moment ago, which is the only reason a wave of joins is expected.
+func (r *Registry) rejoiningLocked(rm *room) bool {
+	return !rm.rejoinUntil.IsZero() && r.opts.Now().Before(rm.rejoinUntil)
+}
+
 // busParticipantLeftLocked publishes one departure, with the reason the room
 // or the session recorded.
 //
@@ -148,9 +161,14 @@ func (r *Registry) busHomeChangedLocked(rm *room, previousPod string) {
 	})
 }
 
-// busRoomOpenedLocked publishes a room's birth. Both kinds: a static room's
-// first homing is when it starts existing on the fleet, and a consumer that
-// wants only dynamic rooms has `kind` to filter on.
+// busRoomOpenedLocked publishes a room becoming a thing to watch. Both kinds,
+// at the moment the contract names for each: a dynamic room's mint, and a
+// static room's FIRST ATTACH.
+//
+// A static room has no birth of its own — it is a definition, loaded on every
+// pod at every start — so announcing it at definition time would fire once per
+// pod per restart and mean nothing. A consumer that wants only one kind has
+// `kind` to filter on.
 func (r *Registry) busRoomOpenedLocked(rm *room) {
 	r.emitLocked(events.TypeRoomOpened, rm.code, events.RoomOpenedData{
 		RoomCode:    rm.code,
@@ -188,6 +206,7 @@ func (r *Registry) busRoomClosedLocked(rm *room, reason uint8) {
 	r.emitLocked(events.TypeRoomClosed, rm.code, events.RoomClosedData{
 		RoomCode: rm.code,
 		RoomKey:  r.opts.Obfuscate(rm.code),
+		Kind:     rm.kind,
 		Reason:   closeReason(reason),
 	})
 }

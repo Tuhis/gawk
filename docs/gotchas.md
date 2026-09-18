@@ -1429,4 +1429,11 @@ Add to it when a new gotcha lands in `docs/`.
   fleet. The reverse order is harmless: a relay publishing before the stream
   exists counts `gawk_eventbus_dropped_total{reason="publish"}` and the portal
   creates the stream at its next start.
-  ([docs/51](51-relay-event-bus.md) D5, self-hosting §12)
+
+  The same applies for as long as the bus is *broken*, not just misordered: a
+  wrong URL, a rejected credential or a NATS outage leaves the sweep retired
+  and nothing arriving, with no automatic fallback — that is the design
+  (docs/51 rejects polling as a backstop), so the `bus` section of
+  `GET /api/v1/relays` and `gawk_eventbus_dropped_total` are what tell you,
+  and they are worth an alert if you depend on room lifecycle rows.
+  ([docs/51](51-relay-event-bus.md) D5, D7, self-hosting §12)

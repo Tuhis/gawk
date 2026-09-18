@@ -21,6 +21,8 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
@@ -171,10 +173,15 @@ func run() error {
 
 	// R50 event bus (docs/51). Constructed before anything can produce an
 	// event and closed last; with -eventbus-url unset New returns a nil
-	// publisher, every hook is a no-op and the process is byte-identical to a
-	// relay predating R50. The counters are registered either way, so an
-	// operator can tell "configured and silent" from "not configured".
-	busMetrics := metrics.NewEventBusMetrics(promReg)
+	// publisher and every hook is a no-op.
+	//
+	// The counters are registered only when the bus IS configured, which is
+	// what makes "off is byte-identical" true of /metrics and not just of
+	// /statusz (EB1's acceptance criteria say both). A deployment without a
+	// bus exports no gawk_eventbus_* series at all — an empty counter would
+	// claim a subsystem that is not there, and "is it configured?" is already
+	// answered by the config view and by /relays' bus section.
+	busMetrics := eventBusMetrics(cfg, promReg)
 	bus, err = eventbus.New(eventbus.Options{
 		URL:            cfg.EventBusURL,
 		CredsFile:      cfg.EventBusCredsFile,
@@ -824,4 +831,18 @@ func podIdentity() string {
 		return host
 	}
 	return "gawk-server"
+}
+
+// eventBusMetrics registers the R50 bus counters, and only when there is a bus.
+//
+// This is what makes "off is byte-identical" true of /metrics and not only of
+// /statusz (docs/51 EB1's acceptance criteria name both). A deployment without
+// a bus exports no gawk_eventbus_* series at all: an always-zero counter would
+// claim a subsystem that is not there, and "is it configured?" is already
+// answered by the config view and by gawk-admin's /relays bus section.
+func eventBusMetrics(cfg config.Config, reg prometheus.Registerer) *metrics.EventBusMetrics {
+	if cfg.EventBusURL == "" {
+		return nil
+	}
+	return metrics.NewEventBusMetrics(reg)
 }

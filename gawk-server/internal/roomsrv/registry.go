@@ -44,6 +44,10 @@ const (
 	// DefaultRefreshInterval is how often attachment live/viewer state is
 	// re-read from the hub and pushed as AttachmentUpdated deltas.
 	DefaultRefreshInterval = time.Second
+	// minRejoinWindow floors how long after an adoption an arrival still
+	// reads as a reconnection (docs/51 D9), so a deployment with a tiny
+	// empty-grace does not make the window meaningless.
+	minRejoinWindow = 60 * time.Second
 	// outboxDepth bounds the per-participant record queue. Control traffic
 	// is tiny; a participant that cannot drain 256 records is not reading.
 	outboxDepth = 256
@@ -207,10 +211,21 @@ type room struct {
 	// (a Join stopped it too late, a Leave re-armed) must not fire.
 	emptyGen uint64
 	ended    bool
-	// adopted marks a room this pod took over from another home (RM3): the
-	// participants that reconnect here are rejoining, and their bus events
-	// say so instead of looking like new arrivals (docs/51 D9).
-	adopted bool
+	// rejoinUntil marks how long arrivals at a room this pod ADOPTED are
+	// reported as reconnections rather than new people (docs/51 D9).
+	//
+	// A deadline rather than a flag, because it has to end: a sticky "this
+	// room was adopted" would report every arrival for the rest of the room's
+	// life as a rejoin, including somebody opening the join link an hour
+	// later. It is a heuristic and says so — the roster does not travel with
+	// the room, participant ids are re-issued by the new home, so no pod can
+	// know which of the arriving sessions were there before. The window is
+	// the deployment's own statement about how long a reconnect takes: the
+	// empty-grace it already keeps a room alive for.
+	rejoinUntil time.Time
+	// openedPublished records that this room's room.opened has been published,
+	// so a static room announces itself once rather than on every attach.
+	openedPublished bool
 	// releasing marks a room this pod is handing to a new home. The end that
 	// follows is a re-home, not a close, and publishes no room.closed.
 	releasing bool
@@ -601,6 +616,7 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 		r.rooms[norm] = rm
 		r.attachLocked(rm, id, req.Label, state, 0)
 		r.startEmptyGraceLocked(rm)
+		rm.openedPublished = true
 		r.busRoomOpenedLocked(rm)
 		r.mu.Unlock()
 		r.log.Info("room minted", "room_key", r.opts.Obfuscate(norm), "broadcast_key", r.opts.Obfuscate(id))
@@ -1061,6 +1077,16 @@ func (r *Registry) attachLocked(rm *room, id, label string, state BroadcastState
 	a := &attachment{id: id, label: label, live: state.Live, viewers: state.Viewers, attachedAt: r.opts.Now(), ownerPID: owner}
 	rm.attachments = append(rm.attachments, a)
 	r.attached[id] = rm.code
+	// A static room has no birth of its own — it is a definition, loaded on
+	// every pod at every start — so the contract puts its room.opened at its
+	// first attach, which is when it becomes a thing to watch (the schema
+	// says exactly that). Once per room here, not per 0→1 transition, or a
+	// room whose streams come and go would open again and again without ever
+	// closing.
+	if rm.kind == rooms.KindStatic && !rm.openedPublished {
+		rm.openedPublished = true
+		r.busRoomOpenedLocked(rm)
+	}
 	// Published HERE rather than beside the participant-facing
 	// AttachmentAdded event, because this is the funnel every attach goes
 	// through: a mint's first broadcast and an adoption's re-attach have no
@@ -1431,32 +1457,48 @@ func (r *Registry) AdoptDynamic(cr *rooms.Room) bool {
 		code: norm, display: rooms.DisplayCode(cr), kind: rooms.KindDynamic,
 		creatorFP: cr.Status.CreatorTokenFingerprint, createdAt: r.opts.Now(),
 		nextPID: 1, participants: make(map[uint16]*Participant),
-		// This room is not being born here; the participants that dial this
-		// pod are rejoining, and their bus events say so (docs/51 D9). No
-		// room.opened is published for an adoption for the same reason.
-		adopted: true,
 	}
+	// This room is not being born here; the participants that dial this pod
+	// within the window are rejoining, and their bus events say so
+	// (docs/51 D9). No room.opened is published for an adoption: the room did
+	// not open, it moved.
+	rm.rejoinUntil = r.opts.Now().Add(r.rejoinWindow())
 	if cr.Status.CreatedAt != nil {
 		rm.createdAt = cr.Status.CreatedAt.Time
 	}
+	r.rooms[norm] = rm
+	// The room arrived here from somewhere else. Say so BEFORE the streams
+	// that came with it: room.home_changed, then a room.attached per stream,
+	// then the rejoining participants — the order is how a consumer tells a
+	// re-home from an ordinary attach (docs/51 D9). This is also the one
+	// event in a re-home a consumer can rely on, because the pod that LOST
+	// the room may have been deleted without publishing anything;
+	// status.lease.holder still names it, when the record has it.
+	var previousPod string
+	if cr.Status.Lease != nil {
+		previousPod = cr.Status.Lease.Holder
+	}
+	r.busHomeChangedLocked(rm, previousPod)
 	for i := range states {
 		if _, taken := r.attached[states[i].id]; taken {
 			continue
 		}
 		r.attachLocked(rm, states[i].id, states[i].label, states[i].state, 0)
 	}
-	r.rooms[norm] = rm
 	r.startEmptyGraceLocked(rm)
-	// The room arrived here from somewhere else. Say so on the bus: this is
-	// the one event in a re-home that a consumer can rely on, because the pod
-	// that LOST the room may have been deleted without publishing anything
-	// (docs/51 D9). status.lease.holder still names it, when the record has it.
-	var previousPod string
-	if cr.Status.Lease != nil {
-		previousPod = cr.Status.Lease.Holder
-	}
-	r.busHomeChangedLocked(rm, previousPod)
 	return true
+}
+
+// rejoinWindow is how long after an adoption an arrival still reads as a
+// reconnection. The empty-grace is the deployment's own answer to "how long
+// does a client take to come back" (docs/44 D7 says to keep it longer than a
+// reconnect interval), with a floor so a zero or tiny grace does not make the
+// window meaningless.
+func (r *Registry) rejoinWindow() time.Duration {
+	if g := r.opts.EmptyGrace; g > minRejoinWindow {
+		return g
+	}
+	return minRejoinWindow
 }
 
 // RoomStats is one row of the /statusz rooms section, keyed by the HMAC'd

@@ -119,7 +119,8 @@ func fixtures() map[string]Event {
 			CreatedAt: "2026-09-17T12:00:00Z",
 		}),
 		TypeRoomClosed: bus(TypeRoomClosed, fixtureRoomKey, RoomClosedData{
-			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, Reason: RoomClosedCreator,
+			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey, Kind: RoomKindDynamic,
+			Reason: RoomClosedCreator,
 		}),
 		TypeRoomAttached: bus(TypeRoomAttached, fixtureRoomKey, RoomAttachedData{
 			RoomCode: fixtureRoomCode, RoomKey: fixtureRoomKey,

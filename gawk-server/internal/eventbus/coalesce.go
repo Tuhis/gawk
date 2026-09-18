@@ -66,6 +66,12 @@ func (c *coalescer) offer(ev Event, now time.Time) (Event, bool) {
 		c.state[k] = st
 	}
 	if st.last != nil && string(st.last) == string(body) {
+		// Back to what was last published. Any held value is now a value that
+		// never was: publishing it at the next flush would report a count the
+		// thing no longer has, and leave it wrong until something else moves.
+		// A viewer count that ticks 5 → 6 → 5 inside one interval is exactly
+		// this, and it is the common shape of a fluctuating count.
+		st.pending = nil
 		return Event{}, false // nothing changed
 	}
 	if now.Sub(st.sentAt) >= c.interval {
