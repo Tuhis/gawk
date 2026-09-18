@@ -122,6 +122,25 @@ spec:
               {{- end }}
             {{- end }}
             {{- end }}
+            {{- if .Values.eventbus.url }}
+            # R50 (docs/51): the event bus. With eventbus.url unset none of
+            # these exist, no stream is created and the room sweep keeps
+            # running — the deployment is byte-identical to a pre-R50 one.
+            - name: GAWK_ADMIN_EVENTBUS_URL
+              value: {{ .Values.eventbus.url | quote }}
+            - name: GAWK_ADMIN_EVENTBUS_STREAM
+              value: {{ .Values.eventbus.stream | quote }}
+            - name: GAWK_ADMIN_EVENTBUS_MAX_BYTES
+              value: {{ .Values.eventbus.maxBytes | quote }}
+            - name: GAWK_ADMIN_EVENTBUS_REPLICAS
+              value: {{ .Values.eventbus.replicas | quote }}
+            - name: GAWK_ADMIN_ACTIVITY_RETENTION
+              value: {{ .Values.eventbus.activityRetention | quote }}
+            {{- if .Values.eventbus.credsSecretRef.name }}
+            - name: GAWK_ADMIN_EVENTBUS_CREDS_FILE
+              value: /etc/gawk/nats/{{ .Values.eventbus.credsSecretRef.key }}
+            {{- end }}
+            {{- end }}
             - name: GAWK_ADMIN_LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
             - name: GAWK_ADMIN_LOG_FORMAT
@@ -149,3 +168,17 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if and .Values.eventbus.url .Values.eventbus.credsSecretRef.name }}
+          # The NATS credential (R50). Read-only, named by the Secret's own
+          # key, so rotating it is a Secret update.
+          volumeMounts:
+            - name: nats-creds
+              mountPath: /etc/gawk/nats
+              readOnly: true
+          {{- end }}
+      {{- if and .Values.eventbus.url .Values.eventbus.credsSecretRef.name }}
+      volumes:
+        - name: nats-creds
+          secret:
+            secretName: {{ .Values.eventbus.credsSecretRef.name }}
+      {{- end }}

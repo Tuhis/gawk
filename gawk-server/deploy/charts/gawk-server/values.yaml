@@ -152,6 +152,34 @@ moderation:
 # byte-identical to a relay without the feature (D17): no /room/ routes, no
 # registry, no CRD, no RBAC, no metrics series. Media is untouched either
 # way; a room is control-plane state layered over ordinary broadcasts.
+# R50 (docs/51): publish broadcast and room lifecycle events to an
+# operator-provided NATS JetStream. OPTIONAL and OFF by default — with url
+# empty the relay builds no client, starts no goroutine and is byte-identical
+# to a deployment predating R50.
+#
+# gawk does not ship NATS: the charts do not own a stateful thing's upgrade
+# story (the Postgres posture). Install it yourself (self-hosting §12), give
+# this relay a PUBLISH-ONLY user on gawk.> and give gawk-admin its own.
+#
+# Subjects carry the fleet's HMAC'd keys; PAYLOADS carry raw broadcast IDs and
+# room codes, like the Room and Ban CRs — so the bus is internal-tier
+# infrastructure and must never be routed publicly.
+eventbus:
+  # NATS URL. tls:// is the intended scheme; empty disables the bus entirely.
+  url: ""
+  # The relay's NATS credential, an NKey/JWT .creds file mounted from a Secret:
+  #   kubectl -n gawk create secret generic gawk-relay-nats \
+  #     --from-file=user.creds=./relay.creds
+  # then set: credsSecretRef: {name: gawk-relay-nats, key: user.creds}
+  credsSecretRef: {}
+  # First token of every subject: <prefix>.<scope>.<key>.<event>. Two fleets
+  # can share one NATS account by taking different prefixes.
+  subjectPrefix: gawk
+  # Viewer-count and attachment deltas are coalesced to at most one per key per
+  # interval, and published only on change — a thousand-viewer broadcast must
+  # not be a thousand messages a second.
+  viewerInterval: "5s"
+
 rooms:
   enabled: false
   # How long a dynamic room survives with no participant before it ends.

@@ -275,6 +275,21 @@ spec:
               {{- end }}
             {{- end }}
             {{- end }}
+            {{- if .Values.eventbus.url }}
+            # R50 (docs/51): the event bus. Everything about it is optional;
+            # with eventbus.url unset none of these exist and the relay
+            # publishes nothing.
+            - name: GAWK_EVENTBUS_URL
+              value: {{ .Values.eventbus.url | quote }}
+            - name: GAWK_EVENTBUS_SUBJECT_PREFIX
+              value: {{ .Values.eventbus.subjectPrefix | quote }}
+            - name: GAWK_EVENTBUS_VIEWER_INTERVAL
+              value: {{ .Values.eventbus.viewerInterval | quote }}
+            {{- if .Values.eventbus.credsSecretRef.name }}
+            - name: GAWK_EVENTBUS_CREDS_FILE
+              value: /etc/gawk/nats/{{ .Values.eventbus.credsSecretRef.key }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.moderation.enabled }}
             # R39 (docs/42 §4.3): where this pod reads enforcement from.
             # "k8s" watches Ban CRs in POD_NAMESPACE — independent of cluster
@@ -387,6 +402,13 @@ spec:
             - name: tls
               mountPath: /tls
               readOnly: true
+            {{- if and .Values.eventbus.url .Values.eventbus.credsSecretRef.name }}
+            # The NATS credential (R50). Mounted read-only and named by the
+            # Secret's own key, so rotating it is a Secret update.
+            - name: nats-creds
+              mountPath: /etc/gawk/nats
+              readOnly: true
+            {{- end }}
           # The server is HTTP/3-only (UDP) — kubelet can't probe it with
           # httpGet/tcpSocket, so all probes exec the bundled gawk-echo
           # against localhost. No -cert-hash: verification is skipped,
@@ -421,3 +443,8 @@ spec:
         - name: tls
           secret:
             secretName: {{ .Values.certificate.secretName }}
+        {{- if and .Values.eventbus.url .Values.eventbus.credsSecretRef.name }}
+        - name: nats-creds
+          secret:
+            secretName: {{ .Values.eventbus.credsSecretRef.name }}
+        {{- end }}

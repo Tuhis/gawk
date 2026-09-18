@@ -202,6 +202,32 @@ notifications:
 #
 # Set exactly one of the two forms below (the same foo / fooRef dual pattern
 # the rest of the repo uses for secrets; the Ref wins if you set both):
+# R50 (docs/51): consume the relay event bus. OPTIONAL and OFF by default —
+# with url empty this portal creates no stream, consumes nothing, writes no
+# activity rows, and the reconciler's once-a-minute room sweep keeps running
+# exactly as it did before R50.
+#
+# Point it at the SAME NATS the relays publish to, with its own user: the
+# portal's credential manages one stream and consumes it, the relays' can only
+# publish. Install NATS yourself (self-hosting §12) — the charts do not own a
+# stateful thing's upgrade story.
+eventbus:
+  url: ""
+  # The portal's NATS credential, an NKey/JWT .creds file from a Secret:
+  #   kubectl -n gawk create secret generic gawk-admin-nats \
+  #     --from-file=user.creds=./admin.creds
+  #   credsSecretRef: {name: gawk-admin-nats, key: user.creds}
+  credsSecretRef: {}
+  # The stream this portal creates and consumes. It owns the retention, which
+  # is why it — and not the relays — creates it.
+  stream: GAWK_EVENTS
+  # Stream size limit in bytes (discard old) and replicas (0 = server default).
+  maxBytes: 268435456
+  replicas: 0
+  # How long ingested ACTIVITY rows are kept. The moderation audit trail is
+  # never pruned by this.
+  activityRetention: "72h"
+
 postgres:
   # A literal DSN — libpq keyword form or a postgres:// URL. Convenient for a
   # throwaway environment; it lands in the rendered manifest and therefore in

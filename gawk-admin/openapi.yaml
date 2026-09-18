@@ -1571,7 +1571,7 @@ components:
     Event:
       type: object
       description: One event in the audit feed.
-      required: [id, type, occurredAt, actor, deliveries]
+      required: [id, type, occurredAt, actor, category, deliveries]
       properties:
         id:
           type: integer
@@ -1588,6 +1588,10 @@ components:
             - $ref: '#/components/schemas/BroadcastId'
           description: The raw broadcast ID. Present here only; never in outbound events.
         reason: { type: string }
+        category:
+          allOf:
+            - $ref: '#/components/schemas/EventCategory'
+          description: Which kind of row this is. Always present.
         summary:
           type: string
           description: One-sentence rendering of the event, suitable for display.
