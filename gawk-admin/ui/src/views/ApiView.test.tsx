@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Redoc is ~1 MB of prebuilt JavaScript and spawns a worker. Mounting it in
@@ -11,6 +11,20 @@ vi.mock('redoc', () => ({
     mounted.push(props);
     return <div data-testid="redoc" />;
   },
+  // The Console drawer subscribes to this to follow sidebar clicks.
+  history: { subscribe: () => () => undefined },
+}));
+
+// The drawer loads the contract itself; here it is a stub so opening it in
+// jsdom needs no network. `ApiConsole.test.tsx` covers the drawer.
+vi.mock('./ApiConsole.tsx', () => ({
+  ApiConsole: ({ onClose }: { onClose: () => void }) => (
+    <aside aria-label="API console">
+      <button type="button" onClick={onClose}>
+        Close console
+      </button>
+    </aside>
+  ),
 }));
 
 import ApiView from './ApiView.tsx';
@@ -81,9 +95,35 @@ describe('the API page (R48, docs/49 D5)', () => {
     }
   });
 
-  // The page reads the contract; it never acts on the caller's behalf. Redoc
+  // The drawer is closed on every visit and opens from a floating toggle
+  // (fixed, so it is there however far down the reference the reader is);
+  // Redoc gives up its width to it so the reference reflows rather than being
+  // covered. While the drawer is open the toggle is gone — the drawer's own
+  // close is the way back — and closing returns both the page and the toggle.
+  it('opens and closes the Console drawer from the floating toggle', async () => {
+    mount();
+    await screen.findByText('API');
+    expect(screen.queryByLabelText('API console')).toBeNull();
+    expect(document.querySelector('.gawk-redoc.withConsole')).toBeNull();
+    const toggle = screen.getByRole('button', { name: 'Console' });
+    expect(toggle.className).toContain('gawk-console-toggle');
+
+    fireEvent.click(toggle);
+    expect(screen.getByLabelText('API console')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Console' })).toBeNull();
+    expect(document.querySelector('.gawk-redoc.withConsole')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close console' }));
+    expect(screen.queryByLabelText('API console')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Console' })).toBeTruthy();
+    expect(document.querySelector('.gawk-redoc.withConsole')).toBeNull();
+  });
+
+  // Redoc reads the contract; it never acts on the caller's behalf. It
   // executes no requests, so — unlike the Swagger UI it replaced — it is never
-  // handed the access token. This is the assertion that keeps it that way.
+  // handed the access token. The Console sends, and does so through the
+  // session (its own test asserts that); this assertion keeps the RENDERER
+  // token-free, whichever the drawer is doing.
   it('never hands the renderer the session token', async () => {
     const session = mount();
     await screen.findByText('API');

@@ -1,6 +1,7 @@
 import { useState, useSyncExternalStore } from 'react';
 import { RedocStandalone } from 'redoc';
 
+import { ApiConsole } from './ApiConsole.tsx';
 import { ASYNCAPI_URL, OPENAPI_URL, readPalette, redocOptions } from './apiDocs.ts';
 import ui from '../styles/ui.module.css';
 import './ApiView.css';
@@ -69,12 +70,12 @@ function ThemedRedoc() {
  *
  * **Redoc, not Swagger UI.** The first cut used Swagger UI for its "Try it
  * out" button; the owner's call was that the page had to read well, and it is
- * the reference far more often than it is a REPL. The loss is real — you
- * cannot execute a call from this page any more — and `docs/self-hosting.md`
- * §9.8's `curl` recipe is what replaces it. Two things came free with the
- * swap: the third-party bundle no longer needs the operator's access token
- * (it does not execute requests, so it is never handed one), and the whole
- * same-origin guard that protected that token is gone with it.
+ * the reference far more often than it is a REPL. What the swap gave up —
+ * sending a call from the page — came back on 2026-09-21 as the in-house
+ * **Console** drawer (`ApiConsole.tsx`), which is the part of that button
+ * worth having without the part that cost: Redoc still executes nothing and
+ * is still handed no token; the console sends through the session's own
+ * `authorizedFetch`, exactly as a view does.
  *
  * **Everything here is served by this binary.** The bundle is built into the
  * SPA, not loaded from a CDN — the portal's CSP is `default-src 'self'` and
@@ -88,6 +89,10 @@ function ThemedRedoc() {
  */
 export default function ApiView() {
   const scheme = useSyncExternalStore(subscribeToScheme, currentScheme, () => 'dark');
+  // Closed on every visit: the drawer is a tool picked up for one call, not
+  // a mode, and a page that reopens it would put a form over the reference
+  // for the operator who came to read.
+  const [consoleOpen, setConsoleOpen] = useState(false);
 
   return (
     <section>
@@ -104,9 +109,23 @@ export default function ApiView() {
           </a>
         </span>
       </div>
+      {/* The toggle FLOATS rather than sitting in the head strip: the reference
+          is long, and the moment an operator wants to send the call they are
+          reading about is exactly when the strip has scrolled away. It is
+          hidden while the drawer is open — the drawer has its own close, and
+          the drawer covers where the pill sits anyway. */}
+      {consoleOpen ? (
+        <ApiConsole onClose={() => setConsoleOpen(false)} />
+      ) : (
+        <button type="button" className="gawk-console-toggle" onClick={() => setConsoleOpen(true)}>
+          Console
+        </button>
+      )}
       {/* The wrapper scopes ApiView.css: those overrides reach into Redoc's
-          own DOM, and must not leak into the portal's views. */}
-      <div className="gawk-redoc">
+          own DOM, and must not leak into the portal's views. `withConsole`
+          narrows it while the drawer is open so Redoc reflows beside the
+          drawer instead of under it. */}
+      <div className={consoleOpen ? 'gawk-redoc withConsole' : 'gawk-redoc'}>
         {/* Remounting on a scheme change is deliberate: Redoc resolves its
             theme when it initialises, so handing the same instance new options
             would leave half the page on the old palette. */}
