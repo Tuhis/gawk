@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -151,6 +152,10 @@ type Consumer struct {
 	js     jetstream.JetStream
 	stream jetstream.Stream
 
+	// closing tells the ClosedHandler that the close it is seeing is Close's
+	// own, not a failure worth an ERROR line at shutdown.
+	closing atomic.Bool
+
 	mu   sync.Mutex
 	live map[string]LiveEntry
 	pods map[string]PodState
@@ -241,10 +246,26 @@ func New(ctx context.Context, opts Options) (*Consumer, error) {
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			c.log.Warn("event bus disconnected", "err", err)
 		}),
+		// Fires when a connect finally succeeds after RetryOnFailedConnect has
+		// been retrying — "the bus was down when this pod started" and "the
+		// grant arrived late", the two cases this whole mechanism exists for.
+		// ReconnectHandler covers only a connection that was up once already,
+		// so without this the recovery is logged by nobody.
+		nats.ConnectHandler(func(nc *nats.Conn) {
+			c.log.Info("event bus connected", "url", nc.ConnectedUrl())
+		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			c.log.Info("event bus reconnected", "url", nc.ConnectedUrl())
 		}),
 		nats.ClosedHandler(func(nc *nats.Conn) {
+			// Two closes are ours and are not news: Close on shutdown, and the
+			// old connection a re-dial just replaced.
+			if c.closing.Load() {
+				return
+			}
+			if cur := c.conn(); cur != nil && cur != nc {
+				return
+			}
 			c.log.Error("event bus connection closed, re-dialling",
 				"err", nc.LastError(), "retryIn", opts.RedialInterval)
 		}),
@@ -304,7 +325,11 @@ func (c *Consumer) ensureConn() error {
 	if err := c.dial(); err != nil {
 		return err
 	}
-	c.log.Info("event bus connection re-established", "url", c.opts.URL)
+	// "re-dialled", not "connected": nats.Connect with RetryOnFailedConnect
+	// hands back a client that is still trying, so this line means a new
+	// client exists and the ConnectHandler above is the one that means the
+	// feed can flow.
+	c.log.Info("event bus re-dialled", "url", c.opts.URL)
 	return nil
 }
 
@@ -384,6 +409,7 @@ func (c *Consumer) Close() {
 	if c == nil {
 		return
 	}
+	c.closing.Store(true)
 	if nc := c.conn(); nc != nil {
 		nc.Close()
 	}

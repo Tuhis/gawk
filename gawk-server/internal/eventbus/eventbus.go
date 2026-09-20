@@ -228,13 +228,31 @@ func New(opts Options) (*Publisher, error) {
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			p.log.Warn("event bus disconnected", "err", err)
 		}),
+		// Fires when a connect finally succeeds after RetryOnFailedConnect has
+		// been retrying — which is exactly the shape of "the bus was down when
+		// this pod started" and "the grant arrived late". Without it that
+		// recovery is logged by nobody: ReconnectHandler is only for a
+		// connection that was established once already.
+		nats.ConnectHandler(func(nc *nats.Conn) {
+			p.log.Info("event bus connected", "url", nc.ConnectedUrl())
+		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			p.log.Info("event bus reconnected", "url", nc.ConnectedUrl())
 		}),
 		nats.ClosedHandler(func(nc *nats.Conn) {
-			// Terminal for this connection, whatever the client decided. The
-			// supervisor builds a new one; this line is so the log says which
-			// happened rather than going quiet.
+			// Two closes are ours and are not news: shutdown, and the old
+			// connection a re-dial just replaced. Anything else is terminal
+			// for a connection that was supposed to be working, and the
+			// supervisor is about to build another — this line is so the log
+			// says that happened rather than going quiet.
+			select {
+			case <-p.done:
+				return
+			default:
+			}
+			if c := p.conn.Load(); c != nil && c.nc != nc {
+				return
+			}
 			p.log.Error("event bus connection closed, re-dialling",
 				"err", nc.LastError(), "retryIn", opts.RedialInterval)
 		}),
@@ -314,7 +332,11 @@ func (p *Publisher) supervise() {
 					"url", p.opts.URL, "err", err, "retryIn", p.opts.RedialInterval)
 				continue
 			}
-			p.log.Info("event bus connection re-established", "url", p.opts.URL)
+			// "re-dialled", not "connected": nats.Connect with
+			// RetryOnFailedConnect hands back a client that is still trying,
+			// so this line means a new client exists, and the ConnectHandler
+			// above is the one that means events can flow.
+			p.log.Info("event bus re-dialled", "url", p.opts.URL)
 		}
 	}
 }

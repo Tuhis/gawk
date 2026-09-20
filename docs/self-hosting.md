@@ -1171,7 +1171,8 @@ Give each side exactly what it needs, in your NATS config or operator setup:
 ```
 authorization {
   users = [
-    { user: gawk-relay, password: "…", permissions: { publish: ["gawk.>"], subscribe: [] } }
+    # subscribe _INBOX.> even though the relay only publishes: see §12.5.
+    { user: gawk-relay, password: "…", permissions: { publish: ["gawk.>"], subscribe: ["_INBOX.>"] } }
     # $JS.ACK.> is not part of $JS.API.> and is not optional: see §12.5.
     { user: gawk-admin, password: "…", permissions: {
         publish: ["$JS.API.>", "$JS.ACK.>"], subscribe: ["_INBOX.>", "gawk.>"] } }
@@ -1216,10 +1217,12 @@ from serving — moderation does not depend on the feed.
   broken: `publish` is the stream (missing, or refusing the message),
   `disconnected` is the connection (NATS unreachable, or a credential it does
   not accept yet), `queue_full` is a relay busier than its bus.
-- Neither side gives up. A relay or portal with `eventbus.url` set re-dials
-  every 60 seconds for as long as the process lives, so a bus that was down,
-  or a grant that landed late, needs no restart — `event bus connection
-  re-established` in the log is what recovery looks like.
+- Neither side gives up. A relay or portal with `eventbus.url` set keeps
+  retrying for as long as the process lives, so a bus that was down, or a
+  grant that landed late, needs no restart. Recovery is `event bus connected`
+  in the log (`event bus reconnected` if the connection had been up before,
+  and `event bus re-dialled` if the client had to be rebuilt) — grep for
+  `event bus` and read the story, rather than for one exact line.
 - From a shell with a subscribe credential:
 
 ```sh
@@ -1264,9 +1267,15 @@ The permissions each identity needs, and the one that is easy to miss:
 | Identity | publish | subscribe |
 |---|---|---|
 | relay | `gawk.>` (or your `subjectPrefix`) | `_INBOX.>` |
-| portal | `$JS.API.STREAM.INFO.<stream>`, `$JS.API.CONSUMER.>`, `$JS.ACK.>` | `_INBOX.>` |
+| portal, `manageStream: true` (the default) | `$JS.API.STREAM.>`, `$JS.API.CONSUMER.>`, `$JS.ACK.>` | `_INBOX.>` |
+| portal, `manageStream: false` | `$JS.API.STREAM.INFO.<stream>`, `$JS.API.CONSUMER.>`, `$JS.ACK.>` | `_INBOX.>` |
 
-Three of those are easy to leave out, and all three fail as silence rather
+The two portal rows differ because the default creates the stream — that is a
+`STREAM.CREATE`, and a `STREAM.UPDATE` on every restart after a limit changes —
+while `manageStream: false` only binds one by name. §12.2's simpler recipe
+grants the whole `$JS.API.>` and covers both.
+
+Three of these are easy to leave out, and all three fail as silence rather
 than as an error:
 
 **`subscribe: _INBOX.>` is required even for the relay, which only publishes.**
