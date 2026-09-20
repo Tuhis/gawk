@@ -857,10 +857,40 @@ func (s *Store) ReleaseAll(ctx context.Context) {
 
 // --- informer ---------------------------------------------------------
 
-// observe handles an added or updated CR: a held room whose lease now
-// names someone else is lost (the watch usually reports it before the
-// renew loop does), and a held static room whose SPEC changed is refreshed
-// in the registry (display name, limits, a changed Secret reference).
+// leaseTakenFromUs reports whether an informer view shows this pod's lease
+// genuinely taken, as opposed to simply being OLDER than the lease it holds.
+//
+// The distinction is the whole point. An informer serves what it has: its
+// initial list can predate this pod's own Adopt, a watch event can arrive
+// late, and a relist after a watch error replays whatever the API server had
+// then. Treating any of those as a force-take cancels the renew loop and
+// fires OnLeaseLost, so the pod abandons a room it owns and R42's fencing
+// hands it to whoever takes it next — for no reason.
+//
+// Generations order the views: every take writes `home.Generation + 1`
+// (docs/44 §4.5), so a lease older than ours is a stale picture, not news. A
+// view with no lease at all is likewise ambiguous — it may simply predate the
+// first take — and is left to renewOnce, whose read is authoritative and
+// which sees a genuine clear on its next tick. Only a generation at or beyond
+// ours, held by someone else, is a take.
+//
+// What this gives up, deliberately: a CR deleted and recreated under the same
+// name comes back at generation 1, which is BELOW ours, so a take of the new
+// CR by another pod is ignored here and caught by renewOnce instead — within
+// one RenewInterval (5s by default) rather than on the event. Bounded, and
+// the right trade against abandoning live rooms on every stale replay.
+func leaseTakenFromUs(l *rooms.Lease, pod string, generation int64) bool {
+	if l == nil || l.Generation < generation {
+		return false
+	}
+	return l.Holder != pod || l.Generation != generation
+}
+
+// observe handles an added or updated CR: a held room the lease was taken
+// from is lost (the watch usually reports it before the renew loop does —
+// leaseTakenFromUs says which views count as a take), and a held static room
+// whose SPEC changed is refreshed in the registry (display name, limits, a
+// changed Secret reference).
 // Secret ROTATION is not a spec change and needs none: the secret is read
 // per join (AttachSecret). Status-only updates — every renew is one —
 // refresh nothing: a Secret read per renew per room would be the
@@ -879,7 +909,7 @@ func (s *Store) observe(oldObj, obj any) {
 	}
 	s.mu.Lock()
 	h, held := s.held[r.Name]
-	lost := held && (r.Status.Lease == nil || r.Status.Lease.Holder != s.opts.PodName || r.Status.Lease.Generation != h.generation)
+	lost := held && leaseTakenFromUs(r.Status.Lease, s.opts.PodName, h.generation)
 	if lost {
 		delete(s.held, r.Name)
 	}
