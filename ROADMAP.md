@@ -71,6 +71,7 @@ feature set exists).
 | R50 | [Relay event bus over NATS JetStream](#r50--relay-event-bus-over-nats-jetstream) | ✅ shipped 2026-09-18 (EB1–EB5) — the relay publishes broadcast and room lifecycle, participant, attachment and coalesced viewer-count events to an operator-provided NATS JetStream from its existing fan-out points, never blocking the media path; `gawk-admin`'s leader consumes a durable stream into the events feed with exactly-once ingest and retires the room sweep. **Optional, default off, off is byte-identical.** R49's activity webhooks depend on it ([docs/51](docs/51-relay-event-bus.md)) |
 | R51 | [Event contract: CloudEvents, JSON Schema, AsyncAPI](#r51--event-contract-cloudevents-json-schema-asyncapi) | ✅ shipped 2026-09-17 (EC1–EC4) — one CloudEvents 1.0 envelope for the R50 bus and the webhooks, one JSON Schema per event type in the public `gawk-server/events` package (23 types, golden vectors, drift tests), an AsyncAPI 3.0 catalogue served by `gawk-admin` at `/api/v1/asyncapi.json` with the schemas under `/api/v1/schemas/events/`, Standard Webhooks delivery replacing the `X-Gawk-*` headers, and naming/versioning/deprecation rules `go test` enforces; **R50 EB1 and R49 RA4 build on it** ([docs/52](docs/52-event-contract.md)) |
 | R52 | [Native macOS broadcaster](#r52--native-macos-broadcaster) | 🔧 designed 2026-09-18 (owner decisions OD1–OD10), not started (MB0–MB8) — Rust in a shared desktop workspace (`gawk-broadcast-windows` → `gawk-broadcast-desktop`, MB0 is the rename and lands alone), ScreenCaptureKit video + per-app audio via the system picker, VideoToolbox low-latency H.264 with an app-forced 500 ms GOP, macOS 14+ Apple Silicon, Developer ID + notarization from CI secrets, built on `macos-latest`; per-distribution release manifests keep R45 and the site card untouched ([docs/54](docs/54-macos-native-broadcaster.md)) |
+| R53 | [OIDC for the telemetry read surface](#r53--oidc-for-the-telemetry-read-surface) | 🔧 designed 2026-09-20 (owner decisions OD1–OD9), not started (TO1–TO5, one PR) — the `gawk-telemetry` read listener (dashboard, `/v1`, `/live`, `/mcp`) adopts R39's auth boundary: OIDC public client + PKCE in the SPA, bearer JWT + a client-scoped `telemetry-reader` role on a separate Keycloak client, same IdP and recipe as `gawk-admin`, SSO across the portal's deep links. TO1 lifts the JWT verifier the relay and the portal each carry today into one public `gawk-server/oidcauth` package, and the SPA flow into `common-ts/oidc-session`, the first package under a new root for shared TypeScript, consumed by both operator UIs (third consumer ⇒ no third copy); per-consumer lock files plus a CI bot bump and required check make any `common-ts` change release every consumer. Basic auth stays as the no-IdP mode; ClusterIP default is unchanged; ingest is untouched and the pod's probes stay on ingest ([docs/55](docs/55-telemetry-oidc.md)) |
 
 ---
 
@@ -4349,6 +4350,92 @@ them.
 **Status**: designed 2026-09-18 (owner decisions OD1–OD10), not started —
 chunks MB0–MB8 in [docs/54](docs/54-macos-native-broadcaster.md); MB0 is
 the rename and lands alone.
+
+---
+
+## R53 — OIDC for the telemetry read surface
+
+**Goal**: the `gawk-telemetry` read listener — dashboard, `/v1/*`, `/live`,
+`/mcp` — is gated the way `gawk-admin` is gated: the SPA is an OIDC public
+client (code flow + PKCE, tokens in memory, refresh-token rotation), every
+read carries a provider-issued JWT validated statelessly, and authorization
+is a Keycloak client role in that token. Same IdP, same role shape, same
+self-hosting recipe as R39, so an operator signed into the portal follows a
+telemetry deep link and the dashboard simply opens.
+
+**Why**: R28 gave the read listener the `/statusz` posture — cluster-internal,
+optional basic auth behind an internal Ingress (docs/33 D14) — and the
+reference deployment runs it that way: one shared `admin` password in the
+`gawk-fleet` Secret. Since R39 the same operator holds a real identity with
+per-person revocation on the portal and a shared string on the surface the
+portal links to. Granting a second operator is an IdP action on one and a
+Secret rotation on the other; the MCP endpoint hands Claude Code the same
+password in a config file. R39 already built the boundary; this item is
+its second consumer.
+
+**Scope sketch** (chunks TO1–TO5 in [docs/55](docs/55-telemetry-oidc.md)):
+
+- **TO1 — one verifier.** The JWT verifier exists twice today
+  (`gawk-server/internal/ops/auth.go` and `gawk-admin/internal/auth`: the
+  `RemoteKeySet` wrapper, the JWKS fetch floor, discovery with backoff, the
+  priming fetch, and a fake-issuer harness each). A third copy is the
+  mirror CLAUDE.md forbids, so TO1 lifts it into a public
+  `gawk-server/oidcauth` package (+ `oidcauthtest`) that the relay, the
+  portal and telemetry all import. The relay's containment test keeps its
+  property — `internal/ops/auth.go` stays the only relay importer — and the
+  `CONTRIBUTING.md` release-coupling rule grows to three components. The
+  same chunk extracts the portal's hand-rolled OIDC flow (`session.ts`,
+  `pkce.ts`) into `common-ts/oidc-session` — the first package under a new
+  root directory for shared TypeScript (Go stays in `gawk-server`'s public
+  packages; languages never share a root) — that both operator SPAs
+  consume via `file:`, one source, not a mirror (OD5, OD5a). Because
+  release-please attributes commits by path and `common-ts/` belongs to no
+  component, each consumer commits a `common-ts.lock` with the package's
+  git tree hash; a CI job bumps stale locks with a bot commit on the PR
+  branch and a required check fails while any is stale, so a `feat`/`fix`
+  touching the shared flow releases both consumers and nothing else
+  changes for consumer-only PRs (OD5b, docs/55 D10). Zero behaviour
+  change; both existing suites pass with untouched assertions.
+- **TO2 — telemetry backend.** `-oidc-issuer` / `-oidc-client-id` /
+  `-oidc-audience` / `-oidc-roles-claim` / `-oidc-role` (+ envs + chart);
+  exactly one of basic-auth mode and OIDC mode; `/auth/config` and `/v1/me`;
+  R39's security headers in every mode; the SSE live stream ends at the
+  token's `exp`, so a long-lived connection cannot outlive revocation;
+  `/readyz` on the read listener reports IdP discovery state — **served,
+  not wired as the pod's probe**, because readiness is pod-wide and an IdP
+  outage must never pull the pod out of the public ingest Service (OD6).
+- **TO3 — SPA.** `@gawk/oidc-session` as a dependency; bearer on every
+  call; the `EventSource` live feed becomes a `fetch`-driven stream because
+  `EventSource` cannot send a header; the 2 s poll fallback and the
+  no-external-assets test stay.
+- **TO4 — MCP.** The MCP authorization spec's `401` challenge and RFC 9728
+  protected-resource metadata naming the IdP, so Claude Code runs the
+  browser flow itself; a client-credentials service identity is the
+  designed-in fallback if Keycloak's default dynamic-registration policy
+  gets in the way.
+- **TO5 — chart, docs, reference deployment, manual pass.** Chart
+  fail-guard: an Ingress needs basic auth *or* OIDC, never neither, never
+  both. Keycloak recipe beside §9.3 (a separate public client
+  `gawk-telemetry` with its own client-scoped `telemetry-reader` role;
+  `localhost` redirect URIs so the port-forward keeps working). The
+  reference deployment switches over in the GitOps repo after the release.
+
+**Non-goals**: reversing the ClusterIP default; authenticating ingest;
+sub-roles inside telemetry (it is all read-only); removing basic-auth mode
+(the offline-laptop port-forward and the IdP-less single node still need
+it); a shared TypeScript package; Grafana or a query audit log.
+
+**Depends on**: R39 (the model), R49 D1's `RequireAnyRole` shape (adopted,
+not required). Touches `gawk-server`, `gawk-admin` and `gawk-telemetry` in
+TO1; telemetry only from TO2 on.
+
+**Status**: designed 2026-09-20 (owner decisions OD1–OD9: shared
+`gawk-server/oidcauth`, basic auth kept as an exclusive mode, a separate
+`gawk-telemetry` IdP client with `telemetry-reader`, MCP via the spec's
+OAuth flow, `common-ts/oidc-session` for the SPA flow with per-consumer
+lock files and a CI bot bump, `/readyz` served but not probed, one PR;
+OD5a/OD5b revised 2026-09-21), not started — chunks TO1–TO5 and the
+manual verification register in [docs/55](docs/55-telemetry-oidc.md).
 
 ---
 

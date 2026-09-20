@@ -119,6 +119,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`50`](50-rooms-read-api.md) | R49 — Rooms read API and room activity events: the `rooms-reader` role, `/internal/admin/rooms`, opt-in webhooks |
 | [`51`](51-relay-event-bus.md) | R50 (shipped) — Relay event bus over NATS JetStream: lifecycle, participant, attachment and viewer events, consumed by `gawk-admin`; nothing polls |
 | [`52`](52-event-contract.md) | R51 (shipped) — Event contract: CloudEvents envelope, one JSON Schema per event type, AsyncAPI catalogue, Standard Webhooks delivery; the lifecycle rules for every event on the bus and in webhooks |
+| [`55`](55-telemetry-oidc.md) | R53 — OIDC for the telemetry read surface: the portal's auth boundary on the dashboard, read API and MCP; one shared `gawk-server/oidcauth` verifier for relay, portal and telemetry |
 
 ## Conventions
 
