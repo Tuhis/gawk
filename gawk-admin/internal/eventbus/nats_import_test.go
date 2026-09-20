@@ -25,6 +25,10 @@ func TestOnlyTheEventBusImportsNATS(t *testing.T) {
 		"internal/eventbus/eventbus_test.go": true,
 		// The insecure switch is a nats.Option, so it lives with the client.
 		"internal/eventbus/tls.go": true,
+		// The reconnect tests drive an embedded server's auth on and off to
+		// reproduce a bus that refuses this portal's credential, so they need
+		// both the client and the server. Same package, same owner.
+		"internal/eventbus/reconnect_test.go": true,
 	}
 
 	scanned, offenders := walkImports(t, moduleRoot, forbidden, allowed)

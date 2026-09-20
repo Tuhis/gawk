@@ -48,6 +48,10 @@ const (
 	MaxAge = 24 * time.Hour
 	// ConsumerName is the durable consumer. One, on the leader.
 	ConsumerName = "gawk-admin"
+	// RedialInterval is the default for Options.RedialInterval: how long a
+	// configured-but-unusable bus stays unusable before the portal tries
+	// again.
+	RedialInterval = 60 * time.Second
 	// AckWait bounds how long an unacked message waits before redelivery.
 	// A redelivery is harmless — it collides on `source` and acks — so this
 	// trades a little duplicate work for never losing a message to a crash
@@ -86,10 +90,15 @@ type Options struct {
 	// default for replicas and 256 MiB for bytes.
 	MaxBytes int64
 	Replicas int
-	Insecure bool
-	Log      *slog.Logger
-	Ingest   Ingester
-	Now      func() time.Time
+	// RedialInterval is how often a consumer with no usable connection builds
+	// a new one, and how often a running consumer checks that its connection
+	// is still alive. Default RedialInterval const. Not a flag: no deployment
+	// wants a configured bus abandoned.
+	RedialInterval time.Duration
+	Insecure       bool
+	Log            *slog.Logger
+	Ingest         Ingester
+	Now            func() time.Time
 }
 
 // Ingester is the store, as this package needs it. An interface so the
@@ -130,8 +139,14 @@ func (e Event) Seq() (uint64, bool) {
 
 // Consumer holds the connection, the stream and the live view.
 type Consumer struct {
-	opts   Options
-	log    *slog.Logger
+	opts     Options
+	log      *slog.Logger
+	connOpts []nats.Option
+
+	// connMu guards the three that are replaced together on a re-dial. A
+	// jetstream.Stream handle belongs to the connection it came from, so they
+	// travel as a set and nothing keeps one across a dial.
+	connMu sync.Mutex
 	nc     *nats.Conn
 	js     jetstream.JetStream
 	stream jetstream.Stream
@@ -139,6 +154,19 @@ type Consumer struct {
 	mu   sync.Mutex
 	live map[string]LiveEntry
 	pods map[string]PodState
+}
+
+// conn is the current connection, or nil if there has never been one.
+func (c *Consumer) conn() *nats.Conn {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	return c.nc
+}
+
+func (c *Consumer) currentStream() jetstream.Stream {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	return c.stream
 }
 
 // LiveEntry is the latest delta for one key: the data nobody stores.
@@ -189,44 +217,95 @@ func New(ctx context.Context, opts Options) (*Consumer, error) {
 		opts.MaxBytes = 256 << 20
 	}
 
-	connOpts := []nats.Option{
-		nats.Name("gawk-admin"),
-		nats.RetryOnFailedConnect(true),
-		nats.MaxReconnects(-1),
-	}
-	if opts.CredsFile != "" {
-		connOpts = append(connOpts, nats.UserCredentials(opts.CredsFile))
-	}
-	if opts.TLSCertFile != "" && opts.TLSKeyFile != "" {
-		connOpts = append(connOpts, nats.ClientCert(opts.TLSCertFile, opts.TLSKeyFile))
-	}
-	if opts.CAFile != "" {
-		connOpts = append(connOpts, nats.RootCAs(opts.CAFile))
-	}
-	if opts.Insecure {
-		opts.Log.Warn("event bus TLS certificate verification is DISABLED " +
-			"(-eventbus-insecure): local development only, never a deployment")
-		connOpts = append(connOpts, insecureSkipVerify())
-	}
-	nc, err := nats.Connect(opts.URL, connOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("eventbus: connect: %w", err)
-	}
-	js, err := jetstream.New(nc)
-	if err != nil {
-		nc.Close()
-		return nil, fmt.Errorf("eventbus: jetstream: %w", err)
+	if opts.RedialInterval <= 0 {
+		opts.RedialInterval = RedialInterval
 	}
 
 	c := &Consumer{
 		opts: opts,
 		log:  opts.Log.With("component", "eventbus"),
-		nc:   nc,
-		js:   js,
 		live: map[string]LiveEntry{},
 		pods: map[string]PodState{},
 	}
+	c.connOpts = []nats.Option{
+		nats.Name("gawk-admin"),
+		nats.RetryOnFailedConnect(true),
+		nats.MaxReconnects(-1),
+		// nats.go stops reconnecting once a server has returned the same auth
+		// error twice, assuming a rejected credential stays rejected. Where
+		// the bus's grants are reconciled from git that is wrong and costly:
+		// a portal that started before its NATS user existed held a dead
+		// connection, retried the stream against it forever, and showed an
+		// empty Events view until someone restarted the pod.
+		nats.IgnoreAuthErrorAbort(),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			c.log.Warn("event bus disconnected", "err", err)
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			c.log.Info("event bus reconnected", "url", nc.ConnectedUrl())
+		}),
+		nats.ClosedHandler(func(nc *nats.Conn) {
+			c.log.Error("event bus connection closed, re-dialling",
+				"err", nc.LastError(), "retryIn", opts.RedialInterval)
+		}),
+	}
+	if opts.CredsFile != "" {
+		c.connOpts = append(c.connOpts, nats.UserCredentials(opts.CredsFile))
+	}
+	if opts.TLSCertFile != "" && opts.TLSKeyFile != "" {
+		c.connOpts = append(c.connOpts, nats.ClientCert(opts.TLSCertFile, opts.TLSKeyFile))
+	}
+	if opts.CAFile != "" {
+		c.connOpts = append(c.connOpts, nats.RootCAs(opts.CAFile))
+	}
+	if opts.Insecure {
+		opts.Log.Warn("event bus TLS certificate verification is DISABLED " +
+			"(-eventbus-insecure): local development only, never a deployment")
+		c.connOpts = append(c.connOpts, insecureSkipVerify())
+	}
+	if err := c.dial(); err != nil {
+		// Not fatal, and not a reason to refuse to serve: moderation does not
+		// depend on the feed. Run re-dials until the bus takes this portal.
+		c.log.Error("event bus connect failed, retrying in the background",
+			"url", opts.URL, "err", err, "retryIn", opts.RedialInterval)
+	}
 	return c, nil
+}
+
+// dial builds a connection and its JetStream context and installs them,
+// dropping the stream handle that belonged to the connection being replaced.
+func (c *Consumer) dial() error {
+	nc, err := nats.Connect(c.opts.URL, c.connOpts...)
+	if err != nil {
+		return fmt.Errorf("eventbus: connect: %w", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		nc.Close()
+		return fmt.Errorf("eventbus: jetstream: %w", err)
+	}
+	c.connMu.Lock()
+	old := c.nc
+	c.nc, c.js, c.stream = nc, js, nil
+	c.connMu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	return nil
+}
+
+// ensureConn re-dials if there is nothing usable, and is a no-op otherwise —
+// including while nats.go is reconnecting on its own, which is not this
+// layer's business.
+func (c *Consumer) ensureConn() error {
+	if nc := c.conn(); nc != nil && !nc.IsClosed() {
+		return nil
+	}
+	if err := c.dial(); err != nil {
+		return err
+	}
+	c.log.Info("event bus connection re-established", "url", c.opts.URL)
+	return nil
 }
 
 // awaitStream keeps trying to create the stream until it exists or the leader
@@ -239,7 +318,12 @@ func New(ctx context.Context, opts Options) (*Consumer, error) {
 func (c *Consumer) awaitStream(ctx context.Context) error {
 	const retry = 5 * time.Second
 	for {
-		err := c.ensureStream(ctx)
+		// A connection first: a stream cannot be reached over one that is
+		// gone, and "gone" is what an auth failure at startup leaves behind.
+		err := c.ensureConn()
+		if err == nil {
+			err = c.ensureStream(ctx)
+		}
 		if err == nil {
 			return nil
 		}
@@ -268,30 +352,41 @@ func (c *Consumer) ensureStream(ctx context.Context) error {
 		Discard:   jetstream.DiscardOld,
 		Replicas:  c.opts.Replicas,
 	}
+	c.connMu.Lock()
+	js := c.js
+	c.connMu.Unlock()
+	if js == nil {
+		return fmt.Errorf("eventbus: no connection to %s", c.opts.URL)
+	}
 	var (
 		stream jetstream.Stream
 		err    error
 	)
 	if c.opts.ManageStream {
-		stream, err = c.js.CreateOrUpdateStream(ctx, cfg)
+		stream, err = js.CreateOrUpdateStream(ctx, cfg)
 	} else {
 		// Somebody else declares it. Bind, and wait for them if it is not
 		// there yet — the retry loop above is the same either way.
-		stream, err = c.js.Stream(ctx, c.opts.Stream)
+		stream, err = js.Stream(ctx, c.opts.Stream)
 	}
 	if err != nil {
 		return fmt.Errorf("eventbus: ensure stream %s: %w", c.opts.Stream, err)
 	}
+	c.connMu.Lock()
 	c.stream = stream
+	c.connMu.Unlock()
 	return nil
 }
 
-// Close releases the connection. Safe on a nil *Consumer.
+// Close releases the connection. Safe on a nil *Consumer, and on one that
+// never had a connection to begin with.
 func (c *Consumer) Close() {
 	if c == nil {
 		return
 	}
-	c.nc.Close()
+	if nc := c.conn(); nc != nil {
+		nc.Close()
+	}
 }
 
 // Run consumes until ctx ends. The caller starts it on the elected leader and
@@ -300,15 +395,40 @@ func (c *Consumer) Close() {
 // DeliverPolicy all on first creation: a fresh durable re-reads the retained
 // window and every message it has seen before collides on `source`, so a
 // rebuilt consumer costs work and loses nothing.
+// It returns only when ctx ends. Everything else — a bus that is down, a
+// credential it has not been granted yet, a connection that died mid-consume —
+// is retried every RedialInterval, because the alternative is a leader that
+// holds the durable consumer and quietly ingests nothing.
 func (c *Consumer) Run(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
+	for {
+		if err := c.runOnce(ctx); err != nil && ctx.Err() == nil {
+			c.log.Warn("event bus consumer stopped, retrying",
+				"err", err, "retryIn", c.opts.RedialInterval)
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(c.opts.RedialInterval):
+		}
+	}
+}
+
+// runOnce binds the consumer and delivers until ctx ends or the connection
+// under it dies. Returning is not failure — Run's loop is what turns a
+// returned error into another attempt.
+func (c *Consumer) runOnce(ctx context.Context) error {
 	var err error
 	if err = c.awaitStream(ctx); err != nil {
 		return err
 	}
-	if c.stream == nil {
+	stream := c.currentStream()
+	if stream == nil {
 		// Leadership ended while the stream was still out of reach. Nothing
 		// to consume from and nothing to report: the next leader picks this up.
 		return nil
@@ -319,7 +439,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 	var cons jetstream.Consumer
 	if c.opts.ManageStream {
-		cons, err = c.stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
+		cons, err = stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 			Durable:       name,
 			AckPolicy:     jetstream.AckExplicitPolicy,
 			AckWait:       AckWait,
@@ -330,7 +450,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 		// Declared elsewhere, with its own delivery rules. Binding rather than
 		// asserting them is the point: the operator's CR is the truth, and a
 		// portal that "corrected" it would fight its reconciler every loop.
-		cons, err = c.stream.Consumer(ctx, name)
+		cons, err = stream.Consumer(ctx, name)
 	}
 	if err != nil {
 		return fmt.Errorf("eventbus: ensure consumer %s: %w", name, err)
@@ -342,8 +462,22 @@ func (c *Consumer) Run(ctx context.Context) error {
 		return fmt.Errorf("eventbus: consume: %w", err)
 	}
 	defer sub.Stop()
-	<-ctx.Done()
-	return nil
+
+	// Consume delivers on its own goroutine and reports nothing when the
+	// connection under it ends, so watch for that here: a leader silently not
+	// consuming is the failure mode worth the ticker.
+	tick := time.NewTicker(c.opts.RedialInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-tick.C:
+			if nc := c.conn(); nc == nil || nc.IsClosed() {
+				return errors.New("eventbus: connection closed under the consumer")
+			}
+		}
+	}
 }
 
 // handle ingests one message and acks it.
@@ -439,20 +573,26 @@ func (c *Consumer) Health(ctx context.Context) *Health {
 	if c == nil {
 		return nil
 	}
-	h := &Health{Stream: c.opts.Stream, Connected: c.nc.IsConnected()}
+	// Through the accessors: this runs on an HTTP handler's goroutine while
+	// the leader's Run may be re-dialling, and the connection and its stream
+	// handle are replaced together.
+	nc := c.conn()
+	stream := c.currentStream()
+
+	h := &Health{Stream: c.opts.Stream, Connected: nc != nil && nc.IsConnected()}
 	c.mu.Lock()
 	for _, st := range c.pods {
 		h.Pods = append(h.Pods, st)
 	}
 	c.mu.Unlock()
-	if c.stream == nil {
+	if stream == nil {
 		// Configured, not yet established: the leader is still trying, or
 		// this replica is not the leader. Either way the feed is not flowing
 		// and the operator should see that rather than a blank.
 		h.Error = "stream not created yet"
 		return h
 	}
-	if info, err := c.stream.Info(ctx); err == nil {
+	if info, err := stream.Info(ctx); err == nil {
 		h.Messages = info.State.Msgs
 		h.Bytes = info.State.Bytes
 	} else {
