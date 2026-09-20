@@ -368,16 +368,22 @@ spec:
             - name: GAWK_TRUSTED_CIDRS
               value: {{ join "," . | quote }}
             {{- end }}
+            # int64 before quote on the byte-sized knobs. Helm parses values
+            # through JSON, so a number in them is a float64 and `quote` alone
+            # renders anything past ~1e6 in scientific notation — the defaults
+            # escape only because values.yaml pre-stringifies them, so it is an
+            # OPERATOR OVERRIDE written as a YAML number that breaks, and the
+            # binary parses these with Atoi (docs/gotchas.md).
             - name: GAWK_MAX_BANDWIDTH
-              value: {{ .Values.config.maxBandwidth | quote }}
+              value: {{ .Values.config.maxBandwidth | int64 | quote }}
             - name: GAWK_MAX_KEYFRAME_BYTES
-              value: {{ .Values.config.maxKeyframeBytes | quote }}
+              value: {{ .Values.config.maxKeyframeBytes | int64 | quote }}
             - name: GAWK_KEYFRAME_WRITE_TIMEOUT
               value: {{ .Values.config.keyframeWriteTimeout | quote }}
             - name: GAWK_DVR_WINDOW
               value: {{ .Values.config.dvrWindow | quote }}
             - name: GAWK_DVR_MAX_BYTES
-              value: {{ .Values.config.dvrMaxBytes | quote }}
+              value: {{ .Values.config.dvrMaxBytes | int64 | quote }}
             - name: GAWK_DVR_MAX_CATCHUP
               value: {{ .Values.config.dvrMaxCatchup | quote }}
             - name: GAWK_DVR_AUDIO

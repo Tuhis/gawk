@@ -106,6 +106,49 @@ func TestRecoversFromAnAuthFailureAtStartup(t *testing.T) {
 	}
 }
 
+// TestSurvivesARejectionStreakWithoutTheSupervisor is the regression guard for
+// nats.IgnoreAuthErrorAbort() specifically, and it exists because the obvious
+// test is not one.
+//
+// TestRecoversFromAnAuthFailureAtStartup passes with the option deleted: the
+// gate there opens within milliseconds, which is one ReconnectWait before
+// nats.go has had the SECOND identical auth error its abort needs — and even
+// past that point the supervisor would re-dial and rescue it. Two safety nets
+// mean neither is proven by an end-to-end recovery test.
+//
+// So this one removes the supervisor from the picture (an hour's re-dial
+// interval), shortens the client's own retry, and does not open the gate until
+// the client has been rejected several times over. What is left is exactly one
+// mechanism: a client that keeps trying through repeated authorization
+// failures. Without the option it gives up, the connection reaches CLOSED, and
+// nothing arrives.
+func TestSurvivesARejectionStreakWithoutTheSupervisor(t *testing.T) {
+	url, open := runGatedNATS(t)
+	p, m := newTestPublisher(t, url, func(o *Options) {
+		o.RedialInterval = time.Hour
+		o.ReconnectWait = 20 * time.Millisecond
+	})
+
+	// Well past two rejections — the client's abort threshold — at 20ms a try.
+	time.Sleep(500 * time.Millisecond)
+	if conn := p.conn.Load(); conn != nil && conn.nc.IsClosed() {
+		t.Fatal("the client gave up on a bus that was only refusing it for now; " +
+			"nats.IgnoreAuthErrorAbort is what keeps it trying")
+	}
+
+	open()
+	js := createStream(t, url)
+
+	waitFor(t, func() bool {
+		p.Publish(aStartedEvent())
+		return m.sent() > 0
+	}, "the client never got in after the credential was accepted, with no supervisor to rescue it")
+
+	if msgs := collect(t, js, "gawk.broadcast.3f9a1c4e7b2d.started", 1); len(msgs) == 0 {
+		t.Fatal("no event arrived after the rejection streak ended")
+	}
+}
+
 // TestRedialsAClosedConnection covers the same promise one layer down: however
 // a connection ends up unusable — an auth abort, a server that closed it, a
 // client that gave up — a configured bus is re-dialled rather than left dead.

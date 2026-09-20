@@ -96,10 +96,15 @@ type Options struct {
 	// is still alive. Default RedialInterval const. Not a flag: no deployment
 	// wants a configured bus abandoned.
 	RedialInterval time.Duration
-	Insecure       bool
-	Log            *slog.Logger
-	Ingest         Ingester
-	Now            func() time.Time
+	// ReconnectWait is how long nats.go waits between its own connect
+	// attempts. Zero leaves the client's default (2s), which is right for a
+	// deployment; the tests shorten it so a rejection streak long enough to
+	// trip the client's auth-abort fits in a test.
+	ReconnectWait time.Duration
+	Insecure      bool
+	Log           *slog.Logger
+	Ingest        Ingester
+	Now           func() time.Time
 }
 
 // Ingester is the store, as this package needs it. An interface so the
@@ -136,6 +141,16 @@ func (e Event) Seq() (uint64, bool) {
 	}
 	n, err := strconv.ParseUint(e.ID[i+1:], 10, 64)
 	return n, err == nil
+}
+
+// reconnectWait keeps nats.go's own default unless a caller (the tests) asked
+// for a shorter one. Nothing may make it *longer* by accident: that would slow
+// every legitimate reconnect to serve a test.
+func reconnectWait(d time.Duration) time.Duration {
+	if d <= 0 || d > nats.DefaultReconnectWait {
+		return nats.DefaultReconnectWait
+	}
+	return d
 }
 
 // Consumer holds the connection, the stream and the live view.
@@ -236,6 +251,7 @@ func New(ctx context.Context, opts Options) (*Consumer, error) {
 		nats.Name("gawk-admin"),
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1),
+		nats.ReconnectWait(reconnectWait(opts.ReconnectWait)),
 		// nats.go stops reconnecting once a server has returned the same auth
 		// error twice, assuming a rejected credential stays rejected. Where
 		// the bus's grants are reconciled from git that is wrong and costly:
@@ -319,6 +335,15 @@ func (c *Consumer) dial() error {
 // including while nats.go is reconnecting on its own, which is not this
 // layer's business.
 func (c *Consumer) ensureConn() error {
+	// After Close there is nothing to ensure. Without this a Run whose
+	// leadership context is still live dials a connection that Close had just
+	// released and that nothing will ever close again: measurably, a fresh
+	// CONNECTED client appears within one re-dial tick of Close. main cancels
+	// the context first today, so it never bit — but the type should not
+	// permit it.
+	if c.closing.Load() {
+		return errors.New("eventbus: consumer is closed")
+	}
 	if nc := c.conn(); nc != nil && !nc.IsClosed() {
 		return nil
 	}
@@ -341,7 +366,13 @@ func (c *Consumer) ensureConn() error {
 // portal from serving in the first place. Each failure is logged once per
 // retry so an operator watching the log sees why the feed is quiet.
 func (c *Consumer) awaitStream(ctx context.Context) error {
-	const retry = 5 * time.Second
+	// 5s in any deployment, but never slower than the re-dial interval that
+	// governs every other retry here — one knob, so a caller that wants a
+	// brisk loop (the tests) does not have to reach past this one.
+	retry := 5 * time.Second
+	if c.opts.RedialInterval > 0 && c.opts.RedialInterval < retry {
+		retry = c.opts.RedialInterval
+	}
 	for {
 		// A connection first: a stream cannot be reached over one that is
 		// gone, and "gone" is what an auth failure at startup leaves behind.

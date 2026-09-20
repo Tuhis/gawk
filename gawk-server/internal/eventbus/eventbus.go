@@ -116,6 +116,11 @@ type Options struct {
 	// deployment that wants a configured bus abandoned, and a minute is small
 	// against the time it takes an operator to notice anything.
 	RedialInterval time.Duration
+	// ReconnectWait is how long nats.go waits between its own connect
+	// attempts. Zero leaves the client's default (2s), which is right for a
+	// deployment; the tests shorten it so a rejection streak long enough to
+	// trip the client's auth-abort fits in a test.
+	ReconnectWait time.Duration
 	// Insecure skips NATS TLS verification. The docs/41 compose lane only: it
 	// is a flag with no chart value and it warns at every start.
 	Insecure bool
@@ -136,6 +141,16 @@ const (
 	// second thing going wrong.
 	warnInterval = 30 * time.Second
 )
+
+// reconnectWait keeps nats.go's own default unless a caller (the tests) asked
+// for a shorter one. Nothing may make it *longer* by accident: that would slow
+// every legitimate reconnect to serve a test.
+func reconnectWait(d time.Duration) time.Duration {
+	if d <= 0 || d > nats.DefaultReconnectWait {
+		return nats.DefaultReconnectWait
+	}
+	return d
+}
 
 // busConn is the pair the drain goroutine publishes on. It is swapped as a
 // unit: a JetStream context belongs to the connection it was built from, and
@@ -216,6 +231,7 @@ func New(opts Options) (*Publisher, error) {
 		// relay must never fail to start because its telemetry sink is down.
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1),
+		nats.ReconnectWait(reconnectWait(opts.ReconnectWait)),
 		// THE ONE THAT COST A PRODUCTION AFTERNOON. By default nats.go stops
 		// reconnecting once a server has returned the same authorization error
 		// twice, on the theory that a rejected credential will stay rejected.

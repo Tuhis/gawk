@@ -1705,8 +1705,16 @@ jobs:
           #   invalid -eventbus-max-bytes "2.68435456e+08"
           # Every deployment that turned the bus on CrashLoopBackOffed, and no
           # assertion here noticed because they all grep for the names.
-          bigA=$(helm template "$admin" $ADMIN_PG --set eventbus.url=tls://nats:4222 \
-                   --set eventbus.maxBytes=1073741824 --set eventbus.replicas=3)
+          # A values FILE, not --set: Helm's strvals parses `--set x=107...`
+          # as an int64, which is exactly the path that does NOT break, so a
+          # --set case would assert nothing. A deployment writes YAML.
+          cat > /tmp/admin-big.yaml <<'YAML'
+          eventbus:
+            url: tls://nats:4222
+            maxBytes: 1073741824
+            replicas: 3
+          YAML
+          bigA=$(helm template "$admin" $ADMIN_PG -f /tmp/admin-big.yaml)
           for rendered in "$onA" "$bigA"; do
             for var in GAWK_ADMIN_EVENTBUS_MAX_BYTES GAWK_ADMIN_EVENTBUS_REPLICAS; do
               v=$(grep -A1 "name: $var" <<<"$rendered" | grep 'value:' | sed 's/.*value: //')
@@ -1715,6 +1723,24 @@ jobs:
                 exit 1
               fi
             done
+          done
+
+          # The same class, chart-wide and not just for the bus: no rendered
+          # env value may be scientific notation. The relay's byte knobs dodge
+          # it only because values.yaml pre-stringifies the defaults, so the
+          # case that matters is an operator override written as a number.
+          cat > /tmp/relay-big.yaml <<'YAML'
+          config:
+            maxBandwidth: 30000000
+            maxKeyframeBytes: 16777216
+            dvrMaxBytes: 50331648
+          YAML
+          bigR=$(helm template "$relay" -f /tmp/relay-big.yaml)
+          for rendered in "$bigR" "$bigA" "$(helm template "$relay")" "$(helm template "$admin" $ADMIN_PG)"; do
+            if bad=$(grep -nE 'value: "[0-9.]+e\+[0-9]+"' <<<"$rendered"); then
+              echo "::error::a chart rendered a number in scientific notation: $bad"
+              exit 1
+            fi
           done
 
           # -eventbus-insecure is deliberately NOT a chart value (docs/51 D6):

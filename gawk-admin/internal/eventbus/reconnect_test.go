@@ -111,6 +111,80 @@ func TestResumesAfterTheConnectionDies(t *testing.T) {
 		func() bool { return ing.count() == 2 })
 }
 
+// TestSurvivesARejectionStreakWithoutTheSupervisor is the regression guard for
+// nats.IgnoreAuthErrorAbort() alone. The end-to-end recovery test above passes
+// without it — the gate opens one ReconnectWait before the client has had the
+// second identical auth error its abort needs, and Run's re-dial would rescue
+// it anyway. Two nets mean neither is proven by a recovery test.
+//
+// So: no supervisor (an hour's re-dial interval), a short client retry, and a
+// gate that stays shut well past the abort threshold. What is left is a client
+// that keeps trying through repeated authorization failures, or nothing.
+func TestSurvivesARejectionStreakWithoutTheSupervisor(t *testing.T) {
+	url, open := runGatedNATS(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ing := &fakeIngest{}
+	c, err := New(ctx, Options{
+		URL: url, Ingest: ing, ManageStream: true,
+		RedialInterval: time.Hour,
+		ReconnectWait:  20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	go func() { _ = c.Run(ctx) }()
+
+	time.Sleep(500 * time.Millisecond)
+	if nc := c.conn(); nc != nil && nc.IsClosed() {
+		t.Fatal("the client gave up on a bus that was only refusing it for now; " +
+			"nats.IgnoreAuthErrorAbort is what keeps it trying")
+	}
+
+	open()
+	waitFor(t, "the portal to reach the stream with no supervisor to rescue it",
+		func() bool { return c.Health(ctx) != nil && c.Health(ctx).Error == "" })
+
+	publish(t, url, "pod-a:1", events.TypeBroadcastStarted, "3f9a1c4e7b2d", startedData())
+	waitFor(t, "an event to be ingested after the rejection streak ended",
+		func() bool { return ing.count() == 1 })
+}
+
+// TestCloseStopsTheReDialling: after Close, a Run whose leadership context is
+// still live must not build a connection nobody will close.
+func TestCloseStopsTheReDialling(t *testing.T) {
+	url := runNATS(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c, err := New(ctx, Options{
+		URL: url, Ingest: &fakeIngest{}, ManageStream: true,
+		RedialInterval: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Run(ctx) }()
+	waitFor(t, "the consumer to connect", func() bool {
+		nc := c.conn()
+		return nc != nil && nc.IsConnected()
+	})
+
+	before := c.conn()
+	c.Close()
+	// Several re-dial ticks. Unguarded, a new CONNECTED client shows up inside
+	// the first one, which is what makes this a leak rather than a race.
+	time.Sleep(300 * time.Millisecond)
+	switch nc := c.conn(); {
+	case nc != before:
+		t.Error("a closed consumer dialled a new connection that nothing will close")
+	case nc != nil && !nc.IsClosed():
+		t.Error("a closed consumer is holding an open connection")
+	}
+}
+
 // startedData is the payload every event in these tests carries; the tests are
 // about the connection, not the contract.
 func startedData() events.BroadcastStartedData {
