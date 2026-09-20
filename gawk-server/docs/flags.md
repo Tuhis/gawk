@@ -137,7 +137,10 @@ default — builds no client, starts no goroutine and leaves the relay
 byte-identical to one predating R50. It never affects the media path: a hook
 does one non-blocking channel send, and a full queue, an unreachable server or
 a missing stream are counted in `gawk_eventbus_dropped_total{reason}` rather
-than waited on. Subjects carry the fleet's HMAC'd keys; payloads carry raw
+than waited on. A configured bus is never abandoned: the connection is
+supervised and re-dialled every 60s, including after a NATS that refused this
+pod's credential learns about it, so a late grant needs no restart (docs/51
+D11). Subjects carry the fleet's HMAC'd keys; payloads carry raw
 broadcast IDs and room codes, so the bus is internal-tier and must never be
 routed publicly. `-eventbus-insecure` skips NATS TLS verification and exists
 for the docs/41 compose lane only; it has no chart value and warns at every

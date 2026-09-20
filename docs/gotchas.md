@@ -1437,3 +1437,25 @@ Add to it when a new gotcha lands in `docs/`.
   `GET /api/v1/relays` and `gawk_eventbus_dropped_total` are what tell you,
   and they are worth an alert if you depend on room lifecycle rows.
   ([docs/51](51-relay-event-bus.md) D5, D7, self-hosting §12)
+- **nats.go stops reconnecting after two identical auth errors, and a workload
+  that starts before its NATS grant exists never publishes again.** The
+  client's default assumes a rejected credential stays rejected. Where the
+  bus's users are reconciled from git that is a race the deployment loses
+  routinely: in the reference fleet the relay pods rolled at 19:17:40 and the
+  NATS config reload that created `CN=gawk-server,O=ioio` landed at 19:18:19,
+  so two of three pods were rejected, gave up, and held a dead connection —
+  publishing nothing, with only `gawk_eventbus_dropped_total` climbing to say
+  so. A restart was the only cure. Both binaries now pass
+  `nats.IgnoreAuthErrorAbort()` and supervise the connection, re-dialling
+  every 60s for as long as `-eventbus-url` is set; the symptom to recognise on
+  any *other* NATS client is publishes failing forever after a credential
+  arrived late. ([docs/51](51-relay-event-bus.md) D11)
+- **A chart value that is a large integer reaches the container in scientific
+  notation.** Helm parses values through JSON, so every number in them is a
+  float64, and `{{ .Values.x | quote }}` on one big enough for an exponent
+  renders `"2.68435456e+08"`. `gawk-admin`'s own default `eventbus.maxBytes`
+  did exactly that and the binary refused it — `invalid -eventbus-max-bytes` —
+  so every deployment that turned the bus on CrashLoopBackOffed on a value
+  nobody had set. `| int64 | quote`, and assert the rendered value is digits:
+  a chart test that greps for the variable's *name* passes right through this.
+  ([docs/51](51-relay-event-bus.md) EB4)

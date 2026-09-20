@@ -1,7 +1,8 @@
 # R50 — Relay event bus over NATS JetStream (docs/51)
 
-**Status**: designed 2026-09-16; **shipped 2026-09-18** (EB1–EB5). Chunks **EB1–EB5** (`EB` =
-Event Bus). Touches `gawk-server` (a publisher package, hooks at the
+**Status**: designed 2026-09-16; **shipped 2026-09-18** (EB1–EB5); **EB6
+2026-09-21**, the reconnect contract (D11) and the chart rendering bug the
+first reference deployment turned up. Chunks **EB1–EB6** (`EB` = Event Bus). Touches `gawk-server` (a publisher package, hooks at the
 existing fan-out points, knobs, chart values), `gawk-admin` (a consumer,
 one migration, the events feed, chart values) and the docs. No wire
 change, no media-path change, nothing on the public relay listener.
@@ -158,6 +159,7 @@ What already exists, so the reader does not go looking:
 | D8 | **Dependency containment, like the OIDC rule.** `github.com/nats-io/nats.go` may be imported by exactly one relay package, `internal/eventbus`, and one `gawk-admin` package, `internal/eventbus`; a source-walk test in each module (the `auth_import_test.go` shape) fails on any other importer. `internal/eventbus` in the relay imports nothing from `transport`, `hub` or `roomsrv`; it takes `Event` values on a channel. | The relay's data plane dependency set is a security property (`ops/auth.go` header comment). A NATS client is a network client with reconnect logic and TLS; it belongs in one place with one owner, behind a channel, where the media path cannot reach it and it cannot reach the media path. |
 | D9 | **Ordering and gaps are documented, not hidden.** Within one pod's publishes, `seq` is total; JetStream preserves publish order per stream. Across pods there is no order and none is claimed. A consumer detects a gap in one pod's `seq` and may reconcile against the read API; `gawk-admin` logs a gap at info with the pod and the size, and R49's webhook payloads carry nothing that depends on the gap having been closed. An adoption (a room's home pod changes) re-issues participant IDs; the new home pod publishes `room.participant_joined` for each rejoining participant with `rejoin: true`, and the old one published `room.participant_left` with `reason: home_moved` when it released — so a consumer that wants to suppress the pair can, and one that does not sees the truth. | The first R49 draft had to *guess* an adoption from a poll diff. The publisher knows; saying so on the event is cheaper than every consumer inferring it. |
 | D10 | **Direct subscribers are a supported consumer pattern, opt-in by the operator.** A third consumer (the bot itself, a dashboard) may be given its own NATS user with subscribe-only permission on a subject filter, e.g. `gawk.room.>`. The self-hosting text says what that grants: the same visibility as R49's `rooms-reader` role, raw codes included, minus the join link. | The owner may prefer the bot on the bus to the bot behind a webhook; both work from the same events, and the bus does not need `gawk-admin` at all for that. It is the operator's grant to make, on the IdP-free tier, and the docs say what it is worth. |
+| D11 | **A configured bus is never abandoned: both clients pass `nats.IgnoreAuthErrorAbort()` and supervise their connection, re-dialling every 60 s for as long as `-eventbus-url` is set.** The relay counts a publish with no live connection as `gawk_eventbus_dropped_total{reason="disconnected"}` — distinct from `publish`, which means the stream refused it — and never buffers into the client's pending queue (`IsConnected`, not `IsClosed`: a reconnecting client accepts an async publish and reports the failure only when the ack times out, which is a queue by another name). `gawk-admin`'s `Run` binds, consumes, and returns to re-bind whenever its connection dies, instead of returning an error that stopped consumption until the next leader election. | nats.go's default gives up reconnecting after two identical auth errors, on the theory that a rejected credential stays rejected. On a bus whose grants are reconciled from git that theory is wrong, and the failure is silent: the reference fleet's relay pods rolled 40 s before the NATS reload that created their user, two of three were rejected, and they held dead connections until a human restarted them (docs/gotchas.md). Retry-forever is the only honest behaviour for an optional telemetry sink — it costs one goroutine and a dial a minute, and the alternative is a fleet that looks healthy and publishes nothing. |
 
 ### Rejected
 
@@ -211,6 +213,7 @@ What already exists, so the reader does not go looking:
 | **EB3** | `gawk-admin` consumer: stream/consumer ensure, leader-run loop, ingest with `source` dedup, deltas to the live view, migration `0002`, retention, sweep retirement, `bus` on `/relays` (D2, D5, D7) | Tests against the embedded server: the stream is created with the documented limits and a second start updates rather than fails; two replicas, one leader, every message ingested once; a redelivered message (ack withheld past `AckWait`) inserts no second row; deltas insert nothing and ack; `room.closed` inserts a moderation `room.ended` with actor `system`, and inserts nothing when the API recorded the operator's `room.ended` inside the dedup window; the bus type set and `store.Event*` moderation types are disjoint; a consumer restarted with `DeliverPolicy all` on a fresh durable re-reads and dedups; the janitor prunes `activity` older than the retention, never `moderation`; with `-eventbus-url` set, `SweepRoomsOnce` is not scheduled (and is, without it). `admin-schema-compat` green; `0002` immutable once merged. |
 | **EB4** | Events view category filter, activity rendering, OpenAPI revision, chart values for both components, `nats-io` recipe (D6, D10) | `EventsView.test.tsx`; R48's drift test, `redocly lint` and `asyncapi validate` green; `helm template` for both charts renders the flags from `eventbus.*` and mounts the creds Secret; the dev stack (docs/41) gains an optional `nats` profile with JetStream and `-eventbus-insecure`, and its CI job round-trips one `room.participant_joined` from a synthetic room into the portal's Events view. |
 | **EB5** | Docs: self-hosting §12, §9.7 sentence, `gawk-server`/`gawk-admin` READMEs, `docs/gotchas.md` if anything earned it, this document's status, the ROADMAP row and entry; docs/44 §4.11 dated note | Review; the recipe executed once on the reference deployment: a relay pod's `gawk_eventbus_published_total` climbs, `nats stream info GAWK_EVENTS` shows messages, the portal's Events view shows a `room.participant_joined` within a second of a browser joining a room. |
+| **EB6** | The reconnect contract and the chart rendering it exposed, after the first reference deployment (D11) | Relay and portal reconnect tests against an embedded server whose authorization is switched off mid-test: recovery from a rejection streak **with the supervisor disabled** (the guard for `IgnoreAuthErrorAbort` alone — an end-to-end recovery test passes without it, because the supervisor rescues what the client abandons), recovery from a connection closed under a working publisher, a publish with no connection counted as `disconnected` and never blocking, and `Close` leaving no re-dialled connection behind. Each fails with its own fix reverted. Charts: no rendered env value is scientific notation, asserted for both charts at their defaults and with the byte-sized knobs overridden from a values **file** (`--set` parses integers as int64 and would assert nothing). |
 
 Success criterion, end to end, on the reference deployment: with NATS
 installed per §12 and both charts pointed at it, a viewer joining a room
@@ -250,13 +253,15 @@ byte-identical `/statusz`, metrics and chart output still passes.
 - **Is it alive?** `GET /api/v1/relays` `bus` section (last message per
   pod, lag), `gawk_eventbus_published_total` / `_dropped_total{reason}` on
   the relay, `nats stream info GAWK_EVENTS`.
-- **Drops climbing on a relay**: the NATS server is unreachable or slow,
-  or the stream is missing; the relay is fine and says so — nothing on
-  the media path waits for the bus (D1). Consumers reconcile against the
-  read API.
+- **Drops climbing on a relay**: read the `reason`. `publish` is the
+  stream — missing, or refusing the message; `disconnected` is the
+  connection — NATS unreachable, or a credential it will not accept yet.
+  Either way the relay is fine and says so: nothing on the media path
+  waits for the bus (D1), and it keeps re-dialling on its own (D11).
+  Consumers reconcile against the read API.
 - **Events stopped but the relays publish**: the portal's leader lost its
-  consumer; the stream retains 24 h, so a restarted leader catches up
-  with no loss (D5). If the gap exceeds retention, the missing window is
-  gone; R49's consumers reconcile.
+  consumer; it re-binds within a minute on its own (D11), and the stream
+  retains 24 h, so it catches up with no loss (D5). If the gap exceeds
+  retention, the missing window is gone; R49's consumers reconcile.
 - **Turning it off**: unset `eventbus.url` on both charts; the room sweep
   resumes, activity events stop, the stream can be deleted at leisure.

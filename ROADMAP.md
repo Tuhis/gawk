@@ -4115,6 +4115,9 @@ EC1). R49's RA4 depends on this.
 **Status**: ✅ shipped 2026-09-18 — EB1–EB5, in
 [docs/51](docs/51-relay-event-bus.md) (§0 lists where the implementation
 departs from the design). It publishes R51's contract, which shipped first.
+EB6 (2026-09-21) followed the first reference deployment: a configured bus
+is never abandoned (D11), and the chart bug that CrashLoopBackOffed the
+portal on its own default `eventbus.maxBytes`.
 
 ---
 

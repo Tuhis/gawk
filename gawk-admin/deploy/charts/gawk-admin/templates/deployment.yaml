@@ -130,10 +130,16 @@ spec:
               value: {{ .Values.eventbus.url | quote }}
             - name: GAWK_ADMIN_EVENTBUS_STREAM
               value: {{ .Values.eventbus.stream | quote }}
+            # int64 before quote, on both. Helm parses values through JSON, so
+            # every number in them is a float64 — and `quote` alone formats one
+            # big enough for an exponent in scientific notation. The chart's
+            # own default maxBytes reached the binary as "2.68435456e+08",
+            # which it rejected, so a portal CrashLoopBackOffed on the one
+            # value nobody had to set.
             - name: GAWK_ADMIN_EVENTBUS_MAX_BYTES
-              value: {{ .Values.eventbus.maxBytes | quote }}
+              value: {{ .Values.eventbus.maxBytes | int64 | quote }}
             - name: GAWK_ADMIN_EVENTBUS_REPLICAS
-              value: {{ .Values.eventbus.replicas | quote }}
+              value: {{ .Values.eventbus.replicas | int64 | quote }}
             - name: GAWK_ADMIN_ACTIVITY_RETENTION
               value: {{ .Values.eventbus.activityRetention | quote }}
             - name: GAWK_ADMIN_EVENTBUS_MANAGE_STREAM
