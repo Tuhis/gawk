@@ -1697,6 +1697,26 @@ jobs:
           grep -A1 'name: GAWK_ADMIN_EVENTBUS_CREDS_FILE' <<<"$onA" | grep -q '/etc/gawk/nats/user.creds'
           grep -q 'secretName: admin-nats' <<<"$onA"
 
+          # Every numeric knob must reach the binary as DIGITS. Helm parses
+          # values through JSON, so each number in them is a float64, and
+          # `quote` on one big enough for an exponent yields scientific
+          # notation. The chart's own default maxBytes rendered as
+          # "2.68435456e+08" and the binary refused it:
+          #   invalid -eventbus-max-bytes "2.68435456e+08"
+          # Every deployment that turned the bus on CrashLoopBackOffed, and no
+          # assertion here noticed because they all grep for the names.
+          bigA=$(helm template "$admin" $ADMIN_PG --set eventbus.url=tls://nats:4222 \
+                   --set eventbus.maxBytes=1073741824 --set eventbus.replicas=3)
+          for rendered in "$onA" "$bigA"; do
+            for var in GAWK_ADMIN_EVENTBUS_MAX_BYTES GAWK_ADMIN_EVENTBUS_REPLICAS; do
+              v=$(grep -A1 "name: $var" <<<"$rendered" | grep 'value:' | sed 's/.*value: //')
+              if ! grep -qE '^"[0-9]+"$' <<<"$v"; then
+                echo "::error::$var rendered as $v, which is not an integer the binary can parse"
+                exit 1
+              fi
+            done
+          done
+
           # -eventbus-insecure is deliberately NOT a chart value (docs/51 D6):
           # it exists for the compose lane, and a deployment must not be able
           # to turn TLS verification off by setting a value.
