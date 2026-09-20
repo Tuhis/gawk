@@ -27,8 +27,12 @@ func TestOnlyTheEventBusImportsNATS(t *testing.T) {
 		"github.com/nats-io/nats-server",
 	}
 	allowed := map[string]bool{
-		"internal/eventbus/eventbus.go":         true,
-		"internal/eventbus/eventbus_test.go":    true,
+		"internal/eventbus/eventbus.go":      true,
+		"internal/eventbus/eventbus_test.go": true,
+		// The reconnect tests drive an embedded server's auth on and off to
+		// reproduce a bus that refuses this relay's credential, so they need
+		// both the client and the server. Same package, same owner.
+		"internal/eventbus/reconnect_test.go":   true,
 		"internal/eventbus/nats_import_test.go": false, // names them as strings only
 	}
 

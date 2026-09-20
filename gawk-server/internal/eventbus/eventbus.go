@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -56,6 +57,12 @@ const (
 	// condition; counted rather than panicking, because a malformed event must
 	// not take the relay down.
 	DropEncode = "encode"
+	// DropNoConn: there is no usable connection to publish on. Distinct from
+	// DropPublish on purpose — "publish" sends an operator to look at the
+	// stream, and this one is about the connection: a bus that is down, or a
+	// credential it does not accept. The supervisor is re-dialling while this
+	// climbs.
+	DropNoConn = "disconnected"
 )
 
 // Event is what a hook hands the bus: the fact, and nothing about identity.
@@ -104,6 +111,11 @@ type Options struct {
 	// QueueSize bounds the channel between the hooks and the publisher.
 	// Default queueSizeDefault.
 	QueueSize int
+	// RedialInterval is how often a publisher with no usable connection builds
+	// a new one. Default redialIntervalDefault. Not a flag: there is no
+	// deployment that wants a configured bus abandoned, and a minute is small
+	// against the time it takes an operator to notice anything.
+	RedialInterval time.Duration
 	// Insecure skips NATS TLS verification. The docs/41 compose lane only: it
 	// is a flag with no chart value and it warns at every start.
 	Insecure bool
@@ -116,22 +128,36 @@ type Options struct {
 const (
 	queueSizeDefault     = 1024
 	viewerIntervalDefaut = 5 * time.Second
+	// redialIntervalDefault is how long a configured-but-unusable bus stays
+	// unusable before the publisher tries again.
+	redialIntervalDefault = 60 * time.Second
 	// warnInterval rate-limits the drop log. A bus that is down drops at the
 	// rate the relay has transitions, and a log line per drop would be the
 	// second thing going wrong.
 	warnInterval = 30 * time.Second
 )
 
+// busConn is the pair the drain goroutine publishes on. It is swapped as a
+// unit: a JetStream context belongs to the connection it was built from, and
+// carrying one past its connection is how you get publishes that go nowhere.
+type busConn struct {
+	nc *nats.Conn
+	js jetstream.JetStream
+}
+
 // Publisher drains the hook channel onto JetStream. A nil *Publisher is the
 // off switch and every method tolerates it.
 type Publisher struct {
-	ch      chan Event
-	opts    Options
-	nc      *nats.Conn
-	js      jetstream.JetStream
-	log     *slog.Logger
-	metrics Metrics
-	now     func() time.Time
+	ch   chan Event
+	opts Options
+	// conn is nil whenever there is nothing usable to publish on: before the
+	// first successful dial, and after a connection died. The supervisor
+	// replaces it; send only reads it.
+	conn     atomic.Pointer[busConn]
+	connOpts []nats.Option
+	log      *slog.Logger
+	metrics  Metrics
+	now      func() time.Time
 
 	seq uint64 // only touched by the drain goroutine
 
@@ -146,9 +172,11 @@ type Publisher struct {
 // the caller stores the nil *Publisher and every hook becomes a no-op, which is
 // what makes "off is byte-identical" true rather than aspirational.
 //
-// Connection failure is NOT an error: the client retries in the background, so
-// a relay that starts before NATS does comes up, publishes nothing, and counts
-// its drops until the server appears.
+// Connection failure is NOT an error and never will be: a configured bus that
+// cannot be reached — down, not yet installed, refusing this credential — is
+// an operational condition the relay rides out. It comes up, counts its drops,
+// and keeps trying every RedialInterval until the bus accepts it. The error
+// return is kept for the caller's shape and is nil in practice.
 func New(opts Options) (*Publisher, error) {
 	if opts.URL == "" {
 		return nil, nil
@@ -168,6 +196,9 @@ func New(opts Options) (*Publisher, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.RedialInterval <= 0 {
+		opts.RedialInterval = redialIntervalDefault
+	}
 
 	p := &Publisher{
 		ch:      make(chan Event, opts.QueueSize),
@@ -179,37 +210,67 @@ func New(opts Options) (*Publisher, error) {
 		done:    make(chan struct{}),
 	}
 
-	connOpts := []nats.Option{
+	p.connOpts = []nats.Option{
 		nats.Name("gawk-server/" + opts.Pod),
 		// Retry forever, and come up even if the server is not there yet: the
 		// relay must never fail to start because its telemetry sink is down.
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1),
+		// THE ONE THAT COST A PRODUCTION AFTERNOON. By default nats.go stops
+		// reconnecting once a server has returned the same authorization error
+		// twice, on the theory that a rejected credential will stay rejected.
+		// On a bus whose grants are reconciled from git that theory is wrong:
+		// the relay pods rolled 40 seconds before the NATS config reload that
+		// created their user, two of the three were rejected, and those two
+		// held a dead connection until someone restarted them — publishing
+		// nothing, with only a drop counter to say so.
+		nats.IgnoreAuthErrorAbort(),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			p.log.Warn("event bus disconnected", "err", err)
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			p.log.Info("event bus reconnected", "url", nc.ConnectedUrl())
 		}),
+		nats.ClosedHandler(func(nc *nats.Conn) {
+			// Terminal for this connection, whatever the client decided. The
+			// supervisor builds a new one; this line is so the log says which
+			// happened rather than going quiet.
+			p.log.Error("event bus connection closed, re-dialling",
+				"err", nc.LastError(), "retryIn", opts.RedialInterval)
+		}),
 	}
 	if opts.CredsFile != "" {
-		connOpts = append(connOpts, nats.UserCredentials(opts.CredsFile))
+		p.connOpts = append(p.connOpts, nats.UserCredentials(opts.CredsFile))
 	}
 	if opts.TLSCertFile != "" && opts.TLSKeyFile != "" {
-		connOpts = append(connOpts, nats.ClientCert(opts.TLSCertFile, opts.TLSKeyFile))
+		p.connOpts = append(p.connOpts, nats.ClientCert(opts.TLSCertFile, opts.TLSKeyFile))
 	}
 	if opts.CAFile != "" {
-		connOpts = append(connOpts, nats.RootCAs(opts.CAFile))
+		p.connOpts = append(p.connOpts, nats.RootCAs(opts.CAFile))
 	}
 	if opts.Insecure {
 		p.log.Warn("event bus TLS certificate verification is DISABLED " +
 			"(-eventbus-insecure): local development only, never a deployment")
-		connOpts = append(connOpts, insecureSkipVerify())
+		p.connOpts = append(p.connOpts, insecureSkipVerify())
 	}
 
-	nc, err := nats.Connect(opts.URL, connOpts...)
+	if err := p.dial(); err != nil {
+		p.log.Error("event bus connect failed, retrying in the background",
+			"url", opts.URL, "err", err, "retryIn", opts.RedialInterval)
+	}
+
+	p.wg.Add(2)
+	go p.run()
+	go p.supervise()
+	return p, nil
+}
+
+// dial builds a connection and its JetStream context and installs them as the
+// current pair, closing whatever they replace.
+func (p *Publisher) dial() error {
+	nc, err := nats.Connect(p.opts.URL, p.connOpts...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	js, err := jetstream.New(nc, jetstream.WithPublishAsyncErrHandler(
 		func(_ jetstream.JetStream, msg *nats.Msg, err error) {
@@ -220,13 +281,42 @@ func New(opts Options) (*Publisher, error) {
 		}))
 	if err != nil {
 		nc.Close()
-		return nil, err
+		return err
 	}
-	p.nc, p.js = nc, js
+	if old := p.conn.Swap(&busConn{nc: nc, js: js}); old != nil {
+		old.nc.Close()
+	}
+	return nil
+}
 
-	p.wg.Add(1)
-	go p.run()
-	return p, nil
+// supervise is the promise that a configured bus is never abandoned.
+//
+// nats.go reconnects on its own and IgnoreAuthErrorAbort keeps it doing so
+// through a credential the server has not learned about yet. This loop is the
+// layer under that: whatever ends a connection for good — an abort a future
+// client version decides on, a server that closed it, a dial that failed
+// before there was a connection at all — a relay with eventbus.url set tries
+// again every RedialInterval, forever, and says so in the log.
+func (p *Publisher) supervise() {
+	defer p.wg.Done()
+	tick := time.NewTicker(p.opts.RedialInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-tick.C:
+			if c := p.conn.Load(); c != nil && !c.nc.IsClosed() {
+				continue
+			}
+			if err := p.dial(); err != nil {
+				p.log.Warn("event bus redial failed",
+					"url", p.opts.URL, "err", err, "retryIn", p.opts.RedialInterval)
+				continue
+			}
+			p.log.Info("event bus connection re-established", "url", p.opts.URL)
+		}
+	}
 }
 
 // Publish hands an event to the bus. It never blocks and never returns an
@@ -252,12 +342,18 @@ func (p *Publisher) Close() {
 	}
 	close(p.done)
 	p.wg.Wait()
+	c := p.conn.Load()
+	if c == nil {
+		// Configured, never usable. There is nothing to flush and nothing to
+		// close, and shutdown is not the time to start caring.
+		return
+	}
 	select {
-	case <-p.js.PublishAsyncComplete():
+	case <-c.js.PublishAsyncComplete():
 	case <-time.After(2 * time.Second):
 		// Shutdown is not the place to wait on a sick bus.
 	}
-	p.nc.Close()
+	c.nc.Close()
 }
 
 // run is the one goroutine that touches NATS.
@@ -287,6 +383,11 @@ func (p *Publisher) run() {
 }
 
 // send builds the CloudEvent, wraps it in a NATS message and publishes.
+//
+// With no usable connection the event is a counted drop and the sequence still
+// advances: (pod, seq) is a dedup key, not a delivery guarantee, and a gap in
+// it is exactly the signal gawk-admin reports per pod (docs/51 D9). Reusing a
+// number for a different event would be the harmful thing.
 func (p *Publisher) send(ev Event) {
 	p.seq++
 	at := ev.Time
@@ -312,7 +413,19 @@ func (p *Publisher) send(ev Event) {
 			"Nats-Msg-Id":  []string{id},
 		},
 	}
-	if _, err := p.js.PublishMsgAsync(msg); err != nil {
+	// IsConnected, not IsClosed: a client that is merely reconnecting accepts
+	// an async publish into a pending buffer and reports the failure only when
+	// the ack times out, tens of seconds later. That is a queue, and the rule
+	// here is drop rather than queue — so a bus that is not connected right
+	// now is a drop right now, counted with the reason an operator can act on.
+	c := p.conn.Load()
+	if c == nil || !c.nc.IsConnected() {
+		p.drop(DropNoConn)
+		p.warn("event bus has no connection, dropping event",
+			"type", ev.Type, "retryIn", p.opts.RedialInterval)
+		return
+	}
+	if _, err := c.js.PublishMsgAsync(msg); err != nil {
 		p.drop(DropPublish)
 		p.warn("event bus publish rejected", "subject", msg.Subject, "err", err)
 		return
