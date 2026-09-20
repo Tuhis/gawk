@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-windows/v1.4.0...gawk-broadcast-windows/v1.5.0) (2026-09-20)
+
+
+### Features
+
+* **broadcasters:** R44 — app icons for the native broadcasters (IC1–IC5) ([#328](https://github.com/Tuhis/gawk/issues/328)) ([2de0c20](https://github.com/Tuhis/gawk/commit/2de0c20cf310cb1a42062eb1d259fd4561c0c2f3))
+
 ## [1.4.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-windows/v1.3.0...gawk-broadcast-windows/v1.4.0) (2026-09-14)
 
 

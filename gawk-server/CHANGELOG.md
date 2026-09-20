@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.28.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.27.0...gawk-server/v0.28.0) (2026-09-20)
+
+
+### Features
+
+* **admin:** R51 — event contract: CloudEvents, JSON Schema, AsyncAPI, Standard Webhooks ([#327](https://github.com/Tuhis/gawk/issues/327)) ([b4ed483](https://github.com/Tuhis/gawk/commit/b4ed483449759a7339c644fe5c41e8dd5ecc575b))
+* **server:** R50 — relay event bus over NATS JetStream ([#329](https://github.com/Tuhis/gawk/issues/329)) ([921770d](https://github.com/Tuhis/gawk/commit/921770d7a362b647a8385b9810951a1239623541))
+
 ## [0.27.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.26.0...gawk-server/v0.27.0) (2026-09-10)
 
 

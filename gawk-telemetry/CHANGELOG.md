@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.7.0...gawk-telemetry/v1.8.0) (2026-09-20)
+
+
+### Features
+
+* **server:** R50 — relay event bus over NATS JetStream ([#329](https://github.com/Tuhis/gawk/issues/329)) ([921770d](https://github.com/Tuhis/gawk/commit/921770d7a362b647a8385b9810951a1239623541))
+
 ## [1.7.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.6.2...gawk-telemetry/v1.7.0) (2026-09-10)
 
 

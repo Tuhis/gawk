@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.45.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.45.0...gawk-app/v0.45.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **gawk-app:** say when a gated room keeps your stream out, and take the secret ([#325](https://github.com/Tuhis/gawk/issues/325)) ([b6d7849](https://github.com/Tuhis/gawk/commit/b6d7849ad83714a5b882e519373b7c8a159463a7))
+
 ## [0.45.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.44.0...gawk-app/v0.45.0) (2026-09-14)
 
 
