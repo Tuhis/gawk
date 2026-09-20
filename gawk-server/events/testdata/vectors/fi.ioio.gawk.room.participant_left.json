@@ -12,6 +12,7 @@
     "roomKey": "9c1d2e3f4a5b",
     "participantId": 3,
     "nickname": "tuhis",
-    "clientKind": "web-broadcaster"
+    "clientKind": "web-broadcaster",
+    "reason": "home_moved"
   }
 }

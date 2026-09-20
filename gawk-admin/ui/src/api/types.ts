@@ -233,11 +233,19 @@ export interface WebhookDelivery {
   nextAttemptAt?: string | null;
 }
 
+/** Which kind of row an event is (R50). */
+export type EventCategory = 'moderation' | 'activity';
+
 export interface ModerationEvent {
   id: number;
   type: string;
   occurredAt: string;
   actor: string;
+  /**
+   * `moderation` is the audit trail of operator actions; `activity` is what
+   * the fleet did, ingested from the relay event bus. Always present.
+   */
+  category: EventCategory;
   broadcastKey?: string | null;
   broadcastId?: string | null;
   reason?: string | null;

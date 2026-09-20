@@ -202,6 +202,61 @@ notifications:
 #
 # Set exactly one of the two forms below (the same foo / fooRef dual pattern
 # the rest of the repo uses for secrets; the Ref wins if you set both):
+# R50 (docs/51): consume the relay event bus. OPTIONAL and OFF by default —
+# with url empty this portal creates no stream, consumes nothing, writes no
+# activity rows, and the reconciler's once-a-minute room sweep keeps running
+# exactly as it did before R50.
+#
+# Point it at the SAME NATS the relays publish to, with its own user: the
+# portal's credential manages one stream and consumes it, the relays' can only
+# publish. Install NATS yourself (self-hosting §12) — the charts do not own a
+# stateful thing's upgrade story.
+eventbus:
+  url: ""
+  # ONE of the two ways a NATS deployment identifies this portal.
+  #
+  # 1. A client CERTIFICATE. With `verify_and_map` on the server the subject DN
+  #    IS the NATS username, so the identity is the cert and cert-manager
+  #    renewal changes nothing:
+  #      tlsSecretRef: {name: gawk-admin-nats-tls}
+  #    The same Secret's ca.crt verifies the SERVER, which a bus on its own
+  #    private CA requires.
+  tlsSecretRef: {}
+  tlsCertKey: tls.crt
+  tlsKeyKey: tls.key
+  tlsCAKey: ca.crt
+  #
+  # 2. An NKey/JWT .creds file:
+  #   kubectl -n gawk create secret generic gawk-admin-nats \
+  #     --from-file=user.creds=./admin.creds
+  #   credsSecretRef: {name: gawk-admin-nats, key: user.creds}
+  credsSecretRef: {}
+  # The stream this portal consumes.
+  stream: GAWK_EVENTS
+  # Whether this portal CREATES and updates that stream and its durable
+  # consumer. True is the self-hosted shape: the consumer owns the retention,
+  # so it owns the object (docs/51 D2).
+  #
+  # Set false where JetStream objects are declared in git and reconciled by a
+  # controller (NACK Stream/Consumer CRs, for instance). Such a deployment
+  # grants workloads no JetStream API at all, so managing them here is not a
+  # duplicate of the operator's intent — it is a retry loop against a
+  # permission that will never be given. The portal then binds to what is
+  # there, with the delivery rules the operator declared.
+  #
+  # With it off, `stream` and `consumer` must name the declared objects, and
+  # maxBytes/replicas below are ignored — they describe a stream this chart is
+  # no longer creating.
+  manageStream: true
+  # Durable consumer name; empty uses the binary's default (gawk-admin).
+  consumer: ""
+  # Stream size limit in bytes (discard old) and replicas (0 = server default).
+  maxBytes: 268435456
+  replicas: 0
+  # How long ingested ACTIVITY rows are kept. The moderation audit trail is
+  # never pruned by this.
+  activityRetention: "72h"
+
 postgres:
   # A literal DSN — libpq keyword form or a postgres:// URL. Convenient for a
   # throwaway environment; it lands in the rendered manifest and therefore in

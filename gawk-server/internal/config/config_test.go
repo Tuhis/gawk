@@ -57,6 +57,11 @@ func TestDefaults(t *testing.T) {
 		// source, so a relay predating R39 and a relay with the flag unset
 		// behave identically.
 		ModerationSource: "off",
+		// R50 (docs/51 D6): the bus is off unless an operator names a NATS
+		// URL. The prefix and the coalescing interval still have defaults, so
+		// turning it on is one value, not three.
+		EventBusSubjectPrefix:  "gawk",
+		EventBusViewerInterval: 5 * time.Second,
 		// R39 AP3 (docs/42 §4.5): the admin API's AUTHORIZATION policy has
 		// defaults; its CREDENTIALS do not. With no token and no issuer the
 		// routes are never registered, so these two carry a usable role

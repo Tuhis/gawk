@@ -64,6 +64,21 @@ const (
 	RoomClosedGrace    = "grace"
 	RoomClosedCreator  = "creator"
 	RoomClosedOperator = "operator"
+
+	// Why a participant left. Only the first is somebody leaving: the other
+	// three are the room happening TO them, and a consumer that announces
+	// departures wants to tell them apart.
+	ParticipantLeft = "left"
+	// ParticipantLeftTimeout: the control session stopped keeping up and was
+	// evicted (wire close 4001, non-terminal — a fresh session restores it).
+	ParticipantLeftTimeout = "timeout"
+	// ParticipantLeftRoomEnded: the room ended under them. It follows a
+	// room.closed for the same room.
+	ParticipantLeftRoomEnded = "room_ended"
+	// ParticipantLeftHomeMoved: the room moved to another pod and they are
+	// reconnecting there. It follows a room.home_changed published by the NEW
+	// home, and the joins that follow carry rejoin: true — nobody left.
+	ParticipantLeftHomeMoved = "home_moved"
 )
 
 // ---------------------------------------------------------------------------
@@ -232,6 +247,11 @@ type RoomOpenedData struct {
 type RoomClosedData struct {
 	RoomCode string `json:"roomCode,omitempty"`
 	RoomKey  string `json:"roomKey"`
+	// Kind is RoomKindStatic or RoomKindDynamic, as room.opened carries it.
+	// gawk-admin's room.ended row has always named the kind, and the sentence
+	// it renders says it ("a dynamic room ended"), so an end that did not
+	// carry it would read worse than the poll it replaced.
+	Kind string `json:"kind,omitempty"`
 	// Reason is RoomClosedGrace, RoomClosedCreator or RoomClosedOperator.
 	Reason string `json:"reason"`
 	Delivery
@@ -295,6 +315,36 @@ type RoomParticipantLeftData struct {
 	ParticipantID int    `json:"participantId"`
 	Nickname      string `json:"nickname,omitempty"`
 	ClientKind    string `json:"clientKind"`
+	// Reason is one of the ParticipantLeft* values. Absent means the plain
+	// one: treat an unknown value as unknown, and an absent one as `left`.
+	//
+	// It exists because three of the four are not departures at all — the
+	// room ended, the room moved, the session was evicted — and a consumer
+	// that announced "tuhis left" for a pod rollout would be lying.
+	Reason string `json:"reason,omitempty"`
+	Delivery
+}
+
+// RoomHomeChangedData is `fi.ioio.gawk.room.home_changed`: this pod adopted a
+// room that another pod was serving (docs/44 §4.5's re-home).
+//
+// It is published by the NEW home, so the CloudEvent's `source` names it — and
+// that is deliberately the only place the new pod's name appears, because a
+// second copy in `data` could disagree with it. PreviousPod names the other
+// end when the CR still records it.
+//
+// The new home is the one publisher that can be relied on here: a pod that
+// loses a room because it is being deleted may publish nothing at all, so a
+// consumer tracking where a room lives should follow this event rather than
+// the departures on the old side.
+type RoomHomeChangedData struct {
+	RoomCode string `json:"roomCode,omitempty"`
+	RoomKey  string `json:"roomKey"`
+	Kind     string `json:"kind,omitempty"`
+	// PreviousPod is the pod that held the home lease before this one, as the
+	// Room CR recorded it. Absent when the lease was already released or the
+	// record is gone.
+	PreviousPod string `json:"previousPod,omitempty"`
 	Delivery
 }
 

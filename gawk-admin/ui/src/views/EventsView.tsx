@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
-import type { EventPage, ModerationEvent, WebhookDelivery } from '../api/types.ts';
+import type { EventCategory, EventPage, ModerationEvent, WebhookDelivery } from '../api/types.ts';
 import { AuthRedirect } from '../auth/session.ts';
 import { formatInstant } from '../lib/format.ts';
 import { useLoader } from '../lib/useLoader.ts';
@@ -22,6 +22,13 @@ export function EventsView() {
   // non-null only when that page came back full, so null means the feed is
   // exhausted — the view stops offering "Load older" instead of paging into an
   // empty response.
+  /**
+   * Which rows to show. Defaults to the audit trail: with the R50 bus on, a
+   * busy fleet writes far more activity than moderation, and an operator who
+   * opened this page to see what an operator did should not have to scroll
+   * past a thousand joins to find it.
+   */
+  const [category, setCategory] = useState<EventCategory>('moderation');
   const [pages, setPages] = useState<ModerationEvent[]>([]);
   const [cursor, setCursor] = useState<number | undefined>(undefined);
   const [exhausted, setExhausted] = useState(false);
@@ -44,13 +51,13 @@ export function EventsView() {
   const generation = useRef(0);
 
   const load = useCallback(async (): Promise<EventPage> => {
-    const page = await api.events();
+    const page = await api.events(undefined, 50, category);
     generation.current++;
     setPages(page.events);
     setCursor(page.nextAfterId ?? undefined);
     setExhausted(page.nextAfterId === null);
     return page;
-  }, [api]);
+  }, [api, category]);
   const { error, loading, reload } = useLoader<EventPage>(load);
 
   const [olderError, setOlderError] = useState<string | null>(null);
@@ -62,7 +69,7 @@ export function EventsView() {
     setLoadingOlder(true);
     setOlderError(null);
     try {
-      const page = await api.events(cursor);
+      const page = await api.events(cursor, 50, category);
       if (asOf !== generation.current) return;
       setPages((prev) => [...prev, ...page.events]);
       setCursor(page.nextAfterId ?? undefined);
@@ -88,6 +95,20 @@ export function EventsView() {
         <h1>Events</h1>
         <span className={ui.sub}>{pages.length} shown, newest first</span>
         <span className={ui.spacer} />
+        <label>
+          Show
+          <select
+            value={category}
+            aria-label="Event category"
+            onChange={(e) => {
+              setExhausted(false);
+              setCategory(e.target.value as EventCategory);
+            }}
+          >
+            <option value="moderation">Moderation</option>
+            <option value="activity">Activity</option>
+          </select>
+        </label>
         <button
           type="button"
           onClick={() => {
@@ -105,6 +126,7 @@ export function EventsView() {
         <article key={e.id} className={ui.panel}>
           <div className={ui.row}>
             <span className={ui.badge}>{e.type}</span>
+            {e.category === 'activity' ? <span className={ui.dim}>activity</span> : null}
             <span className={ui.dim}>{formatInstant(e.occurredAt)}</span>
             <span className={ui.spacer} />
             <span className={ui.dim}>{e.actor}</span>
@@ -126,7 +148,11 @@ export function EventsView() {
       ))}
 
       {!loading && pages.length === 0 && !error ? (
-        <p className={ui.dim}>No moderation events yet.</p>
+        <p className={ui.dim}>
+          {category === 'activity'
+            ? 'No activity events yet. Activity arrives from the relay event bus, which is optional and off by default.'
+            : 'No moderation events yet.'}
+        </p>
       ) : null}
 
       {olderError ? <p className={ui.error}>{olderError}</p> : null}

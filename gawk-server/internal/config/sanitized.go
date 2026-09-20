@@ -91,6 +91,20 @@ type SanitizedConfig struct {
 	MaxRoomParticipants int    `json:"maxRoomParticipants"`
 	RoomsFile           string `json:"roomsFile"`
 
+	// Event bus (R50). The creds FILE PATH is not a secret and prints as
+	// itself; whether it is set is the question an operator debugging a silent
+	// bus is asking.
+	EventBusURL            string `json:"eventBusUrl"`
+	EventBusSubjectPrefix  string `json:"eventBusSubjectPrefix"`
+	EventBusViewerInterval string `json:"eventBusViewerInterval"`
+	EventBusInsecure       bool   `json:"eventBusInsecure"`
+	// The client identity and the CA: paths, not material. Rendered as
+	// themselves — knowing WHICH file a pod was told to use is the point when
+	// a fleet disagrees about who it authenticates as.
+	EventBusTLSCert string `json:"eventBusTlsCert"`
+	EventBusTLSKey  string `json:"eventBusTlsKey"`
+	EventBusCAFile  string `json:"eventBusCaFile"`
+
 	// Moderation (R39).
 	ModerationSource    string `json:"moderationSource"`
 	AdminOIDCIssuer     string `json:"adminOidcIssuer"`
@@ -108,6 +122,7 @@ type SanitizedConfig struct {
 	TelemetryKey      string `json:"telemetryKey"`
 	AdminAPIToken     string `json:"adminApiToken"`
 	RoomCreateSecret  string `json:"roomCreateSecret"`
+	EventBusCredsFile string `json:"eventBusCredsFile"`
 	// ResumeTokenKey names the mode as well as the presence — see the
 	// placeholder comment above and ResumeTokenKeyMode.
 	ResumeTokenKey string `json:"resumeTokenKey"`
@@ -167,6 +182,14 @@ func (c Config) Sanitized() SanitizedConfig {
 		MaxRoomParticipants: c.MaxRoomParticipants,
 		RoomsFile:           c.RoomsFile,
 
+		EventBusURL:            c.EventBusURL,
+		EventBusSubjectPrefix:  c.EventBusSubjectPrefix,
+		EventBusViewerInterval: dur(c.EventBusViewerInterval),
+		EventBusInsecure:       c.EventBusInsecure,
+		EventBusTLSCert:        c.EventBusTLSCert,
+		EventBusTLSKey:         c.EventBusTLSKey,
+		EventBusCAFile:         c.EventBusCAFile,
+
 		ModerationSource:    c.ModerationSource,
 		AdminOIDCIssuer:     c.AdminOIDCIssuer,
 		AdminOIDCAudience:   c.AdminOIDCAudience,
@@ -180,6 +203,7 @@ func (c Config) Sanitized() SanitizedConfig {
 		TelemetryKey:      setness(len(c.TelemetryKey) > 0),
 		AdminAPIToken:     setness(c.AdminAPIToken != ""),
 		RoomCreateSecret:  setness(c.RoomCreateSecret != ""),
+		EventBusCredsFile: setness(c.EventBusCredsFile != ""),
 		ResumeTokenKey:    resumeTokenKeyRedaction(c),
 	}
 }

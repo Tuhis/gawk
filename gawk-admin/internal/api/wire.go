@@ -192,6 +192,10 @@ type eventJSON struct {
 	BroadcastID  string `json:"broadcastId,omitempty"`
 	Reason       string `json:"reason,omitempty"`
 	Summary      string `json:"summary,omitempty"`
+	// Category is "moderation" (what an operator did) or "activity" (what the
+	// fleet did, ingested from the R50 bus). Always present: a client that
+	// renders the two differently must not have to infer which it has.
+	Category string `json:"category"`
 	// Deliveries is what makes a failed webhook delivery VISIBLE (§4.10) —
 	// R40's "a flag must reach a human" posture inherits this pipe.
 	Deliveries []deliveryJSON `json:"deliveries"`
@@ -207,8 +211,18 @@ func renderEvent(e store.Event, deliveries []store.Delivery) eventJSON {
 		BroadcastID:  e.BroadcastID,
 		Reason:       e.PayloadString(store.PayloadReason),
 		Summary:      e.PayloadString(store.PayloadSummary),
+		Category:     category(e.Category),
 		Deliveries:   renderDeliveries(deliveries),
 	}
+}
+
+// category defaults an empty column to moderation: rows written before the
+// R50 migration carry the default, and a client should never see "".
+func category(c string) string {
+	if c == "" {
+		return store.CategoryModeration
+	}
+	return c
 }
 
 type relayJSON struct {
@@ -411,6 +425,34 @@ type eventsPageJSON struct {
 
 type relaysPageJSON struct {
 	Relays []relayJSON `json:"relays"`
+	// Bus is the R50 event bus's health, absent when no bus is configured —
+	// which is how this route says "not configured" rather than "quiet". It
+	// exists so an operator can see the bus is alive BEFORE anything depends
+	// on it (docs/51 D7).
+	Bus *busJSON `json:"bus,omitempty"`
+}
+
+// busJSON mirrors eventbus.Health. A local type, like every other row here, so
+// the wire shape is decided in this file and the OpenAPI drift test holds one
+// document to one struct.
+type busJSON struct {
+	Stream    string       `json:"stream"`
+	Connected bool         `json:"connected"`
+	Messages  uint64       `json:"messages"`
+	Bytes     uint64       `json:"bytes"`
+	Pods      []busPodJSON `json:"pods,omitempty"`
+	Error     string       `json:"error,omitempty"`
+}
+
+type busPodJSON struct {
+	Pod      string `json:"pod"`
+	LastSeen string `json:"lastSeen"`
+	LastSeq  uint64 `json:"lastSeq"`
+	// Gaps counts sequence jumps seen for this pod: events the relay dropped
+	// (its own counters say why) or that expired unread. Reported rather than
+	// repaired — a consumer that needs the truth after a gap reconciles
+	// against the read API (docs/51 D1).
+	Gaps int `json:"gaps"`
 }
 
 type webhooksPageJSON struct {

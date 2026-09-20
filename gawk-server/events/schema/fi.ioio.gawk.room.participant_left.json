@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.participant_left.json",
   "title": "Participant left",
-  "description": "A participant left a room, or its session ended. The `data` of a `fi.ioio.gawk.room.participant_left` CloudEvent.",
+  "description": "A participant left a room \u2014 or the room ended, moved to another pod, or evicted their session; `reason` says which. The `data` of a `fi.ioio.gawk.room.participant_left` CloudEvent.",
   "type": "object",
   "properties": {
     "roomCode": {
@@ -20,6 +20,16 @@
     },
     "clientKind": {
       "$ref": "common.json#/$defs/clientKind"
+    },
+    "reason": {
+      "type": "string",
+      "description": "Why the session ended. `left` is somebody leaving; the other three are the room happening to them \u2014 `room_ended` follows a room.closed, `home_moved` follows a room.home_changed from the new home and the same people rejoin there, `timeout` is an evicted control session. Absent means `left`.",
+      "enum": [
+        "left",
+        "timeout",
+        "room_ended",
+        "home_moved"
+      ]
     },
     "summary": {
       "$ref": "common.json#/$defs/summary"

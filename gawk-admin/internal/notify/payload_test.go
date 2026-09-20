@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -491,6 +492,28 @@ func storeEventTypes(t *testing.T) []string {
 			}
 		}
 	}
+	// R50's ingested activity row types are declared in the same package and
+	// are scraped here too, but they are NOT deliverable: an activity row
+	// carries a bus event that gawk-admin never re-emits, so it has no
+	// moderation CloudEvents type and buildEvent rightly refuses it. Drop
+	// them — and assert the dropped set is exactly the activity vocabulary,
+	// so this cannot quietly swallow a moderation type somebody forgot to map.
+	var deliverable, skipped []string
+	for _, typ := range out {
+		if _, ok := events.ModerationType(typ); ok {
+			deliverable = append(deliverable, typ)
+			continue
+		}
+		skipped = append(skipped, typ)
+	}
+	sort.Strings(skipped)
+	wantSkipped := append([]string(nil), store.ActivityEventTypes()...)
+	sort.Strings(wantSkipped)
+	if !slices.Equal(skipped, wantSkipped) {
+		t.Fatalf("undeliverable store event types = %v, want exactly the activity vocabulary %v", skipped, wantSkipped)
+	}
+	out = deliverable
+
 	// A parse that silently found nothing would make every D8 case vacuous.
 	for _, want := range []string{"broadcast.killed", "ban.created", "ban.expired", "ban.removed", "content_flag.raised",
 		"room.created", "room.ended", "room.secret_rotated"} {

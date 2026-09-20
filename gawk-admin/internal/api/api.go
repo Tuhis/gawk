@@ -52,6 +52,7 @@ import (
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/config"
+	"github.com/Tuhis/gawk/gawk-admin/internal/eventbus"
 	"github.com/Tuhis/gawk/gawk-admin/internal/identity"
 	"github.com/Tuhis/gawk/gawk-admin/internal/openapi"
 	"github.com/Tuhis/gawk/gawk-admin/internal/relayscan"
@@ -88,6 +89,13 @@ type Projector interface {
 // heals anything this request could not finish.
 type Kicker interface {
 	Kick()
+}
+
+// BusHealth reports the R50 event bus's health for the relays view.
+// Implemented by *eventbus.Consumer; nil when no bus is configured, which is
+// how /relays says "not configured" rather than "quiet".
+type BusHealth interface {
+	Health(ctx context.Context) *eventbus.Health
 }
 
 // Fleet is the relay enumeration this package reads. Implemented by
@@ -143,6 +151,8 @@ type Options struct {
 	Reconciler Kicker
 	// Fleet enumerates relay pods. Required for /broadcasts and /relays.
 	Fleet Fleet
+	// Bus reports event-bus health on /relays. nil when the bus is off.
+	Bus BusHealth
 	// Rooms manages Room CRs (R42). nil means rooms are OFF: no /rooms route
 	// is registered (the catch-all answers 404) and /me reports the feature
 	// absent, so the SPA shows no rooms view. main.go sets it only under

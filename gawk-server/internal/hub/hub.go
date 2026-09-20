@@ -32,7 +32,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-server/events"
 	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
+	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -326,6 +328,12 @@ type Options struct {
 	// origin stamps its Lease so a room homed on another pod shows the
 	// tile away (docs/44 §4.9). Nil in single-pod mode.
 	OnPublisherStalled func(broadcastID string, stalled bool)
+	// OnEvent receives one R50 bus event per broadcast lifecycle transition
+	// (docs/51 D4): started, ended with its reason, the away/back pair and
+	// the coalesced viewer counts. It MUST NOT block — most call sites hold
+	// the registry lock, and the publisher's contract is a non-blocking send.
+	// Nil is the off switch and the pre-R50 shape.
+	OnEvent func(eventbus.Event)
 
 	// IDReserved reports whether a freshly minted broadcast ID names a live
 	// room (R42, docs/44 §4.2): /publish never mints an ID that a room owns,
@@ -937,6 +945,7 @@ func (r *Registry) StartPublish(id string) (string, *Publisher, error) {
 	// A real publisher claim makes (or re-makes) this hub the origin — a
 	// prior demote-to-edge is over when the broadcaster comes home (W5).
 	r.setRoleLocked(b, false)
+	r.busStarted(id)
 	return id, pub, nil
 }
 
@@ -967,6 +976,7 @@ func (r *Registry) ResumePublish(id string) (string, *Publisher, error) {
 	}
 	// The broadcaster re-homed onto this pod: origin again (W5 un-demote).
 	r.setRoleLocked(b, false)
+	r.busStarted(normID)
 	return normID, pub, nil
 }
 
@@ -1193,6 +1203,12 @@ func (r *Registry) SweepStalledPublishers(now time.Time) {
 			hook(tr.id, tr.stalled)
 		}
 	}
+	// The same transitions onto the bus. Computed once per transition by the
+	// sweep above, so away/back cannot flap on the bus without flapping in
+	// the fleet.
+	for _, tr := range transitions {
+		r.busStalled(tr.id, tr.stalled)
+	}
 	for _, k := range kicks {
 		reason := fmt.Sprintf("no datagrams from the publisher for %s", k.silent)
 		if r.TerminateBroadcast(k.id, uint32(wire.CloseCodeBroadcastEnded), reason) {
@@ -1342,6 +1358,7 @@ func (r *Registry) TakeOverPublish(id string) (string, *Publisher, error) {
 		return "", nil, ErrNotFound
 	}
 	var deposed SessionCloser
+	superseded := false
 	if old := b.publisher; b.publisherActive && old != nil {
 		// Depose the incumbent: mark it closed so its late datagrams and
 		// keyframes drop and its handler's deferred Close is a no-op (no
@@ -1349,6 +1366,10 @@ func (r *Registry) TakeOverPublish(id string) (string, *Publisher, error) {
 		// the lease now belong to the new publisher).
 		old.closed = true
 		deposed = old.conn
+		// Whether there was an incumbent, independent of whether it had a
+		// connection to close: a deposed session is a broadcast that ended
+		// as replaced even when the test seam has no conn.
+		superseded = true
 		b.publisherActive = false
 		b.publisher = nil
 	}
@@ -1362,6 +1383,14 @@ func (r *Registry) TakeOverPublish(id string) (string, *Publisher, error) {
 	// as StartPublish/ResumePublish (W5 un-demote).
 	r.setRoleLocked(b, false)
 	r.mu.Unlock()
+
+	// On the bus this is two facts in order: the incumbent session ended
+	// because it was replaced, and a new one started. A consumer that saw
+	// only "started" twice could not tell a reconnect from a duplicate.
+	if superseded {
+		r.busEnded(normID, events.BroadcastEndedReplaced)
+	}
+	r.busStarted(normID)
 
 	if deposed != nil {
 		b.log.Info("active publisher superseded by token-bearing claim")
@@ -1445,10 +1474,18 @@ func (r *Registry) PumpViewerCounts(now time.Time) {
 		// left a Safari viewer frozen on a dead session for 48 s with no way
 		// to tell (BUGS.md, 2026-07-22 paired capture). The count itself stays
 		// meaningful while away: those viewers really are still watching.
+		// The bus hears from BOTH roles here, unlike the datagram fan-out:
+		// an edge pod is the only one that knows its own local viewers, and
+		// the origin is the only one that knows the fleet-wide number
+		// (docs/51 D4). The publisher coalesces both, so this is cheap on
+		// every tick.
+		local := b.externalHumansLocked()
 		if b.edge {
+			r.busViewers(b.id, local, 0, true)
 			continue
 		}
 		g := b.globalViewersLocked()
+		r.busViewers(b.id, local, int(g), false)
 		if b.viewerCountEverEmitted && g == b.lastViewerCount &&
 			now.Sub(b.lastViewerCountEmitAt) < ViewerCountKeepalive {
 			continue
@@ -2195,6 +2232,21 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 	// fleet-wide (R17 W4).
 	if !edge && r.opts.OnBroadcastExpired != nil {
 		r.opts.OnBroadcastExpired(id)
+	}
+	// Origin only, like the lease delete above: an edge hub is derived state,
+	// and its teardown is not the broadcast ending (R17 W4).
+	//
+	// The reason comes from the CLOSE CODE, not from `force`: the stall sweep
+	// also removes forcefully (a publisher silent past the grace), and calling
+	// that a kill would report an automatic timeout as enforcement — the one
+	// reason a consumer is expected to escalate. 4006 is the operator's, and
+	// only the operator's (R39, docs/42 §4.3).
+	if !edge {
+		busReason := events.BroadcastEndedGC
+		if code == uint32(wire.CloseCodeTerminatedByOperator) {
+			busReason = events.BroadcastEndedKilled
+		}
+		r.busEnded(id, busReason)
 	}
 	return true
 }

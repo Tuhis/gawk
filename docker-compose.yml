@@ -106,6 +106,11 @@ services:
       # broadcast (the Room panel's "New room", or `--profile rooms` below).
       GAWK_ROOMS: "${ROOMS-1}"
       GAWK_ROOMS_FILE: /dev-rooms/rooms.json
+      # R50: the event bus, on only with `--profile bus`
+      # (EVENTBUS_URL=nats://nats:4222 docker compose --profile bus up).
+      # Empty is the off switch, which is what the default stack uses.
+      GAWK_EVENTBUS_URL: "${EVENTBUS_URL-}"
+      GAWK_EVENTBUS_INSECURE: "true"
       # The relay's own cap is 5 concurrent broadcasts (docs/07). With the
       # `rooms` profile holding three of them and a developer trying things
       # from several tabs, that is hit within minutes and shows in the
@@ -349,6 +354,11 @@ services:
       # watches no CRs. `devroom` is the one to join; a room created in the
       # portal is a CR with no relay behind it.
       GAWK_ADMIN_ROOMS: "${ADMIN_ROOMS-false}"
+      # R50: set by the `bus` profile's run (EVENTBUS_URL=nats://nats:4222).
+      # Empty everywhere else, which is the off switch.
+      GAWK_ADMIN_EVENTBUS_URL: "${EVENTBUS_URL-}"
+      GAWK_ADMIN_EVENTBUS_INSECURE: "true"
+      GAWK_ADMIN_ACTIVITY_RETENTION: "${ACTIVITY_RETENTION:-72h}"
       GAWK_ADMIN_DEV_OIDC_PROXY: "http://fakeidp:8080"
       GAWK_ADMIN_APP_BASE_URL: "${APP_ORIGIN:-http://localhost:8080}"
       GAWK_ADMIN_LOG_LEVEL: "${LOG_LEVEL:-info}"
@@ -367,6 +377,26 @@ services:
   # ── Optional profiles (docs/41 D11) ───────────────────────────────────────
   # Each answers one specific question and costs nothing when unused, which is
   # why they are not in the default `up`.
+
+  # "I want to see the R50 event bus work end to end."
+  #     docker compose --profile bus up
+  # Brings up NATS with JetStream and points BOTH the relay and the portal at
+  # it (the env below is read only when this profile is on). Join a room in the
+  # app and the portal's Events view shows the join under Activity within a
+  # second. No TLS here — the relay and the portal both take -eventbus-insecure
+  # for exactly this lane, and both warn about it at startup.
+  nats:
+    profiles: ["bus"]
+    image: nats:2-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
 
   # "I want a live broadcast without screen-sharing anything."
   #     docker compose --profile sim up
@@ -517,4 +547,5 @@ volumes:
   # (the Ban CRs live here), and the portal's Postgres.
   kube-pki:
   kine-data:
+  nats-data:
   admin-pg-data:

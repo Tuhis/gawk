@@ -12,6 +12,9 @@
     "roomKey": {
       "$ref": "common.json#/$defs/roomKey"
     },
+    "kind": {
+      "$ref": "common.json#/$defs/roomKind"
+    },
     "reason": {
       "type": "string",
       "enum": [

@@ -12,8 +12,8 @@
 //	{"type":"event","seq":2,"kind":1,"participant":{...}}
 //	{"type":"close","code":4007,"reason":"..."}
 //
-// A pre-upgrade refusal (404 unknown room, 403 wrong token, 429 full, 451
-// banned, 503 no home reachable) is reported on stderr as
+// A pre-upgrade refusal (404 unknown room, 403 wrong token or a rejected
+// Origin, 429 full, 451 banned, 503 no home reachable) is reported on stderr as
 //
 //	GAWK_ROOMSIM_DIAL_STATUS=404
 //
@@ -57,6 +57,11 @@ type options struct {
 	insecure bool
 	nick     string
 	duration time.Duration
+	// origin is the Origin header to send. A relay with -allowed-origins set —
+	// every real deployment, and the docs/41 dev stack — refuses a dial that
+	// carries none, unless it arrives over loopback from inside the pod. Same
+	// flag, same reason, as gawk-echo's.
+	origin string
 	// path is the CONNECT path with its query, built from the flags.
 	path string
 }
@@ -76,6 +81,7 @@ func parseArgs(args []string) (options, error) {
 	fs.StringVar(&o.url, "url", "https://127.0.0.1:4433", "relay base URL")
 	fs.BoolVar(&o.insecure, "insecure", false, "skip TLS verification (dev certs)")
 	fs.StringVar(&o.nick, "nick", "roomsim", "nickname in the roster")
+	fs.StringVar(&o.origin, "origin", "", "Origin header to send; required if the relay's -allowed-origins is non-empty (unset skips it)")
 	fs.DurationVar(&o.duration, "duration", 10*time.Second, "how long to hold the control session; 0 = until the relay closes it or SIGTERM")
 	if err := fs.Parse(args); err != nil {
 		return o, err
@@ -231,8 +237,12 @@ func run(o options) int {
 		},
 	}
 	defer d.Close()
+	var hdr http.Header
+	if o.origin != "" {
+		hdr = http.Header{"Origin": {o.origin}}
+	}
 	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second)
-	rsp, sess, err := d.Dial(dialCtx, o.url+o.path, nil)
+	rsp, sess, err := d.Dial(dialCtx, o.url+o.path, hdr)
 	dialCancel()
 	if err != nil {
 		return dialFailed(rsp, err, o.url, os.Stderr)

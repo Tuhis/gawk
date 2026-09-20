@@ -530,6 +530,17 @@ session diagnosed in the R31 UI can be grouped with its room.
 The owner asked that the design leave explicit hooks. These are the
 hooks, and nothing else is promised.
 
+**Dated note, 2026-09-18 (R50).** One of these hooks now has a second,
+lower-effort shape: a Mumble bridge — or any other integration that only needs
+to know who is in a room — can subscribe to the R50 event bus instead of
+speaking the room protocol at all. `room.participant_joined` / `_left` /
+`_updated`, `room.attached` / `_detached` and `room.opened` / `_closed` are
+published the moment they happen, with the raw code and a `speaking` flag, and
+an operator can grant a subscribe-only NATS user for `gawk.room.>`
+([docs/51](51-relay-event-bus.md) D10, self-hosting §12). That is a read-only
+view: everything above about the control stream still applies to an
+integration that must *participate*.
+
 - **Room text chat**: a `RoomCommand` sub-range (`0x40–0x4F`) and matching
   `RoomEvent` kinds; messages fan out over the control stream from the
   home pod; no persistence in v1 of chat either. Requires only D10's

@@ -351,6 +351,16 @@ jobs:
       # rather than incrementing — which is also why the mode `atomic` exists
       # to fix (a lost increment under parallelism) cannot change this answer.
       - run: go test -covermode=set -coverprofile=coverage.out ./...
+      # Nothing after this point compiles, and the Go build cache is worth
+      # gigabytes by now — while the coverage action's setup-python unpacks
+      # ~450MB of interpreter into the runner's tool cache on the same volume.
+      # On the self-hosted runners that is the difference between passing and
+      # `No space left on device`, which is where both of these jobs died in
+      # runs 35315043704 and 35315939106 with every test already green.
+      # The MODULE cache is left alone: setup-go saves it, and re-downloading
+      # it next run would cost far more than it frees.
+      - name: Free the Go build cache before the coverage toolchain
+        run: go clean -cache
       - uses: ./.github/actions/coverage
         with:
           format: go
@@ -1100,6 +1110,16 @@ jobs:
             echo "::error::the envtest tests SKIPPED — KUBEBUILDER_ASSETS did not reach them, so the Lease/CRD tier proved nothing"
             exit 1
           fi
+      # Nothing after this point compiles, and the Go build cache is worth
+      # gigabytes by now — while the coverage action's setup-python unpacks
+      # ~450MB of interpreter into the runner's tool cache on the same volume.
+      # On the self-hosted runners that is the difference between passing and
+      # `No space left on device`, which is where both of these jobs died in
+      # runs 35315043704 and 35315939106 with every test already green.
+      # The MODULE cache is left alone: setup-go saves it, and re-downloading
+      # it next run would cost far more than it frees.
+      - name: Free the Go build cache before the coverage toolchain
+        run: go clean -cache
       - uses: ./.github/actions/coverage
         with:
           format: go
@@ -1327,7 +1347,14 @@ jobs:
           ls -1 "$old"/gawk-admin/migrations/
 
           cd "$old/gawk-admin"
-          go test -count=1 ./internal/store/...
+          # One exclusion, and it is not a weakening: through gawk-admin
+          # v1.x this test asserted the schema version EQUALS that release's
+          # own MinSchemaVersion. That is the release asserting its own shape,
+          # not asking whether it still works against a newer schema — and it
+          # fails for every migration that ever lands (R50's 0002 was the
+          # first). The assertion is `>=` from this branch on, so this line
+          # can go once no released tag still carries the old form.
+          go test -count=1 ./internal/store/... -skip '^TestMigrateParallelRunsAreSerialized$'
 
   tidy:
     needs: changes
@@ -1634,6 +1661,70 @@ jobs:
           ! grep -A2 'resources: \["secrets"\]' <<<"$on" | grep -qE '"list"|"watch"'
           grep -q 'THE POSTURE CHANGE' <<<"$on"
           grep -A1 'name: GAWK_ADMIN_ROOMS' <<<"$on" | grep -q 'value: "true"'
+
+      - name: the event bus renders on both charts, and renders nothing when off (R50)
+        run: |
+          set -euo pipefail
+          relay=gawk-server/deploy/charts/gawk-server
+          admin=gawk-admin/deploy/charts/gawk-admin
+
+          # Off is the default, and "off is byte-identical" is the milestone's
+          # headline promise: not one EVENTBUS variable, not one mount.
+          for rendered in "$(helm template "$relay")" "$(helm template "$admin" $ADMIN_PG)"; do
+            if grep -q 'EVENTBUS' <<<"$rendered"; then
+              echo "::error::a chart rendered an eventbus knob with the bus off"; exit 1
+            fi
+            if grep -q 'nats-creds' <<<"$rendered"; then
+              echo "::error::a chart mounted the NATS credential with the bus off"; exit 1
+            fi
+          done
+
+          on=$(helm template "$relay" --set eventbus.url=tls://nats:4222 \
+                 --set eventbus.credsSecretRef.name=relay-nats \
+                 --set eventbus.credsSecretRef.key=user.creds)
+          grep -A1 'name: GAWK_EVENTBUS_URL' <<<"$on" | grep -q 'value: "tls://nats:4222"'
+          grep -A1 'name: GAWK_EVENTBUS_SUBJECT_PREFIX' <<<"$on" | grep -q 'value: "gawk"'
+          grep -A1 'name: GAWK_EVENTBUS_VIEWER_INTERVAL' <<<"$on" | grep -q 'value: "5s"'
+          grep -A1 'name: GAWK_EVENTBUS_CREDS_FILE' <<<"$on" | grep -q '/etc/gawk/nats/user.creds'
+          grep -q 'secretName: relay-nats' <<<"$on"
+
+          onA=$(helm template "$admin" $ADMIN_PG --set eventbus.url=tls://nats:4222 \
+                  --set eventbus.credsSecretRef.name=admin-nats \
+                  --set eventbus.credsSecretRef.key=user.creds)
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_URL' <<<"$onA" | grep -q 'value: "tls://nats:4222"'
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_STREAM' <<<"$onA" | grep -q 'value: "GAWK_EVENTS"'
+          grep -A1 'name: GAWK_ADMIN_ACTIVITY_RETENTION' <<<"$onA" | grep -q 'value: "72h"'
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_CREDS_FILE' <<<"$onA" | grep -q '/etc/gawk/nats/user.creds'
+          grep -q 'secretName: admin-nats' <<<"$onA"
+
+          # -eventbus-insecure is deliberately NOT a chart value (docs/51 D6):
+          # it exists for the compose lane, and a deployment must not be able
+          # to turn TLS verification off by setting a value.
+          if grep -q 'EVENTBUS_INSECURE' <<<"$on$onA"; then
+            echo "::error::the insecure switch reached a chart"; exit 1
+          fi
+
+          # mTLS: the shape a NATS with verify_and_map needs, where the client
+          # certificate's subject DN IS the username. Both charts mount the
+          # cert-manager Secret and point the binary at all three files.
+          mtls=$(helm template "$relay" --set eventbus.url=nats://nats:4222 \
+                   --set eventbus.tlsSecretRef.name=gawk-server-nats-tls)
+          grep -A1 'name: GAWK_EVENTBUS_TLS_CERT' <<<"$mtls" | grep -q '/etc/gawk/nats-tls/tls.crt'
+          grep -A1 'name: GAWK_EVENTBUS_CA_FILE' <<<"$mtls" | grep -q '/etc/gawk/nats-tls/ca.crt'
+          grep -q 'secretName: gawk-server-nats-tls' <<<"$mtls"
+
+          mtlsA=$(helm template "$admin" $ADMIN_PG --set eventbus.url=nats://nats:4222 \
+                    --set eventbus.tlsSecretRef.name=gawk-admin-nats-tls \
+                    --set eventbus.manageStream=false --set eventbus.consumer=gawk-admin)
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_TLS_KEY' <<<"$mtlsA" | grep -q '/etc/gawk/nats-tls/tls.key'
+          grep -q 'secretName: gawk-admin-nats-tls' <<<"$mtlsA"
+          # And the deployment where a controller owns the JetStream objects:
+          # the portal must be able to bind rather than create, or it retries
+          # forever against a permission it will never be granted.
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_MANAGE_STREAM' <<<"$mtlsA" | grep -q 'value: "false"'
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_CONSUMER' <<<"$mtlsA" | grep -q 'value: "gawk-admin"'
+          # Default is still "this portal owns its stream".
+          grep -A1 'name: GAWK_ADMIN_EVENTBUS_MANAGE_STREAM' <<<"$onA" | grep -q 'value: "true"'
 
       - name: admin secrets render via both the literal and the Ref form
         run: |
@@ -2075,6 +2166,85 @@ jobs:
           # And the native publisher was told WHY (D15's readable close).
           grep -q 'terminated by the server operator' dev-pubsim.out
           echo "portal lane: every property held"
+
+      # R50 (docs/51 EB4): the milestone's end-to-end claim, on the one lane
+      # that has every piece — a relay publishing, a NATS to publish to, and a
+      # portal consuming. Somebody joins a room over real wire and the join
+      # shows up in the portal's activity feed, having travelled
+      # relay → JetStream → the leader's consumer → Postgres → the API.
+      #
+      # Turning the bus on recreates relay and admin with EVENTBUS_URL set;
+      # `--wait` holds until NATS is healthy and both are back up, and the
+      # portal creates the stream during start-up, so by the time /readyz
+      # answers there is somewhere for the relay's events to land.
+      - name: A room join travels the event bus into the portal's activity feed
+        run: |
+          set -euo pipefail
+          echo "EVENTBUS_URL=nats://nats:4222" >> .env
+          docker compose --profile bus up -d --build --wait
+          for i in $(seq 30); do curl -fsS http://127.0.0.1:8088/readyz >/dev/null && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8088/readyz
+
+          # A fresh token: this step is its own shell.
+          verifier="ci-bus-$RANDOM$RANDOM"
+          challenge=$(printf '%s' "$verifier" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+          loc=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+            "http://127.0.0.1:8088/idp/authorize?response_type=code&client_id=gawk-admin-spa&redirect_uri=http://localhost:8088/&scope=openid&state=s1&nonce=n1&code_challenge=$challenge&code_challenge_method=S256")
+          code=$(printf '%s' "$loc" | sed -n 's/.*[?&]code=\([^&]*\).*/\1/p')
+          TOKEN=$(curl -fsS -X POST http://127.0.0.1:8088/idp/token \
+            --data-urlencode grant_type=authorization_code --data-urlencode "code=$code" \
+            --data-urlencode redirect_uri=http://localhost:8088/ \
+            --data-urlencode client_id=gawk-admin-spa \
+            --data-urlencode "code_verifier=$verifier" | jq -r .access_token)
+
+          # The relay is publishing: the counters exist only when the bus is
+          # configured (EB1), so their presence is itself the assertion that
+          # the knob reached the process.
+          # A here-string, not `curl | grep -q`: grep exits at its first match,
+          # curl's next write gets EPIPE, and pipefail reports the success as a
+          # failure (docs/gotchas.md). The metrics body is big enough to hit it
+          # every time.
+          relay_metrics=$(curl -fsS http://127.0.0.1:2112/metrics)
+          grep -q gawk_eventbus_published_total <<<"$relay_metrics"
+
+          # Somebody joins the stack's static room, speaking the wire a browser
+          # participant speaks. The consumer runs on the elected leader, so the
+          # join is retried until the feed shows it or the budget runs out.
+          seen=0
+          for attempt in $(seq 6); do
+            # -origin because the stack sets -allowed-origins, and this dial
+            # arrives from outside the container, where the loopback bypass
+            # does not apply — the same reason gawk-echo is given one above.
+            (cd gawk-server && go run ./cmd/gawk-roomsim \
+              -url https://127.0.0.1:4433 -insecure -origin http://localhost:8080 \
+              -code devroom -nick ci-bus -duration 3s) \
+              > roomsim.out 2>&1 || { cat roomsim.out; exit 1; }
+            for i in $(seq 10); do
+              body=$(curl -fsS -H "Authorization: Bearer $TOKEN" \
+                'http://127.0.0.1:8088/api/v1/events?category=activity&limit=50') || { sleep 1; continue; }
+              if grep -q '"room.participant_joined"' <<<"$body"; then seen=1; break; fi
+              sleep 1
+            done
+            [ "$seen" = 1 ] && break
+          done
+          if [ "$seen" != 1 ]; then
+            echo "::error::a room join never reached the portal's activity feed over the bus"
+            docker compose logs nats | tail -30
+            docker compose logs admin | tail -60
+            curl -fsS http://127.0.0.1:2112/metrics > /tmp/relay-metrics.txt || true
+            grep gawk_eventbus /tmp/relay-metrics.txt || true
+            exit 1
+          fi
+
+          # The row is the bus's, not a poll's: it carries the source id the
+          # relay stamped, and the feed's two categories stay separate.
+          curl -fsS -H "Authorization: Bearer $TOKEN" \
+            'http://127.0.0.1:8088/api/v1/events?category=activity&limit=50' \
+            | jq -e '.events[] | select(.type == "room.participant_joined") | select(.category == "activity")' >/dev/null
+          curl -fsS -H "Authorization: Bearer $TOKEN" \
+            'http://127.0.0.1:8088/api/v1/events?category=moderation&limit=50' \
+            | jq -e '[.events[] | select(.category != "moderation")] | length == 0' >/dev/null
+          echo "bus lane: a join travelled relay -> JetStream -> portal"
 
       - name: The certificate survives a restart (the re-paste loop, gone)
         run: |

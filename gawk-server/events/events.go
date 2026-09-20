@@ -104,6 +104,7 @@ const (
 	TypeRoomAttached           = TypePrefix + "room.attached"
 	TypeRoomDetached           = TypePrefix + "room.detached"
 	TypeRoomAttachmentUpdated  = TypePrefix + "room.attachment_updated"
+	TypeRoomHomeChanged        = TypePrefix + "room.home_changed"
 	TypeRoomParticipantJoined  = TypePrefix + "room.participant_joined"
 	TypeRoomParticipantLeft    = TypePrefix + "room.participant_left"
 	TypeRoomParticipantUpdated = TypePrefix + "room.participant_updated"
@@ -140,6 +141,7 @@ func Types() []string {
 		TypeRoomAttached,
 		TypeRoomDetached,
 		TypeRoomAttachmentUpdated,
+		TypeRoomHomeChanged,
 		TypeRoomParticipantJoined,
 		TypeRoomParticipantLeft,
 		TypeRoomParticipantUpdated,

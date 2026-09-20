@@ -72,8 +72,15 @@ func TestMigrateParallelRunsAreSerialized(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema left dirty by concurrent migrations")
 	}
-	if v != store.MinSchemaVersion {
-		t.Fatalf("version = %d, want %d", v, store.MinSchemaVersion)
+	// AT LEAST the minimum, not exactly it. This test is one of the ones the
+	// `admin-schema-compat` job replays from the PREVIOUS release against THIS
+	// branch's schema, and an equality assertion there says "the schema is
+	// exactly the one I shipped with" — which is not the compatibility
+	// question, and which every future migration would fail (R50's 0002 was
+	// the first to try). The expand-contract rule is that a NEWER schema is
+	// fine by construction; only an older one is not.
+	if v < store.MinSchemaVersion {
+		t.Fatalf("version = %d, want at least %d", v, store.MinSchemaVersion)
 	}
 
 	// "Applied once" is only meaningful if the objects exist exactly once, so

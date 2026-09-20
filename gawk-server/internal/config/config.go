@@ -88,6 +88,35 @@ type Config struct {
 	// hosted "paid / invited" gate (docs/44 D17). It rations creation, it is
 	// not identity, exactly like PublishSecret.
 	RoomCreateSecret string
+
+	// EventBus* configure the R50 event bus (docs/51 D6). Operator-provided
+	// NATS, default off: an empty URL means no client, no goroutine and no
+	// event — byte-identical to a relay predating R50.
+	//
+	// EventBusURL is the server, e.g. tls://nats.gawk.svc:4222.
+	EventBusURL string
+	// EventBusCredsFile is an NKey/JWT .creds file. The relay's NATS user
+	// needs publish permission on <prefix>.> and nothing else.
+	EventBusCredsFile string
+	// EventBusTLSCert / EventBusTLSKey are a client certificate: the other way
+	// a NATS deployment identifies a workload. With `verify_and_map` the
+	// certificate's subject DN IS the NATS username, so there is no secret to
+	// distribute and rotation changes nothing. cert-manager writes both files,
+	// and the CA below, into one Secret.
+	EventBusTLSCert string
+	EventBusTLSKey  string
+	// EventBusCAFile verifies the SERVER. A bus on a private CA — the sane way
+	// to run an internal one — needs it; empty uses the platform trust store.
+	EventBusCAFile string
+	// EventBusSubjectPrefix is the first subject token (default "gawk"), so
+	// two fleets can share one NATS account without sharing a stream.
+	EventBusSubjectPrefix string
+	// EventBusViewerInterval coalesces the viewer-count and attachment deltas
+	// to at most one per key per interval.
+	EventBusViewerInterval time.Duration
+	// EventBusInsecure skips NATS TLS verification: the docs/41 compose lane
+	// only. Deliberately NOT a chart value, and it warns at every start.
+	EventBusInsecure bool
 	// RoomsFile points at a JSON array of static room definitions
 	// (rooms.FileRoom) for deployments without a Kubernetes API (docs/44
 	// §4.3). Reloaded on change and SIGHUP like -moderation-source=file.
@@ -423,6 +452,22 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"maximum control sessions in one room")
 	roomCreateSecret := fs.String("room-create-secret", env("GAWK_ROOM_CREATE_SECRET", ""),
 		"when set, required (as ?create=) to mint a dynamic room; static rooms are unaffected")
+	eventBusURL := fs.String("eventbus-url", env("GAWK_EVENTBUS_URL", ""),
+		"R50 NATS JetStream URL for lifecycle events (e.g. tls://nats:4222); empty disables the bus entirely")
+	eventBusCredsFile := fs.String("eventbus-creds-file", env("GAWK_EVENTBUS_CREDS_FILE", ""),
+		"path to the NATS .creds file for the relay's publish-only user")
+	eventBusTLSCert := fs.String("eventbus-tls-cert", env("GAWK_EVENTBUS_TLS_CERT", ""),
+		"client certificate for NATS mTLS; with verify_and_map its subject DN is the NATS user")
+	eventBusTLSKey := fs.String("eventbus-tls-key", env("GAWK_EVENTBUS_TLS_KEY", ""),
+		"private key for -eventbus-tls-cert")
+	eventBusCAFile := fs.String("eventbus-ca-file", env("GAWK_EVENTBUS_CA_FILE", ""),
+		"CA bundle verifying the NATS server; empty uses the platform trust store")
+	eventBusSubjectPrefix := fs.String("eventbus-subject-prefix", env("GAWK_EVENTBUS_SUBJECT_PREFIX", "gawk"),
+		"first token of every event subject (<prefix>.<scope>.<key>.<event>)")
+	eventBusViewerInterval := fs.String("eventbus-viewer-interval", env("GAWK_EVENTBUS_VIEWER_INTERVAL", "5s"),
+		"coalescing interval for viewer-count and attachment deltas on the event bus")
+	eventBusInsecure := fs.Bool("eventbus-insecure", envBool("GAWK_EVENTBUS_INSECURE", false),
+		"skip NATS TLS verification (local development only; warns at startup)")
 	roomsFile := fs.String("rooms-file", env("GAWK_ROOMS_FILE", ""),
 		"JSON array of static room definitions for non-Kubernetes deployments; reloaded on change and SIGHUP")
 	adminAPIToken := fs.String("admin-api-token", env("GAWK_ADMIN_API_TOKEN", ""),
@@ -624,6 +669,17 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		}
 	}
 
+	if (strings.TrimSpace(*eventBusTLSCert) == "") != (strings.TrimSpace(*eventBusTLSKey) == "") {
+		return Config{}, fmt.Errorf("-eventbus-tls-cert and -eventbus-tls-key must be set together")
+	}
+	eventBusViewer, err := time.ParseDuration(*eventBusViewerInterval)
+	if err != nil || eventBusViewer <= 0 {
+		return Config{}, fmt.Errorf("invalid eventbus-viewer-interval %q: want a positive duration", *eventBusViewerInterval)
+	}
+	if strings.TrimSpace(*eventBusSubjectPrefix) == "" {
+		return Config{}, fmt.Errorf("invalid eventbus-subject-prefix: want a non-empty token")
+	}
+
 	roomGrace, err := time.ParseDuration(*roomEmptyGrace)
 	if err != nil || roomGrace <= 0 {
 		return Config{}, fmt.Errorf("invalid room-empty-grace %q: want a positive duration", *roomEmptyGrace)
@@ -688,7 +744,16 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		MaxRoomBroadcasts:   maxRoomB,
 		MaxRoomParticipants: maxRoomP,
 		RoomCreateSecret:    *roomCreateSecret,
-		RoomsFile:           strings.TrimSpace(*roomsFile),
+
+		EventBusURL:            strings.TrimSpace(*eventBusURL),
+		EventBusCredsFile:      strings.TrimSpace(*eventBusCredsFile),
+		EventBusTLSCert:        strings.TrimSpace(*eventBusTLSCert),
+		EventBusTLSKey:         strings.TrimSpace(*eventBusTLSKey),
+		EventBusCAFile:         strings.TrimSpace(*eventBusCAFile),
+		EventBusSubjectPrefix:  strings.TrimSpace(*eventBusSubjectPrefix),
+		EventBusViewerInterval: eventBusViewer,
+		EventBusInsecure:       *eventBusInsecure,
+		RoomsFile:              strings.TrimSpace(*roomsFile),
 
 		MetricsAddr:        mAddr,
 		ClusterMode:        *clusterMode,
