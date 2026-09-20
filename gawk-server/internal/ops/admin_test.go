@@ -808,9 +808,33 @@ func TestAdminJWTRotationDuringAnAttackWaitsOneRefillInterval(t *testing.T) {
 		t.Fatalf("status before the refill = %d, want 401", w.Code)
 	}
 	// ...and in, on one fetch, once it has elapsed.
+	//
+	// Retried briefly, and the reason is upstream rather than here: go-oidc's
+	// RemoteKeySet lets a verification JOIN a fetch that is already in flight,
+	// and it clears that in-flight slot only after the waiters have been
+	// released. So the request above — throttled, so its "fetch" is the
+	// transport refusing — can still be occupying the slot when this one
+	// arrives, and this one is then answered with that refusal instead of
+	// fetching. One retry later the slot is free and the refill is spent as it
+	// should be. It is the window docs/42 already accepts in production ("an
+	// operator whose token was minted by the new key inside that window
+	// retries and is in"), and on a loaded CI runner it is wide enough to hit:
+	// it failed here on 2026-09-20 (run 35539921560).
+	//
+	// What the test still pins is unchanged, including the count below: a
+	// joined in-flight spends no token, so however many attempts this takes,
+	// the refill buys exactly one fetch.
 	clk.advance(time.Second)
-	if w := get(h, "/internal/admin/broadcasts", rotated); w.Code != http.StatusOK {
-		t.Fatalf("status after %v = %d, want 200 (body %q)", defaultJWKSFetchInterval, w.Code, w.Body.String())
+	var last *httptest.ResponseRecorder
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if last = get(h, "/internal/admin/broadcasts", rotated); last.Code == http.StatusOK {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if last.Code != http.StatusOK {
+		t.Fatalf("status after %v = %d, want 200 (body %q)", defaultJWKSFetchInterval, last.Code, last.Body.String())
 	}
 	if got := idp.keyFetches.Load(); got != fetches+1 {
 		t.Errorf("JWKS fetches = %d, want %d: the refill buys exactly one", got, fetches+1)
