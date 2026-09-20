@@ -1172,8 +1172,9 @@ Give each side exactly what it needs, in your NATS config or operator setup:
 authorization {
   users = [
     { user: gawk-relay, password: "…", permissions: { publish: ["gawk.>"], subscribe: [] } }
+    # $JS.ACK.> is not part of $JS.API.> and is not optional: see §12.5.
     { user: gawk-admin, password: "…", permissions: {
-        publish: ["$JS.API.>"], subscribe: ["_INBOX.>", "$JS.API.>", "gawk.>"] } }
+        publish: ["$JS.API.>", "$JS.ACK.>"], subscribe: ["_INBOX.>", "gawk.>"] } }
   ]
 }
 ```
@@ -1211,7 +1212,14 @@ from serving — moderation does not depend on the feed.
 - `GET /api/v1/relays` has a `bus` section: last message and sequence gaps per
   publishing pod, and the stream's own state.
 - On a relay: `gawk_eventbus_published_total` climbing, and
-  `gawk_eventbus_dropped_total{reason}` not.
+  `gawk_eventbus_dropped_total{reason}` not. The reason names the half that is
+  broken: `publish` is the stream (missing, or refusing the message),
+  `disconnected` is the connection (NATS unreachable, or a credential it does
+  not accept yet), `queue_full` is a relay busier than its bus.
+- Neither side gives up. A relay or portal with `eventbus.url` set re-dials
+  every 60 seconds for as long as the process lives, so a bus that was down,
+  or a grant that landed late, needs no restart — `event bus connection
+  re-established` in the log is what recovery looks like.
 - From a shell with a subscribe credential:
 
 ```sh
@@ -1256,12 +1264,26 @@ The permissions each identity needs, and the one that is easy to miss:
 | Identity | publish | subscribe |
 |---|---|---|
 | relay | `gawk.>` (or your `subjectPrefix`) | `_INBOX.>` |
-| portal | `$JS.API.CONSUMER.>` | `_INBOX.>`, `gawk.>` |
+| portal | `$JS.API.STREAM.INFO.<stream>`, `$JS.API.CONSUMER.>`, `$JS.ACK.>` | `_INBOX.>` |
+
+Three of those are easy to leave out, and all three fail as silence rather
+than as an error:
 
 **`subscribe: _INBOX.>` is required even for the relay, which only publishes.**
 A JetStream publish acknowledgement comes back over a reply inbox; without it
 the publish does not fail, it hangs — and the relay, which never waits on the
 bus, simply counts drops.
+
+**`publish: $JS.ACK.>` is required for the portal.** Acking a message is a
+publish to the reply subject JetStream put on it, and that subject is *not*
+under `$JS.API.>`. Without the grant every message is redelivered until
+`maxDeliver` gives up. Ingest deduplicates, so nothing is written twice and
+nothing looks wrong in the portal — the consumer simply never makes progress.
+
+**`publish: $JS.API.STREAM.INFO.<stream>` is required with `manageStream:
+false`.** Binding a stream by name is a `STREAM.INFO` request. A portal that
+may create streams gets this inside a wider grant; one that may not needs it
+named, or it waits forever for a stream it can see perfectly well.
 
 **Streams declared elsewhere.** If your JetStream objects are reconciled from
 git (NACK `Stream` / `Consumer` CRs, say), the portal must not create them: such
