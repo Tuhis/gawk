@@ -1,26 +1,26 @@
 {
   "asset": {
     "name": "gawk-broadcast-linux-amd64.tar.gz",
-    "sha256": "ce573e68fcc9c21e4c44175d2da0af45a02f488899dde526c9449cf271013636",
-    "size": 19493883,
-    "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast/v1.14.0/gawk-broadcast-linux-amd64.tar.gz"
+    "sha256": "c5b3dc29f67d1e40cce4afff082f18e21b9b08d413398fd645c918039dfc8425",
+    "size": 19546937,
+    "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast/v1.15.1/gawk-broadcast-linux-amd64.tar.gz"
   },
   "assets": {
     "SHA256SUMS": {
-      "sha256": "21cc51190b5a890ffc16e843f50cf55a7b309b61b57d08b15b81d162b382f44b",
+      "sha256": "eb25746929935e624bfaa3afd5e09c0a419c3a6ead5d0d72485833b7787c2915",
       "size": 102,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast/v1.14.0/SHA256SUMS"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast/v1.15.1/SHA256SUMS"
     },
     "gawk-broadcast-linux-amd64.tar.gz": {
-      "sha256": "ce573e68fcc9c21e4c44175d2da0af45a02f488899dde526c9449cf271013636",
-      "size": 19493883,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast/v1.14.0/gawk-broadcast-linux-amd64.tar.gz"
+      "sha256": "c5b3dc29f67d1e40cce4afff082f18e21b9b08d413398fd645c918039dfc8425",
+      "size": 19546937,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast/v1.15.1/gawk-broadcast-linux-amd64.tar.gz"
     }
   },
   "component": "gawk-broadcast",
-  "published_at": "2026-09-14T21:12:21Z",
-  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast/v1.14.0",
+  "published_at": "2026-09-21T20:05:48Z",
+  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast/v1.15.1",
   "schema": 1,
-  "tag": "gawk-broadcast/v1.14.0",
-  "version": "1.14.0"
+  "tag": "gawk-broadcast/v1.15.1",
+  "version": "1.15.1"
 }
