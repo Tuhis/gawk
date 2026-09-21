@@ -1,46 +1,41 @@
 {
   "asset": {
     "name": "gawk-broadcast-windows-x86_64.exe",
-    "sha256": "e6a9126f2c4aacb964ec9447ded6e4347492de1c650aa917307f2b5b83154f9a",
-    "size": 23888384,
-    "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.4.0/gawk-broadcast-windows-x86_64.exe"
+    "sha256": "0ce824a1424fedac4b958946e2ebd2b946760fc8d3142891b8e616f8bebf05ee",
+    "size": 24001536,
+    "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.5.0/gawk-broadcast-windows-x86_64.exe"
   },
   "assets": {
     "BUILD-INFO.txt": {
-      "sha256": "2ca169fc1581b941c87dfd13a069b1441270d31a96115f292e1da0dd613e60e7",
-      "size": 403,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.4.0/BUILD-INFO.txt"
-    },
-    "INSTALL.md": {
-      "sha256": "3c30bb0e277fcb4a29e9aa7e8fb8dd1894ba4626aec03c633b0e9183e0ea48b9",
-      "size": 3711,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.4.0/INSTALL.md"
+      "sha256": "005900280f10d02c69b87e34381717599eb095af1007fe89c395c2f1a688b832",
+      "size": 428,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.5.0/BUILD-INFO.txt"
     },
     "LICENSE": {
       "sha256": "31d34ab1effd9d99ecbc4feeb527b28d4624ddeaff93fd86c136fa0934ddce4f",
       "size": 11344,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.4.0/LICENSE"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.5.0/LICENSE"
     },
     "SHA256SUMS": {
-      "sha256": "f664a9bc81c3742b0eff97305702ac91dc15c814d8eaa7354057558f983faf45",
-      "size": 431,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.4.0/SHA256SUMS"
+      "sha256": "8536c3f7baf741948d929dcb7651d5ff18172e6a29c34c718b944c8e131f1a74",
+      "size": 352,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.5.0/SHA256SUMS"
     },
     "THIRD-PARTY-NOTICES.md": {
       "sha256": "c55b6f9a21be1161ca0af42ccece4c47b5c87b1a9bac95ce404748441ceebe38",
       "size": 357257,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.4.0/THIRD-PARTY-NOTICES.md"
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.5.0/THIRD-PARTY-NOTICES.md"
     },
     "gawk-broadcast-windows-x86_64.exe": {
-      "sha256": "e6a9126f2c4aacb964ec9447ded6e4347492de1c650aa917307f2b5b83154f9a",
-      "size": 23888384,
-      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.4.0/gawk-broadcast-windows-x86_64.exe"
+      "sha256": "0ce824a1424fedac4b958946e2ebd2b946760fc8d3142891b8e616f8bebf05ee",
+      "size": 24001536,
+      "url": "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-windows/v1.5.0/gawk-broadcast-windows-x86_64.exe"
     }
   },
   "component": "gawk-broadcast-windows",
-  "published_at": "2026-09-14T21:12:23Z",
-  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-windows/v1.4.0",
+  "published_at": "2026-09-20T18:52:54Z",
+  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-windows/v1.5.0",
   "schema": 1,
-  "tag": "gawk-broadcast-windows/v1.4.0",
-  "version": "1.4.0"
+  "tag": "gawk-broadcast-windows/v1.5.0",
+  "version": "1.5.0"
 }
