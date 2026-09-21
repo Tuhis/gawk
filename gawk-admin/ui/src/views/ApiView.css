@@ -110,3 +110,35 @@
   background-image: none !important;
   padding-left: 0 !important;
 }
+
+/* The Console drawer (ApiConsole.module.css) is fixed to the right edge. On a
+ * screen wide enough for Redoc's three columns AND the drawer, the wrapper
+ * gives up the drawer's width so Redoc reflows into what is left rather than
+ * having its sample panel covered. Below that, the drawer overlays — Redoc
+ * has already collapsed to one column there, and the operator closes the
+ * drawer to read. `--console-w` is defined here, once, and read by both. */
+:root {
+  --console-w: 30rem;
+}
+
+@media (min-width: 1200px) {
+  .gawk-redoc.withConsole {
+    margin-right: var(--console-w);
+  }
+}
+
+/* The floating Console toggle. Fixed under the portal's sticky header (52px,
+ * App.module.css), right-aligned where the drawer will open, above Redoc's
+ * own fixed pieces but below the drawer (50) and any dialog (100). It wears
+ * the raised surface and the portal's shadow so it reads over whatever Redoc
+ * has scrolled beneath it — a sample panel, a table, the canvas. */
+.gawk-console-toggle {
+  position: fixed;
+  top: calc(52px + var(--sp-3));
+  right: var(--sp-4);
+  z-index: 40;
+  background: var(--surface-2);
+  border-color: var(--border);
+  box-shadow: var(--shadow);
+  font-weight: 600;
+}

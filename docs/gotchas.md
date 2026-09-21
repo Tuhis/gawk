@@ -1195,6 +1195,14 @@ Add to it when a new gotcha lands in `docs/`.
   `npm_config_loglevel` silence it. Benign, and the notices generator installs
   with `--ignore-scripts` regardless. Read the script; do not infer from the
   package's reputation. ([docs/49](49-admin-openapi.md))
+- **The served `openapi.json` has no path order.** `sigs.k8s.io/yaml` converts
+  the YAML through Go maps, so `paths` (and every other object) comes out
+  sorted alphabetically; `/api/v1/bans` leads, and `/api/v1/me` is buried. The
+  repository YAML's order survives only in *arrays* — the top-level `tags`
+  list, each operation's `parameters`. Anything that reads the served
+  document for an order (the API page's Console picker did, and defaulted to
+  "List bans") must take it from `tags`, which is also the order Redoc's
+  sidebar shows. ([docs/49](49-admin-openapi.md) OA5)
 - **`//go:embed` cannot reach outside its own directory**, so a file that has
   to live at a module root for other tools (`redocly lint`,
   release-please's `extra-files`, a human browsing the repository) needs a

@@ -1,0 +1,175 @@
+/* The API console drawer (R48, docs/49 D5 revised 2026-09-21).
+ *
+ * A fixed drawer down the right edge, over the sample panel Redoc puts there,
+ * rather than a fourth column: Redoc already lays out three, and on a laptop a
+ * fourth would leave none of them readable. ApiView narrows Redoc's container
+ * while the drawer is open (see `.gawk-redoc.withConsole` in ApiView.css), so
+ * on a wide screen nothing is covered and Redoc reflows into the space that is
+ * left. On a phone the drawer is the whole width, which is the only honest
+ * layout for a form and a response on that screen.
+ *
+ * `z-index` sits below the dialog overlay (100): a confirm dialog opened from
+ * anywhere must still win. */
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--console-w, 30rem);
+  max-width: 100vw;
+  box-sizing: border-box;
+  overflow-y: auto;
+  padding: var(--sp-3) var(--sp-4) var(--sp-6);
+  background: var(--surface-2);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-2);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+/* Method chip + path, the operation's own header line. */
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.method {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  border: 1px solid currentColor;
+  line-height: 1.5;
+}
+
+/* Method colours follow Redoc's convention (green GET, blue POST, amber PUT,
+   red DELETE) so the chip here reads as the same chip in the sidebar. */
+.get {
+  color: var(--ok);
+}
+
+.post {
+  color: var(--accent);
+}
+
+.put {
+  color: var(--warning);
+}
+
+.delete {
+  color: var(--danger);
+}
+
+.path {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  word-break: break-all;
+}
+
+.docsLink {
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+.summary {
+  margin: 0 0 var(--sp-2);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.params {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
+/* The body editor is code and looks like it: the same dark panel Redoc's
+   samples use, in both schemes, for the same reason (global.css `--code-*`). */
+.body {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  background: var(--code-bg);
+  color: var(--code-text);
+  border-color: var(--border);
+  resize: vertical;
+  tab-size: 2;
+  white-space: pre;
+}
+
+/* A button that reads as a link, for "Reset" inside a caveat line. */
+.linkButton {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.linkButton:hover:not(:disabled) {
+  color: var(--accent-hover);
+  text-decoration: underline;
+  background: none;
+  border: 0;
+}
+
+.linkButton:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.response {
+  margin-top: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.responseHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.pre {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--code-bg);
+  color: var(--code-text);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 50vh;
+  overflow: auto;
+}
