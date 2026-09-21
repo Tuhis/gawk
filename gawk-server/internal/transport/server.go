@@ -861,6 +861,21 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			// session is real (docs/06 revision 2026-07-18).
 			id, pub, err = s.registry.TakeOverPublish(normID)
 			if err != nil {
+				// "Not found" here is usually a GC between the claim attempt
+				// and the takeover — but a ban landing in this very window
+				// also removes the hub, and reporting THAT as an ended
+				// broadcast tells the broadcaster and the logs the wrong
+				// thing. The re-check below is the one that makes the window
+				// airtight; this one only decides which truth to report, so
+				// it stays here rather than replacing it.
+				if rec, banned := s.bannedPublisher(normID, peer); banned {
+					s.metrics.Connection("publish", metrics.OutcomeBanned)
+					s.log.Warn("publish closed: banned during the upgrade",
+						"broadcast_key", s.broadcastKey(normID), "remote", r.RemoteAddr,
+						"target_type", string(rec.Target.Type))
+					sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeTerminatedByOperator), terminationReason)
+					return
+				}
 				// The broadcast was GC'd between the claim attempt and the
 				// takeover.
 				s.metrics.Connection("publish", metrics.OutcomeNotFound)

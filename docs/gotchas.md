@@ -1201,6 +1201,21 @@ Add to it when a new gotcha lands in `docs/`.
   one-line package *at that root* to embed it — `gawk-admin/contract.go` is
   exactly that and nothing else. A symlink does not work either: embed refuses
   them. ([docs/49](49-admin-openapi.md))
+- **A ban landing in the publish upgrade window removes the hub, so every
+  early return between the hook and the ban re-check must prefer the ban's
+  reason.** The re-check that makes the window airtight sits late, after the
+  session is tracked — correctly, because that ordering is what guarantees
+  either the kill sees the session or the check sees the ban. But the paths
+  that return BEFORE it still have to report the right thing: a claim whose
+  slot is held takes the deferred-depose path, and `TakeOverPublish` then
+  fails with "not found" because the kill removed the hub, which used to
+  close 4000 ("broadcast ended") instead of 4006 ("terminated by operator").
+  Same window, right enforcement, wrong reason — and invisible, because the
+  session dies either way. It surfaced as a one-in-dozens flake in
+  `TestPublishBanLandingInsideTheUpgradeWindowStillCloses` (CI run
+  35627508457), whose own claim subtest races the two paths; holding the
+  first session open makes the bad path deterministic.
+  ([docs/42](42-admin-moderation-portal.md) D6)
 
 **Rooms (R42)**
 
