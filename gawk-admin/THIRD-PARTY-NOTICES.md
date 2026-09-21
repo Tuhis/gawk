@@ -64,7 +64,7 @@ script for what counts as a dependency here and why.
 | `github.com/spf13/pflag` | v1.0.9 | `BSD-3-Clause` | Copyright (c) 2012 Alex Ogier. All rights reserved<br>Copyright (c) 2012 The Go Authors. All rights reserved |
 | `github.com/x448/float16` | v0.8.4 | `MIT` | Copyright (c) 2019 Montgomery Edwards⁴⁴⁸ and Faye Amacker |
 | `go.yaml.in/yaml/v2` | v2.4.4 | `Apache-2.0 OR MIT` | Copyright (c) 2006 Kirill Simonov<br>Copyright 2011-2016 Canonical Ltd |
-| `go.yaml.in/yaml/v3` | v3.0.4 | `Apache-2.0 OR MIT OR Apache-2.0` | copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd<br>Copyright 2011-2016 Canonical Ltd |
+| `go.yaml.in/yaml/v3` | v3.0.5 | `Apache-2.0 OR MIT OR Apache-2.0` | copyright staring in 2011 when the project was ported over:<br>Copyright (c) 2006-2010 Kirill Simonov<br>Copyright (c) 2006-2011 Kirill Simonov<br>Copyright (c) 2011-2019 Canonical Ltd<br>Copyright 2011-2016 Canonical Ltd |
 | `golang.org/x/crypto` | v0.57.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/net` | v0.58.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |
 | `golang.org/x/oauth2` | v0.36.0 | `BSD-3-Clause` | Copyright 2009 The Go Authors |

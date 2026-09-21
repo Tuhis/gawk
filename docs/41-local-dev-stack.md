@@ -728,8 +728,9 @@ price of skipping k3s and its kubelet.
   they can point at, and `docs/self-hosting.md` already covers that.
 - Automatic renewal in lane C-2 (structurally impossible without a DNS API).
 - Cluster mode, multi-pod federation, or anything the `e2e` kind tier covers.
-- WebKit/Safari — it cannot join a broadcast at all today (`BUGS.md`), so no
-  lane is designed around it.
+- WebKit/Safari — no lane is designed around it. A Safari viewer against the
+  default lane was verified once (2026-09-21, the fix for the relay's WebKit
+  refusal, `docs/gotchas.md`), but none of the lanes is maintained with it.
 - A `gawk`-operated DNS or certificate service of any kind.
 
 ## 8. Chunks & acceptance criteria
