@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.2.0...gawk-admin/v1.3.0) (2026-09-21)
+
+
+### Features
+
+* **admin:** R48 OA5 — a Console on the API page that sends calls as the signed-in operator ([#337](https://github.com/Tuhis/gawk/issues/337)) ([52cc418](https://github.com/Tuhis/gawk/commit/52cc418052d339729757e343b020b416fd56e973))
+
+
+### Bug Fixes
+
+* **eventbus:** never abandon a configured bus, and render maxBytes as an integer ([#334](https://github.com/Tuhis/gawk/issues/334)) ([16059b9](https://github.com/Tuhis/gawk/commit/16059b915956e6752f1691c27750c4a4ba01c8cc))
+* **server:** restore Safari/WebKit viewers — quic-go v0.62.0 + WT flow-control SETTINGS ([#342](https://github.com/Tuhis/gawk/issues/342)) ([ce63ec6](https://github.com/Tuhis/gawk/commit/ce63ec6442242611ded40301340e4475619b5377))
+
 ## [1.2.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.1.0...gawk-admin/v1.2.0) (2026-09-20)
 
 
