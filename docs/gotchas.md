@@ -111,6 +111,16 @@ Add to it when a new gotcha lands in `docs/`.
   `if` (`echo "$out" | grep -q`) silently reads as "no match" instead. Use a
   here-string (`grep -q … <<<"$var"`) — no pipeline, no SIGPIPE. Producers that
   are read to the end (`grep -c`, `grep -B/-A`) are not exposed to it.
+- **A CI staging directory named after one the checkout already has is a
+  release with no binaries** — and it fails *after* the release exists, so the
+  tag is already published. Both attach jobs staged their assets in `assets/`
+  and ran `sha256sum ./*` in it; once R44 added the icon source tree at
+  `assets/icon/`, `mkdir -p assets` silently reused it and `sha256sum` died on
+  `./icon: Is a directory`, publishing `gawk-broadcast/v1.15.0` and
+  `gawk-broadcast-windows/v1.5.0` with zero assets. The staging directory is
+  now `release-assets/`, and `attach-release-assets` fails loudly on any
+  non-file entry rather than skipping it (a skip would drop exactly the asset
+  whose absence nobody notices). Pick staging names no checkout can create.
 
 **Certificates (`serverCertificateHashes` rules — Chromium *and* Firefox)**
 

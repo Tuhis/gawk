@@ -516,29 +516,35 @@ jobs:
       - name: Package the release assets
         run: |
           set -euo pipefail
-          mkdir -p assets
+          # NOT `assets`: the repository root already has an `assets/`
+          # directory (the icon source set, R44/docs/53), and a staging
+          # directory that collides with a checked-out one is how
+          # gawk-broadcast-windows v1.5.0 published with no EXE — `sha256sum
+          # ./*` hit `assets/icon`, a directory, and the step died before the
+          # upload. Keep this name outside anything the checkout can create.
+          mkdir -p release-assets
           # No archive: a single .exe is the whole product (docs/38 D17), and
           # one file someone can click beats one they have to unpack. BUILD-INFO
           # rides alongside because this EXE is cross-compiled with
           # clang-cl rather than built by MSVC — provenance a tester would not
           # otherwise guess.
-          cp staging/gawk-broadcast.exe assets/gawk-broadcast-windows-x86_64.exe
+          cp staging/gawk-broadcast.exe release-assets/gawk-broadcast-windows-x86_64.exe
           # NOTICES/LICENSE alongside the .exe: the attribution obligations
           # attach to the distributed binary, so they must be assets a
           # downloader gets, not files that only live in the repo.
-          cp staging/BUILD-INFO.txt staging/THIRD-PARTY-NOTICES.md staging/LICENSE assets/
+          cp staging/BUILD-INFO.txt staging/THIRD-PARTY-NOTICES.md staging/LICENSE release-assets/
           # Unsigned by design (docs/38 D17) — the checksum is the only
-          # integrity check a downloader gets. Written outside `assets` and
-          # moved in, because whether a shell's `*` sees a file the same
+          # integrity check a downloader gets. Written outside the asset
+          # directory and moved in, because whether a shell's `*` sees a file the same
           # command is redirecting into is not something to rely on.
-          (cd assets && sha256sum ./* > ../SHA256SUMS)
-          mv SHA256SUMS assets/
-          ls -l assets
+          (cd release-assets && sha256sum ./* > ../SHA256SUMS)
+          mv SHA256SUMS release-assets/
+          ls -l release-assets
       - uses: ./.github/actions/attach-release-assets
         id: attach
         with:
           component: gawk-broadcast-windows
-          dir: assets
+          dir: release-assets
           # Equals github.sha on every ordinary push, so this changes nothing
           # there. On a backfill it is the commit `build` compiled, and the gate
           # still refuses unless the component's tag points at exactly it.
@@ -550,7 +556,7 @@ jobs:
         if: steps.attach.outputs.attached == 'true'
         with:
           component: gawk-broadcast-windows
-          dir: assets
+          dir: release-assets
           primary: gawk-broadcast-windows-x86_64.exe
           tag: ${{ steps.attach.outputs.tag }}
           published-at: ${{ steps.attach.outputs.published_at }}
