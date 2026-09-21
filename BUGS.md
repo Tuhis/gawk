@@ -64,13 +64,26 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 
 ## Every WebKit viewer fails to join since the quic-go bump — two defects, WebKit accepted as unsupported
 
-- **Status (decided 2026-08-04)**: **not being fixed by pinning.** The project
-  stays on current `quic-go` / `webtransport-go`; WebKit (Safari everywhere,
-  and *every* iOS browser) is an unsupported viewer platform until upstream
-  moves. Chromium and Firefox are unaffected and remain the supported set. The
-  app now detects WebKit on load and warns before the user hits the failure —
-  `gawk-app/src/lib/browserSupport.ts`, surfaced by
-  `UnsupportedBrowserModal`. This entry stays open as the record of *why*.
+- **Status (2026-09-21)**: **fix landed, awaiting a Safari pass.** Upstream
+  moved: quic-go v0.62.0 (2026-08-30) ships the defect-B fix — "offer both
+  draft-09 and draft-07 of Reliable Stream Resets … restoring interoperability
+  with Safari for WebTransport" (quic-go#5782), which confirms the
+  RESET_STREAM_AT lead below — and webtransport-go v0.13.0 rides on it. Three
+  independent reporters on webtransport-go#355 (a game-server operator,
+  go-libp2p/Kubo, and a third) now agree that with a current pair the
+  `Server.Config` trio alone brings Safari back (Safari 26.6 on macOS,
+  verified by go-libp2p's CI against a real Safari; go-libp2p#3541 shipped
+  exactly this). The relay now runs quic-go v0.62.0 + webtransport-go
+  v0.13.0 with `Config{MaxIncomingStreams, MaxIncomingUniStreams,
+  MaxIncomingData: 1<<60}`, and `TestRelayAdvertisesWebTransportFlowControlSettings`
+  is the deterministic gate for defect A. What is *not* yet done: nobody has
+  pointed a WebKit client at *this* relay. Until that pass, the app's WebKit
+  warning (`gawk-app/src/lib/browserSupport.ts`, `UnsupportedBrowserModal`,
+  which lets the user continue) stays; it is the thing to remove — with this
+  entry — once a Safari viewer joins.
+- **Previous status (decided 2026-08-04)**: not being fixed by pinning; WebKit
+  an unsupported viewer platform until upstream moved. Chromium and Firefox
+  were unaffected throughout.
 - **Found**: 2026-08-03, from a live report — broadcast `DDP4H7` showed
   "Streamer offline" on macOS Safari while Firefox on the same machine, same
   network, same minute played it fine. Reproduced on iPhone Safari too.
@@ -103,7 +116,8 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   (`ENABLE_WEBTRANSPORT_draft06`, `WT_ENABLED`, `WT_MAX_SESSIONS`) with all
   three `WT_INITIAL_MAX_*` missing.
 
-  **Defect B — an unidentified refusal of the v0.12/v0.61 pair (open).**
+  **Defect B — a refusal of the v0.12/v0.61 pair (identified; fixed in
+  quic-go v0.62.0, see Status).**
   Even with the trio restored, shipping Safari still refuses the session.
   Confirmed 2026-08-04 against the upstream reporter's live matrix: port
   **4440** is v0.12.0 + quic-go v0.61.0 *with the trio configured* and it
@@ -128,12 +142,15 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   v0.11.1 and v0.12.0 hard-requires `SupportsStreamResetPartialDelivery` — so
   4436 advertises the extension at the old high codepoint and 4440 at the new
   low one, and as far as we can tell that is the only wire-visible delta.
-  **Not proven**, and one fact cuts against it: a transport-parameter objection
-  would normally be a handshake-level `CONNECTION_CLOSE`, not the clean H3
-  cancel observed. Confirmable from a qlog on both ports.
-  **If it is the cause, no configuration of webtransport-go v0.12.0 can serve
-  Safari** — it mandates the extension, quic-go v0.61 only sends `0x1d`, and
-  there is no knob for either.
+  **Confirmed upstream 2026-08-30**: quic-go#5782 ("the problem is that
+  Safari breaks with resetStreamAtParameterID (draft-9) only; adding
+  legacyResetStreamAtParameterID (draft-6/7) back fixes Safari again") sends
+  both codepoints from v0.62.0 on. So for the v0.12/v0.61 pair the reading
+  stood: no configuration of webtransport-go v0.12.0 could serve Safari —
+  it mandates the extension, quic-go v0.61 only sent `0x1d`, and there was no
+  knob for either. The one fact that cut against it (a clean H3 cancel rather
+  than a handshake-level `CONNECTION_CLOSE`) was simply how WebKit chooses to
+  decline.
 - **Why the relay logged nothing** — and this is the fact that ruled out every
   other hypothesis: the failure happens during H3 SETTINGS / session
   negotiation, *upstream* of `CheckOrigin` and route dispatch. So there is no
@@ -159,9 +176,13 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   deployed 2026-08-02.
 - **Upstream**:
   [quic-go/webtransport-go#355](https://github.com/quic-go/webtransport-go/issues/355)
-  — *"Safari iOS Fails from SETTINGS_WT_MAX_SESSIONS"*, **open, zero comments,
-  no maintainer response, no PR**, and v0.12.0 is still `@latest` on the module
-  proxy. Waiting for upstream is not currently a plan. The reporter also keeps
+  — *"Safari iOS Fails from SETTINGS_WT_MAX_SESSIONS"*, still open and still
+  without a maintainer response as of 2026-09-21, but with three
+  corroborating reports (2026-08-20, 2026-09-15, 2026-09-17) and a
+  cross-reference from go-libp2p#3541. The library still sends only
+  `WT_MAX_SESSIONS` with a nil `Config`, so every server that never touches
+  `Config` stays broken for Safari; the issue is now about that default. The
+  reporter also keeps
   a live matrix at `echo.semantic-ui.com` — **:4433** (v0.12.0, nil `Config`),
   **:4436** (v0.11.0, works), **:4440** (v0.12.0 + quic-go v0.61.0, trio
   configured — the one that proves defect B), and `/exhibits/quic-go` runs them
@@ -177,9 +198,9 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   So the fifth endpoint upstream says "does not exist yet" **cannot** be built,
   and "roll back only webtransport-go, keep quic-go v0.61" is not an option
   either. It is both or neither.
-- **What defect A's fix looks like, for whenever it lands** (it is spec
-  correctness and should ride along with any future bump, but it is *not* the
-  Safari fix): set the exported `Config` on `webtransport.Server` —
+- **Defect A's fix, landed 2026-09-21 in `transport/server.go`** (spec
+  correctness on its own; the Safari fix only together with quic-go
+  v0.62.0): set the exported `Config` on `webtransport.Server` —
   ```go
   s.wt = &webtransport.Server{
       Config: &webtransport.Config{

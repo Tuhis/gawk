@@ -365,6 +365,28 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 	}
 
 	s.wt = &webtransport.Server{
+		// Session flow-control limits (draft-ietf-webtrans-http3 §3.1). The
+		// three WT_INITIAL_MAX_* SETTINGS are mandatory whenever
+		// WT_MAX_SESSIONS > 1 — which webtransport-go always advertises —
+		// and WebKit enforces that: with a nil Config the relay sends only
+		// three SETTINGS and Safari (macOS and every iOS browser) refuses
+		// the session before the extended CONNECT, leaving no relay-side
+		// trace (BUGS.md, quic-go/webtransport-go#355). The values are the
+		// largest the settings carry and never bind — the QUIC limits stay
+		// the effective caps — and they match what v0.11.1 put on the wire.
+		//
+		// Server.Config is the only door: writing the keys into
+		// H3.AdditionalSettings is wiped by Server.init. Setting it also
+		// enables capsule flow control with any peer that advertises the
+		// trio too. Chromium and Firefox do not, so nothing changes for
+		// them; with a peer that does, OpenUniStream returns
+		// StreamLimitReachedError instead of blocking, which the keyframe
+		// path already treats as a drop (OpenKeyframeStream).
+		Config: &webtransport.Config{
+			MaxIncomingStreams:    1 << 60,
+			MaxIncomingUniStreams: 1 << 60,
+			MaxIncomingData:       1 << 60,
+		},
 		H3: &http3.Server{
 			Addr: cfg.Addr,
 			// ConfigureTLSConfig adds the h3 ALPN; webtransport-go passes
