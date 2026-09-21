@@ -2,9 +2,9 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 2779,
+      "covered": 2781,
       "label": "admin",
-      "pct": 78.7,
+      "pct": 78.8,
       "total": 3530,
       "unit": "statements"
     },
@@ -18,10 +18,10 @@
     },
     "gawk-app": {
       "component": "gawk-app",
-      "covered": 7990,
+      "covered": 7973,
       "label": "app",
       "pct": 81.1,
-      "total": 9847,
+      "total": 9830,
       "unit": "lines"
     },
     "gawk-broadcast": {
