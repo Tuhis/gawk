@@ -3795,7 +3795,7 @@ is the one place a release does not reach.
   outbound call the apps make that is not to a relay and telemetry is
   default-off, so the request must carry nothing identifying: a plain
   `GET` for a static file, no version or ID in the URL or headers.
-  INSTALL.md and the R23 terms name it.
+  The READMEs and the R23 terms name it.
 
 **Design** ([docs/47](docs/47-desktop-update-check.md)):
 
@@ -3827,7 +3827,7 @@ mirrors' golden vectors and close codes, not by refusing old clients); any
 relay-driven update channel.
 
 **Depends on**: R46 (shipped). R44 is a natural sibling (both touch the
-same release packaging and INSTALL docs) and the two should land as
+same release packaging and READMEs) and the two should land as
 separate PRs.
 
 **Status**: designed 2026-09-15, not started — chunks AU1–AU5 in
@@ -4275,7 +4275,7 @@ the version gates that decide the floor:
 | # | Decision | Choice |
 |---|---|---|
 | OD1 | Code shape | **One shared Cargo workspace, two binaries.** `gawk-broadcast-windows/` is renamed **`gawk-broadcast-desktop/`**; `wire`, `engine` and the portable halves of `audio` (Opus, framer, level meter) are shared; `capture`/`encode`/the platform half of `audio` grow `cfg(target_os = "macos")` siblings or sibling crates; `app` splits into the Windows and macOS shells. One workspace version, one release-please component (`gawk-broadcast-desktop/vX.Y.Z`), one changelog — **a Windows-only fix bumps the macOS binary too, and that is accepted.** |
-| OD2 | Rename sequencing | **MB0, a pure rename landed as its own PR before any macOS code**: zero behaviour change, the Windows artifact byte-identical modulo the embedded path/name strings, every reference (workflow, release-please, R46 manifest path, site card, docs/38, CLAUDE.md, INSTALL) updated in that one PR. |
+| OD2 | Rename sequencing | **MB0, a pure rename landed as its own PR before any macOS code**: zero behaviour change, the Windows artifact byte-identical modulo the embedded path/name strings, every reference (workflow, release-please, R46 manifest path, site card, docs/38, CLAUDE.md, READMEs) updated in that one PR. |
 | OD3 | Signing and distribution | **Apple Developer ID + notarization**, from the first release artifact. The signing certificate and notarization credentials are repository secrets used only in the release job (an App Store Connect API key, so nothing identifying ever appears in the tree or the logs); PRs build ad-hoc-signed test bundles and attach nothing (the existing gate). Distributed as a notarized, stapled `.app` in a `.zip` on the GitHub Release, listed on the R46 download card. |
 | OD4 | CI host | **GitHub-hosted `macos-latest` (Apple Silicon), path-filtered** — the one deliberate exception to docs/38 D18's "everything on the self-hosted Linux runners". Free and unlimited on a public repo, has the SDK, `codesign` and `notarytool` natively, and avoids the Xcode SLA grey zone of extracting the SDK onto Linux. Host-side lint/tests of the portable crates keep running on the Linux runners in the existing job. |
 | OD5 | Floor and architecture | **macOS 14 (Sonoma)+, Apple Silicon only.** 14.0 brings the system picker, 13+ brings SCK audio, 14.2's process taps are runtime-checked if ever needed. Intel Macs are pointed at the browser broadcaster (which hardware-encodes there); no universal binary and no x86_64 verification surface. |
@@ -4326,7 +4326,7 @@ the version gates that decide the floor:
   second platform asset. `cargo-deny` and the notices gate cover the new
   crates.
 - **Docs**: `docs/54-macos-native-broadcaster.md` (design + chunks
-  MB0–MB8 + an on-hardware verification register), INSTALL section,
+  MB0–MB8 + an on-hardware verification register), README section,
   `docs/gotchas.md` entries for the TCC/signing and SCK pool rules,
   `docs/self-hosting.md` untouched.
 

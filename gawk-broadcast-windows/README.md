@@ -33,10 +33,12 @@ gh release download gawk-broadcast-windows-v1.1.0 --pattern '*.exe'        # spe
 (Releases newer than v1.1.0 are tagged `gawk-broadcast-windows/vX.Y.Z` —
 the separator changed repo-wide in August 2026; older tags use the dash.)
 
-`INSTALL.md`, `BUILD-INFO.txt` and `SHA256SUMS` are attached alongside it.
+`BUILD-INFO.txt` and `SHA256SUMS` are attached alongside it.
 The EXE is unsigned by design (distribution is to known operators, docs/38
 D17), so the checksum is the integrity check — and **SmartScreen will warn
-about an unknown publisher on first run**: "More info" → "Run anyway".
+about an unknown publisher on first run**: "More info" → "Run anyway". If
+that button is missing, right-click the exe → Properties → tick **Unblock**
+→ OK, then run it again.
 
 For an *unreleased* build, every green CI run uploads an artifact:
 
@@ -51,7 +53,38 @@ The same string is the first line of `debug.log` and the `appVersion` key
 in **Copy diagnostics**. There is no `--version` flag: a windowed EXE has
 no console to print to.
 
-## Troubleshooting: `debug.log`
+## Requirements
+
+| Requirement | Check |
+|---|---|
+| Windows 10 version 2004 (build 19041) or newer, x86-64 | `winver` — per-app audio capture needs 2004+ |
+| A hardware H.264 encoder (any NVIDIA/AMD/Intel GPU from the last decade) | just run it; it tells you. There is no software encoder — use the browser broadcaster instead |
+
+Nothing else: the EXE is fully static — one file, no runtimes, no
+installer. On Windows 10 builds below 20348 captured windows and screens
+show the system's yellow capture border (the API to remove it does not
+exist there); Windows 11 removes it. Closing the window ends the broadcast
+— there is no tray icon and no background presence.
+
+## When it doesn't work
+
+- **"No hardware H.264 encoder was found"** — the app refuses rather than
+  software-encode. Check GPU drivers are installed (a fresh VM has none);
+  otherwise use the browser broadcaster.
+- **Sharing an app, viewers hear nothing** — some games play audio through
+  a helper process the per-app capture can't see. The app shows a hint
+  after ~10 s of silence with a one-click switch to whole-system audio.
+- **Shared window went black/frozen for viewers** — minimized windows
+  aren't composited, so nothing can capture them. Restore the window
+  (occluded/covered is fine).
+- **"Could not reach the relay"** — the relay speaks UDP on port 4433
+  (QUIC). Networks that block UDP block this.
+- **Toasts don't appear during a fullscreen game** — Focus Assist eats
+  them; the in-window status is the truth.
+- Anything else: expand **Details**, click **Copy diagnostics**, and send
+  the JSON along with `debug.log`, below.
+
+### `debug.log`
 
 The app is a windowed EXE — nothing useful ever appears on stderr.
 Instead every launch writes **`%APPDATA%\gawk\debug.log`** (next to

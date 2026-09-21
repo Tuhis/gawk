@@ -120,8 +120,7 @@ OD2. Directory, workspace name, workflow file (`broadcast-windows.yml` →
 `broadcast-desktop.yml`), release-please component, `coverage-floors.json`
 key, `deny.toml` path in `ci.yml`, `renovate.json5`, `THIRD-PARTY-NOTICES`,
 root README (module table, badge filter), CLAUDE.md repository layout,
-docs/38 (a dated note at the top, not a rewrite), `docs/gotchas.md` paths,
-INSTALL.md. What does **not** change in MB0: the Windows EXE's file name,
+docs/38 (a dated note at the top, not a rewrite), `docs/gotchas.md` paths. What does **not** change in MB0: the Windows EXE's file name,
 the release asset name, the R46 manifest path
 `releases/gawk-broadcast-windows/latest.json` (D14 keeps manifests keyed by
 distribution, so R45's compiled-in URL and the site card are untouched), the
@@ -408,7 +407,7 @@ Rules:
 - **PRs never sign.** `pull_request` runs (including from forks, which see
   no secrets) build an **ad-hoc-signed** bundle (`codesign -s -`) uploaded as
   a CI artifact for the owner's own testing, with `BUILD-INFO.txt` saying so
-  and the INSTALL doc's "test build" section explaining the consequence: an
+  and the README's "test build" note explaining the consequence: an
   ad-hoc build must be opened via System Settings → Privacy & Security →
   Open Anyway, and any TCC grant it acquires dies with the build. Signed,
   notarized bundles are produced only on `push` to `main` and by the attach
@@ -438,7 +437,7 @@ Rules:
   `LSApplicationCategoryType = public.app-category.video`,
   `CFBundleIconFile` when R44 supplies the `.icns` — until then no icon,
   like the other two apps today), `entitlements.plist`, and the same
-  README/INSTALL/THIRD-PARTY-NOTICES/LICENSE set the Windows artifact
+  README/THIRD-PARTY-NOTICES/LICENSE set the Windows artifact
   carries. No installer, no `.dmg` (a stapled bundle in a zip opens clean;
   a `.dmg` would need its own notarization and buys a drag-to-Applications
   animation).
@@ -703,7 +702,7 @@ milestone.
 | Secrets referenced by name only; no identity, Team ID, key ID or address in the tree or in any log line; a run missing a secret fails the attach loudly | review + CI |
 | PR builds are ad-hoc signed and say so in `BUILD-INFO.txt`; `push` to `main` and the attach job sign + notarize + staple | CI, observed on a PR and on `main` |
 | Attach: zip beside the EXE on the desktop release; `SHA256SUMS` covers both; **two** manifests written; the site's third card renders from the macOS one; README badge filter updated | the first release after merge |
-| INSTALL section for macOS (fresh-account first run, the ad-hoc test-build caveat, the "when it doesn't work" list); docs/46 dated note (component = distribution); ROADMAP status; CLAUDE.md layout; gotchas synced | review |
+| README section for macOS (fresh-account first run, the ad-hoc test-build caveat, the "when it doesn't work" list); docs/46 dated note (component = distribution); ROADMAP status; CLAUDE.md layout; gotchas synced | review |
 
 ### MB8 — The on-hardware acceptance pass
 

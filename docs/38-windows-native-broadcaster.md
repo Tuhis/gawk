@@ -10,6 +10,12 @@ on the Windows runner; the criteria marked *manual* in §8 — G1/G2/G6–G9 and
 the §10 V-register — remain open until the on-hardware pass on the gaming
 PC.
 
+**2026-09-21**: the `INSTALL.md` WB8 shipped beside the EXE was removed. A
+single static EXE has nothing to install; its requirements, the SmartScreen
+step and the "when it doesn't work" list now live in the module README, and
+the site's download card carries the SmartScreen step for downloaders who
+never see the repo. Mentions of INSTALL.md below are historical.
+
 A Windows counterpart to the Linux native broadcaster (R14, `gawk-broadcast`),
 with two capture modes selectable at start — **share one application** (its
 window plus that app's own audio, independent of everything else on the
