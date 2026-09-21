@@ -36,11 +36,12 @@ describe('listOperations', () => {
       { name: 'id', in: 'path', required: true, description: 'The ban.', enum: null, hint: 'uuid' },
     ]);
     const list = byId('listBans');
-    expect(list.params.map((p) => p.name)).toEqual(['state', 'limit', 'afterId']);
-    expect(list.params[0].enum).toEqual(['active', 'all']);
-    expect(list.params[0].hint).toBe('default active');
-    expect(list.params[1].hint).toBe('default 50, ≤ 500');
-    expect(list.params[2].required).toBe(false);
+    expect(list.params.map((p) => p.name)).toEqual(['scope', 'state', 'limit', 'afterId']);
+    expect(list.params[0].required).toBe(true);
+    expect(list.params[1].enum).toEqual(['active', 'all']);
+    expect(list.params[1].hint).toBe('default active');
+    expect(list.params[2].hint).toBe('default 50, ≤ 500');
+    expect(list.params[3].required).toBe(false);
   });
 
   it('pre-fills the body from the documented example, and with {} when there is none', () => {
@@ -72,12 +73,22 @@ describe('buildRequestPath', () => {
     expect(() => buildRequestPath(byId('removeBan'), { id: '' })).toThrow(/id is required/);
   });
 
-  it('sends only the query parameters that hold something', () => {
-    expect(buildRequestPath(byId('listBans'), { state: 'all', limit: '', afterId: '' })).toBe(
-      'api/v1/bans?state=all',
+  it('sends only the optional query parameters that hold something', () => {
+    expect(buildRequestPath(byId('listBans'), { scope: 'x', state: 'all', limit: '', afterId: '' })).toBe(
+      'api/v1/bans?scope=x&state=all',
     );
-    expect(buildRequestPath(byId('listBans'), {})).toBe('api/v1/bans');
-    expect(buildRequestPath(byId('listBans'), { limit: '5', state: 'all' })).toBe('api/v1/bans?state=all&limit=5');
+    expect(buildRequestPath(byId('listBans'), { scope: 'x' })).toBe('api/v1/bans?scope=x');
+    expect(buildRequestPath(byId('listBans'), { limit: '5', state: 'all', scope: 'x' })).toBe(
+      'api/v1/bans?scope=x&state=all&limit=5',
+    );
+  });
+
+  // The field says "required"; the request must not quietly leave without
+  // it. Same rule as a path parameter — the server's 400 is not the place
+  // to learn a field was mandatory. (Review of PR #337.)
+  it('refuses an empty REQUIRED query parameter like an empty path one', () => {
+    expect(() => buildRequestPath(byId('listBans'), {})).toThrow(/scope is required/);
+    expect(() => buildRequestPath(byId('listBans'), { scope: '', state: 'all' })).toThrow(/scope is required/);
   });
 });
 

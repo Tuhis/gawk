@@ -171,10 +171,13 @@ export function listOperations(doc: Document): Operation[] {
  * The request path for an operation and the values typed into it: RELATIVE,
  * `api/v1/...` with no leading slash, exactly like `client.ts`'s `BASE`.
  *
- * Path values are percent-encoded per segment. Query parameters travel only
- * when they hold something — an empty field means "not sent", never
- * `?limit=`. Throws when a path parameter is empty: the alternative is a
- * request for `bans/` that the server would answer with a misleading 404.
+ * Path values are percent-encoded per segment. OPTIONAL query parameters
+ * travel only when they hold something — an empty field means "not sent",
+ * never `?limit=`. Throws when a REQUIRED parameter is empty, path or query
+ * alike: for a path the alternative is a request for `bans/` that the server
+ * answers with a misleading 404; for a query it is a field the form calls
+ * "required" leaving quietly and the server's 400 being where the operator
+ * learns it meant it (review of PR #337).
  */
 export function buildRequestPath(op: Operation, values: Record<string, string>): string {
   let path = op.path;
@@ -188,6 +191,7 @@ export function buildRequestPath(op: Operation, values: Record<string, string>):
   for (const p of op.params) {
     if (p.in !== 'query') continue;
     const value = values[p.name] ?? '';
+    if (value === '' && p.required) throw new Error(`${p.name} is required`);
     if (value !== '') qs.set(p.name, value);
   }
   const query = qs.toString();

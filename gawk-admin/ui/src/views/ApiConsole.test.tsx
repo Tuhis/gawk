@@ -97,14 +97,20 @@ describe('the API console (docs/49 D5, revised 2026-09-21)', () => {
     expect(document.body.textContent).not.toContain(session.accessToken());
   });
 
-  it('carries query parameters that were filled and drops the empty ones', async () => {
+  it('carries query parameters that were filled and drops the empty optional ones', async () => {
     const session = mount(() => json({ bans: [] }));
     await choose('listBans');
+    // A required query parameter left blank is refused before anything leaves.
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByText('scope is required')).toBeTruthy();
+    expect(session.calls).toHaveLength(0);
+
+    fireEvent.change(screen.getByLabelText(/^scope/), { target: { value: 'x' } });
     fireEvent.change(screen.getByLabelText(/^state/), { target: { value: 'all' } });
     fireEvent.change(screen.getByLabelText(/^limit/), { target: { value: '5' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await screen.findByText('200');
-    expect(session.calls[0].path).toBe('api/v1/bans?state=all&limit=5');
+    expect(session.calls[0].path).toBe('api/v1/bans?scope=x&state=all&limit=5');
     // A sensitive response says so, in the document's own words.
     expect(screen.getByText(/Sensitive: A ban target may be a raw broadcast ID\./)).toBeTruthy();
   });

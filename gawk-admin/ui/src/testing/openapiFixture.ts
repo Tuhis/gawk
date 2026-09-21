@@ -32,6 +32,10 @@ export const DOC: Document = {
         summary: 'List bans',
         'x-gawk-roles': ['operator'],
         parameters: [
+          // A REQUIRED query parameter. The real contract has none today; the
+          // fixture carries one so the console's handling of it is pinned
+          // before the first one lands.
+          { name: 'scope', in: 'query', required: true, schema: { type: 'string' } },
           { name: 'state', in: 'query', schema: { type: 'string', enum: ['active', 'all'], default: 'active' } },
           { name: 'limit', in: 'query', schema: { type: 'integer', default: 50, maximum: 500 } },
           { name: 'afterId', in: 'query', schema: { type: 'string', format: 'uuid' } },
