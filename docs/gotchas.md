@@ -1302,6 +1302,23 @@ Add to it when a new gotcha lands in `docs/`.
   list whenever a kind assert contradicts the relay's own logs.
   ([docs/44](44-rooms.md) §11.2, PR #302)
 
+- **An informer view can be OLDER than your own write, so it cannot fence
+  anything on its own.** A reflector serves what it has: its initial list can
+  predate a write this process just made, a watch event can arrive late, and a
+  relist after a watch error replays whatever the API server had then.
+  `roomcluster.observe` treated any view that did not show this pod's lease as
+  a force-take, so a pod could drop a room lease it genuinely held — cancelling
+  its renew loop and handing the room away — because its own informer replayed
+  the pre-adopt entry. Fence on a monotonic field instead (here the lease
+  generation, `home.Generation + 1` per take) and leave what a view cannot
+  settle to the authoritative read. It surfaced as a flaky
+  `TestRenewLoopKeepsTheLeaseLive` (CI run 35539921560); `GOMAXPROCS=1` is
+  worth trying as a way to make this class of scheduling-dependent bug
+  deterministic, but it is not a reliable lever — it reproduced 25/25 on one
+  machine and 0/25 on another. The direct test
+  (`TestAStaleInformerViewDoesNotDropAHeldLease`) needs no scheduling luck and
+  is what pins it. ([docs/44](44-rooms.md) §4.5)
+
 **CI / deployment**
 
 - **`-race` and a coverage profile in one `go test` run compound

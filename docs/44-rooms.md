@@ -229,7 +229,13 @@ tile.
   expectation made concrete.
 - **Fencing**: a stale home that comes back finds its generation rejected on
   renew, closes its sessions with a non-terminal code, and they reconnect
-  to wherever the load balancer sends them.
+  to wherever the load balancer sends them. **The fence is the generation,
+  and only a generation at or beyond ours counts as a take** (fixed
+  2026-09-21): an informer view older than this pod's own adopt — its
+  initial list, a late watch event, a relist after a watch error — shows no
+  lease or an older one, and treating that as a force-take made a pod
+  abandon a room it owned. A view that cannot settle the question is left
+  to the renew loop's own read, which is authoritative.
 - **Drain**: on pod drain the holder releases the lease (holder cleared,
   generation kept) after closing sessions with 4002, so the next join
   claims without waiting for staleness.
