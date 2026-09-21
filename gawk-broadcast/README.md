@@ -22,10 +22,11 @@ gawk-broadcast -url https://relay.example   # …or somebody else's
 > 📸 **Screenshot coming here** — the GUI mid-broadcast with live stats.
 
 It speaks the existing publisher protocol byte for byte — zero server,
-wire or viewer changes — by importing the relay's own `wire` package. The
-browser broadcaster remains the path for Windows/macOS, for Linux machines
-without a usable hardware encoder, and for anyone who doesn't want to
-install anything.
+wire or viewer changes — by importing the relay's own `wire` package. Windows
+has its own native broadcaster
+([`gawk-broadcast-windows`](../gawk-broadcast-windows/README.md)); the browser
+broadcaster remains the path for macOS, for Linux machines without a usable
+hardware encoder, and for anyone who doesn't want to install anything.
 
 **Why does this exist?** The browser cannot hardware-encode on Linux — a
 platform gap, not a tuning problem. WebCodecs hardware encode ships on
