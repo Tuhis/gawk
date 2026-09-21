@@ -164,15 +164,18 @@ Add to it when a new gotcha lands in `docs/`.
   to `1 << 60` and `TestRelayAdvertisesWebTransportFlowControlSettings`
   reads the SETTINGS back with a bare HTTP/3 client. Setting `Config` also
   turns capsule flow control on with any peer that advertises the trio;
-  Chromium and Firefox do not, so nothing changes for them.
-  (`BUGS.md`, quic-go/webtransport-go#355)
+  Chromium and Firefox do not, so nothing changes for them. Verified against
+  real Safari 2026-09-21; the full forensic record (both defects, the
+  upstream live matrix, what was ruled out) is the BUGS.md entry "Every
+  WebKit viewer fails to join since the quic-go bump", removed by PR #342 —
+  read it from git history. (quic-go/webtransport-go#355)
 - **`quic-go` and `webtransport-go` minor versions are one wire-compatibility
   surface and move together** — neither cross-pairing compiles, and the
   v0.61/v0.12 pair broke Safari for *two* independent reasons (the SETTINGS
   above, and quic-go sending only the draft-09 `RESET_STREAM_AT` transport
-  parameter, fixed in v0.62.0 by sending both codepoints). CI has no WebKit
-  client, so a bump of that pair is the one dependency update that needs a
-  Safari pass before it rolls to the fleet. (`BUGS.md`)
+  parameter, fixed in v0.62.0 by sending both codepoints — quic-go#5782). CI
+  has no WebKit client, so a bump of that pair is the one dependency update
+  that needs a Safari pass before it rolls to the fleet.
 - **Session close code hiding on datagram reads**: In both Go and JS, when a session is closed with a custom error code, reading from the datagram queue/channel returns only a generic `EOF` or channel-closed status. To retrieve the actual close code (e.g. `4000`), the client must listen to `wt.closed` (JS) or block on `AcceptStream` / `AcceptUniStream` (Go). ([docs/06](06-multi-broadcaster.md))
 - **…and `wt.closed` can lose the settle-order race**: on a server close, the
   datagram read loop and the `wt.closed` promise settle in unspecified,

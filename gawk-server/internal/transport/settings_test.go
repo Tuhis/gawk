@@ -11,8 +11,8 @@ import (
 	"github.com/quic-go/quic-go/http3"
 )
 
-// The WebTransport SETTINGS WebKit requires (BUGS.md "Every WebKit viewer
-// fails to join since the quic-go bump", defect A). draft-ietf-webtrans-http3
+// The WebTransport SETTINGS WebKit requires (docs/gotchas.md, the
+// webtransport-go `Server.Config` entry; quic-go/webtransport-go#355). draft-ietf-webtrans-http3
 // makes the three WT_INITIAL_MAX_* settings mandatory whenever
 // WT_MAX_SESSIONS > 1, and webtransport-go always advertises
 // WT_MAX_SESSIONS = 2^62-1. Since v0.12.0 the library sends the trio only when

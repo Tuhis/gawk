@@ -371,7 +371,7 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 		// and WebKit enforces that: with a nil Config the relay sends only
 		// three SETTINGS and Safari (macOS and every iOS browser) refuses
 		// the session before the extended CONNECT, leaving no relay-side
-		// trace (BUGS.md, quic-go/webtransport-go#355). The values are the
+		// trace (docs/gotchas.md, quic-go/webtransport-go#355). The values are the
 		// largest the settings carry and never bind — the QUIC limits stay
 		// the effective caps — and they match what v0.11.1 put on the wire.
 		//
