@@ -26,7 +26,7 @@
     },
     "gawk-broadcast": {
       "component": "gawk-broadcast",
-      "covered": 3527,
+      "covered": 3526,
       "label": "broadcast-linux",
       "pct": 66.3,
       "total": 5318,
