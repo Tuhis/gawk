@@ -405,7 +405,7 @@ jobs:
           # libopus); LICENSE is the repo root's (working-directory is
           # gawk-broadcast-windows). Both ride to the release page via the
           # attach job's explicit cp list — keep the two lists in step.
-          cp README.md INSTALL.md THIRD-PARTY-NOTICES.md ../LICENSE dist/
+          cp README.md THIRD-PARTY-NOTICES.md ../LICENSE dist/
           {
             echo "gawk-broadcast-windows (R34, docs/38)"
             # The commit COMPILED, which on a backfill is not github.sha —
@@ -518,17 +518,15 @@ jobs:
           set -euo pipefail
           mkdir -p assets
           # No archive: a single .exe is the whole product (docs/38 D17), and
-          # one file someone can click beats one they have to unpack. INSTALL
-          # rides alongside because its SmartScreen note is what the first run
-          # needs, and BUILD-INFO because this EXE is cross-compiled with
+          # one file someone can click beats one they have to unpack. BUILD-INFO
+          # rides alongside because this EXE is cross-compiled with
           # clang-cl rather than built by MSVC — provenance a tester would not
           # otherwise guess.
           cp staging/gawk-broadcast.exe assets/gawk-broadcast-windows-x86_64.exe
           # NOTICES/LICENSE alongside the .exe: the attribution obligations
           # attach to the distributed binary, so they must be assets a
           # downloader gets, not files that only live in the repo.
-          cp staging/INSTALL.md staging/BUILD-INFO.txt \
-             staging/THIRD-PARTY-NOTICES.md staging/LICENSE assets/
+          cp staging/BUILD-INFO.txt staging/THIRD-PARTY-NOTICES.md staging/LICENSE assets/
           # Unsigned by design (docs/38 D17) — the checksum is the only
           # integrity check a downloader gets. Written outside `assets` and
           # moved in, because whether a shell's `*` sees a file the same

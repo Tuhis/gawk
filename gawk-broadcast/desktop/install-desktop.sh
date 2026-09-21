@@ -4,8 +4,13 @@
 # it copies the share/ tree next to this script into
 # ${XDG_DATA_HOME:-~/.local/share} and points the entry at the
 # gawk-broadcast-gui beside it, so the launcher, taskbar and notifications
-# show the gawk icon. It is what INSTALL.md's two manual cp lines do, plus the
-# Exec= rewrite those lines leave to you.
+# show the gawk icon. By hand, for a path without spaces or quotes, it is:
+#
+#   cp -r share/applications share/icons ~/.local/share/
+#   sed -i "s|^Exec=.*|Exec=$PWD/gawk-broadcast-gui|" \
+#     ~/.local/share/applications/fi.ioio.gawk.broadcast.desktop
+#
+# The script handles the desktop entry's escaping rules for any path.
 #
 #   ./install-desktop.sh              install for this user
 #   ./install-desktop.sh --uninstall  remove exactly what install put there

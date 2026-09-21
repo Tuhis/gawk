@@ -59,9 +59,9 @@ beside them — plus `INSTALL.md`, `BUILD-INFO.txt`, and the launcher entry
 and icon set (`share/`, installed for your user by `install-desktop.sh`;
 see INSTALL.md), with a `SHA256SUMS` asset beside it (the binaries are
 unsigned, so the checksum is the integrity check). Every green CI run also uploads an artifact
-(`gawk-broadcast-linux-amd64-<sha>`) for testing unreleased builds —
-[`INSTALL.md`](INSTALL.md) is written for a tester with a binary and no
-context.
+(`gawk-broadcast-linux-amd64-<sha>`) for testing unreleased builds.
+[`INSTALL.md`](INSTALL.md) is the short install path for someone who has
+only the tarball.
 
 Built on Ubuntu 24.04, but the actual floor is **glibc 2.34** (measured
 per build into `BUILD-INFO.txt`), so Ubuntu 22.04+, Debian 12+, RHEL 9+,
