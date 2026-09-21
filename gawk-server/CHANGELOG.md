@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.28.1](https://github.com/Tuhis/gawk/compare/gawk-server/v0.28.0...gawk-server/v0.28.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **eventbus:** never abandon a configured bus, and render maxBytes as an integer ([#334](https://github.com/Tuhis/gawk/issues/334)) ([16059b9](https://github.com/Tuhis/gawk/commit/16059b915956e6752f1691c27750c4a4ba01c8cc))
+* **server:** keep a room lease when the informer replays an older view ([#338](https://github.com/Tuhis/gawk/issues/338)) ([0dc9936](https://github.com/Tuhis/gawk/commit/0dc9936812b6f3fe02332ad33a477c3643a2e3d6))
+* **server:** report a ban as 4006 when it lands on the takeover path ([#343](https://github.com/Tuhis/gawk/issues/343)) ([d1de05b](https://github.com/Tuhis/gawk/commit/d1de05bd94a48d2b4f82db1fc9c9d4f0e894c412))
+* **server:** restore Safari/WebKit viewers — quic-go v0.62.0 + WT flow-control SETTINGS ([#342](https://github.com/Tuhis/gawk/issues/342)) ([ce63ec6](https://github.com/Tuhis/gawk/commit/ce63ec6442242611ded40301340e4475619b5377))
+
 ## [0.28.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.27.0...gawk-server/v0.28.0) (2026-09-20)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast/v1.15.0...gawk-broadcast/v1.15.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **server:** restore Safari/WebKit viewers — quic-go v0.62.0 + WT flow-control SETTINGS ([#342](https://github.com/Tuhis/gawk/issues/342)) ([ce63ec6](https://github.com/Tuhis/gawk/commit/ce63ec6442242611ded40301340e4475619b5377))
+
 ## [1.15.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast/v1.14.0...gawk-broadcast/v1.15.0) (2026-09-20)
 
 

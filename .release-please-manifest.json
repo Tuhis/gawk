@@ -1,8 +1,8 @@
 {
-  "gawk-server": "0.28.0",
-  "gawk-app": "0.45.1",
-  "gawk-broadcast": "1.15.0",
+  "gawk-server": "0.28.1",
+  "gawk-app": "0.45.2",
+  "gawk-broadcast": "1.15.1",
   "gawk-telemetry": "1.8.0",
   "gawk-broadcast-windows": "1.5.0",
-  "gawk-admin": "1.2.0"
+  "gawk-admin": "1.3.0"
 }
