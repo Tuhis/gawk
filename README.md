@@ -41,12 +41,13 @@ images, and a **[self-hosting guide](docs/self-hosting.md)**.
   multi-pod cluster
 
 **Browser support:** Chromium-first. Firefox works through documented
-fallbacks. **WebKit — Safari on every OS, and every browser on iOS — cannot
-currently join a broadcast**: it refuses the WebTransport session outright
-(see [BUGS.md](BUGS.md)), so the app detects it on load and warns. The iPhone
-fMP4 + `ManagedMediaSource` playback path
-([docs/27](docs/27-ios-mse-fullscreen.md)) is unchanged and still documented,
-but nothing reaches it until that is resolved.
+fallbacks. Safari (macOS, and every browser on iOS, which is WebKit
+underneath) joins as a viewer; the iPhone fMP4 + `ManagedMediaSource`
+playback path is [docs/27](docs/27-ios-mse-fullscreen.md). The relay's
+QUIC stack is the piece WebKit is pickiest about — a dependency bump broke
+every WebKit viewer for six weeks in 2026 — so
+[docs/gotchas.md](docs/gotchas.md) carries what a bump of that pair has to
+re-verify.
 
 ## Quick links
 

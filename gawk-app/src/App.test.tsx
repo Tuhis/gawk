@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 //
-// The app-level browser-support gate. The requirements it pins (BUGS.md: WebKit
-// cannot join since the quic-go bump) are that the warning reaches a *direct
-// viewer link* and not just the landing page, and that acknowledging it never
-// outlives the page load.
+// The app-level browser-support gate. The requirements it pins are that the
+// warning reaches a *direct viewer link* and not just the landing page, that
+// acknowledging it never outlives the page load — and, since the relay's
+// WebKit refusal was fixed (docs/gotchas.md, the webtransport-go
+// `Server.Config` entry), that a browser which has WebTransport is never
+// warned by engine.
 //
 // The route screens are stubbed: this asserts where the gate sits, and the real
 // screens would drag transports and capture into a jsdom run for no added
@@ -28,43 +30,56 @@ import App from './App';
 
 const SAFARI =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15';
-const CHROME =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 function setUserAgent(ua: string) {
   Object.defineProperty(navigator, 'userAgent', { value: ua, configurable: true });
 }
 
+type G = { WebTransport?: unknown };
+const withWebTransport = () => {
+  (globalThis as G).WebTransport = class {};
+};
+const withoutWebTransport = () => {
+  delete (globalThis as G).WebTransport;
+};
+
 beforeEach(() => {
-  // jsdom has no WebTransport; without this every client would trip the
-  // no-webtransport branch and the WebKit assertions would pass vacuously.
-  (globalThis as { WebTransport?: unknown }).WebTransport = class {};
+  // jsdom has no WebTransport, so the default here is the *unsupported*
+  // client; the supported cases opt in explicitly.
+  withoutWebTransport();
   window.location.hash = '';
 });
 
 afterEach(() => {
   cleanup();
-  delete (globalThis as { WebTransport?: unknown }).WebTransport;
+  withoutWebTransport();
 });
 
 const dialog = () => screen.queryByRole('dialog', { name: 'Unsupported browser' });
 
 describe('App browser-support gate', () => {
-  it('stays out of the way on a supported browser', () => {
-    setUserAgent(CHROME);
+  it('stays out of the way on a browser that has WebTransport', () => {
+    withWebTransport();
     render(<App />);
     expect(dialog()).toBeNull();
     expect(screen.getByTestId('landing')).toBeTruthy();
   });
 
-  it('warns on the landing page in Safari', () => {
+  // The regression pin: Safari was warned about by user agent while the relay
+  // refused WebKit. With that fixed, a Safari that has the API is supported.
+  it('does not warn Safari by engine when it has WebTransport', () => {
+    withWebTransport();
     setUserAgent(SAFARI);
+    render(<App />);
+    expect(dialog()).toBeNull();
+  });
+
+  it('warns on the landing page without WebTransport', () => {
     render(<App />);
     expect(dialog()).toBeTruthy();
   });
 
   it('warns on a direct viewer link, with the viewer still mounted behind it', () => {
-    setUserAgent(SAFARI);
     window.location.hash = '#/view/ABC234';
     render(<App />);
     expect(dialog()).toBeTruthy();
@@ -72,7 +87,6 @@ describe('App browser-support gate', () => {
   });
 
   it('lets the user acknowledge and continue to the stream', () => {
-    setUserAgent(SAFARI);
     window.location.hash = '#/view/ABC234';
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: /continue/i }));
@@ -81,7 +95,6 @@ describe('App browser-support gate', () => {
   });
 
   it('does not re-warn on hash navigation within the same load', () => {
-    setUserAgent(SAFARI);
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: /continue/i }));
     act(() => {
@@ -94,7 +107,6 @@ describe('App browser-support gate', () => {
 
   // The acknowledgment must not be remembered: a fresh mount is a fresh load.
   it('warns again on the next page load, even after acknowledging', () => {
-    setUserAgent(SAFARI);
     const first = render(<App />);
     fireEvent.click(screen.getByRole('button', { name: /continue/i }));
     expect(dialog()).toBeNull();
