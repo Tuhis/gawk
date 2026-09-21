@@ -706,20 +706,29 @@ func TestSetStalledRetriesThroughAConflict(t *testing.T) {
 	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	conflicts := 2
+	// Atomic, not a plain int: the reactor also runs on the renew goroutine
+	// Claim started (every lease Update goes through it), so the test body
+	// resetting the budget below races that goroutine's decrement. CI's
+	// -race run caught exactly that (PR #342).
+	var conflicts atomic.Int32
+	conflicts.Store(2)
 	cs.PrependReactor("update", "leases", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		if conflicts > 0 {
-			conflicts--
-			return true, nil, apierrors.NewConflict(
-				schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"},
-				"gawk-bc-k7xq2m", errors.New("simulated renew race"))
+		for {
+			n := conflicts.Load()
+			if n <= 0 {
+				return false, nil, nil
+			}
+			if conflicts.CompareAndSwap(n, n-1) {
+				return true, nil, apierrors.NewConflict(
+					schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"},
+					"gawk-bc-k7xq2m", errors.New("simulated renew race"))
+			}
 		}
-		return false, nil, nil
 	})
 	if err := a.SetStalled(ctx, "K7XQ2M", true); err != nil {
 		t.Fatalf("SetStalled through conflicts: %v", err)
 	}
-	if conflicts != 0 {
+	if conflicts.Load() != 0 {
 		t.Fatal("conflict reactor never fired")
 	}
 	lease, err := cs.CoordinationV1().Leases(a.opts.Namespace).Get(ctx, leaseName("K7XQ2M"), metav1.GetOptions{})
@@ -729,7 +738,7 @@ func TestSetStalledRetriesThroughAConflict(t *testing.T) {
 	if _, has := lease.Annotations[annotationStalledSince]; !has {
 		t.Fatal("stall stamp lost to a CAS conflict")
 	}
-	conflicts = 2
+	conflicts.Store(2)
 	if err := a.SetStalled(ctx, "K7XQ2M", false); err != nil {
 		t.Fatalf("SetStalled(false) through conflicts: %v", err)
 	}
