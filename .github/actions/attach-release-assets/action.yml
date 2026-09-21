@@ -163,7 +163,21 @@ runs:
           }
 
           const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-          const files = fs.readdirSync(dir);
+          // Regular files only, and a stray anything-else is fatal rather
+          // than skipped. The asset directory is assembled by the caller one
+          // file at a time, so an entry nobody put there means the caller's
+          // staging directory collided with something in the checkout — the
+          // v1.15.0 failure, where `assets/` was also the icon source tree.
+          // Skipping would publish a release missing exactly the file whose
+          // absence is hardest to notice; readFileSync would throw EISDIR
+          // halfway through the uploads instead.
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          const strays = entries.filter((e) => !e.isFile()).map((e) => e.name);
+          if (strays.length) {
+            core.setFailed(`${dir} holds non-file entries (${strays.join(', ')}) — it is not a clean asset directory`);
+            return;
+          }
+          const files = entries.map((e) => e.name);
           for (const name of files) {
             // Re-running this job must not fail on a name already there —
             // which is the whole recovery path if the upload half ever breaks.

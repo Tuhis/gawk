@@ -800,7 +800,13 @@ jobs:
       - name: Package the release assets
         run: |
           set -euo pipefail
-          mkdir -p assets
+          # NOT `assets`: the repository root already has an `assets/`
+          # directory (the icon source set, R44/docs/53), and a staging
+          # directory that collides with a checked-out one is how
+          # gawk-broadcast v1.15.0 published with no binaries — `sha256sum
+          # ./*` hit `assets/icon`, a directory, and the step died before the
+          # upload. Keep this name outside anything the checkout can create.
+          mkdir -p release-assets
           # Belt and braces: the artifact round-trip is a zip, and whether the
           # executable bit survives it is a property of the upload/download
           # action pair rather than something this job should depend on. A
@@ -818,7 +824,7 @@ jobs:
           # (R44, docs/53 D4); the script must keep its executable bit for the
           # same reason the binaries must.
           chmod +x staging/install-desktop.sh
-          tar -czf assets/gawk-broadcast-linux-amd64.tar.gz \
+          tar -czf release-assets/gawk-broadcast-linux-amd64.tar.gz \
             -C staging gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt \
             THIRD-PARTY-NOTICES.md LICENSE install-desktop.sh share
           # Asked of the tarball, not assumed of the command above: the R2
@@ -834,7 +840,7 @@ jobs:
           # fires and reports the file that was *found* as missing. The check
           # was therefore guaranteed to fail on the very first name it looked
           # for. No pipeline, no SIGPIPE, and one decompression instead of five.
-          listing=$(tar -tzf assets/gawk-broadcast-linux-amd64.tar.gz)
+          listing=$(tar -tzf release-assets/gawk-broadcast-linux-amd64.tar.gz)
           for want in gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt \
                       THIRD-PARTY-NOTICES.md LICENSE install-desktop.sh \
                       share/applications/fi.ioio.gawk.broadcast.desktop \
@@ -846,12 +852,12 @@ jobs:
             }
           done
           # The binaries are unsigned by design, so a checksum is the only
-          # integrity check a downloader gets. Written outside `assets` and
-          # moved in, because whether a shell's `*` sees a file the same
+          # integrity check a downloader gets. Written outside the asset
+          # directory and moved in, because whether a shell's `*` sees a file the same
           # command is redirecting into is not something to rely on.
-          (cd assets && sha256sum ./* > ../SHA256SUMS)
-          mv SHA256SUMS assets/
-          ls -l assets
+          (cd release-assets && sha256sum ./* > ../SHA256SUMS)
+          mv SHA256SUMS release-assets/
+          ls -l release-assets
       # Asset names carry no version: the release page already states it, the
       # tarball's BUILD-INFO.txt repeats it, and a stable name is what makes
       # `gh release download -p 'gawk-broadcast-linux-amd64.tar.gz'` work
@@ -860,7 +866,7 @@ jobs:
         id: attach
         with:
           component: gawk-broadcast
-          dir: assets
+          dir: release-assets
           # The commit the tag must point at. Identical to github.sha on a
           # push; on a backfill it is the released commit this run rebuilt,
           # which is the only thing that re-aims the gate without weakening it.
@@ -872,7 +878,7 @@ jobs:
         if: steps.attach.outputs.attached == 'true'
         with:
           component: gawk-broadcast
-          dir: assets
+          dir: release-assets
           primary: gawk-broadcast-linux-amd64.tar.gz
           tag: ${{ steps.attach.outputs.tag }}
           published-at: ${{ steps.attach.outputs.published_at }}
