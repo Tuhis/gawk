@@ -93,7 +93,7 @@ pub fn render(
 ) -> String {
     let d = Diagnostics {
         kind: "gawk-broadcast-windows",
-        app_version: crate::version::display(),
+        app_version: gawk_ui::version::display(),
         timestamp: timestamp_rfc3339,
         broadcast_id,
         state,
@@ -194,11 +194,11 @@ mod tests {
             "2026-07-31T00:00:00Z".into(),
         );
         let v: serde_json::Value = serde_json::from_str(&dump).unwrap();
-        assert_eq!(v["appVersion"], crate::version::display());
+        assert_eq!(v["appVersion"], gawk_ui::version::display());
         assert!(
             v["appVersion"]
                 .as_str()
-                .is_some_and(|s| s.starts_with(crate::version::RELEASE)),
+                .is_some_and(|s| s.starts_with(gawk_ui::version::RELEASE)),
             "appVersion must lead with the release"
         );
     }

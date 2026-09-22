@@ -41,10 +41,51 @@ pub mod defaults {
     /// relay. `off` disables reporting; the pairing rule (default collector
     /// only with the default relay) is enforced where the URL is resolved.
     pub const TELEMETRY_URL: &str = "https://gawk.ioio.fi/api/telemetry/v1/ingest";
-    /// This client's self-identifying Origin header (docs/38 D19). A native
-    /// client must send one, or an allowlisting relay matches it against
-    /// nothing; the production relay's allowlist must include this value.
-    pub const ORIGIN: &str = "gawk-broadcast://windows";
+    /// One downloadable build of this workspace (docs/54 D1, D14): the
+    /// workspace releases as one component, but a user downloads — and the
+    /// relay, the release job and the telemetry dashboard each see — one of
+    /// these.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct Distribution {
+        /// Telemetry `browser` and diagnostics `kind` (docs/38 D15), and the
+        /// R46 manifest's `component`: `releases/<name>/latest.json`.
+        pub name: &'static str,
+        /// The self-identifying Origin header (docs/38 D19, docs/54 D16). A
+        /// native client must send one, or an allowlisting relay matches it
+        /// against nothing; the production relay's allowlist must include it.
+        pub origin: &'static str,
+        /// The fixed release asset name (docs/47 D5's per-platform table).
+        pub asset: &'static str,
+        /// Telemetry `os`.
+        pub os: &'static str,
+    }
+
+    pub const WINDOWS: Distribution = Distribution {
+        name: "gawk-broadcast-windows",
+        origin: "gawk-broadcast://windows",
+        asset: "gawk-broadcast-windows-x86_64.exe",
+        os: "Windows",
+    };
+
+    pub const MACOS: Distribution = Distribution {
+        name: "gawk-broadcast-macos",
+        origin: "gawk-broadcast://macos",
+        asset: "gawk-broadcast-macos-arm64.zip",
+        os: "macOS",
+    };
+
+    /// The distribution this build is: macOS on macOS, Windows everywhere
+    /// else. Not `cfg(windows)`, because the Windows shell is linted and
+    /// tested on Linux hosts too (docs/38 D18) and must keep its identity
+    /// there.
+    pub const THIS: &Distribution = if cfg!(target_os = "macos") {
+        &MACOS
+    } else {
+        &WINDOWS
+    };
+
+    /// This build's Origin header — see [`Distribution::origin`].
+    pub const ORIGIN: &str = THIS.origin;
 
     /// The fixed rung (docs/38 D11): 1080p60, 500 ms GOP, 12 Mbps peak
     /// (peak-constrained VBR; typical motion averages ~75 % of it).
@@ -148,7 +189,47 @@ mod tests {
             defaults::TELEMETRY_URL,
             "https://gawk.ioio.fi/api/telemetry/v1/ingest"
         );
-        assert_eq!(defaults::ORIGIN, "gawk-broadcast://windows");
+    }
+
+    /// docs/54 D14/D16/D17 and docs/47 D5: each distribution's identity is
+    /// pinned here, because every one of these strings is matched verbatim
+    /// by something outside this workspace — the relay's origin allowlist,
+    /// the release job's asset name and manifest path, the telemetry
+    /// dashboard's `kind` filter.
+    #[test]
+    fn distributions_are_pinned() {
+        assert_eq!(
+            defaults::WINDOWS,
+            defaults::Distribution {
+                name: "gawk-broadcast-windows",
+                origin: "gawk-broadcast://windows",
+                asset: "gawk-broadcast-windows-x86_64.exe",
+                os: "Windows",
+            }
+        );
+        assert_eq!(
+            defaults::MACOS,
+            defaults::Distribution {
+                name: "gawk-broadcast-macos",
+                origin: "gawk-broadcast://macos",
+                asset: "gawk-broadcast-macos-arm64.zip",
+                os: "macOS",
+            }
+        );
+    }
+
+    /// A macOS build is the macOS distribution; every other target is the
+    /// Windows one — including the Linux hosts the Windows shell is tested
+    /// and linted on (docs/38 D18), which is why this is not `cfg(windows)`.
+    #[test]
+    fn this_build_is_the_distribution_of_its_target() {
+        let want = if cfg!(target_os = "macos") {
+            &defaults::MACOS
+        } else {
+            &defaults::WINDOWS
+        };
+        assert_eq!(defaults::THIS, want);
+        assert_eq!(defaults::ORIGIN, want.origin);
     }
 
     #[test]

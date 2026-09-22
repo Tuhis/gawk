@@ -19,20 +19,21 @@ mod messages;
 mod pipeline;
 #[cfg(windows)]
 mod toast;
-mod version;
 
 use gawk_engine::clock::MonotonicClock;
 use gawk_engine::config::{self, Config, DEFAULT_SERVER_NAME, ServerProfile};
 use gawk_engine::session::{EngineEvent, Session, SessionConfig};
 use gawk_engine::telemetry::{Hello, Reporter};
+use gawk_ui::version;
+use gawk_ui::{MainWindow, StatRow, refresh_captions};
+#[cfg(windows)]
+use gawk_ui::{MonitorRow, WindowRow};
 use messages::{StartFailure, can_mint, first_line, message};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc;
-
-slint::include_modules!();
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UiState {
@@ -523,23 +524,6 @@ fn save_config(shell: &mut Shell) {
     {
         log::warn!("could not save settings: {e}");
     }
-}
-
-fn refresh_captions(ui: &MainWindow, cfg: &Config) {
-    ui.set_caption_broadcast(format!("Broadcasting to {}", cfg.resolve_relay_url()).into());
-    // What is known before dialing: a non-default relay may still advertise
-    // an ingest URL in-session (0x12), and the reporter follows it then.
-    let opted_out = cfg.telemetry_url.trim().eq_ignore_ascii_case(config::OFF);
-    let diag = cfg.resolve_telemetry_url().unwrap_or_else(|| {
-        if cfg.selected_profile().is_some() && !opted_out {
-            "off unless this server advertises a diagnostics endpoint".into()
-        } else {
-            "off — nothing is sent".into()
-        }
-    });
-    ui.set_caption_diag(format!("Diagnostics to {diag}").into());
-    let app_url = cfg.resolve_app_url();
-    ui.set_terms_link(format!("{}/#/terms", app_url.trim_end_matches('/')).into());
 }
 
 fn refresh_picker(ui: &MainWindow, shell: &mut Shell) {

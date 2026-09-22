@@ -166,11 +166,11 @@ Quirks that will bite you:
   fails), and the MSVC SDK. All three are baked into the CI runner image —
   see docs/38 D18 before reproducing it by hand.
 - **The EXE's icon is a linked `.res`, not a compiled `.rc`.**
-  `crates/app/build.rs` hands `assets/icon/gawk.res` (generated from the
+  `crates/app-windows/build.rs` hands `assets/icon/gawk.res` (generated from the
   shared SVG by `go run ./tools/icon generate`, committed) straight to the
   linker on msvc targets; lld-link and link.exe both take it as an input, so
   there is no `rc.exe`/`llvm-rc` step to install. The window's own icon is
-  `Window.icon` in `ui/main.slint`, embedded by slint-build. CI checks the
+  `Window.icon` in `crates/ui/main.slint`, embedded by slint-build. CI checks the
   resource actually landed (`tools/icon verify-exe`) — docs/53.
 
 ## Layout
@@ -182,7 +182,9 @@ Quirks that will bite you:
 | `crates/capture` | Windows.Graphics.Capture frame source + window/monitor picker enumeration |
 | `crates/encode` | Media Foundation hardware H.264 MFT cascade, trial-gated |
 | `crates/audio` | WASAPI process/system loopback + Opus |
-| `crates/app` | The Slint GUI shell — the only binary, `gawk-broadcast.exe` |
+| `crates/ui` | The window both shells show (`main.slint`, compiled once), the build version, and window logic the shells share |
+| `crates/app-windows` | The Windows shell — `gawk-broadcast.exe` |
+| `crates/app-macos` | The macOS shell — `gawk-broadcast-macos`, bundled as `gawk-broadcast-macos.app` by `tools/macos/bundle.sh` (R52, [docs/54](../docs/54-macos-native-broadcaster.md); in progress — a stub off macOS) |
 
 ### The wire crate is a mirror, not an implementation
 

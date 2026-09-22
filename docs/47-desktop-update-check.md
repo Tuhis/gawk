@@ -9,6 +9,17 @@ Installing the update from inside the app is a separate milestone, **R47**
 gated on a release signing key that does not exist today; this document is
 written so R47 builds on it without reopening anything here.
 
+**2026-09-22 (R52 MB1)**: a third desktop distribution exists —
+`gawk-broadcast-macos`, asset `gawk-broadcast-macos-arm64.zip`, manifest
+`releases/gawk-broadcast-macos/latest.json` ([docs/54](54-macos-native-broadcaster.md)
+D14/D17) — and D5's per-platform table gains that row. The Rust side's
+identity per distribution (name, origin, asset, os) now lives in
+`gawk-broadcast-desktop`'s `engine::defaults::{WINDOWS, MACOS, THIS}`, so
+AU3's validator compares against `defaults::THIS.name` and
+`defaults::THIS.asset` rather than restating the Windows strings; the
+workspace itself was renamed from `gawk-broadcast-windows` (R52 MB0), which
+changes nothing in the manifest names above.
+
 ## 1. Purpose
 
 Both desktop broadcasters are distributed as fixed-name GitHub Release assets

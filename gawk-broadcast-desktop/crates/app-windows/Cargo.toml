@@ -1,6 +1,6 @@
 [package]
-name = "gawk-broadcast-app"
-description = "The Slint GUI shell — the only binary (WB6, docs/38 D12)"
+name = "gawk-broadcast-app-windows"
+description = "The Windows Slint shell — gawk-broadcast.exe (WB6, docs/38 D12)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -15,16 +15,13 @@ gawk-audio = { path = "../audio" }
 gawk-capture = { path = "../capture" }
 gawk-encode = { path = "../encode" }
 gawk-engine = { path = "../engine" }
+gawk-ui = { path = "../ui" }
 gawk-wire = { path = "../wire" }
 arboard = "3"
 log = { version = "0.4", features = ["std"] }
 serde_json = "1"
-# Tri-licensed; gawk takes the Royalty-free Desktop License v2.0 (docs/38 D12,
-# re-confirmed at the Apache-2.0 relicense). Its §2(b) attribution is the
-# "Made with Slint" badge in the root and component READMEs — NOT the INSTALL
-# doc, which is what this comment used to claim and which satisfies neither
-# option the license offers. ../../deny.toml is the scoped cargo-deny
-# exception that keeps the choice enforced.
+# Licence note: see ../ui/Cargo.toml. The shell uses slint's runtime API
+# (timers, models, the event loop); the window itself is gawk-ui's.
 slint = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -40,6 +37,3 @@ windows = { version = "0.62", features = [
     "Win32_System_Memory",
     "Win32_UI_Shell",
 ] }
-
-[build-dependencies]
-slint-build = "1"
