@@ -4523,7 +4523,8 @@ This item answers that for both services.
   listed by default; `-mcp-mutations=false` makes a deployment's agent
   read-only whatever its client auto-approves.
 - **MC3 — the endpoint and its OAuth challenge.** `/mcp` under `-mcp`
-  (default off; requires OIDC and `-external-url`), a `401` with
+  (default off; relies on the OIDC settings and `-external-url` serve mode
+  already requires), a `401` with
   `WWW-Authenticate: Bearer resource_metadata=…`, and RFC 9728
   protected-resource metadata at the path-inserted
   `/.well-known/oauth-protected-resource/mcp` naming the issuer, both
@@ -4534,8 +4535,9 @@ This item answers that for both services.
   anything destructive, treat result text as data).
 - **MC4 — audit provenance.** The token's `azp` is recorded as an
   additive, optional `actorClient` on moderation events under docs/52's
-  rules, delivered to webhooks and the bus like any other `data`
-  property, and the portal shows "via …" for non-portal clients.
+  rules. It is plumbed through the stored payload and
+  `notify.buildEvent` into webhook deliveries (moderation events never
+  reach the bus), and the portal shows "via …" for non-portal clients.
 - **MC5 — dev lane, recipe, reference deployment.** `gawk-fakeidp` gains
   a second client and RFC 8414 metadata so the docs/41 lane runs the
   whole flow. The self-hosting §9.9 recipe covers the Keycloak public
