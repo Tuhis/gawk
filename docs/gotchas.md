@@ -45,6 +45,33 @@ Add to it when a new gotcha lands in `docs/`.
   on `distroless/cc-debian13`. So `-query-sql` being on (its default) is *not*
   the same claim as "queries work here", and CI builds both configurations.
   ([docs/36](36-telemetry-ui-history.md) §8 Q1)
+- **A DuckDB view pins the columns it saw at `CREATE VIEW`.** The telemetry
+  SQL views are `SELECT * FROM read_json_auto(glob, union_by_name=1)` over
+  trees that keep growing new fields (D15). If they are registered once at
+  boot, the first partition that adds a field or widens a type fails every
+  query on that view, `count(*)` included, with `Binder Error: Contents of
+  view were altered`, until the pod restarts. `sqlengine` re-registers
+  missing views on each query and re-registers all of them, then retries
+  once, on that error. Test any change there against a partition written
+  *after* `Open`, not against a fresh store. ([docs/36](36-telemetry-ui-history.md) §TH10)
+- **DuckDB's JSON reader holds a 32 MiB buffer per thread, and its default
+  is one thread per core.** On a many-core node an unpruned scan of the
+  telemetry `sessions` view needed more than the pod's whole memory before
+  reading a byte, and failed with `Out of Memory Error: failed to allocate
+  data of size 32.0 MiB`. The thread count, not the data size, sets that
+  floor. The engine now runs with a stated budget (`-sql-threads 2`,
+  `-sql-memory-limit auto` = a quarter of the cgroup limit,
+  `preserve_insertion_order=false`, spill capped on the data PVC). Don't
+  raise the threads without raising the memory limit.
+  ([docs/36](36-telemetry-ui-history.md) §TH10)
+- **A stored telemetry field never changes type and is never renamed.** The
+  SQL views union partitions by name, so a field that is a number in old
+  rows and a string in new ones turns the column into JSON for every query
+  over history, and rollups are permanent. `internal/storedshape` pins every
+  stored path in a golden file; a new field is recorded with
+  `GAWK_UPDATE_GOLDEN=1 go test ./internal/storedshape/`, and a changed or
+  removed one fails CI. Never edit a recorded line to make it pass: add a
+  new field. ([docs/33](33-telemetry-and-diagnostics.md) D4)
 - **A cgo image that BUILDS is not an image that runs**, and nothing catches
   the difference at build time. The telemetry image shipped twice-broken —
   `distroless/base` has no libstdc++ for a C++ dependency, and a builder whose

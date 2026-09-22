@@ -29,6 +29,9 @@ package sqlengine
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -92,6 +95,109 @@ type Options struct {
 	// RowLimit and Timeout default to the constants above.
 	RowLimit int
 	Timeout  time.Duration
+
+	// The engine's budget. It shares a process with public ingest, so what it
+	// may use is stated rather than left to DuckDB's defaults — which are
+	// ~80 % of the container's memory and one thread per core, and which made
+	// every unpruned `sessions` query fail with an OOM (BUGS.md, 2026-08-20).
+	//
+	// MemoryLimit bounds DuckDB's buffer manager, in bytes; 0 leaves DuckDB's
+	// own default, so a caller wanting the container-derived value passes
+	// AutoMemoryLimit's result.
+	MemoryLimit int64
+	// Threads caps DuckDB's worker threads; 0 means DefaultThreads. It is the
+	// knob that matters most: the JSON reader holds a 32 MiB buffer per
+	// thread, so the thread count alone sets the floor under a scan.
+	Threads int
+	// SpillLimit caps the spill directory, in bytes; 0 disables spilling. The
+	// directory is SpillDir(Root), on the data volume because the image's root
+	// filesystem is read-only — which is also why it must be capped: DuckDB's
+	// own default is 90 % of the free space on the volume ingest writes to.
+	SpillLimit int64
+}
+
+// DefaultThreads is the engine's worker count. Two keep an unpruned scan to
+// ~64 MiB of reader buffers and still use more than one core; an operator
+// console trades latency for not competing with ingest.
+const DefaultThreads = 2
+
+// DefaultSpillLimit is the spill cap a deployment gets unless it says
+// otherwise.
+const DefaultSpillLimit int64 = 512 << 20
+
+// minAutoMemoryLimit is the floor under AutoMemoryLimit: below it DuckDB
+// cannot hold DefaultThreads' reader buffers plus a working set.
+const minAutoMemoryLimit int64 = 128 << 20
+
+// SpillDir is where the engine spills. A dot-directory at the data root, so no
+// store walk (sessions/, relay/, rollups/) ever sees it, and no view glob
+// matches it.
+func SpillDir(root string) string { return filepath.Join(root, ".sql-spill") }
+
+// AutoMemoryLimit is a quarter of the container's memory limit, read from the
+// cgroup filesystem mounted at cgroupRoot (v2 first, then v1), with a floor of
+// 128 MiB. It returns 0 when no limit is set, which leaves DuckDB's default in
+// place — right for a laptop, and the only honest answer without a limit.
+//
+// A quarter, not DuckDB's 80 %: the rest of the process is ingest, the live
+// projection and the Go heap, and a console query must fail rather than take
+// the pod over its limit — an OOMKill there drops public ingest fleet-wide.
+func AutoMemoryLimit(cgroupRoot string) int64 {
+	for _, f := range []string{
+		filepath.Join(cgroupRoot, "memory.max"),
+		filepath.Join(cgroupRoot, "memory", "memory.limit_in_bytes"),
+	} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		s := strings.TrimSpace(string(b))
+		limit, err := strconv.ParseInt(s, 10, 64)
+		// "max" (v2) and v1's page-aligned near-MaxInt64 both mean "no limit".
+		if err != nil || limit <= 0 || limit >= 1<<62 {
+			return 0
+		}
+		if q := limit / 4; q > minAutoMemoryLimit {
+			return q
+		}
+		return minAutoMemoryLimit
+	}
+	return 0
+}
+
+// ParseSize reads a byte count as an operator writes one: a bare number of
+// bytes, or a number with a B/KB/MB/GB (powers of 1000) or KiB/MiB/GiB
+// (powers of 1024) suffix — the same spellings DuckDB accepts.
+func ParseSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	units := []struct {
+		suffix string
+		mult   int64
+	}{
+		{"kib", 1 << 10}, {"mib", 1 << 20}, {"gib", 1 << 30},
+		{"kb", 1e3}, {"mb", 1e6}, {"gb", 1e9}, {"b", 1},
+	}
+	lower := strings.ToLower(s)
+	mult := int64(1)
+	for _, u := range units {
+		if strings.HasSuffix(lower, u.suffix) {
+			lower = strings.TrimSpace(strings.TrimSuffix(lower, u.suffix))
+			mult = u.mult
+			break
+		}
+	}
+	n, err := strconv.ParseInt(lower, 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("sqlengine: %q is not a size (want e.g. 512MiB)", s)
+	}
+	return n * mult, nil
+}
+
+func (o Options) threads() int {
+	if o.Threads <= 0 {
+		return DefaultThreads
+	}
+	return o.Threads
 }
 
 // readOnlyVerbs is the allowlist. Everything DuckDB can use to write, attach,

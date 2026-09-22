@@ -80,7 +80,9 @@ COPY LICENSE /LICENSE
 COPY gawk-telemetry/THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES.md
 COPY gawk-telemetry/ui/THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES-ui.md
 # 8080 is the PUBLIC ingest listener; 8081 is the read listener (dashboard,
-# read API, MCP) and must never be routed publicly — D14.
+# read API, MCP) and must never be routed publicly — D14. 8082 is /metrics, for
+# a ClusterIP scrape only.
 EXPOSE 8080
 EXPOSE 8081
+EXPOSE 8082
 ENTRYPOINT ["/gawk-telemetry"]

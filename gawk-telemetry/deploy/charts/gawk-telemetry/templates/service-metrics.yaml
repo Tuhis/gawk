@@ -1,0 +1,22 @@
+{{- if .Values.metrics.enabled }}
+# The THIRD listener: the service's own health for a Prometheus scrape.
+# ClusterIP only and never behind an Ingress — like the relay's ops port. It
+# carries no identifiers, but it is also not an operator surface, and the read
+# listener's basic auth is not something a scraper holds.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gawk-telemetry.fullname" . }}-metrics
+  labels:
+    {{- include "gawk-telemetry.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gawk-telemetry.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

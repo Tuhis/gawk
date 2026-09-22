@@ -51,6 +51,11 @@ spec:
             - name: read
               containerPort: {{ .Values.read.port }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: GAWK_TELEMETRY_INGEST_ADDR
               value: ":{{ .Values.ingest.port }}"
@@ -99,6 +104,19 @@ spec:
               value: {{ .Values.config.mcp | quote }}
             - name: GAWK_TELEMETRY_QUERY_SQL
               value: {{ .Values.config.querySql | quote }}
+            - name: GAWK_TELEMETRY_SQL_MEMORY_LIMIT
+              value: {{ .Values.config.sqlMemoryLimit | quote }}
+            - name: GAWK_TELEMETRY_SQL_THREADS
+              value: {{ .Values.config.sqlThreads | quote }}
+            - name: GAWK_TELEMETRY_SQL_SPILL_LIMIT
+              value: {{ .Values.config.sqlSpillLimit | quote }}
+            - name: GAWK_TELEMETRY_SQL_PROBE_INTERVAL
+              value: {{ .Values.config.sqlProbeInterval | quote }}
+            # "off" turns the listener off, so metrics.enabled=false leaves no
+            # open port behind the Service it no longer renders. (An empty env
+            # var would fall back to the binary's default, not disable it.)
+            - name: GAWK_TELEMETRY_METRICS_ADDR
+              value: {{ if .Values.metrics.enabled }}{{ printf ":%v" .Values.metrics.port | quote }}{{ else }}"off"{{ end }}
             - name: GAWK_TELEMETRY_INGEST_RATE
               value: {{ .Values.config.ingestRate | quote }}
             - name: GAWK_TELEMETRY_INGEST_BURST

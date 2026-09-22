@@ -2,6 +2,8 @@ package sqlengine
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,6 +26,11 @@ func TestCheckRefusesEverythingThatIsNotARead(t *testing.T) {
 		"UPDATE rollups SET role = 'x'",
 		"INSERT INTO rollups VALUES (1)",
 		"PRAGMA disable_verification",
+		// The engine's budget (Options) is set on its own connection; a query
+		// must not be able to lift it.
+		"SET memory_limit='100GB'",
+		"SET threads=64",
+		"RESET memory_limit",
 		// The one that actually matters: a second statement hiding behind an
 		// allowed first verb walks straight past a first-verb allowlist.
 		"SELECT 1; COPY rollups TO '/data/oops.csv'",
@@ -81,5 +88,55 @@ func TestViewsAreDescribedInEveryBuild(t *testing.T) {
 	}
 	if Compiled() != compiledExpectation {
 		t.Errorf("Compiled() = %v; the build tag and the report disagree", Compiled())
+	}
+}
+
+func TestAutoMemoryLimitIsAQuarterOfTheContainerLimit(t *testing.T) {
+	write := func(t *testing.T, rel, body string) string {
+		t.Helper()
+		root := t.TempDir()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+	for _, c := range []struct {
+		name string
+		root string
+		want int64
+	}{
+		{"cgroup v2, 2 GiB", write(t, "memory.max", "2147483648\n"), 512 << 20},
+		{"cgroup v1, 2 GiB", write(t, "memory/memory.limit_in_bytes", "2147483648\n"), 512 << 20},
+		// The chart's own default limit is 512Mi; a quarter would starve the
+		// reader buffers, so the floor applies.
+		{"floor", write(t, "memory.max", "536870912\n"), 128 << 20},
+		{"v2 unlimited", write(t, "memory.max", "max\n"), 0},
+		{"v1 unlimited", write(t, "memory/memory.limit_in_bytes", "9223372036854771712\n"), 0},
+		{"no cgroup fs", t.TempDir(), 0},
+	} {
+		if got := AutoMemoryLimit(c.root); got != c.want {
+			t.Errorf("%s: AutoMemoryLimit = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+func TestParseSize(t *testing.T) {
+	for in, want := range map[string]int64{
+		"0": 0, "1024": 1024, "512MiB": 512 << 20, "512 MiB": 512 << 20,
+		"1GiB": 1 << 30, "2gb": 2e9, "100MB": 100e6, "64KiB": 64 << 10, "10B": 10,
+	} {
+		got, err := ParseSize(in)
+		if err != nil || got != want {
+			t.Errorf("ParseSize(%q) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "auto", "-1MiB", "1.5GiB", "12XB"} {
+		if _, err := ParseSize(in); err == nil {
+			t.Errorf("ParseSize(%q) accepted a non-size", in)
+		}
 	}
 }

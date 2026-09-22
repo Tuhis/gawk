@@ -67,10 +67,18 @@ flowchart LR
 |----------|---------|---------|----------|
 | ingest | `:8080` | `POST /api/telemetry/v1/ingest` | **Public**, via a same-origin path on the frontend's Ingress |
 | read | `:8081` | dashboard, read API, MCP | **Never public** — ClusterIP, port-forward, or an internal Ingress with basic auth |
+| metrics | `:8082` | `GET /metrics` (build info, SQL view probe) | ClusterIP only, for a Prometheus scrape; no identifiers |
 
 The read side aggregates every broadcast on the fleet and should be no
 more reachable than the relay's `/statusz`. The chart refuses to render a
 read Ingress without basic auth.
+
+The metrics listener is separate because a scraper holds none of the read
+listener's credentials. It carries the SQL console's health:
+`gawk_telemetry_sql_view_up{view}` drops to 0 when a view has data on disk
+but its probe query fails. The chart ships an opt-in ServiceMonitor and
+PrometheusRule (`metrics.serviceMonitor`, `metrics.prometheusRule`) that
+alert on it.
 
 ```sh
 kubectl -n gawk port-forward svc/gawk-telemetry-read 8081:8081
@@ -187,6 +195,11 @@ Every flag has a `GAWK_TELEMETRY_*` environment fallback
 | `-dashboard-base` | `GAWK_TELEMETRY_DASHBOARD_BASE` | (empty) |
 | `-mcp` | `GAWK_TELEMETRY_MCP` | `true` |
 | `-query-sql` | `GAWK_TELEMETRY_QUERY_SQL` | `true` (needs a `-tags duckdb` build to answer) |
+| `-sql-memory-limit` | `GAWK_TELEMETRY_SQL_MEMORY_LIMIT` | `auto` (a quarter of the container's memory limit, min 128MiB) |
+| `-sql-threads` | `GAWK_TELEMETRY_SQL_THREADS` | `2` (each holds a 32 MiB JSON read buffer) |
+| `-sql-spill-limit` | `GAWK_TELEMETRY_SQL_SPILL_LIMIT` | `512MiB` (in `<data-dir>/.sql-spill`; `0` disables) |
+| `-sql-probe-interval` | `GAWK_TELEMETRY_SQL_PROBE_INTERVAL` | `5m` (`0` disables the view probe) |
+| `-metrics-addr` | `GAWK_TELEMETRY_METRICS_ADDR` | `:8082` (ClusterIP only; `off` disables) |
 | `-stats-key` | `GAWK_TELEMETRY_STATS_KEY` | (empty = the find-a-stream lookup is off) |
 | `-read-user` / `-read-password` | `GAWK_TELEMETRY_READ_USER` / `_PASSWORD` | (empty = no auth) |
 | `-ingest-rate` / `-ingest-burst` | `GAWK_TELEMETRY_INGEST_RATE` / `_BURST` | `300` / `1200` (global) |

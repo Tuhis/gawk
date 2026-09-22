@@ -1,0 +1,62 @@
+{{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
+{{- if not .Values.config.querySql }}
+{{- fail "metrics.prometheusRule alerts on the SQL console; it has nothing to watch with config.querySql off" }}
+{{- end }}
+# Requires the prometheus-operator CRDs and a scrape of the metrics Service
+# (metrics.serviceMonitor, or your own). With kube-prometheus-stack, set
+# metrics.prometheusRule.labels to match its ruleSelector.
+#
+# Why these exist: the SQL console broke in production twice (view drift, then
+# memory), and each time it was found weeks later by an operator who happened
+# to reach for it (BUGS.md). The alerts are the part that does not depend on
+# someone happening to look.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "gawk-telemetry.fullname" . }}
+  labels:
+    {{- include "gawk-telemetry.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: gawk-telemetry-sql
+      rules:
+        - alert: GawkTelemetrySQLViewDown
+          expr: gawk_telemetry_sql_view_up == 0
+          for: {{ .Values.metrics.prometheusRule.viewDownFor }}
+          labels:
+            severity: {{ .Values.metrics.prometheusRule.severity }}
+          annotations:
+            summary: "gawk-telemetry SQL view {{`{{ $labels.view }}`}} has data but does not answer queries"
+            description: >-
+              The SQL console's {{`{{ $labels.view }}`}} view has partitions on
+              disk and its probe query has failed for
+              {{ .Values.metrics.prometheusRule.viewDownFor }}. View drift is
+              healed automatically, so this is a failure the heal could not
+              fix. The pod log carries the error ("SQL view probe failed").
+        - alert: GawkTelemetrySQLEngineDown
+          expr: gawk_telemetry_sql_engine_up == 0
+          for: {{ .Values.metrics.prometheusRule.viewDownFor }}
+          labels:
+            severity: {{ .Values.metrics.prometheusRule.severity }}
+          annotations:
+            summary: "gawk-telemetry has the SQL console on but no engine"
+            description: >-
+              config.querySql is on and the engine is absent: either the image
+              was built without -tags duckdb, or the engine failed to open
+              (the pod's startup log says which).
+        - alert: GawkTelemetrySQLProbeStale
+          expr: time() - gawk_telemetry_sql_probe_last_run_timestamp_seconds > {{ int .Values.metrics.prometheusRule.probeStaleAfterSeconds }}
+          for: 5m
+          labels:
+            severity: {{ .Values.metrics.prometheusRule.severity }}
+          annotations:
+            summary: "gawk-telemetry's SQL view probe has not completed a round"
+            description: >-
+              No probe round has completed for
+              {{ int .Values.metrics.prometheusRule.probeStaleAfterSeconds }}s, so
+              GawkTelemetrySQLViewDown cannot fire. A probe query is stuck, or
+              the engine's single connection is held by something else.
+{{- end }}

@@ -1,16 +1,23 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/ingest"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/live"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/opsmetrics"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/readapi"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/sqlengine"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/store"
 )
 
@@ -70,6 +77,118 @@ func TestDefaults(t *testing.T) {
 	if !c.mcpEnabled {
 		t.Error("MCP off by default; it is the item's primary read surface")
 	}
+	// The SQL engine's budget is stated, never DuckDB's defaults (BUGS.md
+	// 2026-08-20), and the probe that notices a broken view is on.
+	if c.sqlThreads != sqlengine.DefaultThreads {
+		t.Errorf("sqlThreads = %d, want %d", c.sqlThreads, sqlengine.DefaultThreads)
+	}
+	if c.sqlSpillLimit != sqlengine.DefaultSpillLimit {
+		t.Errorf("sqlSpillLimit = %d, want %d", c.sqlSpillLimit, sqlengine.DefaultSpillLimit)
+	}
+	if c.sqlProbeInterval != 5*time.Minute {
+		t.Errorf("sqlProbeInterval = %v, want 5m", c.sqlProbeInterval)
+	}
+	// The metrics listener is its own: never the public ingest one, and never
+	// the read one, which sits behind operator auth a scraper does not have.
+	if c.metricsAddr == "" || c.metricsAddr == c.ingestAddr || c.metricsAddr == c.readAddr {
+		t.Errorf("metricsAddr = %q; want a third listener", c.metricsAddr)
+	}
+}
+
+func TestSQLBudgetFlagsAndEnv(t *testing.T) {
+	env := func(k string) string {
+		return map[string]string{
+			"GAWK_TELEMETRY_KEY":                key64,
+			"GAWK_TELEMETRY_SQL_MEMORY_LIMIT":   "768MiB",
+			"GAWK_TELEMETRY_SQL_THREADS":        "3",
+			"GAWK_TELEMETRY_SQL_SPILL_LIMIT":    "0",
+			"GAWK_TELEMETRY_SQL_PROBE_INTERVAL": "0",
+			"GAWK_TELEMETRY_METRICS_ADDR":       ":9999",
+		}[k]
+	}
+	c, err := parseFlags(nil, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.sqlMemoryLimit != 768<<20 || c.sqlThreads != 3 || c.sqlSpillLimit != 0 ||
+		c.sqlProbeInterval != 0 || c.metricsAddr != ":9999" {
+		t.Errorf("env not honoured: %+v", c)
+	}
+	c, err = parseFlags([]string{"-sql-memory-limit", "1GiB", "-sql-threads", "4"}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.sqlMemoryLimit != 1<<30 || c.sqlThreads != 4 {
+		t.Errorf("flags did not win over env: mem=%d threads=%d", c.sqlMemoryLimit, c.sqlThreads)
+	}
+	// The chart's metrics.enabled=false renders "off": an empty env var would
+	// fall back to the default and leave the listener up.
+	c, err = parseFlags(nil, envMap(map[string]string{
+		"GAWK_TELEMETRY_KEY": key64, "GAWK_TELEMETRY_METRICS_ADDR": "off",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.metricsAddr != "" {
+		t.Errorf("metricsAddr = %q with \"off\"; want the listener disabled", c.metricsAddr)
+	}
+}
+
+// A bad budget must stop the process, not reach DuckDB: there it would only
+// log a warning and leave the console unavailable — silently rotting again.
+func TestRejectsAnUnusableSQLBudget(t *testing.T) {
+	for _, extra := range [][]string{
+		{"-sql-memory-limit", "lots"},
+		{"-sql-memory-limit", "0"},
+		{"-sql-spill-limit", "-1"},
+		{"-sql-threads", "0"},
+		{"-sql-probe-interval", "soon"},
+		{"-sql-probe-interval", "-1m"},
+	} {
+		args := append([]string{"-telemetry-key", key64}, extra...)
+		if _, err := parseFlags(args, noEnv); err == nil {
+			t.Errorf("parseFlags(%v) accepted an unusable value", extra)
+		}
+	}
+}
+
+type probeFake struct{}
+
+func (probeFake) Query(string) (*sqlengine.Result, error) {
+	return nil, errors.New("Binder Error: Contents of view were altered")
+}
+
+// The first round runs at startup, so the gauge exists (and a broken view is
+// visible) within one scrape of a restart rather than one probe interval.
+func TestProbeLoopPublishesARoundAtStartup(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "rollups"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "rollups", "date=2026-09-22.ndjson"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := opsmetrics.New("test", true)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		probeLoop(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), probeFake{}, root, time.Hour, m)
+		close(done)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec := httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+		if strings.Contains(rec.Body.String(), `gawk_telemetry_sql_view_up{view="rollups"} 0`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no probe round published:\n%s", rec.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
 }
 
 func TestEnvFallbackAndFlagPrecedence(t *testing.T) {

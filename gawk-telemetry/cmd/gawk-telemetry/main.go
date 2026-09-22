@@ -12,6 +12,10 @@
 //     fleet, and it should be no more reachable than /statusz is today (R9 D1's
 //     posture).
 //
+// A third listener, /metrics, carries only the service's own health (the SQL
+// view probe) and no identifiers. It is for a ClusterIP scrape and is never
+// routed: the read listener's operator auth is the wrong gate for Prometheus.
+//
 // The relay is SCRAPED from here and never pushes: the process carrying every
 // broadcast's hot path must not grow an outbound HTTP client or a queue (D5).
 package main
@@ -38,6 +42,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/ingest"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/live"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/mcp"
+	"github.com/Tuhis/gawk/gawk-telemetry/internal/opsmetrics"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/readapi"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/relayscrape"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/rollup"
@@ -82,8 +87,15 @@ func run() error {
 	// nil here and the console says so plainly — which is a different message
 	// from a query error, and the UI renders it as one.
 	var engine readapi.SQLEngine
+	var probeTarget sqlengine.Querier
+	metrics := opsmetrics.New(version, cfg.enableSQL)
 	if cfg.enableSQL {
-		e, err := sqlengine.Open(sqlengine.Options{Root: cfg.dataDir})
+		e, err := sqlengine.Open(sqlengine.Options{
+			Root:        cfg.dataDir,
+			MemoryLimit: cfg.sqlMemoryLimit,
+			Threads:     cfg.sqlThreads,
+			SpillLimit:  cfg.sqlSpillLimit,
+		})
 		switch {
 		case errors.Is(err, sqlengine.ErrNoEngine):
 			log.Info("query-sql is enabled but this build has no engine compiled in; " +
@@ -92,8 +104,10 @@ func run() error {
 			log.Warn("query engine failed to open; the console will report itself unavailable", "err", err)
 		default:
 			engine = e
+			probeTarget = e
 			defer e.Close()
 		}
+		metrics.SetSQLEngine(engine != nil)
 	}
 
 	api, err := readapi.New(readapi.Options{
@@ -148,6 +162,12 @@ func run() error {
 		"relay_targets", cfg.relayTargetDescription(),
 		"mcp_enabled", cfg.mcpEnabled,
 		"query_sql_enabled", cfg.enableSQL,
+		// 0 = DuckDB's own default (no container limit was found).
+		"sql_memory_limit_bytes", cfg.sqlMemoryLimit,
+		"sql_threads", cfg.sqlThreads,
+		"sql_spill_limit_bytes", cfg.sqlSpillLimit,
+		"sql_probe_interval", cfg.sqlProbeInterval,
+		"metrics_addr", cfg.metricsAddr,
 		// Whether the code -> broadcast-key lookup is available. The key itself
 		// is never logged; only that one was supplied.
 		"resolve_enabled", len(cfg.statsKey) > 0,
@@ -161,6 +181,9 @@ func run() error {
 
 	go scraper.Run(ctx)
 	go maintenance(ctx, log, st, writer, cfg)
+	if probeTarget != nil && cfg.sqlProbeInterval > 0 {
+		go probeLoop(ctx, log, probeTarget, cfg.dataDir, cfg.sqlProbeInterval, metrics)
+	}
 
 	// --- public listener: ingest ONLY -------------------------------------
 	ingestMux := http.NewServeMux()
@@ -214,9 +237,18 @@ func run() error {
 	ingestSrv := &http.Server{Addr: cfg.ingestAddr, Handler: ingestMux, ReadHeaderTimeout: 10 * time.Second}
 	readSrv := &http.Server{Addr: cfg.readAddr, Handler: readHandler, ReadHeaderTimeout: 10 * time.Second}
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 	go func() { errCh <- serve(ingestSrv, "ingest", log) }()
 	go func() { errCh <- serve(readSrv, "read", log) }()
+
+	// --- metrics listener: ClusterIP only, no auth, no identifiers --------
+	var metricsSrv *http.Server
+	if cfg.metricsAddr != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("GET /metrics", metrics.Handler())
+		metricsSrv = &http.Server{Addr: cfg.metricsAddr, Handler: metricsMux, ReadHeaderTimeout: 10 * time.Second}
+		go func() { errCh <- serve(metricsSrv, "metrics", log) }()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -231,6 +263,9 @@ func run() error {
 	defer cancel()
 	_ = ingestSrv.Shutdown(shutCtx)
 	_ = readSrv.Shutdown(shutCtx)
+	if metricsSrv != nil {
+		_ = metricsSrv.Shutdown(shutCtx)
+	}
 	// Every open session ends properly rather than being left to the next
 	// process's orphan sweep.
 	writer.FinalizeAll()
@@ -284,6 +319,33 @@ func maintenance(ctx context.Context, log *slog.Logger, st *store.Store, w *sess
 			} else if n > 0 {
 				log.Info("pruned raw partitions", "count", n, "before", cutoff.Format(store.DateLayout))
 			}
+		}
+	}
+}
+
+// probeLoop runs the SQL view probe at startup and then every interval,
+// publishing each round to the metrics registry. A failing view is also
+// logged, with the error text the gauge deliberately does not carry.
+func probeLoop(ctx context.Context, log *slog.Logger, q sqlengine.Querier, root string, interval time.Duration, m *opsmetrics.Registry) {
+	round := func(now time.Time) {
+		views := sqlengine.Probe(q, root, now)
+		for _, v := range views {
+			if !v.OK {
+				log.Warn("SQL view probe failed; the console cannot answer queries on this view",
+					"view", v.Name, "err", v.Err)
+			}
+		}
+		m.SetViews(views, time.Now())
+	}
+	round(time.Now())
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			round(now)
 		}
 	}
 }
@@ -432,9 +494,19 @@ type config struct {
 	// obfuscated key the dashboard shows (readapi/resolve.go). Unset by
 	// default, because holding it lets this process enumerate join codes for
 	// the broadcasts it stores.
-	statsKey      []byte
-	mcpEnabled    bool
-	enableSQL     bool
+	statsKey   []byte
+	mcpEnabled bool
+	enableSQL  bool
+	// The SQL engine's budget and health probe (sqlengine.Options, Probe).
+	// sqlMemoryLimit 0 = DuckDB's own default; "auto" resolves to a quarter of
+	// the container's limit at parse time.
+	sqlMemoryLimit   int64
+	sqlThreads       int
+	sqlSpillLimit    int64
+	sqlProbeInterval time.Duration
+	// metricsAddr is the ClusterIP-only Prometheus listener; empty (spelled
+	// "off" on the command line and in env) disables it.
+	metricsAddr   string
 	basicAuthUser string
 	basicAuthPass string
 	rateLimit     float64
@@ -514,6 +586,18 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 	// tool both say so rather than pretending (§8 Q1).
 	fs.BoolVar(&c.enableSQL, "query-sql", orBool(env("GAWK_TELEMETRY_QUERY_SQL"), true),
 		"expose the ad-hoc SQL surface (default on; needs a build with -tags duckdb to answer)")
+	// The engine shares a process with public ingest, so its budget is stated
+	// (BUGS.md 2026-08-20: DuckDB's defaults OOMed every unpruned scan).
+	sqlMem := fs.String("sql-memory-limit", or(env("GAWK_TELEMETRY_SQL_MEMORY_LIMIT"), "auto"),
+		"SQL engine memory budget, e.g. 512MiB; auto = a quarter of the container's memory limit (min 128MiB), or DuckDB's default where no limit is set")
+	fs.IntVar(&c.sqlThreads, "sql-threads", orInt(env("GAWK_TELEMETRY_SQL_THREADS"), sqlengine.DefaultThreads),
+		"SQL engine worker threads; each holds a 32 MiB JSON read buffer, so this sets the floor under a scan")
+	sqlSpill := fs.String("sql-spill-limit", or(env("GAWK_TELEMETRY_SQL_SPILL_LIMIT"), "512MiB"),
+		"cap on the SQL engine's spill directory (<data-dir>/.sql-spill, on the data volume ingest writes to); 0 disables spilling")
+	sqlProbe := fs.String("sql-probe-interval", or(env("GAWK_TELEMETRY_SQL_PROBE_INTERVAL"), "5m"),
+		"how often every SQL view is probed for the gawk_telemetry_sql_view_up gauge; 0 disables the probe")
+	fs.StringVar(&c.metricsAddr, "metrics-addr", or(env("GAWK_TELEMETRY_METRICS_ADDR"), ":8082"),
+		"ClusterIP-only Prometheus listener (/metrics) — never route it; off disables it")
 	fs.StringVar(&c.basicAuthUser, "read-user", env("GAWK_TELEMETRY_READ_USER"),
 		"optional basic-auth user for the read listener (empty = no auth, cluster-internal)")
 	fs.StringVar(&c.basicAuthPass, "read-password", env("GAWK_TELEMETRY_READ_PASSWORD"),
@@ -565,6 +649,28 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 	}
 	if c.retentionDays < 1 {
 		return config{}, fmt.Errorf("-retention-days must be at least 1")
+	}
+	// Refused at parse time rather than left for DuckDB to reject at Open: a
+	// bad budget there only logs a warning and leaves the console unavailable,
+	// which is the silent-rot shape this whole surface has already had.
+	if strings.EqualFold(strings.TrimSpace(*sqlMem), "auto") {
+		c.sqlMemoryLimit = sqlengine.AutoMemoryLimit("/sys/fs/cgroup")
+	} else if c.sqlMemoryLimit, err = sqlengine.ParseSize(*sqlMem); err != nil || c.sqlMemoryLimit == 0 {
+		return config{}, fmt.Errorf("invalid -sql-memory-limit %q (want e.g. 512MiB, or auto)", *sqlMem)
+	}
+	if c.sqlSpillLimit, err = sqlengine.ParseSize(*sqlSpill); err != nil {
+		return config{}, fmt.Errorf("invalid -sql-spill-limit %q (want e.g. 512MiB, or 0)", *sqlSpill)
+	}
+	if c.sqlThreads < 1 {
+		return config{}, fmt.Errorf("-sql-threads must be at least 1")
+	}
+	if c.sqlProbeInterval, err = time.ParseDuration(*sqlProbe); err != nil || c.sqlProbeInterval < 0 {
+		return config{}, fmt.Errorf("invalid -sql-probe-interval %q", *sqlProbe)
+	}
+	// "off", not empty, is the env spelling of "disabled": an empty env var
+	// means unset everywhere else here and falls back to the default.
+	if strings.EqualFold(strings.TrimSpace(c.metricsAddr), "off") {
+		c.metricsAddr = ""
 	}
 	for _, a := range strings.Split(*relayStatic, ",") {
 		if a = strings.TrimSpace(a); a != "" {

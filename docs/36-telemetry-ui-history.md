@@ -612,6 +612,20 @@ to §8 Q1's resolution.
 | A build with no engine wired says so plainly and does not render a broken editor | test |
 | `go build ./...` on a fresh clone stays cgo-free (§8 Q1's resolution) | CI |
 | A malformed or long-running query fails safely with a readable message | test |
+| A partition written **after** the engine opened — a new field, a widened type, or the first file of a tree that was empty at boot — is queryable without a restart | test (`duckdb_test.go`) |
+| An unpruned `sessions` scan answers inside the engine's stated budget (memory, threads, capped spill); the console cannot `SET` its way past it | test (`duckdb_test.go`, `sqlengine_test.go`) |
+| A view that has data and does not answer is visible without anyone opening the console: `gawk_telemetry_sql_view_up` on the metrics listener, alertable through the chart's opt-in PrometheusRule | test (`probe_test.go`, `opsmetrics_test.go`) + CI image smoke |
+| Every stored row path keeps its type forever (D4) | test (`internal/storedshape`, golden) |
+
+The last four rows were added after the fact (2026-09-22). The original four
+all passed on a fresh store while the deployed console had been failing every
+`rollups` query for weeks: DuckDB binds a view's columns at `CREATE VIEW`, and
+the views were registered once at boot over globs that D15 guarantees will
+grow new fields. Unpruned `sessions` queries had been failing on memory the
+whole time too, because nothing set DuckDB's budget and its per-thread read
+buffers alone exceeded the pod's share. A criterion checked only against a
+small store that never changes after `Open` catches neither, and nothing but an
+operator's visit would have noticed either, hence the probe.
 
 #### TH11 — Operator ergonomics
 
