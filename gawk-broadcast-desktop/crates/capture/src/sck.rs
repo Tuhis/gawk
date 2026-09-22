@@ -21,8 +21,12 @@ use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
-use objc2_core_foundation::CFDictionary;
-use objc2_core_media::{CMSampleBuffer, CMTime};
+use objc2_core_audio_types::AudioBufferList;
+use objc2_core_foundation::{CFDictionary, CFRetained};
+use objc2_core_media::{
+    CMAudioFormatDescriptionGetStreamBasicDescription, CMBlockBuffer, CMSampleBuffer, CMTime,
+    kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+};
 use objc2_core_video::{
     CVPixelBuffer, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane,
     CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane, CVPixelBufferGetPixelFormatType,
@@ -36,6 +40,7 @@ use objc2_screen_capture_kit::{
     SCStreamOutputType,
 };
 use std::ffi::c_void;
+use std::ptr::NonNull;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -125,13 +130,37 @@ impl Frame<'_> {
     }
 }
 
+/// One delivered audio buffer, lent for the duration of the audio callback
+/// (docs/54 D6). The format is the buffer's own ASBD — read, never assumed;
+/// `gawk_audio::pcm` turns it into what the framer takes.
+pub struct AudioBlock<'a> {
+    pub format_id: u32,
+    pub format_flags: u32,
+    pub sample_rate: f64,
+    pub channels: u32,
+    pub bits_per_channel: u32,
+    /// Sample frames in the block.
+    pub frames: usize,
+    /// One slice per `AudioBuffer`: per channel when planar, one when not.
+    pub buffers: Vec<&'a [u8]>,
+    /// Host-clock presentation time, 100 ns ticks — map it with the SAME
+    /// [`host::mapper`] as video (D5).
+    pub pts_100ns: Option<i64>,
+}
+
 type OnFrame = dyn FnMut(&Frame<'_>) + Send;
+/// The audio callback: each buffer, or why it could not be read.
+pub type OnAudio = dyn FnMut(Result<&AudioBlock<'_>, String>) + Send;
 type OnError = dyn Fn(String) + Send + Sync;
 
 struct OutputIvars {
     on_frame: Mutex<Box<OnFrame>>,
+    on_audio: Mutex<Option<Box<OnAudio>>>,
     on_error: Arc<OnError>,
     guard: Arc<CallbackGuard>,
+    /// Audio's own fence (D6: audio never fails a broadcast): a panic in the
+    /// audio path stops audio and leaves video running.
+    audio_guard: Arc<CallbackGuard>,
 }
 
 define_class!(
@@ -152,10 +181,23 @@ define_class!(
             sample: &CMSampleBuffer,
             kind: SCStreamOutputType,
         ) {
-            if kind != SCStreamOutputType::Screen {
-                return; // audio is MB4's
-            }
             let iv = self.ivars();
+            if kind == SCStreamOutputType::Audio {
+                iv.audio_guard.run(|| {
+                    let mut on_audio = iv.on_audio.lock().unwrap();
+                    if let Some(on_audio) = on_audio.as_mut() {
+                        // SAFETY: the sample buffer is valid for this callback.
+                        let r = unsafe { with_audio(sample, |block| on_audio(Ok(block))) };
+                        if let Err(e) = r {
+                            on_audio(Err(e));
+                        }
+                    }
+                });
+                return;
+            }
+            if kind != SCStreamOutputType::Screen {
+                return;
+            }
             iv.guard.run(|| {
                 // SAFETY: the sample buffer is valid for this callback.
                 let image = unsafe { sample.image_buffer() };
@@ -205,7 +247,79 @@ unsafe fn frame_status(sample: &CMSampleBuffer) -> FrameStatus {
     }
 }
 
-fn configuration(s: StreamSettings) -> Retained<SCStreamConfiguration> {
+/// Lends one audio sample's buffers to `f` (docs/54 D6). The buffer list is
+/// retained by a block buffer for the call and released after it.
+unsafe fn with_audio(
+    sample: &CMSampleBuffer,
+    f: impl FnOnce(&AudioBlock<'_>),
+) -> Result<(), String> {
+    // SAFETY (whole body): CoreMedia getters on a live sample; the buffer
+    // list lives in `storage` (8-byte aligned, sized as CoreMedia asks) and
+    // its data in the retained block buffer, both alive until `f` returns.
+    unsafe {
+        let desc = sample
+            .format_description()
+            .ok_or("audio sample has no format description")?;
+        let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(&desc)
+            .as_ref()
+            .ok_or("audio sample has no stream description")?;
+        let mut needed = 0usize;
+        let _ = sample.audio_buffer_list_with_retained_block_buffer(
+            &mut needed,
+            std::ptr::null_mut(),
+            0,
+            None,
+            None,
+            0,
+            std::ptr::null_mut(),
+        );
+        if needed == 0 {
+            return Err("audio sample has no buffer list".into());
+        }
+        let mut storage = vec![0u64; needed.div_ceil(8)];
+        let abl = storage.as_mut_ptr().cast::<AudioBufferList>();
+        let mut block: *mut CMBlockBuffer = std::ptr::null_mut();
+        let st = sample.audio_buffer_list_with_retained_block_buffer(
+            std::ptr::null_mut(),
+            abl,
+            needed,
+            None,
+            None,
+            kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+            &mut block,
+        );
+        if st != 0 {
+            return Err(format!("could not read the audio buffers ({st})"));
+        }
+        let _block: Option<CFRetained<CMBlockBuffer>> =
+            NonNull::new(block).map(|b| CFRetained::from_raw(b));
+        let n = (*abl).mNumberBuffers as usize;
+        let raw = std::slice::from_raw_parts((*abl).mBuffers.as_ptr(), n);
+        let buffers = raw
+            .iter()
+            .map(|b| {
+                if b.mData.is_null() {
+                    &[][..]
+                } else {
+                    std::slice::from_raw_parts(b.mData as *const u8, b.mDataByteSize as usize)
+                }
+            })
+            .collect();
+        f(&AudioBlock {
+            format_id: asbd.mFormatID,
+            format_flags: asbd.mFormatFlags,
+            sample_rate: asbd.mSampleRate,
+            channels: asbd.mChannelsPerFrame,
+            bits_per_channel: asbd.mBitsPerChannel,
+            frames: sample.num_samples().max(0) as usize,
+            buffers,
+            pts_100ns: host::to_100ns(sample.presentation_time_stamp()),
+        });
+        Ok(())
+    }
+}
+
+fn configuration(s: StreamSettings, audio: bool) -> Retained<SCStreamConfiguration> {
     // SAFETY: setters on a fresh configuration object.
     unsafe {
         let c = SCStreamConfiguration::new();
@@ -220,7 +334,15 @@ fn configuration(s: StreamSettings) -> Retained<SCStreamConfiguration> {
         c.setPreservesAspectRatio(true);
         c.setShowsCursor(true); // R14 invariant
         c.setQueueDepth(QUEUE_DEPTH as isize);
-        c.setCapturesAudio(false); // MB4
+        // docs/54 D6: the filter scopes the audio — a window or app filter
+        // yields that app's audio only, a display filter every app's but
+        // ours. The format is still read per buffer, never assumed.
+        c.setCapturesAudio(audio);
+        if audio {
+            c.setSampleRate(48_000);
+            c.setChannelCount(2);
+            c.setExcludesCurrentProcessAudio(true);
+        }
         c
     }
 }
@@ -232,22 +354,28 @@ pub struct Capture {
     stream: Retained<SCStream>,
     output: Retained<Output>,
     _queue: DispatchRetained<DispatchQueue>,
+    _audio_queue: Option<DispatchRetained<DispatchQueue>>,
     on_error: Arc<OnError>,
     settings: StreamSettings,
+    audio: bool,
     stopped: bool,
 }
 
 impl Capture {
     /// Starts capturing `picked`. `on_frame` runs on the capture's own
-    /// serial queue and must not block; `on_error` may run on any thread
-    /// (a start failure, the stream stopping, a callback panic) and is
-    /// called at most once per cause.
+    /// serial queue and must not block; `on_audio`, when given, turns on
+    /// the stream's audio (D6) and runs on a second serial queue with each
+    /// buffer or the reason it could not be read; `on_error` may run on any
+    /// thread (a start failure, the stream stopping, a callback panic) and
+    /// is called at most once per cause.
     pub fn start(
         picked: &Picked,
         settings: StreamSettings,
         on_frame: impl FnMut(&Frame<'_>) + Send + 'static,
+        on_audio: Option<Box<OnAudio>>,
         on_error: impl Fn(String) + Send + Sync + 'static,
     ) -> Result<Self, String> {
+        let audio = on_audio.is_some();
         let on_error: Arc<OnError> = Arc::new(on_error);
         let guard = Arc::new(CallbackGuard::new({
             let on_error = on_error.clone();
@@ -255,8 +383,12 @@ impl Capture {
         }));
         let output = Output::alloc().set_ivars(OutputIvars {
             on_frame: Mutex::new(Box::new(on_frame)),
+            on_audio: Mutex::new(on_audio),
             on_error: on_error.clone(),
             guard,
+            audio_guard: Arc::new(CallbackGuard::new(|msg| {
+                log::warn!("{msg}; audio stops, video continues");
+            })),
         });
         // SAFETY: NSObject's designated initializer on a fresh instance.
         let output: Retained<Output> = unsafe { msg_send![super(output), init] };
@@ -267,7 +399,7 @@ impl Capture {
             let stream = SCStream::initWithFilter_configuration_delegate(
                 SCStream::alloc(),
                 &picked.filter,
-                &configuration(settings),
+                &configuration(settings, audio),
                 Some(ProtocolObject::from_ref(&*output)),
             );
             stream
@@ -282,14 +414,34 @@ impl Capture {
                         e.localizedDescription()
                     )
                 })?;
+            let audio_queue = if audio {
+                let q = DispatchQueue::new("fi.ioio.gawk.capture.audio", None);
+                stream
+                    .addStreamOutput_type_sampleHandlerQueue_error(
+                        ProtocolObject::from_ref(&*output),
+                        SCStreamOutputType::Audio,
+                        Some(&q),
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "Could not attach to the capture's audio: {}",
+                            e.localizedDescription()
+                        )
+                    })?;
+                Some(q)
+            } else {
+                None
+            };
             let started = completion(on_error.clone(), "Capture could not start");
             stream.startCaptureWithCompletionHandler(Some(&started));
             Ok(Self {
                 stream,
                 output,
                 _queue: queue,
+                _audio_queue: audio_queue,
                 on_error,
                 settings,
+                audio,
                 stopped: false,
             })
         }
@@ -304,9 +456,16 @@ impl Capture {
             self.stream
                 .updateContentFilter_completionHandler(&picked.filter, Some(&done));
             let done = completion(self.on_error.clone(), "Could not resize the capture");
-            self.stream
-                .updateConfiguration_completionHandler(&configuration(settings), Some(&done));
+            self.stream.updateConfiguration_completionHandler(
+                &configuration(settings, self.audio),
+                Some(&done),
+            );
         }
+    }
+
+    /// Whether the audio path panicked and was fenced off (D6).
+    pub fn audio_failed(&self) -> bool {
+        self.output.ivars().audio_guard.failed()
     }
 
     /// What the stream was started (or last updated) with.
@@ -341,6 +500,12 @@ impl Capture {
                 ProtocolObject::from_ref(&*self.output),
                 SCStreamOutputType::Screen,
             );
+            if self.audio {
+                let _ = self.stream.removeStreamOutput_type_error(
+                    ProtocolObject::from_ref(&*self.output),
+                    SCStreamOutputType::Audio,
+                );
+            }
         }
         if rx.recv_timeout(Duration::from_secs(2)).is_err() {
             log::warn!("capture stop not confirmed within 2 s");

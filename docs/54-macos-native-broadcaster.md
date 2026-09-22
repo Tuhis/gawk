@@ -7,8 +7,9 @@ manual ones (the picker, V-1's no-prompt check, frames/cursor, occluded,
 minimized, V-2) await the owner's pass on a Mac; **MB3 (encode — the first
 real broadcast) implemented 2026-09-23**, its hardware trial and
 encode-to-relay criteria verified on an M1, its first on-screen broadcast
-the owner's. §11 records what each chunk turned up. MB4–MB8 not started.
-The
+the owner's; **MB4 (audio) implemented 2026-09-23**, its unit criteria
+green, G1/G2/V-4 the owner's. §11 records what each chunk turned up.
+MB5–MB8 not started. The
 ROADMAP entry ([R52](../ROADMAP.md#r52--native-macos-broadcaster)) carries
 the research summary and owner decisions this doc builds on; the decisions
 are restated in §2 so the doc reads on its own.
@@ -982,6 +983,39 @@ loop without the close dialog.
   is not consulted — D7 wanted it only for the refusal's wording, which does
   not need it. The trial and the relay test need hardware, so the
   `macos-latest` job runs neither; they are for a Mac.
+
+**MB4 (2026-09-23)** — audio, and where D1's module plan bent:
+
+- **No `audio::sck` module.** D1 drew one, but the audio arrives on the
+  `SCStream` the capture crate owns (D6: one stream), so the framework half
+  is `capture::sck`'s — a second output on its own serial queue, each buffer
+  lent as an `AudioBlock` (its ASBD fields and planes) — and the audio
+  crate's half is portable: `audio::pcm` (the ASBD → interleaved stereo
+  shim: Float32 or Int16, planar or interleaved, mono duplicated; anything
+  not 48 kHz refused, not resampled) and `audio::lane` (framer → libopus →
+  TOC check, R25's contract untouched). Both are host tests.
+- **D6's probe is the lane's first packet.** SCK cannot run an audio-only
+  stream, and D6 made the probe the first moments of the real stream's
+  audio. `Lane` advertises the AudioConfig only with the first packet that
+  passes the TOC check, so audio that fails before producing one leaves the
+  wire byte-identical to a video-only broadcaster; any failure is sticky and
+  reported once. Unit-tested for both the probe and the live case.
+- **Audio has its own panic fence.** The first cut shared video's
+  `CallbackGuard`, which would have ended the broadcast on an audio panic —
+  against D6. A second guard stops audio only (`Capture::audio_failed`, the
+  audio line reads "error").
+- **One clock (D5).** Audio maps its host PTS through the same `QpcMapper`
+  instance as video, so A/V skew is zero by construction; a buffer without
+  a time is stamped on arrival minus its own duration.
+- **"Use whole-system audio"** (D6's hint) re-runs the system picker in
+  display mode for the live stream (`presentPickerForStream:usingContentStyle:`);
+  the new display filter swaps the audio scope on the same stream — same
+  Opus stream, same seq space. The shell's audio line keeps saying "App
+  audio" after that switch (its capture mode is fixed at Start); MB5's shell
+  work is where that label follows the filter.
+- **Owner-pending:** G1 and V-4 (mode-1 isolation against ≥ 2 real games,
+  one with a launcher/helper process), G2 (whole-system audio across an
+  output-device switch), and G7's `avSkewMs` on a live viewer.
 
 ## 12. References
 

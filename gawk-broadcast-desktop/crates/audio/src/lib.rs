@@ -11,8 +11,10 @@
 //! `#[cfg(windows)]`.
 
 pub mod framer;
+pub mod lane;
 pub mod level;
 pub mod opusenc;
+pub mod pcm;
 pub mod toc;
 
 #[cfg(windows)]

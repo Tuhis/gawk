@@ -96,6 +96,7 @@ impl Platform for Mac {
             peak_bitrate_bps: bps,
             last_good_encoder: (!cfg.last_good_encoder.is_empty())
                 .then(|| cfg.last_good_encoder.clone()),
+            audio: !cfg.disable_audio,
         };
         let capture_mode = params.picked.style.capture_mode();
         Ok(Prepared {
@@ -123,6 +124,14 @@ impl Platform for Mac {
                 PickerEvent::Cancelled => {}
                 PickerEvent::Failed(text) => ui.set_error_text(text.into()),
             }
+        }
+        // "Use whole-system audio" (D6): a re-pick in display mode.
+        if let Some(p) = media.and_then(|m| m.as_any().downcast_ref::<Pipeline>())
+            && p.take_system_audio_request()
+            && let Some(capture) = p.capture()
+        {
+            self.presenting = true;
+            self.picker.present_display_for(capture);
         }
         // Active only while on screen or live, so an idle app never shows
         // the system's screen-sharing indicator; live, the menu-bar control

@@ -181,7 +181,7 @@ Quirks that will bite you:
 | `crates/engine` | Session lifecycle, send policy, resume supervisor. No GUI, no COM/WinRT; media enters through traits, the network through a `RelaySession` seam |
 | `crates/capture` | Windows.Graphics.Capture frame source + window/monitor picker enumeration; on macOS the ScreenCaptureKit stream and the system content picker (`sck`, `sck_picker`), with their frame policy in the portable `sck_policy` |
 | `crates/encode` | Hardware H.264, trial-gated: the Media Foundation MFT cascade on Windows, VideoToolbox's low-latency session (`vt`) on macOS; the Annex-B and cadence rules are portable |
-| `crates/audio` | WASAPI process/system loopback + Opus |
+| `crates/audio` | Opus under R25's contract: WASAPI process/system loopback on Windows; on macOS the portable PCM shim and audio lane fed by ScreenCaptureKit's audio (`pcm`, `lane`) |
 | `crates/ui` | The window both apps show (`main.slint`, compiled once) and the shell that drives it (`shell`: settings, rooms, the session lifecycle, stats, diagnostics) — each app plugs in a `Platform` and a `Media` pipeline |
 | `crates/app-windows` | The Windows platform — WGC picker, Media Foundation pipeline, toasts, DPAPI — built as `gawk-broadcast.exe` |
 | `crates/app-macos` | The macOS platform — system picker, ScreenCaptureKit → VideoToolbox pipeline — built as `gawk-broadcast-macos`, bundled as `gawk-broadcast-macos.app` by `tools/macos/bundle.sh` (R52, [docs/54](../docs/54-macos-native-broadcaster.md); in progress — a stub off macOS) |

@@ -15,7 +15,7 @@ use objc2::{AnyThread, DefinedClass, Message, define_class, msg_send, sel};
 use objc2_foundation::{NSArray, NSBundle, NSError};
 use objc2_screen_capture_kit::{
     SCContentFilter, SCContentSharingPicker, SCContentSharingPickerConfiguration,
-    SCContentSharingPickerMode, SCContentSharingPickerObserver, SCStream,
+    SCContentSharingPickerMode, SCContentSharingPickerObserver, SCShareableContentStyle, SCStream,
 };
 use std::sync::Arc;
 
@@ -173,6 +173,20 @@ impl Picker {
         self.set_active(true);
         // SAFETY: as `present`; the stream is alive for the call.
         unsafe { SCContentSharingPicker::sharedPicker().presentPickerForStream(capture.stream()) }
+    }
+
+    /// Opens the picker in display mode for a live stream: D6's one-click
+    /// "switch to whole-system audio" — system audio in ScreenCaptureKit
+    /// comes from a display filter.
+    pub fn present_display_for(&self, capture: &Capture) {
+        self.set_active(true);
+        // SAFETY: as `present_for`.
+        unsafe {
+            SCContentSharingPicker::sharedPicker().presentPickerForStream_usingContentStyle(
+                capture.stream(),
+                SCShareableContentStyle::Display,
+            )
+        }
     }
 
     /// Whether the shared picker is active — see the type's docs.

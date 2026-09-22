@@ -1751,6 +1751,7 @@ dependencies = [
 name = "gawk-broadcast-app-macos"
 version = "1.5.0"
 dependencies = [
+ "gawk-audio",
  "gawk-capture",
  "gawk-encode",
  "gawk-engine",
@@ -1787,6 +1788,7 @@ dependencies = [
  "gawk-engine",
  "log",
  "objc2 0.6.4",
+ "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-media",
