@@ -18,7 +18,7 @@ fn main() {
 /// a .res as a plain input, so no resource compiler — `rc.exe`, `llvm-rc`
 /// or a crate wrapping one — is involved. msvc only: GNU ld would need
 /// windres to convert it, and that target is a type-check, not a build.
-/// broadcast-windows.yml verifies the resource actually landed in the EXE.
+/// broadcast-desktop.yml verifies the resource actually landed in the EXE.
 fn emit_icon_resource() {
     println!("cargo::rerun-if-env-changed=CARGO_CFG_TARGET_OS");
     println!("cargo::rerun-if-env-changed=CARGO_CFG_TARGET_ENV");

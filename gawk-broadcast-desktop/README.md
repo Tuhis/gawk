@@ -1,6 +1,6 @@
-# gawk-broadcast-windows
+# gawk-broadcast-desktop
 
-[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-broadcast-windows.json)](../docs/43-coverage-reporting.md)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-broadcast-desktop.json)](../docs/43-coverage-reporting.md)
 
 The native **Windows** broadcaster: share one application — its window
 plus **that app's own audio**, via WASAPI process loopback — or the whole
@@ -19,6 +19,12 @@ This is a Rust Cargo workspace, deliberately its own top-level component
 with its own CI job and release line. No container, no Helm chart, no
 deploy: a single binary you run on your own gaming PC.
 
+The directory was `gawk-broadcast-windows/` until R52 renamed it ahead of a
+native macOS broadcaster joining the workspace
+([docs/54](../docs/54-macos-native-broadcaster.md)). Only the directory,
+the workflow and the release tag changed; the EXE, its release asset and
+everything it reports about itself are still `gawk-broadcast-windows`.
+
 ## Getting a build
 
 Grab `gawk-broadcast-windows-x86_64.exe` from the
@@ -30,8 +36,10 @@ gh release download --pattern 'gawk-broadcast-windows-x86_64.exe'          # new
 gh release download gawk-broadcast-windows-v1.1.0 --pattern '*.exe'        # specific
 ```
 
-(Releases newer than v1.1.0 are tagged `gawk-broadcast-windows/vX.Y.Z` —
-the separator changed repo-wide in August 2026; older tags use the dash.)
+(Releases after v1.5.0 are tagged `gawk-broadcast-desktop/vX.Y.Z`. Before
+that they were `gawk-broadcast-windows/vX.Y.Z`, and up to v1.1.0
+`gawk-broadcast-windows-vX.Y.Z` — the separator changed repo-wide in August
+2026.)
 
 `BUILD-INFO.txt` and `SHA256SUMS` are attached alongside it.
 The EXE is unsigned by design (distribution is to known operators, docs/38

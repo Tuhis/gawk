@@ -23,7 +23,7 @@
 #    the change did not touch, and 19% of changes — docs, ROADMAP, BUGS,
 #    CLAUDE.md — needed no job at all.
 #
-# broadcast-windows.yml has filtered on paths since it moved to these runners,
+# broadcast-desktop.yml has filtered on paths since it moved to these runners,
 # including for release-asset attachment, so the pattern is already load-bearing
 # here; this brings the rest of the matrix in line with it.
 #
@@ -39,7 +39,7 @@ on:
   pull_request:
   push:
     branches: [main]
-  # The recovery path, mirroring broadcast-windows.yml. A re-run is not one:
+  # The recovery path, mirroring broadcast-desktop.yml. A re-run is not one:
   # it replays the workflow file as of the commit it re-runs, so a release
   # whose assets were lost to a bug IN this file cannot be repaired by
   # re-running it — the bug re-runs too. Dispatching runs the file as of the
@@ -176,7 +176,7 @@ jobs:
           telemetry=$(decide    telemetry    '^(gawk-telemetry|gawk-server)/')
           # gawk-app/src/transport/wire.test.ts is the TS wire mirror. Its golden
           # vectors are restated, never imported, so a relay wire change must run
-          # it — the same blind spot broadcast-windows.yml closed for the Rust
+          # it — the same blind spot broadcast-desktop.yml closed for the Rust
           # mirror by triggering on gawk-server/wire/**.
           app=$(decide          app          '^(gawk-app/|gawk-server/wire/)')
           # The off-origin assertion lives in internal/dashboard but can only run
@@ -285,7 +285,7 @@ jobs:
             # workflow that does not load is not a failing job: it is zero jobs,
             # no logs, no annotation. This repository has already published a
             # release with no binaries that way (see the incident note in
-            # broadcast-windows.yml). Falling back to all three entries means
+            # broadcast-desktop.yml). Falling back to all three entries means
             # that if the gate ever fails open, CI does what it did before this
             # change instead of refusing to start — the safe direction, and one
             # this PR cannot test on itself, since editing ci.yml sets all=true.
@@ -726,7 +726,7 @@ jobs:
   # same commit, so these binaries ARE the release's binaries. See
   # .github/actions/attach-release-assets for the gate — this job runs on every
   # main push and attaches on almost none of them. The Windows half is the
-  # matching job in broadcast-windows.yml; keep the two in step.
+  # matching job in broadcast-desktop.yml; keep the two in step.
   #
   # This job used to note that it carried no `attach_to` backfill, "because the
   # gap it recovers from has never bitten here". It has now: the packaging step
@@ -1410,7 +1410,7 @@ jobs:
   #     declare nothing); npm licences are read from the lockfile, and only
   #     packages without `dev: true` count, since build tooling is never
   #     redistributed.
-  #   * Rust — cargo-deny against gawk-broadcast-windows/deny.toml, because
+  #   * Rust — cargo-deny against gawk-broadcast-desktop/deny.toml, because
   #     Cargo manifests declare SPDX *expressions* and evaluating those is
   #     what it exists for. It is also where Slint's royalty-free exception
   #     is written down (docs/38 D12).
@@ -1456,7 +1456,7 @@ jobs:
           echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
           "${RUNNER_TEMP}/bin/cargo-deny" --version
       - name: Rust dependencies are on the license allowlist
-        working-directory: gawk-broadcast-windows
+        working-directory: gawk-broadcast-desktop
         run: cargo-deny check licenses
 
   # The other half of the licence story: the allowlist above says the terms are
@@ -2979,7 +2979,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:
       contents: write
-    # Shared with broadcast-windows.yml's job of the same name: the two
+    # Shared with broadcast-desktop.yml's job of the same name: the two
     # workflows publish to one branch and both run on every push to main.
     # Serialising them turns the push race into a queue, and the writer's
     # retry loop covers what a queue cannot (a re-run, a dispatch, a

@@ -1,4 +1,5 @@
-# Shared by every job in .github/workflows/broadcast-windows.yml.
+# Shared by every job in .github/workflows/broadcast-desktop.yml that builds
+# the Windows distribution.
 #
 # Those jobs install nothing: clang/lld/llvm, cmake+ninja+make, the clang-cl
 # shim, the pinned Rust toolchain with the msvc target, cargo-xwin, Go and the
@@ -34,7 +35,7 @@ inputs:
     # compiler the build never uses.
     description: Directory holding rust-toolchain.toml.
     required: false
-    default: gawk-broadcast-windows
+    default: gawk-broadcast-desktop
 
 runs:
   using: composite

@@ -17,7 +17,7 @@
     "gawk-admin-ui": 90,
     "gawk-app": 78,
     "gawk-broadcast": 63,
-    "gawk-broadcast-windows": 79,
+    "gawk-broadcast-desktop": 79,
     "gawk-server": 81,
     "gawk-telemetry": 66,
     "gawk-telemetry-ui": 17

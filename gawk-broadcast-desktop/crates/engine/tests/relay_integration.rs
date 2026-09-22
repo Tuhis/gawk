@@ -24,7 +24,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 const SECRET: &str = "it-s3cret";
 
 fn server_dir() -> PathBuf {
-    // crates/engine → gawk-broadcast-windows → repo root → gawk-server.
+    // crates/engine → gawk-broadcast-desktop → repo root → gawk-server.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../gawk-server")
         .canonicalize()

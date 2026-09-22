@@ -81,9 +81,9 @@ class TestEmptyReportIsAnError(unittest.TestCase):
                     "llvm-cov",
                     str(report),
                     "--component",
-                    "gawk-broadcast-windows",
+                    "gawk-broadcast-desktop",
                     "--label",
-                    "broadcast-windows",
+                    "broadcast-desktop",
                     "--out",
                     str(tmp / "out.json"),
                 ]
@@ -139,6 +139,22 @@ class TestBadges(unittest.TestCase):
         # Weighted: 900/1010 = 89.1%. A mean of percentages would say 45%.
         self.assertEqual(total["message"], "89.1%")
         self.assertEqual(total["color"], "brightgreen")
+
+    def test_a_component_gone_from_the_floors_file_is_dropped(self) -> None:
+        # R52 MB0 renamed gawk-broadcast-windows to gawk-broadcast-desktop.
+        # Carried forward, the old record would sit in data.json for ever and
+        # count twice in the aggregate beside the new one.
+        self.run_badges(
+            coverage.record("gawk-server", "relay", 80, 100, "statements"),
+            coverage.record("gawk-broadcast-windows", "broadcast-windows", 0, 900, "lines"),
+        )
+        components = self.run_badges(
+            coverage.record("gawk-broadcast-desktop", "broadcast-desktop", 90, 100, "lines")
+        )
+        self.assertEqual(sorted(components), ["gawk-broadcast-desktop", "gawk-server"])
+        self.assertFalse((self.badges / "gawk-broadcast-windows.json").exists())
+        total = json.loads((self.badges / "total.json").read_text())
+        self.assertEqual(total["message"], "85.0%")
 
     def test_badge_files_are_shields_endpoint_shaped(self) -> None:
         self.run_badges(coverage.record("gawk-server", "relay", 80, 100, "statements"))
@@ -238,7 +254,7 @@ class TestFloorsFileItself(unittest.TestCase):
                 "gawk-admin-ui",
                 "gawk-app",
                 "gawk-broadcast",
-                "gawk-broadcast-windows",
+                "gawk-broadcast-desktop",
                 "gawk-server",
                 "gawk-telemetry",
                 "gawk-telemetry-ui",

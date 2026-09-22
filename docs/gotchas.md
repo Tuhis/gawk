@@ -97,7 +97,7 @@ Add to it when a new gotcha lands in `docs/`.
   build**, and it looks like noise rather than a regression. Cargo does not
   apply `target.<triple>.rustflags` to host artifacts while cross-compiling,
   but does apply them when building *for* the host — so setting one
-  workflow-wide in `gawk-broadcast-windows` CI made `cargo xwin clippy
+  workflow-wide in the `gawk-broadcast-desktop` (then `-windows`) CI made `cargo xwin clippy
   --target msvc` build all 107 proc-macro and build-script units bare and
   `cargo clippy` rebuild every one of them (367 units → 481, the step 2:02 →
   2:58). Scope such flags to the job that needs them.

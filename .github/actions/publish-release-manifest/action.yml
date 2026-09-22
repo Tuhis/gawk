@@ -1,5 +1,5 @@
-# Publishes `releases/<component>/latest.json` to the orphan `badges` branch
-# (R46, docs/46) — the per-component "newest release" pointer that the project
+# Publishes `releases/<distribution>/latest.json` to the orphan `badges` branch
+# (R46, docs/46) — the per-distribution "newest release" pointer that the project
 # site's Download section reads, and that the desktop apps' update check (R45)
 # will read after it.
 #
@@ -17,7 +17,7 @@
 # checksums are those of the bytes on the release page.
 #
 # The push can race the coverage-badges writer on a release commit (ci.yml and
-# broadcast-windows.yml both publish to this branch, from four jobs). Hence the
+# broadcast-desktop.yml both publish to this branch, from four jobs). Hence the
 # same fetch-rewrite-retry loop as .github/actions/publish-coverage-badges:
 # this action's whole change is one file, so "rewrite" is a copy.
 name: Publish release manifest
@@ -27,6 +27,16 @@ inputs:
   component:
     description: release-please component name, exactly as keyed in .release-please-manifest.json
     required: true
+  distribution:
+    # docs/54 D14: one release-please component can ship more than one thing
+    # to download — gawk-broadcast-desktop ships the Windows EXE and the macOS
+    # bundle. The version is the component's; the path and the manifest's own
+    # `component` field are the distribution's, which is what the site card
+    # and the R45 update check key on. tools/releases/manifest.py knows which
+    # tag stems each distribution may carry.
+    description: what a user downloads, naming releases/<distribution>/latest.json (defaults to `component`)
+    required: false
+    default: ""
   dir:
     description: the directory of files that were attached to the release
     required: true
@@ -53,6 +63,7 @@ runs:
       shell: bash
       env:
         COMPONENT: ${{ inputs.component }}
+        DISTRIBUTION: ${{ inputs.distribution || inputs.component }}
         ASSET_DIR: ${{ inputs.dir }}
         PRIMARY: ${{ inputs.primary }}
         TAG: ${{ inputs.tag }}
@@ -64,7 +75,7 @@ runs:
         # already swapped in the released commit's copy.
         version=$(python3 -c 'import json,os,sys; print(json.load(open(".release-please-manifest.json"))[os.environ["COMPONENT"]])')
         python3 tools/releases/manifest.py build \
-          --component "$COMPONENT" --version "$version" --tag "$TAG" \
+          --component "$DISTRIBUTION" --version "$version" --tag "$TAG" \
           --published-at "$PUBLISHED_AT" --asset-dir "$ASSET_DIR" --primary "$PRIMARY" \
           --repo "$GITHUB_REPOSITORY" \
           --out "$RUNNER_TEMP/release-manifest/latest.json"
@@ -72,7 +83,7 @@ runs:
     - name: Push it to the badges branch
       shell: bash
       env:
-        COMPONENT: ${{ inputs.component }}
+        DISTRIBUTION: ${{ inputs.distribution || inputs.component }}
         GH_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
@@ -90,8 +101,8 @@ runs:
         git clone --depth 1 --branch badges --quiet "$remote" "$checkout"
 
         publish() {
-          mkdir -p "$checkout/releases/$COMPONENT"
-          cp "$manifest" "$checkout/releases/$COMPONENT/latest.json"
+          mkdir -p "$checkout/releases/$DISTRIBUTION"
+          cp "$manifest" "$checkout/releases/$DISTRIBUTION/latest.json"
         }
         publish
 
@@ -105,9 +116,9 @@ runs:
         fi
 
         for attempt in 1 2 3 4 5; do
-          git commit -qm "chore(releases): $COMPONENT latest.json for ${GITHUB_SHA:0:7}"
+          git commit -qm "chore(releases): $DISTRIBUTION latest.json for ${GITHUB_SHA:0:7}"
           if git push -q origin badges; then
-            echo "Published releases/$COMPONENT/latest.json"
+            echo "Published releases/$DISTRIBUTION/latest.json"
             exit 0
           fi
           echo "Push rejected (attempt $attempt) — folding in the concurrent update."

@@ -9,7 +9,7 @@
 // error.
 //
 // This is a deliberate second implementation of
-// `gawk-broadcast-windows/crates/capture/src/fit.rs`, not a shared one: the two
+// `gawk-broadcast-desktop/crates/capture/src/fit.rs`, not a shared one: the two
 // broadcasters are different languages in different modules, and the geometry
 // is twenty lines. What must not drift is the *answers*, so this package's
 // tests restate the Rust module's golden cases verbatim (fit_test.go) — the

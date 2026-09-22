@@ -515,7 +515,7 @@ COMPONENTS = {
         collect=lambda: collect_npm("gawk-admin/ui"),
     ),
     "windows": dict(
-        path="gawk-broadcast-windows",
+        path="gawk-broadcast-desktop",
         blurb=(
             "The native Windows broadcaster, a single static `gawk-broadcast.exe`.\n"
             "\n"
@@ -536,7 +536,7 @@ COMPONENTS = {
             "they are not part of the shipped executable."
         ),
         collect=lambda: collect_cargo(
-            "gawk-broadcast-windows", "x86_64-pc-windows-msvc"
+            "gawk-broadcast-desktop", "x86_64-pc-windows-msvc"
         ),
     ),
 }

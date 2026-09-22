@@ -56,6 +56,31 @@ class Build(unittest.TestCase):
         with self.assertRaisesRegex(m.ManifestError, "does not match"):
             self.build(tag="gawk-broadcast-windows/v1.13.0")
 
+    def test_distribution_releases_under_its_workspace_tag(self):
+        # R52 MB0 (docs/54 D14): the Windows and macOS apps are distributions
+        # of one release-please component, gawk-broadcast-desktop. The
+        # manifest is keyed by distribution; the tag is the component's.
+        out = self.build(component="gawk-broadcast-windows", tag="gawk-broadcast-desktop/v1.13.0")
+        self.assertEqual(out["component"], "gawk-broadcast-windows")
+        self.assertEqual(out["tag"], "gawk-broadcast-desktop/v1.13.0")
+        out = self.build(component="gawk-broadcast-macos", tag="gawk-broadcast-desktop/v1.13.0")
+        self.assertEqual(out["component"], "gawk-broadcast-macos")
+
+    def test_pre_rename_windows_tags_still_validate(self):
+        # Releases cut before the rename are tagged by the distribution's old
+        # component name, and a backfill of one writes exactly that tag.
+        self.build(component="gawk-broadcast-windows", tag="gawk-broadcast-windows/v1.13.0")
+        self.build(component="gawk-broadcast-windows", tag="gawk-broadcast-windows-v1.13.0")
+
+    def test_distribution_still_rejects_a_foreign_tag(self):
+        with self.assertRaisesRegex(m.ManifestError, "does not match"):
+            self.build(component="gawk-broadcast-windows", tag="gawk-broadcast/v1.13.0")
+        with self.assertRaisesRegex(m.ManifestError, "does not match"):
+            self.build(component="gawk-broadcast", tag="gawk-broadcast-desktop/v1.13.0")
+        # The macOS distribution never released under a pre-rename tag.
+        with self.assertRaisesRegex(m.ManifestError, "does not match"):
+            self.build(component="gawk-broadcast-macos", tag="gawk-broadcast-windows/v1.13.0")
+
     def test_legacy_tag_spelling_is_accepted(self):
         # Releases cut before the tag-separator change are `component-vX.Y.Z`,
         # and a backfill of one runs the writer on exactly that tag.
@@ -119,7 +144,7 @@ class Cli(unittest.TestCase):
             assets = _fixture(root, ("gawk-broadcast-windows-x86_64.exe", "INSTALL.md", "SHA256SUMS"))
             out = root / "releases" / "gawk-broadcast-windows" / "latest.json"
             rc = m.main(["build", "--component", "gawk-broadcast-windows", "--version", "1.3.0",
-                         "--tag", "gawk-broadcast-windows/v1.3.0", "--published-at", "2026-09-10T19:54:23Z",
+                         "--tag", "gawk-broadcast-desktop/v1.3.0", "--published-at", "2026-09-10T19:54:23Z",
                          "--asset-dir", str(assets), "--primary", "gawk-broadcast-windows-x86_64.exe",
                          "--out", str(out)])
             self.assertEqual(rc, 0)
