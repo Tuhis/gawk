@@ -177,21 +177,29 @@ func (s *Store) PruneActivityEvents(ctx context.Context, olderThan time.Time) (i
 // SummarizeActivity is the one human sentence an activity row carries, the
 // activity counterpart of Summarize.
 //
-// Same security rule: it names the HMAC'd key and never the joinable ID or
-// room code, because a summary is one of the few things that may reach a
-// webhook (docs/42 D8).
+// `key` is the CloudEvents subject of the event this row came from, which
+// since docs/52 D9 is the CLEARTEXT broadcast ID or room code — so the
+// sentence names the thing a person typed to join ("room tuhisroom opened")
+// rather than a digest nobody can place. That is only sayable because the
+// same delivery now carries the raw identifiers beside it; the sentence never
+// invents an identity the event does not already hand its receiver, and it
+// still never names an IP.
 func SummarizeActivity(eventType, key string, data map[string]any) string {
 	what := "a broadcast"
 	if key != "" {
 		what = "broadcast " + key
 	}
-	room := "a room"
-	if key != "" {
-		room = "room " + key
-	}
 	str := func(k string) string {
 		v, _ := data[k].(string)
 		return v
+	}
+	// A room is named by its display code when the event carries one — the
+	// casing the operator chose, which the subject's normalised code has lost.
+	room := "a room"
+	if name := str(PayloadDisplayCode); name != "" {
+		room = "room " + name
+	} else if key != "" {
+		room = "room " + key
 	}
 	switch eventType {
 	case EventBroadcastStarted:

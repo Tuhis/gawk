@@ -189,7 +189,8 @@ func (c *Consumer) currentStream() jetstream.Stream {
 	return c.stream
 }
 
-// LiveEntry is the latest delta for one key: the data nobody stores.
+// LiveEntry is the latest delta for one subject — the cleartext broadcast ID
+// or room code since docs/52 D9: the data nobody stores.
 type LiveEntry struct {
 	Type string
 	Data map[string]any

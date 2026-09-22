@@ -200,12 +200,15 @@ func IsEventType(t string) bool {
 	return false
 }
 
-// Payload keys that are safe to copy into a webhook body.
+// The payload keys a delivery is built from.
 //
-// This is a security boundary, not a convenience: Payload may carry raw
-// broadcast IDs, IP addresses and CIDRs (the portal needs them), and D8
-// forbids any of that from reaching a webhook. AP7's dispatcher copies these
-// named keys and nothing else.
+// This was a security boundary until docs/52 D9: Payload may carry raw
+// broadcast IDs, IP addresses and CIDRs (the portal needs them), and the rule
+// was that none of it reached a webhook. What survives of that rule is the
+// part that never moved — **no IP address and no attach secret is ever built
+// into a delivery** — and the way it is enforced: internal/notify reads these
+// named keys into the typed `data` of the event, and nothing else in the
+// payload is even looked at.
 const (
 	PayloadReason  = "reason"
 	PayloadSummary = "summary"
@@ -223,11 +226,18 @@ const (
 	// find it dropped, not forwarded. The raw code, when the portal needs it,
 	// travels under PayloadRoom, which nothing copies out.
 	PayloadRoomKey = "roomKey"
-	// PayloadRoom is the room's raw code (the CR name). Portal and Postgres
-	// only — never a webhook (docs/44 D16, docs/42 D8).
+	// PayloadRoom is the room's raw code (the CR name). Since docs/52 D9 it
+	// is delivered too, as the event's `roomCode` and its `subject`: it is a
+	// join capability and the receiver is a channel the operator chose.
 	PayloadRoom = "room"
-	// PayloadRoomKind is "static" or "dynamic". Not copied into a webhook
-	// either; the summary sentence already names the kind.
+	// PayloadDisplayCode is the code as shown to people — the static slug's
+	// configured casing, which PayloadRoom has normalised away. Delivered
+	// beside it for the same reason: "TuhisTestLab" is what the operator
+	// named the room, and a notification that says `tuhistestlab` is one they
+	// have to translate.
+	PayloadDisplayCode = "displayCode"
+	// PayloadRoomKind is "static" or "dynamic". The summary sentence names
+	// the kind too; the property is what a consumer filters on.
 	PayloadRoomKind = "kind"
 )
 

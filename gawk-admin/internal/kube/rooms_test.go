@@ -377,7 +377,7 @@ func TestRoomSweepRecordsARelayEndedDynamicRoomOnce(t *testing.T) {
 	if ev.Actor != "system" || ev.RoomKey() != "9c1d2e3f4a5b" || ev.PayloadString(store.PayloadRoom) != "r7k3mx" {
 		t.Fatalf("event = %+v payload=%s", ev, ev.Payload)
 	}
-	if s := ev.PayloadString(store.PayloadSummary); s != "a dynamic room ended" {
+	if s := ev.PayloadString(store.PayloadSummary); s != "dynamic room R7K3MX ended" {
 		t.Fatalf("summary = %q", s)
 	}
 

@@ -23,40 +23,45 @@ import (
 const goldenID = "3c2e21c2-5f9a-5242-9ecd-5871bb85c4ac"
 
 // goldenBody is the exact delivery body of goldenEvent — the CloudEvent whose
-// `data` is the D4 projection of a broadcast.killed row (docs/52 D1, D4):
-// the bytes a receiver signs over.
+// `data` is the projection of a broadcast.killed row (docs/52 D1, D4): the
+// bytes a receiver signs over.
 //
 // It is a golden: TestGoldenDeliveryBytes proves the code still produces it,
 // and the signature vectors below are computed over it. A refactor that
-// reorders an attribute, re-enables HTML escaping, or lets a raw ID through
-// changes these bytes and fails loudly, which is the point — every deployed
-// receiver's signature check depends on them.
+// reorders an attribute or re-enables HTML escaping changes these bytes and
+// fails loudly, which is the point — every deployed receiver's signature
+// check depends on them.
+//
+// *(Recut 2026-09-22 for docs/52 D9: `subject` is now the raw ID and `data`
+// carries `broadcastId`. Every signature vector below was recomputed over
+// the new bytes, outside this package, the same way the originals were.)*
 const goldenBody = `{"specversion":"1.0","id":"` + goldenID + `","source":"/gawk/admin",` +
-	`"type":"fi.ioio.gawk.broadcast.killed","subject":"3f9a1c2b4d5e",` +
+	`"type":"fi.ioio.gawk.broadcast.killed","subject":"ABC123",` +
 	`"time":"2026-08-20T15:04:05Z","datacontenttype":"application/json",` +
 	`"dataschema":"https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.killed.json",` +
-	`"data":{"actor":"juho@example.com","broadcastKey":"3f9a1c2b4d5e",` +
+	`"data":{"actor":"juho@example.com","broadcastId":"ABC123","broadcastKey":"3f9a1c2b4d5e",` +
 	`"portalUrl":"https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e",` +
-	`"reason":"terms violation","summary":"broadcast 3f9a1c2b4d5e was terminated by juho@example.com"}}`
+	`"reason":"terms violation","summary":"broadcast ABC123 was terminated by juho@example.com"}}`
 
 // goldenPendingBody is the SAME kill, recorded when its Ban CR write did not
 // land: the delivery that must not claim a termination that has not happened.
 // Same envelope, one more data property (`enforcement`), a graded summary —
 // additive, so the type and the dataschema do not move.
 const goldenPendingBody = `{"specversion":"1.0","id":"` + goldenID + `","source":"/gawk/admin",` +
-	`"type":"fi.ioio.gawk.broadcast.killed","subject":"3f9a1c2b4d5e",` +
+	`"type":"fi.ioio.gawk.broadcast.killed","subject":"ABC123",` +
 	`"time":"2026-08-20T15:04:05Z","datacontenttype":"application/json",` +
 	`"dataschema":"https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.killed.json",` +
-	`"data":{"actor":"juho@example.com","broadcastKey":"3f9a1c2b4d5e","enforcement":"pending",` +
+	`"data":{"actor":"juho@example.com","broadcastId":"ABC123","broadcastKey":"3f9a1c2b4d5e",` +
+	`"enforcement":"pending",` +
 	`"portalUrl":"https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e",` +
-	`"reason":"terms violation","summary":"a kill of broadcast 3f9a1c2b4d5e was recorded by juho@example.com` +
+	`"reason":"terms violation","summary":"a kill of broadcast ABC123 was recorded by juho@example.com` +
 	` — NOT enforced yet, the broadcast is still live"}}`
 
 const goldenTimestamp int64 = 1755702245
 
 // goldenEvent is the row goldenBody is rendered from. Its payload carries
-// portal-only context (banId, cooldownSeconds) and its BroadcastID column the
-// raw ID — none of which may survive into the body.
+// portal-only context (banId, cooldownSeconds) — which must not survive into
+// the body — and its BroadcastID column the raw ID, which since D9 must.
 func goldenEvent() store.Event {
 	return store.Event{
 		ID:           7,
@@ -66,7 +71,7 @@ func goldenEvent() store.Event {
 		BroadcastKey: "3f9a1c2b4d5e",
 		BroadcastID:  "ABC123",
 		Payload: json.RawMessage(`{"reason":"terms violation",` +
-			`"summary":"broadcast 3f9a1c2b4d5e was terminated by juho@example.com",` +
+			`"summary":"broadcast ABC123 was terminated by juho@example.com",` +
 			`"banId":"11111111-2222-3333-4444-555555555555","cooldownSeconds":600}`),
 	}
 }
@@ -74,7 +79,7 @@ func goldenEvent() store.Event {
 func goldenPendingEvent() store.Event {
 	ev := goldenEvent()
 	ev.Payload = json.RawMessage(`{"reason":"terms violation",` +
-		`"summary":"a kill of broadcast 3f9a1c2b4d5e was recorded by juho@example.com` +
+		`"summary":"a kill of broadcast ABC123 was recorded by juho@example.com` +
 		` — NOT enforced yet, the broadcast is still live",` +
 		`"enforcement":"pending",` +
 		`"banId":"11111111-2222-3333-4444-555555555555","cooldownSeconds":600}`)
@@ -132,7 +137,7 @@ func TestSignatureVectors(t *testing.T) {
 			id:        goldenID,
 			timestamp: goldenTimestamp,
 			body:      goldenBody,
-			want:      "NZgDeVu2pXZkmgQVJh9HOy6/Ln0V0HOo6oTRGvLhL9Q=",
+			want:      "nfl3IscTF+VKstADus9H80KbvT9EBJC9C7d/kv9U5Z0=",
 		},
 		{
 			// Same key, same id, same body, ONE SECOND later: a completely
@@ -143,7 +148,7 @@ func TestSignatureVectors(t *testing.T) {
 			id:        goldenID,
 			timestamp: goldenTimestamp + 1,
 			body:      goldenBody,
-			want:      "9/fjkhhvMpyzPTZqlSQZRqATMol3q/ICmbNgUDVqoOo=",
+			want:      "yq2iHwlDSxTJUAhro6xZ1X35wNpwHsZURZDcE1Vkj+4=",
 		},
 		{
 			// Each webhook signs with ITS OWN secret (docs/42 D9).
@@ -152,7 +157,7 @@ func TestSignatureVectors(t *testing.T) {
 			id:        goldenID,
 			timestamp: goldenTimestamp,
 			body:      goldenBody,
-			want:      "Fy2vyCOi2nt8uOVf5j5tlxqWaVoQzFeAX6So9YuXZck=",
+			want:      "26oZxL5QzTl4lLb2B6X/q9wNYiWyTkhZpdtD9exadXY=",
 		},
 		{
 			// The key rule (D5): the key is the base64-DECODED bytes after
@@ -163,7 +168,7 @@ func TestSignatureVectors(t *testing.T) {
 			id:        goldenID,
 			timestamp: goldenTimestamp,
 			body:      goldenBody,
-			want:      "3EBhhBteJnZ2JvArrmynf3riuIfh6yqODdc0gggRZ/E=",
+			want:      "q4Bwtu/IoHAXMMGCyb8puzTEwSCDVD792sAA4P2vC2o=",
 		},
 		{
 			// The prefix is optional and changes nothing: the same base64
@@ -174,7 +179,7 @@ func TestSignatureVectors(t *testing.T) {
 			id:        goldenID,
 			timestamp: goldenTimestamp,
 			body:      goldenBody,
-			want:      "3EBhhBteJnZ2JvArrmynf3riuIfh6yqODdc0gggRZ/E=",
+			want:      "q4Bwtu/IoHAXMMGCyb8puzTEwSCDVD792sAA4P2vC2o=",
 		},
 		{
 			name:      "minimal",
@@ -203,7 +208,7 @@ func TestSignatureVectors(t *testing.T) {
 	// key), and a receiver's library — which always decodes — would reject
 	// it. This is the PR #327 review finding, pinned.
 	verbatim := Sign([]byte(whsecSecret), goldenID, goldenTimestamp, []byte(goldenBody))
-	if verbatim != SignatureVersion+",Jf94dVQSMaYNwdpiXoeCKJXFpG1p+CtUvE+HHUdHyGo=" {
+	if verbatim != SignatureVersion+",eQYCdeOUZO5oFEZxeUlAjutzLoHLZ+iMC8ipgzEkd90=" {
 		t.Fatalf("the verbatim-key control vector moved: %s", verbatim)
 	}
 	if key, _ := config.SigningKey(whsecSecret); Sign(key, goldenID, goldenTimestamp, []byte(goldenBody)) == verbatim {

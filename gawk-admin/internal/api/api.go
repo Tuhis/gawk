@@ -714,7 +714,7 @@ func (a *API) expireLapsed(ctx context.Context, target moderation.Target) {
 			Actor:       "system",
 			BroadcastID: sourceBroadcastID(b),
 			Payload: banPayload(b, b.Reason,
-				store.Summarize(store.EventBanExpired, b.Target.Type, "", ""), store.EnforcementInSync),
+				store.Summarize(store.EventBanExpired, b.Target.Type, sourceBroadcastID(b), ""), store.EnforcementInSync),
 		})
 		a.log.Info("lapsed ban expired inline before re-banning its target", "banId", b.ID,
 			"targetType", b.Target.Type)
@@ -722,8 +722,8 @@ func (a *API) expireLapsed(ctx context.Context, target moderation.Target) {
 }
 
 // sourceBroadcastID is the event's raw-ID column: the broadcast the ban was
-// taken against. Portal and Postgres only — the dispatcher never copies it
-// into a webhook (D8).
+// taken against. Since docs/52 D9 it is also the delivery's `subject` and the
+// broadcast the summary names.
 func sourceBroadcastID(b store.Ban) string {
 	if b.SourceBroadcastID != "" {
 		return b.SourceBroadcastID

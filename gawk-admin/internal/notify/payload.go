@@ -127,7 +127,7 @@ func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 		// producer still satisfies "summary present on every delivery" — and
 		// it calls the ONE summariser (store.SummarizeWithEnforcement) rather
 		// than growing a second one that could drift into naming a raw ID.
-		summary = store.SummarizeWithEnforcement(ev.Type, "", ev.BroadcastKey, ev.Actor, ev.EnforcementState())
+		summary = store.SummarizeWithEnforcement(ev.Type, "", ev.BroadcastID, ev.Actor, ev.EnforcementState())
 	}
 	reason := ev.PayloadString(store.PayloadReason)
 
@@ -139,27 +139,27 @@ func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 	if isRoomEvent(ev.Type) {
 		// Through the accessor, never as a raw string: it is what closes the
 		// vocabulary to a hex digest, so a room CODE written under the key by
-		// mistake is dropped here rather than paged out.
+		// mistake does not end up in the portal link.
 		roomKey := ev.RoomKey()
-		// The raw code IS read here — it is a bus-tier property of the
-		// contract and the projection strips it — but only from the key the
-		// producers write it under.
 		roomCode := ev.PayloadString(store.PayloadRoom)
+		displayCode := ev.PayloadString(store.PayloadDisplayCode)
 		kind := ev.PayloadString(store.PayloadRoomKind)
-		subject = roomKey
+		// The subject is the cleartext code (docs/52 D9); the key stays in
+		// `data` and in the portal link, which is keyed by it.
+		subject = roomCode
 		delivery = events.Delivery{Summary: summary, PortalURL: deepLink(externalURL, roomsPortalPath, roomKey)}
 		switch typ {
 		case events.TypeRoomCreated:
-			data = events.RoomCreatedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, Kind: kind}
+			data = events.RoomCreatedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, DisplayCode: displayCode, Kind: kind}
 		case events.TypeRoomEnded:
-			data = events.RoomEndedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, Kind: kind, Reason: reason}
+			data = events.RoomEndedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, DisplayCode: displayCode, Kind: kind, Reason: reason}
 		case events.TypeRoomSecretRotated:
-			data = events.RoomSecretRotatedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, Kind: kind}
+			data = events.RoomSecretRotatedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, DisplayCode: displayCode, Kind: kind}
 		default:
 			return events.Event{}, fmt.Errorf("notify: no data shape for %s", typ)
 		}
 	} else {
-		subject = ev.BroadcastKey
+		subject = ev.BroadcastID
 		delivery = events.Delivery{Summary: summary, PortalURL: portalURL(externalURL, ev.BroadcastKey)}
 		switch typ {
 		case events.TypeBroadcastKilled:
@@ -180,24 +180,25 @@ func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 	return project(full, delivery)
 }
 
-// project is the webhook projection of docs/52 D4: the same event with every
-// property its schema marks `x-gawk-sensitive` removed from `data`, and the
-// two delivery-added properties filled in. Nothing else changes — same `id`,
-// `source`, `type`, `subject`, `time` and `dataschema` — because a webhook
-// delivery of a bus event is the same event to a consumer that sees both.
+// project is the webhook projection of docs/52 D4 as D9 left it: the same
+// event with the two delivery-added properties filled in, and nothing
+// removed. Same `id`, `source`, `type`, `subject`, `time` and `dataschema` —
+// a webhook delivery of a bus event is the same event to a consumer that sees
+// both, and since D9 that holds for `data` as well.
 //
-// It is driven by the schema's marks rather than by a Go list, so adding a
-// sensitive property without marking it fails the fixture test in
-// contract_test.go (it leaks), not a reviewer's memory. R49 delivers bus
+// It is still a step of its own rather than a struct literal at each call
+// site: `summary` and `portalUrl` are what gawk-admin adds as the delivering
+// intermediary, and they are added in exactly one place. R49 delivers bus
 // events through this same function.
+//
+// What it no longer does is strip the properties the schemas mark
+// `x-gawk-sensitive`. A receiver is a place the operator chose to send
+// joinable identifiers; the mark now warns them of that rather than naming a
+// filter (docs/52 D9).
 func project(full events.Event, delivery events.Delivery) (events.Event, error) {
-	sensitive, err := events.SensitiveProperties(full.Type)
-	if err != nil {
-		return events.Event{}, err
-	}
-	// Through JSON rather than reflection: the marks name JSON property
-	// names, and this is the one representation in which they are exactly
-	// the keys.
+	// Through JSON rather than reflection: the delivery-added properties are
+	// JSON property names, and this is the one representation in which they
+	// are exactly the keys.
 	raw, err := json.Marshal(full.Data)
 	if err != nil {
 		return events.Event{}, fmt.Errorf("notify: encoding %s data: %w", full.Type, err)
@@ -205,9 +206,6 @@ func project(full events.Event, delivery events.Delivery) (events.Event, error) 
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return events.Event{}, fmt.Errorf("notify: %s data is not an object: %w", full.Type, err)
-	}
-	for _, name := range sensitive {
-		delete(data, name)
 	}
 	if delivery.Summary != "" {
 		data["summary"] = delivery.Summary

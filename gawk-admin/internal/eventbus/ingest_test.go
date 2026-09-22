@@ -155,9 +155,10 @@ func TestRoomClosedBecomesTheSweepsRow(t *testing.T) {
 	if summary, _ := p[store.PayloadSummary].(string); summary == "" {
 		t.Error("no summary: every receiver is promised one sentence")
 	}
-	// It must never name the raw code in the sentence a webhook may forward.
-	if summary, _ := p[store.PayloadSummary].(string); strings.Contains(summary, "pf4tzn") {
-		t.Errorf("summary %q names the joinable room code", summary)
+	// It names the room, as the delivery does since docs/52 D9 — by its
+	// display code when the event carries one, else by the code.
+	if summary, _ := p[store.PayloadSummary].(string); !strings.Contains(summary, "pf4tzn") && !strings.Contains(summary, "PF4TZN") {
+		t.Errorf("summary %q does not name the room", summary)
 	}
 }
 
