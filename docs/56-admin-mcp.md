@@ -328,10 +328,12 @@ uneven, and a confirmation the model can answer is not a confirmation.
   3), exactly as a bot's are (self-hosting §9.8 step 2).
 
 The challenge and the metadata handler are **generic** — they take an
-issuer and a resource URL — and live in `gawk-server/oidcauth` beside the
-verifier, where R53 TO4 needs the same two things for telemetry's `/mcp`.
-Whichever of R53 and R54 lands second reuses them. They are not written
-twice.
+issuer and a resource-URL function — and live in `gawk-server/oidcauth`
+beside the verifier. **R53 TO4 builds them** for telemetry's `/mcp` (R53
+lands first, OD8), under the same path-inserted, no-root-copy rule, with
+telemetry deriving its resource URL from the request origin because it has
+no external-URL knob (docs/55 D6, amended with this doc). MC3 **reuses**
+them, passing `-external-url` + `/mcp`. They are not written twice.
 
 **The resource-indicator gap.** The MCP spec has clients send RFC 8707's
 `resource` parameter (the MCP URL) on the authorization and token requests,
@@ -531,7 +533,9 @@ Tools stay with their services. Rules it enforces for both consumers:
   speaks (`2025-06-18` today, as telemetry), else `400`.
 - Request body bounded; notifications answered `202` with no body.
 
-Nothing in the relay imports `mcphttp`; the relay's containment test gains
+`Origin` validation reaches telemetry first, in R53 TO4; MC1 moves it into
+the package with the rest rather than adding it. Nothing in the relay
+imports `mcphttp`; the relay's containment test gains
 it on the forbidden list for the media path, as it gained `oidcauth` in
 R53. It uses only the standard library, so the relay module's dependency
 set does not change. The `CONTRIBUTING.md` release-coupling rule names it:
@@ -624,9 +628,15 @@ For Keycloak, beside §9.3:
    then `/mcp` → *gawk-admin* → authenticate. Allow the read tools
    permanently; leave destructive tools on ask.
 
-Revocation is the portal's: remove `operator`, or end the client's session
-in Keycloak, and the agent loses access at its next refresh — within one
-access-token lifetime.
+Revocation works as it does for the portal, within one access-token
+lifetime. There are two levers, and they look different to the agent:
+
+- **Removing `operator`** leaves the session alive. The refresh succeeds
+  and the token still validates, so `/mcp` keeps answering, but every tool
+  call returns the `403` envelope.
+- **Ending the client's session** in Keycloak makes the refresh fail.
+  `/mcp` then answers `401`, and Claude Code shows the server as needing
+  authentication.
 
 ## 7. What deliberately does not exist
 
@@ -652,7 +662,7 @@ routes become tools through MC2's generator when they land.
 |---|---|---|
 | **MC1** | `gawk-server/mcphttp` lifted from `gawk-telemetry/internal/mcp` (transport, dispatch, tool registry with `annotations`), plus the D9 transport rules; telemetry reduced to its tool list over the package; relay containment test gains the package; `CONTRIBUTING.md` coupling list | Telemetry's `mcp_test.go` — including the MCP-vs-HTTP byte-identity test — passes with **no assertion edits** (imports aside); new package tests: `GET` → 405 + `Allow`; foreign `Origin` → 403, absent `Origin` → served, own origin → served; unknown `MCP-Protocol-Version` → 400; notification → 202 empty; oversized body → 400; unknown tool → `isError` result; containment test fails when a fixture under `internal/hub` imports `mcphttp` (test of the test). Zero user-visible change to telemetry. **Lands alone** (OD8). |
 | **MC2** | `x-gawk-mcp` (+ reason) on every operation and `x-gawk-personal: ip` on every IP/CIDR property and `ip-derived` on `Ban.crName` in `openapi.yaml`, with the `crName` examples corrected; `gawk-admin/internal/mcptools`: generation from the served document (D2), in-process dispatch through `API.Routes()`, redaction and `-mcp-reveal-ips` (D6), the `-mcp-mutations` filter (D4), the no-log rule for arguments and results (D3); `redocly lint` still green | Drift: an operation without `x-gawk-mcp`, a `read` non-`GET`, a `none` without reason, an unmarked `ip`/`cidr`/`…Ip`/`…Cidr` or `ipv4`/`ipv6` property, an unmarked `BanTarget.value` or `Ban.crName` each fail with the operation or property named. Generation: every admitted operation yields exactly one tool; names, `required`, enums and `$ref`-inlined body schemas match the document for a fixture; the served role value appears in descriptions. Dispatch: for every `read` tool, the tool result's text equals the HTTP body byte-for-byte on the test harness after redaction, and the redacted values are exactly the marked ones that parse as an IP or CIDR (a `BanTarget.value` holding a broadcast ID survives, one holding a CIDR does not, and an `ip` ban's `crName` is redacted with it while an `id` ban's is not); the `crName` examples in `openapi.yaml` show the real `ban-ip-<hash>` shape; path arguments are escaped and a `..`/absolute-URL argument cannot change the target route; a missing required argument is a tool error with nothing dispatched. Mutations: off → no `write` tool listed, a `write` `tools/call` is refused and the handler counter stays zero; on (the default) → `kill_broadcast` reaches the handler with the caller's identity and a `202` surfaces as success. Reveal: with `-mcp-reveal-ips` the `list_broadcasts` result equals the HTTP body byte-for-byte, IPs included. Secrets: `create_room` and `rotate_room_secret` return the attach secret to the caller, and `create_webhook` with a known secret leaves no trace of it in the captured log at any level. Features: with rooms off, `tools/list` carries no operation whose `x-gawk-requires` is `rooms`, and the `initialize` instructions contain no room clause; with rooms on, all five room tools are listed. G6 over every operation's documented example. |
-| **MC3** | `/mcp` mounted under `-mcp`; the `401` challenge and `/.well-known/oauth-protected-resource/mcp` as generic helpers in `gawk-server/oidcauth`; D10 knobs + envs + chart values; `initialize` instructions (D8) | Against `oidcauthtest`: no token → 401 with the exact `resource_metadata` URL; expired/tampered/wrong-`aud` → 401 with `error="invalid_token"`; valid token → `initialize` and `tools/list` succeed; valid token without the role → `tools/call` on `list_broadcasts` returns `isError` carrying the 403 envelope; the invalid-credential limiter counts `/mcp` failures like `/api/v1` ones; `401 idp_unavailable` before discovery. Metadata: served at the path-inserted URL only, and the root `/.well-known/oauth-protected-resource` falls through to the catch-all (RFC 9728 §3.3); `resource` is `-external-url` + `/mcp`; `authorization_servers` is exactly the issuer. Config: `-mcp` without `-external-url` or OIDC → startup error naming it; `-mcp-reveal-ips` or `-mcp-mutations=false` without `-mcp` → startup error; `-mcp` alone lists `write` tools (default on). G9: with `-mcp` off, `/mcp` and the metadata path return the portal's catch-all response byte-for-byte. `helm template` goldens for `mcp.*` → envs. No `Set-Cookie` on any response. |
+| **MC3** | `/mcp` mounted under `-mcp`; the `401` challenge and `/.well-known/oauth-protected-resource/mcp` through R53 TO4's `oidcauth` helpers (reused, not re-implemented), with `resource` from `-external-url`; D10 knobs + envs + chart values; `initialize` instructions (D8) | Against `oidcauthtest`: no token → 401 with the exact `resource_metadata` URL; expired/tampered/wrong-`aud` → 401 with `error="invalid_token"`; valid token → `initialize` and `tools/list` succeed; valid token without the role → `tools/call` on `list_broadcasts` returns `isError` carrying the 403 envelope; the invalid-credential limiter counts `/mcp` failures like `/api/v1` ones; `401 idp_unavailable` before discovery. Metadata: served at the path-inserted URL only, and the root `/.well-known/oauth-protected-resource` falls through to the catch-all (RFC 9728 §3.3); `resource` is `-external-url` + `/mcp`; `authorization_servers` is exactly the issuer. Config: `-mcp` without `-external-url` or OIDC → startup error naming it; `-mcp-reveal-ips` or `-mcp-mutations=false` without `-mcp` → startup error; `-mcp` alone lists `write` tools (default on). G9: with `-mcp` off, `/mcp` and the metadata path return the portal's catch-all response byte-for-byte. `helm template` goldens for `mcp.*` → envs. No `Set-Cookie` on any response. |
 | **MC4** | `azp` → `identity.Client`; additive `actorClient` on moderation event `data` (Go types, JSON Schemas, AsyncAPI, golden vectors); portal events view and `summary` show "via" for a non-portal client | Event-contract drift tests pass with the new optional property; an event emitted from a token with `azp=gawk-admin-mcp` carries it and its summary reads "… via gawk-admin-mcp"; a portal-client event's `summary` is **byte-identical** to today's; a token without `azp` records no field; the webhook delivery carries `actorClient` exactly as the event does — a vector populated with it passes `TestEveryVectorProjectsWhole` — and `TestNoIPOrStraySecretInAnyDelivery` (`gawk-admin/internal/notify`) still passes; UI unit test for the "via" rendering. |
 | **MC5** | `gawk-fakeidp`: a second accepted client ID and loopback redirect URIs, plus `/.well-known/oauth-authorization-server` beside the OIDC document; docs/41 compose lane enables `-mcp`; `docs/self-hosting.md` §9.9 (§6 here); `gawk-admin/README.md`; `docs/gotchas.md` (the audience mapper, the fixed callback port); `docs/README.md` row; the reference deployment switched on in `~/gits/ioio` after release; manual pass | fakeidp tests for the second client and the AS-metadata document; `claude mcp add` against the compose lane authenticates through fakeidp and lists tools (recorded); §10 manual pass with every V row recorded. |
 
@@ -691,7 +701,8 @@ answers the challenge; they settle docs/55 V-4 for telemetry too.
 | V-3 | Record whether Claude Code sent `resource`, and whether Keycloak ignored, honoured or rejected it; confirm the issued token's `aud` contains `gawk-admin` via the mapper | |
 | V-4 | After release: `claude mcp add` per §6, authenticate, ask "what is live?" — `list_broadcasts` and `list_relays` answer; no publisher IP appears in the transcript (`revealIps` off) | |
 | V-5 | With the default `mcp.mutations`, on a scratch broadcast: Claude Code asks before `kill_broadcast`; after approval the broadcast ends; the portal's events feed shows "*operator* via gawk-admin-mcp" | |
-| V-6 | Remove `operator` from the user in Keycloak: the next tool call after the access token expires fails, and Claude Code shows the server needing authentication | |
+| V-6a | Remove `operator` from the user in Keycloak: once the current access token expires, the refresh still succeeds (the audience mapper keeps `aud`, the session is alive) and every tool call returns `isError` carrying the `403` envelope; `/mcp` itself keeps answering (D2, D5) | |
+| V-6b | End the `gawk-admin-mcp` client session for the user in Keycloak: the next refresh fails, `/mcp` answers `401`, and Claude Code shows the server needing authentication | |
 | V-7 | With `mcp.mutations: false` on a scratch install, ask the agent to kill a broadcast: no `write` tool is listed, and it says so | |
 | V-8 | Create a static room through the agent: the attach secret is returned to the operator in the conversation, and `kubectl logs` of both portal pods contains no trace of it | |
 

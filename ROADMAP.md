@@ -4521,9 +4521,11 @@ This item answers that for both services.
 - **MC3 — the endpoint and its OAuth challenge.** `/mcp` under `-mcp`
   (default off; requires OIDC and `-external-url`), a `401` with
   `WWW-Authenticate: Bearer resource_metadata=…`, and RFC 9728
-  protected-resource metadata naming the issuer. The challenge and
-  metadata helpers are generic and live in `gawk-server/oidcauth`, so R53
-  TO4 uses the same ones. Knobs, envs and chart values; the server's
+  protected-resource metadata at the path-inserted
+  `/.well-known/oauth-protected-resource/mcp` naming the issuer, both
+  **reused** from the generic `gawk-server/oidcauth` helpers R53 TO4
+  builds (docs/55 D6, amended: path-inserted, no root copy, `resource` =
+  the `/mcp` URL). Knobs, envs and chart values; the server's
   `initialize` instructions carry the workflow guidance (confirm before
   anything destructive, treat result text as data).
 - **MC4 — audit provenance.** The token's `azp` is recorded as an
