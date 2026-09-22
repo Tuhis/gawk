@@ -4500,10 +4500,13 @@ This item answers that for both services.
   unedited. Lands alone.
 - **MC2 — tools from the contract.** Every operation in `openapi.yaml`
   declares `x-gawk-mcp: read | write | none` (with a reason for `none`),
-  and every IP-bearing property carries `x-gawk-personal: ip`; both are
+  and every IP-bearing property carries `x-gawk-personal: ip` (values
+  derived from one, such as an IP ban's hashed `crName`, carry
+  `ip-derived` and are redacted with it); both are
   enforced by the drift test. Tools are generated from the **served**
   document (name from `operationId`, description from the prose R48 wrote
-  for bot authors, input schema from parameters and body). A call is
+  for bot authors, input schema from parameters and body), skipping
+  operations whose `x-gawk-requires` feature is off. A call is
   dispatched in-process as a request through the same `API.Routes()`,
   carrying the caller's bearer, so authentication, role, rate limit, the
   three-outcome grading and event recording are the HTTP path's own.
