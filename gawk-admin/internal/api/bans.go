@@ -195,6 +195,11 @@ func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The broadcast the ban is about (store.Ban.BroadcastID, the rule every
+	// ban event uses — docs/52 D9). The HMAC'd key is looked up only when the
+	// operator acted from a live broadcast: it feeds the portal link alone,
+	// and a ban typed in by ID must not wait on a fleet snapshot for it.
+	bid := created.BroadcastID()
 	key := ""
 	if source != "" {
 		key = a.broadcastKey(r, source)
@@ -207,9 +212,9 @@ func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {
 		OccurredAt:   a.now(),
 		Actor:        id.Actor(),
 		BroadcastKey: key,
-		BroadcastID:  source,
+		BroadcastID:  bid,
 		Payload: banPayload(created, reason,
-			store.SummarizeWithEnforcement(store.EventBanCreated, target.Type, key, id.Actor(), enforcement),
+			store.SummarizeWithEnforcement(store.EventBanCreated, target.Type, bid, id.Actor(), enforcement),
 			enforcement),
 	})
 	a.afterMutation()
@@ -263,9 +268,9 @@ func (a *API) handleDeleteBan(w http.ResponseWriter, r *http.Request) {
 			Type:        store.EventBanRemoved,
 			OccurredAt:  a.now(),
 			Actor:       id.Actor(),
-			BroadcastID: removed.SourceBroadcastID,
+			BroadcastID: removed.BroadcastID(),
 			Payload: banPayload(removed, removed.Reason,
-				store.SummarizeWithEnforcement(store.EventBanRemoved, removed.Target.Type, "", id.Actor(), enforcement),
+				store.SummarizeWithEnforcement(store.EventBanRemoved, removed.Target.Type, removed.BroadcastID(), id.Actor(), enforcement),
 				enforcement),
 		})
 	}

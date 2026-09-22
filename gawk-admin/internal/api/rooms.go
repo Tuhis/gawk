@@ -346,16 +346,18 @@ func (a *API) failRoom(w http.ResponseWriter, r *http.Request, what string, err 
 	}
 }
 
-// recordRoom persists a room event: the raw code under the portal-only key,
-// the HMAC'd key (when a pod has homed the room) under the one internal/notify
-// forwards, and the kind-only summary (docs/44 D16).
+// recordRoom persists a room event: the raw code, the display code, the
+// HMAC'd key (when a pod has homed the room) and the kind-only summary. All
+// four reach a webhook delivery since docs/52 D9, and the summary names the
+// room by its display code.
 func (a *API) recordRoom(ctx context.Context, eventType, actor string, obj kube.RoomObject) {
 	kind := obj.Room.Spec.Kind
+	display := rooms.DisplayCode(&obj.Room)
 	payload := map[string]any{
-		store.PayloadSummary:  store.SummarizeRoom(eventType, kind, actor),
-		store.PayloadRoom:     obj.Name,
-		store.PayloadRoomKind: kind,
-		"displayCode":         rooms.DisplayCode(&obj.Room),
+		store.PayloadSummary:     store.SummarizeRoom(eventType, kind, display, actor),
+		store.PayloadRoom:        obj.Name,
+		store.PayloadRoomKind:    kind,
+		store.PayloadDisplayCode: display,
 	}
 	if key := obj.Room.Status.Key; key != "" {
 		payload[store.PayloadRoomKey] = key

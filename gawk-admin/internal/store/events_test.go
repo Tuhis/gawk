@@ -160,24 +160,25 @@ func TestSummarizeGradesTheSentenceOnEnforcement(t *testing.T) {
 		name      string
 		eventType string
 		target    moderation.TargetType
-		key       string
+		id        string
 		actor     string
 		inSync    string
 		pending   string
 	}{
 		{
-			name:      "kill of a live broadcast",
+			// The sentence names the raw ID, as the delivery's subject does
+			// (docs/52 D9): a digest on a phone is a notification nobody
+			// can act on.
+			name:      "kill of a broadcast",
 			eventType: store.EventBroadcastKilled,
 			target:    moderation.TargetBroadcastID,
-			key:       "3f9a1c2b4d5e",
+			id:        "ABC234",
 			actor:     "op@example.com",
-			inSync:    "broadcast 3f9a1c2b4d5e was terminated by op@example.com",
-			pending:   "a kill of broadcast 3f9a1c2b4d5e was recorded by op@example.com — NOT enforced yet, the broadcast is still live",
+			inSync:    "broadcast ABC234 was terminated by op@example.com",
+			pending:   "a kill of broadcast ABC234 was recorded by op@example.com — NOT enforced yet, the broadcast is still live",
 		},
 		{
-			// No key: the broadcast had already ended, so the event names no
-			// handle at all rather than falling back to the raw ID (D8).
-			name:      "kill with no broadcast key",
+			name:      "kill with no broadcast ID",
 			eventType: store.EventBroadcastKilled,
 			target:    moderation.TargetBroadcastID,
 			actor:     "op@example.com",
@@ -188,17 +189,37 @@ func TestSummarizeGradesTheSentenceOnEnforcement(t *testing.T) {
 			name:      "kill with no actor",
 			eventType: store.EventBroadcastKilled,
 			target:    moderation.TargetBroadcastID,
-			key:       "3f9a1c2b4d5e",
-			inSync:    "broadcast 3f9a1c2b4d5e was terminated by an operator",
-			pending:   "a kill of broadcast 3f9a1c2b4d5e was recorded by an operator — NOT enforced yet, the broadcast is still live",
+			id:        "ABC234",
+			inSync:    "broadcast ABC234 was terminated by an operator",
+			pending:   "a kill of broadcast ABC234 was recorded by an operator — NOT enforced yet, the broadcast is still live",
 		},
 		{
 			name:      "broadcast ban created",
 			eventType: store.EventBanCreated,
 			target:    moderation.TargetBroadcastID,
+			id:        "ABC234",
+			actor:     "op@example.com",
+			inSync:    "a ban on broadcast ABC234 was created by op@example.com",
+			pending:   "a ban on broadcast ABC234 was recorded by op@example.com — NOT enforced yet",
+		},
+		{
+			name:      "broadcast ban with no ID on record",
+			eventType: store.EventBanCreated,
+			target:    moderation.TargetBroadcastID,
 			actor:     "op@example.com",
 			inSync:    "a broadcast ban was created by op@example.com",
 			pending:   "a broadcast ban was recorded by op@example.com — NOT enforced yet",
+		},
+		{
+			// An IP ban names the broadcast it was taken from and never the
+			// address: no event carries an IP (docs/42 D8, unchanged by D9).
+			name:      "IP ban taken from a broadcast",
+			eventType: store.EventBanCreated,
+			target:    moderation.TargetIP,
+			id:        "ABC234",
+			actor:     "op@example.com",
+			inSync:    "a ban on the publisher IP of broadcast ABC234 was created by op@example.com",
+			pending:   "a ban on the publisher IP of broadcast ABC234 was recorded by op@example.com — NOT enforced yet",
 		},
 		{
 			name:      "IP ban created",
@@ -214,9 +235,10 @@ func TestSummarizeGradesTheSentenceOnEnforcement(t *testing.T) {
 			name:      "ban removed",
 			eventType: store.EventBanRemoved,
 			target:    moderation.TargetBroadcastID,
+			id:        "ABC234",
 			actor:     "op@example.com",
-			inSync:    "a broadcast ban was lifted by op@example.com",
-			pending:   "a broadcast ban was lifted in the record by op@example.com — the target is STILL banned",
+			inSync:    "a ban on broadcast ABC234 was lifted by op@example.com",
+			pending:   "a ban on broadcast ABC234 was lifted in the record by op@example.com — the target is STILL banned",
 		},
 		{
 			name:      "IP ban expired",
@@ -239,16 +261,16 @@ func TestSummarizeGradesTheSentenceOnEnforcement(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := store.SummarizeWithEnforcement(tc.eventType, tc.target, tc.key, tc.actor, store.EnforcementInSync)
+			got := store.SummarizeWithEnforcement(tc.eventType, tc.target, tc.id, tc.actor, store.EnforcementInSync)
 			if got != tc.inSync {
 				t.Errorf("in sync = %q, want %q", got, tc.inSync)
 			}
 			// The four-argument form is the same sentence: one summariser, so
 			// the two grades cannot drift apart.
-			if plain := store.Summarize(tc.eventType, tc.target, tc.key, tc.actor); plain != tc.inSync {
+			if plain := store.Summarize(tc.eventType, tc.target, tc.id, tc.actor); plain != tc.inSync {
 				t.Errorf("Summarize = %q, want the in-sync sentence %q", plain, tc.inSync)
 			}
-			pending := store.SummarizeWithEnforcement(tc.eventType, tc.target, tc.key, tc.actor, store.EnforcementPending)
+			pending := store.SummarizeWithEnforcement(tc.eventType, tc.target, tc.id, tc.actor, store.EnforcementPending)
 			if pending != tc.pending {
 				t.Errorf("pending = %q, want %q", pending, tc.pending)
 			}
@@ -291,24 +313,27 @@ func TestEventEnforcementStateIsAClosedVocabulary(t *testing.T) {
 	}
 }
 
-// The room sentence names the KIND and nothing else (R42, docs/44 D16): a
-// room code is a joinable secret like a broadcast ID, so the one string that
-// is copied verbatim into every webhook must never be able to carry it.
-func TestSummarizeRoomNamesTheKindOnly(t *testing.T) {
+// The room sentence names the room as people know it — the display code, with
+// the casing the operator chose — and its kind (docs/52 D9: the delivery
+// carries the code anyway). With no name on record it falls back to the kind
+// alone rather than inventing one.
+func TestSummarizeRoomNamesTheRoom(t *testing.T) {
 	cases := []struct {
-		eventType, kind, actor, want string
+		eventType, kind, name, actor, want string
 	}{
-		{store.EventRoomCreated, "static", "op@example.com", "a static room was created by op@example.com"},
-		{store.EventRoomCreated, "", "", "a room was created by an operator"},
-		{store.EventRoomSecretRotated, "static", "op@example.com", "the attach secret of a static room was rotated by op@example.com"},
-		{store.EventRoomEnded, "dynamic", "op@example.com", "a dynamic room was ended by op@example.com"},
-		{store.EventRoomEnded, "static", "op@example.com", "a static room was deleted by op@example.com"},
-		{store.EventRoomEnded, "dynamic", "system", "a dynamic room ended"},
-		{store.EventRoomEnded, "dynamic", "", "a dynamic room ended"},
+		{store.EventRoomCreated, "static", "TuhisTestLab", "op@example.com", "static room TuhisTestLab was created by op@example.com"},
+		{store.EventRoomCreated, "static", "", "op@example.com", "a static room was created by op@example.com"},
+		{store.EventRoomCreated, "", "TuhisTestLab", "", "room TuhisTestLab was created by an operator"},
+		{store.EventRoomCreated, "", "", "", "a room was created by an operator"},
+		{store.EventRoomSecretRotated, "static", "TuhisTestLab", "op@example.com", "the attach secret of static room TuhisTestLab was rotated by op@example.com"},
+		{store.EventRoomEnded, "dynamic", "R7K3MX", "op@example.com", "dynamic room R7K3MX was ended by op@example.com"},
+		{store.EventRoomEnded, "static", "TuhisTestLab", "op@example.com", "static room TuhisTestLab was deleted by op@example.com"},
+		{store.EventRoomEnded, "dynamic", "R7K3MX", "system", "dynamic room R7K3MX ended"},
+		{store.EventRoomEnded, "dynamic", "", "", "a dynamic room ended"},
 	}
 	for _, tc := range cases {
-		if got := store.SummarizeRoom(tc.eventType, tc.kind, tc.actor); got != tc.want {
-			t.Errorf("SummarizeRoom(%s, %q, %q) = %q, want %q", tc.eventType, tc.kind, tc.actor, got, tc.want)
+		if got := store.SummarizeRoom(tc.eventType, tc.kind, tc.name, tc.actor); got != tc.want {
+			t.Errorf("SummarizeRoom(%s, %q, %q, %q) = %q, want %q", tc.eventType, tc.kind, tc.name, tc.actor, got, tc.want)
 		}
 	}
 	// The grading entry point routes room types here too, without an

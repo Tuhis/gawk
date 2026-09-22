@@ -5,10 +5,12 @@ package events
 // vector must both validate against the schema and be the byte-exact
 // marshalling of the fixture built from the struct.
 //
-// Field tags are the contract's property names. A property that may carry a
-// raw broadcast ID or a room code is marked `x-gawk-sensitive: true` in the
-// schema — it is present on the bus (internal infrastructure, docs/51 D6) and
-// stripped from every webhook delivery (D4). Nothing here ever carries an IP.
+// Field tags are the contract's property names. A property that carries a raw
+// broadcast ID or a room code is marked `x-gawk-sensitive: true` in the
+// schema — since D9 it is present on BOTH channels, the bus and every webhook
+// delivery, and the mark warns a consumer that the value is joinable rather
+// than naming something a projection removes. Nothing here ever carries an IP:
+// that half of the rule did not move.
 //
 // Two conventions:
 //
@@ -28,8 +30,8 @@ type Delivery struct {
 	// receiver, so a webhook-to-push bridge (ntfy) needs no templating.
 	Summary string `json:"summary,omitempty"`
 	// PortalURL is the deep link into the portal — filtered by the HMAC'd
-	// key, never by a raw ID. A notification carries no capability; acting
-	// requires logging in.
+	// key, because that is what the portal's own routes take. It carries no
+	// capability either way: acting requires logging in.
 	PortalURL string `json:"portalUrl,omitempty"`
 }
 
@@ -91,7 +93,7 @@ type BroadcastKilledData struct {
 	Actor string `json:"actor"`
 	// BroadcastKey is the HMAC'd key of the broadcast.
 	BroadcastKey string `json:"broadcastKey,omitempty"`
-	// BroadcastID is the raw, joinable ID. Sensitive: bus only.
+	// BroadcastID is the raw, joinable ID. Sensitive (D9): delivered.
 	BroadcastID string `json:"broadcastId,omitempty"`
 	// Reason is the operator's free text.
 	Reason string `json:"reason,omitempty"`
@@ -149,8 +151,12 @@ type RoomCreatedData struct {
 	// RoomKey is the fleet's HMAC'd handle for the room (docs/44 D16).
 	// Absent until a pod has homed the room.
 	RoomKey string `json:"roomKey,omitempty"`
-	// RoomCode is the joinable code. Sensitive: bus only.
+	// RoomCode is the joinable code. Sensitive (D9): delivered.
 	RoomCode string `json:"roomCode,omitempty"`
+	// DisplayCode is the code as shown to people: a static room's slug with
+	// its configured casing, a dynamic room's code in upper case. Sensitive:
+	// joinable, exactly like RoomCode, whose normalisation it undoes.
+	DisplayCode string `json:"displayCode,omitempty"`
 	// Kind is RoomKindStatic or RoomKindDynamic.
 	Kind string `json:"kind,omitempty"`
 	Delivery
@@ -160,20 +166,22 @@ type RoomCreatedData struct {
 // (Actor is their identity) or by the relay on its own (Actor `system`, and
 // Reason says why once R50's bus feeds this row).
 type RoomEndedData struct {
-	Actor    string `json:"actor"`
-	RoomKey  string `json:"roomKey,omitempty"`
-	RoomCode string `json:"roomCode,omitempty"`
-	Kind     string `json:"kind,omitempty"`
-	Reason   string `json:"reason,omitempty"`
+	Actor       string `json:"actor"`
+	RoomKey     string `json:"roomKey,omitempty"`
+	RoomCode    string `json:"roomCode,omitempty"`
+	DisplayCode string `json:"displayCode,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	Reason      string `json:"reason,omitempty"`
 	Delivery
 }
 
 // RoomSecretRotatedData is `fi.ioio.gawk.room.secret_rotated`.
 type RoomSecretRotatedData struct {
-	Actor    string `json:"actor"`
-	RoomKey  string `json:"roomKey,omitempty"`
-	RoomCode string `json:"roomCode,omitempty"`
-	Kind     string `json:"kind,omitempty"`
+	Actor       string `json:"actor"`
+	RoomKey     string `json:"roomKey,omitempty"`
+	RoomCode    string `json:"roomCode,omitempty"`
+	DisplayCode string `json:"displayCode,omitempty"`
+	Kind        string `json:"kind,omitempty"`
 	Delivery
 }
 
@@ -233,20 +241,19 @@ type BroadcastViewersData struct {
 // RoomOpenedData is `fi.ioio.gawk.room.opened`: the home pod took a room
 // live — a dynamic room's birth, or a static room's first attach.
 type RoomOpenedData struct {
-	RoomCode string `json:"roomCode,omitempty"`
-	RoomKey  string `json:"roomKey"`
-	Kind     string `json:"kind"`
-	// DisplayCode is the code as shown to participants (a static room's
-	// slug). Sensitive: it is joinable too.
+	RoomCode    string `json:"roomCode,omitempty"`
+	RoomKey     string `json:"roomKey"`
 	DisplayCode string `json:"displayCode,omitempty"`
+	Kind        string `json:"kind"`
 	CreatedAt   string `json:"createdAt"`
 	Delivery
 }
 
 // RoomClosedData is `fi.ioio.gawk.room.closed`.
 type RoomClosedData struct {
-	RoomCode string `json:"roomCode,omitempty"`
-	RoomKey  string `json:"roomKey"`
+	RoomCode    string `json:"roomCode,omitempty"`
+	RoomKey     string `json:"roomKey"`
+	DisplayCode string `json:"displayCode,omitempty"`
 	// Kind is RoomKindStatic or RoomKindDynamic, as room.opened carries it.
 	// gawk-admin's room.ended row has always named the kind, and the sentence
 	// it renders says it ("a dynamic room ended"), so an end that did not
@@ -262,6 +269,7 @@ type RoomClosedData struct {
 type RoomAttachedData struct {
 	RoomCode     string `json:"roomCode,omitempty"`
 	RoomKey      string `json:"roomKey"`
+	DisplayCode  string `json:"displayCode,omitempty"`
 	BroadcastID  string `json:"broadcastId,omitempty"`
 	BroadcastKey string `json:"broadcastKey"`
 	// Label is the tile's free text.
@@ -273,6 +281,7 @@ type RoomAttachedData struct {
 type RoomDetachedData struct {
 	RoomCode     string `json:"roomCode,omitempty"`
 	RoomKey      string `json:"roomKey"`
+	DisplayCode  string `json:"displayCode,omitempty"`
 	BroadcastID  string `json:"broadcastId,omitempty"`
 	BroadcastKey string `json:"broadcastKey"`
 	Label        string `json:"label,omitempty"`
@@ -284,6 +293,7 @@ type RoomDetachedData struct {
 type RoomAttachmentUpdatedData struct {
 	RoomCode     string `json:"roomCode,omitempty"`
 	RoomKey      string `json:"roomKey"`
+	DisplayCode  string `json:"displayCode,omitempty"`
 	BroadcastID  string `json:"broadcastId,omitempty"`
 	BroadcastKey string `json:"broadcastKey"`
 	Live         bool   `json:"live"`
@@ -293,8 +303,9 @@ type RoomAttachmentUpdatedData struct {
 
 // RoomParticipantJoinedData is `fi.ioio.gawk.room.participant_joined`.
 type RoomParticipantJoinedData struct {
-	RoomCode string `json:"roomCode,omitempty"`
-	RoomKey  string `json:"roomKey"`
+	RoomCode    string `json:"roomCode,omitempty"`
+	RoomKey     string `json:"roomKey"`
+	DisplayCode string `json:"displayCode,omitempty"`
 	// ParticipantID is the room-scoped id the roster uses (wire
 	// Participant.id). Not a join capability.
 	ParticipantID int    `json:"participantId"`
@@ -312,6 +323,7 @@ type RoomParticipantJoinedData struct {
 type RoomParticipantLeftData struct {
 	RoomCode      string `json:"roomCode,omitempty"`
 	RoomKey       string `json:"roomKey"`
+	DisplayCode   string `json:"displayCode,omitempty"`
 	ParticipantID int    `json:"participantId"`
 	Nickname      string `json:"nickname,omitempty"`
 	ClientKind    string `json:"clientKind"`
@@ -338,9 +350,10 @@ type RoomParticipantLeftData struct {
 // consumer tracking where a room lives should follow this event rather than
 // the departures on the old side.
 type RoomHomeChangedData struct {
-	RoomCode string `json:"roomCode,omitempty"`
-	RoomKey  string `json:"roomKey"`
-	Kind     string `json:"kind,omitempty"`
+	RoomCode    string `json:"roomCode,omitempty"`
+	RoomKey     string `json:"roomKey"`
+	DisplayCode string `json:"displayCode,omitempty"`
+	Kind        string `json:"kind,omitempty"`
 	// PreviousPod is the pod that held the home lease before this one, as the
 	// Room CR recorded it. Absent when the lease was already released or the
 	// record is gone.
@@ -353,6 +366,7 @@ type RoomHomeChangedData struct {
 type RoomParticipantUpdatedData struct {
 	RoomCode      string `json:"roomCode,omitempty"`
 	RoomKey       string `json:"roomKey"`
+	DisplayCode   string `json:"displayCode,omitempty"`
 	ParticipantID int    `json:"participantId"`
 	Nickname      string `json:"nickname,omitempty"`
 	ClientKind    string `json:"clientKind"`

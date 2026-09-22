@@ -3,15 +3,15 @@
   "id": "relay-0:4711",
   "source": "/gawk/relay/relay-0",
   "type": "fi.ioio.gawk.room.opened",
-  "subject": "9c1d2e3f4a5b",
+  "subject": "r7k3mx",
   "time": "2026-09-17T12:00:00Z",
   "datacontenttype": "application/json",
   "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.opened.json",
   "data": {
-    "roomCode": "R7K3MX",
+    "roomCode": "r7k3mx",
     "roomKey": "9c1d2e3f4a5b",
-    "kind": "dynamic",
     "displayCode": "R7K3MX",
+    "kind": "dynamic",
     "createdAt": "2026-09-17T12:00:00Z"
   }
 }

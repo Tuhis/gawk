@@ -341,7 +341,7 @@ func (c contract) checkSchemas() []error {
 				continue
 			}
 			if s, _ := p["x-gawk-sensitive"].(bool); s {
-				errs = append(errs, fmt.Errorf("schema/%s: %s is x-gawk-sensitive and required; a webhook projection strips it and must still validate (D4)", name, rn))
+				errs = append(errs, fmt.Errorf("schema/%s: %s is x-gawk-sensitive and required; a producer may not know a joinable identifier — an IP ban names no broadcast, an unhomed room has no key — and an event it cannot fill is not an event to drop (D4)", name, rn))
 			}
 		}
 		for _, delivery := range []string{"summary", "portalUrl"} {
@@ -789,10 +789,55 @@ func TestTypeHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(sensitive, ",") != "broadcastId,roomCode" {
+	if strings.Join(sensitive, ",") != "broadcastId,displayCode,roomCode" {
 		t.Errorf("SensitiveProperties(room.attached) = %v", sensitive)
 	}
 	if _, err := SensitiveProperties("fi.ioio.gawk.nope.nope"); err == nil {
 		t.Error("SensitiveProperties of an unknown type did not fail")
+	}
+}
+
+// TestSubjectIsTheCleartextIdentity is docs/52 D9 over every golden vector:
+// `subject` is the raw broadcast ID or the room code carried in `data`, never
+// the HMAC'd key — the identity a person typed to join, so a consumer can
+// route, group and render events without resolving a digest first.
+//
+// It reads the vectors rather than the fixtures on purpose: the vector is the
+// document a consumer is shown, and the fixture is already held byte-identical
+// to it by TestContract.
+func TestSubjectIsTheCleartextIdentity(t *testing.T) {
+	for _, typ := range Types() {
+		t.Run(typ, func(t *testing.T) {
+			raw, err := Vector(typ)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ev struct {
+				Subject string `json:"subject"`
+				Data    struct {
+					BroadcastID  string `json:"broadcastId"`
+					BroadcastKey string `json:"broadcastKey"`
+					RoomCode     string `json:"roomCode"`
+					RoomKey      string `json:"roomKey"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &ev); err != nil {
+				t.Fatal(err)
+			}
+			// A room event is about its room even when it also names a
+			// broadcast; a broadcast event is about the broadcast.
+			want := ev.Data.RoomCode
+			if want == "" {
+				want = ev.Data.BroadcastID
+			}
+			if ev.Subject != want {
+				t.Errorf("subject = %q, want the cleartext %q (D9)", ev.Subject, want)
+			}
+			for _, key := range []string{ev.Data.RoomKey, ev.Data.BroadcastKey} {
+				if key != "" && ev.Subject == key {
+					t.Errorf("subject = %q, which is the HMAC'd key; D9 made it the cleartext identity", ev.Subject)
+				}
+			}
+		})
 	}
 }

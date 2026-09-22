@@ -136,10 +136,13 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   A semantic change to any of those packages needs a `gawk-admin`-scoped
   commit in the same PR (`CONTRIBUTING.md` has the release-coupling rule). Two prohibitions travel
   with it: the relay's `/internal/admin/*` routes may carry **raw broadcast IDs
-  and publisher IPs** and must never be routed publicly, and **webhook payloads
-  must never carry either** — they carry the HMAC'd key and a portal link
-  (`docs/42` D8). Its migrations are forward-only and **a merged migration file
-  is immutable**; CI enforces both (`docs/42` §4.15).
+  and publisher IPs** and must never be routed publicly, and **no event, on the
+  bus or in a webhook, ever carries a publisher IP**. Events DO carry raw
+  broadcast IDs and room codes, in `subject` and in `data`, on both channels —
+  that is `docs/52` D9 (2026-09-22), which lifted the raw-ID half of `docs/42`
+  D8; don't "restore" the webhook projection that stripped them.
+  Its migrations are forward-only and **a merged migration file is
+  immutable**; CI enforces both (`docs/42` §4.15).
 - `docs/` — per-milestone design notes. Each component has `deploy/`
   (Dockerfile + Helm chart); `.github/workflows/` holds CI + release automation.
 

@@ -3,6 +3,7 @@ package notify
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
@@ -171,14 +172,18 @@ func TestNoEventTypeIsARowType(t *testing.T) {
 	}
 }
 
-// TestEveryVectorProjectsClean is the D4 projection over every golden
-// vector: the result carries no property the schema marks sensitive, still
-// validates against the same schema, and — the R39 fixture assertion — no
-// raw broadcast ID or room code from the vector survives into the body.
-func TestEveryVectorProjectsClean(t *testing.T) {
-	// The fictional identifiers the vectors carry, which a projected body
-	// must not.
-	vectorPoisons := []string{"ABC234", "R7K3MX", "tuhisroom"}
+// TestEveryVectorProjectsWhole is the projection of docs/52 D4 as D9 leaves
+// it, over every golden vector: the delivered `data` is the bus event's own
+// `data`, property for property — the raw broadcast ID and the room code
+// included — plus the two delivery-added properties, and it still validates
+// against the same schema. The envelope is untouched.
+//
+// It is the inverse of the assertion this test carried until 2026-09-22 ("no
+// raw identifier survives into the body"). That rule moved, deliberately, to
+// the operator's choice of receiver (docs/52 D9); what a test can still hold
+// is that the two channels deliver the SAME event, which is what makes a
+// consumer that sees both able to treat them as one.
+func TestEveryVectorProjectsWhole(t *testing.T) {
 	for _, typ := range events.Types() {
 		t.Run(typ, func(t *testing.T) {
 			raw, err := events.Vector(typ)
@@ -200,16 +205,43 @@ func TestEveryVectorProjectsClean(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, p := range vectorPoisons {
-				if strings.Contains(string(body), p) {
-					t.Errorf("the projection of %s leaked %q\n%s", typ, p, body)
-				}
-			}
 			_, data := decode(t, body)
 			assertProjected(t, typ, data)
 			validateData(t, typ, data)
 			if data["summary"] != "one sentence for the receiver" || data["portalUrl"] != "https://admin.example.com/#/broadcasts" {
 				t.Errorf("the delivery-added properties were not filled: %s", body)
+			}
+			// Every property the vector carries arrives unchanged — including
+			// the sensitive ones, which is the whole of D9.
+			var vector struct {
+				Data map[string]any `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &vector); err != nil {
+				t.Fatal(err)
+			}
+			sensitive, err := events.SensitiveProperties(typ)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for k, want := range vector.Data {
+				if k == "summary" || k == "portalUrl" {
+					continue // the two the delivery fills in, asserted above
+				}
+				got, ok := data[k]
+				if !ok {
+					t.Errorf("the projection of %s dropped %q; a delivery is the event, not a redacted copy (D9)", typ, k)
+					continue
+				}
+				if fmt.Sprint(got) != fmt.Sprint(want) {
+					t.Errorf("the projection of %s changed %q: %v → %v", typ, k, want, got)
+				}
+			}
+			// Not vacuous: every type that HAS a sensitive property must have
+			// had one to carry through, or this test proves nothing about it.
+			for _, k := range sensitive {
+				if _, inVector := vector.Data[k]; !inVector {
+					t.Errorf("the %s vector does not populate %q, so nothing here proves it is delivered; a golden vector is fully populated (docs/52 D7)", typ, k)
+				}
 			}
 			// The envelope is untouched: an intermediary, not a producer.
 			var envelope map[string]any

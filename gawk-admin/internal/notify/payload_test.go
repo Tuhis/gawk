@@ -20,10 +20,19 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/moderation"
 )
 
-// The values a delivery must never contain. Each is planted somewhere an
-// event legitimately carries it — the raw ID column, an IP ban's target, a
-// portal-only payload key, the room code — so a projection that copied "just
-// one more useful field" would surface here.
+// The values a delivery must not contain, except where docs/52 D9 says it
+// must. Each is planted somewhere an event legitimately carries it — the raw
+// ID column, an IP ban's target, a portal-only payload key, the room code —
+// so a projection that copied "just one more useful field" would surface
+// here.
+//
+// Two classes since D9. An IP, an operator's kubectl note and an attach
+// secret are in no event at all and may appear NOWHERE. A broadcast ID and a
+// room code are the event's own identity and belong in exactly two places:
+// the `subject` attribute and the property the schema names for them. Finding
+// one anywhere else is still a leak — it means some other property was
+// copied through — which is why the second class is checked against the body
+// with those two places removed.
 const (
 	poisonRawID        = "ZXQ7K2"
 	poisonRawIPv4      = "203.0.113.7"
@@ -39,18 +48,31 @@ const (
 	poisonAttachSecret = "AttachSecretValue12345678"
 )
 
-var poisons = []string{poisonRawID, poisonRawIPv4, poisonCIDR, poisonRawIPv6, poisonIPv6CIDR, poisonOperatorNote,
-	poisonRoomCode, poisonRoomSlug, poisonAttachSecret}
+// neverPoisons may appear nowhere in a delivery.
+var neverPoisons = []string{poisonRawIPv4, poisonCIDR, poisonRawIPv6, poisonIPv6CIDR, poisonOperatorNote,
+	poisonAttachSecret}
+
+// identityPoisons are the joinable identifiers D9 delivers: allowed in
+// `subject` and in their own `data` property, nowhere else.
+var identityPoisons = []string{poisonRawID, poisonRoomCode, poisonRoomSlug}
 
 // poisonedEvent is one event of the given type carrying a raw broadcast ID in
 // every place an event can hold one, and addresses in every place a ban can
 // put one.
 func poisonedEvent(eventType string) store.Event {
+	// The summary is what production writes: the real summariser, naming the
+	// raw ID or the room's display code as it does since docs/52 D9 — so the
+	// leak checks below run over the sentence a receiver actually gets, not
+	// over one that happens to name nothing.
+	summary := store.SummarizeWithEnforcement(eventType, moderation.TargetBroadcastID, poisonRawID,
+		"juho@example.com", store.EnforcementInSync)
+	if strings.HasPrefix(eventType, "room.") {
+		summary = store.SummarizeRoom(eventType, "dynamic", poisonRoomSlug, "juho@example.com")
+	}
 	payload := map[string]any{
-		store.PayloadReason: "terms violation", // operator text: deliberately NOT poisoned
-		store.PayloadSummary: "a broadcast ban was created by " +
-			"juho@example.com",
-		"target": map[string]any{"type": "ip", "value": poisonCIDR},
+		store.PayloadReason:  "terms violation", // operator text: deliberately NOT poisoned
+		store.PayloadSummary: summary,
+		"target":             map[string]any{"type": "ip", "value": poisonCIDR},
 		// enforcement is read through a closed vocabulary: a value that is
 		// not exactly "pending" is dropped rather than forwarded.
 		store.PayloadEnforcement: poisonRawID,
@@ -62,15 +84,15 @@ func poisonedEvent(eventType string) store.Event {
 		"operatorNote":           poisonOperatorNote,
 		"cooldownSeconds":        600,
 		// The room keys: the raw code under the portal-only key (as the
-		// producers write it) — which buildEvent DOES read, into the
-		// sensitive roomCode property the projection strips — and, the
-		// trap, the raw code planted under the webhook-safe roomKey too.
-		// Only a hex digest may come out.
-		store.PayloadRoom:     poisonRoomCode,
-		store.PayloadRoomKind: "dynamic",
-		store.PayloadRoomKey:  poisonRoomCode,
-		"displayCode":         poisonRoomSlug,
-		"attachSecret":        poisonAttachSecret,
+		// producers write it), which buildEvent reads into the roomCode
+		// property a delivery now carries (D9) — and, the trap, the raw code
+		// planted under roomKey too, where only a hex digest may come out,
+		// because that is the key the portal link is built from.
+		store.PayloadRoom:        poisonRoomCode,
+		store.PayloadRoomKind:    "dynamic",
+		store.PayloadRoomKey:     poisonRoomCode,
+		store.PayloadDisplayCode: poisonRoomSlug,
+		"attachSecret":           poisonAttachSecret,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -101,25 +123,84 @@ func decode(t *testing.T, body []byte) (map[string]any, map[string]any) {
 	return m, data
 }
 
-// TestNoRawIDOrIPInAnyDelivery is docs/42 D8 at the contract level, over
-// EVERY event type the store declares — including R40's reserved
-// content_flag.raised — plus the synthetic test event.
+// withoutIdentity renders a delivery with the places an identity is allowed
+// removed — the `subject` attribute, the `broadcastId` / `roomCode` /
+// `displayCode` properties, and the `summary` sentence that names them since
+// docs/52 D9 §8 — so what is left can be scanned for an identifier that
+// reached it through anything else. The summary gets a check of its own
+// (summaryNamesOnlyItsOwnEvent): exempting it here does not mean trusting it.
+func withoutIdentity(t *testing.T, body []byte) string {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("delivery is not JSON: %v (%s)", err, body)
+	}
+	delete(m, "subject")
+	if data, _ := m["data"].(map[string]any); data != nil {
+		for _, k := range []string{"broadcastId", "roomCode", "displayCode", "summary"} {
+			delete(data, k)
+		}
+	}
+	rest, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(rest)
+}
+
+// summaryNamesOnlyItsOwnEvent: the sentence may name an identity, but only
+// the one the event itself carries — its subject, its broadcastId, its room's
+// code or display code. A summary that named some OTHER broadcast would be a
+// leak through the one free-text field a push bridge shows verbatim.
+func summaryNamesOnlyItsOwnEvent(t *testing.T, envelope, data map[string]any) {
+	t.Helper()
+	summary, _ := data["summary"].(string)
+	own := map[string]bool{}
+	for _, v := range []any{envelope["subject"], data["broadcastId"], data["roomCode"], data["displayCode"]} {
+		if s, _ := v.(string); s != "" {
+			own[s] = true
+		}
+	}
+	for _, p := range identityPoisons {
+		if strings.Contains(summary, p) && !own[p] {
+			t.Errorf("summary %q names %q, which is not this event's own identity", summary, p)
+		}
+	}
+}
+
+// TestNoIPOrStraySecretInAnyDelivery is docs/42 D8 as docs/52 D9 leaves it,
+// at the contract level, over EVERY event type the store declares —
+// including R40's reserved content_flag.raised — plus the synthetic test
+// event.
+//
+// What D9 changed: the broadcast ID and the room code are delivered, in
+// `subject`, in their own property and in the summary sentence. What it did
+// not: no IP, no operator note, no attach secret, and no identifier smuggled
+// through some OTHER property — every payload key here is poisoned, the
+// fixture's summary is the real summariser's, and only the places the
+// contract names may come back carrying one.
 //
 // The type list is READ FROM internal/store's source rather than written out
 // here, so an event type added later is covered the moment it is declared: a
 // producer that ships a new event type cannot also ship a leak by forgetting
 // to add a case to this test.
-func TestNoRawIDOrIPInAnyDelivery(t *testing.T) {
+func TestNoIPOrStraySecretInAnyDelivery(t *testing.T) {
 	for _, eventType := range storeEventTypes(t) {
 		t.Run(eventType, func(t *testing.T) {
 			body := render(t, poisonedEvent(eventType), "https://admin.example.com")
 			rendered := string(body)
-			for _, p := range poisons {
+			for _, p := range neverPoisons {
 				if strings.Contains(rendered, p) {
-					t.Errorf("delivery leaked %q (D8: no raw broadcast ID and no IP address ever appears in a delivery)\n%s", p, rendered)
+					t.Errorf("delivery leaked %q (D8: no IP address, operator note or attach secret ever appears in a delivery)\n%s", p, rendered)
+				}
+			}
+			for _, p := range identityPoisons {
+				if rest := withoutIdentity(t, body); strings.Contains(rest, p) {
+					t.Errorf("delivery leaked %q outside subject, its own property and the summary (D9)\n%s", p, rendered)
 				}
 			}
 			envelope, data := decode(t, body)
+			summaryNamesOnlyItsOwnEvent(t, envelope, data)
 			typ, ok := events.ModerationType(eventType)
 			if !ok || envelope["type"] != typ {
 				t.Errorf("type = %v, want %s", envelope["type"], typ)
@@ -138,24 +219,32 @@ func TestNoRawIDOrIPInAnyDelivery(t *testing.T) {
 			if summary, _ := data["summary"].(string); strings.TrimSpace(summary) == "" {
 				t.Error("delivery has no summary: a webhook-to-push bridge would render an empty notification (§4.10)")
 			}
-			// The deep link filters by the HMAC'd key — still no raw ID (D8):
-			// the poisons check above runs over the URL too. A room event
-			// links to the rooms view; with the poisoned (non-hex) roomKey
-			// dropped, it carries no filter at all rather than the code.
+			// The deep link still filters by the HMAC'd key, because that is
+			// what the portal's routes take. A room event links to the rooms
+			// view; with the poisoned (non-hex) roomKey dropped it carries no
+			// filter at all rather than the code — the one place the code is
+			// still refused, since a link keyed by it would not resolve.
 			wantURL := "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e"
-			wantSubject := "3f9a1c2b4d5e"
+			// The subject is the cleartext identity (D9): the raw ID for a
+			// broadcast event, the code for a room one.
+			wantSubject := poisonRawID
 			if strings.HasPrefix(eventType, "room.") {
 				wantURL = "https://admin.example.com/#/rooms"
-				wantSubject = ""
+				wantSubject = poisonRoomCode
 				if _, leaked := data["roomKey"]; leaked {
-					t.Errorf("a non-hex roomKey (a raw room code) was forwarded: %v", data["roomKey"])
+					t.Errorf("a non-hex roomKey (a raw room code) was forwarded as the key: %v", data["roomKey"])
 				}
+				if data["roomCode"] != poisonRoomCode {
+					t.Errorf("roomCode = %v, want the raw code %q (D9)", data["roomCode"], poisonRoomCode)
+				}
+			} else if data["broadcastId"] != poisonRawID {
+				t.Errorf("broadcastId = %v, want the raw ID %q (D9)", data["broadcastId"], poisonRawID)
 			}
 			if data["portalUrl"] != wantURL {
 				t.Errorf("portalUrl = %v, want %q", data["portalUrl"], wantURL)
 			}
 			if subject, _ := envelope["subject"].(string); subject != wantSubject {
-				t.Errorf("subject = %q, want %q (the HMAC'd key or nothing)", subject, wantSubject)
+				t.Errorf("subject = %q, want the cleartext %q (D9)", subject, wantSubject)
 			}
 		})
 	}
@@ -171,11 +260,15 @@ func TestNoRawIDOrIPInAnyDelivery(t *testing.T) {
 	})
 }
 
-// assertProjected holds a delivery's data to the D4 projection: every key
-// is a property the type's schema declares, and none is one it marks
-// sensitive. The schema is the review gate — a new property is a reviewed
-// change to a public contract — and the poison assertion above is what
-// catches a leak regardless of naming.
+// assertProjected holds a delivery's data to the one rule the projection
+// still enforces since docs/52 D9: every key it carries is a property the
+// type's own schema declares. Nothing is removed any more, so there is
+// nothing to assert absent; TestEveryVectorProjectsWhole is what holds the
+// projection to carrying the event's own properties through.
+//
+// The schema is the review gate: a new property is a reviewed contract
+// change, so a key the schema does not declare is a struct tag that got
+// ahead of the document.
 func assertProjected(t *testing.T, typ string, data map[string]any) {
 	t.Helper()
 	raw, err := events.Schema(typ)
@@ -188,16 +281,9 @@ func assertProjected(t *testing.T, typ string, data map[string]any) {
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		t.Fatal(err)
 	}
-	sensitive, err := events.SensitiveProperties(typ)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for k := range data {
 		if _, declared := schema.Properties[k]; !declared {
 			t.Errorf("delivery carries %q, which %s's schema does not declare; adding a property is a contract change (docs/52 D6 b), not a struct tag", k, typ)
-		}
-		if slices.Contains(sensitive, k) {
-			t.Errorf("delivery carries %q, which the schema marks x-gawk-sensitive (D4)", k)
 		}
 	}
 }
@@ -205,10 +291,17 @@ func assertProjected(t *testing.T, typ string, data map[string]any) {
 // TestSummaryPresentWithoutOneInThePayload covers the fallback: an event
 // whose jsonb carries no summary still gets one, because a receiver that
 // renders only `summary` must never get an empty notification.
+//
+// The fallback names the broadcast from the event's BroadcastID column — the
+// same value the delivery's `subject` carries (docs/52 D9) — and never from
+// some other payload key: a stray raw ID planted in the jsonb must not reach
+// the sentence.
 func TestSummaryPresentWithoutOneInThePayload(t *testing.T) {
+	const column = "ABC234"
 	for _, eventType := range storeEventTypes(t) {
 		t.Run(eventType, func(t *testing.T) {
 			ev := poisonedEvent(eventType)
+			ev.BroadcastID = column
 			ev.Payload = json.RawMessage(`{"sourceBroadcastId":"` + poisonRawID + `"}`)
 			_, data := decode(t, render(t, ev, "https://admin.example.com"))
 			summary, _ := data["summary"].(string)
@@ -216,9 +309,44 @@ func TestSummaryPresentWithoutOneInThePayload(t *testing.T) {
 				t.Fatal("no summary and no fallback summary")
 			}
 			if strings.Contains(summary, poisonRawID) {
-				t.Fatalf("the fallback summary names the raw broadcast ID: %q", summary)
+				t.Fatalf("the fallback summary took a raw ID from a stray payload key: %q", summary)
+			}
+			if eventType == store.EventBroadcastKilled && !strings.Contains(summary, column) {
+				t.Fatalf("the fallback kill summary does not name the broadcast: %q", summary)
 			}
 		})
+	}
+}
+
+// TestFallbackSummaryKeepsTheBanTarget: a ban row with no stored summary still
+// says WHAT was banned. Both producers record the target under "target", so
+// the fallback reads its type — and only its type: the value of an IP ban is
+// an address, which no sentence may name. Without the type, an IP ban taken
+// from broadcast ABC234 would be announced as a ban on the broadcast.
+func TestFallbackSummaryKeepsTheBanTarget(t *testing.T) {
+	for _, eventType := range []string{store.EventBanCreated, store.EventBanExpired, store.EventBanRemoved} {
+		t.Run(eventType, func(t *testing.T) {
+			ev := poisonedEvent(eventType)
+			ev.BroadcastID = "ABC234"
+			ev.Payload = json.RawMessage(`{"target":{"type":"ip","value":"` + poisonCIDR + `"}}`)
+			_, data := decode(t, render(t, ev, "https://admin.example.com"))
+			summary, _ := data["summary"].(string)
+			if !strings.Contains(summary, "publisher IP") {
+				t.Errorf("summary %q announces an IP ban as a ban on the broadcast", summary)
+			}
+			if strings.Contains(summary, "203.0.113") {
+				t.Errorf("summary %q names the banned address", summary)
+			}
+		})
+	}
+	// A target type outside the vocabulary is not trusted: the sentence
+	// falls back to the broadcast form rather than echoing the value.
+	ev := poisonedEvent(store.EventBanCreated)
+	ev.BroadcastID = "ABC234"
+	ev.Payload = json.RawMessage(`{"target":{"type":"` + poisonRawIPv4 + `"}}`)
+	_, data := decode(t, render(t, ev, "https://admin.example.com"))
+	if s, _ := data["summary"].(string); strings.Contains(s, poisonRawIPv4) {
+		t.Errorf("summary %q echoed an unknown target type", s)
 	}
 }
 
@@ -330,13 +458,13 @@ func TestPendingEnforcementCrossesIntoTheDelivery(t *testing.T) {
 }
 
 // roomEvent is one room event as internal/api and the reconciler record it:
-// the raw code under the portal-only key, the HMAC'd key under roomKey.
+// the raw code, the display code, and the HMAC'd key under roomKey.
 func roomEvent(eventType, kind, key, actor string) store.Event {
 	payload := map[string]any{
-		store.PayloadSummary:  store.SummarizeRoom(eventType, kind, actor),
-		store.PayloadRoom:     poisonRoomCode,
-		store.PayloadRoomKind: kind,
-		"displayCode":         poisonRoomSlug,
+		store.PayloadSummary:     store.SummarizeRoom(eventType, kind, poisonRoomSlug, actor),
+		store.PayloadRoom:        poisonRoomCode,
+		store.PayloadRoomKind:    kind,
+		store.PayloadDisplayCode: poisonRoomSlug,
 	}
 	if key != "" {
 		payload[store.PayloadRoomKey] = key
@@ -352,19 +480,26 @@ func roomEvent(eventType, kind, key, actor string) store.Event {
 	}
 }
 
-// TestRoomEventsCarryTheKeyAndLinkToTheRoomsView is RM7's acceptance row
-// (docs/44 §9): a webhook about a room carries the HMAC'd key ONLY — never the
-// code, never the attach secret — and deep-links to the rooms view filtered by
-// that key. When no pod has homed the room yet there is no key, and the
-// delivery then carries no room identity at all rather than falling back to
-// the code.
-func TestRoomEventsCarryTheKeyAndLinkToTheRoomsView(t *testing.T) {
+// TestRoomEventsCarryTheCodeAndLinkToTheRoomsView is RM7's acceptance row
+// (docs/44 §9) as docs/52 D9 rewrote it: a webhook about a room names the
+// room in cleartext — the `subject` and `roomCode` — and still carries the
+// HMAC'd key beside it, because the rooms deep link is filtered by that key.
+// The attach secret is still in no delivery, ever.
+//
+// When no pod has homed the room yet there is no key: the delivery then still
+// names the room (the code is what the operator typed to create it) and links
+// to the unfiltered rooms view.
+func TestRoomEventsCarryTheCodeAndLinkToTheRoomsView(t *testing.T) {
 	for _, eventType := range []string{store.EventRoomCreated, store.EventRoomEnded, store.EventRoomSecretRotated} {
 		t.Run(eventType, func(t *testing.T) {
 			body := render(t, roomEvent(eventType, "static", "9c1d2e3f4a5b", "juho@example.com"), "https://admin.example.com")
 			envelope, data := decode(t, body)
-			if data["roomKey"] != "9c1d2e3f4a5b" || envelope["subject"] != "9c1d2e3f4a5b" {
-				t.Errorf("roomKey = %v, subject = %v, want the HMAC'd key", data["roomKey"], envelope["subject"])
+			if data["roomKey"] != "9c1d2e3f4a5b" {
+				t.Errorf("roomKey = %v, want the HMAC'd key the portal link is built from", data["roomKey"])
+			}
+			if envelope["subject"] != poisonRoomCode || data["roomCode"] != poisonRoomCode {
+				t.Errorf("subject = %v, roomCode = %v, want the cleartext code %q (D9)",
+					envelope["subject"], data["roomCode"], poisonRoomCode)
 			}
 			if data["kind"] != "static" {
 				t.Errorf("kind = %v, want static", data["kind"])
@@ -375,10 +510,14 @@ func TestRoomEventsCarryTheKeyAndLinkToTheRoomsView(t *testing.T) {
 			if _, has := data["broadcastKey"]; has {
 				t.Errorf("a room event carried a broadcastKey: %s", body)
 			}
-			for _, p := range []string{poisonRoomCode, poisonRoomSlug, poisonAttachSecret} {
-				if strings.Contains(string(body), p) {
-					t.Errorf("delivery leaked %q (docs/44 D16: the code is a joinable secret)\n%s", p, body)
-				}
+			// The display code rides along since docs/52 D9: it is what the
+			// operator named the room, and `roomCode` has normalised the
+			// casing away. The attach secret is in no room event at all.
+			if data["displayCode"] != poisonRoomSlug {
+				t.Errorf("displayCode = %v, want the display code %q", data["displayCode"], poisonRoomSlug)
+			}
+			if strings.Contains(string(body), poisonAttachSecret) {
+				t.Errorf("delivery leaked the attach secret (docs/44 §5: it is in no payload, ever)\n%s", body)
 			}
 			summary, _ := data["summary"].(string)
 			if !strings.Contains(summary, "static room") {
@@ -387,16 +526,19 @@ func TestRoomEventsCarryTheKeyAndLinkToTheRoomsView(t *testing.T) {
 			typ, _ := events.ModerationType(eventType)
 			validateData(t, typ, data)
 
-			// Not homed yet: no key, no filter, no subject, still no code.
+			// Not homed yet: no key and no filter, but the room is still
+			// named — an operator who created it knows it by its code, and a
+			// notification that named nothing would be unactionable.
 			unkeyed := render(t, roomEvent(eventType, "static", "", "juho@example.com"), "https://admin.example.com")
-			if strings.Contains(string(unkeyed), "roomKey") || strings.Contains(string(unkeyed), `"subject"`) {
-				t.Errorf("an unkeyed room event grew a roomKey or a subject: %s", unkeyed)
+			if strings.Contains(string(unkeyed), "roomKey") {
+				t.Errorf("an unkeyed room event grew a roomKey: %s", unkeyed)
 			}
 			if !strings.Contains(string(unkeyed), `"portalUrl":"https://admin.example.com/#/rooms"`) {
 				t.Errorf("unkeyed portalUrl should be the bare rooms view: %s", unkeyed)
 			}
-			if strings.Contains(string(unkeyed), poisonRoomCode) {
-				t.Errorf("an unkeyed room event fell back to the code: %s", unkeyed)
+			unkeyedEnvelope, unkeyedData := decode(t, unkeyed)
+			if unkeyedEnvelope["subject"] != poisonRoomCode || unkeyedData["roomCode"] != poisonRoomCode {
+				t.Errorf("an unkeyed room event lost the room's identity: %s", unkeyed)
 			}
 		})
 	}

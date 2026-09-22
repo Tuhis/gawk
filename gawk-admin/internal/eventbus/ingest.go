@@ -58,18 +58,46 @@ func (s *StoreIngester) now() time.Time {
 // `broadcastId`/`broadcastKey`. Reading the wrong key silently yields "" and a
 // row that names nothing, which is why activityRow is tested against the
 // contract's own vectors.
+//
+// The HMAC'd key comes from `data` and never from the CloudEvents `subject`:
+// since docs/52 D9 the subject is the CLEARTEXT id, and the portal stores,
+// links and filters by the key.
 const (
-	keyRoomCode    = "roomCode"
-	keyBroadcastID = "broadcastId"
-	keyKind        = "kind"
-	keyReason      = "reason"
-	keyNickname    = "nickname"
+	keyRoomCode     = "roomCode"
+	keyDisplayCode  = "displayCode"
+	keyRoomKey      = "roomKey"
+	keyBroadcastID  = "broadcastId"
+	keyBroadcastKey = "broadcastKey"
+	keyKind         = "kind"
+	keyReason       = "reason"
+	keyNickname     = "nickname"
 )
 
 // str reads a string property, or "" when it is absent or not a string.
 func (e Event) str(key string) string {
 	v, _ := e.Data[key].(string)
 	return v
+}
+
+// key is the HMAC'd key of what the event is about: a room event's `roomKey`,
+// a broadcast event's `broadcastKey`. The room wins when both are present —
+// room.attached, room.detached and room.attachment_updated also name the
+// broadcast in the tile — because those events are about the room, and the
+// row's key column held the room's key when it came from `subject`.
+func (e Event) key() string {
+	if k := e.str(keyRoomKey); k != "" {
+		return k
+	}
+	return e.str(keyBroadcastKey)
+}
+
+// roomName is the room as a sentence should name it: the display code, which
+// keeps the casing the operator chose, else the normalised code.
+func (e Event) roomName() string {
+	if d := e.str(keyDisplayCode); d != "" {
+		return d
+	}
+	return e.str(keyRoomCode)
 }
 
 // Rows is what ingesting needs from the store, and nothing more.
@@ -113,7 +141,7 @@ func activityRow(ev Event) (store.Event, bool) {
 		// Nobody in the portal did this. "system" is what the sweep already
 		// writes for a relay-originated fact, so the feed reads consistently.
 		Actor:        "system",
-		BroadcastKey: ev.Subject,
+		BroadcastKey: ev.key(),
 		BroadcastID:  ev.str(keyBroadcastID),
 		Payload:      activityPayload(ev, rowType),
 	}, true
@@ -160,9 +188,12 @@ func (s *StoreIngester) ingestRoomClosed(ctx context.Context, ev Event) (bool, e
 func roomClosedRow(ev Event) store.Event {
 	kind := ev.str(keyKind)
 	payload := map[string]any{
-		store.PayloadRoomKey: ev.Subject,
+		store.PayloadRoomKey: ev.str(keyRoomKey),
 		store.PayloadRoom:    ev.str(keyRoomCode),
-		store.PayloadSummary: store.SummarizeRoom(store.EventRoomEnded, kind, "system"),
+		store.PayloadSummary: store.SummarizeRoom(store.EventRoomEnded, kind, ev.roomName(), "system"),
+	}
+	if display := ev.str(keyDisplayCode); display != "" {
+		payload[store.PayloadDisplayCode] = display
 	}
 	if kind != "" {
 		payload[store.PayloadRoomKind] = kind
@@ -192,7 +223,10 @@ func activityPayload(ev Event, rowType string) json.RawMessage {
 	}
 	if code := ev.str(keyRoomCode); code != "" {
 		out[store.PayloadRoom] = code
-		out[store.PayloadRoomKey] = ev.Subject
+		out[store.PayloadRoomKey] = ev.str(keyRoomKey)
+	}
+	if display := ev.str(keyDisplayCode); display != "" {
+		out[store.PayloadDisplayCode] = display
 	}
 	if kind := ev.str(keyKind); kind != "" {
 		out[store.PayloadRoomKind] = kind

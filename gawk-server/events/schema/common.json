@@ -11,22 +11,22 @@
     },
     "broadcastKey": {
       "$ref": "#/$defs/hexKey",
-      "description": "The HMAC'd handle of a broadcast. The one broadcast identity that may leave a deployment."
+      "description": "The HMAC'd handle of a broadcast: what the portal, its links and its filters are keyed by."
     },
     "roomKey": {
       "$ref": "#/$defs/hexKey",
-      "description": "The HMAC'd handle of a room (docs/44 D16). The one room identity that may leave a deployment."
+      "description": "The HMAC'd handle of a room (docs/44 D16): what the portal, its links and its filters are keyed by."
     },
     "broadcastId": {
       "type": "string",
       "pattern": "^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{6}$",
-      "description": "A raw, joinable broadcast ID: six characters of the broadcast alphabet. Only ever on the bus; never in a webhook delivery."
+      "description": "A raw, joinable broadcast ID: six characters of the broadcast alphabet. Delivered on both channels — anyone who can read it can watch the broadcast."
     },
     "roomCode": {
       "type": "string",
       "minLength": 1,
       "maxLength": 64,
-      "description": "A raw, joinable room code: a dynamic room's six-character code or a static room's slug. Only ever on the bus; never in a webhook delivery."
+      "description": "A raw, joinable room code: a dynamic room's six-character code or a static room's slug. Delivered on both channels — anyone who can read it can join the room."
     },
     "displayCode": {
       "type": "string",

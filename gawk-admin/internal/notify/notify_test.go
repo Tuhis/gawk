@@ -132,14 +132,15 @@ func TestFanOutAcrossBothSourcesEachWithItsOwnSecret(t *testing.T) {
 				t.Errorf("%s verified under %s's secret: the webhooks are not signed independently", path, otherPath)
 			}
 		}
-		// D8, end to end on the wire.
-		if strings.Contains(string(c.body), rawID) {
-			t.Errorf("%s: the raw broadcast ID reached the wire: %s", path, c.body)
-		}
+		// Both forms on the wire, end to end (docs/52 D9): the raw ID as the
+		// subject and in `data`, the HMAC'd key beside it for the portal link.
 		payload := c.payloadOf(t)
 		data, _ := payload["data"].(map[string]any)
-		if data["broadcastKey"] != "3f9a1c2b4d5e" || payload["subject"] != "3f9a1c2b4d5e" {
-			t.Errorf("%s: broadcastKey = %v, subject = %v, want the HMAC'd key", path, data["broadcastKey"], payload["subject"])
+		if data["broadcastId"] != rawID || payload["subject"] != rawID {
+			t.Errorf("%s: broadcastId = %v, subject = %v, want the raw ID %q", path, data["broadcastId"], payload["subject"], rawID)
+		}
+		if data["broadcastKey"] != "3f9a1c2b4d5e" {
+			t.Errorf("%s: broadcastKey = %v, want the HMAC'd key", path, data["broadcastKey"])
 		}
 		if s, _ := data["summary"].(string); strings.TrimSpace(s) == "" {
 			t.Errorf("%s: no summary in the delivery", path)

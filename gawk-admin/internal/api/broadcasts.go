@@ -157,8 +157,9 @@ func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The HMAC'd key, if the broadcast is live — the only broadcast handle a
-	// webhook may carry (D8).
+	// The HMAC'd key, if the broadcast is live — what the portal link is
+	// keyed by. The sentence names the raw ID, as the delivery does (docs/52
+	// D9).
 	key := a.broadcastKey(r, normID)
 	projErr := a.project(r.Context(), created)
 	enforcement := enforcementState(projErr)
@@ -170,7 +171,7 @@ func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
 		BroadcastKey: key,
 		BroadcastID:  normID,
 		Payload: killPayload(reason,
-			store.SummarizeWithEnforcement(store.EventBroadcastKilled, target.Type, key, id.Actor(), enforcement),
+			store.SummarizeWithEnforcement(store.EventBroadcastKilled, target.Type, normID, id.Actor(), enforcement),
 			int(cooldown.Seconds()), created.ID.String(), enforcement),
 	})
 	a.afterMutation()

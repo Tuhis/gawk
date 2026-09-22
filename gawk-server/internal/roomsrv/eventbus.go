@@ -30,9 +30,12 @@ func (r *Registry) emitLocked(typ, code string, data any) {
 	}
 	r.opts.OnEvent(eventbus.Event{
 		Type: typ,
-		Key:  r.opts.Obfuscate(code),
-		Time: r.opts.Now(),
-		Data: data,
+		// Both forms: the HMAC'd key routes on the bus, the room code is the
+		// event's subject (docs/52 D9).
+		Key:     r.opts.Obfuscate(code),
+		Subject: code,
+		Time:    r.opts.Now(),
+		Data:    data,
 	})
 }
 
@@ -63,7 +66,7 @@ func (r *Registry) busEventLocked(rm *room, ev wire.RoomEvent) {
 	switch ev.Kind {
 	case wire.RoomEventParticipantJoined:
 		r.emitLocked(events.TypeRoomParticipantJoined, rm.code, events.RoomParticipantJoinedData{
-			RoomCode: rm.code, RoomKey: key,
+			RoomCode: rm.code, RoomKey: key, DisplayCode: rm.display,
 			ParticipantID: int(ev.Participant.ID),
 			Nickname:      ev.Participant.Nickname,
 			ClientKind:    clientKind(ev.Participant.Kind),
@@ -79,7 +82,7 @@ func (r *Registry) busEventLocked(rm *room, ev wire.RoomEvent) {
 		})
 	case wire.RoomEventParticipantUpdated:
 		r.emitLocked(events.TypeRoomParticipantUpdated, rm.code, events.RoomParticipantUpdatedData{
-			RoomCode: rm.code, RoomKey: key,
+			RoomCode: rm.code, RoomKey: key, DisplayCode: rm.display,
 			ParticipantID: int(ev.Participant.ID),
 			Nickname:      ev.Participant.Nickname,
 			ClientKind:    clientKind(ev.Participant.Kind),
@@ -96,7 +99,7 @@ func (r *Registry) busEventLocked(rm *room, ev wire.RoomEvent) {
 		// including the ones with no participants to notify.
 	case wire.RoomEventAttachmentRemoved:
 		r.emitLocked(events.TypeRoomDetached, rm.code, events.RoomDetachedData{
-			RoomCode: rm.code, RoomKey: key,
+			RoomCode: rm.code, RoomKey: key, DisplayCode: rm.display,
 			BroadcastID:  ev.Attachment.BroadcastID,
 			BroadcastKey: r.opts.Obfuscate(ev.Attachment.BroadcastID),
 		})
@@ -105,7 +108,7 @@ func (r *Registry) busEventLocked(rm *room, ev wire.RoomEvent) {
 		// the publisher to at most one per key per interval and only on
 		// change (docs/51 D3).
 		r.emitLocked(events.TypeRoomAttachmentUpdated, rm.code, events.RoomAttachmentUpdatedData{
-			RoomCode: rm.code, RoomKey: key,
+			RoomCode: rm.code, RoomKey: key, DisplayCode: rm.display,
 			BroadcastID:  ev.Attachment.BroadcastID,
 			BroadcastKey: r.opts.Obfuscate(ev.Attachment.BroadcastID),
 			Live:         ev.Attachment.Live,
@@ -142,6 +145,7 @@ func (r *Registry) busParticipantLeftLocked(rm *room, p *Participant) {
 	r.emitLocked(events.TypeRoomParticipantLeft, rm.code, events.RoomParticipantLeftData{
 		RoomCode:      rm.code,
 		RoomKey:       r.opts.Obfuscate(rm.code),
+		DisplayCode:   rm.display,
 		ParticipantID: int(p.id),
 		Nickname:      p.nick,
 		ClientKind:    clientKind(p.kind),
@@ -156,6 +160,7 @@ func (r *Registry) busHomeChangedLocked(rm *room, previousPod string) {
 	r.emitLocked(events.TypeRoomHomeChanged, rm.code, events.RoomHomeChangedData{
 		RoomCode:    rm.code,
 		RoomKey:     r.opts.Obfuscate(rm.code),
+		DisplayCode: rm.display,
 		Kind:        rm.kind,
 		PreviousPod: previousPod,
 	})
@@ -173,8 +178,8 @@ func (r *Registry) busRoomOpenedLocked(rm *room) {
 	r.emitLocked(events.TypeRoomOpened, rm.code, events.RoomOpenedData{
 		RoomCode:    rm.code,
 		RoomKey:     r.opts.Obfuscate(rm.code),
-		Kind:        rm.kind,
 		DisplayCode: rm.display,
+		Kind:        rm.kind,
 		CreatedAt:   rm.createdAt.UTC().Truncate(time.Second).Format(time.RFC3339),
 	})
 }
@@ -187,6 +192,7 @@ func (r *Registry) busAttachedLocked(rm *room, a *attachment) {
 	r.emitLocked(events.TypeRoomAttached, rm.code, events.RoomAttachedData{
 		RoomCode:     rm.code,
 		RoomKey:      r.opts.Obfuscate(rm.code),
+		DisplayCode:  rm.display,
 		BroadcastID:  a.id,
 		BroadcastKey: r.opts.Obfuscate(a.id),
 		Label:        a.label,
@@ -204,10 +210,11 @@ func (r *Registry) busRoomClosedLocked(rm *room, reason uint8) {
 		return
 	}
 	r.emitLocked(events.TypeRoomClosed, rm.code, events.RoomClosedData{
-		RoomCode: rm.code,
-		RoomKey:  r.opts.Obfuscate(rm.code),
-		Kind:     rm.kind,
-		Reason:   closeReason(reason),
+		RoomCode:    rm.code,
+		RoomKey:     r.opts.Obfuscate(rm.code),
+		DisplayCode: rm.display,
+		Kind:        rm.kind,
+		Reason:      closeReason(reason),
 	})
 }
 

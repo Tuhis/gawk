@@ -204,11 +204,11 @@ func scanEvent(row pgx.Row) (Event, error) {
 // templating (docs/42 §4.10's `summary` field), for an event whose enforcement
 // object is in step with the record.
 //
-// It is a SECURITY-relevant helper, not a formatting convenience: `summary` is
-// one of the payload fields AP7 copies into a webhook body, so it must never
-// name a raw broadcast ID or an IP address (D8). It therefore takes the
-// HMAC'd broadcast key — never the ID — and says only what KIND of target a
-// ban covers, never its value.
+// It names the broadcast by its RAW ID — the string an operator typed into the
+// join box, and since docs/52 D9 the same string the delivery's `subject` and
+// `broadcastId` carry, so the sentence says nothing the event does not already
+// hand its receiver. It still never names an IP: an IP ban says only that the
+// target is a publisher IP, and at most which broadcast it was taken from.
 //
 // Every producer that does NOT project a CR inline is in-sync by construction,
 // which is why this shorter form exists rather than making every caller say
@@ -217,8 +217,8 @@ func scanEvent(row pgx.Row) (Event, error) {
 // stopped enforcing against their own clocks (§4.2). internal/api, the one
 // producer that writes a row and a CR in the same request, uses
 // SummarizeWithEnforcement and grades on which of the two landed.
-func Summarize(eventType string, targetType moderation.TargetType, broadcastKey, actor string) string {
-	return SummarizeWithEnforcement(eventType, targetType, broadcastKey, actor, EnforcementInSync)
+func Summarize(eventType string, targetType moderation.TargetType, broadcastID, actor string) string {
+	return SummarizeWithEnforcement(eventType, targetType, broadcastID, actor, EnforcementInSync)
 }
 
 // SummarizeWithEnforcement is that same one sentence, graded on whether the
@@ -234,18 +234,15 @@ func Summarize(eventType string, targetType moderation.TargetType, broadcastKey,
 // It is the single source of the sentence in both grades; Summarize delegates
 // here rather than growing a second copy, because two summarisers is exactly
 // how a pending sentence and an in-sync one drift apart.
-func SummarizeWithEnforcement(eventType string, targetType moderation.TargetType, broadcastKey, actor string, enforcement EnforcementState) string {
-	what := "broadcast"
-	if targetType == moderation.TargetIP {
-		what = "publisher IP"
-	}
+func SummarizeWithEnforcement(eventType string, targetType moderation.TargetType, broadcastID, actor string, enforcement EnforcementState) string {
 	who := actorOrOperator(actor)
 	pending := enforcement == EnforcementPending
+	ban := banPhrase(targetType, broadcastID)
 	switch eventType {
 	case EventBroadcastKilled:
 		subject := "a broadcast"
-		if broadcastKey != "" {
-			subject = "broadcast " + broadcastKey
+		if broadcastID != "" {
+			subject = "broadcast " + broadcastID
 		}
 		if pending {
 			// The verb moves from "was terminated" to "a kill … was recorded"
@@ -256,24 +253,24 @@ func SummarizeWithEnforcement(eventType string, targetType moderation.TargetType
 		return subject + " was terminated by " + who
 	case EventBanCreated:
 		if pending {
-			return "a " + what + " ban was recorded by " + who + " — NOT enforced yet"
+			return ban + " was recorded by " + who + " — NOT enforced yet"
 		}
-		return "a " + what + " ban was created by " + who
+		return ban + " was created by " + who
 	case EventBanExpired:
 		if pending {
-			return "a " + what + " ban expired in the record — the target is STILL banned"
+			return ban + " expired in the record — the target is STILL banned"
 		}
-		return "a " + what + " ban expired"
+		return ban + " expired"
 	case EventBanRemoved:
 		if pending {
-			return "a " + what + " ban was lifted in the record by " + who +
+			return ban + " was lifted in the record by " + who +
 				" — the target is STILL banned"
 		}
-		return "a " + what + " ban was lifted by " + who
+		return ban + " was lifted by " + who
 	case EventRoomCreated, EventRoomEnded, EventRoomSecretRotated:
 		// Rooms have no enforcement grade: a CR write either landed or the
 		// mutation failed outright, there is no row ahead of it.
-		return SummarizeRoom(eventType, "", actor)
+		return SummarizeRoom(eventType, "", "", actor)
 	default:
 		// An unknown type gets a DIRECTION-FREE qualifier: with no idea
 		// whether the event asserts a ban or its lifting, "not enforced yet"
@@ -285,13 +282,35 @@ func SummarizeWithEnforcement(eventType string, targetType moderation.TargetType
 	}
 }
 
+// banPhrase is the noun phrase a ban sentence starts with. A ban on a
+// broadcast names the broadcast; a ban on a publisher IP names the broadcast
+// it was taken from, if any, and never the address.
+func banPhrase(targetType moderation.TargetType, broadcastID string) string {
+	if targetType == moderation.TargetIP {
+		if broadcastID != "" {
+			return "a ban on the publisher IP of broadcast " + broadcastID
+		}
+		return "a publisher IP ban"
+	}
+	if broadcastID != "" {
+		return "a ban on broadcast " + broadcastID
+	}
+	return "a broadcast ban"
+}
+
 // SummarizeRoom is the one sentence for a room event (R42, docs/44 D20). It
-// names the room's KIND only — never its code, which is a joinable secret
-// exactly like a broadcast ID (docs/44 D16) — and never the attach secret.
-// Kind may be empty when the producer did not know it.
-func SummarizeRoom(eventType, kind, actor string) string {
+// names the room as people know it — pass the display code when there is one,
+// the code otherwise, "" when neither is known — and its kind. Since docs/52
+// D9 the delivery carries the code and the display code anyway, so the
+// sentence may too. It never names the attach secret.
+func SummarizeRoom(eventType, kind, name, actor string) string {
 	what := "a room"
-	if kind != "" {
+	switch {
+	case kind != "" && name != "":
+		what = kind + " room " + name
+	case name != "":
+		what = "room " + name
+	case kind != "":
 		what = "a " + kind + " room"
 	}
 	who := actorOrOperator(actor)

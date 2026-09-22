@@ -260,14 +260,15 @@ func TestRoomsCreateReturnsTheSecretOnceAndRecordsTheEvent(t *testing.T) {
 		t.Fatal("the reconciler was not kicked")
 	}
 
-	// One room.created, kind-only summary, the raw code under the portal-only
-	// key, no key yet (nobody has homed the room), and never the secret.
+	// One room.created, a summary naming the room by its display code
+	// (docs/52 D9), the raw code, no key yet (nobody has homed the room), and
+	// never the secret.
 	events := rec.all()
 	if len(events) != 1 || events[0].Type != store.EventRoomCreated || events[0].Actor != "op@example.com" {
 		t.Fatalf("events = %+v", events)
 	}
 	ev := events[0]
-	if s := ev.PayloadString(store.PayloadSummary); s != "a static room was created by op@example.com" {
+	if s := ev.PayloadString(store.PayloadSummary); s != "static room TuhisRoom was created by op@example.com" {
 		t.Fatalf("summary = %q", s)
 	}
 	if ev.PayloadString(store.PayloadRoom) != "tuhisroom" || ev.RoomKey() != "" {
@@ -356,7 +357,7 @@ func TestRoomsRotateSecretIsStaticOnly(t *testing.T) {
 	if len(events) != 2 || events[1].Type != store.EventRoomSecretRotated {
 		t.Fatalf("events = %+v", events)
 	}
-	if s := events[1].PayloadString(store.PayloadSummary); !strings.Contains(s, "attach secret of a static room was rotated") {
+	if s := events[1].PayloadString(store.PayloadSummary); !strings.Contains(s, "attach secret of static room TuhisRoom was rotated") {
 		t.Fatalf("summary = %q", s)
 	}
 	if strings.Contains(string(events[1].Payload), "ROTATED-") || strings.Contains(h.logText(), "ROTATED-") {
@@ -412,17 +413,18 @@ func TestRoomsDeleteAndEnd(t *testing.T) {
 		ended.PayloadString(store.PayloadRoom) != "r7k3mx" {
 		t.Fatalf("end event = %+v payload=%s", ended, ended.Payload)
 	}
-	if s := ended.PayloadString(store.PayloadSummary); s != "a dynamic room was ended by op@example.com" {
+	if s := ended.PayloadString(store.PayloadSummary); s != "dynamic room R7K3MX was ended by op@example.com" {
 		t.Fatalf("dynamic end summary = %q", s)
 	}
-	if s := events[3].PayloadString(store.PayloadSummary); s != "a static room was deleted by op@example.com" {
+	if s := events[3].PayloadString(store.PayloadSummary); s != "static room TuhisRoom was deleted by op@example.com" {
 		t.Fatalf("static delete summary = %q", s)
 	}
-	// No summary names a code (docs/44 D16).
+	// Every summary names its room by the display code (docs/52 D9), never
+	// by the normalised code: the operator named it "TuhisRoom".
 	for _, ev := range events {
 		s := ev.PayloadString(store.PayloadSummary)
-		if strings.Contains(s, "r7k3mx") || strings.Contains(s, "R7K3MX") || strings.Contains(strings.ToLower(s), "tuhisroom") {
-			t.Fatalf("summary %q names a room code", s)
+		if strings.Contains(s, "r7k3mx") || strings.Contains(s, "tuhisroom") {
+			t.Fatalf("summary %q names the normalised code instead of the display code", s)
 		}
 	}
 

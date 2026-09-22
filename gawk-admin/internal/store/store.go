@@ -98,6 +98,22 @@ type Ban struct {
 	CRName string
 }
 
+// BroadcastID is the broadcast a ban is about: the one it was taken from, or —
+// for a ban on a broadcast ID — its target; "" for an IP ban typed in by
+// address. It is the ONE rule every producer of a ban event uses (internal/api
+// for created/removed and the inline expiry, internal/kube for adoption and
+// expiry), so all of a ban's events carry the same raw ID in their event
+// column, their `subject` and their summary (docs/52 D9).
+func (b Ban) BroadcastID() string {
+	if b.SourceBroadcastID != "" {
+		return b.SourceBroadcastID
+	}
+	if b.Target.Type == moderation.TargetBroadcastID {
+		return b.Target.Value
+	}
+	return ""
+}
+
 // Active reports whether the ban is in force at now. It answers from the row's
 // own expiry, exactly as the relay does at check time — a row whose janitor
 // sweep has not run yet is still expired.
@@ -200,12 +216,15 @@ func IsEventType(t string) bool {
 	return false
 }
 
-// Payload keys that are safe to copy into a webhook body.
+// The payload keys a delivery is built from.
 //
-// This is a security boundary, not a convenience: Payload may carry raw
-// broadcast IDs, IP addresses and CIDRs (the portal needs them), and D8
-// forbids any of that from reaching a webhook. AP7's dispatcher copies these
-// named keys and nothing else.
+// This was a security boundary until docs/52 D9: Payload may carry raw
+// broadcast IDs, IP addresses and CIDRs (the portal needs them), and the rule
+// was that none of it reached a webhook. What survives of that rule is the
+// part that never moved — **no IP address and no attach secret is ever built
+// into a delivery** — and the way it is enforced: internal/notify reads these
+// named keys into the typed `data` of the event, and nothing else in the
+// payload is even looked at.
 const (
 	PayloadReason  = "reason"
 	PayloadSummary = "summary"
@@ -216,18 +235,25 @@ const (
 	// that wrote a raw ID under this key would find it dropped, not forwarded.
 	PayloadEnforcement = "enforcement"
 	// PayloadRoomKey carries the fleet's HMAC'd handle for a room (the Room
-	// CR's status.key, docs/44 D16) — the ONE form of a room's identity that
-	// may leave the deployment. It is webhook-safe by construction the way
-	// PayloadEnforcement is: the read side (Event.RoomKey) accepts only a hex
-	// digest, so a producer that wrote the joinable code under this key would
-	// find it dropped, not forwarded. The raw code, when the portal needs it,
-	// travels under PayloadRoom, which nothing copies out.
+	// CR's status.key, docs/44 D16): what the portal's rooms view, its links
+	// and its filters are keyed by. The read side (Event.RoomKey) accepts only
+	// a hex digest, so a producer that wrote the code under this key by
+	// mistake gets it dropped rather than built into a portal link. The code
+	// itself travels under PayloadRoom and is delivered as `roomCode` since
+	// docs/52 D9.
 	PayloadRoomKey = "roomKey"
-	// PayloadRoom is the room's raw code (the CR name). Portal and Postgres
-	// only — never a webhook (docs/44 D16, docs/42 D8).
+	// PayloadRoom is the room's raw code (the CR name). Since docs/52 D9 it
+	// is delivered too, as the event's `roomCode` and its `subject`: it is a
+	// join capability and the receiver is a channel the operator chose.
 	PayloadRoom = "room"
-	// PayloadRoomKind is "static" or "dynamic". Not copied into a webhook
-	// either; the summary sentence already names the kind.
+	// PayloadDisplayCode is the code as shown to people — the static slug's
+	// configured casing, which PayloadRoom has normalised away. Delivered
+	// beside it for the same reason: "TuhisTestLab" is what the operator
+	// named the room, and a notification that says `tuhistestlab` is one they
+	// have to translate.
+	PayloadDisplayCode = "displayCode"
+	// PayloadRoomKind is "static" or "dynamic". The summary sentence names
+	// the kind too; the property is what a consumer filters on.
 	PayloadRoomKind = "kind"
 )
 
@@ -265,11 +291,12 @@ type Event struct {
 	Type       string
 	OccurredAt time.Time
 	Actor      string
-	// BroadcastKey is the HMAC'd key (Registry.ObfuscateID). This is the form
-	// that may leave the deployment.
+	// BroadcastKey is the HMAC'd key (Registry.ObfuscateID): what the portal's
+	// links and filters are keyed by.
 	BroadcastKey string
-	// BroadcastID is the raw, joinable ID. Portal and Postgres only — never a
-	// webhook payload, never a log above Debug (D8).
+	// BroadcastID is the raw, joinable ID. Delivered in the event's webhook
+	// (its `subject` and `broadcastId`) since docs/52 D9; still never logged
+	// above Debug (D8).
 	BroadcastID string
 	// Payload is free-form context. See the PayloadReason/PayloadSummary
 	// comment above before forwarding any of it anywhere.
@@ -327,6 +354,31 @@ func isHexKey(s string) bool {
 		}
 	}
 	return true
+}
+
+// TargetType returns the TYPE of the ban target a ban event records under
+// "target", or "" when there is none. Only the type is ever read — the value
+// of an IP ban is an address, which must not reach a delivery — and the
+// vocabulary is closed like EnforcementState's: anything that is not one of
+// moderation's target types reads as "".
+func (e Event) TargetType() moderation.TargetType {
+	if len(e.Payload) == 0 {
+		return ""
+	}
+	var m struct {
+		Target struct {
+			Type string `json:"type"`
+		} `json:"target"`
+	}
+	if err := json.Unmarshal(e.Payload, &m); err != nil {
+		return ""
+	}
+	switch t := moderation.TargetType(m.Target.Type); t {
+	case moderation.TargetBroadcastID, moderation.TargetIP:
+		return t
+	default:
+		return ""
+	}
 }
 
 // PayloadString returns a top-level string field of the payload, or "".

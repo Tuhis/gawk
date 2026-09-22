@@ -79,8 +79,8 @@ func busFixtureAt(t *testing.T, now *time.Time) (*fixture, *busRecorder, func(ti
 
 // TestRoomLifecycleOnTheBus walks a room's whole life and checks each
 // transition produces exactly one event with the documented fields — and that
-// the subject is the HMAC'd key while the raw code stays in the body, the
-// internal/public split docs/51 D2 rests on.
+// both identities land where they belong: the HMAC'd key as the bus's routing
+// token (docs/51 D2), the room code as the event's own subject (docs/52 D9).
 func TestRoomLifecycleOnTheBus(t *testing.T) {
 	f, rec := busFixture(t)
 	res := f.mint(t, "ABCDEF")
@@ -90,7 +90,10 @@ func TestRoomLifecycleOnTheBus(t *testing.T) {
 		t.Fatalf("mint produced %d room.opened events, want 1", len(opened))
 	}
 	if opened[0].Key != "key-"+res.Code {
-		t.Errorf("subject = %q, want the obfuscated key", opened[0].Key)
+		t.Errorf("bus key = %q, want the obfuscated key", opened[0].Key)
+	}
+	if opened[0].Subject != res.Code {
+		t.Errorf("subject = %q, want the room code %q (docs/52 D9)", opened[0].Subject, res.Code)
 	}
 	data := opened[0].Data.(events.RoomOpenedData)
 	if data.RoomCode != res.Code || data.Kind != "dynamic" || data.DisplayCode != res.Display {

@@ -5,18 +5,16 @@
 //
 // Four rules shape everything here.
 //
-//   - **D8 is absolute: no raw broadcast ID and no IP address ever reaches a
-//     delivery.** Webhooks transit third-party push infrastructure
-//     (ntfy/Slack/Matrix) and a raw broadcast ID is a join capability. The
-//     receiver gets the HMAC'd key and a portal link; acting requires logging
-//     in. Since R51 the mechanism is the event contract's (docs/52 D4): a
-//     delivery is a CloudEvent whose `data` is the type's schema minus every
-//     property marked `x-gawk-sensitive`, projected by `project` from the
-//     marks the schema file carries; and the only row payload keys that
-//     reach it are the ones store closes the vocabulary of
-//     (store.PayloadReason, store.PayloadSummary, store.PayloadEnforcement,
-//     store.PayloadRoomKey) plus the room code, which the projection strips.
-//     IPs are in no event at all.
+//   - **No IP address ever reaches a delivery** — and since docs/52 D9, raw
+//     broadcast IDs and room codes DO: a delivery is the bus event, `data`
+//     included, plus `summary` and `portalUrl`. D8's other half stands
+//     unchanged: no IP is in any event at all, so none can be delivered. The
+//     identifiers are deliberate, because a notification nobody can act on
+//     without first resolving a digest is a notification that gets ignored,
+//     and a webhook is a channel the operator chose (self-hosting §9.5: send
+//     it somewhere you would be comfortable having read). `portalUrl` is
+//     still keyed by the HMAC'd key, and it still carries no capability:
+//     acting in the portal requires logging in.
 //   - **The dispatcher is leader-only, and correctness does not depend on
 //     that.** Run is started from kube.Election.OnLeading (D16), but claims go
 //     through FOR UPDATE SKIP LOCKED, so two dispatchers overlapping across a

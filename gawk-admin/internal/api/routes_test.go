@@ -165,12 +165,14 @@ func TestKillCreatesCooldownBanEventAndCR(t *testing.T) {
 	if ev.BroadcastKey != "3f9a1c2b4d5e" || ev.BroadcastID != "ABC234" || ev.Actor != "op@example.com" {
 		t.Fatalf("event = %+v", ev)
 	}
+	// The sentence names the broadcast by its raw ID — the delivery's
+	// subject since docs/52 D9 — not by a digest nobody can place.
 	summary := ev.PayloadString(store.PayloadSummary)
-	if summary == "" || strings.Contains(summary, "ABC234") {
-		t.Fatalf("summary %q must not carry the raw broadcast ID (D8)", summary)
+	if !strings.Contains(summary, "ABC234") {
+		t.Fatalf("summary %q should name the broadcast by its raw ID", summary)
 	}
-	if !strings.Contains(summary, "3f9a1c2b4d5e") {
-		t.Fatalf("summary %q should name the HMAC'd key", summary)
+	if strings.Contains(summary, "3f9a1c2b4d5e") {
+		t.Fatalf("summary %q names the HMAC'd key instead of the broadcast", summary)
 	}
 	if ev.PayloadString(store.PayloadReason) != "terms violation" {
 		t.Fatalf("reason payload = %q", ev.PayloadString(store.PayloadReason))
@@ -387,8 +389,10 @@ func TestAPendingMutationRecordsThePendingStateOnItsEvent(t *testing.T) {
 		if strings.Contains(summary, tc.mustNotSay) {
 			t.Errorf("%s summary %q claims %q, which has not happened", tc.what, summary, tc.mustNotSay)
 		}
-		if strings.Contains(summary, "ABC234") || strings.Contains(summary, "203.0.113.7") {
-			t.Errorf("%s summary %q names a raw ID or an address (D8)", tc.what, summary)
+		// Naming the broadcast is fine since docs/52 D9; naming an address
+		// never is (docs/42 D8's IP half).
+		if strings.Contains(summary, "203.0.113.7") {
+			t.Errorf("%s summary %q names an address (D8)", tc.what, summary)
 		}
 	}
 }

@@ -34,7 +34,7 @@ references are to that state.
 | D5 | **A plain "kill" is a ban on the ID with a default 10-minute cooldown** (configurable). "Kill + ban" takes explicit durations and optionally the IP. | The broadcaster auto-reclaims with its resume token within seconds, so a kill with no ID ban resurrects before the portal refreshes. The cooldown means the operator is never racing auto-resume while deciding on a real ban. |
 | D6 | **New terminal close code `4006` (`CloseCodeTerminatedByOperator`)**, sent to the publisher *and* to viewers. Terminal everywhere: no reconnect, no auto-resume. | Owner chose viewer-visible transparency over reusing 4000. Costs the full mirror pass (wire.ts, Rust crate, wirecheck, golden vectors) and viewer/broadcaster terminal handling — priced into AP1. |
 | D7 | **The portal is internet-exposable, protected by OIDC**: the SPA is an OIDC public client (code flow + PKCE), and the API is authenticated by the provider-issued JWT on every request, authorized by IdP-managed roles carried in the token (D17). Chart default remains ClusterIP + port-forward; public exposure is an explicit opt-in. | Deliberate deviation from the roadmap sketch's "never routed publicly": a paged operator (R40) must be able to judge and kill from a phone, not a laptop with kubectl. For this surface, OIDC — not network placement — is the auth boundary. The telemetry read listener's posture is unchanged. |
-| D8 | **The raw-broadcast-ID invariant relaxes only on authenticated admin surfaces**: the OIDC-gated portal and the credential-gated relay admin endpoints (§4.5). Public `/statusz` stays HMAC'd. **Webhook payloads never carry raw IDs or IPs** — they carry the HMAC'd key and a portal link. | The operator needs the raw ID to join and judge a stream. Webhooks transit third-party push infrastructure (ntfy/Slack/Matrix); a raw ID is a join capability and must not land there. |
+| D8 | **The raw-broadcast-ID invariant relaxes only on authenticated admin surfaces**: the OIDC-gated portal and the credential-gated relay admin endpoints (§4.5). Public `/statusz` stays HMAC'd. **Webhook payloads never carry raw IDs or IPs** — they carry the HMAC'd key and a portal link. ***Half-superseded 2026-09-22 by [docs/52](52-event-contract.md) D9: a delivery now names the broadcast or room in cleartext (`subject`, `broadcastId`, `roomCode`) beside the HMAC'd key. The IP half stands — no event carries one — and so does the portal-link rule.*** | The operator needs the raw ID to join and judge a stream. Webhooks transit third-party push infrastructure (ntfy/Slack/Matrix); a raw ID is a join capability and must not land there. *(D9's counter-argument: a receiver is not third-party infrastructure in general, it is one channel the operator chose, and a notification identified only by a digest is one nobody acts on.)* |
 | D9 | **Operator notifications are generic signed webhooks — plural, managed two ways**: chart values define config-sourced webhooks (visible but immutable in the UI), and the portal can create/edit/delete its own (stored in Postgres). Every event fans out to all enabled webhooks, each HMAC-SHA256-signed with its own secret. | ntfy/Slack/Discord/Matrix all consume a bare webhook; no vendor coupling. Chart-defined ones keep the paging pipe GitOps-reviewable; UI-defined ones let the operator add a channel from a phone. Smallest surface that satisfies R40's "a flag must reach a human". |
 | D10 | **Dynamic settings = read-only effective-config view only.** Each relay pod reports its parsed config (secrets redacted); the portal displays it per pod. No write path of any kind. | GitOps stays the only mutation channel (CLAUDE.md deploy model). The read view is cheap and genuinely useful for "which pod has the stale flag?" debugging. |
 | D11 | **Content-flag naming and schema are fixed now; the endpoint ships in R40.** The noun is **content flag** everywhere — `POST /api/v1/content-flags`, event type `content_flag.raised` — never bare "flag" (reads as feature flag). | R40 integrates against a frozen contract (§4.11) without R39 shipping dead code. |
@@ -639,8 +639,9 @@ The dialog also always states the NAT-collateral caveat in one sentence.
 > (R51).** The wire format below — the `gawk.moderation-event.v1` body and the
 > `X-Gawk-*` headers with a `sha256=` signature — is what R39 shipped and is
 > kept here as history. Since R51 a delivery is a CloudEvents 1.0 event whose
-> `data` is the type's schema minus its sensitive properties plus `summary`
-> and `portalUrl`, with Standard Webhooks headers (`webhook-id`,
+> `data` is the type's own schema plus `summary` and `portalUrl` (since
+> [docs/52](52-event-contract.md) D9, 2026-09-22, nothing is removed from it),
+> with Standard Webhooks headers (`webhook-id`,
 > `webhook-timestamp`, `webhook-signature: v1,<base64>`) and the `whsec_`
 > key rule. Nothing runs alongside. Everything else in this section — the two
 > sources, the leader-only dispatcher, the retry ladder, D8 and the `summary`
@@ -694,9 +695,10 @@ matching a 12-hex key against a fleet-sized table by eye.
   "enforcement": "pending" }
 ```
 
-- **No raw broadcast ID and no IP address ever appears in a payload** (D8) —
-  the receiver gets the HMAC'd key and a portal link; acting requires
-  logging in.
+- **No IP address ever appears in a payload** (D8; the raw-ID half was
+  lifted 2026-09-22 by [docs/52](52-event-contract.md) D9) — the receiver
+  gets the raw ID or room code, the HMAC'd key and a portal link; the link
+  grants nothing, acting requires logging in.
 - Receivers verify the signature and should reject `|now - timestamp| > 300 s`
   (documented in self-hosting).
 - Retry: attempts at +5 s, +30 s, +2 m, +10 m, then `state = failed`.

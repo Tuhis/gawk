@@ -146,7 +146,7 @@ func TestReconcileExpiresBanAndDeletesCR(t *testing.T) {
 	})
 
 	expiry := now.Add(10 * time.Minute)
-	b := recs.add(store.Ban{
+	recs.add(store.Ban{
 		Target:            moderation.Target{Type: moderation.TargetBroadcastID, Value: "QQQ234"},
 		ExpiresAt:         &expiry,
 		CreatedBy:         "op@example.com",
@@ -182,9 +182,10 @@ func TestReconcileExpiresBanAndDeletesCR(t *testing.T) {
 	if enqueued[0].BroadcastID != "QQQ234" {
 		t.Fatalf("expiry event lost the source broadcast: %+v", enqueued[0])
 	}
-	// The summary is webhook-safe: it must not name the banned broadcast.
-	if s := enqueued[0].PayloadString(store.PayloadSummary); s == "" || contains(s, b.Target.Value) {
-		t.Fatalf("summary %q must not carry the raw broadcast ID", s)
+	// The summary names the banned broadcast, as the delivery's subject does
+	// (docs/52 D9) — the same broadcast the event's BroadcastID column holds.
+	if s := enqueued[0].PayloadString(store.PayloadSummary); !contains(s, "QQQ234") {
+		t.Fatalf("summary %q does not name the banned broadcast", s)
 	}
 
 	// A further pass must not re-emit.

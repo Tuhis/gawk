@@ -12,6 +12,10 @@
     "roomKey": {
       "$ref": "common.json#/$defs/roomKey"
     },
+    "displayCode": {
+      "$ref": "common.json#/$defs/displayCode",
+      "x-gawk-sensitive": true
+    },
     "kind": {
       "$ref": "common.json#/$defs/roomKind"
     },

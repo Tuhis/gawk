@@ -85,7 +85,9 @@ info:
     raw room codes or publisher IP addresses. Broadcast IDs and room codes are
     joinable, and IP addresses are personal data. Do not forward them to any
     system that is not equally access-controlled. Outbound events carry the
-    HMAC'd `key` forms instead.
+    joinable identifiers too, beside the HMAC'd `key` forms, and never an IP
+    address — so a webhook receiver is one such system, and the operator
+    chooses it knowing that.
 
     Webhook signing secrets are never returned. A room's attach secret is
     returned once, by the operation that creates it, and cannot be read again.
@@ -1587,7 +1589,7 @@ components:
         broadcastId:
           allOf:
             - $ref: '#/components/schemas/BroadcastId'
-          description: The raw broadcast ID. Present here only; never in outbound events.
+          description: The raw broadcast ID, as the outbound event of this row also carries it.
         reason: { type: string }
         category:
           allOf:

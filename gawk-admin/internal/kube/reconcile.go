@@ -45,8 +45,9 @@ const roomEndDedupWindow = time.Hour
 // roomSeen is what one sweep remembers about a dynamic room, so the next can
 // record its ending with the kind and key the CR no longer exists to supply.
 type roomSeen struct {
-	kind string
-	key  string
+	kind    string
+	key     string
+	display string
 }
 
 // ReconcilerOptions configure a Reconciler.
@@ -193,7 +194,7 @@ func (r *Reconciler) SweepRoomsOnce(ctx context.Context) error {
 		if obj.Err != nil || obj.Room.Spec.Kind != rooms.KindDynamic {
 			continue
 		}
-		now[obj.Name] = roomSeen{kind: obj.Room.Spec.Kind, key: obj.Room.Status.Key}
+		now[obj.Name] = roomSeen{kind: obj.Room.Spec.Kind, key: obj.Room.Status.Key, display: rooms.DisplayCode(&obj.Room)}
 	}
 	if r.rooms == nil {
 		r.rooms = now
@@ -227,23 +228,27 @@ func (r *Reconciler) emitRoomEnded(ctx context.Context, name string, seen roomSe
 		Type:       store.EventRoomEnded,
 		OccurredAt: at,
 		Actor:      "system",
-		Payload:    roomPayload(name, seen.kind, seen.key, store.SummarizeRoom(store.EventRoomEnded, seen.kind, "system")),
+		Payload:    roomPayload(name, seen, store.SummarizeRoom(store.EventRoomEnded, seen.kind, seen.display, "system")),
 	})
 	// The code is a joinable secret (docs/44 D16): the log names the key.
 	r.log.Info("dynamic room ended by the relay", "roomKey", seen.key)
 }
 
-// roomPayload is the portal-visible context for a room event: the raw code
-// under the portal-only key, the HMAC'd key under the one internal/notify
-// copies out (store.PayloadRoomKey), and the kind.
-func roomPayload(name, kind, key, summary string) json.RawMessage {
+// roomPayload is the context for a room event: the raw code, the display code,
+// the HMAC'd key and the kind — the same keys internal/api's recordRoom
+// writes, so a relay-ended room is delivered in the same shape as an
+// operator-ended one (docs/52 D9).
+func roomPayload(name string, seen roomSeen, summary string) json.RawMessage {
 	payload := map[string]any{
 		store.PayloadSummary:  summary,
 		store.PayloadRoom:     name,
-		store.PayloadRoomKind: kind,
+		store.PayloadRoomKind: seen.kind,
 	}
-	if key != "" {
-		payload[store.PayloadRoomKey] = key
+	if seen.display != "" {
+		payload[store.PayloadDisplayCode] = seen.display
+	}
+	if seen.key != "" {
+		payload[store.PayloadRoomKey] = seen.key
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -412,8 +417,8 @@ func (r *Reconciler) adopt(ctx context.Context, cr BanObject) {
 		Type:        store.EventBanCreated,
 		OccurredAt:  r.opts.Now(),
 		Actor:       created.CreatedBy,
-		BroadcastID: rawBroadcastID(created),
-		Payload:     eventPayload(created, store.Summarize(store.EventBanCreated, created.Target.Type, "", created.CreatedBy)),
+		BroadcastID: created.BroadcastID(),
+		Payload:     eventPayload(created, store.Summarize(store.EventBanCreated, created.Target.Type, created.BroadcastID(), created.CreatedBy)),
 	}
 	r.record(ctx, ev)
 }
@@ -426,8 +431,8 @@ func (r *Reconciler) emitExpired(ctx context.Context, b store.Ban) {
 		Type:        store.EventBanExpired,
 		OccurredAt:  r.opts.Now(),
 		Actor:       "system",
-		BroadcastID: rawBroadcastID(b),
-		Payload:     eventPayload(b, store.Summarize(store.EventBanExpired, b.Target.Type, "", "")),
+		BroadcastID: b.BroadcastID(),
+		Payload:     eventPayload(b, store.Summarize(store.EventBanExpired, b.Target.Type, b.BroadcastID(), "")),
 	}
 	r.record(ctx, ev)
 	r.log.Info("ban expired", "banId", b.ID, "targetType", b.Target.Type)
@@ -463,23 +468,11 @@ func sameSpec(rec moderation.Record, b store.Ban) bool {
 	}
 }
 
-// rawBroadcastID is the event's raw-ID column: the broadcast the action was
-// taken against. Portal and Postgres only — AP7 never copies this field into a
-// webhook (D8).
-func rawBroadcastID(b store.Ban) string {
-	if b.SourceBroadcastID != "" {
-		return b.SourceBroadcastID
-	}
-	if b.Target.Type == moderation.TargetBroadcastID {
-		return b.Target.Value
-	}
-	return ""
-}
-
-// eventPayload is the portal-visible context for a ban event. It may carry the
-// target — including an IP CIDR — because the payload is portal-and-Postgres
-// data; only the named webhook-safe keys ever leave (store.PayloadReason /
-// store.PayloadSummary).
+// eventPayload is the context for a ban event. It may carry the target —
+// including an IP CIDR — because the payload itself never leaves: a webhook
+// delivery is built from typed fields (internal/notify's buildEvent), which
+// read the target's TYPE through store.Event.TargetType and never its value,
+// so no address reaches a receiver (docs/42 D8, unchanged by docs/52 D9).
 func eventPayload(b store.Ban, summary string) json.RawMessage {
 	payload := map[string]any{
 		store.PayloadSummary: summary,
