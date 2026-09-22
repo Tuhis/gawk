@@ -48,6 +48,27 @@ struct AudioShared {
     lane: Mutex<Option<Lane>>,
 }
 
+// The GUI reads below run on the UI thread every tick. The audio queue
+// holds the lane's lock while it feeds it, so a panic in the audio path —
+// caught by the capture's audio fence — leaves the mutex poisoned; that
+// lane is dead (D6: audio stops, video runs on), so a poisoned lock reads
+// as silence instead of unwrapping into a UI-thread panic.
+impl AudioShared {
+    fn level(&self) -> f32 {
+        match self.lane.lock() {
+            Ok(lane) => lane.as_ref().map_or(0.0, |l| l.level().level()),
+            Err(_) => 0.0,
+        }
+    }
+
+    fn silence_hint(&self) -> bool {
+        match self.lane.lock() {
+            Ok(lane) => lane.as_ref().is_some_and(|l| l.level().silence_hint()),
+            Err(_) => false,
+        }
+    }
+}
+
 /// What the capture queue measures and the GUI reads.
 struct Shared {
     admission: Admission,
@@ -315,19 +336,11 @@ impl Media for Pipeline {
     }
 
     fn audio_level(&self) -> f32 {
-        let lane = self.audio.lane.lock().unwrap();
-        lane.as_ref().map_or(0.0, |l| l.level().level())
+        self.audio.level()
     }
 
     fn audio_silence_hint(&self) -> bool {
-        self.audio_state() == "active"
-            && self
-                .audio
-                .lane
-                .lock()
-                .unwrap()
-                .as_ref()
-                .is_some_and(|l| l.level().silence_hint())
+        self.audio_state() == "active" && self.audio.silence_hint()
     }
 
     /// D6: system audio in ScreenCaptureKit comes from a display filter, so
@@ -448,4 +461,31 @@ fn audio_lane(
         }
     };
     Some(Box::new(feed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D6: an audio panic stops audio, never the broadcast. The audio queue
+    /// holds the lane's lock while it feeds it, so a panic there poisons
+    /// the mutex — and the GUI reads the level every 250 ms on the UI
+    /// thread. Reading a poisoned lane must not take the app down.
+    #[test]
+    fn a_panic_inside_the_lane_does_not_poison_the_gui_reads() {
+        let shared = AudioShared {
+            state: Mutex::new("active".into()),
+            lane: Mutex::new(Some(Lane::new("sck-app").unwrap())),
+        };
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {})); // keep the output clean
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = shared.lane.lock().unwrap();
+            panic!("injected inside Lane::feed");
+        }));
+        std::panic::set_hook(prev);
+        assert!(shared.lane.is_poisoned(), "the setup really poisoned it");
+        assert_eq!(shared.level(), 0.0);
+        assert!(!shared.silence_hint());
+    }
 }
