@@ -62,3 +62,7 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
           # claude_args: '--allowed-tools Bash(gh pr *)'
+          # Read-only allowlist mirroring the code-review plugin's gh commands, plus
+          # inline PR comments. No build/test commands: those would run PR code
+          # with the bot's token, and github_ci already exposes CI results.
+          claude_args: '--model claude-opus-5-5 --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),mcp__github_inline_comment__create_inline_comment"'
