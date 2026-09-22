@@ -593,7 +593,8 @@ not only an install one: upgrade the `gawk-server` chart before `gawk-admin`,
 the same schema-before-writer discipline the migration hook enforces for
 Postgres — a newer portal writing against an older installed CRD has its new
 spec fields silently pruned (docs/42 §4.2 carries the CRD's additive-only
-compatibility rule).
+compatibility rule). With the event bus on, the release that brings cleartext
+event subjects is the one exception, and goes portal first (§12.3).
 
 ```sh
 helm upgrade --install gawk-server oci://ghcr.io/tuhis/charts/gawk-server \
@@ -1213,6 +1214,18 @@ before the stream exists drops and counts; the portal's elected leader creates
 the stream as soon as it can reach NATS, retrying until it can. A bus that is
 down, misconfigured or refusing the credential never stops the portal itself
 from serving — moderation does not depend on the feed.
+
+**One upgrade does have an order: the one that brings cleartext event
+subjects** ([docs/52](52-event-contract.md) D9). With the bus on, upgrade
+`gawk-admin` **before** `gawk-server` for that release. An older portal reads
+the HMAC'd key from the event's `subject`; a newer relay puts the raw
+broadcast ID or room code there, so every activity row the old portal ingests
+in between stores the raw identifier as its key — and nothing rewrites those
+rows once the portal catches up. The other order is safe: a newer portal reads
+the key from `data`, which older relays have always sent. This release changes
+no CRD, so it does not conflict with §9.2's relay-first rule. With GitOps
+applying both charts at once, suspend the relay's release until the portal has
+rolled, or accept a short window of mis-keyed activity rows.
 
 ### 12.4 Is it alive?
 
