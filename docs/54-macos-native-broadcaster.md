@@ -1093,7 +1093,12 @@ what MB5 itself added, and how:
   releases the Windows EXE alone, warns, and writes only the Windows
   manifest: blocking every Windows release on an Apple account would have
   been the literal reading of D13 and the wrong one. Configuring the five
-  secrets is what turns the macOS distribution on.
+  secrets is what turns the macOS distribution on. The same holds for the
+  `macos` job itself: `attach-release` depends on it softly (`!cancelled()`
+  plus hard checks on lint/test/build), so a macOS flake, hosted-image drift
+  or a backfill of a commit older than the bundle releases Windows alone
+  with a warning instead of skipping the release — the review of the MB7 PR
+  caught the first cut making the whole Windows release wait on it.
 - **The release set.** `gawk-broadcast-macos-arm64.zip` (the stapled
   bundle, `ditto`-zipped), `BUILD-INFO-macos.txt`,
   `THIRD-PARTY-NOTICES-macos.md` beside the EXE and its files, one

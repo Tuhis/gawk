@@ -674,10 +674,19 @@ jobs:
   # dispatch: that is true, but it is a coercion rule, and this is not a place
   # to be clever about falsiness.
   attach-release:
+    # `macos` is a soft dependency (R52, docs/54 D13): the Windows release
+    # needs lint, test and build green and waits for nothing else — not a
+    # macOS flake, not hosted-image drift, not a backfill of a commit older
+    # than the macOS bundle. `!cancelled()` is what lets this job run when
+    # `macos` failed; the three hard dependencies are then checked by hand.
     needs: [lint, test, build, macos]
     if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.attach_to != '')
+      !cancelled() &&
+      needs.lint.result == 'success' &&
+      needs.test.result == 'success' &&
+      needs.build.result == 'success' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.attach_to != ''))
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:
       contents: write
@@ -696,8 +705,10 @@ jobs:
         with:
           name: gawk-broadcast-windows-x86_64-${{ needs.build.outputs.sha }}
           path: staging
-      # The macOS bundle (R52, docs/54 D14), built from the same commit.
+      # The macOS bundle (R52, docs/54 D14), built from the same commit —
+      # when the macos job produced one.
       - uses: actions/download-artifact@v8
+        if: needs.macos.result == 'success'
         with:
           name: gawk-broadcast-macos-${{ needs.build.outputs.sha }}
           path: staging-macos
@@ -725,6 +736,7 @@ jobs:
         id: package
         env:
           MACOS_SIGNING: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 != '' }}
+          MACOS_BUILT: ${{ needs.macos.result == 'success' }}
         run: |
           set -euo pipefail
           # NOT `assets`: the repository root already has an `assets/`
@@ -746,11 +758,13 @@ jobs:
           cp staging/BUILD-INFO.txt staging/THIRD-PARTY-NOTICES.md staging/LICENSE release-assets/
           # The macOS bundle (docs/54 D13/D14). A release never carries an
           # unsigned one: with the signing secrets configured, a bundle that
-          # is not Developer ID + notarized fails the attach loudly; without
-          # them the macOS distribution is not released yet, and the Windows
-          # one must not wait on Apple credentials — it attaches alone, with
-          # a warning.
-          if [ "$MACOS_SIGNING" = "true" ]; then
+          # is not Developer ID + notarized fails the attach loudly. Without
+          # the secrets, or without a bundle (the macos job failed, or the
+          # commit predates it), Windows attaches alone with a warning — it
+          # never waits on Apple credentials or on the macOS job.
+          if [ "$MACOS_BUILT" != "true" ]; then
+            echo "::warning::the macOS bundle is not attached: the macos job did not succeed for this commit — backfill it with workflow_dispatch attach_to once it does"
+          elif [ "$MACOS_SIGNING" = "true" ]; then
             if ! grep -q '^signed:    Developer ID + notarized' staging-macos/BUILD-INFO.txt; then
               echo "::error::signing is configured but the macOS bundle is not Developer ID + notarized — refusing to attach it (docs/54 D13)"
               cat staging-macos/BUILD-INFO.txt
