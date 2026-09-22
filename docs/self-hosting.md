@@ -769,22 +769,23 @@ POST <webhookUrl>
 Content-Type: application/cloudevents+json
 webhook-id: 3c2e21c2-5f9a-5242-9ecd-5871bb85c4ac
 webhook-timestamp: 1755702245
-webhook-signature: v1,NZgDeVu2pXZkmgQVJh9HOy6/Ln0V0HOo6oTRGvLhL9Q=
+webhook-signature: v1,nfl3IscTF+VKstADus9H80KbvT9EBJC9C7d/kv9U5Z0=
 
 { "specversion": "1.0",
   "id": "3c2e21c2-5f9a-5242-9ecd-5871bb85c4ac",
   "source": "/gawk/admin",
   "type": "fi.ioio.gawk.broadcast.killed",
-  "subject": "3f9a1c2b4d5e",
+  "subject": "ABC123",
   "time": "2026-08-20T15:04:05Z",
   "datacontenttype": "application/json",
   "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.killed.json",
   "data": {
     "actor": "juho@example.com",
+    "broadcastId": "ABC123",
     "broadcastKey": "3f9a1c2b4d5e",
     "portalUrl": "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e",
     "reason": "terms violation",
-    "summary": "broadcast 3f9a1c2b4d5e was terminated by juho@example.com" } }
+    "summary": "broadcast ABC123 was terminated by juho@example.com" } }
 ```
 
 `webhook-signature` is `v1,` + base64 of HMAC-SHA256 over
@@ -810,13 +811,15 @@ deep link into the portal.
   types, new properties and new enum values arrive without notice; a breaking
   change is a new type beside the old one, never a changed one
   ([docs/52](52-event-contract.md) D6).
-- **Treat the payload as sensitive.** Deliveries deliberately carry **no raw
-  broadcast ID, no room code and no IP** — only the HMAC'd keys and a link back
-  to the portal, because webhooks transit third-party push infrastructure and
-  a raw ID is a join capability. But they **do carry ban reasons**, room
-  labels and participant nicknames, which are free text and routinely hold
-  context you would not publish. Send them to a channel you would be
-  comfortable having read.
+- **Treat the payload as a join capability.** A delivery names the broadcast
+  or room in cleartext — `subject`, `broadcastId`, `roomCode`, `displayCode` —
+  so anyone who can read it can watch that stream or join that room. It also carries **ban
+  reasons**, room labels and participant nicknames, which are free text and
+  routinely hold context you would not publish. It never carries a publisher
+  IP address, and the portal link is keyed by the HMAC'd key, so it grants
+  nothing on its own: acting in the portal still means logging in. Send
+  deliveries to a channel you would be comfortable having read — by people
+  you would let into the broadcast.
 
 A complete receiver, standard library only — verified against a real delivery
 from the dispatcher and a wrong-key delivery it must refuse:
@@ -1233,10 +1236,11 @@ nats sub 'gawk.>'
 nats stream info GAWK_EVENTS
 ```
 
-Subjects carry the fleet's HMAC'd keys only. **Payloads carry raw broadcast IDs
-and room codes** — the same tier as the `Room` and `Ban` CRs — so the bus is
-internal infrastructure and must never be routed publicly. No IP address is
-ever published.
+NATS subjects carry the fleet's HMAC'd keys only, so a `nats sub` listing shows
+no joinable identifier. **Payloads carry raw broadcast IDs and room codes** —
+and so does each event's CloudEvents `subject` — the same tier as the `Room`
+and `Ban` CRs, so the bus is internal infrastructure and must never be routed
+publicly. No IP address is ever published.
 
 ### 12.5 A bus you already run
 

@@ -4043,10 +4043,11 @@ room types shared between relay and portal (reuse, never mirror);
 (nickname, kind, streaming, speaking, the reserved identity); a `Room`
 that no reachable pod is home for renders from the CR with `live: false`;
 an `events` filter on webhooks (one expand-only migration) over the
-activity events R50 ingests, delivered as the bus event's CloudEvent with
-its sensitive properties stripped under the R51 contract (revised
-2026-09-16) — never a broadcast ID, room code or IP; the portal's Rooms
-view shows the same roster.
+activity events R50 ingests, delivered as the bus event's CloudEvent under
+the R51 contract (revised 2026-09-16; since 2026-09-22 nothing is stripped
+from it — [docs/52](docs/52-event-contract.md) D9 delivers the room code and
+broadcast ID in cleartext) — never an IP; the portal's Rooms view shows the
+same roster.
 
 **Non-goals**: the bridge itself, voice, chat; any periodic polling in
 `gawk-admin`; a server-push feed from `gawk-admin` (SSE noted as a later
@@ -4182,7 +4183,12 @@ serving package) before EC2–EC3; EC1 stands alone. R50 EB1 and R49 RA4
 depend on this.
 
 **Status**: shipped 2026-09-17 (EC1–EC4); what landed and the decisions
-taken on the way are in [docs/52](docs/52-event-contract.md) §7.
+taken on the way are in [docs/52](docs/52-event-contract.md) §7. **Revised
+2026-09-22**: D9 makes every event name its broadcast or room in cleartext —
+`subject` is the raw ID or room code, the webhook projection strips
+nothing, every room event carries `displayCode`, and the `summary` sentences
+name the broadcast ID or the room's display code too
+([docs/52](docs/52-event-contract.md) §8).
 
 ---
 

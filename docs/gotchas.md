@@ -1185,12 +1185,17 @@ Add to it when a new gotcha lands in `docs/`.
   unique indexes, `FOR UPDATE SKIP LOCKED`, advisory locks), so the job has to
   assert the tests actually ran, not just that they did not fail.
   ([docs/42](42-admin-moderation-portal.md) AP4/AP8)
-- **A raw broadcast ID is a join capability**, which is why R39 confines it to
-  three places — the credential-gated relay admin endpoints, the OIDC-gated
-  portal, and Postgres. Webhook payloads and `/statusz` carry the per-process
-  HMAC'd key instead (webhooks add a portal link). Ban *reasons*, by contrast,
-  do ride webhooks: they are operator text and the receiver sees them.
-  ([docs/42](42-admin-moderation-portal.md) D8)
+- **A raw broadcast ID is a join capability**, which is why `/statusz` carries
+  the per-process HMAC'd key instead and the relay admin endpoints are
+  credential-gated. **Events are the deliberate exception since 2026-09-22**:
+  every event names its broadcast or room in cleartext, in `subject` and in
+  `broadcastId`/`roomCode`, on the bus *and* in every webhook delivery — so a
+  delivery is a join capability, and the operator picks a receiver on those
+  terms. The `summary` sentence names them too ("broadcast ABC123 was
+  terminated", "static room TuhisTestLab was created"). What still never
+  rides an event, in any property or sentence, is a publisher IP. Ban *reasons*,
+  room labels and nicknames ride too: they are free text the receiver sees.
+  ([docs/52](52-event-contract.md) D9, [docs/42](42-admin-moderation-portal.md) D8)
 - **…but relay logs are NOT a place where broadcast IDs are absent, and
   `docs/42` §5's "(existing discipline)" parenthetical is wrong about them.**
   The relay has always logged `broadcast_id` at Info: every publisher,
