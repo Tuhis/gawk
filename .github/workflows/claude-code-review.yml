@@ -52,3 +52,27 @@ jobs:
           claude_args: '--model claude-opus-5-5 --allowedTools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),mcp__github_inline_comment__create_inline_comment"'
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
+
+      # The action logs only permission_denials_count, never which calls were
+      # denied, so a review that ends silently leaves nothing to go on (#350:
+      # 5 denials, 9 turns, no comment, green check). Print the denied calls and
+      # keep the transcript. Not show_full_output: that dumps every tool result
+      # into the log. The transcript holds only what the allowlisted gh reads
+      # returned, which is already public on this repo.
+      - name: List denied tool calls
+        if: always() && steps.claude-review.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        run: |
+          jq -r '.[] | select(.type == "result") | .permission_denials // [] | .[]
+                 | "::warning title=Review bot tool denied::\(.tool_name) \(.tool_input | tojson)"' \
+            "$EXECUTION_FILE" || true
+
+      - name: Upload review transcript
+        if: always() && steps.claude-review.outputs.execution_file != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: claude-review-transcript-pr${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: ${{ steps.claude-review.outputs.execution_file }}
+          retention-days: 7
+          if-no-files-found: warn
