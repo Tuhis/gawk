@@ -285,10 +285,15 @@ def collect_cargo(workspace: str, target: str) -> list[Package]:
         if p.get("source") is None
     }
 
+    # no-proc-macro: a proc macro runs at compile time and is not linked into
+    # the artifact — and its own dependencies resolve for the BUILD host, so
+    # walking it made the output depend on where this script ran (a Mac added
+    # objc2 to the Windows EXE's list, Linux added dlib). Excluding it is both
+    # what "build-dependencies are excluded" meant and host-independent.
     tree = run(
         [
             "cargo", "tree",
-            "-e", "normal",
+            "-e", "normal,no-proc-macro",
             "--target", target,
             "--prefix", "none",
             "--no-dedupe",
@@ -539,6 +544,33 @@ COMPONENTS = {
             "gawk-broadcast-desktop", "x86_64-pc-windows-msvc"
         ),
     ),
+    # R52 (docs/54 D14): the macOS bundle ships from the same workspace, so
+    # its notices sit beside the Windows EXE's under their own name.
+    "macos": dict(
+        path="gawk-broadcast-desktop",
+        file="THIRD-PARTY-NOTICES-macos.md",
+        title="gawk-broadcast-macos",
+        blurb=(
+            "The native macOS broadcaster, `gawk-broadcast-macos.app`.\n"
+            "\n"
+            "As for the Windows EXE: **Slint** and its `i-slint-*` crates are used\n"
+            "under the **Slint Royalty-free License version 2.0**, whose attribution\n"
+            "condition is met by the \"Made with Slint\" badge on the project README\n"
+            "and release pages, and **libopus** is compiled in statically through\n"
+            "`audiopus_sys` (ISC for the bindings, Xiph's BSD-3-Clause for the C\n"
+            "library). The Apple frameworks it links — ScreenCaptureKit,\n"
+            "VideoToolbox, CoreMedia and the rest — are part of macOS and are\n"
+            "governed by Apple's terms, not by anything here."
+        ),
+        sources=(
+            "`cargo tree -e normal --target aarch64-apple-darwin` — build- and "
+            "dev-dependencies (proc macros, test harnesses) are excluded because "
+            "they are not part of the shipped bundle."
+        ),
+        collect=lambda: collect_cargo(
+            "gawk-broadcast-desktop", "aarch64-apple-darwin"
+        ),
+    ),
 }
 
 
@@ -681,9 +713,14 @@ def main() -> None:
         spec = COMPONENTS[name]
         print(f"==> {name}", flush=True)
         packages = spec["collect"]()
-        out = REPO / spec["path"] / "THIRD-PARTY-NOTICES.md"
+        out = REPO / spec["path"] / spec.get("file", "THIRD-PARTY-NOTICES.md")
         out.write_text(
-            render(Path(spec["path"]).name, spec["blurb"], spec["sources"], packages)
+            render(
+                spec.get("title", Path(spec["path"]).name),
+                spec["blurb"],
+                spec["sources"],
+                packages,
+            )
             + "\n",
             encoding="utf-8",
         )

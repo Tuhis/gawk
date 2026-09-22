@@ -2,13 +2,15 @@
 
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-broadcast-desktop.json)](../docs/43-coverage-reporting.md)
 
-The native **Windows** broadcaster: share one application — its window
-plus **that app's own audio**, via WASAPI process loopback — or the whole
-desktop, hardware-encoded through Media Foundation, straight to the gawk
-relay over WebTransport. The design doc is
-[docs/38](../docs/38-windows-native-broadcaster.md); read it before
-changing anything here — every structural choice below is a numbered
-decision there.
+The native desktop broadcasters for **Windows** and **macOS**: share one
+application — its window plus **that app's own audio** — or the whole
+desktop, hardware-encoded, straight to the gawk relay over WebTransport.
+On Windows that is WASAPI process loopback and Media Foundation
+([docs/38](../docs/38-windows-native-broadcaster.md)); on a Mac,
+ScreenCaptureKit through the system picker and VideoToolbox's low-latency
+encoder ([docs/54](../docs/54-macos-native-broadcaster.md), and
+[macOS](#macos) below). Read the design doc before changing anything here —
+every structural choice is a numbered decision there.
 
 **Status:** implemented and CI-gated; the on-hardware acceptance pass on a
 real gaming PC is what remains (docs/38 §10). All portable logic is
@@ -60,6 +62,49 @@ name and `BUILD-INFO.txt`, so a screenshot is enough to identify a build.
 The same string is the first line of `debug.log` and the `appVersion` key
 in **Copy diagnostics**. There is no `--version` flag: a windowed EXE has
 no console to print to.
+
+## macOS
+
+Grab `gawk-broadcast-macos-arm64.zip` from the same
+**[Releases page](https://github.com/Tuhis/gawk/releases)**, unzip it, and
+open `gawk-broadcast-macos` (drag it to Applications first if you like).
+It is signed with a Developer ID and notarized, so a fresh account opens
+it without a Gatekeeper dialog. Then: **Choose what to share…** opens
+macOS's own picker — one window, one app, or a display — and **Start
+broadcast**. The picker path needs no Screen Recording permission.
+
+| Requirement | Why |
+|---|---|
+| macOS 14 (Sonoma) or newer | the system content picker |
+| Apple silicon | Intel Macs: the browser broadcaster hardware-encodes fine there |
+
+Sharing a window or an app sends **only that app's audio**; sharing a
+display sends the whole system's (except gawk-broadcast's own). If an app
+stays silent — some games play audio through a helper process — the window
+offers **Use whole-system audio**, which re-opens the picker on a display.
+
+Settings live in `~/Library/Application Support/gawk/broadcast.json`
+(mode 0600: credentials sit in it as plain text, as on Linux), next to
+`debug.log`. **Settings… ⌘,** opens the same card as the checkbox.
+
+**A CI build is different.** Every green CI run uploads
+`gawk-broadcast-macos-<commit sha>` (`gh run download --name …`), but a
+pull-request build is **ad-hoc signed**, not notarized — its
+`BUILD-INFO.txt` says so. Open it once via System Settings → Privacy &
+Security → **Open Anyway**, and expect any permission it collects to die
+with that build: macOS keys grants to the signature, and an ad-hoc
+signature is the binary's own hash.
+
+When it doesn't work, on a Mac:
+
+- **The picker never appears** — the app must be the frontmost window; and
+  `debug.log` says why if the system refused to start it.
+- **"No hardware H.264 encoder was found"** — a VM, or an Intel Mac. The
+  browser broadcaster is the answer there; this app never software-encodes.
+- **Relay refuses the connection** (`origin rejected` in the relay log) —
+  the relay's `allowedOrigins` needs `gawk-broadcast://macos`
+  ([self-hosting](../docs/self-hosting.md)).
+- **The shared window went frozen** — it is minimized; restore it.
 
 ## Requirements
 

@@ -1504,7 +1504,10 @@ jobs:
       - name: THIRD-PARTY-NOTICES.md matches the dependencies actually linked
         run: |
           python3 tools/licenses/gen-notices.py
-          if ! git diff --exit-code -- '**/THIRD-PARTY-NOTICES.md'; then
+          # -*: the macOS bundle's notices sit beside the Windows EXE's
+          # (R52, docs/54 D14), and an untracked new one counts as stale too.
+          git add -N -- '**/THIRD-PARTY-NOTICES*.md'
+          if ! git diff --exit-code -- '**/THIRD-PARTY-NOTICES*.md'; then
             echo "::error::Third-party notices are stale. Run 'python3 tools/licenses/gen-notices.py' and commit the result (see CONTRIBUTING.md)."
             exit 1
           fi

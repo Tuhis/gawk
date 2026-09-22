@@ -240,7 +240,7 @@ mode, verification, and upgrades.
 | [`gawk-server/`](gawk-server/) | The Go relay — WebTransport endpoint, pub/sub hub, cluster-mode federation. Image + Helm chart. |
 | [`gawk-app/`](gawk-app/) | React SPA — landing/join, broadcaster, viewer. Image + Helm chart. |
 | [`gawk-broadcast/`](gawk-broadcast/) | Native **Linux** broadcaster (Go) — GUI + CLI, GPU encode via the XDG portal + GStreamer. A binary you run, not a deployed component. |
-| [`gawk-broadcast-desktop/`](gawk-broadcast-desktop/) | Native **Windows** broadcaster (Rust) — Windows.Graphics.Capture + Media Foundation, single static EXE. |
+| [`gawk-broadcast-desktop/`](gawk-broadcast-desktop/) | Native **Windows** and **macOS** broadcasters (Rust) — Windows.Graphics.Capture + Media Foundation as a single static EXE; ScreenCaptureKit + VideoToolbox as a notarized `.app`. |
 | [`gawk-telemetry/`](gawk-telemetry/) | Optional per-session diagnostics — ingest, history, dashboard, MCP. Off by default. Image + Helm chart. |
 | [`gawk-admin/`](gawk-admin/) | Optional moderation portal — fleet-wide kill, durable ID/IP bans, OIDC-gated operator SPA, signed webhooks. Off by default. Image + Helm chart. |
 | [`e2e/`](e2e/) | Browser E2E harness — headless Chrome decoding real relayed frames, plus a kind cluster tier. |
@@ -295,6 +295,7 @@ actually linked into that artifact:
 [app](gawk-app/THIRD-PARTY-NOTICES.md) ·
 [Linux broadcaster](gawk-broadcast/THIRD-PARTY-NOTICES.md) ·
 [Windows broadcaster](gawk-broadcast-desktop/THIRD-PARTY-NOTICES.md) ·
+[macOS broadcaster](gawk-broadcast-desktop/THIRD-PARTY-NOTICES-macos.md) ·
 [telemetry](gawk-telemetry/THIRD-PARTY-NOTICES.md) ·
 [telemetry UI](gawk-telemetry/ui/THIRD-PARTY-NOTICES.md) ·
 [admin](gawk-admin/THIRD-PARTY-NOTICES.md) ·

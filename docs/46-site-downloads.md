@@ -5,6 +5,16 @@ DownLoads; two-letter prefix per the R21+ convention). Site + CI, plus two
 footer links in the SPA's landing page (DL5, §6): no relay, wire or
 broadcaster code moves.
 
+**2026-09-23 (R52 MB0/MB7)**: "component" in a manifest means the
+**distribution** — what a user downloads — not the release-please
+component. The Windows and macOS apps are two distributions of one
+component, `gawk-broadcast-desktop` ([docs/54](54-macos-native-broadcaster.md)
+D14): `releases/gawk-broadcast-windows/latest.json` keeps its path and its
+`component` value, `releases/gawk-broadcast-macos/latest.json` joins it, and
+both carry the `gawk-broadcast-desktop/vX.Y.Z` tag. `tools/releases/manifest.py`'s
+`TAG_STEMS` names which tag stems each distribution may carry; the site's
+Download section has a third card reading the macOS one.
+
 ## 1. Purpose
 
 The native broadcasters are the only part of gawk a user has to *download*,
