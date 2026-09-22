@@ -97,6 +97,24 @@ config:
   #     build: the shipped image is compiled `-tags duckdb`, while a binary
   #     built from a fresh clone has no engine and says so (docs/36 §8 Q1).
   querySql: true
+  # The SQL engine's budget. It runs in the same process as public ingest, so
+  # it gets a stated share instead of DuckDB's defaults (~80 % of the
+  # container's memory, one thread per core), which made every unpruned
+  # `sessions` query fail with an OOM.
+  #
+  # sqlMemoryLimit: "auto" is a quarter of resources.limits.memory (read from
+  # the cgroup, minimum 128MiB), or a size such as 512MiB.
+  sqlMemoryLimit: auto
+  # Each thread holds a 32 MiB JSON read buffer, so this sets the floor under
+  # a scan. Raise it for speed only together with sqlMemoryLimit.
+  sqlThreads: 2
+  # Cap on spill files, which live on the data PVC (<dataDir>/.sql-spill)
+  # because the root filesystem is read-only. They share that volume with
+  # ingest, so keep this well under persistence.size. "0" disables spilling.
+  sqlSpillLimit: 512MiB
+  # How often every SQL view is probed for the gawk_telemetry_sql_view_up gauge
+  # (see metrics below). "0" disables the probe.
+  sqlProbeInterval: 5m
   # Ingest rate limiting, in two tiers. No client IP is ever consulted or
   # stored (D8): every browser reaches this through the frontend Ingress, so a
   # per-IP bucket would be fleet-wide anyway — just wearing a misleading name.
@@ -142,6 +160,33 @@ read:
     user: ""
     password: ""
     passwordRef: {}
+
+# The service's own health, in Prometheus format, on a THIRD listener: a
+# ClusterIP-only Service, never an Ingress. It carries no broadcast, session or
+# room identifiers, only build info and the SQL view probe's verdicts.
+#
+# The ServiceMonitor and PrometheusRule need the prometheus-operator CRDs.
+# With kube-prometheus-stack, set their labels to match its selectors
+# (typically {release: <its helm release name>}).
+metrics:
+  enabled: true
+  port: 8082
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    interval: 60s
+    scrapeTimeout: 10s
+  prometheusRule:
+    enabled: false
+    labels: {}
+    # GawkTelemetrySQLViewDown: a view has data on disk and has not answered
+    # for this long. The engine heals view drift on its own, so this fires
+    # only on a failure the heal could not fix.
+    viewDownFor: 15m
+    # GawkTelemetrySQLProbeStale: no probe round has completed for this many
+    # seconds. Keep it well above config.sqlProbeInterval.
+    probeStaleAfterSeconds: 1800
+    severity: warning
 
 resources:
   requests:

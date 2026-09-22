@@ -251,8 +251,9 @@ jobs:
           # gawk-telemetry consumes gawk-server/wire through a local `replace`
           # (docs/33 D12), so the relay module's tree must be present.
           # R31: this is the ONLY cgo image, and `read_port` is what asks it
-          # whether the DuckDB engine actually opened.
-          tel='{"context":".","dockerfile":"gawk-telemetry/deploy/Dockerfile","tag":"gawk-telemetry:ci","run_args":"-telemetry-key 0000000000000000000000000000000000000000000000000000000000000000 -data-dir /tmp/d -log-level warn","probe_port":8080,"probe_path":"/healthz","read_port":8081}'
+          # whether the DuckDB engine actually opened; `metrics_port` asks
+          # whether its view probe ran in the shipped image.
+          tel='{"context":".","dockerfile":"gawk-telemetry/deploy/Dockerfile","tag":"gawk-telemetry:ci","run_args":"-telemetry-key 0000000000000000000000000000000000000000000000000000000000000000 -data-dir /tmp/d -log-level warn","probe_port":8080,"probe_path":"/healthz","read_port":8081,"metrics_port":8082}'
           # R39: repo-root context again, and for the same reason as telemetry
           # — gawk-admin reaches gawk-server/moderation through a local
           # `replace` (docs/42 D13).
@@ -1526,6 +1527,12 @@ jobs:
       - run: helm template gawk-server/deploy/charts/gawk-server > /dev/null
       - run: helm template gawk-app/deploy/charts/gawk-app > /dev/null
       - run: helm template gawk-telemetry/deploy/charts/gawk-telemetry --set telemetryKey=00 > /dev/null
+      # The monitoring templates are opt-in, so the default render above never
+      # reaches them.
+      - run: >-
+          helm template gawk-telemetry/deploy/charts/gawk-telemetry --set telemetryKey=00
+          --set metrics.serviceMonitor.enabled=true --set metrics.prometheusRule.enabled=true
+          | grep -q 'alert: GawkTelemetrySQLViewDown'
       # R28 (docs/33 TM3): with telemetry off, the relay chart must render
       # nothing telemetry-related at all — an install that never enables it
       # carries no trace of R28.
@@ -2900,6 +2907,30 @@ jobs:
           echo "$out"
           grep -q '"rows":\[\[42\]\]' <<<"$out" || {
             echo "::error::the engine is present but did not answer a trivial query"
+            exit 1
+          }
+
+      # The SQL console rotted in production twice before anyone looked
+      # (BUGS.md); the view probe and its gauges are what make that visible.
+      # The probe runs once at startup, so its verdicts are on /metrics within
+      # a second or two of the process answering at all.
+      - name: the SQL view probe publishes its verdicts
+        if: matrix.metrics_port
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            m=$(curl -fsS "http://127.0.0.1:${{ matrix.metrics_port }}/metrics" || true)
+            grep -q 'gawk_telemetry_sql_view_up{' <<<"$m" && break
+            sleep 1
+          done
+          echo "$m"
+          grep -q '^gawk_telemetry_sql_engine_up 1$' <<<"$m" || {
+            echo "::error::/metrics does not report the SQL engine up"
+            exit 1
+          }
+          grep -q 'gawk_telemetry_sql_view_up{view="rollups"} 1' <<<"$m" || {
+            echo "::error::the SQL view probe published no verdict for rollups"
+            docker logs ci-smoke 2>&1 | tail -30
             exit 1
           }
 
