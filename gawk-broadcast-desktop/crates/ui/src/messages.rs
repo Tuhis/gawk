@@ -8,13 +8,12 @@
 use gawk_engine::relay::{StartError, StartPhase};
 
 /// The shell's classified start failure.
-#[cfg_attr(not(windows), allow(dead_code))] // the refusal is only minted by the Windows pipeline
 pub enum StartFailure {
     /// The cascade refused: no hardware encoder survived trial (G3).
     NoHardwareEncoder,
     /// The relay/engine failed to start.
     Relay(StartError),
-    /// Capture setup failed outside the encoder (WGC/D3D).
+    /// Capture setup failed outside the encoder (WGC/D3D, ScreenCaptureKit).
     Capture(String),
 }
 
@@ -23,7 +22,14 @@ pub enum StartFailure {
 pub fn message(failure: &StartFailure, app_url: &str) -> String {
     match failure {
         // Sentinel first — never shadowed by generic rendering.
-        StartFailure::NoHardwareEncoder => gawk_encode::cascade::refusal_message(app_url),
+        StartFailure::NoHardwareEncoder => gawk_encode::cascade::refusal_message(
+            app_url,
+            if gawk_engine::defaults::THIS == &gawk_engine::defaults::MACOS {
+                "a Mac"
+            } else {
+                "Windows"
+            },
+        ),
         StartFailure::Capture(msg) => format!("Could not start screen capture: {msg}"),
         StartFailure::Relay(se) => relay_message(se),
     }

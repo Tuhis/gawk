@@ -182,8 +182,8 @@ Quirks that will bite you:
 | `crates/capture` | Windows.Graphics.Capture frame source + window/monitor picker enumeration; on macOS the ScreenCaptureKit stream and the system content picker (`sck`, `sck_picker`), with their frame policy in the portable `sck_policy` |
 | `crates/encode` | Media Foundation hardware H.264 MFT cascade, trial-gated |
 | `crates/audio` | WASAPI process/system loopback + Opus |
-| `crates/ui` | The window both shells show (`main.slint`, compiled once), the build version, and window logic the shells share |
-| `crates/app-windows` | The Windows shell — `gawk-broadcast.exe` |
+| `crates/ui` | The window both apps show (`main.slint`, compiled once) and the shell that drives it (`shell`: settings, rooms, the session lifecycle, stats, diagnostics) — each app plugs in a `Platform` and a `Media` pipeline |
+| `crates/app-windows` | The Windows platform — WGC picker, Media Foundation pipeline, toasts, DPAPI — built as `gawk-broadcast.exe` |
 | `crates/app-macos` | The macOS shell — `gawk-broadcast-macos`, bundled as `gawk-broadcast-macos.app` by `tools/macos/bundle.sh` (R52, [docs/54](../docs/54-macos-native-broadcaster.md); in progress — a stub off macOS) |
 
 ### The wire crate is a mirror, not an implementation
