@@ -4494,10 +4494,14 @@ This item answers that for both services.
 
 - **MC1 — one MCP transport.** The JSON-RPC / streamable-HTTP plumbing
   that `gawk-telemetry/internal/mcp` hand-rolls moves to a public
-  `gawk-server/mcphttp` package, gaining the spec's `Origin` check,
-  `MCP-Protocol-Version` handling and `405` on `GET`; telemetry keeps
-  only its tools, and its MCP-vs-HTTP byte-identity test passes
-  unedited. Lands alone.
+  `gawk-server/mcphttp` package, carrying telemetry's `405` on `GET` and
+  R53 TO4's `Origin` rule (any `Origin` header is refused: no browser
+  client of `/mcp` exists, and comparing with `Host` would not stop DNS
+  rebinding), and adding the spec's `MCP-Protocol-Version` check.
+  Telemetry keeps only its tools, and its existing tests pass unedited.
+  Two behaviour changes are named and pinned rather than hidden: an
+  oversized body becomes `413`, and an unknown protocol version `400`.
+  Lands alone, as a `fix(telemetry)`.
 - **MC2 — tools from the contract.** Every operation in `openapi.yaml`
   declares `x-gawk-mcp: read | write | none` (with a reason for `none`),
   and every IP-bearing property carries `x-gawk-personal: ip` (values
