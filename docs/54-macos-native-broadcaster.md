@@ -1008,7 +1008,11 @@ loop without the close dialog.
 - **Audio has its own panic fence.** The first cut shared video's
   `CallbackGuard`, which would have ended the broadcast on an audio panic —
   against D6. A second guard stops audio only (`Capture::audio_failed`, the
-  audio line reads "error").
+  audio line reads "error"). A review of the PR found the second half: the
+  audio queue holds the lane's mutex while feeding it, so a caught panic
+  still poisoned it and the GUI's next level read would `unwrap()` the
+  poison on the UI thread. The GUI reads now treat a poisoned lane as
+  silence; a regression test poisons it and reads.
 - **One clock (D5).** Audio maps its host PTS through the same `QpcMapper`
   instance as video, so A/V skew is zero by construction; a buffer without
   a time is stamped on arrival minus its own duration.

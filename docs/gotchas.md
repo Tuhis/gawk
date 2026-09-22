@@ -1054,6 +1054,13 @@ Add to it when a new gotcha lands in `docs/`.
   behind `sck_policy::CallbackGuard` or its own `catch_unwind`, and a caught
   panic ends the broadcast as a session error.
   ([docs/54](54-macos-native-broadcaster.md) D3)
+- **Audio needs its own panic fence, and its locks must survive one.**
+  Sharing video's fence would end the broadcast on an audio panic (D6 says
+  audio never does); and the audio queue holds the lane's mutex while it
+  feeds it, so a caught panic poisons that mutex — the GUI's 250 ms level
+  read then `unwrap()`s a `PoisonError` on the UI thread and the app dies.
+  A poisoned lane reads as silence.
+  ([docs/54](54-macos-native-broadcaster.md) §11, MB4)
 
 **Single-application audio on Linux (R35)**
 
