@@ -356,7 +356,6 @@ func isHexKey(s string) bool {
 	return true
 }
 
-// PayloadString returns a top-level string field of the payload, or "".
 // TargetType returns the TYPE of the ban target a ban event records under
 // "target", or "" when there is none. Only the type is ever read — the value
 // of an IP ban is an address, which must not reach a delivery — and the
@@ -382,6 +381,7 @@ func (e Event) TargetType() moderation.TargetType {
 	}
 }
 
+// PayloadString returns a top-level string field of the payload, or "".
 func (e Event) PayloadString(key string) string {
 	if len(e.Payload) == 0 {
 		return ""
