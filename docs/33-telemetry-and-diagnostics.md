@@ -192,7 +192,12 @@ where getting the schema wrong is expensive. Rules:
 - **Additive forever.** Fields are appended, never renamed or repurposed. A
   reader must tolerate rows from older releases missing newer fields — which
   sparse JSON gives for free, and which the query layer must not undermine by
-  assuming presence.
+  assuming presence. Enforced since 2026-09-22 by `internal/storedshape`: every
+  stored path (rollups, raw session lines and their typed stats fields, relay
+  observations, annotations) is recorded with its JSON type in a golden file,
+  and a changed or removed one fails CI. The SQL views union partitions by
+  name, so a type change does not fail at write time. It turns the column into
+  JSON over all history.
 - **Percentiles, not means, for anything experiential.** A mean fps over a
   session with one 4-second freeze looks fine. Median + p95 (+ p05 where the
   bad tail is low, e.g. fps) is the shape.
