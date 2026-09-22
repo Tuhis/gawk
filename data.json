@@ -34,10 +34,10 @@
     },
     "gawk-broadcast-desktop": {
       "component": "gawk-broadcast-desktop",
-      "covered": 6762,
+      "covered": 6771,
       "label": "broadcast-desktop",
       "pct": 81.4,
-      "total": 8304,
+      "total": 8319,
       "unit": "lines"
     },
     "gawk-server": {
