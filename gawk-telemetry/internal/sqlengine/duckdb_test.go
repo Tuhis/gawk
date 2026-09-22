@@ -5,6 +5,7 @@ package sqlengine
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -199,6 +200,93 @@ func TestProbeOverTheRealEngineSurvivesDrift(t *testing.T) {
 		if want := h.Name == "sessions" || h.Name == "rollups"; h.HasData != want {
 			t.Errorf("%s: hasData = %v, want %v", h.Name, h.HasData, want)
 		}
+	}
+}
+
+// PR #350 review: the engine has ONE connection, and Query held it (open rows)
+// while taking the catalogue lock, whereas register took the catalogue lock and
+// then waited for the connection. Two overlapping queries — the view probe and
+// an operator, two console tabs, MCP — stalled each other until the first
+// one's timeout, which lost its result and could fire a false view-down alert.
+// The old engine re-registered the empty (so unavailable) relay view on every
+// query — the normal state on a fleet without relay data — which is what put
+// B in ExecContext holding the lock.
+func TestOverlappingQueriesDoNotStallEachOther(t *testing.T) {
+	root := seedStore(t)
+	eng, err := Open(Options{Root: root, Timeout: 3 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	holding := make(chan struct{})
+	release := make(chan struct{})
+	var once bool
+	testHookRowsOpen = func() {
+		if once {
+			return
+		}
+		once = true
+		close(holding)
+		<-release
+	}
+	defer func() { testHookRowsOpen = nil }()
+
+	start := time.Now()
+	errA := make(chan error, 1)
+	go func() {
+		_, err := eng.Query("SELECT count(*) FROM rollups")
+		errA <- err
+	}()
+	<-holding // A holds the connection
+	errB := make(chan error, 1)
+	go func() {
+		_, err := eng.Query("SELECT role FROM rollups")
+		errB <- err
+	}()
+	// Give B time to get as far as it can while A holds the connection. The
+	// fixed engine passes with or without this; the broken one needs it to
+	// reproduce the interleaving.
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+
+	for name, ch := range map[string]chan error{"A": errA, "B": errB} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Errorf("query %s failed: %v", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("query %s never returned", name)
+		}
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("two small overlapping queries took %v; they stalled on each other", d)
+	}
+}
+
+// PR #350 review: a registration cut short by the query's clock used to mark
+// every view it touched unavailable and try to DROP them — so one slow query
+// on the drift path took healthy views down for everyone, and the probe then
+// reported them down.
+func TestARegistrationThatRunsOutOfTimeLeavesTheCatalogueAlone(t *testing.T) {
+	root := seedStore(t)
+	eng, err := Open(Options{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	e := eng.(*engine)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	e.register(ctx, true)
+	for _, v := range e.Views() {
+		if v.Name == "rollups" && !v.Available {
+			t.Fatal("a registration that ran out of time marked rollups unavailable")
+		}
+	}
+	if _, err := eng.Query("SELECT count(*) FROM rollups"); err != nil {
+		t.Fatalf("rollups no longer answers: %v", err)
 	}
 }
 

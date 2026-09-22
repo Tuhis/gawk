@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,9 +32,18 @@ type engine struct {
 	db   *sql.DB
 	opts Options
 
-	// mu guards views. The registrations themselves are serialised by the
-	// single connection; the lock keeps the catalogue coherent for Views()
-	// callers that never go through Query.
+	// turn is the engine's one-at-a-time slot: held for a WHOLE Query —
+	// re-registration, the query, reading its rows — and for Open's
+	// registration. The single connection already serialised queries; the
+	// slot makes that order explicit, and acquiring it honours the query's
+	// context, so a query waiting behind another still times out.
+	turn chan struct{}
+
+	// mu guards views and nothing else, and is NEVER held across a database
+	// call. It used to be (register held it through ExecContext) while Query
+	// took it with its rows — the connection — still open: two overlapping
+	// queries each held what the other needed until the first one timed out
+	// (PR #350 review).
 	mu    sync.Mutex
 	views []ViewDoc
 }
@@ -44,6 +54,11 @@ type engine struct {
 // pins the text, so a DuckDB upgrade that rewords it fails CI rather than
 // silently disabling the retry.
 const viewDrift = "Contents of view were altered"
+
+// testHookRowsOpen runs inside Query while its rows (and so the engine's one
+// connection) are held. Nil in production; the concurrency test uses it to
+// start a second query at exactly that point.
+var testHookRowsOpen func()
 
 // Open builds an in-memory DuckDB with views over the store's partitions.
 func Open(opts Options) (Engine, error) {
@@ -63,12 +78,32 @@ func Open(opts Options) (Engine, error) {
 		return nil, err
 	}
 
-	e := &engine{db: db, opts: opts, views: viewDocs(func(string) bool { return false })}
+	e := &engine{
+		db: db, opts: opts,
+		turn:  make(chan struct{}, 1),
+		views: viewDocs(func(string) bool { return false }),
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout())
 	defer cancel()
+	if err := e.acquire(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	defer e.release()
 	e.register(ctx, true)
 	return e, nil
 }
+
+func (e *engine) acquire(ctx context.Context) error {
+	select {
+	case e.turn <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (e *engine) release() { <-e.turn }
 
 // applyBudget sets the engine's resource budget (Options). These are SETs on
 // the engine's own connection, never reachable from a query: Check refuses
@@ -119,15 +154,30 @@ func applyBudget(db *sql.DB, opts Options) error {
 // were altered" until the pod restarted. Likewise a tree that was empty at boot
 // (annotations before the first note, relay before the first scrape) stayed
 // unqueryable. Query heals both.
+//
+// The caller holds the turn. e.mu is taken only to read and to publish the
+// catalogue, never across ExecContext.
 func (e *engine) register(ctx context.Context, all bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	ok := map[string]bool{}
-	for _, v := range e.views {
+	for _, v := range e.Views() {
 		ok[v.Name] = v.Available
 	}
+	defer func() {
+		e.mu.Lock()
+		e.views = viewDocs(func(n string) bool { return ok[n] })
+		e.mu.Unlock()
+	}()
 	for name, src := range viewSources(e.opts.Root) {
 		if ok[name] && !all {
+			continue
+		}
+		// A tree with no files cannot register, so there is nothing to try:
+		// without this, an empty relay/ cost a failing DDL on every query.
+		if matches, _ := filepath.Glob(src.glob); len(matches) == 0 {
+			if ok[name] {
+				_, _ = e.db.ExecContext(ctx, "DROP VIEW IF EXISTS "+name)
+			}
+			ok[name] = false
 			continue
 		}
 		hive := 0
@@ -143,14 +193,20 @@ func (e *engine) register(ctx context.Context, all bool) {
 		// still answer questions about sessions. The failure is REPORTED via
 		// ViewDoc.Available rather than swallowed. A failed re-registration
 		// drops the old view, so Available and the catalogue never disagree.
-		if _, err := e.db.ExecContext(ctx, stmt); err == nil {
+		_, err := e.db.ExecContext(ctx, stmt)
+		switch {
+		case err == nil:
 			ok[name] = true
-		} else {
+		case ctx.Err() != nil:
+			// The clock ran out, not the view: say nothing about this or any
+			// remaining view, rather than marking healthy views down (and
+			// attempting a DROP on a dead context) because a query was slow.
+			return
+		default:
 			ok[name] = false
 			_, _ = e.db.ExecContext(ctx, "DROP VIEW IF EXISTS "+name)
 		}
 	}
-	e.views = viewDocs(func(n string) bool { return ok[n] })
 }
 
 // Compiled reports that this build carries an engine.
@@ -176,27 +232,37 @@ func (e *engine) Query(q string) (*Result, error) {
 	defer cancel()
 
 	started := time.Now()
-	// A view missing since boot costs one failed glob to retry, so it is
-	// retried every time. A full re-registration re-sniffs every partition, so
-	// that runs only when DuckDB reports drift — once, and then the query is
-	// retried against the rebound views.
+	if err := e.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer e.release()
+	// A view missing since boot costs a glob to retry, so it is retried every
+	// time. A full re-registration re-sniffs every partition, so that runs only
+	// when DuckDB reports drift — once, and then the query is retried against
+	// the rebound views. The catalogue is snapshotted after the last
+	// registration and before the rows (the connection) are held.
 	e.register(ctx, false)
+	views := e.Views()
 	rows, err := e.db.QueryContext(ctx, stmt)
 	if err != nil && strings.Contains(err.Error(), viewDrift) {
 		e.register(ctx, true)
+		views = e.Views()
 		rows, err = e.db.QueryContext(ctx, stmt)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	if testHookRowsOpen != nil {
+		testHookRowsOpen()
+	}
 
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, err
 	}
 	types, _ := rows.ColumnTypes()
-	res := &Result{Columns: cols, Views: e.Views()}
+	res := &Result{Columns: cols, Views: views}
 	for _, t := range types {
 		res.Types = append(res.Types, t.DatabaseTypeName())
 	}
