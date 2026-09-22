@@ -76,7 +76,7 @@ component only**. The six components version independently
 | `gawk-server`              | Latest release only  |
 | `gawk-app`                 | Latest release only  |
 | `gawk-broadcast`           | Latest release only  |
-| `gawk-broadcast-windows`   | Latest release only  |
+| `gawk-broadcast-desktop`   | Latest release only  |
 | `gawk-telemetry`           | Latest release only  |
 | `gawk-admin`               | Latest release only  |
 

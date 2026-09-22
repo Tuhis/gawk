@@ -1,6 +1,7 @@
 # R52 — Native macOS broadcaster
 
-**Status**: designed 2026-09-18, not started. Chunks **MB0–MB8**. The
+**Status**: designed 2026-09-18. Chunks **MB0–MB8**; **MB0 implemented
+2026-09-22** (§11 records what the rename turned up), MB1–MB8 not started. The
 ROADMAP entry ([R52](../ROADMAP.md#r52--native-macos-broadcaster)) carries
 the research summary and owner decisions this doc builds on; the decisions
 are restated in §2 so the doc reads on its own.
@@ -756,7 +757,47 @@ dated note (docs/README conventions).
 
 ## 11. Deviations and field findings
 
-None yet.
+**MB0 (2026-09-22)** — what the rename turned up beyond D2's list:
+
+- **The manifest writer could not express "distribution ≠ component".**
+  `publish-release-manifest` used its one `component` input for the version
+  lookup, the `releases/<…>/latest.json` path *and* the manifest's
+  `component` field, and `tools/releases/manifest.py` rejected any tag whose
+  stem was not that field. Keeping `releases/gawk-broadcast-windows/latest.json`
+  (D2, D14) therefore needed part of D14's mechanism in MB0 rather than MB7:
+  the action gained a `distribution` input (defaulting to `component`, so the
+  Linux caller is unchanged), and the tool a `TAG_STEMS` table naming the
+  tag stems each distribution may carry — `gawk-broadcast-windows` accepts
+  `gawk-broadcast-desktop` and its own pre-rename stem (backfills),
+  `gawk-broadcast-macos` only `gawk-broadcast-desktop`. MB7 only adds the
+  second call.
+- **The coverage badge writer would have counted the Windows workspace
+  twice.** `coverage.py badges` carries every record forward, so the last
+  `gawk-broadcast-windows` record would have stayed in `data.json` and the
+  aggregate for ever beside the new `gawk-broadcast-desktop` one. It now drops
+  any component absent from `coverage-floors.json` (and its badge file) —
+  safe because `check` already refuses a record for an unlisted component.
+- **Artifact names are distribution names.** MB0's "uploads the artifact
+  under the new name" is read as the renamed *workflow*: the CI artifact stays
+  `gawk-broadcast-windows-x86_64-<sha>`, matching D15's
+  `gawk-broadcast-macos-<sha>`, the release asset and the README's
+  `gh run download` line.
+- **Backfills of pre-rename releases** must be dispatched from a pre-rename
+  ref: the attach job now asks the manifest for `gawk-broadcast-desktop`,
+  which a pre-rename commit's manifest does not have. It fails loudly ("not a
+  package"), never attaches the wrong thing.
+- **The site's no-script fallback** for the Windows card filtered releases
+  by `gawk-broadcast-windows`, which would stop matching the newest release;
+  it filters by `gawk-broadcast-desktop/` now. The card's manifest URL is
+  unchanged.
+- **First desktop release.** release-please finds no release for the new
+  component and attributes commits by path; nothing before the rename
+  touches `gawk-broadcast-desktop/`, so the first desktop changelog starts at
+  the MB0 commit and the version continues from the manifest's 1.5.0.
+- **Darwin, early**: the whole workspace (Slint included) builds, and `cargo
+  test --workspace`, host clippy and the real-relay integration suite (5/5)
+  pass on an Apple Silicon Mac, macOS 26.5, from the renamed tree. MB1 still
+  has to prove it on `macos-latest`.
 
 ## 12. References
 

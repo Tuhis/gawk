@@ -38,6 +38,18 @@ _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
+# The tag stems each distribution may release under (docs/54 D14). The
+# manifest is keyed by what a user downloads — `component` names the
+# distribution, and the site card and the R45 update check key on it — while
+# the tag names the release-please component that shipped it. R52 MB0 folded
+# the Windows app into the gawk-broadcast-desktop workspace; its releases
+# before that were tagged by its own name, and a backfill of one writes that
+# tag. A distribution absent here is its own component.
+TAG_STEMS = {
+    "gawk-broadcast-windows": ("gawk-broadcast-desktop", "gawk-broadcast-windows"),
+    "gawk-broadcast-macos": ("gawk-broadcast-desktop",),
+}
+
 
 class ManifestError(ValueError):
     pass
@@ -101,10 +113,11 @@ def validate(manifest: object) -> None:
     # Both tag spellings: `component/vX.Y.Z` since the tag-separator change,
     # `component-vX.Y.Z` on every release cut before it — and a backfill of
     # one of those is exactly when the attach job runs this on a legacy tag.
-    stem = f"{manifest['component']}"
-    if manifest["tag"] not in (f"{stem}/v{manifest['version']}", f"{stem}-v{manifest['version']}"):
+    stems = TAG_STEMS.get(manifest["component"], (manifest["component"],))
+    version = manifest["version"]
+    if manifest["tag"] not in {f"{stem}{sep}v{version}" for stem in stems for sep in ("/", "-")}:
         raise ManifestError(
-            f"tag {manifest['tag']!r} does not match {stem}/v{manifest['version']}")
+            f"tag {manifest['tag']!r} does not match {stems[0]}/v{version}")
     if not _TIMESTAMP.match(manifest["published_at"]):
         raise ManifestError(f"published_at {manifest['published_at']!r} is not an RFC 3339 UTC timestamp")
 
@@ -143,7 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     b = sub.add_parser("build", help="write the manifest for one release")
-    b.add_argument("--component", required=True, help="release-please component, e.g. gawk-broadcast")
+    b.add_argument("--component", required=True,
+                   help="the distribution, e.g. gawk-broadcast or gawk-broadcast-windows (see TAG_STEMS)")
     b.add_argument("--version", required=True, help="X.Y.Z as in .release-please-manifest.json")
     b.add_argument("--tag", required=True, help="the release tag, e.g. gawk-broadcast/v1.13.0")
     b.add_argument("--published-at", required=True, help="the release's published_at, RFC 3339 UTC")

@@ -1,11 +1,11 @@
 # Release automation: release-please maintains ONE combined release PR
 # covering every component (gawk-server, gawk-app, gawk-broadcast,
-# gawk-broadcast-windows, gawk-telemetry, gawk-admin), computing each one's
+# gawk-broadcast-desktop, gawk-telemetry, gawk-admin), computing each one's
 # next SemVer from conventional commits; merging it tags per component (e.g.
 # gawk-server/v0.5.0 — tag-separator "/") and the publish jobs below push the
 # docker image and OCI Helm chart to GHCR with matching versions.
 #
-# gawk-broadcast and gawk-broadcast-windows have NO publish job here on
+# gawk-broadcast and gawk-broadcast-desktop have NO publish job here on
 # purpose (R14 Decision 2, docs/19): they are native binaries you run on your
 # own PC, deliberately outside the "chart version == appVersion == image tag"
 # model that exists for cluster-side components. No image, no chart, no
@@ -14,7 +14,7 @@
 #
 # They do get their binaries onto the release page, but not from here and not
 # from a build of their own: this push and the CI runs for the same commit are
-# concurrent, so ci.yml's attach-broadcast-release and broadcast-windows.yml's
+# concurrent, so ci.yml's attach-broadcast-release and broadcast-desktop.yml's
 # attach-release upload the artifacts those runs already built. Rebuilding
 # them in a job here would be minutes of duplicate work for a byte-identical
 # result. See .github/actions/attach-release-assets.

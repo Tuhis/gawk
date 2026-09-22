@@ -102,7 +102,7 @@ this one most of all.
 
 **The wire format has four mirrors.** `gawk-server/wire/wire.go` is the source
 of truth. `gawk-app`'s `wire.ts`, `gawk-broadcast/internal/wirecheck` and
-`gawk-broadcast-windows/crates/wire` each restate it, with golden vectors kept
+`gawk-broadcast-desktop/crates/wire` each restate it, with golden vectors kept
 **byte-identical** across all four — deliberately restated, never imported or
 generated, because a shared fixture could be edited once and stay green
 everywhere. A new wire type or close code lands in all four in one PR, or it
@@ -143,7 +143,7 @@ cd gawk-admin             && go vet ./... && go test ./...   # Postgres-backed
                                                              # tests SKIP unless
                                                              # GAWK_ADMIN_TEST_DSN is set
 cd gawk-admin/ui          && npm ci && npm run lint && npm test && npm run build
-cd gawk-broadcast-windows && cargo test --workspace && \
+cd gawk-broadcast-desktop && cargo test --workspace && \
                              cargo xwin clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 cd tools/icon             && go test ./... && go run . check   # after editing assets/icon/gawk.svg:
                                                                # go run . generate, commit the derivatives
@@ -155,7 +155,7 @@ leave another (which reaches it through a local `replace`) with a stale graph.
 
 The native Windows broadcaster cross-compiles from Linux with
 [cargo-xwin](https://github.com/rust-cross/cargo-xwin); see
-[`gawk-broadcast-windows/README.md`](gawk-broadcast-windows/README.md) before
+[`gawk-broadcast-desktop/README.md`](gawk-broadcast-desktop/README.md) before
 touching that build.
 
 ### CI on your own fork

@@ -104,9 +104,9 @@ mod tests {
             return;
         };
         let manifest: serde_json::Value = serde_json::from_str(&raw).expect("manifest is JSON");
-        let want = manifest["gawk-broadcast-windows"]
+        let want = manifest["gawk-broadcast-desktop"]
             .as_str()
-            .expect("manifest has a gawk-broadcast-windows entry");
+            .expect("manifest has a gawk-broadcast-desktop entry");
         assert_eq!(
             RELEASE, want,
             "Cargo.toml says {RELEASE} but .release-please-manifest.json says {want} — \

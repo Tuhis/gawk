@@ -16,7 +16,7 @@
 # nearly every push.
 #
 # Two workflows call it: ci.yml for the seven components it builds, and
-# broadcast-windows.yml for the Rust one, which lives in its own workflow and
+# broadcast-desktop.yml for the Rust one, which lives in its own workflow and
 # therefore cannot share ci.yml's artifacts. They can land at the same second
 # on a release commit, so pushes race — hence the fetch-rebuild-retry loop,
 # and hence the shared `concurrency` group on both calling jobs.
@@ -94,7 +94,7 @@ runs:
           holds the coverage counts; every other file is a
           [shields.io endpoint](https://shields.io/badges/endpoint-badge)
           response consumed by the README badges.
-        - `releases/<component>/latest.json`:
+        - `releases/<distribution>/latest.json`:
           `.github/actions/publish-release-manifest`, written when a native
           broadcaster release gets its binaries attached. The project site's
           Download section reads it (docs/46).
@@ -110,7 +110,7 @@ runs:
         fi
 
         # The race is real on a release commit, where ci.yml and
-        # broadcast-windows.yml both finish against the same SHA. Rebuild
+        # broadcast-desktop.yml both finish against the same SHA. Rebuild
         # rather than rebase: the merge lives in coverage.py, which folds this
         # run's records into whatever the branch now holds, so re-running it
         # after a fetch is the conflict resolution.

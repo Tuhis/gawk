@@ -1,4 +1,4 @@
-# Third-party notices — `gawk-broadcast-windows`
+# Third-party notices — `gawk-broadcast-desktop`
 
 The native Windows broadcaster, a single static `gawk-broadcast.exe`.
 

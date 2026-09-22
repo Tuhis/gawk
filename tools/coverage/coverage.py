@@ -170,6 +170,17 @@ def cmd_badges(args: argparse.Namespace) -> int:
         rec = json.loads(pathlib.Path(path).read_text())
         components[rec["component"]] = rec
 
+    # The floors file is the list of components. One that left it was renamed
+    # or removed (R52 MB0: gawk-broadcast-windows became gawk-broadcast-
+    # desktop), and carrying its last record forward would count it in the
+    # aggregate for ever. `check` already refuses a record for an unlisted
+    # component, so nothing current can be dropped here.
+    floors = load_floors()
+    for gone in [name for name in components if name not in floors]:
+        del components[gone]
+        (badges_dir / f"{gone}.json").unlink(missing_ok=True)
+        print(f"dropped {gone}: no longer in coverage-floors.json")
+
     # Stable key order keeps the diff on the badges branch readable and stops
     # a re-run with identical numbers from producing a commit.
     components = dict(sorted(components.items()))

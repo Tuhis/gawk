@@ -3,7 +3,7 @@ package fit
 import "testing"
 
 // The cases below are the Rust module's golden cases
-// (gawk-broadcast-windows/crates/capture/src/fit.rs), restated verbatim. Two
+// (gawk-broadcast-desktop/crates/capture/src/fit.rs), restated verbatim. Two
 // implementations of one rule drift silently unless the *answers* are pinned
 // on both sides; docs/39 D2 asks for exactly that, the same way the wire
 // mirrors keep byte-identical vectors.

@@ -16,6 +16,15 @@ step and the "when it doesn't work" list now live in the module README, and
 the site's download card carries the SmartScreen step for downloaders who
 never see the repo. Mentions of INSTALL.md below are historical.
 
+**2026-09-22**: the workspace moved to `gawk-broadcast-desktop/` (R52 MB0,
+[docs/54](54-macos-native-broadcaster.md) D2) ahead of the macOS
+broadcaster joining it; the workflow is now `broadcast-desktop.yml`, the
+release-please component and tags `gawk-broadcast-desktop`, the coverage key
+`gawk-broadcast-desktop`. The EXE, its release asset and CI artifact, the
+`releases/gawk-broadcast-windows/latest.json` manifest, the telemetry `kind`
+and the origin kept their names — they name the Windows distribution, not
+the directory. Paths and workflow names below are as they were when written.
+
 A Windows counterpart to the Linux native broadcaster (R14, `gawk-broadcast`),
 with two capture modes selectable at start — **share one application** (its
 window plus that app's own audio, independent of everything else on the

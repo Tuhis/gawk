@@ -24,7 +24,7 @@ import (
 // unexported, and a test that reads the wire should not borrow the constants
 // it is checking. WT_MAX_SESSIONS is the draft-07+ codepoint, which is what
 // webtransport-go advertises — not the draft-02 0xc671706a that the vendored
-// wtransport-proto (gawk-broadcast-windows) still defines for its own
+// wtransport-proto (gawk-broadcast-desktop) still defines for its own
 // backwards compatibility.
 const (
 	settingWTInitialMaxData        = 0x2b61

@@ -115,11 +115,17 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   every object it creates is a proxy on its own connection with no
   `object.linger`, so the daemon reaps them however it dies. Don't give it
   media, and don't make it linger (`docs/39`).
-- `gawk-broadcast-windows` — native Windows broadcaster (R34): a **Rust Cargo
-  workspace**, not a Go module. Its `crates/wire` is the **fourth wire
-  mirror** (vectors restated, never imported); its CI job **runs on the
-  self-hosted Linux runners, cross-compiled to msvc with cargo-xwin** — see
-  `docs/38` D18 before touching it, especially the clang-cl/libopus wrapper.
+- `gawk-broadcast-desktop` — native Windows broadcaster (R34), and from R52
+  the macOS one too: a **Rust Cargo workspace**, not a Go module (renamed
+  from `gawk-broadcast-windows` in R52 MB0, `docs/54` D2). One workspace
+  version and release unit, but the **distribution** names stay per platform:
+  the `gawk-broadcast-windows-*` EXE/artifact, the
+  `releases/gawk-broadcast-windows/latest.json` manifest and the telemetry
+  `kind` did not change with the directory. Its `crates/wire` is the **fourth
+  wire mirror** (vectors restated, never imported); its Windows CI jobs **run
+  on the self-hosted Linux runners, cross-compiled to msvc with cargo-xwin** —
+  see `docs/38` D18 before touching it, especially the clang-cl/libopus
+  wrapper.
 - `gawk-telemetry` — optional per-session diagnostics service; the **third**
   top-level Go module, **default off everywhere**. Two listeners, and the split
   **is** the security posture: ingest is public (same-origin path on the
@@ -225,7 +231,7 @@ Re-deriving them costs a cycle and has happened before.
   two-letter prefixes (e.g. `DV1`, `MF1`, `TM1`, `CG1`, `UX1`).
 - New wire types and close codes are allocated in `gawk-server/wire/wire.go`
   and must be mirrored in the TS (`wire.ts`), `gawk-broadcast`
-  (`internal/wirecheck`) and `gawk-broadcast-windows` (`crates/wire`) checks,
+  (`internal/wirecheck`) and `gawk-broadcast-desktop` (`crates/wire`) checks,
   with golden vectors kept byte-identical across all mirrors. The Windows
   CI job triggers on `gawk-server/wire/**` too, so the Rust mirror's gates run
   in the same PR as the wire change (this was not true before 2026-07-31).

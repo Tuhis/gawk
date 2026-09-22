@@ -3,7 +3,7 @@
 #
 # Why this exists at all: the binaries a user wants are the ones CI already
 # builds. On a release-PR merge the push to main fires ci.yml,
-# broadcast-windows.yml AND release-please.yml at the same time, on the same
+# broadcast-desktop.yml AND release-please.yml at the same time, on the same
 # commit, so by the time a release exists its binaries have already been built
 # and uploaded as workflow artifacts. Rebuilding them in a release job would be
 # minutes of duplicate work for a byte-identical result. This action moves the
@@ -38,7 +38,7 @@ inputs:
     #
     # Overriding this does NOT weaken the gate, it re-aims it. The tag must
     # still point at the commit named here, and the caller is expected to have
-    # BUILT that commit; broadcast-windows.yml checks it out to do so. Passing
+    # BUILT that commit; broadcast-desktop.yml checks it out to do so. Passing
     # a commit you did not build is how you staple the wrong bytes onto a
     # release, which is the exact failure the gate exists to prevent.
     description: >-
@@ -91,7 +91,7 @@ runs:
           // The commit the tag has to point at. context.sha on every ordinary
           // run; a backfill names an older commit it has just rebuilt, and the
           // manifest in the workspace must be that commit's — see the
-          // attach-release job in broadcast-windows.yml, which checks it out.
+          // attach-release job in broadcast-desktop.yml, which checks it out.
           const expectSha = process.env.EXPECT_SHA || context.sha;
 
           const manifest = JSON.parse(fs.readFileSync('.release-please-manifest.json', 'utf8'));

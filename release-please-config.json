@@ -37,9 +37,9 @@
         }
       ]
     },
-    "gawk-broadcast-windows": {
+    "gawk-broadcast-desktop": {
       "release-type": "simple",
-      "component": "gawk-broadcast-windows",
+      "component": "gawk-broadcast-desktop",
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         {

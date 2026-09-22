@@ -13,7 +13,7 @@
 // mirrors restate its golden vectors byte-identically and must be updated
 // with every wire change: the TS frontend (gawk-app/src/transport/wire.ts),
 // the Go broadcaster's checks (gawk-broadcast/internal/wirecheck), and the
-// Rust Windows broadcaster (gawk-broadcast-windows/crates/wire, R34 —
+// Rust Windows broadcaster (gawk-broadcast-desktop/crates/wire, R34 —
 // docs/38 D4; note its CI job is path-filtered, so the mirror's gates only
 // run once its own commit lands).
 //

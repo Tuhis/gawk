@@ -1,5 +1,11 @@
 # R34 native Windows broadcaster (docs/38 D18).
 #
+# The workspace was renamed gawk-broadcast-windows/ -> gawk-broadcast-desktop/
+# in R52 MB0 (docs/54 D2), ahead of the macOS binary joining it; so was this
+# file. Every job below still builds the Windows distribution only — the
+# `gawk-broadcast-windows-*` artifact, asset and manifest names are
+# distribution names and deliberately did not change.
+#
 # Runs on the SELF-HOSTED Linux runners, cross-compiling to
 # x86_64-pc-windows-msvc with cargo-xwin. The component is Windows-only; the
 # CI for it does not have to be, and the reasons it used to be no longer hold:
@@ -104,13 +110,13 @@
 # these jobs after build-runner-image runs in ioio AND Flux rolls the scale
 # set over. The preflight action is what turns that ordering mistake into a
 # two-second failure with instructions.
-name: broadcast-windows
+name: broadcast-desktop
 
 on:
   push:
     branches: [main]
     paths:
-      - "gawk-broadcast-windows/**"
+      - "gawk-broadcast-desktop/**"
       - "gawk-server/wire/**"
       # R44 (docs/53 D7/D8): the EXE links assets/icon/gawk.res and the
       # build job verifies the resource landed with tools/icon.
@@ -121,10 +127,10 @@ on:
       - ".github/actions/publish-coverage-badges/**"
       - "tools/coverage/**"
       - "coverage-floors.json"
-      - ".github/workflows/broadcast-windows.yml"
+      - ".github/workflows/broadcast-desktop.yml"
   pull_request:
     paths:
-      - "gawk-broadcast-windows/**"
+      - "gawk-broadcast-desktop/**"
       - "gawk-server/wire/**"
       # R44 (docs/53 D7/D8): the EXE links assets/icon/gawk.res and the
       # build job verifies the resource landed with tools/icon.
@@ -135,7 +141,7 @@ on:
       - ".github/actions/publish-coverage-badges/**"
       - "tools/coverage/**"
       - "coverage-floors.json"
-      - ".github/workflows/broadcast-windows.yml"
+      - ".github/workflows/broadcast-desktop.yml"
   # The recovery path this workflow lacked. attach-release-assets already
   # tolerates re-running an upload ("the whole recovery path if the upload half
   # ever breaks"), but re-running is not available when the BUILD half is what
@@ -160,7 +166,7 @@ permissions:
 # they are finite pods — a queue of stale runs still delays real ones, and
 # this workflow now claims three slots per run rather than one.
 concurrency:
-  group: broadcast-windows-${{ github.ref }}
+  group: broadcast-desktop-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -194,7 +200,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     defaults:
       run:
-        working-directory: gawk-broadcast-windows
+        working-directory: gawk-broadcast-desktop
     steps:
       # `inputs.attach_to` is empty on push and pull_request, so this is the
       # ordinary checkout in every case but a backfill. A backfill lints, tests
@@ -228,7 +234,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     defaults:
       run:
-        working-directory: gawk-broadcast-windows
+        working-directory: gawk-broadcast-desktop
     env:
       # Link the host artifacts with lld instead of the default bfd: this job
       # links a test binary per crate, each pulling the whole dependency graph.
@@ -348,9 +354,9 @@ jobs:
       - uses: ./.github/actions/coverage
         with:
           format: llvm-cov
-          report: gawk-broadcast-windows/coverage-llvm.json
-          component: gawk-broadcast-windows
-          label: broadcast-windows
+          report: gawk-broadcast-desktop/coverage-llvm.json
+          component: gawk-broadcast-desktop
+          label: broadcast-desktop
 
   build:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
@@ -362,7 +368,7 @@ jobs:
       sha: ${{ steps.source.outputs.sha }}
     defaults:
       run:
-        working-directory: gawk-broadcast-windows
+        working-directory: gawk-broadcast-desktop
     steps:
       # `inputs.attach_to` is empty on push and pull_request, so this is the
       # ordinary checkout in every case but a backfill. A backfill lints, tests
@@ -403,7 +409,7 @@ jobs:
           # THIRD-PARTY-NOTICES.md discharges the attribution obligations of
           # everything statically linked into the .exe (373 crates incl.
           # libopus); LICENSE is the repo root's (working-directory is
-          # gawk-broadcast-windows). Both ride to the release page via the
+          # gawk-broadcast-desktop). Both ride to the release page via the
           # attach job's explicit cp list — keep the two lists in step.
           cp README.md THIRD-PARTY-NOTICES.md ../LICENSE dist/
           {
@@ -436,7 +442,7 @@ jobs:
           # Keyed by the commit built, which equals github.sha on every run but
           # a backfill. attach-release downloads it by needs.build.outputs.sha.
           name: gawk-broadcast-windows-x86_64-${{ steps.source.outputs.sha }}
-          path: gawk-broadcast-windows/dist/
+          path: gawk-broadcast-desktop/dist/
           retention-days: 1
           if-no-files-found: error
 
@@ -447,7 +453,7 @@ jobs:
   # this run and release-please.yml's are the same commit.
   #
   # This workflow is path-filtered, which works out exactly right: a release
-  # that bumps this component necessarily touches gawk-broadcast-windows/
+  # that bumps this component necessarily touches gawk-broadcast-desktop/
   # (its CHANGELOG.md and Cargo.toml), so the job runs precisely when there is
   # something to attach.
   #
@@ -543,7 +549,11 @@ jobs:
       - uses: ./.github/actions/attach-release-assets
         id: attach
         with:
-          component: gawk-broadcast-windows
+          # The release-please component — the workspace, since R52 MB0. A
+          # backfill of a release cut before the rename (whose manifest keys
+          # `gawk-broadcast-windows`) fails loudly on "not a package" rather
+          # than attaching anything: dispatch it from a pre-rename ref.
+          component: gawk-broadcast-desktop
           dir: release-assets
           # Equals github.sha on every ordinary push, so this changes nothing
           # there. On a backfill it is the commit `build` compiled, and the gate
@@ -552,10 +562,16 @@ jobs:
       # R46 (docs/46): the "newest gawk-broadcast-windows" pointer the project
       # site's Download section reads. Only after a real attach — a manifest
       # for a release with no EXE on it would be a download button to a 404.
+      #
+      # Keyed by DISTRIBUTION, not by component (docs/54 D14): the version
+      # comes from the desktop component, the path and the manifest's own
+      # `component` field stay `gawk-broadcast-windows`, so the site card and
+      # the URL R45 compiles in never move.
       - uses: ./.github/actions/publish-release-manifest
         if: steps.attach.outputs.attached == 'true'
         with:
-          component: gawk-broadcast-windows
+          component: gawk-broadcast-desktop
+          distribution: gawk-broadcast-windows
           dir: release-assets
           primary: gawk-broadcast-windows-x86_64.exe
           tag: ${{ steps.attach.outputs.tag }}
