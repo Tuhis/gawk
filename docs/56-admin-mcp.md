@@ -80,7 +80,7 @@ the audit feed as that operator *via Claude Code*.
 |---|---|
 | docs/42 D7, D17 | OIDC is the boundary of an internet-reachable admin surface. Stateless bearer JWTs, roles in the token, no cookies, no server-side sessions. The access-token lifetime is the revocation horizon. |
 | docs/42 §4.5, docs/55 D2 | One verifier (`gawk-server/oidcauth` after R53 TO1): `go-oidc` `RemoteKeySet`, floored JWKS fetch, background discovery, `401 idp_unavailable` before it resolves, the per-IP invalid-credential limiter. |
-| docs/49 D2, D3, D6 | The served document is the contract, held to the route table in both directions by `go test`; `x-gawk-roles` names the role per operation; `x-gawk-sensitive` marks responses that may carry raw IDs, codes or IPs. |
+| docs/49 D2, D3, D6, D9 | The served document is the contract, held to the route table in both directions by `go test`; `x-gawk-roles` names the role per operation; `x-gawk-sensitive` marks responses that may carry raw IDs, codes or IPs. |
 | docs/49 §5 | The OA5 Console's rules carry over: the request path is built relative from the document, never from input, so a call cannot leave the origin. |
 | docs/55 D6 | The MCP spec's OAuth flow first; a gawk-minted static MCP token is rejected. |
 | docs/52 | Event `data` grows additively within a type; a new property is not a breaking change. |
