@@ -712,26 +712,13 @@ func (a *API) expireLapsed(ctx context.Context, target moderation.Target) {
 			Type:        store.EventBanExpired,
 			OccurredAt:  a.now(),
 			Actor:       "system",
-			BroadcastID: sourceBroadcastID(b),
+			BroadcastID: b.BroadcastID(),
 			Payload: banPayload(b, b.Reason,
-				store.Summarize(store.EventBanExpired, b.Target.Type, sourceBroadcastID(b), ""), store.EnforcementInSync),
+				store.Summarize(store.EventBanExpired, b.Target.Type, b.BroadcastID(), ""), store.EnforcementInSync),
 		})
 		a.log.Info("lapsed ban expired inline before re-banning its target", "banId", b.ID,
 			"targetType", b.Target.Type)
 	}
-}
-
-// sourceBroadcastID is the event's raw-ID column: the broadcast the ban was
-// taken against. Since docs/52 D9 it is also the delivery's `subject` and the
-// broadcast the summary names.
-func sourceBroadcastID(b store.Ban) string {
-	if b.SourceBroadcastID != "" {
-		return b.SourceBroadcastID
-	}
-	if b.Target.Type == moderation.TargetBroadcastID {
-		return b.Target.Value
-	}
-	return ""
 }
 
 func (a *API) kick() {

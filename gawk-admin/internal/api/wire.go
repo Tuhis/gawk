@@ -187,7 +187,9 @@ type eventJSON struct {
 	Type       string `json:"type"`
 	OccurredAt string `json:"occurredAt"`
 	Actor      string `json:"actor"`
-	// BroadcastKey is the HMAC'd key; BroadcastID is raw and portal-only (D8).
+	// BroadcastKey is the HMAC'd key; BroadcastID is the raw, joinable ID —
+	// here behind the portal's auth, and in the event's webhook delivery since
+	// docs/52 D9.
 	BroadcastKey string `json:"broadcastKey,omitempty"`
 	BroadcastID  string `json:"broadcastId,omitempty"`
 	Reason       string `json:"reason,omitempty"`

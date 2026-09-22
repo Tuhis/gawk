@@ -47,7 +47,7 @@ func payloadOf(t *testing.T, row store.Event) map[string]any {
 // and key under the keys the portal renders rooms by. This is where reading
 // "code" instead of the contract's "roomCode" would show up.
 func TestActivityRowNamesTheRoom(t *testing.T) {
-	ev := busEvent(t, events.TypeRoomParticipantJoined, "aa11bb22cc33",
+	ev := busEvent(t, events.TypeRoomParticipantJoined, "pf4tzn",
 		events.RoomParticipantJoinedData{
 			RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", ParticipantID: 7,
 			Nickname: "tuhis", ClientKind: events.ClientKindWebBroadcaster,
@@ -86,7 +86,7 @@ func TestActivityRowNamesTheRoom(t *testing.T) {
 
 // TestActivityRowNamesTheBroadcast: the broadcast half of the same rule.
 func TestActivityRowNamesTheBroadcast(t *testing.T) {
-	ev := busEvent(t, events.TypeBroadcastStarted, "3f9a1c4e7b2d",
+	ev := busEvent(t, events.TypeBroadcastStarted, "K7M2Q9",
 		events.BroadcastStartedData{
 			BroadcastID: "K7M2Q9", BroadcastKey: "3f9a1c4e7b2d",
 			Role: events.RoleOrigin, StartedAt: "2026-09-18T09:30:00Z",
@@ -100,7 +100,37 @@ func TestActivityRowNamesTheBroadcast(t *testing.T) {
 		t.Errorf("broadcastId = %q, want the raw ID from the event", row.BroadcastID)
 	}
 	if row.BroadcastKey != "3f9a1c4e7b2d" {
-		t.Errorf("broadcastKey = %q, want the event's subject", row.BroadcastKey)
+		t.Errorf("broadcastKey = %q, want the event's broadcastKey, not its cleartext subject", row.BroadcastKey)
+	}
+}
+
+// TestRoomEventNamingABroadcastIsStoredUnderTheRoom: room.attached,
+// room.detached and room.attachment_updated carry BOTH keys. Before docs/52
+// D9 the row's key column came from `subject`, which for a room event is the
+// room; reading it from `data` must keep that, or anything that looks up a
+// room's activity by the room's key stops finding its attachments.
+func TestRoomEventNamingABroadcastIsStoredUnderTheRoom(t *testing.T) {
+	for _, tc := range []struct {
+		typ  string
+		data any
+	}{
+		{events.TypeRoomAttached, events.RoomAttachedData{
+			RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", BroadcastID: "K7M2Q9", BroadcastKey: "3f9a1c4e7b2d"}},
+		{events.TypeRoomDetached, events.RoomDetachedData{
+			RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", BroadcastID: "K7M2Q9", BroadcastKey: "3f9a1c4e7b2d"}},
+	} {
+		t.Run(tc.typ, func(t *testing.T) {
+			row, stored := activityRow(busEvent(t, tc.typ, "pf4tzn", tc.data))
+			if !stored {
+				t.Fatal("not stored")
+			}
+			if row.BroadcastKey != "aa11bb22cc33" {
+				t.Errorf("key column = %q, want the ROOM's key: the event is about the room", row.BroadcastKey)
+			}
+			if p := payloadOf(t, row); p[store.PayloadRoomKey] != "aa11bb22cc33" {
+				t.Errorf("payload roomKey = %v", p[store.PayloadRoomKey])
+			}
+		})
 	}
 }
 
@@ -239,7 +269,7 @@ func TestIngestDedupsAgainstTheOperatorsOwnRow(t *testing.T) {
 // TestIngestWakesTheDispatcherOnlyOnAWrite: a duplicate must not kick the
 // webhook loop, and a real row must.
 func TestIngestWakesTheDispatcherOnlyOnAWrite(t *testing.T) {
-	ev := busEvent(t, events.TypeRoomParticipantJoined, "aa11bb22cc33",
+	ev := busEvent(t, events.TypeRoomParticipantJoined, "pf4tzn",
 		events.RoomParticipantJoinedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", ParticipantID: 7})
 
 	woken := 0

@@ -102,13 +102,14 @@ func isRoomEvent(rowType string) bool {
 // the type's data.
 //
 // It is the one place a moderation_events row becomes an event. The typed
-// data is built FULL first — including the raw broadcast ID or room code the
-// row carries, exactly as the relay would put them on the bus — and then
-// projected, so that a portal-originated event and a bus event take the same
-// path to a receiver, and so the projection (not this function's memory) is
-// what keeps a raw identifier out of a delivery. Everything else in the row's
-// jsonb is portal-only: it may hold addresses and CIDRs, and nothing here
-// reads it except through the accessors store closes the vocabulary of.
+// data carries the raw broadcast ID or room code the row holds, exactly as the
+// relay puts them on the bus, and since docs/52 D9 the projection removes
+// nothing — the raw identifiers are delivered on purpose. What keeps
+// everything ELSE in the row out of a delivery is that this function builds
+// typed structs from named fields only: the jsonb may hold addresses and
+// CIDRs, and nothing here reads it except through the accessors store closes
+// the vocabulary of (EnforcementState, RoomKey, TargetType) and the named
+// PayloadString keys.
 func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 	typ, ok := events.ModerationType(ev.Type)
 	if !ok {
@@ -126,8 +127,10 @@ func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 		// summary already. This fallback exists so an event from some future
 		// producer still satisfies "summary present on every delivery" — and
 		// it calls the ONE summariser (store.SummarizeWithEnforcement) rather
-		// than growing a second one that could drift into naming a raw ID.
-		summary = store.SummarizeWithEnforcement(ev.Type, "", ev.BroadcastID, ev.Actor, ev.EnforcementState())
+		// than growing a second one that could drift from it. The target TYPE
+		// comes from the row (never its value, which may be an address), so an
+		// IP ban is not announced as a ban on the broadcast it came from.
+		summary = store.SummarizeWithEnforcement(ev.Type, ev.TargetType(), ev.BroadcastID, ev.Actor, ev.EnforcementState())
 	}
 	reason := ev.PayloadString(store.PayloadReason)
 

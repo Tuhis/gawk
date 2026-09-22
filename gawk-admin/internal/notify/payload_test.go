@@ -60,11 +60,19 @@ var identityPoisons = []string{poisonRawID, poisonRoomCode, poisonRoomSlug}
 // every place an event can hold one, and addresses in every place a ban can
 // put one.
 func poisonedEvent(eventType string) store.Event {
+	// The summary is what production writes: the real summariser, naming the
+	// raw ID or the room's display code as it does since docs/52 D9 — so the
+	// leak checks below run over the sentence a receiver actually gets, not
+	// over one that happens to name nothing.
+	summary := store.SummarizeWithEnforcement(eventType, moderation.TargetBroadcastID, poisonRawID,
+		"juho@example.com", store.EnforcementInSync)
+	if strings.HasPrefix(eventType, "room.") {
+		summary = store.SummarizeRoom(eventType, "dynamic", poisonRoomSlug, "juho@example.com")
+	}
 	payload := map[string]any{
-		store.PayloadReason: "terms violation", // operator text: deliberately NOT poisoned
-		store.PayloadSummary: "a broadcast ban was created by " +
-			"juho@example.com",
-		"target": map[string]any{"type": "ip", "value": poisonCIDR},
+		store.PayloadReason:  "terms violation", // operator text: deliberately NOT poisoned
+		store.PayloadSummary: summary,
+		"target":             map[string]any{"type": "ip", "value": poisonCIDR},
 		// enforcement is read through a closed vocabulary: a value that is
 		// not exactly "pending" is dropped rather than forwarded.
 		store.PayloadEnforcement: poisonRawID,
@@ -115,10 +123,12 @@ func decode(t *testing.T, body []byte) (map[string]any, map[string]any) {
 	return m, data
 }
 
-// withoutIdentity renders a delivery with the two places an identity is
-// allowed — the `subject` attribute and the `broadcastId` / `roomCode` /
-// `displayCode` properties — removed, so what is left can be scanned for an
-// identifier that reached it through anything else.
+// withoutIdentity renders a delivery with the places an identity is allowed
+// removed — the `subject` attribute, the `broadcastId` / `roomCode` /
+// `displayCode` properties, and the `summary` sentence that names them since
+// docs/52 D9 §8 — so what is left can be scanned for an identifier that
+// reached it through anything else. The summary gets a check of its own
+// (summaryNamesOnlyItsOwnEvent): exempting it here does not mean trusting it.
 func withoutIdentity(t *testing.T, body []byte) string {
 	t.Helper()
 	var m map[string]any
@@ -127,7 +137,7 @@ func withoutIdentity(t *testing.T, body []byte) string {
 	}
 	delete(m, "subject")
 	if data, _ := m["data"].(map[string]any); data != nil {
-		for _, k := range []string{"broadcastId", "roomCode", "displayCode"} {
+		for _, k := range []string{"broadcastId", "roomCode", "displayCode", "summary"} {
 			delete(data, k)
 		}
 	}
@@ -138,15 +148,36 @@ func withoutIdentity(t *testing.T, body []byte) string {
 	return string(rest)
 }
 
+// summaryNamesOnlyItsOwnEvent: the sentence may name an identity, but only
+// the one the event itself carries — its subject, its broadcastId, its room's
+// code or display code. A summary that named some OTHER broadcast would be a
+// leak through the one free-text field a push bridge shows verbatim.
+func summaryNamesOnlyItsOwnEvent(t *testing.T, envelope, data map[string]any) {
+	t.Helper()
+	summary, _ := data["summary"].(string)
+	own := map[string]bool{}
+	for _, v := range []any{envelope["subject"], data["broadcastId"], data["roomCode"], data["displayCode"]} {
+		if s, _ := v.(string); s != "" {
+			own[s] = true
+		}
+	}
+	for _, p := range identityPoisons {
+		if strings.Contains(summary, p) && !own[p] {
+			t.Errorf("summary %q names %q, which is not this event's own identity", summary, p)
+		}
+	}
+}
+
 // TestNoIPOrStraySecretInAnyDelivery is docs/42 D8 as docs/52 D9 leaves it,
 // at the contract level, over EVERY event type the store declares —
 // including R40's reserved content_flag.raised — plus the synthetic test
 // event.
 //
 // What D9 changed: the broadcast ID and the room code are delivered, in
-// `subject` and in their own property. What it did not: no IP, no operator
-// note, no attach secret, and no identifier smuggled through some OTHER
-// property — every payload key here is poisoned, and only the two places the
+// `subject`, in their own property and in the summary sentence. What it did
+// not: no IP, no operator note, no attach secret, and no identifier smuggled
+// through some OTHER property — every payload key here is poisoned, the
+// fixture's summary is the real summariser's, and only the places the
 // contract names may come back carrying one.
 //
 // The type list is READ FROM internal/store's source rather than written out
@@ -165,10 +196,11 @@ func TestNoIPOrStraySecretInAnyDelivery(t *testing.T) {
 			}
 			for _, p := range identityPoisons {
 				if rest := withoutIdentity(t, body); strings.Contains(rest, p) {
-					t.Errorf("delivery leaked %q outside subject and its own property (D9 delivers an identity in two places, not everywhere)\n%s", p, rendered)
+					t.Errorf("delivery leaked %q outside subject, its own property and the summary (D9)\n%s", p, rendered)
 				}
 			}
 			envelope, data := decode(t, body)
+			summaryNamesOnlyItsOwnEvent(t, envelope, data)
 			typ, ok := events.ModerationType(eventType)
 			if !ok || envelope["type"] != typ {
 				t.Errorf("type = %v, want %s", envelope["type"], typ)
@@ -283,6 +315,38 @@ func TestSummaryPresentWithoutOneInThePayload(t *testing.T) {
 				t.Fatalf("the fallback kill summary does not name the broadcast: %q", summary)
 			}
 		})
+	}
+}
+
+// TestFallbackSummaryKeepsTheBanTarget: a ban row with no stored summary still
+// says WHAT was banned. Both producers record the target under "target", so
+// the fallback reads its type — and only its type: the value of an IP ban is
+// an address, which no sentence may name. Without the type, an IP ban taken
+// from broadcast ABC234 would be announced as a ban on the broadcast.
+func TestFallbackSummaryKeepsTheBanTarget(t *testing.T) {
+	for _, eventType := range []string{store.EventBanCreated, store.EventBanExpired, store.EventBanRemoved} {
+		t.Run(eventType, func(t *testing.T) {
+			ev := poisonedEvent(eventType)
+			ev.BroadcastID = "ABC234"
+			ev.Payload = json.RawMessage(`{"target":{"type":"ip","value":"` + poisonCIDR + `"}}`)
+			_, data := decode(t, render(t, ev, "https://admin.example.com"))
+			summary, _ := data["summary"].(string)
+			if !strings.Contains(summary, "publisher IP") {
+				t.Errorf("summary %q announces an IP ban as a ban on the broadcast", summary)
+			}
+			if strings.Contains(summary, "203.0.113") {
+				t.Errorf("summary %q names the banned address", summary)
+			}
+		})
+	}
+	// A target type outside the vocabulary is not trusted: the sentence
+	// falls back to the broadcast form rather than echoing the value.
+	ev := poisonedEvent(store.EventBanCreated)
+	ev.BroadcastID = "ABC234"
+	ev.Payload = json.RawMessage(`{"target":{"type":"` + poisonRawIPv4 + `"}}`)
+	_, data := decode(t, render(t, ev, "https://admin.example.com"))
+	if s, _ := data["summary"].(string); strings.Contains(s, poisonRawIPv4) {
+		t.Errorf("summary %q echoed an unknown target type", s)
 	}
 }
 

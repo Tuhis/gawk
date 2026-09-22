@@ -79,14 +79,16 @@ func (e Event) str(key string) string {
 	return v
 }
 
-// key is the event's HMAC'd key: a broadcast event's `broadcastKey`, a room
-// event's `roomKey`. One accessor rather than a branch per call site, because
-// a room event carries only the second and the column is the same one.
+// key is the HMAC'd key of what the event is about: a room event's `roomKey`,
+// a broadcast event's `broadcastKey`. The room wins when both are present —
+// room.attached, room.detached and room.attachment_updated also name the
+// broadcast in the tile — because those events are about the room, and the
+// row's key column held the room's key when it came from `subject`.
 func (e Event) key() string {
-	if k := e.str(keyBroadcastKey); k != "" {
+	if k := e.str(keyRoomKey); k != "" {
 		return k
 	}
-	return e.str(keyRoomKey)
+	return e.str(keyBroadcastKey)
 }
 
 // roomName is the room as a sentence should name it: the display code, which

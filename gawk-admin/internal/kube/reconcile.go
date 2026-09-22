@@ -417,8 +417,8 @@ func (r *Reconciler) adopt(ctx context.Context, cr BanObject) {
 		Type:        store.EventBanCreated,
 		OccurredAt:  r.opts.Now(),
 		Actor:       created.CreatedBy,
-		BroadcastID: rawBroadcastID(created),
-		Payload:     eventPayload(created, store.Summarize(store.EventBanCreated, created.Target.Type, rawBroadcastID(created), created.CreatedBy)),
+		BroadcastID: created.BroadcastID(),
+		Payload:     eventPayload(created, store.Summarize(store.EventBanCreated, created.Target.Type, created.BroadcastID(), created.CreatedBy)),
 	}
 	r.record(ctx, ev)
 }
@@ -431,8 +431,8 @@ func (r *Reconciler) emitExpired(ctx context.Context, b store.Ban) {
 		Type:        store.EventBanExpired,
 		OccurredAt:  r.opts.Now(),
 		Actor:       "system",
-		BroadcastID: rawBroadcastID(b),
-		Payload:     eventPayload(b, store.Summarize(store.EventBanExpired, b.Target.Type, rawBroadcastID(b), "")),
+		BroadcastID: b.BroadcastID(),
+		Payload:     eventPayload(b, store.Summarize(store.EventBanExpired, b.Target.Type, b.BroadcastID(), "")),
 	}
 	r.record(ctx, ev)
 	r.log.Info("ban expired", "banId", b.ID, "targetType", b.Target.Type)
@@ -468,23 +468,11 @@ func sameSpec(rec moderation.Record, b store.Ban) bool {
 	}
 }
 
-// rawBroadcastID is the event's raw-ID column: the broadcast the action was
-// taken against. Portal and Postgres only — AP7 never copies this field into a
-// webhook (D8).
-func rawBroadcastID(b store.Ban) string {
-	if b.SourceBroadcastID != "" {
-		return b.SourceBroadcastID
-	}
-	if b.Target.Type == moderation.TargetBroadcastID {
-		return b.Target.Value
-	}
-	return ""
-}
-
-// eventPayload is the portal-visible context for a ban event. It may carry the
-// target — including an IP CIDR — because the payload is portal-and-Postgres
-// data; only the named webhook-safe keys ever leave (store.PayloadReason /
-// store.PayloadSummary).
+// eventPayload is the context for a ban event. It may carry the target —
+// including an IP CIDR — because the payload itself never leaves: a webhook
+// delivery is built from typed fields (internal/notify's buildEvent), which
+// read the target's TYPE through store.Event.TargetType and never its value,
+// so no address reaches a receiver (docs/42 D8, unchanged by docs/52 D9).
 func eventPayload(b store.Ban, summary string) json.RawMessage {
 	payload := map[string]any{
 		store.PayloadSummary: summary,

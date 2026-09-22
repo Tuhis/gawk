@@ -195,14 +195,14 @@ func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The broadcast the ban is about: the one it was taken from, or — for a
-	// ban on a broadcast ID — its target. The same rule the expiry and the
-	// reconciler's adoption use, so a ban's created, expired and removed
-	// events all name the same broadcast (docs/52 D9).
-	bid := sourceBroadcastID(created)
+	// The broadcast the ban is about (store.Ban.BroadcastID, the rule every
+	// ban event uses — docs/52 D9). The HMAC'd key is looked up only when the
+	// operator acted from a live broadcast: it feeds the portal link alone,
+	// and a ban typed in by ID must not wait on a fleet snapshot for it.
+	bid := created.BroadcastID()
 	key := ""
-	if bid != "" {
-		key = a.broadcastKey(r, bid)
+	if source != "" {
+		key = a.broadcastKey(r, source)
 	}
 	projErr := a.project(r.Context(), created)
 	enforcement := enforcementState(projErr)
@@ -268,9 +268,9 @@ func (a *API) handleDeleteBan(w http.ResponseWriter, r *http.Request) {
 			Type:        store.EventBanRemoved,
 			OccurredAt:  a.now(),
 			Actor:       id.Actor(),
-			BroadcastID: sourceBroadcastID(removed),
+			BroadcastID: removed.BroadcastID(),
 			Payload: banPayload(removed, removed.Reason,
-				store.SummarizeWithEnforcement(store.EventBanRemoved, removed.Target.Type, sourceBroadcastID(removed), id.Actor(), enforcement),
+				store.SummarizeWithEnforcement(store.EventBanRemoved, removed.Target.Type, removed.BroadcastID(), id.Actor(), enforcement),
 				enforcement),
 		})
 	}
