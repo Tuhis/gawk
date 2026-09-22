@@ -8,8 +8,9 @@ minimized, V-2) await the owner's pass on a Mac; **MB3 (encode — the first
 real broadcast) implemented 2026-09-23**, its hardware trial and
 encode-to-relay criteria verified on an M1, its first on-screen broadcast
 the owner's; **MB4 (audio) implemented 2026-09-23**, its unit criteria
-green, G1/G2/V-4 the owner's. §11 records what each chunk turned up.
-MB5–MB8 not started. The
+green, G1/G2/V-4 the owner's; **MB5 (the macOS shell) implemented
+2026-09-23**, its on-screen criteria and V-8 the owner's. §11 records what
+each chunk turned up. MB6–MB8 not started. The
 ROADMAP entry ([R52](../ROADMAP.md#r52--native-macos-broadcaster)) carries
 the research summary and owner decisions this doc builds on; the decisions
 are restated in §2 so the doc reads on its own.
@@ -1016,6 +1017,38 @@ loop without the close dialog.
 - **Owner-pending:** G1 and V-4 (mode-1 isolation against ≥ 2 real games,
   one with a launcher/helper process), G2 (whole-system audio across an
   output-device switch), and G7's `avSkewMs` on a live viewer.
+
+**MB5 (2026-09-23)** — most of the shell arrived with the shared core
+(settings, rooms, the lifecycle, stats, diagnostics, the D12 config file);
+what MB5 itself added, and how:
+
+- **The menu bar.** On macOS Slint installs a default application menu —
+  About (the bundle's name and `CFBundleShortVersionString`), Services,
+  Hide, Quit ⌘Q — so D11's Quit and About come from it, and ⌘Q was already
+  what MB1's owner pass exercised. What it lacks, **Settings… ⌘,**, is a
+  `MenuBar` in the shared window that exists only in picker mode (Windows
+  has no menu bar); Slint maps its `Control` modifier to ⌘ on Apple
+  platforms. The item opens the Settings card.
+- **Notifications** through `UNUserNotificationCenter`, docs/38 D12's two
+  urgencies mapped to an active banner, with the default sound for the
+  critical one; a delegate shows banners while the app is frontmost, as the
+  Windows toasts do. The center throws an Objective-C exception in a process
+  without a bundle identifier, so notifications are enabled only when
+  running as the `.app` (D14); every one is also a debug-log line. No
+  time-sensitive delivery (an entitlement D13 does not request); how they
+  fare under Focus is V-8's. `app-macos::notify` is the one module outside
+  D3's three with `unsafe` in it, for the delegate class.
+- **The Share card holds the thumbnail** (D11) — the separate "what viewers
+  see" card stays the Windows layout.
+- **The audio label follows a live re-pick.** `Media::capture_mode` (a
+  defaulted trait method; Windows keeps the mode Start resolved) lets the
+  macOS pipeline report the mode its current filter implies, so after
+  "Use whole-system audio" the line reads "System audio" and the per-app
+  silence hint stops.
+- **Owner-pending:** the on-screen criteria (all D11 cards, the
+  Idle/Starting/Live/amber flow, picker → start → code → copy link, ⌘Q ends
+  a live broadcast cleanly), V-8 (notifications under Focus during a
+  fullscreen game), and idle CPU ~0 %.
 
 ## 12. References
 

@@ -24,4 +24,10 @@ gawk-encode = { path = "../encode" }
 gawk-engine = { path = "../engine" }
 gawk-ui = { path = "../ui" }
 log = "0.4"
+# Notifications (docs/54 D11): UNUserNotificationCenter, which needs the
+# bundle identifier — `notify` is the one unsafe module in this crate.
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-user-notifications = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }

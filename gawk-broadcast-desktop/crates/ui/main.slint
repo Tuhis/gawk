@@ -212,6 +212,23 @@ export component MainWindow inherits Window {
     callback open-link(string);
     callback quit-confirmed();
 
+    // macOS (docs/54 D11): Slint already gives the app menu About (the
+    // bundle's name and version) and Quit ⌘Q; this adds Settings… ⌘, beside
+    // it. Windows has no menu bar, so the bar exists only in picker mode.
+    if root.system-picker: MenuBar {
+        Menu {
+            title: "Broadcast";
+            MenuItem {
+                title: "Settings…";
+                // Slint's Control is the platform's primary modifier: ⌘ here.
+                shortcut: @keys(Control + ",");
+                activated => {
+                    root.show-settings = true;
+                }
+            }
+        }
+    }
+
     ScrollView {
         VerticalLayout {
             padding: 16px;
@@ -357,6 +374,14 @@ export component MainWindow inherits Window {
                         color: Palette.muted;
                         font-size: 12px;
                     }
+                }
+                // The 1 Hz "what viewers see", from the live stream's own
+                // frames (docs/54 D11) — no second stream, no second grant.
+                if root.show-thumbnail: Image {
+                    source: root.thumbnail;
+                    width: 100%;
+                    image-fit: contain;
+                    max-height: 180px;
                 }
                 HorizontalLayout {
                     Button {
@@ -621,7 +646,7 @@ export component MainWindow inherits Window {
             }
 
             // ================= live thumbnail (mode 1) =================
-            if root.show-thumbnail: Card {
+            if root.show-thumbnail && !root.system-picker: Card {
                 title: "WHAT VIEWERS SEE";
                 Image {
                     source: root.thumbnail;

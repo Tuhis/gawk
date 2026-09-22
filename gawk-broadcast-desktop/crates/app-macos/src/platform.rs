@@ -76,7 +76,10 @@ fn stream_settings(cfg: &Config, picked: &Picked) -> StreamSettings {
 
 impl Platform for Mac {
     fn hooks(&self) -> Hooks {
-        Hooks { notify, creds }
+        Hooks {
+            notify: crate::notify::notify,
+            creds,
+        }
     }
 
     fn init_window(&mut self, ui: &MainWindow) {
@@ -159,14 +162,4 @@ pub fn wire(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
 /// identity, so every dev build would prompt).
 fn creds() -> Box<dyn config::Credentials> {
     Box::new(config::Plaintext)
-}
-
-/// Notifications are MB5's (`UNUserNotificationCenter`, which needs the
-/// bundle identifier); until then they go to the debug log.
-fn notify(summary: &str, body: &str, critical: bool) {
-    if critical {
-        log::warn!("notification: {summary}: {body}");
-    } else {
-        log::info!("notification: {summary}: {body}");
-    }
 }
