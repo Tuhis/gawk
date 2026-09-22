@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  gawk-broadcast-macos.app's Info.plist (R52, docs/54 D14). bundle.sh fills
+  @VERSION@ from gawk-broadcast-desktop/version.txt, which release-please
+  maintains. No CFBundleIconFile until tools/icon generates an .icns (R44):
+  the mark has one source and its derivatives are generated, never drawn.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>gawk-broadcast</string>
+	<key>CFBundleExecutable</key>
+	<string>gawk-broadcast-macos</string>
+	<!-- docs/54 D13: derived from the project domain the default relay and
+	     app URLs already name. It keys the TCC grant and the notification
+	     center, so it must never change once a release ships; a fork edits
+	     it like SITE_URL. -->
+	<key>CFBundleIdentifier</key>
+	<string>fi.ioio.gawk.broadcast</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>gawk-broadcast</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.video</string>
+	<!-- docs/54 OD5: macOS 14 (Sonoma) brings the system content picker. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<!-- Shown only if the non-picker capture path is ever hit (docs/54 D13);
+	     the system picker needs no Screen Recording grant. -->
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>gawk-broadcast streams the window, app or display you choose to your viewers.</string>
+</dict>
+</plist>

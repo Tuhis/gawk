@@ -1,0 +1,23 @@
+[package]
+name = "gawk-broadcast-app-macos"
+description = "The macOS Slint shell — gawk-broadcast-macos.app (R52, docs/54 D11)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Not `gawk-broadcast`: the Windows shell's binary already has that name, and
+# two workspace binaries sharing one collide in target/ on any host that
+# builds both. The bundle is gawk-broadcast-macos.app (docs/54 D14) anyway.
+[[bin]]
+name = "gawk-broadcast-macos"
+path = "src/main.rs"
+
+# Everything is macOS-gated. Off macOS this crate is a stub `main`, so the
+# Linux and msvc jobs that build the whole workspace (docs/38 D18) pay nothing
+# for it; the `macos` job is where it is built, linted and tested (docs/54
+# D15).
+[target.'cfg(target_os = "macos")'.dependencies]
+gawk-engine = { path = "../engine" }
+gawk-ui = { path = "../ui" }
+slint = "1"

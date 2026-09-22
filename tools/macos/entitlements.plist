@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for gawk-broadcast-macos.app (docs/54 D13):
+  deliberately empty. ScreenCaptureKit and VideoToolbox need none, and nothing
+  here asks for JIT, unsigned memory or library-validation exceptions. Add a
+  key only when an on-hardware trial shows the need, and record why in
+  docs/54 §11.
+-->
+<plist version="1.0">
+<dict/>
+</plist>

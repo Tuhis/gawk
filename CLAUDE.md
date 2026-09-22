@@ -125,7 +125,10 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   wire mirror** (vectors restated, never imported); its Windows CI jobs **run
   on the self-hosted Linux runners, cross-compiled to msvc with cargo-xwin** —
   see `docs/38` D18 before touching it, especially the clang-cl/libopus
-  wrapper.
+  wrapper — while its `macos` job is the one deliberate exception, on
+  GitHub-hosted `macos-latest` (`docs/54` D15). The window is one shared
+  `crates/ui/main.slint`; platforms differ in properties and one card, never
+  in a forked `.slint` (`docs/54` D11).
 - `gawk-telemetry` — optional per-session diagnostics service; the **third**
   top-level Go module, **default off everywhere**. Two listeners, and the split
   **is** the security posture: ingest is public (same-origin path on the

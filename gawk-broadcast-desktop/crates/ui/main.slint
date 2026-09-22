@@ -2,6 +2,10 @@
 // architecture plus the capture picker, Fluent-adjacent spacing, and the
 // gawk accent shared with gawk-app so the two broadcasters read as one
 // product. One window; window-is-the-app.
+//
+// Shared by the Windows and macOS shells (docs/54 D11): the platforms differ
+// in properties and one card — the Windows picker card or the macOS Share
+// card, chosen by `system-picker` — never in a forked file.
 
 import { Button, ComboBox, LineEdit, ScrollView, CheckBox } from "std-widgets.slint";
 
@@ -80,7 +84,7 @@ export component MainWindow inherits Window {
     // embedded into the binary by slint-build (its default for Rust output),
     // so the EXE stays a single file. Explorer's icon is a separate surface —
     // the linked resource from build.rs — and both come from the same SVG.
-    icon: @image-url("../../../../assets/icon/png/gawk-256.png");
+    icon: @image-url("../../../assets/icon/png/gawk-256.png");
     background: Palette.bg;
     preferred-width: 520px;
     preferred-height: 760px;
@@ -133,6 +137,20 @@ export component MainWindow inherits Window {
     in property <string> error-text: "";
     in property <bool> can-mint: false;
 
+    // ----- share card (macOS, docs/54 D11) -----
+    // True on macOS: content is chosen in the system picker
+    // (SCContentSharingPicker, docs/54 D4), so the Share card replaces the
+    // Windows picker card, lists nothing itself, and stays up while live —
+    // "Change…" re-picks without stopping the broadcast.
+    in property <bool> system-picker: false;
+    in property <string> share-summary: "";      // what was picked; empty = nothing yet
+    in property <string> share-mode-label: "";   // "this app's audio" / "whole-system audio"
+    in property <bool> share-picker-available: true;
+
+    // The join/room code face. Consolas is a Windows font; a platform
+    // without it would fall back to a proportional face.
+    in property <string> mono-font: "Consolas";
+
     // ----- picker -----
     in property <[WindowRow]> windows: [];
     in property <[MonitorRow]> monitors: [];
@@ -174,6 +192,7 @@ export component MainWindow inherits Window {
     in-out property <bool> confirm-close: false;
 
     callback refresh-picker();
+    callback choose-content();
     callback start-broadcast();
     callback resume-broadcast();
     callback stop-broadcast();
@@ -316,8 +335,43 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // ================= picker (idle only) =================
-            if !root.busy: Card {
+            // ================= share (macOS system picker) =================
+            if root.system-picker: Card {
+                title: "SHARE";
+                if root.share-summary == "": Text {
+                    text: "Nothing chosen yet — pick a window, an app or a display.";
+                    color: Palette.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                if root.share-summary != "": VerticalLayout {
+                    spacing: 2px;
+                    Text {
+                        text: root.share-summary;
+                        color: Palette.text;
+                        font-size: 13px;
+                        overflow: elide;
+                    }
+                    if root.share-mode-label != "": Text {
+                        text: root.share-mode-label;
+                        color: Palette.muted;
+                        font-size: 12px;
+                    }
+                }
+                HorizontalLayout {
+                    Button {
+                        text: root.share-summary == "" ? "Choose what to share…" : "Change…";
+                        enabled: root.share-picker-available;
+                        clicked => {
+                            root.choose-content();
+                        }
+                    }
+                    Rectangle { }
+                }
+            }
+
+            // ================= picker (Windows, idle only) =================
+            if !root.busy && !root.system-picker: Card {
                 title: "SHARE";
                 HorizontalLayout {
                     spacing: 6px;
@@ -437,7 +491,7 @@ export component MainWindow inherits Window {
                     text: root.code;
                     color: Palette.text;
                     font-size: 30px;
-                    font-family: "Consolas";
+                    font-family: root.mono-font;
                     letter-spacing: 4px;
                 }
                 if root.join-link != "": Text {
@@ -478,7 +532,7 @@ export component MainWindow inherits Window {
                         text: root.room-code;
                         color: Palette.text;
                         font-size: 22px;
-                        font-family: "Consolas";
+                        font-family: root.mono-font;
                         letter-spacing: 3px;
                         vertical-alignment: center;
                     }

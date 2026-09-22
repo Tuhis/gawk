@@ -2,9 +2,11 @@
 #
 # The workspace was renamed gawk-broadcast-windows/ -> gawk-broadcast-desktop/
 # in R52 MB0 (docs/54 D2), ahead of the macOS binary joining it; so was this
-# file. Every job below still builds the Windows distribution only — the
-# `gawk-broadcast-windows-*` artifact, asset and manifest names are
-# distribution names and deliberately did not change.
+# file. `lint`, `test`, `build` and `attach-release` build the Windows
+# distribution — the `gawk-broadcast-windows-*` artifact, asset and manifest
+# names are distribution names and deliberately did not change. `macos` (R52
+# MB1, docs/54 D15) is the macOS distribution, and the one job here that runs
+# on a GitHub-hosted runner.
 #
 # Runs on the SELF-HOSTED Linux runners, cross-compiling to
 # x86_64-pc-windows-msvc with cargo-xwin. The component is Windows-only; the
@@ -122,6 +124,9 @@ on:
       # build job verifies the resource landed with tools/icon.
       - "assets/icon/**"
       - "tools/icon/**"
+      # R52 (docs/54 D15): the macOS bundle's Info.plist, entitlements and
+      # assembly script.
+      - "tools/macos/**"
       - ".github/actions/rust-windows-preflight/**"
       - ".github/actions/coverage/**"
       - ".github/actions/publish-coverage-badges/**"
@@ -136,6 +141,9 @@ on:
       # build job verifies the resource landed with tools/icon.
       - "assets/icon/**"
       - "tools/icon/**"
+      # R52 (docs/54 D15): the macOS bundle's Info.plist, entitlements and
+      # assembly script.
+      - "tools/macos/**"
       - ".github/actions/rust-windows-preflight/**"
       - ".github/actions/coverage/**"
       - ".github/actions/publish-coverage-badges/**"
@@ -389,8 +397,11 @@ jobs:
       # measured to cost ~12% MORE total CPU (874 vs 781 CPU-seconds), which
       # is the wrong trade on a shared runner, and it would change the bytes
       # BUILD-INFO.txt asks testers to report codegen differences against.
+      # -p: the workspace also holds the macOS shell (R52), which off macOS
+      # is a stub binary nobody ships. Naming the package also pins feature
+      # unification to exactly the EXE's own graph.
       - name: Build (release)
-        run: cargo xwin build --release --target "$WINDOWS_TARGET"
+        run: cargo xwin build --release --target "$WINDOWS_TARGET" -p gawk-broadcast-app-windows
 
       # R44 (docs/53 D8): the icon reaches Explorer through a .res that
       # build.rs hands the linker as a plain input — no resource compiler in
@@ -444,6 +455,116 @@ jobs:
           name: gawk-broadcast-windows-x86_64-${{ steps.source.outputs.sha }}
           path: gawk-broadcast-desktop/dist/
           retention-days: 1
+          if-no-files-found: error
+
+  # R52 MB1 (docs/54 D15): the macOS distribution, on GitHub-hosted
+  # `macos-latest` (Apple Silicon) — the one deliberate exception to docs/38
+  # D18's "everything on the self-hosted Linux runners". Free on a public
+  # repository, and it has the SDK, codesign and notarytool natively;
+  # cross-compiling instead would mean extracting MacOSX.sdk onto Linux,
+  # whose licence restricts it to Apple hardware.
+  #
+  # Host = Darwin, so this job's clippy is what type-checks every
+  # cfg(target_os = "macos") block — the analogue of `lint`'s xwin pass. The
+  # portable crates are tested here AND on Linux; coverage is measured on
+  # Linux only (docs/54 D14: one floor, one source of truth).
+  #
+  # Nothing is cached, for now: unlike the self-hosted pods, a hosted runner
+  # restores from GitHub's cache CDN at full speed, so actions/cache may well
+  # pay here. Measure a few runs first (docs/38 D18's rule for this workflow).
+  #
+  # PR builds are ad-hoc signed and say so in BUILD-INFO.txt. Developer ID
+  # signing and notarization arrive with the release path (MB7, docs/54 D13),
+  # and only ever on push to main — a pull_request run must never see the
+  # signing secrets.
+  macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: gawk-broadcast-desktop
+    steps:
+      # See `lint`: a backfill builds the commit it is attaching to.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
+
+      # The relay integration suite shells out to `go build` of gawk-server,
+      # and the hosted image's Go predates gawk-server/go.mod's floor.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+
+      - name: Resolve the commit being built
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # rust-toolchain.toml pins the compiler; the hosted image's rustup
+      # installs it (with rustfmt and clippy) on first use. Printed so the
+      # log names the compiler that built the artifact.
+      - name: Toolchain
+        run: |
+          rustc --version
+          cargo --version
+          echo "macOS $(sw_vers -productVersion), SDK $(xcrun --show-sdk-version)"
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (Darwin)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # docs/54 MB1: "wtransport works on macOS" is a claim the transport
+      # gates should prove, not the crate's README. The same suite `test`
+      # runs on Linux — Origin honoured by an allowlisting relay, rejection
+      # status and close code visible, kill-and-restart resume — against the
+      # real gawk-server binary, built on this runner.
+      - name: Integration — publish, reject, resume, supersede vs the real relay
+        run: cargo test -p gawk-engine --test relay_integration -- --ignored --test-threads=1
+
+      - name: Build (release)
+        run: cargo build --release --target aarch64-apple-darwin -p gawk-broadcast-app-macos
+
+      - name: Bundle (ad-hoc signed)
+        run: ../tools/macos/bundle.sh target/aarch64-apple-darwin/release/gawk-broadcast-macos bundle
+
+      # The bundle rides zipped by `ditto`, not as a directory: upload-artifact
+      # drops the executable bit, and a bundle whose binary is not executable
+      # does not launch. ditto also keeps the signature's extended attributes.
+      - name: Assemble artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --keepParent bundle/gawk-broadcast-macos.app dist/gawk-broadcast-macos.app.zip
+          cp README.md ../LICENSE dist/
+          {
+            echo "gawk-broadcast-macos (R52, docs/54)"
+            echo "commit:    ${{ steps.source.outputs.sha }}"
+            echo "ref:       ${{ inputs.attach_to || github.ref }}"
+            echo "built:     $(date -Iseconds)"
+            echo "toolchain: $(rustc --version)"
+            echo "target:    aarch64-apple-darwin"
+            echo "built-by:  GitHub-hosted macos-latest (macOS $(sw_vers -productVersion), SDK $(xcrun --show-sdk-version))"
+            # docs/54 D13. Consequence for a tester: open it once via System
+            # Settings → Privacy & Security → Open Anyway, and expect any
+            # permission it is granted to die with this build.
+            echo "signed:    ad-hoc (PR/CI build) — not Developer ID, not notarized"
+          } > dist/BUILD-INFO.txt
+          cat dist/BUILD-INFO.txt
+          ls -l dist
+
+      # R14's artifact-as-verification pattern, as `build` does for the EXE.
+      # A week rather than a day: nothing downstream consumes this one yet
+      # (the release path is MB7), and the on-hardware passes it exists for
+      # are human-paced.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gawk-broadcast-macos-${{ steps.source.outputs.sha }}
+          path: gawk-broadcast-desktop/dist/
+          retention-days: 7
           if-no-files-found: error
 
   # The Windows half of the release-assets story; the Linux one is

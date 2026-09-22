@@ -152,8 +152,9 @@ impl Reporter {
                     version.into()
                 },
                 surface: "broadcaster",
-                browser: "gawk-broadcast-windows",
-                os: "Windows",
+                // The distribution, not the host: see defaults::THIS.
+                browser: crate::defaults::THIS.name,
+                os: crate::defaults::THIS.os,
             },
             clock,
             send,
@@ -508,8 +509,8 @@ mod tests {
         assert_eq!(v["final"], true);
         assert_eq!(v["app"]["version"], "1.2.3");
         assert_eq!(v["app"]["surface"], "broadcaster");
-        assert_eq!(v["app"]["browser"], "gawk-broadcast-windows");
-        assert_eq!(v["app"]["os"], "Windows");
+        assert_eq!(v["app"]["browser"], crate::defaults::THIS.name);
+        assert_eq!(v["app"]["os"], crate::defaults::THIS.os);
         assert!(v["samples"].as_array().is_some());
         assert!(v["events"].as_array().is_some());
         assert!(v.get("truncated").is_none(), "truncated omitted when false");

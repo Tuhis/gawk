@@ -1,7 +1,9 @@
 # R52 — Native macOS broadcaster
 
 **Status**: designed 2026-09-18. Chunks **MB0–MB8**; **MB0 implemented
-2026-09-22** (§11 records what the rename turned up), MB1–MB8 not started. The
+2026-09-22**, **MB1 implemented 2026-09-23** (its one manual criterion — ⌘Q on
+a Mac — is the owner's; §11 records what both turned up), MB2–MB8 not
+started. The
 ROADMAP entry ([R52](../ROADMAP.md#r52--native-macos-broadcaster)) carries
 the research summary and owner decisions this doc builds on; the decisions
 are restated in §2 so the doc reads on its own.
@@ -798,6 +800,60 @@ dated note (docs/README conventions).
   test --workspace`, host clippy and the real-relay integration suite (5/5)
   pass on an Apple Silicon Mac, macOS 26.5, from the renamed tree. MB1 still
   has to prove it on `macos-latest`.
+
+**MB1 (2026-09-23)** — deviations from D1/D11 as written, and findings:
+
+- **`crates/ui` is a crate (`gawk-ui`), not a directory both shells
+  compile.** D11 has each shell run `slint-build` over the shared `.slint`;
+  that gives each shell its own generated `MainWindow` type, so no Rust
+  that seeds or reads the window could ever be shared — MB5 would copy the
+  Windows shell's ~1,000 lines of settings/room/caption plumbing. `gawk-ui`
+  compiles `main.slint` once and exports the types, and holds what both
+  shells need above the engine: `version` (moved from the Windows shell,
+  with the build-revision stamp its `build.rs` emitted — `rustc-env` only
+  reaches the crate that emits it) and, as the first shared window logic,
+  `refresh_captions`. The Windows shell's build script now only links the
+  icon. D11's rule stands unchanged: one `.slint`, platforms differ in
+  properties and one card (`system-picker` switches the Windows picker card
+  for the Share card; `mono-font` replaces the hardcoded Consolas).
+- **Binary name `gawk-broadcast-macos`**, not `gawk-broadcast`: two
+  workspace binaries with one name collide in `target/` on any host that
+  builds both. It matches the bundle name anyway.
+- **`app-macos` is a stub off macOS, with every dependency macOS-gated.**
+  The Linux and msvc jobs build the whole workspace; gating keeps the
+  second Slint shell out of their compile (and the EXE's feature
+  unification untouched). The Windows `build` job now names its package
+  (`-p gawk-broadcast-app-windows`) so it never links the stub EXE.
+- **Per-distribution identity in `engine::defaults`**: `WINDOWS`, `MACOS`
+  (`name`, `origin`, `asset`, `os`) and `THIS`, chosen by `target_os` — not
+  `cfg(windows)`, because the Windows shell is tested on Linux hosts and must
+  keep its identity there. `ORIGIN` and the telemetry reporter's
+  `browser`/`os` derive from `THIS`. docs/47 D5 carries a dated note: its
+  validator table's macOS row is these constants (AU3 is not started, so
+  there is no validator yet to extend — the constants and their pin test are
+  what MB1 can deliver of that criterion).
+- **`deny.toml` judges the macOS graph too** (`targets` gains
+  `aarch64-apple-darwin`): from MB1 a macOS artifact exists, and an unjudged
+  graph is how a GPL crate would arrive. `cargo-deny check licenses` passes
+  with it.
+- **`tools/macos/` is at the repository root** (with `tools/icon` etc.), as
+  D15's trigger list names it; §5's tree draws it inside the workspace. The
+  bundle is assembled and signed by `tools/macos/bundle.sh` — ad-hoc unless
+  `SIGN_IDENTITY` is set, hardened runtime and the empty entitlements either
+  way — and verified with `codesign --verify --deep --strict`. No icon until
+  `tools/icon` generates an `.icns` (D14).
+- **The CI artifact carries no THIRD-PARTY-NOTICES yet.** The committed file
+  is the msvc graph's; the macOS graph (Slint's AppKit backend, `objc2`,
+  …) needs its own generated list, which is MB7's release-artifact work. The
+  MB1 artifact is a 7-day CI build for on-hardware passes, not a release.
+- **Local, on an Apple Silicon Mac (macOS 26.5)**: fmt, Darwin clippy
+  `-D warnings`, `cargo test --workspace` (the new `defaults` pins run their
+  macOS branch), the real-relay suite, the release build and the bundle all
+  pass; the bundle opens under the hardened runtime showing the D11 cards
+  empty, and exits cleanly on a `quit` Apple Event — the same `terminate:`
+  path the application menu's Quit (⌘Q) takes. Pressing ⌘Q itself is left
+  to the owner's manual pass: this session's terminal has no Accessibility
+  grant to send keystrokes.
 
 ## 12. References
 
