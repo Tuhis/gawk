@@ -338,7 +338,10 @@ Two paths, both designed in, one verified before the item closes:
    so the recipe either relaxes that policy for the operator's networks or
    pre-registers a public client `gawk-telemetry-mcp` with the loopback
    redirect URIs Claude Code uses. Which of these Claude Code needs is
-   **V-4 in §10**, not an assumption.
+   **V-4 in §10**, not an assumption. *(2026-09-22: [docs/56](56-admin-mcp.md)
+   D5 takes the pre-registered public client for `gawk-admin`'s `/mcp`, and
+   its V-1–V-3 spike settles this row for both services. The challenge and
+   metadata helpers live in `oidcauth`, so they are written only once.)*
 2. **The fallback.** A confidential client `gawk-telemetry-mcp` on the
    client-credentials grant with the role on its service account (the docs/50
    D9 shape), with a **client-level** access-token lifespan override (hours,

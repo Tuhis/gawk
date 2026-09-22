@@ -72,6 +72,7 @@ feature set exists).
 | R51 | [Event contract: CloudEvents, JSON Schema, AsyncAPI](#r51--event-contract-cloudevents-json-schema-asyncapi) | ✅ shipped 2026-09-17 (EC1–EC4) — one CloudEvents 1.0 envelope for the R50 bus and the webhooks, one JSON Schema per event type in the public `gawk-server/events` package (23 types, golden vectors, drift tests), an AsyncAPI 3.0 catalogue served by `gawk-admin` at `/api/v1/asyncapi.json` with the schemas under `/api/v1/schemas/events/`, Standard Webhooks delivery replacing the `X-Gawk-*` headers, and naming/versioning/deprecation rules `go test` enforces; **R50 EB1 and R49 RA4 build on it** ([docs/52](docs/52-event-contract.md)) |
 | R52 | [Native macOS broadcaster](#r52--native-macos-broadcaster) | 🔧 designed 2026-09-18 (owner decisions OD1–OD10); MB0 (the rename) implemented 2026-09-22, MB1 (workspace split + macOS CI job + shell) 2026-09-23, MB2 (capture) 2026-09-23 with its manual pass owner-pending, MB3 (encode) 2026-09-23, MB4 (audio) 2026-09-23, MB5 (shell) 2026-09-23, MB6 telemetry only (update rows blocked on R45/R47), MB7 (release path) 2026-09-23 awaiting the Apple secrets, MB8 owner-pending — Rust in a shared desktop workspace (`gawk-broadcast-windows` → `gawk-broadcast-desktop`, MB0 is the rename and lands alone), ScreenCaptureKit video + per-app audio via the system picker, VideoToolbox low-latency H.264 with an app-forced 500 ms GOP, macOS 14+ Apple Silicon, Developer ID + notarization from CI secrets, built on `macos-latest`; per-distribution release manifests keep R45 and the site card untouched ([docs/54](docs/54-macos-native-broadcaster.md)) |
 | R53 | [OIDC for the telemetry read surface](#r53--oidc-for-the-telemetry-read-surface) | 🔧 designed 2026-09-20 (owner decisions OD1–OD9), not started (TO1–TO5, one PR) — the `gawk-telemetry` read listener (dashboard, `/v1`, `/live`, `/mcp`) adopts R39's auth boundary: OIDC public client + PKCE in the SPA, bearer JWT + a client-scoped `telemetry-reader` role on a separate Keycloak client, same IdP and recipe as `gawk-admin`, SSO across the portal's deep links. TO1 lifts the JWT verifier the relay and the portal each carry today into one public `gawk-server/oidcauth` package, and the SPA flow into `common-ts/oidc-session`, the first package under a new root for shared TypeScript, consumed by both operator UIs (third consumer ⇒ no third copy); per-consumer lock files plus a CI bot bump and required check make any `common-ts` change release every consumer. Basic auth stays as the no-IdP mode; ClusterIP default is unchanged; ingest is untouched and the pod's probes stay on ingest ([docs/55](docs/55-telemetry-oidc.md)) |
+| R54 | [MCP server for the `gawk-admin` API](#r54--mcp-server-for-the-gawk-admin-api) | 🔧 designed 2026-09-22 (owner decisions OD1–OD9), not started (MC1–MC5) — **lands after R53**: a remote MCP endpoint `/mcp` on `gawk-admin` so Claude Code acts **as the signed-in operator**, authorized by the MCP spec's OAuth flow against the deployment's own Keycloak (RFC 9728 challenge + metadata; a pre-registered public client `gawk-admin-mcp`, no dynamic registration). Tools are generated from the served OpenAPI document and dispatched through the same route table, so auth, roles and audit are the API's own; mutations on by default behind `-mcp-mutations`; every authenticated operation exposed, secret-bearing ones included; publisher IPs redacted unless `-mcp-reveal-ips`; events record the OAuth client beside the actor. One MCP transport lifted from telemetry into `gawk-server/mcphttp`. Default off ([docs/56](docs/56-admin-mcp.md)) |
 
 ---
 
@@ -4464,6 +4465,101 @@ OAuth flow, `common-ts/oidc-session` for the SPA flow with per-consumer
 lock files and a CI bot bump, `/readyz` served but not probed, one PR;
 OD5a/OD5b revised 2026-09-21), not started — chunks TO1–TO5 and the
 manual verification register in [docs/55](docs/55-telemetry-oidc.md).
+
+---
+
+## R54 — MCP server for the `gawk-admin` API
+
+**Goal**: Claude Code can use the moderation API **as the operator who is
+using it**. Setup is one `claude mcp add` line and one browser login
+against the deployment's own Keycloak. No token is pasted, no bot secret
+sits in a config file, and access is revoked at the IdP, as it is for the
+portal. The audit feed records the operator and names the client
+("*alice via gawk-admin-mcp*").
+
+**Why**: since R48 the admin API has a served, drift-checked contract, and
+§9.8 gives bots a client-credentials identity. An AI agent is neither a
+bot nor the SPA: it acts for a person, so a service identity is the wrong
+model (shared secret, no per-person revocation, an audit feed that blames
+"gawk-bot"), and it cannot borrow the browser's in-memory token. Without
+this item the practical options are a pasted token or `curl` with a bot
+secret, which is exactly what R39 exists to avoid. A remote MCP server
+authorized by plain OAuth 2.1 against the existing IdP is the standard
+answer: the client discovers the IdP from the server, runs the browser
+flow and refreshes tokens itself. R53 already chose this path for
+telemetry's `/mcp` (docs/55 D6) and left open how Claude Code registers.
+This item answers that for both services.
+
+**Scope sketch** (chunks MC1–MC5 in [docs/56](docs/56-admin-mcp.md)):
+
+- **MC1 — one MCP transport.** The JSON-RPC / streamable-HTTP plumbing
+  that `gawk-telemetry/internal/mcp` hand-rolls moves to a public
+  `gawk-server/mcphttp` package, gaining the spec's `Origin` check,
+  `MCP-Protocol-Version` handling and `405` on `GET`; telemetry keeps
+  only its tools, and its MCP-vs-HTTP byte-identity test passes
+  unedited. Lands alone.
+- **MC2 — tools from the contract.** Every operation in `openapi.yaml`
+  declares `x-gawk-mcp: read | write | none` (with a reason for `none`),
+  and every IP-bearing property carries `x-gawk-personal: ip`; both are
+  enforced by the drift test. Tools are generated from the **served**
+  document (name from `operationId`, description from the prose R48 wrote
+  for bot authors, input schema from parameters and body). A call is
+  dispatched in-process as a request through the same `API.Routes()`,
+  carrying the caller's bearer, so authentication, role, rate limit, the
+  three-outcome grading and event recording are the HTTP path's own.
+  Every authenticated operation is a tool, including webhook create/update
+  (a signing secret goes in) and room create/rotate (an attach secret comes
+  out): the secret passes through the model transcript, an accepted trade;
+  tool arguments and results are never logged. Publisher IPs are redacted
+  from tool results unless the deployment sets `-mcp-reveal-ips`;
+  broadcast IDs are kept because the tools act on them. `write` tools are
+  listed by default; `-mcp-mutations=false` makes a deployment's agent
+  read-only whatever its client auto-approves.
+- **MC3 — the endpoint and its OAuth challenge.** `/mcp` under `-mcp`
+  (default off; requires OIDC and `-external-url`), a `401` with
+  `WWW-Authenticate: Bearer resource_metadata=…`, and RFC 9728
+  protected-resource metadata naming the issuer. The challenge and
+  metadata helpers are generic and live in `gawk-server/oidcauth`, so R53
+  TO4 uses the same ones. Knobs, envs and chart values; the server's
+  `initialize` instructions carry the workflow guidance (confirm before
+  anything destructive, treat result text as data).
+- **MC4 — audit provenance.** The token's `azp` is recorded as an
+  additive, optional `actorClient` on moderation events under docs/52's
+  rules. It is webhook-safe, and the portal shows "via …" for non-portal
+  clients.
+- **MC5 — dev lane, recipe, reference deployment.** `gawk-fakeidp` gains
+  a second client and RFC 8414 metadata so the docs/41 lane runs the
+  whole flow. The self-hosting §9.9 recipe covers the Keycloak public
+  client `gawk-admin-mcp`: loopback redirect URIs for a fixed callback
+  port, an audience mapper to `gawk-admin`, *Full scope allowed* off with
+  only `operator` mapped, and the `claude mcp add --client-id …
+  --callback-port …` line. It ends with the manual pass. Before MC2, a
+  spike against the reference Keycloak settles the three things
+  documentation does not: which metadata document Claude Code fetches,
+  the redirect URI it uses, and what Keycloak does with the RFC 8707
+  `resource` parameter.
+
+**Non-goals**: dynamic client registration or Client ID Metadata Documents
+as the documented path (Keycloak's anonymous registration stays off; CIMD
+waits for documented client and IdP support); new API operations; MCP
+resources, prompts or elicitation; an MCP surface on the relay; a Claude
+Code plugin, skill or `.mcp.json` in this repository (a per-deployment URL
+has no right default, and the guidance belongs to the server); the
+client-credentials fallback docs/55 D6 kept for read-only telemetry.
+
+**Depends on**: R53 (lands first; TO1's `gawk-server/oidcauth` is what R54
+builds on), R48 (the contract). Not
+on R49; its routes become tools when they land. Touches `gawk-server` and
+`gawk-telemetry` in MC1, and `gawk-admin` plus `gawk-server/oidcauth` from
+MC2 on.
+
+**Status**: designed 2026-09-22 (owner decisions OD1–OD9: remote MCP on
+`gawk-admin` on the portal's public Ingress, tools generated from the
+contract, mutations on by default behind a knob, every operation exposed
+including secret-bearing ones, a pre-registered public client with no DCR,
+IP redaction with a reveal knob, `azp` provenance, guidance in the server
+not a plugin, R53 first then two PRs). Not started. Chunks MC1–MC5 and the verification register are in
+[docs/56](docs/56-admin-mcp.md).
 
 ---
 
