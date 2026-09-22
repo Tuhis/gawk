@@ -15,6 +15,10 @@
       "$ref": "common.json#/$defs/roomCode",
       "x-gawk-sensitive": true
     },
+    "displayCode": {
+      "$ref": "common.json#/$defs/displayCode",
+      "x-gawk-sensitive": true
+    },
     "kind": {
       "$ref": "common.json#/$defs/roomKind"
     },

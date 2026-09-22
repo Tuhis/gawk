@@ -3,13 +3,14 @@
   "id": "relay-0:4711",
   "source": "/gawk/relay/relay-0",
   "type": "fi.ioio.gawk.room.detached",
-  "subject": "9c1d2e3f4a5b",
+  "subject": "r7k3mx",
   "time": "2026-09-17T12:00:00Z",
   "datacontenttype": "application/json",
   "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.detached.json",
   "data": {
-    "roomCode": "R7K3MX",
+    "roomCode": "r7k3mx",
     "roomKey": "9c1d2e3f4a5b",
+    "displayCode": "R7K3MX",
     "broadcastId": "ABC234",
     "broadcastKey": "3f9a1c2b4d5e",
     "label": "main stage & lobby"

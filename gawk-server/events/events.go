@@ -266,9 +266,13 @@ type Event struct {
 	ID     string `json:"id"`
 	Source string `json:"source"`
 	Type   string `json:"type"`
-	// Subject is the fleet's HMAC'd key of the broadcast or room the event
-	// is about — the one identity that may appear anywhere — and absent for
-	// an event that is about neither.
+	// Subject is the raw broadcast ID or room code the event is about, in
+	// cleartext, and absent for an event that is about neither (D9). It is
+	// what a consumer routes and renders on — the string a person typed to
+	// join — while the HMAC'd key stays in `data` beside it for the portal
+	// links that are keyed by it. The NATS subject's key token is still the
+	// HMAC'd one: that string shows up in bus monitoring, which is not the
+	// event.
 	Subject string `json:"subject,omitempty"`
 	// Time is when the occurrence happened. Marshal renders it in UTC.
 	Time            time.Time `json:"time"`
@@ -396,13 +400,16 @@ func SchemaFiles() ([]string, error) {
 }
 
 // SensitiveProperties returns the `data` property names a type's schema marks
-// `x-gawk-sensitive: true` (D4): the ones that may carry a raw broadcast ID
-// or a room code, which a bus event carries and a webhook delivery must not.
+// `x-gawk-sensitive: true`: the ones that carry a raw broadcast ID or a room
+// code.
 //
-// The marks are read from the schema file — the document a consumer reads —
-// rather than from a Go list, so a sensitive property added without its mark
-// is caught by the fixture test (it would leak), and one marked without a Go
-// change is stripped from the day it is marked.
+// Since D9 the mark is a WARNING, not a filter. Both channels carry these
+// properties — a webhook delivery is no longer projected free of them — and
+// the mark is what tells a consumer, in the document it codes against, that
+// the value is a joinable secret and that a delivery of this event must go
+// somewhere its readers are allowed to join. The marks are read from the
+// schema file rather than a Go list so that the document and the code cannot
+// disagree about which properties those are.
 func SensitiveProperties(t string) ([]string, error) {
 	props, err := properties(t)
 	if err != nil {

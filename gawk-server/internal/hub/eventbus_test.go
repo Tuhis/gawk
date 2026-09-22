@@ -91,11 +91,15 @@ func TestBroadcastLifecycleOnTheBus(t *testing.T) {
 	if d := ended[1].Data.(events.BroadcastEndedData); d.Reason != events.BroadcastEndedGC {
 		t.Errorf("second end reason = %q, want gc", d.Reason)
 	}
-	// The subject is the HMAC'd key; the raw joinable ID stays in the body,
-	// which is the internal/public split the bus rests on (docs/51 D2).
+	// Both identities, in the two places docs/52 D9 puts them: the HMAC'd key
+	// routes on the bus (it is the NATS subject's key token, docs/51 D2), the
+	// raw ID is the event's own subject and is in the body besides.
 	started := rec.only(events.TypeBroadcastStarted)
 	if started[0].Key != r.ObfuscateID(id) || started[0].Key == id {
-		t.Errorf("subject = %q, want the obfuscated key of %q", started[0].Key, id)
+		t.Errorf("bus key = %q, want the obfuscated key of %q", started[0].Key, id)
+	}
+	if started[0].Subject != id {
+		t.Errorf("subject = %q, want the raw ID %q (docs/52 D9)", started[0].Subject, id)
 	}
 	if d := started[0].Data.(events.BroadcastStartedData); d.BroadcastID != id || d.Role != events.RoleOrigin {
 		t.Errorf("started data = %+v", d)

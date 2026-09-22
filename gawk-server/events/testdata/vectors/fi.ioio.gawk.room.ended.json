@@ -3,17 +3,18 @@
   "id": "6c1f1a40-2f7e-5a3b-9a1d-0b7d2c1e4f55",
   "source": "/gawk/admin",
   "type": "fi.ioio.gawk.room.ended",
-  "subject": "9c1d2e3f4a5b",
+  "subject": "r7k3mx",
   "time": "2026-09-17T12:00:00Z",
   "datacontenttype": "application/json",
   "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.ended.json",
   "data": {
     "actor": "system",
     "roomKey": "9c1d2e3f4a5b",
-    "roomCode": "R7K3MX",
+    "roomCode": "r7k3mx",
+    "displayCode": "R7K3MX",
     "kind": "dynamic",
     "reason": "grace",
-    "summary": "a dynamic room was ended by the relay",
+    "summary": "dynamic room R7K3MX ended",
     "portalUrl": "https://admin.example.com/#/rooms?key=9c1d2e3f4a5b"
   }
 }

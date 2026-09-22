@@ -66,15 +66,21 @@ const (
 )
 
 // Event is what a hook hands the bus: the fact, and nothing about identity.
-// The publisher assigns the sequence, the pod, the subject and the timestamp
-// formatting as it drains, so a hook costs one struct and one channel send.
+// The publisher assigns the sequence, the pod and the timestamp formatting as
+// it drains, so a hook costs one struct and one channel send.
 type Event struct {
 	// Type is an events.Type* constant.
 	Type string
-	// Key is the fleet's HMAC'd key for the broadcast or room. It is the
-	// CloudEvents subject AND the third token of the NATS subject: a raw ID or
-	// room code must never appear in either (docs/51 D2).
+	// Key is the fleet's HMAC'd key for the broadcast or room: the third
+	// token of the NATS subject, and the coalescing key. It stays HMAC'd
+	// because that token is what shows up in bus monitoring and an operator's
+	// `nats sub '>'` — a listing of subjects is not a delivery of events
+	// (docs/51 D2, as revised by docs/52 D9).
 	Key string
+	// Subject is the same thing in cleartext — the raw broadcast ID or room
+	// code — and becomes the CloudEvents subject (docs/52 D9). Empty for an
+	// event about neither.
+	Subject string
 	// Time is when the transition happened. Zero means "now".
 	Time time.Time
 	// Data is the events.*Data struct for Type.
@@ -433,7 +439,7 @@ func (p *Publisher) send(ev Event) {
 		at = p.now()
 	}
 	id := events.BusID(p.opts.Pod, p.seq)
-	ce := events.New(ev.Type, id, events.SourceRelay(p.opts.Pod), ev.Key, at, ev.Data)
+	ce := events.New(ev.Type, id, events.SourceRelay(p.opts.Pod), ev.Subject, at, ev.Data)
 	body, err := events.Marshal(ce)
 	if err != nil {
 		p.drop(DropEncode)
@@ -477,7 +483,8 @@ func (p *Publisher) send(ev Event) {
 
 // subject is <prefix>.<scope>.<key>.<event> — the shape that shows up in NATS
 // monitoring, in server logs and in an operator's `nats sub '>'`, which is why
-// the key token is the HMAC'd one (docs/51 D2).
+// the key token is the HMAC'd one (docs/51 D2) even though the event's own
+// `subject` attribute is the cleartext id (docs/52 D9).
 func (p *Publisher) subject(ev Event) string {
 	scope, event := splitType(ev.Type)
 	key := ev.Key

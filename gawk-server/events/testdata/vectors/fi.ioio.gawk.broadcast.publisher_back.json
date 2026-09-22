@@ -3,7 +3,7 @@
   "id": "relay-0:4711",
   "source": "/gawk/relay/relay-0",
   "type": "fi.ioio.gawk.broadcast.publisher_back",
-  "subject": "3f9a1c2b4d5e",
+  "subject": "ABC234",
   "time": "2026-09-17T12:00:00Z",
   "datacontenttype": "application/json",
   "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.broadcast.publisher_back.json",

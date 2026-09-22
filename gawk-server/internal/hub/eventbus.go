@@ -25,9 +25,12 @@ func (r *Registry) emitEvent(typ, id string, data any) {
 	}
 	r.opts.OnEvent(eventbus.Event{
 		Type: typ,
-		Key:  r.ObfuscateID(id),
-		Time: time.Now(),
-		Data: data,
+		// Both forms: the HMAC'd key routes on the bus, the raw ID is the
+		// event's subject (docs/52 D9).
+		Key:     r.ObfuscateID(id),
+		Subject: id,
+		Time:    time.Now(),
+		Data:    data,
 	})
 }
 

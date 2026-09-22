@@ -109,18 +109,21 @@ func newTestPublisher(t *testing.T, url string, tweak func(*Options)) (*Publishe
 	return p, m
 }
 
-// TestPublishesCloudEvents is the shape check a consumer depends on: the
-// subject carries the HMAC'd key and nothing else, the headers say structured
-// CloudEvents and repeat the body's id as the dedup key, and the body is
-// exactly what events.Marshal produces — this package adds no encoding.
+// TestPublishesCloudEvents is the shape check a consumer depends on: the two
+// identities land where docs/52 D9 puts them — the NATS subject's key token
+// stays the HMAC'd one, the CloudEvents `subject` is the cleartext room code
+// — the headers say structured CloudEvents and repeat the body's id as the
+// dedup key, and the body is exactly what events.Marshal produces: this
+// package adds no encoding.
 func TestPublishesCloudEvents(t *testing.T) {
 	url, js := withStream(t)
 	p, m := newTestPublisher(t, url, nil)
 
 	p.Publish(Event{
-		Type: events.TypeRoomParticipantJoined,
-		Key:  "aa11bb22cc33",
-		Time: time.Date(2026, 9, 18, 9, 30, 0, 0, time.UTC),
+		Type:    events.TypeRoomParticipantJoined,
+		Key:     "aa11bb22cc33",
+		Subject: "pf4tzn",
+		Time:    time.Date(2026, 9, 18, 9, 30, 0, 0, time.UTC),
 		Data: events.RoomParticipantJoinedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33",
 			ParticipantID: 7, Nickname: "tuhis", ClientKind: events.ClientKindWebBroadcaster},
 	})
@@ -136,8 +139,8 @@ func TestPublishesCloudEvents(t *testing.T) {
 	if got := msg.Headers().Get("Nats-Msg-Id"); got != ce["id"] {
 		t.Errorf("Nats-Msg-Id %q != body id %v", got, ce["id"])
 	}
-	if ce["subject"] != "aa11bb22cc33" {
-		t.Errorf("subject %v, want the HMAC'd key", ce["subject"])
+	if ce["subject"] != "pf4tzn" {
+		t.Errorf("subject %v, want the cleartext room code (docs/52 D9)", ce["subject"])
 	}
 	if ce["source"] != "/gawk/relay/pod-a" {
 		t.Errorf("source %v", ce["source"])
@@ -145,7 +148,7 @@ func TestPublishesCloudEvents(t *testing.T) {
 	// The body is byte-identical to the contract package's encoding of the
 	// same event, with the id the publisher assigned.
 	want, err := events.Marshal(events.New(events.TypeRoomParticipantJoined,
-		ce["id"].(string), events.SourceRelay("pod-a"), "aa11bb22cc33",
+		ce["id"].(string), events.SourceRelay("pod-a"), "pf4tzn",
 		time.Date(2026, 9, 18, 9, 30, 0, 0, time.UTC),
 		events.RoomParticipantJoinedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33",
 			ParticipantID: 7, Nickname: "tuhis", ClientKind: events.ClientKindWebBroadcaster}))

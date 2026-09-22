@@ -16,8 +16,9 @@
 #   - `x-gawk-since` names the milestone that shipped the type;
 #     `x-gawk-status` is `stable` or `deprecated`; a deprecated message also
 #     carries `x-gawk-sunset` (a date) and keeps being emitted until then.
-#   - A schema property marked `x-gawk-sensitive: true` is present on the
-#     bus and stripped from every webhook delivery (docs/52 D4).
+#   - A schema property marked `x-gawk-sensitive: true` carries a joinable
+#     identifier. Both channels deliver it (docs/52 D9); the mark tells a
+#     consumer what it is holding.
 #
 # The served copy (GET /api/v1/asyncapi.json on any gawk-admin deployment)
 # has the `./schema/…` references rewritten to that deployment's
@@ -48,7 +49,7 @@ info:
     | `id` | Unique per `source`. On the bus `<pod>:<seq>`; for a portal-originated moderation event a UUIDv5 over its row; for a test send a fresh UUID. A retried webhook delivery repeats the `id`: it is your idempotency key. |
     | `source` | `/gawk/relay/<pod>` for a relay-published event, `/gawk/admin` for a portal-originated one. |
     | `type` | `fi.ioio.gawk.<scope>.<event>` — see *Types* below. |
-    | `subject` | The HMAC'd key of the broadcast or room the event is about; absent for an event about neither. |
+    | `subject` | The broadcast ID or room code the event is about, in cleartext — the string a person joins with; absent for an event about neither. The HMAC'd key is in `data` beside it. |
     | `time` | RFC 3339, UTC. |
     | `datacontenttype` | `application/json` |
     | `dataschema` | The `$id` of the schema `data` conforms to. |
@@ -77,15 +78,18 @@ info:
       date, for at least two `gawk-server` minor releases and never less
       than 90 days before it is removed.
 
-    ## The two projections of `data`
+    ## `data` on the two channels
 
-    A bus event carries every property of its schema, including the ones
-    marked `x-gawk-sensitive: true` (raw broadcast IDs, room codes — the bus
-    is internal infrastructure). A webhook delivery of the same event
-    carries the schema **minus every sensitive property, plus `summary` and
-    `portalUrl`**, which every schema declares optional and only gawk-admin
-    sets. Same `type`, same `dataschema`, same required set. No event on
-    either channel ever carries a publisher IP address.
+    Both channels carry every property of the schema, the ones marked
+    `x-gawk-sensitive: true` included — the raw broadcast ID, the room code.
+    A webhook delivery adds `summary` and `portalUrl`, which every schema
+    declares optional and only gawk-admin sets; nothing is removed. Same
+    `type`, same `dataschema`, same required set.
+
+    **What a sensitive property means for you**: it is a join capability.
+    Anyone who can read a delivery containing one can join that broadcast or
+    room. Point a webhook at a channel whose readers you would let in. No
+    event on either channel ever carries a publisher IP address.
 
     ## Receiving webhooks
 
@@ -144,7 +148,11 @@ channels:
         description: The `<scope>` segment of the event type.
         enum: [broadcast, room]
       key:
-        description: The HMAC'd key of the broadcast or room — the event's `subject`.
+        description: >-
+          The HMAC'd key of the broadcast or room. It is the routing token,
+          not the event's `subject`, which is the cleartext id: a NATS
+          subject shows up in bus monitoring and in `nats sub '>'` listings,
+          which is not the same as delivering an event.
       event:
         description: The `<event>` segment of the event type.
     messages:
@@ -197,7 +205,7 @@ channels:
       One HTTPS `POST` per event per enabled webhook, retried at +5 s,
       +30 s, +2 m and +10 m before the delivery is marked failed (visible in
       the portal's events view). The body is the CloudEvent with the
-      projected `data` (no sensitive properties; `summary` and `portalUrl`
+      delivered `data` (the event's own properties; `summary` and `portalUrl`
       added).
 
       **A message is listed here if and only if it can be delivered to a
@@ -310,7 +318,7 @@ components:
         subject:
           type: string
           pattern: '^(?:[0-9a-f]{2}){4,32}$'
-          description: The HMAC'd key of the broadcast or room; absent for an event about neither.
+          description: The cleartext broadcast ID or room code; absent for an event about neither.
         time:
           type: string
           format: date-time
