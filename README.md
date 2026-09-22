@@ -7,7 +7,7 @@ by hand, and do not merge this branch anywhere.
   holds the coverage counts; every other file is a
   [shields.io endpoint](https://shields.io/badges/endpoint-badge)
   response consumed by the README badges.
-- `releases/<component>/latest.json`:
+- `releases/<distribution>/latest.json`:
   `.github/actions/publish-release-manifest`, written when a native
   broadcaster release gets its binaries attached. The project site's
   Download section reads it (docs/46).

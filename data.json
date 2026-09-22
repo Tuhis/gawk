@@ -32,10 +32,10 @@
       "total": 5318,
       "unit": "statements"
     },
-    "gawk-broadcast-windows": {
-      "component": "gawk-broadcast-windows",
+    "gawk-broadcast-desktop": {
+      "component": "gawk-broadcast-desktop",
       "covered": 6762,
-      "label": "broadcast-windows",
+      "label": "broadcast-desktop",
       "pct": 81.4,
       "total": 8304,
       "unit": "lines"
