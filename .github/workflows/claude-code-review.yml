@@ -42,6 +42,13 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          claude_args: '--model claude-opus-5-5 --allowedTools "mcp__github_inline_comment__create_inline_comment"'
+          # The allowlist is the code-review plugin's own `allowed-tools`
+          # (plugins/code-review/commands/code-review.md), verbatim. Allowing the
+          # inline-comment tool alone denied every gh call: the bot could not
+          # read the PR (gh pr view/diff) or post its "No issues found" summary
+          # (gh pr comment), so every review since #331 ended silently. All of
+          # these are gh reads except gh pr comment, which the plugin needs for
+          # the summary; nothing here builds or runs PR code.
+          claude_args: '--model claude-opus-5-5 --allowedTools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),mcp__github_inline_comment__create_inline_comment"'
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
