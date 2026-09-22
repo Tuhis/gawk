@@ -142,6 +142,48 @@ impl BitReader<'_> {
     }
 }
 
+/// Rewrites a length-prefixed (AVCC) access unit — what VideoToolbox
+/// emits (docs/54 D8) — as Annex-B with 4-byte start codes. `len_size` is
+/// the NAL length field's size from the format description (1, 2 or 4).
+///
+/// `None` for anything malformed — a length running past the end, a
+/// zero-length NAL, a dangling partial length, an unsupported size — never
+/// a truncated AU: a half-rewritten keyframe would poison every viewer's
+/// decoder until the next one.
+pub fn avcc_to_annex_b(avcc: &[u8], len_size: usize) -> Option<Vec<u8>> {
+    if !matches!(len_size, 1 | 2 | 4) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(avcc.len() + avcc.len() / 64 + 16);
+    let mut i = 0;
+    while i < avcc.len() {
+        let len_bytes = avcc.get(i..i + len_size)?;
+        let n = len_bytes
+            .iter()
+            .fold(0usize, |acc, &b| (acc << 8) | usize::from(b));
+        i += len_size;
+        if n == 0 {
+            return None;
+        }
+        let nal = avcc.get(i..i.checked_add(n)?)?;
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(nal);
+        i += n;
+    }
+    Some(out)
+}
+
+/// Raw NAL units (the SPS and PPS out of a format description) as an
+/// Annex-B prefix — the headers prepended to every IDR (docs/54 D8).
+pub fn annex_b_from_nals<'a>(nals: impl IntoIterator<Item = &'a [u8]>) -> Vec<u8> {
+    let mut out = Vec::new();
+    for nal in nals {
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(nal);
+    }
+    out
+}
+
 /// Iterates the NAL units in an Annex-B buffer, yielding each NAL's bytes
 /// without its start code. Accepts both 3- and 4-byte start codes, which
 /// encoders mix freely within one AU. Trailing zero padding is trimmed — it
@@ -265,5 +307,72 @@ mod tests {
         let nals: Vec<_> = annex_b_nals(&au).collect();
         assert_eq!(nals.len(), 1);
         assert_eq!(nals[0], &[0x67, 0x42, 0xE0, 0x2A, 0x99]);
+    }
+
+    // docs/54 D8: VideoToolbox emits AVCC (length-prefixed NALs) with the
+    // parameter sets only in the format description; the wire wants
+    // Annex-B with SPS/PPS in-band. These pin the rewrite, on the same
+    // vectors the Windows (Media Foundation) path is tested with.
+
+    /// The inverse, for building fixtures: Annex-B → AVCC with `len`-byte
+    /// big-endian lengths.
+    fn to_avcc(annex_b: &[u8], len: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        for nal in annex_b_nals(annex_b) {
+            let n = nal.len() as u32;
+            out.extend_from_slice(&n.to_be_bytes()[4 - len..]);
+            out.extend_from_slice(nal);
+        }
+        out
+    }
+
+    #[test]
+    fn avcc_rewrites_to_annex_b_nal_for_nal() {
+        // SPS (the Go vectors' 0x42E02A), PPS, IDR — mixed 3/4-byte start
+        // codes, as Media Foundation vendors emit them.
+        let annex_b = [
+            0, 0, 0, 1, 0x67, 0x42, 0xE0, 0x2A, 0x99, // SPS
+            0, 0, 1, 0x68, 0xCE, 0x3C, 0x80, // PPS
+            0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, 0x33, // IDR
+        ];
+        for len in [1usize, 2, 4] {
+            let avcc = to_avcc(&annex_b, len);
+            let back = avcc_to_annex_b(&avcc, len).expect("well-formed");
+            assert_eq!(
+                annex_b_nals(&back).collect::<Vec<_>>(),
+                annex_b_nals(&annex_b).collect::<Vec<_>>(),
+                "len {len}"
+            );
+            // Always 4-byte start codes out, and the SPS still parses.
+            assert_eq!(&back[..4], &[0, 0, 0, 1]);
+            assert_eq!(parse_codec_string(&back).as_deref(), Some("avc1.42E02A"));
+            assert!(has_idr(&back) && has_sps_pps(&back));
+        }
+    }
+
+    #[test]
+    fn malformed_avcc_is_refused_not_truncated() {
+        // A length running past the end.
+        assert_eq!(avcc_to_annex_b(&[0, 0, 0, 9, 0x65, 0x88], 4), None);
+        // A zero-length NAL.
+        assert_eq!(avcc_to_annex_b(&[0, 0, 0, 0], 4), None);
+        // A dangling partial length field.
+        assert_eq!(avcc_to_annex_b(&[0, 0, 0, 2, 0x41, 0xC0, 0, 0], 4), None);
+        // An unsupported length size.
+        assert_eq!(avcc_to_annex_b(&[1, 0x41], 3), None);
+        assert_eq!(avcc_to_annex_b(&[], 4), Some(Vec::new()));
+    }
+
+    #[test]
+    fn parameter_sets_become_an_annex_b_prefix() {
+        let sps: &[u8] = &[0x67, 0x64, 0x00, 0x28, 0xAC];
+        let pps: &[u8] = &[0x68, 0xEE, 0x3C, 0x80];
+        let prefix = annex_b_from_nals([sps, pps]);
+        assert_eq!(
+            prefix,
+            [&[0u8, 0, 0, 1][..], sps, &[0, 0, 0, 1], pps].concat()
+        );
+        assert!(has_sps_pps(&prefix));
+        assert_eq!(parse_codec_string(&prefix).as_deref(), Some("avc1.640028"));
     }
 }

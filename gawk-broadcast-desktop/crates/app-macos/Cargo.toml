@@ -19,7 +19,8 @@ path = "src/main.rs"
 # D15).
 [target.'cfg(target_os = "macos")'.dependencies]
 gawk-capture = { path = "../capture" }
+gawk-encode = { path = "../encode" }
 gawk-engine = { path = "../engine" }
 gawk-ui = { path = "../ui" }
 log = "0.4"
-slint = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }

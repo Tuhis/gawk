@@ -233,6 +233,7 @@ pub struct Capture {
     output: Retained<Output>,
     _queue: DispatchRetained<DispatchQueue>,
     on_error: Arc<OnError>,
+    settings: StreamSettings,
     stopped: bool,
 }
 
@@ -288,6 +289,7 @@ impl Capture {
                 output,
                 _queue: queue,
                 on_error,
+                settings,
                 stopped: false,
             })
         }
@@ -305,6 +307,11 @@ impl Capture {
             self.stream
                 .updateConfiguration_completionHandler(&configuration(settings), Some(&done));
         }
+    }
+
+    /// What the stream was started (or last updated) with.
+    pub fn settings(&self) -> StreamSettings {
+        self.settings
     }
 
     pub(crate) fn stream(&self) -> &SCStream {
@@ -340,6 +347,13 @@ impl Capture {
         }
     }
 }
+
+// SAFETY: built on the shell's start thread and driven from the GUI
+// thread afterwards, never from two at once (the shell owns it). SCStream's
+// start/stop/update calls are documented thread-agnostic — their
+// completions arrive on framework queues — and the output object's ivars
+// are all `Send + Sync` (Mutex, Arc).
+unsafe impl Send for Capture {}
 
 impl Drop for Capture {
     fn drop(&mut self) {

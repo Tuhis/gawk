@@ -1,17 +1,17 @@
 //! gawk-broadcast for macOS (R52, docs/54): ScreenCaptureKit capture through
-//! the system picker, VideoToolbox low-latency H.264, the shared engine.
+//! the system picker, VideoToolbox low-latency H.264, the shared engine and
+//! the shared shell (`gawk_ui::shell`) — this crate is only the platform.
 //!
-//! As of MB2 the shell picks content through the system picker and runs
-//! the ScreenCaptureKit stream; encode and send arrive in MB3, audio in
-//! MB4. Until then Start is a capture test and the header says so, rather
-//! than a broadcast that silently sends nothing.
+//! As of MB3 a Start is a real, video-only broadcast; audio is MB4's.
 
 #[cfg(target_os = "macos")]
-mod shell;
+mod pipeline;
+#[cfg(target_os = "macos")]
+mod platform;
 
 #[cfg(target_os = "macos")]
 fn main() {
-    shell::run();
+    gawk_ui::shell::run(Box::new(platform::Mac::new()), platform::wire);
 }
 
 // The Linux and msvc jobs build the whole workspace (docs/38 D18); this is

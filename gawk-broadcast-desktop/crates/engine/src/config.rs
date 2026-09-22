@@ -375,7 +375,18 @@ pub fn default_path() -> Option<PathBuf> {
     {
         std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("gawk").join("broadcast.json"))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // docs/54 D12.
+        std::env::var_os("HOME").map(|d| {
+            PathBuf::from(d)
+                .join("Library")
+                .join("Application Support")
+                .join("gawk")
+                .join("broadcast.json")
+        })
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         // Dev hosts only (the product is Windows): keep the Linux
         // broadcaster's location so a dev box has one gawk config story.
@@ -491,14 +502,74 @@ pub fn save(path: &Path, cfg: &Config, creds: &dyn Credentials) -> Result<(), St
     let dir = path.parent().ok_or("config path has no parent directory")?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &json).map_err(|e| e.to_string())?;
+    write_owner_only(&tmp, &json).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Writes `bytes` to `path`, replacing it. On Unix the file is mode 0600
+/// (docs/54 D12, the Linux rule): the credentials in it are plaintext
+/// there, so nobody but the owner may read it. Windows protects them with
+/// DPAPI instead and keeps the default ACL.
+fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        // `mode` only applies on creation; a tmp left by a crashed save
+        // keeps its old bits unless they are set explicitly.
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(bytes)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// docs/54 D12 (the Linux rule, unchanged): on Unix the credentials sit
+    /// in the file as plaintext, so the file is the owner's alone.
+    #[cfg(unix)]
+    #[test]
+    fn saved_config_is_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-mode-{}", std::process::id()));
+        let path = dir.join("broadcast.json");
+        let cfg = Config {
+            last_resume_token: "aa11".into(),
+            ..Config::default()
+        };
+        save(&path, &cfg, &Plaintext).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "mode {mode:o}");
+        // A rewrite keeps it (the atomic rename replaces the file).
+        save(&path, &cfg, &Plaintext).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "mode {mode:o} after a rewrite");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// docs/54 D12: where macOS keeps it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_config_lives_in_application_support() {
+        let p = default_path().expect("HOME is set");
+        assert!(
+            p.ends_with("Library/Application Support/gawk/broadcast.json"),
+            "{}",
+            p.display()
+        );
+    }
 
     #[test]
     fn blank_means_the_default_resolved_at_use() {
