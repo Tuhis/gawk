@@ -39,11 +39,30 @@ const healthy = {
   framesDroppedIncomplete: 7,
   framesDroppedLate: 4,
   connection: { rttMs: 9 },
+  // Striping (R30): auto mode on a relay that supports it, not engaged.
+  stripeMode: 'auto',
+  stripeCapable: true,
+  stripeActive: 0,
+  stripeNeeded: 1,
+  stripeLargeLossPct: null,
+  stripeLegDials: 0,
+  stripeLegDeaths: 0,
+  // Audio: an Opus track, aligned to video.
+  audioState: 'active',
+  audioCodec: 'opus',
+  audioSampleRate: 48000,
+  audioChannels: 2,
+  audioPacketsReceived: 45_210,
+  audioPacketsDecoded: 45_196,
+  avSkewMs: 12,
+  avPlayheadAdvance: 1.0,
+  avMaster: 'video',
 } as never;
 
 // The resilient path: reliable carrier streams instead of raw datagrams, on a
 // software decoder — the shape of a session that is working hard.
 const resilient = {
+  audioState: 'absent',
   frameWidth: 1920,
   frameHeight: 1080,
   receivedFps: 48.2,

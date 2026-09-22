@@ -42,6 +42,20 @@
     "BundledTerms": "src/features/terms/BundledTerms.tsx",
     "CaptureControls": "src/features/loopback/components/CaptureControls.tsx",
     "DebugShell": "src/features/debug/DebugShell.tsx",
+    "PeopleIcon": "src/ui/Icons.tsx",
+    "GridIcon": "src/ui/Icons.tsx",
+    "FocusIcon": "src/ui/Icons.tsx",
+    "VideoOffIcon": "src/ui/Icons.tsx",
+    "EditIcon": "src/ui/Icons.tsx",
+    "OpenIcon": "src/ui/Icons.tsx",
+    "PinIcon": "src/ui/Icons.tsx",
+    "ScreenIcon": "src/ui/Icons.tsx",
+    "Toast": "src/ui/Toast.tsx",
+    "NicknamePrompt": "src/features/room/NicknamePrompt.tsx",
+    "AttachSecretPrompt": "src/features/room/AttachSecretPrompt.tsx",
+    "RoomPanel": "src/features/room/RoomPanel.tsx",
+    "RoomTile": null,
+    "OwnPreviewTile": "src/features/room/RoomTile.tsx",
     "BroadcasterScreen": null,
     "LandingPage": null,
     "LoopbackPage": null,
@@ -52,7 +66,10 @@
     "DebugIndex": null,
     "DecodedPreview": null,
     "SourcePreview": null,
-    "App": null
+    "App": null,
+    "RoomScreen": null,
+    "RoomView": null,
+    "JoinResolver": null
   },
   "overrides": {
     "ViewerSettingsPanel": {
@@ -82,7 +99,7 @@
     },
     "UnsupportedBrowserModal": {
       "cardMode": "single",
-      "primaryStory": "Webkit"
+      "primaryStory": "NoWebTransport"
     },
     "ServerIndicator": {
       "cardMode": "single",
@@ -91,6 +108,9 @@
     "ServerPickerPanel": {
       "cardMode": "single",
       "primaryStory": "SavedServers"
+    },
+    "OwnPreviewTile": {
+      "cardMode": "column"
     }
   },
   "readmeHeader": ".design-sync/conventions.md"
