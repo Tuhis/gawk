@@ -36,3 +36,17 @@ windows = { version = "0.62", features = [
     "Win32_System_WinRT_Graphics_Capture",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# macOS (R52, docs/54 D3/D4): ScreenCaptureKit through the generated objc2
+# bindings. `unsafe` is confined to `sck` and `sck_picker`; everything above
+# them is safe Rust, like `wgc` over the windows crate.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-foundation = "0.3"
+objc2-screen-capture-kit = "0.3"

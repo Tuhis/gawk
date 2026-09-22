@@ -1,11 +1,10 @@
 //! gawk-broadcast for macOS (R52, docs/54): ScreenCaptureKit capture through
 //! the system picker, VideoToolbox low-latency H.264, the shared engine.
 //!
-//! This is the MB1 shell: the shared window with the Share card in its empty
-//! state, the version badge, and the menu bar ⌘Q quits through. Capture,
-//! encode and audio arrive in MB2–MB4 and are not faked here — the picker
-//! button is disabled and Start says what is missing, rather than a broadcast
-//! that silently sends nothing.
+//! As of MB2 the shell picks content through the system picker and runs
+//! the ScreenCaptureKit stream; encode and send arrive in MB3, audio in
+//! MB4. Until then Start is a capture test and the header says so, rather
+//! than a broadcast that silently sends nothing.
 
 #[cfg(target_os = "macos")]
 mod shell;
