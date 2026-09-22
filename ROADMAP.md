@@ -4525,8 +4525,8 @@ This item answers that for both services.
   anything destructive, treat result text as data).
 - **MC4 — audit provenance.** The token's `azp` is recorded as an
   additive, optional `actorClient` on moderation events under docs/52's
-  rules. It is webhook-safe, and the portal shows "via …" for non-portal
-  clients.
+  rules, delivered to webhooks and the bus like any other `data`
+  property, and the portal shows "via …" for non-portal clients.
 - **MC5 — dev lane, recipe, reference deployment.** `gawk-fakeidp` gains
   a second client and RFC 8414 metadata so the docs/41 lane runs the
   whole flow. The self-hosting §9.9 recipe covers the Keycloak public

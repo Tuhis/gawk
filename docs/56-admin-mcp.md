@@ -84,7 +84,7 @@ the audit feed as that operator *via Claude Code*.
 | docs/49 §5 | The OA5 Console's rules carry over: the request path is built relative from the document, never from input, so a call cannot leave the origin. |
 | docs/55 D6 | The MCP spec's OAuth flow first; a gawk-minted static MCP token is rejected. |
 | docs/52 | Event `data` grows additively within a type; a new property is not a breaking change. |
-| CLAUDE.md | Every new knob is plumbed through flags, `GAWK_ADMIN_*` envs and Helm values. Raw broadcast IDs and publisher IPs never reach a webhook payload. |
+| CLAUDE.md, docs/52 D9 | Every new knob is plumbed through flags, `GAWK_ADMIN_*` envs and Helm values. Publisher IPs never reach an event or a webhook; raw broadcast IDs and room codes are delivered, in `subject` and `data`, since docs/52 D9 lifted the raw-ID half of docs/42 D8. |
 
 ## 3. Non-goals
 
@@ -360,8 +360,10 @@ by construction. The three kinds of value differ:
 
 - **Broadcast IDs and room codes** are what `kill_broadcast` and the room
   tools take as arguments. Redacting them makes the tools useless. They are
-  joinable, but short-lived and already visible to anyone watching; the
-  operator who connects an agent is choosing to let it act on them. **Kept.**
+  joinable, but short-lived, already visible to anyone watching, and since
+  docs/52 D9 already delivered in cleartext to every webhook receiver the
+  operator chose; the operator who connects an agent is making the same
+  choice about one more reader. **Kept.**
 - **Publisher IP addresses** are personal data, are never needed by any
   `write` tool (an IP ban's CIDR can still be typed by the operator into
   `create_ban`), and add nothing to "what is live and is it healthy?".
@@ -390,8 +392,8 @@ the operator's to make about data they hold on other people's behalf, and
 the API's body byte-for-byte (G6). The markers and their drift test stay
 either way, so turning the knob back off is never a code change.
 
-**Rejected — HMAC'd stand-ins** for redacted IPs (the webhook `key`
-treatment). They would let the model notice "same publisher as before",
+**Rejected — HMAC'd stand-ins** for redacted IPs (the treatment events give
+broadcast IDs in their `key`). They would let the model notice "same publisher as before",
 which is useful, but a keyed hash of an IPv4 address under a key the model
 never sees still identifies a person to anyone who holds the key, and it
 invites a follow-up feature ("ban the publisher behind this token") that is
@@ -420,9 +422,11 @@ moderation event gains an additive, optional `actorClient` in its `data`:
   gawk-admin-mcp*" when the client is not the portal's own, and in the
   event `summary` the same way. A kill that an agent performed on the
   operator's behalf reads as exactly that.
-- **Webhooks**: `actorClient` is a client ID, not personal data and not a
-  broadcast ID, so it is webhook-safe and is added to the webhook-safe key
-  list. The D8 prohibition (never raw IDs or IPs) is unaffected.
+- **Delivered like any other `data` property.** Since docs/52 D9 the
+  webhook projection strips nothing, so `actorClient` reaches webhooks and
+  the bus with no extra step. It is a client ID, not an IP, so the one
+  prohibition that remains (no publisher IP in any event, CLAUDE.md) is
+  unaffected.
 
 Tokens without `azp` (another IdP, a client-credentials token from an IdP
 that omits it) record nothing; the field is optional because the claim is.
@@ -606,7 +610,7 @@ routes become tools through MC2's generator when they land.
 | **MC1** | `gawk-server/mcphttp` lifted from `gawk-telemetry/internal/mcp` (transport, dispatch, tool registry with `annotations`), plus the D9 transport rules; telemetry reduced to its tool list over the package; relay containment test gains the package; `CONTRIBUTING.md` coupling list | Telemetry's `mcp_test.go` — including the MCP-vs-HTTP byte-identity test — passes with **no assertion edits** (imports aside); new package tests: `GET` → 405 + `Allow`; foreign `Origin` → 403, absent `Origin` → served, own origin → served; unknown `MCP-Protocol-Version` → 400; notification → 202 empty; oversized body → 400; unknown tool → `isError` result; containment test fails when a fixture under `internal/hub` imports `mcphttp` (test of the test). Zero user-visible change to telemetry. **Lands alone** (OD8). |
 | **MC2** | `x-gawk-mcp` (+ reason) on every operation and `x-gawk-personal: ip` on every IP/CIDR property in `openapi.yaml`; `gawk-admin/internal/mcptools`: generation from the served document (D2), in-process dispatch through `API.Routes()`, redaction and `-mcp-reveal-ips` (D6), the `-mcp-mutations` filter (D4), the no-log rule for arguments and results (D3); `redocly lint` still green | Drift: an operation without `x-gawk-mcp`, a `read` non-`GET`, a `none` without reason, an unmarked `ip`/`cidr`/`…Ip`/`…Cidr` or `ipv4`/`ipv6` property, an unmarked `BanTarget.value` each fail with the operation or property named. Generation: every admitted operation yields exactly one tool; names, `required`, enums and `$ref`-inlined body schemas match the document for a fixture; the served role value appears in descriptions. Dispatch: for every `read` tool, the tool result's text equals the HTTP body byte-for-byte on the test harness after redaction, and the redacted values are exactly the marked ones that parse as an IP or CIDR (a `BanTarget.value` holding a broadcast ID survives, one holding a CIDR does not); path arguments are escaped and a `..`/absolute-URL argument cannot change the target route; a missing required argument is a tool error with nothing dispatched. Mutations: off → no `write` tool listed, a `write` `tools/call` is refused and the handler counter stays zero; on (the default) → `kill_broadcast` reaches the handler with the caller's identity and a `202` surfaces as success. Reveal: with `-mcp-reveal-ips` the `list_broadcasts` result equals the HTTP body byte-for-byte, IPs included. Secrets: `create_room` and `rotate_room_secret` return the attach secret to the caller, and `create_webhook` with a known secret leaves no trace of it in the captured log at any level. G6 over every operation's documented example. |
 | **MC3** | `/mcp` mounted under `-mcp`; the `401` challenge and `/.well-known/oauth-protected-resource[/mcp]` as generic helpers in `gawk-server/oidcauth`; D10 knobs + envs + chart values; `initialize` instructions (D8) | Against `oidcauthtest`: no token → 401 with the exact `resource_metadata` URL; expired/tampered/wrong-`aud` → 401 with `error="invalid_token"`; valid token → `initialize` and `tools/list` succeed; valid token without the role → `tools/call` on `list_broadcasts` returns `isError` carrying the 403 envelope; the invalid-credential limiter counts `/mcp` failures like `/api/v1` ones; `401 idp_unavailable` before discovery. Metadata: both paths serve the same document; `resource` is `-external-url` + `/mcp`; `authorization_servers` is exactly the issuer. Config: `-mcp` without `-external-url` or OIDC → startup error naming it; `-mcp-reveal-ips` or `-mcp-mutations=false` without `-mcp` → startup error; `-mcp` alone lists `write` tools (default on). G9: with `-mcp` off, `/mcp` and both metadata paths return the portal's catch-all response byte-for-byte. `helm template` goldens for `mcp.*` → envs. No `Set-Cookie` on any response. |
-| **MC4** | `azp` → `identity.Client`; additive `actorClient` on moderation event `data` (Go types, JSON Schemas, AsyncAPI, golden vectors); webhook-safe key list; portal events view and `summary` show "via" for a non-portal client | Event-contract drift tests pass with the new optional property; an event emitted from a token with `azp=gawk-admin-mcp` carries it and its summary reads "… via gawk-admin-mcp"; a portal-client event's `summary` is **byte-identical** to today's; a token without `azp` records no field; the webhook payload carries `actorClient` and still no raw ID or IP (existing webhook-safety test); UI unit test for the "via" rendering. |
+| **MC4** | `azp` → `identity.Client`; additive `actorClient` on moderation event `data` (Go types, JSON Schemas, AsyncAPI, golden vectors); portal events view and `summary` show "via" for a non-portal client | Event-contract drift tests pass with the new optional property; an event emitted from a token with `azp=gawk-admin-mcp` carries it and its summary reads "… via gawk-admin-mcp"; a portal-client event's `summary` is **byte-identical** to today's; a token without `azp` records no field; the webhook delivery carries `actorClient` exactly as the event does — a vector populated with it passes `TestEveryVectorProjectsWhole` — and `TestNoIPOrStraySecretInAnyDelivery` (`gawk-admin/internal/notify`) still passes; UI unit test for the "via" rendering. |
 | **MC5** | `gawk-fakeidp`: a second accepted client ID and loopback redirect URIs, plus `/.well-known/oauth-authorization-server` beside the OIDC document; docs/41 compose lane enables `-mcp`; `docs/self-hosting.md` §9.9 (§6 here); `gawk-admin/README.md`; `docs/gotchas.md` (the audience mapper, the fixed callback port); `docs/README.md` row; the reference deployment switched on in `~/gits/ioio` after release; manual pass | fakeidp tests for the second client and the AS-metadata document; `claude mcp add` against the compose lane authenticates through fakeidp and lists tools (recorded); §10 manual pass with every V row recorded. |
 
 **Two PRs** (OD8): MC1 first, titled `refactor(telemetry): …` with a

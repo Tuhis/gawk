@@ -120,7 +120,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`51`](51-relay-event-bus.md) | R50 (shipped) — Relay event bus over NATS JetStream: lifecycle, participant, attachment and viewer events, consumed by `gawk-admin`; nothing polls |
 | [`52`](52-event-contract.md) | R51 (shipped, revised 2026-09-22) — Event contract: CloudEvents envelope, one JSON Schema per event type, AsyncAPI catalogue, Standard Webhooks delivery; the lifecycle rules for every event on the bus and in webhooks, and D9's cleartext identities |
 | [`55`](55-telemetry-oidc.md) | R53 — OIDC for the telemetry read surface: the portal's auth boundary on the dashboard, read API and MCP; one shared `gawk-server/oidcauth` verifier for relay, portal and telemetry |
-| [`56`](56-admin-mcp.md) | R54 — MCP server for the `gawk-admin` API: Claude Code acts as the signed-in operator via the MCP OAuth flow against the deployment's IdP; tools generated from the OpenAPI contract, mutations opt-in |
+| [`56`](56-admin-mcp.md) | R54 — MCP server for the `gawk-admin` API: Claude Code acts as the signed-in operator via the MCP OAuth flow against the deployment's IdP; tools generated from the OpenAPI contract, mutations on by default (`-mcp-mutations=false` for read-only) |
 
 ## Conventions
 
