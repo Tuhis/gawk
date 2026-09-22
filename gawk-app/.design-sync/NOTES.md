@@ -117,6 +117,17 @@ components wider than a grid cell; `single` + `primaryStory` for anything
 `position: fixed` or portalled, which no grid layout can present. Re-derive from
 the validator's own message if the set changes — don't guess.
 
+## Room surfaces (R42)
+
+Every room surface is `position: absolute` against the room screen
+(`.scrim`/`.modalCenter` `inset: 0`, `.panel` pinned right, `Toast` bottom-
+centred, tiles fill their grid cell). Each preview supplies a
+`position: relative` stage with an explicit height — without one they collapse
+or escape the cell. `RoomPanel`'s stage must be ≥700px or the share note clips.
+`OwnPreviewTile` needs a `MediaStream`: the preview paints a canvas and uses
+`captureStream()`, repainting on an interval so the `<video>` always has a frame.
+`RoomPanel`'s `snapshot` bit fields are documented at the top of its preview.
+
 ## States that can't be captured statically
 
 - **`ViewerSettingsPanel`** — the `interpolationAvailable={null}` state lives
@@ -132,13 +143,21 @@ the validator's own message if the set changes — don't guess.
 
 ## Re-sync risks — what can silently go stale
 
-- **`componentSrcMap` is a hand-maintained list of 35 components plus 11 explicit
+- **`componentSrcMap` is a hand-maintained list of 48 components plus 15 explicit
   `null` exclusions** (the app screens: `ViewerScreen`, `BroadcasterScreen`,
-  `LandingPage`, `BroadcastPage`, `ViewPage`, `TermsPage`, `LoopbackPage`, plus
-  `DebugIndex`, `DecodedPreview`, `SourcePreview`, `App`). New components in
-  `src/ui/` or `src/features/` are **not** picked up automatically — there is no
-  `.d.ts` export list to discover them from. Re-check `src/ui/` and
-  `src/features/*/` against the map on every sync.
+  `LandingPage`, `BroadcastPage`, `ViewPage`, `TermsPage`, `LoopbackPage`,
+  `RoomScreen`, `RoomView`, plus `JoinResolver`, `RoomTile`, `DebugIndex`,
+  `DecodedPreview`, `SourcePreview`, `App`). New components in `src/ui/` or
+  `src/features/` are **not** picked up automatically — there is no `.d.ts`
+  export list to discover them from. The 2026-09-22 sync found 14 unsynced (8
+  icons, `Toast`, 5 room pieces). Check every PascalCase export under
+  `src/ui/` and `src/features/` against the map on every sync (a 10-line node
+  walk over `export function|const [A-Z]` does it).
+- **Anything that opens a viewer session can't be synced.** `RoomTile` (like
+  `ViewerScreen`) calls `useViewerConnection`, which constructs the Vite-bundled
+  `viewer.worker.ts` via `new URL(..., import.meta.url)`. Outside the app that is
+  a `SecurityError: Failed to construct 'Worker'` and an empty root — in the
+  design agent too, not just the card. Exclude it; don't author around it.
 - **Name collision**: `src/ui/StatsPanel.tsx` and
   `src/features/loopback/components/StatsPanel.tsx` both export `StatsPanel`.
   The map pins the `src/ui` one. If the loopback copy ever needs syncing it must
@@ -150,6 +169,16 @@ the validator's own message if the set changes — don't guess.
   once: `BroadcasterStatsOverlay` rendered `Encoding: undefinedxundefined`
   because `encoderInfo` lacked `width`/`height`/`framerate`. **Read the review
   sheets for the word "undefined" after any change to those transport types.**
+  It bit again on 2026-09-22 (audio + striping fields, and `audioState` values
+  renamed: broadcaster `'sharing'` → `'active'`, viewer uses
+  `'absent'|'active'|…`). Faster than reading sheets:
+  `.render-check.json` `texts` — grep it for `undefined|NaN`. The source
+  defaults objects aren't exported, so the previews can't spread them.
+- **Previews that restate component copy go stale with it.** The
+  `UnsupportedBrowserModal` preview carried a `Webkit` cell ("Safari can't play
+  gawk streams") after #342 removed that branch — it rendered and passed every
+  check while being false. When a synced component's source changes, re-read its
+  preview against the new source, not just the sheet.
 - **`ServerSettings` / `ServerPickerPanel` cards show `localhost:4433`** because
   `defaultServerUrl()` resolves to the dev default in this build. Harmless, but
   if the card should show the production relay the runtime config has to be set
