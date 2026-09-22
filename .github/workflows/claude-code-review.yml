@@ -41,6 +41,14 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
+          # Keep every subagent in the foreground. Headless -p mode ends the
+          # session when the main agent ends its turn, and it does not wait for
+          # background agents. On #354 the bot started its four reviewers with
+          # run_in_background, ended its turn "waiting for their results", and
+          # the job exited before any reviewer reported back: no comment, green
+          # check. Several foreground Agent calls in one turn still run in
+          # parallel.
+          settings: '{"env": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}}'
           prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           # The allowlist is the code-review plugin's own `allowed-tools`
           # (plugins/code-review/commands/code-review.md), verbatim. Allowing the
