@@ -88,7 +88,7 @@ docs/19 and docs/38 warn.
 | OD12 | Linux-only knobs kept | **All four**: the encoder pin (`encoder`), the audio-device pin (`audioDevice`), the H.264 dump tap (`GAWK_DUMP_H264`), and the mid-session capture rebuild. |
 | OD13 | Thumbnail | **Yes**: the 1 Hz "what viewers see" thumbnail from the live frames, as on Windows and macOS. Reverses docs/19 D16. It is dropped on any capture path where it would break zero-copy (D4, V-3). |
 | OD14 | Distro floor | **Ubuntu 24.04-class**: built in an `ubuntu:24.04` container (glibc 2.39, GStreamer 1.24, PipeWire 1.0). Covers Ubuntu 24.04+, Debian 13, Fedora 40+ and Arch. The Go card's "glibc 2.34" was never the real floor, because GStreamer ≥ 1.24 already excluded Ubuntu 22.04 and Debian 12. |
-| OD15 | Version | **The desktop workspace goes to 2.0.0** on the release that first ships Linux (`Release-As: 2.0.0`), so Linux users never see 1.15 → 1.6. |
+| OD15 | Version | **The desktop workspace goes to 2.0.0** on the release that first ships Linux (a one-time `release-as` override, D13), so Linux users never see 1.15 → 1.6. |
 
 ## 3. Non-goals
 
@@ -201,8 +201,7 @@ Go's `BuildPipeline` string tests did:
 
 ```
 pipewiresrc fd=<portal fd> path=<node id> do-timestamp=true
-  ! <capture rung: auto-capped | auto | system-memory>       (docs/19, Go pipeline.go ladder)
-  ! <candidate convert>                                      (vulkanupload ! vulkancolorconvert | cudaupload ! cudaconvertscale | vapostproc)
+  ! <capture rung, which includes the candidate convert>    (the Go pipeline.go ladder; expansions in the table below)
   ! video/x-raw(<memory>),width=W,height=H,framerate=F/1     (fitted W×H; F only budgets rate control — VFR passes through)
   ! tee name=t
   t. ! <encoder> ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=au
@@ -210,6 +209,18 @@ pipewiresrc fd=<portal fd> path=<node id> do-timestamp=true
   t. ! queue leaky=downstream max-size-buffers=1 ! videorate drop-only=true max-rate=1
      ! <download> ! videoconvertscale ! video/x-raw,format=RGBA,width=320 ! appsink name=thumb sync=false drop=true max-buffers=1
 ```
+
+The capture rungs expand exactly as the Go ladder did, and every rung only
+ever drops frames:
+
+| Rung | Elements |
+|---|---|
+| `auto-capped` | `video/x-raw(ANY),max-framerate=F/1 ! <convert> ! videorate drop-only=true max-rate=F` (the compositor paces delivery; the gate catches the rest) |
+| `auto` | `<convert> ! videorate drop-only=true max-rate=F` (convert straight on the source, keeping DMA-BUF allocation adjacent) |
+| `system-memory` | `video/x-raw ! videorate drop-only=true max-rate=F ! videoconvert ! <convert>` |
+
+`<convert>` is the candidate's: `vulkanupload ! vulkancolorconvert`,
+`cudaupload ! cudaconvertscale`, or `vapostproc` (D5).
 
 - **The thumbnail branch** (OD13) exists only on capture paths where
   V-3 shows it costs no zero-copy. Elsewhere `show-thumbnail` is false,
@@ -227,12 +238,15 @@ pipewiresrc fd=<portal fd> path=<node id> do-timestamp=true
     `ptsAnchor` and its bias gate are deleted, not ported** (docs/19 D6 and
     D7 existed because of the pipe). V-7 still measures glass-to-glass
     against the photographed reference.
-- **Backpressure** (docs/38 D10, inherited in shape):
+- **Backpressure**, inherited in shape: the producer-queue policy is the
+  docs/38 D5 send-policy table (the Linux original is docs/19 Decision 12),
+  and the in-flight pin is docs/54 D10.
   - The appsink callback classifies the AU, runs `ensure_idr_headers`, and
     offers it to the shared `FrameGate`. No other queue sits between the
     encoder and the sender.
-  - The capture side stays drop-only (`videorate drop-only`), and nothing
-    ever synthesizes frames.
+  - Rate limiting lives in the capture rung and is drop-only on every rung
+    (see the rung expansions under the plan). `framerate=F/1` in the caps
+    only budgets rate control, and nothing ever synthesizes frames.
 - **Errors.**
   - A dedicated bus thread attributes each `ERROR` message by its source
     element:
@@ -363,14 +377,19 @@ pipeline, on the same `GstSystemClock`:
 
 ### D8 — App audio: the docs/39 tee, in-process on its own PipeWire connection
 
-The *mechanism* is docs/39 D3, verbatim:
+The *mechanism* is docs/39 D3 **as amended by its §8 findings F2 and F3**
+(what actually shipped):
 - a virtual sink `gawk-app-capture-<pid>`, media class
   `Audio/Sink/Internal`
-- its channel layout mirrors the default sink's
+- its channel layout comes from the target app's own output ports, falling
+  back to the widest real sink, then stereo (docs/39 F3)
 - the target app's `Stream/Output/Audio` ports are **linked** into it as a
   tee, never re-routed
 - the capture source is the sink's monitor, addressed by `object.serial`
-- a default-sink layout change recreates the sink and re-links it
+- the sink is created once per broadcast and never recreated; a layout
+  change re-links into it, channel-matched else positional (docs/39 F2).
+  Recreating it would change the `object.serial` under a running
+  `pipewiresrc` and turn a headphone switch into a dead audio branch.
 
 The *process shape* changes (OD4):
 
@@ -395,8 +414,9 @@ The *process shape* changes (OD4):
   (F1–F11) is restated as a Rust test**, above all F8 (the dropped opening
   registry burst), F2 (sink never recreated) and F5 (capture answered with
   a link count).
-- **Failure semantics**: the docs/39 D6 table verbatim. "Helper missing"
-  becomes "control plane failed to connect". Every row still ends in system
+- **Failure semantics**: the docs/39 D6 table verbatim, with F2's
+  amendment to its layout-change row (re-link into the existing sink, never
+  recreate it). "Helper missing" becomes "control plane failed to connect". Every row still ends in system
   audio or silence, never a failed broadcast.
 - **Why this reversal is sound** (docs/39 §7 rejected in-process
   libpipewire):
@@ -564,9 +584,15 @@ and icon match the window. This is verified in V-11. The desktop entry's
   Its text states the real floor: "Ubuntu 24.04 or newer (or equivalent),
   a hardware H.264 encoder; tested on KDE Plasma (Wayland)". The fallback
   link filters `gawk-broadcast-desktop/`.
-- **Version** (OD15): the squash commit of the PR that first attaches the
-  Linux tarball (LX6) carries a `Release-As: 2.0.0` footer. `CONTRIBUTING.md`
-  already documents the footer mechanism if it is needed again.
+- **Version** (OD15): the LX6 PR sets `"release-as": "2.0.0"` on the
+  `gawk-broadcast-desktop` package in `release-please-config.json`. The
+  config key is used rather than a `Release-As:` commit footer because it
+  shows up in review, and because a footer depends on what the squash
+  commit's body ends up containing. release-please does **not** clear the
+  key, and while it is set every release of the component is forced to
+  2.0.0. So the PR that follows the 2.0.0 release removes it, and LX6's
+  criteria require that. `CONTRIBUTING.md` gains a short section on
+  one-time version overrides in this PR.
 - **The old manifest** `releases/gawk-broadcast/latest.json` freezes at the
   last Go release (LX8). Nothing reads it except the site card, which has
   moved. The Go app never shipped an update check.
@@ -822,7 +848,8 @@ Prefix **LX** (Linux; the first free two-letter prefix that reads right).
 |---|---|
 | System cascade `pipewire-monitor` → `pulse-default-monitor`; `audioDevice` pin; 25-buffer trials; `lastGoodAudioSource` cached | unit (plan) + CI integration (headless PipeWire) |
 | gst F32 appsink → shared `Lane`: 20 ms frames, one Opus packet per datagram, TOC gate, R25 contract unchanged | existing unit + CI integration |
-| `pwctl`: sink creation with the default sink's layout, tee links, re-link on churn, sink recreation on layout change; every docs/39 F1–F11 restated as a test | CI integration (headless PipeWire) |
+| `pwctl`: one sink per broadcast with the layout from the target app's own ports (widest real sink, then stereo, as fallbacks; F3); tee links; re-link on churn; a layout change re-links into the **existing** sink and never recreates it (F2); every docs/39 F1–F11 restated as a test | CI integration (headless PipeWire) |
+| Telemetry and diagnostics carry the new optional `audioApp` stats field; `gawk-telemetry` ingests a report containing it (the field is added to its schema list if the schema rejects unknown fields, D14) | unit + integration against `gawk-telemetry` |
 | Kill matrix: SIGKILL, panic, and clean exit of the app process each leave no `gawk-app-capture-*` node or link in the daemon (G11) | CI integration |
 | Wedged-loop guard: a `pwctl` request past 5 s degrades audio per the docs/39 D6 table; video untouched | unit (fake control plane) |
 | Subordination: every audio failure leaves video running; wire byte-identical to video-only when audio is off | unit + CI integration |
@@ -844,7 +871,7 @@ Prefix **LX** (Linux; the first free two-letter prefix that reads right).
 |---|---|
 | Tarball layout per D11; desktop entry `Exec=gawk-broadcast-linux`, same app ID; `install-desktop.sh` installs, validates (`desktop-file-validate`) and uninstalls in CI | CI |
 | Attach: tarball on the desktop release beside the EXE and zip; `SHA256SUMS` covers all three; the third manifest written; `TAG_STEMS` row with a test; the site card reads the new manifest | CI + the first release after merge |
-| The first release carrying the tarball is `gawk-broadcast-desktop/v2.0.0` (OD15) | the release |
+| The first release carrying the tarball is `gawk-broadcast-desktop/v2.0.0` (OD15); the `release-as` key is removed in the PR right after it, and the next release is 2.0.x/2.1.0 | the release + review |
 | `gawk-telemetry` shows `gawk-broadcast-linux` sessions like any other class (D2) | manual |
 | Docs: desktop README Linux section + `INSTALL.md` (floor, apt/dnf/pacman lines, "when it doesn't work"); `docs/self-hosting.md` origin rows; docs/47 and docs/48 dated Linux-row notes; ROADMAP status; CLAUDE.md layout; gotchas synced | review |
 | Production relay values gain `gawk-broadcast://linux` (ioio repo); `://native` kept | review + manual |
@@ -948,7 +975,7 @@ Each gets a dated note in place, in the same PR as this doc:
 
 - [docs/19](19-linux-native-broadcaster.md): R14, the Go Linux app (cascade, portal, auto-resume, verification)
 - [docs/39](39-linux-app-sharing.md): R35, window + app audio on Linux (the tee, the whose-audio step, failure table, findings)
-- [docs/38](38-windows-native-broadcaster.md): R34, the Rust workspace's origins (engine port, D3 in-process, D10 backpressure, §7 prohibitions, WB9)
+- [docs/38](38-windows-native-broadcaster.md): R34, the Rust workspace's origins (engine port and the D5 send policy, D3 in-process, §7 prohibitions, WB9); [docs/54](54-macos-native-broadcaster.md) D10 for the in-flight pin
 - [docs/54](54-macos-native-broadcaster.md): R52, the shared workspace and the system-picker card
 - [docs/28](28-native-broadcaster-audio.md): R25, the native audio contract
 - [docs/47](47-desktop-update-check.md), [docs/48](48-signed-in-place-update.md): R45 / R47
