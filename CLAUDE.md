@@ -118,7 +118,8 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   since 2026-09-24** (R56, `docs/58`): Linux is moving into
   `gawk-broadcast-desktop` as a third shell, and this app is removed once
   that passes its hardware pass, leaving only `gawk-pubsim` as Go test
-  tooling. Build no new features here.
+  tooling. Build no new features here — the one exception is LX8's single
+  `feat(broadcast)` deprecation release (`docs/58` D15).
 - `gawk-broadcast-desktop` — native Windows broadcaster (R34), and from R52
   the macOS one too: a **Rust Cargo workspace**, not a Go module (renamed
   from `gawk-broadcast-windows` in R52 MB0, `docs/54` D2). One workspace

@@ -137,14 +137,38 @@ docs/19 and docs/38 warn.
 - `app-windows` keeps its non-Windows dev-shell stub for host tests. It
   stops being the thing a Linux developer runs.
 
-### D2 — Identity: `defaults::LINUX`, chosen by target OS; `://native` stays allowlisted
+### D2 — Identity: `defaults::LINUX`, injected by the Linux shell; `://native` stays allowlisted
 
 - `engine::defaults` gains
   `LINUX = {"gawk-broadcast-linux", "gawk-broadcast://linux", "gawk-broadcast-linux-x86_64.tar.gz", "Linux"}`.
-- `THIS` becomes: macOS → `MACOS`, Linux → `LINUX`, otherwise `WINDOWS`.
-  `this_build_is_the_distribution_of_its_target` and the refusal-wording
-  test in `ui/src/messages.rs` gain their Linux branches, so the wording
-  names "this PC", not "Windows", on Linux.
+- **The shell injects its identity; the target OS does not choose it.**
+  `THIS` is deliberately *not* `cfg(windows)` today, because the Windows
+  shell is linted, tested and integration-tested on Linux hosts
+  (docs/38 D18) and must keep its identity there. Switching `THIS` to
+  `LINUX` on every Linux build would silently move all of that onto the
+  Linux identity, and nothing in CI would test Windows identity behaviour
+  any more. So:
+  - `THIS` (a `const`) becomes `defaults::this() -> &'static Distribution`,
+    backed by a `OnceLock`.
+  - `app-linux` calls `defaults::set_this(&LINUX)` once, first thing in
+    `main`, before `ui::shell::run`.
+  - Unset, `this()` returns exactly today's rule: `MACOS` on macOS,
+    `WINDOWS` everywhere else. `app-windows`, `app-macos`, the engine's
+    relay-integration suite and every host test therefore keep today's
+    identity byte for byte.
+  - `set_this` is idempotent for the same value and panics on a second,
+    different value, so two shells can never race each other.
+  - `ORIGIN` becomes `defaults::origin()`. Every current consumer of `THIS`
+    reads `this()`: telemetry `browser`/`os`, diagnostics `kind`,
+    `Config::resolve_origin`, and the refusal wording.
+  - A Cargo feature was rejected: `cargo test --workspace` unifies features
+    across crates, so `app-linux` enabling one would flip the identity of
+    `app-windows`'s host tests too.
+- `this_build_is_the_distribution_of_its_target` keeps its assertion for
+  the unset case. New tests cover `set_this(&LINUX)` in a separate test
+  binary, so the global never leaks into other tests, and a second
+  different value panicking. The refusal wording gains a Linux branch that
+  names "this PC", not "Windows".
 - **Relay allowlists**:
   - Production values (the ioio repo) and `docs/self-hosting.md` gain
     `gawk-broadcast://linux`.
@@ -627,7 +651,8 @@ and icon match the window. This is verified in V-11. The desktop entry's
   - R45 and R47 skip the Go app.
   - R55's "the Go broadcaster follows" branch (docs/57 OD5) is void.
   - R35's AS7 on-hardware pass is **not** run on the Go app. Its register
-    is folded into this doc's §10.
+    is folded into this doc's §10, item by item: docs/39 V-1 → V-14,
+    V-2–V-4 → V-4, V-5 → V-5, V-6 and V-7 → V-6, V-8 → V-8, V-9 → V-7.
   - R14 V8 re-homes to this app (§3).
   - `CLAUDE.md`'s module-roles entry says the module is frozen.
 - **LX8, the deprecation release.** Once a desktop release carrying the
@@ -811,7 +836,7 @@ Prefix **LX** (Linux; the first free two-letter prefix that reads right).
 
 | Acceptance criterion | Verified by |
 |---|---|
-| `defaults::LINUX` and `THIS` by target OS; the identity tests and the refusal-wording test cover all three OSes; Windows and macOS identities unchanged (G12) | unit |
+| `defaults::LINUX` injected by `app-linux` via `set_this` (D2); unset `this()` is today's rule, so `app-windows` host tests, clippy and the relay-integration suite on Linux runners still resolve to `WINDOWS` (docs/38 D18); a conflicting second `set_this` panics; refusal wording covers all three (G12) | unit (separate test binary for the injected case) + CI |
 | Config: `XDG_CONFIG_HOME` honoured on Linux; `encoder`, `audioDevice`, `audioApp`, `lastGoodAudioSource` round-trip; a Go-written fixture config loads with identical effective values (D10) | unit |
 | The `ubuntu:24.04` container job: fmt, clippy `-D warnings`, `cargo test --workspace`, coverage, and `cargo build --release -p gawk-broadcast-app-linux`; artifact `gawk-broadcast-linux-x86_64-<sha>` with `BUILD-INFO.txt` (version, commit, glibc floor, `ldd`), `if-no-files-found: error` | CI |
 | glibc floor ≤ 2.39 asserted; `ldd` allowlist asserted; `deny.toml` and `gen-notices.py` cover the Linux target, freshness check green | CI |
@@ -827,7 +852,7 @@ Prefix **LX** (Linux; the first free two-letter prefix that reads right).
 | Capture ladder walked on `pipewiresrc` failure; `ErrCaptureFormat`-equivalent sentence when all rungs fail | unit (scripted bus errors) |
 | Mid-session rebuild on the held grant, capped at 60 / 30 s, counted in `captureRestarts`; `Sender::restart_codec` re-derives the DecoderConfig from the new SPS (D6) | unit + CI integration (forced source error) |
 | Thumbnail branch present only on paths V-3 cleared; 1 Hz; never blocks the encoder branch (leaky queue) | CI integration + manual |
-| Window resize / fullscreen / minimize on KWin (V-4) recorded | manual |
+| Window resize / fullscreen / minimize on KWin (V-4) recorded; an odd-sized window encodes fitted, not stretched (V-14) | manual |
 
 ### LX3 — Encode
 
@@ -950,6 +975,7 @@ real hardware can prove. Both machines, KDE Plasma Wayland, unless noted.
 | V-11 | Wayland `app_id` matches the desktop entry (icon in the task switcher); notification urgency honoured by Plasma | LX0, LX5 |
 | V-12 | Carry-over: the Rust app, on the Go app's real config, resumes a broadcast code the Go app minted, with the same server secret | LX7 |
 | V-13 | Relay pod restart and a fleet rollout: auto-resume with a forced IDR first | LX7 |
+| V-14 | Fit: a deliberately odd-sized window is encoded fitted, not stretched; the Share card and stats show the fitted dimensions (docs/39 V-1, AG3) | LX2 |
 
 ## 11. Deviations and field findings
 
