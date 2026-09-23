@@ -180,3 +180,17 @@ export const LINK_COPIED_TOAST = {
 
 export const RECONNECTING_NOTE = 'Reconnecting to the room…';
 export const DRAINING_NOTE = 'Room server is updating — reconnecting…';
+
+// The Creator chip's help (docs/44 §4.9 revision 2026-09-23). What the
+// creator token grants (D8): detach any attachment and end the room. Not
+// people — there is no command that removes a participant — and a removed
+// stream keeps running and may be attached again, so the copy says so
+// rather than promising a kick.
+export const CREATOR_HELP = {
+  title: 'You created this room',
+  points: [
+    'Remove any stream from the room with the × on its row under People. It keeps running on its own code, and its streamer can add it back.',
+    'End the room for everyone from the bottom of People.',
+    'You can’t remove people who are only watching — anyone with the room link can join.',
+  ],
+};

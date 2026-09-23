@@ -189,6 +189,8 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(screen.getByTestId('room-pill').textContent).toContain('1 streaming');
     // The room pill copies like the stream's own code chip beside it.
     expect(within(screen.getByTestId('room-pill')).getByRole('button', { name: 'Copy room link' })).toBeTruthy();
+    // The broadcaster minted the room, so the topbar says whose it is.
+    expect(screen.getByRole('button', { name: 'Creator' })).toBeTruthy();
     for (const name of ['Stop broadcast', 'Settings', 'Show stats', 'People and chat']) {
       expect(screen.getByRole('button', { name })).toBeTruthy();
     }

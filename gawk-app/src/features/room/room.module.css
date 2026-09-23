@@ -1036,3 +1036,93 @@
     padding: 0.45rem 0.7rem;
   }
 }
+
+/* The Creator chip beside the room code (revised 2026-09-23), in the room
+   accent the broadcaster's room pill uses, and its help popover. */
+.creatorWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.creatorBadge {
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 999px;
+  padding: 0.3rem 0.65rem;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.creatorBadge:hover,
+.creatorBadge[aria-expanded='true'] {
+  border-color: var(--accent);
+}
+
+/* Doubled class: an opaque surface over ui/GlassPanel's translucent glass
+   (whose stylesheet may load after this one) — help text over live video
+   has to be readable. */
+.creatorHelp.creatorHelp {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  left: 0;
+  z-index: 40;
+  width: min(20rem, calc(100vw - 2rem));
+  padding: 0.85rem 1rem;
+  background: color-mix(in srgb, var(--surface-1) 96%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: var(--fs-sm);
+  white-space: normal;
+  color: var(--muted);
+  line-height: 1.45;
+  text-align: left;
+}
+
+.creatorHelpTitle {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.creatorHelpList {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+/* Phones: the header row holds the code, the Creator chip and the counts
+   beside two icons, which overflowed below ~400px even before the chip.
+   The watching count goes (the People panel has it), and on the narrowest
+   phones the streaming count too; the help spans the header instead of
+   hanging off the chip (the wrap goes static, so the absolutely positioned
+   header is its containing block). */
+@media (max-width: 719px) {
+  .header .count:not([data-live]) {
+    display: none;
+  }
+
+  .header .creatorWrap {
+    position: static;
+  }
+
+  .header .creatorHelp.creatorHelp {
+    left: 0.75rem;
+    right: 0.75rem;
+    top: calc(100% - 0.25rem);
+    width: auto;
+  }
+}
+
+@media (max-width: 374px) {
+  .header .count {
+    display: none;
+  }
+}

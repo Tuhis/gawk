@@ -332,6 +332,31 @@ describe('RoomScreen people-and-chat panel', () => {
     expect(screen.getByRole('button', { name: 'End room…' })).toBeTruthy();
   });
 
+  it('the creator sees a Creator chip whose help says what the role can and cannot do', async () => {
+    await joinAs('tuhis', { flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR });
+    const chip = screen.getByRole('button', { name: 'Creator' });
+    expect(chip.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(chip);
+    expect(chip.getAttribute('aria-expanded')).toBe('true');
+    const help = screen.getByRole('dialog', { name: 'Your role in this room' });
+    expect(help.textContent).toContain('You created this room');
+    expect(help.textContent).toContain('Remove any stream');
+    expect(help.textContent).toContain('End the room for everyone');
+    // Honest about the limit: streams, not people.
+    expect(help.textContent).toContain('can’t remove people');
+    // Escape and a second click both close it.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Your role in this room' })).toBeNull();
+    fireEvent.click(chip);
+    fireEvent.click(chip);
+    expect(screen.queryByRole('dialog', { name: 'Your role in this room' })).toBeNull();
+  });
+
+  it('a participant without the creator token sees no Creator chip', async () => {
+    await joinAs();
+    expect(screen.queryByRole('button', { name: 'Creator' })).toBeNull();
+  });
+
   it('End room from the More menu opens the panel on the same confirm instead of ending at once', async () => {
     const room = await joinAs('tuhis', { flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR });
     fireEvent.click(screen.getByRole('button', { name: 'More options' }));

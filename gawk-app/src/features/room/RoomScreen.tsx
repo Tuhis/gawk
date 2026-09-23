@@ -39,6 +39,7 @@ import { isDynamicRoom, isRoomCreator, mayAttach, useRoomStore } from '../../sta
 import { ServerIndicator } from '../servers/ServerIndicator';
 import { NicknamePrompt } from './NicknamePrompt';
 import { RoomPanel } from './RoomPanel';
+import { CreatorBadge } from './CreatorBadge';
 import { OwnPreviewTile, RoomTile } from './RoomTile';
 import { RoomAudioMixer } from './roomAudio';
 import {
@@ -98,6 +99,9 @@ export interface RoomHeaderContext {
   // The room chip's copy (the room link), and its "Copied" flash.
   copyLink: () => void;
   linkCopied: boolean;
+  // The Creator chip with its help, or null when this session is not the
+  // creator; the host places it beside its room pill.
+  creatorBadge: ReactNode;
   // The overlays' fade state; the header follows it.
   showChrome: boolean;
 }
@@ -168,6 +172,8 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   );
   const [guest, setGuest] = useState(presetNickname === null);
   const [editingNick, setEditingNick] = useState(false);
+  // The Creator chip's help (CreatorBadge); open counts as an overlay.
+  const [creatorHelpOpen, setCreatorHelpOpen] = useState(false);
   const ready = nickname !== null || guest;
 
   // D8: a secret typed inside the room (the gated-static case below) wins
@@ -355,7 +361,10 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   useHotkey({ key: 'f' }, () => toggleFullscreen());
   useWakeLock(tilesShown || previewOnly);
 
-  const anyOverlayOpen = !!menu || !!presetMenu || editingNick;
+  // The creator guard keeps a help left open by a creator who lost the
+  // flag (a reconnect without the token) from pinning the chrome forever.
+  const anyOverlayOpen =
+    !!menu || !!presetMenu || editingNick || (creatorHelpOpen && isRoomCreator(snapshot));
   const stageLive = tilesShown || previewOnly;
   const chromeVisible = useAutoHide(CONTROL_IDLE_MS, stageLive && !anyOverlayOpen);
   const showChrome = chromeVisible || !stageLive || anyOverlayOpen;
@@ -409,6 +418,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   // room view" (the web broadcaster's own view has `own`), whose person
   // already streams from the app (docs/44 §4.9 revision 2026-09-23).
   const canStartStreaming = onStartStreaming != null && !own && !creator;
+  const creatorBadge = creator ? <CreatorBadge open={creatorHelpOpen} onOpenChange={setCreatorHelpOpen} /> : null;
   // The header's two totals: broadcasts on the stage, and the people in the
   // room who are not streaming. Per-POV viewer counts stay in the panel.
   const streaming = attachments.length;
@@ -699,6 +709,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
           togglePanel: () => setPanelOpen((o) => !o),
           copyLink,
           linkCopied,
+          creatorBadge,
           showChrome,
         })
       ) : (
@@ -718,6 +729,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
             <span className={styles.codeText}>{code}</span>
             <CopyIcon />
           </button>
+          {creatorBadge}
           <span className={styles.count} data-live={streaming > 0 ? 'true' : 'false'}>
             {streaming} streaming
           </span>

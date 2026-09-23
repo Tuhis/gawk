@@ -865,6 +865,7 @@ export function BroadcasterScreen() {
             </IconButton>
           </span>
         )}
+        {room?.creatorBadge}
         {renderAutoBadge(stats)}
         {stats?.encoderPressure && (
           <span className={`${styles.badge} ${styles.warnBadge}`}>
