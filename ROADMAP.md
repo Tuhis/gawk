@@ -72,6 +72,7 @@ feature set exists).
 | R51 | [Event contract: CloudEvents, JSON Schema, AsyncAPI](#r51--event-contract-cloudevents-json-schema-asyncapi) | ✅ shipped 2026-09-17 (EC1–EC4) — one CloudEvents 1.0 envelope for the R50 bus and the webhooks, one JSON Schema per event type in the public `gawk-server/events` package (23 types, golden vectors, drift tests), an AsyncAPI 3.0 catalogue served by `gawk-admin` at `/api/v1/asyncapi.json` with the schemas under `/api/v1/schemas/events/`, Standard Webhooks delivery replacing the `X-Gawk-*` headers, and naming/versioning/deprecation rules `go test` enforces; **R50 EB1 and R49 RA4 build on it** ([docs/52](docs/52-event-contract.md)) |
 | R52 | [Native macOS broadcaster](#r52--native-macos-broadcaster) | 🔧 designed 2026-09-18 (owner decisions OD1–OD10); MB0 (the rename) implemented 2026-09-22, MB1 (workspace split + macOS CI job + shell) 2026-09-23, MB2 (capture) 2026-09-23 with its manual pass owner-pending, MB3 (encode) 2026-09-23, MB4 (audio) 2026-09-23, MB5 (shell) 2026-09-23, MB6 telemetry only (update rows blocked on R45/R47), MB7 (release path) 2026-09-23 awaiting the Apple secrets, MB8 owner-pending — Rust in a shared desktop workspace (`gawk-broadcast-windows` → `gawk-broadcast-desktop`, MB0 is the rename and lands alone), ScreenCaptureKit video + per-app audio via the system picker, VideoToolbox low-latency H.264 with an app-forced 500 ms GOP, macOS 14+ Apple Silicon, Developer ID + notarization from CI secrets, built on `macos-latest`; per-distribution release manifests keep R45 and the site card untouched ([docs/54](docs/54-macos-native-broadcaster.md)) |
 | R53 | [OIDC for the telemetry read surface](#r53--oidc-for-the-telemetry-read-surface) | 🔧 designed 2026-09-20 (owner decisions OD1–OD9), not started (TO1–TO5, one PR) — the `gawk-telemetry` read listener (dashboard, `/v1`, `/live`, `/mcp`) adopts R39's auth boundary: OIDC public client + PKCE in the SPA, bearer JWT + a client-scoped `telemetry-reader` role on a separate Keycloak client, same IdP and recipe as `gawk-admin`, SSO across the portal's deep links. TO1 lifts the JWT verifier the relay and the portal each carry today into one public `gawk-server/oidcauth` package, and the SPA flow into `common-ts/oidc-session`, the first package under a new root for shared TypeScript, consumed by both operator UIs (third consumer ⇒ no third copy); per-consumer lock files plus a CI bot bump and required check make any `common-ts` change release every consumer. Basic auth stays as the no-IdP mode; ClusterIP default is unchanged; ingest is untouched and the pod's probes stay on ingest ([docs/55](docs/55-telemetry-oidc.md)) |
+| R54 | [Broadcasting over Wi-Fi](#r54--broadcasting-over-wi-fi) | 🔧 proposed 2026-09-23 (owner decisions OD1–OD6 open), not started (WU0–WU6) — leg-A loss from a Mac on Wi-Fi (AWDL) freezes viewers; deltas ride one deadline-reset reliable stream per GOP from the native broadcaster (R19's carrier, reversed) behind a new `CapUplinkCarriers` relay capability, engaged automatically on low-RTT paths; a macOS Wi-Fi hint and an opt-in helper that holds AWDL down only while live ([docs/56](docs/56-wifi-uplink.md)) |
 
 ---
 
@@ -4464,6 +4465,43 @@ OAuth flow, `common-ts/oidc-session` for the SPA flow with per-consumer
 lock files and a CI bot bump, `/readyz` served but not probed, one PR;
 OD5a/OD5b revised 2026-09-21), not started — chunks TO1–TO5 and the
 manual verification register in [docs/55](docs/55-telemetry-oidc.md).
+
+
+---
+
+## R54 — Broadcasting over Wi-Fi
+
+**Goal**: a native broadcaster on Wi-Fi streams without viewer freezes. Deltas
+on the broadcaster → relay leg ride a reliable QUIC stream per GOP that is
+reset at a deadline, so QUIC's own retransmission recovers bursty Wi-Fi loss
+on the low-RTT paths where it is cheap. On macOS the app detects Wi-Fi + AWDL,
+says so, and offers a one-approval Wi-Fi streaming mode that holds AWDL down
+only while live.
+
+**Why**: the first macOS broadcast (R52, 2026-09-23) froze a viewer every few
+seconds. The app was clean; the relay counted 3.7 % of frames never arriving
+(leg A) — and that figure excludes partly received frames. AWDL on the Mac's
+Wi-Fi was most of it: with `awdl0` down the viewer's broken frames fell
+roughly tenfold. One lost chunk costs the rest of a 500 ms GOP. R19 fixed the
+same failure for leg B and left leg A alone because leg A had always been
+clean.
+
+**Scope sketch** (chunks WU0–WU6 in [docs/56](docs/56-wifi-uplink.md)):
+
+- **WU0** — fix the live view's zeroed relay facts (BUGS.md), count partly
+  received frames in leg-A loss, record a baseline.
+- **WU1** — relay: accept `0x0A` carriers from a publisher behind
+  `CapUplinkCarriers`; each record ingested exactly as the same datagram;
+  `-uplink-carriers` plumbed through `registryOptions`.
+- **WU2** — Rust engine: carrier per GOP, 150 ms deadline reset, RTT-gated
+  engage policy, keyframe stream prioritised, telemetry incl. local QUIC loss.
+- **WU3** — macOS Wi-Fi hint on the Share card.
+- **WU4** — opt-in `SMAppService` helper holding AWDL down while live,
+  crash-safe the `gawk-pw-helper` way (OD4).
+- **WU5** — `NET_SERVICE_TYPE_VI` marking, shipped only on a measured gain.
+- **WU6** — on-hardware acceptance pass.
+
+**Status**: 🔧 proposed 2026-09-23, owner decisions OD1–OD6 open, not started.
 
 ---
 

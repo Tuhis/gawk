@@ -57,6 +57,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`24`](24-viewer-network-resilience.md) | R19 — Resilient viewer mode for lossy networks |
 | [`34`](34-live-edge-forward-parity.md) | R29 — Forward parity for live-edge delivery |
 | [`35`](35-connection-interleaving.md) | R30 — Connection interleaving (striped delivery) |
+| [`56`](56-wifi-uplink.md) | R54 — Broadcasting over Wi-Fi: a deadline-reliable uplink carrier and a macOS Wi-Fi streaming mode |
 
 ## The viewer
 

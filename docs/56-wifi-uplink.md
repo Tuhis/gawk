@@ -1,0 +1,415 @@
+# R54 — Broadcasting over Wi-Fi: a deadline-reliable uplink and a Wi-Fi streaming mode
+
+**Status**: proposed 2026-09-23. Chunks **WU0–WU6**, none started. The owner
+decisions in §2 are *proposed* and open; the doc is written so each can be
+flipped without re-deriving the rest.
+
+**Relationship to earlier work**: this is R19 ([docs/24](24-viewer-network-resilience.md))
+turned around. R19 made the **relay → viewer** leg (leg B) survive a lossy
+path by carrying deltas on reliable streams; its Decision 1 left the
+**broadcaster → relay** leg (leg A) "exactly as is", because every leg-A
+reading until now was clean (docs/34 records 0.00–0.03 %). The first macOS
+broadcast made leg A the problem. Wherever this doc says "the carrier", the
+mechanism is docs/24's, verbatim, and is not re-argued here.
+
+---
+
+## 1. Why, and what "done" means
+
+### The finding (2026-09-23)
+
+The first live pass of the macOS broadcaster (R52, [docs/54](54-macos-native-broadcaster.md))
+streamed from an M1 MacBook on 5 GHz Wi-Fi (802.11ac, −43 dBm, 866 Mbps
+link) to a Windows Firefox viewer. The viewer stuttered: `receivedFps` held
+~50 while `decoderFps` collapsed to ~4 every few seconds —
+`keyframe-only-delivery`, 157 gap resyncs against 244 keyframes in two
+minutes.
+
+- **The broadcaster was clean.** 55–57 fps captured, encoded and sent,
+  `framesDroppedAtSend` 0, ~8 Mbps average at 1728×1080.
+- **Leg A was not.** The relay counted `ingressLossRatio` **3.7 %** —
+  frames that never arrived. That understates it: `IngressFramesLost` counts
+  only frames with *no* chunk seen; a frame missing some chunks lands in
+  `IngressChunksLost` instead (`gawk-server/internal/hub/ingress.go`).
+- **Every earlier broadcast passed leg A**, including the Windows native app
+  on the same Rust engine (wired) and Chrome broadcasters.
+- **AWDL was most of it.** `awdl0` (AirDrop, Sidecar, Universal Control)
+  periodically takes the Wi-Fi radio off-channel. With it down
+  (`sudo ifconfig awdl0 down`) the viewer's broken frames fell from 20–170
+  per minute to 0–4, and every diagnosis turned `ok`.
+
+One lost chunk costs the rest of the GOP: the viewer has no reference for
+the next delta and waits up to 500 ms for a keyframe. So a sub-percent
+*packet* loss on a 20-packet frame is a visible freeze several times a
+minute.
+
+### Why the fix belongs in gawk
+
+"Use Ethernet" is correct and not a product answer: the Mac is a laptop,
+and most Mac broadcasters will be on Wi-Fi. Turning AWDL off needs root and
+breaks AirDrop until reboot. And AWDL is only the loss we identified; the
+same Wi-Fi link drops bursts for other reasons (a microwave, a neighbour's
+channel, roaming).
+
+The property that makes this solvable: **on the path that loses, the RTT is
+tiny.** The Mac measured `timeSyncRttMs` ≈ 10 ms to the relay. QUIC can
+retransmit a lost packet 3–5 times inside a budget a viewer never notices —
+but only for stream data. Datagrams are never retransmitted, by design.
+
+### Milestone acceptance criteria
+
+Pre-registered. "Manual" means the reference setup: an Apple Silicon Mac on
+Wi-Fi with AWDL **on**, broadcasting to the production fleet, one Windows
+viewer, 10 minutes at the default rung. WU0 records the baseline every row
+compares against.
+
+| # | Goal | Verified by |
+|---|---|---|
+| G1 | Leg-A loss with the carrier uplink: `IngressFramesLost + IngressChunksLost` ≤ **0.1 %** of frames over 10 min, AWDL on | manual, relay `/statusz` counters (history API) |
+| G2 | The viewer stops stuttering: `reorderGapResyncs` ≤ 2/min and no `keyframe-only-delivery` finding over the same 10 min | manual, viewer telemetry |
+| G3 | Latency cost bounded: viewer `capToRenderMs` p50 within **+20 ms**, p95 within **+50 ms** of the same Mac on Ethernet in datagram mode | manual, paired runs |
+| G4 | No regression where nothing was wrong: the Windows app on wired Ethernet with the carrier uplink engaged shows fps, latency and leg-A loss within noise of datagram mode | manual, paired runs |
+| G5 | Compatibility: a carrier-capable broadcaster against a relay without the capability sends datagrams, unchanged; an old broadcaster against a new relay is unchanged; with `-uplink-carriers=false` the relay's `/statusz`, metrics and wire are byte-identical to pre-R54 | integration (real `gawk-server`) + diff assertion |
+| G6 | Wire parity: the new capability bit and any new constant are in `gawk-server/wire`, `wire.ts`, `gawk-broadcast/internal/wirecheck` and `crates/wire`, golden vectors byte-identical | unit (existing mirror tests) |
+| G7 | Viewers untouched: no change in `gawk-app` beyond the `wire.ts` mirror | review |
+| G8 | The Wi-Fi hint: on Wi-Fi with AWDL up, the macOS Share card shows the hint within 5 s of going live; on Ethernet it never shows | unit (policy) + manual |
+| G9 | Wi-Fi streaming mode (if OD4 is taken): AWDL is down while live and **back up** after Stop, after `kill -9` of the app, after `kill -9` of the helper, and after a reboot mid-broadcast; AirDrop works afterwards | manual |
+| G10 | Telemetry says which uplink ran: the broadcaster reports `uplinkMode`, carrier counters and local QUIC loss; the relay reports carrier ingest per broadcast | unit + one real session in the dashboard |
+
+## 2. Owner decisions (proposed, open)
+
+| # | Decision | Proposed choice |
+|---|---|---|
+| OD1 | Transport for leg-A deltas | **R19's carrier, reversed**: one reliable uni stream per GOP from the broadcaster, records of `uint16 len ‖ datagram`, reset at a deadline (D1–D3). Not per-frame streams, not NACK/ARQ over datagrams. |
+| OD2 | When it engages | **Automatically**, when the relay advertises it and the path's smoothed RTT is ≤ 40 ms (D4). No user setting; an advanced override exists for diagnosis. |
+| OD3 | The deadline | **150 ms** from a GOP's oldest unacknowledged record, capped by the GOP (D3). A knob, not a constant. |
+| OD4 | Wi-Fi streaming mode | **Yes, opt-in**: a privileged helper that holds AWDL down only while live, installed from the hint with one approval (D7). If declined, WU4 is dropped and the hint says "use Ethernet or turn off AirDrop". |
+| OD5 | Which broadcasters | **The Rust desktop engine first** (Windows + macOS share it). The relay side serves any producer; the Go Linux broadcaster and the browser follow as separate chunks if the measurement justifies them. |
+| OD6 | QoS marking | **An experiment, shipped only on a measured gain** (D8). |
+
+## 3. Non-goals
+
+- **Pacing or frame-size capping.** Both were rejected for leg B by owner
+  decision (docs/34 Finding 4, docs/35) because they add latency or cost
+  quality. The carrier does not pace: records go out as the encoder
+  produces them, and QUIC's congestion controller is the only pacer, as
+  today.
+- **Relay-side reconstruction** of parity on ingest — rejected in docs/34;
+  the relay stays a byte forwarder.
+- **A keyframe request of any kind.** docs/15 Decision 6 stands: nothing in
+  this doc asks for a keyframe (§4 D6).
+- **A viewer-side change.** Leg B already has R19 and R30.
+- **Changing the rung on loss** (an auto-ladder for native apps) — docs/38
+  D11 / R14 Decision 9 still say no ladder; this doc fixes delivery, not the
+  bitrate.
+- **Turning AWDL off without the user asking**, or leaving it off after the
+  broadcast.
+
+## 4. Decisions
+
+### D1 — The uplink carrier: docs/24's stream, publisher → relay
+
+A carrier is a unidirectional QUIC stream opened by the **broadcaster**,
+starting with the existing prologue `0x01 0x0A` (`ReliableCarrier`), then
+records of `uint16 len ‖ datagram`. Each record is **byte-for-byte the
+datagram that would otherwise have been sent**: `VideoChunk` (0x01) and
+`ParityChunk` (0x0E). So the relay's ingest for a record is exactly its
+ingest for a datagram, and everything downstream — accounting, the ingress
+window, fan-out to datagram viewers, R19 carriers for resilient viewers, R30
+striping, R29 parity prefixes, the DVR — is untouched.
+
+- **One carrier per GOP.** A new carrier opens at each keyframe. It holds
+  that GOP's deltas and their parity, nothing else.
+- **Why per GOP, not per frame.** Head-of-line blocking is harmless *inside*
+  a GOP: every delta depends on the one before it, so a delta that arrives
+  before its predecessor is undecodable anyway. Per-GOP streams also keep
+  the stream rate at ~2/s instead of ~60/s. docs/24 rejected per-frame
+  streams for the same reason (unproven stream-credit behaviour at 60/s).
+- **What stays a datagram**: audio (`AudioFrame`, 20 ms Opus — a lost packet
+  is one concealment, not a freeze), `TimeSync`, and everything when the
+  carrier is not engaged.
+- **Keyframes stay on their own streams** (`StreamFrame`, R8) with docs/38
+  F-12's rules unchanged.
+- **Not a `StreamFrame` with the keyframe flag clear.** The flag is
+  "reserved" in `wire.go`, but today's `ParseStreamFrameHeader` does not
+  reject `Keyframe=false` and `onKeyframe` caches whatever arrives as the
+  join-priming keyframe. A delta sent that way to a current relay would
+  overwrite the priming cache. The carrier type avoids that trap entirely.
+
+### D2 — The relay: accept carriers from a publisher, behind a capability bit
+
+- **Capability.** `RelayCapabilities` (0x0F) gains
+  `CapUplinkCarriers = 1 << 2` — capability growth is new bits in the flags
+  word, never new bytes (the rule in `server.go`). A broadcaster opens
+  carriers **only** after it has seen the bit. A relay without the bit
+  treats a `0x0A` stream from a publisher as bad input (`countBad` +
+  `CancelRead`) today, so the gate is not optional.
+- **Acceptance.** The publish session's uni-stream accept loop recognises the
+  `0x0A` prologue and hands the stream to a carrier reader, separate from
+  `acceptKeyframeStreams` and outside its `maxConcurrentKeyframeStreams = 4`
+  budget. At most **2** carriers per publisher at once (the current GOP and
+  the one being drained); a third is `CancelRead`, counted.
+- **Ingest.** Each record is validated as a datagram would be (type,
+  version, `MaxDatagramSize`) and passed to `Publisher.HandleDatagram`. A
+  malformed record ends the carrier (`CancelRead`) and is counted; earlier
+  records have already been forwarded.
+- **Staleness.** A record whose `frameID` precedes the most recent keyframe
+  the relay has ingested is dropped and counted rather than forwarded: its
+  GOP is over, and forwarding it spends leg-B bandwidth on frames every
+  viewer will discard.
+- **The knob.** `-uplink-carriers` (default **true** once WU1 ships; the
+  flag exists so an operator can turn it off), `GAWK_UPLINK_CARRIERS`, Helm
+  value `config.uplinkCarriers`, plumbed through `registryOptions` in
+  `cmd/gawk-server/main.go` and asserted by `TestRegistryOptionsCarryAllLimits`
+  — the CLAUDE.md invariant.
+- **Flow control.** quic-go's per-stream and connection receive windows must
+  cover a GOP at the top rung: 500 ms × 16 Mbps ≈ 1 MB. WU1 sets them
+  explicitly for publish sessions and has a test that sends a full GOP
+  through one carrier without a window stall.
+- **Cluster mode.** Only the origin ingests publishers, so edges are
+  unaffected. The origin forwards to edges exactly as before.
+
+### D3 — The broadcaster: carrier lifecycle and the deadline
+
+In `crates/engine/src/sender.rs`, beside the keyframe writer:
+
+- **Open** a carrier when a keyframe is sent (the new GOP starts); finish
+  (`FIN`) the previous carrier once its last record is written.
+- **Write** each delta's chunks, then its parity, as records, in order. The
+  write is non-blocking from the encoder's point of view: records go into
+  the carrier's queue and a writer task drains it, as the keyframe writer
+  does.
+- **The deadline.** If the carrier's oldest *unacknowledged* record is older
+  than `uplinkDeadlineMs` (default **150**, OD3), the carrier is **reset**
+  (`RESET_STREAM`, a new code `UPLINK_CARRIER_EXPIRED`). The GOP is lost
+  from that point, exactly as a lost datagram loses it today. Later deltas
+  of that GOP are discarded locally (they are undecodable without the lost
+  one), and the next keyframe opens a fresh carrier. The deadline turns
+  "reliable" into "reliable while it still matters". Because it never blocks
+  the encoder and never outlives a GOP, "favour dropped frames over stalled
+  playback" still holds — frames drop 150 ms later instead of immediately.
+- **Why 150 ms.** At the measured 10 ms RTT, QUIC's loss detection plus
+  retransmission is ~2–3 RTT per attempt, so 150 ms allows several attempts
+  and still ends well inside a 500 ms GOP. The viewer's adaptive playout
+  (docs/12) absorbs the occasional retransmit delay; G3 bounds what it adds.
+- **Stream priority.** quinn packs datagrams ahead of *all* stream data
+  (docs/38 F-12). With deltas on a stream that stops mattering for video,
+  but the keyframe stream and the carrier now compete with each other. The
+  keyframe stream gets the higher `set_priority`: the carrier's deltas are
+  useless until their keyframe has landed.
+- **Superseded GOP.** When a new keyframe opens a carrier while the previous
+  one still has unacknowledged records, the old carrier keeps its deadline
+  (it may still complete), but it never delays the new one.
+
+### D4 — When the carrier engages: automatic, RTT-gated
+
+Engaged when **all** hold: the relay advertised `CapUplinkCarriers`; the
+connection's smoothed RTT (quinn `ConnectionStats`) is ≤ **40 ms**; and the
+advanced override is not "datagrams". Checked at each keyframe, with
+hysteresis (engage below 40 ms, disengage above 60 ms for 5 s) so a jittery
+link does not flap. On a WAN path with a 60 ms RTT, one retransmit already
+costs most of the deadline, and datagrams remain the right answer.
+
+The user sees nothing, except one line in the stats panel: *Uplink: reliable
+(Wi-Fi-safe)* or *Uplink: datagrams*.
+
+### D5 — Telemetry: say which uplink ran and what it cost
+
+- Broadcaster fields (added to the field registry, `gawk-telemetry/internal/schema`):
+  `uplinkMode` (`datagram` | `carrier`), `uplinkCarriersOpened`,
+  `uplinkCarriersExpired`, `uplinkRecordsDiscarded`, and
+  `uplinkLossPct` — QUIC's own lost/sent packet ratio from quinn
+  `ConnectionStats`. That last one is the first time the broadcaster can see
+  leg-A loss **locally**, without a relay report.
+- Relay `/statusz` per broadcast: `uplinkCarriers`, `uplinkRecords`,
+  `uplinkRecordsStale`, `uplinkCarriersRejected`.
+- A playbook row: leg-A loss with `uplinkMode=datagram` on a low-RTT path
+  says "the carrier uplink would recover this; is the relay advertising it?".
+- **Prerequisite**: the live view's windowed relay facts read zero today
+  (BUGS.md, "Telemetry live view: every windowed relay fact reads zero"), so
+  a live leg-A row cannot fire until that is fixed. WU0 fixes it first.
+
+### D6 — Not a back-channel, and not docs/15 D6
+
+docs/15 Decision 6 rejected a viewer → server keyframe request because it
+produces **more** keyframes in the congested case. Nothing here requests a
+keyframe or changes the cadence. The only new relay → publisher signal is one
+capability bit on a message that already exists. D6's remark that the design
+is one-way ("the relay never talks back to the broadcaster") was already
+superseded by R18's push channel (`ViewerCount`, `RelayCapabilities`,
+`TelemetryHello`); this adds nothing to it. The NACK/ARQ-over-datagrams
+rejections (docs/24, docs/26) are respected too: retransmission is QUIC's,
+on a stream, not a gawk protocol.
+
+### D7 — macOS: the Wi-Fi hint and Wi-Fi streaming mode
+
+**The hint (WU3), unprivileged.** While live, the macOS shell checks:
+
+- whether the connection's route goes out a Wi-Fi interface — CoreWLAN's
+  interface names against the interface Network.framework's path monitor
+  reports;
+- whether `awdl0` is `IFF_UP` (`getifaddrs`, no privilege);
+- `uplinkLossPct` from D5.
+
+On Wi-Fi with AWDL up, the Share card shows an amber line: *"You're on
+Wi-Fi. AirDrop and Handoff can make viewers stutter."* with two actions:
+**Turn on Wi-Fi streaming mode** (OD4) and **Learn more** (the README
+section). If the carrier is engaged and `uplinkLossPct` stays under 0.5 %,
+the hint is downgraded to the stats panel only: the uplink is coping, so
+don't nag.
+
+**Wi-Fi streaming mode (WU4), privileged, opt-in.** A root helper installed
+with `SMAppService.daemon` — one approval in System Settings → Login Items,
+the macOS-native way, no password prompt from gawk itself:
+
+- It exposes one XPC Mach service with two calls, `hold()` and `release()`,
+  and verifies the caller's code signature (same Team ID) before accepting.
+- `hold()` brings `awdl0` down (`SIOCSIFFLAGS`, no shelling out to
+  `ifconfig`) and keeps it down while the hold lasts: it watches the routing
+  socket, because macOS brings AWDL back up on demand (an AirDrop browse).
+- **Crash safety by design, as `gawk-pw-helper` does it (docs/39)**: the
+  hold is tied to the XPC connection. When the app releases it, quits,
+  crashes or is killed, the connection invalidates and the helper restores
+  AWDL. The helper writes a marker before taking AWDL down and restores on
+  its own start if the marker exists, which covers a helper crash and a
+  reboot. It never leaves AWDL down without a live holder.
+- The app takes the hold when a broadcast goes live and releases it at
+  Stop. AirDrop, Sidecar and Universal Control are unavailable *only* while
+  broadcasting, and the hint says so.
+- Signed and notarized with the app bundle (docs/54 D13/D14): the helper is
+  `Contents/Library/LaunchDaemons/` + its plist, same identity, same
+  release unit.
+
+**Windows** has no AWDL; the hint's Wi-Fi half ("you're on Wi-Fi, and the
+uplink is losing X %") applies there too and is a later, small chunk.
+
+### D8 — QoS marking: an experiment with a stop rule
+
+Mark the broadcaster's UDP socket as interactive video: on macOS
+`SO_NET_SERVICE_TYPE = NET_SERVICE_TYPE_VI`, which maps to the Wi-Fi WMM
+video access category (priority airtime) and a DSCP. It needs no privilege.
+
+- **The trap.** quinn-udp sets a per-packet `IP_TOS`/`IPV6_TCLASS` control
+  message carrying only the ECN bits, which likely overrides a socket-level
+  DSCP. `SO_NET_SERVICE_TYPE` may survive it (the service class is a socket
+  attribute, not the TOS byte) — WU5 checks with a packet capture before
+  anything else. If not, the change is a patch to the vendored stack, which
+  goes in `vendor/wtransport/GAWK-PATCH.md`.
+- **Stop rule.** Ship it only if paired runs show leg-A loss or retransmit
+  count down by ≥ 30 % against the carrier alone. WMM priority does not stop
+  AWDL taking the radio off-channel, so a null result is plausible and fine.
+
+## 5. Architecture
+
+```
+ broadcaster (Rust engine)                          relay (origin)
+ ────────────────────────                          ──────────────
+ keyframe ──► StreamFrame uni stream (R8, F-12) ──► acceptKeyframeStreams ──► onKeyframe (cache, DVR, fan-out)
+ deltas   ──► carrier uni stream per GOP       ──► acceptUplinkCarrier (new)
+               0x01 0x0A ‖ len ‖ dgram ‖ …           └─ per record ─► Publisher.HandleDatagram ─► (unchanged)
+               reset at uplinkDeadlineMs
+ audio    ──► datagram (unchanged)             ──► HandleDatagram
+ (carrier not engaged: deltas as datagrams, exactly as today)
+```
+
+## 6. Chunks and acceptance criteria
+
+### WU0 — Baseline, and the telemetry that can see it
+
+| Acceptance criterion | Verified by |
+|---|---|
+| The BUGS.md double-append in `relayscrape.ScrapeOnce` is fixed test-first; the live view shows non-zero `framesRelayed` and a `framesRelayedPerSec` | unit (red first) + live dashboard |
+| Leg-A loss is reported as frames **and** chunks: `ingressLossRatio` counts partly received frames, or a sibling `ingressChunkLossRatio` exists and the leg-A row reads both | unit |
+| The baseline is recorded in §8: 10 min each, the reference Mac, datagram mode, AWDL on / AWDL off / Ethernet — leg-A frames and chunks lost, viewer resyncs, `capToRenderMs` p50/p95 | manual, recorded |
+
+### WU1 — Relay: carrier ingest behind `CapUplinkCarriers`
+
+| Acceptance criterion | Verified by |
+|---|---|
+| `CapUplinkCarriers` allocated in `wire.go` and mirrored in `wire.ts`, `wirecheck`, `crates/wire`; golden vectors byte-identical | unit (mirror tests) |
+| A carrier's records are ingested exactly as the same bytes sent as datagrams: same fan-out, same accounting, same DVR contents (property test over random frames) | unit, test-first |
+| Without the capability configured, a publisher `0x0A` stream is rejected as today; with `-uplink-carriers=false`, `/statusz`, metrics and wire are byte-identical to pre-R54 (diff-asserted, the R28 pattern) | unit |
+| Third concurrent carrier rejected and counted; malformed record ends the carrier, earlier records forwarded; stale record (pre-latest-keyframe) dropped and counted | unit |
+| A full GOP at 16 Mbps passes one carrier without a flow-control stall | unit (real quic-go loopback) |
+| `-uplink-carriers` / `GAWK_UPLINK_CARRIERS` / `config.uplinkCarriers` plumbed; `TestRegistryOptionsCarryAllLimits` grows the field; README flags table updated | unit + review |
+
+### WU2 — Rust engine: carrier sender, deadline, engage policy
+
+| Acceptance criterion | Verified by |
+|---|---|
+| Carrier opened per keyframe, FIN after the GOP's last record; records are byte-identical to the datagrams datagram mode would send (same frame) | unit, test-first |
+| Deadline: with a fake transport that withholds acks, the carrier resets at `uplinkDeadlineMs`, later deltas of that GOP are discarded, the next keyframe opens a fresh carrier, the encoder is never blocked | unit (fake clock) |
+| Engage policy: capability absent ⇒ datagrams; RTT hysteresis 40/60 ms over 5 s; override forces either mode | unit |
+| Keyframe stream priority above the carrier's; F-12's 2 s rule unchanged (its tests still pass) | unit |
+| Against a real `gawk-server` with injected loss (the `vt_to_relay` harness): with 2 % random packet loss, carrier mode delivers every frame to a subscriber and datagram mode does not | integration, ignored-by-default like `vt_to_relay` |
+| D5 broadcaster fields reported; the field registry and stored-shape golden updated | unit |
+
+### WU3 — macOS Wi-Fi hint
+
+| Acceptance criterion | Verified by |
+|---|---|
+| The hint policy (Wi-Fi × AWDL × carrier engaged × `uplinkLossPct`) is a pure function with a table test; the platform probes only translate values | unit |
+| On Wi-Fi with AWDL up, the hint shows within 5 s of going live; on Ethernet it never does; downgraded to the stats panel when the carrier copes | unit + manual |
+| README (macOS section) gains "Broadcasting over Wi-Fi" with the one-line cause and both remedies | review |
+
+### WU4 — Wi-Fi streaming mode helper (only if OD4 is taken)
+
+| Acceptance criterion | Verified by |
+|---|---|
+| Helper registers via `SMAppService.daemon`; the approval flow is one System Settings toggle; the app shows the pending state until approved | manual |
+| XPC caller verification: a binary not signed with the app's Team ID is refused | unit (signature check against a test binary) + manual |
+| AWDL down while live, re-asserted if macOS raises it; restored after Stop, `kill -9` of the app, `kill -9` of the helper, reboot mid-broadcast (G9) | manual, each case recorded |
+| Bundle layout, signing and notarization pass the existing MB7 checks (`codesign --verify --deep --strict`, `spctl --assess`) with the helper inside | CI (signed run) |
+
+### WU5 — QoS marking experiment
+
+| Acceptance criterion | Verified by |
+|---|---|
+| A packet capture shows whether `NET_SERVICE_TYPE_VI` survives quinn-udp's per-packet TOS cmsg | manual, recorded |
+| Paired runs recorded; shipped only if the D8 stop rule is met, otherwise §8 records the null result and the code is not merged | manual |
+
+### WU6 — The on-hardware acceptance pass
+
+| Acceptance criterion | Verified by |
+|---|---|
+| G1–G4 and G8–G10 pass on the reference setup; the Windows app's G4 run on the gaming PC | manual |
+| §8 records every measured number against the WU0 baseline | review |
+
+## 7. Risks
+
+- **Retransmit latency leaks into playout.** A retransmitted delta arrives
+  one or two RTTs late, and the viewer's adaptive playout may grow its
+  buffer to absorb that. G3 is the bound; if it fails, the deadline goes
+  down before the design is changed.
+- **Congestion control reacts to Wi-Fi loss.** Datagrams are congestion
+  controlled in quinn too, so this is not new, but a stream makes the effect
+  visible as queueing rather than loss. The deadline caps how long a queue
+  can hold a GOP.
+- **quinn's scheduling.** F-12 showed quinn's packet assembly can starve a
+  stream. Moving deltas onto a stream removes the datagram flood that caused
+  it, but WU2's integration test has to show the keyframe stream is not
+  starved by the carrier either.
+- **Apple and AWDL.** The helper depends on bringing an interface down from
+  root. Apple can change that in any release; the hint and the carrier do
+  not depend on it, which is why WU4 is separable.
+- **A privileged component** is new attack surface. XPC caller verification,
+  two calls, no arguments, no media — the same "owns nothing" shape as
+  `gawk-pw-helper`.
+
+## 8. Measurements
+
+Empty until WU0. Baseline observations from the 2026-09-23 session (not
+the WU0 protocol, recorded for context): AWDL on, datagram mode —
+`ingressLossRatio` 3.7 % (frames only), viewer 20–170 incomplete frames/min;
+AWDL off — viewer 0–4 incomplete frames/min.
+
+## 9. References
+
+- [docs/24](24-viewer-network-resilience.md) — R19 carriers, the format reused here
+- [docs/34](34-live-edge-forward-parity.md) — R29 parity; leg-A cleanliness; pacing rejected
+- [docs/35](35-connection-interleaving.md) — R30, the leg-B burst threshold
+- [docs/38](38-windows-native-broadcaster.md) — F-12, quinn's datagram-first packing
+- [docs/15](15-viewer-live-edge.md) — Decision 6, the rejected back-channel
+- [docs/39](39-linux-app-sharing.md) — the `gawk-pw-helper` crash-safety shape
+- [docs/54](54-macos-native-broadcaster.md) — R52, where the finding came from
+- `BUGS.md` — the live relay-facts bug WU0 fixes
