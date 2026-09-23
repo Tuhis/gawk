@@ -1,24 +1,28 @@
-//! The live macOS media pipeline (R52 MB3, docs/54 §5): ScreenCaptureKit →
+//! The live macOS media pipeline (R52 MB3/MB4, docs/54 §5): ScreenCaptureKit →
 //! admission (idle-drop + drop-only fps gate) → VideoToolbox → the engine's
-//! producer gate → the send pump. One process, one capture queue, one
-//! encoder, no pipes. Audio is MB4's.
+//! producer gate → the send pump; and, on the same stream's audio output,
+//! PCM shim → framer → libopus → the audio lane (D6). One process, two
+//! capture queues, one encoder, no pipes.
 //!
 //! The encoder is fed *session-clock* timestamps (the host PTS mapped once,
 //! D5), so what VideoToolbox returns needs no second mapping.
 
+use gawk_audio::lane::{Block, Lane};
 use gawk_capture::host;
-use gawk_capture::sck::{Capture, Frame, StreamSettings};
+use gawk_capture::sck::{AudioBlock, Capture, Frame, OnAudio, StreamSettings};
 use gawk_capture::sck_picker::Picked;
 use gawk_capture::sck_policy::{Admission, ENCODER_MAX_IN_FLIGHT, nv12_thumbnail};
 use gawk_encode::cascade;
 use gawk_encode::vt::{self, Encoder, EncoderParams, VtTrialRunner};
 use gawk_engine::clock::Clock;
+use gawk_engine::clock::QpcMapper;
 use gawk_engine::gate::FrameGate;
-use gawk_engine::media::AccessUnit;
+use gawk_engine::media::{AUDIO_SAMPLE_RATE, AccessUnit};
+use gawk_engine::sender::Sender;
 use gawk_ui::messages::StartFailure;
 use gawk_ui::shell::{Media, MediaEnv, MediaInfo, Thumb};
 use std::any::Any;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const THUMB_W: u32 = 320;
@@ -31,6 +35,38 @@ pub struct Params {
     pub stream: StreamSettings,
     pub peak_bitrate_bps: u32,
     pub last_good_encoder: Option<String>,
+    /// The config's audio switch (D6); off means byte-identical to a
+    /// video-only broadcaster.
+    pub audio: bool,
+}
+
+/// GUI-readable audio state (the shell's audio line and silence hint).
+struct AudioShared {
+    /// "off" | "unavailable" | "active" | "error"
+    state: Mutex<String>,
+    /// The lane, fed on the audio queue; the GUI reads its level meter.
+    lane: Mutex<Option<Lane>>,
+}
+
+// The GUI reads below run on the UI thread every tick. The audio queue
+// holds the lane's lock while it feeds it, so a panic in the audio path —
+// caught by the capture's audio fence — leaves the mutex poisoned; that
+// lane is dead (D6: audio stops, video runs on), so a poisoned lock reads
+// as silence instead of unwrapping into a UI-thread panic.
+impl AudioShared {
+    fn level(&self) -> f32 {
+        match self.lane.lock() {
+            Ok(lane) => lane.as_ref().map_or(0.0, |l| l.level().level()),
+            Err(_) => 0.0,
+        }
+    }
+
+    fn silence_hint(&self) -> bool {
+        match self.lane.lock() {
+            Ok(lane) => lane.as_ref().is_some_and(|l| l.level().silence_hint()),
+            Err(_) => false,
+        }
+    }
 }
 
 /// What the capture queue measures and the GUI reads.
@@ -49,6 +85,10 @@ pub struct Pipeline {
     failed: Arc<Mutex<Option<String>>>,
     /// Frames the backpressure gate dropped (D10), for the debug log.
     dropped_backpressure: Arc<AtomicU64>,
+    audio: Arc<AudioShared>,
+    /// "Use whole-system audio" was clicked: the platform re-runs the
+    /// picker in display mode for the live stream (D6).
+    wants_system_audio: AtomicBool,
     send_task: tokio::task::JoinHandle<()>,
 }
 
@@ -194,7 +234,24 @@ impl Pipeline {
                 }
             }
         };
-        let capture = match Capture::start(&params.picked, s, on_frame, record) {
+        // Audio, strictly subordinate (D6): anything that goes wrong drops
+        // audio, notifies through the audio line, and leaves video running.
+        let audio = Arc::new(AudioShared {
+            state: Mutex::new("off".into()),
+            lane: Mutex::new(None),
+        });
+        let on_audio = if params.audio {
+            audio_lane(
+                &audio,
+                env.sender.clone(),
+                mapper,
+                env.clock.clone(),
+                params.picked.style.capture_mode(),
+            )
+        } else {
+            None
+        };
+        let capture = match Capture::start(&params.picked, s, on_frame, on_audio, record) {
             Ok(c) => c,
             Err(e) => {
                 send_task.abort();
@@ -223,8 +280,16 @@ impl Pipeline {
             clock: env.clock,
             failed,
             dropped_backpressure,
+            audio,
+            wants_system_audio: AtomicBool::new(false),
             send_task,
         })
+    }
+
+    /// Takes a pending "use whole-system audio" request (see
+    /// `wants_system_audio`).
+    pub fn take_system_audio_request(&self) -> bool {
+        self.wants_system_audio.swap(false, Ordering::AcqRel)
     }
 
     /// Points the running capture at newly picked content (D4's re-pick
@@ -259,21 +324,28 @@ impl Media for Pipeline {
         self.shared.lock().unwrap().admission.fps()
     }
 
-    // Audio arrives in MB4: until then a broadcast is video-only, which on
-    // the wire is byte-identical to an audio-off one (D6).
     fn audio_state(&self) -> String {
-        "off".into()
+        if self.capture.as_ref().is_some_and(|c| c.audio_failed()) {
+            return "error".into();
+        }
+        self.audio.state.lock().unwrap().clone()
     }
 
     fn audio_level(&self) -> f32 {
-        0.0
+        self.audio.level()
     }
 
     fn audio_silence_hint(&self) -> bool {
-        false
+        self.audio_state() == "active" && self.audio.silence_hint()
     }
 
-    fn switch_audio_to_system(&self) {}
+    /// D6: system audio in ScreenCaptureKit comes from a display filter, so
+    /// the switch is a re-pick in display mode — the platform presents it
+    /// on its next tick. A new filter on the same stream: same Opus stream,
+    /// same seq space, viewers notice nothing.
+    fn switch_audio_to_system(&self) {
+        self.wants_system_audio.store(true, Ordering::Release);
+    }
 
     fn minimized(&self) -> bool {
         self.shared
@@ -304,5 +376,108 @@ impl Media for Pipeline {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+/// Builds the audio callback (D6) around a [`Lane`], or `None` when
+/// libopus will not open — then the broadcast is video-only and says so.
+fn audio_lane(
+    shared: &Arc<AudioShared>,
+    sender: Arc<Sender>,
+    mapper: QpcMapper,
+    clock: Arc<dyn Clock>,
+    capture_mode: &'static str,
+) -> Option<Box<OnAudio>> {
+    let source = if capture_mode == "app" {
+        "sck-app"
+    } else {
+        "sck-system"
+    };
+    match Lane::new(source) {
+        Ok(lane) => *shared.lane.lock().unwrap() = Some(lane),
+        Err(e) => {
+            log::warn!("opus encoder: {e}; broadcasting without audio");
+            *shared.state.lock().unwrap() = "unavailable".into();
+            return None;
+        }
+    }
+    *shared.state.lock().unwrap() = "active".into();
+    let shared = shared.clone();
+    let mut announced = false;
+    let feed = move |block: Result<&AudioBlock<'_>, String>| {
+        let block = block.map(|b| {
+            if !announced {
+                announced = true;
+                log::info!(
+                    "audio: {} Hz, {} ch, {}-bit, flags {:#x} from ScreenCaptureKit ({source})",
+                    b.sample_rate,
+                    b.channels,
+                    b.bits_per_channel,
+                    b.format_flags
+                );
+            }
+            // One clock (D5): the SAME mapper as video. A buffer without a
+            // time is stamped on arrival, minus its own duration.
+            let timestamp_us = b
+                .pts_100ns
+                .map(|p| mapper.to_session_us(p))
+                .unwrap_or_else(|| {
+                    clock
+                        .now_us()
+                        .saturating_sub(b.frames as u64 * 1_000_000 / u64::from(AUDIO_SAMPLE_RATE))
+                });
+            Block {
+                format_id: b.format_id,
+                format_flags: b.format_flags,
+                sample_rate: b.sample_rate,
+                channels: b.channels,
+                bits_per_channel: b.bits_per_channel,
+                frames: b.frames,
+                buffers: &b.buffers,
+                timestamp_us,
+            }
+        });
+        let out = match shared.lane.lock().unwrap().as_mut() {
+            Some(lane) => lane.feed(block),
+            None => return,
+        };
+        if let Some(format) = out.advertise {
+            sender.set_audio_format(format);
+        }
+        for packet in out.packets {
+            sender.send_audio(packet);
+        }
+        if let Some(why) = out.failed {
+            log::warn!("audio: {why}; broadcast continues without audio");
+            *shared.state.lock().unwrap() = "error".into();
+        }
+    };
+    Some(Box::new(feed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D6: an audio panic stops audio, never the broadcast. The audio queue
+    /// holds the lane's lock while it feeds it, so a panic there poisons
+    /// the mutex — and the GUI reads the level every 250 ms on the UI
+    /// thread. Reading a poisoned lane must not take the app down.
+    #[test]
+    fn a_panic_inside_the_lane_does_not_poison_the_gui_reads() {
+        let shared = AudioShared {
+            state: Mutex::new("active".into()),
+            lane: Mutex::new(Some(Lane::new("sck-app").unwrap())),
+        };
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {})); // keep the output clean
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = shared.lane.lock().unwrap();
+            panic!("injected inside Lane::feed");
+        }));
+        std::panic::set_hook(prev);
+        assert!(shared.lane.is_poisoned(), "the setup really poisoned it");
+        assert_eq!(shared.level(), 0.0);
+        assert!(!shared.silence_hint());
     }
 }
