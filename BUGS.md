@@ -699,6 +699,72 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   by design, so either they stay poisoned with this entry as the explanation,
   or a one-off rewrite drops the outliers.
 
+## Telemetry live view: every windowed relay fact reads zero — leg-A loss can never fire live
+
+- **Found**: 2026-09-23, troubleshooting stutter on the first macOS
+  broadcaster session (broadcast `5b39bb21764d`, docs/54). The history
+  diagnosis (`/v1/broadcasts/{key}/diagnose`) reported leg-A ingress loss of
+  3.7 %; the live view of the same broadcast at the same time reported
+  `ingressLossRatio: 0` with `framesRelayed: 0` and no `framesRelayedPerSec`,
+  while ~56 fps were demonstrably flowing to a viewer.
+- **Cause (read in code, not yet test-reproduced)**: in
+  `gawk-telemetry/internal/relayscrape/scrape.go` `Scraper.ScrapeOnce`, each pod's
+  observations are appended to `all` **twice** — once right after
+  `answered++` ("Counted BEFORE the emptiness check") and again after
+  `StoreRelay`. Present since R28 (#151). `live.Projection.ObserveRelay` then
+  sees the same pod's broadcast record twice in one round: the second copy
+  rotates `prev = cur` at the same `now`, so every `deltaOf(cur, prev)` is 0
+  and `origin.at.Sub(origin.prevAt)` is 0 (hence no rate). The store path is
+  unaffected — `StoreRelay` is given `obs`, not `all` — which is why history
+  and the diagnose endpoints are right.
+- **Impact**: every windowed relay fact on `/live` is zero —
+  `framesRelayed`, `framesRelayedPerSec`, `ingressFramesLost`,
+  `ingressLossRatio`, `datagramsDropped`, `bandwidthDroppedDatagrams`,
+  `keyframeStreamsIn`, `subscribersDropping` (per-subscriber deltas take the
+  same double-rotation). So the live playbook rows that need them —
+  leg-A broadcaster uplink, relay egress saturation, "publisher attached
+  but nothing relayed" (row 10) — can never fire on a live card; the operator
+  only learns after the fact, from history. The live row that did fire in
+  that session did so on client-side evidence.
+- **Fix would start**: test-first in `relayscrape`: a fake two-pod fleet
+  round whose `Round.Observations` must contain each observation exactly
+  once, then a `live` test that two scrape rounds with advancing counters
+  produce a non-zero `framesRelayed` and a `framesRelayedPerSec`. The fix is
+  deleting the second append. Consider a defensive guard in `ObserveRelay`
+  too (skip a pod already seen in this round) so a future double-feed fails
+  loudly rather than zeroing every delta.
+
+## Telemetry counts R30 stripe legs as viewers — `viewer-count-gap` fires on every striped viewer
+
+- **Found**: 2026-09-23, same session as the entry above. Every recent
+  broadcast carries a `viewer-count-gap` warning ("the origin's global count
+  is below the fleet's actual subscribers") with `viewersGlobal: 1` against
+  `subscribersFleetTotal: 5` (6 with two viewers).
+- **Cause (read in code)**: a striped viewer holds **1 primary + 4 legs = 5
+  relay sessions** (docs/35 §5.8, `MaxStripeLegs = 4`). The relay reports
+  legs in `subscriberDetails` with `stripeLeg: true` but **not**
+  `internal: true` — `internal` is reserved for R17 edge sessions — and its own
+  `viewersGlobal` correctly excludes them (docs/35 ST3). Telemetry excludes
+  only `Internal`: `relayscrape.Subscriber` does not even decode `stripeLeg`,
+  and the subscriber loops in `live.aggregateLocked`,
+  `readapi/broadcast.go` and `readapi/readapi.go` (`subscribersFleetTotal`,
+  `subscribers`, `subscribersDropping`) all count legs as audience.
+- **Impact**: the `viewer-count-gap` playbook row is a false positive on
+  essentially every broadcast with a striping-capable viewer, which trains
+  the operator to ignore it — and it is the row meant to catch a real R18
+  edge-report aggregation bug. `subscribers`/`subscribersDropping` are
+  inflated the same way, and leg sessions are written to the per-viewer
+  relay store as "subscriber" observations.
+- **Not confirmed on the wire**: reading the origin's raw `/statusz` from
+  inside the cluster was not done, so "the 4 extra entries are this viewer's
+  legs" is inferred from the exact 1 + 4 match and the code, not observed.
+- **Fix would start**: test-first — decode `stripeLeg` in
+  `relayscrape.Subscriber`, then assert with a fixture of one primary + four
+  legs that `subscribersFleetTotal == 1`, that `viewer-count-gap` does not
+  fire, and that legs are not emitted as `subscriber` observations (they are
+  plumbing, like edges). One shared "is audience" predicate for the three
+  loops would stop them drifting apart again.
+
 (The "Telemetry SQL console: the `rollups` view rots after boot, and any
 unpruned `sessions` query OOMs" entry was resolved 2026-09-22: views
 re-register on drift, and the engine runs inside a stated memory, thread
