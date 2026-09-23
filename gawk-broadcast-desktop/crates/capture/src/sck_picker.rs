@@ -19,7 +19,8 @@ use objc2_screen_capture_kit::{
 };
 use std::sync::Arc;
 
-/// What the user picked.
+/// What the user picked. Cloning retains the same filter.
+#[derive(Clone)]
 pub struct Picked {
     pub(crate) filter: Retained<SCContentFilter>,
     pub style: ShareStyle,

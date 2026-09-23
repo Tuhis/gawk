@@ -264,6 +264,19 @@ impl Shell {
     pub fn media(&self) -> Option<&dyn Media> {
         self.media.as_deref()
     }
+
+    /// The platform and the running media together — for a platform
+    /// callback that acts on the live pipeline (macOS "Change…" re-picks
+    /// for the running capture).
+    pub fn platform_and_media<T: Platform>(&mut self) -> (&mut T, Option<&dyn Media>) {
+        let media = self.media.as_deref();
+        let platform = self
+            .platform
+            .as_any_mut()
+            .downcast_mut::<T>()
+            .expect("the shell runs the platform it was started with");
+        (platform, media)
+    }
 }
 
 fn creds() -> Box<dyn config::Credentials> {

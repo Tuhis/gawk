@@ -11,6 +11,20 @@ license.workspace = true
 [dependencies]
 log = "0.4"
 
+# macOS (R52, docs/54 D3/D7): VideoToolbox's low-latency H.264 session
+# through the generated objc2 bindings; `unsafe` is confined to `vt`.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-video-toolbox = "0.3"
+
+# tests/vt_to_relay.rs: VideoToolbox output through the engine to the real
+# relay (macOS, ignored by default).
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gawk-engine = { path = "../engine" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
 # Windows-only: the crate's portable half (bitstream inspection, cascade
 # policy) tests on any host; the MFT session is cfg-gated.
 [target.'cfg(windows)'.dependencies]

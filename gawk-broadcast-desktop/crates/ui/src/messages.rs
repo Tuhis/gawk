@@ -111,6 +111,13 @@ mod tests {
         let m = message(&StartFailure::NoHardwareEncoder, "https://gawk.ioio.fi");
         assert!(m.contains("deliberately has no software encoder"));
         assert!(m.contains("https://gawk.ioio.fi"));
+        // G3 / docs/54 D7: each platform's refusal names its own reason.
+        let on = if cfg!(target_os = "macos") {
+            "fine on a Mac;"
+        } else {
+            "fine on Windows;"
+        };
+        assert!(m.contains(on), "{m}");
     }
 
     #[test]

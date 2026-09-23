@@ -1023,6 +1023,28 @@ Add to it when a new gotcha lands in `docs/`.
   the shipped binary. Nothing sets it; do not.
   ([docs/53](53-app-icons.md) §6)
 
+**Native macOS broadcaster (R52)**
+
+- **An active `SCContentSharingPicker` puts the system's screen-sharing
+  indicator in the menu bar**, whether or not anything is being captured.
+  Activating it at launch made an idle app look like it was sharing; it is
+  activated on present and while a capture runs, and deactivated otherwise.
+  ([docs/54](54-macos-native-broadcaster.md) §11, MB2)
+- **Low-latency VideoToolbox ignores the GOP keys** — "infinite GOP after the
+  IDR" by documentation — so the 500 ms GOP is the app's: `ForceKeyFrame` on
+  every `fps/2`-th submitted frame. Verified honoured on an M1 (V-3).
+  ([docs/54](54-macos-native-broadcaster.md) D7, §11 MB3)
+- **VideoToolbox's parameter sets live only in the format description.** The
+  AVCC output has no in-band SPS/PPS, and the Annex-B wire has no extradata,
+  so every IDR gets them prepended from the sample's description — skip it
+  and a viewer joining on that keyframe cannot decode it.
+  ([docs/54](54-macos-native-broadcaster.md) D8)
+- **Nothing may unwind into an Objective-C or VideoToolbox callback** — it
+  aborts the process. Every delegate, output and completion entry point runs
+  behind `sck_policy::CallbackGuard` or its own `catch_unwind`, and a caught
+  panic ends the broadcast as a session error.
+  ([docs/54](54-macos-native-broadcaster.md) D3)
+
 **Single-application audio on Linux (R35)**
 
 - **`application.process.binary` is not in PipeWire's registry global

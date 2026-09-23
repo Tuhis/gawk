@@ -4,8 +4,11 @@
 2026-09-22**, **MB1 implemented and owner-verified 2026-09-23**; **MB2
 (capture) implemented 2026-09-23** — its unit criteria are green, its
 manual ones (the picker, V-1's no-prompt check, frames/cursor, occluded,
-minimized, V-2) await the owner's pass on a Mac. §11 records what each
-chunk turned up. MB3–MB8 not started. The
+minimized, V-2) await the owner's pass on a Mac; **MB3 (encode — the first
+real broadcast) implemented 2026-09-23**, its hardware trial and
+encode-to-relay criteria verified on an M1, its first on-screen broadcast
+the owner's. §11 records what each chunk turned up. MB4–MB8 not started.
+The
 ROADMAP entry ([R52](../ROADMAP.md#r52--native-macos-broadcaster)) carries
 the research summary and owner decisions this doc builds on; the decisions
 are restated in §2 so the doc reads on its own.
@@ -929,6 +932,56 @@ behaviour change is on non-Windows dev hosts, where the Windows binary now
 refuses Start before dialing instead of after. The quit path gained a
 final bounded stop after the event loop returns, for ⌘Q, which ends the
 loop without the close dialog.
+
+**MB3 (2026-09-23)** — how the encode landed, and what the hardware said:
+
+- **V-3 and V-9 answered on an Apple M1, macOS 26.5.2.** The D7 trial —
+  `crates/encode/src/vt.rs`'s `the_trial_passes_on_this_mac`, run with
+  `--ignored` — creates the low-latency hardware session, and the forced-IDR
+  cadence is honoured under `EnableLowLatencyRateControl` (V-3: IDRs at
+  frame 0, at the 30-frame boundary and at the forced frame). `420v`
+  IOSurface-backed input is accepted directly (V-9, with the trial's own
+  buffers; SCK's are the same format and backing). No B-frames, VFR
+  pass-through and SPS/PPS before every IDR all hold. Codec string:
+  `avc1.64002A` (High, level 4.2) at 1080p60 12 Mbps. The BGRA fallback is
+  therefore not built; it stays pre-registered.
+- **Required vs advisory properties.** `RealTime`, `AllowFrameReordering`,
+  `ProfileLevel` and `AverageBitRate` must be accepted or the trial rejects
+  the session. `DataRateLimits`, `ExpectedFrameRate` and the two
+  `MaxKeyFrameInterval*` keys are set but a refusal is logged, not fatal:
+  the cadence never depended on the GOP keys (low-latency mode documents
+  them as ignored), and the peak cap is V-6's to measure — refusing to
+  broadcast over it would trade a bitrate question for a dead app. All were
+  accepted on the M1.
+- **The encoder is fed session-clock timestamps.** The host PTS is mapped
+  once at capture (D5), and VideoToolbox returns the PTS it was given, so
+  output needs no second mapping — the `AccessUnit` timestamp is the input
+  time in µs.
+- **SPS/PPS come from the format description on every IDR.** The output
+  callback copies the AVCC bytes once (D7's zero-copy note), rewrites them
+  with the shared `h264::avcc_to_annex_b` and prepends the description's
+  parameter sets through the shared `cascade::ensure_idr_headers` — the same
+  helper the Windows path uses for vendors that omit in-band headers. A
+  malformed AVCC unit is refused whole, never truncated.
+- **End to end against the real relay** (`crates/encode/tests/vt_to_relay.rs`,
+  ignored by default, macOS only): VideoToolbox's real output through the
+  engine to a real `gawk-server`, a rolling restart, the reclaim of the same
+  code, then `force_idr` — the next AU is an IDR with its parameter sets
+  and reaches the restarted relay. That is MB3's "forced IDR on resume"
+  criterion; the shell calls `Media::force_idr` on `Resumed`. The real-relay
+  harness moved to `crates/engine/tests/support/relay.rs` so the two suites
+  share it.
+- **D12's config file landed early**, because MB3's broadcasts go through
+  the shared shell, which loads and saves it: `~/Library/Application
+  Support/gawk/broadcast.json`, and on every Unix the file is now written
+  mode 0600 (it was the umask's 0644 — on Linux dev hosts too). Plaintext
+  credentials, no Keychain, as D12 decided.
+- **Not yet:** notifications go to the debug log until MB5 brings
+  `UNUserNotificationCenter`; audio is off until MB4 (a video-only
+  broadcast, byte-identical to audio-off on the wire); `VTCopyVideoEncoderList`
+  is not consulted — D7 wanted it only for the refusal's wording, which does
+  not need it. The trial and the relay test need hardware, so the
+  `macos-latest` job runs neither; they are for a Mac.
 
 ## 12. References
 
