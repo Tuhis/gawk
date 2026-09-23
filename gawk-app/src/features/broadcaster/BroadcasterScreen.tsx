@@ -860,8 +860,12 @@ export function BroadcasterScreen() {
             <span>
               {room.streaming} streaming · {fmtWatching(room.watching)}
             </span>
+            <IconButton label={room.linkCopied ? 'Copied' : 'Copy room link'} onClick={room.copyLink}>
+              <CopyIcon />
+            </IconButton>
           </span>
         )}
+        {room?.creatorBadge}
         {renderAutoBadge(stats)}
         {stats?.encoderPressure && (
           <span className={`${styles.badge} ${styles.warnBadge}`}>

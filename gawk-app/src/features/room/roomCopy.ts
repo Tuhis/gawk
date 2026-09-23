@@ -169,7 +169,28 @@ export const ATTACH_REFUSED_CARD: Card = {
   body: 'The room refused it. Check the secret and try again — the room code could also be wrong. Your stream is still running either way.',
 };
 
-export const SHARE_CODE_NOTE = 'Anyone with the room code can also see the codes of the streams in it.';
+// The toast for a copied room link. Its second line carries the D16 note —
+// the code reveals the codes of the streams in the room — at the moment of
+// sharing, which is when it matters (it used to sit in the people panel's
+// foot).
+export const LINK_COPIED_TOAST = {
+  text: 'Room link copied',
+  note: 'Anyone with it can also see the codes of the streams in it.',
+};
 
 export const RECONNECTING_NOTE = 'Reconnecting to the room…';
 export const DRAINING_NOTE = 'Room server is updating — reconnecting…';
+
+// The Creator chip's help (docs/44 §4.9 revision 2026-09-23). What the
+// creator token grants (D8): detach any attachment and end the room. Not
+// people — there is no command that removes a participant — and a removed
+// stream keeps running and may be attached again, so the copy says so
+// rather than promising a kick.
+export const CREATOR_HELP = {
+  title: 'You created this room',
+  points: [
+    'Remove any stream from the room with the × on its row under People. It keeps running on its own code, and its streamer can add it back.',
+    'End the room for everyone from the bottom of People.',
+    'You can’t remove people who are only watching — anyone with the room link can join.',
+  ],
+};

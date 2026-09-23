@@ -251,7 +251,7 @@ describe('RoomScreen modes', () => {
 });
 
 describe('RoomScreen people-and-chat panel', () => {
-  it('renders the roster and streams from the RoomState, with the share note', async () => {
+  it('renders the roster and streams from the RoomState; sharing lives on the header chip, not here', async () => {
     await joinAs();
     fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
     const panel = screen.getByRole('complementary', { name: 'People and chat' });
@@ -261,22 +261,109 @@ describe('RoomScreen people-and-chat panel', () => {
     expect(screen.getByText('me (you)')).toBeTruthy();
     expect(screen.getByText('alpha-streamer')).toBeTruthy();
     expect(screen.getByText('streaming')).toBeTruthy();
-    expect(screen.getByText(/Anyone with the room code can also see/)).toBeTruthy();
     // Chat is reserved: absent until the relay advertises the capability.
     expect(screen.queryByText('Chat')).toBeNull();
-    // A dynamic room offers the code; the link is always there.
-    expect(within(panel).getByRole('button', { name: /Copy room code/ })).toBeTruthy();
-    expect(within(panel).getByRole('button', { name: /Copy room link/ })).toBeTruthy();
+    // Revised 2026-09-23: no copy buttons in the panel — the header's code
+    // chip copies the link, the More menu keeps both copies.
+    expect(within(panel).queryByRole('button', { name: /Copy room/ })).toBeNull();
     // Not the creator: no detach, no end room.
     expect(screen.queryByRole('button', { name: /^Detach/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'End room' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /End room/ })).toBeNull();
   });
 
-  it('the creator sees detach and end room, and they send the commands', async () => {
+  it('the header code chip is the copy: click it and the room link is copied, the note riding the toast', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    await joinAs();
+    // One copy control in the header, and it is the chip showing the code
+    // (the separate copy-link icon beside the panel toggle is gone).
+    const chip = screen.getByRole('button', { name: 'Copy room link' });
+    expect(chip.textContent).toContain('AB2CD3');
+    expect(chip.getAttribute('title')).toBe('Room code');
+    fireEvent.click(chip);
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText.mock.calls[0]).toEqual([expect.stringMatching(/#\/room\/AB2CD3$/)]);
+    // The code-visibility note (D16) moved from the panel foot to the moment
+    // of sharing.
+    await waitFor(() => expect(screen.getByText(/Room link copied/)).toBeTruthy());
+    expect(screen.getByText(/can also see the codes of the streams/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy();
+  });
+
+  it('a static room’s chip shows its slug and copies its link too', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    render(<RoomScreen code="devroom" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Join as a guest' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ flags: ROOM_STATE_FLAG_ATTACH_OK, code: 'devroom' })));
+    const chip = screen.getByRole('button', { name: 'Copy room link' });
+    expect(chip.textContent).toContain('devroom');
+    fireEvent.click(chip);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringMatching(/#\/room\/devroom$/)));
+  });
+
+  it('the creator sees detach and end room; ending asks first, and only the confirm sends it', async () => {
     const room = await joinAs('tuhis', { flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR });
     fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
     fireEvent.click(screen.getByRole('button', { name: 'Detach bravo' }));
     expect(room.sent).toContainEqual({ kind: 'detach', broadcastId: 'BBBBBB' });
+    fireEvent.click(screen.getByRole('button', { name: 'End room…' }));
+    expect(room.sent).not.toContainEqual({ kind: 'end' });
+    expect(screen.getByText('End the room for everyone?')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByText('End the room for everyone?')).toBeNull();
+    expect(room.sent).not.toContainEqual({ kind: 'end' });
+    fireEvent.click(screen.getByRole('button', { name: 'End room…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End room' }));
+    expect(room.sent).toContainEqual({ kind: 'end' });
+  });
+
+  it('a creator watching from a tab (a native "Open room view") is not offered "start streaming here"', async () => {
+    // The creator flag only arrives with the creator token, and a tab that
+    // holds it without a broadcast of its own is the native app's room view:
+    // that person already streams from the app. Neither the empty-room card
+    // nor the panel offers a second, browser stream.
+    await joinAs('tuhis', { flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR, attachments: [] });
+    expect(screen.getByText('Nobody is streaming yet')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
+    expect(screen.queryByRole('button', { name: 'Start streaming here' })).toBeNull();
+    // End room stays: that is what the creator token is for.
+    expect(screen.getByRole('button', { name: 'End room…' })).toBeTruthy();
+  });
+
+  it('the creator sees a Creator chip whose help says what the role can and cannot do', async () => {
+    await joinAs('tuhis', { flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR });
+    const chip = screen.getByRole('button', { name: 'Creator' });
+    expect(chip.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(chip);
+    expect(chip.getAttribute('aria-expanded')).toBe('true');
+    const help = screen.getByRole('dialog', { name: 'Your role in this room' });
+    expect(help.textContent).toContain('You created this room');
+    expect(help.textContent).toContain('Remove any stream');
+    expect(help.textContent).toContain('End the room for everyone');
+    // Honest about the limit: streams, not people.
+    expect(help.textContent).toContain('can’t remove people');
+    // Escape and a second click both close it.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Your role in this room' })).toBeNull();
+    fireEvent.click(chip);
+    fireEvent.click(chip);
+    expect(screen.queryByRole('dialog', { name: 'Your role in this room' })).toBeNull();
+  });
+
+  it('a participant without the creator token sees no Creator chip', async () => {
+    await joinAs();
+    expect(screen.queryByRole('button', { name: 'Creator' })).toBeNull();
+  });
+
+  it('End room from the More menu opens the panel on the same confirm instead of ending at once', async () => {
+    const room = await joinAs('tuhis', { flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR });
+    fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'End room…' }));
+    expect(room.sent).not.toContainEqual({ kind: 'end' });
+    expect(screen.getByRole('complementary', { name: 'People and chat' })).toBeTruthy();
+    expect(screen.getByText('End the room for everyone?')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'End room' }));
     expect(room.sent).toContainEqual({ kind: 'end' });
   });
