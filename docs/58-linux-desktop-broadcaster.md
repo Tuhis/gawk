@@ -568,7 +568,8 @@ and icon match the window. This is verified in V-11. The desktop entry's
   `libpipewire-0.3-dev`, `libfontconfig-dev`, `libxkbcommon-dev`, `clang`,
   `cmake` and `pkg-config`. For the integration tests it also has
   `pipewire`, `wireplumber`, `dbus`, `gstreamer1.0-pipewire` and
-  `gstreamer1.0-plugins-{base,good}`.
+  `gstreamer1.0-plugins-{base,good,bad,ugly}`. `-bad` carries `h264parse`
+  (the D4 plan) and `-ugly` is there only for the test-only `x264enc` stub.
 - **Why a container and not the runner image**: the runner image stays
   unchanged, and the build's glibc floor is pinned by the container
   (OD14), not by whenever the runner is upgraded.
@@ -578,7 +579,8 @@ and icon match the window. This is verified in V-11. The desktop entry's
   per-test `XDG_RUNTIME_DIR`, a D-Bus session, pipewire, wireplumber and a
   null sink. It runs the `pwctl` integration and kill-matrix tests.
   - It keeps Go's skip-gate lesson (docs/39 F11): a step fails the job if
-    any of those tests was skipped.
+    any of the `pwctl`, kill-matrix **or gst-level** tests was skipped, so
+    a missing element or daemon can never turn into a silent pass.
   - It also runs a gst-level test: `videotestsrc` through the D4 plan, with
     an encoder stub (`x264enc`, **test-only**, never a production
     candidate) into the appsink → `FrameGate` → the real relay. That
@@ -661,7 +663,10 @@ and icon match the window. This is verified in V-11. The desktop entry's
   - a persistent header line in the Go GUI: "This app has been replaced —
     download gawk broadcast for Linux", linking the site's download
     section;
-  - a start-up log line in the Go CLI saying the same.
+  - a start-up log line in the Go CLI saying the app is no longer
+    developed, that its GUI replacement is gawk broadcast for Linux, and
+    that the replacement has no CLI yet (OD5), so headless use stays on
+    this release.
   That release also writes the frozen `releases/gawk-broadcast/latest.json`.
 - **LX9, removal (after LX7 passes).**
   - **Delete**: every package that `gawk-pubsim`, `wirecheck` and their
@@ -913,7 +918,7 @@ Prefix **LX** (Linux; the first free two-letter prefix that reads right).
 
 | Acceptance criterion | Verified by |
 |---|---|
-| The Go GUI shows the persistent "replaced" line linking the site's download section; the Go CLI logs it at start | unit (Go) + manual |
+| The Go GUI shows the persistent "replaced" line linking the site's download section; the Go CLI logs at start that it is no longer developed, names the GUI replacement, and says headless use stays on this release until a CLI exists (OD5) | unit (Go) + manual |
 | Released as the final `gawk-broadcast` minor; `releases/gawk-broadcast/latest.json` written one last time | the release |
 
 ### LX9 — Removing the Go app
