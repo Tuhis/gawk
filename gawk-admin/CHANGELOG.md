@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.3.0...gawk-admin/v1.4.0) (2026-09-23)
+
+
+### Features
+
+* **events:** name broadcasts and rooms in cleartext in every event ([#348](https://github.com/Tuhis/gawk/issues/348)) ([cd82ee0](https://github.com/Tuhis/gawk/commit/cd82ee0586286681b8c8f65a8740de0ee33d66e0))
+
 ## [1.3.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.2.0...gawk-admin/v1.3.0) (2026-09-21)
 
 

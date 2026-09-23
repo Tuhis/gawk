@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.46.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.45.2...gawk-app/v0.46.0) (2026-09-23)
+
+
+### Features
+
+* **app:** clearer room view sharing, a confirmed End room, and the creator's role ([#369](https://github.com/Tuhis/gawk/issues/369)) ([a0dc399](https://github.com/Tuhis/gawk/commit/a0dc399e94216c65ee86eb3245eabb0a88611517))
+* **app:** simplify the broadcaster's Room panel to one field and one create ([#368](https://github.com/Tuhis/gawk/issues/368)) ([70bbdcb](https://github.com/Tuhis/gawk/commit/70bbdcb43a7d36f1cfb759bb642bf49a911a734f))
+
 ## [0.45.2](https://github.com/Tuhis/gawk/compare/gawk-app/v0.45.1...gawk-app/v0.45.2) (2026-09-21)
 
 
