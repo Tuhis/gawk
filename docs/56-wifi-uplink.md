@@ -75,6 +75,7 @@ compares against.
 | G8 | The app stays quiet unless viewers are affected: on a clean Wi-Fi link (AWDL up, carrier coping) nothing appears; with sustained harm the D7 line appears within 15 s, at most once per broadcast; every string matches D7's copy table and none contains D7's banned terms | unit (policy + string test) + manual |
 | G9 | Improve (if OD4 is taken): from the amber line to "Wi-Fi improved" is **Improve → Continue → the system toggle**, nothing else; afterwards it is automatic on every Wi-Fi broadcast; AirDrop comes back with **no user action** after Stop, `kill -9` of the app, `kill -9` of the helper and a reboot mid-broadcast | manual |
 | G10 | Telemetry says which uplink ran: the broadcaster reports `uplinkMode`, carrier counters and local QUIC loss; the relay reports carrier ingest per broadcast | unit + one real session in the dashboard |
+| G11 | High bitrate: at 50 Mbps / 1440p60 on a Wi-Fi link with ≥ 3× headroom, G1 and G2 hold; on a link without headroom the carrier expires (it does not queue unboundedly) and the D7 status line appears | manual, paired runs |
 
 ## 2. Owner decisions (proposed, open)
 
@@ -168,10 +169,9 @@ striping, R29 parity prefixes, the DVR — is untouched.
   value `config.uplinkCarriers`, plumbed through `registryOptions` in
   `cmd/gawk-server/main.go` and asserted by `TestRegistryOptionsCarryAllLimits`
   — the CLAUDE.md invariant.
-- **Flow control.** quic-go's per-stream and connection receive windows must
-  cover a GOP at the top rung: 500 ms × 16 Mbps ≈ 1 MB. WU1 sets them
-  explicitly for publish sessions and has a test that sends a full GOP
-  through one carrier without a window stall.
+- **Flow control.** Sized from time and a maximum bitrate, not from a GOP
+  — D9 has the rule, the quic-go defaults it replaces, and the memory
+  budget.
 - **Cluster mode.** Only the origin ingests publishers, so edges are
   unaffected. The origin forwards to edges exactly as before.
 
@@ -335,6 +335,101 @@ video access category (priority airtime) and a DSCP. It needs no privilege.
   count down by ≥ 30 % against the carrier alone. WMM priority does not stop
   AWDL taking the radio off-channel, so a null result is plausible and fine.
 
+### D9 — Cost, the tradeoff, and scaling to high bitrates
+
+**What the carrier costs** (estimated from the protocol; WU0/WU6 measure it):
+
+| | No loss | During loss | Scales with |
+|---|---|---|---|
+| Bandwidth | ≈ +0.5–1 %: a 2-byte record length plus QUIC's stream-frame header (stream id, offset, length) — ~6–10 B per ~1200 B packet | plus the retransmitted bytes, ≈ the loss rate | bitrate × loss |
+| Delay | ≈ 0 — records are written as encoded and forwarded as read, no per-frame store-and-forward | one lost packet: ≈ 1.5 × RTT (≈ 15–20 ms at 10 ms); an AWDL absence: its length (published 50–100 ms) + RTT; worst: the 150 ms deadline, then the GOP is dropped as today | outage length, link headroom |
+| CPU, broadcaster | negligible — quinn tracks stream offsets instead of firing-and-forgetting | retransmission | packets/s |
+| CPU, relay | one stream read + record split, then the same `HandleDatagram` as today | none extra | packets/s |
+| Memory, broadcaster | unacknowledged bytes ≈ bitrate × RTT (≈ 15–25 KB at 12 Mbps) | ≤ bitrate × deadline (≈ 225 KB at 12 Mbps, ≈ 940 KB at 50 Mbps) | bitrate × deadline |
+| Memory, relay | ≈ 0 — in-order records are consumed immediately | out-of-order data held behind a hole until it fills, ≤ bitrate × deadline per carrier | bitrate × deadline × publishers |
+
+A lost packet also bumps the chunk's frames by the recovery time; later
+deltas of the GOP arrive behind it and are then presented back to back.
+Viewers in the default live-edge playout (`playout.ts` mode `off`) see a
+brief hitch and no lasting latency; viewers in **adaptive** playout (target =
+p95 arrival jitter + 34 ms, slewing up 50 ms/s and down 5 ms/s after 15 s)
+will carry a buffer about one recovery time larger for as long as loss
+persists. G3 bounds both.
+
+**The tradeoff.** Gained: a loss costs a bounded delay instead of the rest
+of the GOP — and that gain grows with bitrate, because frames get longer. At
+0.2 % packet loss a 12 Mbps frame (~21 packets at 60 fps) arrives intact 96 %
+of the time; a 50 Mbps frame (~87 packets) 84 % — datagram delivery over Wi-Fi
+is effectively unwatchable there. Given up:
+
+1. *Freshness during an outage.* Datagrams deliver whatever is newest when
+   the radio returns; a stream drains its backlog in order first. The
+   deadline caps how stale that backlog can be.
+2. *Loss becomes queueing.* Loss-based congestion control (quinn's Cubic)
+   cuts its window ~30 % on Wi-Fi loss. For datagrams that surfaces as drops
+   in quinn's datagram buffer; for a stream it surfaces as queued data — and
+   the deadline converts a queue that lasts too long back into a drop.
+3. *Complexity*: a second ingest path, a mirrored capability bit, deadline
+   and priority logic in the engine — contained by G5's byte-identical-when-off
+   rule.
+
+**Headroom, not the deadline, is the limit at high bitrate.** After an
+outage the backlog drains through the link's spare capacity:
+
+```
+recovery ≈ outage × (1 + bitrate / (link capacity − bitrate))
+```
+
+| Bitrate | Link goodput | Backlog after an 80 ms absence | Drain | Recovery |
+|---|---|---|---|---|
+| 12 Mbps | 300 Mbps | 120 KB | ~3 ms | ~85 ms — inside the deadline |
+| 50 Mbps | 300 Mbps | 500 KB | ~16 ms | ~100 ms — inside |
+| 50 Mbps | 80 Mbps | 500 KB | ~130 ms | ~210 ms — expires |
+
+On a link without headroom the carrier cannot save a high rung: every
+outage expires a GOP. That is the D7 status line's case exactly ("Your Wi-Fi
+is dropping some video"), and the honest remedies are the same — a cable,
+Improve, or a lower quality setting. The carrier never queues unboundedly
+(G11).
+
+**Flow-control windows: sized from time and a maximum bitrate.** The relay
+sets no windows today (`internal/transport/server.go` builds one
+`quic.Config` for every connection), so quic-go v0.62.0's defaults apply: a
+stream starts at **512 KB** and auto-tunes up to **6 MB**; a connection starts
+at 768 KB and tunes up to **15 MB**. At 50 Mbps one deadline's worth of data is
+≈ 940 KB — above the initial stream window, so the first GOPs of a broadcast
+would stall on flow control until auto-tuning catches up. The rule:
+
+```
+stream window ≥ uplinkMaxBitrate × (deadline + RTT) × 2
+             = 50 Mbps × (150 + 10) ms × 2 ≈ 2 MB
+```
+
+set as `InitialStreamReceiveWindow` on the relay's `quic.Config`, derived
+from a new knob **`-uplink-max-bitrate`** (default 50 Mbps; `GAWK_UPLINK_MAX_BITRATE`,
+Helm `config.uplinkMaxBitrate`, plumbed through `registryOptions`). The
+maxima stay quic-go's. A window is an allowance, not an allocation — the
+relay only holds bytes that actually arrive out of order — so raising the
+initial window costs nothing on a clean link, including for viewer
+connections that share the config.
+
+**Relay memory budget.** A publisher can hold relay memory by leaving holes
+on purpose, up to its connection's receive window (15 MB). The ceiling it can
+reach **today** is already higher than that: keyframe ingest is
+store-and-forward (`IngestKeyframeStream` reads the whole frame), so four
+concurrent keyframe streams at `MaxKeyframeBytes` (8 MiB) can pin ~32 MiB of
+application memory besides the window. Carriers add nothing to either: their
+records are forwarded as read (no application-side buffering), and their
+out-of-order bytes live inside the same connection window. So the pod's
+worst case per publisher does not rise, and docs/07's caps and the pod
+memory limit are what already have to cover it. WU1 measures it with a
+hostile-publisher test rather than trusting the arithmetic.
+
+**Keyframes at high bitrate.** A 50 Mbps keyframe can be 0.5–1 MB. The
+keyframe stream's priority over the carrier (D3) means the next GOP's deltas
+wait for it — correct, since they are undecodable without it — and F-12's
+2 s in-flight rule already covers a keyframe that cannot finish.
+
 ## 5. Architecture
 
 ```
@@ -366,7 +461,9 @@ video access category (priority airtime) and a DSCP. It needs no privilege.
 | A carrier's records are ingested exactly as the same bytes sent as datagrams: same fan-out, same accounting, same DVR contents (property test over random frames) | unit, test-first |
 | Without the capability configured, a publisher `0x0A` stream is rejected as today; with `-uplink-carriers=false`, `/statusz`, metrics and wire are byte-identical to pre-R54 (diff-asserted, the R28 pattern) | unit |
 | Third concurrent carrier rejected and counted; malformed record ends the carrier, earlier records forwarded; stale record (pre-latest-keyframe) dropped and counted | unit |
-| A full GOP at 16 Mbps passes one carrier without a flow-control stall | unit (real quic-go loopback) |
+| A full GOP at **50 Mbps** passes one carrier without a flow-control stall from the first GOP of a session (the initial window, not auto-tuning, covers it) | unit (real quic-go loopback) |
+| `-uplink-max-bitrate` / `GAWK_UPLINK_MAX_BITRATE` / `config.uplinkMaxBitrate` derives `InitialStreamReceiveWindow` per D9; `TestRegistryOptionsCarryAllLimits` grows the field | unit |
+| Hostile publisher: a carrier with a deliberate hole holds at most the connection window of relay memory, and the carrier is dropped when the publisher's deadline would have expired it (`RESET_STREAM` or stale-keyframe rule) — measured, recorded in §8 | unit |
 | `-uplink-carriers` / `GAWK_UPLINK_CARRIERS` / `config.uplinkCarriers` plumbed; `TestRegistryOptionsCarryAllLimits` grows the field; README flags table updated | unit + review |
 
 ### WU2 — Rust engine: carrier sender, deadline, engage policy
@@ -378,6 +475,8 @@ video access category (priority airtime) and a DSCP. It needs no privilege.
 | Engage policy: capability absent ⇒ datagrams; RTT hysteresis 40/60 ms over 5 s; override forces either mode | unit |
 | Keyframe stream priority above the carrier's; F-12's 2 s rule unchanged (its tests still pass) | unit |
 | Against a real `gawk-server` with injected loss (the `vt_to_relay` harness): with 2 % random packet loss, carrier mode delivers every frame to a subscriber and datagram mode does not | integration, ignored-by-default like `vt_to_relay` |
+| Outage injection at 50 Mbps: an 80 ms total blackout every second recovers inside the deadline with 300 Mbps of link capacity, and expires cleanly (no unbounded queue, next keyframe opens a fresh carrier) with 80 Mbps — D9's headroom table, measured | integration (shaped loopback) |
+| Broadcaster memory for unacknowledged data stays ≤ bitrate × deadline + one GOP's keyframe under the outage test | integration |
 | D5 broadcaster fields reported; the field registry and stored-shape golden updated | unit |
 
 ### WU3 — macOS: the quiet status line
@@ -412,7 +511,7 @@ video access category (priority airtime) and a DSCP. It needs no privilege.
 
 | Acceptance criterion | Verified by |
 |---|---|
-| G1–G4 and G8–G10 pass on the reference setup; the Windows app's G4 run on the gaming PC | manual |
+| G1–G4 and G8–G11 pass on the reference setup (G11 on a 1440p60 source at 50 Mbps); the Windows app's G4 run on the gaming PC | manual |
 | §8 records every measured number against the WU0 baseline | review |
 
 ## 7. Risks
@@ -423,8 +522,12 @@ video access category (priority airtime) and a DSCP. It needs no privilege.
   down before the design is changed.
 - **Congestion control reacts to Wi-Fi loss.** Datagrams are congestion
   controlled in quinn too, so this is not new, but a stream makes the effect
-  visible as queueing rather than loss. The deadline caps how long a queue
-  can hold a GOP.
+  visible as queueing rather than loss (D9). The deadline caps how long a
+  queue can hold a GOP. If WU6 shows Cubic's reaction to non-congestive Wi-Fi
+  loss dominating, quinn's BBR controller is the next rung to evaluate — not
+  a longer deadline.
+- **High rungs on thin links.** Without headroom the carrier cannot help
+  (D9); it must fail as cleanly as datagrams do, which G11 checks.
 - **quinn's scheduling.** F-12 showed quinn's packet assembly can starve a
   stream. Moving deltas onto a stream removes the datagram flood that caused
   it, but WU2's integration test has to show the keyframe stream is not

@@ -4493,9 +4493,13 @@ clean.
   received frames in leg-A loss, record a baseline.
 - **WU1** — relay: accept `0x0A` carriers from a publisher behind
   `CapUplinkCarriers`; each record ingested exactly as the same datagram;
-  `-uplink-carriers` plumbed through `registryOptions`.
+  `-uplink-carriers` plumbed through `registryOptions`; flow-control windows
+  sized from time and `-uplink-max-bitrate` (default 50 Mbps) instead of
+  quic-go's 512 KB initial stream window (D9).
 - **WU2** — Rust engine: carrier per GOP, 150 ms deadline reset, RTT-gated
-  engage policy, keyframe stream prioritised, telemetry incl. local QUIC loss.
+  engage policy, keyframe stream prioritised, telemetry incl. local QUIC loss;
+  outage injection at 50 Mbps proves recovery with headroom and a clean
+  expiry without it.
 - **WU3** — macOS: a quiet status line that appears only when viewers are
   actually losing video, in plain words (no jargon, no notifications, ask once).
 - **WU4** — one **Improve** button: pauses AirDrop and Handoff while live on
