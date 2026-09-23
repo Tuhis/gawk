@@ -4596,13 +4596,14 @@ clean.
 
 **Scope sketch** (chunks WU0–WU6 in [docs/57](docs/57-wifi-uplink.md)):
 
-- **WU0** — fix the live view's zeroed relay facts (BUGS.md), count partly
-  received frames in leg-A loss, record a baseline.
+- **WU0** — fix the live view's zeroed relay facts (BUGS.md), report leg-A
+  loss in frames including partly received ones (`ingressFrameLossRatio`),
+  record a baseline.
 - **WU1** — relay: accept `0x0A` carriers from a publisher behind
   `CapUplinkCarriers`; each record ingested exactly as the same datagram;
   `-uplink-carriers` plumbed through `registryOptions`; flow-control windows
   sized from time and `-uplink-max-bitrate` (default 50 Mbps) instead of
-  quic-go's 512 KB initial stream window (D9).
+  quic-go's 512 KB / 768 KB initial stream and connection windows (D9).
 - **WU2** — Rust engine: carrier per GOP, 150 ms deadline reset, always on
   when the relay supports it, Settings → Advanced → Video delivery
   (Automatic · Legacy, behind a warning), keyframe stream prioritised,

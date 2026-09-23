@@ -65,14 +65,14 @@ compares against.
 
 | # | Goal | Verified by |
 |---|---|---|
-| G1 | Leg-A loss with the carrier uplink: `IngressFramesLost + IngressChunksLost` ≤ **0.1 %** of frames over 10 min, AWDL on | manual, relay `/statusz` counters (history API) |
+| G1 | Leg-A frame loss with the carrier uplink: **damaged frames** (never arrived *or* arrived with a chunk missing) ≤ **0.1 %** of frames expected, over 10 min, AWDL on — the `ingressFrameLossRatio` WU0 defines. Chunk loss is reported beside it as a diagnostic, not a gate | manual, relay `/statusz` counters (history API) |
 | G2 | The viewer stops stuttering: `reorderGapResyncs` ≤ 2/min and no `keyframe-only-delivery` finding over the same 10 min | manual, viewer telemetry |
 | G3 | Latency cost bounded: viewer `capToRenderMs` p50 within **+20 ms**, p95 within **+50 ms** of the same Mac on Ethernet in datagram mode | manual, paired runs |
 | G4 | No regression where nothing was wrong: the Windows app on wired Ethernet with the carrier uplink engaged shows fps, latency and leg-A loss within noise of datagram mode | manual, paired runs |
 | G5 | Compatibility: a carrier-capable broadcaster against a relay without the capability sends datagrams, unchanged; an old broadcaster against a new relay is unchanged; with `-uplink-carriers=false` the relay's `/statusz`, metrics and wire are byte-identical to pre-R55 | integration (real `gawk-server`) + diff assertion |
 | G6 | Wire parity: the new capability bit and any new constant are in `gawk-server/wire`, `wire.ts`, `gawk-broadcast/internal/wirecheck` and `crates/wire`, golden vectors byte-identical | unit (existing mirror tests) |
 | G7 | Viewers untouched: no change in `gawk-app` beyond the `wire.ts` mirror | review |
-| G8 | The app stays quiet unless viewers are affected: on a clean Wi-Fi link (AWDL up, carrier coping) nothing appears; with sustained harm the D7 line appears within 15 s, at most once per broadcast; every string matches D7's copy table and none contains D7's banned terms | unit (policy + string test) + manual |
+| G8 | The app stays quiet unless viewers are affected: on a clean Wi-Fi link (AWDL up, carrier coping) nothing appears; with sustained harm the D7 line appears within 15 s, at most once per broadcast; every string matches D7's copy table, and no **main-flow** string (status line, sheets, Settings) contains a D7 principle-3 banned term — Help and Diagnostics are exempt as principle 3 scopes them | unit (policy + string test) + manual |
 | G9 | Improve (only if WU4 ships, OD4): from the amber line to "Wi-Fi improved" is **Improve → Continue → the system toggle**, nothing else; afterwards it is automatic on every Wi-Fi broadcast; AirDrop comes back with **no user action** after Stop, `kill -9` of the app, `kill -9` of the helper and a reboot mid-broadcast | manual |
 | G10 | Telemetry says which uplink ran: the broadcaster reports `uplinkMode`, carrier counters and local QUIC loss; the relay reports carrier ingest per broadcast | unit + one real session in the dashboard |
 | G11 | High bitrate: at 50 Mbps / 1440p60 on a Wi-Fi link with ≥ 3× headroom, G1 and G2 hold; on a link without headroom the carrier expires (it does not queue unboundedly) and the D7 status line appears | manual, paired runs |
@@ -265,8 +265,9 @@ produces **more** keyframes in the congested case. Nothing here requests a
 keyframe or changes the cadence. The only new relay → publisher signal is one
 capability bit on a message that already exists. D6's remark that the design
 is one-way ("the relay never talks back to the broadcaster") was already
-superseded by R18's push channel (`ViewerCount`, `RelayCapabilities`,
-`TelemetryHello`); this adds nothing to it. The NACK/ARQ-over-datagrams
+superseded by relay → publisher messages: R18's `ViewerCount` datagram, then
+R28's `TelemetryHello` and R29's `RelayCapabilities` on server-opened uni
+streams; this adds nothing to it. The NACK/ARQ-over-datagrams
 rejections (docs/24, docs/26) are respected too: retransmission is QUIC's,
 on a stream, not a gawk protocol.
 
@@ -286,9 +287,14 @@ actually suffering, names no protocol, and goes away by itself.
    losing video *despite* the carrier: carriers expiring at the deadline, or
    `uplinkLossPct` above a threshold, sustained for 10 s while at least one
    viewer is watching.
-3. **No jargon.** No user-facing string in this feature says AWDL, channel,
-   packet, uplink, QUIC, carrier, DSCP or Wi-Fi band. It talks about what the
-   user sees and what they know: Wi-Fi, AirDrop, Handoff, viewers, pauses.
+3. **No jargon where the user acts.** On the **main-flow surfaces** — the
+   Share card status line, any sheet, and Settings (Advanced included) — no
+   string says AWDL, channel, packet, uplink, QUIC, carrier, DSCP or Wi-Fi
+   band. They talk about what the user sees and knows: Wi-Fi, AirDrop,
+   Handoff, viewers, pauses. **Help** is exempt only for router vocabulary
+   (it may say "channel" and "5 GHz", because principle 7 sends router
+   advice there) and **Diagnostics** is exempt entirely — it is the
+   technical truth, for us.
 4. **One action, and it's reversible without thinking.** Anything gawk turns
    off comes back by itself when the broadcast ends, whatever happens to the
    app.
@@ -428,18 +434,25 @@ sets no windows today (`internal/transport/server.go` builds one
 `quic.Config` for every connection), so quic-go v0.62.0's defaults apply: a
 stream starts at **512 KB** and auto-tunes up to **6 MB**; a connection starts
 at 768 KB and tunes up to **15 MB**. At 50 Mbps one deadline's worth of data is
-≈ 940 KB — above the initial stream window, so the first GOPs of a broadcast
-would stall on flow control until auto-tuning catches up. The rule:
+≈ 940 KB — above the initial stream window, and above the initial
+**connection** window too, which the keyframe stream (0.5–1 MB at that rate)
+shares. quic-go sets the connection window from its own default, not from
+the stream window, and only raises it to 1.5 × the stream window when
+auto-tuning runs. So both must be set, or the first GOPs of a broadcast
+stall until auto-tuning catches up. The rule:
 
 ```
-stream window ≥ uplinkMaxBitrate × (deadline + RTT) × 2
-             = 50 Mbps × (150 + 10) ms × 2 ≈ 2 MB
+stream window     ≥ uplinkMaxBitrate × (deadline + RTT) × 2
+                  = 50 Mbps × (150 + 10) ms × 2            ≈ 2 MB
+connection window ≥ stream window + one keyframe at that rate
+                  ≈ 1.5 × stream window (quic-go's own ratio) ≈ 3 MB
 ```
 
-set as `InitialStreamReceiveWindow` on the relay's `quic.Config`, derived
-from a new knob **`-uplink-max-bitrate`** (default 50 Mbps; `GAWK_UPLINK_MAX_BITRATE`,
-Helm `config.uplinkMaxBitrate`, plumbed through `registryOptions`). The
-maxima stay quic-go's. A window is an allowance, not an allocation — the
+set as `InitialStreamReceiveWindow` and `InitialConnectionReceiveWindow` on
+the relay's `quic.Config`, both derived from a new knob
+**`-uplink-max-bitrate`** (default 50 Mbps; `GAWK_UPLINK_MAX_BITRATE`, Helm
+`config.uplinkMaxBitrate`, plumbed through `registryOptions`). The maxima
+stay quic-go's (6 MB / 15 MB), so the memory ceiling below is unchanged. A window is an allowance, not an allocation — the
 relay only holds bytes that actually arrive out of order — so raising the
 initial window costs nothing on a clean link, including for viewer
 connections that share the config.
@@ -481,7 +494,7 @@ wait for it — correct, since they are undecodable without it — and F-12's
 | Acceptance criterion | Verified by |
 |---|---|
 | The BUGS.md double-append in `relayscrape.ScrapeOnce` is fixed test-first; the live view shows non-zero `framesRelayed` and a `framesRelayedPerSec` | unit (red first) + live dashboard |
-| Leg-A loss is reported as frames **and** chunks: `ingressLossRatio` counts partly received frames, or a sibling `ingressChunkLossRatio` exists and the leg-A row reads both | unit |
+| Leg-A loss is reported in **frames**, counting partly received ones: the relay's ingress window gains `IngressFramesDamaged` (frames seen with ≥ 1 chunk missing at `finalize`), and telemetry derives `ingressFrameLossRatio = (IngressFramesLost + IngressFramesDamaged) / frames expected` (the window's frameID span). `IngressChunksLost` stays a chunk count, reported as `ingressChunkLossRatio` over chunks expected — one unit per ratio, never summed. The leg-A playbook row reads the frame ratio | unit (red first: a window with one fully lost and one partly received frame reports 2 damaged frames, not 1 + missing-chunk count) |
 | The baseline is recorded in §8: 10 min each, the reference Mac, datagram mode, AWDL on / AWDL off / Ethernet — leg-A frames and chunks lost, viewer resyncs, `capToRenderMs` p50/p95 | manual, recorded |
 
 ### WU1 — Relay: carrier ingest behind `CapUplinkCarriers`
@@ -493,7 +506,7 @@ wait for it — correct, since they are undecodable without it — and F-12's
 | Without the capability configured, a publisher `0x0A` stream is rejected as today; with `-uplink-carriers=false`, `/statusz`, metrics and wire are byte-identical to pre-R55 (diff-asserted, the R28 pattern) | unit |
 | Third concurrent carrier rejected and counted; malformed record ends the carrier, earlier records forwarded; stale record (pre-latest-keyframe) dropped and counted | unit |
 | A full GOP at **50 Mbps** passes one carrier without a flow-control stall from the first GOP of a session (the initial window, not auto-tuning, covers it) | unit (real quic-go loopback) |
-| `-uplink-max-bitrate` / `GAWK_UPLINK_MAX_BITRATE` / `config.uplinkMaxBitrate` derives `InitialStreamReceiveWindow` per D9; `TestRegistryOptionsCarryAllLimits` grows the field | unit |
+| `-uplink-max-bitrate` / `GAWK_UPLINK_MAX_BITRATE` / `config.uplinkMaxBitrate` derives **both** `InitialStreamReceiveWindow` and `InitialConnectionReceiveWindow` per D9 (≈ 2 MB / ≈ 3 MB at the default); `TestRegistryOptionsCarryAllLimits` grows the field | unit |
 | Hostile publisher: a carrier with a deliberate hole holds at most the connection window of relay memory, and the carrier is dropped when the publisher's deadline would have expired it (`RESET_STREAM` or stale-keyframe rule) — measured, recorded in §8 | unit |
 | `-uplink-carriers` / `GAWK_UPLINK_CARRIERS` / `config.uplinkCarriers` plumbed; `TestRegistryOptionsCarryAllLimits` grows the field; README flags table updated | unit + review |
 
@@ -516,7 +529,7 @@ wait for it — correct, since they are undecodable without it — and F-12's
 | Acceptance criterion | Verified by |
 |---|---|
 | The D7 policy (Wi-Fi × harm sustained 10 s × viewers > 0 × dismissed × mode state) is a pure function with a table test; the platform probes only translate values | unit |
-| Every D7 row renders with its exact copy; a string test fails if any user-facing string in the feature contains a banned term (AWDL, channel, packet, uplink, QUIC, carrier, DSCP) | unit |
+| Every D7 row renders with its exact copy; a string test fails if any **main-flow** string (status line, sheets, Settings incl. Advanced) contains a banned term (AWDL, channel, packet, uplink, QUIC, carrier, DSCP, Wi-Fi band); Help is checked for everything except router vocabulary; Diagnostics is not checked | unit |
 | On clean Wi-Fi with AWDL up nothing appears; with injected loss the line appears within 15 s; Not Now holds for the broadcast; two consecutive dismissals stop it | unit (fake clock) + manual |
 | No notification, sound or modal is raised by this feature while live | unit + review |
 | Help page (README macOS section, linked from **?**) in D7's order: cable, Improve, router channel | review |
@@ -580,7 +593,9 @@ no-button line stays; otherwise it is built to these criteria.
 
 Empty until WU0. Baseline observations from the 2026-09-23 session (not
 the WU0 protocol, recorded for context): AWDL on, datagram mode —
-`ingressLossRatio` 3.7 % (frames only), viewer 20–170 incomplete frames/min;
+`ingressLossRatio` 3.7 % (whole frames only — a **lower bound** on the
+`ingressFrameLossRatio` G1 is stated in, since partly received frames are
+not in it; WU0 re-baselines in G1's unit), viewer 20–170 incomplete frames/min;
 AWDL off — viewer 0–4 incomplete frames/min. The Mac's Wi-Fi was on
 channel 100, not one of AWDL's social channels (44/149 on 5 GHz), so the
 radio was hopping.
