@@ -1,9 +1,11 @@
 # R52 — Native macOS broadcaster
 
 **Status**: designed 2026-09-18. Chunks **MB0–MB8**; **MB0 implemented
-2026-09-22**, **MB1 implemented 2026-09-23** (its one manual criterion — ⌘Q on
-a Mac — is the owner's; §11 records what both turned up), MB2–MB8 not
-started. The
+2026-09-22**, **MB1 implemented and owner-verified 2026-09-23**; **MB2
+(capture) implemented 2026-09-23** — its unit criteria are green, its
+manual ones (the picker, V-1's no-prompt check, frames/cursor, occluded,
+minimized, V-2) await the owner's pass on a Mac. §11 records what each
+chunk turned up. MB3–MB8 not started. The
 ROADMAP entry ([R52](../ROADMAP.md#r52--native-macos-broadcaster)) carries
 the research summary and owner decisions this doc builds on; the decisions
 are restated in §2 so the doc reads on its own.
@@ -854,6 +856,58 @@ dated note (docs/README conventions).
   path the application menu's Quit (⌘Q) takes. Pressing ⌘Q itself is left
   to the owner's manual pass: this session's terminal has no Accessibility
   grant to send keystrokes.
+- **Owner pass (2026-09-23)**: the CI bundle opens on the owner's Mac and
+  ⌘Q closes it — MB1's manual criterion passes.
+
+**MB2 (2026-09-23)** — how the capture landed, deviations, and findings:
+
+- **The policy is its own portable module**, `capture::sck_policy`: frame
+  admission (only `.complete` frames, then the shared drop-only `FpsGate`),
+  the staleness watch behind the minimized hint, `SCShareableContentStyle` →
+  audio scope / mode label / `captureMode`, the `CallbackGuard` panic fence,
+  CMTime → 100 ns, the `queueDepth` pin and the thumbnail. Every rule is a
+  host test on all three CI hosts; `sck` and `sck_picker` only translate
+  framework values. `host` is the macOS twin of `qpc` (D5): the engine's
+  `QpcMapper` is unit-agnostic affine arithmetic, so it maps host-clock
+  100 ns ticks unchanged.
+- **Stale means "no live content", not "no new frames".** D4 keys the hint
+  off the frame status going stale; `.idle` is SCK's "nothing changed", so
+  counting it as stale would flag every unchanging window as minimized.
+  Only a run of `.blank`/`.suspended` (or no frames) for > 1 s shows the
+  hint. Whether a minimized window arrives as `.blank` or as silence is V-2's
+  to record; both trip it.
+- **The `queueDepth` pin lives in `sck_policy`**, as
+  `QUEUE_DEPTH = ENCODER_MAX_IN_FLIGHT + 2` with `const` assertions for the
+  pin and SCK's documented 3–8 range. MB3's VideoToolbox session takes its
+  in-flight limit from that constant, so the pin cannot drift from the gate
+  it protects.
+- **Ownership is enforced by the type, not by a count.** A `Frame<'a>` is
+  lent to the frame callback for the call only (the output queue is
+  serial), so the app can never hold a second SCK surface; MB3's encoder
+  keeps what it needs by VideoToolbox retaining the pixel buffer. D10's
+  "at most one outside VideoToolbox" is therefore review-verified by the
+  signature rather than unit-counted.
+- **The thumbnail is pure Rust, not vImage** (D11): a nearest-neighbour,
+  BT.709 video-range NV12 → RGBA sample of the frame already in hand, once
+  a second, into a 320×180 box. At that size and rate it costs less than a
+  vImage round trip, and it is a host test. It shows in the window's
+  existing thumbnail card; moving it into the Share card is MB5's layout
+  work.
+- **Start is a capture test until MB3.** There is no encoder yet, so Start
+  runs the stream alone and the header says "Capture test — nothing is
+  sent"; the encode line and Details show the delivered size, pixel format,
+  measured fps and both drop counters. That is what MB2's manual criteria
+  are checked against.
+- **The picker is active only while it is on screen or a capture runs.**
+  Activating it at launch (the first cut) put the system's screen-sharing
+  indicator in the menu bar of an app that was sharing nothing. It is now
+  activated on present, kept active while live (so the menu-bar control can
+  re-pick too, D4), and deactivated after every picker result when idle and
+  on stop.
+- **Share-card names need macOS 15.2.** `SCContentFilter`'s
+  `includedWindows`/`includedApplications`/`includedDisplays` arrived in
+  15.2; on 14.0–15.1 the card says "A window" / "An app" / "A display". The
+  accessors are sent only when the filter answers to them.
 
 ## 12. References
 

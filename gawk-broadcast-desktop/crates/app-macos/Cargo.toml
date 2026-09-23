@@ -18,6 +18,8 @@ path = "src/main.rs"
 # for it; the `macos` job is where it is built, linted and tested (docs/54
 # D15).
 [target.'cfg(target_os = "macos")'.dependencies]
+gawk-capture = { path = "../capture" }
 gawk-engine = { path = "../engine" }
 gawk-ui = { path = "../ui" }
+log = "0.4"
 slint = "1"

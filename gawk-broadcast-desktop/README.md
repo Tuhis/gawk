@@ -179,7 +179,7 @@ Quirks that will bite you:
 |---|---|
 | `crates/wire` | The wire-format mirror — see below |
 | `crates/engine` | Session lifecycle, send policy, resume supervisor. No GUI, no COM/WinRT; media enters through traits, the network through a `RelaySession` seam |
-| `crates/capture` | Windows.Graphics.Capture frame source + window/monitor picker enumeration |
+| `crates/capture` | Windows.Graphics.Capture frame source + window/monitor picker enumeration; on macOS the ScreenCaptureKit stream and the system content picker (`sck`, `sck_picker`), with their frame policy in the portable `sck_policy` |
 | `crates/encode` | Media Foundation hardware H.264 MFT cascade, trial-gated |
 | `crates/audio` | WASAPI process/system loopback + Opus |
 | `crates/ui` | The window both shells show (`main.slint`, compiled once), the build version, and window logic the shells share |
