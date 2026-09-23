@@ -1767,8 +1767,8 @@ async function roomsGatedPass({ relayUrl, certHash, opsUrl }) {
   try {
     // Join the gated room by code with NO secret — the reported flow.
     await page.getByRole('button', { name: 'Room' }).click();
-    await page.getByRole('textbox', { name: 'Room code' }).fill(GATED_ROOM_CODE);
-    await page.getByRole('button', { name: 'Join by code' }).click();
+    await page.getByRole('textbox', { name: 'Room code or link' }).fill(GATED_ROOM_CODE);
+    await page.getByRole('button', { name: 'Join', exact: true }).click();
     // D10: the nickname is asked BEFORE the first dial, so nothing reaches
     // the relay until it is answered. A guest is one click and keeps the
     // pass free of a remembered-nickname side effect.

@@ -48,7 +48,7 @@ import { parseGrant, readGrant, type RoomGrant } from '../room/grantHandoff';
 import { takeRoomReturn } from '../room/roomReturn';
 import { BACKGROUND_STOP_NOTE, BackgroundWatchdog } from './backgroundWatchdog';
 import { loadNickname } from '../room/roomPrefs';
-import { isValidRoomCode, parseRoomLink } from '../../lib/roomCode';
+import { parseRoomLink } from '../../lib/roomCode';
 import { MAX_ROOM_LABEL_LEN } from '../../transport/wire';
 // R24 (docs/30): browser-aware capture & audio guidance — words + dismissible
 // reactive notes, gated on the real audio capability (never UA sniffing) and
@@ -71,14 +71,13 @@ import {
 
 type Status = 'idle' | 'connecting' | 'broadcasting' | 'reconnecting' | 'stopping' | 'error';
 
-// R42: a room chosen before the broadcast is live, joined the moment it is.
-// `nickname` undefined ⇒ the room view asks / remembers as usual; a string
-// or null is an answer the hop from a room already has (roomReturn.ts).
-interface PendingRoom {
-  code: string;
-  grant: RoomGrant | null;
-  nickname: string | null | undefined;
-}
+// R42: a room chosen before the broadcast is live, joined — or, for
+// `create`, minted — the moment it is. `nickname` undefined ⇒ the room view
+// asks / remembers as usual; a string or null is an answer the hop from a
+// room already has (roomReturn.ts).
+type PendingRoom =
+  | { kind: 'join'; code: string; grant: RoomGrant | null; nickname: string | null | undefined }
+  | { kind: 'create' };
 
 // R15 (docs/20): system audio is unconditional on the production broadcaster
 // since 2026-07-23 — the experimental toggle is gone. capture.ts owns the
@@ -163,28 +162,35 @@ export function BroadcasterScreen() {
   // the resume token, which does not exist before the relay minted the ID),
   // so a room chosen before the stream starts becomes `pendingRoom`: the
   // page shows what it will join, and the join fires by itself the moment
-  // the broadcast is live. Two sources: a room's "start streaming here"
+  // the broadcast is live. Sources: a room's "start streaming here"
   // (roomReturn.ts — carrying the nickname already answered there), and the
-  // Room panel's join-by-code / link used from the pre-start card.
+  // Room panel's join or create used from the pre-start card.
   const [roomReturn] = useState(takeRoomReturn);
   const [pendingRoom, setPendingRoom] = useState<PendingRoom | null>(() =>
-    roomReturn ? { code: roomReturn.code, grant: readGrant(roomReturn.code), nickname: roomReturn.nickname } : null,
+    roomReturn
+      ? { kind: 'join', code: roomReturn.code, grant: readGrant(roomReturn.code), nickname: roomReturn.nickname }
+      : null,
   );
   // The nickname to bring into the room view without asking: the hop's
   // answer, else the room view asks / remembers as usual (undefined).
   const [roomNickname, setRoomNickname] = useState<string | null | undefined>(() =>
     roomReturn ? roomReturn.nickname : undefined,
   );
-  const [roomCodeDraft, setRoomCodeDraft] = useState('');
+  // One field for a code or a link (parseRoomLink reads both).
+  const [roomDraft, setRoomDraft] = useState('');
   const [roomPanelOpen, setRoomPanelOpen] = useState(false);
+  // The name is one line ("Joining as …") until Change opens its field; it
+  // opens by itself when there is no name yet. Escape restores the name the
+  // edit started from.
+  const [nameEditing, setNameEditing] = useState(false);
+  const focusNameRef = useRef(false);
+  const nameBeforeEditRef = useRef('');
   const [roomTarget, setRoomTarget] = useState<RoomTarget | null>(null);
   const [roomGrant, setRoomGrant] = useState<RoomGrant | null>(null);
   const [roomLabel, setRoomLabel] = useState(() => roomReturn?.nickname ?? loadNickname() ?? '');
   // The resume token is a ref (nothing renders it); this mirrors "the token
   // has arrived" for the pending-room effect below.
   const [resumeReady, setResumeReady] = useState(false);
-  const [roomLinkDraft, setRoomLinkDraft] = useState('');
-  const [roomSecretDraft, setRoomSecretDraft] = useState('');
   const [roomNote, setRoomNote] = useState<string | null>(null);
   // Bumped on every publish auto-resume so the room view re-sends Attach.
   const [attachEpoch, setAttachEpoch] = useState(0);
@@ -524,7 +530,8 @@ export function BroadcasterScreen() {
 
   useHotkey(STATS_HOTKEY, () => setShowStats((s) => !s));
 
-  // R42 RM5: the three ways into a room from the broadcast page.
+  // R42 RM5: the two ways into a room from the broadcast page — join a code
+  // or link, or create one.
   const live = status === 'broadcasting' || status === 'reconnecting';
   const canMint = live && broadcastId !== null && resumeReady;
   const enterRoom = useCallback((target: RoomTarget, grant: RoomGrant | null) => {
@@ -542,58 +549,77 @@ export function BroadcasterScreen() {
         enterRoom({ kind: 'join', code }, grant);
         return;
       }
-      setPendingRoom({ code, grant, nickname: undefined });
+      setPendingRoom({ kind: 'join', code, grant, nickname: undefined });
       setRoomNote(null);
       setRoomPanelOpen(false);
     },
     [canMint, enterRoom],
   );
-  const newRoom = useCallback(() => {
+  const mintRoom = useCallback(() => {
     const token = resumeTokenRef.current;
-    if (!canMint || !broadcastId || !token) {
-      setRoomNote('Start a stream first — a room is made from a running broadcast.');
-      return;
-    }
+    if (!broadcastId || !token) return;
     enterRoom({ kind: 'mint', broadcastId, resumeTokenHex: token, label: roomLabel.trim() }, null);
-  }, [canMint, broadcastId, roomLabel, enterRoom]);
-  const joinRoomByCode = useCallback(() => {
-    const code = roomCodeDraft.trim();
-    if (!isValidRoomCode(code)) {
-      setRoomNote('That doesn’t look like a room code.');
+  }, [broadcastId, roomLabel, enterRoom]);
+  // A room is minted from a running broadcast (§4.4); asked for before the
+  // stream is live, it waits the same way a join does.
+  const newRoom = useCallback(() => {
+    if (canMint) {
+      mintRoom();
       return;
     }
-    // A grant a native launch stashed for this code (grantHandoff.ts) still
-    // applies; a typed attach secret wins.
-    const secret = roomSecretDraft.trim();
-    joinRoom(code, secret !== '' ? { kind: 'attach', secret } : readGrant(code));
-  }, [roomCodeDraft, roomSecretDraft, joinRoom]);
-  const joinRoomByLink = useCallback(() => {
-    const parsed = parseRoomLink(roomLinkDraft);
+    setPendingRoom({ kind: 'create' });
+    setRoomNote(null);
+    setRoomPanelOpen(false);
+  }, [canMint, mintRoom]);
+  // What the one field reads, as the user types: a link's code and whether
+  // it carries a key. A bare code needs no echo.
+  const roomDraftParsed = parseRoomLink(roomDraft);
+  const roomDraftIsLink = roomDraftParsed !== null && roomDraftParsed.code !== roomDraft.trim();
+  const roomDraftGrant = roomDraftParsed?.grant ? parseGrant(roomDraftParsed.grant) : null;
+  const joinRoomFromDraft = useCallback(() => {
+    const parsed = parseRoomLink(roomDraft);
     if (!parsed) {
-      setRoomNote('That doesn’t look like a room link.');
+      setRoomNote('That isn’t a room code or link.');
       return;
     }
-    const secret = roomSecretDraft.trim();
-    const grant: RoomGrant | null =
-      secret !== '' ? { kind: 'attach', secret } : parsed.grant ? parseGrant(parsed.grant) : readGrant(parsed.code);
-    joinRoom(parsed.code, grant);
-  }, [roomLinkDraft, roomSecretDraft, joinRoom]);
-  // The pending room joins the moment the broadcast is live: ID minted,
-  // resume token in hand (both arrive before onSourceStream flips the
-  // stage). The hop's nickname answer, if any, goes with it.
+    // The link's own grant wins; else a grant a native launch stashed for
+    // this code (grantHandoff.ts) still applies. A static room's attach
+    // secret is not asked for here: a gated room admits us as a watcher and
+    // the room view asks for it (ATTACH_GATED_CARD, AttachSecretPrompt).
+    joinRoom(parsed.code, parsed.grant ? parseGrant(parsed.grant) : readGrant(parsed.code));
+  }, [roomDraft, joinRoom]);
+  const toggleRoomPanel = useCallback(() => {
+    if (!roomPanelOpen) setNameEditing(roomLabel.trim() === '');
+    setRoomPanelOpen(!roomPanelOpen);
+  }, [roomPanelOpen, roomLabel]);
+  // The pending room joins (or is minted) the moment the broadcast is live:
+  // ID minted, resume token in hand (both arrive before onSourceStream flips
+  // the stage). The hop's nickname answer, if any, goes with a join.
   useEffect(() => {
     if (!pendingRoom || !canMint) return;
+    if (pendingRoom.kind === 'create') {
+      mintRoom();
+      return;
+    }
     if (pendingRoom.nickname !== undefined) setRoomNickname(pendingRoom.nickname);
     enterRoom({ kind: 'join', code: pendingRoom.code }, pendingRoom.grant);
-  }, [pendingRoom, canMint, enterRoom]);
-  // Shown on the pre-start card and the live topbar while a join waits.
+  }, [pendingRoom, canMint, enterRoom, mintRoom]);
+  // Shown on the pre-start card and the live topbar while a room waits.
   const pendingRoomChip = pendingRoom && (
     <span className={styles.pendingRoom} role="status" data-testid="pending-room">
       <PeopleIcon />
-      <span>
-        Joins room <code>{pendingRoom.code}</code> when live
-      </span>
-      <IconButton label="Don’t join the room" className={styles.hintDismiss} onClick={() => setPendingRoom(null)}>
+      {pendingRoom.kind === 'create' ? (
+        <span>Creates a room when live</span>
+      ) : (
+        <span>
+          Joins room <code>{pendingRoom.code}</code> when live
+        </span>
+      )}
+      <IconButton
+        label={pendingRoom.kind === 'create' ? 'Don’t create the room' : 'Don’t join the room'}
+        className={styles.hintDismiss}
+        onClick={() => setPendingRoom(null)}
+      >
         <CloseIcon />
       </IconButton>
     </span>
@@ -666,10 +692,11 @@ export function BroadcasterScreen() {
     </>
   );
 
-  // R42 RM5 (docs/44 §4.8, §4.9 "ways in"): the Room panel — the server
-  // picker's idiom (a topbar IconButton opening a glass sheet). New room
-  // needs a live broadcast with its resume token; join by code / link work
-  // from either stage and attach the broadcast once it is live.
+  // R42 RM5 (docs/44 §4.8, §4.9 "ways in"; simplified 2026-09-23): the Room
+  // panel — the server picker's idiom (a topbar IconButton opening a glass
+  // sheet). One field joins a code or a link, one button creates a room;
+  // either, used before the stream is live, waits on the card as a pending
+  // room. The name is a line, not a section.
   const roomPanel = roomPanelOpen && (
     <>
       <div className={styles.scrim} onClick={() => setRoomPanelOpen(false)} />
@@ -682,88 +709,109 @@ export function BroadcasterScreen() {
         </div>
 
         <section className={styles.group}>
-          <h3 className={styles.groupTitle}>Your name</h3>
-          <p className={styles.settingsAudioNote}>Shown on your stream in the room and in its people list.</p>
-          <input
-            className={styles.modalInput}
-            value={roomLabel}
-            maxLength={MAX_ROOM_LABEL_LEN}
-            onChange={(e) => setRoomLabel(e.target.value)}
-            placeholder="your name"
-            aria-label="Your name"
-            autoComplete="nickname"
-            spellCheck={false}
-          />
-        </section>
-
-        <section className={styles.group}>
-          <h3 className={styles.groupTitle}>New room</h3>
-          <p className={styles.settingsAudioNote}>
-            {canMint
-              ? 'Make a room from this broadcast. Others join with the room code or link.'
-              : 'Start a stream first — a room is made from a running broadcast.'}
-          </p>
-          <Button onClick={newRoom} disabled={!canMint}>
-            <PeopleIcon /> New room
-          </Button>
-        </section>
-
-        <section className={styles.group}>
           <h3 className={styles.groupTitle}>Join a room</h3>
           <form
-            className={styles.modalForm}
+            className={styles.joinRow}
             onSubmit={(e) => {
               e.preventDefault();
-              joinRoomByCode();
+              joinRoomFromDraft();
             }}
           >
             <input
               className={styles.modalInput}
-              value={roomCodeDraft}
-              onChange={(e) => setRoomCodeDraft(e.target.value)}
-              placeholder="room code"
-              aria-label="Room code"
-              autoCapitalize="characters"
-              spellCheck={false}
-            />
-            <Button type="submit" variant="secondary" disabled={roomCodeDraft.trim() === ''}>
-              Join by code
-            </Button>
-          </form>
-          <form
-            className={styles.modalForm}
-            onSubmit={(e) => {
-              e.preventDefault();
-              joinRoomByLink();
-            }}
-          >
-            <input
-              className={styles.modalInput}
-              value={roomLinkDraft}
-              onChange={(e) => setRoomLinkDraft(e.target.value)}
-              placeholder="room link"
-              aria-label="Room link"
-              spellCheck={false}
-            />
-            <input
-              type="password"
-              className={styles.modalInput}
-              value={roomSecretDraft}
-              onChange={(e) => setRoomSecretDraft(e.target.value)}
-              placeholder="attach secret (static rooms only)"
-              aria-label="Attach secret"
+              value={roomDraft}
+              onChange={(e) => {
+                setRoomDraft(e.target.value);
+                setRoomNote(null);
+              }}
+              placeholder="room code or link"
+              aria-label="Room code or link"
               autoComplete="off"
+              spellCheck={false}
             />
-            <Button type="submit" variant="secondary" disabled={roomLinkDraft.trim() === ''}>
-              Use a room link
+            <Button type="submit" disabled={roomDraft.trim() === ''}>
+              Join
             </Button>
           </form>
+          {roomDraftIsLink && roomDraftParsed && (
+            <p className={styles.settingsAudioNote} data-testid="room-link-read">
+              Room <code className={styles.roomCodeRead}>{roomDraftParsed.code}</code>
+              {roomDraftGrant ? ' · key included' : ''}
+            </p>
+          )}
           {roomNote && <p className={styles.note}>{roomNote}</p>}
-          <p className={styles.settingsAudioNote}>
-            {canMint
-              ? 'Your broadcast joins the room as your tile; everyone else keeps their own code.'
-              : 'Your broadcast joins the room the moment it is live; everyone else keeps their own code.'}
-          </p>
+        </section>
+
+        <div className={styles.orDivider} aria-hidden="true">
+          or
+        </div>
+
+        <section className={styles.group}>
+          <Button variant="secondary" onClick={newRoom}>
+            <PeopleIcon /> Create a new room
+          </Button>
+          {!canMint && <p className={styles.settingsAudioNote}>Made when you go live.</p>}
+        </section>
+
+        <section className={styles.nameBlock}>
+          {nameEditing ? (
+            <>
+              {/* Save (or Enter) folds the field; Escape puts the old name
+                  back. Focus loss does not: nothing on screen said it
+                  would. The name applies as typed, so a join or create
+                  made without Save still carries it. */}
+              <form
+                className={styles.joinRow}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (roomLabel.trim() !== '') setNameEditing(false);
+                }}
+              >
+                <input
+                  ref={(el) => {
+                    if (el && focusNameRef.current) {
+                      focusNameRef.current = false;
+                      el.focus();
+                    }
+                  }}
+                  className={styles.modalInput}
+                  value={roomLabel}
+                  maxLength={MAX_ROOM_LABEL_LEN}
+                  onChange={(e) => setRoomLabel(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Escape') return;
+                    e.stopPropagation();
+                    setRoomLabel(nameBeforeEditRef.current);
+                    if (nameBeforeEditRef.current.trim() !== '') setNameEditing(false);
+                  }}
+                  placeholder="your name"
+                  aria-label="Your name"
+                  autoComplete="nickname"
+                  spellCheck={false}
+                />
+                <Button type="submit" variant="secondary" aria-label="Save name" disabled={roomLabel.trim() === ''}>
+                  Save
+                </Button>
+              </form>
+              <p className={styles.settingsAudioNote}>Shown on your stream and in the room’s people list.</p>
+            </>
+          ) : (
+            <p className={styles.settingsAudioNote}>
+              Joining as <strong className={styles.nameStrong}>{roomLabel.trim()}</strong> ·{' '}
+              <button
+                type="button"
+                className={styles.linkBtn}
+                aria-label="Change your name"
+                onClick={() => {
+                  focusNameRef.current = true;
+                  nameBeforeEditRef.current = roomLabel;
+                  setNameEditing(true);
+                }}
+              >
+                Change
+              </button>
+            </p>
+          )}
         </section>
       </GlassPanel>
     </>
@@ -845,7 +893,7 @@ export function BroadcasterScreen() {
           </IconButton>
         ) : (
           /* R42 RM5: the Room panel, in the server-picker idiom. */
-          <IconButton label="Room" onClick={() => setRoomPanelOpen((o) => !o)}>
+          <IconButton label="Room" onClick={toggleRoomPanel}>
             <PeopleIcon />
           </IconButton>
         )}
@@ -1059,7 +1107,7 @@ export function BroadcasterScreen() {
             <Button variant="ghost" onClick={() => setSettingsOpen((o) => !o)}>
               <GearIcon /> Settings
             </Button>
-            <Button variant="ghost" onClick={() => setRoomPanelOpen((o) => !o)}>
+            <Button variant="ghost" onClick={toggleRoomPanel}>
               <PeopleIcon /> Room
             </Button>
             <Button variant="ghost" onClick={() => (window.location.hash = HOME)}>
