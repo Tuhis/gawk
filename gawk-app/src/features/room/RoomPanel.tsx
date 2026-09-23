@@ -3,7 +3,7 @@ import styles from './room.module.css';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
-import { CloseIcon, CopyIcon, EditIcon, EyeIcon, OpenIcon } from '../../ui/Icons';
+import { CloseIcon, EditIcon, EyeIcon, OpenIcon } from '../../ui/Icons';
 import {
   ROOM_CAP_CHAT,
   ROOM_CLIENT_NATIVE,
@@ -15,7 +15,6 @@ import {
 import { fmtWatching } from '../../lib/format';
 import { buildViewLink } from '../../lib/shareLink';
 import { isDynamicRoom, isRoomCreator } from '../../state/roomStore';
-import { SHARE_CODE_NOTE } from './roomCopy';
 import { sanitizeNickname } from './roomPrefs';
 
 interface Props {
@@ -24,9 +23,11 @@ interface Props {
   onClose: () => void;
   onDetach: (broadcastId: string) => void;
   onSetNickname: (nickname: string) => void;
-  onCopyLink: () => void;
-  onCopyCode: () => void;
   onEndRoom: () => void;
+  // End room asks first. The state lives with the room view so the More
+  // menu's "End room…" can open the panel on the same confirm.
+  confirmingEnd: boolean;
+  onConfirmingEndChange: (confirming: boolean) => void;
   // The broadcaster's own attached broadcast, if any (its row gets Detach
   // even for a non-creator — the attacher may detach its own).
   ownBroadcastId: string | null;
@@ -53,9 +54,9 @@ export function RoomPanel({
   onClose,
   onDetach,
   onSetNickname,
-  onCopyLink,
-  onCopyCode,
   onEndRoom,
+  confirmingEnd,
+  onConfirmingEndChange,
   ownBroadcastId,
   onStartStreaming,
 }: Props) {
@@ -194,29 +195,42 @@ export function RoomPanel({
         </section>
       )}
 
+      {/* The foot (revised 2026-09-23): only what acts on the room. Sharing
+          moved to the header's code chip (and the More menu); End room is
+          a quiet destructive line that asks before it ends anything. */}
+      {(onStartStreaming || (creator && dynamic)) && (
       <div className={styles.panelFoot}>
-        <div className={styles.panelActions}>
-          <Button variant="secondary" onClick={onCopyLink}>
-            <CopyIcon /> Copy room link
+        {onStartStreaming && (
+          <Button variant="secondary" onClick={onStartStreaming}>
+            Start streaming here
           </Button>
-          {dynamic && (
-            <Button variant="secondary" onClick={onCopyCode}>
-              <CopyIcon /> Copy room code
-            </Button>
-          )}
-          {onStartStreaming && (
-            <Button variant="secondary" onClick={onStartStreaming}>
-              Start streaming here
-            </Button>
-          )}
-          {creator && dynamic && (
-            <Button variant="danger" onClick={onEndRoom}>
-              End room
-            </Button>
-          )}
-        </div>
-        <p className={styles.note}>{SHARE_CODE_NOTE}</p>
+        )}
+        {creator && dynamic && (
+          <div className={styles.endBlock}>
+            {confirmingEnd ? (
+              <div className={styles.endConfirm} role="group" aria-label="End the room">
+                <p className={styles.endConfirmText}>
+                  <strong>End the room for everyone?</strong>
+                  <span>Everyone leaves and the code stops working. Streams keep running on their own codes.</span>
+                </p>
+                <div className={styles.endConfirmActions}>
+                  <Button variant="secondary" onClick={() => onConfirmingEndChange(false)}>
+                    Cancel
+                  </Button>
+                  <Button variant="danger" onClick={onEndRoom}>
+                    End room
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" className={styles.endLink} onClick={() => onConfirmingEndChange(true)}>
+                End room…
+              </button>
+            )}
+          </div>
+        )}
       </div>
+      )}
     </GlassPanel>
   );
 }

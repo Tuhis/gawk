@@ -656,7 +656,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.2rem 0.7rem 0.2rem 0.6rem;
+  padding: 0.2rem 0.2rem 0.2rem 0.6rem;
   background: var(--glass);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);

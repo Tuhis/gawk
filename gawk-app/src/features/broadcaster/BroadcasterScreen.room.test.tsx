@@ -14,7 +14,7 @@
 // to re-type, no nickname asked twice.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { BroadcastCallbacks } from '../../transport/broadcaster';
 
 const { created, scripts, roomSessions, FakeRoomSession } = vi.hoisted(() => {
@@ -187,6 +187,8 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(screen.getByText('LIVE')).toBeTruthy();
     expect(screen.getByTestId('room-pill').textContent).toContain('RM2CD3');
     expect(screen.getByTestId('room-pill').textContent).toContain('1 streaming');
+    // The room pill copies like the stream's own code chip beside it.
+    expect(within(screen.getByTestId('room-pill')).getByRole('button', { name: 'Copy room link' })).toBeTruthy();
     for (const name of ['Stop broadcast', 'Settings', 'Show stats', 'People and chat']) {
       expect(screen.getByRole('button', { name })).toBeTruthy();
     }

@@ -47,6 +47,7 @@ import {
   ATTACH_REFUSED_CARD,
   EMPTY_ROOM_CARD,
   HIDDEN_CARD,
+  LINK_COPIED_TOAST,
   endedCard,
   errorCard,
   rejectionToast,
@@ -94,6 +95,9 @@ export interface RoomHeaderContext {
   watching: number;
   panelOpen: boolean;
   togglePanel: () => void;
+  // The room chip's copy (the room link), and its "Copied" flash.
+  copyLink: () => void;
+  linkCopied: boolean;
   // The overlays' fade state; the header follows it.
   showChrome: boolean;
 }
@@ -305,16 +309,29 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   // at, so it does not fade with the overlays (revision 2026-09-05; the
   // earlier pin-to-keep affordance is gone). A bottom sheet on a phone (CSS).
   const [panelOpen, setPanelOpen] = useState(false);
+  // End room's confirm (RoomPanel). Closing the panel drops it, so it never
+  // greets a later open.
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
+  useEffect(() => {
+    if (!panelOpen) setConfirmingEnd(false);
+  }, [panelOpen]);
 
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [presetMenu, setPresetMenu] = useState<{ x: number; y: number } | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const presetButtonRef = useRef<HTMLButtonElement | null>(null);
 
-  const [toast, setToast] = useState<string | null>(null);
+  // `note` is an optional second, quieter line (the copied-link note).
+  const [toast, setToast] = useState<{ text: string; note?: string } | null>(null);
+  // The room chip's "Copied" flash, like the stream code chip's.
+  const [linkCopied, setLinkCopied] = useState(false);
+  const linkCopiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (linkCopiedTimer.current !== null) clearTimeout(linkCopiedTimer.current);
+  }, []);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showToast = useCallback((text: string) => {
-    setToast(text);
+  const showToast = useCallback((text: string, note?: string) => {
+    setToast({ text, note });
     if (toastTimer.current !== null) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
   }, []);
@@ -355,7 +372,12 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
 
   const copyLink = useCallback(() => {
     if (code === '') return;
-    void navigator.clipboard?.writeText(buildRoomLink(code)).then(() => showToast('Room link copied'));
+    void navigator.clipboard?.writeText(buildRoomLink(code)).then(() => {
+      showToast(LINK_COPIED_TOAST.text, LINK_COPIED_TOAST.note);
+      setLinkCopied(true);
+      if (linkCopiedTimer.current !== null) clearTimeout(linkCopiedTimer.current);
+      linkCopiedTimer.current = setTimeout(() => setLinkCopied(false), 1800);
+    });
   }, [code, showToast]);
   const copyCode = useCallback(() => {
     if (code === '') return;
@@ -398,7 +420,18 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     ...(dynamic ? [{ label: 'Copy room code', onSelect: copyCode }] : []),
     { label: 'Change nickname…', onSelect: () => setEditingNick(true) },
     { label: isFullscreen ? 'Exit fullscreen' : 'Fullscreen', onSelect: () => toggleFullscreen() },
-    ...(creator && dynamic ? [{ label: 'End room', onSelect: () => commands.endRoom() }] : []),
+    // Never ends at once: opens the panel on its confirm (RoomPanel).
+    ...(creator && dynamic
+      ? [
+          {
+            label: 'End room…',
+            onSelect: () => {
+              setPanelOpen(true);
+              setConfirmingEnd(true);
+            },
+          },
+        ]
+      : []),
     {
       label: 'Terms of use',
       onSelect: () => window.open(`${window.location.origin}${window.location.pathname}#/terms`, '_blank', 'noopener'),
@@ -644,16 +677,41 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
         </button>
       )}
 
-      {toast && <Toast>{toast}</Toast>}
+      {toast && (
+        <Toast className={toast.note ? styles.toastWithNote : undefined}>
+          {toast.text}
+          {toast.note && <span className={styles.toastNote}>{toast.note}</span>}
+        </Toast>
+      )}
 
       {header ? (
-        header({ code, streaming, watching, panelOpen, togglePanel: () => setPanelOpen((o) => !o), showChrome })
+        header({
+          code,
+          streaming,
+          watching,
+          panelOpen,
+          togglePanel: () => setPanelOpen((o) => !o),
+          copyLink,
+          linkCopied,
+          showChrome,
+        })
       ) : (
       <div className={[styles.header, showChrome ? '' : styles.headerHidden].join(' ')} data-panel={panelOpen ? 'true' : 'false'}>
         <div className={styles.headerLeft}>
-          <span className={styles.code} title="Room code">
-            {code}
-          </span>
+          {/* The code chip is the share control, as the stream code chip
+              is on a plain stream: click copies the room link (revised
+              2026-09-23; the separate copy icon and the panel's copy
+              buttons are gone — the More menu keeps both copies). */}
+          <button
+            type="button"
+            className={styles.code}
+            title="Room code"
+            aria-label={linkCopied ? 'Copied' : 'Copy room link'}
+            onClick={copyLink}
+          >
+            <span className={styles.codeText}>{code}</span>
+            <CopyIcon />
+          </button>
           <span className={styles.count} data-live={streaming > 0 ? 'true' : 'false'}>
             {streaming} streaming
           </span>
@@ -662,9 +720,6 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
           </span>
         </div>
         <div className={styles.headerRight}>
-          <IconButton label="Copy room link" onClick={copyLink}>
-            <CopyIcon />
-          </IconButton>
           <IconButton
             label={panelOpen ? 'Hide people and chat' : 'People and chat'}
             aria-pressed={panelOpen}
@@ -789,9 +844,9 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
             onClose={() => setPanelOpen(false)}
             onDetach={(id) => (own && id === own.broadcastId ? detachOwn() : commands.detach(id))}
             onSetNickname={submitNickname}
-            onCopyLink={copyLink}
-            onCopyCode={copyCode}
             onEndRoom={() => commands.endRoom()}
+            confirmingEnd={confirmingEnd}
+            onConfirmingEndChange={setConfirmingEnd}
             ownBroadcastId={own?.broadcastId ?? null}
             onStartStreaming={onStartStreaming && !own ? startStreaming : null}
           />

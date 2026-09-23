@@ -169,7 +169,14 @@ export const ATTACH_REFUSED_CARD: Card = {
   body: 'The room refused it. Check the secret and try again — the room code could also be wrong. Your stream is still running either way.',
 };
 
-export const SHARE_CODE_NOTE = 'Anyone with the room code can also see the codes of the streams in it.';
+// The toast for a copied room link. Its second line carries the D16 note —
+// the code reveals the codes of the streams in the room — at the moment of
+// sharing, which is when it matters (it used to sit in the people panel's
+// foot).
+export const LINK_COPIED_TOAST = {
+  text: 'Room link copied',
+  note: 'Anyone with it can also see the codes of the streams in it.',
+};
 
 export const RECONNECTING_NOTE = 'Reconnecting to the room…';
 export const DRAINING_NOTE = 'Room server is updating — reconnecting…';
