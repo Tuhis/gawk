@@ -165,6 +165,9 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(screen.queryByRole('textbox', { name: 'Your name' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Change your name' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Your name' }), { target: { value: 'my desk' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
+    expect(screen.queryByRole('textbox', { name: 'Your name' })).toBeNull();
+    expect(panel.textContent).toContain('Joining as my desk');
     fireEvent.click(screen.getByRole('button', { name: 'Create a new room' }));
 
     await waitFor(() => expect(roomSessions).toHaveLength(1));
@@ -266,13 +269,45 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(roomSessions).toHaveLength(0);
   });
 
-  it('with no name remembered the field is open, and typing into it does not fold it away', async () => {
+  it('with no name remembered the field is open; only Save (never focus loss) folds it, and not while empty', async () => {
     localStorage.removeItem('gawk:nickname');
     await goLive();
     fireEvent.click(screen.getByRole('button', { name: 'Room' }));
     expect(screen.queryByRole('button', { name: 'Change your name' })).toBeNull();
-    fireEvent.change(screen.getByRole('textbox', { name: 'Your name' }), { target: { value: 'd' } });
+    const save = screen.getByRole('button', { name: 'Save name' }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    const field = screen.getByRole('textbox', { name: 'Your name' });
+    fireEvent.change(field, { target: { value: 'desk' } });
+    fireEvent.blur(field);
     expect(screen.getByRole('textbox', { name: 'Your name' })).toBeTruthy();
+    // Enter submits the field's form (jsdom does not synthesize that from a
+    // keydown, so submit it directly).
+    fireEvent.submit(field.closest('form')!);
+    expect(screen.queryByRole('textbox', { name: 'Your name' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Room' }).textContent).toContain('Joining as desk');
+  });
+
+  it('Escape in the name field puts the old name back', async () => {
+    await goLive();
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Change your name' }));
+    const field = screen.getByRole('textbox', { name: 'Your name' });
+    fireEvent.change(field, { target: { value: 'oops' } });
+    fireEvent.keyDown(field, { key: 'Escape' });
+    expect(screen.queryByRole('textbox', { name: 'Your name' })).toBeNull();
+    // Escape cancels the edit, not the whole sheet.
+    expect(screen.getByRole('dialog', { name: 'Room' }).textContent).toContain('Joining as tuhis');
+  });
+
+  it('a name typed but not saved still goes with the join', async () => {
+    await goLive();
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Change your name' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your name' }), { target: { value: 'desk' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Room code or link' }), { target: { value: 'TuhisRoom' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    expect(roomSessions[0].opts.nickname).toBe('desk');
   });
 
   it('a room’s "start streaming here" waits quietly, then joins by itself once the stream is live — no panel, no prompt', async () => {

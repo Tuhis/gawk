@@ -180,9 +180,11 @@ export function BroadcasterScreen() {
   const [roomDraft, setRoomDraft] = useState('');
   const [roomPanelOpen, setRoomPanelOpen] = useState(false);
   // The name is one line ("Joining as …") until Change opens its field; it
-  // opens by itself when there is no name yet.
+  // opens by itself when there is no name yet. Escape restores the name the
+  // edit started from.
   const [nameEditing, setNameEditing] = useState(false);
   const focusNameRef = useRef(false);
+  const nameBeforeEditRef = useRef('');
   const [roomTarget, setRoomTarget] = useState<RoomTarget | null>(null);
   const [roomGrant, setRoomGrant] = useState<RoomGrant | null>(null);
   const [roomLabel, setRoomLabel] = useState(() => roomReturn?.nickname ?? loadNickname() ?? '');
@@ -754,28 +756,43 @@ export function BroadcasterScreen() {
         <section className={styles.nameBlock}>
           {nameEditing ? (
             <>
-              <input
-                ref={(el) => {
-                  if (el && focusNameRef.current) {
-                    focusNameRef.current = false;
-                    el.focus();
-                  }
-                }}
-                className={styles.modalInput}
-                value={roomLabel}
-                maxLength={MAX_ROOM_LABEL_LEN}
-                onChange={(e) => setRoomLabel(e.target.value)}
-                onBlur={() => {
+              {/* Save (or Enter) folds the field; Escape puts the old name
+                  back. Focus loss does not: nothing on screen said it
+                  would. The name applies as typed, so a join or create
+                  made without Save still carries it. */}
+              <form
+                className={styles.joinRow}
+                onSubmit={(e) => {
+                  e.preventDefault();
                   if (roomLabel.trim() !== '') setNameEditing(false);
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.currentTarget.blur();
-                }}
-                placeholder="your name"
-                aria-label="Your name"
-                autoComplete="nickname"
-                spellCheck={false}
-              />
+              >
+                <input
+                  ref={(el) => {
+                    if (el && focusNameRef.current) {
+                      focusNameRef.current = false;
+                      el.focus();
+                    }
+                  }}
+                  className={styles.modalInput}
+                  value={roomLabel}
+                  maxLength={MAX_ROOM_LABEL_LEN}
+                  onChange={(e) => setRoomLabel(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Escape') return;
+                    e.stopPropagation();
+                    setRoomLabel(nameBeforeEditRef.current);
+                    if (nameBeforeEditRef.current.trim() !== '') setNameEditing(false);
+                  }}
+                  placeholder="your name"
+                  aria-label="Your name"
+                  autoComplete="nickname"
+                  spellCheck={false}
+                />
+                <Button type="submit" variant="secondary" aria-label="Save name" disabled={roomLabel.trim() === ''}>
+                  Save
+                </Button>
+              </form>
               <p className={styles.settingsAudioNote}>Shown on your stream and in the room’s people list.</p>
             </>
           ) : (
@@ -787,6 +804,7 @@ export function BroadcasterScreen() {
                 aria-label="Change your name"
                 onClick={() => {
                   focusNameRef.current = true;
+                  nameBeforeEditRef.current = roomLabel;
                   setNameEditing(true);
                 }}
               >

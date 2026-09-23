@@ -359,6 +359,10 @@ held. Settled:
 - **The name is one line**, "Joining as **name** · Change", under the
   actions; Change opens the field, and it opens by itself when no name is
   remembered (the room view still asks on first join when it is empty).
+  The open field has a **Save** beside it (Enter too) and Escape restores
+  the old name; focus loss does not fold it — a first cut saved on blur,
+  and with no button on screen nothing said so. The name applies as
+  typed, so a join or create made without Save still carries it.
 
 Acceptance: `BroadcasterScreen.room.test.tsx` — a bare code joins with
 no grant (or the stashed one); a link is echoed with its key and joins
@@ -366,7 +370,9 @@ with its grant; junk is refused in place with the panel open; no
 attach-secret field exists; a pre-start create shows the chip, dials
 nothing, then mints with the live broadcast's ID, token and name; the
 create chip dismisses; the name line opens its field and an empty name
-starts open. `e2e/run.mjs --rooms-gated` drives the new field against a
+starts open; Save folds the field (disabled while empty), blur does not,
+Escape restores the old name, and an unsaved name still goes with a
+join. `e2e/run.mjs --rooms-gated` drives the new field against a
 real relay (the gated room is joined with no secret, then the secret is
 typed in the room).
 
