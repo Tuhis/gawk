@@ -745,10 +745,14 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   legs in `subscriberDetails` with `stripeLeg: true` but **not**
   `internal: true` — `internal` is reserved for R17 edge sessions — and its own
   `viewersGlobal` correctly excludes them (docs/35 ST3). Telemetry excludes
-  only `Internal`: `relayscrape.Subscriber` does not even decode `stripeLeg`,
-  and the subscriber loops in `live.aggregateLocked`,
-  `readapi/broadcast.go` and `readapi/readapi.go` (`subscribersFleetTotal`,
-  `subscribers`, `subscribersDropping`) all count legs as audience.
+  only `Internal`, and neither of its two decoders knows the field:
+  `relayscrape.Subscriber` (feeding `live.aggregateLocked`) and readapi's own
+  `relayObservation.Broadcast.SubscriberDetails` element (`SessionID`,
+  `Dropped`, `Internal` only), which the stored relay lines are unmarshalled
+  into for `setBroadcastRelayFacts` (`/v1/broadcasts/{key}/diagnose`) and
+  `factsFor` (per-session diagnose). All three loops
+  (`subscribersFleetTotal`, `subscribers`, `subscribersDropping`) count legs
+  as audience.
 - **Impact**: the `viewer-count-gap` playbook row is a false positive on
   essentially every broadcast with a striping-capable viewer, which trains
   the operator to ignore it — and it is the row meant to catch a real R18
@@ -758,12 +762,21 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Not confirmed on the wire**: reading the origin's raw `/statusz` from
   inside the cluster was not done, so "the 4 extra entries are this viewer's
   legs" is inferred from the exact 1 + 4 match and the code, not observed.
-- **Fix would start**: test-first — decode `stripeLeg` in
-  `relayscrape.Subscriber`, then assert with a fixture of one primary + four
-  legs that `subscribersFleetTotal == 1`, that `viewer-count-gap` does not
-  fire, and that legs are not emitted as `subscriber` observations (they are
-  plumbing, like edges). One shared "is audience" predicate for the three
-  loops would stop them drifting apart again.
+- **Stored history stays wrong**: `StoreRelay` persists lines re-marshalled
+  from the `relayscrape` types, not the relay's raw JSON, so every
+  observation stored before the fix has no leg marker and cannot be
+  corrected on read. Diagnoses over those days keep over-counting (and keep
+  firing `viewer-count-gap`) after the fix ships; only new lines carry it.
+- **Fix would start**: test-first — add `stripeLeg` to both decoders
+  (`relayscrape.Subscriber`, and readapi's `relayObservation`
+  `SubscriberDetails` element; adding it to the former also persists it in
+  new stored lines). Then, with one fixture of one primary + four legs,
+  drive **both** paths: `live` and the diagnose endpoints
+  (`/v1/broadcasts/{key}/diagnose` and a session diagnose) must each report
+  `subscribersFleetTotal == 1` and not fire `viewer-count-gap`; and legs must
+  not be emitted as `subscriber` observations (they are plumbing, like
+  edges). One shared "is audience" predicate for the three loops would stop
+  them drifting apart again.
 
 (The "Telemetry SQL console: the `rollups` view rots after boot, and any
 unpruned `sessions` query OOMs" entry was resolved 2026-09-22: views
