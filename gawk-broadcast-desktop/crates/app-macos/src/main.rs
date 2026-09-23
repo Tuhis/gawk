@@ -2,8 +2,11 @@
 //! the system picker, VideoToolbox low-latency H.264, the shared engine and
 //! the shared shell (`gawk_ui::shell`) — this crate is only the platform.
 //!
-//! As of MB3 a Start is a real, video-only broadcast; audio is MB4's.
+//! Capture (MB2), encode (MB3), audio (MB4) and the macOS shell touches —
+//! the Share card, the menu bar's Settings…, notifications (MB5) — are in.
 
+#[cfg(target_os = "macos")]
+mod notify;
 #[cfg(target_os = "macos")]
 mod pipeline;
 #[cfg(target_os = "macos")]
@@ -11,6 +14,7 @@ mod platform;
 
 #[cfg(target_os = "macos")]
 fn main() {
+    notify::init();
     gawk_ui::shell::run(Box::new(platform::Mac::new()), platform::wire);
 }
 

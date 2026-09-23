@@ -89,6 +89,8 @@ pub struct Pipeline {
     /// "Use whole-system audio" was clicked: the platform re-runs the
     /// picker in display mode for the live stream (D6).
     wants_system_audio: AtomicBool,
+    /// What the stream shares now; a live re-pick can change it.
+    capture_mode: Mutex<&'static str>,
     send_task: tokio::task::JoinHandle<()>,
 }
 
@@ -282,6 +284,7 @@ impl Pipeline {
             dropped_backpressure,
             audio,
             wants_system_audio: AtomicBool::new(false),
+            capture_mode: Mutex::new(params.picked.style.capture_mode()),
             send_task,
         })
     }
@@ -298,6 +301,7 @@ impl Pipeline {
     pub fn repick(&self, picked: &Picked) {
         if let Some(c) = &self.capture {
             c.update(picked, c.settings());
+            *self.capture_mode.lock().unwrap() = picked.style.capture_mode();
         }
     }
 
@@ -345,6 +349,10 @@ impl Media for Pipeline {
     /// same seq space, viewers notice nothing.
     fn switch_audio_to_system(&self) {
         self.wants_system_audio.store(true, Ordering::Release);
+    }
+
+    fn capture_mode(&self) -> Option<&'static str> {
+        Some(*self.capture_mode.lock().unwrap())
     }
 
     fn minimized(&self) -> bool {

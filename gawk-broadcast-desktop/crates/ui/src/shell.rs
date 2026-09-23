@@ -72,6 +72,12 @@ pub trait Media: Send {
     fn switch_audio_to_system(&self);
     /// Whether the shared window is minimized (the GUI hint).
     fn minimized(&self) -> bool;
+    /// The capture mode now ("app" | "screen"), when the pipeline can change
+    /// it mid-broadcast — macOS re-picks a display for whole-system audio
+    /// (docs/54 D6). `None` keeps the mode Start resolved.
+    fn capture_mode(&self) -> Option<&'static str> {
+        None
+    }
     /// A pump died; the broadcast should end with this message.
     fn take_failure(&self) -> Option<String>;
     /// Tears the media down in dependency order. No zombie capture.
@@ -1524,8 +1530,9 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     if let Some(p) = sh.media() {
         ui.set_audio_level(p.audio_level());
         let state = p.audio_state();
-        ui.set_audio_line(audio_line(&state, sh.capture_mode).into());
-        let hint = sh.capture_mode == "app" && p.audio_silence_hint();
+        let mode = p.capture_mode().unwrap_or(sh.capture_mode);
+        ui.set_audio_line(audio_line(&state, mode).into());
+        let hint = mode == "app" && p.audio_silence_hint();
         ui.set_audio_hint(hint);
         if hint {
             ui.set_audio_hint_text(

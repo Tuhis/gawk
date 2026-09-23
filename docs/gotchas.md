@@ -1039,6 +1039,11 @@ Add to it when a new gotcha lands in `docs/`.
   so every IDR gets them prepended from the sample's description — skip it
   and a viewer joining on that keyframe cannot decode it.
   ([docs/54](54-macos-native-broadcaster.md) D8)
+- **`UNUserNotificationCenter` throws in a process without a bundle
+  identifier** — an Objective-C exception, not an error — so a bare
+  `cargo run` build must not touch it; notifications are enabled only when
+  running as the `.app`, and go to `debug.log` otherwise.
+  ([docs/54](54-macos-native-broadcaster.md) §11, MB5)
 - **Nothing may unwind into an Objective-C or VideoToolbox callback** — it
   aborts the process. Every delegate, output and completion entry point runs
   behind `sck_policy::CallbackGuard` or its own `catch_unwind`, and a caught
