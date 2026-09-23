@@ -1,4 +1,4 @@
-# R54 — Broadcasting over Wi-Fi: a deadline-reliable uplink and a Wi-Fi streaming mode
+# R54 — Broadcasting over Wi-Fi: it just works, and speaks only when viewers are affected
 
 **Status**: proposed 2026-09-23. Chunks **WU0–WU6**, none started. The owner
 decisions in §2 are *proposed* and open; the doc is written so each can be
@@ -72,8 +72,8 @@ compares against.
 | G5 | Compatibility: a carrier-capable broadcaster against a relay without the capability sends datagrams, unchanged; an old broadcaster against a new relay is unchanged; with `-uplink-carriers=false` the relay's `/statusz`, metrics and wire are byte-identical to pre-R54 | integration (real `gawk-server`) + diff assertion |
 | G6 | Wire parity: the new capability bit and any new constant are in `gawk-server/wire`, `wire.ts`, `gawk-broadcast/internal/wirecheck` and `crates/wire`, golden vectors byte-identical | unit (existing mirror tests) |
 | G7 | Viewers untouched: no change in `gawk-app` beyond the `wire.ts` mirror | review |
-| G8 | The Wi-Fi hint: on Wi-Fi with AWDL up, the macOS Share card shows the hint within 5 s of going live; on Ethernet it never shows | unit (policy) + manual |
-| G9 | Wi-Fi streaming mode (if OD4 is taken): AWDL is down while live and **back up** after Stop, after `kill -9` of the app, after `kill -9` of the helper, and after a reboot mid-broadcast; AirDrop works afterwards | manual |
+| G8 | The app stays quiet unless viewers are affected: on a clean Wi-Fi link (AWDL up, carrier coping) nothing appears; with sustained harm the D7 line appears within 15 s, at most once per broadcast; every string matches D7's copy table and none contains D7's banned terms | unit (policy + string test) + manual |
+| G9 | Improve (if OD4 is taken): from the amber line to "Wi-Fi improved" is **Improve → Continue → the system toggle**, nothing else; afterwards it is automatic on every Wi-Fi broadcast; AirDrop comes back with **no user action** after Stop, `kill -9` of the app, `kill -9` of the helper and a reboot mid-broadcast | manual |
 | G10 | Telemetry says which uplink ran: the broadcaster reports `uplinkMode`, carrier counters and local QUIC loss; the relay reports carrier ingest per broadcast | unit + one real session in the dashboard |
 
 ## 2. Owner decisions (proposed, open)
@@ -83,11 +83,17 @@ compares against.
 | OD1 | Transport for leg-A deltas | **R19's carrier, reversed**: one reliable uni stream per GOP from the broadcaster, records of `uint16 len ‖ datagram`, reset at a deadline (D1–D3). Not per-frame streams, not NACK/ARQ over datagrams. |
 | OD2 | When it engages | **Automatically**, when the relay advertises it and the path's smoothed RTT is ≤ 40 ms (D4). No user setting; an advanced override exists for diagnosis. |
 | OD3 | The deadline | **150 ms** from a GOP's oldest unacknowledged record, capped by the GOP (D3). A knob, not a constant. |
-| OD4 | Wi-Fi streaming mode | **Yes, opt-in**: a privileged helper that holds AWDL down only while live, installed from the hint with one approval (D7). If declined, WU4 is dropped and the hint says "use Ethernet or turn off AirDrop". |
+| OD4 | "Improve" | **Yes, opt-in**: one button that pauses AirDrop and Handoff while live on Wi-Fi, via a privileged helper approved once in System Settings (D7). If declined, WU4 is dropped, the amber line has no button, and Help carries the remedies. |
 | OD5 | Which broadcasters | **The Rust desktop engine first** (Windows + macOS share it). The relay side serves any producer; the Go Linux broadcaster and the browser follow as separate chunks if the measurement justifies them. |
 | OD6 | QoS marking | **An experiment, shipped only on a measured gain** (D8). |
 
 ## 3. Non-goals
+
+- **Settings for the transport.** No "reliable uplink" toggle, deadline
+  slider or mode picker in the UI; the advanced override is a config-file
+  key for diagnosis only.
+- **Telling users what's wrong with their router** in the main flow — Help
+  only (D7 principle 7).
 
 - **Pacing or frame-size capping.** Both were rejected for leg B by owner
   decision (docs/34 Finding 4, docs/35) because they add latency or cost
@@ -210,8 +216,8 @@ hysteresis (engage below 40 ms, disengage above 60 ms for 5 s) so a jittery
 link does not flap. On a WAN path with a 60 ms RTT, one retransmit already
 costs most of the deadline, and datagrams remain the right answer.
 
-The user sees nothing, except one line in the stats panel: *Uplink: reliable
-(Wi-Fi-safe)* or *Uplink: datagrams*.
+The user sees nothing. The mode is one row in Diagnostics, for us, not in
+the main window (D7 principle 1).
 
 ### D5 — Telemetry: say which uplink ran and what it cost
 
@@ -241,47 +247,77 @@ superseded by R18's push channel (`ViewerCount`, `RelayCapabilities`,
 rejections (docs/24, docs/26) are respected too: retransmission is QUIC's,
 on a stream, not a gawk protocol.
 
-### D7 — macOS: the Wi-Fi hint and Wi-Fi streaming mode
+### D7 — The experience: it just works, and speaks only when viewers are affected
 
-**The hint (WU3), unprivileged.** While live, the macOS shell checks:
+The bar is an Apple app: the right thing happens by default, and the rare
+time the app speaks, it says one plain sentence and offers one button.
+FaceTime's "Poor connection" is the model — it appears when the call is
+actually suffering, names no protocol, and goes away by itself.
 
-- whether the connection's route goes out a Wi-Fi interface — CoreWLAN's
-  interface names against the interface Network.framework's path monitor
-  reports;
-- whether `awdl0` is `IFF_UP` (`getifaddrs`, no privilege);
-- `uplinkLossPct` from D5.
+**Principles** (each one is an acceptance criterion in WU3/WU4):
 
-On Wi-Fi with AWDL up, the Share card shows an amber line: *"You're on
-Wi-Fi. AirDrop and Handoff can make viewers stutter."* with two actions:
-**Turn on Wi-Fi streaming mode** (OD4) and **Learn more** (the README
-section). If the carrier is engaged and `uplinkLossPct` stays under 0.5 %,
-the hint is downgraded to the stats panel only: the uplink is coping, so
-don't nag.
+1. **Silent by default.** The carrier (D1–D4) needs no setting, no toggle and
+   no explanation. On a good network, nothing about R54 is visible.
+2. **Speak only on measured harm.** Being on Wi-Fi is not a problem, and
+   AWDL being up is not a problem. The app speaks only when viewers are
+   losing video *despite* the carrier: carriers expiring at the deadline, or
+   `uplinkLossPct` above a threshold, sustained for 10 s while at least one
+   viewer is watching.
+3. **No jargon.** No user-facing string in this feature says AWDL, channel,
+   packet, uplink, QUIC, carrier, DSCP or Wi-Fi band. It talks about what the
+   user sees and what they know: Wi-Fi, AirDrop, Handoff, viewers, pauses.
+4. **One action, and it's reversible without thinking.** Anything gawk turns
+   off comes back by itself when the broadcast ends, whatever happens to the
+   app.
+5. **Never interrupt the game.** No system notification, no sound, no modal
+   while live. The message lives in the gawk window; the user sees it when
+   they look.
+6. **Ask once.** A dismissed message stays dismissed for that broadcast.
+   Dismissed in two broadcasts in a row, it stops appearing and the option
+   lives only in Settings.
+7. **Advice that needs a router belongs in Help,** not in the app's flow.
 
-**Wi-Fi streaming mode (WU4), privileged, opt-in.** A root helper installed
-with `SMAppService.daemon` — one approval in System Settings → Login Items,
-the macOS-native way, no password prompt from gawk itself:
+**The copy** (normative; wording changes go through review like code):
 
-- It exposes one XPC Mach service with two calls, `hold()` and `release()`,
-  and verifies the caller's code signature (same Team ID) before accepting.
-- `hold()` brings `awdl0` down (`SIOCSIFFLAGS`, no shelling out to
-  `ifconfig`) and keeps it down while the hold lasts: it watches the routing
-  socket, because macOS brings AWDL back up on demand (an AirDrop browse).
-- **Crash safety by design, as `gawk-pw-helper` does it (docs/39)**: the
-  hold is tied to the XPC connection. When the app releases it, quits,
-  crashes or is killed, the connection invalidates and the helper restores
-  AWDL. The helper writes a marker before taking AWDL down and restores on
-  its own start if the marker exists, which covers a helper crash and a
-  reboot. It never leaves AWDL down without a live holder.
-- The app takes the hold when a broadcast goes live and releases it at
-  Stop. AirDrop, Sidecar and Universal Control are unavailable *only* while
-  broadcasting, and the hint says so.
-- Signed and notarized with the app bundle (docs/54 D13/D14): the helper is
-  `Contents/Library/LaunchDaemons/` + its plist, same identity, same
-  release unit.
+| Moment | What the user sees |
+|---|---|
+| Live on Wi-Fi, video getting through | Nothing |
+| Viewers affected, on Wi-Fi, mode never enabled | Amber line on the Share card: **"Your Wi-Fi is dropping some video. Viewers may see brief pauses."** Buttons: **Improve** · Not Now. A small **?** opens Help. |
+| After **Improve**, first time | A sheet: **"Improve Wi-Fi while you're live"** — "gawk can pause AirDrop and Handoff while you broadcast. They come back as soon as you stop." Buttons: **Continue** · Cancel. **Continue** opens System Settings at Login Items, where macOS asks for its own approval; the sheet waits and closes by itself when approval lands. |
+| Approved | The amber line turns into a green check, **"Wi-Fi improved"**, for 3 s, then disappears. From now on this happens automatically whenever a broadcast is live on Wi-Fi. |
+| Viewers affected, on Ethernet (or mode already on) | Amber line: **"Your network is dropping some video. Viewers may see brief pauses."** No button — there's nothing to fix on this Mac. **?** opens Help. |
+| Settings | One checkbox: **"Pause AirDrop and Handoff while live on Wi-Fi"**. Unchecking it stops the behaviour; the helper stays installed but idle. |
+| Help page | Why it happens in one paragraph; then, in order: use a cable if you can; let gawk pause AirDrop and Handoff; if you manage your router, channel 149 (or 44) on 5 GHz avoids the problem without turning anything off. |
+| Diagnostics / stats panel only | The technical truth for us: uplink mode, loss %, carriers expired, AWDL state, Wi-Fi channel. |
 
-**Windows** has no AWDL; the hint's Wi-Fi half ("you're on Wi-Fi, and the
-uplink is losing X %") applies there too and is a later, small chunk.
+**How it's built** (what the copy sits on):
+
+- *Detection (WU3), unprivileged.* The route's interface is Wi-Fi
+  (Network.framework path monitor against CoreWLAN's interface names);
+  `awdl0` is `IFF_UP` (`getifaddrs`); `uplinkLossPct` and carrier expiries
+  from D5; the current channel from CoreWLAN, for Diagnostics and Help only.
+  The policy is one pure function over those inputs.
+- *The helper (WU4), privileged, opt-in.* A root daemon registered with
+  `SMAppService.daemon`; the approval is the system's Login Items toggle, so
+  gawk never asks for a password itself. One XPC Mach service with two calls,
+  `hold()` and `release()`, refused unless the caller is signed with the
+  app's Team ID. `hold()` brings `awdl0` down (`SIOCSIFFLAGS`, no shelling
+  out to `ifconfig`) and keeps it down while held — it watches the routing
+  socket, because macOS raises AWDL again on demand.
+- *Crash safety, the `gawk-pw-helper` way (docs/39).* The hold is the XPC
+  connection: release, quit, crash or `kill -9` invalidates it and the helper
+  restores AWDL. A marker written before taking AWDL down makes the helper
+  restore on its own next start, covering a helper crash and a reboot. AWDL
+  is never down without a live holder — principle 4 holds even when
+  everything else fails.
+- The app takes the hold when a broadcast goes live **on Wi-Fi** with the
+  setting on, and releases it at Stop or when the route moves to Ethernet.
+- Signed and notarized inside the bundle (docs/54 D13/D14):
+  `Contents/Library/LaunchDaemons/` + its plist, same identity, same release
+  unit.
+
+**Windows** has no AWDL. The "Your network is dropping some video" line,
+with no button, applies there as a later, small chunk.
 
 ### D8 — QoS marking: an experiment with a stop rule
 
@@ -344,21 +380,25 @@ video access category (priority airtime) and a DSCP. It needs no privilege.
 | Against a real `gawk-server` with injected loss (the `vt_to_relay` harness): with 2 % random packet loss, carrier mode delivers every frame to a subscriber and datagram mode does not | integration, ignored-by-default like `vt_to_relay` |
 | D5 broadcaster fields reported; the field registry and stored-shape golden updated | unit |
 
-### WU3 — macOS Wi-Fi hint
+### WU3 — macOS: the quiet status line
 
 | Acceptance criterion | Verified by |
 |---|---|
-| The hint policy (Wi-Fi × AWDL × carrier engaged × `uplinkLossPct`) is a pure function with a table test; the platform probes only translate values | unit |
-| On Wi-Fi with AWDL up, the hint shows within 5 s of going live; on Ethernet it never does; downgraded to the stats panel when the carrier copes | unit + manual |
-| README (macOS section) gains "Broadcasting over Wi-Fi" with the one-line cause and both remedies | review |
+| The D7 policy (Wi-Fi × harm sustained 10 s × viewers > 0 × dismissed × mode state) is a pure function with a table test; the platform probes only translate values | unit |
+| Every D7 row renders with its exact copy; a string test fails if any user-facing string in the feature contains a banned term (AWDL, channel, packet, uplink, QUIC, carrier, DSCP) | unit |
+| On clean Wi-Fi with AWDL up nothing appears; with injected loss the line appears within 15 s; Not Now holds for the broadcast; two consecutive dismissals stop it | unit (fake clock) + manual |
+| No notification, sound or modal is raised by this feature while live | unit + review |
+| Help page (README macOS section, linked from **?**) in D7's order: cable, Improve, router channel | review |
+| Diagnostics shows uplink mode, loss %, carriers expired, AWDL state and channel | unit |
 
-### WU4 — Wi-Fi streaming mode helper (only if OD4 is taken)
+### WU4 — macOS: Improve (only if OD4 is taken)
 
 | Acceptance criterion | Verified by |
 |---|---|
-| Helper registers via `SMAppService.daemon`; the approval flow is one System Settings toggle; the app shows the pending state until approved | manual |
+| The flow is **Improve → Continue → system toggle**; the sheet closes itself when `SMAppService` reports approval; cancelling at any step leaves everything as it was | manual |
+| After approval the Settings checkbox is on and every later Wi-Fi broadcast holds AWDL down with no prompt; on Ethernet no hold is taken; route change to Ethernet mid-broadcast releases it | unit (hold policy) + manual |
 | XPC caller verification: a binary not signed with the app's Team ID is refused | unit (signature check against a test binary) + manual |
-| AWDL down while live, re-asserted if macOS raises it; restored after Stop, `kill -9` of the app, `kill -9` of the helper, reboot mid-broadcast (G9) | manual, each case recorded |
+| AWDL restored with no user action after Stop, `kill -9` of the app, `kill -9` of the helper, reboot mid-broadcast; AirDrop works afterwards (G9) | manual, each case recorded |
 | Bundle layout, signing and notarization pass the existing MB7 checks (`codesign --verify --deep --strict`, `spctl --assess`) with the helper inside | CI (signed run) |
 
 ### WU5 — QoS marking experiment
@@ -390,7 +430,7 @@ video access category (priority airtime) and a DSCP. It needs no privilege.
   it, but WU2's integration test has to show the keyframe stream is not
   starved by the carrier either.
 - **Apple and AWDL.** The helper depends on bringing an interface down from
-  root. Apple can change that in any release; the hint and the carrier do
+  root. Apple can change that in any release; the status line and the carrier do
   not depend on it, which is why WU4 is separable.
 - **A privileged component** is new attack surface. XPC caller verification,
   two calls, no arguments, no media — the same "owns nothing" shape as
@@ -401,7 +441,18 @@ video access category (priority airtime) and a DSCP. It needs no privilege.
 Empty until WU0. Baseline observations from the 2026-09-23 session (not
 the WU0 protocol, recorded for context): AWDL on, datagram mode —
 `ingressLossRatio` 3.7 % (frames only), viewer 20–170 incomplete frames/min;
-AWDL off — viewer 0–4 incomplete frames/min.
+AWDL off — viewer 0–4 incomplete frames/min. The Mac's Wi-Fi was on
+channel 100, not one of AWDL's social channels (44/149 on 5 GHz), so the
+radio was hopping.
+
+Published AWDL timing, for WU0 to confirm or refute on this hardware: 16 TU
+(~16.4 ms) availability windows on a ~1.05 s channel sequence, at least 25 %
+of airtime and up to 50–75 % when active, ~13 % throughput loss with the AP
+on a different channel (Stute et al., MobiCom '18, arXiv 1808.03156); field
+reports of 50–100 ms stalls about once a second, or ~80–90 ms stalls in 1–2 s
+bursts every 10–12 s. Most reports describe **delay** rather than loss, while
+this session's relay counted **loss** — WU0 records both, and the spike
+length, because D3's deadline and G3's bound depend on it.
 
 ## 9. References
 
