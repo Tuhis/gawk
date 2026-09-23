@@ -87,7 +87,7 @@ compares against.
 | OD2 | When it engages | **Always, whenever the relay advertises it** — no RTT gate (D4). The escape hatch is a user-facing **advanced setting with a warning**, plus the relay's flag, env var and Helm value. |
 | OD3 | The deadline | **150 ms** from a GOP's oldest unacknowledged record, capped by the GOP (D3). A knob, not a constant. |
 | OD4 | "Improve" (pause AirDrop/Handoff via a helper) | **Deferred until after WU2.** The carrier ships first; WU6-style measurement then decides whether residual AWDL harm justifies a privileged helper. Until then the status line has **no button** and Help carries the remedies (D7). |
-| OD5 | Which broadcasters | **The Rust desktop engine first** (Windows + macOS share it). The relay side serves any producer; the Go Linux broadcaster and the browser follow as separate chunks if measurement justifies them. |
+| OD5 | Which broadcasters | **The Rust desktop engine first** (Windows + macOS share it). The relay side serves any producer; the Go Linux broadcaster and the browser follow as separate chunks if measurement justifies them. *Revised 2026-09-24:* the Go Linux app is frozen (docs/58 OD6); R56's Rust Linux shell inherits WU2 with the shared engine. |
 | OD6 | QoS marking | **Ship it unconditionally** (D8) — no stop rule. WU5 still proves the marking actually reaches the wire. |
 
 ## 3. Non-goals

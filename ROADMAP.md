@@ -74,6 +74,7 @@ feature set exists).
 | R53 | [OIDC for the telemetry read surface](#r53--oidc-for-the-telemetry-read-surface) | 🔧 designed 2026-09-20 (owner decisions OD1–OD9), not started (TO1–TO5, one PR) — the `gawk-telemetry` read listener (dashboard, `/v1`, `/live`, `/mcp`) adopts R39's auth boundary: OIDC public client + PKCE in the SPA, bearer JWT + a client-scoped `telemetry-reader` role on a separate Keycloak client, same IdP and recipe as `gawk-admin`, SSO across the portal's deep links. TO1 lifts the JWT verifier the relay and the portal each carry today into one public `gawk-server/oidcauth` package, and the SPA flow into `common-ts/oidc-session`, the first package under a new root for shared TypeScript, consumed by both operator UIs (third consumer ⇒ no third copy); per-consumer lock files plus a CI bot bump and required check make any `common-ts` change release every consumer. Basic auth stays as the no-IdP mode; ClusterIP default is unchanged; ingest is untouched and the pod's probes stay on ingest ([docs/55](docs/55-telemetry-oidc.md)) |
 | R54 | [MCP server for the `gawk-admin` API](#r54--mcp-server-for-the-gawk-admin-api) | 🔧 designed 2026-09-22 (owner decisions OD1–OD9), not started (MC1–MC5) — **lands after R53**: a remote MCP endpoint `/mcp` on `gawk-admin` so Claude Code acts **as the signed-in operator**, authorized by the MCP spec's OAuth flow against the deployment's own Keycloak (RFC 9728 challenge + metadata; a pre-registered public client `gawk-admin-mcp`, no dynamic registration). Tools are generated from the served OpenAPI document and dispatched through the same route table, so auth, roles and audit are the API's own; mutations on by default behind `-mcp-mutations`; every authenticated operation exposed, secret-bearing ones included; publisher IPs redacted unless `-mcp-reveal-ips`; events record the OAuth client beside the actor. One MCP transport lifted from telemetry into `gawk-server/mcphttp`. Default off ([docs/56](docs/56-admin-mcp.md)) |
 | R55 | [Broadcasting over Wi-Fi](#r55--broadcasting-over-wi-fi) | 🔧 designed 2026-09-23 (owner decisions OD1–OD6 taken 2026-09-24), not started (WU0–WU6; WU4 deferred) — leg-A loss from a Mac on Wi-Fi (AWDL) freezes viewers; deltas ride one 150 ms-deadline reliable stream per GOP from the Rust desktop broadcaster (R19's carrier, reversed) behind a new `CapUplinkCarriers` relay capability, always on when supported, with a warned Advanced → Legacy escape hatch; QoS marking shipped; silent by default, a plain status line on measured harm; the AirDrop-pausing **Improve** helper decided after WU2 ([docs/57](docs/57-wifi-uplink.md)) |
+| R56 | [Linux in the desktop workspace, and retiring the Go broadcaster](#r56--linux-in-the-desktop-workspace-and-retiring-the-go-broadcaster) | 🔧 designed 2026-09-24 (owner decisions OD1–OD15), not started (LX0–LX9) — a third shell `crates/app-linux` in `gawk-broadcast-desktop/` sharing the engine, wire, `main.slint` and audio lane; the Linux layer rebuilt, not ported: `ashpd` portal, **in-process** `gstreamer-rs` with R14's hardware-only cascade, the docs/39 app-audio tee on an in-process `pipewire-rs` connection, one monotonic clock, no MPEG-TS pipe; new identity `gawk-broadcast-linux` / `gawk-broadcast://linux`; tarball, x86_64, Ubuntu 24.04-class floor; desktop workspace to 2.0.0. **The Go app is frozen to fixes only from 2026-09-24**; one deprecation release (LX8), removed after the NVIDIA + AMD/Intel KDE Wayland pass (LX9), leaving `gawk-pubsim` as Go test tooling ([docs/58](docs/58-linux-desktop-broadcaster.md)) |
 
 ---
 
@@ -4625,6 +4626,48 @@ clean.
 2026-09-24 (per-GOP carrier; always on when supported; 150 ms deadline;
 Improve deferred until after WU2; Rust desktop first; QoS marking shipped);
 not started.
+
+---
+
+## R56 — Linux in the desktop workspace, and retiring the Go broadcaster
+
+**Goal**: one codebase for all three native broadcasters. Linux becomes a
+third shell (`crates/app-linux`) in the Rust `gawk-broadcast-desktop`
+workspace — same engine, wire mirror, `main.slint`, audio lane and encoder
+cascade code as Windows and macOS — and the Go `gawk-broadcast` app is
+frozen, then removed.
+
+**Why**: two of the three native apps share code by construction; the
+Linux one shares none, so every cross-cutting feature (rooms, the server
+picker, telemetry, the update notice) is built twice and the engines have
+already drifted (resume IDR, the F-12 keyframe fix, close-while-live, the
+default app URL and bitrate, R55's uplink carriers). The Go app's
+subprocess, MPEG-TS pipe, PTS anchor and cgo helper exist to avoid cgo in
+Go, not because Linux needs them.
+
+**Scope sketch** (chunks LX0–LX9 in
+[docs/58](docs/58-linux-desktop-broadcaster.md)):
+
+- **LX0** — spike and go/no-go on both GPUs: `ashpd` portal + in-process
+  GStreamer to the production relay; measure the in-process crash posture;
+  a lessons ledger over docs/19 and docs/39's findings.
+- **LX1** — identity (`gawk-broadcast-linux`, `gawk-broadcast://linux`),
+  config (the Go app's own file, `XDG_CONFIG_HOME`, four Linux keys), an
+  `ubuntu:24.04` CI container, the empty shell.
+- **LX2–LX4** — capture + the video pipeline (one clock, capture ladder,
+  mid-session rebuild, thumbnail), encode (the R14 cascade under the shared
+  trial validator, forced IDR), audio (system cascade into the shared libopus
+  lane; the docs/39 tee on an in-process PipeWire connection with a CI kill
+  matrix).
+- **LX5–LX6** — the shell (portal Share card, whose-audio card, D-Bus
+  notifications), the tarball, the third manifest and site card, desktop
+  2.0.0.
+- **LX7** — on-hardware pass: NVIDIA + AMD/Intel, KDE Plasma Wayland.
+- **LX8–LX9** — a last Go release with a deprecation notice; then removal,
+  keeping `gawk-pubsim` as Go test tooling.
+
+**Status**: 🔧 designed 2026-09-24; owner decisions OD1–OD15 taken the same
+day; not started. The Go app is fixes-only from 2026-09-24.
 
 ---
 

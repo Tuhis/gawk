@@ -98,7 +98,8 @@ decide whether R52 works — exactly as docs/19 and docs/38 warn.
   product (D14).
 - **A ladder, auto-fallback or mid-session rung change** — R14 Decision 9.
 - **Any change to relay, wire format or viewer** beyond one origin-allowlist
-  line (D16). Sharing code with the Go Linux broadcaster.
+  line (D16). Sharing code with the Go Linux broadcaster (*moot 2026-09-24:
+  R56 replaces it with a third shell in this workspace, docs/58*).
 
 ## 4. Decisions
 

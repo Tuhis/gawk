@@ -215,7 +215,10 @@ frozen `#/debug/broadcast` page next to the production UI.
    for versioning/changelog only; attaching prebuilt binaries to its releases
    is a possible later convenience, not part of R14.
 3. **The media stack is a GStreamer subprocess (`gst-launch-1.0`) for V1–V7;
-   direct encode is V8.** *Revised 2026-07-15 — the original vehicle was an
+   direct encode is V8.** *Superseded for the replacement app 2026-09-24:* R56's Linux app in the Rust desktop
+   workspace runs GStreamer **in-process** via `gstreamer-rs` (docs/58 OD3,
+   D4, with a pre-registered re-exec fallback); this Go app keeps the
+   subprocess until it is removed (docs/58 LX9). *Revised 2026-07-15 — the original vehicle was an
    ffmpeg subprocess around `pipewiregrab`, which does not exist in any
    mainline or distro ffmpeg (see the revision note); mainline ffmpeg has no
    PipeWire input at all.* The honest reasons for a subprocess are unchanged
@@ -458,7 +461,9 @@ frozen `#/debug/broadcast` page next to the production UI.
     preview only because a tab isn't your screen. What people actually need is
     *"am I live and are frames moving"*, which a sent-fps readout and a
     heartbeat indicator answer at ~zero cost. Revisit only if V7's
-    verification shows people genuinely can't tell.
+    verification shows people genuinely can't tell. *Superseded for the replacement app 2026-09-24:* R56's Linux
+    app shows the shared 1 Hz thumbnail wherever it costs no zero-copy
+    (docs/58 OD13).
 17. **Notifications via `godbus` directly, with urgency levels — critical
     urgency for failures.** *Revised 2026-07-15.* The review surfaced a
     trap the original design walked straight into: **KDE's portal explicitly

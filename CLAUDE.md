@@ -114,7 +114,11 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   media passes through it — and its crash-safety comes from owning nothing:
   every object it creates is a proxy on its own connection with no
   `object.linger`, so the daemon reaps them however it dies. Don't give it
-  media, and don't make it linger (`docs/39`).
+  media, and don't make it linger (`docs/39`). **Frozen to `fix` commits
+  since 2026-09-24** (R56, `docs/58`): Linux is moving into
+  `gawk-broadcast-desktop` as a third shell, and this app is removed once
+  that passes its hardware pass, leaving only `gawk-pubsim` as Go test
+  tooling. Build no new features here.
 - `gawk-broadcast-desktop` — native Windows broadcaster (R34), and from R52
   the macOS one too: a **Rust Cargo workspace**, not a Go module (renamed
   from `gawk-broadcast-windows` in R52 MB0, `docs/54` D2). One workspace

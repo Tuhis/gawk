@@ -239,6 +239,12 @@ bigger hammer, and two audio masters would be worse than either).
 
 ### D4 — The control plane is a small native helper, spawned per app-mode broadcast, whose death *is* the cleanup
 
+*Superseded for the replacement app 2026-09-24:* R56's Linux app keeps this doc's
+mechanism (D3) but runs the control plane **in-process** on its own
+PipeWire core connection, so the connection's close is the cleanup
+(docs/58 OD4, D8). This helper lives until the Go app is removed
+(docs/58 LX9).
+
 AD4. A new binary, `cmd/gawk-pw-helper`: a few hundred lines of Go + cgo
 against `libpipewire-0.3`, doing exactly four things — watch the registry,
 create the sink, maintain links for one target binary, report events. It is
@@ -467,7 +473,9 @@ that only a desktop can prove:
   snapshot-and-shell-out tooling races it. Revisit only if the helper's
   build cost ever becomes real pain, with the churn integration suite (AS3)
   as the bar it would have to pass.
-- **In-process libpipewire in the main binary** — forfeits the module's
+- **In-process libpipewire in the main binary** (*Superseded for the replacement app 2026-09-24:* reversed for
+  R56's Rust app, docs/58 D8 — under in-process GStreamer the helper would
+  isolate the smaller component) — forfeits the module's
   settled crash-isolation posture (docs/19 Decision 3) to save one small
   subprocess.
 - **Direct single-node capture (`pipewiresrc target-object=<app stream>`),
