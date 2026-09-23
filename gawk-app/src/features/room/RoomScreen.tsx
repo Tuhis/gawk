@@ -403,6 +403,12 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
 
   const creator = isRoomCreator(snapshot);
   const dynamic = isDynamicRoom(snapshot);
+  // "Start streaming here" needs a page that can start one and nothing of
+  // ours already attached — and is not offered to the creator: a tab holding
+  // the creator token with no broadcast of its own is a native app's "Open
+  // room view" (the web broadcaster's own view has `own`), whose person
+  // already streams from the app (docs/44 §4.9 revision 2026-09-23).
+  const canStartStreaming = onStartStreaming != null && !own && !creator;
   // The header's two totals: broadcasts on the stage, and the people in the
   // room who are not streaming. Per-POV viewer counts stay in the panel.
   const streaming = attachments.length;
@@ -637,7 +643,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
         card(
           EMPTY_ROOM_CARD.title,
           EMPTY_ROOM_CARD.body,
-          onStartStreaming ? <Button onClick={startStreaming}>Start streaming here</Button> : undefined,
+          canStartStreaming ? <Button onClick={startStreaming}>Start streaming here</Button> : undefined,
         )}
       {/* D8: the gated-out state, in place of the empty-room card — "nobody
           is streaming" would be the wrong story when it is our own stream
@@ -848,7 +854,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
             confirmingEnd={confirmingEnd}
             onConfirmingEndChange={setConfirmingEnd}
             ownBroadcastId={own?.broadcastId ?? null}
-            onStartStreaming={onStartStreaming && !own ? startStreaming : null}
+            onStartStreaming={canStartStreaming ? startStreaming : null}
           />
         </div>
       )}

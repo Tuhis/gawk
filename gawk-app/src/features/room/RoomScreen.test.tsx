@@ -319,6 +319,19 @@ describe('RoomScreen people-and-chat panel', () => {
     expect(room.sent).toContainEqual({ kind: 'end' });
   });
 
+  it('a creator watching from a tab (a native "Open room view") is not offered "start streaming here"', async () => {
+    // The creator flag only arrives with the creator token, and a tab that
+    // holds it without a broadcast of its own is the native app's room view:
+    // that person already streams from the app. Neither the empty-room card
+    // nor the panel offers a second, browser stream.
+    await joinAs('tuhis', { flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR, attachments: [] });
+    expect(screen.getByText('Nobody is streaming yet')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
+    expect(screen.queryByRole('button', { name: 'Start streaming here' })).toBeNull();
+    // End room stays: that is what the creator token is for.
+    expect(screen.getByRole('button', { name: 'End room…' })).toBeTruthy();
+  });
+
   it('End room from the More menu opens the panel on the same confirm instead of ending at once', async () => {
     const room = await joinAs('tuhis', { flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR });
     fireEvent.click(screen.getByRole('button', { name: 'More options' }));

@@ -579,13 +579,21 @@ copies its join link. Settled:
   means, Cancel / End room — and the More menu's "End room…" opens the
   panel on the same confirm instead of ending at once. Closing the panel
   drops the confirm.
+- **The creator is not offered "Start streaming here".** The creator flag
+  arrives only with the creator token, and a tab holding it with no
+  broadcast of its own is a native app's "Open room view" (the web
+  broadcaster's own view already has its stream attached) — that person
+  already streams from the app, so a second, browser stream is noise.
+  Neither the empty-room card nor the panel shows it; a creator whose
+  native stream stopped restarts it from the app.
 
 Acceptance: `RoomScreen.test.tsx` — the chip shows the code (a static
 room's slug too) and a click copies the room link, raises the two-line
 toast and flashes "Copied"; the panel has no copy buttons; only the
 confirm sends `EndRoom`, Cancel sends nothing, and the menu path lands on
-the same confirm. `BroadcasterScreen.room.test.tsx` — the room pill
-carries the copy button.
+the same confirm; a creator with no stream in the tab sees End room but
+no "Start streaming here". `BroadcasterScreen.room.test.tsx` — the room
+pill carries the copy button.
 
 ### 4.10 Knobs, Helm, observability
 
@@ -967,7 +975,7 @@ the manual pass outcome.
 | RM5 a room chosen before the stream waits and joins by itself; "start streaming here" carries the nickname, a guest stays a guest, nothing is asked twice (§4.8 revision 2026-09-05) | `BroadcasterScreen.room.test.tsx` (pending room from the stash and from the code-or-link field; dismiss), `RoomScreen.test.tsx` (the stash's shape, `presetNickname`), `roomReturn.test.ts` |
 | Live means the page is running: a silent publisher reads as away fleet-wide, ends at the grace only by opt-in; labels unique within a room (§4.9 revision 2026-09-06) | `internal/hub/stall_test.go` (not live after the timeout, any datagram clears it — keyframe, audio, ClockMapping, the transport's TimeSync stamp — ended with 4000 after the grace only with `PublisherStallEnds`, held and away without it, transitions reported once, `0` disables, edge hubs exempt), `cluster`: `TestLookupCarriesTheStallStamp`, `transport`: `TestRoomOnAnotherPodShowsASilentPublisherAway` (lease path and edge-hub path), `internal/roomsrv/label_test.go`, `TestRegistryOptionsCarryAllLimits`, config flag/env/bounds tests |
 | RM5 the Room panel is one code-or-link field and one create, a pre-start create waits as a pending room and mints when live, and there is no attach-secret field (§4.8 revision 2026-09-23) | `BroadcasterScreen.room.test.tsx` (the nine panel cases listed in that revision); `node e2e/run.mjs --rooms-gated` joins through the new field |
-| RM5 the room code chip copies the room link on both headers, the panel carries no copy buttons, the copy toast carries the code-visibility note, and End room (panel or menu) asks before it sends (§4.9 revision 2026-09-23) | `RoomScreen.test.tsx` (chip copy and toast, static chip, panel without copies, the confirm from the panel and from the menu); `BroadcasterScreen.room.test.tsx` (the room pill's copy) |
+| RM5 the room code chip copies the room link on both headers, the panel carries no copy buttons, the copy toast carries the code-visibility note, End room (panel or menu) asks before it sends, and the creator is not offered "Start streaming here" (§4.9 revision 2026-09-23) | `RoomScreen.test.tsx` (chip copy and toast, static chip, panel without copies, the confirm from the panel and from the menu, no start-streaming for the creator); `BroadcasterScreen.room.test.tsx` (the room pill's copy) |
 | RM5 a gated static room that withheld `ATTACH_OK` says so, and the secret typed in the room re-dials with an attach grant (§11.1, fixed 2026-09-17) | `RoomScreen.test.tsx` (card in place of the empty-room card and no `Attach` sent; pill with other POVs on the stage; the second dial's grant, the stash, then the attach once `ATTACH_OK` arrives; a viewer with nothing to attach stays silent) **and** `node e2e/run.mjs --rooms-gated` — the browser broadcaster against a real `-rooms-file` room: admitted with `attachments: 0` and the copy on screen, then a wrong secret really refused (its card names the secret and offers no reload), then `attachments: 1` and its own tile after the right one. The e2e lane is the load-bearing half: this state sends no command, so only a real relay proves the flag arrives clear — and it is what corrected the assumed error kind, which is `refused`, not `forbidden` |
 | RM4 the dock's overlays and the tiles' chrome do not overlap; header carries the room totals (§4.9 revision 2026-09-05) | `room.module.css` bands; `RoomScreen.test.tsx` (`N streaming`, `M watching`); the dev stack's `--profile rooms` (docs/41 §4.5) is the three-POV fixture it was seen on |
 | RM6 attach visible in another participant's `RoomState` | `gawk-broadcast/internal/engine/room_integration_test.go`, `crates/engine/tests/relay_integration.rs` (ignored; CI runs it on Linux) |
