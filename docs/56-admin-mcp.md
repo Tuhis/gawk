@@ -707,8 +707,12 @@ routes become tools through MC2's generator when they land.
 `/mcp` changes observably (D9's table) and should release, with a
 `gawk-server`-touching commit; it is reviewed against G10 and that table
 alone. MC2–MC5 second, titled as a `feat(admin)` so `gawk-admin` releases;
-it touches `gawk-server` (`oidcauth`) and therefore carries the coupling
-commit. The reference-deployment switch happens in the GitOps repo after
+it touches two public `gawk-server` packages and therefore carries the
+`gawk-admin`-scoped coupling commit CLAUDE.md requires: **`events`** (MC4's
+`actorClient` in the moderation `data` types, JSON Schemas, AsyncAPI
+catalogue and golden vectors), and **`oidcauth`** (MC4's `Client` on
+`Identity`, which R53 TO1 moves there; MC3 itself only reuses TO4's
+helpers). The reference-deployment switch happens in the GitOps repo after
 the release, not in the PR.
 
 ## 9. Risks
@@ -724,7 +728,7 @@ the release, not in the PR.
 | The in-process dispatch diverges from the real HTTP path (e.g. a middleware mounted outside `Routes()`) | Dispatch goes through `Routes()`, and G3/G4 are tested over every read tool. A middleware outside `Routes()` that matters for authorization would be a finding in its own right. |
 | The Client ID Metadata Document path becomes the norm and pre-registration looks dated | Revisit when Claude Code documents CIMD support and Keycloak ships it; it is additive — the pre-registered client keeps working. |
 | The MC1 lift changes telemetry's MCP behaviour beyond what it names | G10: its existing tests pass unedited; the two intended changes (D9's table) each have a new telemetry test; MC1 lands alone. |
-| An `mcphttp` or `oidcauth` change ships in the relay release only | `CONTRIBUTING.md` coupling rule extended; admin and telemetry CI already run on any `gawk-server/` change. |
+| An `mcphttp`, `oidcauth` or `events` change ships in the relay release only | `CONTRIBUTING.md` coupling rule (extended for `mcphttp`); each PR that touches one carries the consumer-scoped commit (§8); admin and telemetry CI already run on any `gawk-server/` change. |
 
 ## 10. Verification register (manual pass on the reference deployment)
 

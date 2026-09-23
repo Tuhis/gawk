@@ -4561,8 +4561,8 @@ client-credentials fallback docs/55 D6 kept for read-only telemetry.
 **Depends on**: R53 (lands first; TO1's `gawk-server/oidcauth` is what R54
 builds on), R48 (the contract). Not
 on R49; its routes become tools when they land. Touches `gawk-server` and
-`gawk-telemetry` in MC1, and `gawk-admin` plus `gawk-server/oidcauth` from
-MC2 on.
+`gawk-telemetry` in MC1, and `gawk-admin` plus `gawk-server/events` (MC4's
+`actorClient`) and `gawk-server/oidcauth` (`Identity.Client`) from MC2 on.
 
 **Status**: designed 2026-09-22 (owner decisions OD1–OD9: remote MCP on
 `gawk-admin` on the portal's public Ingress, tools generated from the
