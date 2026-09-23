@@ -318,8 +318,10 @@ the code pre-filled, where the user then closed the panel to press
 Start and nothing joined. Settled:
 
 - The live page is the primary way in: press Start, then open the Room
-  control and make or join a room. *New room* stays disabled before the
-  stream exists (a room is made from a running broadcast, §4.4).
+  control and make or join a room. ~~*New room* stays disabled before the
+  stream exists~~ — superseded 2026-09-23 (below): asked for before the
+  stream exists, it becomes a pending room like a join. The mint itself
+  still happens only from a running broadcast (§4.4).
 - A room chosen **before** the stream is live becomes a *pending room*:
   a chip on the pre-start card ("Joins room `CODE` when live", with a
   dismiss), and the join fires by itself the moment the broadcast has
@@ -329,6 +331,44 @@ Start and nothing joined. Settled:
   `roomReturn.ts`), so the broadcaster page asks nothing and the tile
   label defaults to that nickname. A grant the room link carried applies
   through the same session-storage stash the link hand-off uses.
+
+**Revision 2026-09-23 — the Room panel is one field and one button.**
+The panel had grown four inputs and three buttons: a name section, a
+disabled *New room* with a sentence explaining why, a *room code* field
+with *Join by code*, and a *room link* field with an *attach secret
+(static rooms only)* field and *Use a room link*. The code/link split
+and the secret field both asked the user to know which kind of room they
+held. Settled:
+
+- **One "room code or link" field and one Join.** `parseRoomLink` already
+  read both shapes, so the two paths differed only in the `?rt=` grant a
+  link may carry. A pasted link is echoed under the field ("Room
+  `devroom` · key included") so the user sees what was read before
+  joining. The link's grant wins; else a grant a native launch stashed
+  for the code (`grantHandoff.ts`) applies, as before.
+- **No attach-secret field.** A gated static room admits the broadcaster
+  as a watcher and the room view asks for the secret
+  (`ATTACH_GATED_CARD`, `AttachSecretPrompt`, §11.1 2026-09-17); a link
+  can carry it as `?rt=a:…`. Asking up front added a field and a term
+  ("static room") the user shouldn't need.
+- **"Create a new room" works before the stream starts.** It becomes a
+  pending room of kind *create* — the chip reads "Creates a room when
+  live" with its own dismiss — and mints the moment the broadcast has its
+  ID and resume token, through the same gate a pending join waits on. The
+  panel says "Made when you go live." instead of disabling the button.
+- **The name is one line**, "Joining as **name** · Change", under the
+  actions; Change opens the field, and it opens by itself when no name is
+  remembered (the room view still asks on first join when it is empty).
+
+Acceptance: `BroadcasterScreen.room.test.tsx` — a bare code joins with
+no grant (or the stashed one); a link is echoed with its key and joins
+with its grant; junk is refused in place with the panel open; no
+attach-secret field exists; a pre-start create shows the chip, dials
+nothing, then mints with the live broadcast's ID, token and name; the
+create chip dismisses; the name line opens its field and an empty name
+starts open. `e2e/run.mjs --rooms-gated` drives the new field against a
+real relay (the gated room is joined with no secret, then the secret is
+typed in the room).
 
 **Revision 2026-09-05 (later the same day) — the broadcaster's room view
 is direction A of the design pass.** The first cut rendered the viewer's
@@ -885,8 +925,9 @@ the manual pass outcome.
 | RM4 routing, modes, hide-videos closes every media session | `routing.test.ts`, `RoomScreen.test.tsx` (hide-videos: zero `/subscribe` sessions, control session kept), `room-session.test.ts`, `App.room.test.tsx` (`?rt=` hand-off before first render) |
 | RM4 browser E2E | `node e2e/run.mjs --rooms` (two pubsims, grid → focus by key → hide-videos asserted on the relay's subscriber counts) |
 | RM5 broadcaster attaches, appears in a roster, away then removal | `BroadcasterScreen.room.test.tsx`; the relay-side away/expiry path in `TestBroadcastLifecycleHooks` and the Go native integration test |
-| RM5 a room chosen before the stream waits and joins by itself; "start streaming here" carries the nickname, a guest stays a guest, nothing is asked twice (§4.8 revision 2026-09-05) | `BroadcasterScreen.room.test.tsx` (pending room from the stash and from join-by-code; dismiss), `RoomScreen.test.tsx` (the stash's shape, `presetNickname`), `roomReturn.test.ts` |
+| RM5 a room chosen before the stream waits and joins by itself; "start streaming here" carries the nickname, a guest stays a guest, nothing is asked twice (§4.8 revision 2026-09-05) | `BroadcasterScreen.room.test.tsx` (pending room from the stash and from the code-or-link field; dismiss), `RoomScreen.test.tsx` (the stash's shape, `presetNickname`), `roomReturn.test.ts` |
 | Live means the page is running: a silent publisher reads as away fleet-wide, ends at the grace only by opt-in; labels unique within a room (§4.9 revision 2026-09-06) | `internal/hub/stall_test.go` (not live after the timeout, any datagram clears it — keyframe, audio, ClockMapping, the transport's TimeSync stamp — ended with 4000 after the grace only with `PublisherStallEnds`, held and away without it, transitions reported once, `0` disables, edge hubs exempt), `cluster`: `TestLookupCarriesTheStallStamp`, `transport`: `TestRoomOnAnotherPodShowsASilentPublisherAway` (lease path and edge-hub path), `internal/roomsrv/label_test.go`, `TestRegistryOptionsCarryAllLimits`, config flag/env/bounds tests |
+| RM5 the Room panel is one code-or-link field and one create, a pre-start create waits as a pending room and mints when live, and there is no attach-secret field (§4.8 revision 2026-09-23) | `BroadcasterScreen.room.test.tsx` (the nine panel cases listed in that revision); `node e2e/run.mjs --rooms-gated` joins through the new field |
 | RM5 a gated static room that withheld `ATTACH_OK` says so, and the secret typed in the room re-dials with an attach grant (§11.1, fixed 2026-09-17) | `RoomScreen.test.tsx` (card in place of the empty-room card and no `Attach` sent; pill with other POVs on the stage; the second dial's grant, the stash, then the attach once `ATTACH_OK` arrives; a viewer with nothing to attach stays silent) **and** `node e2e/run.mjs --rooms-gated` — the browser broadcaster against a real `-rooms-file` room: admitted with `attachments: 0` and the copy on screen, then a wrong secret really refused (its card names the secret and offers no reload), then `attachments: 1` and its own tile after the right one. The e2e lane is the load-bearing half: this state sends no command, so only a real relay proves the flag arrives clear — and it is what corrected the assumed error kind, which is `refused`, not `forbidden` |
 | RM4 the dock's overlays and the tiles' chrome do not overlap; header carries the room totals (§4.9 revision 2026-09-05) | `room.module.css` bands; `RoomScreen.test.tsx` (`N streaming`, `M watching`); the dev stack's `--profile rooms` (docs/41 §4.5) is the three-POV fixture it was seen on |
 | RM6 attach visible in another participant's `RoomState` | `gawk-broadcast/internal/engine/room_integration_test.go`, `crates/engine/tests/relay_integration.rs` (ignored; CI runs it on Linux) |

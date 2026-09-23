@@ -19,7 +19,7 @@ export function isValidRoomCode(code: string): boolean {
   return isValidRoomSlug(code) || isValidBroadcastId(code.toUpperCase());
 }
 
-// A room link pasted into the broadcaster's "use a room link" field — or a
+// What the broadcaster's "room code or link" field holds: a room link or a
 // bare code. Accepts `…#/room/<code>`, `#/room/<code>`, `/room/<code>` and a
 // plain code; returns the code as written, or null when nothing usable is
 // there. The `?rt=` grant, if any, is returned beside it so the broadcaster

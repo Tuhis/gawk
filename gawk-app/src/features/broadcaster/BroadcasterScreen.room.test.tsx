@@ -8,9 +8,10 @@
 // topbar (direction A: no duplicated controls, "preview only" mode), that a
 // publish resume re-sends Attach, and that Leave lands back on the live page
 // with the broadcast still running. A room chosen BEFORE the stream is live
-// (a room's "start streaming here", or join-by-code from the pre-start card)
-// is pending until the broadcast can prove itself, then joins by itself —
-// no panel to re-open, no code to re-type, no nickname asked twice.
+// (a room's "start streaming here", a code or link joined from the pre-start
+// card, or a new room asked for there) is pending until the broadcast can
+// prove itself, then joins or mints by itself — no panel to re-open, no code
+// to re-type, no nickname asked twice.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -159,8 +160,12 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Room' }));
     const panel = screen.getByRole('dialog', { name: 'Room' });
     expect(panel).toBeTruthy();
+    // A remembered name is one line, not a field; Change opens the field.
+    expect(panel.textContent).toContain('Joining as tuhis');
+    expect(screen.queryByRole('textbox', { name: 'Your name' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Change your name' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Your name' }), { target: { value: 'my desk' } });
-    fireEvent.click(screen.getByRole('button', { name: 'New room' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create a new room' }));
 
     await waitFor(() => expect(roomSessions).toHaveLength(1));
     const room = roomSessions[0];
@@ -216,27 +221,58 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(created).toHaveLength(1);
   });
 
-  it('Join by code dials the typed room; a typed attach secret becomes the grant', async () => {
+  it('one field takes a bare code; there is no attach-secret field (the room view asks for it)', async () => {
     await goLive();
     fireEvent.click(screen.getByRole('button', { name: 'Room' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Room code' }), { target: { value: 'TuhisRoom' } });
-    fireEvent.change(screen.getByLabelText('Attach secret'), { target: { value: 'hunter2' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Join by code' }));
+    expect(screen.queryByLabelText('Attach secret')).toBeNull();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Room code or link' }), { target: { value: 'TuhisRoom' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
     await waitFor(() => expect(roomSessions).toHaveLength(1));
     expect(roomSessions[0].opts.target).toEqual({ kind: 'join', code: 'TuhisRoom' });
+    expect(roomSessions[0].opts.grant).toBeNull();
+  });
+
+  it('a bare code still picks up a grant a native launch stashed for it', async () => {
+    sessionStorage.setItem('gawk:room-grant:tuhisroom', JSON.stringify({ kind: 'attach', secret: 'hunter2' }));
+    await goLive();
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Room code or link' }), { target: { value: 'TuhisRoom' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
     expect(roomSessions[0].opts.grant).toEqual({ kind: 'attach', secret: 'hunter2' });
   });
 
-  it('Use a room link reads the code and its ?rt= grant', async () => {
+  it('the same field takes a link, says what it read, and uses its ?rt= grant', async () => {
     await goLive();
     fireEvent.click(screen.getByRole('button', { name: 'Room' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Room link' }), {
-      target: { value: `https://gawk.example/#/room/AB2CD3?rt=c:${'a'.repeat(32)}` },
+    fireEvent.change(screen.getByRole('textbox', { name: 'Room code or link' }), {
+      target: { value: `https://gawk.example/#/room/devroom?rt=a:hunter2` },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Use a room link' }));
+    expect(screen.getByTestId('room-link-read').textContent).toBe('Room devroom · key included');
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
     await waitFor(() => expect(roomSessions).toHaveLength(1));
-    expect(roomSessions[0].opts.target).toEqual({ kind: 'join', code: 'AB2CD3' });
-    expect(roomSessions[0].opts.grant).toEqual({ kind: 'creator', tokenHex: 'a'.repeat(32) });
+    expect(roomSessions[0].opts.target).toEqual({ kind: 'join', code: 'devroom' });
+    expect(roomSessions[0].opts.grant).toEqual({ kind: 'attach', secret: 'hunter2' });
+  });
+
+  it('something that is neither a code nor a link is refused in place', async () => {
+    await goLive();
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Room code or link' }), { target: { value: 'no way!' } });
+    expect(screen.queryByTestId('room-link-read')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
+    expect(screen.getByText('That isn’t a room code or link.')).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Room' })).toBeTruthy();
+    expect(roomSessions).toHaveLength(0);
+  });
+
+  it('with no name remembered the field is open, and typing into it does not fold it away', async () => {
+    localStorage.removeItem('gawk:nickname');
+    await goLive();
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    expect(screen.queryByRole('button', { name: 'Change your name' })).toBeNull();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your name' }), { target: { value: 'd' } });
+    expect(screen.getByRole('textbox', { name: 'Your name' })).toBeTruthy();
   });
 
   it('a room’s "start streaming here" waits quietly, then joins by itself once the stream is live — no panel, no prompt', async () => {
@@ -288,7 +324,7 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(screen.queryByRole('dialog', { name: 'Nickname' })).toBeNull();
   });
 
-  it('Join by code before the stream starts is deferred, shown on the card, and fires when live', async () => {
+  it('a join before the stream starts is deferred, shown on the card, and fires when live', async () => {
     scripts.push(async (cbs) => {
       cbs.onBroadcastId?.('AB2CD3');
       cbs.onResumeToken?.(TOKEN);
@@ -296,10 +332,8 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     });
     render(<BroadcasterScreen />);
     fireEvent.click(screen.getByRole('button', { name: 'Room' }));
-    // New room needs a live broadcast; join does not.
-    expect((screen.getByRole('button', { name: 'New room' }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(screen.getByRole('textbox', { name: 'Room code' }), { target: { value: 'TuhisRoom' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Join by code' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Room code or link' }), { target: { value: 'TuhisRoom' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
     // The panel closes; the page is still the pre-start card with the
     // pending chip; no room session was dialed (nothing to attach yet).
     expect(screen.queryByRole('dialog', { name: 'Room' })).toBeNull();
@@ -322,8 +356,8 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /start a stream/i })).toBeTruthy());
     // A join chosen while stopped is pending.
     fireEvent.click(screen.getByRole('button', { name: 'Room' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Room code' }), { target: { value: 'TuhisRoom' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Join by code' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Room code or link' }), { target: { value: 'TuhisRoom' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
     expect(screen.getByTestId('pending-room').textContent).toContain('TuhisRoom');
     // Start reclaims the old ID first; the relay refuses (connect phase),
     // so the page falls back to a mint — which resets the ID and the token
@@ -364,6 +398,45 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     });
     render(<BroadcasterScreen />);
     fireEvent.click(screen.getByRole('button', { name: 'Don’t join the room' }));
+    expect(screen.queryByTestId('pending-room')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /start a stream/i }));
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(roomSessions).toHaveLength(0);
+  });
+
+  it('a new room asked for before the stream starts waits on the card, then mints from the live broadcast', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onResumeToken?.(TOKEN);
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    const create = screen.getByRole('button', { name: 'Create a new room' }) as HTMLButtonElement;
+    expect(create.disabled).toBe(false);
+    expect(screen.getByRole('dialog', { name: 'Room' }).textContent).toContain('Made when you go live.');
+    fireEvent.click(create);
+    expect(screen.queryByRole('dialog', { name: 'Room' })).toBeNull();
+    expect(screen.getByTestId('pending-room').textContent).toContain('Creates a room when live');
+    expect(roomSessions).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /start a stream/i }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    expect(roomSessions[0].opts.target).toEqual({ kind: 'mint', broadcastId: 'AB2CD3', resumeTokenHex: TOKEN, label: 'tuhis' });
+    expect(roomSessions[0].opts.clientKind).toBe(ROOM_CLIENT_WEB_BROADCASTER);
+    expect(screen.queryByTestId('pending-room')).toBeNull();
+  });
+
+  it('a pending new room can be dismissed before the stream starts', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onResumeToken?.(TOKEN);
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create a new room' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Don’t create the room' }));
     expect(screen.queryByTestId('pending-room')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /start a stream/i }));
     await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
