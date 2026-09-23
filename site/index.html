@@ -226,7 +226,7 @@
     <h2>Get the app</h2>
     <p class="section-lead">Broadcasting doesn't have to happen in a browser tab. The native apps use your graphics card directly, can share one window along with just that app's audio, and on Linux they're the only way to broadcast with hardware encoding. Viewers still need nothing but a browser.</p>
 
-    <div class="cards cards-2 dl-cards">
+    <div class="cards cards-3 dl-cards">
       <div class="card dl" data-dl="gawk-broadcast">
         <div class="dl-hd">
           <h3>Linux</h3>
@@ -247,8 +247,21 @@
         <p>One file, nothing to install. It's unsigned, so SmartScreen will object the first time: <em>More info → Run anyway</em>, or untick <em>Unblock</em> in the file's properties. Needs Windows 10 or newer and a hardware H.264 encoder.</p>
         <p class="dl-sum" data-dl-sum hidden><span>sha256</span><code data-dl-sha></code></p>
       </div>
+      <!-- Hidden until its manifest exists (site.js): the Mac app only ships
+           once the Developer ID signing secrets are configured (docs/54 D13),
+           and a card pointing at releases with no Mac asset would be a lie. -->
+      <div class="card dl" data-dl="gawk-broadcast-macos" data-dl-until-released hidden>
+        <div class="dl-hd">
+          <h3>macOS</h3>
+          <span class="dl-tag">Apple silicon · .app in a .zip</span>
+        </div>
+        <p class="dl-ver" data-dl-version>Latest release</p>
+        <a class="btn btn-primary dl-btn" data-dl-link href="https://github.com/Tuhis/gawk/releases?q=gawk-broadcast-desktop%2F" target="_blank" rel="noopener">Download for Mac <span aria-hidden="true">↓</span></a>
+        <p>Unzip it and open <code>gawk-broadcast-macos</code>; drag it to Applications first if you like. It's signed and notarized, so it opens without a warning, and it picks what to share through macOS's own picker. Needs macOS 14 or newer on Apple silicon.</p>
+        <p class="dl-sum" data-dl-sum hidden><span>sha256</span><code data-dl-sha></code></p>
+      </div>
     </div>
-    <p class="section-note">Neither binary is signed, so the checksum is the only integrity check you get. Each release also ships a <code>SHA256SUMS</code> file: <code>sha256sum -c SHA256SUMS</code> on Linux, <code>Get-FileHash</code> on Windows. Older versions and release notes are on the <a href="https://github.com/Tuhis/gawk/releases" target="_blank" rel="noopener">releases page</a>.</p>
+    <p class="section-note">The Linux and Windows binaries aren't signed, so for them the checksum is the only integrity check you get; the Mac app is signed and notarized by Apple. Each release also ships a <code>SHA256SUMS</code> file: <code>sha256sum -c SHA256SUMS</code> on Linux, <code>Get-FileHash</code> on Windows, <code>shasum -a 256 -c SHA256SUMS</code> on a Mac. Older versions and release notes are on the <a href="https://github.com/Tuhis/gawk/releases" target="_blank" rel="noopener">releases page</a>.</p>
   </section>
 
   <section class="section">

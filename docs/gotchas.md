@@ -1022,6 +1022,11 @@ Add to it when a new gotcha lands in `docs/`.
   the environment would turn it into an absolute build-machine path inside
   the shipped binary. Nothing sets it; do not.
   ([docs/53](53-app-icons.md) §6)
+- **`cargo tree -e normal` walks proc-macro crates, whose dependencies
+  resolve for the BUILD host** — so a notices file generated on a Mac
+  listed `objc2` for the Windows EXE, and one generated on Linux listed
+  `dlib`. `gen-notices.py` passes `no-proc-macro`; a proc macro is never in
+  the artifact anyway. ([docs/54](54-macos-native-broadcaster.md) §11, MB7)
 
 **Native macOS broadcaster (R52)**
 

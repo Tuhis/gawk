@@ -158,6 +158,7 @@ config:
     - https://gawk.example.com     # CHANGEME: the web app
     - gawk-broadcast://native      # the Linux native broadcaster
     - gawk-broadcast://windows     # the Windows native broadcaster
+    - gawk-broadcast://macos       # the macOS native broadcaster
 
   # Capacity. Defaults are conservative; raise them against your uplink.
   maxSubscribers: 15               # per broadcast
@@ -178,6 +179,7 @@ Three kinds of client, and only the first two go in the list:
 | The web app | `https://` + the app's Ingress host | **Add it.** Must match `ingress.host` exactly |
 | `gawk-broadcast` (Linux) | `gawk-broadcast://native` | **Add it** if anyone will broadcast from the Linux app |
 | `gawk-broadcast-windows` | `gawk-broadcast://windows` | **Add it** if anyone will broadcast from Windows |
+| `gawk-broadcast-macos` | `gawk-broadcast://macos` | **Add it** if anyone will broadcast from a Mac |
 | Relay pods, in cluster mode | `gawk-server://native-internal-edge` | **Do not add it.** Built in |
 
 The native broadcasters do not send an `https://` origin — they are not

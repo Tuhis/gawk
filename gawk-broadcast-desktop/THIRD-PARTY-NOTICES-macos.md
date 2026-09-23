@@ -1,53 +1,51 @@
-# Third-party notices — `gawk-broadcast-desktop`
+# Third-party notices — `gawk-broadcast-macos`
 
-The native Windows broadcaster, a single static `gawk-broadcast.exe`.
+The native macOS broadcaster, `gawk-broadcast-macos.app`.
 
-Two entries deserve a second look. **Slint** and its `i-slint-*` crates
-are tri-licensed; gawk uses them under the **Slint Royalty-free License
-version 2.0**, whose attribution condition is met by the "Made with
-Slint" badge on the project README and release pages. **libopus** is
-compiled in statically through `audiopus_sys`; the ISC license below
-covers the Rust bindings, and Xiph's BSD-3-Clause license covers the C
-library itself.
-
-The MSVC C runtime the binary links against is Microsoft's and is
-governed by the Visual Studio license terms, not by anything here.
+As for the Windows EXE: **Slint** and its `i-slint-*` crates are used
+under the **Slint Royalty-free License version 2.0**, whose attribution
+condition is met by the "Made with Slint" badge on the project README
+and release pages, and **libopus** is compiled in statically through
+`audiopus_sys` (ISC for the bindings, Xiph's BSD-3-Clause for the C
+library). The Apple frameworks it links — ScreenCaptureKit,
+VideoToolbox, CoreMedia and the rest — are part of macOS and are
+governed by Apple's terms, not by anything here.
 
 This file is generated. Do not edit it by hand — run
 `python3 tools/licenses/gen-notices.py` and commit the result. See that
 script for what counts as a dependency here and why.
 
-**Scope:** `cargo tree -e normal --target x86_64-pc-windows-msvc` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped executable.
+**Scope:** `cargo tree -e normal --target aarch64-apple-darwin` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped bundle.
 
-## Summary — 267 packages
+## Summary — 294 packages
 
 | License (as declared) | Packages |
 |---|---:|
-| `MIT OR Apache-2.0` | 127 |
-| `MIT` | 34 |
+| `MIT OR Apache-2.0` | 122 |
+| `MIT` | 45 |
 | `Apache-2.0 OR MIT` | 24 |
 | `Unicode-3.0` | 22 |
-| `MIT/Apache-2.0` | 10 |
+| `Zlib OR Apache-2.0 OR MIT` | 22 |
+| `MIT/Apache-2.0` | 13 |
 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 7 |
 | `MIT OR Apache-2.0 OR Zlib` | 7 |
-| `Apache-2.0` | 6 |
+| `Apache-2.0` | 4 |
 | `ISC` | 4 |
 | `BSD-3-Clause` | 3 |
 | `Apache-2.0 OR ISC OR MIT` | 2 |
 | `BSD-2-Clause` | 2 |
 | `BSD-3-Clause OR Apache-2.0` | 2 |
-| `BSL-1.0` | 2 |
+| `MIT / Apache-2.0` | 2 |
 | `Unlicense OR MIT` | 2 |
 | `Zlib` | 2 |
-| `Zlib OR Apache-2.0 OR MIT` | 2 |
 | `0BSD OR MIT OR Apache-2.0` | 1 |
 | `Apache-2.0 / MIT` | 1 |
 | `Apache-2.0 AND ISC` | 1 |
 | `Apache-2.0 AND MIT` | 1 |
 | `Apache-2.0/MIT` | 1 |
+| `BSD-2-Clause OR Apache-2.0 OR MIT` | 1 |
 | `CC0-1.0 OR Apache-2.0` | 1 |
 | `CDLA-Permissive-2.0` | 1 |
-| `MIT / Apache-2.0` | 1 |
 | `MIT OR Zlib OR Apache-2.0` | 1 |
 
 ## Packages
@@ -56,7 +54,7 @@ script for what counts as a dependency here and why.
 |---|---|---|---|
 | `accesskit` | 0.24.1 | `MIT OR Apache-2.0` | Copyright 2021 The AccessKit Authors. All rights reserved |
 | `accesskit_consumer` | 0.38.0 | `MIT OR Apache-2.0` | Copyright 2021 The AccessKit Authors. All rights reserved |
-| `accesskit_windows` | 0.34.0 | `MIT OR Apache-2.0` | Copyright 2021 The AccessKit Authors. All rights reserved |
+| `accesskit_macos` | 0.26.3 | `MIT OR Apache-2.0` | Copyright 2022 The AccessKit Authors. All rights reserved |
 | `accesskit_winit` | 0.33.2 | `Apache-2.0` | Copyright 2022 The AccessKit Authors. All rights reserved |
 | `adler2` | 2.0.1 | `0BSD OR MIT OR Apache-2.0` | Copyright (C) Jonas Schievink <jonasschievink@gmail.com> |
 | `allocator-api2` | 0.2.21 | `MIT OR Apache-2.0` | — |
@@ -68,19 +66,27 @@ script for what counts as a dependency here and why.
 | `base64` | 0.22.1 | `MIT OR Apache-2.0` | Copyright (c) 2015 Alice Maz |
 | `base64` | 0.23.1 | `MIT OR Apache-2.0` | Copyright (c) 2025 Alice Maz, Marshall Pierce |
 | `bitflags` | 2.13.1 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
+| `bitflags` | 1.3.2 | `MIT/Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `block-buffer` | 0.12.1 | `MIT OR Apache-2.0` | Copyright (c) 2018-2025 The RustCrypto Project Developers |
+| `block2` | 0.6.2 | `MIT` | — |
+| `block2` | 0.5.1 | `MIT` | — |
 | `bytemuck` | 1.25.2 | `Zlib OR Apache-2.0 OR MIT` | Copyright (c) 2019 Daniel "Lokathor" Gee |
 | `byteorder-lite` | 0.1.0 | `Unlicense OR MIT` | Copyright (c) 2015 Andrew Gallant |
 | `bytes` | 1.12.1 | `MIT` | Copyright (c) 2018 Carl Lerche |
 | `cfg-if` | 1.0.4 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
+| `cgl` | 0.3.2 | `MIT / Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
 | `chacha20` | 0.10.1 | `MIT OR Apache-2.0` | Copyright (c) 2019-2026 The RustCrypto Project Developers |
 | `chrono` | 0.4.45 | `MIT OR Apache-2.0` | Copyright (c) 2014, Kang Seonghoon |
-| `clipboard-win` | 5.4.1 | `BSL-1.0` | — |
 | `clru` | 0.6.3 | `MIT` | Copyright (c) 2020 Élie ROUDNINSKI (marmeladema) <xademax@gmail.com> |
 | `color_quant` | 1.1.0 | `MIT` | Copyright (c) 2016 PistonDevelopers |
 | `const-field-offset` | 0.2.0 | `MIT OR Apache-2.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `const-oid` | 0.10.2 | `Apache-2.0 OR MIT` | Copyright (c) 2020-2026 The RustCrypto Project Developers |
 | `copypasta` | 0.10.2 | `MIT / Apache-2.0` | Copyright (c) 2017 Avraham Weinstock |
+| `core-foundation` | 0.10.1 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
+| `core-foundation` | 0.9.4 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
+| `core-foundation-sys` | 0.8.7 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
+| `core-graphics` | 0.23.2 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
+| `core-graphics-types` | 0.1.3 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
 | `core_maths` | 0.1.1 | `MIT` | Copyright (c) 2024 Robert Bastian |
 | `cpufeatures` | 0.3.0 | `MIT OR Apache-2.0` | Copyright (c) 2020-2025 The RustCrypto Project Developers |
 | `crc32fast` | 1.5.0 | `MIT OR Apache-2.0` | Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors |
@@ -95,11 +101,13 @@ script for what counts as a dependency here and why.
 | `deranged` | 0.5.8 | `MIT OR Apache-2.0` | Copyright 2024 Jacob Pratt et al<br>Copyright (c) 2024 Jacob Pratt et al |
 | `derive_more` | 2.1.1 | `MIT` | Copyright (c) 2016 Jelte Fennema |
 | `digest` | 0.11.3 | `MIT OR Apache-2.0` | Copyright (c) 2017-2025 RustCrypto Developers<br>Copyright (c) 2017 Artyom Pavlov |
+| `dispatch` | 0.2.0 | `MIT` | — |
+| `dispatch2` | 0.3.1 | `Zlib OR Apache-2.0 OR MIT` | — |
 | `dpi` | 0.1.2 | `Apache-2.0 AND MIT` | Copyright (c) 2018 Jorge Aparicio<br>Copyright © 2005-2020 Rich Felker, et al<br>Copyright © 1993,2004 Sun Microsystems or<br>Copyright © 2003-2011 David Schultz or<br>Copyright © 2003-2009 Steven G. Kargl or<br>Copyright © 2003-2009 Bruce D. Evans or<br>Copyright © 2008 Stephen L. Moshier or<br>Copyright © 2017-2018 Arm Limited |
 | `either` | 1.17.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 |
 | `equivalent` | 1.0.2 | `Apache-2.0 OR MIT` | Copyright (c) 2016--2023 |
-| `error-code` | 3.3.2 | `BSL-1.0` | — |
 | `euclid` | 0.22.14 | `MIT OR Apache-2.0` | Copyright (c) 2012-2013 Mozilla Foundation |
+| `fax` | 0.2.7 | `MIT` | Copyright © 2021 The pdf-rs contributers |
 | `fdeflate` | 0.3.7 | `MIT OR Apache-2.0` | — |
 | `femtovg` | 0.25.1 | `MIT OR Apache-2.0` | Copyright 2021 femtovg contributors<br>Copyright 2021 Developers of the femtovg project |
 | `field-offset` | 0.3.6 | `MIT OR Apache-2.0` | Copyright (c) 2016-2021 Diggory Blake, and other contributors |
@@ -112,6 +120,8 @@ script for what counts as a dependency here and why.
 | `font-types` | 0.12.2 | `MIT OR Apache-2.0` | Copyright 2019 Fontations Developers<br>Copyright (c) 2019 Fontations Developers |
 | `fontdb` | 0.23.0 | `MIT` | Copyright (c) 2020 Yevhenii Reizner |
 | `fontique` | 0.10.0 | `Apache-2.0 OR MIT` | Copyright 2024 the Parley Authors |
+| `foreign-types` | 0.5.0 | `MIT/Apache-2.0` | Copyright (c) 2017 The foreign-types Developers |
+| `foreign-types-shared` | 0.3.1 | `MIT/Apache-2.0` | Copyright (c) 2017 The foreign-types Developers |
 | `form_urlencoded` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2013-2016 The rust-url developers |
 | `getopts` | 0.2.24 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `getrandom` | 0.2.17 | `MIT OR Apache-2.0` | Copyright (c) 2018-2024 The rust-random Project Developers<br>Copyright (c) 2014 The Rust Project Developers |
@@ -120,8 +130,7 @@ script for what counts as a dependency here and why.
 | `glow` | 0.17.0 | `MIT OR Apache-2.0 OR Zlib` | — |
 | `glutin` | 0.32.3 | `Apache-2.0` | Copyright 2022 Kirill Chibisov |
 | `glutin-winit` | 0.5.0 | `MIT` | Copyright © 2022 Kirill Chibisov |
-| `glutin_egl_sys` | 0.7.1 | `Apache-2.0` | Copyright 2022 Kirill Chibisov |
-| `glutin_wgl_sys` | 0.6.1 | `Apache-2.0` | Copyright 2022 Kirill Chibisov |
+| `half` | 2.7.1 | `MIT OR Apache-2.0` | — |
 | `harfrust` | 0.8.4 | `MIT` | Copyright (c) HarfBuzz developers<br>Copyright (c) 2020 Yevhenii Reizner |
 | `hashbrown` | 0.16.1 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
 | `hashbrown` | 0.17.1 | `MIT OR Apache-2.0` | Copyright (c) 2016 Amanieu d'Antras |
@@ -136,6 +145,7 @@ script for what counts as a dependency here and why.
 | `i-slint-core` | 1.17.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `i-slint-renderer-femtovg` | 1.17.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
 | `i-slint-renderer-software` | 1.17.1 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | Copyright © SixtyFPS GmbH <info@slint.dev> |
+| `iana-time-zone` | 0.1.65 | `MIT OR Apache-2.0` | Copyright 2020 Andrew Straw<br>Copyright (c) 2020 Andrew D. Straw |
 | `icu_collections` | 2.2.0 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `icu_decimal` | 2.2.0 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `icu_decimal_data` | 2.2.0 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
@@ -185,6 +195,32 @@ script for what counts as a dependency here and why.
 | `num-conv` | 0.2.2 | `MIT OR Apache-2.0` | Copyright (c) Jacob Pratt |
 | `num-integer` | 0.1.46 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `num-traits` | 0.2.19 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
+| `objc-sys` | 0.3.5 | `MIT` | — |
+| `objc2` | 0.6.4 | `MIT` | — |
+| `objc2` | 0.5.2 | `MIT` | — |
+| `objc2-app-kit` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-app-kit` | 0.2.2 | `MIT` | — |
+| `objc2-av-foundation` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-cloud-kit` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-core-audio` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-core-audio-types` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-core-data` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-core-foundation` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-core-graphics` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-core-image` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-core-location` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-core-media` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-core-text` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-core-video` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-encode` | 4.1.0 | `MIT` | — |
+| `objc2-foundation` | 0.3.2 | `MIT` | — |
+| `objc2-foundation` | 0.2.2 | `MIT` | — |
+| `objc2-metal` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-quartz-core` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-screen-capture-kit` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-uniform-type-identifiers` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-user-notifications` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
+| `objc2-video-toolbox` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
 | `octets` | 0.3.6 | `BSD-2-Clause` | Copyright (C) 2018-2019, Cloudflare, Inc |
 | `oid-registry` | 0.8.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pierre Chifflier |
 | `once_cell` | 1.21.4 | `MIT OR Apache-2.0` | — |
@@ -228,9 +264,10 @@ script for what counts as a dependency here and why.
 | `rustls-pki-types` | 1.15.1 | `MIT OR Apache-2.0` | Copyright 2023 Dirkjan Ochtman<br>Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl> |
 | `rustls-webpki` | 0.103.13 | `ISC` | Copyright 2015 Brian Smith |
 | `rustybuzz` | 0.20.1 | `MIT` | Copyright (c) HarfBuzz developers<br>Copyright (c) 2020 Yevhenii Reizner |
-| `schannel` | 0.1.29 | `MIT` | Copyright (c) 2015 steffengy |
 | `scoped-tls-hkt` | 0.1.5 | `MIT/Apache-2.0` | Copyright (c) 2020 Diggory Blake |
 | `scopeguard` | 1.2.0 | `MIT OR Apache-2.0` | Copyright (c) 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers |
+| `security-framework` | 3.7.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 Steven Fackler |
+| `security-framework-sys` | 2.17.0 | `MIT OR Apache-2.0` | Copyright (c) 2015 Steven Fackler |
 | `serde` | 1.0.229 | `MIT OR Apache-2.0` | — |
 | `serde_core` | 1.0.229 | `MIT OR Apache-2.0` | — |
 | `serde_json` | 1.0.151 | `MIT OR Apache-2.0` | — |
@@ -248,7 +285,6 @@ script for what counts as a dependency here and why.
 | `socket2` | 0.6.5 | `MIT OR Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `softbuffer` | 0.4.8 | `MIT OR Apache-2.0` | Copyright 2022 Kirill Chibisov |
 | `stable_deref_trait` | 1.2.1 | `MIT OR Apache-2.0` | Copyright (c) 2017 Robert Grosse |
-| `static_assertions` | 1.1.0 | `MIT OR Apache-2.0` | Copyright (c) 2017 Nikolai Vazquez |
 | `strict-num` | 0.1.1 | `MIT` | Copyright (c) 2022 Yevhenii Reizner |
 | `strum` | 0.28.0 | `MIT` | Copyright (c) 2019 Peter Glotfelty |
 | `subtle` | 2.6.1 | `BSD-3-Clause` | Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved<br>Copyright (c) 2016-2024 Isis Agora Lovecruft. All rights reserved |
@@ -257,6 +293,7 @@ script for what counts as a dependency here and why.
 | `sys-locale` | 0.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2021 1Password |
 | `taffy` | 0.10.1 | `MIT` | — |
 | `thiserror` | 2.0.19 | `MIT OR Apache-2.0` | — |
+| `tiff` | 0.11.3 | `MIT` | Copyright (c) 2018 PistonDevelopers |
 | `time` | 0.3.54 | `MIT OR Apache-2.0` | Copyright (c) Jacob Pratt et al |
 | `time-core` | 0.1.9 | `MIT OR Apache-2.0` | Copyright (c) Jacob Pratt et al |
 | `tiny-skia` | 0.12.0 | `BSD-3-Clause` | Copyright (c) 2011 Google Inc. All rights reserved<br>Copyright (c) 2020 Yevhenii Reizner All rights reserved |
@@ -291,19 +328,6 @@ script for what counts as a dependency here and why.
 | `webbrowser` | 1.2.2 | `MIT OR Apache-2.0` | Copyright (c) 2015-2022 Amod Malviya |
 | `webpki-roots` | 1.0.9 | `CDLA-Permissive-2.0` | — |
 | `weezl` | 0.1.12 | `MIT OR Apache-2.0` | Copyright (c) HeroicKatora 2020 |
-| `windows` | 0.62.2 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-collections` | 0.3.2 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-core` | 0.62.2 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-future` | 0.3.2 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-link` | 0.2.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-numerics` | 0.3.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-result` | 0.4.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-strings` | 0.5.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-sys` | 0.61.2 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-sys` | 0.52.0 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-targets` | 0.52.6 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows-threading` | 0.2.1 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
-| `windows_x86_64_msvc` | 0.52.6 | `MIT OR Apache-2.0` | Copyright (c) Microsoft Corporation |
 | `winit` | 0.30.13 | `Apache-2.0` | — |
 | `writeable` | 0.6.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `wtransport` | 0.7.1 | `MIT OR Apache-2.0` | Copyright (c) 2023 Biagio Festa |
@@ -314,6 +338,7 @@ script for what counts as a dependency here and why.
 | `yazi` | 0.2.1 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
 | `yoke` | 0.8.3 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zeno` | 0.3.3 | `Apache-2.0 OR MIT` | Copyright (c) 2020 Chad Brokaw |
+| `zerocopy` | 0.8.55 | `BSD-2-Clause OR Apache-2.0 OR MIT` | Copyright 2023 The Fuchsia Authors<br>Copyright 2019 The Fuchsia Authors |
 | `zerofrom` | 0.1.8 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `zeroize` | 1.9.0 | `Apache-2.0 OR MIT` | Copyright (c) 2018-2026 The RustCrypto Project Developers |
 | `zerotrie` | 0.2.4 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
@@ -568,9 +593,9 @@ You should also get your employer (if you work as a programmer) or school, if an
 The GNU General Public License does not permit incorporating your program into proprietary programs. If your program is a subroutine library, you may consider it more useful to permit linking proprietary applications with the library. If this is what you want to do, use the GNU Lesser General Public License instead of this License. But first, please read <http://www.gnu.org/philosophy/why-not-lgpl.html>.
 ```
 
-### 2. Apache-2.0 — 118 packages
+### 2. Apache-2.0 — 114 packages
 
-Applies to: `arrayvec`, `asn1-rs`, `base64`, `bitflags`, `block-buffer`, `cfg-if`, `chacha20`, `const-oid`, `cpufeatures`, `critical-section`, `crossbeam-channel`, `crossbeam-utils` — and 106 more
+Applies to: `arrayvec`, `asn1-rs`, `base64`, `bitflags`, `block-buffer`, `cfg-if`, `cgl`, `chacha20`, `const-oid`, `core-foundation`, `core-foundation-sys`, `core-graphics` — and 102 more
 
 ```
 Apache License
@@ -761,7 +786,7 @@ APPENDIX: How to apply the Apache License to your work.
    same "printed page" as the copyright notice for easier
    identification within third-party archives.
 
-Copyright 2017 http-rs authors
+Copyright 2020 Andrew Straw
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -776,9 +801,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 3. Apache-2.0 — 25 packages
+### 3. Apache-2.0 — 26 packages
 
-Applies to: `allocator-api2`, `arboard`, `fdeflate`, `field-offset`, `image`, `image-webp`, `itoa`, `libc`, `linebender_resource_handle`, `miniz_oxide`, `num-conv`, `pin-project` — and 13 more
+Applies to: `allocator-api2`, `arboard`, `fdeflate`, `field-offset`, `half`, `image`, `image-webp`, `itoa`, `libc`, `linebender_resource_handle`, `miniz_oxide`, `num-conv` — and 14 more
 
 ```
 Apache License
@@ -961,7 +986,7 @@ END OF TERMS AND CONDITIONS
 
 ### 4. Apache-2.0 — 11 packages
 
-Applies to: `copypasta`, `crc32fast`, `dpi`, `glutin`, `glutin_egl_sys`, `glutin_wgl_sys`, `quick-error`, `softbuffer`, `winit`, `wtransport`, `wtransport-proto`
+Applies to: `copypasta`, `crc32fast`, `dpi`, `foreign-types`, `foreign-types-shared`, `glutin`, `quick-error`, `softbuffer`, `winit`, `wtransport`, `wtransport-proto`
 
 ```
 Apache License
@@ -1167,9 +1192,9 @@ Apache License
    limitations under the License.
 ```
 
-### 5. Apache-2.0 — 4 packages
+### 5. Apache-2.0 — 6 packages
 
-Applies to: `euclid`, `unicode-properties`, `unicode-segmentation`, `unicode-width`
+Applies to: `cgl`, `core-graphics`, `euclid`, `unicode-properties`, `unicode-segmentation`, `unicode-width`
 
 ```
 Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
@@ -4145,7 +4170,38 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 27. BSD-3-Clause — 3 packages
+### 27. BSD-2-Clause — 1 package
+
+Applies to: `zerocopy`
+
+```
+Copyright 2019 The Fuchsia Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### 28. BSD-3-Clause — 3 packages
 
 Applies to: `moxcms`, `pxfm`, `subtle`
 
@@ -4178,7 +4234,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 28. BSD-3-Clause — 2 packages
+### 29. BSD-3-Clause — 2 packages
 
 Applies to: `tiny-skia`, `tiny-skia-path`
 
@@ -4215,7 +4271,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 29. BSD-3-Clause — 1 package
+### 30. BSD-3-Clause — 1 package
 
 Applies to: `minimal-lexical`
 
@@ -4259,7 +4315,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 30. GPL — 7 packages
+### 31. GPL — 7 packages
 
 Applies to: `i-slint-backend-selector`, `i-slint-backend-winit`, `i-slint-common`, `i-slint-core`, `i-slint-renderer-femtovg`, `i-slint-renderer-software`, `slint`
 
@@ -4309,7 +4365,7 @@ SixtyFPS is only liable for conflicting rights of third parties if SixtyFPS was 
 Unless required by law, SixtyFPS won't be liable for any direct, indirect, incidental, or consequential damages arising in any way out of the use of the Software.
 ```
 
-### 31. GPL — 7 packages
+### 32. GPL — 7 packages
 
 Applies to: `i-slint-backend-selector`, `i-slint-backend-winit`, `i-slint-common`, `i-slint-core`, `i-slint-renderer-femtovg`, `i-slint-renderer-software`, `slint`
 
@@ -4433,7 +4489,7 @@ The following can be purchased as an Add-On
 (c) GUI Test Framework.
 ```
 
-### 32. ISC — 2 packages
+### 33. ISC — 2 packages
 
 Applies to: `rustls`, `rustls-native-certs`
 
@@ -4455,7 +4511,7 @@ ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
-### 33. ISC — 1 package
+### 34. ISC — 1 package
 
 Applies to: `adler2`
 
@@ -4474,7 +4530,7 @@ AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 34. ISC — 1 package
+### 35. ISC — 1 package
 
 Applies to: `audiopus_sys`
 
@@ -4496,7 +4552,7 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 35. ISC — 1 package
+### 36. ISC — 1 package
 
 Applies to: `libloading`
 
@@ -4515,7 +4571,7 @@ NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE US
 THIS SOFTWARE.
 ```
 
-### 36. ISC — 1 package
+### 37. ISC — 1 package
 
 Applies to: `ring`
 
@@ -4535,7 +4591,7 @@ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 37. ISC — 1 package
+### 38. ISC — 1 package
 
 Applies to: `rustls-webpki`
 
@@ -4561,7 +4617,7 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ```
 
-### 38. ISC — 1 package
+### 39. ISC — 1 package
 
 Applies to: `untrusted`
 
@@ -4581,9 +4637,9 @@ Applies to: `untrusted`
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 39. MIT — 126 packages
+### 40. MIT — 134 packages
 
-Applies to: `adler2`, `allocator-api2`, `arrayvec`, `asn1-rs`, `bitflags`, `block-buffer`, `bytes`, `cfg-if`, `chacha20`, `clru`, `const-oid`, `copypasta` — and 114 more
+Applies to: `adler2`, `allocator-api2`, `arrayvec`, `asn1-rs`, `bitflags`, `block-buffer`, `bytes`, `cfg-if`, `cgl`, `chacha20`, `clru`, `const-oid` — and 122 more
 
 ```
 Permission is hereby granted, free of charge, to any
@@ -4611,9 +4667,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 40. MIT — 27 packages
+### 41. MIT — 28 packages
 
-Applies to: `arboard`, `const-field-offset`, `core_maths`, `crc32fast`, `fdeflate`, `field-offset`, `image`, `image-webp`, `imagesize`, `linebender_resource_handle`, `miniz_oxide`, `muda` — and 15 more
+Applies to: `arboard`, `const-field-offset`, `core_maths`, `crc32fast`, `fdeflate`, `field-offset`, `half`, `image`, `image-webp`, `imagesize`, `linebender_resource_handle`, `miniz_oxide` — and 16 more
 
 ```
 MIT License
@@ -4643,7 +4699,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 41. MIT — 23 packages
+### 42. MIT — 23 packages
 
 Applies to: `base64`, `byteorder-lite`, `color_quant`, `crossbeam-channel`, `crossbeam-utils`, `data-encoding`, `derive_more`, `fontdb`, `gif`, `harfrust`, `htmlparser`, `memchr` — and 11 more
 
@@ -4671,7 +4727,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 42. MIT — 22 packages
+### 43. MIT — 22 packages
 
 Applies to: `fixed_decimal`, `icu_collections`, `icu_decimal`, `icu_decimal_data`, `icu_locale`, `icu_locale_core`, `icu_locale_data`, `icu_normalizer`, `icu_normalizer_data`, `icu_properties`, `icu_properties_data`, `icu_provider` — and 10 more
 
@@ -4724,35 +4780,33 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-### 43. MIT — 12 packages
-
-Applies to: `windows`, `windows-collections`, `windows-core`, `windows-future`, `windows-link`, `windows-numerics`, `windows-result`, `windows-strings`, `windows-sys`, `windows-targets`, `windows-threading`, `windows_x86_64_msvc`
-
-```
-MIT License
-
-    Copyright (c) Microsoft Corporation.
-
-    Permission is hereby granted, free of charge, to any person obtaining a copy
-    of this software and associated documentation files (the "Software"), to deal
-    in the Software without restriction, including without limitation the rights
-    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-    copies of the Software, and to permit persons to whom the Software is
-    furnished to do so, subject to the following conditions:
-
-    The above copyright notice and this permission notice shall be included in all
-    copies or substantial portions of the Software.
-
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-    SOFTWARE
-```
-
 ### 44. MIT — 2 packages
+
+Applies to: `fax`, `glutin-winit`
+
+```
+Copyright © 2022 Kirill Chibisov
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the “Software”), to deal
+in the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### 45. MIT — 2 packages
 
 Applies to: `pulldown-cmark`, `pulldown-cmark-escape`
 
@@ -4780,7 +4834,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 45. MIT — 1 package
+### 46. MIT — 2 packages
+
+Applies to: `security-framework`, `security-framework-sys`
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2015 Steven Fackler
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### 47. MIT — 1 package
 
 Applies to: `bytemuck`
 
@@ -4796,7 +4877,7 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 46. MIT — 1 package
+### 48. MIT — 1 package
 
 Applies to: `dpi`
 
@@ -4852,62 +4933,6 @@ Copyright © 2017-2018 Arm Limited
 and labelled as such in comments in the individual source files. All
 have been licensed under extremely permissive terms.
 ------------------------------------------------------------------------------
-```
-
-### 47. MIT — 1 package
-
-Applies to: `glutin-winit`
-
-```
-Copyright © 2022 Kirill Chibisov
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the “Software”), to deal
-in the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-of the Software, and to permit persons to whom the Software is furnished to do
-so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### 48. MIT OR BSL-1.0 — 1 package
-
-Applies to: `error-code`
-
-```
-Boost Software License - Version 1.0 - August 17th, 2003
-
-Permission is hereby granted, free of charge, to any person or organization
-obtaining a copy of the software and accompanying documentation covered by
-this license (the "Software") to use, reproduce, display, distribute,
-execute, and transmit the Software, and to prepare derivative works of the
-Software, and to permit third-parties to whom the Software is furnished to
-do so, all subject to the following:
-
-The copyright notices in the Software and this entire statement, including
-the above license grant, this restriction and the following disclaimer,
-must be included in all copies of the Software, in whole or in part, and
-all derivative works of the Software, unless such copies or derivative
-works are solely in the form of machine-executable object code generated by
-a source language processor.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
-SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
-FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 ```
 
 ### 49. UNKNOWN — 1 package

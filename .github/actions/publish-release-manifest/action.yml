@@ -87,7 +87,11 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
-        checkout="${RUNNER_TEMP}/badges-branch-release"
+        # Per distribution, and cleared first: one job calls this action once
+        # per distribution (docs/54 D14), RUNNER_TEMP is shared by every step
+        # of a job, and `git clone` refuses a non-empty destination.
+        checkout="${RUNNER_TEMP}/badges-branch-release-${DISTRIBUTION}"
+        rm -rf "$checkout"
         remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
         manifest="$RUNNER_TEMP/release-manifest/latest.json"
 

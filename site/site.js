@@ -56,6 +56,9 @@
         ver.appendChild(document.createTextNode([when, size].filter(Boolean).map((s) => ` · ${s}`).join('')));
         sha.textContent = m.asset.sha256;
         sum.hidden = false;
+        // A distribution with no release yet (docs/54: the Mac app before its
+        // first signed release) stays hidden until its manifest is real.
+        if (card.hasAttribute('data-dl-until-released')) card.hidden = false;
       })
       .catch(() => {});
   });

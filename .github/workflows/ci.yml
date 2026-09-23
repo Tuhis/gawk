@@ -205,7 +205,9 @@ jobs:
           licenses=$(decide     licenses     '(^|/)(go\.(mod|sum)|package(-lock)?\.json|Cargo\.(toml|lock)|deny\.toml)$|^tools/licenses/')
           # The notices files are in their own list on purpose: a hand-edit to
           # one is exactly what the freshness job should overturn.
-          notices=$(decide      notices      '(^|/)(go\.(mod|sum)|package(-lock)?\.json|Cargo\.(toml|lock)|THIRD-PARTY-NOTICES\.md)$|^tools/licenses/')
+          # [^/]*: the macOS bundle's THIRD-PARTY-NOTICES-macos.md too (R52),
+          # matching the freshness step's '**/THIRD-PARTY-NOTICES*.md' glob.
+          notices=$(decide      notices      '(^|/)(go\.(mod|sum)|package(-lock)?\.json|Cargo\.(toml|lock)|THIRD-PARTY-NOTICES[^/]*\.md)$|^tools/licenses/')
           helm=$(decide         helm         '/deploy/charts/')
           # E2E is the only job that spans modules, and it is what keeps path
           # filtering honest: two PRs that each skip the other's tests still meet
@@ -1504,7 +1506,10 @@ jobs:
       - name: THIRD-PARTY-NOTICES.md matches the dependencies actually linked
         run: |
           python3 tools/licenses/gen-notices.py
-          if ! git diff --exit-code -- '**/THIRD-PARTY-NOTICES.md'; then
+          # -*: the macOS bundle's notices sit beside the Windows EXE's
+          # (R52, docs/54 D14), and an untracked new one counts as stale too.
+          git add -N -- '**/THIRD-PARTY-NOTICES*.md'
+          if ! git diff --exit-code -- '**/THIRD-PARTY-NOTICES*.md'; then
             echo "::error::Third-party notices are stale. Run 'python3 tools/licenses/gen-notices.py' and commit the result (see CONTRIBUTING.md)."
             exit 1
           fi

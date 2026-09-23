@@ -9,8 +9,12 @@ real broadcast) implemented 2026-09-23**, its hardware trial and
 encode-to-relay criteria verified on an M1, its first on-screen broadcast
 the owner's; **MB4 (audio) implemented 2026-09-23**, its unit criteria
 green, G1/G2/V-4 the owner's; **MB5 (the macOS shell) implemented
-2026-09-23**, its on-screen criteria and V-8 the owner's. §11 records what
-each chunk turned up. MB6–MB8 not started. The
+2026-09-23**, its on-screen criteria and V-8 the owner's; **MB6** —
+telemetry is in (the shared reporter, `kind: gawk-broadcast-macos`); the
+update notice and in-place install are **blocked on R45/R47, which are not
+started**; **MB7 (packaging, signing, release path, docs) implemented
+2026-09-23**, its signed run waiting on the Apple secrets. MB8 is the
+owner's on-hardware pass. §11 records what each chunk turned up. The
 ROADMAP entry ([R52](../ROADMAP.md#r52--native-macos-broadcaster)) carries
 the research summary and owner decisions this doc builds on; the decisions
 are restated in §2 so the doc reads on its own.
@@ -1053,6 +1057,75 @@ what MB5 itself added, and how:
   Idle/Starting/Live/amber flow, picker → start → code → copy link, ⌘Q ends
   a live broadcast cleanly), V-8 (notifications under Focus during a
   fullscreen game), and idle CPU ~0 %.
+
+**MB6 (2026-09-23)** — half of it cannot exist yet:
+
+- **Telemetry is done by construction.** The shared shell's reporter
+  answers `TelemetryHello`, batches with the browser field names, and
+  reports `browser: gawk-broadcast-macos`, `os: macOS` from
+  `defaults::THIS` (MB1); the diagnostics dump's `kind` follows the same
+  constant (unit-tested). A real session landing in the production
+  dashboard is the owner's to confirm.
+- **The update notice and the in-place install are blocked.** D17 builds on
+  R45's `engine::update` and R47's install flow; neither milestone has
+  started (docs/47, docs/48 — both "not started", and the Windows app has
+  neither either). What R52 contributes is ready for them: the macOS
+  distribution name, asset name and manifest path are constants in
+  `engine::defaults` (MB1), docs/47 D5 names the macOS row, and MB7 writes
+  `releases/gawk-broadcast-macos/latest.json`. The D17 bundle-swap design
+  stands; it lands with R47.
+
+**MB7 (2026-09-23)** — the release path, and where it bent:
+
+- **Signing happens in the `macos` job, on `push` and dispatch only, and
+  only when the secrets exist.** D15 had the attach job build and sign;
+  the `macos` job already builds the bundle on every push, so it signs
+  there instead: import the `.p12` into a throwaway keychain, discover the
+  Developer ID identity (masked, never printed), `bundle.sh` with
+  `SIGN_IDENTITY`, `notarytool submit --wait` with the App Store Connect key,
+  `stapler staple`, then `codesign --verify --deep --strict` and
+  `spctl --assess` — MB7's first criterion, run on every signed build.
+  PRs never sign.
+- **An unsigned bundle is never released — and Windows does not wait for
+  Apple credentials.** With the signing secret configured, the attach job
+  refuses a bundle whose `BUILD-INFO.txt` is not "Developer ID + notarized"
+  (fails loudly, D13). Without it — the state today — the attach job
+  releases the Windows EXE alone, warns, and writes only the Windows
+  manifest: blocking every Windows release on an Apple account would have
+  been the literal reading of D13 and the wrong one. Configuring the five
+  secrets is what turns the macOS distribution on. The same holds for the
+  `macos` job itself: `attach-release` depends on it softly (`!cancelled()`
+  plus hard checks on lint/test/build), so a macOS flake, hosted-image drift
+  or a backfill of a commit older than the bundle releases Windows alone
+  with a warning instead of skipping the release — the review of the MB7 PR
+  caught the first cut making the whole Windows release wait on it.
+- **The release set.** `gawk-broadcast-macos-arm64.zip` (the stapled
+  bundle, `ditto`-zipped), `BUILD-INFO-macos.txt`,
+  `THIRD-PARTY-NOTICES-macos.md` beside the EXE and its files, one
+  `SHA256SUMS` over all of them, and a second manifest
+  (`releases/gawk-broadcast-macos/latest.json`). R47's minisign step, when
+  it exists, signs the one `SHA256SUMS`.
+- **macOS has its own THIRD-PARTY-NOTICES** — `THIRD-PARTY-NOTICES-macos.md`,
+  generated for `aarch64-apple-darwin` by the same `gen-notices.py`, checked
+  by the same freshness job (its glob now covers it). Doing that exposed a
+  host dependence: the generator walked proc-macro crates, whose own
+  dependencies resolve for the build host, so the Windows file came out
+  different on a Mac than on the Linux CI runner. It now passes
+  `no-proc-macro` — which is what its "build-dependencies are excluded"
+  meant — and the Windows notices shrink from 377 to 267 packages, the
+  difference being compile-time-only crates that were never in the EXE.
+- **The site's macOS card stays hidden until its manifest exists**
+  (`data-dl-until-released`): before the first signed release it would
+  point at releases with no Mac asset. `docs/self-hosting.md` lists
+  `gawk-broadcast://macos`; docs/46 carries the dated
+  "component means distribution" note.
+- **The owner's to do:** create the Developer ID Application certificate and
+  an App Store Connect API key (Developer role) in the Apple Developer
+  account, and add the five repository secrets D13 names
+  (`APPLE_SIGNING_CERTIFICATE_P12` base64, `APPLE_SIGNING_CERTIFICATE_PASSWORD`,
+  `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER_ID`, `APPLE_NOTARY_KEY_P8`).
+  The next push to `main` touching the workspace then produces a signed,
+  notarized artifact, and the next desktop release carries it.
 
 ## 12. References
 

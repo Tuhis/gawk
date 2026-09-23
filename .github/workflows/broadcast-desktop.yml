@@ -482,6 +482,10 @@ jobs:
     defaults:
       run:
         working-directory: gawk-broadcast-desktop
+    env:
+      # Whether Developer ID signing is configured at all (docs/54 D13) —
+      # `secrets` cannot appear in a step's `if`, a job env can.
+      SIGNING_CONFIGURED: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 != '' }}
     steps:
       # See `lint`: a backfill builds the commit it is attaching to.
       - uses: actions/checkout@v7
@@ -528,18 +532,86 @@ jobs:
       - name: Build (release)
         run: cargo build --release --target aarch64-apple-darwin -p gawk-broadcast-app-macos
 
-      - name: Bundle (ad-hoc signed)
+      # docs/54 D13: Developer ID signing and notarization, from repository
+      # secrets referenced by name only — never echoed, and the identity name
+      # is discovered from the imported keychain, never written down. Never
+      # on pull_request (PRs never sign, #218's posture); only when the
+      # secrets exist, so a repository without them keeps building ad-hoc
+      # bundles (and says so) instead of failing every push. The release
+      # attach below refuses an unsigned bundle once they do exist.
+      - name: Import the signing identity
+        id: signing
+        if: github.event_name != 'pull_request' && env.SIGNING_CONFIGURED == 'true'
+        env:
+          P12: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.APPLE_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kc_pass="$(uuidgen)"
+          security create-keychain -p "$kc_pass" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$kc" >/dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          # The quoted name of the first Developer ID Application identity —
+          # into an output, not the log.
+          identity=$(security find-identity -v -p codesigning "$kc" | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          if [ -z "$identity" ]; then
+            echo "::error::the imported certificate holds no Developer ID Application identity"
+            exit 1
+          fi
+          echo "::add-mask::$identity"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Bundle (Developer ID when imported, else ad-hoc)
+        env:
+          SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
         run: ../tools/macos/bundle.sh target/aarch64-apple-darwin/release/gawk-broadcast-macos bundle
+
+      # Notarize with an App Store Connect API key (D13: no Apple ID or
+      # address anywhere), staple the ticket so Gatekeeper's check works
+      # offline, and prove both with the tools a downloader's Mac uses.
+      - name: Notarize and staple
+        if: steps.signing.outputs.identity != ''
+        env:
+          KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          for v in KEY_ID ISSUER KEY_P8; do
+            if [ -z "${!v}" ]; then
+              echo "::error::signing is configured but the notarization secret for $v is missing (docs/54 D13)"
+              exit 1
+            fi
+          done
+          key="$RUNNER_TEMP/notary.p8"
+          printf '%s' "$KEY_P8" > "$key"
+          ditto -c -k --keepParent bundle/gawk-broadcast-macos.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$key" --key-id "$KEY_ID" --issuer "$ISSUER" --wait --timeout 20m
+          rm -f "$key"
+          xcrun stapler staple bundle/gawk-broadcast-macos.app
+          codesign --verify --deep --strict bundle/gawk-broadcast-macos.app
+          spctl --assess --type execute --verbose bundle/gawk-broadcast-macos.app
 
       # The bundle rides zipped by `ditto`, not as a directory: upload-artifact
       # drops the executable bit, and a bundle whose binary is not executable
       # does not launch. ditto also keeps the signature's extended attributes.
       - name: Assemble artifact
+        env:
+          SIGNED: ${{ steps.signing.outputs.identity != '' }}
         run: |
           set -euo pipefail
           mkdir -p dist
           ditto -c -k --keepParent bundle/gawk-broadcast-macos.app dist/gawk-broadcast-macos.app.zip
-          cp README.md ../LICENSE dist/
+          # The bundle's own notices (the aarch64-apple-darwin graph), next to
+          # it the way the EXE's ride next to the EXE.
+          cp README.md THIRD-PARTY-NOTICES-macos.md ../LICENSE dist/
           {
             echo "gawk-broadcast-macos (R52, docs/54)"
             echo "commit:    ${{ steps.source.outputs.sha }}"
@@ -548,18 +620,22 @@ jobs:
             echo "toolchain: $(rustc --version)"
             echo "target:    aarch64-apple-darwin"
             echo "built-by:  GitHub-hosted macos-latest (macOS $(sw_vers -productVersion), SDK $(xcrun --show-sdk-version))"
-            # docs/54 D13. Consequence for a tester: open it once via System
-            # Settings → Privacy & Security → Open Anyway, and expect any
-            # permission it is granted to die with this build.
-            echo "signed:    ad-hoc (PR/CI build) — not Developer ID, not notarized"
+            # docs/54 D13. The attach job reads this line: a release only ever
+            # carries the Developer ID one. For an ad-hoc build, a tester
+            # opens it once via System Settings → Privacy & Security → Open
+            # Anyway, and any permission it is granted dies with the build.
+            if [ "$SIGNED" = "true" ]; then
+              echo "signed:    Developer ID + notarized (stapled)"
+            else
+              echo "signed:    ad-hoc — not Developer ID, not notarized"
+            fi
           } > dist/BUILD-INFO.txt
           cat dist/BUILD-INFO.txt
           ls -l dist
 
-      # R14's artifact-as-verification pattern, as `build` does for the EXE.
-      # A week rather than a day: nothing downstream consumes this one yet
-      # (the release path is MB7), and the on-hardware passes it exists for
-      # are human-paced.
+      # R14's artifact-as-verification pattern, as `build` does for the EXE,
+      # and the bytes attach-release puts on the release page. A week rather
+      # than a day: the on-hardware passes it also exists for are human-paced.
       - uses: actions/upload-artifact@v7
         with:
           name: gawk-broadcast-macos-${{ steps.source.outputs.sha }}
@@ -598,10 +674,19 @@ jobs:
   # dispatch: that is true, but it is a coercion rule, and this is not a place
   # to be clever about falsiness.
   attach-release:
-    needs: [lint, test, build]
+    # `macos` is a soft dependency (R52, docs/54 D13): the Windows release
+    # needs lint, test and build green and waits for nothing else — not a
+    # macOS flake, not hosted-image drift, not a backfill of a commit older
+    # than the macOS bundle. `!cancelled()` is what lets this job run when
+    # `macos` failed; the three hard dependencies are then checked by hand.
+    needs: [lint, test, build, macos]
     if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.attach_to != '')
+      !cancelled() &&
+      needs.lint.result == 'success' &&
+      needs.test.result == 'success' &&
+      needs.build.result == 'success' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.attach_to != ''))
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:
       contents: write
@@ -620,6 +705,13 @@ jobs:
         with:
           name: gawk-broadcast-windows-x86_64-${{ needs.build.outputs.sha }}
           path: staging
+      # The macOS bundle (R52, docs/54 D14), built from the same commit —
+      # when the macos job produced one.
+      - uses: actions/download-artifact@v8
+        if: needs.macos.result == 'success'
+        with:
+          name: gawk-broadcast-macos-${{ needs.build.outputs.sha }}
+          path: staging-macos
 
       # ...with one exception: the manifest has to be the TARGET's, because the
       # gate resolves the tag from it and the version being backfilled is the
@@ -641,6 +733,10 @@ jobs:
           echo "manifest as of ${{ needs.build.outputs.sha }}:"
           cat .release-please-manifest.json
       - name: Package the release assets
+        id: package
+        env:
+          MACOS_SIGNING: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 != '' }}
+          MACOS_BUILT: ${{ needs.macos.result == 'success' }}
         run: |
           set -euo pipefail
           # NOT `assets`: the repository root already has an `assets/`
@@ -660,6 +756,27 @@ jobs:
           # attach to the distributed binary, so they must be assets a
           # downloader gets, not files that only live in the repo.
           cp staging/BUILD-INFO.txt staging/THIRD-PARTY-NOTICES.md staging/LICENSE release-assets/
+          # The macOS bundle (docs/54 D13/D14). A release never carries an
+          # unsigned one: with the signing secrets configured, a bundle that
+          # is not Developer ID + notarized fails the attach loudly. Without
+          # the secrets, or without a bundle (the macos job failed, or the
+          # commit predates it), Windows attaches alone with a warning — it
+          # never waits on Apple credentials or on the macOS job.
+          if [ "$MACOS_BUILT" != "true" ]; then
+            echo "::warning::the macOS bundle is not attached: the macos job did not succeed for this commit — backfill it with workflow_dispatch attach_to once it does"
+          elif [ "$MACOS_SIGNING" = "true" ]; then
+            if ! grep -q '^signed:    Developer ID + notarized' staging-macos/BUILD-INFO.txt; then
+              echo "::error::signing is configured but the macOS bundle is not Developer ID + notarized — refusing to attach it (docs/54 D13)"
+              cat staging-macos/BUILD-INFO.txt
+              exit 1
+            fi
+            cp staging-macos/gawk-broadcast-macos.app.zip release-assets/gawk-broadcast-macos-arm64.zip
+            cp staging-macos/BUILD-INFO.txt release-assets/BUILD-INFO-macos.txt
+            cp staging-macos/THIRD-PARTY-NOTICES-macos.md release-assets/
+            echo "macos=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the macOS bundle is not attached: no Developer ID signing secrets are configured (docs/54 D13)"
+          fi
           # Unsigned by design (docs/38 D17) — the checksum is the only
           # integrity check a downloader gets. Written outside the asset
           # directory and moved in, because whether a shell's `*` sees a file the same
@@ -695,6 +812,18 @@ jobs:
           distribution: gawk-broadcast-windows
           dir: release-assets
           primary: gawk-broadcast-windows-x86_64.exe
+          tag: ${{ steps.attach.outputs.tag }}
+          published-at: ${{ steps.attach.outputs.published_at }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      # The second distribution of the same release (docs/54 D14): its own
+      # manifest, which the site's macOS card and R45's macOS check read.
+      - uses: ./.github/actions/publish-release-manifest
+        if: steps.attach.outputs.attached == 'true' && steps.package.outputs.macos == 'true'
+        with:
+          component: gawk-broadcast-desktop
+          distribution: gawk-broadcast-macos
+          dir: release-assets
+          primary: gawk-broadcast-macos-arm64.zip
           tag: ${{ steps.attach.outputs.tag }}
           published-at: ${{ steps.attach.outputs.published_at }}
           token: ${{ secrets.GITHUB_TOKEN }}
