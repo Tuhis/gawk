@@ -355,7 +355,7 @@ Two paths, both designed in, one verified before the item closes:
    the bare origin. **`Origin` validation** on `/mcp` refuses any request
    that carries the header (`403`). Telemetry has no configured origin to
    compare with, comparing with `Host` does not stop DNS rebinding, and
-   no browser client of `/mcp` exists (docs/56 D9) *(revised 2026-09-23
+   no browser client of `/mcp` exists (docs/56 D9) *(revised 2026-09-22
    with [docs/56](56-admin-mcp.md) D5, D9)*.
    Keycloak serves AS metadata and supports dynamic client registration —
    but anonymous registration is off by default (the *Trusted Hosts* policy),
