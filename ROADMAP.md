@@ -73,6 +73,7 @@ feature set exists).
 | R52 | [Native macOS broadcaster](#r52--native-macos-broadcaster) | 🔧 designed 2026-09-18 (owner decisions OD1–OD10); MB0 (the rename) implemented 2026-09-22, MB1 (workspace split + macOS CI job + shell) 2026-09-23, MB2 (capture) 2026-09-23 with its manual pass owner-pending, MB3 (encode) 2026-09-23, MB4 (audio) 2026-09-23, MB5 (shell) 2026-09-23, MB6 telemetry only (update rows blocked on R45/R47), MB7 (release path) 2026-09-23 awaiting the Apple secrets, MB8 owner-pending — Rust in a shared desktop workspace (`gawk-broadcast-windows` → `gawk-broadcast-desktop`, MB0 is the rename and lands alone), ScreenCaptureKit video + per-app audio via the system picker, VideoToolbox low-latency H.264 with an app-forced 500 ms GOP, macOS 14+ Apple Silicon, Developer ID + notarization from CI secrets, built on `macos-latest`; per-distribution release manifests keep R45 and the site card untouched ([docs/54](docs/54-macos-native-broadcaster.md)) |
 | R53 | [OIDC for the telemetry read surface](#r53--oidc-for-the-telemetry-read-surface) | 🔧 designed 2026-09-20 (owner decisions OD1–OD9), not started (TO1–TO5, one PR) — the `gawk-telemetry` read listener (dashboard, `/v1`, `/live`, `/mcp`) adopts R39's auth boundary: OIDC public client + PKCE in the SPA, bearer JWT + a client-scoped `telemetry-reader` role on a separate Keycloak client, same IdP and recipe as `gawk-admin`, SSO across the portal's deep links. TO1 lifts the JWT verifier the relay and the portal each carry today into one public `gawk-server/oidcauth` package, and the SPA flow into `common-ts/oidc-session`, the first package under a new root for shared TypeScript, consumed by both operator UIs (third consumer ⇒ no third copy); per-consumer lock files plus a CI bot bump and required check make any `common-ts` change release every consumer. Basic auth stays as the no-IdP mode; ClusterIP default is unchanged; ingest is untouched and the pod's probes stay on ingest ([docs/55](docs/55-telemetry-oidc.md)) |
 | R54 | [MCP server for the `gawk-admin` API](#r54--mcp-server-for-the-gawk-admin-api) | 🔧 designed 2026-09-22 (owner decisions OD1–OD9), not started (MC1–MC5) — **lands after R53**: a remote MCP endpoint `/mcp` on `gawk-admin` so Claude Code acts **as the signed-in operator**, authorized by the MCP spec's OAuth flow against the deployment's own Keycloak (RFC 9728 challenge + metadata; a pre-registered public client `gawk-admin-mcp`, no dynamic registration). Tools are generated from the served OpenAPI document and dispatched through the same route table, so auth, roles and audit are the API's own; mutations on by default behind `-mcp-mutations`; every authenticated operation exposed, secret-bearing ones included; publisher IPs redacted unless `-mcp-reveal-ips`; events record the OAuth client beside the actor. One MCP transport lifted from telemetry into `gawk-server/mcphttp`. Default off ([docs/56](docs/56-admin-mcp.md)) |
+| R55 | [Broadcasting over Wi-Fi](#r55--broadcasting-over-wi-fi) | 🔧 designed 2026-09-23 (owner decisions OD1–OD6 taken 2026-09-24), not started (WU0–WU6; WU4 deferred) — leg-A loss from a Mac on Wi-Fi (AWDL) freezes viewers; deltas ride one 150 ms-deadline reliable stream per GOP from the Rust desktop broadcaster (R19's carrier, reversed) behind a new `CapUplinkCarriers` relay capability, always on when supported, with a warned Advanced → Legacy escape hatch; QoS marking shipped; silent by default, a plain status line on measured harm; the AirDrop-pausing **Improve** helper decided after WU2 ([docs/57](docs/57-wifi-uplink.md)) |
 
 ---
 
@@ -4466,6 +4467,7 @@ lock files and a CI bot bump, `/readyz` served but not probed, one PR;
 OD5a/OD5b revised 2026-09-21), not started — chunks TO1–TO5 and the
 manual verification register in [docs/55](docs/55-telemetry-oidc.md).
 
+
 ---
 
 ## R54 — MCP server for the `gawk-admin` API
@@ -4571,6 +4573,58 @@ including secret-bearing ones, a pre-registered public client with no DCR,
 IP redaction with a reveal knob, `azp` provenance, guidance in the server
 not a plugin, R53 first then two PRs). Not started. Chunks MC1–MC5 and the verification register are in
 [docs/56](docs/56-admin-mcp.md).
+
+---
+
+## R55 — Broadcasting over Wi-Fi
+
+**Goal**: a native broadcaster on Wi-Fi streams without viewer freezes. Deltas
+on the broadcaster → relay leg ride a reliable QUIC stream per GOP that is
+reset at a deadline, so QUIC's own retransmission recovers bursty Wi-Fi loss
+wherever the relay supports it. The experience is Apple-like: silent by
+default, and only when viewers are actually losing video does the Mac app
+say so in one plain sentence. Whether that line also gets an **Improve**
+button (pause AirDrop and Handoff while live) is decided after WU2.
+
+**Why**: the first macOS broadcast (R52, 2026-09-23) froze a viewer every few
+seconds. The app was clean; the relay counted 3.7 % of frames never arriving
+(leg A) — and that figure excludes partly received frames. AWDL on the Mac's
+Wi-Fi was most of it: with `awdl0` down the viewer's broken frames fell
+roughly tenfold. One lost chunk costs the rest of a 500 ms GOP. R19 fixed the
+same failure for leg B and left leg A alone because leg A had always been
+clean.
+
+**Scope sketch** (chunks WU0–WU6 in [docs/57](docs/57-wifi-uplink.md)):
+
+- **WU0** — fix the live view's zeroed relay facts (BUGS.md), report leg-A
+  loss in frames including partly received ones (`ingressFrameLossRatio`),
+  record a baseline.
+- **WU1** — relay: accept `0x0A` carriers from a publisher behind
+  `CapUplinkCarriers`; each record ingested exactly as the same datagram;
+  `-uplink-carriers` plumbed through `registryOptions`; flow-control windows
+  sized from time and `-uplink-max-bitrate` (default 50 Mbps) instead of
+  quic-go's 512 KB / 768 KB initial stream and connection windows (D9).
+- **WU2** — Rust engine: carrier per GOP, 150 ms deadline reset, always on
+  when the relay supports it, Settings → Advanced → Video delivery
+  (Automatic · Legacy, behind a warning), keyframe stream prioritised,
+  telemetry incl. local QUIC loss;
+  outage injection at 50 Mbps proves recovery with headroom and a clean
+  expiry without it.
+- **WU3** — macOS: a quiet status line that appears only when viewers are
+  actually losing video, in plain words (no jargon, no notifications, ask
+  once); no button until OD4 is decided, Help carries the remedies.
+- **WU4** — one **Improve** button: pauses AirDrop and Handoff while live on
+  Wi-Fi via an `SMAppService` helper approved once in System Settings;
+  everything comes back by itself, crash-safe the `gawk-pw-helper` way.
+  **Deferred** (OD4): built only if WU2's measurement shows residual harm.
+- **WU5** — `NET_SERVICE_TYPE_VI` marking, shipped unconditionally (OD6);
+  a packet capture proves it reaches the wire.
+- **WU6** — on-hardware acceptance pass.
+
+**Status**: 🔧 designed 2026-09-23; owner decisions OD1–OD6 taken
+2026-09-24 (per-GOP carrier; always on when supported; 150 ms deadline;
+Improve deferred until after WU2; Rust desktop first; QoS marking shipped);
+not started.
 
 ---
 
