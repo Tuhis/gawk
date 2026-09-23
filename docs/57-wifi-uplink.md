@@ -1,4 +1,4 @@
-# R54 — Broadcasting over Wi-Fi: it just works, and speaks only when viewers are affected
+# R55 — Broadcasting over Wi-Fi: it just works, and speaks only when viewers are affected
 
 **Status**: designed 2026-09-23, owner decisions taken 2026-09-24 (§2).
 Chunks **WU0–WU6**, none started; **WU4 is deferred** until WU2's
@@ -69,7 +69,7 @@ compares against.
 | G2 | The viewer stops stuttering: `reorderGapResyncs` ≤ 2/min and no `keyframe-only-delivery` finding over the same 10 min | manual, viewer telemetry |
 | G3 | Latency cost bounded: viewer `capToRenderMs` p50 within **+20 ms**, p95 within **+50 ms** of the same Mac on Ethernet in datagram mode | manual, paired runs |
 | G4 | No regression where nothing was wrong: the Windows app on wired Ethernet with the carrier uplink engaged shows fps, latency and leg-A loss within noise of datagram mode | manual, paired runs |
-| G5 | Compatibility: a carrier-capable broadcaster against a relay without the capability sends datagrams, unchanged; an old broadcaster against a new relay is unchanged; with `-uplink-carriers=false` the relay's `/statusz`, metrics and wire are byte-identical to pre-R54 | integration (real `gawk-server`) + diff assertion |
+| G5 | Compatibility: a carrier-capable broadcaster against a relay without the capability sends datagrams, unchanged; an old broadcaster against a new relay is unchanged; with `-uplink-carriers=false` the relay's `/statusz`, metrics and wire are byte-identical to pre-R55 | integration (real `gawk-server`) + diff assertion |
 | G6 | Wire parity: the new capability bit and any new constant are in `gawk-server/wire`, `wire.ts`, `gawk-broadcast/internal/wirecheck` and `crates/wire`, golden vectors byte-identical | unit (existing mirror tests) |
 | G7 | Viewers untouched: no change in `gawk-app` beyond the `wire.ts` mirror | review |
 | G8 | The app stays quiet unless viewers are affected: on a clean Wi-Fi link (AWDL up, carrier coping) nothing appears; with sustained harm the D7 line appears within 15 s, at most once per broadcast; every string matches D7's copy table and none contains D7's banned terms | unit (policy + string test) + manual |
@@ -280,7 +280,7 @@ actually suffering, names no protocol, and goes away by itself.
 **Principles** (each one is an acceptance criterion in WU3/WU4):
 
 1. **Silent by default.** The carrier (D1–D4) needs no setting, no toggle and
-   no explanation. On a good network, nothing about R54 is visible.
+   no explanation. On a good network, nothing about R55 is visible.
 2. **Speak only on measured harm.** Being on Wi-Fi is not a problem, and
    AWDL being up is not a problem. The app speaks only when viewers are
    losing video *despite* the carrier: carriers expiring at the deadline, or
@@ -490,7 +490,7 @@ wait for it — correct, since they are undecodable without it — and F-12's
 |---|---|
 | `CapUplinkCarriers` allocated in `wire.go` and mirrored in `wire.ts`, `wirecheck`, `crates/wire`; golden vectors byte-identical | unit (mirror tests) |
 | A carrier's records are ingested exactly as the same bytes sent as datagrams: same fan-out, same accounting, same DVR contents (property test over random frames) | unit, test-first |
-| Without the capability configured, a publisher `0x0A` stream is rejected as today; with `-uplink-carriers=false`, `/statusz`, metrics and wire are byte-identical to pre-R54 (diff-asserted, the R28 pattern) | unit |
+| Without the capability configured, a publisher `0x0A` stream is rejected as today; with `-uplink-carriers=false`, `/statusz`, metrics and wire are byte-identical to pre-R55 (diff-asserted, the R28 pattern) | unit |
 | Third concurrent carrier rejected and counted; malformed record ends the carrier, earlier records forwarded; stale record (pre-latest-keyframe) dropped and counted | unit |
 | A full GOP at **50 Mbps** passes one carrier without a flow-control stall from the first GOP of a session (the initial window, not auto-tuning, covers it) | unit (real quic-go loopback) |
 | `-uplink-max-bitrate` / `GAWK_UPLINK_MAX_BITRATE` / `config.uplinkMaxBitrate` derives `InitialStreamReceiveWindow` per D9; `TestRegistryOptionsCarryAllLimits` grows the field | unit |
