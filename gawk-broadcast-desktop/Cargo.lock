@@ -1821,10 +1821,15 @@ dependencies = [
 name = "gawk-ui"
 version = "1.5.0"
 dependencies = [
+ "arboard",
+ "gawk-encode",
  "gawk-engine",
+ "log",
+ "serde",
  "serde_json",
  "slint",
  "slint-build",
+ "tokio",
 ]
 
 [[package]]

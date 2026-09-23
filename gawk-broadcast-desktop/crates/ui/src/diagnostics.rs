@@ -1,5 +1,6 @@
 //! `Copy diagnostics` JSON (docs/38 D12.8): the Linux dump's shape with
-//! `kind: "gawk-broadcast-windows"` and one honest improvement — capture
+//! `kind` = the distribution (`gawk-broadcast-windows`,
+//! `gawk-broadcast-macos` — `defaults::THIS`) and one honest improvement — capture
 //! fps is a real number here (we own capture; the Go shell's is permanently
 //! `"n/a"`). Nullable-pointer semantics survive the port: keys for
 //! availability-gated numbers are always present, `null` when unmeasured —
@@ -92,8 +93,8 @@ pub fn render(
     timestamp_rfc3339: String,
 ) -> String {
     let d = Diagnostics {
-        kind: "gawk-broadcast-windows",
-        app_version: gawk_ui::version::display(),
+        kind: gawk_engine::defaults::THIS.name,
+        app_version: crate::version::display(),
         timestamp: timestamp_rfc3339,
         broadcast_id,
         state,
@@ -162,7 +163,7 @@ mod tests {
             "2026-07-31T00:00:00Z".into(),
         );
         let v: serde_json::Value = serde_json::from_str(&dump).unwrap();
-        assert_eq!(v["kind"], "gawk-broadcast-windows");
+        assert_eq!(v["kind"], gawk_engine::defaults::THIS.name);
         assert_eq!(v["state"], "Live");
         assert_eq!(v["broadcastId"], "K7XQ2M");
         assert_eq!(v["captureMode"], "app");
@@ -194,11 +195,11 @@ mod tests {
             "2026-07-31T00:00:00Z".into(),
         );
         let v: serde_json::Value = serde_json::from_str(&dump).unwrap();
-        assert_eq!(v["appVersion"], gawk_ui::version::display());
+        assert_eq!(v["appVersion"], crate::version::display());
         assert!(
             v["appVersion"]
                 .as_str()
-                .is_some_and(|s| s.starts_with(gawk_ui::version::RELEASE)),
+                .is_some_and(|s| s.starts_with(crate::version::RELEASE)),
             "appVersion must lead with the release"
         );
     }

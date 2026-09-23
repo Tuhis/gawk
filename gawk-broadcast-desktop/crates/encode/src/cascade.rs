@@ -55,14 +55,15 @@ pub trait TrialRunner {
     fn run(&mut self, candidate: &Candidate) -> Result<TrialRun, String>;
 }
 
-/// D9's refusal, verbatim modulo the resolved app URL: the message differs
-/// from Linux because the REASON differs — on Windows the browser hardware-
-/// encodes fine; what this app adds is capture fidelity.
-pub fn refusal_message(app_url: &str) -> String {
+/// D9's refusal, verbatim modulo the resolved app URL and the platform: the
+/// message differs from Linux because the REASON differs — on Windows and
+/// on a Mac (docs/54 D7) the browser hardware-encodes fine; what this app
+/// adds is capture fidelity. `on` is "Windows" or "a Mac".
+pub fn refusal_message(app_url: &str, on: &str) -> String {
     format!(
         "No hardware H.264 encoder was found, so gawk-broadcast can't start — \
 it deliberately has no software encoder. The browser broadcaster at {app_url} \
-hardware-encodes fine on Windows; what you lose without this app is \
+hardware-encodes fine on {on}; what you lose without this app is \
 per-application audio and background-window capture."
     )
 }
@@ -425,10 +426,13 @@ mod tests {
         let err = choose(&[], None, &mut trial).unwrap_err();
         assert!(err.tried.is_empty());
         // And the message is D9's, pointing at the browser.
-        let msg = refusal_message("https://gawk.ioio.fi");
+        let msg = refusal_message("https://gawk.ioio.fi", "Windows");
         assert!(msg.contains("deliberately has no software encoder"));
         assert!(msg.contains("https://gawk.ioio.fi"));
+        assert!(msg.contains("hardware-encodes fine on Windows;"));
         assert!(msg.contains("per-application audio"));
+        // docs/54 D7: the macOS wording.
+        assert!(refusal_message("x", "a Mac").contains("hardware-encodes fine on a Mac;"));
     }
 
     #[test]

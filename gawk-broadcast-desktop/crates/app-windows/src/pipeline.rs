@@ -8,7 +8,6 @@
 //! capture running (the exact failure class R14's `finish()` incident
 //! documents).
 
-use crate::messages::StartFailure;
 use gawk_audio::framer::{Framer, packet_timestamp_us};
 use gawk_audio::level::LevelMeter;
 use gawk_audio::opusenc::OpusEncoder;
@@ -24,11 +23,11 @@ use gawk_engine::clock::Clock;
 use gawk_engine::gate::FrameGate;
 use gawk_engine::media::{AccessUnit, AudioPacket};
 use gawk_engine::sender::Sender;
+use gawk_ui::messages::StartFailure;
+use gawk_ui::shell::{Media, MediaInfo, Thumb};
+use std::any::Any;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-
-/// A downscaled RGBA thumbnail: width, height, pixels.
-pub type Thumb = (u32, u32, Vec<u8>);
 
 // The ring-soundness pin (see both constants' docs): the backpressure gate
 // must trip before the converter ring can wrap onto an in-flight texture.
@@ -65,18 +64,6 @@ pub struct PipelineParams {
     pub audio_mode: AudioMode,
 }
 
-/// What the shell shows about a built pipeline.
-#[derive(Clone)]
-pub struct PipelineInfo {
-    pub encoder: String,
-    pub codec: String,
-    pub capture_path: &'static str,
-    /// The ACTUAL encode dimensions — the configured rung box fitted to
-    /// the source aspect (D11 amendment), not the box itself.
-    pub width: u32,
-    pub height: u32,
-}
-
 /// Shared, GUI-readable audio state.
 struct AudioShared {
     state: Mutex<String>, // "off" | "unavailable" | "active" | "error"
@@ -89,7 +76,7 @@ struct AudioShared {
 unsafe impl Send for Pipeline {}
 
 pub struct Pipeline {
-    pub info: PipelineInfo,
+    info: MediaInfo,
     gpu: GpuDevice,
     capture: Option<wgc::Capture>,
     audio: Mutex<Option<LoopbackCapture>>,
@@ -389,12 +376,15 @@ impl Pipeline {
         );
 
         Ok(Self {
-            info: PipelineInfo {
+            info: MediaInfo {
+                family: "Media Foundation",
                 encoder: accepted.id,
                 codec: accepted.codec_string,
-                capture_path: "zero-copy",
+                capture_path: "zero-copy".into(),
                 width: enc_width,
                 height: enc_height,
+                // The 1 Hz confidence thumbnail is a mode-1 affordance.
+                show_thumbnail: mode1,
             },
             gpu,
             capture: Some(capture),
@@ -411,31 +401,41 @@ impl Pipeline {
             hwnd,
         })
     }
+}
+
+impl Media for Pipeline {
+    fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
     /// Resume re-prime (D5): the relay's caches were invalidated; the next
     /// frame carries an IDR instead of waiting out the GOP.
-    pub fn force_idr(&self) {
+    fn force_idr(&self) {
         self.force_idr.store(true, Ordering::SeqCst);
         self.encoder.force_idr();
     }
 
-    pub fn take_thumbnail(&self) -> Option<Thumb> {
+    fn take_thumbnail(&self) -> Option<Thumb> {
         self.thumb.lock().unwrap().take()
     }
 
-    pub fn capture_fps(&self) -> Option<f64> {
+    fn capture_fps(&self) -> Option<f64> {
         self.capture_fps.lock().unwrap().fps()
     }
 
-    pub fn audio_state(&self) -> String {
+    fn audio_state(&self) -> String {
         self.audio_shared.state.lock().unwrap().clone()
     }
 
-    pub fn audio_level(&self) -> f32 {
+    fn audio_level(&self) -> f32 {
         self.audio_shared.level.lock().unwrap().level()
     }
 
-    pub fn audio_silence_hint(&self) -> bool {
+    fn audio_silence_hint(&self) -> bool {
         *self.audio_shared.state.lock().unwrap() == "active"
             && self.audio_shared.level.lock().unwrap().silence_hint()
     }
@@ -443,7 +443,7 @@ impl Pipeline {
     /// The D8 one-click switch: per-app audio → whole-system, mid-session.
     /// A new capture, not a renegotiation — same Opus stream, same seq
     /// space; viewers notice nothing.
-    pub fn switch_audio_to_system(&self) {
+    fn switch_audio_to_system(&self) {
         let mut audio = self.audio.lock().unwrap();
         if let Some(old) = audio.take() {
             old.stop();
@@ -460,19 +460,19 @@ impl Pipeline {
 
     /// Whether the captured window is minimized (mode 1): WGC delivers no
     /// frames for minimized windows; the GUI hint owns that honesty.
-    pub fn minimized(&self) -> bool {
+    fn minimized(&self) -> bool {
         self.hwnd.is_some_and(wgc::is_minimized)
     }
 
     /// A pump died; the broadcast should end with this message.
-    pub fn take_failure(&self) -> Option<String> {
+    fn take_failure(&self) -> Option<String> {
         self.failed.lock().unwrap().take()
     }
 
     /// Tears the media down in dependency order: capture stops feeding,
     /// audio stops, the encoder drains. No zombie capture (the `finish()`
     /// incident class).
-    pub fn shutdown(mut self) {
+    fn shutdown(mut self: Box<Self>) {
         drop(self.capture.take());
         if let Some(a) = self.audio.lock().unwrap().take() {
             a.stop();

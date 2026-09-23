@@ -909,6 +909,27 @@ dated note (docs/README conventions).
   15.2; on 14.0–15.1 the card says "A window" / "An app" / "A display". The
   accessors are sent only when the filter answers to them.
 
+**One shell core (2026-09-23, ahead of MB3).** MB3 is where the macOS app
+first broadcasts, and a broadcast needs everything the Windows shell's
+`main.rs` does around the pipeline — settings and server profiles, the
+identity latch, rooms, the engine-event handling, resume re-prime, stats,
+diagnostics — about 1,500 lines, none of it Windows-specific except at the
+handful of `#[cfg(windows)]` sites that reached into the pipeline. Rather
+than a second copy, that code moved verbatim into `gawk-ui` as
+`gawk_ui::shell`, with exactly two seams: `Platform` (resolve a Start from
+the picker, notifications, credentials, the platform's own callbacks and
+ticks) and `Media` (the running pipeline — the calls the old `cfg(windows)`
+sites made: re-prime, thumbnail, capture fps, audio state/level/hint, the
+audio switch, minimized, failure, shutdown). `messages`, `diagnostics` and
+`debuglog` moved with it; the diagnostics `kind` and the refusal sentence
+("hardware-encodes fine on Windows" / "on a Mac", D7) follow
+`defaults::THIS`. `app-windows` is now its platform only: the WGC picker
+card, the Media Foundation pipeline behind `Media`, toasts, DPAPI. The one
+behaviour change is on non-Windows dev hosts, where the Windows binary now
+refuses Start before dialing instead of after. The quit path gained a
+final bounded stop after the event loop returns, for ⌘Q, which ends the
+loop without the close dialog.
+
 ## 12. References
 
 Apple documentation and sessions the decisions cite (retrieved 2026-09-18):

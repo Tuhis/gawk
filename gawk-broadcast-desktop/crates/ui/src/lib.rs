@@ -1,9 +1,10 @@
 //! The window both GUI shells show (docs/54 D11), compiled once here and
-//! exported, plus the build's version and the window logic both shells run.
-//! The Windows shell (`app-windows`) and the macOS one (`app-macos`) differ in
-//! properties and one card, never in a forked `.slint` file — and because the
-//! generated `MainWindow` is one type, code that seeds or reads it lives here
-//! once instead of in each shell.
+//! exported, and the shell that drives it ([`shell`]). The Windows app
+//! (`app-windows`) and the macOS one (`app-macos`) differ in properties and
+//! one card, never in a forked `.slint` file — and because the generated
+//! `MainWindow` is one type, everything that seeds, reads or drives it lives
+//! here once. Each app supplies a [`shell::Platform`] and a
+//! [`shell::Media`] and nothing more.
 //!
 //! Platform-free by construction: nothing in this crate may name a Windows
 //! or Apple API.
@@ -12,6 +13,10 @@ use gawk_engine::config::{self, Config};
 
 slint::include_modules!();
 
+pub(crate) mod debuglog;
+pub(crate) mod diagnostics;
+pub mod messages;
+pub mod shell;
 pub mod version;
 
 /// The Settings card's two "where does this go" captions and the terms link,

@@ -7,7 +7,13 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+gawk-encode = { path = "../encode" }
 gawk-engine = { path = "../engine" }
+arboard = "3"
+log = { version = "0.4", features = ["std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 # Tri-licensed; gawk takes the Royalty-free Desktop License v2.0 (docs/38 D12,
 # re-confirmed at the Apache-2.0 relicense). Its §2(b) attribution is the
 # "Made with Slint" badge in the root and component READMEs. ../../deny.toml
@@ -17,5 +23,3 @@ slint = "1"
 [build-dependencies]
 slint-build = "1"
 
-[dev-dependencies]
-serde_json = "1"
