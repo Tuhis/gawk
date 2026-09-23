@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.28.1...gawk-server/v0.29.0) (2026-09-23)
+
+
+### Features
+
+* **events:** name broadcasts and rooms in cleartext in every event ([#348](https://github.com/Tuhis/gawk/issues/348)) ([cd82ee0](https://github.com/Tuhis/gawk/commit/cd82ee0586286681b8c8f65a8740de0ee33d66e0))
+
 ## [0.28.1](https://github.com/Tuhis/gawk/compare/gawk-server/v0.28.0...gawk-server/v0.28.1) (2026-09-21)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v1.5.0...gawk-broadcast-desktop/v1.5.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* trigger release ([f568e11](https://github.com/Tuhis/gawk/commit/f568e11b05048056d3633165fb9131c8bd54d28d))
+
 ## [1.5.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-windows/v1.4.0...gawk-broadcast-windows/v1.5.0) (2026-09-20)
 
 

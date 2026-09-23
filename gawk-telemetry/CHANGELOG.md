@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.8.0...gawk-telemetry/v1.9.0) (2026-09-23)
+
+
+### Features
+
+* **telemetry:** keep the SQL console answering, and alert when it does not ([#350](https://github.com/Tuhis/gawk/issues/350)) ([ac23ff1](https://github.com/Tuhis/gawk/commit/ac23ff19b2ecc6ee9668224fbfeb35257e9762c7))
+
 ## [1.8.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.7.0...gawk-telemetry/v1.8.0) (2026-09-20)
 
 
