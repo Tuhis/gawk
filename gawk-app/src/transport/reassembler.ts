@@ -24,6 +24,8 @@ import { MAX_PARITY_SYMBOLS, parseParityChunk, recoverChunks } from './parity';
 import { frameIdAhead, parseAudioConfig, parseAudioFrame, parseClockMapping, parseDecoderConfig, parseVideoChunk, parseViewerCount, peekType, TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_PARITY_CHUNK, TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, WIRE_VERSION, type AudioConfigMessage, type DecoderConfigMessage } from './wire';
 
 const MAX_ASSEMBLIES = 8;
+// Frames remembered as seen-as-delta; well beyond the reorder buffer's reach.
+const DELTA_EVIDENCE_FRAMES = 256;
 
 export interface AssembledFrame {
   frameId: number;
@@ -142,6 +144,8 @@ export class Reassembler {
   // signal the burst-threshold-loss rule would then fire on. Keyed by
   // frameId; rolled by watermark distance at each emit.
   private recoveredLedger = new Map<number, { expected: number; arrived: number }>();
+  // Recent frameIds with at least one delta datagram (insertion ordered).
+  private deltaEvidence = new Set<number>();
 
   private stats: ReassemblerStats = {
     datagramsReceived: 0,
@@ -166,6 +170,22 @@ export class Reassembler {
 
   getStats(): ReassemblerStats {
     return { ...this.stats };
+  }
+
+  // True when a datagram of this frame (data chunk or parity) arrived, which
+  // makes it a delta: keyframes ride streams. The reorder buffer's loss
+  // allowance must not skip a frame that could be a keyframe still in flight.
+  sawDelta(frameId: number): boolean {
+    return this.deltaEvidence.has(frameId);
+  }
+
+  private noteDelta(frameId: number): void {
+    if (this.deltaEvidence.has(frameId)) return;
+    this.deltaEvidence.add(frameId);
+    if (this.deltaEvidence.size > DELTA_EVIDENCE_FRAMES) {
+      const oldest = this.deltaEvidence.values().next().value;
+      if (oldest !== undefined) this.deltaEvidence.delete(oldest);
+    }
   }
 
   // Keyframes travel on reliable streams since R8 and never pass through the
@@ -302,6 +322,7 @@ export class Reassembler {
       this.stats.badDatagrams++;
       return;
     }
+    if (!header.keyframe) this.noteDelta(header.frameId);
 
     let assembly = this.assemblies.get(header.frameId);
     if (!assembly) {
@@ -380,6 +401,7 @@ export class Reassembler {
       return;
     }
     this.stats.parityChunksReceived++;
+    this.noteDelta(header.frameId);
 
     let assembly = this.assemblies.get(header.frameId);
     // Parity for a frame already emitted is redundant, and on a CLEAN link

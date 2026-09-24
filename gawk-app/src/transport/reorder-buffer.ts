@@ -248,12 +248,18 @@ export interface ReorderBufferOptions {
   // target − lead keeps the decoder frame pool bounded while the paint stays
   // on time. Fixed mode keeps its R5 Q3 semantics (lead 0). Injectable.
   decodeLeadMs?: () => number;
+  // Whether a frame is known to be a delta (the reassembler saw a datagram of
+  // it). The loss allowance only skips known deltas: a missing frame with no
+  // datagram evidence may be a keyframe still arriving on its stream.
+  // Absent: every missing frame counts as a delta.
+  isDeltaFrame?: (frameId: number) => boolean;
 }
 
 export class ReorderBuffer {
   private onFrame: (frame: ReleasedFrame) => void;
   private now: () => number;
   private onRestart: (() => void) | undefined;
+  private isDeltaFrame: (frameId: number) => boolean;
   private playoutOffsetMs: () => number;
   private decodeLeadMs: () => number;
   // Windowed min of (arrivalMs − timestampMs): the pacing anchor (R5 Q3).
@@ -298,6 +304,7 @@ export class ReorderBuffer {
     this.onFrame = onFrame;
     this.now = now;
     this.onRestart = opts.onRestart;
+    this.isDeltaFrame = opts.isDeltaFrame ?? (() => true);
     this.playoutOffsetMs = opts.playoutOffsetMs ?? getPlayoutOffsetMs;
     this.decodeLeadMs =
       opts.decodeLeadMs ?? (() => (getPlayoutMode() === 'adaptive' ? DECODE_LEAD_MS : 0));
@@ -463,7 +470,7 @@ export class ReorderBuffer {
         // carriers, so a hole there means something else went wrong and
         // freezing is still the correct response.
         const allowance = getResilientMode() ? 0 : getLossAllowanceFrames();
-        if (this.gopSkips < allowance) {
+        if (this.gopSkips < allowance && this.isDeltaFrame(next)) {
           this.gopSkips++;
           this.stats.framesSkippedWithinAllowance++;
           // Step over the hole and keep decoding. Frames after it reference

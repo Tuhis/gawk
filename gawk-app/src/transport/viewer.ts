@@ -618,9 +618,12 @@ export class ViewerPipeline {
     this.reorder = new ReorderBuffer(
       (frame) => this.decodeReleased(frame),
       () => performance.now(),
-      // Broadcaster restart: timestamps move to a new timeline, so the
-      // drift baseline must rebuild against it.
-      { onRestart: () => this.handleBroadcasterRestart() },
+      {
+        // Broadcaster restart: timestamps move to a new timeline, so the
+        // drift baseline must rebuild against it.
+        onRestart: () => this.handleBroadcasterRestart(),
+        isDeltaFrame: (frameId) => this.reassembler?.sawDelta(frameId) ?? false,
+      },
     );
 
     this.reassembler = new Reassembler({

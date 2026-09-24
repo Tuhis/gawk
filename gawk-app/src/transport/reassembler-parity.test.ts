@@ -186,6 +186,26 @@ describe('Reassembler parity recovery', () => {
 // "the code worked" and "the code was never even attempted" produced the same
 // number. `parityInsufficient` is the missing one, counted where the frame is
 // actually given up on.
+describe('Reassembler delta evidence', () => {
+  it('knows a frame is a delta from any of its data or parity datagrams', () => {
+    const { r } = collector();
+    r.push(packetizeFrameWithParity(info(50), patternBytes(3000, 5), 2).datagrams[1]);
+    r.push(packetizeFrameWithParity(info(51), patternBytes(3000, 6), 2).parity[1]);
+    expect(r.sawDelta(50)).toBe(true);
+    expect(r.sawDelta(51)).toBe(true);
+    expect(r.sawDelta(52)).toBe(false);
+  });
+
+  it('forgets old frames so its memory stays bounded', () => {
+    const { r } = collector();
+    for (let id = 1; id <= 1000; id++) {
+      r.push(packetizeFrameWithParity(info(id), patternBytes(100, id), 0).datagrams[0]);
+    }
+    expect(r.sawDelta(1000)).toBe(true);
+    expect(r.sawDelta(1)).toBe(false);
+  });
+});
+
 describe('Reassembler parity shortfall accounting', () => {
   // A COMPLETED frame leaves the map at once, so filling it needs assemblies
   // that stay pending: eight parity-free frames each missing a chunk. Creating
