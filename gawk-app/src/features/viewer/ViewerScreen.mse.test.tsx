@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/react';
-import type { MseProbeResult } from './msePresentation';
+import { MsePresenter, type MseProbeResult } from './msePresentation';
 
 const conn = vi.hoisted(() => ({
   state: {
@@ -88,6 +88,23 @@ afterEach(() => {
 });
 
 describe('ViewerScreen R22 arm lifecycle (gated, mocked connection)', () => {
+  // Both SourceBuffers must exist before the first init segment, so a
+  // presenter created after the audio verdict must still learn its mime.
+  it('hands a late-created presenter the audio mime already known', async () => {
+    const setMime = vi.spyOn(MsePresenter.prototype, 'setExpectedAudioMime');
+    try {
+      conn.state.probe = UNSUPPORTED;
+      conn.state.audioProbe = AUDIO_SUPPORTED;
+      const { rerender } = render(<ViewerScreen broadcastId="AB2CD3" />);
+      conn.state.probe = SUPPORTED;
+      rerender(<ViewerScreen broadcastId="AB2CD3" />);
+      await waitFor(() => expect(conn.state.arm).toHaveBeenCalled());
+      expect(setMime).toHaveBeenCalledWith(AUDIO_SUPPORTED.mime);
+    } finally {
+      setMime.mockRestore();
+    }
+  });
+
   it('arms at watching once the probe passes, mounting the hidden paused video', async () => {
     conn.state.probe = SUPPORTED;
     const { container } = render(<ViewerScreen broadcastId="AB2CD3" />);

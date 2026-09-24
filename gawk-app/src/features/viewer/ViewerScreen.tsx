@@ -300,6 +300,8 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // native player will output — which is when the inline sink must go quiet and
   // the hidden element must be audible.
   const nativeAudio = mseAudioProbe?.supported === true;
+  const audioMimeRef = useRef<string | null>(null);
+  audioMimeRef.current = mseAudioProbe?.mime ?? null;
 
   // R22 (docs/27 Decision 3): the main-thread presenter — MMS + SourceBuffer
   // behind the hidden <video>. One per screen, created lazily on the gated
@@ -314,7 +316,12 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // append → metadata) is async.
   useEffect(() => {
     if (!gated || status !== 'watching' || mseProbe?.supported !== true) return;
-    presenterRef.current ??= new MsePresenter();
+    if (!presenterRef.current) {
+      presenterRef.current = new MsePresenter();
+      // The audio verdict can land first; the effect below only reaches a
+      // presenter that already exists.
+      presenterRef.current.setExpectedAudioMime(audioMimeRef.current);
+    }
     const presenter = presenterRef.current;
     setSegmentSink((seg) => {
       presenter.pushSegment(
