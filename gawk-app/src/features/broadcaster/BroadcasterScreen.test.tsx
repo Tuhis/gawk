@@ -11,13 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { BroadcastCallbacks } from '../../transport/broadcaster';
 
-const { created, scripts } = vi.hoisted(() => {
+const { created, scripts, sessionGate } = vi.hoisted(() => {
   interface FakeSession {
     callbacks: BroadcastCallbacks;
     broadcastId?: string;
     grant?: Promise<unknown>;
     start(): Promise<void>;
     stop(): Promise<void>;
+    stopped: boolean;
     setLadder(): void;
     setEncoderSettings(): void;
   }
@@ -25,7 +26,10 @@ const { created, scripts } = vi.hoisted(() => {
   // One script per createBroadcastSession call, consumed in order; a script
   // drives the callbacks and resolves/rejects like the real session's start().
   const scripts: Array<(cbs: BroadcastCallbacks) => Promise<void>> = [];
-  return { created, scripts };
+  // When set, createBroadcastSession resolves only once this settles (the
+  // worker boot the real one awaits).
+  const sessionGate = { value: null as Promise<void> | null };
+  return { created, scripts, sessionGate };
 });
 
 vi.mock('./workerBroadcastSession', () => ({
@@ -37,14 +41,19 @@ vi.mock('./workerBroadcastSession', () => ({
     broadcastId?: string,
     grant?: Promise<unknown>,
   ) => {
+    if (sessionGate.value) await sessionGate.value;
     const script = scripts.shift();
     if (!script) throw new Error('test bug: no session script queued');
     const session = {
       callbacks,
       broadcastId,
       grant,
+      stopped: false,
       start: () => script(callbacks),
-      stop: async () => callbacks.onEnded(),
+      stop: async () => {
+        session.stopped = true;
+        callbacks.onEnded();
+      },
       setLadder: () => {},
       setEncoderSettings: () => {},
     };
@@ -108,6 +117,7 @@ function goLive(surface: string, audioState: BroadcastStats['audioState']) {
 beforeEach(() => {
   created.length = 0;
   scripts.length = 0;
+  sessionGate.value = null;
   // Skip the publish-secret modal (vitest runs with import.meta.env.DEV, and
   // requiresPublishSecret() falls back to isDevEnvironment()).
   window.__GAWK_CONFIG__ = { requirePublishSecret: false };
@@ -187,6 +197,27 @@ describe('BroadcasterScreen start failure after capture', () => {
 // nothing touches the transport until the broadcaster has agreed (once per
 // terms version). Viewers are never gated (covered elsewhere); this is the
 // broadcaster gate.
+describe('BroadcasterScreen left while the session is being created', () => {
+  // Nothing owns a session created after unmount: started, it would publish
+  // under a fresh ID that no page will ever stop.
+  it('stops the session instead of starting it', async () => {
+    let boot!: () => void;
+    sessionGate.value = new Promise((r) => (boot = r));
+    let started = 0;
+    scripts.push(async () => {
+      started++;
+    });
+    const { unmount } = render(<BroadcasterScreen />);
+    startBroadcast();
+    unmount();
+    boot();
+    await waitFor(() => expect(created).toHaveLength(1));
+    await act(async () => {});
+    expect(started).toBe(0);
+    expect(created[0].stopped).toBe(true);
+  });
+});
+
 describe('BroadcasterScreen terms acknowledgment gate', () => {
   beforeEach(() => {
     // Undo the outer pre-accept so these tests see the gate.

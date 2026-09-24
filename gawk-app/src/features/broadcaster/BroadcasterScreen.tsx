@@ -36,6 +36,7 @@ import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
 import type { TelemetryHelloMessage } from '../../transport/wire';
 import { buildViewLink } from '../../lib/shareLink';
+import { relayHost } from '../../lib/relayUrl';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
@@ -122,14 +123,6 @@ function TipLine({ copy }: { copy: TipCopy }) {
   );
 }
 
-function serverHost(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
-
 // The production broadcaster (docs/10 J5): preview-hero, controls float, and
 // R3/R4 feedback as quiet badges. Reuses BroadcastPipeline and the reclaim→mint
 // fallback verbatim; LadderPicker drops into the gear panel. Server URL / cert
@@ -137,6 +130,7 @@ function serverHost(url: string): string {
 // when the deploy requires one (config.requirePublishSecret).
 export function BroadcasterScreen() {
   const pipelineRef = useRef<BroadcastSessionLike | null>(null);
+  const unmountedRef = useRef(false);
   // The display grant of the latest start. The screen owns it (handleStart
   // requests it in the click), so the unmount cleanup releases it: leaving
   // mid-connect stops a session that never consumed it and whose start()
@@ -388,6 +382,10 @@ export function BroadcasterScreen() {
         activeId,
         grant,
       );
+      if (unmountedRef.current) {
+        void pipeline.stop();
+        return;
+      }
       pipeline.setLadder(res, framerateSelection);
       pipeline.setEncoderSettings(encoderSettingsFromStore());
       pipelineRef.current = pipeline;
@@ -430,6 +428,10 @@ export function BroadcasterScreen() {
       undefined,
       grant,
     );
+    if (unmountedRef.current) {
+      void pipeline.stop();
+      return;
+    }
     pipeline.setLadder(res, framerateSelection);
     pipeline.setEncoderSettings(encoderSettingsFromStore());
     pipelineRef.current = pipeline;
@@ -531,7 +533,11 @@ export function BroadcasterScreen() {
   }, [broadcastId]);
 
   useEffect(() => {
+    unmountedRef.current = false;
     return () => {
+      // A session still being created (the worker boot is awaited) sees this
+      // and stops instead of starting: nothing would ever stop it otherwise.
+      unmountedRef.current = true;
       void pipelineRef.current?.stop();
       if (grantRef.current) releaseGrant(grantRef.current);
     };
@@ -709,7 +715,7 @@ export function BroadcasterScreen() {
           <section className={styles.group}>
             <h3 className={styles.groupTitle}>Server</h3>
             <p className={styles.settingsAudioNote}>
-              Broadcasting to {serverHost(resolvedServerUrl)}
+              Broadcasting to {relayHost(resolvedServerUrl)}
             </p>
             <Button
               variant="secondary"
