@@ -1238,7 +1238,7 @@ describe('ViewerPipeline closed during connect', () => {
       const fakeTransport: ViewerTransport = {
         kind: 'in-process',
         connect: async (cb) => {
-          cb.onClosed({ closeCode: CLOSE_CODE_BROADCAST_ENDED, reason: '' });
+          cb.onClosed({ closeCode: CLOSE_CODE_BROADCAST_ENDED, message: 'broadcast ended' });
         },
         sampleConnectionStats: () => null,
         sampleTimeSync: () => null,
