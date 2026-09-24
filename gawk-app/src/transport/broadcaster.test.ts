@@ -35,6 +35,7 @@ vi.mock('../media/encoder', () => ({
 }));
 
 import { BroadcastPipeline, type BroadcastCallbacks } from './broadcaster';
+import { EncoderSupportProber } from '../media/probe';
 import { DEFAULT_CAPTURE_CONFIG } from '../media/types';
 import { CLOCK_MAPPING_INTERVAL_MS } from './time-sync';
 import {
@@ -135,6 +136,66 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+// PR #373 review: stop() while start() is still dialing ran teardown() with
+// no session yet, so the dial then resolved into a live publisher nobody owned
+// (a zombie holding the broadcast ID) and went on to consume the screen grant.
+// The auto-resume dial already guarded this race; start() now does too.
+describe('BroadcastPipeline stop() racing the first dial', () => {
+  it('closes the session the dial delivers and never starts capture', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    let resolveDial!: (wt: unknown) => void;
+    connectWebTransport.mockReturnValue(new Promise((r) => (resolveDial = r)));
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    const cbs = makeCallbacks();
+    const pipeline = makePipeline(cbs);
+
+    const started = pipeline.start();
+    await pipeline.stop();
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+
+    resolveDial(fake.wt);
+    await expect(started).resolves.toBeUndefined();
+    expect(fake.close).toHaveBeenCalled();
+    expect(startCapture).not.toHaveBeenCalled();
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  // The same race one await later: stop() lands while the pre-capture support
+  // probe runs. teardown() closed the session, but start() still went on to
+  // capture, owning a stream nothing would ever stop.
+  it('does not start capture when stop() lands during the support probe', async () => {
+    const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    let openGate!: () => void;
+    const gate = new Promise<void>((r) => (openGate = r));
+    const prober = new EncoderSupportProber(async () => {
+      await gate;
+      return { supported: false };
+    });
+    const cbs = makeCallbacks();
+    const pipeline = new BroadcastPipeline(
+      { ...DEFAULT_CAPTURE_CONFIG },
+      'https://relay.test:4433',
+      {},
+      cbs,
+      undefined,
+      undefined,
+      undefined,
+      prober,
+    );
+
+    const started = pipeline.start();
+    await vi.waitFor(() => expect(connectWebTransport).toHaveBeenCalled());
+    await Promise.resolve();
+    await pipeline.stop();
+    openGate();
+    await expect(started).resolves.toBeUndefined();
+    expect(fake.close).toHaveBeenCalled();
+    expect(startCapture).not.toHaveBeenCalled();
+  });
 });
 
 describe('BroadcastPipeline URLs', () => {
