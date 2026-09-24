@@ -9,6 +9,7 @@
 // injectable encoder factory (unit-tested with fakes); startAudioLane wires
 // the real MediaStreamTrackProcessor + AudioEncoder around it.
 
+import { bufferSourceBytes } from '../lib/bytes';
 import { log } from '../lib/logger';
 import { encodeAudioConfig, encodeAudioFrame, nextFrameId } from '../transport/wire';
 
@@ -174,7 +175,7 @@ const realAudioEncoderFactory: AudioEncoderFactory = (config, callbacks) => {
   const encoder = new AudioEncoder({
     output: (chunk, meta) => {
       const desc = meta?.decoderConfig?.description;
-      callbacks.output(chunk, desc ? toUint8(desc) : undefined);
+      callbacks.output(chunk, desc ? bufferSourceBytes(desc) : undefined);
     },
     error: (e) => callbacks.error(e instanceof Error ? e : new Error(String(e))),
   });
@@ -187,11 +188,6 @@ const realAudioEncoderFactory: AudioEncoderFactory = (config, callbacks) => {
   };
 };
 
-function toUint8(src: AllowSharedBufferSource): Uint8Array {
-  if (src instanceof ArrayBuffer || src instanceof SharedArrayBuffer) return new Uint8Array(src);
-  const view = src as ArrayBufferView;
-  return new Uint8Array(view.buffer as ArrayBuffer, view.byteOffset, view.byteLength);
-}
 
 // DOM-free lane core. Feed it AudioData-likes; it configures the encoder
 // from the first one (trust the data in hand, never track.getSettings() —

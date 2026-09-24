@@ -25,7 +25,7 @@
 // which IS visible and maps to a specific failure.
 
 import { log } from '../lib/logger';
-import { hexToBytes, webTransportInit } from './connection';
+import { bytesToHex, hexToBytes, webTransportInit } from './connection';
 import {
   RECONNECT_MAX_ATTEMPTS,
   isTerminalRoomClose,
@@ -385,7 +385,7 @@ export class RoomSession {
           this.target = { kind: 'join', code: state.code };
         }
         if (state.creatorToken.length > 0) {
-          this.grant = { kind: 'creator', tokenHex: bytesToHexLower(state.creatorToken) };
+          this.grant = { kind: 'creator', tokenHex: bytesToHex(state.creatorToken) };
         }
         this.cb.onState(state);
         return;
@@ -551,10 +551,4 @@ export class RoomSession {
         if (!a.settled) log.info('room control write failed:', e);
       });
   }
-}
-
-function bytesToHexLower(bytes: Uint8Array): string {
-  let out = '';
-  for (const b of bytes) out += b.toString(16).padStart(2, '0');
-  return out;
 }

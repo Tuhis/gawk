@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { packetizeDecoderConfig, packetizeFrame } from './packetizer';
 import { Reassembler, type AssembledFrame, type AudioPacket } from './reassembler';
@@ -8,6 +8,7 @@ import {
   encodeAudioFrame,
   encodeClockMapping,
   encodeViewerCount,
+  parseDecoderConfig,
   type AudioConfigMessage,
   type DecoderConfigMessage,
 } from './wire';
@@ -111,6 +112,19 @@ describe('config handling', () => {
     const { r, configs } = collector();
     r.push(packetizeDecoderConfig('avc1.42E02A', new Uint8Array([9, 8]).buffer));
     expect(Array.from(configs[0].extradata)).toEqual([9, 8]);
+  });
+});
+
+// SharedArrayBuffer is not defined on a page that is not cross-origin
+// isolated, which this app never is.
+describe('config packetizing without SharedArrayBuffer', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('accepts a description handed over as a typed-array view', () => {
+    vi.stubGlobal('SharedArrayBuffer', undefined);
+    const backing = new Uint8Array([9, 1, 2, 3, 9]);
+    const cfg = packetizeDecoderConfig('avc1.42E02A', backing.subarray(1, 4));
+    expect(Array.from(parseDecoderConfig(cfg).extradata)).toEqual([1, 2, 3]);
   });
 });
 

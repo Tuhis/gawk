@@ -35,6 +35,7 @@ import {
 } from '../../transport/wire';
 import { fmtWatching } from '../../lib/format';
 import type { RoomTarget } from '../../transport/room-session';
+import { bytesToHex } from '../../transport/connection';
 import { isDynamicRoom, isRoomCreator, mayAttach, useRoomStore } from '../../state/roomStore';
 import { ServerIndicator } from '../servers/ServerIndicator';
 import { NicknamePrompt } from './NicknamePrompt';
@@ -141,12 +142,6 @@ function useMediaMatch(query: string): boolean {
     return () => mq.removeEventListener?.('change', onChange);
   }, [query]);
   return matches;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  let out = '';
-  for (const b of bytes) out += b.toString(16).padStart(2, '0');
-  return out;
 }
 
 // R42 (docs/44 §4.9 revision): the cinematic dock. Video edge to edge, a

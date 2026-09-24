@@ -13,6 +13,7 @@ import {
   WireError,
 } from './wire';
 import { MAX_PARITY_DATA_CHUNKS, computeParity, encodeParityChunk } from './parity';
+import { bufferSourceBytes } from '../lib/bytes';
 
 export interface FrameInfo {
   frameId: number; // uint32, monotonic per broadcast session
@@ -92,7 +93,10 @@ export function packetizeDecoderConfig(
   codec: string,
   description?: AllowSharedBufferSource,
 ): Uint8Array<ArrayBuffer> {
-  return encodeDecoderConfig({ codec, extradata: toUint8Array(description) });
+  return encodeDecoderConfig({
+    codec,
+    extradata: description ? bufferSourceBytes(description) : new Uint8Array(0),
+  });
 }
 
 // Builds the single StreamFrame message a keyframe travels in over a reliable
@@ -110,10 +114,4 @@ export function packetizeStreamKeyframe(
     configDatagram,
     payload,
   );
-}
-
-function toUint8Array(src?: AllowSharedBufferSource): Uint8Array {
-  if (!src) return new Uint8Array(0);
-  if (src instanceof ArrayBuffer || src instanceof SharedArrayBuffer) return new Uint8Array(src);
-  return new Uint8Array(src.buffer, src.byteOffset, src.byteLength);
 }
