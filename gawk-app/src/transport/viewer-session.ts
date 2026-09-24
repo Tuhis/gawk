@@ -284,13 +284,15 @@ export class ViewerSession {
       } else {
         this.lastCloseCode = null;
       }
+      // stop() raced this attempt and fires the one onEnded itself.
+      if (this.stopped) return;
       if (isTerminalViewerClose(this.lastCloseCode)) {
         log.info(`Broadcast ended by server during reconnect (code ${this.lastCloseCode}).`);
         this.stopped = true;
         this.cb.onEnded(this.endReason());
         return;
       }
-      if (!this.stopped) this.scheduleReconnect();
+      this.scheduleReconnect();
       return;
     } finally {
       this.starting = null;

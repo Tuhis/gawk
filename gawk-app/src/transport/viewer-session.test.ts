@@ -31,9 +31,17 @@ class FakePipeline implements PipelineHandle {
     this.startResult = startResult;
   }
 
+  // Settles a 'hold' start; undefined resolves, anything else rejects.
+  settleStart: (err?: unknown) => void = () => {};
+
   start(): Promise<void> {
     if (this.startResult === 'ok') {
       return Promise.resolve();
+    }
+    if (this.startResult === 'hold') {
+      return new Promise((resolve, reject) => {
+        this.settleStart = (err) => (err === undefined ? resolve() : reject(err));
+      });
     }
     const err = new Error('connect failed') as any;
     if (this.startResult === 'fail-4000') {
@@ -73,7 +81,7 @@ class FakePipeline implements PipelineHandle {
 
 // A pipeline's start() outcome: connect, fail without a code, or fail with a
 // terminal close code the relay sent before the dial completed.
-type StartResult = 'ok' | 'fail' | 'fail-4000' | 'fail-4006';
+type StartResult = 'ok' | 'fail' | 'fail-4000' | 'fail-4006' | 'hold';
 
 interface Harness {
   session: ViewerSession;
@@ -319,6 +327,19 @@ describe('ViewerSession', () => {
     expect(events).toEqual(['connected', retry, 'ended']);
     expect(endReasons).toEqual(['normal']);
     expect(pipelines).toHaveLength(2);
+  });
+
+  it('ends exactly once when stop() races a reconnect that the relay ends', async () => {
+    const { session, pipelines, endReasons } = makeHarness(['ok', 'hold']);
+    await session.start();
+    pipelines[0].crash('drop');
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS);
+    expect(pipelines).toHaveLength(2);
+
+    const stopped = session.stop();
+    pipelines[1].settleStart(Object.assign(new Error('ended'), { closeCode: CLOSE_CODE_BROADCAST_ENDED }));
+    await stopped;
+    expect(endReasons).toHaveLength(1);
   });
 
   // The second terminal check (the reconnect dial's own rejection) has to know
