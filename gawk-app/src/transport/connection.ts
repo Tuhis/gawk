@@ -38,23 +38,23 @@ export interface ConnectOptions {
   // empty for a real (publicly trusted) certificate.
   certHashHex?: string;
   publishSecret?: string;
-  // R17 W2: the hex resume token from a previous session of this broadcast
+  // The hex resume token from a previous session of this broadcast
   // (wire 0x09). Required for every /publish/{id} claim; travels as the
   // `resume` query param (the WebTransport JS API can't set headers).
   resumeToken?: string;
-  // R19 (docs/24 Decision 6): request reliable delta delivery at subscribe
-  // time (`?delivery=reliable`). Viewer-only; ignored by the connect itself —
-  // ViewerPipeline appends the query param when building the subscribe URL.
+  // Request reliable delta delivery at subscribe time (`?delivery=reliable`).
+  // Viewer-only; ignored by the connect itself — ViewerPipeline appends the
+  // query param when building the subscribe URL.
   deliveryMode?: 'reliable';
-  // R29 (docs/34 §5.2): opt DOWN from the fleet parity default. Absent means
+  // Opt DOWN from the fleet parity default. Absent means
   // "take whatever the fleet serves", which is the default and the only way to
   // get the maximum — a viewer cannot conjure symbols the producer never
   // emitted, so there is deliberately no way to ask for MORE.
   parityLevel?: 0 | 1;
 }
 
-// The WebTransportOptions every gawk session dials with. Shared with the R42
-// room control session (transport/room-session.ts), which carries no media
+// The WebTransportOptions every gawk session dials with. Shared with the
+// room control session (room-session.ts), which carries no media
 // but must present the same dev-cert hash as the media sessions do — a room
 // that could not be joined on a local stack while its broadcasts could would
 // be a confusing half-failure.
@@ -77,7 +77,7 @@ export async function connectWebTransport(url: string, opts: ConnectOptions = {}
   await wt.ready;
   if (wt.datagrams.maxDatagramSize < MAX_DATAGRAM_SIZE) {
     // Handled condition, not a fault: packetizeFrame sizes chunks to the
-    // actual path limit (docs/11 — Firefox negotiates 1024), so nothing is
+    // actual path limit (Firefox negotiates 1024), so nothing is
     // dropped; smaller datagrams just mean more chunks per frame.
     log.info(
       `Path maxDatagramSize ${wt.datagrams.maxDatagramSize} < wire MAX_DATAGRAM_SIZE ${MAX_DATAGRAM_SIZE}; video chunks will be sized to the path limit (more datagrams per frame)`,
@@ -130,7 +130,7 @@ export async function readDatagrams(
   }
 }
 
-// One keyframe delivered over a reliable unidirectional stream (R8).
+// One keyframe delivered over a reliable unidirectional stream.
 export interface KeyframeStreamFrame {
   frameId: number;
   timestampUs: bigint;
@@ -142,11 +142,11 @@ export interface KeyframeStreamFrame {
   streamBytes: number;
 }
 
-// Per-session tallies of the R19 reliable-carrier streams, owned by the
-// transport and surfaced in ViewerStats (docs/24 Decision 10). streamsAborted
-// counts carriers ending in a reset — the relay CancelWrite-ing a stalled or
-// superseded GOP tail; malformed counts framing violations (bad prologue,
-// bad record length, truncated mid-record).
+// Per-session tallies of the reliable-carrier streams, owned by the transport
+// and surfaced in ViewerStats. streamsAborted counts carriers ending in a
+// reset — the relay CancelWrite-ing a stalled or superseded GOP tail;
+// malformed counts framing violations (bad prologue, bad record length,
+// truncated mid-record).
 export interface CarrierCounters {
   streamsOpened: number;
   recordsReceived: number;
@@ -160,39 +160,35 @@ export function newCarrierCounters(): CarrierCounters {
 
 export interface ServerStreamCallbacks {
   onKeyframe: (kf: KeyframeStreamFrame) => void;
-  // R28 (docs/33 D2): this session's telemetry identity, arriving on its own
-  // reliable uni stream. Optional — a relay predating R28, or one with
-  // telemetry off, sends none, and the correct client behaviour is then to
-  // collect nothing rather than to wait for a message that will not come.
+  // This session's telemetry identity, arriving on its own reliable uni
+  // stream. Optional — an older relay, or one with telemetry off, sends none,
+  // and the correct client behaviour is then to collect nothing rather than
+  // to wait for a message that will not come.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
-  // R37 (docs/40 §4.10): the relay-advertised telemetry ingest URL (0x12).
+  // The relay-advertised telemetry ingest URL (0x12).
   onTelemetryEndpoint?: (url: string) => void;
-  // R29/R30 (docs/35 §5.3 + §12 finding 1): the relay's capabilities. The
-  // relay has sent this on the subscribe route since R29, but the viewer had
-  // no branch for it and counted every one as malformed. It is now also
-  // R30's version-skew gate: striping engages only after CAP_STRIPED_DELIVERY
-  // is seen, so an old relay (which never sends it) is never dialed for legs.
+  // The relay's capabilities. Also the striping version-skew gate: striping
+  // engages only after CAP_STRIPED_DELIVERY is seen, so an older relay (which
+  // never sends it) is never dialed for legs.
   onRelayCapabilities?: (caps: RelayCapabilities) => void;
-  // R19: one verbatim datagram record off a reliable carrier stream. The
+  // One verbatim datagram record off a reliable carrier stream. The
   // transport feeds it into the same handler as a received datagram — the
-  // whole point of the carrier design (docs/24 Decision 2).
+  // whole point of the carrier design.
   onCarrierRecord: (record: Uint8Array<ArrayBuffer>) => void;
 }
 
-// Test seam (undefined in production). readServerStreams tracks each in-flight
-// stream task in a set it prunes on settle, so the working set stays
-// proportional to open streams (~2), not to session length. This hook samples
-// that set's size after every add and every settle so a test can assert the
-// working set never grows unbounded (INGEST-1) — the bug being that the old
-// array retained one settled promise per stream for the life of the session.
+// Test seam (undefined in production). Samples the size of readServerStreams'
+// in-flight stream set after every add and every settle, so a test can assert
+// the working set never grows unbounded.
 export interface ReadServerStreamsHooks {
   onInFlightChange?: (count: number) => void;
 }
 
 // Reads server-initiated unidirectional streams for the life of the session,
 // dispatching each by its stream-kind bytes: a keyframe StreamFrame message
-// (version‖0x04 — read to EOF, bounded by MAX_KEYFRAME_BYTES) or, since R19,
-// a reliable carrier (version‖0x0A — a long-lived record loop). Each stream
+// (version‖0x04 — read to EOF, bounded by MAX_KEYFRAME_BYTES), a reliable
+// carrier (version‖0x0A — a long-lived record loop), or a small one-shot
+// control message (telemetry hello/endpoint, relay capabilities). Each stream
 // is processed on its own task so a stalled or superseded stream never blocks
 // the next. Returns normally on session end or abort; connection errors
 // reject.
@@ -206,11 +202,10 @@ export async function readServerStreams(
   const reader = wt.incomingUnidirectionalStreams.getReader();
   const onAbort = () => void reader.cancel().catch(() => {});
   signal?.addEventListener('abort', onAbort, { once: true });
-  // Track only the streams still being read. A hours-long mobile session
+  // Track only the streams still being read. An hours-long mobile session
   // accepts thousands of short-lived streams (keyframe + carrier per GOP);
   // pruning each on settle keeps the working set proportional to open streams
-  // (~2), not to session length — the old append-only array was a slow leak
-  // (INGEST-1: ~1 MB/hr, monotonic).
+  // (~2), not to session length.
   const inFlight = new Set<Promise<void>>();
   try {
     for (;;) {
@@ -300,10 +295,10 @@ async function readOneServerStream(
     }
 
     if (head1 === TYPE_TELEMETRY_ENDPOINT) {
-      // R37 (docs/40 §4.10): variable length, bounded by the wire cap; read
-      // to EOF and parse leniently — a malformed endpoint costs only the
-      // advertised destination (the session falls back to D15's precedence),
-      // never the media path.
+      // Variable length, bounded by the wire cap; read to EOF and parse
+      // leniently — a malformed endpoint costs only the advertised
+      // destination (reporting stays on the configured URL), never the media
+      // path.
       for (;;) {
         if (total > 5 + TELEMETRY_ENDPOINT_MAX_URL_LEN + 64) break;
         if (!(await readMore())) break;
@@ -348,7 +343,7 @@ async function readOneServerStream(
       return;
     }
 
-    // Reliable carrier (R19): a record loop for the life of the stream. The
+    // Reliable carrier: a record loop for the life of the stream. The
     // relay closes it at a rotation (clean EOF at a record boundary) or
     // resets it to shed a stalled GOP tail.
     carrier.streamsOpened++;
@@ -417,7 +412,7 @@ function emitKeyframe(data: Uint8Array, onKeyframe: (kf: KeyframeStreamFrame) =>
 
 // Opens a writer on the session's outgoing datagram stream. The deprecated
 // `datagrams.writable` attribute is preferred where it exists (Chromium,
-// Firefox) so their behaviour is unchanged; WebKit implements only the
+// Firefox), keeping them on their proven path; WebKit implements only the
 // current-spec `datagrams.createWritable()` and has no `writable` at all.
 // Null when neither exists (test fakes).
 export interface DatagramWritableSource {

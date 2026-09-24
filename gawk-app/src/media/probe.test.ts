@@ -1,4 +1,4 @@
-// R13 (docs/18) L1: the probe matrix classifies each (rung, fps) combo as
+// The probe matrix classifies each (rung, fps) combo as
 // hardware / software / unsupported from isConfigSupported answers, honors
 // the acceleration policy, memoizes, and never throws.
 
@@ -171,12 +171,11 @@ describe('robustness', () => {
 });
 
 describe('probe concurrency bound', () => {
-  // Field bug (2026-07-15): the broadcaster surface fires the main matrix
-  // plus 13 per-codec matrices at load; every isConfigSupported call ran in
-  // parallel (nested Promise.all, no bound). On Chrome each pending call
-  // holds a real encoder instance — hundreds of simultaneous 4K encoder
-  // initializations OOM-crashed the tab. The prober must gate its probe
-  // calls through a small fixed-size slot pool.
+  // The broadcaster surface fires the main matrix plus a per-codec matrix
+  // for each preference at load. On Chrome each pending isConfigSupported
+  // call holds a real encoder instance, and hundreds of simultaneous 4K
+  // encoder initializations OOM-crash the tab. The prober must gate its
+  // probe calls through a small fixed-size slot pool.
   it('never exceeds MAX_CONCURRENT_PROBES in-flight isConfigSupported calls', async () => {
     let inFlight = 0;
     let maxInFlight = 0;

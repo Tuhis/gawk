@@ -1,17 +1,14 @@
-// R15 field finding (2026-07-19, docs/20): "Enable audio (experimental)" took
-// the whole broadcast down on platforms that cannot capture system audio.
 // Chromium does not treat getDisplayMedia audio as best-effort — when no
 // system-audio source can start (Linux/macOS screen or window shares; only
 // Windows/ChromeOS and tab shares have one) it rejects the ENTIRE request with
-// NotReadableError "Could not start audio source", video included. docs/20
-// Decision 6 says audio may annotate, never abort, so the audio-bearing grant
-// falls back to a video-only one.
+// NotReadableError "Could not start audio source", video included. Audio may
+// annotate a broadcast, never abort it, so the audio-bearing grant falls back
+// to a video-only one.
 //
-// 2026-07-23: with the toggle removed (audio is requested on every broadcast),
-// the module also remembers a refusal for the rest of the page session — that
-// memory *is* the escape hatch the toggle used to be, since the video-only
-// retry usually has no transient activation left. Each case re-imports the
-// module so it starts with a fresh (unrefused) session.
+// Audio is requested on every broadcast, so the module also remembers a
+// refusal for the rest of the page session — that memory is the escape hatch,
+// since the video-only retry usually has no transient activation left. Each
+// case re-imports the module so it starts with a fresh (unrefused) session.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -114,9 +111,9 @@ describe('acquireDisplayStream', () => {
   });
 });
 
-// With no toggle to turn off, "start again" is the only move a broadcaster
-// has left on a machine that cannot capture system audio — so the second
-// start must not spend its one grant re-discovering that.
+// "Start again" is the only move a broadcaster has on a machine that cannot
+// capture system audio — so the second start must not spend its one grant
+// re-discovering that.
 describe('acquireDisplayStream after an audio refusal (session memory)', () => {
   it('asks for video only on the next start, and still says "unavailable"', async () => {
     const getDisplayMedia = stubAudioRefusingPlatform();
@@ -135,9 +132,8 @@ describe('acquireDisplayStream after an audio refusal (session memory)', () => {
   });
 
   it('remembers even when the video-only retry failed — the failed start is the last one', async () => {
-    // The escape hatch that replaces the toggle: attempt 1 dies (no
-    // activation left for the retry), attempt 2 goes straight to video-only
-    // and broadcasts.
+    // The escape hatch: attempt 1 dies (no activation left for the retry),
+    // attempt 2 goes straight to video-only and broadcasts.
     let allowVideoOnly = false;
     const getDisplayMedia = stubDisplayMedia(async (opts) => {
       if (opts.audio) throw domError('NotReadableError', 'Could not start audio source');

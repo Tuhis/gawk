@@ -1,4 +1,4 @@
-// TypeScript mirror of the relay's wire format (gawk-server/internal/wire).
+// TypeScript mirror of the relay's wire format (gawk-server/wire).
 // The Go package is the source of truth; the golden hex vectors in
 // wire.test.ts are copied verbatim from wire_test.go and guarantee the two
 // implementations stay byte-compatible. If a vector fails, the wire format
@@ -20,11 +20,11 @@
 //     byte 3       uint8   codecLen
 //     bytes 4..    codecLen bytes of ASCII codec string, then extradata
 //
-//   0x05 TimeSync (exactly 18 bytes, R5 Q2 — docs/15):
+//   0x05 TimeSync (exactly 18 bytes):
 //     bytes 2-9    uint64  clientTimeUs   sender's clock at send; echoed back
 //     bytes 10-17  uint64  serverTimeUs   relay monotonic clock; 0 in requests
 //
-//   0x06 ClockMapping (exactly 10 bytes, R5 Q2 — docs/15):
+//   0x06 ClockMapping (exactly 10 bytes):
 //     bytes 2-9    int64   offsetUs       relayClockUs = timestampUs + offsetUs
 //
 // Parse functions never copy: returned payload/extradata are subarray views
@@ -36,94 +36,93 @@ export const WIRE_VERSION = 0x01;
 export const TYPE_VIDEO_CHUNK = 0x01;
 export const TYPE_DECODER_CONFIG = 0x02;
 export const TYPE_BROADCAST_ANNOUNCE = 0x03;
-// TypeStreamFrame (R8): never a datagram — the payload of one unidirectional
-// stream carrying exactly one keyframe. See encode/parseStreamFrame below.
+// StreamFrame: never a datagram — the payload of one unidirectional stream
+// carrying exactly one keyframe. See encode/parseStreamFrame below.
 export const TYPE_STREAM_FRAME = 0x04;
-// TimeSync (R5 Q2): client↔relay clock-sync ping/pong datagram. The client
-// sends it with serverTimeUs = 0; the relay echoes clientTimeUs and fills its
-// monotonic clock, giving the client an NTP-style offset + RTT sample.
+// TimeSync: client↔relay clock-sync ping/pong datagram. The client sends it
+// with serverTimeUs = 0; the relay echoes clientTimeUs and fills its monotonic
+// clock, giving the client an NTP-style offset + RTT sample.
 export const TYPE_TIME_SYNC = 0x05;
-// ClockMapping (R5 Q2): broadcaster→viewers, relayed + cached by the relay
-// like the keyframe prime. Maps frame timestamps onto the relay clock so a
-// viewer (with its own TimeSync offset) can compute absolute capture→render.
+// ClockMapping: broadcaster→viewers, relayed + cached by the relay like the
+// keyframe prime. Maps frame timestamps onto the relay clock so a viewer (with
+// its own TimeSync offset) can compute absolute capture→render.
 export const TYPE_CLOCK_MAPPING = 0x06;
-// AudioFrame (R15, docs/20 Decision 2): broadcaster→viewers, one complete
-// Opus packet per datagram — no chunking, no reassembly, no keyframes. seq is
-// audio's own uint32 sequence space (same serial arithmetic as frameIds);
-// timestampUs is on the broadcaster's performance.now() µs clock, the same
-// clock video capture stamps, so A/V skew is a subtraction.
+// AudioFrame: broadcaster→viewers, one complete Opus packet per datagram — no
+// chunking, no reassembly, no keyframes. seq is audio's own uint32 sequence
+// space (same serial arithmetic as frameIds); timestampUs is on the
+// broadcaster's performance.now() µs clock, the same clock video capture
+// stamps, so A/V skew is a subtraction.
 export const TYPE_AUDIO_FRAME = 0x07;
-// AudioConfig (R15, docs/20): broadcaster→viewers, relayed + cached by the
-// hub like ClockMapping (join-primed, invalidated with the other caches).
-// Re-sent at 1 Hz by the broadcaster — audio has no keyframe to anchor
-// config re-emits to; idempotent on the viewer.
+// AudioConfig: broadcaster→viewers, relayed + cached by the hub like
+// ClockMapping (join-primed, invalidated with the other caches). Re-sent at
+// 1 Hz by the broadcaster — audio has no keyframe to anchor config re-emits
+// to; idempotent on the viewer.
 export const TYPE_AUDIO_CONFIG = 0x08;
-// ResumeToken (R17 W2, docs/22): server→publisher on its own uni stream right
-// after the session upgrade. The broadcaster presents it (hex, as the
-// `resume` query param) to claim /publish/{id} on any pod — auto-resume,
-// manual reclaim, and relay restarts all ride it.
+// ResumeToken: server→publisher on its own uni stream right after the session
+// upgrade. The broadcaster presents it (hex, as the `resume` query param) to
+// claim /publish/{id} on any pod — auto-resume, manual reclaim, and relay
+// restarts all ride it.
 export const TYPE_RESUME_TOKEN = 0x09;
-// ReliableCarrier (R19, docs/24 Decision 3): the stream-kind discriminator of
-// a relay→subscriber uni stream carrying delta datagrams reliably to an
-// opted-in resilient subscriber. Never a datagram. The stream opens with the
-// two-byte prologue version‖type (a keyframe stream starts version‖0x04, so a
-// bare length prefix would be ambiguous), then records of
-// uint16 length (BE) ‖ verbatim datagram bytes — each record a complete
-// datagram the relay would otherwise have sent unreliably.
+// ReliableCarrier: the stream-kind discriminator of a relay→subscriber uni
+// stream carrying delta datagrams reliably to an opted-in resilient
+// subscriber. Never a datagram. The stream opens with the two-byte prologue
+// version‖type (a keyframe stream starts version‖0x04, so a bare length prefix
+// would be ambiguous), then records of uint16 length (BE) ‖ verbatim datagram
+// bytes — each record a complete datagram the relay would otherwise have sent
+// unreliably.
 export const TYPE_RELIABLE_CARRIER = 0x0a;
-// ViewerCount (R18, docs/23 Decision 2): relay-originated only — the live
-// "N watching" number pushed to viewers and the broadcaster (and, in cluster
-// mode, an edge's local count reported up to its origin — a leg browsers
-// never see). Clients parse it and never send it.
+// ViewerCount: relay-originated only — the live "N watching" number pushed to
+// viewers and the broadcaster (and, in cluster mode, an edge's local count
+// reported up to its origin — a leg browsers never see). Clients parse it and
+// never send it.
 export const TYPE_VIEWER_COUNT = 0x0b;
-// DeliveryAck (R21, docs/26 Decision 7a): relay→viewer, once at join. Says
-// what this subscriber is ACTUALLY being served — delivery is negotiated by
-// query param, and a DVR-replayed GOP is byte-identical on the wire to a live
-// one, so without this the viewer cannot tell an honoured request from a
-// downgrade or from a relay too old to know the parameter.
+// DeliveryAck: relay→viewer, once at join. Says what this subscriber is
+// ACTUALLY being served — delivery is negotiated by query param, and a
+// DVR-replayed GOP is byte-identical on the wire to a live one, so without
+// this the viewer cannot tell an honoured request from a downgrade or from a
+// relay too old to know the parameter.
 export const TYPE_DELIVERY_ACK = 0x0c;
-// TelemetryHello (R28, docs/33 D2): relay→client, once per session on its own
-// reliable uni stream. Carries this session's telemetry token, the OBFUSCATED
-// broadcast key (so a client never reports a joinable ID), and whether the
-// fleet collects telemetry at all. Clients parse it and never send it; a relay
-// predating R28 sends nothing, which the client treats exactly like
-// enabled: false.
+// TelemetryHello: relay→client, once per session on its own reliable uni
+// stream. Carries this session's telemetry token, the OBFUSCATED broadcast
+// key (so a client never reports a joinable ID), and whether the fleet
+// collects telemetry at all. Clients parse it and never send it; a relay that
+// sends none is treated exactly like enabled: false.
 export const TYPE_TELEMETRY_HELLO = 0x0d;
-// ParityChunk (R29, docs/34): broadcaster→relay→viewers, one RAID-6 P/Q parity
-// symbol over a delta frame's data chunks, so a live-edge viewer repairs chunk
-// loss without R19's carrier latency. Deltas only — keyframes ride reliable uni
+// ParityChunk: broadcaster→relay→viewers, one RAID-6 P/Q parity symbol over a
+// delta frame's data chunks, so a live-edge viewer repairs chunk loss without
+// the reliable carrier's latency. Deltas only — keyframes ride reliable uni
 // streams already. The relay computes nothing: it forwards a per-subscriber
 // PREFIX of the symbols the producer emitted. Encoding lives in parity.ts.
 export const TYPE_PARITY_CHUNK = 0x0e;
-// RelayCapabilities (R29, docs/34 §4.4): relay→client, once per session on both
-// routes, naming the optional features this fleet supports and at what level.
-// Its own message rather than extra BroadcastAnnounce fields because the
-// parsers are strict and the WebTransport API exposes no response headers — so
-// a producer that never sees it emits no parity, keeping a new broadcaster
-// against an old relay byte-identical to pre-R29.
+// RelayCapabilities: relay→client, once per session on both routes, naming
+// the optional features this fleet supports and at what level. Its own
+// message rather than extra BroadcastAnnounce fields because the parsers are
+// strict and the WebTransport API exposes no response headers — so a producer
+// that never sees it emits no parity, and a new broadcaster stays compatible
+// with an older relay.
 export const TYPE_RELAY_CAPABILITIES = 0x0f;
-// StripeState (R30, docs/35 §5.3): client→relay, the one message a striping
-// viewer sends on its primary subscribe session to suppress (or restore)
-// delta datagrams there while stripe legs carry them. Level state, re-sent at
-// 1 Hz while striped; the relay expires stale suppression so a lost message
-// converges to duplicates, never holes. Encoding lives beside the other
-// fixed-size messages below.
+// StripeState: client→relay, the one message a striping viewer sends on its
+// primary subscribe session to suppress (or restore) delta datagrams there
+// while stripe legs carry them. Level state, re-sent at 1 Hz while striped;
+// the relay expires stale suppression so a lost message converges to
+// duplicates, never holes. Encoding lives beside the other fixed-size messages
+// below.
 export const TYPE_STRIPE_STATE = 0x10;
-// RelayIdentity (R37, docs/40 §4.4): relay→client on a uni stream at /echo
-// session start — version + operator display name for the server picker's
-// probe. Trailing bytes past the declared fields are TOLERATED (the managed-
-// mode extension space, a documented deviation from house strictness); the
-// flags byte stays strict. Clients parse it and never send it.
+// RelayIdentity: relay→client on a uni stream at /echo session start —
+// version + operator display name for the server picker's probe. Trailing
+// bytes past the declared fields are TOLERATED (the managed-mode extension
+// space, a documented deviation from house strictness); the flags byte stays
+// strict. Clients parse it and never send it.
 export const TYPE_RELAY_IDENTITY = 0x11;
-// TelemetryEndpoint (R37, docs/40 §4.10): relay→client on its own uni stream
-// on the media routes — the fleet's advertised telemetry ingest URL, which
-// wins over the deployment's configured one (D15). Same trailing-bytes
-// tolerance and strict flags as RelayIdentity; never sent by clients.
+// TelemetryEndpoint: relay→client on its own uni stream on the media routes —
+// the fleet's advertised telemetry ingest URL, which wins over the
+// deployment's configured one. Same trailing-bytes tolerance and strict flags
+// as RelayIdentity; never sent by clients.
 export const TYPE_TELEMETRY_ENDPOINT = 0x12;
-// Room control protocol (R42, docs/44 §4.6 / D15): four message types that
-// travel as length-prefixed records on ONE bidirectional stream per room
-// control session (CONNECT /room/{code}). Never datagrams; media never rides
-// this stream. Encoders/parsers live in the room section at the bottom.
+// Room control protocol: four message types that travel as length-prefixed
+// records on ONE bidirectional stream per room control session (CONNECT
+// /room/{code}). Never datagrams; media never rides this stream.
+// Encoders/parsers live in the room section at the bottom.
 // RoomHello: client → relay, once, the first record on the stream.
 export const TYPE_ROOM_HELLO = 0x13;
 // RoomState: relay → client, a full snapshot — sent once after RoomHello and
@@ -136,49 +135,47 @@ export const TYPE_ROOM_COMMAND = 0x16;
 
 export const CLOSE_CODE_BROADCAST_ENDED = 4000;
 // The relay evicted this subscriber because its keyframe stream opens failed
-// persistently (R10, docs/14 — typically a zombie session with exhausted
-// stream credit). Non-terminal by design: the viewer's normal reconnect
-// applies (a fresh session restores stream credit), so no special handling —
-// mirrored from Go wire.CloseCodeSubscriberUnresponsive for namespace parity.
+// persistently (typically a zombie session with exhausted stream credit).
+// Non-terminal by design: the viewer's normal reconnect applies (a fresh
+// session restores stream credit), so no special handling — mirrored from Go
+// wire.CloseCodeSubscriberUnresponsive for namespace parity.
 export const CLOSE_CODE_SUBSCRIBER_UNRESPONSIVE = 4001;
-// The relay pod is shutting down for a planned rollout (R17 W1, docs/22):
-// sent while the pod is still Ready, so it reliably reaches the peer.
-// Non-terminal and explicitly fast — the client reconnects immediately
-// (0 ms first retry); a ready replacement pod is behind the same Service.
+// The relay pod is shutting down for a planned rollout: sent while the pod is
+// still Ready, so it reliably reaches the peer. Non-terminal and explicitly
+// fast — the client reconnects immediately (0 ms first retry); a ready
+// replacement pod is behind the same Service.
 export const CLOSE_CODE_SERVER_DRAINING = 4002;
-// Internal edge sessions only (R17 W5): the origin lost its Lease and is
-// demoting. Browsers never receive it — mirrored for namespace parity.
+// Internal edge sessions only: the origin lost its Lease and is demoting.
+// Browsers never receive it — mirrored for namespace parity.
 export const CLOSE_CODE_ORIGIN_MOVED = 4003;
-// The relay deposed this publisher session because a newer session claimed
-// its broadcast ID with a verified resume token (docs/06 revision
-// 2026-07-18: newest publisher wins — the relay can't tell a silently-dead
-// publisher from a live one inside the QUIC idle window, and 409ing the
-// reclaim orphaned every viewer). In practice it lands on the broadcaster's
-// own zombie session; a live session receiving it has been replaced and
-// must not resume back. Mirrored from Go wire.CloseCodePublisherSuperseded.
+// The relay deposed this publisher session because a newer session claimed its
+// broadcast ID with a verified resume token. Newest publisher wins: the relay
+// can't tell a silently-dead publisher from a live one inside the QUIC idle
+// window, and refusing the reclaim would orphan every viewer. In practice it
+// lands on the broadcaster's own zombie session; a live session receiving it
+// has been replaced and must not resume back. Mirrored from Go
+// wire.CloseCodePublisherSuperseded.
 export const CLOSE_CODE_PUBLISHER_SUPERSEDED = 4004;
-// The relay reaped this R30 stripe leg as orphaned (docs/35 §14): the
-// primary session sharing its ?owner= token ended, or the leg's liveness
-// lease expired. NOT terminal — the leg-death fallback applies (unstripe,
-// then re-engage through a fresh session set), exactly as for any other leg
-// death. Never sent to a primary. Mirrored from Go
-// wire.CloseCodeStripeLegOrphaned.
+// The relay reaped this stripe leg as orphaned: the primary session sharing
+// its ?owner= token ended, or the leg's liveness lease expired. NOT terminal —
+// the leg-death fallback applies (unstripe, then re-engage through a fresh
+// session set), exactly as for any other leg death. Never sent to a primary.
+// Mirrored from Go wire.CloseCodeStripeLegOrphaned.
 export const CLOSE_CODE_STRIPE_LEG_ORPHANED = 4005;
-// The operator (or, later, R40's auto-tier) terminated this broadcast — sent
-// to the publisher being killed and to every viewer of it (R39, docs/42 §4.4).
-// TERMINAL in both roles: a viewer must not reconnect and a publisher must not
-// auto-resume, because the ID is banned for at least the kill cooldown and a
-// reclaim would only collect a 451. Distinct from 4000 precisely so the viewer
-// can be told a moderator ended the stream. Mirrored from Go
-// wire.CloseCodeTerminatedByOperator.
+// The operator terminated this broadcast — sent to the publisher being killed
+// and to every viewer of it. TERMINAL in both roles: a viewer must not
+// reconnect and a publisher must not auto-resume, because the ID is banned for
+// at least the kill cooldown and a reclaim would only collect a 451. Distinct
+// from 4000 precisely so the viewer can be told a moderator ended the stream.
+// Mirrored from Go wire.CloseCodeTerminatedByOperator.
 export const CLOSE_CODE_TERMINATED_BY_OPERATOR = 4006;
 // Sent on a room CONTROL session when the room ends: empty-grace expiry, an
 // explicit end from a creator-token holder, or the operator deleting the Room
-// CR (R42, docs/44 §4.4). TERMINAL for the room session only — a client must
-// not reconnect to the room — while the participant's media sessions have
-// their own lifecycle and are untouched (docs/44 D1: attached broadcasts keep
-// streaming to anyone watching them directly). Never sent on a publish or
-// subscribe session. Mirrored from Go wire.CloseCodeRoomEnded.
+// CR. TERMINAL for the room session only — a client must not reconnect to the
+// room — while the participant's media sessions have their own lifecycle and
+// are untouched (attached broadcasts keep streaming to anyone watching them
+// directly). Never sent on a publish or subscribe session. Mirrored from Go
+// wire.CloseCodeRoomEnded.
 export const CLOSE_CODE_ROOM_ENDED = 4007;
 
 // Wire frameIds are uint32 and wrap; consumers must compare them with serial
@@ -205,7 +202,7 @@ export const MAX_CHUNK_PAYLOAD = MAX_DATAGRAM_SIZE - VIDEO_CHUNK_HEADER_SIZE;
 // never reach viewers — the encoder must fail loudly instead.
 export const MAX_CHUNK_COUNT = 3000;
 
-// StreamFrame constants (mirror gawk-server/internal/wire).
+// StreamFrame constants.
 export const STREAM_FRAME_HEADER_SIZE = 24;
 // Absolute ceiling on one StreamFrame message (header + config + payload); the
 // stream analogue of MAX_CHUNK_COUNT. A reader must never allocate beyond it
@@ -344,7 +341,7 @@ export interface StreamFrameHeader {
   payloadLen: number; // uint32, byte length of the encoded keyframe
 }
 
-// Encodes the 24-byte StreamFrame header (R8). Rejects a declared total
+// Encodes the 24-byte StreamFrame header. Rejects a declared total
 // exceeding MAX_KEYFRAME_BYTES.
 export function encodeStreamFrameHeader(header: StreamFrameHeader): Uint8Array<ArrayBuffer> {
   if (STREAM_FRAME_HEADER_SIZE + header.configLen + header.payloadLen > MAX_KEYFRAME_BYTES) {
@@ -417,9 +414,9 @@ export function parseStreamFrameHeader(buf: Uint8Array): StreamFrameHeader {
   return header;
 }
 
-// TimeSync + ClockMapping (R5 Q2, docs/15). Both are tiny fixed-size
-// datagrams, parsed strictly (exact length) per the R2 defensive-parsing
-// discipline — a malformed datagram is dropped, never trusted partially.
+// TimeSync + ClockMapping. Both are tiny fixed-size datagrams, parsed
+// strictly (exact length) — a malformed datagram is dropped, never trusted
+// partially.
 
 export const TIME_SYNC_SIZE = 18;
 export const CLOCK_MAPPING_SIZE = 10;
@@ -483,7 +480,7 @@ export function parseClockMapping(dgram: Uint8Array): bigint {
   return view.getBigInt64(2);
 }
 
-// DeliveryAck (R21, docs/26): exactly 5 bytes — version, type 0x0c, a mode
+// DeliveryAck: exactly 5 bytes — version, type 0x0c, a mode
 // byte, then the accepted buffer in ms (uint16). The encoder exists for tests
 // and golden vectors; browsers only ever parse it. An unknown mode throws
 // rather than defaulting: a viewer that cannot name what it got is the gap
@@ -533,7 +530,7 @@ export function parseDeliveryAck(dgram: Uint8Array): DeliveryAckMessage {
   return { mode, bufferMs: view.getUint16(3) };
 }
 
-// ViewerCount (R18, docs/23): exactly 6 bytes — version, type 0x0b, then a
+// ViewerCount: exactly 6 bytes — version, type 0x0b, then a
 // uint32 count. Strict fixed-length parse like TimeSync/ClockMapping. The
 // encoder exists for tests and golden vectors; browsers only ever parse it.
 
@@ -562,7 +559,7 @@ export function parseViewerCount(dgram: Uint8Array): number {
   return view.getUint32(2);
 }
 
-// ResumeToken (R17 W2): version, type 0x09, uint8 tokenLen, token bytes.
+// ResumeToken: version, type 0x09, uint8 tokenLen, token bytes.
 // The token is opaque on the wire (the server mints truncated HMACs).
 
 export function encodeResumeToken(token: Uint8Array): Uint8Array<ArrayBuffer> {
@@ -594,7 +591,7 @@ export function parseResumeToken(msg: Uint8Array): Uint8Array {
   return msg.subarray(3);
 }
 
-// TelemetryHello (R28, docs/33 §4.1): exactly 35 bytes — version, type 0x0d,
+// TelemetryHello: exactly 35 bytes — version, type 0x0d,
 // a flags byte (bit 0 = enabled), uint16 reportIntervalMs, a 24-byte session
 // token, and the 6-byte obfuscated broadcast key. Strict fixed-length parse
 // like TimeSync/ClockMapping/ViewerCount, including reserved flag bits, which
@@ -652,10 +649,10 @@ export function parseTelemetryHello(msg: Uint8Array): TelemetryHelloMessage {
   };
 }
 
-// The sessionId a token names (R28, docs/33 §4.2): hex of the 12-byte nonce
-// sitting between the 4-byte expiry hour and the 8-byte tag. Mirrors Go's
+// The sessionId a token names: hex of the 12-byte nonce sitting between the
+// 4-byte expiry hour and the 8-byte tag. Mirrors Go's
 // `wire.TelemetrySessionID` — the token's layout is a wire fact, so it gets
-// exactly one definition per language (CODE-REVIEW.md).
+// exactly one definition per language.
 //
 // This is the only part of a token that is ever stored, shown or logged. It
 // NAMES a session on both sides of the join (the relay records the same value
@@ -690,12 +687,12 @@ function hexToBytes(hex: string, want: number, what: string): Uint8Array {
   return out;
 }
 
-// --- StripeState (R30, docs/35 §5.3) ---------------------------------------
+// --- StripeState ------------------------------------------------------------
 // Mirrors gawk-server/wire/stripe.go byte for byte.
 
 export const STRIPE_STATE_SIZE = 5;
-// Evidence-bound cap on stripe width (docs/34 finding 5 measured coexistence
-// at 4 connections; 4 legs × target 6 covers every observed delta frame).
+// Evidence-bound cap on stripe width (coexistence is measured up to 4
+// connections; 4 legs × target 6 covers every observed delta frame).
 // A constant, not a knob — mirrors wire.MaxStripeLegs.
 export const MAX_STRIPE_LEGS = 4;
 
@@ -754,12 +751,12 @@ export function parseStripeState(b: Uint8Array): StripeState {
 // The stripe ordinal of a delta datagram: data chunk i has ordinal i, parity
 // symbol r over an n-chunk frame has ordinal n+r — so parity keeps its
 // measured tail-of-burst position on every leg. Leg j of stripe N carries
-// the datagrams with stripeOrdinal(...) % N === j (docs/35 §5.2).
+// the datagrams with stripeOrdinal(...) % N === j.
 export function stripeOrdinal(chunkIndex: number, chunkCount: number, parityIndex: number | null): number {
   return parityIndex != null ? chunkCount + parityIndex : chunkIndex;
 }
 
-// AudioFrame + AudioConfig (R15, docs/20). Mirrors gawk-server/wire; the
+// AudioFrame + AudioConfig. Mirrors gawk-server/wire; the
 // golden vectors in wire.test.ts pin byte compatibility.
 
 export const AUDIO_FRAME_HEADER_SIZE = 16;
@@ -872,7 +869,7 @@ export function parseAudioConfig(dgram: Uint8Array): AudioConfigMessage {
   return config;
 }
 
-// Reliable-carrier framing (R19). The viewer only ever parses carriers (the
+// Reliable-carrier framing. The viewer only ever parses carriers (the
 // relay writes them), but the encoders exist for tests and golden vectors.
 
 export const CARRIER_PROLOGUE_SIZE = 2;
@@ -974,11 +971,11 @@ export function parseBroadcastAnnounce(dgram: Uint8Array): string {
   return id;
 }
 
-// RelayIdentity (R37, docs/40 §4.4): version, type 0x11, strict-zero flags,
+// RelayIdentity: version, type 0x11, strict-zero flags,
 // uint8 versionLen (1–32) + printable-ASCII release version, uint8 nameLen
 // (0–64) + valid-UTF-8 operator name, then IGNORED trailing extension bytes —
 // the one message family whose parser deliberately tolerates a longer buffer
-// (docs/40 §4.9; appended fields are the extension mechanism, flags are not).
+// (appended fields are the extension mechanism, flags are not).
 // The encoder exists for tests and golden vectors; browsers only ever parse.
 
 export const RELAY_IDENTITY_MAX_VERSION_LEN = 32;
@@ -987,7 +984,7 @@ export const RELAY_IDENTITY_MAX_NAME_LEN = 64;
 export interface RelayIdentityMessage {
   serverVersion: string;
   // Attacker-influenced trust UI: render sanitized, never in place of the
-  // host (docs/40 §4.4 F6).
+  // host.
   name: string;
 }
 
@@ -1053,10 +1050,10 @@ export function parseRelayIdentity(msg: Uint8Array): RelayIdentityMessage {
   return { serverVersion: new TextDecoder().decode(versionBytes), name };
 }
 
-// TelemetryEndpoint (R37, docs/40 §4.10): version, type 0x12, strict-zero
-// flags, uint16 urlLen (1–512, big-endian) + an absolute https URL, then
-// ignored trailing extension bytes. A message failing any rule here degrades
-// caller-side to "no advertised URL" — never to a failed session.
+// TelemetryEndpoint: version, type 0x12, strict-zero flags, uint16 urlLen
+// (1–512, big-endian) + an absolute https URL, then ignored trailing extension
+// bytes. A message failing any rule here degrades caller-side to "no
+// advertised URL" — never to a failed session.
 
 export const TELEMETRY_ENDPOINT_MAX_URL_LEN = 512;
 
@@ -1119,7 +1116,7 @@ function validateTelemetryEndpointUrl(url: string): void {
   }
 }
 
-// --- Room control protocol (R42, docs/44 §4.6) ------------------------------
+// --- Room control protocol --------------------------------------------------
 // Mirrors gawk-server/wire/room.go byte for byte; the layout comment there is
 // the spec. Four message types ride ONE bidirectional stream per room control
 // session as records of uint16 length (BE) ‖ Version ‖ Type ‖ payload — the
@@ -1127,12 +1124,11 @@ function validateTelemetryEndpointUrl(url: string): void {
 // it: a participant's per-broadcast /subscribe sessions are untouched.
 //
 // Parsers are strict in the house style (exact length, reserved bits zero)
-// EXCEPT for the two forward-compatibility seams docs/44 §4.11 reserves on
-// purpose: an unknown RoomEvent / RoomCommand kind throws
-// RoomUnknownKindError (with the header fields filled in) so a reader can skip
-// the record — chat 0x40–0x4F and voice 0x50–0x5F are the reserved
-// sub-ranges — and the capability bitmaps are the advertise/request mechanism
-// for those later features.
+// EXCEPT for two deliberate forward-compatibility seams: an unknown
+// RoomEvent / RoomCommand kind throws RoomUnknownKindError (with the header
+// fields filled in) so a reader can skip the record — chat 0x40–0x4F and
+// voice 0x50–0x5F are the reserved sub-ranges — and the capability bitmaps
+// are the advertise/request mechanism for those later features.
 //
 // Layouts, after the common Version ‖ Type prefix:
 //
@@ -1152,7 +1148,10 @@ function validateTelemetryEndpointUrl(url: string): void {
 //     ...      uint8 nameLen       0..MAX_ROOM_DISPLAY_NAME_LEN, then the name
 //     ...      uint8 tokenLen      0 or ROOM_CREATOR_TOKEN_SIZE, then the
 //                                  creator token — non-empty ONLY in the first
-//                                  snapshot after /room/new (docs/44 §4.4)
+//                                  snapshot after /room/new
+//     ...      uint8 keyLen        0 or ROOM_KEY_SIZE, then the room's HMAC'd
+//                                  key — the /statusz + telemetry handle for
+//                                  the room, never the code
 //     ...      uint8 attachCount   then that many Attachment records
 //     ...      uint16 partCount    then that many Participant records
 //
@@ -1162,7 +1161,7 @@ function validateTelemetryEndpointUrl(url: string): void {
 //     Participant record:
 //       uint16 id, uint8 kind (ROOM_CLIENT_*), uint8 flags
 //       (ROOM_PARTICIPANT_FLAG_*), uint8 nickLen + nickname,
-//       uint8 identityLen + identity (reserved, empty in v1 — docs/44 §4.11)
+//       uint8 identityLen + identity (reserved, empty in v1)
 //
 //   0x15 RoomEvent (relay → client, one delta):
 //     2-5      uint32 seq          monotonic within the home pod's generation
@@ -1200,26 +1199,26 @@ export const ROOM_RECORD_HEADER_SIZE = 2;
 export const MAX_ROOM_RECORD_SIZE = 16384;
 // Participant nickname bound, in UTF-8 bytes.
 export const MAX_ROOM_NICKNAME_LEN = 32;
-// Room display code bound: a static slug is 3–32 characters (docs/44 §4.1); a
-// dynamic code is a broadcast-ID-length code.
+// Room display code bound: a static slug is 3–32 characters; a dynamic code is
+// a broadcast-ID-length code.
 export const MAX_ROOM_CODE_LEN = 32;
 // A static room's optional display name bound.
 export const MAX_ROOM_DISPLAY_NAME_LEN = 64;
 // A broadcaster-chosen attachment label bound.
 export const MAX_ROOM_LABEL_LEN = 32;
-// The reserved participant identity field bound (docs/44 §4.11: a key
-// fingerprint later; empty in v1).
+// The reserved participant identity field bound (a key fingerprint later;
+// empty in v1).
 export const MAX_ROOM_IDENTITY_LEN = 64;
 // A CommandRejected message bound.
 export const MAX_ROOM_REJECT_MESSAGE_LEN = 128;
 // Byte length of a dynamic room's creator token: the same truncated-HMAC
-// construction as the resume token (docs/44 D8), own domain-separation prefix.
+// construction as the resume token, own domain-separation prefix.
 export const ROOM_CREATOR_TOKEN_SIZE = 16;
 // The room's HMAC'd key as carried in RoomState: the same 6-byte digest
 // TelemetryHello carries for a broadcast, so telemetry keys both the same way.
 export const ROOM_KEY_SIZE = 6;
-// Byte length of a broadcast resume token (R17 W2) as it appears inside a
-// RoomCommand Attach — the attach proof (docs/44 D9). 128 bits of HMAC-SHA256.
+// Byte length of a broadcast resume token as it appears inside a RoomCommand
+// Attach — the attach proof. 128 bits of HMAC-SHA256.
 export const RESUME_TOKEN_SIZE = 16;
 
 // Client kinds (RoomHello clientKind, Participant kind).
@@ -1229,7 +1228,7 @@ export const ROOM_CLIENT_NATIVE = 2;
 const ROOM_CLIENT_KIND_MAX = ROOM_CLIENT_NATIVE;
 
 // Capability bits (RoomHello wantCaps, RoomState caps). Both reserved for
-// docs/44 §4.11's integrations; a v1 room advertises none.
+// the chat/voice integrations; a v1 room advertises none.
 export const ROOM_CAP_CHAT = 0x01;
 export const ROOM_CAP_VOICE = 0x02;
 const ROOM_CAP_MASK = ROOM_CAP_CHAT | ROOM_CAP_VOICE;
@@ -1251,8 +1250,8 @@ export const ROOM_ATTACHMENT_FLAG_LIVE = 0x01;
 const ROOM_ATTACHMENT_FLAG_MASK = ROOM_ATTACHMENT_FLAG_LIVE;
 
 // Participant flags.
-// Reserved for the voice integration (docs/44 §4.11), carried from day one so
-// the roster's speaking indicator does not need a wire change later.
+// Reserved for the voice integration, carried from day one so the roster's
+// speaking indicator does not need a wire change later.
 export const ROOM_PARTICIPANT_FLAG_SPEAKING = 0x01;
 // Set while the participant has at least one attached broadcast.
 export const ROOM_PARTICIPANT_FLAG_STREAMING = 0x02;
@@ -1299,21 +1298,20 @@ export const ROOM_REJECT_NOT_FOUND = 3;
 // The participant lacks the grant (attach without the attach secret,
 // detach-other / end without the creator token).
 export const ROOM_REJECT_FORBIDDEN = 4;
-// The broadcast is attached to another room (D1: at most one room per
+// The broadcast is attached to another room (at most one room per
 // broadcast).
 export const ROOM_REJECT_ALREADY_ATTACHED = 5;
 // The relay does not implement the command kind (a reserved chat/voice
 // command on a v1 relay).
 export const ROOM_REJECT_UNSUPPORTED = 6;
-// The command needs the API server and it is unreachable (docs/44 §6, fail
-// closed).
+// The command needs the API server and it is unreachable (fail closed).
 export const ROOM_REJECT_UNAVAILABLE = 7;
 
 // Thrown by parseRoomEvent / parseRoomCommand (and refused by their encoders)
-// for a kind this implementation does not know — the docs/44 §4.11 reserved
+// for a kind this implementation does not know — the reserved chat/voice
 // ranges. Mirrors Go's ErrUnknownRoomKind: the header fields are filled in so
-// a reader can skip the record without losing its place in the sequence, and
-// a relay can answer ROOM_REJECT_UNSUPPORTED. `seq` is set for events only.
+// a reader can skip the record without losing its place in the sequence, and a
+// relay can answer ROOM_REJECT_UNSUPPORTED. `seq` is set for events only.
 export class RoomUnknownKindError extends WireError {
   readonly kind: number;
   readonly seq: number | undefined;
@@ -1347,7 +1345,7 @@ export interface RoomParticipant {
   kind: number; // ROOM_CLIENT_*
   flags: number; // ROOM_PARTICIPANT_FLAG_* bitmap
   nickname: string;
-  identity: string; // reserved (docs/44 §4.11); empty in v1
+  identity: string; // reserved; empty in v1
 }
 
 export interface RoomState {
@@ -1751,7 +1749,8 @@ export function encodeRoomState(s: RoomState): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-// Strict: exact length, reserved bits zero. creatorToken is a view of msg.
+// Strict: exact length, reserved bits zero. creatorToken and key are views
+// of msg.
 export function parseRoomState(msg: Uint8Array): RoomState {
   checkRoomPrefix(msg, TYPE_ROOM_STATE, 16, 'room state');
   const r = new RoomReader(msg, 'room state');

@@ -1,8 +1,7 @@
-// R15 N2/N3 (docs/20 Decision 6): the pipeline's audio lane wiring — toggle
-// off runs zero audio paths, no-track and no-AudioEncoder degrade to
-// annotated video-only (never an error, never a placement change), the happy
-// path sends audio datagrams, and a lane error annotates without touching
-// the broadcast.
+// The pipeline's audio lane wiring — audio not requested runs zero audio
+// paths, no-track and no-AudioEncoder degrade to annotated video-only (never
+// an error, never a placement change), the happy path sends audio datagrams,
+// and a lane error annotates without touching the broadcast.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -214,10 +213,9 @@ describe('BroadcastPipeline audio lane wiring', () => {
   });
 
   it('toggle on + the browser refused the audio source: distinguishes unavailable from no-track', async () => {
-    // R15 field finding (2026-07-19): capture.ts retried video-only after
-    // Chromium rejected the audio-bearing grant. Reporting that as 'no-track'
-    // would read as "the user unchecked the box" — the overlay has to say the
-    // platform can't, or the next debug session starts from the wrong end.
+    // capture.ts retried video-only after Chromium rejected the audio-bearing
+    // grant. Reporting that as 'no-track' would read as "the user unchecked
+    // the box" — the overlay has to say the platform can't.
     const cbs = makeCallbacks();
     const pipeline = makePipeline(cbs, { ...makeMedia(null), audioUnavailable: true }, true);
     await pipeline.start();
@@ -229,7 +227,7 @@ describe('BroadcastPipeline audio lane wiring', () => {
 
   it('toggle on + track but no AudioEncoder in scope: unsupported annotation, video unaffected', async () => {
     // jsdom has neither AudioEncoder nor MediaStreamTrackProcessor — exactly
-    // the worker-without-AudioEncoder shape (docs/20 N3): the pipeline keeps
+    // the worker-without-AudioEncoder shape: the pipeline keeps
     // its placement and annotates.
     const cbs = makeCallbacks();
     const pipeline = makePipeline(cbs, makeMedia(fakeAudioTrack()), true);
@@ -280,11 +278,10 @@ describe('BroadcastPipeline audio lane wiring', () => {
     await pipeline.stop();
   });
 
-  // Regression (self-review 2026-07-19): startAudioLane constructs a real
-  // MediaStreamTrackProcessor, and that can throw synchronously (ended track,
-  // a scope whose MSTP rejects audio tracks). It runs inside startMedia(),
-  // whose throw path fails the ENTIRE broadcast with a capture-phase error —
-  // exactly what Decision 6 forbids ("never the broadcast").
+  // startAudioLane constructs a real MediaStreamTrackProcessor, and that can
+  // throw synchronously (ended track, a scope whose MSTP rejects audio
+  // tracks). It runs inside startMedia(), whose throw path fails the ENTIRE
+  // broadcast with a capture-phase error — audio may annotate, never abort.
   it('a lane that fails to construct annotates without failing the broadcast', async () => {
     stubAudioGlobals();
     // MSTP exists (so the lane is attempted) but explodes on construction.

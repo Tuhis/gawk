@@ -1,10 +1,9 @@
-// R17 W2 (docs/22 Decision 5): broadcaster auto-resume. On session death
-// mid-broadcast the pipeline keeps capture + encoder alive and reconnects
-// the transport only, presenting the relay-minted resume token (wire 0x09)
-// on the /publish/{id} claim; on re-attach it forces the next frame to be a
-// keyframe (stream + embedded config) while frameIDs continue — continuity
-// is the viewer's resume-vs-restart signal (Decision 6). Mocks mirror
-// broadcaster-keyframe.test.ts.
+// Broadcaster auto-resume. On session death mid-broadcast the pipeline keeps
+// capture + encoder alive and reconnects the transport only, presenting the
+// relay-minted resume token (wire 0x09) on the /publish/{id} claim; on
+// re-attach it forces the next frame to be a keyframe (stream + embedded
+// config) while frameIDs continue — continuity is the viewer's
+// resume-vs-restart signal. Mocks mirror broadcaster-keyframe.test.ts.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -373,10 +372,10 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     await pipeline.stop();
   });
 
-  // R39 (docs/42 §4.4): 4006 is the operator's kill. Auto-resuming would
-  // burn the relay's 451 rejection budget for the whole cooldown — and the
-  // browser cannot even read that status (D15), so the pipeline would loop
-  // blind until the ladder ran out. 4004 is here for the same reason it is in
+  // 4006 is the operator's kill. Auto-resuming would burn the relay's 451
+  // rejection budget for the whole cooldown — and the browser cannot even
+  // read that status, so the pipeline would loop blind until the ladder ran
+  // out. 4004 is here for the same reason it is in
   // both natives: "newest publisher wins" only converges if the deposed
   // session stays down.
   it.each([
@@ -460,11 +459,9 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     expect(cbs.onReconnecting).not.toHaveBeenCalled();
   });
 
-  // R17 post-review fix (PR #47; CODE-REVIEW.md: error paths release what
-  // they acquired — a leaked WebTransport session is a zombie publisher
-  // holding the broadcast ID hostage until the tab closes). stop() racing
-  // the in-flight resume dial must close the fresh session, not adopt and
-  // abandon it.
+  // A leaked WebTransport session is a zombie publisher holding the
+  // broadcast ID hostage until the tab closes. stop() racing the in-flight
+  // resume dial must close the fresh session, not adopt and abandon it.
   it('stop() during an in-flight resume dial closes the fresh session', async () => {
     const cbs = makeCallbacks();
     const { pipeline, first } = await startBroadcast(cbs);

@@ -23,7 +23,8 @@ export interface FrameInfo {
 
 // Splits data into datagrams that fit within the path MTU. A zero-length
 // frame still produces one chunk so the frame exists on the wire. Throws
-// WireError if the frame would need more than 65535 chunks.
+// WireError (from encodeVideoChunk) if the frame would need more than
+// MAX_CHUNK_COUNT chunks.
 export function packetizeFrame(
   info: FrameInfo,
   data: Uint8Array,
@@ -52,14 +53,14 @@ export function packetizeFrame(
 }
 
 // Splits data into datagrams and, when parityLevel > 0, computes up to that
-// many RAID-6 P/Q parity symbols over the chunk PAYLOADS (R29, docs/34).
+// many RAID-6 P/Q parity symbols over the chunk PAYLOADS.
 //
 // Parity covers payloads rather than whole datagrams because payloads are
 // what the viewer reassembles — covering headers would still round-trip on a
 // clean link and fail only under the loss the feature exists for.
 //
 // Deltas only. Callers must not ask for parity on a keyframe: keyframes ride
-// reliable uni streams (R8) and are not exposed to datagram loss.
+// reliable uni streams and are not exposed to datagram loss.
 //
 // A frame needing more than MAX_PARITY_DATA_CHUNKS chunks degrades to plain
 // datagrams rather than throwing — past that bound the Q coefficients wrap
@@ -100,7 +101,7 @@ export function packetizeDecoderConfig(
 }
 
 // Builds the single StreamFrame message a keyframe travels in over a reliable
-// unidirectional stream (R8): header + the current DecoderConfig datagram
+// unidirectional stream: header + the current DecoderConfig datagram
 // (embedded so a delivered keyframe is self-sufficient to decode) + the encoded
 // keyframe payload. configDatagram may be empty when no config is available yet
 // (the viewer then relies on an earlier one).

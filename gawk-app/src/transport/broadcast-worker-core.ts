@@ -1,4 +1,4 @@
-// R11 (docs/16): host-agnostic core of the worker-offloaded broadcaster.
+// Host-agnostic core of the worker-offloaded broadcaster.
 // `broadcaster.worker.ts` is a thin `onmessage` shell around this; the core
 // owns the pipeline lifecycle and reuses BroadcastPipeline unchanged (with a
 // media source that waits for the main thread to transfer the capture track).
@@ -31,19 +31,19 @@ export type BroadcastWorkerCommand =
       broadcastId?: string;
       selection: ResolutionSelection;
       framerate: FramerateSelection;
-      // R13: the advanced encoder settings ride the start command (and the
+      // The advanced encoder settings ride the start command (and the
       // dedicated command below for live changes).
       encoderSettings?: EncoderSettings;
     }
-  // The capture track (transferred), in response to 'awaitingCapture'. R15
-  // (docs/20 N3): the audio clone transfers alongside the video clone when
-  // the toggle asked for audio and the grant delivered a track.
+  // The capture track (transferred), in response to 'awaitingCapture'. The
+  // audio clone transfers alongside the video clone when audio was requested
+  // and the grant delivered a track.
   | {
       type: 'capture';
       track: MediaStreamTrack;
       nativeFps: number | null;
       audioTrack?: MediaStreamTrack | null;
-      // R15 field finding: set when the main thread's audio-bearing grant was
+      // Set when the main thread's audio-bearing grant was
       // refused and it fell back to a video-only one.
       audioUnavailable?: boolean;
     }
@@ -66,10 +66,10 @@ export type BroadcastWorkerEvent =
   | { type: 'capturePath'; path: string }
   | { type: 'encoderConfigured'; info: EncoderConfigured }
   | { type: 'broadcastId'; id: string }
-  // R17 W2: the relay-minted resume token (hex) — the main thread keeps it
+  // The relay-minted resume token (hex) — the main thread keeps it
   // next to the broadcast ID for manual-restart reclaims.
   | { type: 'resumeToken'; token: string }
-  // R17 W2 auto-resume progress: transport died / transport re-attached.
+  // Auto-resume progress: transport died / transport re-attached.
   | { type: 'reconnecting'; attempt: number; delayMs: number; reason: string; closeCode?: number | null }
   | { type: 'resumed' }
   | { type: 'stats'; stats: BroadcastStats }

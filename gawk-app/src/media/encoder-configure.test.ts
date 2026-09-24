@@ -5,7 +5,7 @@
 // "why is this stream software-encoded?" is answerable from one console
 // line instead of a debugging session.
 //
-// R13 (docs/18 L2): the acceleration tri-state filters the variant cascade
+// The acceleration tri-state filters the variant cascade
 // — 'hardware' refuses to configure software, 'software' probes only
 // prefer-software variants.
 

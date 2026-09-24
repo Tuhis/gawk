@@ -1,12 +1,10 @@
-// R4 automatic-fallback decision core (docs/09-automatic-fallback.md).
-// Pure and timer-free: time is injected per call, never read (same
-// testability discipline as FpsGate and KeyframeCadence). The controller
+// Automatic-fallback decision core (docs/09-automatic-fallback.md).
+// Pure and timer-free: time is injected per call, never read. The controller
 // decides *direction* only; the pipeline resolves it against autoLadder and
 // reports back steps it could not apply (stepRejected). Ladder knowledge,
 // auto-vs-explicit mode, and all actuation stay in the pipeline.
 
-// Detection thresholds (Decision 2). Tuned in I4 on the real gaming PC —
-// all constants live here and are exported for the tests.
+// Detection thresholds, tuned on real gaming hardware.
 //
 // Outcomes older than this fall out of the sliding window.
 export const WINDOW_MS = 4000;
@@ -21,7 +19,7 @@ export const TRIGGER_RATIO = 0.25;
 // renegotiation churn must not count, and the new rung gets a fair chance.
 export const COOLDOWN_MS = 8000;
 
-// Step-up probing (Decision 5).
+// Step-up probing.
 //
 // The healthy streak needs the rejection ratio below this, continuously.
 export const RECOVERY_RATIO = 0.02;
@@ -34,7 +32,7 @@ export const UP_FAIL_WINDOW_MS = 60_000;
 // per ~8 minutes instead of oscillating.
 export const UP_PROBE_MAX_MS = 480_000;
 
-// Encoder-error bounding (Decision 7): a second error this soon after an
+// Encoder-error bounding: a second error this soon after an
 // error-triggered reset means the problem is not resolution — fail.
 export const ERROR_FAIL_WINDOW_MS = 10_000;
 
@@ -121,8 +119,8 @@ export class FallbackController {
     return 'none';
   }
 
-  // Decision 7 bounding. The auto/explicit split lives in the pipeline: it
-  // ignores 'stepDown' outside auto mode and fails instead.
+  // The auto/explicit split lives in the pipeline: it ignores 'stepDown'
+  // outside auto mode and fails instead.
   onEncoderError(nowMs: number): 'stepDown' | 'fail' {
     this.resolveProbeSurvival(nowMs);
     if (this.downLatched) return 'fail'; // already at the floor

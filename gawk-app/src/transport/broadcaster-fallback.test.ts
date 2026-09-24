@@ -1,6 +1,6 @@
-// R4 pipeline-integration tests (docs/09, chunk I2). Unlike broadcaster.test.ts
-// (URLs / announce / start failures) these drive real frames through the
-// pipeline with a controllable fake Encoder and an injected clock, so the
+// Fallback pipeline-integration tests. Unlike broadcaster.test.ts (URLs /
+// announce / start failures) these drive real frames through the pipeline
+// with a controllable fake Encoder and an injected clock, so the
 // FallbackController's time-based decisions are deterministic. The
 // FramePreprocessor is mocked to a passthrough that records the rung the
 // pipeline commands (real scaling needs OffscreenCanvas/VideoFrame, and it
@@ -20,7 +20,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./connection', () => ({
   connectWebTransport: (...args: unknown[]) => connectWebTransport(...args),
-  // Time-sync reply loop (R5 Q2): stays open, delivers nothing.
+  // Time-sync reply loop: stays open, delivers nothing.
   readDatagrams: () => new Promise(() => {}),
   DatagramSender: class {
     send = vi.fn(() => Promise.resolve());

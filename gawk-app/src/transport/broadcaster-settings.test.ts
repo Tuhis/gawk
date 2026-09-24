@@ -1,8 +1,8 @@
-// R13 pipeline-integration tests (docs/18, chunk L2): the advanced encoder
-// settings — bitrate override, codec pin, acceleration tri-state — reach the
-// encoder's negotiated config, changes recreate the encoder mid-stream, and
-// the old >1080p@>30 force-cap is gone (an explicit 4K@60 choice is honored
-// as-is). Same fake-encoder harness shape as broadcaster-fallback.test.ts.
+// Advanced encoder settings pipeline-integration tests: bitrate override,
+// codec pin and acceleration tri-state reach the encoder's negotiated config,
+// changes recreate the encoder mid-stream, and an explicit 4K@60 choice is
+// honored as-is (no >1080p force-cap). Same fake-encoder harness shape as
+// broadcaster-fallback.test.ts.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -476,7 +476,7 @@ describe('capture alignment via applyConstraints (docs/18 Decision 6, L3)', () =
   });
 });
 
-// docs/33 D17: telemetry has to know what the stream was ASKED to be, or a
+// Telemetry has to know what the stream was ASKED to be, or a
 // sustained shortfall is indistinguishable from a stream configured that way.
 // Recorded from what the encoder COMMITTED to, never from the settings that
 // asked for it — a rung can be refused, clamped or renegotiated.

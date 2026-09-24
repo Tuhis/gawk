@@ -90,29 +90,27 @@ export interface BroadcastStats {
   datagramsSent: number;
   bytesSent: number;
   configsSent: number;
-  // R8: keyframes travel over reliable uni streams, deltas over datagrams.
+  // Keyframes travel over reliable uni streams, deltas over datagrams.
   keyframeStreamsSent: number;
   keyframeStreamsFailed: number;
   keyframeBytesSent: number;
   encoderQueueDepth: number;
   encoderFps: number;
   lastEncodeLatencyMs: number;
-  // R9 funnel rates (docs/13 D5): capture → post-gate → encoded → sent.
+  // Funnel rates: capture → post-gate → encoded → sent.
   // A rate gap between two adjacent stages localizes the bottleneck to that
   // stage. captureFps counts frames delivered by the capture path *before*
   // the fps gate; sentFps counts frames whose bytes were actually handed to
   // the transport without error (the "actually sent framerate").
   captureFps: number;
   sentFps: number;
-  // R9 connection health for this leg (broadcaster→relay); null when the
+  // Connection health for this leg (broadcaster→relay); null when the
   // browser doesn't implement WebTransport.getStats().
   connection: TransportConnectionStats | null;
-  // R5 Q2: self-owned broadcaster↔relay RTT from the TimeSync exchange —
-  // works where getStats() doesn't (no browser ships it today — docs/13 D7).
-  // Null until
-  // the first ping/pong completes.
+  // Self-owned broadcaster↔relay RTT from the TimeSync exchange — works
+  // where getStats() doesn't. Null until the first ping/pong completes.
   timeSyncRttMs: number | null;
-  // R4 automatic-fallback observability (docs/09). autoRung is the currently
+  // Automatic-fallback observability. autoRung is the currently
   // applied ladder rung in auto mode, null in explicit mode. encoderPressure
   // is the explicit-mode passive warning: the encoder can't keep up but the
   // rung is held because the broadcaster chose it.
@@ -121,27 +119,26 @@ export interface BroadcastStats {
   autoStepDowns: number;
   autoStepUps: number;
   encoderPressure: boolean;
-  // R13 (docs/18): the HW-aware auto ceiling (null in explicit resolution
+  // The HW-aware auto ceiling (null in explicit resolution
   // mode) and the resolved 'auto' framerate (null when the fps selection is
   // an explicit rung).
   autoCeiling: ResolutionRung | null;
   autoFps: number | null;
-  // R11 (docs/16): where the pipeline runs, detected via `window` absence
-  // (the viewer's R10 convention) — 'worker' on the offloaded path.
+  // Where the pipeline runs, detected via `window` absence — 'worker' on the
+  // offloaded path.
   pipelineContext: 'worker' | 'main-thread';
-  // R18 (docs/23 Decision 7): the live "N watching" number the relay pushes
+  // The live "N watching" number the relay pushes
   // to this publisher session (~1 s cadence, change-driven). Null until the
   // first push lands; survives transport resumes (the new session re-pushes
   // within a tick).
   viewerCount: number | null;
-  // R15 (docs/20 Decision 6): the audio lane. 'off' = toggle off (zero audio
-  // code paths ran); 'no-track' = requested but the grant had no audio track
-  // (Firefox, unchecked picker box) — a state, not an error; 'unavailable' =
-  // the browser refused to start an audio source at all and capture fell back
-  // to a video-only grant (Chromium on Linux/macOS screen shares — R15 field
-  // finding); 'unsupported' = track present but this scope lacks
-  // AudioEncoder/MSTP; 'error' = the lane died mid-broadcast (video
-  // continues).
+  // The audio lane. 'off' = audio not requested (zero audio code paths
+  // ran); 'no-track' = requested but the grant had no audio track (Firefox,
+  // unchecked picker box) — a state, not an error; 'unavailable' = the
+  // browser refused to start an audio source at all and capture fell back to
+  // a video-only grant (Chromium on Linux/macOS screen shares);
+  // 'unsupported' = track present but this scope lacks AudioEncoder/MSTP;
+  // 'error' = the lane died mid-broadcast (video continues).
   audioState: 'off' | 'no-track' | 'unavailable' | 'unsupported' | 'active' | 'error';
   audioEncodedPackets: number;
   audioPacketsSent: number;
@@ -153,36 +150,33 @@ export interface BroadcastStats {
   audioChannels: number | null;
   audioCodec: string | null;
   audioBitrateBps: number | null;
-  // R29 (docs/34): forward parity on the delta path. parityLevel is what this
-  // producer is EMITTING — the fleet level the relay advertised via
-  // RelayCapabilities, 0 when the relay predates R29 or is configured off.
-  // It is not a request: a producer cannot choose to protect a stream the
-  // fleet has not asked it to protect, because the relay is what filters the
-  // symbols per subscriber.
+  // Forward parity on the delta path. parityLevel is what this producer is
+  // EMITTING — the fleet level the relay advertised via RelayCapabilities, 0
+  // when the relay advertises none or is configured off. It is not a
+  // request: a producer cannot choose to protect a stream the fleet has not
+  // asked it to protect, because the relay is what filters the symbols per
+  // subscriber.
   parityLevel: number;
   parityChunksSent: number;
   parityBytesSent: number;
-  // docs/20 field finding 13: how long the encoder took to hand back the
-  // packet for a captured frame. Audio timestamps are pinned at capture
-  // arrival (the stage video is stamped at), so this delay is measured rather
-  // than written into them — which is what it used to be, invisibly, putting
-  // every viewer's audio that far behind its picture.
+  // How long the encoder took to hand back the packet for a captured frame.
+  // Audio timestamps are pinned at capture arrival (the stage video is
+  // stamped at), so this delay is measured rather than written into them.
   audioEncodeLagMs: number | null;
   // Times the audio media clock drifted far enough to be re-pinned. Each one
   // steps the audio timeline against video.
   audioAnchorReanchors: number;
-  // R28 D17 (docs/33 §4.11): what this broadcast was ASKED to be, as opposed
-  // to what it turned out to be. Everything else on this object is an
-  // outcome; without the target, no consumer can compute the difference —
-  // "30 fps" reads identically whether 30 or 60 was requested, and a session
-  // that delivered half its intended rate has a perfect funnel and no dips.
+  // What this broadcast was ASKED to be, as opposed to what it turned out to
+  // be. Everything else on this object is an outcome; without the target, no
+  // consumer can compute the difference — "30 fps" reads identically whether
+  // 30 or 60 was requested, and a session that delivered half its intended
+  // rate has a perfect funnel and no dips.
   //
-  // Deliberately NOT read back from the settings store or
-  // `getSettings()`: these are the values the encoder actually committed to
+  // Deliberately NOT read back from the settings store or `getSettings()`:
+  // these are the values the encoder actually committed to
   // (`EncoderConfigured`), which is the same "trust the real thing, not the
-  // metadata" rule the capture path follows. Null until the encoder
-  // configures — an unconfigured broadcast has no target, and a zero would
-  // claim one.
+  // metadata" rule the capture path follows. Null until the encoder configures
+  // — an unconfigured broadcast has no target, and a zero would claim one.
   targetWidth: number | null;
   targetHeight: number | null;
   targetFps: number | null;
@@ -192,18 +186,12 @@ export interface BroadcastStats {
   // beside the targets rather than in the funnel.
   codec: string | null;
   acceleration: string | null;
-  // R28 follow-up: was the tab in the background, and for how long?
-  //
-  // A backgrounded broadcaster is not the same failure as a stalled one — the
-  // browser throttles a hidden tab, so capture and encode rates fall for a
-  // reason that is nothing to do with the pipeline. `documentHiddenMs` is
-  // CUMULATIVE so a reader can take a delta between two samples and get the
-  // hidden share of the interval that produced a rate; "hidden right now"
-  // alone cannot answer that, because a sample is an instant and every rate
-  // here is measured over a window.
-  //
-  // Attached on the main thread by BroadcasterScreen: the pipeline runs in a
-  // worker (R11), where `document` does not exist.
+  // Whether the tab is hidden, and for how long in total. The browser
+  // throttles a hidden tab, so capture and encode rates fall for a reason
+  // outside the pipeline. `documentHiddenMs` is CUMULATIVE so a reader can
+  // delta two samples and get the hidden share of the window a rate was
+  // measured over. Attached on the main thread by BroadcasterScreen: the
+  // pipeline may run in a worker, where `document` does not exist.
   documentHidden?: boolean;
   documentHiddenMs?: number;
 }
@@ -267,19 +255,19 @@ export interface BroadcastCallbacks {
   onError: (err: Error) => void;
   onEnded: () => void;
   onBroadcastId?: (id: string) => void;
-  // R17 W2: the hex resume token minted by the relay (wire 0x09). The UI
+  // The hex resume token minted by the relay (wire 0x09). The UI
   // keeps it next to the broadcast ID so a manual restart can reclaim.
   onResumeToken?: (token: string) => void;
-  // R17 W2 auto-resume: the session died mid-broadcast and a transport-only
+  // Auto-resume: the session died mid-broadcast and a transport-only
   // reconnect is scheduled (capture + encoder stay alive, frames drop).
   onReconnecting?: (info: ReconnectInfo) => void;
   // The transport reconnected; the pipeline forced a fresh keyframe.
   onResumed?: () => void;
-  // R28 (docs/33 D2): this session's telemetry identity, straight off wire
-  // 0x0D. Optional on purpose — a relay predating R28, or one with telemetry
-  // off, never sends it, and the collector's correct behaviour then is to
-  // collect nothing. Fires once per transport session, so an auto-resume
-  // delivers a fresh identity for the new session.
+  // This session's telemetry identity, straight off wire 0x0D. Optional on
+  // purpose — an older relay, or one with telemetry off, never sends it, and
+  // the collector's correct behaviour then is to collect nothing. Fires once
+  // per transport session, so an auto-resume delivers a fresh identity for the
+  // new session.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   onTelemetryEndpoint?: (url: string) => void;
 }
@@ -290,8 +278,8 @@ function roundDownToEven(n: number): number {
 
 export type BroadcastStartPhase = 'connect' | 'capture';
 
-// R13 (docs/18): the advanced encoder settings. hwPreference selects the
-// variant cascade (Decision 5); bitrateOverride (bps, clamped by
+// The advanced encoder settings. hwPreference selects the variant cascade;
+// bitrateOverride (bps, clamped by
 // clampBitrateOverride) replaces the ladder math while set; codecOverride
 // pins the preference list to one codec. All three take effect via encoder
 // recreate on the next frame — never a stream restart.
@@ -307,7 +295,7 @@ export const DEFAULT_ENCODER_SETTINGS: EncoderSettings = {
   codecOverride: null,
 };
 
-// R11 (docs/16): the surface BroadcasterScreen drives. Implemented by
+// The surface BroadcasterScreen drives. Implemented by
 // BroadcastPipeline (main thread) and WorkerBroadcastSession (worker path),
 // so the screen's reclaim/mint/error logic is path-agnostic.
 export interface BroadcastSessionLike {
@@ -317,7 +305,7 @@ export interface BroadcastSessionLike {
   setEncoderSettings(settings: EncoderSettings): void;
 }
 
-// Default media source: the existing main-thread capture path, unchanged.
+// Default media source: the main-thread capture path.
 // Lives here (not capture.ts) so tests that mock '../media/capture' keep
 // stubbing startCapture/stopCapture without also faking the adapter.
 // `grant` is the display stream BroadcasterScreen requested in the start
@@ -333,9 +321,10 @@ export const captureMediaSourceFrom = (
     // don't carry a rate, and it only seeds the encoder's rate-control hint
     // when the framerate rung is 'native'.
     nativeFps: handle.track.getSettings().frameRate ?? null,
-    // R15: the system-audio track when the toggle asked and the grant
-    // delivered; stopCapture stops every stream track, audio included. Never
-    // even inspected with the toggle off (also: fakes without audio APIs).
+    // The system-audio track when audio was requested and the grant
+    // delivered one; stopCapture stops every stream track, audio included.
+    // Never inspected when audio wasn't requested (also: fakes without audio
+    // APIs).
     audioTrack: config.audio ? (handle.stream.getAudioTracks?.()[0] ?? null) : null,
     audioUnavailable: handle.audioUnavailable,
     onEnded: (cb) => handle.track.addEventListener('ended', cb),
@@ -394,9 +383,9 @@ export class BroadcastPipeline {
   private encoder: Encoder | null = null;
   private stopping = false;
 
-  // R3 ladder (docs/08): gate + scale before encode. The encoder is
-  // recreated — not reconfigured — whenever the preprocessed frames stop
-  // matching its configured size, or a ladder change is flagged.
+  // Ladder: gate + scale before encode. The encoder is recreated — not
+  // reconfigured — whenever the preprocessed frames stop matching its
+  // configured size, or a ladder change is flagged.
   private preprocessor = new FramePreprocessor();
   private ladderFps: FramerateSelection = 'native';
   private pendingEncoderReset = false;
@@ -404,13 +393,13 @@ export class BroadcastPipeline {
   private encoderDims: { width: number; height: number } | null = null;
   private nativeFps: number | null = null;
 
-  // R13 probe matrix state (docs/18). The matrix is probed once at start
-  // (pre-capture 4K upper bound) and refined from real frame dims — but only
+  // Probe matrix state. The matrix is probed once at start (pre-capture 4K
+  // upper bound) and refined from real frame dims — but only
   // upward (monotonic max): our own applyConstraints shrinks the frames, and
   // re-probing at constrained dims would feed the ceiling its own output
   // (constrain → smaller frames → "source is smaller" → different ceiling →
-  // constrain…). A null prober (no WebCodecs in scope) keeps the pre-R13
-  // optimistic defaults: ceiling native, auto fps 30.
+  // constrain…). A null prober (no WebCodecs in scope) keeps optimistic
+  // defaults: ceiling native, auto fps 30.
   private prober: EncoderSupportProber | null;
   private matrix: SupportMatrix | null = null;
   private matrixGen = 0;
@@ -419,10 +408,10 @@ export class BroadcastPipeline {
   private probedSourceDims: SourceDims | null = null;
   private lastConstraintsKey: string | null = null;
 
-  // R4 automatic fallback (docs/09). The controller is pure and timer-free;
-  // the pipeline resolves its direction decisions against a per-source
-  // effective ladder. Auto state is runtime-only — reset to the ceiling on
-  // every start and on any resolution-selection change (Decision 6).
+  // Automatic fallback. The controller is pure and timer-free; the pipeline
+  // resolves its direction decisions against a per-source effective ladder.
+  // Auto state is runtime-only — reset to the ceiling on every start and on
+  // any resolution-selection change.
   private resolutionSelection: ResolutionSelection = 'auto';
   private encoderSettings: EncoderSettings = DEFAULT_ENCODER_SETTINGS;
   private controller = new FallbackController();
@@ -437,15 +426,14 @@ export class BroadcastPipeline {
   // keyframe (the relay additionally caches and re-emits it).
   private configDatagram: Uint8Array<ArrayBuffer> | null = null;
 
-  // R17 W2 auto-resume state. resumeToken is minted by the relay (0x09) and
+  // Auto-resume state. resumeToken is minted by the relay (0x09) and
   // presented on every /publish/{id} claim; connGeneration invalidates
   // callbacks from a torn-down transport so a stale wt.closed can't disturb
   // its successor; the frameId counter deliberately survives resumes —
-  // frameID continuity IS the viewer's resume-vs-restart signal (docs/22
-  // Decision 6).
+  // frameID continuity IS the viewer's resume-vs-restart signal.
   private resumeToken: string | null = null;
-  // R29: the fleet parity level, learned from RelayCapabilities. 0 until the
-  // relay says otherwise, so an old relay (which sends nothing) and a fleet
+  // The fleet parity level, learned from RelayCapabilities. 0 until the
+  // relay says otherwise, so an older relay (which sends nothing) and a fleet
   // configured off are the same code path — no parity is ever emitted.
   private parityLevel = 0;
   private connGeneration = 0;
@@ -457,15 +445,15 @@ export class BroadcastPipeline {
   private encodedSinceStats = 0;
   private capturedSinceStats = 0;
   private sentSinceStats = 0;
-  // R15 audio lane (docs/20 Decision 6): strictly subordinate — its errors
-  // annotate, never fail the broadcast.
+  // Audio lane: strictly subordinate — its errors annotate, never fail the
+  // broadcast.
   private audioLane: RunningAudioLane | null = null;
   private lastAudioEncoded = 0;
   private lastAudioSent = 0;
   private connSampler: ConnectionStatsSampler | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
 
-  // R5 Q2 (docs/16): relay clock sync + the ClockMapping publication. Frame
+  // Relay clock sync + the ClockMapping publication. Frame
   // timestamps are already on this machine's performance.now() timeline
   // (capture.ts re-stamps at capture), so the TimeSync offset IS the mapping.
   private timeSync: TimeSyncClient | null = null;
@@ -478,14 +466,15 @@ export class BroadcastPipeline {
     connectOpts: ConnectOptions,
     callbacks: BroadcastCallbacks,
     broadcastId?: string,
-    // Injectable clock (defaults to performance.now); the R4 controller's
-    // decisions are time-based, so tests drive it deterministically.
+    // Injectable clock (defaults to performance.now); the fallback
+    // controller's decisions are time-based, so tests drive it
+    // deterministically.
     now: () => number = () => performance.now(),
-    // R11 (docs/16): where frames come from. Default is the main-thread
+    // Where frames come from. Default is the main-thread
     // getDisplayMedia capture; the broadcast worker injects a source built
     // around a transferred track.
     mediaSource: BroadcastMediaSourceFactory = captureMediaSource,
-    // R13 (docs/18): injectable for tests; null (no WebCodecs in scope)
+    // Injectable for tests; null (no WebCodecs in scope)
     // disables the matrix and keeps optimistic defaults.
     prober?: EncoderSupportProber,
   ) {
@@ -516,12 +505,12 @@ export class BroadcastPipeline {
       throw new BroadcastStartError('connect', e);
     }
     if (this.stopping) {
-      // stop() raced the first dial, the same race resumeTransport guards:
+      // stop() raced the first dial, the same race tryResume guards:
       // teardown() ran with no session yet, so this one would be a zombie
       // publisher holding the broadcast ID, and it would go on to consume the
-      // screen grant after the page gave up on it (PR #373 review). stop()
-      // already fired onEnded; resolve quietly, because a connect-phase
-      // rejection would make the screen fall back from reclaim to a mint.
+      // screen grant after the page gave up on it. stop() already fired
+      // onEnded; resolve quietly, because a connect-phase rejection would make
+      // the screen fall back from reclaim to a mint.
       this.teardownTransport();
       return;
     }
@@ -530,9 +519,9 @@ export class BroadcastPipeline {
     // timer for the pipeline's life — it survives transport resumes.
     this.clockMappingTimer = setInterval(() => this.maybeSendClockMapping(), 1000);
 
-    // R13: probe the support matrix before media starts, so the first
-    // encoder init already resolves the auto ceiling / auto fps (docs/18
-    // Decision 3). Never throws; a probe-less scope keeps the defaults.
+    // Probe the support matrix before media starts, so the first encoder
+    // init already resolves the auto ceiling / auto fps. Never throws; a
+    // probe-less scope keeps the defaults.
     await this.refreshMatrix();
     // stop() during the probe: teardown() already closed the session, and
     // capturing now would own a stream nothing ever stops.
@@ -550,8 +539,8 @@ export class BroadcastPipeline {
   }
 
   // The /publish dial URL. Auth crosses as query params — the WebTransport
-  // JS API can't set headers: the publish secret (R2), and for any
-  // /publish/{id} claim the resume token (R17 W2, required by the relay).
+  // JS API can't set headers: the publish secret, and for any
+  // /publish/{id} claim the resume token (required by the relay).
   private publishUrl(): string {
     const path = this.broadcastId ? `/publish/${this.broadcastId}` : '/publish';
     const urlObj = new URL(path, this.serverUrl);
@@ -584,11 +573,10 @@ export class BroadcastPipeline {
       });
 
     // The server-message read is detached: media flow must never wait on the
-    // announce (docs/06) — only the UI code display and the resume token
-    // consume it.
+    // announce — only the UI code display and the resume token consume it.
     void this.readServerMessages(wt);
 
-    // Relay clock sync (R5 Q2). Pings ride the ordinary datagram sender; the
+    // Relay clock sync. Pings ride the ordinary datagram sender; the
     // read loop exists solely to catch replies (the relay sends the publisher
     // nothing else as datagrams). Failures are the session's problem, not the
     // ping loop's. Fresh estimator per session — the new pod has a new clock.
@@ -596,8 +584,8 @@ export class BroadcastPipeline {
     this.timeSync = new TimeSyncClient((d) => void sender.send([d]).catch(() => {}));
     this.timeSync.start();
     void readDatagrams(wt, (dgram) => {
-      // R18 (docs/23 Decision 7): the relay pushes the live viewer count on
-      // this session; everything else stays TimeSync's.
+      // The relay pushes the live viewer count on this session; everything
+      // else stays TimeSync's.
       if (dgram.length === VIEWER_COUNT_SIZE && dgram[1] === TYPE_VIEWER_COUNT) {
         try {
           this.stats.viewerCount = parseViewerCount(dgram);
@@ -611,8 +599,9 @@ export class BroadcastPipeline {
   }
 
   // Reads server-initiated unidirectional streams for the session's life,
-  // dispatching each message by wire type: BroadcastAnnounce (0x03) and, per
-  // R17 W2, the ResumeToken (0x09) — arrival order is not guaranteed.
+  // dispatching each message by wire type (BroadcastAnnounce 0x03,
+  // ResumeToken 0x09, telemetry, relay capabilities) — arrival order is not
+  // guaranteed.
   // Failures are logged, never fatal: the broadcast runs fine without the
   // code being displayed.
   private async readServerMessages(wt: WebTransport): Promise<void> {
@@ -668,17 +657,17 @@ export class BroadcastPipeline {
           if (!this.stopping) this.cb.onResumeToken?.(this.resumeToken);
           break;
         }
-        // R28 (docs/33 D2): this session's telemetry identity. Parsed here and
-        // handed straight out — the pipeline never collects or sends anything
-        // itself (D13: collection lives on the main thread). A relay predating
-        // R28 sends no such stream, which is why the callback is optional on
-        // both sides rather than a required handshake step.
+        // This session's telemetry identity. Parsed here and handed straight
+        // out — the pipeline never collects or sends anything itself
+        // (collection lives on the main thread). An older relay sends no such
+        // stream, which is why the callback is optional on both sides rather
+        // than a required handshake step.
         case TYPE_TELEMETRY_HELLO: {
           const hello = parseTelemetryHello(data);
           if (!this.stopping) this.cb.onTelemetryHello?.(hello);
           break;
         }
-        // R37 (docs/40 §4.10): where this session's telemetry should go.
+        // Where this session's telemetry should go.
         // Same route as the hello (main-thread pipeline; the worker shell
         // forwards neither — collection begins only where a hello lands).
         case TYPE_TELEMETRY_ENDPOINT: {
@@ -686,11 +675,9 @@ export class BroadcastPipeline {
           if (!this.stopping) this.cb.onTelemetryEndpoint?.(url);
           break;
         }
-        // R29 (docs/34 §4.4): the fleet's parity level. A relay predating R29
-        // sends no such stream, so parityLevel stays 0 and this producer emits
-        // no parity chunks — which is what keeps a new broadcaster against an
-        // old relay byte-identical to pre-R29. A relay that HAS the feature
-        // but is configured off sends level 0 for the same effect, so the
+        // The fleet's parity level. An older relay sends no such stream, so
+        // parityLevel stays 0 and this producer emits no parity chunks. A
+        // relay configured off sends level 0 for the same effect, so the
         // fleet can be turned down from one chart value.
         case TYPE_RELAY_CAPABILITIES: {
           const caps = parseRelayCapabilities(data);
@@ -712,15 +699,15 @@ export class BroadcastPipeline {
   // reset flag because the frame size doesn't move (the encoder's
   // framerate/bitrate config must still follow the rung).
   //
-  // R4 (docs/09): the resolution axis is a ResolutionSelection. 'auto' walks
-  // the ladder on its own; an explicit rung is honored unconditionally (never
+  // The resolution axis is a ResolutionSelection. 'auto' walks the ladder on
+  // its own; an explicit rung is honored unconditionally (never
   // auto-stepped). A resolution-selection change resets auto state to the
-  // ceiling (Decision 6); a framerate-only change keeps the current auto rung.
+  // ceiling; a framerate-only change keeps the current auto rung.
   setLadder(selection: ResolutionSelection, framerate: FramerateSelection): void {
     const selectionChanged = selection !== this.resolutionSelection;
     this.resolutionSelection = selection;
     this.ladderFps = framerate;
-    // Both R13 'auto' resolutions are matrix lookups — sync, no re-probe
+    // Both 'auto' resolutions are matrix lookups — sync, no re-probe
     // (the matrix covers every fps rung).
     this.resolveFromMatrix();
     const fps = this.effectiveFpsRung();
@@ -757,7 +744,7 @@ export class BroadcastPipeline {
     this.syncCaptureConstraints();
   }
 
-  // R13 (docs/18): advanced encoder settings — acceleration tri-state,
+  // Advanced encoder settings — acceleration tri-state,
   // bitrate override, codec pin. Like setLadder, safe any time; takes
   // effect via encoder recreate on the next captured frame. A change resets
   // the fallback controller for the same reason a ladder change does: the
@@ -787,8 +774,8 @@ export class BroadcastPipeline {
     return this.autoRungs[this.autoIndex];
   }
 
-  // R13 (docs/18 Decision 4): the effective framerate rung — 'auto' resolves
-  // to the matrix's framerate-first answer (conservative 30 until probed).
+  // The effective framerate rung — 'auto' resolves to the matrix's
+  // framerate-first answer (conservative 30 until probed).
   private effectiveFpsRung(): FramerateRung {
     return this.ladderFps === 'auto' ? this.resolvedAutoFps : this.ladderFps;
   }
@@ -878,7 +865,7 @@ export class BroadcastPipeline {
     this.syncCaptureConstraints();
   }
 
-  // docs/18 Decision 6: capture follows the *sticky* target — the explicit
+  // Capture follows the *sticky* target — the explicit
   // rung, or the auto ceiling — never the current auto step (up-probes need
   // the higher-res source still flowing). Failures are non-fatal by
   // construction: the preprocessor keeps scaling whatever actually arrives.
@@ -921,7 +908,7 @@ export class BroadcastPipeline {
 
     // Initial capture alignment with the sticky target (explicit rung, or
     // the pre-capture auto ceiling); later matrix refinements and setting
-    // changes re-sync as they land (docs/18 Decision 6).
+    // changes re-sync as they land.
     this.syncCaptureConstraints();
 
     media.onEnded(() => {
@@ -939,7 +926,7 @@ export class BroadcastPipeline {
         frame.close();
         return;
       }
-      // Funnel stage 1 (R9): frames the capture path delivered, pre-gate.
+      // Funnel stage 1: frames the capture path delivered, pre-gate.
       this.capturedSinceStats++;
 
       // Auto mode resolves against a per-source effective ladder; the source
@@ -977,14 +964,14 @@ export class BroadcastPipeline {
       processed.close();
 
       // Feed every accept/reject outcome to the fallback controller and act
-      // on its decision (R4, docs/09). fps-gate drops never reach here — they
-      // are not encoder backpressure — so the ratio stays self-normalizing.
+      // on its decision. fps-gate drops never reach here — they are not
+      // encoder backpressure — so the ratio stays self-normalizing.
       this.applyDecision(this.controller.record(accepted, this.now()));
     });
   }
 
-  // R15 (docs/20 Decision 6): starts the audio lane when the toggle asked
-  // for audio and the environment can run it. Every non-active outcome is a
+  // Starts the audio lane when audio was requested and the environment can
+  // run it. Every non-active outcome is a
   // stats annotation, never an error — video-only is a first-class state.
   private startAudioLane(media: BroadcastMediaSource): void {
     if (!this.config.audio) return; // audioState stays 'off' — zero audio paths
@@ -1008,12 +995,11 @@ export class BroadcastPipeline {
     }
     // Construction itself can throw (an ended track, a scope whose MSTP
     // rejects audio tracks). This runs inside startMedia(), so an escaping
-    // throw would fail the whole broadcast with a capture-phase error —
-    // precisely what Decision 6 forbids. Audio is strictly additive: it may
-    // annotate, never abort.
+    // throw would fail the whole broadcast with a capture-phase error. Audio
+    // is strictly additive: it may annotate, never abort.
     try {
       this.audioLane = startAudioLane(track, {
-        // Reads the live sender so the lane survives R17 transport resumes
+        // Reads the live sender so the lane survives transport resumes
         // (packets during the gap reject and drop — live-edge, no buffering).
         send: (datagrams) => {
           const sender = this.sender;
@@ -1038,7 +1024,7 @@ export class BroadcastPipeline {
   // Recomputes the auto ladder when the source dimensions first appear or
   // change (a window-share resize). A change resets to the ceiling and a
   // fresh baseline — rare, and better than guessing an equivalent index.
-  // R13: the ladder is sliced at the HW-aware ceiling, and real dims refine
+  // The ladder is sliced at the HW-aware ceiling, and real dims refine
   // the probe matrix (upward only — see maybeRefineMatrix).
   private updateAutoLadder(srcWidth: number, srcHeight: number): void {
     const srcLongerDim = Math.max(srcWidth, srcHeight);
@@ -1063,7 +1049,7 @@ export class BroadcastPipeline {
 
   // Acts on a controller decision. In auto mode it walks the ladder; in
   // explicit mode a would-be step-down only raises the passive pressure
-  // warning (Decision 8) — the rung is never touched.
+  // warning — the rung is never touched.
   private applyDecision(decision: 'none' | 'stepDown' | 'stepUp'): void {
     if (decision === 'none') return;
     if (this.resolutionSelection !== 'auto') {
@@ -1093,8 +1079,8 @@ export class BroadcastPipeline {
     this.stats.autoAtFloor = false;
     if (delta > 0) this.stats.autoStepDowns++;
     else this.stats.autoStepUps++;
-    // Auto steps are encode-only (docs/18 Decision 7): no
-    // syncCaptureConstraints here — capture stays at the sticky target.
+    // Auto steps are encode-only: no syncCaptureConstraints here — capture
+    // stays at the sticky target.
     this.preprocessor.setTarget(this.autoRungs[this.autoIndex], this.effectiveFpsRung());
     this.pendingEncoderReset = true;
   }
@@ -1108,7 +1094,7 @@ export class BroadcastPipeline {
   }
 
   // (Re)creates the encoder from an actual frame's dimensions — never
-  // track.getSettings() (see docs/01-loopback-test.md). Consumes the frame:
+  // track.getSettings(). Consumes the frame:
   // it becomes the encoder's first input (a keyframe) on success.
   private initEncoder(firstFrame: VideoFrame): void {
     this.encoderIniting = true;
@@ -1122,12 +1108,12 @@ export class BroadcastPipeline {
     const framerate = fpsRung === 'native' ? (this.nativeFps ?? this.config.framerate) : fpsRung;
 
     const proceedInit = async () => {
-      // R13: the advanced settings shape the negotiation — codec pin narrows
-      // the preference walk to one, the bitrate override replaces the ladder
-      // math, and the tri-state selects the variant cascade. The old
-      // >1080p@>30 force-cap is gone (docs/18 Decision 10): the HW-aware
-      // auto ceiling covers the default path, and an explicit high rung is
-      // honored (and merely annotated), never silently capped.
+      // The advanced settings shape the negotiation — codec pin narrows the
+      // preference walk to one, the bitrate override replaces the ladder
+      // math, and the tri-state selects the variant cascade. Don't force-cap
+      // >1080p to 30 fps here: the HW-aware auto ceiling covers the default
+      // path, and an explicit high rung is honored (and merely annotated),
+      // never silently capped.
       const settings = this.encoderSettings;
       const negotiatedConfig: CaptureConfig = {
         ...this.config,
@@ -1157,12 +1143,12 @@ export class BroadcastPipeline {
         this.encoder = enc;
         this.encoderDims = { width, height };
         this.encoderIniting = false;
-        // The one place the target is actually decided (D17). Recorded from
+        // The one place the target is actually decided. Recorded from
         // what the encoder COMMITTED to, not from the settings that asked for
         // it — a rung can be refused, clamped or renegotiated, and telemetry
         // that reported the request would describe a stream that never ran.
-        // Re-runs on every encoder recreate, so an R4 auto step or an R13
-        // live settings change moves the target with it.
+        // Re-runs on every encoder recreate, so an auto step or a live
+        // settings change moves the target with it.
         this.stats.targetWidth = chosen.width;
         this.stats.targetHeight = chosen.height;
         this.stats.targetFps = chosen.framerate;
@@ -1215,7 +1201,7 @@ export class BroadcastPipeline {
     if (chunk.type === 'key') {
       // Keyframe → one reliable unidirectional stream carrying the current
       // config (embedded, so the keyframe is self-sufficient) + the payload.
-      // A lost datagram can no longer strand a keyframe for a whole GOP.
+      // A lost datagram cannot strand a keyframe for a whole GOP.
       let msg: Uint8Array<ArrayBuffer>;
       try {
         msg = packetizeStreamKeyframe(
@@ -1233,7 +1219,7 @@ export class BroadcastPipeline {
     }
 
     // Delta → datagrams (fast, lossy; a loss costs one frame, not a GOP).
-    // R29: plus up to parityLevel parity symbols, which turn "a loss costs one
+    // Plus up to parityLevel parity symbols, which turn "a loss costs one
     // frame" into "a loss costs nothing" for the common single-chunk case.
     let datagrams: Uint8Array<ArrayBuffer>[];
     let parity: Uint8Array<ArrayBuffer>[];
@@ -1264,14 +1250,14 @@ export class BroadcastPipeline {
         this.stats.bytesSent += bytes;
         this.stats.parityChunksSent += parity.length;
         this.stats.parityBytesSent += parityBytes;
-        // Funnel stage 4 (R9): the whole frame actually left, without error.
+        // Funnel stage 4: the whole frame actually left, without error.
         this.sentSinceStats++;
       })
       .catch(() => {
         // A send failure means the session is dying (or dead): drop the
         // frame and let wt.closed drive the state change — it is the one
-        // signal that carries the close code, and auto-resume (R17 W2)
-        // hangs off it. Failing here would kill a resumable broadcast.
+        // signal that carries the close code, and auto-resume hangs off it.
+        // Failing here would kill a resumable broadcast.
         if (!this.stopping) this.stats.droppedFrames++;
       });
   }
@@ -1300,11 +1286,11 @@ export class BroadcastPipeline {
     }
   }
 
-  // A mid-stream encoder error. In explicit mode it stays fatal (silently
-  // switching resolution against an explicit choice is exactly what Decision 4
-  // rules out). In auto mode it is the strongest backpressure evidence: step
-  // down one rung and recreate, bounded — a second error inside the controller's
-  // window, or an error at the floor, fails for real (Decision 7).
+  // A mid-stream encoder error. In explicit mode it stays fatal (never
+  // silently switch resolution against an explicit choice). In auto mode it
+  // is the strongest backpressure evidence: step down one rung and recreate,
+  // bounded — a second error inside the controller's window, or an error at
+  // the floor, fails for real.
   private handleEncoderError(err: Error): void {
     if (this.resolutionSelection !== 'auto') {
       this.fail(err);
@@ -1345,17 +1331,17 @@ export class BroadcastPipeline {
   // failures defer to it). Mid-broadcast, with an ID + resume token in hand,
   // the pipeline auto-resumes: capture and encoder stay alive (frames drop
   // while disconnected — live-edge, no buffering) and only the transport
-  // reconnects (R17 W2, docs/22 Decision 5). Anything earlier (no media yet,
-  // or the announce/token never landed) fails as before.
+  // reconnects. Anything earlier (no media yet, or the announce/token never
+  // landed) fails.
   private handleSessionGone(gen: number, err: Error | null, closeCode: number | null): void {
     if (this.stopping || gen !== this.connGeneration) return;
     // Terminal codes are checked BEFORE the resume branch: they are the cases
     // in which coming back is the wrong thing to do, not merely futile. 4004
     // only converges because the deposed session stays down, and 4006 means
     // the operator killed this broadcast and banned the ID for at least the
-    // cooldown (R39, docs/42 §4.4) — every reclaim would collect a 451 whose
-    // status the browser cannot even read (docs/42 D15), so the honest end is
-    // here, with a sentence saying what happened.
+    // cooldown — every reclaim would collect a 451 whose status the browser
+    // cannot even read, so the honest end is here, with a sentence saying
+    // what happened.
     if (isTerminalPublisherClose(closeCode)) {
       log.info(`Relay ended this publisher session (code ${closeCode}). Not resuming.`);
       this.fail(new Error(terminalPublisherMessage(closeCode)));
@@ -1395,7 +1381,7 @@ export class BroadcastPipeline {
 
   private scheduleResumeAttempt(closeCode: number | null, reason: string): void {
     // stop() may race a dial that is already in flight; its failure must not
-    // schedule anything (or surface errors) after onEnded (PR #47 review).
+    // schedule anything (or surface errors) after onEnded.
     if (this.stopping) return;
     this.reconnectAttempt += 1;
     if (this.reconnectAttempt > RECONNECT_MAX_ATTEMPTS) {
@@ -1427,7 +1413,7 @@ export class BroadcastPipeline {
       // stop() raced the dial: connectTransport just re-armed a live session
       // (wt, sender, TimeSync) after teardown() already ran. Release it — an
       // abandoned session is a zombie publisher holding the broadcast ID
-      // hostage until the tab closes (CODE-REVIEW.md; PR #47 review).
+      // hostage until the tab closes.
       this.teardownTransport();
       return;
     }

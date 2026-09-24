@@ -1,8 +1,7 @@
-// R11 K2 acceptance (docs/16): BroadcastWorkerCore is unit-testable
-// synchronously with a fake host + fake pipeline factory — no real Worker,
-// MSTP, or WebTransport. Pins the command/event mapping, the
-// awaitingCapture/capture handshake, phase preservation, and the generation
-// guard.
+// BroadcastWorkerCore is unit-testable synchronously with a fake host + fake
+// pipeline factory — no real Worker, MSTP, or WebTransport. Pins the
+// command/event mapping, the awaitingCapture/capture handshake, phase
+// preservation, and the generation guard.
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -166,7 +165,7 @@ describe('BroadcastWorkerCore capture handshake', () => {
     expect(track.stop).toHaveBeenCalled();
   });
 
-  // R15 N3 (docs/20): the audio clone rides the capture handshake into the
+  // The audio clone rides the capture handshake into the
   // worker-side media source, and teardown stops both clones.
   it('threads the transferred audio track into the media source', async () => {
     const { core, captured } = makeCore();

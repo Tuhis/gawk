@@ -140,7 +140,7 @@ import {
   type VideoChunkHeader,
 } from './wire';
 
-// Golden vectors copied verbatim from gawk-server/internal/wire/wire_test.go
+// Golden vectors copied verbatim from gawk-server/wire/wire_test.go
 // — the cross-language portability guarantee. Do not regenerate them from
 // code; if they change, the wire format changed.
 const GOLDEN_VIDEO_CHUNK_HEX = '0101010001020304000500820000005d21dba5f0616263';
@@ -152,13 +152,13 @@ const GOLDEN_TIME_SYNC_HEX = '01050102030405060708090a0b0c0d0e0f10';
 const GOLDEN_TIME_SYNC_REQUEST_HEX = '010500000000000f42400000000000000000';
 const GOLDEN_CLOCK_MAPPING_HEX = '0106000000000016e360';
 const GOLDEN_CLOCK_MAPPING_NEGATIVE_HEX = '0106fffffffffff0bdc0';
-// R19 reliable-carrier framing (docs/24 Decision 3).
+// Reliable-carrier framing.
 const GOLDEN_CARRIER_PROLOGUE_HEX = '010a';
 const GOLDEN_CARRIER_RECORD_HEX = '0017' + GOLDEN_VIDEO_CHUNK_HEX;
 // The length prefix of a record at the inclusive upper boundary: a full delta
 // chunk is exactly MAX_DATAGRAM_SIZE (1200 = 0x04b0).
 const GOLDEN_CARRIER_MAX_RECORD_PREFIX_HEX = '04b0';
-// R18 viewer count (docs/23 Decision 2).
+// Viewer count.
 const GOLDEN_VIEWER_COUNT_HEX = '010b00000003';
 const GOLDEN_VIEWER_COUNT_LARGE_HEX = '010b01020304';
 
@@ -498,7 +498,7 @@ describe('carrier record parser (R19)', () => {
   // The inclusive upper boundary of the uint16 length prefix. A full delta
   // chunk is exactly MAX_DATAGRAM_SIZE, so this is the *common* record on a
   // carrier — not an exotic edge — and it must survive both the framing and a
-  // read split landing on the boundary itself (docs/24 finding 15).
+  // read split landing on the boundary itself.
   it('round-trips a record whose datagram is exactly MAX_DATAGRAM_SIZE', () => {
     const dgram = encodeVideoChunk(
       { keyframe: false, frameId: 43, chunkIndex: 1, chunkCount: 2, timestampUs: 7654321n },
@@ -663,7 +663,7 @@ describe('error cases', () => {
     indexBeyondCount[8] = 0;
     indexBeyondCount[9] = 130; // chunkIndex == chunkCount
     expect(() => parseVideoChunk(indexBeyondCount)).toThrow(/index/);
-    // R2: the relay caps keyframe reassembly at MAX_CHUNK_COUNT chunks and
+    // The relay caps keyframe reassembly at MAX_CHUNK_COUNT chunks and
     // counts anything above it as a bad datagram; the TS side must agree.
     const overMaxCount = validChunk.slice();
     const view = new DataView(overMaxCount.buffer);
@@ -721,7 +721,7 @@ describe('error cases', () => {
   });
 });
 
-// ResumeToken (R17 W2, docs/22). Golden vector copied verbatim from
+// ResumeToken. Golden vector copied verbatim from
 // wire_test.go goldenResumeTokenHex.
 const GOLDEN_RESUME_TOKEN_HEX = '010910000102030405060708090a0b0c0d0e0f';
 
@@ -757,7 +757,7 @@ describe('resume token (R17 W2)', () => {
   });
 });
 
-// R21 (docs/26 Decision 7a): the join-time delivery ack. Golden vectors are
+// The join-time delivery ack. Golden vectors are
 // byte-identical to gawk-server/wire's — this is the mirror that keeps them so.
 describe('DeliveryAck (R21)', () => {
   const GOLDEN_DVR_HEX = '010c020bb8';
@@ -787,9 +787,9 @@ describe('DeliveryAck (R21)', () => {
   });
 });
 
-// R28 (docs/33 §4.1): the telemetry hello. Golden vectors are byte-identical
-// to gawk-server/wire's and gawk-broadcast's wirecheck — this is one of the
-// three mirrors that keeps them so.
+// The telemetry hello. Golden vectors are byte-identical to gawk-server/wire's
+// and gawk-broadcast's wirecheck — this is one of the mirrors that keeps them
+// so.
 describe('TelemetryHello (R28)', () => {
   const GOLDEN_HEX =
     '010d0107d000012345000102030405060708090a0ba1a2a3a4a5a6a7a81a2b3c4d5e6f';
@@ -862,11 +862,10 @@ describe('TelemetryHello (R28)', () => {
     expect(() => encodeTelemetryHello({ ...base, broadcastKey: 'zzzzzzzzzzzz' })).toThrow(WireError);
   });
 
-  // The sessionId projection (docs/33 §4.2). The nonce below is the same one
-  // Go's TestGoldenTelemetrySessionToken mints against, so both languages pin
-  // the same 24 characters — this is the value the relay records, the ingest
-  // re-derives, the dashboard prints and (since docs/33 §4.13) the viewer
-  // overlay shows.
+  // The sessionId projection. The nonce below is the same one Go's
+  // TestGoldenTelemetrySessionToken mints against, so both languages pin the
+  // same 24 characters — this is the value the relay records, the ingest
+  // re-derives, the dashboard prints and the viewer overlay shows.
   it('derives the sessionId a token names, from the nonce alone', () => {
     expect(telemetrySessionId(GOLDEN_TOKEN)).toBe('000102030405060708090a0b');
     expect(telemetrySessionId(GOLDEN_TOKEN)).toHaveLength(TELEMETRY_SESSION_ID_LEN);
@@ -881,7 +880,7 @@ describe('TelemetryHello (R28)', () => {
   });
 });
 
-// R30 (docs/35 §5.3): the stripe suppression signal. Golden vectors are
+// The stripe suppression signal. Golden vectors are
 // byte-identical to gawk-server/wire's and gawk-broadcast's wirecheck.
 describe('StripeState (R30)', () => {
   const GOLDEN_STRIPED_HEX = '0110010300';
@@ -931,7 +930,7 @@ describe('StripeState (R30)', () => {
 
   it('assigns stripe ordinals with parity at the tail', () => {
     // Data chunks keep their index; parity follows the data, preserving the
-    // measured tail-of-burst position per leg (docs/34 finding 4).
+    // measured tail-of-burst position per leg.
     expect(stripeOrdinal(7, 20, null)).toBe(7);
     expect(stripeOrdinal(0, 20, 0)).toBe(20);
     expect(stripeOrdinal(0, 20, 1)).toBe(21);
@@ -943,7 +942,7 @@ describe('StripeState (R30)', () => {
   });
 });
 
-// --- R37 RelayIdentity (0x11) + TelemetryEndpoint (0x12) (docs/40 SP4) ---
+// --- RelayIdentity (0x11) + TelemetryEndpoint (0x12) ---
 // Golden vectors restated byte-identically from gawk-server/wire/wire_test.go.
 
 const GOLDEN_RELAY_IDENTITY_HEX = '01110006312e34322e30096761776b20686f6d65';
@@ -973,7 +972,7 @@ describe('relay identity (0x11)', () => {
     });
   });
 
-  // The extension-point contract (docs/40 §4.9): trailing bytes parse as if
+  // The extension-point contract: trailing bytes parse as if
   // absent — appended future fields must not break this build.
   it('tolerates trailing extension bytes', () => {
     expect(parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_HEX + 'a1b2c3'))).toEqual({
@@ -1032,7 +1031,7 @@ describe('telemetry endpoint (0x12)', () => {
   });
 });
 
-// --- R42 room control protocol (0x13–0x16) (docs/44 §4.6) -------------------
+// --- Room control protocol (0x13–0x16) --------------------------------------
 // Golden vectors restated byte-identically from gawk-server/wire/room_test.go
 // (the same concatenation pieces, so a diff against Go lines up). Do not
 // regenerate them from code; if they change, the wire format changed.
@@ -1044,9 +1043,9 @@ const GOLDEN_ROOM_HELLO_HEX = '0113010100057475686973';
 const GOLDEN_ROOM_RECORD_HEX = '000b' + GOLDEN_ROOM_HELLO_HEX;
 // RoomState, dynamic room right after /room/new: flags dynamic|creator
 // (0x03), caps none, seq 7, yourID 1, code "5UP4XW", no display name,
-// creator token 00..0f, one attachment (ABCDEF, label "tuhis", live,
-// 3 viewers), one participant (id 1, web-broadcaster, streaming, "tuhis",
-// no identity).
+// creator token 00..0f, key 1a2b3c4d5e6f, one attachment (ABCDEF, label
+// "tuhis", live, 3 viewers), one participant (id 1, web-broadcaster,
+// streaming, "tuhis", no identity).
 const GOLDEN_ROOM_STATE_DYNAMIC_HEX =
   '0114' + '03' + '00' + '00000007' + '0001' +
   '06355550345857' + '00' +
@@ -1055,8 +1054,8 @@ const GOLDEN_ROOM_STATE_DYNAMIC_HEX =
   '01' + '06414243444546' + '057475686973' + '01' + '00000003' +
   '0001' + '0001' + '01' + '02' + '057475686973' + '00';
 // RoomState, static room, empty: flags attachOK (0x04), caps none, seq 0,
-// yourID 2, code "TuhisRoom", display name "Tuhis' room", no token, no
-// attachments, one participant (id 2, web-viewer, no flags, "viewer").
+// yourID 2, code "TuhisRoom", display name "Tuhis' room", no token, no key,
+// no attachments, one participant (id 2, web-viewer, no flags, "viewer").
 const GOLDEN_ROOM_STATE_STATIC_HEX =
   '0114' + '04' + '00' + '00000000' + '0002' +
   '095475686973526f6f6d' + '0b54756869732720726f6f6d' + '00' + '00' + '00' +
@@ -1240,7 +1239,7 @@ describe('room control protocol (R42)', () => {
     expect(parseRoomCommand(fromHex(hex))).toEqual(want);
   });
 
-  // The docs/44 §4.11 reserved ranges: an unknown kind is reported as such
+  // The reserved chat/voice ranges: an unknown kind is reported as such
   // with the header fields filled in, so a reader can skip the record and a
   // relay can answer ROOM_REJECT_UNSUPPORTED.
   it('reports reserved kinds with the header fields filled in', () => {
