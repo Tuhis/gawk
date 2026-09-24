@@ -1,8 +1,6 @@
-// Diagnostics export (R9 M7, docs/13 D8): a bounded rolling window of stat
-// samples that a stats overlay can serialize to JSON for the clipboard — the
-// remote-troubleshooting story ("paste the blob into the chat") in place of
-// any client→server metrics push. Also derives client-side rates (e.g.
-// bitrate) from cumulative counters across the window.
+// A bounded rolling window of stat samples that a stats overlay serializes to
+// JSON for the clipboard ("paste the blob into the chat"). Also derives rates
+// (e.g. bitrate) from cumulative counters across the window.
 
 export interface DiagnosticsSample<T> {
   // Milliseconds, monotonic within the buffer (performance.now by default).

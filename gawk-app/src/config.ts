@@ -7,14 +7,8 @@
 
 export interface GawkRuntimeConfig {
   // Where this deployment's relay lives, e.g. "https://relay.example.com:4433".
-  //
-  // The one value a self-hosted install cannot do without. Before this
-  // existed, the relay URL was decided entirely by a hostname check in
-  // transportStore.ts — gawk.ioio.fi got the production fleet and EVERY other
-  // origin got https://localhost:4433, so a self-hoster's viewers each had to
-  // open settings and paste the URL by hand before a join link would work.
-  // Unset still falls back to that behaviour, which is what keeps local dev
-  // (localhost:5173 → localhost:4433) working with no config at all.
+  // Unset falls back to transportStore's origin-derived default, which keeps
+  // local dev (localhost:5173 → localhost:4433) working with no config.
   relayUrl?: string;
 
   // The relay requires a pre-shared publish secret (server started with
@@ -26,17 +20,13 @@ export interface GawkRuntimeConfig {
   // before it starts dropping frames until the next keyframe.
   maxDecoderQueueSize?: number;
 
-  // R21 (docs/26): the playout floor a Deep buffer viewer holds, in ms, and
-  // the value it asks the relay to back. Pairs with the relay chart's
-  // config.dvrWindow, which clamps it — so this is the knob for tuning the
-  // trade per deployment without an image rebuild, which is exactly what DV6
-  // needs. Default 3000.
+  // The playout floor a Deep buffer viewer holds, in ms, and the value it asks
+  // the relay to back (the relay chart's config.dvrWindow clamps it).
+  // Default 3000.
   dvrBufferMs?: number;
 
-  // R23 (docs/29): terms & conditions. Bumping the version re-prompts every
-  // broadcaster for acknowledgment (D7); empty/unset falls back to the
-  // BUNDLED_TERMS_VERSION baked into this release. A date-stamp is the
-  // recommended form, e.g. "2026-07-24".
+  // Terms version. Bumping it re-prompts every broadcaster; empty/unset falls
+  // back to BUNDLED_TERMS_VERSION. A date stamp is the recommended form.
   termsVersion?: string;
 
   // Substituted into the bundled default terms text so an operator gets
@@ -45,13 +35,10 @@ export interface GawkRuntimeConfig {
   operatorName?: string;
   operatorContact?: string;
 
-  // R28 (docs/33 D1): where telemetry batches are POSTed. The default is a
-  // SAME-ORIGIN path on this frontend's own Ingress, which is what makes the
-  // `sendBeacon` unload flush work without a CORS preflight it cannot perform
-  // during unload. Override only when the telemetry service is split onto
-  // another origin — and then that origin has to answer preflights itself.
-  // Collection is gated by the RELAY (wire 0x0D), not by this value: an
-  // unconfigured install with telemetry off never sends a single request.
+  // Where telemetry batches are POSTed. The default is a same-origin path,
+  // which lets the unload `sendBeacon` flush work without a CORS preflight;
+  // another origin must answer preflights itself. Whether anything is sent at
+  // all is decided by the relay (the telemetry hello), not by this value.
   telemetryUrl?: string;
 
   // Optional full-body terms override. When set, the terms page renders this
@@ -60,28 +47,20 @@ export interface GawkRuntimeConfig {
   // asset (see the gawk-app chart). An absolute URL is allowed.
   termsUrl?: string;
 
-  // R37 (docs/40 D6): whether this deployment's UI may talk to relays other
-  // than its own — the server picker and the ?relay= link parameter. Default
-  // TRUE (out of the box, shared cross-relay links work on any install);
-  // false hides the picker and ignores ?relay= with a quiet note.
+  // Whether this UI may talk to relays other than its own (the server picker
+  // and ?relay= links). Default true; false hides the picker and ignores
+  // ?relay= with a quiet note.
   allowCustomRelays?: boolean;
 
-  // R38 (docs/41 D4): hex SHA-256 of the relay's self-signed dev certificate
-  // DER, for local stacks whose relay presents an untrusted cert. Read ONLY in
-  // a dev environment, and deliberately NOT a gawk-app chart value: a
-  // production deployment needing this has a TLS misconfiguration, not a
-  // missing knob. The local stack's dev/config-gen.sh renders it.
-  //
-  // It is what lets the bare `#/view/{id}` route — which has no cert-hash
-  // field, by design — work in a fresh profile, in incognito and on a second
-  // machine, instead of only where the broadcaster page had already written
-  // the hash to same-origin localStorage.
+  // Hex SHA-256 of a local stack's self-signed relay certificate (rendered by
+  // dev/config-gen.sh), so #/view/{id} works in a fresh profile. Read only in a
+  // dev environment and deliberately not a chart value: a production
+  // deployment that needs it has a TLS problem, not a missing knob.
   devCertHashHex?: string;
 
-  // R37 (docs/40 D9): optional URL of a directory JSON the picker offers
-  // (schema v1). Fetched when the picker opens — never at boot. Empty/unset
-  // means no directory section. Same-origin path recommended (the terms.html
-  // ConfigMap pattern); a cross-origin URL must serve CORS itself.
+  // Optional server directory JSON the picker offers, fetched when the picker
+  // opens, never at boot. Same-origin recommended; a cross-origin URL must
+  // serve CORS itself.
   serverDirectoryUrl?: string;
 }
 
@@ -118,23 +97,20 @@ export function getMaxDecoderQueueSize(): number {
   if (config.maxDecoderQueueSize !== undefined) {
     return config.maxDecoderQueueSize;
   }
-  // 10 (raised from 5, R10): a decoder that is briefly ~one burst behind now
-  // absorbs it instead of cycling overflow → drop-to-keyframe → GOP wait.
-  // Worst case this queues ~10 frames ≈ 330 ms at 30 fps before the resync
-  // policy kicks in — acceptable against a 500 ms GOP recovery.
+  // Enough to absorb a decoder briefly one burst behind instead of cycling
+  // overflow → drop to keyframe → GOP wait; at worst ~330 ms at 30 fps, less
+  // than a 500 ms GOP recovery.
   return 10;
 }
 
-// R37 (docs/40 D6): default true — a missing key means the deployment allows
-// alternative relays, which is what keeps a shared ?relay= link working on
-// installs whose operator configured nothing.
+// A missing key allows other relays, so shared ?relay= links work on installs
+// whose operator configured nothing.
 export function allowCustomRelays(): boolean {
   const v = getRuntimeConfig().allowCustomRelays;
   return v === undefined ? true : v;
 }
 
-// R37 (docs/40 D9): '' when unset ⇒ no directory section in the picker. The
-// "empty string counts as unset" rule, same as every other getter here.
+// '' when unset: no directory section in the picker.
 export function getServerDirectoryUrl(): string {
   const v = getRuntimeConfig().serverDirectoryUrl;
   return (typeof v === 'string' && v.trim()) || '';
@@ -150,10 +126,8 @@ export function isDevEnvironment(): boolean {
   return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
 }
 
-// R38 (docs/41 D4): the local stack's relay certificate hash, '' anywhere
-// that is not a dev environment. The gate is not decoration — a bundle served
-// from a real hostname must never present a hash it was handed by config, and
-// a deployment that thinks it needs one has a TLS problem to fix instead.
+// The local stack's relay certificate hash, or '' outside a dev environment:
+// a bundle served from a real hostname must never present a configured hash.
 export function getDevCertHashHex(): string {
   if (!isDevEnvironment()) return '';
   const v = getRuntimeConfig().devCertHashHex;
@@ -161,24 +135,20 @@ export function getDevCertHashHex(): string {
 }
 
 export const DEFAULT_DVR_BUFFER_MS = 3000;
-// The relay downgrades anything under a second (docs/26 Decision 7), so asking
-// for less is asking for plain carrier delivery by another name.
+// The relay downgrades anything under a second, so asking for less is plain
+// carrier delivery by another name.
 export const MIN_DVR_BUFFER_MS = 1000;
 export const MAX_DVR_BUFFER_MS = 30000;
 
-// R21: the Deep buffer floor. Clamped to something a viewer can actually hold
-// and a relay can plausibly back — a value below the relay's minimum would be
-// silently downgraded, and one in the minutes is a configuration error rather
-// than a choice.
+// The Deep buffer floor, clamped to what a viewer can hold and a relay can
+// plausibly back.
 export function getDvrBufferMs(): number {
   const v = getRuntimeConfig().dvrBufferMs;
   if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_DVR_BUFFER_MS;
   return Math.min(Math.max(Math.round(v), MIN_DVR_BUFFER_MS), MAX_DVR_BUFFER_MS);
 }
 
-// R28 (docs/33 D1): the same-origin ingest path. A relative URL by default so
-// no CORS, no second DNS name and no second certificate are involved, and the
-// unload beacon works as-is.
+// Relative, so no CORS, second DNS name or certificate is involved.
 export const DEFAULT_TELEMETRY_URL = '/api/telemetry/v1/ingest';
 
 export function getTelemetryUrl(): string {
@@ -191,16 +161,13 @@ export function getTelemetryUrl(): string {
 // deployment — a fork that wants its own link edits it in the fork.
 export const SOURCE_URL = 'https://github.com/Tuhis/gawk';
 
-// R46 DL5 (docs/46 §6): the project site, and its Download section — the
-// native broadcasters are the one thing a user of this UI may need that the
-// UI itself cannot hand them. Constants for the same reason as SOURCE_URL:
-// they describe the project, not the deployment.
+// The project site and its downloads (the native broadcasters). Constants for
+// the same reason as SOURCE_URL.
 export const SITE_URL = 'https://tuhis.github.io/gawk/';
 export const SITE_DOWNLOAD_URL = `${SITE_URL}#download`;
 
-// R23 (docs/29): terms & conditions. The version baked into this release; the
-// acknowledgment key stores whichever version a broadcaster last agreed to, so
-// an operator bumps config.termsVersion to re-prompt on a meaningful edit (D7).
+// The terms version baked into this release; config.termsVersion overrides it
+// to re-prompt broadcasters after a meaningful edit.
 export const BUNDLED_TERMS_VERSION = '2026-07-26';
 
 // Empty string counts as unset — the ConfigMap renders an empty default rather

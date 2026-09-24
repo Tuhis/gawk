@@ -1,20 +1,9 @@
-// R28 TM2 (docs/33 D13): the React glue around TelemetryCollector.
-//
-// Both surfaces need the same three things — a collector whose lifetime
-// matches the screen, a `visibilitychange → hidden` flush, and a guarantee
-// that unmount ends the session — so they share this hook rather than growing
-// two copies that drift.
-//
-// Collection lives on the main thread by construction: both stats objects
-// already arrive here fully assembled (the viewer screen merges in
-// `audioBuffer`/`featureGates`/`presentationSurface`, and `BroadcastStats`
-// comes back through the worker shell the same way), so the collector
-// subscribes to exactly what the overlay renders. No worker message, no
-// transport change, no pipeline change — with one recorded exception: the
-// hello itself has to cross from the viewer's nested transport worker, which
-// is where wire 0x0D arrives. It travels as its own worker message rather than
-// as a `ViewerStats` field precisely so the token stays out of the
-// Copy-diagnostics blob a user pastes into a chat.
+// The React glue around TelemetryCollector: a collector living as long as the
+// screen, a flush when the page is hidden, and a session end on unmount.
+// Collection runs on the main thread over exactly the stats object the
+// overlay renders. The telemetry hello crosses from the viewer's transport
+// worker as its own message, not a ViewerStats field, so its token stays out
+// of the Copy-diagnostics blob.
 
 import { useEffect, useRef } from 'react';
 
@@ -24,39 +13,20 @@ import { TelemetryCollector, type TelemetryRole } from './telemetry';
 export function useTelemetryCollector<T>(role: TelemetryRole): TelemetryCollector<T> {
   const ref = useRef<TelemetryCollector<T> | null>(null);
   if (ref.current === null) {
-    // R37 (docs/40 D15, revised per review R3-A/R3-C): the configured URL
-    // is the fallback on ANY relay; a relay-advertised 0x12 wins when it
-    // arrives (collector.setAdvertisedUrl).
+    // The configured URL is the fallback on any relay; a relay-advertised
+    // endpoint wins when it arrives (collector.setAdvertisedUrl).
     ref.current = new TelemetryCollector<T>({ url: getTelemetryUrl(), role });
   }
   const collector = ref.current;
 
-  // Review finding 7 (R28 / PR #151): a deferred, cancellable stop() — the
-  // same trick `useViewerConnection`'s worker-controller teardown uses for
-  // the identical problem (README "R8 viewer-teardown gotcha"). gawk-app
-  // renders <StrictMode>, whose dev-mode mount -> cleanup -> remount reuses
-  // this SAME component instance and therefore this same `ref.current`: the
-  // cleanup below used to call collector.stop() synchronously, which is
-  // deliberately terminal (telemetry.ts) and made begin() a permanent no-op —
-  // so the collector was already dead before the wire-0x0D hello ever had a
-  // chance to arrive, and every dev session collected nothing.
-  //
-  // Recreating the collector instead (swap the ref, force a re-render) was
-  // rejected: both consuming screens close over the value this hook returns
-  // inside `useCallback`s keyed on it, and StrictMode's cleanup->remount does
-  // NOT re-render the component in between — a swapped instance would leave
-  // those callbacks bound forever to the OLD (correctly stopped, so silently
-  // inert) collector, trading a visible dev-only failure for an invisible
-  // one.
-  //
-  // A flat "cleanup is never terminal" split was also rejected: the viewer's
-  // worker-sourced `onEvent` (unlike the main-thread path) is not gated by an
-  // `active` flag, and its controller's own dispose is itself deferred a
-  // macrotask (R8) — so on a REAL unmount there is a genuine window where a
-  // late worker message (a telemetryHello included) could still reach
-  // `begin()`. Terminal stop() is what closes that window; it must still
-  // apply, just not before a synchronous StrictMode remount gets a chance to
-  // cancel it.
+  // stop() is terminal (it refuses every later begin()), so it is deferred a
+  // macrotask and cancelled by a remount: StrictMode's development mount →
+  // cleanup → remount reuses this instance and this ref, and a synchronous
+  // stop() would kill the collector before the hello arrived. It cannot just
+  // be dropped either: on a real unmount a late worker message can still
+  // reach begin(). Recreating the collector would not work, because the
+  // screens' callbacks close over the instance this hook returned and
+  // StrictMode does not re-render between cleanup and remount.
   const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {

@@ -1,9 +1,5 @@
-// R16 (docs/21 Decision 9): gate-controlled features, reported by a surface
-// for its stats overlay's Feature Gates section — the generic home for "which
-// conditional features are live on this client". Names are UpperCamelCase by
-// policy, enforced as this string-literal union so they can't drift per call
-// site. Future gates (paced playout, interpolation, worker placement, audio)
-// are natural later entries.
+// Conditional features a surface reports for its stats overlay's Feature
+// Gates section. The union keeps the names from drifting per call site.
 export type FeatureGateName = 'NativeVideoFullscreen' | 'DatagramReceiveBuffer';
 
 export interface FeatureGate {
@@ -13,19 +9,16 @@ export interface FeatureGate {
   detail?: string;
 }
 
-// R16: which fullscreen tier is active — element fullscreen (the standard
-// API), the iPhone-only native video fullscreen, or CSS pseudo-fullscreen.
+// Which fullscreen tier is active: element fullscreen (the standard API), the
+// iPhone-only native video fullscreen, or CSS pseudo-fullscreen.
 export type FullscreenTier = 'element' | 'video' | 'pseudo';
 
-// R16, reshaped by R22 (docs/27 Decision 8): raw presentation-surface
-// diagnostics for Copy diagnostics; the NativeVideoFullscreen gate row is
-// derived from these. (Named presentationSurface in ViewerStats —
-// `presentation` was already taken by the R12 pacing-placement field.) The
-// pipeline is worker muxer → transferred segments → main-thread
-// ManagedMediaSource → hidden <video>, and each hop reports here so a broken
-// native fullscreen localizes remotely: muxer producing but nothing appended
-// (segmentsAppended stuck) vs appends erroring vs the element never reaching
-// readiness vs a paused element.
+// Presentation-surface diagnostics (the iPhone native fullscreen path) for
+// Copy diagnostics; the NativeVideoFullscreen gate row derives from these. The
+// path is worker muxer → transferred segments → main-thread ManagedMediaSource
+// → hidden <video>, and each hop reports here so a broken fullscreen can be
+// localized remotely: nothing appended, appends erroring, the element never
+// ready, or the element paused.
 export interface PresentationSurfaceStats {
   tier: FullscreenTier | null;
   armed: boolean;
@@ -36,8 +29,7 @@ export interface PresentationSurfaceStats {
   // Main-thread SourceBuffer side.
   segmentsAppended: number;
   appendErrors: number;
-  // docs/27 finding 7: the three fields that localize "nothing was appended".
-  // `segmentsReceived` 0 means the worker→main→sink hop is broken (the muxer's
+  // The fields that localize "nothing was appended". `segmentsReceived` 0 means the worker→main→sink hop is broken (the muxer's
   // own counters live in the worker and keep climbing regardless);
   // `segmentsQueued` at the bound with nothing appended means the appender is
   // holding data the system will not take; `segmentsDroppedNoInit` counts media
@@ -48,29 +40,25 @@ export interface PresentationSurfaceStats {
   segmentsQueued: number;
   segmentsDroppedNoInit: number;
   mmsStreaming: boolean | null;
-  // docs/27 finding 6: the reason for the most recent append failure, captured
-  // at the failure (see MsePresenterStats.lastError). Null until one happens.
+  // The reason for the most recent append failure. Null until one happens.
   lastAppendError: string | null;
-  // R22 finding 1: whether this MediaSource accepted duration = Infinity — i.e.
-  // whether the native player gets the LIVE badge and treats a buffer underrun
-  // as a stall rather than end-of-media. Null before a source exists.
+  // Whether this MediaSource accepted duration = Infinity, i.e. whether the
+  // native player treats a buffer underrun as a stall rather than the end.
+  // Null before a source exists.
   liveDuration: boolean | null;
-  // R22 finding 2, the audio track. `audioMode` is the resolved verdict for the
-  // stream's audio lane: 'none' (no audio in the broadcast), 'muxed' (Opus in MP4
+  // The audio track. `audioMode` is the resolved verdict for the stream's
+  // audio lane: 'none' (no audio in the broadcast), 'muxed' (Opus in MP4
   // accepted — the native player has its own audio), or the refusal reason.
   audioMode: string;
-  // R22 finding 4: the AAC transcoder's state where the presentation is on that
-  // path ('idle' | 'active' | 'unsupported' | 'error'), null otherwise. This is
-  // the row that says whether an iPhone can encode AAC at all.
+  // The AAC transcoder's state on that path ('idle' | 'active' | 'unsupported'
+  // | 'error'), null otherwise: whether an iPhone can encode AAC at all.
   audioTranscode: string | null;
   audioSegmentsAppended: number;
   audioTrackActive: boolean;
-  // docs/27 finding 6: how many audio tracks the ELEMENT ended up with, which is
-  // the only end-of-chain confirmation that a muxed track really became playable
-  // audio — `audioTrackActive` says a SourceBuffer exists, not that the demuxer
-  // accepted its content. Read 0 on the device throughout the silent session.
-  // Null where HTMLMediaElement.audioTracks is unavailable (it exists on iOS
-  // 18.7; webkitAudioDecodedByteCount, measured, does not).
+  // How many audio tracks the element ended up with: the only end-of-chain
+  // proof that a muxed track became playable audio (`audioTrackActive` says a
+  // SourceBuffer exists, not that the demuxer accepted it). Null where
+  // HTMLMediaElement.audioTracks is unavailable.
   elementAudioTracks: number | null;
   muxAudioSegments: number;
   muxAudioHoles: number;

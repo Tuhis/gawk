@@ -19,8 +19,7 @@ export function formatHotkey(h: Hotkey): string {
   return parts.join('+');
 }
 
-// True when the event target is a text field. Exported for the R42 room
-// view's number keys, which must never fire while a nickname is being typed.
+// True when the event target is a text field, where keys are typing.
 export function isEditable(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el || typeof el.tagName !== 'string') return false;

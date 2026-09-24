@@ -84,7 +84,7 @@ export function StatsIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 export function EyeIcon(props: SVGProps<SVGSVGElement>) {
-  // The R18 "N watching" glyph.
+  // The "N watching" glyph.
   return (
     <svg {...base} {...props}>
       <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
@@ -93,8 +93,7 @@ export function EyeIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-// R15 (docs/20 Decision 9): the viewer's audio controls — rendered only when
-// audio is actually received in the stream.
+// The audio controls, rendered only when the stream carries audio.
 export function SpeakerIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>
@@ -114,10 +113,9 @@ export function SpeakerMutedIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-// The overflow ("kebab") glyph — the pointer-agnostic way into the viewer
-// menu, which a right-click alone left out of reach on touch devices
-// (docs/24 review finding PRODUCT-2). Dots are zero-length round-capped
-// segments, so they inherit the file's stroke styling.
+// The overflow ("kebab") glyph: the way into the viewer menu on touch, where
+// there is no right-click. Dots are zero-length round-capped segments, so they
+// inherit the file's stroke styling.
 export function MoreIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>
@@ -154,7 +152,7 @@ export function CloseIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-// ── R42 (docs/44 §4.9): the room view's glyphs ──────────────────────────────
+// ── The room view's glyphs ─────────────────────────────────────────────────
 
 // Two people — the header's people-and-chat toggle, the broadcaster's Room
 // button.

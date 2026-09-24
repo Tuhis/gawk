@@ -8,7 +8,7 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 // The production button primitive. Variants are the only place button styling
-// is defined (Decision 3); the legacy global <button> stays for debug pages.
+// is defined; the global <button> style is for the debug pages.
 export function Button({ variant = 'primary', className, type = 'button', ...rest }: Props) {
   const cls = [styles.btn, styles[variant], className].filter(Boolean).join(' ');
   return <button type={type} className={cls} {...rest} />;

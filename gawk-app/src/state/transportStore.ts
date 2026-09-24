@@ -4,10 +4,9 @@ import { getDevCertHashHex, getRelayUrl } from '../config';
 import { normalizeRelayOrigin } from '../lib/relayUrl';
 import { readStored, writeStored } from '../lib/storage';
 
-// R37 (docs/40 §4.1): the server model. What was three global values
-// (serverUrl / certHashHex / publishSecret) is now a list of saved servers
-// plus a selection, resolved to the same three values every existing
-// consumer keeps reading from this store — the transport layer is untouched.
+// The relay server model: saved servers plus a selection (and a route's
+// ?relay= override), resolved to the serverUrl / certHashHex / publishSecret
+// trio every consumer reads.
 //
 // Storage:
 //   gawk.servers        JSON array of RelayServerEntry — custom entries, plus
@@ -16,48 +15,42 @@ import { readStored, writeStored } from '../lib/storage';
 //                       not a source — see defaultCredentials()).
 //   gawk.selectedServer the selected entry id; absent/unknown ⇒ "default".
 //
-// The pinned default's identity is never stored (D5): its URL is recomputed
-// from config every load, so a chart-side relayUrl change reaches users who
-// have saved entries. Legacy keys (gawk.serverUrl / certHashHex /
-// publishSecret) migrate on first load (§4.1.2) and are then removed.
+// The pinned default's identity is never stored: its URL is recomputed from
+// config every load, so a chart-side relayUrl change reaches users who have
+// saved entries. Legacy single-value keys migrate on first load and are then
+// removed.
 const LS_SERVERS = 'gawk.servers';
 const LS_SELECTED = 'gawk.selectedServer';
 
-// Legacy single-value keys, pre-R37. Read once by the migration, then removed.
 const LS_LEGACY_SERVER_URL = 'gawk.serverUrl';
 const LS_LEGACY_CERT_HASH = 'gawk.certHashHex';
 const LS_LEGACY_PUBLISH_SECRET = 'gawk.publishSecret';
 
-// The pinned default's reserved id (docs/40 §4.1.1).
 export const DEFAULT_SERVER_ID = 'default';
 
 export interface RelayServerEntry {
   id: string;
   label: string;
-  // Normalized https origin (lib/relayUrl.ts) on every write path (F8).
+  // Normalized https origin (lib/relayUrl.ts) on every write path.
   url: string;
-  // Per-server credentials (D4): the stored secret for server A can never be
+  // Per-server credentials: the stored secret for server A can never be
   // presented to server B, whatever a link says.
   publishSecret: string;
   certHashHex: string;
-  // Unknown fields are preserved on rewrite (forward compatibility for the
-  // §4.9 managed-relay extension points).
+  // Unknown fields are preserved on rewrite (forward compatibility).
   [key: string]: unknown;
 }
 
-// Where the resolved connection came from — drives the in-session indicator
-// (§4.3) and phase E's telemetry guard.
+// Where the resolved connection came from; drives the in-session indicator.
 export type ResolvedSource = 'override' | 'selected' | 'default';
 
-// Precedence (docs/40 §4.1.1): the deployment's configured relay (gawk-app
-// chart config.relayUrl, rendered into /config.js) > the reference
-// deployment's own origin > local dev.
+// Precedence: the deployment's configured relay (gawk-app chart
+// config.relayUrl) > the reference deployment's own origin > local dev.
 export function defaultServerUrl(): string {
   const configured = getRelayUrl();
   if (configured) {
-    // Operators write clean origins, but normalize anyway so the F8/F9
-    // equality guards hold; an unparseable configured value falls through
-    // verbatim rather than silently breaking an existing install.
+    // Normalize anyway so the URL-equality guards hold; an unparseable value
+    // falls through verbatim rather than silently breaking an install.
     return normalizeRelayOrigin(configured) ?? configured;
   }
   if (typeof window !== 'undefined' && window.location.hostname === 'gawk.ioio.fi') {
@@ -75,8 +68,8 @@ function str(v: unknown): string {
 }
 
 // Parse gawk.servers. Corrupt JSON or a non-array degrades to "no custom
-// servers" rather than throwing — losing a hand-added list beats a boot loop
-// (§4.1.1). Entries with an unusable id/url are dropped individually; the
+// servers" rather than throwing: losing a hand-added list beats a boot loop.
+// Entries with an unusable id/url are dropped individually; the
 // default credentials record only needs id + url.
 function readStoredServers(): RelayServerEntry[] {
   const raw = readStored(LS_SERVERS);
@@ -142,7 +135,7 @@ function migrateLegacyKeys(): void {
 
   if (isDefaultShaped) {
     // Credentials-only record for the pinned default, keyed to the URL they
-    // were saved against (F9). Nothing to store when both are empty.
+    // were saved against. Nothing to store when both are empty.
     if ((credentials.publishSecret !== '' || credentials.certHashHex !== '') && defaultUrl !== null) {
       const rest = servers.filter((s) => s.id !== DEFAULT_SERVER_ID);
       rest.unshift({
@@ -156,7 +149,7 @@ function migrateLegacyKeys(): void {
     writeSelectedId(DEFAULT_SERVER_ID);
   } else {
     // A custom relay pointed at by the old global setting keeps working
-    // without the user noticing (§4.1.2).
+    // without the user noticing.
     const id = generateEntryId(servers);
     servers.push({
       id,
@@ -175,8 +168,8 @@ function migrateLegacyKeys(): void {
   writeStored(LS_LEGACY_PUBLISH_SECRET, null);
 }
 
-// F9: the default's credential record follows the URL it was saved against,
-// not the id — a chart-side relayUrl change must not present the old relay's
+// The default's credential record follows the URL it was saved against, not
+// the id: a chart-side relayUrl change must not present the old relay's
 // secret and cert hash to the new host. Discard on mismatch, at read time.
 function pruneStaleDefaultCredentials(servers: RelayServerEntry[]): RelayServerEntry[] {
   const defaultUrl = normalizeRelayOrigin(defaultServerUrl());
@@ -213,25 +206,23 @@ interface TransportSettingsState extends ResolvedTransport {
   // + defaultCredentials, not from this list.
   servers: RelayServerEntry[];
   selectedServerId: string;
-  // `?relay=` session override (docs/40 §4.2): normalized origin, held in
-  // memory only, never persisted (D2).
+  // The route's `?relay=` override: a normalized origin, held in memory only,
+  // never persisted.
   sessionOverrideUrl: string | null;
-  // Credentials entered while an unsaved override is active — session-only
-  // (F3); they persist only through an explicit "Save this server".
+  // Credentials entered while an unsaved override is active: session-only,
+  // persisted only through an explicit "Save this server".
   overridePublishSecret: string;
   overrideCertHashHex: string;
-  // Quiet note about this route's ?relay= handling (docs/40 §4.2 — an
-  // invalid value, or a link asking for a server on a gated deployment).
+  // Quiet note about this route's ?relay= handling (an invalid value, or a
+  // link asking for a server on a gated deployment).
   // Route-scoped like the override itself; rendered by the in-session
   // indicator, never fatal.
   relayLinkNote: string | null;
-  // R37 (docs/40 D16): true while this session reports diagnostics to a
-  // foreign relay's advertised collector — the in-session indicator carries
-  // the disclosure. Session-scoped, set by the screens when a 0x12 lands on
-  // a non-default resolution, cleared with the override on route change.
+  // True while this session reports diagnostics to a foreign relay's
+  // advertised collector; the in-session indicator discloses it. Cleared with
+  // the override on route change.
   foreignTelemetryActive: boolean;
 
-  // Picker actions (SP3).
   selectServer: (id: string) => void;
   addServer: (entry: { label: string; url: string; publishSecret?: string; certHashHex?: string }) => string | null;
   updateServer: (
@@ -239,18 +230,15 @@ interface TransportSettingsState extends ResolvedTransport {
     patch: Partial<Pick<RelayServerEntry, 'label' | 'url' | 'publishSecret' | 'certHashHex'>>,
   ) => boolean;
   removeServer: (id: string) => void;
-  // Route-driven (SP2): null clears. An invalid value is the caller's problem
-  // — routing only ever passes normalized origins.
+  // Route-driven; null clears. Routing only ever passes normalized origins.
   setSessionOverride: (url: string | null) => void;
   setRelayLinkNote: (note: string | null) => void;
   setForeignTelemetryActive: (active: boolean) => void;
-  // Cross-tab rule (F11): the panel re-reads storage when it opens;
-  // last-writer-wins; no storage-event reactivity.
+  // Across tabs: the picker re-reads storage when it opens; last writer wins.
   reloadFromStorage: () => void;
 
-  // Legacy surface, kept for the frozen #/debug/* tree and the secret prompt.
-  // Semantics are per-resolved-server now: the credential setters write to
-  // whatever entry the store currently resolves to (docs/40 §4.2 F3).
+  // Used by the #/debug/* pages and the secret prompt. The credential setters
+  // write to whatever entry the store currently resolves to.
   setServerUrl: (url: string) => void;
   setCertHashHex: (hash: string) => void;
   setPublishSecret: (secret: string) => void;
@@ -276,21 +264,11 @@ function defaultCredentials(servers: RelayServerEntry[]): { publishSecret: strin
   return { publishSecret: '', certHashHex: '' };
 }
 
-// R38 (docs/41 §4.2.3): a local stack renders its relay's dev-certificate
-// hash into /config.js, which is what makes the chrome-free `#/view/{id}`
-// route work in a fresh profile instead of only where the broadcaster page
-// had already written the hash to localStorage.
-//
-// A FALLBACK, never an override: a hash the developer typed wins, because
-// they typed it while pointing somewhere else. And it is scoped by URL, not
-// by entry id — the configured hash belongs to THIS deployment's relay, so
-// presenting it to a foreign `?relay=` target would be handing one relay's
-// identity to another.
-// Exported because the picker's probe must resolve a row's hash exactly the
-// way a real connection does. Reading the stored entry directly instead made
-// a local stack's own relay probe as "unreachable" while the viewer was
-// streaming from it — the connection went through this fallback and the probe
-// did not.
+// A local stack's configured dev-certificate hash, as a fallback: a hash the
+// developer typed wins, and it is scoped by URL, not entry id, because it
+// belongs to this deployment's relay and must never be presented to another.
+// The picker's probe uses this too, so a row resolves its hash exactly the way
+// a real connection does.
 export function certHashWithDevFallback(url: string, certHashHex: string): string {
   if (certHashHex !== '') return certHashHex;
   const configured = getDevCertHashHex();
@@ -305,9 +283,9 @@ function withDevCertFallback(resolved: ResolvedTransport): ResolvedTransport {
   return { ...resolved, certHashHex };
 }
 
-// Precedence, top wins: session override > selected entry > pinned default
-// (docs/40 §4.1.1) — then R38's fallback fills a hash the resolution left
-// empty. Every consumer reads this one, never resolveEntry.
+// Precedence, top wins: session override > selected entry > pinned default;
+// then the dev-certificate fallback fills a hash the resolution left empty.
+// Every consumer reads this one, never resolveEntry.
 function resolve(inputs: ResolutionInputs): ResolvedTransport {
   return withDevCertFallback(resolveEntry(inputs));
 }
@@ -389,8 +367,6 @@ function loadInitialState(): ResolutionInputs {
   };
 }
 
-// relayLinkNote is not a resolution input — it rides beside the override.
-
 // Custom entries as the picker lists them (the default's credentials record
 // is internal storage, not a row).
 export function customServers(servers: RelayServerEntry[]): RelayServerEntry[] {
@@ -398,7 +374,7 @@ export function customServers(servers: RelayServerEntry[]): RelayServerEntry[] {
 }
 
 // True when the RESOLVED server names the deployment's own relay — by
-// normalized-URL equality, not entry id (docs/40 §5 G3): a user who manually
+// normalized-URL equality, not entry id: a user who manually
 // saved the deployment's relay as a custom entry is id-non-default but
 // URL-default, and anything keyed on identity semantics (the foreign-
 // telemetry disclosure) must not treat them as foreign.
@@ -424,7 +400,7 @@ export const useTransportStore = create<TransportSettingsState>((set, get) => {
     overrideCertHashHex: s.overrideCertHashHex,
   });
 
-  // Upsert the default's credentials-only record (F4: the rotation path).
+  // Upsert the default's credentials-only record (how its secret is rotated).
   const writeDefaultCredentials = (
     servers: RelayServerEntry[],
     patch: Partial<Pick<RelayServerEntry, 'publishSecret' | 'certHashHex'>>,
@@ -451,8 +427,8 @@ export const useTransportStore = create<TransportSettingsState>((set, get) => {
     return out;
   };
 
-  // Credential writes land on whatever the store currently resolves to
-  // (F3/F4): the default's record, a custom entry, or — for an unsaved
+  // Credential writes land on whatever the store currently resolves to: the
+  // default's record, a custom entry, or — for an unsaved
   // override — session-only memory.
   const setResolvedCredential = (patch: {
     publishSecret?: string;
@@ -521,7 +497,7 @@ export const useTransportStore = create<TransportSettingsState>((set, get) => {
       const s = get();
       if (id === DEFAULT_SERVER_ID) {
         // The pinned default's identity is locked; only its credential slots
-        // are editable (F4 — the rotation path).
+        // are editable.
         const credPatch: Partial<Pick<RelayServerEntry, 'publishSecret' | 'certHashHex'>> = {};
         if (patch.publishSecret !== undefined) credPatch.publishSecret = patch.publishSecret;
         if (patch.certHashHex !== undefined) credPatch.certHashHex = patch.certHashHex;
@@ -554,7 +530,7 @@ export const useTransportStore = create<TransportSettingsState>((set, get) => {
     },
 
     removeServer: (id) => {
-      if (id === DEFAULT_SERVER_ID) return; // pinned (D5)
+      if (id === DEFAULT_SERVER_ID) return; // pinned
       const s = get();
       const servers = s.servers.filter((e) => e.id !== id);
       if (servers.length === s.servers.length) return;

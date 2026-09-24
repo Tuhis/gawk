@@ -1,29 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import type { FullscreenTier } from './featureGates';
 
-// Fullscreen for a target element (docs/10 J3), tiered since R16 (docs/21
-// Decision 2). Where the Element Fullscreen API exists (desktop, Android,
-// iPad) tier 1 is the entire feature, byte-identical to the pre-R16 hook. On
-// element-fullscreen-less devices (iPhone — WebKit ships the API on iPadOS
-// only, and every iOS browser is WebKit) the toggle tries the one native
-// fullscreen that exists there, HTMLVideoElement.webkitEnterFullscreen() on
-// the presentation video, and falls through to CSS pseudo-fullscreen so the
-// button always visibly does something.
-//
-// R22 (docs/27 Decision 2): the presentation video's media source changed
-// from the R16 MediaStream tee (black on iOS — docs/21 U4) to an
-// MSE/ManagedMediaSource feed; tier 2 gains a seek-to-live before the
-// in-gesture play (the armed video sits paused while its buffer follows the
-// live edge — docs/27 Decision 5) and pauses the hidden video again on exit
-// so the second decode stops with the native player.
+// Fullscreen for a target element, in tiers. Where the Element Fullscreen API
+// exists (desktop, Android, iPad) tier 1 is the whole feature. On iPhone
+// (WebKit ships the API on iPadOS only, and every iOS browser is WebKit) the
+// toggle tries the one native fullscreen there, webkitEnterFullscreen() on the
+// MSE-fed presentation video, and falls through to CSS pseudo-fullscreen so
+// the button always visibly does something. The armed video sits paused, so
+// entry seeks it to the live edge and plays it in the gesture; exit pauses it
+// again so the second decode stops with the native player.
 //
 // State tracking is per tier: `fullscreenchange` (tier 1),
 // `webkitbeginfullscreen`/`webkitendfullscreen` on the video (tier 2 — the
 // native fullscreen does NOT fire fullscreenchange), local state (tier 3).
 
-// R16 Decision 1: the device gate. Absence of Element.requestFullscreen is
-// effectively an iPhone signature; on devices where it exists, no R16 code
-// path activates.
+// The device gate: no Element.requestFullscreen is effectively an iPhone.
 export function elementFullscreenAvailable(): boolean {
   return (
     typeof document !== 'undefined' &&
@@ -34,9 +25,9 @@ export function elementFullscreenAvailable(): boolean {
 // webkitEnterFullscreen needs media at readyState ≥ HAVE_METADATA.
 const HAVE_METADATA = 1;
 
-// R22: how far behind the buffered end the playhead may sit before the
-// in-gesture entry seeks it forward, and where the seek lands (a hair inside
-// the buffered range — seeking to the exact end can stall HAVE_CURRENT_DATA).
+// How far behind the buffered end the playhead may sit before the in-gesture
+// entry seeks it forward, and where the seek lands (a hair inside the buffered
+// range: seeking to the exact end can stall at HAVE_CURRENT_DATA).
 const SEEK_IF_BEHIND_S = 0.5;
 const LIVE_EDGE_REJOIN_S = 0.1;
 
@@ -67,8 +58,8 @@ interface FullscreenState {
   tier: FullscreenTier | null;
 }
 
-// R22 audio: the tier-2 transitions the caller needs to react to. Both fire
-// synchronously — the enter hook runs inside the user gesture, before play().
+// The tier-2 transitions the caller reacts to (the audio hand-over). Both
+// fire synchronously; the enter hook runs inside the gesture, before play().
 export interface FullscreenHooks {
   onNativeEnter?: (video: HTMLVideoElement) => void;
   onNativeExit?: (video: HTMLVideoElement) => void;
@@ -76,9 +67,9 @@ export interface FullscreenHooks {
 
 export function useFullscreen(
   ref: RefObject<HTMLElement | null>,
-  // R16: the hidden presentation <video> on gated devices (null elsewhere and
-  // until armed) — tier 2's target. Passed as an element, not a ref, so the
-  // event listeners re-attach when it mounts.
+  // The hidden presentation <video> on gated devices (null elsewhere and until
+  // armed): tier 2's target. An element, not a ref, so the listeners
+  // re-attach when it mounts.
   presentationVideo: HTMLVideoElement | null = null,
   hooks: FullscreenHooks = {},
 ) {
@@ -98,7 +89,7 @@ export function useFullscreen(
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  // Tier 1 tracking — exactly the pre-R16 behavior.
+  // Tier 1 tracking.
   useEffect(() => {
     if (!tier1Available) return;
     const onChange = () => {
@@ -111,9 +102,9 @@ export function useFullscreen(
 
   // Tier 2 tracking: webkitEnterFullscreen does not fire fullscreenchange —
   // state travels on these WebKit-prefixed video events (incl. the system
-  // UI's own exit affordance). On exit the hidden video pauses again (R22):
-  // playback only exists for the native player, and leaving it running would
-  // keep a second decode burning battery under the inline canvas.
+  // UI's own exit affordance). On exit the hidden video pauses again: playback
+  // only exists for the native player, and leaving it running would keep a
+  // second decode burning battery under the inline canvas.
   useEffect(() => {
     if (tier1Available || !presentationVideo) return;
     const onBegin = () => setState({ fullscreen: true, tier: 'video' });
@@ -123,8 +114,8 @@ export function useFullscreen(
       } catch {
         // pausing a hidden video is best-effort
       }
-      // R22 audio: the inline sink takes the audio back (the native player is
-      // the only thing that was playing the muxed track).
+      // The inline sink takes the audio back (the native player was the only
+      // thing playing the muxed track).
       hooksRef.current.onNativeExit?.(presentationVideo);
       setState({ fullscreen: false, tier: null });
     };
@@ -153,8 +144,8 @@ export function useFullscreen(
         video?.webkitExitFullscreen?.();
         // webkitendfullscreen confirms (and pauses the hidden video); update
         // eagerly so the button follows the tap even if the event is late,
-        // and pause eagerly too — a missed event must not leave a second
-        // decode running under the canvas (R22).
+        // and pause eagerly too: a missed event must not leave a second
+        // decode running under the canvas.
         try {
           video?.pause();
         } catch {
@@ -167,9 +158,8 @@ export function useFullscreen(
     }
 
     // Tier 2: the native video fullscreen, synchronously inside the user
-    // gesture (an async hop here would void the gesture — docs/21). The
-    // armed MSE video is loaded-but-paused (docs/27 Decision 5): seek to the
-    // live edge, play, enter — all in-gesture.
+    // gesture (an async hop would void it). The armed video is loaded but
+    // paused: seek to the live edge, play, enter, all in-gesture.
     const video = presentationVideo as WebKitVideoElement | null;
     if (
       video &&
@@ -178,13 +168,13 @@ export function useFullscreen(
     ) {
       try {
         seekToLiveEdge(video);
-        // R22 audio: hand the audio over BEFORE play() — still inside the
-        // gesture, so an unmuted start is allowed, and the inline sink goes quiet
-        // before the native player's first sample instead of overlapping it.
+        // Hand the audio over before play(): still inside the gesture, so an
+        // unmuted start is allowed, and the inline sink goes quiet before the
+        // native player's first sample instead of overlapping it.
         hooksRef.current.onNativeEnter?.(video);
         // In-gesture play(): succeeds even where a muted autoplay would be
-        // blocked (e.g. iOS Low Power Mode) — and a paused video is exactly
-        // what the native player must not be handed (docs/21 U4).
+        // blocked (e.g. iOS Low Power Mode), and a paused video is exactly
+        // what the native player must not be handed.
         if (video.paused) void video.play()?.catch?.(() => {});
         video.webkitEnterFullscreen();
         setState({ fullscreen: true, tier: 'video' });

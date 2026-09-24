@@ -1,8 +1,6 @@
-// R42 (docs/44 §4.1): the two shapes a room code takes. A dynamic room's
-// code is six characters of the broadcast alphabet (the relay guarantees the
-// two namespaces are disjoint — D3); a static room's is a slug of 3–32
-// characters from [A-Za-z0-9-], case-insensitive. Every six-character
-// broadcast-shaped code is also a valid slug, which is fine: this only says
+// The two shapes a room code takes: six characters of the broadcast alphabet
+// (a dynamic room; the relay keeps it disjoint from broadcast IDs) or a static
+// room's slug of 3–32 of [A-Za-z0-9-], case-insensitive. This only says
 // "well-formed enough to ask the relay about", never which kind it is.
 import { isValidBroadcastId } from './broadcastId';
 import { MAX_ROOM_CODE_LEN } from '../transport/wire';
