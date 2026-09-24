@@ -624,3 +624,58 @@ func keysOf(m map[uint8][]byte) []uint8 {
 	}
 	return out
 }
+
+// R57 (docs/59 D2) across the cascade: the edge never forwards its upstream
+// session's close code — /internal/subscribe gets no close notice, and the
+// edge reads the origin's 4000 as "upstream gone" either way. It learns the
+// broadcast ENDED from the lease (the origin's GC deletes it), ends its own
+// hub, and closes ITS viewers itself — through their external-subscribe
+// adapters, which do carry the notice. So a Chrome viewer on an edge pod is
+// told 4000 in-band exactly like one on the origin.
+func TestEdgeViewerGetsCloseNoticeWhenTheBroadcastEnds(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cs := fake.NewClientset()
+
+	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
+	if err != nil {
+		t.Fatalf("GenerateDevCert: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(cert.Leaf)
+	clientTLS := &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{"h3"}}
+
+	shortGrace := func(c *config.Config) { c.BroadcastGrace = time.Second }
+	podA := startClusteredPod(t, ctx, cs, "pod-a", cert, pool, 0, shortGrace)
+	podB := startClusteredPod(t, ctx, cs, "pod-b", cert, pool, 0, shortGrace)
+	for _, p := range []*clusteredPod{podA, podB} {
+		go p.coord.Run(ctx)
+	}
+
+	pub := dial(t, ctx, fmt.Sprintf("https://%s/publish", podA.addr()), clientTLS)
+	id, _ := readPublisherHandshake(t, ctx, pub)
+	kf := buildStreamKeyframe(t, 0, "avc1.42E02A", 1200)
+	sendKeyframeStream(t, pub, kf)
+
+	// The viewer lands on B, so B pulls from A as an edge.
+	viewerB := dialSubscriber(t, ctx, podB.port, id, clientTLS)
+	recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
+	readNextKeyframeStream(t, recvCtx, viewerB)
+	recvCancel()
+	if role := podB.registry.Stats().Broadcasts[podB.registry.ObfuscateID(id)].Role; role != "edge" {
+		t.Fatalf("pod B role = %q, want edge", role)
+	}
+
+	// The broadcaster leaves; A's grace GCs the broadcast and deletes the
+	// lease, and B ends its viewers. This harness builds its registries
+	// without main.go's hub hooks, so the lease delete that
+	// OnBroadcastExpired performs in production is done here once A's hub
+	// is gone.
+	pub.CloseWithError(0, "")
+	waitFor(t, 10*time.Second, func() bool { return podA.registry.CheckSubscribe(id) != nil }, "origin GC")
+	if err := podA.coord.Delete(ctx, id); err != nil {
+		t.Fatalf("lease delete: %v", err)
+	}
+	n, nAt, code, cAt := drainUntilClosed(t, ctx, viewerB)
+	assertNoticedClose(t, "edge viewer", wire.CloseCodeBroadcastEnded, n, nAt, code, cAt)
+}

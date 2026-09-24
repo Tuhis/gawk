@@ -106,6 +106,22 @@ Both native broadcasters already ignore unknown server message types, so a
 native publisher gets the stream and drops it. An older web viewer counts it
 as a malformed stream and logs a warning.
 
+**Across the cascade** (broadcaster → origin → edge → viewer), no notice needs
+to cross the internal hop, because the edge never forwards its upstream close
+code. The edge learns *why* a broadcast is gone from cluster state and closes
+its own viewers itself:
+
+- **4000:** the origin's GC deletes the Lease, and the edge's
+  `HandleLeaseDeleted` ends its hub.
+- **4006:** each pod actuates the ban itself (`HandleBanAdded`, or
+  `HandleLeaseDeleted` consulting the ban set) and terminates its hub.
+
+Either way the edge's viewers are external subscribe sessions on the edge
+pod, so their adapters send the notice exactly as the origin's do. 4004 goes
+only to a publisher, and publishers connect to the origin. A stripe leg gets
+no notice, but its primary session does, and the primary is what reports the
+end.
+
 ### D3 — Notice, settle, then close
 
 A session close cancels every stream and discards what the peer hasn't read.
@@ -173,7 +189,7 @@ terminal close (4000/4004/4006)
 | Chunk | Scope | Acceptance criteria | Status |
 |---|---|---|---|
 | **CN1** | Wire: 0x17 in all four mirrors | Golden vector `011700000fa4` byte-identical in `closing_test.go`, `wire.test.ts`, `wirecheck_test.go`, `golden.rs`; the type and size pinned in each constants table; strict parsers reject a wrong size, version, type or out-of-range code | ✅ |
-| **CN2** | Relay sends the notice | `closenotice_test.go`: a Go client sees the notice *and then* the same close code for a GC'd broadcast's viewer (4000), a deposed publisher (4004), and a killed broadcast's publisher and viewer (4006); `TestReclaimSupersedesActivePublisher` updated to read through the notice; `go test -race ./...` green | ✅ |
+| **CN2** | Relay sends the notice | `closenotice_test.go`: a Go client sees the notice *and then* the same close code for a GC'd broadcast's viewer (4000), a deposed publisher (4004), and a killed broadcast's publisher and viewer (4006); `TestEdgeViewerGetsCloseNoticeWhenTheBroadcastEnds`: a viewer on an **edge** pod gets the notice and 4000 when the origin's broadcast ends; `TestReclaimSupersedesActivePublisher` updated to read through the notice; `go test -race ./...` green | ✅ |
 | **CN3** | Web viewer and broadcaster use it | `connection.test.ts` dispatches the notice without touching media and counts a malformed one; `viewer.test.ts` reports the noticed code when `closed` has none and when the read loop dies first; `broadcaster-resume.test.ts` treats a noticed 4004/4006 as terminal with no resume dial | ✅ |
 | **CN4** | Rooms act on RoomEnding; broadcaster room UX | `room-session.test.ts` RoomEnding + code-less loss → `onEnded`; `RoomScreen.test.tsx` self-end returns without a card, others' end and own-stream removal show a card and return on acknowledge; `BroadcasterScreen.room.test.tsx` a mid-broadcast failure leaves the room and says "Your broadcast stopped" | ✅ |
 
