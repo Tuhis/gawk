@@ -1,10 +1,9 @@
-// R8 S6: OffscreenCanvasRenderSink resizes the backing store to the frame and
-// always closes the frame (single-owner contract). No real OffscreenCanvas —
-// a fake canvas/context is enough to pin the behavior.
-// R10 (docs/14) + R12 (docs/17): PacedPresentationSink schedules at most one
-// draw per tick (latest-frame-wins; display-slot pacing when targets are
-// given), WebGLRenderSink uploads via texImage2D, and createRenderSink
-// composes them with a 2D fallback.
+// OffscreenCanvasRenderSink resizes the backing store to the frame and always
+// closes the frame (single-owner contract). No real OffscreenCanvas — a fake
+// canvas/context is enough to pin the behavior. PacedPresentationSink
+// schedules at most one draw per tick (latest-frame-wins; display-slot pacing
+// when targets are given), WebGLRenderSink uploads via texImage2D, and
+// createRenderSink composes them with a 2D fallback.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -197,9 +196,8 @@ function pacedHarness() {
   return { paced, drawn, sched, clock };
 }
 
-// R12 T2: with no target (the default path), the paced sink IS the old
-// coalescing sink — hold ≤1, newest wins, ≤1 inner draw per tick. These are
-// the R10 P1 tests, ported.
+// With no target (the default path), the paced sink is a pure coalescer —
+// hold ≤1, newest wins, ≤1 inner draw per tick.
 describe('PacedPresentationSink no-target mode (R10 P1 semantics)', () => {
   it('draws only the newest frame per tick and closes superseded ones unseen', () => {
     const { paced, drawn, sched } = pacedHarness();
@@ -250,9 +248,9 @@ describe('PacedPresentationSink no-target mode (R10 P1 semantics)', () => {
   });
 });
 
-// R12 T2 (docs/17 Decision 3): with a target display time, frames are held
-// (≤ MAX_HELD_FRAMES) and presented in their vsync slot — the newest due
-// frame wins, older ones close unseen, and pacing never queue-grows.
+// With a target display time, frames are held (≤ MAX_HELD_FRAMES) and presented
+// in their vsync slot — the newest due frame wins, older ones close unseen, and
+// pacing never queue-grows.
 describe('PacedPresentationSink paced mode (R12 T2)', () => {
   it('holds an early frame and presents it once its slot is due', () => {
     const { paced, drawn, sched, clock } = pacedHarness();
@@ -639,8 +637,8 @@ describe('context sink options', () => {
   });
 });
 
-// R12 T4 (docs/17 Decision 7): the interpolating WebGL sink — decoupled
-// upload/present over two ping-pong textures with a blend shader.
+// The interpolating WebGL sink — decoupled upload/present over two ping-pong
+// textures with a blend shader.
 describe('InterpolatingWebGLRenderSink (R12 T4)', () => {
   it('draw() uploads and presents like a plain WebGL sink', () => {
     const { canvas } = fakeCanvas();
@@ -699,7 +697,7 @@ describe('InterpolatingWebGLRenderSink (R12 T4)', () => {
   });
 });
 
-// R12 T4: the paced sink's α-slot scheduling — a synthesized mid frame
+// The paced sink's α-slot scheduling — a synthesized mid frame
 // between two consecutive real slots, only when the next frame is in hand.
 describe('PacedPresentationSink interpolation (R12 T4)', () => {
   function interpHarness() {

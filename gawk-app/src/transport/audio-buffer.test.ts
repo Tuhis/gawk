@@ -1,7 +1,6 @@
-// R15 N4 (docs/20 Decision 8): the audio jitter buffer's policies, pure and
-// clock-injected — gap ⇒ silence, late ⇒ drop, overflow ⇒ drop, underrun ⇒
-// counted, restart ⇒ flush + re-anchor — plus the Decision 12 profile
-// widening under resilient mode.
+// The audio jitter buffer's policies, pure and clock-injected — gap ⇒ skip
+// or conceal, late ⇒ drop, overflow ⇒ drop, underrun ⇒ counted, restart ⇒
+// flush + re-anchor — plus the profile widening under resilient mode.
 
 import { describe, expect, it } from 'vitest';
 
@@ -31,8 +30,8 @@ function chunk(timestampUs: number, fill = 0.5): AudioChunk {
 }
 
 // A frozen, injectable clock: the buffer extrapolates the sink's drain between
-// playhead reports (field finding 8), so a test that let the wall clock run
-// would race its own assertions.
+// playhead reports, so a test that let the wall clock run would race its own
+// assertions.
 function collecting() {
   const emitted: AudioChunk[] = [];
   const clock = { t: 1000 };
@@ -89,7 +88,7 @@ describe('AudioJitterBuffer policies', () => {
 
   it('overflow ⇒ the incoming chunk is dropped once the sink is backlogged', () => {
     const { emitted, buffer } = collecting();
-    // Fill well past target + slack without ever draining (notePlayed).
+    // Fill well past target + slack without ever draining (noteDepth).
     let ts = 0;
     let overflowed = 0;
     for (let i = 0; i < 100; i++, ts += FRAME_US) {
@@ -121,8 +120,8 @@ describe('AudioJitterBuffer policies', () => {
 
   it('bufferedMs tracks queue depth as the sink drains', () => {
     const { buffer } = collecting();
-    // Prime first (field finding 3): before that the sink holds nothing, so
-    // there is nothing for it to report draining.
+    // Prime first: before that the sink holds nothing, so there is nothing for
+    // it to report draining.
     for (let i = 0; i < 3; i++) buffer.push(chunk(i * FRAME_US));
     expect(buffer.getStats().bufferedMs).toBeCloseTo(60, 5);
     buffer.noteDepth(40);
@@ -141,7 +140,7 @@ describe('AudioJitterBuffer policies', () => {
 
     // Broadcaster restart: timestamps jump back to a fresh timeline. The
     // re-anchor flushes, so the new timeline primes its cushion before playing
-    // (field finding 3) — three 20 ms chunks, then everything flows again.
+    // — three 20 ms chunks, then everything flows again.
     expect(buffer.push(chunk(0))).toBe('accepted');
     expect(buffer.push(chunk(FRAME_US))).toBe('accepted');
     expect(buffer.push(chunk(2 * FRAME_US))).toBe('accepted');
@@ -165,14 +164,11 @@ describe('AudioJitterBuffer policies', () => {
   });
 
   it('flush zeroes the per-timeline counters but keeps counting resets', () => {
-    // BUGS.md (2026-07-22): the sink outlives individual sessions, and flush()
-    // used to bump `resets` while leaving every other counter running. So the
-    // audioBuffer block in a Copy-diagnostics capture was cumulative over the
-    // whole page view while everything beside it was per-attempt — which is
-    // how a capture ended up reporting 12816 overflow drops against 4908
-    // decoded packets, a comparison that reads as a wild accounting bug and is
-    // really two different time bases. The counters describe the CURRENT
-    // timeline; `resets` says how many came before.
+    // The sink outlives individual sessions, so counters left running across
+    // flushes would be cumulative over the whole page view while everything
+    // beside them in a Copy-diagnostics capture is per-attempt — two time
+    // bases that read as a wild accounting bug. The counters describe the
+    // CURRENT timeline; `resets` says how many came before.
     const { buffer } = collecting();
     buffer.push(chunk(0));
     buffer.push(chunk(3 * FRAME_US)); // a 40 ms hole: skipped inside the budget
@@ -201,13 +197,12 @@ describe('AudioJitterBuffer policies', () => {
   });
 });
 
-// Field findings 3 + 4 (docs/20). Finding 3: the target was implemented as an
-// overflow *ceiling* only — every chunk went to the worklet on arrival, so the
-// sink played at ~0 ms depth and any jitter ran it dry. Finding 4 (the
-// video-master revision) makes the release a scheduling decision instead: hold
-// audio until the video presentation schedule says it is due, because after
-// playback starts the worklet runs at 1x and the alignment can never be
-// changed again by buffering.
+// The target is a release gate, not only an overflow *ceiling*: sending every
+// chunk to the worklet on arrival plays at ~0 ms depth and any jitter runs it
+// dry. And the release is a scheduling decision: hold audio until the video
+// presentation schedule says it is due, because after playback starts the
+// worklet runs at 1x and the alignment can never be changed again by
+// buffering.
 describe('AudioJitterBuffer alignment', () => {
   function scheduled(dueAt: (timestampUs: number) => number | null) {
     const emitted: AudioChunk[] = [];
@@ -235,7 +230,7 @@ describe('AudioJitterBuffer alignment', () => {
     buffer.tick();
     expect(emitted).toHaveLength(5);
     expect(emitted.map((c) => c.timestampUs)).toEqual([0, FRAME_US, 2 * FRAME_US, 3 * FRAME_US, 4 * FRAME_US]);
-    // That hold is now the sink's depth — the cushion finding 3 lacked.
+    // That hold is now the sink's depth.
     expect(buffer.getStats().bufferedMs).toBeCloseTo(100, 5);
     expect(buffer.getStats().alignmentHoldMs).toBeCloseTo(100, 5);
   });
@@ -243,8 +238,8 @@ describe('AudioJitterBuffer alignment', () => {
   it('builds the jitter-floor cushion even when the schedule is due immediately (live-edge)', () => {
     // Live-edge: video presents on arrival, so the schedule says "due now" at
     // ~0 hold. Releasing there would leave the worklet no cushion and let
-    // normal jitter starve it (docs/20 field finding 6). The adaptive jitter
-    // target is a floor in every mode: hold until it is met, THEN pass through.
+    // normal jitter starve it. The adaptive jitter target is a floor in every
+    // mode: hold until it is met, THEN pass through.
     const { emitted, buffer, clock } = scheduled(() => 1000); // due immediately
     buffer.push(chunk(0));
     buffer.push(chunk(FRAME_US));
@@ -262,7 +257,7 @@ describe('AudioJitterBuffer alignment', () => {
 
   it('falls back to a depth floor when no schedule is known', () => {
     // A pipeline with no video baseline yet: still must not play at ~0 ms
-    // depth (finding 3), so the jitter target becomes the gate.
+    // depth, so the jitter target becomes the gate.
     const emitted: AudioChunk[] = [];
     const buffer = new AudioJitterBuffer((c) => void emitted.push(c), DEFAULT_AUDIO_PROFILE, {
       now: () => 1000,
@@ -281,16 +276,12 @@ describe('AudioJitterBuffer alignment', () => {
     expect(emitted.length).toBeGreaterThan(0);
   });
 
-  // docs/20 field finding 9 (2026-07-23, reproduced against the homelab).
-  // Leaving Deep buffer for Live edge flushed the buffer correctly (`resets`
-  // incremented) and audio still committed ~2.8 s behind the picture. The due
-  // time was computed from the *first* schedule seen after the flush — the
-  // outgoing deep one, since audio arrives at 50/s and the new session's video
-  // baseline only reaches the sink on the ~2 Hz stats tick — and then latched.
-  // The live schedule that arrived moments later was never consulted, so the
-  // buffer waited out MAX_ALIGNMENT_HOLD_MS and released ~2.87 s deep (the
-  // observed 2873.5 ms is the cap, not a schedule-derived hold). Alignment is a
-  // start-time decision, so that anchor is permanent: only a reload cured it.
+  // Leaving Deep buffer for Live edge: audio arrives at 50/s but the new
+  // session's video baseline only reaches the sink on the ~2 Hz stats tick,
+  // so the first schedule seen after the flush is the outgoing deep one. A
+  // due time latched from it waits out MAX_ALIGNMENT_HOLD_MS and releases
+  // seconds behind the picture — permanently, since alignment is a
+  // start-time decision.
   it('re-evaluates the due time when the schedule changes during priming', () => {
     // The deep schedule: this chunk's frame is presented 3 s from now.
     let dueAt = 4000;
@@ -318,9 +309,9 @@ describe('AudioJitterBuffer alignment', () => {
   });
 
   it('re-primes on a dry underrun by depth, not by a schedule already past', () => {
-    // The schedule for the oldest pending chunk is in the past by definition
-    // at this point — that is why we ran dry. Honoring it would release
-    // instantly and rebuild no cushion at all.
+    // Here every scheduled slot is already past. Releasing on the schedule
+    // alone would release instantly and rebuild no cushion at all, so the
+    // depth gate governs.
     const { emitted, buffer, clock } = scheduled((ts) => 1000 + ts / 1000);
     // Start playback by building the jitter-floor cushion (60 ms = 3 chunks).
     buffer.push(chunk(0));
@@ -340,14 +331,13 @@ describe('AudioJitterBuffer alignment', () => {
     expect(emitted).toHaveLength(before + 3);
   });
 
-  // docs/20 field finding 13 (2026-07-26): the "schedule already past" premise
-  // above holds for a live-edge schedule, where the hold is ~0 by definition.
-  // In a paced mode the hold is the whole playout offset, so a chunk arriving
-  // AFTER the dry-out is still due a few hundred ms in the future — its
-  // schedule is not past at all, and abandoning it strands audio that far
-  // ahead of its picture for the rest of the session. The depth floor is an
-  // anti-starvation guard, not an alignment; only the schedule is an
-  // alignment, and after a re-prime it is available again.
+  // The "schedule already past" case above is typical of a live-edge schedule,
+  // where the hold is ~0 by definition. In a paced mode the hold is the whole
+  // playout offset, so a chunk arriving AFTER the dry-out is still due a few
+  // hundred ms in the future — its schedule is not past at all, and abandoning
+  // it strands audio that far ahead of its picture for the rest of the session.
+  // The depth floor is an anti-starvation guard, not an alignment; only the
+  // schedule is an alignment, and after a re-prime it is available again.
   it('re-anchors a dry underrun against a schedule whose slots are still ahead', () => {
     // Paced: audio for timestamp T arrives 300 ms before its frame is shown.
     const { emitted, buffer, clock } = scheduled((ts) => 1300 + ts / 1000);
@@ -448,8 +438,6 @@ describe('AudioJitterBuffer adaptive target', () => {
     expect(buffer.getStats().targetMs).toBe(DEFAULT_AUDIO_PROFILE.minMs);
   });
 
-  // Decision 12: the resilient profile is what keeps audio-master pacing from
-  // dragging the video buffer back to ~150 ms.
   it('follows a live profile getter into the resilient envelope', () => {
     const emitted: AudioChunk[] = [];
     let resilient = false;
@@ -482,14 +470,12 @@ describe('AudioJitterBuffer adaptive target', () => {
   });
 });
 
-// Field finding 7 (docs/20): the depth estimate is a *shadow* of the worklet's
-// real queue, and it must not count audio the worklet never received. The
-// pre-fix buffer incremented queuedMs for every chunk it handed to the emit
-// callback, even when the callback dropped it (the AudioWorklet node was still
-// booting, or its port threw). That phantom depth inflated bufferedMs past the
-// overflow ceiling forever, so every further chunk spuriously overflow-dropped
-// — the crackle — and, once the sink stopped draining, froze there with no
-// recovery — the silence.
+// The depth estimate is a *shadow* of the worklet's real queue, and it must
+// not count audio the worklet never received (the AudioWorklet node still
+// booting, or its port throwing). Phantom depth inflates bufferedMs past the
+// overflow ceiling forever, so every further chunk spuriously
+// overflow-drops — the crackle — and, once the sink stops draining, freezes
+// there with no recovery — the silence.
 describe('AudioJitterBuffer honest accounting', () => {
   it('does not count chunks the sink never received as buffered depth', () => {
     // A sink that is "ready" (so release proceeds) but rejects every chunk on
@@ -500,8 +486,8 @@ describe('AudioJitterBuffer honest accounting', () => {
       schedule: () => null,
       sinkReady: () => true,
     });
-    // Far more than a ceiling's worth: the old buffer would have inflated
-    // queuedMs past target+slack and started overflow-dropping. Nothing here
+    // Far more than a ceiling's worth: counting these would inflate queuedMs
+    // past target+slack and start overflow-dropping. Nothing here
     // ever reached the worklet, so the honest depth is zero and nothing may be
     // reported as backlog.
     for (let i = 0; i < 200; i++) buffer.push(chunk(i * FRAME_US));
@@ -519,7 +505,7 @@ describe('AudioJitterBuffer honest accounting', () => {
     });
     // The depth floor is met (3 × 20 ms ≥ 60 ms seed), but the worklet has not
     // booted: releasing now would hand the whole cushion to a null node and
-    // lose it, leaving the worklet to starve at ~0 ms depth (finding 6 redux).
+    // lose it, leaving the worklet to starve at ~0 ms depth.
     for (let i = 0; i < 5; i++) buffer.push(chunk(i * FRAME_US));
     expect(emitted).toHaveLength(0);
 
@@ -565,16 +551,13 @@ describe('AudioJitterBuffer honest accounting', () => {
 });
 
 
-// Field finding 8 (docs/20): on Safari the buffer latched into ~75 %
-// synthesized silence — 37 overflow drops/s against 50 packets/s arriving,
-// with zero network loss (received == decoded) and bufferedMs pinned at
-// target + slack forever. The cause is a loop between two policies that each
-// look right alone: `push` counts an overflow drop *before* advancing
-// nextExpectedUs, so the run of dropped packets comes back as a hole, and the
-// gap branch conceals that hole with exactly as much silence as was dropped —
-// through emitChunk, so it re-adds the very depth the drop was meant to shed.
-// Overflow-dropping therefore cannot lower the depth; it only converts audio
-// into silence, at whatever rate keeps the estimate at the ceiling.
+// A loop between two policies that each look right alone: if an overflow drop
+// does not advance nextExpectedUs, the run of dropped packets comes back as a
+// hole, and the gap branch conceals that hole with exactly as much silence as
+// was dropped — through emitChunk, so it re-adds the very depth the drop was
+// meant to shed. Overflow-dropping then cannot lower the depth; it only
+// converts audio into silence, at whatever rate keeps the estimate at the
+// ceiling (seen on Safari as mostly-silent audio with zero network loss).
 describe('AudioJitterBuffer overflow does not manufacture silence', () => {
   it('an overflow drop is a skip toward live, not a hole to conceal', () => {
     const { emitted, buffer, clock } = collecting();
@@ -591,7 +574,7 @@ describe('AudioJitterBuffer overflow does not manufacture silence', () => {
     expect(overflowed).toBeGreaterThan(5);
 
     // The sink drains; the next packet is contiguous with the *skipped* run,
-    // not 'gap-filled'. Pre-fix this was the latch: a silence chunk exactly as
+    // not 'gap-filled'. Filling it is the latch: a silence chunk exactly as
     // long as the drops, putting the depth straight back over the ceiling.
     clock.t += 1000;
     buffer.noteDepth(0);
@@ -605,7 +588,7 @@ describe('AudioJitterBuffer overflow does not manufacture silence', () => {
   // The headline regression: a realistic producer/consumer loop with the
   // production shape (50 packets/s in, a worklet draining at 1×, ~4 Hz
   // playhead reports) and one arrival burst to push it over the ceiling. The
-  // field capture sat at ~25 % real audio; anything near that is the bug.
+  // latch leaves ~25 % real audio; anything near that is the bug.
   it('recovers from an arrival burst instead of latching into silence', () => {
     const clock = { t: 0 };
     let workletMs = 0; // what the worklet actually holds
@@ -631,8 +614,7 @@ describe('AudioJitterBuffer overflow does not manufacture silence', () => {
     // Prime.
     for (let i = 0; i < 3; i++) push();
     // The trigger: a 300 ms arrival burst (jitter on the shared datagram
-    // path — the capture showed receivedFps swinging 20→48 at ~100 ms of
-    // arrival jitter). Every packet is contiguous, so none of it is late.
+    // path). Every packet is contiguous, so none of it is late.
     for (let i = 0; i < 15; i++) push();
 
     // 6 s of steady state: one 20 ms packet per 20 ms, the worklet draining in
@@ -660,8 +642,8 @@ describe('AudioJitterBuffer overflow does not manufacture silence', () => {
     }
     const dropsAtEnd = buffer.getStats().overflowDrops;
 
-    // The speaker hears audio, not silence. Pre-fix: 12 % real, the rest
-    // synthesized — audible as constant breakup.
+    // The speaker hears audio, not silence. The latch leaves ~12 % real, the
+    // rest synthesized — audible as constant breakup.
     expect(realMs / (realMs + silenceMs)).toBeGreaterThan(0.99);
     // The burst is shed all the way back to the alignment depth, not merely to
     // just under the ceiling: parked at the ceiling, input rate == drain rate
@@ -676,9 +658,8 @@ describe('AudioJitterBuffer overflow does not manufacture silence', () => {
     const { buffer, clock } = collecting();
     let ts = 0;
     for (let i = 0; i < 3; i++, ts += FRAME_US) buffer.push(chunk(ts));
-    // The estimate drifts above the truth — findings 7 and 8 are both a
-    // *shadow* of the worklet's queue diverging from it, and a shadow can
-    // never notice on its own.
+    // The estimate drifts above the truth — a *shadow* of the worklet's
+    // queue diverging from it, which a shadow can never notice on its own.
     for (let i = 0; i < 12; i++, ts += FRAME_US) buffer.push(chunk(ts));
     expect(buffer.getStats().bufferedMs).toBeGreaterThan(200);
 
@@ -728,12 +709,11 @@ describe('AudioJitterBuffer overflow does not manufacture silence', () => {
   });
 });
 
-// The other half of the latch: the ceiling was evaluated against an estimate
-// that is only credited down on the worklet's ~4 Hz playhead report, so it
-// over-read by up to a full report interval (250 ms) while OVERFLOW_SLACK_MS
-// is 200 ms. A perfectly healthy real-time producer therefore cleared the
-// ceiling near the end of every report window and dropped a slice of audio,
-// 4×/s, forever.
+// The other half of the latch: an estimate only credited down on the
+// worklet's ~4 Hz playhead report over-reads by up to a full report interval
+// (250 ms) while OVERFLOW_SLACK_MS is 200 ms. Evaluating the ceiling against
+// it, a perfectly healthy real-time producer clears the ceiling near the end
+// of every report window and drops a slice of audio, 4×/s, forever.
 describe('AudioJitterBuffer depth estimate between playhead reports', () => {
   it('does not overflow-drop a real-time producer feeding a real-time sink', () => {
     const { buffer, clock } = collecting();
@@ -760,10 +740,10 @@ describe('AudioJitterBuffer depth estimate between playhead reports', () => {
   });
 });
 
-// The lead budget (user decision 2026-07-23): concealment silence exists to
-// keep audio from running *ahead* of the video it was aligned to at playback
-// start. Below the budget that lead is inaudible and the av-sync rate trim
-// absorbs it; paying for it in synthesized silence is the worse trade.
+// The lead budget: concealment silence exists to keep audio from running
+// *ahead* of the video it was aligned to at playback start. Below the budget
+// that lead is inaudible and the av-sync rate trim absorbs it; paying for it in
+// synthesized silence is the worse trade.
 describe('AudioJitterBuffer gap lead budget', () => {
   it('skips a small hole instead of concealing it', () => {
     const { emitted, buffer } = collecting();
@@ -819,15 +799,13 @@ describe('AudioJitterBuffer gap lead budget', () => {
   });
 });
 
-// R21 Deep buffer (docs/26). In deep mode the video playhead sits DVR_BUFFER_MS
-// (`B`) behind live while audio still arrives ~live (audio is NOT in the relay
-// ring — docs/26 Decision 8/8a is unshipped), so the audio buffer must hold the
-// full `B` depth or audio plays ~B ahead of its video (docs/20 field finding 4:
-// video is the master clock, and alignment is a start-time decision that
-// buffering can never undo). docs/26's own acceptance note ("What the viewer
-// needs"): the audio depth ceiling AND the alignment-hold cap must both exceed
-// `B`. The R19 resilient profile (seed 500, max 2000) and MAX_ALIGNMENT_HOLD_MS
-// (3000) satisfy neither at B ≥ 3000.
+// Deep buffer. In deep mode the video playhead sits DVR_BUFFER_MS (`B`) behind
+// live while audio still arrives ~live (audio is NOT in the relay ring), so
+// the audio buffer must hold the full `B` depth or audio plays ~B ahead of its
+// video (video is the master clock, and alignment is a start-time decision
+// that buffering can never undo). The audio depth ceiling AND the
+// alignment-hold cap must both exceed `B`; the resilient profile (seed 500,
+// max 2000) and MAX_ALIGNMENT_HOLD_MS (3000) satisfy neither at B ≥ 3000.
 describe('AudioJitterBuffer deep-buffer alignment', () => {
   it('audioProfileForDeliveryMode gives Deep buffer a floor at B, not the resilient 500 ms', () => {
     const B = getDvrBufferMs();
@@ -838,8 +816,8 @@ describe('AudioJitterBuffer deep-buffer alignment', () => {
     expect(deep.minMs).toBe(B);
     expect(deep.maxMs).toBeGreaterThanOrEqual(B);
     // And the other two points on the axis are unchanged — in particular
-    // live-edge must NOT inherit the resilient floor (the truthy-string bug: a
-    // three-valued mode read as a boolean is always truthy).
+    // live-edge must NOT inherit the resilient floor (a three-valued mode read
+    // as a boolean is always truthy).
     expect(audioProfileForDeliveryMode('resilient')).toBe(RESILIENT_AUDIO_PROFILE);
     expect(audioProfileForDeliveryMode('live')).toBe(DEFAULT_AUDIO_PROFILE);
   });
@@ -855,7 +833,7 @@ describe('AudioJitterBuffer deep-buffer alignment', () => {
       now: () => 1000,
       schedule: () => null,
     });
-    // 500 ms — the old resilient floor — must NOT be enough to start playback.
+    // 500 ms — the resilient floor — must NOT be enough to start playback.
     for (let i = 0; i * 20 < 500; i++) buffer.push(chunk(i * FRAME_US));
     expect(emitted).toHaveLength(0);
     // Fill up to (but not across) B: still holding, no shedding.
@@ -871,9 +849,9 @@ describe('AudioJitterBuffer deep-buffer alignment', () => {
   });
 
   it('does not release before a deep schedule is due, even when B exceeds the old 3000 cap', () => {
-    // B = 5000 > the historical MAX_ALIGNMENT_HOLD_MS of 3000 and its priming
-    // ceiling. With the old cap the buffer sheds/escapes at ~3000 ms and audio
-    // ends up ~2 s ahead of a 5 s-delayed video. The cap must track the profile.
+    // B = 5000 > MAX_ALIGNMENT_HOLD_MS (3000) and its priming ceiling. With a
+    // flat cap the buffer sheds/escapes at ~3000 ms and audio ends up ~2 s
+    // ahead of a 5 s-delayed video. The cap must track the profile.
     const B = 5000;
     const deepProfile = { seedMs: B, minMs: B, maxMs: B };
     const emitted: AudioChunk[] = [];
@@ -904,9 +882,9 @@ describe('AudioJitterBuffer deep-buffer alignment', () => {
     // The connected AudioWorklet pulls a quantum every ~2.67 ms, so during the
     // multi-second deep hold it reports a continuous run of dry underruns while
     // we DELIBERATELY hold the cushion. Those are expected pre-roll silence, not
-    // a dry-after-playback event: they must not re-prime the buffer, because
-    // re-prime clears alignOnSchedule and would drop the deep buffer onto the
-    // depth floor (anchored to audio arrival) instead of the video playhead —
+    // a dry-after-playback event: they must not re-prime or otherwise disturb
+    // the hold, which is aligned to the video playhead rather than to the
+    // depth floor (anchored to audio arrival) — releasing on depth instead is
     // audible as audio drifting off video by ~the output-latency lead.
     const emitted: AudioChunk[] = [];
     const clock = { t: 1000 };

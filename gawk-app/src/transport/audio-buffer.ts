@@ -1,13 +1,12 @@
-// R15 (docs/20 Decision 8): the viewer's audio jitter buffer — live-edge
-// discipline for the third medium. Pure and clock-injected: every policy
-// decision (gap → skip or conceal, late → drop, overflow → shed toward the
-// alignment depth, underrun → silence, restart → flush + re-anchor) is
-// unit-testable without an AudioContext.
+// The viewer's audio jitter buffer — live-edge discipline for the third
+// medium. Pure and clock-injected: every policy decision (gap → skip or
+// conceal, late → drop, overflow → shed toward the alignment depth, underrun
+// → silence, restart → flush + re-anchor) is unit-testable without an
+// AudioContext.
 //
-// The policies are not independent: field finding 8 shipped an overflow drop
-// and a gap concealment that exactly undid each other. Anything added here
-// must answer "what does this do to the depth, and what does the next policy
-// then do about that?"
+// The policies are not independent: an overflow drop and a gap concealment
+// can exactly undo each other. Anything added here must answer "what does
+// this do to the depth, and what does the next policy then do about that?"
 //
 // Division of labor with the AudioWorklet sink: this class owns *which*
 // PCM goes to the speaker and in what order; the worklet is a dumb FIFO
@@ -17,10 +16,9 @@
 import { getDvrBufferMs } from '../config';
 import type { ViewerDeliveryMode } from './resilient';
 
-// Decision 10: the adaptive target envelope. Default profile is small — the
-// live-edge philosophy does not bend for audio; the resilient profile
-// (docs/24 + docs/20 Decision 12) widens it so audio-master pacing works at
-// resilient depth instead of collapsing the video buffer to ~150 ms.
+// The adaptive target envelope. Default profile is small — the live-edge
+// philosophy does not bend for audio; the resilient profile widens it to
+// resilient depth.
 export interface AudioBufferProfile {
   minMs: number;
   maxMs: number;
@@ -30,16 +28,14 @@ export interface AudioBufferProfile {
 export const DEFAULT_AUDIO_PROFILE: AudioBufferProfile = { minMs: 40, maxMs: 150, seedMs: 60 };
 export const RESILIENT_AUDIO_PROFILE: AudioBufferProfile = { minMs: 150, maxMs: 2000, seedMs: 500 };
 
-// R21 Deep buffer (docs/26). The audio analogue of playout.ts's
-// DVR_PLAYOUT_PROFILE, and for the same reason: in deep mode the video playhead
-// sits DVR_BUFFER_MS (`B`) behind live while audio still arrives ~live (it is
-// not in the relay ring — docs/26 Decision 8/8a is unshipped), so the audio
-// buffer must hold that full depth or it plays ~B ahead of its video. Alignment
-// is a start-time decision (docs/20 field finding 4), so a shallow floor here
-// is a permanent desync, not a transient the rate trim can walk out. docs/26's
-// acceptance note requires the depth ceiling to exceed `B`; pinning seed = min
-// = B (max ≥ B) mirrors the video profile exactly. RESILIENT_AUDIO_PROFILE's
-// 2000 ms ceiling could not express B, which is why deep mode needs its own.
+// Deep buffer. The audio analogue of playout.ts's DVR_PLAYOUT_PROFILE, and for
+// the same reason: in deep mode the video playhead sits DVR_BUFFER_MS (`B`)
+// behind live while audio still arrives ~live (it is not in the relay ring),
+// so the audio buffer must hold that full depth or it plays ~B ahead of its
+// video. Alignment is a start-time decision, so a shallow floor here is a
+// permanent desync, not a transient the rate trim can walk out. Pinning
+// seed = min = B (max ≥ B) mirrors the video profile exactly;
+// RESILIENT_AUDIO_PROFILE's 2000 ms ceiling cannot express B.
 const DVR_BUFFER_MS = getDvrBufferMs();
 export const DVR_AUDIO_PROFILE: AudioBufferProfile = {
   minMs: DVR_BUFFER_MS,
@@ -49,11 +45,7 @@ export const DVR_AUDIO_PROFILE: AudioBufferProfile = {
 
 // The audio profile matching a viewer delivery mode, three-valued to mirror
 // playout.ts's getPlayoutProfile. Deep buffer gets DVR_AUDIO_PROFILE so the
-// audio depth floor equals the video offset; resilient and live keep their R19
-// profiles. A prior version tested the (now three-valued) mode as a boolean,
-// which is always truthy — so it handed live-edge the resilient floor and deep
-// mode no deep floor at all, stranding Deep-buffer audio ~B ahead of a video
-// playhead B behind (docs/26 A/V field finding, 2026-07-23).
+// audio depth floor equals the video offset.
 export function audioProfileForDeliveryMode(mode: ViewerDeliveryMode): AudioBufferProfile {
   switch (mode) {
     case 'deep':
@@ -65,7 +57,7 @@ export function audioProfileForDeliveryMode(mode: ViewerDeliveryMode): AudioBuff
   }
 }
 
-// Headroom over measured jitter, mirroring the R12 PlayoutController shape.
+// Headroom over measured jitter, mirroring PlayoutController's shape.
 const HEADROOM_MS = 20;
 // Slew limits (ms of target change per second): grow fast to avoid dropouts,
 // shrink slowly so a single quiet moment doesn't collapse the buffer.
@@ -74,8 +66,7 @@ const SLEW_DOWN_MS_PER_S = 5;
 // Overflow ceiling: anything beyond target + this is backlog, not jitter.
 const OVERFLOW_SLACK_MS = 200;
 // How far audio may run *ahead* of the video it was aligned to before a hole
-// is worth paying for in synthesized silence (field finding 8, user decision
-// 2026-07-23).
+// is worth paying for in synthesized silence.
 //
 // Concealment exists for one reason: alignment is a start-time decision (the
 // worklet then runs at 1×, so no later buffering can move a sample), which
@@ -97,9 +88,9 @@ const MAX_DRAIN_EXTRAPOLATION_MS = 500;
 // late and leaves audio output-latency behind video. 150 ms comfortably covers
 // arrival jitter; live-edge's own target is smaller, so min() leaves it alone.
 const SCHEDULED_START_CUSHION_MS = 150;
-// Timeline-change thresholds, deliberately asymmetric — the same lesson the
-// video path learned in R10 (docs/14 finding 5): a *serially backwards* jump
-// is the restart signal, and treating it as lateness strands the viewer.
+// Timeline-change thresholds, deliberately asymmetric — as on the video path,
+// a *serially backwards* jump is the restart signal, and treating it as
+// lateness strands the viewer.
 // Backwards: no straggler is a full second behind the feed position (arrival
 // jitter is tens of ms; the buffer's depth doesn't make packets arrive late),
 // so anything beyond this is a new timeline, not a late packet.
@@ -109,8 +100,8 @@ const BACKWARDS_RESTART_MS = 1000;
 const FORWARD_RESTART_MS = 5000;
 
 export interface AudioChunk {
-  // Broadcaster-clock µs (docs/20 Decision 3) — the same clock video frames
-  // carry, which is what makes A/V skew a subtraction.
+  // Broadcaster-clock µs — the same clock video frames carry, which is what
+  // makes A/V skew a subtraction.
   timestampUs: number;
   // Planar PCM, one Float32Array per channel.
   channels: Float32Array[];
@@ -121,35 +112,35 @@ export interface AudioChunk {
 
 export interface AudioBufferStats {
   gapsConcealed: number;
-  // Holes small enough to skip inside the lead budget (field finding 8).
-  // Split from gapsConcealed rather than folded into it: they are the same
-  // event with opposite treatments, and it was precisely the *ratio* of
-  // concealments to overflow drops that identified the finding-8 latch.
+  // Holes small enough to skip inside the lead budget. Split from
+  // gapsConcealed rather than folded into it: they are the same event with
+  // opposite treatments, and the *ratio* of concealments to overflow drops is
+  // what exposes overflow shedding and concealment undoing each other.
   gapsSkipped: number;
   lateDrops: number;
   overflowDrops: number;
   underruns: number;
   bufferedMs: number;
   targetMs: number;
-  // How long audio was held to line up with the video schedule (docs/20
-  // field finding 4). Null until playback starts; the number to look at when
-  // lip sync is off.
+  // How long audio was held to line up with the video schedule. Null until
+  // playback starts; the number to look at when lip sync is off.
   alignmentHoldMs: number | null;
-  // Wall-clock ms the buffer has been anchored (diagnostic for re-anchors).
+  // Timeline re-anchors (flushes). Survives the flush that zeroes the other
+  // counters, so it says how many earlier timelines they are not describing.
   resets: number;
 }
 
 // Returns whether the chunk actually reached the sink. `false` means the sink
 // dropped it (the AudioWorklet node was still booting, or its port threw), and
 // the buffer must NOT count it toward depth — counting undelivered audio
-// inflates the estimate above the overflow ceiling forever, which is the
-// field-finding-7 crackle-then-silence. `void` is treated as delivered so
-// simpler sinks (the tests) need not care.
+// inflates the estimate above the overflow ceiling forever: crackle, then
+// silence. `void` is treated as delivered so simpler sinks (the tests) need
+// not care.
 export type AudioChunkSink = (chunk: AudioChunk) => boolean | void;
 
 // Whether the sink can receive a chunk right now. The buffer holds audio in
 // priming until this is true, so the alignment cushion is never released into
-// a null worklet node and lost (field finding 7). Defaults to always-ready.
+// a null worklet node and lost. Defaults to always-ready.
 export type SinkReadyFn = () => boolean;
 
 // Maps a broadcaster audio timestamp (µs) to the local ms at which that chunk
@@ -161,13 +152,12 @@ export type AudioScheduleFn = (timestampUs: number) => number | null;
 // A schedule that never fires would hold audio forever; release anyway past
 // this. It is a safety net for a broken/absent schedule ("audio plays, badly
 // aligned" instead of "audio never plays"), NOT a normal release path — so it
-// must sit clearly above the deepest *legitimate* hold. The historical 3000 ms
-// covers the live/resilient profiles, but Deep buffer holds `B` (≥ 3000 ms,
-// tunable to 30 s), so the effective cap tracks the active profile's ceiling
-// via alignmentHoldCapMs(); at 3000 ms flat the net fired as a matter of course
-// in deep mode and preempted the very schedule it exists to back up (docs/26
-// A/V field finding). This constant stays the floor for the shallow profiles,
-// so live/resilient behavior is byte-identical.
+// must sit clearly above the deepest *legitimate* hold. 3000 ms covers the
+// live/resilient profiles, but Deep buffer holds `B` (≥ 3000 ms, tunable to
+// 30 s), so the effective cap tracks the active profile's ceiling via
+// alignmentHoldCapMs(); a flat 3000 ms net would fire as a matter of course in
+// deep mode and preempt the very schedule it exists to back up. This constant
+// stays the floor for the shallow profiles.
 export const MAX_ALIGNMENT_HOLD_MS = 3000;
 // Headroom between the deepest intended hold (the profile ceiling) and the
 // point the safety net trips, so ordinary jitter around a deep hold never
@@ -181,8 +171,8 @@ export class AudioJitterBuffer {
   private lastSlewAtMs: number | null = null;
   // Identity of the profile the current target was learned under. A resilient
   // flip must re-seed on the incoming profile rather than carry a value from
-  // the other one's envelope (docs/24 Decision 9's rule, applied to audio) —
-  // and the two envelopes overlap at 150 ms, so a range check alone misses it.
+  // the other one's envelope — and the two envelopes overlap at 150 ms, so a
+  // range check alone misses it.
   private profileSeedMs: number;
   // True while dropping incoming audio to get back down to the alignment
   // depth after a backlog. Hysteretic — see the ceiling check in push().
@@ -191,29 +181,29 @@ export class AudioJitterBuffer {
   // The next expected timestamp (µs) — how gaps are detected. Null before
   // the first accepted chunk and after every flush.
   private nextExpectedUs: number | null = null;
-  // What the sink held at its last report, in ms — the worklet's own measure
-  // of its queue, not an estimate maintained here (field finding 8). Between
-  // reports it is stale, so read it through queuedNowMs(), never directly, or
-  // the ceiling sees a sawtooth.
+  // What the sink held at its last report, in ms — the worklet's own measure of
+  // its queue, not an estimate maintained here. Between reports it is stale, so
+  // read it through queuedNowMs(), never directly, or the ceiling sees a
+  // sawtooth.
   private queuedMs = 0;
   // Local ms of the last ground truth about the sink's depth (a playhead
   // report, or the release that handed it the cushion). Null before playback.
   private lastDrainAtMs: number | null = null;
-  // How far ahead of the video schedule the holes we chose to skip have put
-  // us (field finding 8). Concealment pays this back in full, so it is a debt
-  // and not a running average.
+  // How far ahead of the video schedule the holes we chose to skip have put us.
+  // Concealment pays this back in full, so it is a debt and not a running
+  // average.
   private skipLeadMs = 0;
-  // Field findings 3 + 4 (docs/20): chunks accumulate here until playback is
-  // due, then release in order. Two ways to become due, in priority order:
+  // Chunks accumulate here until playback is due, then release in order. Two
+  // ways to become due, in priority order:
   //
   //   1. The video presentation schedule says so — the alignment decision,
-  //      and the only one that produces lip sync (finding 4). Audio arrives
-  //      earlier than video, so this normally holds a few hundred ms, which
-  //      then *is* the sink's queue depth for the rest of the session.
+  //      and the only one that produces lip sync. Audio arrives earlier than
+  //      video, so this normally holds a few hundred ms, which then *is* the
+  //      sink's queue depth for the rest of the session.
   //   2. No schedule available (video baseline not yet established, or a
   //      pipeline that never presents video): fall back to a depth floor of
-  //      targetMs, so audio still plays with a cushion rather than at the
-  //      ~0 ms depth of finding 3.
+  //      targetMs, so audio still plays with a cushion rather than at ~0 ms
+  //      depth.
   //
   // Re-armed on flush and on a still-dry underrun report.
   private priming = true;
@@ -306,11 +296,11 @@ export class AudioJitterBuffer {
     if (this.shedding) {
       this.stats.overflowDrops++;
       // Advance past what we dropped, so the drop cannot come back as a hole
-      // for the gap branch to conceal (field finding 8). Filling a hole we
-      // made ourselves re-adds exactly the depth the drop was meant to shed,
-      // which makes overflow-dropping unable to lower the depth at all: the
-      // buffer latches at the ceiling and converts audio into silence at
-      // whatever rate keeps it there (~75 % of it, in the Safari capture).
+      // for the gap branch to conceal. Filling a hole we made ourselves
+      // re-adds exactly the depth the drop was meant to shed, which makes
+      // overflow-dropping unable to lower the depth at all: the buffer latches
+      // at the ceiling and converts audio into silence at whatever rate keeps
+      // it there.
       //
       // Skipping is also the *right* answer here, not merely the cheap one:
       // an overflow means the sink is holding more than the alignment asked
@@ -336,8 +326,7 @@ export class AudioJitterBuffer {
     const deltaUs = chunk.timestampUs - this.nextExpectedUs;
 
     // A big jump in either direction is a new timeline, not a gap: re-anchor
-    // rather than synthesizing seconds of silence or dropping forever
-    // (docs/20 Decision 8, restart/reconnect policy).
+    // rather than synthesizing seconds of silence or dropping forever.
     if (deltaUs < -BACKWARDS_RESTART_MS * 1000 || deltaUs > FORWARD_RESTART_MS * 1000) {
       this.flush();
       this.nextExpectedUs = chunk.timestampUs + durationMs * 1000;
@@ -356,7 +345,7 @@ export class AudioJitterBuffer {
     // after it is heard that much earlier); concealing it costs audible
     // silence. Pay in silence only once the accumulated lead is large enough
     // to matter — and then pay the whole debt at once, so the timeline is
-    // exactly restored instead of half-corrected (field finding 8).
+    // exactly restored instead of half-corrected.
     if (deltaUs > 0) {
       this.skipLeadMs += deltaUs / 1000;
       let filled = false;
@@ -383,11 +372,10 @@ export class AudioJitterBuffer {
   // once the alignment gate opens.
   private emitChunk(chunk: AudioChunk, durationMs: number): void {
     if (!this.priming) {
-      // Count toward depth only what the sink actually took (field finding 7):
-      // an undelivered chunk (node booting, port throwing) that still inflated
-      // queuedMs is what drove the chronic spurious overflow drops.
-      // Counted optimistically until the sink's next report corrects it; only
-      // delivered audio counts (field finding 7).
+      // Count toward depth only what the sink actually took: an undelivered
+      // chunk (node booting, port throwing) that still inflated queuedMs would
+      // drive chronic spurious overflow drops. Counted optimistically until
+      // the sink's next report corrects it.
       if (this.emit(chunk) !== false) this.queuedMs += durationMs;
       return;
     }
@@ -404,54 +392,46 @@ export class AudioJitterBuffer {
     const oldest = this.pending[0]!;
     // Re-read the schedule on every pass while priming, rather than latching
     // the first answer. The release *is* the alignment decision, so the only
-    // schedule that may decide it is the one in force at that moment (docs/20
-    // field finding 9). Latching broke leaving Deep buffer: audio arrives at
-    // 50/s but the new session's video baseline only reaches the sink on the
-    // ~2 Hz stats tick, so the first post-flush chunk always latched the
-    // *outgoing* deep schedule, and the live one that arrived milliseconds
-    // later was never consulted — the buffer waited out the
-    // MAX_ALIGNMENT_HOLD_MS net and committed ~2.87 s behind a picture back at
-    // the live edge, permanently (alignment is a start-time decision). A
-    // momentarily absent schedule keeps the last known due time instead of
-    // clearing it, so the no-schedule depth-floor path is unchanged.
+    // schedule that may decide it is the one in force at that moment.
+    // Latching breaks leaving Deep buffer: audio arrives at 50/s but the new
+    // session's video baseline only reaches the sink on the ~2 Hz stats tick,
+    // so the first post-flush chunk would latch the *outgoing* deep schedule
+    // and commit audio seconds behind a picture back at the live edge,
+    // permanently (alignment is a start-time decision). A momentarily absent
+    // schedule keeps the last known due time instead of clearing it, so the
+    // no-schedule depth-floor path is unchanged.
     const next = this.schedule()?.(oldest.timestampUs) ?? null;
     if (next !== null) this.dueAtMs = next;
     const nowMs = this.now();
     // The video schedule decides *lip sync* — when audio is heard relative to
     // its frame. But in live-edge mode the frame is presented on arrival, so
     // the schedule says "due now" at ~0 hold, which leaves the worklet no
-    // cushion and lets normal arrival jitter starve it into constant underrun
-    // (docs/20 field finding 6: near-silent live-edge audio, worse the higher
-    // the arrival jitter). So the adaptive jitter target is a *floor* in every
-    // mode: never release below it. In paced modes the schedule hold already
-    // exceeds the floor, so gating on both changes nothing there.
+    // cushion and lets normal arrival jitter starve it into constant underrun.
+    // So the adaptive jitter target is a *floor* in every mode: never release
+    // below it. In paced modes the schedule hold already exceeds the floor, so
+    // gating on both changes nothing there.
     const haveSchedule = this.dueAtMs !== null;
     const scheduleDue = haveSchedule ? nowMs >= this.dueAtMs! : true;
-    // Depth gate. With NO schedule it is the whole alignment target (finding 5's
-    // deep fallback: hold B even when the video baseline never arrives). With a
-    // schedule it is only an anti-starvation cushion — the schedule already sets
-    // the hold, and does so lead-compensated (dueAt = present − output latency),
-    // so requiring the full target on top would defeat that compensation and
-    // leave audio ~output-latency behind video (the depth is only met `lead` ms
-    // after the schedule is due, because `targetMs` of audio takes `targetMs` to
-    // arrive at 1×). See SCHEDULED_START_CUSHION_MS.
+    // Depth gate. With NO schedule it is the whole alignment target (the deep
+    // fallback: hold B even when the video baseline never arrives). With a
+    // schedule it is only an anti-starvation cushion: the schedule already
+    // sets the hold, lead-compensated (dueAt = present − output latency), and
+    // requiring the full target on top would release `lead` ms late, since
+    // `targetMs` of audio takes `targetMs` to arrive at 1×. See
+    // SCHEDULED_START_CUSHION_MS.
     //
-    // Since the schedule is consulted on every priming episode — including the
-    // rebuild after an underrun (docs/20 field finding 13) — this cap now also
-    // governs those, where the whole target used to apply. Deliberate: in
-    // resilient mode `targetMs` rides the *video* arrival-jitter estimate and
-    // seeds at 500 ms, which is a cushion sized by the wrong medium (audio is
-    // one packet per datagram and far smoother), and when the schedule has
-    // already gone by it is pure lip-sync error, since holding longer cannot
-    // make a late release earlier. Live-edge is unaffected: its target is
-    // already ≤ the cap, so min() leaves it alone.
+    // The cap also governs the rebuild after an underrun. In resilient mode
+    // `targetMs` rides the *video* arrival-jitter estimate and seeds at 500 ms
+    // — a cushion sized by the wrong medium — and once the schedule has gone
+    // by, holding longer is pure lip-sync error. Live-edge's target is already
+    // ≤ the cap, so min() leaves it alone.
     const depthTarget = haveSchedule
       ? Math.min(this.targetMs, SCHEDULED_START_CUSHION_MS)
       : this.targetMs;
     const depthReady = this.bufferedMs() >= depthTarget;
-    // Field finding 7: never release the cushion into a sink that can't receive
-    // it — the released chunks would be dropped and the worklet would start at
-    // ~0 ms depth (finding 6 redux). Hold until the worklet node exists.
+    // Never release the cushion into a sink that can't receive it — the
+    // released chunks would be dropped and the worklet would start at ~0 ms
+    // depth. Hold until the worklet node exists.
     const due = scheduleDue && depthReady && this.ready();
     // The cap keeps a missing or nonsensical schedule (or a sink that never
     // comes up) from muting audio: release anyway, and honest accounting below
@@ -465,10 +445,10 @@ export class AudioJitterBuffer {
     this.pendingMs = 0;
     const ready = this.pending;
     this.pending = [];
-    // Count only what the sink accepted (field finding 7). If the node is up
-    // (the ready() path) that is all of it, identical to before; only the
-    // MAX_ALIGNMENT_HOLD escape can hit an unready sink, and there the depth
-    // must stay honest rather than bake in a phantom cushion.
+    // Count only what the sink accepted. If the node is up (the ready() path)
+    // that is all of it; only the MAX_ALIGNMENT_HOLD escape can hit an unready
+    // sink, and there the depth must stay honest rather than bake in a phantom
+    // cushion.
     let delivered = 0;
     for (const c of ready) {
       if (this.emit(c) !== false) delivered += (c.frameCount / c.sampleRate) * 1000;
@@ -482,13 +462,12 @@ export class AudioJitterBuffer {
 
   // The sink's depth *now*, not at its last report. queuedMs is only credited
   // down on the worklet's ~4 Hz playhead report, so reading it raw over-states
-  // depth by up to a full report interval (250 ms) — more than OVERFLOW_SLACK_MS
-  // (200 ms). A perfectly healthy real-time producer feeding a real-time sink
-  // therefore cleared the ceiling near the end of every window and dropped a
-  // slice of audio, 4×/s, forever (field finding 8, ~46 drops/s in the
-  // regression test). Between reports the worklet is known to drain at 1× — it
-  // consumes exactly sampleRate samples per second — so extrapolate, and let
-  // the next report correct it.
+  // depth by up to a full report interval (250 ms) — more than
+  // OVERFLOW_SLACK_MS (200 ms). A perfectly healthy real-time producer feeding
+  // a real-time sink would therefore clear the ceiling near the end of every
+  // window and drop a slice of audio, 4×/s, forever. Between reports the
+  // worklet is known to drain at 1× — it consumes exactly sampleRate samples
+  // per second — so extrapolate, and let the next report correct it.
   //
   // Capped: if reports stop entirely (a suspended context — Safari does this
   // at will) the extrapolation must not decay a real backlog to zero and let
@@ -511,7 +490,7 @@ export class AudioJitterBuffer {
   // The safety-net hold, tracking the active profile so a deep cushion is never
   // preempted by it (see MAX_ALIGNMENT_HOLD_MS). The deepest legitimate hold is
   // the profile's ceiling; the net trips one margin above that. For the shallow
-  // profiles this is exactly the historical 3000 ms.
+  // profiles this is MAX_ALIGNMENT_HOLD_MS.
   private alignmentHoldCapMs(): number {
     return Math.max(MAX_ALIGNMENT_HOLD_MS, this.profile().maxMs + ALIGNMENT_HOLD_MARGIN_MS);
   }
@@ -532,12 +511,12 @@ export class AudioJitterBuffer {
   // itself and reconciled for anything still in flight. Authoritative: it
   // replaces the running count rather than adjusting it.
   //
-  // Findings 7 and 8 were both the same shape — a *shadow* of the worklet's
-  // queue, maintained here from deliveries and drain deltas, diverging from
-  // the real thing with no way to notice (undelivered chunks; a context
-  // running at a rate we assumed; a suspended worklet). A shadow cannot audit
-  // itself, so the queue's owner reports it instead, in content ms so the
-  // context's sample rate never enters the accounting.
+  // A *shadow* of the worklet's queue, maintained here from deliveries and
+  // drain deltas, diverges from the real thing with no way to notice
+  // (undelivered chunks; a context running at a rate we assumed; a suspended
+  // worklet). A shadow cannot audit itself, so the queue's owner reports it
+  // instead, in content ms so the context's sample rate never enters the
+  // accounting.
   noteDepth(queuedMs: number): void {
     // A non-finite report is no information, not bad information. Every depth
     // comparison here is a `>` or `>=`, and all of them are false against NaN:
@@ -551,13 +530,7 @@ export class AudioJitterBuffer {
   }
 
   // The sink ran dry and emitted silence itself. Rebuild the cushion before
-  // playing on — at zero depth the next blip underruns too, and the next,
-  // which is exactly the "constant breaks" of field finding 3.
-  //
-  // Only when it is *still* dry, though: reports arrive on the sink's ~4 Hz
-  // cadence (notePlayed lands first, from the same report), so a buffer that
-  // already recovered would otherwise be sent back to priming — paying a
-  // second silence for a gap that had closed.
+  // playing on — at zero depth the next blip underruns too, and the next.
   noteUnderrun(count = 1): void {
     // Before the first release the worklet is connected and pulling silence
     // while we deliberately hold the alignment cushion (a deep buffer holds
@@ -582,36 +555,32 @@ export class AudioJitterBuffer {
     // old one is meaningless — and the silence the worklet just played for
     // itself has already pushed audio the other way.
     this.skipLeadMs = 0;
-    // Forget the timeline as well, for the same reason (docs/20 field finding
-    // 13). Keeping `nextExpectedUs` made the first chunk after the dry period
-    // read as a gap and pay for it in synthesized silence — for a hole the
-    // worklet had *already* filled with silence of its own by running dry.
-    // Worse than the double payment: that concealment chunk carries the stale
+    // Forget the timeline as well, for the same reason. Keeping
+    // `nextExpectedUs` would make the first chunk after the dry period read
+    // as a gap and pay for it in synthesized silence — for a hole the worklet
+    // had *already* filled with silence of its own by running dry. Worse than
+    // the double payment: that concealment chunk carries the stale
     // pre-gap timestamp, so it lands at the head of the rebuild and anchors
     // the release against a schedule slot that has long passed, discarding the
     // realignment this re-prime exists to make. The next chunk re-anchors the
     // timeline exactly as it does after a flush.
     this.nextExpectedUs = null;
-    // `alignOnSchedule` deliberately stays TRUE (docs/20 field finding 13).
-    // It used to be cleared here, on the reasoning that the oldest pending
-    // chunk's slot "is already past by definition — that is why we ran dry".
-    // That holds for a live-edge schedule, where the hold is ~0 anyway. In a
-    // paced mode the hold is the whole playout offset, so audio arriving after
-    // the dry-out is due a few hundred ms in the FUTURE and its schedule is
-    // the alignment, freely available: abandoning it for the depth floor
-    // leaves audio (hold − floor) ms ahead of its picture until the rate trim
-    // walks it back at ≤4 ms/s — minutes, and only within the trim's 20 ms
-    // deadband. When the schedule really is past, maybeRelease() already falls
-    // through to the depth gate, which is what rebuilds the cushion, so the
-    // live-edge case is unchanged. The cost is a longer silence at the
-    // re-prime (the hold rather than the floor); alignment is a start-time
-    // decision and this is the only chance to get it right.
+    // The rebuild still aligns on the video schedule; don't skip it on the
+    // theory that the oldest chunk's slot is already past. In a paced mode
+    // the hold is the whole playout offset, so audio arriving after the
+    // dry-out is due a few hundred ms in the FUTURE and its schedule is the
+    // alignment: abandoning it for the depth floor leaves audio
+    // (hold − floor) ms ahead of its picture until the rate trim walks it
+    // back at ≤4 ms/s — minutes, and only within the trim's 20 ms deadband.
+    // When the schedule really is past, maybeRelease() falls through to the
+    // depth gate, which rebuilds the cushion. The cost is a longer silence at
+    // the re-prime (the hold rather than the floor); alignment is a
+    // start-time decision and this is the only chance to get it right.
   }
 
-  // Drops everything pending and forgets the timeline: a broadcaster restart
-  // or a viewer reconnect (docs/20 Decision 8). Without this, every packet on
-  // the new timeline reads as "older than the playhead" and is late-dropped
-  // forever.
+  // Drops everything pending and forgets the timeline: a broadcaster restart or
+  // a viewer reconnect. Without this, every packet on the new timeline reads as
+  // "older than the playhead" and is late-dropped forever.
   flush(): void {
     this.nextExpectedUs = null;
     this.queuedMs = 0;
@@ -630,13 +599,11 @@ export class AudioJitterBuffer {
     this.alignmentHoldMs = null;
     this.establishedDepthMs = 0;
     // The counters describe the timeline being played, not the page view. The
-    // sink deliberately outlives individual sessions (useViewerConnection:
-    // "The sink outlives individual sessions"), so leaving them running made
-    // the audioBuffer block the only cumulative-across-reconnects section of a
-    // Copy-diagnostics capture — uncomparable with the per-attempt counters
-    // beside it, and actively misleading (BUGS.md, 2026-07-22). `resets` is
-    // the exception by design: it is what tells a reader how many earlier
-    // timelines the surviving numbers are not describing.
+    // sink deliberately outlives individual sessions, so cumulative counters
+    // would be uncomparable with the per-attempt counters beside them in a
+    // Copy-diagnostics capture. `resets` is the exception by design: it is
+    // what tells a reader how many earlier timelines the surviving numbers are
+    // not describing.
     const resets = this.stats.resets + 1;
     this.stats = {
       gapsConcealed: 0,
@@ -652,9 +619,9 @@ export class AudioJitterBuffer {
     this.lastSlewAtMs = null;
   }
 
-  // R15 Decision 10 + Decision 12: the adaptive target, slew-limited inside
-  // the active profile's clamp. jitterMs is the same windowed p95−min the
-  // video path measures; null leaves the target where it is.
+  // The adaptive target, slew-limited inside the active profile's clamp.
+  // jitterMs is the same windowed p95−min the video path measures; null leaves
+  // the target where it is.
   updateTarget(jitterMs: number | null, nowMs: number): void {
     const p = this.profile();
     // Re-seed when the profile itself changed under us (resilient flip):

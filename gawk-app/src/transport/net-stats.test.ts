@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ConnectionStatsSampler, sampleConnectionStats } from './net-stats';
 
-// R9 M6 (docs/13 D7): WebTransport.getStats() is unevenly shipped, so the
-// sampler must handle present, absent, partial, and rejecting getStats
-// without ever throwing.
+// WebTransport.getStats() is unevenly shipped, so the sampler must handle
+// present, absent, partial, and rejecting getStats without ever throwing.
 
 const fullDict = {
   smoothedRtt: 23.5,

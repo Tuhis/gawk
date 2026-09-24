@@ -1,4 +1,4 @@
-// R10 P3: the dedicated transport worker's entry point — a thin shell around
+// The dedicated transport worker's entry point — a thin shell around
 // TransportWorkerCore. Spawned as a *nested* worker by viewer.worker.ts (one
 // per ViewerPipeline attempt, so reconnects get a fresh session and teardown
 // is just worker death); the WebTransport read loops run here so no decode or

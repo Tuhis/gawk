@@ -1,22 +1,16 @@
-// R30 finding 5 (docs/35): the large/small split was ABSOLUTE.
+// The burst signature needs BOTH buckets — large frames losing while small
+// frames stay clean is what separates a per-connection burst threshold from
+// uniform loss. On a high-bitrate stream every frame clears the absolute
+// STRIPE_LARGE_FRAME_CHUNKS line, which would leave the small bucket
+// permanently under STRIPE_MIN_SMALL_CHUNKS and the signature never
+// evaluated. So the split falls back to the stream's own median frame size
+// when the fixed line cannot fill the small bucket, and the test gains the
+// ratio form of what cleanliness is a proxy for: loss that RISES with burst
+// size.
 //
-// STRIPE_LARGE_FRAME_CHUNKS = 8 came from one measured path (docs/34 finding
-// 4), and the burst signature needs BOTH buckets — large frames losing while
-// small frames stay clean is what separates a per-connection burst threshold
-// from uniform loss. On a high-bitrate stream every frame clears 8 chunks: a
-// live Firefox 154 session measured 2967 of 3088 video chunks in the large
-// bucket, leaving the small bucket permanently under STRIPE_MIN_SMALL_CHUNKS,
-// so the signature could never be *evaluated* at all — 7-9% large-frame loss
-// with nothing to compare it against.
-//
-// The split now falls back to the stream's own median frame size when the
-// fixed line cannot fill the small bucket, and the test gains the ratio form
-// of what cleanliness was a proxy for: loss that RISES with burst size.
-//
-// Since finding 6 this signature no longer gates engagement (stripe.test.ts
-// owns that policy) — it is the reported answer to "is striping earning its
-// connection cost here", so getting it right still matters, and getting it
-// *reportable* matters more.
+// The signature does not gate engagement (stripe.test.ts owns that policy);
+// it is the reported answer to "is striping earning its connection cost
+// here", so getting it *reportable* matters most.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -36,8 +30,8 @@ function controller(): StripeController {
   return c;
 }
 
-// A stream in the finding-5 shape: every frame above the fixed split, sizes
-// varying. `lost(size)` is the loss model under test.
+// A high-bitrate stream: every frame above the fixed split, sizes varying.
+// `lost(size)` is the loss model under test.
 function feedAllLarge(
   c: StripeController,
   seconds: number,
@@ -84,8 +78,8 @@ describe('adaptive large/small split', () => {
     const c = controller();
     feedAllLarge(c, 10, (size) => Math.max(0, size - 12));
     const s = c.snapshot();
-    // The whole point of finding 5: the small bucket now has evidence in it,
-    // where the fixed split left it permanently empty.
+    // The small bucket has evidence in it, where the fixed split would have
+    // left it permanently empty.
     expect(s.smallChunks).toBeGreaterThanOrEqual(STRIPE_MIN_SMALL_CHUNKS);
     expect(s.largeChunks).toBeGreaterThan(0);
     expect(s.splitAtChunks).toBeGreaterThan(STRIPE_LARGE_FRAME_CHUNKS);

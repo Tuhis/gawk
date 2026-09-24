@@ -1,9 +1,9 @@
-// R30 ST4 (docs/35 §5.6): the striped transport's transition protocol.
-// Everything here runs against a controllable fake WebTransport, because the
-// properties under test are ORDERING properties: suppression is sent only
-// after a complete leg set is up (duplicates, never holes), a leg death
-// releases the primary before anything else, and the unstriped path stays
-// byte-identical (no legs dialed, no 0x10 written).
+// The striped transport's transition protocol. Everything here runs against a
+// controllable fake WebTransport, because the properties under test are
+// ORDERING properties: suppression is sent only after a complete leg set is up
+// (duplicates, never holes), a leg death releases the primary before anything
+// else, and the unstriped path stays byte-identical (no legs dialed, no 0x10
+// written).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -377,9 +377,9 @@ describe('LocalViewerTransport striping (R30)', () => {
     }
   });
 
-  // WebKit has no `datagrams.writable`, so both the primary's writer (0x10,
-  // TimeSync pings) and every leg's heartbeat writer used to be skipped
-  // without a word: no suppression, no heartbeat, leg reaped by the lease.
+  // WebKit has no `datagrams.writable`; without the createWritable() path the
+  // primary's writer (0x10, TimeSync pings) and every leg's heartbeat writer
+  // are skipped silently: no suppression, no heartbeat, leg reaped by the lease.
   it('writes the suppression and leg heartbeats over createWritable() on WebKit', async () => {
     FakeWT.webkit = true;
     vi.useFakeTimers();

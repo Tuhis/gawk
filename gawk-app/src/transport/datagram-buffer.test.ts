@@ -1,14 +1,14 @@
-// R29 finding 2 (docs/34): the viewer's incoming-datagram buffer knob.
+// The viewer's incoming-datagram buffer knob.
 //
 // The bug this guards is not "datagrams were lost" but "they were lost in a
 // way parity structurally cannot repair": the WebTransport receive queue drops
 // from the HEAD when it overflows, so a frame's burst loses its earliest data
-// chunks while the parity symbols written last always survive. Measured on a
-// live Firefox session: 10.5 % of delta chunks gone, 0.05 % of parity.
+// chunks while the parity symbols written last always survive (on Firefox:
+// ~10 % of delta chunks gone, ~0.05 % of parity).
 //
 // Every case below is about the reporting being honest, because the whole
 // point of the gate is telling "set and honored" from "set and ignored" — a
-// silent no-op is exactly how this stayed invisible for a release.
+// silent no-op is otherwise invisible.
 
 import { describe, expect, it } from 'vitest';
 
@@ -42,10 +42,9 @@ describe('applyIncomingDatagramBuffer', () => {
     expect((dg as { incomingMaxBufferedDatagrams: number }).incomingMaxBufferedDatagrams).toBe(256);
   });
 
-  // R29 finding 3 (docs/34), measured on Firefox 154.0b2: it exposes ONLY the
-  // legacy attribute, and its default is 1 — one datagram, against a frame
-  // burst of ~11. The default is the single most diagnostic number here, so it
-  // is recorded before anything is written.
+  // Firefox exposes ONLY the legacy attribute, and its default is 1 — one
+  // datagram, against a frame burst of ~11. The default is the single most
+  // diagnostic number here, so it is recorded before anything is written.
   it('records the depth the browser chose before we touched it', () => {
     const stats = applyIncomingDatagramBuffer(datagramsWith({ incomingHighWaterMark: 1 }), 256);
     expect(stats.defaultDepth).toBe(1);
@@ -56,9 +55,9 @@ describe('applyIncomingDatagramBuffer', () => {
   // [[IncomingMaxBufferedDatagrams]], reachable only through the spec-named
   // attribute. `incomingHighWaterMark` is the pre-rename attribute whose
   // documented meaning is the readable stream's queuing high-water mark — a
-  // backpressure signal. Writing it succeeds and reads back, which is why the
-  // first version of this gate reported a confident green while production
-  // loss did not move at all.
+  // backpressure signal. Writing it succeeds and reads back, so a readback
+  // alone reports a confident green while production loss does not move at
+  // all.
   it('does not claim to govern drops through the legacy attribute alone', () => {
     const legacy = applyIncomingDatagramBuffer(datagramsWith({ incomingHighWaterMark: 1 }), 256);
     expect(legacy.applied).toBe(true); // the write landed …
@@ -67,9 +66,9 @@ describe('applyIncomingDatagramBuffer', () => {
     expect(spec.governsDrops).toBe(true);
   });
 
-  // Firefox 154 — the browser the finding was measured on — ships only the
-  // pre-rename name, and Chromium is removing it. Neither name alone covers
-  // the fleet, so the fallback is the feature, not a nicety.
+  // Firefox ships only the pre-rename name, and Chromium is removing it.
+  // Neither name alone covers the fleet, so the fallback is the feature, not a
+  // nicety.
   it('falls back to the legacy attribute where only that exists', () => {
     const dg = datagramsWith({ incomingHighWaterMark: 1 });
     const stats = applyIncomingDatagramBuffer(dg, 256);

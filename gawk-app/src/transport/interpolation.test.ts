@@ -1,5 +1,5 @@
-// R12 T4 (docs/17 Decision 7): the pure slot logic behind experimental frame
-// interpolation, and its per-context toggle.
+// The pure slot logic behind experimental frame interpolation, and its
+// per-context toggle.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import {

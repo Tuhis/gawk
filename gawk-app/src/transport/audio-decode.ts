@@ -1,14 +1,13 @@
-// R15 (docs/20 Decision 7): the viewer's audio decode lane. Runs wherever the
-// pipeline runs — inside the viewer worker on the offloaded path, on the main
-// thread in the fallback — and emits planar PCM ready for the AudioWorklet
-// sink.
+// The viewer's audio decode lane. Runs wherever the pipeline runs — inside the
+// viewer worker on the offloaded path, on the main thread in the fallback — and
+// emits planar PCM ready for the AudioWorklet sink.
 //
 // Why planar PCM out (and not a transferred AudioData): the sink must reach
 // an AudioWorklet, which needs Float32 planar channels. copyTo() has to happen
-// somewhere; doing it here means the copy lands in the worker (the thread we
-// spent R8/R10 clearing is the *main* one) and only plain ArrayBuffers cross
-// the boundary — no reliance on AudioData being transferable. Same "no
-// structured clone of media" property the design asked for.
+// somewhere; doing it here means the copy lands in the worker (the thread to
+// keep clear is the *main* one) and only plain ArrayBuffers cross the
+// boundary — no reliance on AudioData being transferable, and no structured
+// clone of media.
 
 import { log } from '../lib/logger';
 import type { AudioPacket } from './reassembler';
@@ -26,7 +25,7 @@ export interface DecodedAudioChunk {
 export interface AudioDecodeCallbacks {
   onChunk: (chunk: DecodedAudioChunk) => void;
   // The lane died (unsupported codec, decode failure). Video keeps playing —
-  // audio is strictly additive (docs/20 Decision 7).
+  // audio is strictly additive.
   onError: (err: Error) => void;
 }
 
@@ -62,8 +61,8 @@ export class AudioDecodeLane {
   }
 
   // Applies an AudioConfig. Deduplicated by content: the broadcaster re-sends
-  // it at 1 Hz (docs/20 Decision 5), and reconfiguring mid-stream would drop
-  // the decoder's state for nothing.
+  // it at 1 Hz, and reconfiguring mid-stream would drop the decoder's state for
+  // nothing.
   configure(config: AudioConfigMessage): void {
     if (this.stopped) return;
     const key = `${config.codec}:${config.sampleRate}:${config.channels}:${Array.from(config.description).join(',')}`;

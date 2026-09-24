@@ -1,19 +1,16 @@
-// Adaptive delta-gap grace (docs/35 finding 4).
+// Adaptive delta-gap grace.
 //
-// DELTA_GAP_GRACE_MS shipped as a per-CONNECTION constant: 60 ms, "a couple of
-// frame intervals", sized when a frame's datagrams arrived back-to-back on one
-// QUIC connection so "outstanding past the grace" meant "lost". R30 striping
-// spreads each frame across N legs with mutual skew, which turns that spread
-// into per-frame completion jitter — a live Firefox 154 session measured
-// p95−min arrival jitter of 101 ms median (268 ms p95) against the 60 ms
-// grace, and paid ~1 gap resync per second for it while losing only 0.5 % of
-// frames outright.
+// DELTA_GAP_GRACE_MS is a per-CONNECTION constant: 60 ms, "a couple of frame
+// intervals", sized for a frame's datagrams arriving back-to-back on one QUIC
+// connection, so "outstanding past the grace" means "lost". Striping spreads
+// each frame across N legs with mutual skew, which turns that spread into
+// per-frame completion jitter well above 60 ms.
 //
-// The fix reads the jitter the buffer already measures. What makes the signal
-// the right one is that it discriminates the two failure modes for free: a
-// LATE frame arrives, so it inflates p95 and widens the grace; a LOST frame
-// never arrives, so it contributes nothing and the grace stays at its floor
-// and freezes fast. Both halves are asserted below.
+// The grace reads the jitter the buffer already measures. What makes the
+// signal the right one is that it discriminates the two failure modes for
+// free: a LATE frame arrives, so it inflates p95 and widens the grace; a LOST
+// frame never arrives, so it contributes nothing and the grace stays at its
+// floor and freezes fast. Both halves are asserted below.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -78,10 +75,9 @@ describe('adaptive delta-gap grace', () => {
   });
 
   it('never exceeds the ceiling, whatever the spike', () => {
-    // The 3748 ms outlier the Firefox session actually logged. An unclamped
-    // grace here would climb into KEYFRAME_WAIT_MS territory and degenerate
-    // into keyframe-only playback — docs/14's 2 fps failure, from the other
-    // direction.
+    // A measured multi-second outlier. An unclamped grace here would climb
+    // into KEYFRAME_WAIT_MS territory and degenerate into keyframe-only
+    // playback.
     warmTo(3748);
     expect(deltaGapGraceMs()).toBe(MAX_DELTA_GAP_GRACE_MS);
     expect(MAX_DELTA_GAP_GRACE_MS).toBeLessThan(RESILIENT_DELTA_GAP_GRACE_MS + 1);
@@ -156,7 +152,7 @@ describe('freeze-on-gap under the adaptive grace', () => {
     rb.pushDelta(delta(2));
     rb.pushDelta(delta(4)); // hole at 3
 
-    // 100 ms later: past the shipped 60 ms grace, inside the measured jitter.
+    // 100 ms later: past the 60 ms floor, inside the measured jitter.
     clock.t += 100;
     rb.tick();
     expect(rb.getStats().gapResyncs).toBe(0);

@@ -1,29 +1,18 @@
-// Playout modes (R5 Q3 + R12 T2, docs/15 + docs/17). Default OFF — the
-// project's live-edge philosophy stands; both smoothing modes are per-viewer
-// latency-for-smoothness trades the viewer explicitly opts into, and the cost
+// Playout modes. Default OFF (live edge); adaptive smoothing is a per-viewer
+// latency-for-smoothness trade the viewer explicitly opts into, and the cost
 // is visible (the stats overlay shows the mode and the latency rows rise by
 // the offset).
 //
 //   'off'      — live-edge: release + present immediately.
-//   'adaptive' — R12: sub-frame paced presentation with a jitter-tracked
-//                offset (T3; until then the seed constant) and a decode lead.
+//   'adaptive' — sub-frame paced presentation with a jitter-tracked offset
+//                and a decode lead.
 //
-// A third mode, 'fixed' (R5 Q3's constant 150 ms decoder-release pacing), was
-// retired from the production menu by docs/17 Decision 10 (2026-07-23) and
-// **removed outright by R32** (docs/37, owner decision 2026-07-29). Adaptive
-// dominated it at every point on the trade curve — clamp floor below the
-// constant on a clean link, ceiling above it on a dirty one, same 150 ms
-// warmup seed, and only adaptive sets a displayTargetMs, so 'fixed' bought the
-// buffering latency without the presentation pacing. It had survived as a
-// dev-only diagnostic (a measurement-free offset separates a pacing bug from a
-// bug in the jitter estimator driving it — PLAYOUT-1, docs/24 finding 8), but
-// that put a tuning row in a menu R32 made actions-only, for a control nobody
-// had reached for since. A stored 'fixed' migrates to 'adaptive'.
+// There is deliberately no constant-offset mode: adaptive beats it at every
+// point on the trade curve. A stored 'fixed' migrates to 'adaptive'.
 //
-// R19 (docs/24 Decision 7): while Resilient mode is on, the *effective* mode
-// is 'adaptive' with a wider controller profile ([150, 2000] ms, seed 500) —
-// the stored mode keeps its value and its semantics and regains effect the
-// moment Resilient mode turns off.
+// While Resilient mode is on, the *effective* mode is 'adaptive' with a wider
+// controller profile — the stored mode keeps its value and its semantics and
+// regains effect the moment Resilient mode turns off.
 //
 // The setting is a module-scoped value in whichever JS context the pipeline
 // runs (main thread, or the viewer worker via the 'playout' worker command),
@@ -42,27 +31,24 @@ import {
 
 export type PlayoutMode = 'off' | 'adaptive';
 
-// One value, a named tunable like KEYFRAME_WAIT_MS: ~9 frames at 60 fps,
-// comfortably inside the reorder buffer's MAX_BUFFERED_FRAMES. Adaptive
-// mode's seed until the T3 controller has enough window to take over. (It
-// was also the retired 'fixed' mode's constant — removed in R32, see above.)
+// Adaptive mode's seed offset until the controller has enough jitter window
+// to take over: ~9 frames at 60 fps, comfortably inside the reorder buffer's
+// MAX_BUFFERED_FRAMES.
 export const PLAYOUT_OFFSET_MS = 150;
 
-// R12 T2 (docs/17 Decision 4): in adaptive mode, frames release from the
-// reorder buffer this much before their display target so decoded frames
-// reach the presentation sink just in time — the pre-decode pace stays the
-// decoder frame-pool bound, the sink does the final ±½-vsync alignment.
-// ~1 frame interval at 30 fps; T6 re-sizes it from measured decode jitter.
+// In adaptive mode, frames release from the reorder buffer this much before
+// their display target so decoded frames reach the presentation sink just in
+// time — the pre-decode pace stays the decoder frame-pool bound, the sink
+// does the final ±½-vsync alignment. ~1 frame interval at 30 fps.
 export const DECODE_LEAD_MS = 35;
 
-// R12 T3 (docs/17 Decision 6): the adaptive offset controller. Target =
-// clamp(arrival jitter (p95 − min) + headroom, [min, max]); the current
-// offset slews toward it asymmetrically — up fast (under-buffering means
-// visible drops NOW), down slowly and only after the target has sat well
-// below the current value for a dwell period (fallback.ts's step-down-fast /
-// probe-up-slow philosophy). Slew, not step: the paced sink turns offset
-// changes directly into presentation cadence, so a slewed offset is an
-// invisible fractional playback-rate nudge where a step would be a skip.
+// The adaptive offset controller. Target = clamp(arrival jitter (p95 − min) +
+// headroom, [min, max]); the current offset slews toward it asymmetrically —
+// up fast (under-buffering means visible drops NOW), down slowly and only
+// after the target has sat well below the current value for a dwell period.
+// Slew, not step: the paced sink turns offset changes directly into
+// presentation cadence, so a slewed offset is an invisible fractional
+// playback-rate nudge where a step would be a skip.
 export const HEADROOM_MS = 34; // one 30 fps interval over the p95
 export const MIN_PLAYOUT_OFFSET_MS = 50;
 export const MAX_PLAYOUT_OFFSET_MS = 350; // inside MAX_BUFFERED_FRAMES, under KEYFRAME_WAIT_MS
@@ -72,19 +58,16 @@ export const OFFSET_DOWN_MARGIN_MS = 30; // target must sit this far below to ar
 export const OFFSET_DOWN_DWELL_MS = 15_000;
 export const OFFSET_WARMUP_MS = 5000; // seed holds until the jitter window has data
 
-// The clamp/seed/slew envelope of the adaptive controller (R19 made it a
-// profile). The formula is shared; only these numbers widen in resilient
-// mode — retransmit stalls inflate arrival p95, so the offset grows exactly
-// when loss is happening and shrinks (slowly, dwell-gated) when the link
-// cleans up.
+// The clamp/seed/slew envelope of the adaptive controller. The formula is
+// shared; only these numbers widen in resilient mode — retransmit stalls
+// inflate arrival p95, so the offset grows exactly when loss is happening and
+// shrinks (slowly, dwell-gated) when the link cleans up.
 //
-// A profile also owns the *measurement* feeding it (R19 hardening,
-// PLAYOUT-1): the arrival-jitter estimator is a fixed-range histogram, so a
-// clamp the histogram cannot express is dead envelope. docs/24 Decision 7
-// assumed "the existing WindowedQuantileTracker needs no changes" and it was
-// wrong — its 500 ms range pinned the resilient offset at ~534 ms, less than
-// the retransmit stalls the mode exists to absorb. Keep
-// `quantileRangeMs >= maxMs` in every profile.
+// A profile also owns the *measurement* feeding it: the arrival-jitter
+// estimator is a fixed-range histogram, so a clamp the histogram cannot express
+// is dead envelope (a 500 ms range pins the resilient offset near 534 ms, below
+// the stalls it exists to absorb). Keep `quantileRangeMs >= maxMs` in every
+// profile.
 export interface PlayoutProfile {
   seedMs: number;
   minMs: number;
@@ -99,7 +82,7 @@ export interface PlayoutProfile {
   // slew below, not by how fast a bad episode ages out of the window.
   jitterWindowMs: number;
   // A rise larger than this steps the offset straight to target instead of
-  // slewing. Infinity = always slew (the default profile's shipped behavior).
+  // slewing. Infinity = always slew.
   stepUpAboveMs: number;
 }
 
@@ -114,8 +97,6 @@ export const DEFAULT_PLAYOUT_PROFILE: PlayoutProfile = {
   stepUpAboveMs: Infinity,
 };
 
-// R19 resilient profile (docs/24 Decision 7): clamp [150, 2000] ms, seed 500,
-// slew up 100 ms/s / down 10 ms/s. Provisional until X6's measurement pass.
 export const RESILIENT_PLAYOUT_PROFILE: PlayoutProfile = {
   seedMs: 500,
   minMs: 150,
@@ -127,7 +108,7 @@ export const RESILIENT_PLAYOUT_PROFILE: PlayoutProfile = {
   quantileRangeMs: 2500,
   // 8 s, not 60: a handover spike is a seconds-scale event, and at 60 s it
   // sits under the p95 of a minute of clean samples and barely moves the
-  // offset (PLAYOUT-3). The min tracker keeps its 60 s window — it is also
+  // offset. The min tracker keeps its 60 s window — it is also
   // the release-schedule anchor, and offset ≈ p95 − min₆₀ is what makes
   // `timestamp + min₆₀ + offset` land at the measured p95.
   jitterWindowMs: 8000,
@@ -138,17 +119,14 @@ export const RESILIENT_PLAYOUT_PROFILE: PlayoutProfile = {
   stepUpAboveMs: 150,
 };
 
-// R21 (docs/26): the buffer a viewer requests from the relay, and the floor it
-// applies once the relay confirms it is serving from a ring. Deliberately NOT
-// applied on request: against a relay that cannot honour it, a deep buffer is
-// pure latency for no benefit, so the floor only deepens on a DeliveryAck
-// saying `dvr`. The value must strictly exceed the stall it covers — 3 s of
-// buffer backs a ~2 s stall at 3x recovery bandwidth (docs/26 Decision 6).
+// The buffer a viewer requests from the relay's DVR ring, and the playout
+// floor that goes with it. The value must strictly exceed the stall it covers
+// — 3 s of buffer backs a ~2 s stall at 3x recovery bandwidth.
 export const DVR_BUFFER_MS = getDvrBufferMs();
 
-// R21 DVR profile: the resilient envelope with its floor raised to what the
-// relay is now able to keep filled. maxMs rises with it so the adaptive
-// controller is not clamped below its own floor.
+// The resilient envelope with its floor raised to what the relay's ring can
+// keep filled. maxMs rises with it so the adaptive controller is not clamped
+// below its own floor.
 export const DVR_PLAYOUT_PROFILE: PlayoutProfile = {
   ...RESILIENT_PLAYOUT_PROFILE,
   seedMs: DVR_BUFFER_MS,
@@ -162,15 +140,11 @@ export const DVR_PLAYOUT_PROFILE: PlayoutProfile = {
 // change — a new session must re-establish it rather than inherit it from a
 // relay that may have been replaced mid-view.
 //
-// Deliberately three-valued rather than a boolean, and the deep profile
-// applies while it is still null (docs/26 Decision 7, revised 2026-07-23).
-// The original rule was "never deepen on request, only on grant", to avoid
-// paying latency a relay could not back. But the two directions are not
-// symmetric: DEEPENING mid-session makes the reorder buffer hold frames
-// longer, which is a visible multi-second freeze while it refills — the E2E
-// deep-buffer pass caught exactly that, ~2 s of frozen video at startup,
-// indistinguishable to a viewer from the bug it was written to catch.
-// SHORTENING costs nothing: frames simply become due sooner. So the buffer a
+// Deliberately three-valued rather than a boolean: the deep profile applies
+// while it is still null. Don't wait for a grant to deepen — the two
+// directions are not symmetric. DEEPENING mid-session makes the reorder
+// buffer hold frames longer, a visible multi-second freeze while it refills;
+// SHORTENING costs nothing, frames simply become due sooner. So the buffer a
 // user asked for applies immediately, and a denial shortens it.
 type DvrAck = 'granted' | 'denied';
 let dvrAck: DvrAck | null = null;
@@ -201,9 +175,9 @@ export function getPlayoutProfile(): PlayoutProfile {
 // `jitterWindowMs`) belong to whoever OWNS the estimator, not to a consumer of
 // its output — so a second consumer with no tracker of its own (the adaptive
 // delta-gap grace in reorder-buffer.ts, which reads the same
-// `arrivalJitterMs()` the offset does) can supply an envelope without
-// inventing values for two fields it would never use. `PlayoutProfile`
-// satisfies this structurally, so every existing call site is unchanged.
+// `arrivalJitterMs()` the offset does) can supply an envelope without inventing
+// values for two fields it would never use. `PlayoutProfile` satisfies this
+// structurally.
 export type SlewEnvelope = Pick<
   PlayoutProfile,
   'seedMs' | 'minMs' | 'maxMs' | 'slewUpMsPerS' | 'slewDownMsPerS' | 'stepUpAboveMs'
@@ -281,8 +255,8 @@ export function setPlayoutMode(m: PlayoutMode): void {
   mode = m;
 }
 
-// The stored playout mode, as toggled by the user (docs/24 Decision 7 keeps
-// its semantics untouched while resilient mode overrides the effective mode).
+// The stored playout mode, as toggled by the user; its semantics are untouched
+// while resilient mode overrides the effective mode.
 export function getStoredPlayoutMode(): PlayoutMode {
   return mode;
 }
@@ -311,16 +285,16 @@ export function resetPlayoutController(): void {
   controller.reset();
 }
 
-// R19 (docs/24 Decision 9): the one entry point for flipping resilient mode
-// in this JS context. Resets the controller across the flip so the offset
-// re-seeds on the incoming profile (500 ms entering resilient, 150 ms
-// leaving it) instead of carrying a value from the other profile's envelope.
+// The one entry point for changing the delivery mode in this JS context.
+// Resets the controller across the change so the offset re-seeds on the
+// incoming profile instead of carrying a value from the other profile's
+// envelope.
 export function setViewerDeliveryMode(next: ViewerDeliveryMode): void {
   if (next === getViewerDeliveryMode()) return;
   setViewerDeliveryModeFlag(next);
   // Reset across every step, not just across the live boundary: resilient and
   // deep have different envelopes, so a target learned under one would be
-  // carried into the other's clamp (the R19 rule, extended to three states).
+  // carried into the other's clamp.
   controller.reset();
   // A mode change is a deliberate reconnect, so the previous session's ack
   // says nothing about the next one — and "unknown" is not "denied".

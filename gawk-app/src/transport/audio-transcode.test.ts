@@ -9,11 +9,10 @@ import {
   type TranscoderDeps,
 } from './audio-transcode';
 
-// docs/27 finding 6, measured on iPhone (iOS 18.7 / Safari 26.5.2) by the R22
-// device probe: Safari's AudioEncoder hands back the WHOLE `esds` payload — a
+// Safari's AudioEncoder (iPhone) hands back the WHOLE `esds` payload — a
 // complete ES_Descriptor — as `decoderConfig.description`, where the WebCodecs
-// spec (and Chrome) hand back the bare AudioSpecificConfig. These are the real
-// 39 bytes from the device. Note the 4-byte 0x80-continuation descriptor sizes:
+// spec (and Chrome) hand back the bare AudioSpecificConfig. These are real
+// 39 bytes from an iPhone. Note the 4-byte 0x80-continuation descriptor sizes:
 // Apple writes the long form even for tiny payloads.
 const SAFARI_DESCRIPTION = Uint8Array.from(
   (

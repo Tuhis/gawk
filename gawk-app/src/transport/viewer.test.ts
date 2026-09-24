@@ -138,9 +138,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// docs/35 §14: every primary dial carries a freshly minted ?owner= token.
-// These URL tests assert everything EXCEPT the token (random per attempt):
-// the token is validated for shape, stripped, and the rest compared exactly.
+// Every primary dial carries a freshly minted ?owner= token. These URL tests
+// assert everything EXCEPT the token (random per attempt): the token is
+// validated for shape, stripped, and the rest compared exactly.
 function expectDialed(expectedWithoutOwner: string, opts: unknown): void {
   const call = connectWebTransport.mock.calls.at(-1) as [string, unknown];
   const u = new URL(call[0]);
@@ -184,9 +184,9 @@ describe('ViewerPipeline', () => {
   });
 
   it('appends ?parity= only when the viewer opted DOWN from the fleet default (R29)', async () => {
-    // docs/34 §5.2: the fleet decides the level and the viewer can only opt
-    // down, so the DEFAULT must send no parameter at all — that is what lets
-    // the relay's default apply and keeps a pre-R29 relay's URL unchanged.
+    // The fleet decides the level and the viewer can only opt down, so the
+    // DEFAULT must send no parameter at all — that is what lets the relay's
+    // default apply.
     connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
     readDatagrams.mockReturnValue(new Promise(() => {}));
     const { cbs } = makeCallbacks();
@@ -207,18 +207,18 @@ describe('ViewerPipeline', () => {
   });
 
   it('appends ?delivery=reliable when resilient delivery is requested (R19)', async () => {
-    // The session/URL seam of docs/24 Decision 6: the toggle reaches the
-    // relay as a subscribe-time query param, nothing else changes.
+    // The toggle reaches the relay as a subscribe-time query param, nothing
+    // else changes.
     connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
     readDatagrams.mockReturnValue(new Promise(() => {}));
     const { cbs } = makeCallbacks();
     const opts = { deliveryMode: 'reliable' as const };
     const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
     await pipeline.start();
-    // R21 (docs/26 Decisions 7 + 15): plain Resilient mode asks for carriers
-    // and NOT for a ring. Sending buffer= here would have the relay serve this
-    // viewer from a cursor with a 3 s staleness bound while it holds ~0.5 s —
-    // the two ends disagreeing about how far behind it is.
+    // Plain Resilient mode asks for carriers and NOT for a ring. Sending
+    // buffer= here would have the relay serve this viewer from a cursor with a
+    // 3 s staleness bound while it holds ~0.5 s — the two ends disagreeing
+    // about how far behind it is.
     expectDialed('https://relay.test:4433/subscribe/K7XQ2M?delivery=reliable', opts);
     await pipeline.stop();
   });
@@ -243,13 +243,13 @@ describe('ViewerPipeline', () => {
   });
 
   it('reconnects when keyframes stop while deltas keep arriving (Safari stream-path stall)', async () => {
-    // Safari field finding (2026-07-21): the viewer's stream path can wedge
-    // while datagrams keep flowing (QUIC datagrams are not flow-controlled;
-    // streams are). Keyframes stop, the reorder buffer parks in
-    // waiting-for-keyframe and ages out every delta, and playback freezes
-    // permanently — with no close code and no error, so nothing reconnects.
-    // A viewer taking frames but starved of keyframes must give up and let
-    // ViewerSession reconnect into a fresh session.
+    // The viewer's stream path can wedge (seen on Safari) while datagrams keep
+    // flowing (QUIC datagrams are not flow-controlled; streams are). Keyframes
+    // stop, the reorder buffer parks in waiting-for-keyframe and ages out every
+    // delta, and playback freezes permanently — with no close code and no
+    // error, so nothing reconnects. A viewer taking frames but starved of
+    // keyframes must give up and let ViewerSession reconnect into a fresh
+    // session.
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
     });
@@ -298,9 +298,9 @@ describe('ViewerPipeline', () => {
 
   it('does not reconnect when the broadcaster is away but the session is alive', async () => {
     // A broadcaster who stepped away sends no media at all, and the viewer
-    // must stay connected (docs/05 D1 keepalive holds the session open on
-    // purpose), not reconnect-loop against an idle broadcast. What proves the
-    // session is still alive is the relay's R18 ViewerCount keepalive, which
+    // must stay connected (the keepalive holds the session open on purpose),
+    // not reconnect-loop against an idle broadcast. What proves the session
+    // is still alive is the relay's ViewerCount keepalive, which
     // keeps arriving every ViewerCountKeepalive (5 s) with the publisher away.
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
@@ -345,12 +345,11 @@ describe('ViewerPipeline', () => {
   });
 
   it('reconnects when all media stops while the broadcaster keeps publishing (stream wedge)', async () => {
-    // BUGS.md (2026-07-26, iPhone Deep-buffer capture `XN73GU`): in Deep buffer
-    // every medium rides the stream path — video carriers, keyframe streams and
-    // (R21 DV5) audio's own carrier — so a WebKit stream wedge stops all of it
-    // dead. That disqualifies checkKeyframeStall, which requires frames to still
-    // be arriving, while the relay's control sideband keeps landing on datagrams
-    // and holds checkSessionStall off. Both watchdogs blind, 31 s frozen.
+    // In Deep buffer every medium rides the stream path — video carriers,
+    // keyframe streams and audio's own carrier — so a WebKit stream wedge
+    // stops all of it dead. That disqualifies checkKeyframeStall, which
+    // requires frames to still be arriving, while the relay's control sideband
+    // keeps landing on datagrams and holds checkSessionStall off.
     //
     // The discriminators are the broadcaster's ClockMapping (published every 5 s
     // *only while capturing*, on datagrams) and audio having stopped too — see
@@ -408,11 +407,11 @@ describe('ViewerPipeline', () => {
 
   it('does not fire the media watchdog on a static screen (damage-driven capture)', async () => {
     // The case that makes "no video while mappings arrive" unsound on its own:
-    // screen capture is damage-driven and stops entirely on a static screen
-    // (docs/19, docs/28), so a paused game produces no frames for minutes while
-    // the broadcaster is perfectly healthy and its 5 s mappings keep coming.
-    // Audio is what separates the two — it is not damage-driven, so it keeps
-    // flowing here and must veto the watchdog.
+    // screen capture is damage-driven and stops entirely on a static screen, so
+    // a paused game produces no frames for minutes while the broadcaster is
+    // perfectly healthy and its 5 s mappings keep coming. Audio is what
+    // separates the two — it is not damage-driven, so it keeps flowing here and
+    // must veto the watchdog.
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
     });
@@ -506,13 +505,13 @@ describe('ViewerPipeline', () => {
   });
 
   it('reconnects when the session goes completely silent (dead session, no signal)', async () => {
-    // BUGS.md (2026-07-22 paired capture): the relay had already dropped the
-    // subscriber while WebKit surfaced nothing — wt.closed never resolved and
-    // no read loop rejected — so the viewer sat on a corpse for 48 s showing
-    // stale stats, no error and no reconnect. The keyframe watchdog could not
-    // help: it only fires while frames are still arriving, and nothing was.
-    // Total inbound silence past SESSION_STALL_MS is a dead session, because a
-    // live one always carries at least the ViewerCount keepalive.
+    // WebKit can leave a session the relay already dropped without any signal —
+    // wt.closed never resolves and no read loop rejects — so the viewer sits on
+    // a corpse showing stale stats, with no error and no reconnect. The
+    // keyframe watchdog cannot help: it only fires while frames are still
+    // arriving, and nothing is. Total inbound silence past SESSION_STALL_MS is
+    // a dead session, because a live one always carries at least the
+    // ViewerCount keepalive.
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
     });
@@ -614,7 +613,7 @@ describe('ViewerPipeline', () => {
       );
       await pipeline.start();
 
-      // Requested, but no carrier has appeared: the Decision 8 fallback state.
+      // Requested, but no carrier has appeared: the fallback state.
       await vi.advanceTimersByTimeAsync(500);
       expect(stats.at(-1)!.deliveryMode).toBe('reliable-requested');
       expect(stats.at(-1)!.carrierStreams).toBe(0);
@@ -633,11 +632,10 @@ describe('ViewerPipeline', () => {
     }
   });
 
-  // R29 finding 2 (docs/34), the fix itself: LocalViewerTransport is the
-  // object that owns the session in EVERY placement — main thread, viewer
-  // worker, and the nested transport worker — so raising the buffer there is
-  // what makes the knob reach the path the loss was measured on. A fake whose
-  // datagrams expose the legacy attribute stands in for Firefox 154.
+  // LocalViewerTransport is the object that owns the session in EVERY
+  // placement — main thread, viewer worker, and the nested transport worker —
+  // so raising the buffer there is what makes the knob reach every path. A
+  // fake whose datagrams expose the legacy attribute stands in for Firefox.
   it('raises the incoming datagram buffer on the session it connects (R29)', async () => {
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
@@ -670,11 +668,11 @@ describe('ViewerPipeline', () => {
     }
   });
 
-  // R29 finding 2 (docs/34): the receive-buffer verdict is transport-owned —
-  // only the realm holding the WebTransport can set or read it — so the
-  // pipeline must forward it verbatim rather than deriving anything. Null
-  // where a transport doesn't report one, because "unknown" and "at the
-  // browser default" are different states and only one of them is a problem.
+  // The receive-buffer verdict is transport-owned — only the realm holding the
+  // WebTransport can set or read it — so the pipeline must forward it verbatim
+  // rather than deriving anything. Null where a transport doesn't report one,
+  // because "unknown" and "at the browser default" are different states and
+  // only one of them is a problem.
   it('forwards the transport datagram-buffer verdict into ViewerStats (R29)', async () => {
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
@@ -856,22 +854,22 @@ describe('ViewerPipeline', () => {
       expect(last!.timeSinceLastFrameMs).toBeCloseTo(500, 0);
       expect(last!.lastKeyframeAgeMs).toBeCloseTo(500, 0);
       // Main-thread path (no RenderSink) → renderedFps is unknowable here,
-      // and no sink means no renderer kind either (R10).
+      // and no sink means no renderer kind either.
       expect(last!.renderedFps).toBeNull();
       expect(last!.renderer).toBeNull();
       // These tests stub `window`, so the pipeline detects the main-thread
-      // context, with the default in-process transport (R10 P3).
+      // context, with the default in-process transport.
       expect(last!.pipelineContext).toBe('main-thread');
       expect(last!.transport).toBe('in-process');
       // The fake WebTransport has no getStats → null, never a throw.
       expect(last!.connection).toBeNull();
-      // R5 Q1: the drift metric is null before any decoded frame (the mocked
+      // The drift metric is null before any decoded frame (the mocked
       // decoder never emits), and the field must ride every stats tick.
       expect(last!.liveEdgeDriftMs).toBeNull();
       // Frame dimensions come from decoded frames, so they're null here too.
       expect(last!.frameWidth).toBeNull();
       expect(last!.frameHeight).toBeNull();
-      // R5 Q2: absolute latency + self-owned RTT stay null against a relay /
+      // Absolute latency + self-owned RTT stay null against a relay /
       // transport that never answers time sync (older server: no regression).
       expect(last!.capToRenderMs).toBeNull();
       expect(last!.timeSyncRttMs).toBeNull();
@@ -885,7 +883,7 @@ describe('ViewerPipeline', () => {
   it('counts self-received video bytes: datagrams + keyframe stream messages', async () => {
     // "Video bitrate (recv)" is derived from this counter — the viewer counts
     // what it receives itself because WebTransport.getStats() ships in no
-    // browser (docs/13 D7), mirroring the broadcaster's bytesSent.
+    // browser, mirroring the broadcaster's bytesSent.
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
     });
@@ -978,7 +976,7 @@ describe('ViewerPipeline', () => {
       expect(last.capToRenderMs).toBeCloseTo(250, 0);
       expect(last.timeSyncRttMs).toBe(5);
       expect(last.liveEdgeDriftMs).toBe(0); // single sample IS the baseline
-      // The decoded frame's own dimensions ride the stats (docs/01: trust the
+      // The decoded frame's own dimensions ride the stats (trust the
       // VideoFrame in hand, not track metadata).
       expect(last.frameWidth).toBe(1920);
       expect(last.frameHeight).toBe(1080);
@@ -1036,7 +1034,7 @@ describe('ViewerPipeline', () => {
     // The sink presents the frame (its own clock): skew is sampled now, and
     // reads video − audio = 50 ms, not the buffering depth. Read on the same
     // clock the observer was given — a skew is only a reading while it is
-    // fresh (docs/20 field finding 13).
+    // fresh.
     observer!(1_050_000, 0);
     expect(getAvSkewMs(0)).toBeCloseTo(50, 0);
 
@@ -1080,8 +1078,7 @@ describe('ViewerPipeline', () => {
     // creation. A reconnect mid-view (the resilient-mode toggle, a 4002
     // rollout drain, any auto-reconnect) spawns a fresh transport worker
     // minutes after the viewer worker, and applying its offset to the viewer
-    // worker's now() inflated capture→render by exactly that gap (field
-    // report: ~3 minutes after ~3 minutes of watching).
+    // worker's now() would inflate capture→render by exactly that gap.
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'],
     });
@@ -1132,7 +1129,7 @@ describe('ViewerPipeline', () => {
 
       await vi.advanceTimersByTimeAsync(500); // one stats tick
       const last = stats.at(-1)!;
-      // Buggy cross-domain math read ≈ WORKER_AGE_GAP_MS + 250 here.
+      // Cross-domain math without the rebase reads ≈ WORKER_AGE_GAP_MS + 250.
       expect(last.capToRenderMs).toBeCloseTo(250, 0);
 
       await pipeline.stop();
@@ -1142,11 +1139,10 @@ describe('ViewerPipeline', () => {
   });
 
   it('recovers delta flow after a broadcaster restart (stream keyframe resets the reassembler watermark)', async () => {
-    // R10 field finding (docs/14): keyframes ride streams since R8, so the
-    // reassembler's datagram-keyframe watermark reset never fires in
-    // practice. After a restart (frameIds reset to 0), the stream keyframe
-    // must reset the watermark or every new-session delta is dropped as
-    // late — keyframe-only 2 fps playback.
+    // Keyframes ride streams, so the reassembler's datagram-keyframe watermark
+    // reset never fires in practice. After a restart (frameIds reset to 0), the
+    // stream keyframe must reset the watermark or every new-session delta is
+    // dropped as late — keyframe-only 2 fps playback.
     connectWebTransport.mockResolvedValue(makeFakeWT(600_000, {}));
     let deliver: ((d: Uint8Array) => void) | null = null;
     readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
@@ -1185,7 +1181,7 @@ describe('ViewerPipeline', () => {
   });
 
   it('fails without a close code when the session drops abruptly', async () => {
-    // A transient drop (no clean close) must keep today's reconnect path:
+    // A transient drop (no clean close) must take the reconnect path:
     // an error with no closeCode.
     const wt = makeFakeWT(60_000, {}); // closed never settles in this test
     connectWebTransport.mockResolvedValue(wt);
@@ -1292,10 +1288,10 @@ describe('ViewerPipeline H.264 format', () => {
   });
 });
 
-// R15 N4 (docs/20 Decision 7): the viewer's audio lane is strictly additive.
-// It is built lazily on the first audio message, never built at all without
-// an audio consumer or an AudioDecoder, and its absence is annotated rather
-// than fatal — video is untouched in every case.
+// The viewer's audio lane is strictly additive. It is built lazily on the first
+// audio message, never built at all without an audio consumer or an
+// AudioDecoder, and its absence is annotated rather than fatal — video is
+// untouched in every case.
 describe('ViewerPipeline audio lane', () => {
   function audioFrameDgram(seq: number): Uint8Array {
     return encodeAudioFrame({ seq, timestampUs: BigInt(seq * 20_000) }, new Uint8Array([1, 2, 3]));
@@ -1345,8 +1341,8 @@ describe('ViewerPipeline audio lane', () => {
     expect(stats.audioPacketsReceived).toBe(0);
   });
 
-  // The N4 criterion: a scope without AudioDecoder plays video-only and says
-  // so, rather than erroring or changing pipeline placement.
+  // A scope without AudioDecoder plays video-only and says so, rather than
+  // erroring or changing pipeline placement.
   it('annotates unsupported when the scope has no AudioDecoder', async () => {
     // jsdom has no AudioDecoder — exactly the shape being tested.
     const { cbs, errors } = makeCallbacks();
@@ -1379,12 +1375,11 @@ describe('ViewerPipeline audio lane', () => {
   });
 });
 
-// CODE-REVIEW.md ("counters and stats survive their owner's deletion") +
-// docs/20 post-implementation review finding 2. The viewer used to read the
-// decode counters straight off the live lane, so nulling it on error left the
-// overlay reporting "State: Error, decoded 0, format —" — which reads as
-// "audio never worked" rather than "audio worked, then died", inverting the
-// diagnosis on the one screen used to debug it.
+// Counters survive their owner's deletion. Reading the decode counters
+// straight off the live lane, nulling it on error would leave the overlay
+// reporting "State: Error, decoded 0, format —" — which reads as "audio never
+// worked" rather than "audio worked, then died", inverting the diagnosis on
+// the one screen used to debug it.
 describe('ViewerPipeline audio stats survive lane death', () => {
   // A drivable AudioDecoder: configure succeeds, each decode emits one
   // AudioData-like, and the test can fire the error callback on demand.
@@ -1482,11 +1477,11 @@ describe('ViewerPipeline audio stats survive lane death', () => {
   });
 });
 
-// R21 (docs/26 Decision 7a): the relay states the served mode once at join,
-// because a ring-replayed GOP is byte-identical on the wire to a live one and
-// nothing the viewer can observe would tell the two apart. The deeper playout
-// floor is applied only on that confirmation — against a relay that cannot
-// keep it filled it would be pure latency.
+// The relay states the served mode once at join, because a ring-replayed GOP
+// is byte-identical on the wire to a live one and nothing the viewer can
+// observe would tell the two apart. The ack records the grant; a denial walks
+// the deep playout floor back, since against a relay that cannot keep it
+// filled it is pure latency.
 describe('ViewerPipeline delivery ack', () => {
   afterEach(() => setDvrGranted(false));
 

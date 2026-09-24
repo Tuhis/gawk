@@ -1,21 +1,21 @@
-// R22 (docs/27 Decision 3/4): the fMP4 muxer behind iPhone native fullscreen.
-// Consumes the reorder buffer's release stream — the same in-order,
-// freeze-on-gap-applied encoded frames the VideoDecoder eats — and emits fMP4
-// segments for a ManagedMediaSource-backed <video>, which is the only media
-// source the iOS native fullscreen player is known to present (the R16
-// MediaStream tee was black; docs/21 U4). Pure and DOM-free: runs in the
-// viewer worker, unit-tests in node, and is CI-provable in a desktop Chrome
-// MediaSource (docs/27 Decision 10).
+// The fMP4 muxer behind iPhone native fullscreen
+// (docs/27-ios-mse-fullscreen.md). Consumes the reorder buffer's release stream
+// — the same in-order, freeze-on-gap-applied encoded frames the VideoDecoder
+// eats — and emits fMP4 segments for a ManagedMediaSource-backed <video>, which
+// is the only media source the iOS native fullscreen player is known to present
+// (a MediaStream-fed one stays black). Pure and DOM-free: runs in the viewer
+// worker, unit-tests in node, and is CI-provable in a desktop Chrome
+// MediaSource.
 //
-// Wire-format reality it must absorb (docs/27 Decision 4):
+// Wire-format reality it must absorb:
 //   - Browser broadcaster: AVCC samples (length-prefixed NALs) + an avcC in
 //     DecoderConfig.extradata.
-//   - Native broadcaster (docs/19): Annex-B samples with EMPTY extradata and
-//     in-band SPS/PPS at every IDR — the avcC is synthesized from those, and
-//     visual dimensions come from the SPS itself (docs/01: trust the
-//     bitstream, not metadata).
-//   - No B-frames is a protocol invariant (docs/19), so CTS == DTS everywhere
-//     and the trun carries no composition offsets.
+//   - Native broadcaster: Annex-B samples with EMPTY extradata and in-band
+//     SPS/PPS at every IDR — the avcC is synthesized from those, and visual
+//     dimensions come from the SPS itself (trust the bitstream, not
+//     metadata).
+//   - No B-frames is a protocol invariant, so CTS == DTS everywhere and the
+//     trun carries no composition offsets.
 //
 // Output timeline: input timestamps are the broadcaster's performance.now()
 // microseconds — huge, and they jump on a broadcaster restart. The muxer maps
@@ -38,9 +38,9 @@ export interface MuxInputFrame {
   config: DecoderConfigMessage | null;
 }
 
-// R22 audio (docs/27 finding 2): video and audio ride SEPARATE SourceBuffers on
-// one MediaSource — the standard MSE shape, and the one that keeps the working
-// video path untouched when audio is absent, unsupported, or dies mid-stream.
+// Video and audio ride SEPARATE SourceBuffers on one MediaSource — the standard
+// MSE shape, and the one that keeps the working video path untouched when audio
+// is absent, unsupported, or dies mid-stream.
 export type Fmp4Track = 'video' | 'audio';
 
 export interface Fmp4InitSegment {
@@ -58,14 +58,14 @@ export interface Fmp4MediaSegment {
   track: Fmp4Track;
   // Video: a sync sample. Audio samples are all sync samples, so the flag is
   // always true there — the presenter's resync-at-keyframe policy is a no-op
-  // for audio, which is correct: any Opus packet is a decodable restart point.
+  // for audio, which is correct: any audio packet is a decodable restart point.
   keyframe: boolean;
   data: Uint8Array;
 }
 
 export type Fmp4Segment = Fmp4InitSegment | Fmp4MediaSegment;
 
-// The R15 audio lane's config, as the muxer needs it (docs/20 wire type 0x08).
+// The audio lane's config (wire type 0x08), as the muxer needs it.
 // `description` carries the codec's out-of-band setup bytes where the format
 // needs them: unused for Opus (dOps is built from the fields above), required
 // for AAC — the AudioSpecificConfig that goes inside `esds`, taken verbatim from
@@ -77,10 +77,10 @@ export interface AudioMuxConfig {
   description?: Uint8Array;
 }
 
-// Which audio encapsulation the muxer is producing. Opus is the R15 lane
-// muxed verbatim (no transcode); AAC is the iOS path — iOS refuses
-// `audio/mp4; codecs="opus"` through ManagedMediaSource (docs/27 finding 4), so
-// the decoded PCM is re-encoded to AAC, which Apple's own HLS mandates.
+// Which audio encapsulation the muxer is producing. Opus is the audio lane
+// muxed verbatim (no transcode); AAC is the iOS path — iOS refuses `audio/mp4;
+// codecs="opus"` through ManagedMediaSource, so the decoded PCM is re-encoded
+// to AAC, which Apple's own HLS mandates.
 export type AudioMuxCodec = 'opus' | 'aac';
 
 export function aacMime(codec: string): string {
@@ -93,7 +93,7 @@ export const AAC_FRAME_SAMPLES = 1024;
 
 export interface AudioMuxInput {
   timestampUs: bigint;
-  data: Uint8Array; // exactly one Opus packet (docs/20: one packet per datagram)
+  data: Uint8Array; // exactly one packet: Opus off the wire, or one AAC frame
 }
 
 // What the pipeline forks to the muxer: the encoded audio lane in wire order.
@@ -121,11 +121,11 @@ export const MOVIE_TIMESCALE = 1_000_000;
 
 // Fallback per-sample duration before any inter-frame delta is observed, and
 // the step used when re-anchoring across a restart. 30 fps — the fleet's
-// default fan-out cadence (docs/08).
+// default fan-out cadence.
 export const DEFAULT_FRAME_DURATION_US = 33_333;
 
 // Opus is always 48 kHz out, and the audio track's timescale IS its sample rate
-// so every duration is an exact sample count (docs/20: 20 ms frames = 960).
+// so every duration is an exact sample count (20 ms frames = 960).
 export const OPUS_FRAME_MS = 20;
 
 // A live MSE audio track must be hole-free: HTMLMediaElement.buffered is the
@@ -660,19 +660,19 @@ function descriptor(w: BoxWriter, tag: number, body: () => void): void {
 }
 
 // The AAC sample entry: `mp4a` + `esds` carrying the encoder's own
-// AudioSpecificConfig. Apple's mandated HLS audio codec, and the iOS path for
-// R22 audio (docs/27 finding 4).
+// AudioSpecificConfig. Apple's mandated HLS audio codec, and the iOS audio
+// path.
 function writeMp4aEntry(w: BoxWriter, cfg: AudioMuxConfig): void {
   const asc = cfg.description;
   if (!asc || asc.length === 0) throw new Error('AAC needs an AudioSpecificConfig description');
-  // docs/27 finding 6: an ES_Descriptor (tag 0x03) or DecoderConfigDescriptor
-  // (tag 0x04) is what Safari's AudioEncoder hands back as `description`;
-  // audio-transcode.ts unwraps it to the ASC. If an un-normalized one gets here,
-  // nesting it inside our own DecoderSpecificInfo yields an init segment WebKit
-  // rejects with MEDIA_ERR_SRC_NOT_SUPPORTED — which closes the MediaSource
-  // rather than failing visibly. An ASC's first byte carries the 5-bit
-  // audioObjectType in its high bits, so it can never be 0x03/0x04 (AOT 0 is
-  // "NULL" and never encoded): refuse those outright.
+  // An ES_Descriptor (tag 0x03) or DecoderConfigDescriptor (tag 0x04) is what
+  // Safari's AudioEncoder hands back as `description`; audio-transcode.ts
+  // unwraps it to the ASC. If an un-normalized one gets here, nesting it inside
+  // our own DecoderSpecificInfo yields an init segment WebKit rejects with
+  // MEDIA_ERR_SRC_NOT_SUPPORTED — which closes the MediaSource rather than
+  // failing visibly. An ASC's first byte carries the 5-bit audioObjectType in
+  // its high bits, so it can never be 0x03/0x04 (AOT 0 is "NULL" and never
+  // encoded): refuse those outright.
   if (asc[0] === 0x03 || asc[0] === 0x04) {
     throw new Error(`AAC description is a descriptor (tag 0x0${asc[0]}), not an AudioSpecificConfig`);
   }
@@ -726,8 +726,8 @@ function writeOpusEntry(w: BoxWriter, cfg: AudioMuxConfig): void {
     w.box('dOps', () => {
       w.u8(0); // Version
       w.u8(cfg.channels); // OutputChannelCount
-      // PreSkip 0: WebCodecs exposes no encoder delay (docs/20 leaves the
-      // AudioDecoder description empty for the same reason), so there is nothing
+      // PreSkip 0: WebCodecs exposes no encoder delay (the AudioDecoder
+      // description is left empty for the same reason), so there is nothing
       // honest to declare. The cost is the encoder's ~6.5 ms ramp-up being
       // audible-in-principle at stream start — an order below the 60 ms A/V
       // skew target.
@@ -892,8 +892,8 @@ export interface Fmp4MuxerStats {
   // Frames skipped before the first keyframe made an init segment possible.
   skippedAwaitingInit: number;
   errors: number;
-  // R22 audio. audioSkipped counts packets that could not be placed on the
-  // output timeline (no video anchor yet, no config, or a non-Opus codec);
+  // audioSkipped counts packets that could not be placed on the output
+  // timeline (no video anchor yet, no config, or an unsupported codec);
   // audioHoles counts gaps too long to absorb by stretching, i.e. the ones that
   // do reach the buffered ranges.
   audioInitSegments: number;
@@ -917,17 +917,17 @@ export class Fmp4Muxer {
   private prevInputUs: number | null = null;
   private prevOutputUs = 0;
   private lastDurationUs = DEFAULT_FRAME_DURATION_US;
-  // One frame of lookahead (docs/27 finding 3). A sample's declared duration
-  // must be the interval to its SUCCESSOR, which is only knowable once the
-  // successor arrives — so the newest frame is held here until then.
+  // One frame of lookahead. A sample's declared duration must be the interval
+  // to its SUCCESSOR, which is only knowable once the successor arrives — so
+  // the newest frame is held here until then.
   private pendingVideo: { outputUs: number; keyframe: boolean; sample: Uint8Array } | null = null;
 
   // The video path's input→output shift, republished on every frame (including
   // each re-anchor). This is what keeps audio in sync: both media carry
-  // timestamps on the same broadcaster performance.now() clock (docs/20's
-  // load-bearing sync decision), so one shared offset puts both tracks on one
-  // output timeline and relative A/V skew is zero by construction. Null until
-  // the first video frame — audio cannot be placed before then.
+  // timestamps on the same broadcaster performance.now() clock, so one shared
+  // offset puts both tracks on one output timeline and relative A/V skew is
+  // zero by construction. Null until the first video frame — audio cannot be
+  // placed before then.
   private outputOffsetUs: number | null = null;
 
   private audioConfig: AudioMuxConfig | null = null;
@@ -1076,16 +1076,16 @@ export class Fmp4Muxer {
     };
   }
 
-  // R22 audio (docs/27 finding 2): the R15 audio config (wire 0x08). Returns an
-  // init segment when the track parameters actually change — the broadcaster
-  // re-sends the config at 1 Hz, and re-initing per repeat would reset the
-  // SourceBuffer for nothing. Emitted eagerly (it carries no timestamps), but
-  // the presenter deliberately holds it until the first audio sample: an audio
-  // track with a SourceBuffer and no samples empties the element's buffered
-  // intersection and would stall the video.
+  // The audio config (wire 0x08). Returns an init segment when the track
+  // parameters actually change — the broadcaster re-sends the config at 1 Hz,
+  // and re-initing per repeat would reset the SourceBuffer for nothing. Emitted
+  // eagerly (it carries no timestamps), but the presenter deliberately holds it
+  // until the first audio sample: an audio track with a SourceBuffer and no
+  // samples empties the element's buffered intersection and would stall the
+  // video.
   setAudioConfig(cfg: AudioMuxConfig): Fmp4Segment[] {
-    // Two encapsulations, no guessing: Opus (the R15 lane verbatim) or AAC (the
-    // iOS transcode path). Anything else can't be muxed here.
+    // Two encapsulations, no guessing: Opus (the audio lane verbatim) or AAC
+    // (the iOS transcode path). Anything else can't be muxed here.
     const isOpus = /^opus$/i.test(cfg.codec);
     const isAac = /^mp4a\./i.test(cfg.codec);
     if ((!isOpus && !isAac) || cfg.sampleRate <= 0 || cfg.channels < 1) {
@@ -1138,13 +1138,12 @@ export class Fmp4Muxer {
     ];
   }
 
-  // Feed one Opus packet. Emits the PREVIOUS packet's segment: a sample's
-  // duration must be the interval to the next sample, or the audio timeline
-  // grows holes (on a slowdown) and overlaps (on a speed-up) exactly the way the
-  // video timeline did — and because buffered is the intersection of both
-  // tracks, an audio hole freezes the native player's video. One packet of
-  // lookahead is 20 ms; the audio track already runs ahead of the paced video
-  // release by more than that.
+  // Feed one encoded audio packet. Emits the PREVIOUS packet's segment: a
+  // sample's duration must be the interval to the next sample, or the audio
+  // timeline grows holes (on a slowdown) and overlaps (on a speed-up) — and
+  // because buffered is the intersection of both tracks, an audio hole freezes
+  // the native player's video. One packet of lookahead is ~20 ms; the audio
+  // track already runs ahead of the paced video release by more than that.
   pushAudio(pkt: AudioMuxInput): Fmp4Segment[] {
     const cfg = this.audioConfig;
     if (!cfg || this.outputOffsetUs === null) {
@@ -1188,7 +1187,7 @@ export class Fmp4Muxer {
     const seg: Fmp4Segment = {
       kind: 'media',
       track: 'audio',
-      keyframe: true, // every Opus packet is a sync sample
+      keyframe: true, // every audio packet is a sync sample
       data: buildMediaSegment(prev.data, {
         sequence: this.audioSequence,
         decodeTime: prev.dts,
@@ -1202,10 +1201,10 @@ export class Fmp4Muxer {
   }
 
   // Emit a fresh init segment when the parameter sets actually changed
-  // (docs/27 Decision 6: R4/R13 resolution steps, codec pins, broadcaster
-  // restarts with a different config). Byte-compares the avcC — the SPS/PPS
-  // are re-sent with every IDR on the Annex-B path, and re-initing per GOP
-  // would reset the SourceBuffer's decoder pointlessly.
+  // (resolution steps, codec pins, broadcaster restarts with a different
+  // config). Byte-compares the avcC — the SPS/PPS are re-sent with every IDR on
+  // the Annex-B path, and re-initing per GOP would reset the SourceBuffer's
+  // decoder pointlessly.
   private maybeReinit(avcc: Uint8Array, sps: Uint8Array): Fmp4InitSegment | null {
     if (this.avcc && bytesEqual(this.avcc, avcc)) return null;
     const info = parseSps(sps);

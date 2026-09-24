@@ -1,12 +1,12 @@
-// R22 MF1 (docs/27): the fMP4 muxer's automated proof, golden-vector style
-// (the wire-test culture). The committed fixture is the same 320x240 @ 30 fps
+// The fMP4 muxer's automated proof, golden-vector style (the wire-test
+// culture). The committed fixture is the same 320x240 @ 30 fps
 // H.264 stream gawk-broadcast embeds (h264-fixture.ts documents provenance):
 // Annex-B access units with in-band SPS/PPS at every IDR — the native
 // broadcaster's wire shape. The AVCC (browser broadcaster) shape is derived
 // from it in this file, which doubles as an independent check that both input
 // formats produce byte-identical media segments. The final proof — the bytes
-// actually playing in a Chrome MediaSource <video> — lives in the e2e harness
-// (docs/27 Decision 10), not here: vitest has no media stack.
+// actually playing in a Chrome MediaSource <video> — lives in the e2e harness,
+// not here: vitest has no media stack.
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -47,7 +47,7 @@ function annexBFrame(i: number, overrides: Partial<MuxInputFrame> = {}): MuxInpu
     timestampUs: BASE_TS_US + BigInt(i * FRAME_US),
     data: f.data,
     // The native broadcaster's config: codec negotiated, extradata EMPTY —
-    // parameter sets are in-band (docs/19).
+    // parameter sets are in-band.
     config: f.keyframe ? { codec: 'avc1.42E01F', extradata: new Uint8Array(0) } : null,
     ...overrides,
   };
@@ -484,8 +484,8 @@ describe('Fmp4Muxer on the AVCC shape', () => {
   it('does not misread an AVCC length prefix as an Annex-B start code', () => {
     // Fixture frame 16's first NAL is 461 bytes, so its 4-byte AVCC length
     // prefix is 00 00 01 CD — byte-identical to an Annex-B start code. A
-    // per-frame sniff mangles exactly this frame (found by the equivalence
-    // test below); the format decision is sticky from the keyframe instead.
+    // per-frame sniff mangles exactly this frame (the equivalence test below
+    // catches it); the format decision is sticky from the keyframe instead.
     const muxer = new Fmp4Muxer();
     muxer.push(avccFrame(0));
     muxer.push(avccFrame(16));
@@ -515,13 +515,12 @@ describe('Fmp4Muxer on the AVCC shape', () => {
 // ---------------------------------------------------------------------------
 // Edge behavior
 
-// docs/27 finding 3 (on-device pass 2): a sample's declared duration must be the
-// interval to its SUCCESSOR. Declaring the interval from its PREDECESSOR instead
-// (what shipped) leaves a hole exactly as big as any cadence increase — and the
-// release stream's cadence jumps a whole keyframe interval on every reorder-gap
-// resync, so the iPhone capture showed 5 buffered ranges (4 holes). Because
-// HTMLMediaElement.buffered is the intersection of the tracks, a hole stalls the
-// native player. Same invariant the audio track already holds.
+// A sample's declared duration must be the interval to its SUCCESSOR.
+// Declaring the interval from its PREDECESSOR instead leaves a hole exactly as
+// big as any cadence increase — and the release stream's cadence jumps a
+// whole keyframe interval on every reorder-gap resync. Because
+// HTMLMediaElement.buffered is the intersection of the tracks, a hole stalls
+// the native player. Same invariant the audio track holds.
 describe('Fmp4Muxer sample timing (holes)', () => {
   // Cumulative timestamps for the given inter-frame intervals.
   function atIntervals(indices: number[], intervalsUs: number[]): MuxInputFrame[] {
@@ -569,9 +568,9 @@ describe('Fmp4Muxer sample timing (holes)', () => {
   });
 
   it('abuts under ordinary capture jitter, in both directions', () => {
-    // Damage-driven capture never delivers an exact cadence; a slowdown used to
-    // leave a hole and a speed-up used to overlap (which MSE resolves by
-    // REMOVING the overlapped frame).
+    // Damage-driven capture never delivers an exact cadence; predecessor-based
+    // durations would leave a hole on a slowdown and overlap on a speed-up
+    // (which MSE resolves by REMOVING the overlapped frame).
     const frames = atIntervals([0, 1, 2, 3, 4, 5], [40_000, 20_000, 33_000, 60_000, 16_000]);
     const t = timings(muxAll(frames).segments);
     expect(t.map((x) => x.duration)).toEqual([40_000, 20_000, 33_000, 60_000, 16_000, 16_000]);
@@ -652,7 +651,7 @@ describe('Fmp4Muxer edge behavior', () => {
     const again = muxer.push({ ...avccFrame(15), timestampUs: BASE_TS_US + BigInt(15 * FRAME_US) });
     expect(inits(again)).toHaveLength(0);
 
-    // A changed level byte = a different config (R13 codec pin / R4 step).
+    // A changed level byte = a different config (codec pin / resolution step).
     const { sps, pps } = fixtureSpsPps();
     const sps2 = sps.slice();
     sps2[3] = 0x28; // level 4.0
@@ -684,11 +683,10 @@ describe('Fmp4Muxer edge behavior', () => {
 });
 
 // ---------------------------------------------------------------------------
-// R22 audio (docs/27 finding 2): the Opus track. The invariant under test
-// throughout is ABUTMENT — sample N's decode time plus its declared duration
-// must equal sample N+1's decode time. HTMLMediaElement.buffered is the
-// intersection of the tracks' ranges, so a hole in audio is a hole in playback,
-// and the native player stops there.
+// The Opus track. The invariant under test throughout is ABUTMENT — sample
+// N's decode time plus its declared duration must equal sample N+1's decode
+// time. HTMLMediaElement.buffered is the intersection of the tracks' ranges,
+// so a hole in audio is a hole in playback, and the native player stops there.
 
 const OPUS_CFG = { codec: 'opus', sampleRate: 48_000, channels: 2 };
 const OPUS_FRAME_US = 20_000;
@@ -758,8 +756,8 @@ describe('Fmp4Muxer audio track', () => {
   });
 
   it('refuses an AAC description that is a descriptor rather than an AudioSpecificConfig', () => {
-    // docs/27 finding 6: Safari's AudioEncoder returns the whole ES_Descriptor
-    // as `description`. audio-transcode.ts unwraps it, but if an un-normalized
+    // Safari's AudioEncoder returns the whole ES_Descriptor as
+    // `description`. audio-transcode.ts unwraps it, but if an un-normalized
     // one ever reaches here, nesting it inside our own DecoderSpecificInfo
     // produces an init segment WebKit rejects with MEDIA_ERR_SRC_NOT_SUPPORTED —
     // and a rejected init is invisible until it kills the whole MediaSource. A

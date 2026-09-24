@@ -90,15 +90,13 @@ describe('Reassembler parity recovery', () => {
   });
 
   it('does not inflate framesDroppedIncomplete on a CLEAN link', () => {
-    // The bug this pins, caught by the e2e telemetry pass rather than by the
-    // test above: the producer sends parity AFTER the frame's data chunks, so
-    // on a lossless link every frame completes and THEN its parity arrives.
+    // The producer sends parity AFTER the frame's data chunks, so on a
+    // lossless link every frame completes and THEN its parity arrives.
     // Creating an assembly for that parity leaves a frame that can never
-    // complete, which later evicts as "incomplete" — 832 phantom drops on a
-    // loopback e2e run, inflating the exact counter R29's whole diagnosis
-    // rests on and making diagnose() call a perfect session bursty.
+    // complete, which later evicts as "incomplete" — phantom drops that make
+    // diagnose() call a perfect session bursty.
     //
-    // Asserting "frames still 1" was not enough to catch it. The counter is.
+    // Asserting "frames still 1" is not enough to catch it. The counter is.
     const { r, frames } = collector();
     for (let i = 1; i <= 40; i++) {
       const { datagrams, parity } = packetizeFrameWithParity(info(i), patternBytes(3000, i), 2);
@@ -179,13 +177,6 @@ describe('Reassembler parity recovery', () => {
   });
 });
 
-// R29 finding 3 (docs/34): `parityRecoveryFailures` counts only GF-arithmetic
-// failures, and `tryRecover` returns early — uncounted — whenever the erasures
-// simply exceed the symbols held. It therefore read 0 across a live session
-// that repaired nothing, which is the least useful thing a diagnostic can do:
-// "the code worked" and "the code was never even attempted" produced the same
-// number. `parityInsufficient` is the missing one, counted where the frame is
-// actually given up on.
 describe('Reassembler delta evidence', () => {
   it('knows a frame is a delta from any of its data or parity datagrams', () => {
     const { r } = collector();
@@ -206,6 +197,11 @@ describe('Reassembler delta evidence', () => {
   });
 });
 
+// `parityRecoveryFailures` counts only GF-arithmetic failures, and
+// `tryRecover` returns early — uncounted — whenever the erasures simply exceed
+// the symbols held, so on its own it cannot tell "parity worked" from "parity
+// was never attempted". `parityInsufficient` covers the rest, counted where
+// the frame is actually given up on.
 describe('Reassembler parity shortfall accounting', () => {
   // A COMPLETED frame leaves the map at once, so filling it needs assemblies
   // that stay pending: eight parity-free frames each missing a chunk. Creating
@@ -224,8 +220,7 @@ describe('Reassembler parity shortfall accounting', () => {
     const s = r.getStats();
     expect(s.framesDroppedIncomplete).toBeGreaterThanOrEqual(1);
     expect(s.parityInsufficient).toBe(1);
-    // Still zero: the GF solve was never reached, which is exactly the
-    // distinction the old counter could not draw.
+    // Still zero: the GF solve was never reached.
     expect(s.parityRecoveryFailures).toBe(0);
   });
 
@@ -237,10 +232,10 @@ describe('Reassembler parity shortfall accounting', () => {
     expect(r.getStats().parityInsufficient).toBe(0);
   });
 
-  // The n=1 hole (docs/34 finding 2): the single parity symbol duplicates the
-  // only chunk, but `received === 0` means there is no timestamp to decode
-  // with, so it is unusable. It is a shortfall of a different kind and must
-  // not be silent either.
+  // The n=1 hole: the single parity symbol duplicates the only chunk, but
+  // `received === 0` means there is no timestamp to decode with, so it is
+  // unusable. It is a shortfall of a different kind and must not be silent
+  // either.
   it('counts a single-chunk delta whose only chunk was lost', () => {
     const { r } = collector();
     const n = feed(r, 1, patternBytes(200, 9), 2, [0]);

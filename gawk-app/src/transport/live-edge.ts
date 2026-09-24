@@ -1,13 +1,14 @@
-// Live-edge drift estimation (R5 Q1, docs/15). Frame timestamps are stamped
-// on the broadcaster's performance.now() clock at capture (capture.ts), so a
-// viewer-side `delta = viewerNow − frameTimestamp` is (unknown clock offset) +
-// (true capture→here latency). The minimum delta over a sliding window is the
-// session-best baseline; the excess over it is pure accumulated lag — decoder
-// backlog, reorder holds, queue growth — with the clock offset cancelled.
+// Live-edge drift estimation. Frame timestamps are stamped on the broadcaster's
+// performance.now() clock at capture (capture.ts), so a viewer-side `delta =
+// viewerNow − frameTimestamp` is (unknown clock offset) + (true capture→here
+// latency). The minimum delta over a sliding window is the session-best
+// baseline; the excess over it is pure accumulated lag — decoder backlog,
+// reorder holds, queue growth — with the clock offset cancelled.
 //
 // The window is what makes this robust: consumer crystal oscillators skew tens
 // of ppm (tens to hundreds of ms per hour), which would silently inflate a
-// session-long baseline. Absolute latency (offset NOT cancelled) is Q2's job.
+// session-long baseline. Absolute latency (offset NOT cancelled) is measured
+// separately, via the relay clock.
 //
 // Pure and timer-free: the clock is injected, everything is node-testable.
 
@@ -64,12 +65,12 @@ export class WindowedMinTracker {
   }
 }
 
-// R12 T1 (docs/17): windowed quantile, the sibling of WindowedMinTracker and
-// shared by the arrival-jitter metric and the adaptive playout controller —
-// measurement and control read the same estimator by design. Each bucket
-// holds a fixed-width histogram of (value − bucket min); memory stays
-// O(window/bucket × bins) regardless of observation rate. Quantiles are
-// accurate to one bin (values past the range clamp into the top bin).
+// Windowed quantile, the sibling of WindowedMinTracker and shared by the
+// arrival-jitter metric and the adaptive playout controller — measurement and
+// control read the same estimator by design. Each bucket holds a fixed-width
+// histogram of (value − bucket min); memory stays O(window/bucket × bins)
+// regardless of observation rate. Quantiles are accurate to one bin (values
+// past the range clamp into the top bin).
 export const QUANTILE_BIN_MS = 4;
 export const QUANTILE_RANGE_MS = 500;
 

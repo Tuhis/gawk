@@ -1,16 +1,14 @@
 // The viewer pipeline hands each decoded VideoFrame to a RenderSink instead of
 // bouncing it across a callback boundary. On the main thread the sink draws to
-// a 2D canvas; in the worker (R8 S6) it draws to a transferred OffscreenCanvas
-// so decoded frames are painted *in the worker* and never postMessage-d back.
+// a 2D canvas; in the worker it draws to a transferred OffscreenCanvas so
+// decoded frames are painted *in the worker* and never postMessage-d back.
 //
-// R10 (docs/14): the worker composes sinks via createRenderSink() — a WebGL
-// textured-quad sink (Firefox's 2D drawImage(VideoFrame) does a synchronous
-// CPU conversion per frame; the 2D sink survives as fallback) wrapped in a
-// scheduling sink that draws at most once per rAF tick, latest-frame-wins.
-// R12 (docs/17): that scheduling sink is PacedPresentationSink — with no
-// display target it IS the old R10 coalescer; with targets (the opt-in
-// adaptive playout mode) it holds ≤3 decoded frames and presents each in its
-// vsync slot.
+// The worker composes sinks via createRenderSink() — a WebGL textured-quad sink
+// (Firefox's 2D drawImage(VideoFrame) does a synchronous CPU conversion per
+// frame; the 2D sink survives as fallback) wrapped in PacedPresentationSink.
+// With no display target that sink draws at most once per rAF tick,
+// latest-frame-wins; with targets (the opt-in adaptive playout mode) it holds
+// ≤3 decoded frames and presents each in its vsync slot.
 //
 // Contract: draw() takes ownership of the frame and MUST close() it (single
 // owner — the pipeline never touches the frame again).
@@ -26,29 +24,29 @@ export type RenderSinkKind = '2d' | 'webgl';
 // interpolated mid-frame), carrying that frame's timestamp and the sink's own
 // clock. The viewer pipeline routes this into av-sync's observeVideoPresented:
 // the paced sink holds a frame for the playout offset, so sampling A/V skew at
-// decode reads the audio buffering depth as skew (docs/20 field finding 9).
+// decode reads the audio buffering depth as skew.
 export type PresentationObserver = (timestampUs: number, atMs: number) => void;
 
 export interface RenderSink {
   readonly kind: RenderSinkKind;
   // Whether the scheduling sink paces on worker rAF or the timer fallback —
-  // surfaced so degraded pacing accuracy is visible (R12 T2).
+  // surfaced so degraded pacing accuracy is visible.
   readonly scheduleKind?: RenderScheduleKind;
-  // R12 T2: an optional target display time (same clock as the sink's `now`,
+  // An optional target display time (same clock as the sink's `now`,
   // i.e. this context's performance.now()). Absent ⇒ present ASAP (the
   // latest-frame-wins default). Ownership transfers either way.
   draw(frame: VideoFrame, targetDisplayMs?: number): void;
-  // Cumulative frames drawn (R9 M6): feeds the viewer funnel's renderedFps.
+  // Cumulative frames drawn: feeds the viewer funnel's renderedFps.
   drawnFrames(): number;
-  // R12 T1: presentation-cadence jitter since the last drain; implemented by
+  // Presentation-cadence jitter since the last drain; implemented by
   // the scheduling sink (the paint is the phenomenon under measurement), null
   // elsewhere and before two draws.
   drainCadence?(): RenderCadence | null;
-  // R12 T2: close everything held without presenting (broadcaster restart,
+  // Close everything held without presenting (broadcaster restart,
   // resync, stop); presentNewest paints the newest held frame first (mode
   // toggled off — don't let it wait out a schedule that no longer applies).
   flush?(presentNewest?: boolean): void;
-  // R12 T4: whether this sink can synthesize interpolated frames (the
+  // Whether this sink can synthesize interpolated frames (the
   // WebGL2 two-texture path) — gates the experimental toggle's visibility.
   readonly supportsInterpolation?: boolean;
   // Observe real presentations for the A/V-skew metric (implemented by the
@@ -56,7 +54,7 @@ export interface RenderSink {
   setPresentationObserver?(observer: PresentationObserver | null): void;
 }
 
-// R12 T4: what the paced sink needs from an interpolation-capable inner sink.
+// What the paced sink needs from an interpolation-capable inner sink.
 interface InterpolatingInner {
   upload(frame: VideoFrame): void;
   present(alpha: number): void;
@@ -69,7 +67,7 @@ function asInterpolating(sink: RenderSink): (RenderSink & InterpolatingInner) | 
     : null;
 }
 
-// Presentation-cadence error per stats window (R12 T1, docs/17 Decision 1).
+// Presentation-cadence error per stats window.
 export interface RenderCadence {
   stdDevMs: number;
   p95Ms: number; // p95 of |error|
@@ -127,7 +125,7 @@ export class CadenceRecorder {
 
 // Draws to an OffscreenCanvas transferred once from the main thread. The
 // backing-store size tracks the frame's display size; the on-screen <canvas>
-// element's CSS governs letterboxing, exactly as the main-thread path did.
+// element's CSS governs letterboxing, as on the main-thread path.
 export class OffscreenCanvasRenderSink implements RenderSink {
   readonly kind: RenderSinkKind = '2d';
   private canvas: OffscreenCanvas;
@@ -183,7 +181,7 @@ void main() { gl_FragColor = texture2D(tex, uv); }`;
 // Draws each VideoFrame as a WebGL texture on a fullscreen quad.
 // texImage2D(VideoFrame) is the upload path every WebGL video player uses:
 // synchronous, no per-frame allocation, and kept on the GPU where the
-// platform allows — unlike Firefox's software 2D drawImage path (R10) or a
+// platform allows — unlike Firefox's software 2D drawImage path or a
 // bitmaprenderer sink's per-frame createImageBitmap hop.
 //
 // The constructor throws if program setup fails; createRenderSink() catches
@@ -251,15 +249,13 @@ export class WebGLRenderSink implements RenderSink {
   }
 }
 
-// R12 T4 (docs/17 Decision 7): the interpolating WebGL sink — two ping-pong
-// textures (previous + current frame) and a linear-blend fragment shader.
-// upload() is decoupled from present(): the paced sink uploads the NEXT real
-// frame early to synthesize a mid frame (present(0.5) = blend of the frame
-// on screen and the one in hand), then presents the real frame from the
-// already-uploaded texture (present(1)). Plain draw() = upload + present(1),
-// so this sink is a drop-in WebGLRenderSink when interpolation is off.
-// WebGL2-only by policy (createContextSink); T5 swaps the blend for
-// motion-estimated warping behind the same two methods.
+// The interpolating WebGL sink — two ping-pong textures (previous + current
+// frame) and a linear-blend fragment shader. upload() is decoupled from
+// present(): the paced sink uploads the NEXT real frame early to synthesize a
+// mid frame (present(0.5) = blend of the frame on screen and the one in hand),
+// then presents the real frame from the already-uploaded texture (present(1)).
+// Plain draw() = upload + present(1), so this sink is a drop-in WebGLRenderSink
+// when interpolation is off. WebGL2-only by policy (createContextSink).
 const BLEND_FRAGMENT_SHADER = `
 precision mediump float;
 varying vec2 uv;
@@ -382,8 +378,8 @@ export type RenderScheduleKind = 'raf' | 'timer';
 
 // Worker rAF exists in Chrome and Firefox ≥ 105 (it shipped alongside
 // OffscreenCanvas); the timer fallback keeps coalescing — the point — even
-// where it doesn't (pacing accuracy degrades to ~today's and the overlay
-// says so via scheduleKind).
+// where it doesn't (pacing accuracy degrades, and the overlay says so via
+// scheduleKind).
 const defaultScheduleKind: RenderScheduleKind =
   typeof requestAnimationFrame === 'function' ? 'raf' : 'timer';
 const defaultSchedule: RenderSchedule =
@@ -392,7 +388,7 @@ const defaultSchedule: RenderSchedule =
     : (cb) => void setTimeout(cb, 16);
 
 // The display refresh interval, estimated as a windowed median of scheduler
-// tick deltas (R12 T2) — sets the ±½-vsync lookahead for slot matching.
+// tick deltas — sets the ±½-vsync lookahead for slot matching.
 // Median, not mean: one long tick (GC, tab switch) must not stretch it.
 const DEFAULT_DISPLAY_INTERVAL_MS = 1000 / 60;
 const DISPLAY_INTERVAL_SAMPLES = 32;
@@ -425,16 +421,15 @@ interface HeldFrame {
   targetDisplayMs: number;
 }
 
-// How many decoded frames pacing may hold. VRAM is trivial at 3; the real
-// bound is the decoder's frame pool, which the reorder buffer's decode lead
-// keeps at a steady-state hold of 1–2 (docs/17 Decision 3). Overflow closes
-// the oldest — latest-frame-wins under load is structural, not a mode.
+// How many decoded frames pacing may hold. VRAM is trivial at 3; the real bound
+// is the decoder's frame pool, which the reorder buffer's decode lead keeps at
+// a steady-state hold of 1–2. Overflow closes the oldest — latest-frame-wins
+// under load is structural, not a mode.
 export const MAX_HELD_FRAMES = 3;
 
-// The one scheduling sink (R12 T2, subsuming R10 P1's CoalescingRenderSink):
-// at most one inner draw per scheduler tick, latest-frame-wins. A frame drawn
-// without a target presents at the next tick exactly as the coalescing sink
-// did; a frame with a targetDisplayMs is held (bounded) and presented in the
+// The one scheduling sink: at most one inner draw per scheduler tick,
+// latest-frame-wins. A frame drawn without a target presents at the next
+// tick; a frame with a targetDisplayMs is held (bounded) and presented in the
 // tick whose time best matches its slot — the newest due frame wins and every
 // older held frame closes unseen. Pacing holds only frames already in hand;
 // it never waits for missing ones.
@@ -444,14 +439,14 @@ export class PacedPresentationSink implements RenderSink {
   private inner: RenderSink;
   private schedule: RenderSchedule;
   private now: () => number;
-  // R12 T1: cadence is recorded at the inner draw — the actual paint.
+  // Cadence is recorded at the inner draw — the actual paint.
   private cadence = new CadenceRecorder();
   private display = new DisplayIntervalEstimator();
   private held: HeldFrame[] = [];
   private immediate: VideoFrame | null = null;
   private tickScheduled = false;
   private dropped = 0;
-  // R12 T4: the interpolation-capable view of the inner sink (null = plain).
+  // The interpolation-capable view of the inner sink (null = plain).
   private interpolating: (RenderSink & InterpolatingInner) | null;
   // The last REAL frame's display slot — the left edge of a mid slot.
   private lastPresentedTarget: number | null = null;
@@ -587,7 +582,7 @@ export class PacedPresentationSink implements RenderSink {
           this.lastPresentedTarget = targetDisplayMs;
         }
       } else if (this.held.length > 0 && this.uploadedNext === null) {
-        // R12 T4: mid slot — synthesize a frame halfway between the one on
+        // Mid slot — synthesize a frame halfway between the one on
         // screen and the next one already in hand (opportunistic: a missing
         // next frame simply means no interpolation this interval).
         const interp = getInterpolationEnabled() ? this.interpolating : null;
@@ -646,12 +641,10 @@ export function createRenderSink(
   return new PacedPresentationSink(createContextSink(canvas), schedule, undefined, scheduleKind);
 }
 
-// (Was exported for R16's TeeRenderSink composition; R22 deleted that path —
-// docs/27 Decision 7 — so this is internal again.)
 function createContextSink(canvas: OffscreenCanvas): RenderSink {
   const opts = { alpha: false, antialias: false, depth: false, stencil: false };
-  // WebGL2 gets the interpolation-capable sink (R12 T4 — WebGL2-only by
-  // policy); its plain draw() path is identical to WebGLRenderSink, so this
+  // WebGL2 gets the interpolation-capable sink (WebGL2-only by policy); its
+  // plain draw() path is identical to WebGLRenderSink, so this
   // costs nothing when the experimental toggle is off.
   const gl2 = canvas.getContext('webgl2', opts) as GL | null;
   if (gl2) {

@@ -1,19 +1,18 @@
-// R22 audio, iOS path (docs/27 finding 4): re-encode the decoded R15 audio lane
-// to AAC so the iPhone's native-fullscreen player can have sound.
+// iOS audio path: re-encode the decoded audio lane to AAC so the iPhone's
+// native-fullscreen player can have sound.
 //
 // Why this exists at all: the muxed presentation carries Opus verbatim wherever
-// the runtime accepts it (Chrome does — the CI proof), but iOS 18.7 / Safari
-// 26.5.2 answered `isTypeSupported('audio/mp4; codecs="opus"')` with **false**
-// through ManagedMediaSource, so on the one device this whole feature exists for
-// there is no Opus track to be had. AAC-LC is the codec Apple's own HLS mandates,
-// and it is the one audio format an iPhone is guaranteed to demux from fMP4.
+// the runtime accepts it (Chrome does), but iOS Safari answers
+// `isTypeSupported('audio/mp4; codecs="opus"')` with **false** through
+// ManagedMediaSource, so on the one device this whole feature exists for there
+// is no Opus track to be had. AAC-LC is the codec Apple's own HLS mandates, and
+// it is the one audio format an iPhone is guaranteed to demux from fMP4.
 //
 // Where it sits: the viewer worker already decodes Opus to planar PCM for the
-// main-thread AudioWorklet sink (docs/20 Decision 7). This taps that same
-// decoded stream — so the transcode is decode-once, encode-once, and it does not
-// touch the inline audio path at all. If the encoder is unavailable or fails, the
-// tap goes quiet and the presentation stays video-only; audio keeps playing
-// inline exactly as before.
+// main-thread AudioWorklet sink. This taps that same decoded stream — so the
+// transcode is decode-once, encode-once, and it does not touch the inline audio
+// path at all. If the encoder is unavailable or fails, the tap goes quiet and
+// the presentation stays video-only; audio keeps playing inline.
 //
 // DOM-free and injectable: `AudioEncoder`/`AudioData` come in through the
 // constructor so this unit-tests in node with fakes.
@@ -53,7 +52,7 @@ export interface AacTranscoderStats {
 // AAC-LC. `mp4a.40.2` is the RFC 6381 name (object type 0x40, audio object type
 // 2) and the one Safari/HLS is specified around.
 export const AAC_CODEC = 'mp4a.40.2';
-// 128 kbps stereo — matches the R15 Opus lane's bitrate, so the transcode is not
+// 128 kbps stereo — matches the Opus lane's bitrate, so the transcode is not
 // the quality bottleneck.
 export const AAC_BITRATE = 128_000;
 
@@ -279,15 +278,14 @@ const TAG_ES_DESCRIPTOR = 0x03;
 const TAG_DECODER_CONFIG = 0x04;
 const TAG_DECODER_SPECIFIC_INFO = 0x05;
 
-// R22 audio (docs/27 finding 6), measured on iPhone by the device probe: WebCodecs
-// says an AAC `decoderConfig.description` is the AudioSpecificConfig, and Chrome
-// hands back exactly that (`11 90` for AAC-LC 48 kHz stereo) — but **Safari hands
-// back the entire `esds` payload**, a complete ES_Descriptor with the ASC buried
-// three levels down. Taken at face value, the muxer nests that whole descriptor
-// inside its own DecoderSpecificInfo, and WebKit rejects the resulting init
-// segment with MEDIA_ERR_SRC_NOT_SUPPORTED and closes the MediaSource — which is
-// how iPhone native fullscreen ended up permanently video-only (the presenter's
-// sticky audio drop then made it silent for the rest of the session).
+// WebCodecs says an AAC `decoderConfig.description` is the AudioSpecificConfig,
+// and Chrome hands back exactly that (`11 90` for AAC-LC 48 kHz stereo) — but
+// **Safari (iPhone) hands back the entire `esds` payload**, a complete
+// ES_Descriptor with the ASC buried three levels down. Taken at face value, the
+// muxer nests that whole descriptor inside its own DecoderSpecificInfo, and
+// WebKit rejects the resulting init segment with MEDIA_ERR_SRC_NOT_SUPPORTED
+// and closes the MediaSource — leaving iPhone native fullscreen permanently
+// video-only.
 //
 // So: unwrap a descriptor when we are handed one, and pass a bare ASC through.
 // The discriminator is the leading tag byte — an AudioSpecificConfig's first

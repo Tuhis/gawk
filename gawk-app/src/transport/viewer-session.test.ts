@@ -135,7 +135,7 @@ describe('reconnectDelayMs', () => {
     ]);
   });
 
-  // R17 W1 (docs/22 Decision 4): the close-code-aware first-retry table.
+  // The close-code-aware first-retry table.
   it('applies the fast first-retry policy per close code', () => {
     // 4002 planned drain ⇒ reconnect now.
     expect(reconnectDelayMs(1, CLOSE_CODE_SERVER_DRAINING)).toBe(0);
@@ -300,9 +300,9 @@ describe('ViewerSession', () => {
     expect(pipelines).toHaveLength(1);
   });
 
-  // R39 (docs/42 §4.4): 4006 joins 4000 in the terminal set, and carries the
-  // distinct reason the end card renders. Without both halves a kill turns
-  // into a reconnect loop against the relay's ban gate.
+  // 4006 joins 4000 in the terminal set, and carries the distinct reason the
+  // end card renders. Without both halves a kill turns into a reconnect loop
+  // against the relay's ban gate.
   it('stops reconnecting and reports "moderated" when closed with code 4006', async () => {
     const { session, pipelines, events, endReasons } = makeHarness();
     await session.start();
@@ -360,8 +360,8 @@ describe('ViewerSession', () => {
   });
 });
 
-// R39 (docs/42 §4.4). One named set per role, so the two viewer call sites and
-// the browser broadcaster cannot drift apart.
+// One named set per role, so the two viewer call sites and the browser
+// broadcaster cannot drift apart.
 describe('terminal close-code sets', () => {
   it('holds exactly 4000 and 4006 for viewers', () => {
     expect(isTerminalViewerClose(CLOSE_CODE_BROADCAST_ENDED)).toBe(true);

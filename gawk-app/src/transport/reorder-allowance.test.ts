@@ -1,4 +1,4 @@
-// R29 FP6: the per-GOP frame-loss allowance (docs/34 §6).
+// The per-GOP frame-loss allowance.
 //
 // Parity reduces how OFTEN a frame is unrecoverable; the allowance bounds what
 // one unrecoverable frame COSTS. Without it a single hole still forfeits the
@@ -100,9 +100,9 @@ describe('per-GOP loss allowance', () => {
   });
 
   it('a skipped frame is NOT counted as a gap resync', () => {
-    // gapResyncs is what docs/13's playbook reads as "delta loss is eating
-    // GOPs". A skip is the opposite outcome — the GOP survived — so counting
-    // it there would make the existing signal mean two things.
+    // gapResyncs reads as "delta loss is eating GOPs". A skip is the opposite
+    // outcome — the GOP survived — so counting it there would make one signal
+    // mean two things.
     const h = harness();
     h.push(1, true);
     h.push(3, false);

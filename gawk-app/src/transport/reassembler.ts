@@ -13,10 +13,10 @@
 //   (wire.frameIdAhead), never `<=`.
 // - Keyframes reset the ordering watermark — a keyframe doesn't reference
 //   other frames, and the reset is what makes a broadcaster restart
-//   (frameIds reset to 0) recover. Since R8 real keyframes arrive over
-//   reliable streams and never pass through here, so the pipeline reports
-//   them via noteStreamKeyframe(); the datagram-keyframe path below is kept
-//   for robustness but no broadcaster sends it (R10 field finding, docs/14).
+//   (frameIds reset to 0) recover. Real keyframes arrive over reliable
+//   streams and never pass through here, so the pipeline reports them via
+//   noteStreamKeyframe(); the datagram-keyframe path below is kept for
+//   robustness but no broadcaster sends it.
 // - Duplicate DecoderConfig datagrams are deduplicated by byte equality;
 //   the relay re-emits the config before every keyframe by design.
 
@@ -34,9 +34,8 @@ export interface AssembledFrame {
   data: Uint8Array; // contiguous copy, safe to retain
 }
 
-// R15 (docs/20 Decision 7): one demuxed audio packet — exactly one Opus
-// packet. The payload aliases the input datagram (same non-reuse contract as
-// push()).
+// One demuxed audio packet — exactly one Opus packet. The payload aliases the
+// input datagram (same non-reuse contract as push()).
 export interface AudioPacket {
   seq: number;
   timestampUs: bigint;
@@ -47,25 +46,24 @@ export interface ReassemblerCallbacks {
   // Called only when the config bytes differ from the previous one.
   onConfig: (config: DecoderConfigMessage) => void;
   onFrame: (frame: AssembledFrame) => void;
-  // R5 Q2: the broadcaster's clock mapping (relayClockUs = timestampUs +
-  // offsetUs), relayed + cached by the relay. Last one wins.
+  // The broadcaster's clock mapping (relayClockUs = timestampUs + offsetUs),
+  // relayed + cached by the relay. Last one wins.
   onClockMapping?: (offsetUs: bigint) => void;
-  // R18 (docs/23 Decision 8): the relay's live "N watching" push (global
-  // across the fleet in cluster mode). Last one wins, like the mapping.
+  // The relay's live "N watching" push (global across the fleet in cluster
+  // mode). Last one wins, like the mapping.
   onSubscriberCount?: (count: number) => void;
-  // R15 (docs/20 Decision 7): the audio lane's demux points. Audio has no
-  // chunking/reassembly — a packet datagram IS the packet; the config is
-  // deduplicated by byte equality like the video config (the broadcaster
-  // re-sends it at 1 Hz by design).
+  // The audio lane's demux points. Audio has no chunking/reassembly — a packet
+  // datagram IS the packet; the config is deduplicated by byte equality like
+  // the video config (the broadcaster re-sends it at 1 Hz by design).
   onAudioFrame?: (packet: AudioPacket) => void;
   onAudioConfig?: (config: AudioConfigMessage) => void;
-  // R30 (docs/35 §5.5): one finalized frame's arrival accounting — how many
-  // chunks the frame-global header promised and how many ACTUALLY arrived
+  // One finalized frame's arrival accounting — how many chunks the
+  // frame-global header promised and how many ACTUALLY arrived
   // (parity-recovered chunks are repairs, not deliveries). Fired at every
   // finalization: completion (including late-dropped ones — the network
-  // delivered them) and eviction. This is the in-client port of the
-  // datagram-loss-profile instrument's per-frame arithmetic, and the stripe
-  // detector's only input.
+  // delivered them) and eviction; a parity-recovered frame reports later,
+  // once its raced stragglers can be credited. The stripe detector's only
+  // input.
   onFrameAccounting?: (expectedChunks: number, arrivedChunks: number) => void;
 }
 
@@ -77,31 +75,29 @@ export interface ReassemblerStats {
   framesCompleted: number;
   framesDroppedIncomplete: number;
   framesDroppedLate: number;
-  // R15 (docs/20): audio packets demuxed here. Loss/gaps are the sink's
-  // story (it conceals them) — this is purely "what arrived".
+  // Audio packets demuxed here. Loss/gaps are the sink's story (it conceals
+  // them) — this is purely "what arrived".
   audioPacketsReceived: number;
   audioBytesReceived: number;
-  // R29 forward parity (docs/34 §7.1). parityChunksReceived is arrival;
-  // framesRecoveredByParity is the headline "is it working" signal — a frame
-  // that would have been dropped incomplete and instead decoded.
-  // parityRecoveryFailures counts frames where parity was present but there
-  // were more erasures than symbols: routine on a bad link, not a fault.
+  // Forward parity. parityChunksReceived is arrival; framesRecoveredByParity is
+  // the headline "is it working" signal — a frame that would have been dropped
+  // incomplete and instead decoded. parityRecoveryFailures counts frames where
+  // parity was present but there were more erasures than symbols: routine on a
+  // bad link, not a fault.
   parityChunksReceived: number;
   framesRecoveredByParity: number;
   parityRecoveryFailures: number;
-  // R30 (docs/35 §12 finding 2): data chunks arriving for a frame at or
-  // behind the emit watermark, dropped WITHOUT creating an assembly. Rare
-  // pre-R30 (one connection delivers a frame nearly atomically); routine
-  // under striping, where eager parity recovery races the slowest leg and
-  // the raced share then arrives behind the watermark. Before this guard,
-  // each such share built a phantom assembly that died as
-  // framesDroppedIncomplete — ~130/window on a clean loopback.
+  // Data chunks arriving for a frame at or behind the emit watermark, dropped
+  // WITHOUT creating an assembly. Rare on one connection (it delivers a frame
+  // nearly atomically); routine under striping, where eager parity recovery
+  // races the slowest leg and the raced share then arrives behind the
+  // watermark. An assembly built for such a share would be a phantom that
+  // dies as framesDroppedIncomplete.
   staleChunks: number;
-  // R29 finding 3 (docs/34): frames given up on that HELD parity which could
-  // not cover their erasures. parityRecoveryFailures cannot see these — the
-  // solve is never attempted — so it read 0 across a live session that
-  // repaired nothing, making "parity worked" and "parity was never tried"
-  // the same number. Counted at eviction, once per frame actually lost.
+  // Frames given up on that HELD parity which could not cover their
+  // erasures. parityRecoveryFailures cannot see these — the solve is never
+  // attempted — so without this counter "parity worked" and "parity was
+  // never tried" read the same. Counted at eviction, once per frame lost.
   parityInsufficient: number;
 }
 
@@ -113,10 +109,10 @@ interface Assembly {
   received: number;
   // Real chunk arrivals only. `received` doubles as the completeness cursor
   // and is bumped to chunkCount by a parity recovery; this one never is —
-  // the stripe detector needs delivery truth, not repair truth (R30).
+  // the stripe detector needs delivery truth, not repair truth.
   arrived: number;
   bytes: number;
-  // R29: parity symbols held for this frame, indexed by parityIndex, and the
+  // Parity symbols held for this frame, indexed by parityIndex, and the
   // total frame length their headers carry (the only thing that says how long
   // the short final chunk is). Both stay null/0 until a parity chunk arrives,
   // so a frame on a fleet with parity off allocates nothing extra.
@@ -137,12 +133,10 @@ export class Reassembler {
   private lastConfigBytes: Uint8Array | null = null;
   private lastAudioConfigBytes: Uint8Array | null = null;
   private lastEmittedFrameId: number | null = null;
-  // R30 (docs/35 §12 finding 2): accounting for parity-RECOVERED frames,
-  // held open so stragglers the recovery raced can be credited as the
-  // deliveries they are. Reporting arrived < expected at recovery time
-  // called a raced stripe leg a lossy link — which is exactly the false
-  // signal the burst-threshold-loss rule would then fire on. Keyed by
-  // frameId; rolled by watermark distance at each emit.
+  // Accounting for parity-RECOVERED frames, held open so stragglers the
+  // recovery raced can be credited as the deliveries they are. Reporting
+  // arrived < expected at recovery time would call a raced stripe leg a lossy
+  // link. Keyed by frameId; rolled by watermark distance at each emit.
   private recoveredLedger = new Map<number, { expected: number; arrived: number }>();
   // Recent frameIds with at least one delta datagram (insertion ordered).
   private deltaEvidence = new Set<number>();
@@ -188,12 +182,11 @@ export class Reassembler {
     }
   }
 
-  // Keyframes travel on reliable streams since R8 and never pass through the
-  // datagram reassembler — so the pipeline reports them here to sync the
-  // late-delta watermark. Without this, a broadcaster restart (frameIds reset
-  // to 0) leaves the watermark at the old session's high frameId and every
-  // new-session delta is dropped as "late" — keyframe-only 2 fps playback
-  // (R10 field finding, docs/14).
+  // Keyframes travel on reliable streams and never pass through the datagram
+  // reassembler — so the pipeline reports them here to sync the late-delta
+  // watermark. Without this, a broadcaster restart (frameIds reset to 0)
+  // leaves the watermark at the old session's high frameId and every
+  // new-session delta is dropped as "late" — keyframe-only playback.
   noteStreamKeyframe(frameId: number): void {
     // Unconditional: a backwards jump here is exactly the restart signal the
     // watermark must follow. Mid-session it's a no-op (keyframe ids track the
@@ -266,8 +259,8 @@ export class Reassembler {
       this.stats.badDatagrams++;
       return;
     }
-    // The broadcaster re-sends this at 1 Hz (docs/20 Decision 5) — dedup by
-    // byte equality so the sink reconfigures only on a real change.
+    // The broadcaster re-sends this at 1 Hz — dedup by byte equality so the
+    // sink reconfigures only on a real change.
     if (this.lastAudioConfigBytes !== null && bytesEqual(this.lastAudioConfigBytes, dgram)) {
       this.stats.duplicateConfigs++;
       return;
@@ -326,11 +319,10 @@ export class Reassembler {
 
     let assembly = this.assemblies.get(header.frameId);
     if (!assembly) {
-      // R30 (docs/35 §12 finding 2): a chunk for an already-emitted frame
-      // must not build a phantom assembly — the delta-chunk mirror of the
-      // guard pushParity has had since R29. Keyframes bypass (a datagram
-      // keyframe resets the watermark by design); frames with a LIVE
-      // assembly behind the watermark still fill and late-drop as before.
+      // A chunk for an already-emitted frame must not build a phantom
+      // assembly — the delta-chunk mirror of pushParity's guard. Keyframes
+      // bypass (a datagram keyframe resets the watermark by design); frames
+      // with a LIVE assembly behind the watermark still fill and late-drop.
       if (
         !header.keyframe &&
         this.lastEmittedFrameId !== null &&
@@ -385,7 +377,7 @@ export class Reassembler {
     this.tryRecover(header.frameId, assembly);
   }
 
-  // R29 (docs/34): a parity symbol for some frame. Held against the assembly
+  // A parity symbol for some frame. Held against the assembly
   // until either the frame completes on its own (parity discarded) or enough
   // chunks are in to solve for the missing ones.
   //
@@ -408,10 +400,9 @@ export class Reassembler {
     // that is the normal case — the producer sends parity after the data
     // chunks, so every frame completes before its symbols land. Creating an
     // assembly here would leave one that can never complete, which later
-    // evicts as framesDroppedIncomplete: phantom drops on a lossless link,
-    // inflating the counter R29's whole diagnosis rests on.
+    // evicts as framesDroppedIncomplete: phantom drops on a lossless link.
     //
-    // Serial comparison (wrap-aware), the same rule pushDelta uses. Keyed on
+    // Serial comparison (wrap-aware), the same rule pushChunk uses. Keyed on
     // the emitted watermark rather than on "have I seen this frame", because
     // parity legitimately outruns its own data chunks under reorder.
     if (
@@ -427,7 +418,7 @@ export class Reassembler {
         // Parity is delta-only by construction (keyframes ride reliable
         // streams), so a parity-created assembly is never a keyframe. The
         // timestamp is filled in by the first real chunk — a parity header
-        // deliberately does not carry one (docs/34 §4.2).
+        // does not carry one.
         keyframe: false,
         timestampUs: 0n,
         chunkCount: header.chunkCount,
@@ -493,9 +484,9 @@ export class Reassembler {
 
   private completeFrame(frameId: number, assembly: Assembly, recovered: boolean): void {
     if (recovered) {
-      // Deferred (docs/35 §12 finding 2): the chunks this recovery raced may
-      // still be in flight on a slower stripe leg; report only once the
-      // watermark has moved far enough that a straggler is genuine loss.
+      // Deferred: the chunks this recovery raced may still be in flight on a
+      // slower stripe leg; report only once the watermark has moved far enough
+      // that a straggler is genuine loss.
       this.recoveredLedger.set(frameId, {
         expected: assembly.chunkCount,
         arrived: assembly.arrived,
@@ -559,12 +550,12 @@ export class Reassembler {
     if (this.assemblies.size < MAX_ASSEMBLIES) return;
     const oldest = this.assemblies.keys().next();
     if (!oldest.done) {
-      // R29 finding 3: eviction is where a frame is actually given up on, so
-      // it is the only place the parity shortfall can be attributed to one
-      // frame exactly once. Two shapes count, because both mean "parity was
-      // present and could not save it": more erasures than symbols held, and
-      // the n<=k case where every data chunk died so there is no timestamp to
-      // decode the reconstruction with (docs/34 §4.2).
+      // Eviction is where a frame is actually given up on, so it is the only
+      // place the parity shortfall can be attributed to one frame exactly
+      // once. Two shapes count, because both mean "parity was present and
+      // could not save it": more erasures than symbols held, and the n<=k case
+      // where every data chunk died so there is no timestamp to decode the
+      // reconstruction with.
       const assembly = this.assemblies.get(oldest.value);
       if (assembly && assembly.parityHeld > 0) {
         const missing = assembly.chunkCount - assembly.received;
