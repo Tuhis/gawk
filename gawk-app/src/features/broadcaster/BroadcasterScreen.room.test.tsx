@@ -226,7 +226,10 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(screen.getByText('LIVE')).toBeTruthy();
     expect(room.stopped).toBe(true);
     expect(created).toHaveLength(1);
-  });
+    // The file's first test pays its warm-up (the whole broadcaster page and
+    // room view rendered cold): 3.8 s of the default 5 s on main's CI
+    // coverage run (36054770006), and over it on a busier runner (PR #375).
+  }, 15_000);
 
   // A broadcast that dies under the room (an operator kill, a newer session
   // taking the code over, the resume budget spent) used to leave the room
