@@ -1200,6 +1200,36 @@ describe('ViewerPipeline', () => {
   });
 });
 
+describe('ViewerPipeline closed during connect', () => {
+  it('arms no timers when the session ended before connect() returned', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    try {
+      const fakeTransport: ViewerTransport = {
+        kind: 'in-process',
+        connect: async (cb) => {
+          cb.onClosed({ closeCode: CLOSE_CODE_BROADCAST_ENDED, reason: '' });
+        },
+        sampleConnectionStats: () => null,
+        sampleTimeSync: () => null,
+        close: () => {},
+      };
+      const rec = makeCallbacks();
+      let statsAfterEnd = 0;
+      rec.cbs.onStats = () => {
+        if (rec.events.includes('ended')) statsAfterEnd++;
+      };
+      const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, rec.cbs, null, () => fakeTransport);
+      await pipeline.start();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(rec.events).toContain('ended');
+      expect(statsAfterEnd).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 // An AVCC length prefix for a 256–511-byte NAL is 00 00 01 xx, which looks
 // like an Annex-B start code; the config, not the frame, decides the format.
 describe('ViewerPipeline H.264 format', () => {
@@ -1409,6 +1439,14 @@ describe('ViewerPipeline audio stats survive lane death', () => {
     expect(latest!.audioCodec).toBe('opus');
     expect(latest!.audioSampleRate).toBe(48000);
     expect(latest!.audioChannels).toBe(2);
+
+    // Packets keep arriving; they must not rebuild a lane that can never be
+    // configured again (the config is deduplicated) and reads as "active".
+    send(encodeAudioFrame({ seq: 3, timestampUs: 60_000n }, new Uint8Array([1, 2, 3])));
+    await flush();
+    (pipeline as unknown as { publishStats(): void }).publishStats();
+    expect(latest!.audioState).toBe('error');
+    expect(latest!.audioPacketsDecoded).toBe(3);
     await pipeline.stop();
   });
 });

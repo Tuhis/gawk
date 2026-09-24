@@ -775,10 +775,15 @@ export class ViewerPipeline {
       this.reassembler = null;
       this.reorder = null;
       this.transport = null;
+      this.audioLane?.stop();
+      this.audioLane = null;
       transport.close();
       if (decoder) void decoder.close();
       throw e;
     }
+    // The session can end inside connect() (accepted, then closed); stop()
+    // has already run and nothing would clear timers armed now.
+    if (this.stopping) return;
 
     this.lastStatsAt = performance.now();
     // Bare setInterval (not window.*) so the pipeline runs unchanged inside a
@@ -792,7 +797,9 @@ export class ViewerPipeline {
   // scope lacks AudioDecoder — both annotate and keep video untouched.
   private ensureAudioLane(): AudioDecodeLane | null {
     if (this.audioLane) return this.audioLane;
-    if (this.stopping || !this.cb.onAudioChunk) return null;
+    // A failed lane stays failed: a rebuilt one would never be configured
+    // (the unchanged AudioConfig is deduplicated) yet would read as active.
+    if (this.stopping || !this.cb.onAudioChunk || this.audioState === 'error') return null;
     if (!audioDecodeSupported()) {
       this.audioState = 'unsupported';
       return null;
