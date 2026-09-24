@@ -228,6 +228,32 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(created).toHaveLength(1);
   });
 
+  // A broadcast that dies under the room (an operator kill, a newer session
+  // taking the code over, the resume budget spent) used to leave the room
+  // view up — LIVE in the topbar, the own tile "away" — with the error card
+  // hidden behind it. The broadcaster page's room only exists for a live
+  // broadcast, so the failure takes the page out of the room and says what
+  // happened; and it says the broadcast STOPPED, not that it "couldn't start".
+  it('a broadcast that fails while in a room leaves the room and says it stopped', async () => {
+    await goLive();
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create a new room' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(mintedState()));
+    expect(screen.getByTestId('room-tile')).toBeTruthy();
+
+    act(() => {
+      created[0].callbacks.onError(new Error('This broadcast was terminated by the server operator.'));
+      created[0].callbacks.onEnded();
+    });
+    await waitFor(() => expect(screen.queryByTestId('room-tile')).toBeNull());
+    expect(room.stopped).toBe(true);
+    expect(screen.getByRole('heading', { name: 'Your broadcast stopped' })).toBeTruthy();
+    expect(screen.getByText('This broadcast was terminated by the server operator.')).toBeTruthy();
+    expect(screen.queryByText('Couldn’t start')).toBeNull();
+  });
+
   it('one field takes a bare code; there is no attach-secret field (the room view asks for it)', async () => {
     await goLive();
     fireEvent.click(screen.getByRole('button', { name: 'Room' }));

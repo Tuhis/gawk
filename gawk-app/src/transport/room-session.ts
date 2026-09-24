@@ -7,8 +7,11 @@
 //
 // Reconnect policy (docs/44 §4.5, reconnect.ts): 4007 RoomEnded is the ONLY
 // terminal code — the room is gone, the participant's media sessions have
-// their own lifecycle. A 4002 drain reconnects immediately, an abrupt drop
-// (home-pod death, proxy upstream loss) follows the shared ladder, and every
+// their own lifecycle — and a session that ends after a RoomEnding event is
+// terminal whatever its code (Chrome never receives the 4007 itself; see
+// settle() and docs/58). A 4002 drain reconnects
+// immediately, an abrupt drop (home-pod death, proxy upstream loss) follows
+// the shared ladder, and every
 // reconnect re-sends the hello with the remembered nickname and re-attaches
 // whatever this session attached, because a reconnected broadcaster must
 // re-attach before it can detach again (the RM2 contract).
@@ -443,6 +446,19 @@ export class RoomSession {
 
     if (isTerminalRoomClose(code)) {
       log.info(`room ended by relay (code ${CLOSE_CODE_ROOM_ENDED}).`);
+      this.stopped = true;
+      this.cb.onEnded(this.endingReason);
+      return;
+    }
+    // A RoomEnding already said the room is over, so whatever ended the
+    // session after it is that ending — even with no code. Chrome never
+    // receives the 4007: the relay's close packet puts STOP_SENDING on the
+    // CONNECT stream ahead of the close capsule, and Chrome fails the
+    // session on it ("Connection lost."; docs/58). RoomEnding is the room's
+    // in-band close notice. Reconnecting into the gone room only spun the
+    // "Reconnecting…" pill until the budget ran out.
+    if (this.endingReason !== null) {
+      log.info(`room ended by relay (RoomEnding, then the session closed with code ${code ?? 'none'}).`);
       this.stopped = true;
       this.cb.onEnded(this.endingReason);
       return;

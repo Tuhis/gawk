@@ -524,6 +524,98 @@ describe('RoomView with an own broadcast (RM5)', () => {
     expect(room.sent).toContainEqual({ kind: 'detach', broadcastId: 'AAAAAA' });
     expect(onDetach).toHaveBeenCalled();
   });
+
+  // A broadcaster in a room, joined to someone else's (or its own) room.
+  function renderOwn(onLeave: () => void) {
+    localStorage.setItem('gawk:nickname', 'tuhis');
+    const preview = { getTracks: () => [] } as unknown as MediaStream;
+    render(
+      <RoomView
+        target={{ kind: 'join', code: 'AB2CD3' }}
+        own={{
+          broadcastId: 'AAAAAA',
+          resumeTokenHex: 'b'.repeat(32),
+          label: 'alpha',
+          attachEpoch: 0,
+          preview,
+          controls: null,
+          onDetach: () => {},
+        }}
+        onLeave={onLeave}
+      />,
+    );
+  }
+
+  it('ending the room yourself goes straight back to the broadcast — no card to dismiss', async () => {
+    const onLeave = vi.fn();
+    renderOwn(onLeave);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(state({ flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR | ROOM_STATE_FLAG_ATTACH_OK })));
+    fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End room…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End room' }));
+    expect(onLeave).not.toHaveBeenCalled();
+    act(() => room.cbs.onEvent({ seq: 4, kind: ROOM_EVENT_ROOM_ENDING, reason: ROOM_END_REASON_CREATOR }));
+    act(() => room.cbs.onEnded(ROOM_END_REASON_CREATOR));
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  it('a room someone else ended says so, says the stream is still live, and returns on acknowledge', async () => {
+    const onLeave = vi.fn();
+    renderOwn(onLeave);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(state()));
+    act(() => room.cbs.onEvent({ seq: 4, kind: ROOM_EVENT_ROOM_ENDING, reason: ROOM_END_REASON_CREATOR }));
+    act(() => room.cbs.onEnded(ROOM_END_REASON_CREATOR));
+    expect(screen.getByText('Room ended')).toBeTruthy();
+    expect(screen.getByText(/ended by its creator/)).toBeTruthy();
+    expect(screen.getByText(/Your stream is still live/)).toBeTruthy();
+    expect(onLeave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to my stream' }));
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  it('the creator removing YOUR stream is a card, not a toast, and acknowledging it leaves the room', async () => {
+    const onLeave = vi.fn();
+    renderOwn(onLeave);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(state()));
+    act(() =>
+      room.cbs.onEvent({
+        seq: 4,
+        kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+        attachment: { broadcastId: 'AAAAAA' },
+        reason: ROOM_DETACH_REASON_CREATOR,
+      }),
+    );
+    expect(screen.getByText('Your stream was removed from the room')).toBeTruthy();
+    expect(screen.getByText(/Your stream is still live/)).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(onLeave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to my stream' }));
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  it('someone else’s stream being removed is still just a toast', async () => {
+    const onLeave = vi.fn();
+    renderOwn(onLeave);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(state()));
+    act(() =>
+      room.cbs.onEvent({
+        seq: 4,
+        kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+        attachment: { broadcastId: 'BBBBBB' },
+        reason: ROOM_DETACH_REASON_CREATOR,
+      }),
+    );
+    expect(screen.getByRole('status').textContent).toContain('bravo’s stream was removed by the room’s creator');
+    expect(screen.queryByText('Your stream was removed from the room')).toBeNull();
+  });
 });
 
 describe('a gated static room that refused the attach grant (D8)', () => {

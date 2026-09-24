@@ -418,6 +418,27 @@ describe('RoomSession endings', () => {
     s.stop();
   });
 
+  // What Chrome actually delivers (measured 2026-09-24 in a net-log,
+  // docs/58): the relay's close packet carries STOP_SENDING on the CONNECT stream AHEAD of the 4007
+  // capsule (quic-go packs control frames before stream data), and Chrome
+  // fails the session on it — wt.closed rejects "Connection lost." with no
+  // code. The RoomEnding that preceded it is the relay's word that
+  // the room is over; reconnecting into a gone room only looped the
+  // "Reconnecting…" pill until the budget ran out.
+  it('a RoomEnding followed by a session loss WITHOUT a close code is still the end', async () => {
+    const { s, cb } = await connected();
+    fakes[0].push(encodeRoomEvent({ seq: 11, kind: ROOM_EVENT_ROOM_ENDING, reason: ROOM_END_REASON_CREATOR }));
+    await flush();
+    fakes[0].crash();
+    await flush();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(cb.onEnded).toHaveBeenCalledWith(ROOM_END_REASON_CREATOR);
+    expect(cb.onReconnecting).not.toHaveBeenCalled();
+    expect(cb.onError).not.toHaveBeenCalled();
+    expect(fakes).toHaveLength(1);
+    s.stop();
+  });
+
   it('4002 reconnects immediately, re-sending the hello with the remembered nickname and the attach', async () => {
     const { s, cb } = await connected();
     s.setNickname('renamed');
