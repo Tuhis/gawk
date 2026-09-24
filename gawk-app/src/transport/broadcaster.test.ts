@@ -196,6 +196,61 @@ describe('BroadcastPipeline stop() racing the first dial', () => {
     expect(fake.close).toHaveBeenCalled();
     expect(startCapture).not.toHaveBeenCalled();
   });
+
+  it('resolves quietly when the dial fails after stop()', async () => {
+    let rejectDial!: (e: unknown) => void;
+    connectWebTransport.mockReturnValue(new Promise((_, r) => (rejectDial = r)));
+    const cbs = makeCallbacks();
+    const pipeline = makePipeline(cbs, 'K7XQ2M');
+
+    const started = pipeline.start();
+    await pipeline.stop();
+    rejectDial(new Error('Opening handshake failed.'));
+    await expect(started).resolves.toBeUndefined();
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a capture that arrives after stop() while the picker was open', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+      connectWebTransport.mockResolvedValue(fake.wt);
+      const source = {
+        capturePath: 'mstp' as const,
+        stream: {} as MediaStream,
+        nativeFps: 60,
+        onEnded: vi.fn(),
+        startFrames: vi.fn(() => Promise.resolve()),
+        stop: vi.fn(),
+      };
+      let grant!: (s: typeof source) => void;
+      const cbs = makeCallbacks();
+      const pipeline = new BroadcastPipeline(
+        { ...DEFAULT_CAPTURE_CONFIG },
+        'https://relay.test:4433',
+        {},
+        cbs,
+        undefined,
+        undefined,
+        () => new Promise((r) => (grant = r)),
+      );
+
+      const started = pipeline.start();
+      await vi.waitFor(() => expect(grant).toBeDefined());
+      await pipeline.stop();
+      grant(source);
+      await expect(started).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(source.stop).toHaveBeenCalled();
+      expect(source.startFrames).not.toHaveBeenCalled();
+      expect(cbs.onSourceStream).not.toHaveBeenCalled();
+      expect(cbs.onStats).not.toHaveBeenCalled();
+      expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('BroadcastPipeline URLs', () => {

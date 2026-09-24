@@ -510,6 +510,9 @@ export class BroadcastPipeline {
     try {
       await this.connectTransport();
     } catch (e) {
+      // After stop(), a failed dial is not a start failure: the screen would
+      // fall back from reclaim to minting a broadcast nobody owns.
+      if (this.stopping) return;
       throw new BroadcastStartError('connect', e);
     }
     if (this.stopping) {
@@ -901,6 +904,12 @@ export class BroadcastPipeline {
 
   private async startMedia(): Promise<void> {
     const media = await this.mediaSource(this.config);
+    // stop() (or the session dying) while the picker was open already tore
+    // down; nothing would ever stop a capture started now.
+    if (this.stopping) {
+      media.stop();
+      return;
+    }
     this.media = media;
     log.info('Capture path:', media.capturePath);
     this.cb.onCapturePathChosen(media.capturePath);
