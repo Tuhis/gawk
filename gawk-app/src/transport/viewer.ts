@@ -991,17 +991,12 @@ export class ViewerPipeline {
       const config = this.pendingConfig;
       this.pendingConfig = null;
 
-      // Annex-B H.264 stream starts with a start code prefix: 0x00000001 (4 bytes) or 0x000001 (3 bytes).
-      const isAnnexB =
-        data.length >= 3 &&
-        data[0] === 0x00 &&
-        data[1] === 0x00 &&
-        (data[2] === 0x01 || (data.length >= 4 && data[2] === 0x00 && data[3] === 0x01));
+      // The config decides the H.264 format, never the frame: an AVCC length
+      // prefix for a 256–511-byte NAL reads 00 00 01 xx, exactly like an
+      // Annex-B start code. An avcC record starts with version 0x01; Annex-B
+      // publishers send empty (or start-code) extradata.
       const isAvcc =
-        !isAnnexB &&
-        config.codec.startsWith('avc1') &&
-        config.extradata.length > 0 &&
-        config.extradata[0] === 0x01;
+        config.codec.startsWith('avc1') && config.extradata.length > 0 && config.extradata[0] === 0x01;
 
       let codec = config.codec;
       let extradata = config.extradata;
@@ -1037,7 +1032,7 @@ export class ViewerPipeline {
       log.info(
         'Applying decoder config:',
         codec,
-        `(${extradata.length}B extradata, detected format: ${isAnnexB ? 'Annex-B' : 'AVCC'}${
+        `(${extradata.length}B extradata, format: ${isAvcc ? 'AVCC' : 'Annex-B/other'}${
           this.preferSoftware ? ', SW fallback' : ''
         })`,
       );

@@ -892,9 +892,11 @@ Add to it when a new gotcha lands in `docs/`.
   ([docs/19](19-linux-native-broadcaster.md))
 - **`gawk-broadcast` is the *only* Annex-B publisher — and the only thing
   exercising the viewer's Annex-B branch.** It emits raw Annex-B with
-  **empty DecoderConfig extradata** and builds no avcC record; the viewer's
-  `isAnnexB` start-code sniff (`viewer.ts`) routes it into the branch that
-  ignores extradata. The browser broadcaster always sends AVCC, so a
+  **empty DecoderConfig extradata** and builds no avcC record; with no avcC
+  (`0x01`-led) extradata the viewer (`viewer.ts`) configures the decoder
+  without a `description`, i.e. as Annex-B. The format comes from the config,
+  never from sniffing the frame (see the AVCC-prefix gotcha). The browser
+  broadcaster always sends AVCC, so a
   regression there breaks native broadcasts while browser ones stay green.
   ([docs/19](19-linux-native-broadcaster.md))
 - **`h264parse config-interval=-1` is load-bearing, not cosmetic.** Empty

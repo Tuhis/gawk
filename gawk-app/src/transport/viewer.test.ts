@@ -10,6 +10,7 @@ const readDatagrams = vi.fn();
 // which frames actually reached the decoder (the observable freeze-on-gap
 // behavior: gapped deltas are never handed to decode()).
 const decodeSpy = vi.fn();
+const configureSpy = vi.fn();
 
 const readServerStreams = vi.fn();
 
@@ -31,7 +32,7 @@ const decoderCbs: { value: { onDecoded: (d: unknown) => void } | null } = { valu
 vi.mock('../media/decoder', () => ({
   Decoder: class {
     queueSize = 0;
-    configure = vi.fn();
+    configure = (...args: unknown[]) => configureSpy(...args);
     decode = (...args: unknown[]) => decodeSpy(...args);
     close = vi.fn(() => Promise.resolve());
     constructor(cbs: { onDecoded: (d: unknown) => void }) {
@@ -109,6 +110,7 @@ beforeEach(() => {
   // datagrams); the loop just stays open for the life of the session.
   readServerStreams.mockReturnValue(new Promise(() => {}));
   decodeSpy.mockReset();
+  configureSpy.mockReset();
 });
 
 // Single-chunk datagrams (chunkCount 1 => the reassembler emits on arrival).
@@ -1195,6 +1197,37 @@ describe('ViewerPipeline', () => {
     await vi.waitFor(() => expect(events).toContain('ended'), { timeout: 2000 });
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.every((e) => e.closeCode === undefined)).toBe(true);
+  });
+});
+
+// An AVCC length prefix for a 256–511-byte NAL is 00 00 01 xx, which looks
+// like an Annex-B start code; the config, not the frame, decides the format.
+describe('ViewerPipeline H.264 format', () => {
+  it('keeps the avcC description when a keyframe starts with a start-code-like prefix', async () => {
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    let deliver: ((d: Uint8Array) => void) | null = null;
+    readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
+      deliver = onDatagram;
+      return new Promise(() => {});
+    });
+    const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, makeCallbacks().cbs);
+    await pipeline.start();
+    const avcC = new Uint8Array([
+      0x01, 0x42, 0xe0, 0x2a, 0xff, 0xe1, 0x00, 0x04, 0x67, 0x42, 0xe0, 0x2a, 0x01, 0x00, 0x02, 0x68, 0xce,
+    ]);
+    const nal = new Uint8Array(300).fill(0x65);
+    const frame = new Uint8Array(304);
+    new DataView(frame.buffer).setUint32(0, nal.length);
+    frame.set(nal, 4);
+    const push = deliver as unknown as (d: Uint8Array) => void;
+    push(encodeDecoderConfig({ codec: 'avc1.42E02A', extradata: avcC }));
+    push(encodeVideoChunk({ keyframe: true, frameId: 1, chunkIndex: 0, chunkCount: 1, timestampUs: 1000n }, frame));
+    await flush();
+    await pipeline.stop();
+
+    expect(configureSpy).toHaveBeenCalledTimes(1);
+    const config = configureSpy.mock.calls[0][0] as VideoDecoderConfig;
+    expect(config.description).toBeDefined();
   });
 });
 
