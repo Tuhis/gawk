@@ -8,6 +8,7 @@
 // videos, that NO /subscribe session exists at all.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 const { roomSessions, roomState, FakeRoomSession, viewerSessions, FakeViewerSession } = vi.hoisted(() => {
@@ -586,6 +587,28 @@ describe('RoomScreen relay states', () => {
     expect(window.location.hash).toBe('#/');
     cleanup();
     expect(room.stopped).toBe(true);
+  });
+});
+
+// main.tsx renders <StrictMode>, which mounts, cleans up and remounts every
+// effect in development. A mint that reached the relay twice was refused the
+// second time ("broadcast is in another room").
+describe('RoomView under StrictMode', () => {
+  it('dials the room once', async () => {
+    render(
+      <StrictMode>
+        <RoomView
+          target={{ kind: 'mint', broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), label: 'mine' }}
+          presetNickname="tuhis"
+          onLeave={() => {}}
+        />
+      </StrictMode>,
+    );
+    await waitFor(() => expect(roomSessions.filter((s) => !s.stopped)).toHaveLength(1));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(roomSessions).toHaveLength(1);
   });
 });
 

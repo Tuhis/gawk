@@ -65,44 +65,54 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
     const t = targetRef.current;
     if (t === null) return;
     store.setStatus('connecting');
-    const session = new RoomSession(
-      {
-        serverUrl,
-        certHashHex,
-        target: t,
-        nickname: nicknameRef.current,
-        clientKind: clientKindRef.current,
-        grant: grantRef.current,
-      },
-      {
-        onConnected: () => {},
-        onState: (state) => useRoomStore.getState().replaceState(state),
-        onEvent: (ev) => useRoomStore.getState().applyEvent(ev),
-        onReconnecting: (info) => {
-          log.info('room reconnecting:', info.reason);
-          useRoomStore
-            .getState()
-            .setStatus(
-              'reconnecting',
-              info.closeCode === CLOSE_CODE_SERVER_DRAINING ? DRAINING_NOTE : RECONNECTING_NOTE,
-            );
+    // Dial a macrotask later: StrictMode's development mount → cleanup →
+    // mount would otherwise reach the relay twice, and a room mint that
+    // arrives twice is refused the second time.
+    let session: RoomSession | null = null;
+    const dial = setTimeout(() => {
+      const s = new RoomSession(
+        {
+          serverUrl,
+          certHashHex,
+          target: t,
+          nickname: nicknameRef.current,
+          clientKind: clientKindRef.current,
+          grant: grantRef.current,
         },
-        onEnded: (reason) => useRoomStore.getState().setEnded(reason),
-        onError: (err) => {
-          log.error(`room session failed (${err.kind}):`, err.message);
-          useRoomStore.getState().setError(err.kind, err.message);
+        {
+          onConnected: () => {},
+          onState: (state) => useRoomStore.getState().replaceState(state),
+          onEvent: (ev) => useRoomStore.getState().applyEvent(ev),
+          onReconnecting: (info) => {
+            log.info('room reconnecting:', info.reason);
+            useRoomStore
+              .getState()
+              .setStatus(
+                'reconnecting',
+                info.closeCode === CLOSE_CODE_SERVER_DRAINING ? DRAINING_NOTE : RECONNECTING_NOTE,
+              );
+          },
+          onEnded: (reason) => useRoomStore.getState().setEnded(reason),
+          onError: (err) => {
+            log.error(`room session failed (${err.kind}):`, err.message);
+            useRoomStore.getState().setError(err.kind, err.message);
+          },
         },
-      },
-    );
-    sessionRef.current = session;
-    session.start().catch((err) => {
-      if (sessionRef.current !== session) return;
-      log.error(`room session failed (${err.kind}):`, err.message);
-      useRoomStore.getState().setError(err.kind, err.message);
-    });
+      );
+      session = s;
+      sessionRef.current = s;
+      s.start().catch((err) => {
+        if (sessionRef.current !== s) return;
+        log.error(`room session failed (${err.kind}):`, err.message);
+        useRoomStore.getState().setError(err.kind, err.message);
+      });
+    }, 0);
     return () => {
-      if (sessionRef.current === session) sessionRef.current = null;
-      session.stop();
+      clearTimeout(dial);
+      if (session !== null) {
+        if (sessionRef.current === session) sessionRef.current = null;
+        session.stop();
+      }
       // The store outlives this screen; a later room view must not render
       // (and dial the tiles of) this room before its own session resets it.
       useRoomStore.getState().reset();
