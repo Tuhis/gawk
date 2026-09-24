@@ -301,6 +301,14 @@ export class RoomSession {
       }
       throw new RoomConnectError('refused', e instanceof Error ? e.message : String(e));
     }
+    if (this.stopped) {
+      try {
+        wt.close();
+      } catch {
+        // already gone
+      }
+      return;
+    }
     const attempt: Attempt = {
       wt,
       writer: stream.writable.getWriter() as WritableStreamDefaultWriter<Uint8Array>,
@@ -415,9 +423,7 @@ export class RoomSession {
       // from a fresh RoomState.
       const msg = e instanceof WireError ? e.message : String(e);
       log.warn('room control record unreadable; reconnecting:', msg);
-      this.lastReason = `malformed control record: ${msg}`;
-      this.closeAttempt();
-      this.settle(attempt, null, this.lastReason);
+      this.settle(attempt, null, `malformed control record: ${msg}`);
     }
   }
 
@@ -437,6 +443,13 @@ export class RoomSession {
       attempt.writer.releaseLock();
     } catch {
       // the stream is gone
+    }
+    // The read loop can end with the session still open (a framing error),
+    // and a reconnect must not leave it behind as a second participant.
+    try {
+      attempt.wt.close();
+    } catch {
+      // already closed
     }
     if (this.stopped) return;
     this.lastReason = reason;
