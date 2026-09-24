@@ -118,6 +118,21 @@ describe('AacTranscoder description normalization', () => {
     expect(outputs[0]).toEqual(ASC);
   });
 
+  it('reports the format of the encoder that produced each output', () => {
+    const outputs: { sampleRate: number; channels: number; description: Uint8Array | null }[] = [];
+    const { deps, emit } = depsEmitting(ASC);
+    const t = new AacTranscoder((o) => outputs.push(o), deps);
+    t.push(pcm());
+    emit();
+    t.push({ timestampUs: 20_000, sampleRate: 44_100, channels: [new Float32Array(882)], frameCount: 882 });
+    emit();
+    expect(outputs.map(({ sampleRate, channels }) => ({ sampleRate, channels }))).toEqual([
+      { sampleRate: 48_000, channels: 2 },
+      { sampleRate: 44_100, channels: 1 },
+    ]);
+    expect(outputs[1].description).not.toBeNull();
+  });
+
   it('is a no-op on the Chrome shape', () => {
     const outputs: (Uint8Array | null)[] = [];
     const { deps, emit } = depsEmitting(ASC);

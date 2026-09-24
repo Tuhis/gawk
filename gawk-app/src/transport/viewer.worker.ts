@@ -121,8 +121,8 @@ const audioPcmTap = (chunk: DecodedAudioChunk): void => {
       postSegments(
         m.setAudioConfig({
           codec: AAC_CODEC,
-          sampleRate: chunk.sampleRate,
-          channels: chunk.channels.length,
+          sampleRate: out.sampleRate,
+          channels: out.channels,
           description: out.description,
         }),
       );

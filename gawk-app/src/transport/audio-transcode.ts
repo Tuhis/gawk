@@ -32,6 +32,9 @@ export interface TranscodeInput {
 export interface TranscodedAudio {
   timestampUs: number;
   data: Uint8Array;
+  // The encoded format, which changes when the input's format does.
+  sampleRate: number;
+  channels: number;
   // Present on the first output only (and after a reconfigure): the
   // AudioSpecificConfig the muxer must put in `esds`. Taken from the encoder
   // rather than synthesized — it is the encoder that decides the profile.
@@ -254,10 +257,12 @@ export class AacTranscoder {
       this.fail('copyTo failed', e);
       return;
     }
+    const format = this.configured;
+    if (!format) return;
     const description = this.descriptionSent ? null : this.description;
     this.descriptionSent = true;
     this.stats.packetsOut++;
-    this.onOutput({ timestampUs: chunk.timestamp, data, description });
+    this.onOutput({ timestampUs: chunk.timestamp, data, description, ...format });
   }
 
   private fail(what: string, e: unknown): void {
