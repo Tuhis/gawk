@@ -25,7 +25,7 @@ import { useAutoHide } from '../../lib/useAutoHide';
 import { useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
-import { buildRoomLink } from '../../lib/shareLink';
+import { buildRoomLink, relayQuerySuffix } from '../../lib/shareLink';
 import { HOME } from '../../routing';
 import {
   ROOM_CLIENT_WEB_BROADCASTER,
@@ -912,7 +912,9 @@ export function RoomScreen({ code }: { code: string }) {
       target={target}
       grant={grant}
       onStartStreaming={() => {
-        window.location.hash = '#/broadcast';
+        // Carry a room link's relay: without it the route drops the override
+        // and the broadcast would publish to the default relay.
+        window.location.hash = `#/broadcast${relayQuerySuffix()}`;
       }}
     />
   );

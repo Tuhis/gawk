@@ -92,6 +92,7 @@ vi.mock('../../transport/viewer-session', () => ({
 
 import { RoomScreen, RoomView } from './RoomScreen';
 import { useRoomStore } from '../../state/roomStore';
+import { useTransportStore } from '../../state/transportStore';
 import {
   ROOM_CLIENT_WEB_VIEWER,
   ROOM_COMMAND_ATTACH,
@@ -384,6 +385,17 @@ describe('RoomScreen people-and-chat panel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
     expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: 'tuhis' });
     expect(window.location.hash).toBe('#/broadcast');
+  });
+
+  it('"start streaming here" keeps a room link\'s relay across the hop', async () => {
+    useTransportStore.getState().setSessionOverride('https://relay.example:4433');
+    try {
+      await joinAs('tuhis', { attachments: [] });
+      fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
+      expect(window.location.hash).toBe(`#/broadcast?relay=${encodeURIComponent('https://relay.example:4433')}`);
+    } finally {
+      useTransportStore.getState().setSessionOverride(null);
+    }
   });
 
   it('a guest’s "start streaming here" hands over a null nickname, so the broadcaster asks nothing', async () => {
