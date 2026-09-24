@@ -778,7 +778,7 @@ export class BroadcastPipeline {
     if (this.encoder) this.controller.noteReset(this.now());
     // Acceleration mode / codec pin shift what the matrix means — re-probe
     // and recompute the ceiling when it lands (bitrate never affects it).
-    if (probeAxesChanged) void this.refreshMatrix(this.matrix?.source);
+    if (probeAxesChanged) void this.refreshMatrix(this.probedSourceDims ?? this.matrix?.source);
   }
 
   private currentAutoRung(): ResolutionRung | null {

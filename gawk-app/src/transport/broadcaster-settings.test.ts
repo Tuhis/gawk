@@ -288,6 +288,36 @@ describe('mid-stream settings changes', () => {
     await p.stop();
   });
 
+  // A settings re-probe that races the first real-dimensions refine must
+  // probe at the real source, not at the pre-capture placeholder.
+  it('a settings change during the first refine keeps the real source dims', async () => {
+    let gated = false;
+    const held: (() => void)[] = [];
+    const prober = new EncoderSupportProber(
+      (config) =>
+        new Promise((resolve) => {
+          const answer = () => resolve({ supported: true, config });
+          if (gated) held.push(answer);
+          else answer();
+        }),
+    );
+    const p = await startPipeline(undefined, { prober });
+    gated = true;
+    clock.t += 33;
+    h.frameCb.value!(fakeFrame(Math.round(clock.t * 1000), 2560, 1440));
+    await flush();
+    p.setEncoderSettings({ ...DEFAULT_ENCODER_SETTINGS, hwPreference: 'software' });
+    gated = false;
+    for (let i = 0; i < 50 && held.length > 0; i++) {
+      held.splice(0).forEach((answer) => answer());
+      await flush();
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    const matrix = (p as unknown as { matrix: { source: { width: number; height: number } } }).matrix;
+    expect(matrix.source).toEqual({ width: 2560, height: 1440 });
+    await p.stop();
+  });
+
   it('setting identical settings is a no-op (no encoder churn)', async () => {
     const p = await startPipeline();
     await prime();
