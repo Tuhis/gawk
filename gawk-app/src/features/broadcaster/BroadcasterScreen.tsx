@@ -137,6 +137,11 @@ function serverHost(url: string): string {
 // when the deploy requires one (config.requirePublishSecret).
 export function BroadcasterScreen() {
   const pipelineRef = useRef<BroadcastSessionLike | null>(null);
+  // The display grant of the latest start. The screen owns it (handleStart
+  // requests it in the click), so the unmount cleanup releases it: leaving
+  // mid-connect stops a session that never consumed it and whose start()
+  // never settles, and the share indicator would otherwise stay on.
+  const grantRef = useRef<Promise<DisplayStreamGrant> | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const [status, setStatus] = useState<Status>('idle');
@@ -272,6 +277,7 @@ export function BroadcasterScreen() {
     // A cancelled picker surfaces through the session that consumes the
     // grant (phase 'capture'); this only keeps an unconsumed one quiet.
     grant.catch(() => {});
+    grantRef.current = grant;
     const { serverUrl, certHashHex, publishSecret } = useTransportStore.getState();
     setError(null);
     setStats(null);
@@ -527,6 +533,7 @@ export function BroadcasterScreen() {
   useEffect(() => {
     return () => {
       void pipelineRef.current?.stop();
+      if (grantRef.current) releaseGrant(grantRef.current);
     };
   }, []);
 

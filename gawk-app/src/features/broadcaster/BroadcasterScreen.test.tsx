@@ -614,6 +614,21 @@ describe('BroadcasterScreen screen-share prompt (user gesture)', () => {
     expect(created[1]!.grant).toBe(created[2]!.grant);
   });
 
+  // PR #373 review: leaving the page while the relay connects (Stop is
+  // disabled then, so leaving is the only way out) stops a session that never
+  // asked for the grant and whose start() never settles. The screen owns the
+  // grant, so its unmount must release it or the share indicator stays on.
+  it('stops the granted tracks when the screen unmounts mid-connect', async () => {
+    const { stream, stop } = stoppableStream();
+    stubDisplayMedia(async () => stream);
+    scripts.push(() => new Promise(() => {}));
+    const { unmount } = render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(created).toHaveLength(1));
+    unmount();
+    await waitFor(() => expect(stop).toHaveBeenCalled());
+  });
+
   it('stops the granted tracks when the start fails before a session used them', async () => {
     const { stream, stop } = stoppableStream();
     stubDisplayMedia(async () => stream);
