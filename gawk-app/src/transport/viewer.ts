@@ -487,6 +487,9 @@ export class ViewerPipeline {
   // Decoder ops chain so configure completes before any decode and decodes
   // stay in arrival order — same discipline as the loopback pipeline.
   private decoderChain: Promise<void> = Promise.resolve();
+  // Bumped when the decoder is replaced, so failures from the old one and its
+  // abandoned op chain are ignored.
+  private decoderGeneration = 0;
   // WebCodecs requires the first chunk after configure() to be a keyframe;
   // set on every (re)configure, cleared by the first keyframe. This is the
   // decoder-level guard; cross-frame ordering lives in the reorder buffer.
@@ -608,12 +611,7 @@ export class ViewerPipeline {
     // Pipeline stages exist before the transport connects: the relay primes a
     // joining viewer with the cached keyframe immediately, and that must land
     // in the reorder buffer, not race the setup.
-    this.decoder = new Decoder({
-      onDecoded: (decoded) => this.handleDecoded(decoded),
-      // A decoder error (unsupported codec, decode failure) is not recoverable
-      // by reconnecting — mark it fatal so the session surfaces it and stops.
-      onError: (e) => this.failDecode(e),
-    });
+    this.decoder = this.newDecoder();
 
     this.reorder = new ReorderBuffer(
       (frame) => this.decodeReleased(frame),
@@ -1069,10 +1067,19 @@ export class ViewerPipeline {
   }
 
   private chainDecoderOp(op: () => void | Promise<void>): void {
+    const generation = this.decoderGeneration;
     this.decoderChain = this.decoderChain.then(op);
     this.decoderChain = this.decoderChain.catch((e) => {
       // configure()/decode() rejections land here — a codec/decode failure.
-      this.failDecode(e instanceof Error ? e : new Error(String(e)));
+      this.failDecode(e instanceof Error ? e : new Error(String(e)), generation);
+    });
+  }
+
+  private newDecoder(): Decoder {
+    const generation = this.decoderGeneration;
+    return new Decoder({
+      onDecoded: (decoded) => this.handleDecoded(decoded),
+      onError: (e) => this.failDecode(e, generation),
     });
   }
 
@@ -1359,14 +1366,11 @@ export class ViewerPipeline {
     void this.stop();
   }
 
-  // A decoder/codec failure: reconnecting re-feeds the same unplayable stream
-  // and fails identically, so this is marked `fatal` — ViewerSession surfaces
-  // it to the user and stops instead of looping. Guarded so the decoder's
-  // error callback and the configure() rejection can't double-report.
-  // A decoder/codec failure: we try to fall back to software-based decoding first.
-  // If it still fails, it's marked fatal — ViewerSession surfaces it to the user.
-  private failDecode(err: Error): void {
-    if (this.stopping) return;
+  // A decoder/codec failure. The first one retries with a software decoder;
+  // a second is marked `fatal`, because reconnecting would re-feed the same
+  // unplayable stream — ViewerSession surfaces it and stops instead of looping.
+  private failDecode(err: Error, generation: number): void {
+    if (this.stopping || generation !== this.decoderGeneration) return;
 
     if (!this.preferSoftware) {
       log.warn('Decode error encountered; trying software decoder fallback:', err.message);
@@ -1379,13 +1383,8 @@ export class ViewerPipeline {
         void oldDecoder.close();
       }
 
-      // Recreate decoder
-      this.decoder = new Decoder({
-        onDecoded: (decoded) => this.handleDecoded(decoded),
-        onError: (e) => this.failDecode(e),
-      });
-
-      // Reset decoder queue/chain
+      this.decoderGeneration++;
+      this.decoder = this.newDecoder();
       this.decoderChain = Promise.resolve();
       this.waitingForKeyframe = true;
 

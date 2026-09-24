@@ -1200,6 +1200,37 @@ describe('ViewerPipeline', () => {
   });
 });
 
+describe('ViewerPipeline software decode fallback', () => {
+  it('ignores a failure from the decoder it already replaced', async () => {
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    let deliver: ((d: Uint8Array) => void) | null = null;
+    readDatagrams.mockImplementation((_wt: unknown, onDatagram: (d: Uint8Array) => void) => {
+      deliver = onDatagram;
+      return new Promise(() => {});
+    });
+    let rejectConfigure!: (e: Error) => void;
+    configureSpy.mockReturnValueOnce(new Promise((_, reject) => (rejectConfigure = reject)));
+    const rec = makeCallbacks();
+    const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, rec.cbs);
+    await pipeline.start();
+    const push = deliver as unknown as (d: Uint8Array) => void;
+    push(configDgram());
+    push(frameDgram(1, true));
+    await flush();
+
+    // The hardware decoder errors while its configure() is still pending:
+    // the pipeline swaps in a software decoder…
+    const hardware = decoderCbs.value as unknown as { onError: (e: Error) => void };
+    hardware.onError(new Error('hardware decoder failed'));
+    // …and then the abandoned configure() rejects.
+    rejectConfigure(new DOMException('closed', 'InvalidStateError') as unknown as Error);
+    await flush();
+
+    expect(rec.errors).toEqual([]);
+    await pipeline.stop();
+  });
+});
+
 describe('ViewerPipeline closed during connect', () => {
   it('arms no timers when the session ended before connect() returned', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
