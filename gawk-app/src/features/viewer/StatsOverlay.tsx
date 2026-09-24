@@ -13,15 +13,15 @@ interface Props {
   // keyframe stream messages, no transport overhead); null until two
   // samples exist.
   bitrateBps: number | null;
-  // R16 (docs/21 Decision 9): gate-controlled features by name + state. The
+  // Gate-controlled features by name + state. The
   // section renders only when the surface reports at least one gate — the
   // broadcaster overlay reports none and stays section-less.
   featureGates?: FeatureGate[];
-  // R16 U4: tee + presentation-<video> diagnostics, passed on gated (iPhone)
+  // Tee + presentation-<video> diagnostics, passed on gated (iPhone)
   // devices only — details must be visible rows there, since the Feature
   // Gates tooltips need hover and iPhones have none. Absent ⇒ no section.
   presentationSurface?: PresentationSurfaceStats;
-  // R28 (docs/33 §4.13): this session's telemetry id, or null when the fleet
+  // This session's telemetry id, or null when the fleet
   // collects nothing. The row it feeds is how a viewer on the phone tells an
   // operator which dashboard row is them.
   telemetrySessionId?: string | null;
@@ -31,21 +31,19 @@ interface Props {
 }
 
 // How much of the 24-hex sessionId the row shows. Eight characters is what the
-// telemetry dashboard's session column prints
-// (gawk-telemetry/internal/dashboard/assets/app.js: `sessionId.slice(0, 8)`),
-// so the two match by construction — and it is about as much as anyone can
-// read down a voice call, which is the whole use case. The full id rides the
+// telemetry dashboard's session column prints, so the two match — and it is
+// about as much as anyone can read down a voice call. The full id rides the
 // tooltip and Copy diagnostics, where `diagnose()` needs all 24.
 const SESSION_ID_DISPLAY_CHARS = 8;
 
-// The viewer stats overlay (docs/10 J4, extended by R9 M7) — "is it the
-// stream or my machine". Sections follow the docs/13 funnel: video (decode),
-// delivery (frames arriving/dropping), network (this leg's health).
+// The viewer stats overlay — "is it the stream or my machine". Sections
+// follow the pipeline funnel: video (decode), delivery (frames
+// arriving/dropping), network (this leg's health).
 export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentationSurface, telemetrySessionId, onClose, onCopy, copied }: Props) {
   const conn = stats?.connection ?? null;
   const surface = presentationSurface ?? null;
   const sections: StatsSection[] = [
-    // R28: the identity of everything below it — first, because the one person
+    // The identity of everything below it — first, because the one person
     // who needs it is reading it aloud to someone else and should not have to
     // scroll a phone-sized panel to find it. Rendered even with no session, so
     // "this viewer is not reporting" is an answer the overlay gives rather than
@@ -72,11 +70,10 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Decode mode', stats?.isHardwareAccelerated === true ? 'Hardware' : stats?.isHardwareAccelerated === false ? 'Software' : '—'],
         ['Renderer', stats?.renderer === 'webgl' ? 'WebGL' : stats?.renderer === '2d' ? 'Canvas 2D' : '—'],
         ['Pipeline', stats?.pipelineContext === 'worker' ? 'Worker' : stats?.pipelineContext === 'main-thread' ? 'Main thread' : '—'],
-        // R12 T2: where presentation happens — paced (adaptive mode, on rAF
-        // or the degraded timer fallback) or immediate (live-edge/fixed).
+        // Where presentation happens — paced (adaptive mode, on rAF or the
+        // degraded timer fallback) or immediate (live edge).
         ['Presentation', stats?.presentation === 'paced-raf' ? 'Paced (rAF)' : stats?.presentation === 'paced-timer' ? 'Paced (timer)' : stats?.presentation === 'immediate' ? 'Immediate' : '—'],
-        // R12 T4: the experimental interpolation state; "—" where the
-        // pipeline can't offer it.
+        // The interpolation state; "—" where the pipeline can't offer it.
         ['Interpolation', stats?.interpolation === 'on' ? 'On (blend)' : stats?.interpolation === 'off' ? 'Off' : '—'],
         ['Received fps', fmt(stats?.receivedFps ?? NaN)],
         ['Decoder fps', fmt(stats?.decoderFps ?? NaN)],
@@ -89,14 +86,14 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
     {
       title: 'Delivery',
       rows: [
-        // R18: the relay's live audience push (fleet-global; includes this
+        // The relay's live audience push (fleet-global; includes this
         // viewer). "—" until the join-prime lands.
         ['Watching', stats?.viewerCount == null ? '—' : String(stats.viewerCount)],
-        // R19 (docs/24 Decision 10): how deltas actually arrive — the
-        // truthful mode row, incl. the Decision 8 degradation state.
-        // R21: 'dvr' is the relay's own word for it (the join-time DeliveryAck)
-        // — a replayed GOP looks exactly like a live one, so nothing the viewer
-        // can observe would tell these two apart.
+        // How deltas actually arrive — the truthful mode row, including the
+        // degraded "reliable requested / datagrams served" state. 'dvr' is the
+        // relay's own word for it (the join-time DeliveryAck) — a replayed GOP
+        // looks exactly like a live one, so nothing the viewer can observe
+        // would tell these two apart.
         ['Delivery mode', stats == null ? '—' : stats.deliveryMode === 'dvr' ? `ring-backed (buffer ${fmtInt(stats.dvrBufferMs)} ms)` : stats.deliveryMode === 'reliable' ? 'reliable (resilient)' : stats.deliveryMode === 'reliable-requested' ? 'reliable requested / datagrams served' : 'datagrams (live-edge)'],
         ...(stats?.deliveryMode !== 'datagrams' && stats != null
           ? ([
@@ -107,29 +104,28 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Completed', String(stats?.framesCompleted ?? '—')],
         ['Dropped (incomplete)', String(stats?.framesDroppedIncomplete ?? '—')],
         ['Dropped (late)', String(stats?.framesDroppedLate ?? '—')],
-        // R29 (docs/34 §7.1): parity's own line. "Recovered" is the headline —
+        // Parity's own line. "Recovered" is the headline —
         // frames that would have been dropped incomplete and instead decoded.
         // Zero recovered while chunks arrive means the link is clean, which is
         // the good case; chunks at zero while the fleet is on means the
         // producer is not emitting, which is the case worth noticing.
         ['Parity chunks', String(stats?.parityChunksReceived ?? '—')],
         ['Parity recovered', String(stats?.framesRecoveredByParity ?? '—')],
-        // R29 finding 3 (docs/34): "too weak" used to read parityRecoveryFailures,
-        // which counts only GF-solve failures and is therefore ~always 0 — the
-        // row was dark through a whole session that repaired nothing. The
-        // honest number is the shortfall counted where frames are given up on.
+        // "Too weak" is not parityRecoveryFailures: that counts only GF-solve
+        // failures and is therefore ~always 0. The honest number is the
+        // shortfall counted where frames are given up on.
         ...(stats?.parityInsufficient
           ? ([['Parity too weak', String(stats.parityInsufficient)]] as StatsRow[])
           : []),
         ...(stats?.parityRecoveryFailures
           ? ([['Parity solve failed', String(stats.parityRecoveryFailures)]] as StatsRow[])
           : []),
-        // R30 (docs/35 §7): striping, on datagram delivery only. "Striping"
-        // is requested-vs-active in one line; active < needed is the caps-
+        // Striping, on datagram delivery only. "Striping" is
+        // requested-vs-active in one line; active < needed is the caps-
         // pressure / dial-failure signature, and the detector row is the
         // auto gate's own inputs — large-frame loss against small-frame
-        // cleanliness is the burst-threshold shape (docs/34 finding 4), so a
-        // non-engaging detector is arguable straight from this overlay.
+        // cleanliness is the burst-threshold shape, so a non-engaging
+        // detector is arguable straight from this overlay.
         ...(stats != null && stats.deliveryMode === 'datagrams'
           ? ([
               [
@@ -145,7 +141,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                 // Both sample sizes, not just the large one: an empty small
                 // bucket is why the detector cannot fire on a high-bitrate
                 // stream, and it is indistinguishable from a clean one without
-                // the count (finding 5). "split >N" above 8 means the fixed
+                // the count. "split >N" above 8 means the fixed
                 // line held no frames and the stream's own median was used.
                 stats.stripeLargeLossPct == null
                   ? '—'
@@ -161,7 +157,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Awaiting keyframe', String(stats?.framesDiscardedAwaitingKey ?? '—')],
         ['Keyframe streams', String(stats?.keyframeStreamsReceived ?? '—')],
         ['Gap resyncs', String(stats?.reorderGapResyncs ?? '—')],
-        // R30 finding 4: patience for a straggling delta, tracking measured
+        // Patience for a straggling delta, tracking measured
         // arrival jitter. Resyncs climbing while this sits at its floor is
         // real loss; resyncs climbing while it is pinned at the ceiling means
         // the link's reordering has outrun what live-edge can absorb.
@@ -173,19 +169,19 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         // means the session itself is dead, not that the broadcaster paused.
         ['Last inbound', stats?.timeSinceLastInboundMs == null ? '—' : `${fmtInt(stats.timeSinceLastInboundMs)} ms ago`],
         ['Keyframe age', stats?.lastKeyframeAgeMs == null ? '—' : `${fmtInt(stats.lastKeyframeAgeMs)} ms`],
-        // R5 Q1: lag behind this session's best capture→decode delta. ~0 = at
-        // live edge; sustained growth = falling behind (see docs/15).
+        // Lag behind this session's best capture→decode delta. ~0 = at live
+        // edge; sustained growth = falling behind.
         ['Live-edge drift', stats?.liveEdgeDriftMs == null ? '—' : `${fmtInt(stats.liveEdgeDriftMs)} ms`],
-        // R5 Q2: absolute glass-to-glass via the relay clock; "—" until both
+        // Absolute glass-to-glass via the relay clock; "—" until both
         // clock legs (broadcaster + this viewer) have synced.
         ['Latency (capture→render)', stats?.capToRenderMs == null ? '—' : `${fmtInt(stats.capToRenderMs)} ms`],
-        // R5 Q3 + R12 T2: the playout mode, from the pipeline's own context
-        // (ground truth — a toggle that failed to cross the worker shows
-        // here). Adaptive shows the live offset (T3 makes it dynamic).
+        // The playout mode, from the pipeline's own context (ground truth — a
+        // toggle that failed to cross the worker shows here). Adaptive shows
+        // the live offset.
         ['Playout', stats == null ? '—' : stats.playoutMode === 'adaptive' ? `adaptive (+${fmtInt(stats.playoutOffsetMs)} ms)` : 'live-edge'],
-        // R12 T1: the jitter trio (docs/17 Decision 1). Render cadence σ is
-        // what T2's paced presentation must move; arrival jitter sizes T3's
-        // adaptive offset; decode jitter sizes the decode lead.
+        // The jitter trio. Render cadence σ is what paced presentation must
+        // move; arrival jitter sizes the adaptive offset; decode jitter sizes
+        // the decode lead.
         ['Render cadence σ', stats?.renderCadenceStdDevMs == null ? '—' : `${fmt(stats.renderCadenceStdDevMs)} ms`],
         ['Arrival jitter (p95−min)', stats?.arrivalJitterMs == null ? '—' : `${fmtInt(stats.arrivalJitterMs)} ms`],
         ['Decode jitter σ', stats?.decodeJitterMs == null ? '—' : `${fmt(stats.decodeJitterMs)} ms`],
@@ -196,8 +192,8 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
       rows: [
         ['Transport', stats?.transport === 'worker' ? 'Worker' : stats?.transport === 'in-process' ? 'In-process' : '—'],
         ['RTT', conn?.rttMs == null ? '—' : `${fmt(conn.rttMs)} ms`],
-        // R5 Q2: from our own TimeSync ping — independent of getStats(), so it
-        // works even though no browser ships getStats() today (docs/13 D7).
+        // From our own TimeSync ping — independent of getStats(), which no
+        // browser ships today.
         ['RTT (time-sync)', stats?.timeSyncRttMs == null ? '—' : `${fmt(stats.timeSyncRttMs)} ms`],
         ['RTT variation', conn?.rttVarMs == null ? '—' : `${fmt(conn.rttVarMs)} ms`],
         ['Packets lost', fmtInt(conn?.packetsLost)],
@@ -207,8 +203,8 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
         ['Bad datagrams', String(stats?.badDatagrams ?? '—')],
       ],
     },
-    // R15 (docs/20 N6): the Audio section, rendered only when the stream
-    // actually carries audio — a video-only viewer's overlay is unchanged.
+    // The Audio section, rendered only when the stream actually carries
+    // audio.
     ...(stats && stats.audioState !== 'absent'
       ? [
           {
@@ -230,15 +226,15 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
               ],
               ['Packets received', String(stats.audioPacketsReceived)],
               ['Packets decoded', String(stats.audioPacketsDecoded)],
-              // R15 N5: the sync numbers. Positive skew = video ahead of
+              // The sync numbers. Positive skew = video ahead of
               // audio (the forgiving direction); target median ≤ 60 ms.
               ['A/V skew', stats.avSkewMs == null ? '—' : `${fmt(stats.avSkewMs)} ms`],
-              // docs/20 field finding 12: the discriminator for the row above.
-              // ~1× means the audio timeline is keeping up, so a skew there is
-              // a real lip-sync offset; below 1× the worklet is starving and
-              // the skew is starvation debt accruing at (1 − ratio) per second
-              // — the shape that read in the thousands while audio sounded
-              // fine. A skew without this number cannot be interpreted.
+              // The discriminator for the row above. ~1× means the audio
+              // timeline is keeping up, so a skew there is a real lip-sync
+              // offset; below 1× the worklet is starving and the skew is
+              // starvation debt accruing at (1 − ratio) per second — it can
+              // read in the thousands while audio sounds fine. A skew without
+              // this number cannot be interpreted.
               [
                 'Playhead advance',
                 stats.avPlayheadAdvance == null
@@ -255,7 +251,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                     ? 'Video (audio free-running)'
                     : '—',
               ],
-              // docs/20 field finding 6: the jitter-buffer counters. Buffer
+              // The jitter-buffer counters. Buffer
               // depth well below target + climbing underruns is the "audio
               // starved for cushion" signature (near-silent live-edge audio).
               ...(stats.audioBuffer
@@ -270,7 +266,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                         ? '—'
                         : `${fmt(stats.audioBuffer.alignmentHoldMs)} ms`,
                     ],
-                    // docs/20 field finding 13: what the device adds between a
+                    // What the device adds between a
                     // sample being written and heard. Both the alignment hold
                     // and A/V skew correct for it, so a big number here is not
                     // itself a fault — but it IS the size of the lip-sync
@@ -285,7 +281,8 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                     ['Underruns', String(stats.audioBuffer.underruns)],
                     // Filled vs skipped separates "loss was concealed" from
                     // "loss was skipped inside the lead budget"; overflow
-                    // climbing alongside filled is the finding-8 latch.
+                    // climbing alongside filled is the buffer latched at its
+                    // overflow ceiling.
                     [
                       'Gaps filled / skipped',
                       `${stats.audioBuffer.gapsConcealed} / ${stats.audioBuffer.gapsSkipped}`,
@@ -294,8 +291,8 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                       'Late / overflow drops',
                       `${stats.audioBuffer.lateDrops} / ${stats.audioBuffer.overflowDrops}`,
                     ],
-                    // Re-anchors (timeline restarts + field-finding-7 stall
-                    // recoveries): a climbing count is the sink stalling.
+                    // Re-anchors (timeline restarts + stall recoveries): a
+                    // climbing count is the sink stalling.
                     ['Recoveries', String(stats.audioBuffer.resets)],
                     // The context is free to run at the device rate rather
                     // than the stream's; the worklet resamples, but this is
@@ -317,9 +314,9 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
           },
         ]
       : []),
-    // R16: which conditional features are live on this client — rendered on
-    // every viewer. The value stays a bare ✓/✗ (the full detail string
-    // overflowed the grid); the detail shows as a hover tooltip on the value
+    // Which conditional features are live on this client — rendered on every
+    // viewer. The value stays a bare ✓/✗ (the full detail string overflows
+    // the grid); the detail shows as a hover tooltip on the value
     // and always travels in Copy diagnostics.
     ...(featureGates && featureGates.length > 0
       ? [
@@ -329,8 +326,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
           },
         ]
       : []),
-    // R16 U4, reshaped by R22 (docs/27 Decision 8): the native-fullscreen
-    // debugging section (gated devices only) — each hop of the worker-muxer →
+    // The native-fullscreen debugging section (gated devices only) — each hop of the worker-muxer →
     // MMS → <video> chain reports, so a broken fullscreen localizes remotely.
     ...(surface
       ? [
@@ -343,7 +339,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                 `${surface.armed ? 'armed' : 'idle'} · ${surface.muxMediaSegments} seg (${surface.muxInitSegments} init) · ${surface.muxErrors} err`,
               ],
               ['Appends', `${surface.segmentsAppended} · ${surface.appendErrors} err`],
-              // docs/27 finding 7: where segments stop. Received counts what
+              // Where segments stop. Received counts what
               // reached the main thread (0 against a climbing muxer = a broken
               // sink), queued what the appender is holding (full against 0
               // appends = the system is not taking them), no-init what was
@@ -363,7 +359,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
                     ? 'on — system is asking for data'
                     : 'off — parked',
               ],
-              // docs/27 finding 6: the reason, not just the count — an append
+              // The reason, not just the count — an append
               // error is otherwise indistinguishable from a quota drop, and the
               // difference is a dead audio track versus a routine resync.
               ...(surface.lastAppendError
@@ -385,7 +381,7 @@ export function StatsOverlay({ stats, codec, bitrateBps, featureGates, presentat
               ],
               // The element's own count is the only proof the demuxer ACCEPTED
               // the muxed audio: appends can succeed into a track that never
-              // materializes (docs/27 finding 6).
+              // materializes.
               ...(surface.audioMode.startsWith('muxed')
                 ? ([
                     [

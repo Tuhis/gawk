@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
-// The hidden-tab watchdog on the real page (docs/44 §4.8 revision
-// 2026-09-06): five minutes hidden with no frame encoded ends the broadcast
-// and explains it on the card; frames still flowing while hidden do not.
+// The hidden-tab watchdog on the real page: five minutes hidden with no frame
+// encoded ends the broadcast and explains it on the card; frames still
+// flowing while hidden do not.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';

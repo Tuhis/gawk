@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 //
-// R22 MF2 acceptance (docs/27, carrying R16 Decision 1 forward): non-gated
-// devices' worker messages are BYTE-IDENTICAL — the init message carries no
-// presentationMux key at all, and 'arm' is never sent unless requested. The
-// controller is the one place every worker-bound message passes through, so
-// this is the seam that proves it.
+// Non-gated devices' worker messages carry no trace of the mux fork — the
+// init message has no presentationMux key at all, and 'arm' is never sent
+// unless requested. The controller is the one place every worker-bound
+// message passes through, so this is the seam that proves it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkerViewerController } from './workerViewerController';
@@ -76,7 +75,7 @@ describe('WorkerViewerController message shapes (R22 MF2)', () => {
       (p) => (p.msg as { type?: string }).type === 'init',
     )!;
     expect(init).toBeDefined();
-    // Key-for-key: the exact pre-R22 shape, not merely a falsy flag.
+    // Key-for-key: no mux key at all, not merely a falsy flag.
     expect(Object.keys(init.msg as object).sort()).toEqual(['canvas', 'type']);
   });
 

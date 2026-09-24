@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 //
-// R22 MF2/MF3/MF4 (docs/27): the MSE capability probe and the main-thread
-// presenter. jsdom has no MSE, so the MediaSource/SourceBuffer are structural
+// The MSE capability probe and the main-thread presenter. jsdom has no MSE, so the MediaSource/SourceBuffer are structural
 // fakes injected through the presenter's ctor parameter — which is exactly
 // how iPhone-vs-desktop divergence (ManagedMediaSource streaming pacing vs
 // classic MediaSource) is simulated.
@@ -174,8 +173,8 @@ function makeVideo({ srcObjectThrows = false } = {}) {
 }
 
 // jsdom's <video> reports readyState 0 and throws on `buffered`, so "does the
-// element hold media" — which decides whether MMS parking is legal (docs/27
-// finding 7) — has to be stated explicitly by any test that cares.
+// element hold media" — which decides whether MMS parking is legal — has to
+// be stated explicitly by any test that cares.
 function setElementMedia(
   video: HTMLVideoElement,
   readyState: number,
@@ -229,7 +228,7 @@ describe('probeMsePresentation', () => {
     expect(getMediaSourceCtor()).toBe(mms);
   });
 
-  // R22 audio: the Opus-in-MP4 question is answered at runtime, per device —
+  // The Opus-in-MP4 question is answered at runtime, per device —
   // WebKit 17 added Opus in MP4, but nothing promises it through
   // ManagedMediaSource, so the verdict is probed and never assumed.
   it('probes the audio lane independently, and refuses what MP4 Opus cannot carry', () => {
@@ -262,8 +261,8 @@ describe('probeMsePresentation', () => {
     expect(r.reason).toContain('mp4a.40.2');
   });
 
-  // docs/27 finding 4, measured on iOS 18.7: MMS refuses Opus in MP4 but takes
-  // AAC — the codec Apple's own HLS mandates. That is the tier the iPhone lands
+  // iOS 18.7's MMS refuses Opus in MP4 but takes AAC — the codec Apple's own
+  // HLS mandates. That is the tier the iPhone lands
   // on, and it is the one that costs a transcode.
   it('falls back to the AAC tier when Opus in MP4 is refused', () => {
     const { ctor } = makeFakeMsCtor();
@@ -343,7 +342,7 @@ describe('MsePresenter', () => {
     expect(p.getStats()).toMatchObject({ segmentsAppended: 3, appendErrors: 0, failed: false });
   });
 
-  // docs/27 finding 1: without an explicit infinite duration, MSE keeps raising
+  // Without an explicit infinite duration, MSE keeps raising
   // duration to the newest appended end timestamp — so the native player draws
   // a finite scrub bar instead of the LIVE badge, and "the playhead reached the
   // buffered end" becomes indistinguishable from "the media ended" (WebKit
@@ -408,7 +407,7 @@ describe('MsePresenter', () => {
     expect(p.getStats()).toMatchObject({ liveDuration: false, failed: false });
   });
 
-  // R22 audio (docs/27 finding 2): video and audio are separate SourceBuffers.
+  // Video and audio are separate SourceBuffers.
   // The element's `buffered` is their INTERSECTION, which drives the two rules
   // under test: an audio SourceBuffer is never created before a sample can
   // follow its init (an empty audio track empties the intersection and stalls
@@ -422,7 +421,7 @@ describe('MsePresenter', () => {
     p.attach(video);
     instances[0].open();
 
-    // docs/27 finding 5: the audio mime is declared up front, so BOTH buffers are
+    // The audio mime is declared up front, so BOTH buffers are
     // created with the first video init — an MSE implementation may refuse a
     // second buffer once the first init segment has been parsed.
     p.setExpectedAudioMime(AUDIO_MIME);
@@ -496,9 +495,8 @@ describe('MsePresenter', () => {
     expect(p.getStats()).toMatchObject({ queued: 0, audioSegmentsAppended: 0 });
   });
 
-  // The element's buffered range is the INTERSECTION of the tracks, so a dead
-  // docs/27 finding 6: the media error is the one fact that localizes a rejected
-  // init segment, and it is only readable before the rebuild.
+  // The media error is the one fact that localizes a rejected init segment,
+  // and it is only readable before the rebuild.
   it('records the element media error and MediaSource state at the failure', () => {
     const { ctor, instances } = makeFakeMsCtor();
     const p = new MsePresenter(ctor);
@@ -541,6 +539,7 @@ describe('MsePresenter', () => {
     expect(p.getStats().lastError).toContain('addSourceBuffer');
   });
 
+  // The element's buffered range is the INTERSECTION of the tracks, so a dead
   // audio buffer would freeze video. Audio is additive: it must be able to fail
   // without taking the presentation down.
   it('rebuilds video-only when the audio SourceBuffer errors', () => {
@@ -561,10 +560,9 @@ describe('MsePresenter', () => {
     // The audio buffer rejects its content (a malformed transcode, say).
     audioSb.fireError();
     expect(p.getStats()).toMatchObject({ failed: false, audioTrack: false });
-    // docs/27 finding 6: the WHY has to be captured here, at the error, or it is
-    // gone — dropAudioTrack rebuilds the MediaSource and the element's error
-    // clears with it, which is exactly why the first on-device capture could say
-    // "one append error" and nothing about what WebKit objected to.
+    // The WHY has to be captured here, at the error, or it is gone —
+    // dropAudioTrack rebuilds the MediaSource and the element's error clears
+    // with it.
     expect(p.getStats().lastError).toContain('audio');
 
     // A fresh MediaSource carrying video alone, re-primed from the cached init.
@@ -582,9 +580,9 @@ describe('MsePresenter', () => {
     expect(instances[1].mimes).toEqual(['video/mp4; codecs="avc1.42C01E"']);
   });
 
-  // The failure CI caught on a Linux runner with no AAC encoder: the audio buffer
+  // A runtime with no AAC encoder (a Linux CI runner, say): the audio buffer
   // exists, nothing ever appends to it, and because `buffered` is the tracks'
-  // INTERSECTION the video cannot play either — worse than video-only.
+  // INTERSECTION the video can be blocked too — worse than video-only.
   it('leaves a working presentation alone when audio produces nothing', () => {
     // The audio buffer never received even an init segment, so it contributes no
     // active track and this implementation plays video regardless. Rebuilding
@@ -717,10 +715,9 @@ describe('MsePresenter', () => {
     expect(instances[0].sb!.appended).toHaveLength(2);
   });
 
-  // docs/27 finding 7 — the 2026-07-26 regression. An MMS that has never been
-  // asked for anything opens with `streaming` false and stays there: the system
-  // asks when the element needs more data, and an element with no init segment
-  // needs nothing. Parking there is a deadlock, and its signature is a capture
+  // An MMS that has never been asked for anything opens with `streaming`
+  // false and stays there: the system asks when the element needs more data,
+  // and an element with no init segment needs nothing. Parking there is a deadlock, and its signature is a capture
   // with segmentsAppended 0 / appendErrors 0 / elementReadyState 0 and a
   // healthy open source — i.e. no visible failure anywhere.
   it('primes an element with no media even while MMS never asks for data', () => {
@@ -752,9 +749,8 @@ describe('MsePresenter', () => {
     expect(instances[0].sb!.appended).toHaveLength(3);
   });
 
-  // The capture that started this could not say whether the presenter was
-  // holding segments or had never been handed any: both read appended 0,
-  // errors 0. These three counters are what tells them apart remotely.
+  // A presenter holding segments and one never handed any both read appended
+  // 0, errors 0. These three counters are what tells them apart remotely.
   it('reports what it received, what it is holding, and whether MMS is asking', () => {
     const { ctor, instances } = makeFakeMsCtor({ managed: true });
     const p = new MsePresenter(ctor);

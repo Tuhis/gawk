@@ -103,7 +103,7 @@
   background: color-mix(in srgb, var(--warning) 12%, transparent);
 }
 
-/* R18: the "N watching" figure — quiet monochrome, like the sending readout. */
+/* The "N watching" figure — quiet monochrome, like the sending readout. */
 .watchingBadge {
   display: inline-flex;
   align-items: center;
@@ -223,7 +223,7 @@
   font-weight: 600;
 }
 
-/* R23: the terms link at the foot of the settings panel. */
+/* The terms link at the foot of the settings panel. */
 .settingsFoot {
   margin-top: 0.5rem;
   padding-top: 1rem;
@@ -419,9 +419,9 @@
   justify-content: center;
 }
 
-/* ── R24 (docs/30): capture & audio guidance ── */
+/* ── Capture & audio guidance ── */
 
-/* CG3: reactive live notes, under the top bar. Quiet glass pills, dismissible;
+/* Reactive live notes, under the top bar. Quiet glass pills, dismissible;
    they describe a correctable condition, so they do not auto-hide. The
    container is click-through — only the pills take pointer events, so the rest
    of the preview stays interactive. */
@@ -464,17 +464,15 @@
   margin-top: -0.05rem;
 }
 
-/* CG2: the collapsed pre-start "Sharing tips" disclosure. A single quiet line
-   an experienced broadcaster's eye skips; opening it reveals two short tips.
-   Native <details>, so toggling it touches nothing on the start path. */
+/* The collapsed pre-start "Sharing tips" disclosure. A single quiet line an
+   experienced broadcaster's eye skips; opening it reveals the tips. */
 .tips {
   width: 100%;
   margin-top: 0.75rem;
   text-align: center;
 }
 
-/* A quiet button styled like the old <summary>, with a chevron that rotates
-   as it opens. */
+/* A quiet button with a chevron that rotates as it opens. */
 .tipsSummary {
   display: inline-flex;
   align-items: center;
@@ -534,7 +532,7 @@
   color: var(--muted);
 }
 
-/* CG4: the read-only audio-status echo in the settings panel. */
+/* The read-only audio-status echo in the settings panel. */
 .settingsAudioNote {
   margin: 0;
   font-size: var(--fs-sm);
@@ -542,9 +540,8 @@
   color: var(--muted);
 }
 
-/* R42: the Room panel's pieces (simplified 2026-09-23) — one code-or-link
-   field with its Join beside it, an "or" rule before Create, and the name as
-   a quiet line at the foot. */
+/* The Room panel's pieces — one code-or-link field with its Join beside it,
+   an "or" rule before Create, and the name as a quiet line at the foot. */
 .joinRow {
   display: flex;
   gap: 0.5rem;
@@ -607,7 +604,7 @@
   text-decoration-color: var(--text);
 }
 
-/* R42: the pending-room chip — a room chosen before the stream is live, shown
+/* The pending-room chip — a room chosen before the stream is live, shown
    on the pre-start card and in the live topbar until the join fires. */
 .pendingRoom {
   display: inline-flex;
@@ -631,9 +628,8 @@
   letter-spacing: 0.06em;
 }
 
-/* R42 (docs/44 §4.8 revision 2026-09-05, direction A): the topbar over the
-   room's stage follows the room's chrome fade and leaves the open people
-   panel its width (the same --panel-w the room view uses). */
+/* The topbar over the room's stage follows the room's chrome fade and leaves
+   the open people panel its width (the same --panel-w the room view uses). */
 .topbarHidden {
   opacity: 0;
   transform: translateY(-8px);

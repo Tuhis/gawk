@@ -1,5 +1,4 @@
-// R15 N4 (docs/20 Decision 7) + post-implementation review finding 3: the
-// audio sink runs on the viewer's message path, so nothing inside it may
+// The audio sink runs on the viewer's message path, so nothing inside it may
 // propagate — audio is never allowed to break video. A detached buffer or a
 // closed worklet port must cost one dropped packet, which is the correct
 // live-edge outcome anyway.
@@ -64,7 +63,7 @@ describe('AudioSink worklet delivery', () => {
     const sink = new AudioSink();
     await sink.start(SAMPLE_RATE);
 
-    // Three 20 ms chunks prime the 60 ms cushion (field finding 3), then the
+    // Three 20 ms chunks prime the 60 ms cushion, then the
     // whole cushion reaches the worklet in order.
     for (let i = 0; i < 3; i++) sink.push(chunk(i * 20_000));
     expect(posted).toHaveLength(3);
@@ -76,7 +75,7 @@ describe('AudioSink worklet delivery', () => {
     sink.dispose();
   });
 
-  // The finding: without a guard this throw escapes sink.push() → the viewer's
+  // Without a guard this throw escapes sink.push() → the viewer's
   // message handler. Audio must never break video.
   it('swallows a throwing worklet port instead of propagating', async () => {
     stubWebAudio(() => {
@@ -101,7 +100,7 @@ describe('AudioSink worklet delivery', () => {
   });
 });
 
-// Field finding 7 (docs/20): the worklet drives the buffer's drain accounting
+// The worklet drives the buffer's drain accounting
 // through ~4 Hz playhead reports. When the AudioContext is suspended (Safari
 // does this at will) the reports stop, the buffer's depth estimate freezes
 // above the overflow ceiling, and every further chunk is dropped forever with
@@ -157,10 +156,9 @@ describe('AudioSink stall recovery', () => {
     });
   }
 
-  // BUGS.md (2026-07-22): once the stream dies the worklet keeps running and
-  // keeps reporting an underrun for every 128-sample quantum, forever — a
-  // capture showed `underruns` at 300386 climbing ~375/s with no audio
-  // arriving at all. Underrunning with nothing to play is not a defect; it is
+  // Once the stream dies the worklet keeps running and keeps reporting an
+  // underrun for every 128-sample quantum, forever (~375/s with no audio
+  // arriving at all). Underrunning with nothing to play is not a defect; it is
   // silence working correctly. Counting it destroys the counter's value as a
   // severity measure exactly when someone is reading it to diagnose a freeze.
   it('stops counting underruns once no audio is arriving', async () => {
@@ -247,8 +245,7 @@ describe('AudioSink stall recovery', () => {
 });
 
 // The worklet processor ships as a source string, so it never ran under test —
-// yet with the drift trim (docs/20 field finding 4) it is the code that touches
-// every audio sample. Instantiate it against stubbed worklet globals and drive
+// yet with the drift trim it is the code that touches every audio sample. Instantiate it against stubbed worklet globals and drive
 // it directly: a resampler that steps or skips is exactly what the "smooth over
 // a long period" requirement forbids.
 describe('audio worklet resampler', () => {
@@ -361,13 +358,13 @@ describe('audio worklet resampler', () => {
     }
   });
 
-  // The sample-rate fix. macOS/Safari hands back a 44.1 kHz context routinely
-  // (it is the device rate), while Opus decodes to 48 kHz. Playing 48 kHz
-  // content one sample per output frame there is 8.8 % slow and a semitone
-  // low — and it also under-drains the queue by 8 %/s, which walks any
-  // inferred depth estimate straight to the overflow ceiling (field
-  // finding 8). The resampler the drift trim already needed is the fix: the
-  // base read rate is content rate ÷ context rate, and the trim multiplies it.
+  // macOS/Safari hands back a 44.1 kHz context routinely (it is the device
+  // rate), while Opus decodes to 48 kHz. Playing 48 kHz content one sample per
+  // output frame there is 8.8 % slow and a semitone low — and it also
+  // under-drains the queue by 8 %/s, which walks any inferred depth estimate
+  // straight to the overflow ceiling. The resampler the drift trim needs
+  // anyway handles it: the base read rate is content rate ÷ context rate, and
+  // the trim multiplies it.
   it('resamples source content to the context rate', () => {
     const p = instantiate(44_100);
     for (let c = 0; c < 4; c++) feed(p, c * FRAME_COUNT, FRAME_COUNT, c * 20_000);
@@ -375,7 +372,7 @@ describe('audio worklet resampler', () => {
 
     // Source advances 48000/44100 samples per output frame — so the ramp's
     // step grows by exactly that ratio, which is what preserves both pitch and
-    // duration. At the buggy 1× the step would be 1/100_000.
+    // duration. At 1× the step would be 1/100_000.
     const step = (SAMPLE_RATE / 44_100) / 100_000;
     for (let i = 1; i < out.length; i++) {
       expect(out[i]! - out[i - 1]!).toBeCloseTo(step, 8);
@@ -395,7 +392,7 @@ describe('audio worklet resampler', () => {
     expect(p.underruns).toBeGreaterThan(0);
   });
 
-  // Findings 7 and 8 were both a *shadow* of this queue diverging from it. The
+  // A *shadow* of this queue kept anywhere else can diverge from it. The
   // worklet is the only place the truth exists, so it reports it — in content
   // ms (each chunk's own frameCount ÷ its own sampleRate), which is the unit
   // the jitter buffer thinks in and is independent of the context rate.
@@ -438,8 +435,7 @@ describe('audio worklet resampler', () => {
   });
 });
 
-// The sample-rate half of docs/20 field finding 8. The sink asks for a context
-// at the decoder's rate, but the browser is free to refuse the option outright
+// The sink asks for a context at the decoder's rate, but the browser is free to refuse the option outright
 // (a throw) or to hand back a context at the device rate. Neither may end with
 // audio accounted in one rate and played in another — the worklet resamples,
 // and the sink's own accounting is in content ms, so the context rate only
@@ -481,7 +477,7 @@ describe('AudioSink context sample rate', () => {
   it('falls back to the device context when the requested rate is refused', async () => {
     const { created } = stubRateAware({ refuseOption: true, deviceRate: 44_100 });
     const sink = new AudioSink();
-    // Pre-fix this rejected and the whole stream went video-only.
+    // A refused rate must not reject the start and take the stream video-only.
     await sink.start(SAMPLE_RATE);
     expect(created).toHaveLength(1);
     expect(created[0].sampleRate).toBeUndefined();
@@ -491,7 +487,7 @@ describe('AudioSink context sample rate', () => {
 
   it('reports the rate the context actually runs at, not the one requested', async () => {
     // A context that silently ignores the option: the number an operator needs
-    // when audio sounds slow, and the one that used to be assumed.
+    // when audio sounds slow, reported rather than assumed.
     stubRateAware({ deviceRate: 44_100 });
     const sink = new AudioSink();
     await sink.start(SAMPLE_RATE);
@@ -543,14 +539,13 @@ describe('AudioSink depth reconciliation', () => {
   });
 });
 
-// docs/20 field finding 11 (2026-07-23, measured against the homelab). Toggling
-// Paced playback moves the video presentation schedule — capToRenderMs went
-// 204 → 65 ms — but audio kept the alignment it chose at start, so `avSkewMs`
-// jumped 142 → 333 ms and stayed there. Unlike finding 10 there is no flush to
-// get wrong: a playout toggle is a worker command with no reconnect, and after
-// release the worklet runs at 1×, so no amount of buffering can move a sample.
-// Re-anchoring is the only lever, and it costs a short silence — which is the
-// right trade on a deliberate user action that already changes playback.
+// Toggling Paced playback moves the video presentation schedule by the whole
+// playout offset, while audio keeps the alignment it chose at start. There is
+// no flush to lean on: a playout toggle is a worker command with no reconnect,
+// and after release the worklet runs at 1×, so no amount of buffering can
+// move a sample. Re-anchoring is the only lever, and it costs a short
+// silence — which is the right trade on a deliberate user action that
+// already changes playback.
 describe('AudioSink video-schedule re-anchor', () => {
   it('re-anchors when the video presentation schedule shifts materially', async () => {
     stubWebAudio(() => {});
@@ -590,13 +585,13 @@ describe('AudioSink video-schedule re-anchor', () => {
   });
 });
 
-// docs/20 field finding 13 (2026-07-26): the sink is the only place that knows
+// The sink is the only place that knows
 // where the speaker is. The worklet reports the sample it is WRITING into the
 // output buffer; that sample reaches the listener `outputLatency` later. The
 // alignment release already compensates (it hands the cushion over early by
 // exactly that much) — but av-sync's drift trim then servos the *measured*
 // skew to zero, and if that measurement is taken at the write position, zero
-// means "audio heard outputLatency late". The trim therefore spends the
+// means "audio heard outputLatency late". The trim would then spend the
 // session undoing the alignment: a simulation of the real loop settles at
 // `outputLatency - RATE_TRIM_DEADBAND_MS` of lateness (100 ms on a 120 ms
 // device, 280 ms on a 300 ms one) while the overlay reads ~0.
@@ -713,9 +708,9 @@ describe('AudioSink playhead reference point', () => {
     sink.dispose();
   });
 
-  // The bug was in the COMPOSITION, not in either half: the alignment release
-  // compensated for output latency and the trim then removed the compensation,
-  // each behaving exactly as written. So close the loop across the real sink,
+  // The failure lives in the COMPOSITION, not in either half: the alignment
+  // release compensates for output latency and a write-position trim removes
+  // the compensation, each behaving exactly as written. So close the loop across the real sink,
   // the real av-sync mapping and the real controller, and assert the thing
   // neither half can assert alone — that a stream synced at the speaker stays
   // synced.
@@ -734,8 +729,7 @@ describe('AudioSink playhead reference point', () => {
     const controller = new AudioRateController();
     // One clock for the whole loop: the sink's own `now` must advance with the
     // context, or the mapping anchors every report at the same instant and the
-    // loop is self-consistent for the wrong reason (this test passed under a
-    // mutation until the injection was added).
+    // loop is self-consistent for the wrong reason.
     const sink = new AudioSink({ onPlayhead: (r) => notePlayhead(r, contextTime * 1000) }, undefined, {
       now: () => contextTime * 1000,
     });
@@ -762,8 +756,9 @@ describe('AudioSink playhead reference point', () => {
       rate = controller.update(observeVideoPresented(nowMs * 1000, nowMs), nowMs);
       errorMs += (1 - rate) * 250;
     }
-    // Five minutes of loop. Pre-fix this reads ~100 ms (outputLatency minus
-    // the trim's deadband) with avSkewMs sitting at a clean zero throughout.
+    // Five minutes of loop. Measured at the write position this would read
+    // ~100 ms (outputLatency minus the trim's deadband) with avSkewMs sitting
+    // at a clean zero throughout.
     expect(Math.abs(errorMs)).toBeLessThan(1);
     sink.dispose();
     resetAvSync();
@@ -783,7 +778,7 @@ describe('AudioSink playhead reference point', () => {
   });
 });
 
-// R42 (docs/44 §4.7): an injected shared output. The sink must neither open
+// An injected shared output. The sink must neither open
 // nor close a context it was handed, must route through the given
 // destination, and must let the owner register the worklet exactly once.
 describe('AudioSink with an injected output (R42 room mixing)', () => {

@@ -1,5 +1,5 @@
-// R8 S6: imperative glue between React and the viewer Web Worker, kept out of
-// the component so the effect code stays legible. Owns the one-shot
+// Imperative glue between React and the viewer Web Worker, kept out of the
+// component so the effect code stays legible. Owns the one-shot
 // OffscreenCanvas transfer and the boot handshake; the pipeline/reconnect logic
 // lives in the worker's ViewerWorkerCore.
 //
@@ -39,9 +39,9 @@ export interface WorkerViewerCallbacks {
 }
 
 export interface WorkerViewerOptions {
-  // R22 (docs/27): request the encoded-frame mux fork at init. Set only on
-  // gated (element-fullscreen-less) devices — when false, the init message is
-  // byte-identical to before and no mux code runs in the worker.
+  // Request the encoded-frame mux fork at init. Set only on gated
+  // (element-fullscreen-less) devices — when false, the init message carries
+  // no mux flag and no mux code runs in the worker.
   presentationMux?: boolean;
 }
 
@@ -60,7 +60,7 @@ export class WorkerViewerController {
   private pendingStart: StartParams | null = null;
   private armRequested = false;
   private armSent = false;
-  // R22 audio: audio is armed separately because it becomes known later — the
+  // Audio is armed separately because it becomes known later — the
   // Opus-in-MP4 verdict needs the stream's audio config, which arrives (at 1 Hz)
   // well after the video arm. A second `arm` is idempotent in the worker.
   private armAudioRequested = false;
@@ -134,8 +134,8 @@ export class WorkerViewerController {
     if (!this.canvasTransferred) {
       const offscreen = this.canvas.transferControlToOffscreen();
       this.canvasTransferred = true;
-      // The mux flag is spread in only when set, keeping non-gated init
-      // messages byte-identical (docs/27, carrying R16 Decision 1 forward).
+      // The mux flag is spread in only when set, so a non-gated init message
+      // carries no trace of it.
       this.post(
         { type: 'init', canvas: offscreen, ...(this.presentationMux ? { presentationMux: true } : {}) },
         [offscreen],
@@ -172,7 +172,7 @@ export class WorkerViewerController {
     if (this.booted && this.supported && this.canvasTransferred) this.post({ type: 'stop' });
   }
 
-  // R5 Q3 + R12 T2: apply the playout mode inside the worker context.
+  // Apply the playout mode inside the worker context.
   // Safe at any lifecycle point — worker messages queue until the shell runs,
   // and the setting is module state there, independent of start/stop.
   setPlayoutMode(mode: PlayoutMode): void {
@@ -180,13 +180,13 @@ export class WorkerViewerController {
     this.post({ type: 'playout', mode });
   }
 
-  // R12 T4: the experimental interpolation toggle, same crossing semantics.
+  // The interpolation toggle, same crossing semantics.
   setInterpolation(enabled: boolean): void {
     if (this.disposed) return;
     this.post({ type: 'interpolation', enabled });
   }
 
-  // R15 N5: the audio sink's ~4 Hz playhead report (docs/20 Decision 10).
+  // The audio sink's ~4 Hz playhead report.
   // Fire-and-forget: a dropped report just means the worker keeps the
   // previous mapping, and a stale one falls back to the arrival baseline.
   sendAudioPlayhead(heardUs: number | null, atEpochMs: number): void {
@@ -194,7 +194,7 @@ export class WorkerViewerController {
     this.post({ type: 'audioPlayhead', heardUs, atEpochMs });
   }
 
-  // R19: resilient mode for the worker context. Callers send it before
+  // The delivery mode for the worker context. Callers send it before
   // start() (worker messages process in order), so the wider profile is live
   // before the session's first frame.
   setViewerDeliveryMode(mode: ViewerDeliveryMode): void {
@@ -202,7 +202,7 @@ export class WorkerViewerController {
     this.post({ type: 'resilient', mode });
   }
 
-  // R30 (docs/35 §5.5): the stripe mode — a LIVE flip, never a reconnect:
+  // The stripe mode — a LIVE flip, never a reconnect:
   // engagement is in-band (leg dials + the 0x10 level protocol), so the
   // worker's controller applies the change at its next decide().
   setStripeMode(mode: StripeMode): void {
@@ -210,19 +210,18 @@ export class WorkerViewerController {
     this.post({ type: 'stripeMode', mode });
   }
 
-  // R22: start the worker muxer (gated devices, at `watching`). Sent at most
+  // Start the worker muxer (gated devices, at `watching`). Sent at most
   // once — the muxer and its output timeline are session-long and survive
-  // reconnects (docs/27 Decision 3). Buffered until the canvas/init exist.
-  // Guarded on the mux opt-in so a stray call can't break the non-gated
-  // byte-identity guarantee (the worker would ignore it, but the message
-  // itself is the contract).
+  // reconnects. Buffered until the canvas/init exist. Guarded on the mux
+  // opt-in so a non-gated worker never receives an arm (it would ignore it,
+  // but the message itself is the contract).
   armPresentation(): void {
     if (this.disposed || this.armRequested || !this.presentationMux) return;
     this.armRequested = true;
     this.flushArm();
   }
 
-  // R22 audio: start muxing the encoded audio lane too (the screen calls this
+  // Start muxing the encoded audio lane too (the screen calls this
   // once the audio config has probed supported). Never un-armed — an audio track
   // that stopped is handled in the presenter, not by silencing the fork.
   armPresentationAudio(codec: AudioMuxCodec): void {

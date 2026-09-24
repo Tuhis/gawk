@@ -1,30 +1,27 @@
-// R32 (docs/37): the viewer's playback presets — the model, the copy, and the
-// not-applicable rules, in one pure module so all of it is unit-testable
-// without React and no surface can inline a second copy of a label
-// (CODE-REVIEW "one definition, one home"; the docs/30 decision-8 precedent).
+// The viewer's playback presets — the model, the copy, and the not-applicable
+// rules, in one pure module so all of it is unit-testable without React and
+// no surface can inline a second copy of a label.
 //
-// The load-bearing observation (docs/37 §3): the viewer's four tuning controls
-// are not four independent choices, and two of them are not even on the same
-// axis.
+// The viewer's four tuning controls are not four independent choices, and two
+// of them are not even on the same axis.
 //
-//   delivery mode (R19/R21) ─┐
-//   paced playback (R12)    ─┴─ latency: live → ~0.5 s → seconds behind
+//   delivery mode           ─┐
+//   paced playback          ─┴─ latency: live → ~0.5 s → seconds behind
 //
-//   loss protection (R29)   ─┐
-//   striping (R30)          ─┴─ robustness: costs data / connections,
+//   loss protection         ─┐
+//   striping                ─┴─ robustness: costs data / connections,
 //                               and **zero latency**
 //
 // So a preset governs delivery + pacing. Turning parity or striping off does
-// not make anything faster — it makes it cheaper and more fragile — which is
-// why an early sketch that folded them into a "Lowest latency" preset was
-// rejected. They are Advanced, they sit at their defaults, and they are
-// exactly what "Custom" tracks.
+// not make anything faster — it makes it cheaper and more fragile — so they
+// don't belong in a "Lowest latency" preset. They are Advanced, they sit at
+// their defaults, and they are exactly what "Custom" tracks.
 
 import type { PlayoutMode } from '../../transport/playout';
 import type { ViewerDeliveryMode } from '../../transport/resilient';
 import type { StripeMode } from '../../transport/stripe';
 
-// R29's opt-DOWN from the fleet parity default. 'auto' means "take what the
+// An opt-DOWN from the fleet parity default. 'auto' means "take what the
 // fleet serves", which is the ceiling — a viewer cannot ask for more parity
 // than the producer emitted.
 export type ParityChoice = 'auto' | 1 | 0;
@@ -40,7 +37,7 @@ export interface PlaybackConfig {
   interpolation: boolean;
 }
 
-/** The advanced fields, shared by every preset (docs/37 decision 2). */
+/** The advanced fields, shared by every preset. */
 export const ADVANCED_DEFAULTS = {
   parity: 'auto',
   striping: 'auto',
@@ -56,9 +53,8 @@ export interface Preset {
   playout: PlayoutMode;
 }
 
-// One axis, ordered by increasing delay. `balanced` is defined to be today's
-// shipping default (R12's adaptive pacing + interpolation, live-edge
-// delivery), so installing R32 and touching nothing changes no behaviour.
+// One axis, ordered by increasing delay. `balanced` is the shipping default
+// (adaptive pacing + interpolation, live-edge delivery).
 export const PRESETS: readonly Preset[] = [
   {
     id: 'lowest',
@@ -99,7 +95,7 @@ export const CUSTOM_LABEL = 'Custom';
 // session-effect dependency array, because delivery is negotiated at subscribe
 // time. Pacing, striping and interpolation cross into the live pipeline
 // instead and never reconnect. Disclosed on exactly those controls — an
-// annotation on everything would say nothing (docs/37 decision 7).
+// annotation on everything would say nothing.
 export const RECONNECT_NOTE = '· switching reconnects';
 
 /** The complete configuration a preset applies. */
@@ -116,9 +112,9 @@ export function presetConfig(id: PresetId): PlaybackConfig {
  * The preset this configuration *is*, or null for Custom.
  *
  * Deliberately an exact match on all five fields rather than a nearest-preset
- * snap: a legacy R19-era viewer (resilient delivery, pacing stored off) and a
- * dev build's 'fixed' diagnostic both land on Custom, which is honest, where
- * snapping would silently relabel a state as something it is not.
+ * snap: a legacy stored state (resilient delivery, pacing stored off) lands on
+ * Custom, which is honest, where snapping would silently relabel a state as
+ * something it is not.
  */
 export function resolvePreset(config: PlaybackConfig): PresetId | null {
   const advancedDefault =
@@ -153,23 +149,20 @@ export type AdvancedField = 'parity' | 'striping' | 'interpolation';
 
 /**
  * Whether an advanced control applies right now, and if not, why — one
- * function, so a surface cannot gray something out without saying why
- * (docs/37 decision 4). `null` means applicable.
+ * function, so a surface cannot gray something out without saying why.
+ * `null` means applicable.
  *
- * Both delivery rules restate what the pipeline already does: R29 serves
- * parity only to live-edge subscribers and R30 stripes only datagram
- * delivery, because the carrier modes recover loss by retransmission. Before
- * R32 these controls were *removed* from the menu in those modes, so the menu
- * changed length with the delivery mode and a viewer who had seen "Loss
- * protection" once could not find it again (docs/37 §1.2).
+ * Both delivery rules restate what the pipeline already does: parity is served
+ * only to live-edge subscribers and only datagram delivery is striped, because
+ * the carrier modes recover loss by retransmission. The controls are disabled
+ * with a reason rather than removed, so they stay findable in every mode.
  */
 export function notApplicable(field: AdvancedField, config: PlaybackConfig): string | null {
   if (field === 'interpolation') {
-    // The *effective* pacing mode, never the stored one: R19 delivery implies
-    // adaptive pacing inside playout.ts, so a resilient viewer whose stored
-    // mode is 'off' does have interpolation running and must keep the control
-    // that turns it off. That is review finding LIFECYCLE-2 (docs/24 finding
-    // 16) and it must not regress through this move.
+    // The *effective* pacing mode, never the stored one: a carrier delivery
+    // mode implies adaptive pacing inside playout.ts, so a resilient viewer
+    // whose stored mode is 'off' does have interpolation running and must keep
+    // the control that turns it off.
     return effectivePlayout(config) === 'adaptive'
       ? null
       : 'Needs paced playback — available on Balanced and smoother.';

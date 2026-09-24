@@ -81,9 +81,9 @@ import {
 
 const fakeStream = { getTracks: () => [] } as unknown as MediaStream;
 
-// R24: a display stream whose single video track reports a capture surface, so
-// the window-share note (CG3) can be exercised. Fully shaped for the
-// optional-chained read in BroadcasterScreen.
+// A display stream whose single video track reports a capture surface, so the
+// window-share note can be exercised. Fully shaped for the optional-chained
+// read in BroadcasterScreen.
 function streamWithSurface(surface?: string): MediaStream {
   const track = { getSettings: () => ({ displaySurface: surface }) } as unknown as MediaStreamTrack;
   return {
@@ -92,7 +92,7 @@ function streamWithSurface(surface?: string): MediaStream {
   } as unknown as MediaStream;
 }
 
-// R24: make audioLaneSupported() report true (jsdom lacks both globals, so the
+// Make audioLaneSupported() report true (jsdom lacks both globals, so the
 // default is Firefox-like / unsupported).
 function enableChromiumAudio(): void {
   (globalThis as Record<string, unknown>).AudioEncoder = function () {};
@@ -103,7 +103,7 @@ function disableChromiumAudio(): void {
   delete (globalThis as Record<string, unknown>).MediaStreamTrackProcessor;
 }
 
-// R24: drive a session straight to a live broadcast with the given capture
+// Drive a session straight to a live broadcast with the given capture
 // surface + audio state, so the reactive notes can be asserted.
 function goLive(surface: string, audioState: BroadcastStats['audioState']) {
   scripts.push(async (cbs) => {
@@ -121,7 +121,7 @@ beforeEach(() => {
   // Skip the publish-secret modal (vitest runs with import.meta.env.DEV, and
   // requiresPublishSecret() falls back to isDevEnvironment()).
   window.__GAWK_CONFIG__ = { requirePublishSecret: false };
-  // R23: pre-accept the terms so these behaviour tests exercise the start
+  // Pre-accept the terms so these behaviour tests exercise the start
   // flow, not the gate. The gate has its own describe below (which clears it).
   localStorage.clear();
   acceptCurrentTerms();
@@ -193,10 +193,6 @@ describe('BroadcasterScreen start failure after capture', () => {
   });
 });
 
-// R23 (docs/29 D5): the terms acknowledgment gate. It sits ahead of connect —
-// nothing touches the transport until the broadcaster has agreed (once per
-// terms version). Viewers are never gated (covered elsewhere); this is the
-// broadcaster gate.
 describe('BroadcasterScreen left while the session is being created', () => {
   // Nothing owns a session created after unmount: started, it would publish
   // under a fresh ID that no page will ever stop.
@@ -218,6 +214,9 @@ describe('BroadcasterScreen left while the session is being created', () => {
   });
 });
 
+// The terms acknowledgment gate sits ahead of connect: nothing touches the
+// transport until the broadcaster has agreed (once per terms version).
+// Viewers are never gated (covered elsewhere); this is the broadcaster gate.
 describe('BroadcasterScreen terms acknowledgment gate', () => {
   beforeEach(() => {
     // Undo the outer pre-accept so these tests see the gate.
@@ -275,9 +274,9 @@ describe('BroadcasterScreen terms acknowledgment gate', () => {
   });
 });
 
-// R24 (docs/30): browser-aware capture & audio guidance. The two hard UX
-// constraints are the load-bearing assertions here — it must not add a step to
-// Start, and it must not fire on a healthy broadcast.
+// Browser-aware capture & audio guidance. The two hard UX constraints are the
+// load-bearing assertions here — it must not add a step to Start, and it must
+// not fire on a healthy broadcast.
 describe('BroadcasterScreen capture & audio guidance (R24)', () => {
   afterEach(disableChromiumAudio);
 
@@ -290,7 +289,7 @@ describe('BroadcasterScreen capture & audio guidance (R24)', () => {
       (a) => a.getAttribute('href') === SITE_DOWNLOAD_URL,
     );
 
-  // ── CG2: pre-start "Sharing tips" ──
+  // ── Pre-start "Sharing tips" ──
   it('CG2.1: the tips disclosure is present and collapsed by default', () => {
     render(<BroadcasterScreen />);
     const toggle = screen.getByRole('button', { name: /sharing tips/i });
@@ -336,7 +335,7 @@ describe('BroadcasterScreen capture & audio guidance (R24)', () => {
     expect(screen.getByRole('button', { name: /start a stream/i })).toBeTruthy();
   });
 
-  // ── CG3: reactive live notes ──
+  // ── Reactive live notes ──
   it('CG3.1: renders and dismisses the audio note on Chromium no-track', async () => {
     enableChromiumAudio();
     goLive('monitor', 'no-track');
@@ -400,7 +399,7 @@ describe('BroadcasterScreen capture & audio guidance (R24)', () => {
     expect(localStorage.getItem(HINT_WINDOW_SHARE_KEY)).toBeNull();
   });
 
-  // ── CG4: settings echo ──
+  // ── Settings echo ──
   it('CG4.1: the settings panel shows the browser-correct audio line', () => {
     enableChromiumAudio();
     render(<BroadcasterScreen />);
@@ -410,14 +409,9 @@ describe('BroadcasterScreen capture & audio guidance (R24)', () => {
   });
 });
 
-// Same macOS idle-dim bug as the viewer, and worse here: capturing a screen is
-// not "playing media", so an idle broadcaster's display dims and then sleeps —
-// and a slept display can stop delivering getDisplayMedia frames, taking the
-// broadcast down rather than just dimming one desk. The hook's rules live in
-// lib/useWakeLock.test.ts; this covers the wiring to the live status.
-// R37 (docs/40 §4.2 F3): the publish-secret prompt is decided per resolved
-// server — config.requirePublishSecret governs only the pinned default, and
-// a non-default server prompts exactly when its entry holds no secret. A
+// The publish-secret prompt is decided per resolved server —
+// config.requirePublishSecret governs only the pinned default, and a
+// non-default server prompts exactly when its entry holds no secret. A
 // secret-less connect failure against a non-default relay is offered as
 // "may require a secret" + retry, never a dead end.
 describe('BroadcasterScreen per-server secret prompt (R37 F3)', () => {
@@ -496,14 +490,14 @@ describe('BroadcasterScreen per-server secret prompt (R37 F3)', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Start broadcasting' }));
     await waitFor(() => expect(created).toHaveLength(2));
-    // The prompted secret landed on the resolved entry (F3 storage rule).
+    // The prompted secret landed on the resolved entry.
     expect(
       useTransportStore.getState().servers.find((e) => e.id === id)?.publishSecret,
     ).toBe('now-i-know');
     act(() => useTransportStore.getState().removeServer(id));
   });
 
-  // F2: the indicator renders on the broadcaster screen before capture.
+  // The indicator renders on the broadcaster screen before capture.
   it('shows the in-session indicator pre-start on a non-default server', () => {
     act(() => {
       useTransportStore.getState().setSessionOverride('https://foreign.example:4433');
@@ -515,6 +509,10 @@ describe('BroadcasterScreen per-server secret prompt (R37 F3)', () => {
   });
 });
 
+// Capturing a screen is not "playing media", so an idle broadcaster's display
+// dims and then sleeps — and on macOS a slept display can stop delivering
+// getDisplayMedia frames, taking the broadcast down. The hook's rules live in
+// lib/useWakeLock.test.ts; this covers the wiring to the live status.
 describe('BroadcasterScreen screen wake lock', () => {
   const locks: Array<{ released: boolean }> = [];
 
@@ -580,10 +578,9 @@ describe('BroadcasterScreen screen wake lock', () => {
 });
 
 // Safari: getDisplayMedia must be called from inside the user-gesture handler.
-// WebKit's activation does not survive the worker boot + relay connect that
-// used to come first, so a Safari start died with "getDisplayMedia must be
-// called from a user gesture handler." The prompt now opens in the click,
-// concurrently with the connect, and the session consumes the grant.
+// WebKit's activation does not survive the worker boot + relay connect, so
+// the prompt opens in the click, concurrently with the connect, and the
+// session consumes the grant.
 describe('BroadcasterScreen screen-share prompt (user gesture)', () => {
   function stubDisplayMedia(impl: () => Promise<MediaStream>) {
     const getDisplayMedia = vi.fn(impl);
@@ -645,7 +642,7 @@ describe('BroadcasterScreen screen-share prompt (user gesture)', () => {
     expect(created[1]!.grant).toBe(created[2]!.grant);
   });
 
-  // PR #373 review: leaving the page while the relay connects (Stop is
+  // Leaving the page while the relay connects (Stop is
   // disabled then, so leaving is the only way out) stops a session that never
   // asked for the grant and whose start() never settles. The screen owns the
   // grant, so its unmount must release it or the share indicator stays on.

@@ -11,8 +11,8 @@ import {
   type PlaybackConfig,
 } from './playbackPresets';
 
-// Today's shipping default: live-edge delivery, R12 adaptive pacing +
-// interpolation, fleet-max parity, auto striping. R32 must not change it.
+// The shipping default: live-edge delivery, adaptive pacing + interpolation,
+// fleet-max parity, auto striping.
 const DEFAULT_CONFIG: PlaybackConfig = {
   delivery: 'live',
   playout: 'adaptive',
@@ -20,7 +20,6 @@ const DEFAULT_CONFIG: PlaybackConfig = {
 };
 
 describe('playbackPresets — resolution', () => {
-  // UX2.1
   it('resolves today’s default state to Balanced', () => {
     expect(resolvePreset(DEFAULT_CONFIG)).toBe('balanced');
     expect(presetLabel('balanced')).toBe('Balanced');
@@ -37,15 +36,15 @@ describe('playbackPresets — resolution', () => {
     expect(new Set(pairs).size).toBe(PRESETS.length);
   });
 
-  // UX2.2 — the whole basis of "Custom appears only once you change something".
+  // The whole basis of "Custom appears only once you change something".
   it('returns null when any single advanced field is off its default', () => {
     expect(resolvePreset({ ...DEFAULT_CONFIG, parity: 0 })).toBeNull();
     expect(resolvePreset({ ...DEFAULT_CONFIG, striping: 'off' })).toBeNull();
     expect(resolvePreset({ ...DEFAULT_CONFIG, interpolation: false })).toBeNull();
   });
 
-  // UX2.3 — a state a real R19-era viewer can already be in. Snapping it to a
-  // nearest preset would relabel it as something it is not.
+  // A state a legacy viewer can already be in. Snapping it to a nearest
+  // preset would relabel it as something it is not.
   it('returns null for a legacy off-preset combination rather than snapping', () => {
     expect(resolvePreset({ ...DEFAULT_CONFIG, delivery: 'resilient', playout: 'off' })).toBeNull();
   });
@@ -54,7 +53,7 @@ describe('playbackPresets — resolution', () => {
     expect(presetLabel(null)).toBe('Custom');
   });
 
-  // Decision 2: a preset is a complete configuration, so applying one always
+  // A preset is a complete configuration, so applying one always
   // puts the advanced fields back to their defaults.
   it('presetConfig always carries the advanced defaults', () => {
     for (const preset of PRESETS) {
@@ -68,7 +67,7 @@ describe('playbackPresets — resolution', () => {
 });
 
 describe('playbackPresets — advancedChanges', () => {
-  // UX2.5 — all eight advanced combinations, and the two preset-owned fields
+  // All eight advanced combinations, and the two preset-owned fields
   // proven not to count.
   it('counts exactly the deviating advanced fields', () => {
     const cases: [Partial<PlaybackConfig>, number][] = [
@@ -94,7 +93,7 @@ describe('playbackPresets — advancedChanges', () => {
 });
 
 describe('playbackPresets — notApplicable', () => {
-  // UX2.6 — all six (field, delivery) pairs.
+  // All six (field, delivery) pairs.
   it('grays parity and striping under the carrier delivery modes only', () => {
     for (const field of ['parity', 'striping'] as const) {
       expect(notApplicable(field, { ...DEFAULT_CONFIG, delivery: 'live' })).toBeNull();
@@ -111,8 +110,8 @@ describe('playbackPresets — notApplicable', () => {
     expect(notApplicable('parity', carrier)).not.toBe(notApplicable('striping', carrier));
   });
 
-  // UX2.7 — the LIFECYCLE-2 regression guard (docs/24 finding 16). A resilient
-  // viewer whose *stored* pacing is 'off' still has interpolation running,
+  // A resilient viewer whose *stored* pacing is 'off' still has interpolation
+  // running,
   // because playout.ts resolves carrier delivery to adaptive — so the control
   // must stay live, or the most GPU-expensive viewer feature has no off switch
   // on exactly the phones resilient mode exists for.
