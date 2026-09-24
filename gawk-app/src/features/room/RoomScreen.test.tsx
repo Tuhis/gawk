@@ -439,6 +439,19 @@ describe('RoomScreen relay states', () => {
     expect(screen.getByText(/Room server is updating/)).toBeTruthy();
   });
 
+  // The control session and the media sessions are independent: a room
+  // reconnect (a relay rollout drains it) must not cut anyone's video.
+  it('a control-session reconnect keeps every tile and its media session', async () => {
+    const room = await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    const created = viewerSessions.length;
+    act(() => room.cbs.onReconnecting({ attempt: 1, delayMs: 0, reason: 'drain', closeCode: 4002 }));
+    expect(screen.getAllByTestId('room-tile')).toHaveLength(3);
+    act(() => room.cbs.onState(state()));
+    expect(viewerSessions).toHaveLength(created);
+    expect(activeViewerIds()).toHaveLength(3);
+  });
+
   it('an attachment removal drops the tile and toasts', async () => {
     const room = await joinAs();
     act(() =>

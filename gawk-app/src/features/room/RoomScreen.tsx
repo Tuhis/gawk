@@ -271,7 +271,8 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
       mixerRef.current = null;
     };
   }, []);
-  const tilesShown = joined && effectiveMode !== 'hidden' && attachments.length > 0;
+  // A control-session reconnect keeps the stage: media sessions are independent of it.
+  const tilesShown = (joined || status === 'reconnecting') && effectiveMode !== 'hidden' && attachments.length > 0;
   // A broadcaster's "hide videos" is "preview only": their own screen full
   // bleed, no /subscribe to anyone (the bandwidth saver), the control
   // session kept. Same persisted mode as a viewer's hide-videos.
