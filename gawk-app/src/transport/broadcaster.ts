@@ -68,12 +68,14 @@ import {
   nextFrameId,
   parseBroadcastAnnounce,
   parseResumeToken,
+  parseSessionClosing,
   parseTelemetryHello,
   parseViewerCount,
   peekType,
   TYPE_BROADCAST_ANNOUNCE,
   TYPE_RESUME_TOKEN,
   TYPE_RELAY_CAPABILITIES,
+  TYPE_SESSION_CLOSING,
   TYPE_TELEMETRY_HELLO,
   TYPE_TELEMETRY_ENDPOINT,
   parseTelemetryEndpoint,
@@ -449,6 +451,10 @@ export class BroadcastPipeline {
   // configured off are the same code path — no parity is ever emitted.
   private parityLevel = 0;
   private connGeneration = 0;
+  // R56 (docs/58): the close code the relay said, in-band, it is about to
+  // close session `gen` with. Chrome never reads the close code itself, so
+  // handleSessionGone falls back to this when `closed` carries none.
+  private closingNotice: { gen: number; code: number } | null = null;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -583,7 +589,7 @@ export class BroadcastPipeline {
     // The server-message read is detached: media flow must never wait on the
     // announce (docs/06) — only the UI code display and the resume token
     // consume it.
-    void this.readServerMessages(wt);
+    void this.readServerMessages(wt, gen);
 
     // Relay clock sync (R5 Q2). Pings ride the ordinary datagram sender; the
     // read loop exists solely to catch replies (the relay sends the publisher
@@ -612,14 +618,14 @@ export class BroadcastPipeline {
   // R17 W2, the ResumeToken (0x09) — arrival order is not guaranteed.
   // Failures are logged, never fatal: the broadcast runs fine without the
   // code being displayed.
-  private async readServerMessages(wt: WebTransport): Promise<void> {
+  private async readServerMessages(wt: WebTransport, gen: number): Promise<void> {
     try {
       const reader = wt.incomingUnidirectionalStreams.getReader();
       try {
         for (;;) {
           const { value, done } = await reader.read();
           if (done) return;
-          if (value) void this.readServerMessage(value);
+          if (value) void this.readServerMessage(value, gen);
         }
       } finally {
         reader.releaseLock();
@@ -629,7 +635,7 @@ export class BroadcastPipeline {
     }
   }
 
-  private async readServerMessage(stream: ReadableStream<Uint8Array>): Promise<void> {
+  private async readServerMessage(stream: ReadableStream<Uint8Array>, gen: number): Promise<void> {
     try {
       const chunks: Uint8Array[] = [];
       const streamReader = stream.getReader();
@@ -693,6 +699,13 @@ export class BroadcastPipeline {
           const caps = parseRelayCapabilities(data);
           this.parityLevel = caps.flags & CAP_PARITY_CHUNKS ? caps.parityLevel : 0;
           this.stats.parityLevel = this.parityLevel;
+          break;
+        }
+        // R56 (docs/58): the relay is about to close this session with this
+        // code. Kept for handleSessionGone — the close itself arrives in
+        // Chrome as a bare "Connection lost.".
+        case TYPE_SESSION_CLOSING: {
+          this.closingNotice = { gen, code: parseSessionClosing(data) };
           break;
         }
         default:
@@ -1340,6 +1353,7 @@ export class BroadcastPipeline {
   // or the announce/token never landed) fails as before.
   private handleSessionGone(gen: number, err: Error | null, closeCode: number | null): void {
     if (this.stopping || gen !== this.connGeneration) return;
+    if (closeCode === null && this.closingNotice?.gen === gen) closeCode = this.closingNotice.code;
     // Terminal codes are checked BEFORE the resume branch: they are the cases
     // in which coming back is the wrong thing to do, not merely futile. 4004
     // only converges because the deposed session stays down, and 4006 means
