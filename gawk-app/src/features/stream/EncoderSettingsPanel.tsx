@@ -3,6 +3,8 @@
 // hands the full EncoderSettings snapshot to a live session. All three are
 // applied via encoder recreate on the next frame — never a stream restart.
 
+import { useState } from 'react';
+
 import styles from './stream.module.css';
 import {
   BITRATE_OVERRIDE_MAX,
@@ -51,6 +53,19 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
 
   const emit = () => onChange?.(encoderSettingsFromStore());
 
+  // Every commit recreates the live encoder, so the field holds what is being
+  // typed ("0" on the way to "0.7", "2" on the way to "25") and commits on
+  // blur/Enter. null = not editing: the field shows the stored value.
+  const [bitrateDraft, setBitrateDraft] = useState<string | null>(null);
+  const commitBitrate = () => {
+    if (bitrateDraft === null) return;
+    const v = bitrateDraft.trim();
+    const mbps = Number(v);
+    setBitrateOverride(v === '' || !Number.isFinite(mbps) || mbps <= 0 ? null : mbps * 1e6);
+    setBitrateDraft(null);
+    emit();
+  };
+
   // Stacked, full-width (like the dev settings) — three fields with full
   // codec strings overflow the side panel as a row.
   return (
@@ -81,12 +96,11 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
           max={BITRATE_OVERRIDE_MAX / 1e6}
           step={0.5}
           placeholder="auto"
-          value={bitrateOverride === null ? '' : bitrateOverride / 1e6}
-          onChange={(e) => {
-            const v = e.target.value.trim();
-            const mbps = Number(v);
-            setBitrateOverride(v === '' || !Number.isFinite(mbps) || mbps <= 0 ? null : mbps * 1e6);
-            emit();
+          value={bitrateDraft ?? (bitrateOverride === null ? '' : bitrateOverride / 1e6)}
+          onChange={(e) => setBitrateDraft(e.target.value)}
+          onBlur={commitBitrate}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitBitrate();
           }}
         />
       </div>
