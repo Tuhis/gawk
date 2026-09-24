@@ -432,6 +432,29 @@ describe('RoomScreen people-and-chat panel', () => {
     await waitFor(() => expect(roomSessions).toHaveLength(2));
     expect(roomSessions[1].opts.nickname).toBe('');
   });
+
+  // A name typed on the broadcaster page is bounded in characters there, but
+  // the wire limits are bytes: 20 × 'ä' is 40.
+  it('bounds a handed-in name to the wire limits before it reaches the relay', async () => {
+    const name = 'ä'.repeat(20);
+    const own = {
+      broadcastId: 'AAAAAA',
+      resumeTokenHex: 'b'.repeat(32),
+      label: name,
+      attachEpoch: 0,
+      preview: null,
+      controls: null,
+      onDetach: () => {},
+    };
+    render(<RoomView target={{ kind: 'join', code: 'AB2CD3' }} own={own} presetNickname={name} onLeave={() => {}} />);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(state({ attachments: [] })));
+    const bytes = (s: string) => new TextEncoder().encode(s).length;
+    expect(bytes(room.opts.nickname)).toBeLessThanOrEqual(32);
+    const attach = room.sent.find((c) => (c as { kind: string }).kind === 'attach') as { label: string };
+    expect(bytes(attach.label)).toBeLessThanOrEqual(32);
+  });
 });
 
 describe('RoomScreen relay states', () => {

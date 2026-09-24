@@ -30,6 +30,7 @@ import { HOME } from '../../routing';
 import {
   ROOM_CLIENT_WEB_BROADCASTER,
   ROOM_CLIENT_WEB_VIEWER,
+  MAX_ROOM_LABEL_LEN,
   ROOM_PARTICIPANT_FLAG_STREAMING,
   type RoomAttachment,
 } from '../../transport/wire';
@@ -55,7 +56,17 @@ import {
   rejectionToast,
   removalToast,
 } from './roomCopy';
-import { loadNickname, loadRoomMode, loadRoomPreset, saveNickname, saveRoomMode, saveRoomPreset, type RoomMode } from './roomPrefs';
+import {
+  loadNickname,
+  loadRoomMode,
+  loadRoomPreset,
+  sanitizeNickname,
+  sanitizeRoomText,
+  saveNickname,
+  saveRoomMode,
+  saveRoomPreset,
+  type RoomMode,
+} from './roomPrefs';
 import { readGrant, stashGrant, type RoomGrant } from './grantHandoff';
 import { AttachSecretPrompt } from './AttachSecretPrompt';
 import { stashRoomReturn } from './roomReturn';
@@ -163,7 +174,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   // D10: the nickname, asked once before the first dial and remembered — or
   // handed in by the hop from a room (presetNickname), which never asks.
   const [nickname, setNicknameState] = useState<string | null>(() =>
-    presetNickname === undefined ? loadNickname() : presetNickname,
+    presetNickname === undefined ? loadNickname() : presetNickname && sanitizeNickname(presetNickname),
   );
   const [guest, setGuest] = useState(presetNickname === null);
   const [editingNick, setEditingNick] = useState(false);
@@ -199,7 +210,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   const attachOk = mayAttach(snapshot);
   const ownId = own?.broadcastId ?? null;
   const ownToken = own?.resumeTokenHex ?? null;
-  const ownLabel = own?.label ?? '';
+  const ownLabel = sanitizeRoomText(own?.label ?? '', MAX_ROOM_LABEL_LEN);
   const ownEpoch = own?.attachEpoch ?? 0;
   useEffect(() => {
     if (!joined || !attachOk || ownId === null || ownToken === null) return;
