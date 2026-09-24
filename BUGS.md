@@ -28,7 +28,9 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   the *capture* path is fine — it is the whole breakout-box-in-worker surface
   that is missing, which is one platform capability, not two failures. There
   is no path to worker-side encode without native browser support, so this is
-  the same accepted fallback as Safari and Firefox. **Do not re-propose worker
+  the same accepted fallback as Firefox. (Safari is the opposite: its MSTP is
+  worker-only and tracks transfer, so it runs the worker path. See
+  `docs/gotchas.md`.) **Do not re-propose worker
   offload for Chrome/macOS without evidence the platform shipped it**; the
   capability check belongs in a probe, not a plan.
 - **The defect that remains: the fallback is silent.** `createBroadcastSession`
@@ -196,10 +198,15 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
     In resilient mode this is structural rather than incidental — all video
     rides the stream path there, so a stream-path wedge stops `lastFrame` too.
   - *No independent liveness probe*: `timeSyncRttMs` and `capToRenderMs` were
-    `null` for the entire session in **both** captures — the R5 TimeSync
-    round trip never completed once on this Safari. The ping write failure is
-    swallowed by `.catch(() => {})` in `viewer-transport.ts`, so it fails
-    silently and the viewer has no signal of its own to gate a watchdog on.
+    `null` for the entire session in **both** captures. The R5 TimeSync
+    round trip never completed once on this Safari, so the viewer has no
+    signal of its own to gate a watchdog on. **Cause found 2026-09-24:** no ping
+    was ever sent. WebKit has no `datagrams.writable` (only
+    `createWritable()`), and the viewer skipped its TimeSync writer when the
+    attribute was missing. Fixed by `openDatagramWriter()`; see
+    `docs/gotchas.md`. With pings flowing, the RTT signal a watchdog could gate
+    on now exists on Safari. The watchdog itself is still unbuilt, and the
+    missing ping explains none of the WebKit silence above.
 - **The session was unhealthy well before it died** (origin pod, that
   subscriber's broadcast): `carrierQueueOverflow` 3100 against 22987 delivered
   records — a **12 % overflow rate** on the 256-deep queue, i.e. `drainReliable`

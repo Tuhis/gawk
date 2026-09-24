@@ -337,6 +337,9 @@ Add to it when a new gotcha lands in `docs/`.
   (`createBroadcastSession(…, grant)`). Nothing may be awaited ahead of that
   call. Side effect: the picker opens while the relay connects, so an
   unreachable relay reports its error after the pick, not instead of it.
+- The two fixes above were verified on desktop Safari 26.5.2 (2026-09-24): the
+  broadcast went live against the local dev stack, on the R11 worker path
+  (`broadcaster.worker` logged the publish connect).
 - **Safari's `MediaStreamTrackProcessor` is worker-only** (`Exposed=DedicatedWorker`),
   and a `MediaStreamTrack` transfers into a worker. That is the opposite of
   Chrome on macOS (see the R11 entry in CLAUDE.md), so Safari passes the R11

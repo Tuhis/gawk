@@ -42,8 +42,10 @@ images, and a **[self-hosting guide](docs/self-hosting.md)**.
 
 **Browser support:** Chromium-first. Firefox works through documented
 fallbacks. Safari (macOS, and every browser on iOS, which is WebKit
-underneath) joins as a viewer; the iPhone fMP4 + `ManagedMediaSource`
-playback path is [docs/27](docs/27-ios-mse-fullscreen.md). The relay's
+underneath) joins as a viewer, and desktop Safari can broadcast video
+(its screen share carries no system audio); the iPhone fMP4 +
+`ManagedMediaSource` playback path is
+[docs/27](docs/27-ios-mse-fullscreen.md). The relay's
 QUIC stack is the piece WebKit is pickiest about — a dependency bump broke
 every WebKit viewer for six weeks in 2026 — so
 [docs/gotchas.md](docs/gotchas.md) carries what a bump of that pair has to

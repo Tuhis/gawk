@@ -3,12 +3,13 @@
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-app.json)](../docs/43-coverage-reporting.md)
 
 React SPA frontend for the gawk game stream: screen capture, WebCodecs
-encode/decode, and WebTransport datagram transport to the relay. Requires
-a Chromium-based browser for broadcasting; viewing works on Chromium and
-Firefox. **WebKit — Safari everywhere, and every browser on iOS — currently
-cannot join at all** (see [BUGS.md](../BUGS.md)); the app detects it on load
-and warns before the user hits the failure. The iPhone Safari fallbacks are
-still in the code and still documented, but nothing reaches them today.
+encode/decode, and WebTransport datagram transport to the relay. Chromium
+is the primary target for broadcasting and viewing. Firefox does both through
+documented fallbacks. Safari (and every iOS browser, all WebKit) can watch, and
+desktop Safari can broadcast video only: its screen share carries no system
+audio. The WebKit specifics (the datagram writer, the in-gesture screen
+prompt, worker-only `MediaStreamTrackProcessor`) are in `docs/gotchas.md`. A
+browser without `WebTransport` is warned on load (`lib/browserSupport.ts`).
 Project overview and quickstart: [root README](../README.md); gotchas:
 [`docs/gotchas.md`](../docs/gotchas.md).
 
