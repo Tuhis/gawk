@@ -145,3 +145,41 @@ describe('broadcastSettingsStore advanced axes (R13 L4)', () => {
     expect(localStorage.getItem('gawk.codecOverride')).toBeNull();
   });
 });
+
+describe('broadcastSettingsStore with storage unavailable', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('loads defaults and still applies changes when every storage call throws', async () => {
+    const denied = () => {
+      throw new DOMException('Access is denied for this document.', 'SecurityError');
+    };
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(denied);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(denied);
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(denied);
+
+    const s = await loadStore();
+    expect(s).toMatchObject({
+      resolutionSelection: 'auto',
+      framerateSelection: 'auto',
+      hwPreference: 'auto',
+      bitrateOverride: null,
+      codecOverride: null,
+    });
+
+    s.setResolutionSelection(720);
+    s.setFramerateSelection(60);
+    s.setHwPreference('software');
+    s.setBitrateOverride(2_000_000);
+    s.setCodecOverride('vp8');
+    const { useBroadcastSettingsStore } = await import('./broadcastSettingsStore');
+    expect(useBroadcastSettingsStore.getState()).toMatchObject({
+      resolutionSelection: 720,
+      framerateSelection: 60,
+      hwPreference: 'software',
+      bitrateOverride: 2_000_000,
+      codecOverride: 'vp8',
+    });
+  });
+});
