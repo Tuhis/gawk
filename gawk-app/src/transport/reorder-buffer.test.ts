@@ -234,6 +234,26 @@ describe('ReorderBuffer', () => {
     expect(ids()).toEqual([100, 101, 0, 1]);
   });
 
+  // frameIds across a restart are not comparable: an old-session frame still
+  // buffered (103) sits serially ahead of the new position and must not pose
+  // as the oldest waiting frame, which declared a gap after every release.
+  it('drops the old session\'s buffered frames on a restart', () => {
+    const { rb, ids, clock } = harness();
+    rb.pushKeyframe(kf(100));
+    rb.pushDelta(delta(101));
+    rb.pushDelta(delta(103)); // 102 lost
+    clock.t += DELTA_GAP_GRACE_MS + 1;
+    rb.tick();
+    clock.t += 200;
+    rb.pushKeyframe(kf(0));
+    for (let i = 1; i <= 10; i++) {
+      clock.t += 16;
+      rb.pushDelta(delta(i));
+    }
+    expect(ids()).toEqual([100, 101, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(rb.getStats().buffered).toBe(0);
+  });
+
   it('ignores an exact-duplicate keyframe of the current position', () => {
     const { rb, ids } = harness();
     rb.pushKeyframe(kf(0));

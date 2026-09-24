@@ -329,6 +329,11 @@ export class ReorderBuffer {
     const backwards =
       this.decodePosition !== null && !frameIdAhead(kf.frameId, this.decodePosition);
     if (backwards) {
+      // Everything buffered belongs to the old session, whose frameIds can sit
+      // serially ahead of the new ones and would pass for the new session's
+      // oldest waiting frames.
+      for (const e of this.buffer.values()) if (!e.keyframe) this.stats.deltasDropped++;
+      this.buffer.clear();
       this.arrivalBaseline.reset();
       this.arrivalQuantile.reset();
       this.onRestart?.();
@@ -392,14 +397,6 @@ export class ReorderBuffer {
     const min = this.arrivalBaseline.min(nowMs);
     if (p95 === null || min === null) return null;
     return Math.max(0, p95 - min);
-  }
-
-  reset(): void {
-    this.buffer.clear();
-    this.decodePosition = null;
-    this.waitingForKeyframe = true;
-    this.arrivalBaseline.reset();
-    this.arrivalQuantile.reset();
   }
 
   private insert(e: Entry): void {
