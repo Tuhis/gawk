@@ -730,7 +730,10 @@ price of skipping k3s and its kubelet.
 - Cluster mode, multi-pod federation, or anything the `e2e` kind tier covers.
 - WebKit/Safari — no lane is designed around it. A Safari viewer against the
   default lane was verified once (2026-09-21, the fix for the relay's WebKit
-  refusal, `docs/gotchas.md`), but none of the lanes is maintained with it.
+  refusal, `docs/gotchas.md`), and a Safari broadcaster once (2026-09-24, the
+  WebKit datagram-writer and in-gesture picker fixes), but none of the lanes is
+  maintained with it. Open the app as `http://localhost:8080`, not
+  `127.0.0.1`: the relay's `allowedOrigins` lists only the former.
 - A `gawk`-operated DNS or certificate service of any kind.
 
 ## 8. Chunks & acceptance criteria

@@ -22,6 +22,7 @@ import { BroadcasterStatsOverlay } from './BroadcasterStatsOverlay';
 import { BroadcastStartError, type BroadcastSessionLike, type BroadcastStats } from '../../transport/broadcaster';
 import { readVisibility } from '../../lib/visibility';
 import { createBroadcastSession } from './workerBroadcastSession';
+import { acquireDisplayStream, type DisplayStreamGrant } from '../../media/capture';
 import type { EncoderConfigured } from '../../media/encoder';
 import type { ResolutionSelection } from '../../media/ladder';
 import { DEFAULT_CAPTURE_CONFIG, type CaptureConfig } from '../../media/types';
@@ -87,6 +88,19 @@ type PendingRoom =
 // absent — and stay byte-identical.
 const BROADCASTER_CAPTURE_CONFIG: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG, audio: true };
 
+// Stops a display grant after a failed start. A start that fails before the
+// session consumed the grant (a connect failure) would otherwise leave the
+// capture indicator on for a stream nobody owns; stopping tracks the session
+// already stopped is a no-op.
+function releaseGrant(grant: Promise<DisplayStreamGrant>): void {
+  void grant.then(
+    ({ stream }) => {
+      for (const t of stream.getTracks()) t.stop();
+    },
+    () => {},
+  );
+}
+
 function selectionLabel(selection: ResolutionSelection): string {
   if (selection === 'auto') return 'auto';
   return selection === 'native' ? 'native' : `${selection}p`;
@@ -123,6 +137,11 @@ function serverHost(url: string): string {
 // when the deploy requires one (config.requirePublishSecret).
 export function BroadcasterScreen() {
   const pipelineRef = useRef<BroadcastSessionLike | null>(null);
+  // The display grant of the latest start. The screen owns it (handleStart
+  // requests it in the click), so the unmount cleanup releases it: leaving
+  // mid-connect stops a session that never consumed it and whose start()
+  // never settles, and the share indicator would otherwise stay on.
+  const grantRef = useRef<Promise<DisplayStreamGrant> | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const [status, setStatus] = useState<Status>('idle');
@@ -247,6 +266,18 @@ export function BroadcasterScreen() {
 
   const handleStart = useCallback(async () => {
     if (pipelineRef.current) return;
+    // Open the screen picker now, inside the click, and hand the grant to the
+    // session: Safari honours getDisplayMedia only from the user-gesture
+    // handler itself, and the worker boot + relay connect that precede
+    // capture outlast it ("getDisplayMedia must be called from a user gesture
+    // handler"). Chromium's ~5 s activation window used to hide this. Nothing
+    // may be awaited above this line. A reclaim that falls back to a mint
+    // reuses the same grant — one picker per click.
+    const grant = acquireDisplayStream(BROADCASTER_CAPTURE_CONFIG);
+    // A cancelled picker surfaces through the session that consumes the
+    // grant (phase 'capture'); this only keeps an unconsumed one quiet.
+    grant.catch(() => {});
+    grantRef.current = grant;
     const { serverUrl, certHashHex, publishSecret } = useTransportStore.getState();
     setError(null);
     setStats(null);
@@ -355,6 +386,7 @@ export function BroadcasterScreen() {
         { certHashHex, publishSecret, resumeToken: resumeTokenRef.current ?? undefined },
         makeCallbacks(false),
         activeId,
+        grant,
       );
       pipeline.setLadder(res, framerateSelection);
       pipeline.setEncoderSettings(encoderSettingsFromStore());
@@ -367,6 +399,7 @@ export function BroadcasterScreen() {
         if (!(e instanceof BroadcastStartError) || e.phase !== 'connect') {
           const err = e instanceof Error ? e : new Error(String(e));
           log.error(err);
+          releaseGrant(grant);
           // A start() rejection fires no onEnded (the rejection is our error
           // surface), and a capture-phase failure lands after onSourceStream
           // already flipped the stage to LIVE — reset it here or the screen
@@ -394,6 +427,8 @@ export function BroadcasterScreen() {
       serverUrl,
       { certHashHex, publishSecret },
       makeCallbacks(triedReclaim),
+      undefined,
+      grant,
     );
     pipeline.setLadder(res, framerateSelection);
     pipeline.setEncoderSettings(encoderSettingsFromStore());
@@ -403,6 +438,7 @@ export function BroadcasterScreen() {
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       log.error(err);
+      releaseGrant(grant);
       // Same stage reset as the reclaim catch above: no onEnded follows a
       // start() rejection.
       setSourceStream(null);
@@ -497,6 +533,7 @@ export function BroadcasterScreen() {
   useEffect(() => {
     return () => {
       void pipelineRef.current?.stop();
+      if (grantRef.current) releaseGrant(grantRef.current);
     };
   }, []);
 

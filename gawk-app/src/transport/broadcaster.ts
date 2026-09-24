@@ -13,6 +13,7 @@ import {
   stopCapture,
   type BroadcastMediaSource,
   type BroadcastMediaSourceFactory,
+  type DisplayStreamGrant,
 } from '../media/capture';
 import { Encoder, type EncodedFrame, type EncoderConfigured } from '../media/encoder';
 import {
@@ -319,8 +320,12 @@ export interface BroadcastSessionLike {
 // Default media source: the existing main-thread capture path, unchanged.
 // Lives here (not capture.ts) so tests that mock '../media/capture' keep
 // stubbing startCapture/stopCapture without also faking the adapter.
-const captureMediaSource: BroadcastMediaSourceFactory = async (config) => {
-  const handle = await startCapture(config);
+// `grant` is the display stream BroadcasterScreen requested in the start
+// click (Safari's user-gesture rule); without one, capture prompts itself.
+export const captureMediaSourceFrom = (
+  grant?: Promise<DisplayStreamGrant>,
+): BroadcastMediaSourceFactory => async (config) => {
+  const handle = await startCapture(config, grant);
   return {
     capturePath: handle.capturePath,
     stream: handle.stream,
@@ -341,6 +346,8 @@ const captureMediaSource: BroadcastMediaSourceFactory = async (config) => {
       : {}),
   };
 };
+
+const captureMediaSource = captureMediaSourceFrom();
 
 // Thrown by BroadcastPipeline.start(). The phase tells the caller whether a
 // relay session was ever established: 'connect' failures never had one (safe
@@ -494,14 +501,26 @@ export class BroadcastPipeline {
   }
 
   async start(): Promise<void> {
-    // Connect before prompting for screen capture: if the publisher slot is
-    // taken (409) or the server is unreachable, fail without the share
-    // picker ever appearing.
+    // Connect before consuming the screen capture: an unreachable server
+    // fails the start before any frame is captured. The picker itself may
+    // already be open — BroadcasterScreen requests the display stream inside
+    // the start click, since Safari honours getDisplayMedia only from the
+    // user-gesture handler, and that grant arrives here via mediaSource.
     this.resumeToken = this.connectOpts.resumeToken ?? null;
     try {
       await this.connectTransport();
     } catch (e) {
       throw new BroadcastStartError('connect', e);
+    }
+    if (this.stopping) {
+      // stop() raced the first dial, the same race resumeTransport guards:
+      // teardown() ran with no session yet, so this one would be a zombie
+      // publisher holding the broadcast ID, and it would go on to consume the
+      // screen grant after the page gave up on it (PR #373 review). stop()
+      // already fired onEnded; resolve quietly, because a connect-phase
+      // rejection would make the screen fall back from reclaim to a mint.
+      this.teardownTransport();
+      return;
     }
     // The mapping check runs on a 1s timer so the first mapping goes out
     // promptly after the first pong, then refreshes on the cadence. One
@@ -512,6 +531,9 @@ export class BroadcastPipeline {
     // encoder init already resolves the auto ceiling / auto fps (docs/18
     // Decision 3). Never throws; a probe-less scope keeps the defaults.
     await this.refreshMatrix();
+    // stop() during the probe: teardown() already closed the session, and
+    // capturing now would own a stream nothing ever stops.
+    if (this.stopping) return;
 
     try {
       await this.startMedia();

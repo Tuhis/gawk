@@ -13,12 +13,16 @@ const decodeSpy = vi.fn();
 
 const readServerStreams = vi.fn();
 
-vi.mock('./connection', () => ({
-  connectWebTransport: (...args: unknown[]) => connectWebTransport(...args),
-  readDatagrams: (...args: unknown[]) => readDatagrams(...args),
-  readServerStreams: (...args: unknown[]) => readServerStreams(...args),
-  newCarrierCounters: () => ({ streamsOpened: 0, recordsReceived: 0, streamsAborted: 0, malformed: 0 }),
-}));
+vi.mock('./connection', async () => {
+  const actual = await vi.importActual<typeof import('./connection')>('./connection');
+  return {
+    connectWebTransport: (...args: unknown[]) => connectWebTransport(...args),
+    readDatagrams: (...args: unknown[]) => readDatagrams(...args),
+    readServerStreams: (...args: unknown[]) => readServerStreams(...args),
+    newCarrierCounters: () => ({ streamsOpened: 0, recordsReceived: 0, streamsAborted: 0, malformed: 0 }),
+    openDatagramWriter: actual.openDatagramWriter,
+  };
+});
 
 // The latest Decoder instance's callbacks, so a test can fire onDecoded (the
 // pipeline's measurement point for live-edge drift + absolute latency).

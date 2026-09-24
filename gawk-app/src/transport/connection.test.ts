@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { log } from '../lib/logger';
 import {
   connectWebTransport,
+  DatagramSender,
   newCarrierCounters,
+  openDatagramWriter,
   readServerStreams,
   type KeyframeStreamFrame,
 } from './connection';
@@ -460,5 +462,50 @@ describe('readServerStreams — relay capabilities (R29/R30)', () => {
     );
     expect(seen).toHaveLength(0);
     expect(counters.malformed).toBe(1);
+  });
+});
+
+// WebKit implements only the current-spec `datagrams.createWritable()`; the
+// deprecated `datagrams.writable` attribute is absent there. Every datagram
+// writer in the app used `.writable`, so a Safari broadcast died at session
+// setup with "undefined is not an object (evaluating
+// 'e.datagrams.writable.getWriter')", and the viewer's TimeSync pings were
+// silently never sent.
+describe('openDatagramWriter', () => {
+  function sink(): { stream: WritableStream<BufferSource>; written: Uint8Array[] } {
+    const written: Uint8Array[] = [];
+    const stream = new WritableStream<BufferSource>({
+      write(chunk) {
+        written.push(new Uint8Array(chunk as ArrayBuffer));
+      },
+    });
+    return { stream, written };
+  }
+
+  it('uses createWritable() when datagrams.writable is absent (WebKit)', async () => {
+    const { stream, written } = sink();
+    const createWritable = vi.fn(() => stream);
+    const wt = { datagrams: { createWritable } } as unknown as WebTransport;
+
+    const sender = new DatagramSender(wt);
+    await sender.send([new Uint8Array([1, 2, 3])]);
+
+    expect(createWritable).toHaveBeenCalledTimes(1);
+    expect(written).toEqual([new Uint8Array([1, 2, 3])]);
+  });
+
+  it('keeps using datagrams.writable where it exists (Chromium, Firefox)', () => {
+    const { stream } = sink();
+    const createWritable = vi.fn(() => sink().stream);
+    const wt = { datagrams: { writable: stream, createWritable } } as unknown as WebTransport;
+
+    expect(openDatagramWriter(wt)).not.toBeNull();
+    expect(createWritable).not.toHaveBeenCalled();
+    expect(stream.locked).toBe(true);
+  });
+
+  it('returns null when neither exists', () => {
+    expect(openDatagramWriter({ datagrams: {} } as unknown as WebTransport)).toBeNull();
+    expect(openDatagramWriter({} as unknown as WebTransport)).toBeNull();
   });
 });

@@ -215,8 +215,10 @@ Re-deriving them costs a cycle and has happened before.
   `MediaStreamTrackGenerator` or `MediaStreamTrack` — so the track is not
   transferable and the worker can't build a processor. There is no path to
   worker-side encode without native support; the main-thread fallback is the
-  accepted outcome there, as it is on Safari and Firefox. Probe the capability
-  before re-proposing. (`docs/16` Decision 1, `docs/gotchas.md`, `BUGS.md`)
+  accepted outcome there, as it is on Firefox. Safari is the opposite case: its
+  MSTP is worker-only and tracks transfer, so it takes the worker path
+  (`docs/gotchas.md`, 2026-09-24). Probe the capability before re-proposing.
+  (`docs/16` Decision 1, `docs/gotchas.md`, `BUGS.md`)
 - **Dropping the compiled-in default relay** (making `-url` required, or
   defaulting to empty because the repository is public) — rejected 2026-08-19.
   Prioritising the official deployment is the product decision; the answer to

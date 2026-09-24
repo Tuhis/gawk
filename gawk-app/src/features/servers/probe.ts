@@ -15,7 +15,7 @@
 // causes once (docs/40 §4.4) rather than pretending to diagnose.
 
 import { parseRelayIdentity, type RelayIdentityMessage } from '../../transport/wire';
-import { hexToBytes } from '../../transport/connection';
+import { hexToBytes, openDatagramWriter } from '../../transport/connection';
 
 export const PROBE_SAMPLES = 5;
 export const PROBE_SAMPLE_SPACING_MS = 120;
@@ -41,8 +41,10 @@ export type ProbeResult = ProbeSuccess | ProbeFailure;
 export interface ProbeTransport {
   ready: Promise<void>;
   closed: Promise<unknown>;
+  // `writable` is absent on WebKit, which has only `createWritable()`.
   datagrams: {
-    writable: WritableStream<Uint8Array>;
+    writable?: WritableStream<BufferSource>;
+    createWritable?: () => WritableStream<BufferSource>;
     readable: ReadableStream<Uint8Array>;
   };
   incomingUnidirectionalStreams: ReadableStream<ReadableStream<Uint8Array>>;
@@ -143,7 +145,8 @@ export async function probeRelay(
   // RTT: send stamped pings, read echoes, median of successes.
   const rtts: number[] = [];
   try {
-    const writer = wt.datagrams.writable.getWriter();
+    const writer = openDatagramWriter(wt);
+    if (!writer) throw new Error('no writable datagram stream');
     const reader = wt.datagrams.readable.getReader();
     const echoReads = (async () => {
       for (let i = 0; i < PROBE_SAMPLES; i++) {
