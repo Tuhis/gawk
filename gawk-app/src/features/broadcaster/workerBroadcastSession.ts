@@ -11,12 +11,13 @@
 // preview stream, and transferring a track *clone* into the worker (transfer
 // detaches a track from this realm — the original must stay for the preview).
 
-import { acquireDisplayStream } from '../../media/capture';
+import { acquireDisplayStream, type DisplayStreamGrant } from '../../media/capture';
 import type { CaptureConfig } from '../../media/types';
 import type { FramerateSelection, ResolutionSelection } from '../../media/ladder';
 import {
   BroadcastPipeline,
   BroadcastStartError,
+  captureMediaSourceFrom,
   DEFAULT_ENCODER_SETTINGS,
   type BroadcastCallbacks,
   type BroadcastSessionLike,
@@ -346,18 +347,40 @@ function probeTrackTransfer(worker: Worker): boolean {
 // pipeline where the environment supports it (Chromium), the unchanged
 // main-thread BroadcastPipeline otherwise (Firefox, jsdom). Both implement
 // BroadcastSessionLike, so the caller never branches.
+//
+// `grant` is the display stream the caller requested in its start click:
+// Safari honours getDisplayMedia only from the user-gesture handler itself,
+// and the worker boot + relay connect that precede capture outlast it. Both
+// paths consume the grant instead of prompting.
 export async function createBroadcastSession(
   config: CaptureConfig,
   serverUrl: string,
   connectOpts: ConnectOptions,
   callbacks: BroadcastCallbacks,
   broadcastId?: string,
+  grant?: Promise<DisplayStreamGrant>,
 ): Promise<BroadcastSessionLike> {
   const worker = await tryCreateBroadcastWorker();
   if (!worker) {
-    return new BroadcastPipeline(config, serverUrl, connectOpts, callbacks, broadcastId);
+    return new BroadcastPipeline(
+      config,
+      serverUrl,
+      connectOpts,
+      callbacks,
+      broadcastId,
+      undefined,
+      captureMediaSourceFrom(grant),
+    );
   }
-  return new WorkerBroadcastSession(worker, config, serverUrl, connectOpts, callbacks, broadcastId);
+  return new WorkerBroadcastSession(
+    worker,
+    config,
+    serverUrl,
+    connectOpts,
+    callbacks,
+    broadcastId,
+    grant ? () => grant : acquireDisplayStream,
+  );
 }
 
 async function tryCreateBroadcastWorker(): Promise<Worker | null> {

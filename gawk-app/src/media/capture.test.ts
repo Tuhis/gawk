@@ -178,3 +178,25 @@ describe('acquireDisplayStream after an audio refusal (session memory)', () => {
     expect(reloaded.mock.calls[0]![0].audio).toBeTruthy();
   });
 });
+
+// Safari: the screen prompt is opened in the start click (BroadcasterScreen)
+// and its grant handed down, so the capture step must consume that grant
+// rather than prompt a second time long after the gesture has expired.
+describe('startCapture with a pre-acquired grant', () => {
+  it('uses the grant and never calls getDisplayMedia', async () => {
+    vi.resetModules();
+    const { startCapture } = await import('./capture');
+    const getDisplayMedia = stubDisplayMedia(async () => fakeStream());
+    // The MSTP handle defers the processor to startFrames — no DOM needed.
+    vi.stubGlobal('MediaStreamTrackProcessor', function () {});
+    const stream = fakeStream();
+    const track = stream.getVideoTracks()[0]!;
+    const handle = await startCapture(
+      DEFAULT_CAPTURE_CONFIG,
+      Promise.resolve({ stream, track, audioUnavailable: false }),
+    );
+    expect(getDisplayMedia).not.toHaveBeenCalled();
+    expect(handle.stream).toBe(stream);
+    expect(handle.track).toBe(track);
+  });
+});

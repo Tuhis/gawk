@@ -169,8 +169,15 @@ async function requestDisplayStream(
   return { stream, track };
 }
 
-export async function startCapture(config: CaptureConfig): Promise<CaptureHandle> {
-  const { stream, track, audioUnavailable } = await acquireDisplayStream(config);
+// `grant` is a display stream the caller already requested — BroadcasterScreen
+// opens the picker inside the start click, because Safari only honours
+// getDisplayMedia from the user-gesture handler itself (see
+// acquireDisplayStream's callers). Without one, capture prompts here.
+export async function startCapture(
+  config: CaptureConfig,
+  grant?: Promise<DisplayStreamGrant>,
+): Promise<CaptureHandle> {
+  const { stream, track, audioUnavailable } = await (grant ?? acquireDisplayStream(config));
 
   if (typeof (globalThis as unknown as { MediaStreamTrackProcessor?: unknown }).MediaStreamTrackProcessor === 'function') {
     return createMstpHandle(stream, track, audioUnavailable);

@@ -318,6 +318,30 @@ Add to it when a new gotcha lands in `docs/`.
   (`displaySurface`, an advisory category only — never pipeline config).
   ([docs/30](30-broadcaster-capture-audio-guidance.md))
 
+**Cross-browser (Safari / WebKit)**
+
+- **WebKit has no `datagrams.writable`, only `datagrams.createWritable()`.**
+  The spec deprecated the attribute. Chromium and Firefox still ship it, WebKit
+  never did. Open every datagram writer through `openDatagramWriter()`
+  (`transport/connection.ts`), which prefers `.writable` and falls back. Until
+  2026-09-24 a Safari broadcast died at session setup ("undefined is not an
+  object (evaluating 'e.datagrams.writable.getWriter')"). The same bug made the
+  server picker's probe fail every relay and stopped Safari viewers from ever
+  sending a TimeSync ping, which is why `timeSyncRttMs` was always null in the
+  July Safari captures.
+- **Safari honours `getDisplayMedia` only from inside the user-gesture
+  handler.** Chromium grants ~5 s of transient activation. WebKit rejects a call
+  made after the worker boot and relay connect with "getDisplayMedia must be
+  called from a user gesture handler". `BroadcasterScreen.handleStart` opens the
+  picker before its first `await` and hands the grant to the session
+  (`createBroadcastSession(…, grant)`). Nothing may be awaited ahead of that
+  call. Side effect: the picker opens while the relay connects, so an
+  unreachable relay reports its error after the pick, not instead of it.
+- **Safari's `MediaStreamTrackProcessor` is worker-only** (`Exposed=DedicatedWorker`),
+  and a `MediaStreamTrack` transfers into a worker. That is the opposite of
+  Chrome on macOS (see the R11 entry in CLAUDE.md), so Safari passes the R11
+  capability gate and broadcasts from the worker path.
+
 **Frontend UI**
 
 - **A modal overlay must be portalled to `<body>`, never mounted where it is

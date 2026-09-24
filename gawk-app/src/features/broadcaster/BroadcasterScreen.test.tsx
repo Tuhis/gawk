@@ -15,6 +15,7 @@ const { created, scripts } = vi.hoisted(() => {
   interface FakeSession {
     callbacks: BroadcastCallbacks;
     broadcastId?: string;
+    grant?: Promise<unknown>;
     start(): Promise<void>;
     stop(): Promise<void>;
     setLadder(): void;
@@ -34,12 +35,14 @@ vi.mock('./workerBroadcastSession', () => ({
     _opts: unknown,
     callbacks: BroadcastCallbacks,
     broadcastId?: string,
+    grant?: Promise<unknown>,
   ) => {
     const script = scripts.shift();
     if (!script) throw new Error('test bug: no session script queued');
     const session = {
       callbacks,
       broadcastId,
+      grant,
       start: () => script(callbacks),
       stop: async () => callbacks.onEnded(),
       setLadder: () => {},
@@ -542,5 +545,83 @@ describe('BroadcasterScreen screen wake lock', () => {
     await act(async () => {});
     expect(locks[0].released).toBe(false);
     expect(locks).toHaveLength(1);
+  });
+});
+
+// Safari: getDisplayMedia must be called from inside the user-gesture handler.
+// WebKit's activation does not survive the worker boot + relay connect that
+// used to come first, so a Safari start died with "getDisplayMedia must be
+// called from a user gesture handler." The prompt now opens in the click,
+// concurrently with the connect, and the session consumes the grant.
+describe('BroadcasterScreen screen-share prompt (user gesture)', () => {
+  function stubDisplayMedia(impl: () => Promise<MediaStream>) {
+    const getDisplayMedia = vi.fn(impl);
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getDisplayMedia },
+    });
+    return getDisplayMedia;
+  }
+
+  function stoppableStream() {
+    const stop = vi.fn();
+    const track = { stop, getSettings: () => ({}) } as unknown as MediaStreamTrack;
+    const stream = {
+      getTracks: () => [track],
+      getVideoTracks: () => [track],
+      getAudioTracks: () => [],
+    } as unknown as MediaStream;
+    return { stream, stop };
+  }
+
+  afterEach(() => {
+    delete (navigator as { mediaDevices?: unknown }).mediaDevices;
+  });
+
+  it('asks for the screen synchronously inside the click and hands the grant to the session', async () => {
+    const getDisplayMedia = stubDisplayMedia(() => new Promise(() => {}));
+    scripts.push(() => new Promise(() => {}));
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    // No await between the click and this line: the call happened in the
+    // gesture handler itself.
+    expect(getDisplayMedia).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(created).toHaveLength(1));
+    expect(created[0]!.grant).toBeInstanceOf(Promise);
+  });
+
+  it('prompts once for a reclaim that falls back to a mint, both sessions sharing the grant', async () => {
+    const getDisplayMedia = stubDisplayMedia(() => new Promise(() => {}));
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /stop broadcast/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /start a stream/i })).toBeTruthy(),
+    );
+    getDisplayMedia.mockClear();
+    scripts.push(async () => {
+      throw new BroadcastStartError('connect', new Error('reclaim refused'));
+    });
+    scripts.push(() => new Promise(() => {}));
+    startBroadcast();
+    await waitFor(() => expect(created).toHaveLength(3));
+    expect(getDisplayMedia).toHaveBeenCalledTimes(1);
+    expect(created[1]!.grant).toBe(created[2]!.grant);
+  });
+
+  it('stops the granted tracks when the start fails before a session used them', async () => {
+    const { stream, stop } = stoppableStream();
+    stubDisplayMedia(async () => stream);
+    scripts.push(async () => {
+      throw new BroadcastStartError('connect', new Error('relay unreachable'));
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(stop).toHaveBeenCalled());
   });
 });
