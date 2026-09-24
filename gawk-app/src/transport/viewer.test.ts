@@ -783,7 +783,7 @@ describe('ViewerPipeline', () => {
     expect(errors.some((e) => e.closeCode === CLOSE_CODE_BROADCAST_ENDED)).toBe(true);
   });
 
-  // R57 (docs/59 CN3): what Chrome actually delivers — the relay's close
+  // What Chrome actually delivers: the relay's close
   // code never arrives (wt.closed rejects "Connection lost." with none), so
   // the in-band SessionClosing is the only way the viewer can tell a killed
   // or ended broadcast from a network drop.

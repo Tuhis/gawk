@@ -401,7 +401,7 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     await pipeline.stop();
   });
 
-  // R57 (docs/59 CN3): what Chrome actually delivers. The relay's close code
+  // What Chrome actually delivers. The relay's close code
   // never arrives — `closed` rejects "Connection lost." with none — so the
   // in-band SessionClosing is the only thing that stops a deposed publisher
   // from resuming straight back into a fight with the one that replaced it,

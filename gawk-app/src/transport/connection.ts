@@ -338,7 +338,7 @@ async function readOneServerStream(
     }
 
     if (head1 === TYPE_SESSION_CLOSING) {
-      // R57: fixed 6 bytes; read to EOF and parse strictly. An unreadable
+      // Fixed 6 bytes; read to EOF and parse strictly. An unreadable
       // notice costs only the reason shown for the close, never media.
       for (;;) {
         if (total > SESSION_CLOSING_SIZE) break;

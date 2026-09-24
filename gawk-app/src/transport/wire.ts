@@ -178,7 +178,7 @@ export const CLOSE_CODE_TERMINATED_BY_OPERATOR = 4006;
 // wire.CloseCodeRoomEnded.
 export const CLOSE_CODE_ROOM_ENDED = 4007;
 
-// SessionClosing (R57, docs/59): relay→client on its own server-opened uni
+// SessionClosing: relay→client on its own server-opened uni
 // stream, a settle interval BEFORE the relay closes the session with this
 // code. It exists because Chrome never reads a webtransport-go close code —
 // the relay's close packet carries STOP_SENDING on the CONNECT stream ahead

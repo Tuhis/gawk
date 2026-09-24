@@ -427,9 +427,8 @@ describe('RoomSession endings', () => {
     s.stop();
   });
 
-  // What Chrome actually delivers (measured 2026-09-24 in a net-log,
-  // docs/59): the relay's close packet carries STOP_SENDING on the CONNECT stream AHEAD of the 4007
-  // capsule (quic-go packs control frames before stream data), and Chrome
+  // What Chrome actually delivers: the relay's close packet carries
+  // STOP_SENDING on the CONNECT stream AHEAD of the 4007 capsule (quic-go packs control frames before stream data), and Chrome
   // fails the session on it — wt.closed rejects "Connection lost." with no
   // code. The RoomEnding that preceded it is the relay's word that
   // the room is over; reconnecting into a gone room only looped the

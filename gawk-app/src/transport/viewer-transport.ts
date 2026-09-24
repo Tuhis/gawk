@@ -138,7 +138,7 @@ export class LocalViewerTransport implements ViewerTransport {
   private abort = new AbortController();
   private closing = false; // close() called — suppress onClosed
   private closedReported = false;
-  // R57 (docs/59): the code the relay said, in-band, it is about to close
+  // The code the relay said, in-band, it is about to close
   // this session with. Chrome never reads the close code itself, so a close
   // (or a drop) that arrives without one reports this instead.
   private noticedCloseCode: number | undefined;
@@ -460,7 +460,7 @@ export class LocalViewerTransport implements ViewerTransport {
   // An abrupt drop (read loop died, no close frame): message only.
   private reportDropped(cb: ViewerTransportCallbacks, err: Error): void {
     if (this.closing || this.closedReported) return;
-    // The relay said why before it closed (R57): this is that close, not a
+    // The relay said why before it closed: this is that close, not a
     // drop — Chrome just never delivered its code.
     if (this.noticedCloseCode !== undefined) {
       this.reportClosed(cb, this.noticedCloseCode, err.message);
