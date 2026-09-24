@@ -21,6 +21,9 @@ import {
   encodeStreamFrame,
   encodeTelemetryHello,
   encodeVideoChunk,
+  encodeSessionClosing,
+  CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_TERMINATED_BY_OPERATOR,
   type TelemetryHelloMessage,
 } from './wire';
 import {
@@ -507,5 +510,33 @@ describe('openDatagramWriter', () => {
   it('returns null when neither exists', () => {
     expect(openDatagramWriter({ datagrams: {} } as unknown as WebTransport)).toBeNull();
     expect(openDatagramWriter({} as unknown as WebTransport)).toBeNull();
+  });
+});
+
+// R57 (docs/59 CN3): the relay's in-band close notice. Chrome never reads a
+// webtransport-go close code, so this stream is how a viewer learns its
+// broadcast ended (4000) or was killed (4006) rather than merely dropped.
+describe('readServerStreams — session closing notice (R57)', () => {
+  it('dispatches the notice code to its own callback, never to the media path', async () => {
+    const wt = wtWithStreams([[encodeSessionClosing(CLOSE_CODE_TERMINATED_BY_OPERATOR)]]);
+    const seen: number[] = [];
+    const counters = newCarrierCounters();
+    await readServerStreams(
+      wt,
+      { onKeyframe: () => { throw new Error('not a keyframe'); }, onCarrierRecord: () => {}, onSessionClosing: (c) => seen.push(c) },
+      counters,
+    );
+    expect(seen).toEqual([CLOSE_CODE_TERMINATED_BY_OPERATOR]);
+    expect(counters.malformed).toBe(0);
+  });
+
+  it('counts a malformed notice and keeps going', async () => {
+    const bad = encodeSessionClosing(CLOSE_CODE_BROADCAST_ENDED).subarray(0, 5);
+    const wt = wtWithStreams([[bad]]);
+    const seen: number[] = [];
+    const counters = newCarrierCounters();
+    await readServerStreams(wt, { onKeyframe: () => {}, onCarrierRecord: () => {}, onSessionClosing: (c) => seen.push(c) }, counters);
+    expect(seen).toHaveLength(0);
+    expect(counters.malformed).toBe(1);
   });
 });

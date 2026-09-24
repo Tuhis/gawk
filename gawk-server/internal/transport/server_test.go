@@ -435,16 +435,12 @@ func TestReclaimSupersedesActivePublisher(t *testing.T) {
 	second := dialPublisherReclaim(t, ctx, port, id, token, clientTLS)
 	defer second.CloseWithError(0, "")
 
-	// The first session is kicked with the superseded close code.
-	actx, acancel := context.WithTimeout(ctx, 5*time.Second)
-	defer acancel()
-	_, err := first.AcceptUniStream(actx)
-	if err == nil {
-		t.Fatal("first publisher session still alive after takeover, want superseded close")
-	}
-	var serr *webtransport.SessionError
-	if !errors.As(err, &serr) || !serr.Remote || serr.ErrorCode != webtransport.SessionErrorCode(wire.CloseCodePublisherSuperseded) {
-		t.Fatalf("first publisher close = %v, want remote session error %d", err, wire.CloseCodePublisherSuperseded)
+	// The first session is kicked with the superseded close code — told
+	// in-band first (R57), then closed with it.
+	notice, _, code, _ := drainUntilClosed(t, ctx, first)
+	if notice != wire.CloseCodePublisherSuperseded || code != webtransport.SessionErrorCode(wire.CloseCodePublisherSuperseded) {
+		t.Fatalf("first publisher notice/close = %d/%d, want %d/%d", notice, code,
+			wire.CloseCodePublisherSuperseded, wire.CloseCodePublisherSuperseded)
 	}
 
 	// The new session owns a working slot: its frames reach the subscriber

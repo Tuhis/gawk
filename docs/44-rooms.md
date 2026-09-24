@@ -268,7 +268,14 @@ message, with golden vectors.
 - Participant IDs are per-room, per-generation, opaque. Nicknames are
   display-only.
 - **Close code 4007 `RoomEnded`**: terminal for the room session only. The
-  participant's media sessions have their own lifecycle.
+  participant's media sessions have their own lifecycle. *(Revision
+  2026-09-24, [docs/59](59-close-notice.md) D5.)* Chrome never receives this
+  code. It fails the session on a STOP_SENDING that arrives ahead of the
+  close capsule and reports "Connection lost." with no code
+  (docs/gotchas.md). `RoomEnding` is therefore the signal: the client treats
+  any session end that follows a `RoomEnding` event as the end of the room,
+  whatever the code. The relay always sends `RoomEnding` a settle interval
+  before the close, so the event does arrive.
 - The native mirrors implement `RoomHello`, `RoomState` (parse), the
   attach/detach commands, and the close code; they carry every golden
   vector regardless.
@@ -444,6 +451,21 @@ The canvas itself is the reference for RM4/RM5 and is linked from §12.
   secret, and — the quiet one, fixed 2026-09-17 — *no* attach secret,
   where a gated static room admits the participant as a watcher and keeps
   their stream out (§11.1's `ATTACH_OK` note).
+- *(Revision 2026-09-24.)* How a broadcaster leaves a room it didn't
+  choose to leave. **Ending the room yourself** shows no card: once the
+  relay confirms, you are back on your own live stage (a viewer goes
+  home). **Someone else ending the room** shows the reason card, adds
+  "Your stream is still live on its own code.", and has one button, *Back
+  to my stream*. **The creator removing your stream** (detach reason
+  `creator`) shows a card, not the toast other removals get, with the
+  same button: a broadcaster should not be left in a room their stream
+  is no longer part of. Removals of other people's streams stay toasts.
+  **The broadcast itself failing** (an operator kill, a newer session taking
+  the code, the resume budget spent) takes the page out of the room and
+  shows "Your broadcast stopped" with the reason. It used to leave the room
+  view up, still reading LIVE. Verified by `RoomScreen.test.tsx` ("RoomView
+  with an own broadcast"), `BroadcasterScreen.room.test.tsx` and
+  headless-Chrome runs against a local relay (docs/59 §8).
 - Reserved space: a speaking indicator on participants and a chat panel
   slot, both hidden until their capabilities arrive (§4.11). The design
   pass should draw them so the v1 layout does not have to move later.
