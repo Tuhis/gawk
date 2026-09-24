@@ -65,7 +65,7 @@ const (
 	// sessions actually receive: it is what repoints the R28 reporter on a
 	// foreign relay (docs/40 §4.10), so like the hello above this is coupling
 	// on a message this module really uses.
-	// R56 (docs/58 CN1): SessionClosing, code 4004. Pinned by the allocation
+	// R57 (docs/59 CN1): SessionClosing, code 4004. Pinned by the allocation
 	// rule; this module never needs to parse it (see TestGoldenSessionClosing).
 	goldenSessionClosingHex      = "011700000fa4"
 	goldenRelayIdentityHex       = "01110006312e34322e30096761776b20686f6d65"
@@ -336,7 +336,7 @@ func TestWireConstants(t *testing.T) {
 		{"MaxRoomLabelLen", wire.MaxRoomLabelLen, 32},
 		{"MaxRoomIdentityLen", wire.MaxRoomIdentityLen, 64},
 		{"MaxRoomRejectMessageLen", wire.MaxRoomRejectMessageLen, 128},
-		// R56 (docs/58 CN1): the relay's in-band close notice. This module's
+		// R57 (docs/59 CN1): the relay's in-band close notice. This module's
 		// publisher reads close codes itself (webtransport-go's client does,
 		// unlike Chrome) and ignores the stream by type, so the pin is the
 		// allocation map's, not a runtime dependency.
@@ -552,7 +552,7 @@ func TestCapabilitiesSurviveStripedBit(t *testing.T) {
 
 // --- R37 relay identity + telemetry endpoint -------------------------------
 
-// SessionClosing (R56) is relay→client on a publish or subscribe session. The
+// SessionClosing (R57) is relay→client on a publish or subscribe session. The
 // native publisher reads the WebTransport close code directly, so it ignores
 // this stream by type (engine.readServerMessage's default branch); the vector
 // is restated so the four mirrors stay byte-identical.

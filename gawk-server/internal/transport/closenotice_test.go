@@ -1,6 +1,6 @@
 package transport
 
-// R56 (docs/58 CN2): the in-band close notice. Chrome never reads a
+// R57 (docs/59 CN2): the in-band close notice. Chrome never reads a
 // webtransport-go close code, so before the relay closes a browser-facing
 // session with a code that changes what the client does next, it says the
 // code on its own uni stream (wire.SessionClosing) and closes a settle

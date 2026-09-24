@@ -8,7 +8,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// R56 (docs/58): the in-band close notice.
+// R57 (docs/59): the in-band close notice.
 //
 // A webtransport-go close code never reaches Chrome — the library's close
 // packet carries STOP_SENDING on the CONNECT stream ahead of the close

@@ -18,7 +18,7 @@ const GOLDEN_CLOCK_MAPPING: &str = "0106000000000016e360";
 const GOLDEN_CLOCK_MAPPING_NEGATIVE: &str = "0106fffffffffff0bdc0";
 const GOLDEN_BROADCAST_ANNOUNCE: &str = "0103064b375851324d"; // "K7XQ2M"
 const GOLDEN_RESUME_TOKEN: &str = "010910000102030405060708090a0b0c0d0e0f";
-// R56 (docs/58 CN1): SessionClosing, code 4004. Byte-identical to
+// R57 (docs/59 CN1): SessionClosing, code 4004. Byte-identical to
 // gawk-server/wire closing_test.go goldenSessionClosingHex.
 const GOLDEN_SESSION_CLOSING: &str = "011700000fa4";
 const GOLDEN_CARRIER_PROLOGUE: &str = "010a";

@@ -436,7 +436,7 @@ func TestReclaimSupersedesActivePublisher(t *testing.T) {
 	defer second.CloseWithError(0, "")
 
 	// The first session is kicked with the superseded close code — told
-	// in-band first (R56), then closed with it.
+	// in-band first (R57), then closed with it.
 	notice, _, code, _ := drainUntilClosed(t, ctx, first)
 	if notice != wire.CloseCodePublisherSuperseded || code != webtransport.SessionErrorCode(wire.CloseCodePublisherSuperseded) {
 		t.Fatalf("first publisher notice/close = %d/%d, want %d/%d", notice, code,

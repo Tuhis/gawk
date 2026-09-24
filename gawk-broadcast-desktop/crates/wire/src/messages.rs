@@ -499,7 +499,7 @@ pub fn parse_resume_token(msg: &[u8]) -> Result<&[u8], WireError> {
 
 // --- SessionClosing (0x17) --------------------------------------------------
 
-/// Appends a SessionClosing message (R56): version, type, u32 BE close code.
+/// Appends a SessionClosing message (R57): version, type, u32 BE close code.
 pub fn append_session_closing(dst: &mut Vec<u8>, code: u32) -> Result<(), WireError> {
     if !(4000..=4999).contains(&code) {
         return Err(WireError::BadSessionClosing { code });

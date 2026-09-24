@@ -513,10 +513,10 @@ describe('openDatagramWriter', () => {
   });
 });
 
-// R56 (docs/58 CN3): the relay's in-band close notice. Chrome never reads a
+// R57 (docs/59 CN3): the relay's in-band close notice. Chrome never reads a
 // webtransport-go close code, so this stream is how a viewer learns its
 // broadcast ended (4000) or was killed (4006) rather than merely dropped.
-describe('readServerStreams — session closing notice (R56)', () => {
+describe('readServerStreams — session closing notice (R57)', () => {
   it('dispatches the notice code to its own callback, never to the media path', async () => {
     const wt = wtWithStreams([[encodeSessionClosing(CLOSE_CODE_TERMINATED_BY_OPERATOR)]]);
     const seen: number[] = [];

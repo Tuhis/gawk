@@ -1684,7 +1684,7 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 type webtransportSessionAdapter struct {
 	*webtransport.Session
 	// closeNotice: this is a browser-facing session (publish, external
-	// subscribe), so a terminal close states its code in-band first (R56,
+	// subscribe), so a terminal close states its code in-band first (R57,
 	// closenotice.go). False on /internal/subscribe, whose edge client reads
 	// every uni stream as a keyframe.
 	closeNotice bool

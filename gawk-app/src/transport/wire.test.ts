@@ -761,9 +761,9 @@ describe('resume token (R17 W2)', () => {
   });
 });
 
-// R56 (docs/58 CN1): the in-band close notice. Byte-identical to
+// R57 (docs/59 CN1): the in-band close notice. Byte-identical to
 // gawk-server/wire closing_test.go goldenSessionClosingHex.
-describe('SessionClosing (R56)', () => {
+describe('SessionClosing (R57)', () => {
   const GOLDEN_SESSION_CLOSING_HEX = '011700000fa4';
 
   it('encodes the golden notice byte-for-byte and parses it back', () => {

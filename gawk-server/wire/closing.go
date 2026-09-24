@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// SessionClosing (R56, docs/58): relay→client, the close code of a session
+// SessionClosing (R57, docs/59): relay→client, the close code of a session
 // the relay is about to close, sent on its own server-opened unidirectional
 // stream a settle interval before the WebTransport close itself.
 //

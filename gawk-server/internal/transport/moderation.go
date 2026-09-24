@@ -107,7 +107,7 @@ func (s *Server) terminate(broadcastID, why string) {
 	delete(s.publishers, broadcastID)
 	s.sessMu.Unlock()
 	if pub != nil {
-		// With the in-band notice first (R56): a browser never reads the
+		// With the in-band notice first (R57): a browser never reads the
 		// 4006 itself, and would otherwise retry into the ban.
 		closeWithNoticeAsync(pub.sess, wire.CloseCodeTerminatedByOperator, terminationReason)
 	}

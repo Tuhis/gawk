@@ -451,7 +451,7 @@ export class BroadcastPipeline {
   // configured off are the same code path — no parity is ever emitted.
   private parityLevel = 0;
   private connGeneration = 0;
-  // R56 (docs/58): the close code the relay said, in-band, it is about to
+  // R57 (docs/59): the close code the relay said, in-band, it is about to
   // close session `gen` with. Chrome never reads the close code itself, so
   // handleSessionGone falls back to this when `closed` carries none.
   private closingNotice: { gen: number; code: number } | null = null;
@@ -701,7 +701,7 @@ export class BroadcastPipeline {
           this.stats.parityLevel = this.parityLevel;
           break;
         }
-        // R56 (docs/58): the relay is about to close this session with this
+        // R57 (docs/59): the relay is about to close this session with this
         // code. Kept for handleSessionGone — the close itself arrives in
         // Chrome as a bare "Connection lost.".
         case TYPE_SESSION_CLOSING: {

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// --- R56 SessionClosing (0x17) (docs/58 CN1) ---
+// --- R57 SessionClosing (0x17) (docs/59 CN1) ---
 
 // Golden vector, computed by hand from the layout in closing.go. Restated
 // byte-identically in all three mirrors (wire.ts, wirecheck, crates/wire).

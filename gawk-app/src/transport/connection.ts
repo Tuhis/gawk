@@ -176,7 +176,7 @@ export interface ServerStreamCallbacks {
   // R30's version-skew gate: striping engages only after CAP_STRIPED_DELIVERY
   // is seen, so an old relay (which never sends it) is never dialed for legs.
   onRelayCapabilities?: (caps: RelayCapabilities) => void;
-  // R56 (docs/58): the close code the relay is about to close this session
+  // R57 (docs/59): the close code the relay is about to close this session
   // with, stated in-band because Chrome never reads a webtransport-go close
   // code. The consumer keeps it for when `closed` settles without one.
   onSessionClosing?: (code: number) => void;
@@ -343,7 +343,7 @@ async function readOneServerStream(
     }
 
     if (head1 === TYPE_SESSION_CLOSING) {
-      // R56: fixed 6 bytes; read to EOF and parse strictly. An unreadable
+      // R57: fixed 6 bytes; read to EOF and parse strictly. An unreadable
       // notice costs only the reason shown for the close, never media.
       for (;;) {
         if (total > SESSION_CLOSING_SIZE) break;

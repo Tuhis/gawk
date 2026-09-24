@@ -73,7 +73,7 @@ pub const TYPE_ROOM_HELLO: u8 = 0x13;
 pub const TYPE_ROOM_STATE: u8 = 0x14;
 pub const TYPE_ROOM_EVENT: u8 = 0x15;
 pub const TYPE_ROOM_COMMAND: u8 = 0x16;
-// SessionClosing (R56, docs/58): relay→client on its own uni stream, the close
+// SessionClosing (R57, docs/59): relay→client on its own uni stream, the close
 // code the relay is about to close the session with — in-band because Chrome
 // never reads a webtransport-go close code. This broadcaster reads the close
 // code itself (wtransport does) and ignores the stream by type; the constant
