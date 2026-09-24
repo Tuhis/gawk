@@ -30,6 +30,28 @@ describe('useHotkey', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
+  it('fires when Option has changed the reported character (macOS)', () => {
+    const handler = vi.fn();
+    renderHook(() => useHotkey(STATS, handler));
+    press(window, { key: 'Î', code: 'KeyD' });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not match a different physical key through code', () => {
+    const handler = vi.fn();
+    renderHook(() => useHotkey(STATS, handler));
+    press(window, { key: 'ß', code: 'KeyS' });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('matches a shortcut without Alt by character only', () => {
+    const handler = vi.fn();
+    renderHook(() => useHotkey({ key: 'f' }, handler));
+    // Dvorak: the physical F key types 'u'.
+    press(window, { key: 'u', code: 'KeyF', ctrlKey: false, altKey: false, shiftKey: false });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('ignores a partial modifier match', () => {
     const handler = vi.fn();
     renderHook(() => useHotkey(STATS, handler));
