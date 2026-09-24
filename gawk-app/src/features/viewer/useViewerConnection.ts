@@ -628,6 +628,10 @@ export function useViewerConnection(
     };
   }, [useWorker, applyEvent, canvasRef, presentationMux]);
 
+  // Parity is served only on live edge, so off it a parity change must not
+  // re-dial for nothing.
+  const negotiatedParity = deliveryMode === 'live' ? parityLevel : undefined;
+
   // Session start/stop per broadcast id — and per resilient-mode flip, which
   // is a deliberate reconnect with the delivery negotiation in the URL
   // (docs/24 Decision 9). The mode command goes first: worker messages
@@ -642,15 +646,13 @@ export function useViewerConnection(
       connectOpts: {
         certHashHex,
         ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}),
-        // Only on live edge: the carrier modes are served no parity, so
-        // sending the param there would ask for something that cannot happen.
-        ...(deliveryMode === 'live' && parityLevel != null ? { parityLevel } : {}),
+        ...(negotiatedParity != null ? { parityLevel: negotiatedParity } : {}),
       },
     });
     return () => {
       controllerRef.current?.stop();
     };
-  }, [useWorker, broadcastId, deliveryMode, parityLevel, serverUrl, certHashHex, resetState]);
+  }, [useWorker, broadcastId, deliveryMode, negotiatedParity, serverUrl, certHashHex, resetState]);
 
   // R5 Q3 + R12 T2: the playout mode, applied on mount and on every toggle.
   // Worker path: cross into the worker's context; main-thread path: set the
@@ -691,7 +693,7 @@ export function useViewerConnection(
       {
         certHashHex,
         ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}),
-        ...(deliveryMode === 'live' && parityLevel != null ? { parityLevel } : {}),
+        ...(negotiatedParity != null ? { parityLevel: negotiatedParity } : {}),
       },
       {
         onDecodedFrame: ({ frame }) => {
@@ -772,7 +774,7 @@ export function useViewerConnection(
     useWorker,
     broadcastId,
     deliveryMode,
-    parityLevel,
+    negotiatedParity,
     serverUrl,
     certHashHex,
     applyEvent,

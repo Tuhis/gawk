@@ -647,6 +647,34 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(screen.getByLabelText('Playback quality: Balanced')).toBeTruthy();
   });
 
+  // Parity is negotiated only on live edge; off it, a parity change has
+  // nothing to renegotiate.
+  it('does not reconnect for a parity reset under a carrier delivery mode', async () => {
+    localStorage.setItem('gawk:viewer-delivery', 'resilient');
+    localStorage.setItem('gawk:parity-level', '0');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    openSettings();
+    openAdvanced();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset advanced' }));
+    expect(localStorage.getItem('gawk:parity-level')).toBeNull();
+    expect(sessions).toHaveLength(1);
+    localStorage.removeItem('gawk:viewer-delivery');
+  });
+
+  // Applying a live preset resets a live viewer's parity, which re-dials, so
+  // the row must say so like the delivery-changing rows do.
+  it('marks a preset that will reconnect because it resets parity', async () => {
+    localStorage.setItem('gawk:parity-level', '1');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    tap(screen.getByLabelText(/^Playback quality:/));
+    expect(screen.getByRole('menuitemradio', { name: 'Balanced' }).textContent).toContain('reconnects');
+    localStorage.removeItem('gawk:parity-level');
+  });
+
   // Decision 2, and the risk it carries: a preset is a *complete*
   // configuration, so picking one puts the advanced knobs back. The pill would
   // otherwise read "Balanced" over a forced-off striping setting.

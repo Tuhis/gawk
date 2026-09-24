@@ -617,13 +617,14 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     ...PRESETS.map((preset) => ({
       label: preset.label,
       checked: currentPreset === preset.id,
-      // Only a delivery change re-dials: delivery and parity are in
-      // useViewerConnection's session-effect deps, pacing/striping/
-      // interpolation cross into the live pipeline instead. So the step
-      // between Lowest latency and Balanced is silent, and the carrier
-      // presets are not (docs/37 decision 7).
+      // Delivery and live-edge parity re-dial (they are negotiated at
+      // subscribe time, and a preset resets parity); pacing, striping and
+      // interpolation cross into the live pipeline. So the step between
+      // Lowest latency and Balanced is silent unless parity was changed.
       note:
-        preset.delivery !== deliveryMode ? `${preset.sub} ${RECONNECT_NOTE}` : preset.sub,
+        preset.delivery !== deliveryMode || (deliveryMode === 'live' && parityChoice !== 'auto')
+          ? `${preset.sub} ${RECONNECT_NOTE}`
+          : preset.sub,
       onSelect: () => applyPreset(preset.id),
     })),
     // Custom is never offered on a clean install: it renders only while it is
