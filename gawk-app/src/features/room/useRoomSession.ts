@@ -19,8 +19,6 @@ export interface RoomCommands {
   detach: (broadcastId: string) => void;
   setNickname: (nickname: string) => void;
   endRoom: () => void;
-  // The code the session is joined to (a mint learns it from the first state).
-  code: () => string | null;
 }
 
 export interface UseRoomSessionArgs {
@@ -128,8 +126,7 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
   const detach = useCallback((id: string) => sessionRef.current?.detach(id), []);
   const setNickname = useCallback((n: string) => sessionRef.current?.setNickname(n), []);
   const endRoom = useCallback(() => sessionRef.current?.endRoom(), []);
-  const code = useCallback(() => sessionRef.current?.code ?? null, []);
 
   // One stable object: the room screen's attach effect depends on it.
-  return useMemo(() => ({ attach, detach, setNickname, endRoom, code }), [attach, detach, setNickname, endRoom, code]);
+  return useMemo(() => ({ attach, detach, setNickname, endRoom }), [attach, detach, setNickname, endRoom]);
 }
