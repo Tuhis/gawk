@@ -28,7 +28,7 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
     this.underruns = 0;
     this.lastReportAt = 0;
     this.playheadUs = null;
-    // Drift trim only (docs/20 Decision 10 revised). The base read rate comes
+    // Drift trim only. The base read rate comes
     // from the content-vs-context sample rates and is computed per chunk.
     this.trim = 1;
     // The context's own rate — an AudioWorkletGlobalScope global. The context
@@ -36,7 +36,7 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
     // back the device rate (44.1 kHz is routine) while Opus decodes to 48 kHz.
     // Reading one source sample per output frame there plays 8.8 % slow and a
     // semitone low, so the rate ratio is part of the read position, not an
-    // assumption (docs/20 field finding 8).
+    // assumption.
     this.contextRate = sampleRate;
     // Cumulative content ms this worklet has accepted. Paired with the sink's
     // own delivered total, it lets the sink add back chunks that were in
@@ -66,10 +66,10 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
   // rate the context runs at, and is directly comparable to the durations the
   // jitter buffer thinks in.
   //
-  // This is the number findings 7 and 8 were both missing: the buffer used to
-  // maintain a shadow of this queue from deliveries and drain deltas, which
-  // could diverge (undelivered chunks, an assumed context rate, a suspended
-  // context) with no way to notice. The queue's owner reports it instead.
+  // The queue's owner reports this rather than the jitter buffer keeping a
+  // shadow of it from deliveries and drain deltas, which could diverge
+  // (undelivered chunks, an assumed context rate, a suspended context) with no
+  // way to notice.
   queuedMs() {
     let ms = 0;
     for (let i = 0; i < this.queue.length; i++) {
@@ -141,8 +141,8 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // ~4 Hz playhead/depth report (docs/20 Decision 10 measures skew from it,
-    // field finding 8 takes the depth from it).
+    // ~4 Hz playhead/depth report: the A/V skew and the buffer depth are both
+    // measured from it.
     if (currentTime - this.lastReportAt >= 0.25) {
       this.lastReportAt = currentTime;
       this.port.postMessage({
