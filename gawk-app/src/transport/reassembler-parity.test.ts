@@ -122,6 +122,7 @@ describe('Reassembler parity recovery', () => {
     });
     expect(frames).toHaveLength(1);
     expect(Array.from(frames[0].data)).toEqual(Array.from(data));
+    expect(frames[0].timestampUs).toBe(30_000n);
   });
 
   it('recovers when parity arrives BEFORE the surviving chunks', () => {
@@ -137,6 +138,19 @@ describe('Reassembler parity recovery', () => {
     });
     expect(frames).toHaveLength(1);
     expect(Array.from(frames[0].data)).toEqual(Array.from(data));
+    expect(frames[0].timestampUs).toBe(16_000n);
+  });
+
+  // A parity symbol carries no timestamp, so the frame it opens must take it
+  // from the first data chunk even when nothing else is lost.
+  it('keeps the timestamp of a frame whose parity arrived first', () => {
+    const { r, frames } = collector();
+    const data = patternBytes(800, 3);
+    const { datagrams, parity } = packetizeFrameWithParity(info(40), data, 2);
+    r.push(parity[0]);
+    for (const d of datagrams) r.push(d);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].timestampUs).toBe(40_000n);
   });
 
   it('counts parity chunks but never treats them as bad datagrams', () => {

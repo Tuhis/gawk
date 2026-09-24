@@ -342,6 +342,11 @@ export class Reassembler {
       this.stats.badDatagrams++;
       return;
     }
+    if (assembly.arrived === 0) {
+      // Opened by a parity symbol, which carries no timestamp.
+      assembly.timestampUs = header.timestampUs;
+      assembly.keyframe = header.keyframe;
+    }
     if (assembly.payloads[header.chunkIndex] !== null) {
       this.stats.duplicateChunks++;
       return;
