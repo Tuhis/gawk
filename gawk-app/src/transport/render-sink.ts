@@ -142,15 +142,18 @@ export class OffscreenCanvasRenderSink implements RenderSink {
   draw(frame: VideoFrame): void {
     const canvas = this.canvas;
     const ctx = this.ctx;
-    if (ctx) {
-      if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-        canvas.width = frame.displayWidth;
-        canvas.height = frame.displayHeight;
+    try {
+      if (ctx) {
+        if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+          canvas.width = frame.displayWidth;
+          canvas.height = frame.displayHeight;
+        }
+        ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+        this.drawn++;
       }
-      ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
-      this.drawn++;
+    } finally {
+      frame.close();
     }
-    frame.close();
   }
 
   drawnFrames(): number {

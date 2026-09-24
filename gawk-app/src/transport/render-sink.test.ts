@@ -130,6 +130,17 @@ describe('OffscreenCanvasRenderSink', () => {
     expect(writes()).toBe(2); // unchanged: no further writes
   });
 
+  it('closes the frame even when drawing throws', () => {
+    const { canvas, ctx } = fakeCanvas();
+    ctx.drawImage.mockImplementation(() => {
+      throw new DOMException('unsupported', 'InvalidStateError');
+    });
+    const sink = new OffscreenCanvasRenderSink(canvas);
+    const frame = fakeFrame(320, 240);
+    expect(() => sink.draw(frame)).toThrow();
+    expect(frame.close).toHaveBeenCalledTimes(1);
+  });
+
   it('still closes the frame when no 2D context is available', () => {
     const canvas = { width: 0, height: 0, getContext: () => null } as unknown as OffscreenCanvas;
     const sink = new OffscreenCanvasRenderSink(canvas);
