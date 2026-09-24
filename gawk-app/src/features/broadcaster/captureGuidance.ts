@@ -10,6 +10,7 @@
 // *capability*, never on the `audioState` string (which cannot tell "Firefox,
 // can't do audio" from "Chromium, box unticked" — both are 'no-track').
 
+import { readStored, writeStored } from '../../lib/storage';
 import { audioLaneSupported } from '../../media/audio-lane';
 import type { BroadcastStats } from '../../transport/broadcaster';
 
@@ -133,28 +134,15 @@ export function captureSurfaceNote(displaySurface: string | undefined): { text: 
   return displaySurface === 'window' ? { text: WINDOW_NOTE } : null;
 }
 
-// ── Dismissal memory (localStorage, gawk:* convention) ─────────────────────
-// Persisting the dismissal is a conscious trade (docs/30 decisions 3–4): it
-// serves "don't nag experienced users" at the cost of not re-warning a
-// forgetful repeat mistake. The two keys are distinct so the two notes dismiss
-// independently. All access is try/catch-guarded — a private-mode / disabled
-// storage must never throw on the broadcast path (terms/acceptance.ts idiom).
-
+// Dismissals persist, so the two notes dismiss independently and an
+// experienced user is not nagged again.
 export const HINT_AUDIO_MISSING_KEY = 'gawk:hint-audio-missing';
 export const HINT_WINDOW_SHARE_KEY = 'gawk:hint-window-share';
 
 export function isHintDismissed(key: string): boolean {
-  try {
-    return localStorage.getItem(key) === '1';
-  } catch {
-    return false; // storage unavailable: show the hint rather than throw
-  }
+  return readStored(key) === '1';
 }
 
 export function dismissHint(key: string): void {
-  try {
-    localStorage.setItem(key, '1');
-  } catch {
-    // Nothing to persist to; the hint may re-show next time, never a throw.
-  }
+  writeStored(key, '1');
 }

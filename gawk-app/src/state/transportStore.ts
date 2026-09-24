@@ -2,6 +2,7 @@ import { create } from 'zustand';
 
 import { getDevCertHashHex, getRelayUrl } from '../config';
 import { normalizeRelayOrigin } from '../lib/relayUrl';
+import { readStored, writeStored } from '../lib/storage';
 
 // R37 (docs/40 §4.1): the server model. What was three global values
 // (serverUrl / certHashHex / publishSecret) is now a list of saved servers
@@ -78,12 +79,7 @@ function str(v: unknown): string {
 // (§4.1.1). Entries with an unusable id/url are dropped individually; the
 // default credentials record only needs id + url.
 function readStoredServers(): RelayServerEntry[] {
-  let raw: string | null = null;
-  try {
-    raw = localStorage.getItem(LS_SERVERS);
-  } catch {
-    return [];
-  }
+  const raw = readStored(LS_SERVERS);
   if (!raw) return [];
   let parsed: unknown;
   try {
@@ -111,42 +107,23 @@ function readStoredServers(): RelayServerEntry[] {
 }
 
 function writeStoredServers(servers: RelayServerEntry[]): void {
-  try {
-    localStorage.setItem(LS_SERVERS, JSON.stringify(servers));
-  } catch {
-    // Quota/privacy-mode failures degrade to session-only state.
-  }
+  writeStored(LS_SERVERS, JSON.stringify(servers));
 }
 
 function readSelectedId(): string {
-  try {
-    return localStorage.getItem(LS_SELECTED) ?? DEFAULT_SERVER_ID;
-  } catch {
-    return DEFAULT_SERVER_ID;
-  }
+  return readStored(LS_SELECTED) ?? DEFAULT_SERVER_ID;
 }
 
 function writeSelectedId(id: string): void {
-  try {
-    localStorage.setItem(LS_SELECTED, id);
-  } catch {
-    // Same degradation as writeStoredServers.
-  }
+  writeStored(LS_SELECTED, id);
 }
 
-// §4.1.2 migration, idempotent: runs only while legacy keys exist, removes
-// them after a successful write of the new ones.
+// Idempotent: runs only while legacy keys exist and removes them once the new
+// ones are written.
 function migrateLegacyKeys(): void {
-  let legacyUrl: string | null;
-  let legacyCert: string | null;
-  let legacySecret: string | null;
-  try {
-    legacyUrl = localStorage.getItem(LS_LEGACY_SERVER_URL);
-    legacyCert = localStorage.getItem(LS_LEGACY_CERT_HASH);
-    legacySecret = localStorage.getItem(LS_LEGACY_PUBLISH_SECRET);
-  } catch {
-    return;
-  }
+  const legacyUrl = readStored(LS_LEGACY_SERVER_URL);
+  const legacyCert = readStored(LS_LEGACY_CERT_HASH);
+  const legacySecret = readStored(LS_LEGACY_PUBLISH_SECRET);
   if (legacyUrl === null && legacyCert === null && legacySecret === null) return;
 
   const servers = readStoredServers();
@@ -191,14 +168,11 @@ function migrateLegacyKeys(): void {
     writeSelectedId(id);
   }
 
-  try {
-    localStorage.removeItem(LS_LEGACY_SERVER_URL);
-    localStorage.removeItem(LS_LEGACY_CERT_HASH);
-    localStorage.removeItem(LS_LEGACY_PUBLISH_SECRET);
-  } catch {
-    // If removal fails the migration re-runs next load; every branch above is
-    // idempotent under a re-run (same inputs, same outputs).
-  }
+  // A failed removal just re-runs the migration next load, which is safe:
+  // every branch above yields the same result for the same inputs.
+  writeStored(LS_LEGACY_SERVER_URL, null);
+  writeStored(LS_LEGACY_CERT_HASH, null);
+  writeStored(LS_LEGACY_PUBLISH_SECRET, null);
 }
 
 // F9: the default's credential record follows the URL it was saved against,
@@ -397,17 +371,18 @@ function resolveEntry(inputs: ResolutionInputs): ResolvedTransport {
   };
 }
 
+// The stored selection, or the default when it names no saved entry.
+function storedSelectionIn(servers: RelayServerEntry[]): string {
+  const stored = readSelectedId();
+  return servers.some((s) => s.id === stored) ? stored : DEFAULT_SERVER_ID;
+}
+
 function loadInitialState(): ResolutionInputs {
   migrateLegacyKeys();
   const servers = pruneStaleDefaultCredentials(readStoredServers());
-  const storedSelection = readSelectedId();
-  const selectedServerId =
-    storedSelection === DEFAULT_SERVER_ID || servers.some((s) => s.id === storedSelection)
-      ? storedSelection
-      : DEFAULT_SERVER_ID;
   return {
     servers,
-    selectedServerId,
+    selectedServerId: storedSelectionIn(servers),
     sessionOverrideUrl: null,
     overridePublishSecret: '',
     overrideCertHashHex: '',
@@ -607,12 +582,7 @@ export const useTransportStore = create<TransportSettingsState>((set, get) => {
     reloadFromStorage: () => {
       const s = get();
       const servers = pruneStaleDefaultCredentials(readStoredServers());
-      const storedSelection = readSelectedId();
-      const selectedServerId =
-        storedSelection === DEFAULT_SERVER_ID || servers.some((e) => e.id === storedSelection)
-          ? storedSelection
-          : DEFAULT_SERVER_ID;
-      apply({ ...inputsOf(s), servers, selectedServerId });
+      apply({ ...inputsOf(s), servers, selectedServerId: storedSelectionIn(servers) });
     },
 
     // Legacy debug-tree surface: point the store at a raw URL. Equal to the

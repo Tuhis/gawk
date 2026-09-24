@@ -40,6 +40,7 @@ import { elementFullscreenAvailable, useFullscreen } from '../../lib/useFullscre
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
 import { fmtWatching } from '../../lib/format';
+import { readStored, writeStored } from '../../lib/storage';
 import { buildViewLink } from '../../lib/shareLink';
 import { useViewerConnection, type ViewerStatus } from './useViewerConnection';
 import type { ViewerEndReason, ViewerErrorKind } from '../../transport/viewer-session';
@@ -51,121 +52,53 @@ import { ServerPickerPanel } from '../servers/ServerPickerPanel';
 
 const CONTROL_IDLE_MS = 3000;
 
-// R5 Q3 + R12 T2: the playout preference, persisted per browser as one mode
-// ('off' | 'fixed' | 'adaptive'). **Default: 'adaptive'** (user decision
-// 2026-07-15, flipping the earlier live-edge default for the production
-// viewer; the right-click menu is the disable path).
+// Per-browser viewer preferences. The playback preset is derived from these
+// values and never stored itself, so a configuration that matches no preset
+// simply reads "Custom".
 //
-// docs/17 Decision 10 (2026-07-23) retired 'fixed' from the production menu:
-// adaptive dominates it on every axis — its clamp floor (50 ms) is *below*
-// fixed's constant 150 ms on a clean link, its ceiling above it on a dirty
-// one, its first ~5 s are the same 150 ms seed, and only adaptive computes a
-// displayTargetMs, so fixed paid the buffering latency while presenting
-// unpaced (viewer.ts `displayTargetMs` returns undefined outside adaptive).
-// The *mode* survives as a developer diagnostic — a measurement-free control
-// for telling a pacing bug from a bug in the thing measuring the pacing,
-// which PLAYOUT-1 (docs/24 finding 8) proved is a real failure mode — so the
-// entry is gated on isDevEnvironment() exactly like the broadcaster's dev
-// settings, rather than left as an unreachable branch.
-//
-// Migration order: an explicit new-key choice wins ('fixed' outside a dev
-// build resolves to 'adaptive' — the mode it was a worse approximation of);
-// then the legacy boolean ('1' = the R5 "Smooth playback" opt-in → 'adaptive',
-// which is what that user was asking for; '0' = an explicit live-edge choice
-// → 'off', the default flip must not overrule it); then the adaptive default.
+// Playout: 'adaptive' by default. A stored 'fixed' (a removed mode) resolves
+// to 'adaptive'; without a current value the legacy smoothing boolean decides,
+// so an explicit live-edge choice ('0') is still honoured.
 const PLAYOUT_MODE_KEY = 'gawk:playout-mode';
 const LEGACY_SMOOTHED_KEY = 'gawk:smoothed-playout';
-// R12 T4: the experimental frame-interpolation preference. **Default: on**
-// (same 2026-07-15 decision); a no-op wherever the pipeline can't
-// interpolate (main-thread path, non-WebGL2 sink, non-adaptive mode).
+// Frame interpolation: on by default, a no-op where the pipeline can't do it.
 const INTERPOLATION_KEY = 'gawk:interpolation';
-// R19 (docs/24 Decision 9): resilient mode for lossy (mobile) networks —
-// reliable delta delivery + a wider adaptive buffer, at 0.5–2 s behind live.
-// Default off; persisted; toggling is a deliberate reconnect.
-const RESILIENT_MODE_KEY = 'gawk:resilient-mode';
-// R21 (docs/26 Decision 15): R19's boolean became three points on one axis —
-// live-edge, resilient, deep buffer — because each step buys smoothness with
-// delay and a second boolean would have made two controls out of one choice.
-// The legacy key migrates: an R19 viewer that had resilient mode on keeps
-// exactly the latency it had, and opts into the deep buffer separately.
+// Delivery: live | resilient | deep. The legacy resilient boolean maps to
+// 'resilient', never 'deep', so an old setting keeps the latency it had.
 const DELIVERY_MODE_KEY = 'gawk:viewer-delivery';
-// R29 (docs/34 §5.2): an opt-DOWN from the fleet parity default, persisted.
-// Absent/'auto' means "take what the fleet serves", which is the default and
-// the only way to get the maximum — a viewer cannot ask for MORE parity than
-// the producer emitted.
+const RESILIENT_MODE_KEY = 'gawk:resilient-mode';
+// Parity can only be lowered from what the fleet serves; absent means 'auto'.
 const PARITY_LEVEL_KEY = 'gawk:parity-level';
-// R30 (docs/35 §5.5): connection striping. 'auto' (default) engages when the
-// client detects the burst-threshold loss signature on itself; 'on' forces
-// it as soon as frames are sized; 'off' forbids it. A live flip, never a
-// reconnect — engagement is in-band.
+// Connection striping: 'auto' engages on the loss signature it detects.
 const STRIPE_MODE_KEY = 'gawk:stripe-mode';
 
-// R32 (docs/37 decision 1): the five keys above stay exactly as they are and
-// the *preset* is derived from them — never stored. No migration for existing
-// viewers, no second source of truth that can drift from the values it claims
-// to describe, and a legacy R19-era configuration keeps working and simply
-// reads "Custom". `ParityChoice` now lives in playbackPresets.ts beside the
-// model that consumes it.
-
 function loadStripeMode(): StripeMode {
-  try {
-    const v = localStorage.getItem(STRIPE_MODE_KEY);
-    if (v === 'on' || v === 'off') return v;
-  } catch {
-    // private mode etc. — fall through to auto
-  }
-  return 'auto';
+  const v = readStored(STRIPE_MODE_KEY);
+  return v === 'on' || v === 'off' ? v : 'auto';
 }
 
 function loadParityChoice(): ParityChoice {
-  try {
-    const v = localStorage.getItem(PARITY_LEVEL_KEY);
-    if (v === '0') return 0;
-    if (v === '1') return 1;
-  } catch {
-    // private mode etc. — fall through to the fleet default
-  }
+  const v = readStored(PARITY_LEVEL_KEY);
+  if (v === '0') return 0;
+  if (v === '1') return 1;
   return 'auto';
 }
 
 function loadInterpolation(): boolean {
-  try {
-    return localStorage.getItem(INTERPOLATION_KEY) !== '0';
-  } catch {
-    return true;
-  }
+  return readStored(INTERPOLATION_KEY) !== '0';
 }
 
 function loadDeliveryMode(): ViewerDeliveryMode {
-  try {
-    const v = localStorage.getItem(DELIVERY_MODE_KEY);
-    if (v === 'live' || v === 'resilient' || v === 'deep') return v;
-    // Legacy R19 boolean: on ⇒ resilient, never deep. Silently promoting it
-    // would hand an existing viewer a 10x latency change it never asked for.
-    if (localStorage.getItem(RESILIENT_MODE_KEY) === '1') return 'resilient';
-    return 'live';
-  } catch {
-    return 'live';
-  }
+  const v = readStored(DELIVERY_MODE_KEY);
+  if (v === 'live' || v === 'resilient' || v === 'deep') return v;
+  return readStored(RESILIENT_MODE_KEY) === '1' ? 'resilient' : 'live';
 }
 
 function loadPlayoutMode(): PlayoutMode {
-  try {
-    const v = localStorage.getItem(PLAYOUT_MODE_KEY);
-    // R32 removed 'fixed' outright, so a viewer carrying one — from before
-    // docs/17 Decision 10 retired it, or from a dev build that could still
-    // select it — lands on adaptive: the mode fixed was a worse approximation
-    // of, and the one its stored value was already migrating to everywhere a
-    // real viewer could see it.
-    if (v === 'fixed') return 'adaptive';
-    if (v === 'adaptive' || v === 'off') return v;
-    const legacy = localStorage.getItem(LEGACY_SMOOTHED_KEY);
-    if (legacy === '1') return 'adaptive';
-    if (legacy === '0') return 'off';
-    return 'adaptive';
-  } catch {
-    return 'adaptive';
-  }
+  const v = readStored(PLAYOUT_MODE_KEY);
+  if (v === 'adaptive' || v === 'off') return v;
+  if (v === 'fixed') return 'adaptive';
+  return readStored(LEGACY_SMOOTHED_KEY) === '0' ? 'off' : 'adaptive';
 }
 
 // Error-card copy per failure kind. Deliberately decoupled from the raw
@@ -231,89 +164,47 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // R5 Q3 + R12 T2: playout smoothing (trades latency for steadier pacing).
-  // Two modes since R32 removed the retired 'fixed' one: 'adaptive' (the R12
-  // paced-presentation mode, the default since 2026-07-15) and 'off'
-  // (live-edge). Which one is in force is a property of the chosen preset —
-  // Lowest latency is 'off', every other preset is 'adaptive'.
+  // Lowest latency runs playout 'off' (live edge); every other preset paces
+  // presentation adaptively.
   const [playoutMode, setPlayoutModeState] = useState<PlayoutMode>(loadPlayoutMode);
 
-  // R37 (docs/40 §4.3, F1): the picker replaced the dev-only relay override
-  // panel — the picker is a production surface (gated by allowCustomRelays at
-  // the menu item), and selecting a server is a deliberate reconnect because
-  // useViewerConnection depends on the store's resolved serverUrl.
+  // Picking a server reconnects: useViewerConnection depends on the store's
+  // resolved serverUrl.
   const [showServerPicker, setShowServerPicker] = useState(false);
   const setPlayoutMode = useCallback((next: PlayoutMode) => {
-    setPlayoutModeState(() => {
-      try {
-        localStorage.setItem(PLAYOUT_MODE_KEY, next);
-      } catch {
-        // private mode etc. — the choice still holds for this session
-      }
-      return next;
-    });
+    writeStored(PLAYOUT_MODE_KEY, next);
+    setPlayoutModeState(next);
   }, []);
 
   // The connection (worker-offloaded when supported, main-thread otherwise)
   // owns decode + render and reports back only view state — no VideoFrame ever
-  // reaches this component (R8 S6).
-  // R12 T4: experimental frame interpolation — only offered when the
-  // pipeline reports it available (WebGL2 worker sink + adaptive mode).
+  // reaches this component.
   const [interpolation, setInterpolation] = useState(loadInterpolation);
   const chooseInterpolation = useCallback((next: boolean) => {
-    setInterpolation(() => {
-      try {
-        localStorage.setItem(INTERPOLATION_KEY, next ? '1' : '0');
-      } catch {
-        // private mode etc. — the choice still holds for this session
-      }
-      return next;
-    });
+    writeStored(INTERPOLATION_KEY, next ? '1' : '0');
+    setInterpolation(next);
   }, []);
 
-  // R19/R21: where this viewer sits on the latency-for-smoothness axis.
-  // Changing it re-runs the connection effect — a visible, deliberate
-  // reconnect, because delivery is negotiated at subscribe time.
+  // Delivery and parity are negotiated at subscribe time, so changing either
+  // re-runs the connection effect: a visible, deliberate reconnect.
   const [deliveryMode, setDeliveryMode] = useState(loadDeliveryMode);
   const chooseDeliveryMode = useCallback((next: ViewerDeliveryMode) => {
-    setDeliveryMode(() => {
-      try {
-        localStorage.setItem(DELIVERY_MODE_KEY, next);
-      } catch {
-        // private mode etc. — the choice still holds for this session
-      }
-      return next;
-    });
+    writeStored(DELIVERY_MODE_KEY, next);
+    setDeliveryMode(next);
   }, []);
 
-  // R29: like delivery, this is negotiated at subscribe time, so changing it
-  // is a deliberate reconnect rather than an in-session morph.
   const [parityChoice, setParityChoice] = useState(loadParityChoice);
   const chooseParity = useCallback((next: ParityChoice) => {
-    setParityChoice(() => {
-      try {
-        if (next === 'auto') localStorage.removeItem(PARITY_LEVEL_KEY);
-        else localStorage.setItem(PARITY_LEVEL_KEY, String(next));
-      } catch {
-        // private mode etc. — the choice still holds for this session
-      }
-      return next;
-    });
+    writeStored(PARITY_LEVEL_KEY, next === 'auto' ? null : String(next));
+    setParityChoice(next);
   }, []);
 
-  // R30: connection striping — a live flip (never a reconnect), so the value
-  // deliberately does NOT reach the session effect's deps.
+  // Striping flips live without a reconnect, so this value must stay out of
+  // the session effect's deps.
   const [stripeMode, setStripeModeState] = useState(loadStripeMode);
   const chooseStripeMode = useCallback((next: StripeMode) => {
-    setStripeModeState(() => {
-      try {
-        if (next === 'auto') localStorage.removeItem(STRIPE_MODE_KEY);
-        else localStorage.setItem(STRIPE_MODE_KEY, next);
-      } catch {
-        // private mode etc. — the choice still holds for this session
-      }
-      return next;
-    });
+    writeStored(STRIPE_MODE_KEY, next === 'auto' ? null : next);
+    setStripeModeState(next);
   }, []);
 
   // R32 UX2 (docs/37 §6.1): the five stored values as one configuration, and

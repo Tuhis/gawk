@@ -43,6 +43,7 @@ import { resolvedUrlIsDefault, useTransportStore } from '../../state/transportSt
 import { useTelemetryCollector } from '../../lib/useTelemetry';
 import { readVisibility } from '../../lib/visibility';
 import { log } from '../../lib/logger';
+import { readStored, writeStored } from '../../lib/storage';
 
 export type ViewerStatus = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'error';
 
@@ -125,29 +126,19 @@ export interface ViewerConnectionState {
   audio: AudioState;
 }
 
-// R15 (docs/20 Decision 9): mute/volume persist per browser, filling the slot
-// R6 reserved. Default: unmuted at full volume — the toggle is the
-// broadcaster's experimental opt-in, not the viewer's.
+// Mute and volume persist per browser. Default: unmuted at full volume.
 const MUTED_KEY = 'gawk:muted';
 const VOLUME_KEY = 'gawk:volume';
 
 function loadMuted(): boolean {
-  try {
-    return localStorage.getItem(MUTED_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return readStored(MUTED_KEY) === '1';
 }
 
 function loadVolume(): number {
-  try {
-    const raw = localStorage.getItem(VOLUME_KEY);
-    if (raw === null) return 1;
-    const v = Number(raw);
-    return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1;
-  } catch {
-    return 1;
-  }
+  const raw = readStored(VOLUME_KEY);
+  if (raw === null) return 1;
+  const v = Number(raw);
+  return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1;
 }
 
 // Whether we can even attempt the worker path. In jsdom (tests) and any browser
@@ -364,12 +355,7 @@ export function useViewerConnection(
       mutedRef.current = next;
       applySinkMute();
       clearGestureBlock();
-      if (!persistAudio) return;
-      try {
-        localStorage.setItem(MUTED_KEY, next ? '1' : '0');
-      } catch {
-        // private mode etc. — the toggle still works for this session
-      }
+      if (persistAudio) writeStored(MUTED_KEY, next ? '1' : '0');
     },
     [applySinkMute, clearGestureBlock, persistAudio],
   );
@@ -388,12 +374,7 @@ export function useViewerConnection(
       setVolumeState(v);
       sinkRef.current?.setVolume(v);
       clearGestureBlock();
-      if (!persistAudio) return;
-      try {
-        localStorage.setItem(VOLUME_KEY, String(v));
-      } catch {
-        // private mode etc.
-      }
+      if (persistAudio) writeStored(VOLUME_KEY, String(v));
     },
     [clearGestureBlock, persistAudio],
   );
