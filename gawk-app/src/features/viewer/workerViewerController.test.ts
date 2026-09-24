@@ -108,6 +108,25 @@ describe('WorkerViewerController message shapes (R22 MF2)', () => {
     const init = workers[0].posted[0].msg as { presentationMux?: boolean };
     expect(init.presentationMux).toBe(true);
   });
+
+  // The worker creates its muxer on the first arm; the screen registers the
+  // segment sink before the video arm. An audio arm that went first could
+  // start the muxer with no sink to take its one init segment.
+  it('gated: an audio arm waits for the video arm', () => {
+    const controller = new WorkerViewerController(
+      makeCanvas(),
+      { onEvent: () => {}, onUnsupported: () => {} },
+      { presentationMux: true },
+    );
+    controller.start(START);
+    workers[0].boot();
+    controller.armPresentationAudio('opus');
+    const arms = () =>
+      workers[0].posted.map((p) => p.msg as { type: string; audio?: string }).filter((m) => m.type === 'arm');
+    expect(arms()).toEqual([]);
+    controller.armPresentation();
+    expect(arms()).toEqual([{ type: 'arm' }, { type: 'arm', audio: 'opus' }]);
+  });
 });
 
 // A worker that never boots must not strand the viewer on "Connecting…": the

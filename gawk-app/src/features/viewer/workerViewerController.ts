@@ -151,7 +151,9 @@ export class WorkerViewerController {
       this.post({ type: 'arm' });
       this.armSent = true;
     }
-    if (this.armAudioRequested && !this.armAudioSent && this.armAudioCodec) {
+    // After the video arm: the worker starts its muxer on the first arm, and
+    // only the video arm comes after the screen has registered a segment sink.
+    if (this.armSent && this.armAudioRequested && !this.armAudioSent && this.armAudioCodec) {
       this.post({ type: 'arm', audio: this.armAudioCodec });
       this.armAudioSent = true;
     }
