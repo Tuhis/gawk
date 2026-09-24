@@ -113,7 +113,8 @@ Recorded here so the rest of the doc can build on them without hedging:
   to earn an item.
 - **Installer, code signing, winget, auto-update** — OD6. A version-check
   toast is a possible later convenience, not R34.
-- **Sharing code, GUI, build, or release pipeline with the Linux
+- (*Moot 2026-09-24: R56 moves Linux into this workspace as a third shell,
+  docs/58.*) **Sharing code, GUI, build, or release pipeline with the Linux
   `gawk-broadcast`** — the toolchains no longer overlap enough to force it.
 
 ## 4. Decisions

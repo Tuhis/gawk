@@ -79,6 +79,18 @@ nothing. The version and the release notes are the only things this affects —
 it changes no behavior, which is exactly why it is easy to get wrong and worth
 checking before you push.
 
+### Forcing a version once
+
+Occasionally a component's next version must be a specific number the
+commit types would not produce, such as the desktop workspace's 2.0.0 when
+Linux joins it (`docs/58` D13). Set `"release-as": "X.Y.Z"` on that
+package in `release-please-config.json`, in the PR that should carry the
+bump, so the override is visible in review. release-please does not clear
+the key, and while it is set **every** release of that component is forced
+to that version, so remove it in the PR right after the release goes out.
+Prefer this to a `Release-As:` commit footer, which depends on the squash
+commit's body and applies to every component the commit touches.
+
 ## Where things live
 
 `CLAUDE.md` has the map, and it is a rule rather than a courtesy: each fact
