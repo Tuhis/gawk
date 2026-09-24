@@ -37,6 +37,8 @@ pub enum WireError {
     BadCarrierRecord { declared: usize },
     /// An AudioFrame payload that is empty or exceeds MaxAudioPayload.
     BadAudioPayload { len: usize },
+    /// A SessionClosing carrying a code outside the gawk range 4000–4999.
+    BadSessionClosing { code: u32 },
     /// An AudioConfig with a zero sample rate or zero channels.
     BadAudioConfig,
     /// A TelemetryHello with a wrong-length token/key or reserved flag bits set.
@@ -123,6 +125,12 @@ impl fmt::Display for WireError {
                 write!(f, "wire: invalid audio payload: {len} bytes")
             }
             Self::BadAudioConfig => write!(f, "wire: invalid audio config"),
+            Self::BadSessionClosing { code } => {
+                write!(
+                    f,
+                    "wire: invalid session closing: code {code} outside 4000-4999"
+                )
+            }
             Self::BadTelemetryHello => write!(f, "wire: invalid telemetry hello"),
             Self::UnknownDeliveryMode(m) => write!(f, "wire: unknown delivery mode {m}"),
             Self::UnknownStripeFlags(b) => write!(f, "wire: unknown stripe flags 0x{b:02x}"),

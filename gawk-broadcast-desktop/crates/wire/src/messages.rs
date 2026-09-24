@@ -8,13 +8,13 @@ use crate::{
     CARRIER_RECORD_HEADER_SIZE, CLOCK_MAPPING_SIZE, DELIVERY_ACK_SIZE, FLAG_KEYFRAME,
     FLAG_TELEMETRY_ENABLED, MAX_AUDIO_PAYLOAD, MAX_CHUNK_COUNT, MAX_CHUNK_PAYLOAD,
     MAX_DATAGRAM_SIZE, MAX_KEYFRAME_BYTES, MAX_RELAY_IDENTITY_NAME_LEN,
-    MAX_RELAY_IDENTITY_VERSION_LEN, MAX_TELEMETRY_ENDPOINT_URL_LEN, STREAM_FRAME_HEADER_SIZE,
-    TELEMETRY_BROADCAST_KEY_SIZE, TELEMETRY_HELLO_SIZE, TELEMETRY_SESSION_TOKEN_SIZE,
-    TIME_SYNC_SIZE, TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME, TYPE_BROADCAST_ANNOUNCE,
-    TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_DELIVERY_ACK, TYPE_RELAY_IDENTITY,
-    TYPE_RELIABLE_CARRIER, TYPE_RESUME_TOKEN, TYPE_STREAM_FRAME, TYPE_TELEMETRY_ENDPOINT,
-    TYPE_TELEMETRY_HELLO, TYPE_TIME_SYNC, TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, VERSION,
-    VIDEO_CHUNK_HEADER_SIZE, VIEWER_COUNT_SIZE,
+    MAX_RELAY_IDENTITY_VERSION_LEN, MAX_TELEMETRY_ENDPOINT_URL_LEN, SESSION_CLOSING_SIZE,
+    STREAM_FRAME_HEADER_SIZE, TELEMETRY_BROADCAST_KEY_SIZE, TELEMETRY_HELLO_SIZE,
+    TELEMETRY_SESSION_TOKEN_SIZE, TIME_SYNC_SIZE, TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME,
+    TYPE_BROADCAST_ANNOUNCE, TYPE_CLOCK_MAPPING, TYPE_DECODER_CONFIG, TYPE_DELIVERY_ACK,
+    TYPE_RELAY_IDENTITY, TYPE_RELIABLE_CARRIER, TYPE_RESUME_TOKEN, TYPE_SESSION_CLOSING,
+    TYPE_STREAM_FRAME, TYPE_TELEMETRY_ENDPOINT, TYPE_TELEMETRY_HELLO, TYPE_TIME_SYNC,
+    TYPE_VIDEO_CHUNK, TYPE_VIEWER_COUNT, VERSION, VIDEO_CHUNK_HEADER_SIZE, VIEWER_COUNT_SIZE,
 };
 
 fn check_prefix(buf: &[u8], want_type: u8) -> Result<(), WireError> {
@@ -495,6 +495,41 @@ pub fn parse_resume_token(msg: &[u8]) -> Result<&[u8], WireError> {
         return Err(WireError::BadResumeToken);
     }
     Ok(&msg[3..])
+}
+
+// --- SessionClosing (0x17) --------------------------------------------------
+
+/// Appends a SessionClosing message (R56): version, type, u32 BE close code.
+pub fn append_session_closing(dst: &mut Vec<u8>, code: u32) -> Result<(), WireError> {
+    if !(4000..=4999).contains(&code) {
+        return Err(WireError::BadSessionClosing { code });
+    }
+    dst.extend_from_slice(&[VERSION, TYPE_SESSION_CLOSING]);
+    dst.extend_from_slice(&code.to_be_bytes());
+    Ok(())
+}
+
+/// Parses a SessionClosing message. Strict: exactly SESSION_CLOSING_SIZE
+/// bytes and a code in the gawk range.
+pub fn parse_session_closing(msg: &[u8]) -> Result<u32, WireError> {
+    if msg.len() < SESSION_CLOSING_SIZE {
+        return Err(WireError::ShortDatagram {
+            len: msg.len(),
+            need: SESSION_CLOSING_SIZE,
+        });
+    }
+    check_prefix(msg, TYPE_SESSION_CLOSING)?;
+    if msg.len() != SESSION_CLOSING_SIZE {
+        return Err(WireError::BadLength {
+            len: msg.len(),
+            want: SESSION_CLOSING_SIZE,
+        });
+    }
+    let code = u32::from_be_bytes([msg[2], msg[3], msg[4], msg[5]]);
+    if !(4000..=4999).contains(&code) {
+        return Err(WireError::BadSessionClosing { code });
+    }
+    Ok(code)
 }
 
 // --- ReliableCarrier (0x0A) --------------------------------------------------

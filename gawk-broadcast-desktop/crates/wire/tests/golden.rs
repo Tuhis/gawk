@@ -18,6 +18,9 @@ const GOLDEN_CLOCK_MAPPING: &str = "0106000000000016e360";
 const GOLDEN_CLOCK_MAPPING_NEGATIVE: &str = "0106fffffffffff0bdc0";
 const GOLDEN_BROADCAST_ANNOUNCE: &str = "0103064b375851324d"; // "K7XQ2M"
 const GOLDEN_RESUME_TOKEN: &str = "010910000102030405060708090a0b0c0d0e0f";
+// R56 (docs/58 CN1): SessionClosing, code 4004. Byte-identical to
+// gawk-server/wire closing_test.go goldenSessionClosingHex.
+const GOLDEN_SESSION_CLOSING: &str = "011700000fa4";
 const GOLDEN_CARRIER_PROLOGUE: &str = "010a";
 const GOLDEN_CARRIER_MAX_RECORD_PREFIX: &str = "04b0"; // 1200
 const GOLDEN_VIEWER_COUNT: &str = "010b00000003";
@@ -276,6 +279,21 @@ fn golden_resume_token() {
     append_resume_token(&mut got, &token).unwrap();
     assert_eq!(to_hex(&got), GOLDEN_RESUME_TOKEN);
     assert_eq!(parse_resume_token(&got).unwrap(), token.as_slice());
+}
+
+#[test]
+fn golden_session_closing() {
+    let mut got = Vec::new();
+    append_session_closing(&mut got, CLOSE_CODE_PUBLISHER_SUPERSEDED).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_SESSION_CLOSING);
+    assert_eq!(
+        parse_session_closing(&from_hex(GOLDEN_SESSION_CLOSING)).unwrap(),
+        CLOSE_CODE_PUBLISHER_SUPERSEDED
+    );
+    assert!(parse_session_closing(&from_hex("011700000f")).is_err());
+    assert!(parse_session_closing(&from_hex("011700000fa400")).is_err());
+    assert!(parse_session_closing(&from_hex("011700000f9f")).is_err());
+    assert!(append_session_closing(&mut Vec::new(), 5000).is_err());
 }
 
 #[test]
@@ -1034,6 +1052,8 @@ fn wire_constants_are_pinned() {
     assert_eq!(TYPE_ROOM_STATE, 0x14);
     assert_eq!(TYPE_ROOM_EVENT, 0x15);
     assert_eq!(TYPE_ROOM_COMMAND, 0x16);
+    assert_eq!(TYPE_SESSION_CLOSING, 0x17);
+    assert_eq!(SESSION_CLOSING_SIZE, 6);
 
     assert_eq!(MAX_DATAGRAM_SIZE, 1200);
     assert_eq!(VIDEO_CHUNK_HEADER_SIZE, 20);
