@@ -227,7 +227,8 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   // hedged (no HTTP status reaches JS), but "a secret was just supplied and
   // the join failed" is certain — enough to name the likely cause and to
   // offer another attempt instead of a page reload.
-  const secretRefused = status === 'error' && attachSecret !== null;
+  const secretRefused =
+    status === 'error' && attachSecret !== null && (errorKind === 'refused' || errorKind === 'forbidden');
 
   // Layout mode, persisted; the grid degrades to focus on a narrow screen.
   const [mode, setModeState] = useState<RoomMode>(loadRoomMode);
@@ -409,10 +410,12 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     (n: string) => {
       saveNickname(n);
       setNicknameState(n);
+      setGuest(false);
       setEditingNick(false);
-      if (status !== 'idle' && status !== 'connecting') commands.setNickname(n);
+      // Before the first state this updates the pending hello instead.
+      commands.setNickname(n);
     },
-    [commands, status],
+    [commands],
   );
 
   // The hop carries the nickname this participant already answered (a guest

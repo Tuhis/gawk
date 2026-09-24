@@ -419,6 +419,30 @@ describe('RoomScreen people-and-chat panel', () => {
     expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: null });
   });
 
+  it('a guest who later picks a nickname hands it over on "start streaming here"', async () => {
+    render(<RoomScreen code="AB2CD3" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Join as a guest' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ attachments: [] })));
+    fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit nickname' }));
+    fireEvent.change(screen.getByLabelText('New nickname'), { target: { value: 'named' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Start streaming here' })[0]);
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: 'named' });
+  });
+
+  it('a nickname changed while the first join is connecting reaches the relay', async () => {
+    localStorage.setItem('gawk:nickname', 'old');
+    render(<RoomScreen code="AB2CD3" />);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    fireEvent.contextMenu(document.querySelector('[data-status]')!);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Change nickname…' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Nickname' }), { target: { value: 'new' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(roomSessions[0].sent).toContainEqual({ kind: 'nick', nickname: 'new' });
+  });
+
   it('presetNickname skips the prompt: a string dials with it, null joins as a guest', async () => {
     const target = { kind: 'join', code: 'AB2CD3' } as const;
     const { unmount } = render(<RoomView target={target} presetNickname="handed" />);
@@ -663,6 +687,20 @@ describe('a gated static room that refused the attach grant (D8)', () => {
       label: 'mine',
     });
     expect(screen.queryByText('Your stream isn’t in this room')).toBeNull();
+  });
+
+  it('a later lost session after an accepted secret does not blame the secret', async () => {
+    renderOwn();
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ flags: 0, attachments: [] })));
+    fireEvent.click(screen.getByRole('button', { name: 'Enter the secret' }));
+    fireEvent.change(screen.getByLabelText('Attach secret'), { target: { value: 'hunter2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+    act(() => roomSessions[1].cbs.onState(state({ flags: ROOM_STATE_FLAG_ATTACH_OK, attachments: [] })));
+    act(() => roomSessions[1].cbs.onError({ kind: 'lost', message: 'lost' }));
+    expect(screen.getByText('Lost the room')).toBeTruthy();
+    expect(screen.queryByText('That secret didn’t work')).toBeNull();
   });
 
   it('with other POVs on the stage it is a pill, not a card over the video', async () => {
