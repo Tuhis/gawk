@@ -103,6 +103,9 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
     return () => {
       if (sessionRef.current === session) sessionRef.current = null;
       session.stop();
+      // The store outlives this screen; a later room view must not render
+      // (and dial the tiles of) this room before its own session resets it.
+      useRoomStore.getState().reset();
     };
     // targetKey / grantKey stand in for `target` and `grant` (content
     // identity, see above).

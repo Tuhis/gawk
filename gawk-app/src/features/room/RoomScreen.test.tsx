@@ -452,6 +452,25 @@ describe('RoomScreen relay states', () => {
     expect(activeViewerIds()).toHaveLength(3);
   });
 
+  it('entering another room shows nothing of the previous one', async () => {
+    const room = await joinAs();
+    act(() =>
+      room.cbs.onEvent({
+        seq: 4,
+        kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+        attachment: { broadcastId: 'BBBBBB' },
+        reason: ROOM_DETACH_REASON_CREATOR,
+      }),
+    );
+    cleanup();
+    viewerSessions.length = 0;
+
+    render(<RoomScreen code="XY2ZW3" />);
+    expect(viewerSessions).toHaveLength(0);
+    expect(screen.queryByTestId('room-tile')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
   it('an attachment removal drops the tile and toasts', async () => {
     const room = await joinAs();
     act(() =>
