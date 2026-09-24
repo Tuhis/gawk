@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 //
-// R13 L4 (docs/18 Decision 9): picker options are annotated from the probe
-// matrix — ' · software' badge, disabled 'unsupported' — never removed, and
-// annotations recompute when the matrix changes (acceleration mode / codec
-// pin re-probes).
+// Picker options are annotated from the probe matrix (' · software' badge,
+// disabled 'unsupported'), never removed, and annotations recompute when the
+// matrix changes (acceleration mode / codec pin re-probes).
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';

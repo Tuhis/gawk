@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// R37 (docs/40 SP6/SP7): the picker's probe + directory surfaces, driven
-// through injected probe/fetch fns (jsdom has no WebTransport).
+// The picker's probe + directory surfaces, driven through injected
+// probe/fetch fns (jsdom has no WebTransport).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
@@ -42,7 +42,7 @@ describe('ServerPickerPanel probe (SP6)', () => {
     const probeFn = okProbe();
     render(<ServerPickerPanel onClose={() => {}} probeFn={probeFn} />);
     await waitFor(() => expect(screen.getByText(/42 ms/)).toBeTruthy());
-    // F6: bidi controls stripped, host still rendered by the row itself.
+    // Bidi controls stripped, host still rendered by the row itself.
     expect(screen.getByText(/Homelab Evil/)).toBeTruthy();
     expect(screen.getByText(/gawk-server 9\.9\.9/)).toBeTruthy();
     expect(probeFn).toHaveBeenCalledTimes(1); // the pinned default only
@@ -83,7 +83,7 @@ describe('ServerPickerPanel directory (SP7)', () => {
     expect(screen.getByText(/Managed one · managed/)).toBeTruthy();
     expect(screen.getAllByText('unnamed.example.com:4433').length).toBeGreaterThan(0);
     expect(screen.queryByText(/insecure/)).toBeNull();
-    // F10: opening the panel probed ONLY the saved default — no offer.
+    // Opening the panel probed ONLY the saved default, no offer.
     expect(probeFn).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Ping EU mirror' }));
@@ -104,7 +104,7 @@ describe('ServerPickerPanel directory (SP7)', () => {
     expect(entry).toBeTruthy();
     expect(entry!.label).toBe('EU mirror');
     expect(entry!.publishSecret).toBe(''); // no credential fields exist in the schema
-    // Adding never selects (D2's explicit-act rule).
+    // Adding never selects: selection is its own explicit act.
     expect(useTransportStore.getState().selectedServerId).toBe('default');
   });
 
@@ -129,23 +129,23 @@ describe('ServerPickerPanel directory (SP7)', () => {
   });
 });
 
-// Regression (R37 follow-up): the panel is a modal overlay, so it must escape
-// its mount point's layout and be dismissible from outside.
+// The panel is a modal overlay, so it must escape its mount point's layout
+// and be dismissible from outside.
 describe('ServerPickerPanel overlay', () => {
   it('renders through a portal, not inside its mount point', () => {
     // The landing chip sits in a `position: absolute; transform: translateX(-50%)`
     // row; a transformed ancestor becomes the containing block for
-    // `position: fixed` descendants, which collapsed the full-screen overlay to
-    // the chip's ~78px box. Portalling to <body> is what keeps it full-screen.
+    // `position: fixed` descendants, which would collapse the full-screen
+    // overlay to the chip's box. Portalling to <body> keeps it full-screen.
     const { container } = render(<ServerPickerPanel onClose={() => {}} probeFn={okProbe()} />);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(document.body.querySelector('[role="dialog"]')).toBeTruthy();
   });
 
   it('portals into the fullscreen element while one is active', () => {
-    // The viewer goes fullscreen on its own root (lib/useFullscreen.ts), and
-    // the Fullscreen API paints only that subtree — a <body> child would be
-    // invisible over a fullscreen stream.
+    // The viewer goes fullscreen on its own root, and the Fullscreen API
+    // paints only that subtree: a <body> child would be invisible over a
+    // fullscreen stream.
     const host = document.createElement('div');
     document.body.appendChild(host);
     // jsdom implements no fullscreen API at all, so define the one property
@@ -163,8 +163,8 @@ describe('ServerPickerPanel overlay', () => {
     }
   });
 
-  // onClose is awaited rather than asserted synchronously: dismissal now runs
-  // an exit animation and reports back when it has finished.
+  // onClose is awaited rather than asserted synchronously: dismissal runs an
+  // exit animation and reports back when it has finished.
   it('closes when the backdrop is clicked but not when the panel is', async () => {
     const onClose = vi.fn();
     render(<ServerPickerPanel onClose={onClose} probeFn={okProbe()} />);
@@ -184,10 +184,9 @@ describe('ServerPickerPanel overlay', () => {
   });
 });
 
-// Regression (R37 follow-up): the panel resolved a row's cert hash straight
-// from the stored entry, bypassing R38's config fallback that every real
-// connection goes through — so a local stack's own relay probed as
-// "unreachable" while the viewer was streaming from it.
+// A row's cert hash must go through the config fallback every real
+// connection uses: read straight from the stored entry, a local stack's own
+// relay probes as "unreachable" while the viewer is streaming from it.
 describe('ServerPickerPanel probe credentials', () => {
   it('probes the pinned default with the deployment cert hash when no entry stores one', async () => {
     window.__GAWK_CONFIG__ = {
@@ -226,9 +225,9 @@ describe('ServerPickerPanel probe credentials', () => {
   });
 });
 
-// Regression: an edited entry keeps its id, and the probe was keyed on the id
-// alone — so the row kept the old host's verdict beside the new host, and
-// saved rows have no Ping button to refresh it.
+// An edited entry keeps its id, so a probe keyed on the id alone would leave
+// the old host's verdict beside the new host, and saved rows have no Ping
+// button to refresh it.
 describe('ServerPickerPanel probe after an edit', () => {
   const editUrl = (label: string, url: string) => {
     fireEvent.click(screen.getByLabelText(`Edit ${label}`));
@@ -440,7 +439,7 @@ describe('ServerPickerPanel footer', () => {
     expect(buttons.map((b) => b.textContent?.trim())).toEqual(['Add a server', 'Done']);
     // The add button carries a glyph saying what it does.
     expect(buttons[0].querySelector('svg')).toBeTruthy();
-    // The title bar no longer carries the dismiss control.
+    // The title bar carries no dismiss control.
     expect(screen.getByTestId('server-picker-head').querySelector('button')).toBeNull();
   });
 

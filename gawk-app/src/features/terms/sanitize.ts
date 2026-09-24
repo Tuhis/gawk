@@ -1,12 +1,12 @@
-// R23 (docs/29 §4.2). An operator can replace the terms body with their own
-// HTML fragment served from `config.termsUrl`. That fragment is fetched at
-// runtime and rendered inside the SPA origin, so it MUST be sanitized before
-// it reaches the DOM — an unsanitized operator document is a stored-XSS vector
-// against every visitor. This is an allowlist sanitizer (deny by default):
-// only known-inert elements/attributes survive; everything else is dropped or
-// unwrapped. Whitelisting beats blacklisting for URL schemes and attributes,
-// which is why href is checked against an allowed-scheme list rather than a
-// "block javascript:" pattern.
+// An operator can replace the terms body with their own HTML fragment served
+// from `config.termsUrl`. That fragment is fetched at runtime and rendered
+// inside the SPA origin, so it MUST be sanitized before it reaches the DOM: an
+// unsanitized operator document is a stored-XSS vector against every visitor.
+// This is an allowlist sanitizer (deny by default): only known-inert
+// elements/attributes survive; everything else is dropped or unwrapped.
+// Whitelisting beats blacklisting for URL schemes and attributes, which is
+// why href is checked against an allowed-scheme list rather than a "block
+// javascript:" pattern.
 //
 // Parsing uses DOMParser('text/html'), which produces an INERT document:
 // scripts do not execute and resources (img/iframe) do not load while we walk

@@ -12,7 +12,7 @@ interface Props {
   ariaLabel?: string;
 }
 
-// Segmented code entry (docs/10 J2). One real, visually-hidden <input> captures
+// Segmented code entry. One real, visually-hidden <input> captures
 // all typing/paste/backspace; the N boxes are presentational, rendered from the
 // value. This makes paste, caret handling, and IME "just work" (the browser
 // owns the field) while we still sanitize to the code alphabet on every change.

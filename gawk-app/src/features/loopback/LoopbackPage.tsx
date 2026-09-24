@@ -51,9 +51,9 @@ export function LoopbackPage() {
           );
         }
         if (ctx && canvas) {
-          // Always keep the wrapper's aspect in sync with the frame — even
-          // when the buffer size doesn't change (which was hiding the bug on
-          // Chrome when frames happen to match the initial 1920x1080).
+          // Sync the wrapper's aspect independently of the buffer resize: a
+          // frame that already matches the initial buffer size (1920x1080)
+          // would otherwise never set it.
           const wrapper = canvas.parentElement;
           if (wrapper) {
             const targetAspect = `${frame.displayWidth} / ${frame.displayHeight}`;

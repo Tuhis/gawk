@@ -1,8 +1,6 @@
-// R37 (docs/40 §4.3): the landing-page server chip — the only new element on
-// the front door. Quiet (muted) on the default server so join-by-code reads
-// exactly as before; prominent when a non-default server is selected. Hidden
-// entirely when the deployment disallows custom relays (D6). Opens the
-// picker panel.
+// The landing-page server chip. Quiet (muted) on the default server so it
+// doesn't compete with join-by-code; prominent when a non-default server is
+// selected. Hidden entirely when the deployment disallows custom relays.
 
 import { useState } from 'react';
 

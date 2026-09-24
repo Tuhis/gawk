@@ -105,15 +105,14 @@
   color: var(--text);
 }
 
-/* R23: a quiet footer pinned below the card — the terms link, and since the
-   repository went public the source link beside it; R46 adds the site links.
+/* A quiet footer pinned below the card: the terms, source and site links.
    Wraps on narrow viewports rather than colliding with the card.
 
    width: max-content, because an absolutely positioned box centred by
    left:50% + translate only gets the right half of the viewport as its
-   shrink-to-fit width — with four links that wrapped at 400px and the top
-   line landed on the server chip. max-content lets the row use the full
-   max-width before flex-wrap takes over. */
+   shrink-to-fit width, which wraps the links early and pushes the top line
+   into the server chip. max-content lets the row use the full max-width
+   before flex-wrap takes over. */
 .foot {
   position: absolute;
   z-index: 1;
@@ -144,8 +143,8 @@
   color: var(--faint);
 }
 
-/* R37: the server chip row, pinned above the terms link — present but out of
- * the join-by-code eye line. */
+/* The server chip row, pinned above the terms link: present but out of the
+ * join-by-code eye line. */
 .chipRow {
   position: absolute;
   z-index: 1;

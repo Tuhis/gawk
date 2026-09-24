@@ -90,7 +90,7 @@ export function BroadcastPage() {
       pipelineRef.current = pipeline;
       try {
         await pipeline.start();
-        return; // Success!
+        return;
       } catch (e) {
         pipelineRef.current = null;
         if (!(e instanceof BroadcastStartError) || e.phase !== 'connect') {
@@ -104,15 +104,14 @@ export function BroadcastPage() {
           setStatus('error');
           return;
         }
-        // Reclaim dial rejected (expired ⇒ 404, zombie ⇒ 409 —
-        // indistinguishable in JS): fall back to a fresh mint.
+        // Reclaim dial rejected (the HTTP status is invisible to JS): fall
+        // back to a fresh mint.
         log.warn('Reclaim failed, falling back to mint:', e);
         setBroadcastId(null);
         activeId = null;
       }
     }
 
-    // Mint path
     setStatus('connecting');
     const pipeline = new BroadcastPipeline(
       { ...DEFAULT_CAPTURE_CONFIG },
@@ -195,8 +194,8 @@ export function BroadcastPage() {
       {reclaimFailedNote && <div className={styles.notice}>{reclaimFailedNote}</div>}
       {error && status === 'error' && <div className={styles.error}>Error: {error}</div>}
 
-      {/* R4 auto-mode indicator: shown whenever the applied rung is below the
-          ceiling. Recovery is automatic — no buttons. */}
+      {/* Auto-mode indicator: shown whenever the applied rung is below the
+          ceiling. Recovery is automatic, so no buttons. */}
       {stats?.autoAtFloor ? (
         <div className={styles.warning}>
           Encoder can&apos;t keep up even at {selectionLabel(stats.autoRung ?? 480)} — try a lower
@@ -212,7 +211,7 @@ export function BroadcastPage() {
         )
       )}
 
-      {/* R4 explicit-mode passive warning (display-only, no actuation). */}
+      {/* Explicit-mode passive warning (display-only, no actuation). */}
       {stats?.encoderPressure && (
         <div className={styles.warning}>
           Encoder can&apos;t keep up at {selectionLabel(resolutionSelection)} — frames are being

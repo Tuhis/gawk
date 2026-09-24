@@ -6,8 +6,8 @@ const CARDS = [
   ['#/debug/loopback', 'Loopback', 'Local capture → encode → decode, no network.'],
 ] as const;
 
-// The troubleshooting story (docs/10): the stats-heavy pages, kept alive but
-// off the production paths.
+// The stats-heavy troubleshooting pages, kept alive but off the production
+// paths.
 export function DebugIndex() {
   return (
     <div className={styles.index}>

@@ -1,9 +1,9 @@
-// R37 (docs/40 §4.4 / SP6): probe state for the picker's rows. Saved servers
-// (the pinned default + custom entries) are probed once when the panel opens
-// and on demand; directory offers are probed ON DEMAND ONLY (F10 — opening
-// the picker must not disclose the user's address to every third-party host
-// an operator listed). No background probing exists anywhere: this hook
-// lives inside the panel, so an idle landing page generates zero traffic.
+// Probe state for the picker's rows. Saved servers (the pinned default +
+// custom entries) are probed once when the panel opens and on demand;
+// directory offers are probed ON DEMAND ONLY, because opening the picker must
+// not disclose the user's address to every third-party host an operator
+// listed. No background probing exists anywhere: this hook lives inside the
+// panel, so an idle landing page generates zero traffic.
 
 import { useEffect, useRef, useState } from 'react';
 

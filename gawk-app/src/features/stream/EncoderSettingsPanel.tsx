@@ -1,7 +1,7 @@
-// R13 (docs/18 L4): the advanced encoder controls — acceleration tri-state,
-// bitrate override, codec pin. Store-backed like LadderPicker; onChange
-// hands the full EncoderSettings snapshot to a live session. All three are
-// applied via encoder recreate on the next frame — never a stream restart.
+// The advanced encoder controls: acceleration tri-state, bitrate override,
+// codec pin. onChange hands the full EncoderSettings snapshot to a live
+// session. All three are applied via encoder recreate on the next frame,
+// never a stream restart.
 
 import { useState } from 'react';
 
@@ -21,8 +21,8 @@ import { annotate, codecAcceleration } from './supportAnnotations';
 
 interface Props {
   onChange?: (settings: EncoderSettings) => void;
-  // R13 Decision 9 for the codec pin: per-codec probe matrices backing the
-  // option annotations (see useCodecMatrices). null renders unannotated.
+  // Per-codec probe matrices backing the codec-pin annotations
+  // (useCodecMatrices). null renders unannotated.
   codecMatrices?: Map<string, SupportMatrix> | null;
 }
 
@@ -66,8 +66,6 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
     emit();
   };
 
-  // Stacked, full-width (like the dev settings) — three fields with full
-  // codec strings overflow the side panel as a row.
   return (
     <div className={styles.stackedPicker}>
       <div className={styles.field}>
@@ -128,10 +126,9 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
           })}
         </select>
       </div>
-      {/* R15's "Enable audio (experimental)" checkbox lived here until
-          2026-07-23. System audio is on unconditionally now — there is
-          nothing to configure, and a browser that can't start a source is
-          handled in capture.ts, not by asking the broadcaster. */}
+      {/* No audio toggle: system audio is always on, and a browser that
+          can't start a source is handled in capture.ts, not by asking the
+          broadcaster. */}
     </div>
   );
 }

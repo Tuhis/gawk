@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-// R4 (docs/09 I3): the resolution axis defaults to 'auto' when the
-// localStorage key is missing or invalid; a previously persisted explicit
-// rung (including 'native') keeps its exact meaning. The store reads
+// The resolution axis defaults to 'auto' when the localStorage key is
+// missing or invalid; a previously persisted explicit rung (including
+// 'native') keeps its exact meaning. The store reads
 // localStorage at module-evaluation time, so each case resets modules and
 // re-imports with a fresh localStorage.
 
@@ -66,9 +66,8 @@ describe('broadcastSettingsStore resolution selection', () => {
 });
 
 describe('broadcastSettingsStore framerate selection (R13)', () => {
-  // docs/18 Decision 4: the default is 'auto' (probe-resolved — 60 when
-  // hardware supports it, else 30). A previously persisted explicit rung
-  // keeps its exact meaning across the widening.
+  // The default is 'auto' (probe-resolved: 60 when hardware supports it,
+  // else 30). A previously persisted explicit rung keeps its exact meaning.
   it('defaults to auto when nothing is persisted', async () => {
     const s = await loadStore();
     expect(s.framerateSelection).toBe('auto');

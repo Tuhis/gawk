@@ -2,11 +2,11 @@
 //
 // jsdom has no Fullscreen API, so we mock requestFullscreen/exitFullscreen and
 // a mutable document.fullscreenElement, firing `fullscreenchange` the way the
-// real API does. R16 (docs/21): the hook is tiered — tier 1 (element
-// fullscreen, unchanged) where the API exists, tier 2 (webkitEnterFullscreen
-// on the presentation video) / tier 3 (CSS pseudo-fullscreen) on gated
-// devices. jsdom's documentElement has no requestFullscreen, so the gated
-// tiers are the jsdom default; tier 1 tests install it explicitly.
+// real API does. The hook is tiered: tier 1 (element fullscreen) where the
+// API exists, tier 2 (webkitEnterFullscreen on the presentation video) /
+// tier 3 (CSS pseudo-fullscreen) on gated devices. jsdom's documentElement
+// has no requestFullscreen, so the gated tiers are the jsdom default; tier 1
+// tests install it explicitly.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
@@ -32,15 +32,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// The R16 device gate: present ⇒ tier 1 is the entire feature.
+// The device gate: present ⇒ tier 1 is the entire feature.
 function installElementFullscreen() {
   (document.documentElement as { requestFullscreen?: unknown }).requestFullscreen = vi.fn();
 }
 
 // A stub of the iPhone presentation <video> — jsdom's video element plus the
 // WebKit-prefixed fullscreen API, a settable readyState/paused, play()/pause()
-// mocks (jsdom's own are unimplemented), and R22's buffered/currentTime for
-// the seek-to-live path.
+// mocks (jsdom's own are unimplemented), and buffered/currentTime for the
+// seek-to-live path.
 function fakeVideo({
   readyState = 1,
   enterThrows = false,
@@ -151,9 +151,9 @@ describe('useFullscreen tier 2 (gated, native video fullscreen)', () => {
   });
 
   it('plays a paused video inside the gesture before entering (U4 black-screen finding)', () => {
-    // A paused MediaStream video is exactly a black native player; the toggle
-    // runs in the user gesture, so play() succeeds even where muted autoplay
-    // was blocked (e.g. iOS Low Power Mode).
+    // A paused video is exactly a black native player; the toggle runs in the
+    // user gesture, so play() succeeds even where muted autoplay was blocked
+    // (e.g. iOS Low Power Mode).
     const video = fakeVideo({ paused: true });
     const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
     act(() => result.current.toggle());
@@ -180,9 +180,9 @@ describe('useFullscreen tier 2 (gated, native video fullscreen)', () => {
     expect(result.current.isFullscreen).toBe(false);
   });
 
-  // R22 (docs/27 Decision 5): the armed MSE video sits paused while its
-  // buffer follows the live edge — entering must jump to the newest buffered
-  // range or the native player would resume minutes behind live.
+  // The armed MSE video sits paused while its buffer follows the live edge:
+  // entering must jump to the newest buffered range or the native player
+  // would resume minutes behind live.
   it('seeks a lagging video to the live edge inside the entry gesture', () => {
     const video = fakeVideo({ paused: true, buffered: [[0, 30]], currentTime: 2 });
     const { result } = renderHook(() => useFullscreen({ current: document.createElement('div') }, video));
@@ -201,7 +201,7 @@ describe('useFullscreen tier 2 (gated, native video fullscreen)', () => {
     expect(result.current.tier).toBe('video');
   });
 
-  // R22: playback exists only for the native player — exiting (system UI or
+  // Playback exists only for the native player: exiting (system UI or
   // toggle) pauses the hidden video so a second decode doesn't keep burning
   // battery under the inline canvas.
   it('pauses the hidden video when the system UI exits fullscreen', () => {

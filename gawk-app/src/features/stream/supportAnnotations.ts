@@ -1,8 +1,7 @@
-// R13 (docs/18 Decision 9): shared option-annotation logic for the quality
-// pickers and the advanced codec pin. Options are annotated, never removed —
-// an explicit software choice is allowed (R4's "explicit choices are
-// honored"); only genuinely unsupported combos disable. The probe is
-// advisory: the overlay's Encode mode row shows the runtime truth.
+// Shared option-annotation logic for the quality pickers and the advanced
+// codec pin. Options are annotated, never removed: an explicit software
+// choice is honoured, and only genuinely unsupported combos disable. The
+// probe is advisory; the overlay's Encode mode row shows the runtime truth.
 
 import {
   RESOLUTION_RUNGS,

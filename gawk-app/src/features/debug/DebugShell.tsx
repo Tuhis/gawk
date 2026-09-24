@@ -7,9 +7,9 @@ const LINKS = [
   ['#/debug/loopback', 'Loopback'],
 ] as const;
 
-// Chrome for the frozen diagnostic pages (docs/10 Decision 1). Not linked from
-// the production UI — reachable only by typing #/debug. Kept deliberately
-// plain; the production surfaces do not share components with it.
+// Chrome for the frozen diagnostic pages. Not linked from the production UI:
+// reachable only by typing #/debug. Kept deliberately plain; the production
+// surfaces do not share components with it.
 export function DebugShell({ active, children }: { active?: string; children: ReactNode }) {
   return (
     <>

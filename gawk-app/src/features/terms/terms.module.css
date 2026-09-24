@@ -1,6 +1,5 @@
-/* R23 (docs/29). The terms surface: R6 design system, long-form readable
-   typography. A scrollable page (not a centered card like landing) — the
-   document is long. */
+/* The terms surface: long-form readable typography. A scrollable page (not a
+   centered card like landing) because the document is long. */
 .root {
   position: relative;
   min-height: 100vh;

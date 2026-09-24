@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 //
-// R13 codec-pin annotations (docs/18 Decision 9 extended to the codec list):
-// each codec option is badged from its own single-codec matrix — hardware
-// unmarked, ' · software' badge, ' · unsupported' disabled — and the
-// annotation answers "what would pinning this codec get at the current
-// resolution/fps selections".
+// Codec-pin annotations: each codec option is badged from its own
+// single-codec matrix (hardware unmarked, ' · software' badge,
+// ' · unsupported' disabled), and the annotation answers "what would pinning
+// this codec get at the current resolution/fps selections".
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -89,10 +88,10 @@ describe('EncoderSettingsPanel codec annotations', () => {
   });
 });
 
-// Regression: the field committed every keystroke — a leading "0" parsed as
-// "auto" and cleared the field (0.5–0.9 Mbps only reachable as ".5"), and
-// each intermediate value recreated the live encoder (typing "25" briefly
-// applied 2 Mbps).
+// The field must not commit every keystroke: a leading "0" would parse as
+// "auto" and clear the field (0.5–0.9 Mbps only reachable as ".5"), and each
+// intermediate value would recreate the live encoder (typing "25" briefly
+// applies 2 Mbps).
 describe('EncoderSettingsPanel bitrate override', () => {
   function bitrateInput(): HTMLInputElement {
     return screen.getByLabelText(/Bitrate/) as HTMLInputElement;

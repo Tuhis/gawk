@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// R28 TM2: the browser-side lifecycle around the collector — the
+// The browser-side lifecycle around the collector: the
 // `visibilitychange → hidden` beacon flush, and unmount ending the session.
 // These are the two paths that only exist in a document, so they get a jsdom
 // test rather than a pure-unit one.
@@ -114,13 +114,12 @@ describe('useTelemetryCollector', () => {
     expect(beacons).toHaveLength(0);
   });
 
-  // Review finding 7 (R28 / PR #151): gawk-app renders <StrictMode> in
-  // main.tsx, whose dev-mode mount -> cleanup -> remount runs this hook's
-  // effect setup, cleanup, then setup again against the SAME component
-  // instance (same fiber, same useRef). Before the fix, cleanup called
-  // collector.stop() — terminal, per telemetry.ts — so the collector was
-  // permanently dead by the time the real wire-0x0D hello arrived over the
-  // transport: every dev session collected nothing.
+  // gawk-app renders <StrictMode> in main.tsx, whose dev-mode mount ->
+  // cleanup -> remount runs this hook's effect setup, cleanup, then setup
+  // again against the SAME component instance (same fiber, same useRef). A
+  // cleanup that calls collector.stop() (terminal) leaves the collector dead
+  // by the time the real wire-0x0D hello arrives over the transport, so every
+  // dev session collects nothing.
   it('still collects after a hello that arrives following a StrictMode double-invoke', () => {
     let collector!: TelemetryCollector<{ fps: number }>;
     render(
@@ -131,7 +130,7 @@ describe('useTelemetryCollector', () => {
 
     // By the time render() returns, React has already run this hook's effect
     // through setup -> cleanup -> setup once (synchronously, in the same
-    // commit) — the exact sequence the finding describes. The hello (and
+    // commit), the exact sequence above. The hello (and
     // every sample after it) arrives only now, as it would in the real app.
     collector.begin(HELLO);
     collector.sample({ fps: 30 });

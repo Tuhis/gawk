@@ -47,8 +47,8 @@ describe('runtime config', () => {
   });
 });
 
-// R21 (docs/26): the Deep buffer floor is a deploy-time knob, because DV6 sets
-// it by measurement and re-tuning must not need an image rebuild.
+// The Deep buffer floor is a deploy-time knob: it is set by measurement, and
+// re-tuning must not need an image rebuild.
 describe('getDvrBufferMs', () => {
   afterEach(() => {
     delete window.__GAWK_CONFIG__;
@@ -81,9 +81,9 @@ describe('getDvrBufferMs', () => {
   });
 });
 
-// R23 (docs/29): terms metadata accessors. Empty/whitespace strings count as
-// unset so the ConfigMap can render empty defaults without duplicating the
-// version constant or printing blank attribution.
+// Terms metadata accessors. Empty/whitespace strings count as unset so the
+// ConfigMap can render empty defaults without duplicating the version
+// constant or printing blank attribution.
 describe('terms config', () => {
   afterEach(() => {
     delete window.__GAWK_CONFIG__;
@@ -135,9 +135,9 @@ describe('terms config', () => {
   });
 });
 
-// R38 (docs/41 D4): the local stack's dev certificate hash. The gate is the
-// point of the key — it exists so `#/view/{id}` works on a local stack, and
-// must be inert anywhere else.
+// The local stack's dev certificate hash. The gate is the point of the key:
+// it exists so `#/view/{id}` works on a local stack, and must be inert
+// anywhere else.
 describe('getDevCertHashHex', () => {
   afterEach(() => {
     delete window.__GAWK_CONFIG__;
@@ -169,13 +169,13 @@ describe('getDevCertHashHex', () => {
   });
 });
 
-// D4 says this key is deliberately NOT a chart value: offering the knob would
+// This key is deliberately NOT a chart value: offering the knob would
 // invite a production deployment to paper over a TLS misconfiguration with
 // it. A deliberate omission is invisible to a reader of the chart, so it is
 // asserted here rather than left to be "tidied up" by a later sweep.
 describe('the gawk-app chart does not learn devCertHashHex (D4)', () => {
-  // Read through Vite's glob rather than node:fs — this package has no Node
-  // type definitions and D4 is not worth a dependency.
+  // Read through Vite's glob rather than node:fs: this package has no Node
+  // type definitions and this check is not worth a dependency.
   const chartFiles = import.meta.glob('../deploy/charts/**/*', {
     query: '?raw',
     import: 'default',

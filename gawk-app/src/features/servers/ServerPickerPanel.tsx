@@ -1,10 +1,9 @@
-// R37 (docs/40 §4.3): the server picker panel. The saved-server list with
-// the pinned default first (identity locked, credentials editable — F4),
-// add/edit/remove for custom entries, select-on-click, and the
-// "save this server" affordance for an unsaved link override (D2). The
-// dev-cert-hash field is dev-gated exactly like the old panels; everything
-// else is a production surface gated only by allowCustomRelays (D6) at the
-// call sites that open this panel.
+// The server picker panel: the saved-server list with the pinned default
+// first (identity locked, credentials editable), add/edit/remove for custom
+// entries, select-on-click, and the "save this server" affordance for an
+// unsaved link override. The dev-cert-hash field is dev-gated; everything
+// else is a production surface gated only by allowCustomRelays at the call
+// sites that open this panel.
 
 import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -60,9 +59,9 @@ function ProbeDot({ quality }: { quality: ProbeQuality }) {
   );
 }
 
-// One probe cell (docs/40 §4.4): RTT + sanitized identity next to — never in
-// place of — the host the row already shows; one honest combined failure
-// state (browsers blur the causes).
+// One probe cell: RTT + sanitized identity next to, never in place of, the
+// host the row already shows; one honest combined failure state (browsers
+// blur the causes).
 function ProbeCell({ probe }: { probe: RowProbeState | undefined }) {
   if (!probe || probe.state === 'idle') return null;
   if (probe.state === 'probing') {
@@ -124,8 +123,8 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
   const servers = useTransportStore((s) => s.servers);
   const selectedServerId = useTransportStore((s) => s.selectedServerId);
   const sessionOverrideUrl = useTransportStore((s) => s.sessionOverrideUrl);
-  // Directory (docs/40 §4.5): fetched when the panel opens, never at boot;
-  // failure degrades to a quiet note. undefined = still loading.
+  // Directory: fetched when the panel opens, never at boot; failure degrades
+  // to a quiet note. undefined = still loading.
   const [directory, setDirectory] = useState<DirectoryOffer[] | null | undefined>(undefined);
 
   const [editing, setEditing] = useState<Editing>({ mode: 'closed' });
@@ -186,7 +185,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [requestClose]);
 
-  // Cross-tab rule (F11): re-read storage when the panel opens.
+  // Another tab may have edited the list: re-read storage when the panel opens.
   useEffect(() => {
     useTransportStore.getState().reloadFromStorage();
   }, []);
@@ -207,12 +206,12 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
   }, [directoryUrl, fetchFn]);
 
   // Saved servers probe on open + demand; directory offers on demand ONLY
-  // (F10 — the probe discloses the user's address to the probed host).
+  // (the probe discloses the user's address to the probed host).
   const { results: probeResults, probe } = useServerProbe(
     [
       // Every row's hash goes through the same fallback a real connection
       // uses, so a probe can never report a relay the viewer is streaming
-      // from as unreachable (R38, transportStore.certHashWithDevFallback).
+      // from as unreachable.
       {
         key: DEFAULT_SERVER_ID,
         url: defaultServerUrl(),
@@ -313,8 +312,8 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
   const saveOverride = () => {
     const store = useTransportStore.getState();
     if (store.sessionOverrideUrl === null) return;
-    // Saving carries any session-typed credentials into the entry (F3) but
-    // does NOT change the selection — selection is its own click (D2).
+    // Saving carries any session-typed credentials into the entry but does
+    // NOT change the selection: selection is its own click.
     store.addServer({
       label: '',
       url: store.sessionOverrideUrl,
@@ -407,8 +406,8 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
 
   // Portalled on purpose: the landing chip lives in a `transform`ed row, and
   // a transformed ancestor becomes the containing block for `position: fixed`
-  // descendants — mounted in place, the full-screen overlay collapsed to the
-  // chip's own ~78px box.
+  // descendants, so mounted in place the full-screen overlay would collapse to
+  // the chip's own box.
   return createPortal(
     <div
       className={`${styles.scrim} ${closing ? styles.scrimOut : ''}`}

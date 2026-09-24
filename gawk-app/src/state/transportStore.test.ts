@@ -39,10 +39,10 @@ afterEach(() => {
 });
 
 describe('transportStore default relay URL', () => {
-  // The self-hosting case, and the reason config.relayUrl exists: before it,
-  // any origin that was not the reference deployment fell through to
-  // localhost, so a self-hoster's viewers each had to paste the relay URL
-  // into settings before a join link would work.
+  // The self-hosting case, and the reason config.relayUrl exists: without it,
+  // any origin that is not the reference deployment falls through to
+  // localhost, so a self-hoster's viewers would each have to paste the relay
+  // URL into settings before a join link works.
   it('uses the deployment-configured relay on any host', async () => {
     setHostname('gawk.example.com');
     window.__GAWK_CONFIG__ = { relayUrl: 'https://relay.example.com:4433' };
@@ -67,8 +67,8 @@ describe('transportStore default relay URL', () => {
   });
 });
 
-// R37 §4.1.2: the legacy three-key model migrates on first load, both
-// shapes, idempotently, and the legacy keys are removed afterwards.
+// The legacy three-key model migrates on first load, both shapes,
+// idempotently, and the legacy keys are removed afterwards.
 describe('legacy key migration', () => {
   it('migrates a custom legacy URL into a selected entry (custom shape)', async () => {
     setHostname('gawk.example.com');
@@ -78,8 +78,8 @@ describe('legacy key migration', () => {
     localStorage.setItem('gawk.certHashHex', 'abcd');
 
     const s = await freshStore();
-    // The pre-R37 test "lets a persisted setting win over the configured
-    // relay" — same behaviour, now via migration + selection.
+    // A persisted setting wins over the configured relay, via migration +
+    // selection.
     expect(s.serverUrl).toBe('https://other.example.com:4433');
     expect(s.publishSecret).toBe('hunter2');
     expect(s.certHashHex).toBe('abcd');
@@ -149,7 +149,7 @@ describe('resolution precedence (override > selected > default)', () => {
     store.getState().setSessionOverride('https://link.example.com:4433');
     expect(store.getState().serverUrl).toBe('https://link.example.com:4433');
     expect(store.getState().resolvedSource).toBe('override');
-    // Unsaved override carries no credentials (D4).
+    // Unsaved override carries no credentials.
     expect(store.getState().publishSecret).toBe('');
     expect(store.getState().certHashHex).toBe('');
 
@@ -194,9 +194,9 @@ describe('resolution precedence (override > selected > default)', () => {
   });
 });
 
-// R38 (docs/41 §4.2.3): the local stack renders its relay's dev certificate
-// hash into /config.js so the chrome-free viewer route works in a fresh
-// profile. A fallback, and scoped to this deployment's own relay.
+// The local stack renders its relay's dev certificate hash into /config.js
+// so the chrome-free viewer route works in a fresh profile. A fallback, and
+// scoped to this deployment's own relay.
 describe('devCertHashHex fallback', () => {
   it('fills in the pinned default’s empty hash', async () => {
     setHostname('localhost');
@@ -250,7 +250,7 @@ describe('devCertHashHex fallback', () => {
   });
 
   // A saved custom entry that happens to name the same relay is the same
-  // relay (docs/40 §5 G3 uses URL equality for exactly this reason).
+  // relay: relay identity is URL equality.
   it('applies to a custom entry whose URL equals the default', async () => {
     setHostname('localhost');
     window.__GAWK_CONFIG__ = { devCertHashHex: 'beef00' };
@@ -321,9 +321,9 @@ describe('storage semantics', () => {
     expect(stored[0].label).toBe('renamed');
   });
 
-  // F9: the default's credential record is keyed to the URL it was saved
-  // against; a chart-side relayUrl change discards it rather than presenting
-  // the old relay's secret to the new host.
+  // The default's credential record is keyed to the URL it was saved against;
+  // a chart-side relayUrl change discards it rather than presenting the old
+  // relay's secret to the new host.
   it('discards default credentials when the recomputed default URL changes', async () => {
     setHostname('localhost');
     localStorage.setItem(
@@ -346,7 +346,7 @@ describe('storage semantics', () => {
     expect(JSON.parse(localStorage.getItem('gawk.servers')!)).toEqual([]);
   });
 
-  // F11: re-read on panel open, last-writer-wins.
+  // Re-read on panel open, last-writer-wins.
   it('reloadFromStorage picks up another tab’s writes', async () => {
     setHostname('localhost');
     const mod = await freshModule();
@@ -413,7 +413,7 @@ describe('entry management', () => {
   });
 });
 
-// F3: credential writes land on whatever the store currently resolves to.
+// Credential writes land on whatever the store currently resolves to.
 describe('per-resolved-server credential writes', () => {
   it('writes the secret to the selected custom entry', async () => {
     setHostname('localhost');

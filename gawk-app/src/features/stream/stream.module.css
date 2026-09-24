@@ -71,7 +71,7 @@
   opacity: 0.5;
 }
 
-/* R3 ladder picker: two compact selects, usable mid-broadcast. */
+/* Ladder picker: two compact selects, usable mid-broadcast. */
 .ladderPicker {
   display: flex;
   gap: 1rem;
@@ -85,9 +85,8 @@
   min-width: 140px;
 }
 
-/* R13 advanced encoder settings: stacked vertically like the dev settings —
-   three fields (incl. full codec strings) don't fit as a row in the side
-   panel. */
+/* Advanced encoder settings, stacked vertically: three fields (incl. full
+   codec strings) don't fit as a row in the side panel. */
 .stackedPicker {
   display: flex;
   flex-direction: column;
@@ -134,8 +133,8 @@
   color: var(--muted);
 }
 
-/* R4 auto-mode indicator: informational, distinct from the error style —
-   the stream is fine, just running at a stepped-down rung. */
+/* Auto-mode indicator: informational, distinct from the error style. The
+   stream is fine, just running at a stepped-down rung. */
 .autoNotice {
   padding: 0.75rem 1rem;
   border: 1px solid var(--accent);
@@ -144,8 +143,8 @@
   background: rgba(76, 139, 245, 0.08);
 }
 
-/* R4 pressure / at-floor warning: something the broadcaster may want to act
-   on (lower framerate, close apps) but not a fatal error. */
+/* Pressure / at-floor warning: something the broadcaster may want to act on
+   (lower framerate, close apps) but not a fatal error. */
 .warning {
   padding: 0.75rem 1rem;
   border: 1px solid var(--warning);

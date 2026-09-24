@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// R37 (docs/40 §4.7): links stay short on the default relay and carry
-// ?relay= on any other — that parameter is what makes a code minted on
-// relay B joinable from a UI deployed against relay A.
+// Links stay short on the default relay and carry ?relay= on any other: that
+// parameter is what makes a code minted on relay B joinable from a UI
+// deployed against relay A.
 async function load() {
   vi.resetModules();
   const store = (await import('../state/transportStore')).useTransportStore;

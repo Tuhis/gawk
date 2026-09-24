@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// R37 (docs/40 §4.4 / SP6): the probe against a scripted transport — jsdom
-// has no WebTransport, and these behaviours (median over lossy samples,
+// The probe against a scripted transport: jsdom has no WebTransport, and
+// these behaviours (median over lossy samples,
 // identity-late, degraded identity) need deterministic control anyway.
 import { describe, expect, it } from 'vitest';
 
@@ -94,8 +94,8 @@ describe('probeRelay', () => {
     expect(result.identity).toEqual({ serverVersion: '9.9.9', name: 'Homelab' });
   });
 
-  // WebKit has no `datagrams.writable`; the probe used to throw on it, catch
-  // that, and report every relay as failed on Safari.
+  // WebKit has no `datagrams.writable`, only `createWritable()`; a probe that
+  // requires `writable` reports every relay as failed on Safari.
   it('measures RTT over createWritable() on WebKit', async () => {
     const result = await probeRelay('https://relay.example:4433', '', undefined, () =>
       fakeTransport({ webkit: true, echoDelayMs: 10 }),
@@ -110,8 +110,8 @@ describe('probeRelay', () => {
     expect(result.state).toBe('ok');
   });
 
-  // F5: echoes finish long before the identity stream arrives — the wait
-  // window must still capture it.
+  // Echoes finish long before the identity stream arrives; the wait window
+  // must still capture it.
   it('captures identity arriving after the echoes complete', async () => {
     const identity = encodeRelayIdentity({ serverVersion: '9.9.9', name: 'Late' });
     const result = await probeRelay('https://relay.example:4433', '', undefined, () =>
@@ -131,7 +131,7 @@ describe('probeRelay', () => {
     expect(result.identity).toBe(null);
   });
 
-  // F7: a malformed identity degrades to "no identity", never a failed probe.
+  // A malformed identity degrades to "no identity", never a failed probe.
   it('degrades a malformed identity to null', async () => {
     const junk = new Uint8Array([0x01, 0x11, 0xff, 0x00]);
     const result = await probeRelay('https://relay.example:4433', '', undefined, () =>
@@ -157,8 +157,8 @@ describe('probeRelay', () => {
   }, 10000);
 });
 
-// F6: control and bidi-control characters are stripped; the host is always
-// rendered alongside by the caller — this only cleans the string.
+// Control and bidi-control characters are stripped; the host is always
+// rendered alongside by the caller, so this only cleans the string.
 describe('sanitizeIdentityName', () => {
   it('strips control and bidi characters', () => {
     expect(sanitizeIdentityName('Off‮icial relay⁦ ✓')).toBe('Official relay ✓');

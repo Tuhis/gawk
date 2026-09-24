@@ -1,39 +1,20 @@
-// R22 MF1's CI proof (docs/27 Decision 10): the production fMP4 muxer's
-// output must PLAY in a real Chrome MediaSource <video> — frames present and
-// currentTime advances. This file is the in-page driver the e2e harness
-// bundles (rolldown) and injects into headless Chrome (`run.mjs
-// --muxer-check`); it is never part of the app bundle (nothing imports it).
+// In-page driver for `run.mjs --muxer-check`: the e2e harness bundles it
+// (rolldown) and injects it into headless Chrome; nothing in the app imports
+// it. It runs the production pieces end to end (the committed Annex-B fixture
+// → Fmp4Muxer → MsePresenter via its Chromium object-URL fallback → <video>)
+// and proves a real MediaSource accepts, demuxes and PLAYS the muxer's fMP4,
+// video and audio track, driven by the presenter's real append, dual
+// SourceBuffer and duration logic.
 //
-// It deliberately runs the *production* pieces end to end: the committed
-// Annex-B fixture → Fmp4Muxer (worker-side code) → MsePresenter (the
-// main-thread append path, exercising its Chromium object-URL fallback)
-// → <video>.
-//
-// WHAT THIS DOES NOT COVER, and why (do not read a green run as more):
-//   * It does not go through R16/R22's device gate at all — it imports the
-//     muxer and presenter directly and never renders ViewerScreen. The gate is
-//     the *absence* of Element.requestFullscreen, which Chrome has, so in the
-//     production viewer under Chrome `gated` is false and NO R22 code runs (no
-//     presentationMux in the worker init, no frame tap, no muxer, no hidden
-//     <video>) — that is R16 Decision 1's byte-identity guarantee, and it means
-//     the tier-1 viewer scenario proves nothing about this path by design.
-//     So the gate is not stubbed or worked around here; it is simply not on the
-//     path. What is elided with it: arm-at-watching, the worker/postMessage
-//     crossing, the audio probe firing off the stats tick, useFullscreen's tier
-//     selection, and the inline-sink audio handoff — all covered by jsdom tests
-//     against the connection seam (ViewerScreen.mse.test.tsx et al), not here.
-//   * Chrome has no ManagedMediaSource (verified: `typeof ManagedMediaSource
-//     === 'undefined'`), so everything MMS-specific is unexercised — the
-//     `streaming` parking that pump() honors, MMS's own buffer eviction, and the
-//     srcObject-with-MediaSource wiring (Chrome takes the object-URL fallback).
-//   * WebKit's pause-and-fire-`ended` on an MSE underrun is, definitionally,
-//     what Chrome does NOT do — it stalls and resumes. That divergence is why
-//     docs/27 finding 1 shipped with CI green, and no Chrome check can catch
-//     its class of bug.
-// What it does prove: the muxer emits valid fMP4 that a production MSE
-// implementation accepts, demuxes and PLAYS (video + the Opus track), and the
-// presenter's real append/dual-SourceBuffer/duration logic drives a real
-// MediaSource + SourceBuffer correctly.
+// Not covered, so don't read a green run as more:
+//   * the viewer's device gate and everything behind it (arming, the worker
+//     crossing, fullscreen tier selection, the audio hand-off). Chrome has
+//     Element.requestFullscreen, so that path never runs in Chrome at all;
+//     jsdom tests against the connection seam cover it.
+//   * anything ManagedMediaSource-specific (the `streaming` parking, MMS
+//     eviction, the srcObject wiring): Chrome has no MMS.
+//   * WebKit's pause-and-fire-`ended` on an MSE underrun: Chrome stalls and
+//     resumes instead, so no Chrome check can catch that class of bug.
 
 import { MsePresenter, probeMseAudio } from '../features/viewer/msePresentation';
 import { AAC_CODEC, AacTranscoder, type TranscodeInput } from '../transport/audio-transcode';
@@ -52,15 +33,14 @@ interface MuxerCheckResult {
   videoWidth: number;
   videoHeight: number;
   videoError: string | null;
-  // R22 audio (docs/27 finding 2). `audioSupported` is this Chrome's
-  // Opus-in-MP4 verdict — the same question iOS answers for itself; when it is
-  // false the audio leg is skipped rather than failed. `audioTrack` says the
-  // presenter really created the second SourceBuffer, and `currentTime`
-  // advancing WITH both tracks appended is the coupling proof: the element plays
-  // only where the tracks' buffered ranges intersect, so a broken audio timeline
-  // stalls this check even though the video half is perfect.
-  // Which tier the runtime picked (or was forced onto): 'opus' muxes verbatim,
-  // 'aac' transcodes — the path iOS lands on.
+  // `audioSupported` is this runtime's MP4-audio verdict, the same probe iOS
+  // runs; when it is false the audio leg is skipped rather than failed.
+  // `audioTrack` says the presenter really created the second SourceBuffer, and
+  // `currentTime` advancing WITH both tracks appended is the coupling proof: the
+  // element plays only where the tracks' buffered ranges intersect, so a broken
+  // audio timeline stalls this check even though the video half is perfect.
+  // `audioTier` is the tier picked (or forced): 'opus' muxes verbatim, 'aac'
+  // transcodes, which is the path iOS lands on.
   audioTier: 'opus' | 'aac' | null;
   audioTranscode: string | null;
   audioTranscodeDetail: string | null;
@@ -72,17 +52,17 @@ interface MuxerCheckResult {
   audioTrack: boolean;
   audioMime: string | null;
   audioError: string | null;
-  // R22 finding 1: duration = Infinity must stick, or the native player draws a
-  // finite timeline and reads a buffer underrun as end-of-media.
+  // duration = Infinity must stick, or the native player draws a finite
+  // timeline and reads a buffer underrun as end-of-media.
   liveDuration: boolean;
   // Computed in-page: JSON has no Infinity (it serializes to null), so the
   // comparison has to happen where the number still is one.
   durationIsInfinite: boolean;
 }
 
-// Real Opus packets, produced by the browser's own encoder — the R15 lane's
-// shape (48 kHz stereo, 20 ms frames), so the muxer sees what it sees in
-// production rather than synthetic bytes an MSE demuxer would reject.
+// Real Opus packets from the browser's own encoder, in the audio lane's shape
+// (48 kHz stereo, 20 ms frames), so the muxer sees what it sees in production
+// rather than synthetic bytes an MSE demuxer would reject.
 const OPUS_FRAME_SAMPLES = 960;
 const OPUS_SAMPLE_RATE = 48_000;
 
@@ -174,20 +154,20 @@ async function runMuxerCheck(): Promise<MuxerCheckResult> {
   const presenter = new MsePresenter();
   presenter.attach(video);
 
-  // R22 audio: probe first — a runtime with neither Opus nor AAC in MP4 skips the
-  // audio leg instead of failing the video proof (and the skip is reported, never
-  // silent). Chrome takes both, so `GAWK_MUXER_CHECK_AAC` forces the AAC tier to
-  // exercise the path iOS actually lands on (docs/27 finding 4): the mp4a/esds
-  // boxes and the AudioSpecificConfig the encoder hands back.
+  // Probe first: a runtime with neither Opus nor AAC in MP4 skips the audio leg
+  // instead of failing the video proof (and the skip is reported, never silent).
+  // Chrome takes both, so the `?aac=1` page query (run.mjs's second pass) forces
+  // the AAC tier to exercise the path iOS actually lands on: the mp4a/esds boxes
+  // and the AudioSpecificConfig the encoder hands back.
   const forceAac = new URLSearchParams(location.search).get('aac') === '1';
   const audioProbe = forceAac
     ? { supported: true, codec: 'aac' as const, mime: null, reason: 'forced' }
     : probeMseAudio('opus', 2);
   const audioPackets = audioProbe.supported ? await encodeOpusPackets(40) : [];
   let audioMime: string | null = null;
-  // docs/27 finding 5: the audio SourceBuffer has to be created alongside the
-  // video one — an MSE implementation may refuse a second buffer once the first
-  // init segment is parsed. The mime is known from the tier; the init bytes are
+  // The audio SourceBuffer has to be created alongside the video one: an MSE
+  // implementation may refuse a second buffer once the first init segment is
+  // parsed. The mime is known from the tier; the init bytes are
   // not (the AAC path learns its AudioSpecificConfig from the encoder).
   //
   // On the AAC tier, prime the transcoder FIRST: Chrome's AAC *encoder* is
@@ -287,8 +267,7 @@ async function runMuxerCheck(): Promise<MuxerCheckResult> {
   // play() resolves only when playback actually BEGINS, so it stays pending
   // forever if the element never has data — which is exactly what an audio track
   // that produces nothing does, since `buffered` is the tracks' intersection.
-  // (This hung a CI run for 6 minutes.) Race it: a rejection or a timeout both
-  // show up as framesPresented staying 0.
+  // Race it: a rejection or a timeout both show up as framesPresented staying 0.
   await Promise.race([
     video.play().catch(() => {}),
     new Promise((r) => setTimeout(r, 2000)),

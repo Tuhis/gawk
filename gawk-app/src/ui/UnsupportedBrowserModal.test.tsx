@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The unsupported-browser warning. Behavior is written first (CODE-REVIEW.md).
+// The unsupported-browser warning.
 // The load-bearing parts are that it says what is missing, that it cannot be
 // dismissed by accident (the point is an acknowledgment, not a toast), and that
 // continuing is always available — nobody is locked out of the app.
@@ -23,7 +23,7 @@ describe('UnsupportedBrowserModal', () => {
     expect(screen.getByRole('dialog')).toBeTruthy();
     expect(screen.getByRole('heading').textContent).toContain('This browser');
     expect(document.body.textContent).toContain('WebTransport');
-    // Safari is a supported viewer again; the copy must not steer users away.
+    // Safari is a supported viewer; the copy must not steer users away.
     expect(document.body.textContent).toContain('Safari');
     expect(document.body.textContent).not.toContain('WebKit');
   });

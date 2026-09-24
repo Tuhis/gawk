@@ -1,5 +1,5 @@
-// R28 TM2 (docs/33): the collector's four load-bearing properties — zero PII,
-// never on the hot path, off means off, and a truncated session that says so.
+// The collector's four load-bearing properties: zero PII, never on the hot
+// path, off means off, and a truncated session that says so.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -109,9 +109,9 @@ describe('TelemetryCollector — off means off', () => {
   });
 });
 
-// docs/33 §4.13: the id a viewer reads off its own stats overlay. The property
-// that matters is not the derivation (wire.test.ts pins that) but the gating —
-// the collector names a session only while it is actually reporting one, so an
+// The id a viewer reads off its own stats overlay. The property that matters
+// is not the derivation (wire.test.ts pins that) but the gating: the
+// collector names a session only while it is actually reporting one, so an
 // operator handed an id can always expect a dashboard row for it.
 describe('TelemetryCollector — sessionId (§4.13)', () => {
   it('names the session it is reporting under, and nothing before or after', () => {
@@ -170,9 +170,9 @@ describe('TelemetryCollector — zero PII (D8)', () => {
     expect(batch.app.browser).toBe('Chrome 152');
     expect(batch.app.os).toBe('Windows');
     expect(batch.role).toBe('viewer');
-    // Asserted by grepping the SERIALIZED body, per TM2's criteria — a field
-    // added later that smuggles the UA in would fail here even if the typed
-    // envelope still looks clean.
+    // Asserted by grepping the SERIALIZED body: a field added later that
+    // smuggles the UA in would fail here even if the typed envelope still looks
+    // clean.
     expect(body).not.toContain('Mozilla/');
     expect(body).not.toContain('AppleWebKit');
     expect(body.toLowerCase()).not.toContain('useragent');
@@ -214,10 +214,9 @@ describe('TelemetryCollector — zero PII (D8)', () => {
       browser: 'Firefox 145',
       os: 'Linux',
     });
-    // Headless Chrome says "HeadlessChrome/", never "Chrome/" — a bare Chrome
-    // rule reports a real, shipping browser as "unknown", which is exactly how
-    // the e2e harness's own browser looked until it was measured. Headlessness
-    // is not a browser family.
+    // Headless Chrome says "HeadlessChrome/", never "Chrome/": a bare Chrome
+    // rule reports a real, shipping browser as "unknown". Headlessness is not
+    // a browser family.
     expect(
       describeClient(
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.0.0 Safari/537.36',
@@ -276,9 +275,8 @@ describe('TelemetryCollector — sampling and batching', () => {
   // leave a lone high surrogate. That is not valid UTF-16 text — sendBeacon
   // and fetch both encode the request body to UTF-8, which silently rewrites
   // an unpaired surrogate to U+FFFD, so the stored value would be corrupted
-  // rather than merely shortened (the same class of bug as the ingest
-  // service's byte-boundary clip()). Built so the emoji's leading surrogate
-  // lands exactly on the cut.
+  // rather than merely shortened. Built so the emoji's leading surrogate lands
+  // exactly on the cut.
   it('truncates event fields on a UTF-16 boundary instead of splitting a surrogate pair', () => {
     const h = harness();
     h.begin();
@@ -457,7 +455,7 @@ describe('TelemetryCollector — byte budget (§4.3)', () => {
 });
 
 describe('TelemetryCollector — retry semantics', () => {
-  // 429 means "later"; every other rejection means "never" (review finding 2).
+  // 429 means "later"; every other rejection means "never".
   // Retrying a batch the service will reject identically forever is pure noise
   // at exactly the moment the fleet is busiest.
   it('does not retry a rejection the service will repeat', async () => {
@@ -502,8 +500,8 @@ describe('TelemetryCollector — interval minima (docs/33 D16)', () => {
     const h = harness({ reportIntervalMs: 2000 });
     h.begin();
     // Four 500 ms ticks per emitted sample. The collapse happens on a tick
-    // that decimation discards — which is exactly how an intermittent stutter
-    // used to become invisible before it ever left the browser.
+    // that decimation discards, which without minima makes an intermittent
+    // stutter invisible before it ever leaves the browser.
     h.collector.sample({ receivedFps: 30 });
     h.advance(500);
     h.collector.sample({ receivedFps: 2 });
@@ -580,7 +578,7 @@ describe('TelemetryCollector — interval minima (docs/33 D16)', () => {
   });
 });
 
-// --- R37 (docs/40 §4.10 SP13): the relay-advertised destination ------------
+// --- The relay-advertised destination ---------------------------------------
 
 describe('advertised telemetry endpoint (R37, revised per review R3-A/R3-C)', () => {
   it('an advertised URL wins over the configured one (D15)', () => {
@@ -592,12 +590,11 @@ describe('advertised telemetry endpoint (R37, revised per review R3-A/R3-C)', ()
     expect(h.sent.at(-1)!.url).toBe('https://foreign.example/api/telemetry/v1/ingest');
   });
 
-  // The revised D15 fallback: with no 0x12, batches go to the CONFIGURED
-  // URL on any relay — the pre-R37 behavior. The same fleet is legitimately
-  // reached through non-default URLs (direct IP, alternate DNS, a migrated
-  // legacy setting) where the configured collector shares the key; the
-  // suppression variant silently stopped those sessions' telemetry (the
-  // e2e failure that proved it).
+  // With no 0x12, batches go to the CONFIGURED URL on any relay. The same
+  // fleet is legitimately reached through non-default URLs (direct IP,
+  // alternate DNS, a migrated legacy setting) where the configured collector
+  // shares the key; suppressing telemetry there would silently stop those
+  // sessions' telemetry.
   it('falls back to the configured URL when no 0x12 arrives', () => {
     const h = harness();
     h.begin();
@@ -607,8 +604,8 @@ describe('advertised telemetry endpoint (R37, revised per review R3-A/R3-C)', ()
     expect(h.sent[0].url).toBe('/api/telemetry/v1/ingest');
   });
 
-  // G2: precedence re-resolves at every send — a late 0x12 redirects the
-  // rest of the session's batches (already-sent ones went to the fallback).
+  // Precedence re-resolves at every send: a late 0x12 redirects the rest of
+  // the session's batches (already-sent ones went to the fallback).
   it('a late 0x12 redirects subsequent batches', () => {
     const h = harness();
     h.begin();
@@ -630,10 +627,10 @@ describe('advertised telemetry endpoint (R37, revised per review R3-A/R3-C)', ()
     expect(h.collector.reportingToAdvertised).toBe(true);
   });
 
-  // G3: the 250 ms sampling floor is security-load-bearing since R37 — the
-  // hello's interval is relay-chosen and the destination can be a hostile
-  // relay's choice, so the clamp is what bounds the reflector rate. A relay
-  // asking for 0 ms must not sample faster than the floor.
+  // The 250 ms sampling floor is security-load-bearing: the hello's interval
+  // is relay-chosen and the destination can be a hostile relay's choice, so
+  // the clamp is what bounds the reflector rate. A relay asking for 0 ms must
+  // not sample faster than the floor.
   it('clamps a below-floor hello interval to 250 ms', () => {
     const h = harness({ reportIntervalMs: 0 });
     h.begin();
@@ -647,8 +644,8 @@ describe('advertised telemetry endpoint (R37, revised per review R3-A/R3-C)', ()
   });
 });
 
-// D17: the unload beacon rides a CORS-safelisted content type so sendBeacon
-// needs no preflight it cannot perform during unload — cross-origin included.
+// The unload beacon rides a CORS-safelisted content type so sendBeacon needs
+// no preflight it cannot perform during unload, cross-origin included.
 describe('beacon content type (R37 D17)', () => {
   it('sendBeacon is handed a text/plain blob', async () => {
     const calls: Array<{ url: string; type: string }> = [];
@@ -676,8 +673,8 @@ describe('beacon content type (R37 D17)', () => {
   });
 });
 
-// R42 (docs/44 §4.10, RM8): the HMAC'd room key rides every batch while set,
-// and only the key — the code never enters the collector at all.
+// The HMAC'd room key rides every batch while set, and only the key: the code
+// never enters the collector at all.
 describe('TelemetryCollector — room key (R42)', () => {
   it('stamps roomKey on every batch once set, in either order relative to begin()', () => {
     const h = harness();

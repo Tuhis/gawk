@@ -2,10 +2,8 @@
 //
 // The app-level browser-support gate. The requirements it pins are that the
 // warning reaches a *direct viewer link* and not just the landing page, that
-// acknowledging it never outlives the page load — and, since the relay's
-// WebKit refusal was fixed (docs/gotchas.md, the webtransport-go
-// `Server.Config` entry), that a browser which has WebTransport is never
-// warned by engine.
+// acknowledging it never outlives the page load, and that a browser which has
+// WebTransport is never warned by engine.
 //
 // The route screens are stubbed: this asserts where the gate sits, and the real
 // screens would drag transports and capture into a jsdom run for no added
@@ -75,8 +73,7 @@ describe('App browser-support gate', () => {
     expect(screen.getByTestId('landing')).toBeTruthy();
   });
 
-  // The regression pin: Safari was warned about by user agent while the relay
-  // refused WebKit. With that fixed, a Safari that has the API is supported.
+  // No engine check: a Safari that has the API is supported.
   it('does not warn Safari by engine when it has WebTransport', () => {
     withWebTransport();
     setUserAgent(SAFARI);
