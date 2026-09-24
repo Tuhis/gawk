@@ -949,7 +949,7 @@ export class BroadcastPipeline {
         this.updateAutoLadder(frame.displayWidth, frame.displayHeight);
       }
 
-      const processed = this.preprocessor.process(frame, this.nativeFps);
+      const processed = this.preprocessor.process(frame);
       if (!processed) return; // fps gate drop; frame closed inside
 
       // Encoder no longer matches what we're sending (ladder change, or the
