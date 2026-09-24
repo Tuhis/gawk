@@ -7,6 +7,7 @@
 // cannot be repeated or reversed), drive with start()/stop() across broadcasts,
 // dispose() on teardown.
 
+import { log } from '../../lib/logger';
 import type { ViewerDeliveryMode } from '../../transport/resilient';
 import type { StripeMode } from '../../transport/stripe';
 import type { ConnectOptions } from '../../transport/connection';
@@ -18,6 +19,11 @@ import type {
   ViewerWorkerOutbound,
 } from '../../transport/viewer-worker-core';
 
+// How long to wait for the worker's boot handshake before falling back. The
+// worker posts 'boot' as soon as its module evaluates, so this only has to
+// cover fetching the script.
+const BOOT_TIMEOUT_MS = 2000;
+
 export interface StartParams {
   serverUrl: string;
   broadcastId: string;
@@ -26,8 +32,9 @@ export interface StartParams {
 
 export interface WorkerViewerCallbacks {
   onEvent: (ev: ViewerWorkerEvent) => void;
-  // The worker reported it lacks the codecs/transport it needs (before any
-  // canvas transfer) — caller should fall back to the main-thread pipeline.
+  // The worker reported it lacks the codecs/transport it needs, or never booted
+  // at all (before any canvas transfer) — caller should fall back to the
+  // main-thread pipeline.
   onUnsupported: () => void;
 }
 
@@ -39,12 +46,14 @@ export interface WorkerViewerOptions {
 }
 
 export class WorkerViewerController {
-  private worker: Worker;
+  private worker: Worker | null = null;
   private canvas: HTMLCanvasElement;
   private cb: WorkerViewerCallbacks;
   private presentationMux: boolean;
 
   private booted = false;
+  private bootFailed = false;
+  private bootTimer: ReturnType<typeof setTimeout> | null = null;
   private supported = false;
   private canvasTransferred = false;
   private disposed = false;
@@ -62,14 +71,46 @@ export class WorkerViewerController {
     this.canvas = canvas;
     this.cb = cb;
     this.presentationMux = opts.presentationMux ?? false;
-    this.worker = new Worker(new URL('../../transport/viewer.worker.ts', import.meta.url), {
-      type: 'module',
-    });
-    this.worker.onmessage = (e: MessageEvent) => this.onMessage(e.data as ViewerWorkerOutbound);
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL('../../transport/viewer.worker.ts', import.meta.url), {
+        type: 'module',
+      });
+    } catch (e) {
+      // e.g. a CSP worker-src violation.
+      this.failBoot(e);
+      return;
+    }
+    this.worker = worker;
+    worker.onmessage = (e: MessageEvent) => this.onMessage(e.data as ViewerWorkerOutbound);
+    // A script that fails to load (a tab from before a deploy asking for the
+    // old hashed chunk) or throws while evaluating never posts 'boot'.
+    worker.onerror = (e) => this.failBoot(e);
+    this.bootTimer = setTimeout(() => this.failBoot('boot timed out'), BOOT_TIMEOUT_MS);
+  }
+
+  // Only before boot: the canvas is transferred after a successful boot, so
+  // until then it is still free for the main-thread pipeline. A worker error
+  // after boot is the worker's own business, not a reason to fall back.
+  private failBoot(reason: unknown): void {
+    if (this.booted || this.bootFailed || this.disposed) return;
+    this.bootFailed = true;
+    this.clearBootTimer();
+    this.worker?.terminate();
+    log.warn('Viewer worker failed to boot; using the main-thread pipeline:', reason);
+    this.cb.onUnsupported();
+  }
+
+  private clearBootTimer(): void {
+    if (this.bootTimer !== null) clearTimeout(this.bootTimer);
+    this.bootTimer = null;
   }
 
   private onMessage(msg: ViewerWorkerOutbound): void {
     if (msg.type === 'boot') {
+      // Too late: the caller has fallen back and may be drawing to the canvas.
+      if (this.bootFailed) return;
+      this.clearBootTimer();
       this.booted = true;
       this.supported = msg.supported;
       if (!msg.supported) {
@@ -84,7 +125,7 @@ export class WorkerViewerController {
   }
 
   private post(cmd: ViewerWorkerCommand, transfer?: Transferable[]): void {
-    this.worker.postMessage(cmd, transfer ?? []);
+    this.worker?.postMessage(cmd, transfer ?? []);
   }
 
   private flushStart(): void {
@@ -191,6 +232,7 @@ export class WorkerViewerController {
 
   dispose(): void {
     this.disposed = true;
-    this.worker.terminate();
+    this.clearBootTimer();
+    this.worker?.terminate();
   }
 }
