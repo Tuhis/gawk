@@ -9,6 +9,7 @@ import { log } from '../lib/logger';
 import {
   connectWebTransport,
   newCarrierCounters,
+  openDatagramWriter,
   readDatagrams,
   readServerStreams,
   type CarrierCounters,
@@ -182,10 +183,11 @@ export class LocalViewerTransport implements ViewerTransport {
     // Relay clock sync (R5 Q2): ping over this session's datagrams; replies
     // are intercepted below, before the video path ever sees them. Feature-
     // detected so test fakes / odd environments without a writable datagram
-    // stream simply report null.
-    const datagrams = (wt as { datagrams?: { writable?: WritableStream<BufferSource> } }).datagrams;
-    if (datagrams?.writable) {
-      const writer = datagrams.writable.getWriter();
+    // stream simply report null. WebKit has only `createWritable()`; before
+    // openDatagramWriter this branch was skipped there, so no ping ever left
+    // a Safari viewer.
+    const writer = openDatagramWriter(wt);
+    if (writer) {
       this.timeSyncWriter = writer;
       // A ping that never leaves is why `timeSyncRttMs` reads null forever —
       // which is how both 2026-07-22 Safari captures looked, with no clue as
@@ -510,13 +512,10 @@ class StripeLegSession {
   constructor(wt: WebTransport, member: number) {
     this.wt = wt;
     this.member = member;
-    const datagrams = (wt as { datagrams?: { writable?: WritableStream<BufferSource> } }).datagrams;
-    if (datagrams?.writable) {
-      try {
-        this.writer = datagrams.writable.getWriter();
-      } catch {
-        this.writer = null; // a locked/odd writable — the lease will reap us
-      }
+    try {
+      this.writer = openDatagramWriter(wt);
+    } catch {
+      this.writer = null; // a locked/odd writable — the lease will reap us
     }
   }
 

@@ -16,6 +16,8 @@ import { parseStripeState, MAX_STRIPE_LEGS } from './wire';
 class FakeWT {
   static instances: FakeWT[] = [];
   static autoReady = true;
+  // WebKit shape: no `datagrams.writable`, only `createWritable()`.
+  static webkit = false;
 
   url: string;
   readyResolve!: () => void;
@@ -29,7 +31,8 @@ class FakeWT {
   datagrams: {
     maxDatagramSize: number;
     readable: ReadableStream<Uint8Array>;
-    writable: WritableStream<BufferSource>;
+    writable?: WritableStream<BufferSource>;
+    createWritable?: () => WritableStream<BufferSource>;
   };
   incomingUnidirectionalStreams = new ReadableStream<ReadableStream<Uint8Array>>({
     start() {}, // never yields; never closes — like a quiet live session
@@ -63,12 +66,14 @@ class FakeWT {
           };
         },
       }),
-      writable: new WritableStream<BufferSource>({
-        write: (chunk) => {
-          this.written.push(new Uint8Array(chunk as ArrayBuffer | Uint8Array as Uint8Array));
-        },
-      }),
     };
+    const writable = new WritableStream<BufferSource>({
+      write: (chunk) => {
+        this.written.push(new Uint8Array(chunk as ArrayBuffer | Uint8Array as Uint8Array));
+      },
+    });
+    if (FakeWT.webkit) this.datagrams.createWritable = () => writable;
+    else this.datagrams.writable = writable;
   }
 
   close(): void {
@@ -80,6 +85,7 @@ class FakeWT {
   static reset(): void {
     FakeWT.instances = [];
     FakeWT.autoReady = true;
+    FakeWT.webkit = false;
   }
 
   static primary(): FakeWT {
@@ -327,6 +333,26 @@ describe('LocalViewerTransport striping (R30)', () => {
       const counts = FakeWT.legs().map((l) => stripeStatesWritten(l).length);
       await vi.advanceTimersByTimeAsync(3000);
       expect(FakeWT.legs().map((l) => stripeStatesWritten(l).length)).toEqual(counts);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // WebKit has no `datagrams.writable`, so both the primary's writer (0x10,
+  // TimeSync pings) and every leg's heartbeat writer used to be skipped
+  // without a word: no suppression, no heartbeat, leg reaped by the lease.
+  it('writes the suppression and leg heartbeats over createWritable() on WebKit', async () => {
+    FakeWT.webkit = true;
+    vi.useFakeTimers();
+    try {
+      await connectTransport();
+      transport.setStripe(2);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(stripeStatesWritten(FakeWT.primary()).length).toBeGreaterThanOrEqual(1);
+      for (const leg of FakeWT.legs()) {
+        expect(stripeStatesWritten(leg).length).toBeGreaterThanOrEqual(2);
+      }
     } finally {
       vi.useRealTimers();
     }

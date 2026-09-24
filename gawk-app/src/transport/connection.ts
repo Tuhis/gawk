@@ -415,6 +415,27 @@ function emitKeyframe(data: Uint8Array, onKeyframe: (kf: KeyframeStreamFrame) =>
   });
 }
 
+// Opens a writer on the session's outgoing datagram stream. The deprecated
+// `datagrams.writable` attribute is preferred where it exists (Chromium,
+// Firefox) so their behaviour is unchanged; WebKit implements only the
+// current-spec `datagrams.createWritable()` and has no `writable` at all.
+// Null when neither exists (test fakes).
+export interface DatagramWritableSource {
+  datagrams?: {
+    writable?: WritableStream<BufferSource>;
+    createWritable?: () => WritableStream<BufferSource>;
+  };
+}
+
+export function openDatagramWriter(
+  wt: WebTransport | DatagramWritableSource,
+): WritableStreamDefaultWriter<BufferSource> | null {
+  const { datagrams } = wt as DatagramWritableSource;
+  if (datagrams?.writable) return datagrams.writable.getWriter();
+  if (typeof datagrams?.createWritable === 'function') return datagrams.createWritable().getWriter();
+  return null;
+}
+
 // Serializes datagram writes so frames leave in encode order (datagram
 // delivery is unordered anyway, but bursting writes out of order would
 // guarantee reordering instead of merely permitting it).
@@ -424,7 +445,9 @@ export class DatagramSender {
   private failed: Error | null = null;
 
   constructor(wt: WebTransport) {
-    this.writer = wt.datagrams.writable.getWriter();
+    const writer = openDatagramWriter(wt);
+    if (!writer) throw new Error('WebTransport session has no writable datagram stream');
+    this.writer = writer;
   }
 
   // Queues datagrams for sending. Returns a promise that settles when they

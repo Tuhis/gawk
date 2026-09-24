@@ -16,6 +16,8 @@ function fakeTransport(opts: {
   identity?: Uint8Array;
   identityDelayMs?: number;
   failReady?: boolean;
+  // WebKit shape: no `datagrams.writable`, only `createWritable()`.
+  webkit?: boolean;
 }): ProbeTransport {
   const echoDelay = opts.echoDelayMs ?? 5;
   const drop = new Set(opts.dropPings ?? []);
@@ -26,11 +28,11 @@ function fakeTransport(opts: {
     },
   });
   let pingIndex = 0;
-  const writable = new WritableStream<Uint8Array>({
+  const writable = new WritableStream<BufferSource>({
     write(chunk) {
       const i = pingIndex++;
       if (drop.has(i)) return;
-      const copy = new Uint8Array(chunk);
+      const copy = new Uint8Array(chunk as ArrayBuffer);
       setTimeout(() => {
         try {
           echoController.enqueue(copy);
@@ -66,7 +68,9 @@ function fakeTransport(opts: {
   return {
     ready: opts.failReady ? Promise.reject(new Error('refused')) : Promise.resolve(),
     closed: new Promise(() => {}),
-    datagrams: { writable, readable: echoReadable },
+    datagrams: opts.webkit
+      ? { createWritable: () => writable, readable: echoReadable }
+      : { writable, readable: echoReadable },
     incomingUnidirectionalStreams: uniStreams,
     close() {
       try {
@@ -88,6 +92,15 @@ describe('probeRelay', () => {
     if (result.state !== 'ok') return;
     expect(result.rttMs).toBeGreaterThan(0);
     expect(result.identity).toEqual({ serverVersion: '9.9.9', name: 'Homelab' });
+  });
+
+  // WebKit has no `datagrams.writable`; the probe used to throw on it, catch
+  // that, and report every relay as failed on Safari.
+  it('measures RTT over createWritable() on WebKit', async () => {
+    const result = await probeRelay('https://relay.example:4433', '', undefined, () =>
+      fakeTransport({ webkit: true, echoDelayMs: 10 }),
+    );
+    expect(result.state).toBe('ok');
   });
 
   it('computes the median over lossy samples', async () => {

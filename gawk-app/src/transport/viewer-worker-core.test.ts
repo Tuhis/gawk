@@ -10,12 +10,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const connectWebTransport = vi.fn();
 const readDatagrams = vi.fn();
 const readServerStreams = vi.fn();
-vi.mock('./connection', () => ({
-  connectWebTransport: (...a: unknown[]) => connectWebTransport(...a),
-  readDatagrams: (...a: unknown[]) => readDatagrams(...a),
-  readServerStreams: (...a: unknown[]) => readServerStreams(...a),
-  newCarrierCounters: () => ({ streamsOpened: 0, recordsReceived: 0, streamsAborted: 0, malformed: 0 }),
-}));
+vi.mock('./connection', async () => {
+  const actual = await vi.importActual<typeof import('./connection')>('./connection');
+  return {
+    connectWebTransport: (...a: unknown[]) => connectWebTransport(...a),
+    readDatagrams: (...a: unknown[]) => readDatagrams(...a),
+    readServerStreams: (...a: unknown[]) => readServerStreams(...a),
+    newCarrierCounters: () => ({ streamsOpened: 0, recordsReceived: 0, streamsAborted: 0, malformed: 0 }),
+    openDatagramWriter: actual.openDatagramWriter,
+  };
+});
 
 const decodeSpy = vi.fn();
 function makeFakeFrame() {
