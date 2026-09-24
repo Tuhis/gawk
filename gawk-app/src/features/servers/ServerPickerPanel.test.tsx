@@ -2,10 +2,11 @@
 // R37 (docs/40 SP6/SP7): the picker's probe + directory surfaces, driven
 // through injected probe/fetch fns (jsdom has no WebTransport).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import { ServerPickerPanel } from './ServerPickerPanel';
 import { useTransportStore } from '../../state/transportStore';
+import type { ProbeResult } from './probe';
 import type { ProbeFn } from './useServerProbe';
 
 const okProbe = (rtt = 42): ProbeFn =>
@@ -222,6 +223,77 @@ describe('ServerPickerPanel probe credentials', () => {
     await waitFor(() =>
       expect(probeFn).toHaveBeenCalledWith('https://relay.test:4433', 'ddeeff'),
     );
+  });
+});
+
+// Regression: an edited entry keeps its id, and the probe was keyed on the id
+// alone — so the row kept the old host's verdict beside the new host, and
+// saved rows have no Ping button to refresh it.
+describe('ServerPickerPanel probe after an edit', () => {
+  const editUrl = (label: string, url: string) => {
+    fireEvent.click(screen.getByLabelText(`Edit ${label}`));
+    fireEvent.change(screen.getByLabelText(/Server URL/), { target: { value: url } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  };
+
+  it('re-probes a saved server whose URL was edited', async () => {
+    useTransportStore.getState().addServer({ label: 'Homelab', url: 'https://old.test:4433' });
+    const probeFn: ProbeFn = vi.fn(async (url: string) =>
+      url === 'https://old.test:4433'
+        ? { state: 'failed' as const }
+        : { state: 'ok' as const, rttMs: url === 'https://new.test:4433' ? 7 : 42, identity: null },
+    );
+    render(<ServerPickerPanel onClose={() => {}} probeFn={probeFn} />);
+    await waitFor(() => expect(screen.getByText('unreachable')).toBeTruthy());
+
+    editUrl('Homelab', 'https://new.test:4433');
+
+    await waitFor(() => expect(probeFn).toHaveBeenCalledWith('https://new.test:4433', ''));
+    await waitFor(() => expect(screen.getByText(/7 ms/)).toBeTruthy());
+    expect(screen.queryByText('unreachable')).toBeNull();
+  });
+
+  it('re-probes a saved server whose cert hash changed', async () => {
+    const id = useTransportStore
+      .getState()
+      .addServer({ label: 'Homelab', url: 'https://home.test:4433' })!;
+    const probeFn = okProbe();
+    render(<ServerPickerPanel onClose={() => {}} probeFn={probeFn} />);
+    await waitFor(() => expect(probeFn).toHaveBeenCalledWith('https://home.test:4433', ''));
+
+    act(() => {
+      useTransportStore.getState().updateServer(id, { certHashHex: 'abcd' });
+    });
+
+    await waitFor(() => expect(probeFn).toHaveBeenCalledWith('https://home.test:4433', 'abcd'));
+  });
+
+  it("never lets the old target's late verdict overwrite the new one", async () => {
+    useTransportStore.getState().addServer({ label: 'Homelab', url: 'https://old.test:4433' });
+    let failOld: () => void = () => {};
+    const probeFn: ProbeFn = vi.fn((url: string) => {
+      if (url === 'https://old.test:4433') {
+        return new Promise<ProbeResult>((resolve) => {
+          failOld = () => resolve({ state: 'failed' });
+        });
+      }
+      return Promise.resolve<ProbeResult>({
+        state: 'ok',
+        rttMs: url === 'https://new.test:4433' ? 7 : 42,
+        identity: null,
+      });
+    });
+    render(<ServerPickerPanel onClose={() => {}} probeFn={probeFn} />);
+    await waitFor(() => expect(probeFn).toHaveBeenCalledWith('https://old.test:4433', ''));
+
+    editUrl('Homelab', 'https://new.test:4433');
+    await waitFor(() => expect(screen.getByText(/7 ms/)).toBeTruthy());
+
+    await act(async () => {
+      failOld();
+    });
+    expect(screen.queryByText('unreachable')).toBeNull();
+    expect(screen.getByText(/7 ms/)).toBeTruthy();
   });
 });
 
