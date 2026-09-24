@@ -15,6 +15,7 @@ import {
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
 } from './wire';
 import { ABRUPT_DROP_RETRY_DELAY_MS } from './reconnect';
+import { CAP_PARITY_CHUNKS, encodeRelayCapabilities } from './parity';
 
 const connectWebTransport = vi.fn();
 const startCapture = vi.fn();
@@ -224,8 +225,8 @@ function makeCallbacks() {
   } satisfies BroadcastCallbacks;
 }
 
-async function startBroadcast(cbs: ReturnType<typeof makeCallbacks>) {
-  const first = makeFakeWT();
+async function startBroadcast(cbs: ReturnType<typeof makeCallbacks>, serverMessages?: Uint8Array[]) {
+  const first = makeFakeWT(serverMessages);
   connectWebTransport.mockResolvedValueOnce(first.wt);
   startCapture.mockResolvedValue(makeCaptureHandle());
   const pipeline = new BroadcastPipeline(
@@ -328,6 +329,27 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     );
     expect(config.codec).toBe('avc1.42E01F');
 
+    await pipeline.stop();
+  });
+
+  // A resume can land on a relay that sends no capabilities (an older pod);
+  // the previous pod's parity level must not carry over.
+  it("drops the previous relay's parity level on resume", async () => {
+    const cbs = makeCallbacks();
+    const caps = encodeRelayCapabilities({ flags: CAP_PARITY_CHUNKS, parityLevel: 2 });
+    const { pipeline, first } = await startBroadcast(cbs, [ANNOUNCE_K7XQ2M, TOKEN_MSG, caps]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(cbs.onStats.mock.calls.at(-1)![0].parityLevel).toBe(2);
+
+    const second = makeFakeWT();
+    connectWebTransport.mockResolvedValueOnce(second.wt);
+    first.die(new Error('connection lost'));
+    await flush();
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS);
+    await flush();
+    expect(cbs.onResumed).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(cbs.onStats.mock.calls.at(-1)![0].parityLevel).toBe(0);
     await pipeline.stop();
   });
 

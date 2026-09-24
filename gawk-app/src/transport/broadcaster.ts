@@ -1388,6 +1388,9 @@ export class BroadcastPipeline {
     // Re-publish the mapping promptly on the next session: the new pod's
     // hub cache starts empty, and viewers need it for absolute latency.
     this.lastMappingSentAt = null;
+    // Parity is per relay: the next one states its own level, or none at all.
+    this.parityLevel = 0;
+    this.stats.parityLevel = 0;
   }
 
   private scheduleResumeAttempt(closeCode: number | null, reason: string): void {
