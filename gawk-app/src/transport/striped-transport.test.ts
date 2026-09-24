@@ -227,6 +227,45 @@ describe('LocalViewerTransport striping (R30)', () => {
     expect(states.every((s) => s.striped)).toBe(true); // primary stays covered by the old set
   });
 
+  it('a failed transition closes the legs that did connect', async () => {
+    await connectTransport();
+    vi.stubGlobal(
+      'WebTransport',
+      class extends FakeWT {
+        constructor(url: string) {
+          if (new URL(url).searchParams.get('leg') === '1') throw new Error('429');
+          super(url);
+        }
+      },
+    );
+    transport.setStripe(2);
+    await flush();
+    expect(transport.sampleStripe()).toMatchObject({ active: 0, legDialFailures: 1 });
+    expect(FakeWT.legs()).toHaveLength(1);
+    expect(FakeWT.legs()[0].closeCalled).toBe(true);
+  });
+
+  it('still notices a live leg dying after a failed grow', async () => {
+    await connectTransport();
+    transport.setStripe(2);
+    await flush();
+    const liveLegs = FakeWT.legs();
+    vi.stubGlobal(
+      'WebTransport',
+      class {
+        constructor() {
+          throw new Error('429');
+        }
+      },
+    );
+    transport.setStripe(3);
+    await flush();
+    liveLegs[1].closedResolve({ reason: 'gone' });
+    await flush();
+    expect(stripeChanges).toEqual([2, 0]);
+    expect(transport.sampleStripe()).toMatchObject({ active: 0, legDeaths: 1 });
+  });
+
   it('a leg death releases the primary immediately and tears the stripe down', async () => {
     await connectTransport();
     transport.setStripe(2);

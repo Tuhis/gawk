@@ -148,6 +148,7 @@ export class LocalViewerTransport implements ViewerTransport {
   private stripeTarget = 0;
   private stripeActive = 0;
   private stripeGeneration = 0; // bumps per transition; stale dials discard
+  private liveStripeGeneration = -1; // the committed leg set's generation
   private stripeRefresh: ReturnType<typeof setInterval> | null = null;
   private stripeStats: StripeTransportStats = {
     active: 0,
@@ -279,18 +280,18 @@ export class LocalViewerTransport implements ViewerTransport {
   // or old leg set) stays live until the new one is complete.
   private async transitionStripe(target: number): Promise<void> {
     const generation = ++this.stripeGeneration;
-    const fresh: StripeLegSession[] = [];
-    try {
-      const dials: Promise<StripeLegSession>[] = [];
-      for (let j = 0; j < target; j++) {
-        this.stripeStats.legDials++;
-        dials.push(this.dialLeg(j, target));
-      }
-      fresh.push(...(await Promise.all(dials)));
-    } catch (e) {
+    const dials: Promise<StripeLegSession>[] = [];
+    for (let j = 0; j < target; j++) {
+      this.stripeStats.legDials++;
+      dials.push(this.dialLeg(j, target));
+    }
+    const settled = await Promise.allSettled(dials);
+    const fresh = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+    const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failure) {
       this.stripeStats.legDialFailures++;
       for (const leg of fresh) leg.close();
-      if (!this.closing) log.warn(`stripe transition to ${target} legs failed; staying at ${this.stripeActive}:`, e);
+      if (!this.closing) log.warn(`stripe transition to ${target} legs failed; staying at ${this.stripeActive}:`, failure.reason);
       return;
     }
     if (this.closing || generation !== this.stripeGeneration) {
@@ -301,6 +302,7 @@ export class LocalViewerTransport implements ViewerTransport {
     const old = this.legs;
     const firstEngage = this.stripeActive === 0;
     this.legs = fresh;
+    this.liveStripeGeneration = generation;
     this.stripeActive = target;
     // Suppress only once the new set is complete; on a grow the suppression
     // is already armed and the width rides the next 1 Hz refresh.
@@ -319,13 +321,14 @@ export class LocalViewerTransport implements ViewerTransport {
   // seconds of keyframe-only video), then tear the rest of the set down. The
   // controller decides whether and when to re-engage.
   private handleLegDeath(generation: number): void {
-    if (this.closing || generation !== this.stripeGeneration || this.stripeActive === 0) return;
+    if (this.closing || generation !== this.liveStripeGeneration || this.stripeActive === 0) return;
     this.stripeStats.legDeaths++;
     this.disengageStripe();
   }
 
   private disengageStripe(): void {
     this.stripeGeneration++;
+    this.liveStripeGeneration = -1;
     this.stopStripeRefresh();
     this.sendUnstripeBurst();
     const old = this.legs;
