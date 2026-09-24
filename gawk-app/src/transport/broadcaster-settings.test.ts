@@ -26,6 +26,7 @@ const h = vi.hoisted(() => ({
   frameCb: { value: null as null | ((frame: unknown) => void) },
   constraintCalls: [] as MediaTrackConstraints[],
   constraintsReject: { value: false },
+  flushHangs: { value: false },
 }));
 
 vi.mock('./connection', () => ({
@@ -90,7 +91,7 @@ vi.mock('../media/encoder', () => ({
       this.disposed = true;
     }
     close() {
-      return Promise.resolve();
+      return h.flushHangs.value ? new Promise<void>(() => {}) : Promise.resolve();
     }
   },
 }));
@@ -218,6 +219,7 @@ beforeEach(() => {
   h.frameCb.value = null;
   h.constraintCalls.length = 0;
   h.constraintsReject.value = false;
+  h.flushHangs.value = false;
 });
 
 afterEach(() => {
@@ -316,6 +318,18 @@ describe('mid-stream settings changes', () => {
     const matrix = (p as unknown as { matrix: { source: { width: number; height: number } } }).matrix;
     expect(matrix.source).toEqual({ width: 2560, height: 1440 });
     await p.stop();
+  });
+
+  it('stop() closes the session without waiting on an encoder flush', async () => {
+    const p = await startPipeline();
+    await prime();
+    const wt = (await connectWebTransport.mock.results[0].value) as { close: ReturnType<typeof vi.fn> };
+    h.flushHangs.value = true;
+    const stopped = p.stop();
+    await flush();
+    expect(wt.close).toHaveBeenCalled();
+    await expect(stopped).resolves.toBeUndefined();
+    expect(h.encoders[0].disposed).toBe(true);
   });
 
   it('setting identical settings is a no-op (no encoder churn)', async () => {

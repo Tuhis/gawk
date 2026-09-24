@@ -1516,7 +1516,9 @@ export class BroadcastPipeline {
 
     this.audioLane?.stop();
     this.audioLane = null;
-    if (this.encoder) await this.encoder.close();
+    // Dispose, not a flushing close: output is discarded once stopping, and a
+    // wedged hardware encoder's flush would hold the publisher session open.
+    this.encoder?.dispose();
     this.media?.stop();
     this.sender?.close();
     try {
