@@ -19,14 +19,18 @@ const MODE_KEY = 'gawk:room-mode';
 const PRESET_KEY = 'gawk:room-preset';
 const VOLUME_PREFIX = 'gawk:room-volume:';
 
-// Trim and bound to the wire's nickname limit (bytes, so a long emoji name
-// is cut conservatively by code units first, then by encoded length).
+// Collapse whitespace and bound to `maxBytes` of UTF-8, the unit the wire
+// limits are in. Cuts whole characters: half a surrogate pair is not valid
+// UTF-8, and the room encoder refuses it.
+export function sanitizeRoomText(raw: string, maxBytes: number): string {
+  const chars = Array.from(raw.trim().replace(/\s+/g, ' '));
+  const encoder = new TextEncoder();
+  while (chars.length > 0 && encoder.encode(chars.join('')).length > maxBytes) chars.pop();
+  return chars.join('').trim();
+}
+
 export function sanitizeNickname(raw: string): string {
-  let s = raw.trim().replace(/\s+/g, ' ');
-  while (s.length > 0 && new TextEncoder().encode(s).length > MAX_ROOM_NICKNAME_LEN) {
-    s = s.slice(0, -1);
-  }
-  return s;
+  return sanitizeRoomText(raw, MAX_ROOM_NICKNAME_LEN);
 }
 
 export function loadNickname(): string | null {

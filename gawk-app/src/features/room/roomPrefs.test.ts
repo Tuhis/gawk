@@ -11,6 +11,7 @@ import {
   saveRoomPreset,
   saveTileVolume,
 } from './roomPrefs';
+import { ROOM_CLIENT_WEB_VIEWER, ROOM_PROTOCOL_VERSION, encodeRoomHello } from '../../transport/wire';
 
 beforeEach(() => localStorage.clear());
 
@@ -26,8 +27,16 @@ describe('room prefs', () => {
 
   it('bounds the nickname to the wire limit in bytes', () => {
     expect(sanitizeNickname('x'.repeat(40))).toHaveLength(32);
-    // 3-byte characters: 11 fit (33 would not).
+    // 3-byte characters: 10 fit (11 would be 33 bytes).
     expect(sanitizeNickname('€'.repeat(20))).toBe('€'.repeat(10));
+  });
+
+  it('never splits a character to fit, which the wire would reject', () => {
+    const clean = sanitizeNickname('a'.repeat(29) + '😀');
+    expect(clean).toBe('a'.repeat(29));
+    expect(() =>
+      encodeRoomHello({ protocol: ROOM_PROTOCOL_VERSION, clientKind: ROOM_CLIENT_WEB_VIEWER, wantCaps: 0, nickname: clean }),
+    ).not.toThrow();
   });
 
   it('defaults the mode to grid and only accepts known modes', () => {
