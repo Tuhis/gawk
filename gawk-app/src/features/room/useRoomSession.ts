@@ -1,4 +1,4 @@
-// R42: the React glue between RoomSession (transport) and the room store.
+// The React glue between RoomSession (transport) and the room store.
 // One session per mount, keyed on the target; every callback lands in the
 // store, and the hook hands back the commands. The session dials on mount
 // (an explicit event — CODE-REVIEW's effect rule), never on re-render: the
@@ -27,7 +27,7 @@ export interface UseRoomSessionArgs {
   clientKind: number;
   grant: RoomSessionGrant | null;
   // Bump to force a re-dial with an unchanged target and grant — the "try
-  // that key again" case (docs/44 D8). Any change re-dials; the value itself
+  // that key again" case. Any change re-dials; the value itself
   // means nothing.
   dialNonce?: number;
 }
@@ -54,7 +54,7 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
   // The grant is the same kind of thing: content identity, and a CHANGE is a
   // deliberate re-dial (a server change already is one). It has to be — the
   // grant rides RoomHello, so a secret supplied inside the room cannot travel
-  // as a command (docs/44 D8; RoomView's gated-out state).
+  // as a command (see RoomView's gated-out state).
   const grantKey = grant === null ? '' : JSON.stringify(grant);
 
   useEffect(() => {

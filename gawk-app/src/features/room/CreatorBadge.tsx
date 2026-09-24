@@ -10,7 +10,7 @@ interface Props {
   onOpenChange: (open: boolean) => void;
 }
 
-// R42 (docs/44 §4.9 revision 2026-09-23): the creator's role, made visible.
+// The creator's role, made visible.
 // A chip beside the room code; a click opens what the role can (and cannot)
 // do. Escape or a click outside closes it.
 export function CreatorBadge({ open, onOpenChange }: Props) {

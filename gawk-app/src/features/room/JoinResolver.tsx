@@ -7,7 +7,7 @@ import { useTransportStore } from '../../state/transportStore';
 import { relayQuerySuffix } from '../../lib/shareLink';
 import { log } from '../../lib/logger';
 
-// R42 (docs/44 D19): `#/join/<code>` — a typed six-character code that is
+// `#/join/<code>` — a typed six-character code that is
 // either a room or a broadcast. The relay is HTTP/3-only, so there is no
 // dependable fetch to ask; a WebTransport CONNECT to /room/{code} is the
 // probe. A RoomState means "room": hop to #/room/<code>. A refusal (404 for

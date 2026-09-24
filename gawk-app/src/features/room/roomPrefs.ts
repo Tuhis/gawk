@@ -1,12 +1,10 @@
-// R42 (docs/44 §4.9): the per-browser room preferences. Three keys, all
-// under the `gawk:` prefix the viewer's settings use, each read defensively
-// (private mode, quota) so a storage failure only costs the memory.
+// The per-browser room preferences:
 //
-//   gawk:nickname                 the participant's remembered nickname (D10)
+//   gawk:nickname                 the participant's remembered nickname
 //   gawk:room-mode                grid | focus | hidden — the layout mode
 //   gawk:room-preset              the playback preset the focused / grid
-//                                 tiles use (small tiles always run 'lowest')
-//   gawk:room-volume:<broadcast>  a tile's own level, 0..1 (docs/44 §4.7)
+//                                 tiles use (small tiles drop its pacing)
+//   gawk:room-volume:<broadcast>  a tile's own level, 0..1
 
 import { readStored, writeStored } from '../../lib/storage';
 import { MAX_ROOM_NICKNAME_LEN } from '../../transport/wire';

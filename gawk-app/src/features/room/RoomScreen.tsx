@@ -79,11 +79,11 @@ import { useRoomSession } from './useRoomSession';
 const CONTROL_IDLE_MS = 3000;
 const TOAST_MS = 4000;
 const NO_ATTACHMENTS: RoomAttachment[] = [];
-// Below this width the grid degrades to focus (docs/44 §4.9 "mobile"); the
+// Below this width the grid degrades to focus; the
 // same breakpoint room.module.css uses for the bottom-sheet panel.
 export const NARROW_QUERY = '(max-width: 719px)';
 
-// RM5 (docs/44 §4.8): what the web broadcaster brings into the room — its
+// What the web broadcaster brings into the room: its
 // running broadcast (attached with the resume token as proof), the local
 // preview for its own tile, and the controls that ride on that tile.
 export interface OwnBroadcast {
@@ -95,8 +95,8 @@ export interface OwnBroadcast {
   attachEpoch: number;
   preview: MediaStream | null;
   // Controls for the own tile's glass bar. Null renders no bar: the
-  // broadcaster page (docs/44 §4.8 revision 2026-09-05, direction A) keeps
-  // Stop / Settings / Stats in its own topbar and Detach in the panel.
+  // broadcaster page keeps Stop / Settings / Stats in its own topbar and
+  // Detach in the panel.
   controls: ReactNode | null;
   onDetach: () => void;
 }
@@ -127,7 +127,7 @@ export interface RoomViewProps {
   // Leaving the room. The route version goes home; the broadcaster returns
   // to its live page with the broadcast still running.
   onLeave?: () => void;
-  // Viewer only: "start streaming here" (docs/44 §4.8).
+  // Viewer only: "start streaming here".
   onStartStreaming?: () => void;
   // The nickname question already answered elsewhere — the broadcaster
   // arriving from a room's "start streaming here" (roomReturn.ts). A string
@@ -157,11 +157,11 @@ function useMediaMatch(query: string): boolean {
   return matches;
 }
 
-// R42 (docs/44 §4.9 revision): the cinematic dock. Video edge to edge, a
-// header and a footer overlay that fade after the viewer's idle period, an
-// optional people-and-chat panel that stays until closed. Three modes: grid (every POV, all
-// mixed), focus (one large + the rest small in a glass strip, focused audio
-// only), hide videos (no media sessions at all — the control session stays).
+// The cinematic dock. Video edge to edge, a header and a footer overlay that
+// fade after the viewer's idle period, an optional people-and-chat panel that
+// stays until closed. Three modes: grid (every POV, all mixed), focus (one
+// large + the rest small in a glass strip, focused audio only), hide videos
+// (no media sessions at all; the control session stays).
 export function RoomView({ target, grant = null, own = null, onLeave, onStartStreaming, presetNickname, header }: RoomViewProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const status = useRoomStore((s) => s.status);
@@ -173,7 +173,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   const lastRemoval = useRoomStore((s) => s.lastRemoval);
   const clearRejection = useRoomStore((s) => s.clearRejection);
 
-  // D10: the nickname, asked once before the first dial and remembered — or
+  // The nickname, asked once before the first dial and remembered — or
   // handed in by the hop from a room (presetNickname), which never asks.
   const [nickname, setNicknameState] = useState<string | null>(() =>
     presetNickname === undefined ? loadNickname() : presetNickname && sanitizeNickname(presetNickname),
@@ -184,7 +184,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   const [creatorHelpOpen, setCreatorHelpOpen] = useState(false);
   const ready = nickname !== null || guest;
 
-  // D8: a secret typed inside the room (the gated-static case below) wins
+  // A secret typed inside the room (the gated-static case below) wins
   // over whatever grant we arrived with. The grant rides RoomHello, so this
   // is a re-dial, not a command — useRoomSession keys its dial on it.
   const [attachSecret, setAttachSecret] = useState<string | null>(null);
@@ -205,9 +205,9 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     dialNonce,
   });
 
-  // RM5: attach (and re-attach) the broadcaster's own broadcast. Idempotent
-  // on the relay — a mint's first snapshot already carries it, and a
-  // reconnected broadcaster must re-attach before it can detach (RM2).
+  // Attach (and re-attach) the broadcaster's own broadcast. Idempotent on the
+  // relay: a mint's first snapshot already carries it, and a reconnected
+  // broadcaster must re-attach before it can detach.
   const joined = status === 'joined';
   const attachOk = mayAttach(snapshot);
   const ownId = own?.broadcastId ?? null;
@@ -219,13 +219,13 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     commands.attach(ownId, ownToken, ownLabel);
   }, [joined, attachOk, ownId, ownToken, ownLabel, ownEpoch, commands]);
 
-  // D8: we are in a gated static room that withheld the attach grant, so the
+  // We are in a gated static room that withheld the attach grant, so the
   // effect above sends nothing and our stream stays out of the room. No
   // CommandRejected explains it (none was provoked), so this state is its own
-  // visible form — a card when the stage is empty, a pill otherwise, both
-  // offering the secret (BUGS.md, fixed 2026-09-17).
+  // visible form: a card when the stage is empty, a pill otherwise, both
+  // offering the secret.
   const gatedOut = joined && snapshot !== null && !attachOk && ownId !== null;
-  // D8: the dial we made with a typed secret came back refused. The kind is
+  // The dial we made with a typed secret came back refused. The kind is
   // hedged (no HTTP status reaches JS), but "a secret was just supplied and
   // the join failed" is certain — enough to name the likely cause and to
   // offer another attempt instead of a page reload.
@@ -279,7 +279,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     return { ...mainConfig, playout: cheapest.playout, interpolation: false };
   }, [mainConfig]);
 
-  // The mixer (docs/44 §4.7): one AudioContext, one master gain, opened on
+  // The mixer: one AudioContext, one master gain, opened on
   // the first tile shown and closed with the screen.
   const mixerRef = useRef<RoomAudioMixer | null>(null);
   mixerRef.current ??= new RoomAudioMixer();
@@ -327,8 +327,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
 
   // The people-and-chat panel: open from the header, and it STAYS open until
   // closed — it is not chrome, it is a thing the participant asked to look
-  // at, so it does not fade with the overlays (revision 2026-09-05; the
-  // earlier pin-to-keep affordance is gone). A bottom sheet on a phone (CSS).
+  // at, so it does not fade with the overlays. A bottom sheet on a phone (CSS).
   const [panelOpen, setPanelOpen] = useState(false);
   // End room's confirm (RoomPanel). Closing the panel drops it, so it never
   // greets a later open.
@@ -360,7 +359,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     if (toastTimer.current !== null) clearTimeout(toastTimer.current);
   }, []);
 
-  // Every relay state has a visible form (docs/44 §4.9): removals and
+  // Every relay state has a visible form: removals and
   // rejections are toasts, the rest are cards and pills below.
   // Except our own stream removed by the creator: that is a card (below),
   // because it leaves a broadcaster in a room their stream is no longer in.
@@ -442,7 +441,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   );
 
   // The hop carries the nickname this participant already answered (a guest
-  // stays a guest), so the broadcaster page never asks again (docs/44 §4.8).
+  // stays a guest), so the broadcaster page never asks again.
   const startStreaming = useCallback(() => {
     if (code !== '') stashRoomReturn({ code, nickname: guest ? null : nickname });
     onStartStreaming?.();
@@ -454,7 +453,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   // ours already attached — and is not offered to the creator: a tab holding
   // the creator token with no broadcast of its own is a native app's "Open
   // room view" (the web broadcaster's own view has `own`), whose person
-  // already streams from the app (docs/44 §4.9 revision 2026-09-23).
+  // already streams from the app.
   const canStartStreaming = onStartStreaming != null && !own && !creator;
   const creatorBadge = creator ? <CreatorBadge open={creatorHelpOpen} onOpenChange={setCreatorHelpOpen} /> : null;
   // The header's two totals: broadcasts on the stage, and the people in the
@@ -493,7 +492,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     { label: 'Leave room', onSelect: leave },
   ];
 
-  // D8: the secret answers the gated-out state. Setting it re-dials, which is
+  // The secret answers the gated-out state. Setting it re-dials, which is
   // how a grant reaches the relay at all.
   const submitAttachSecret = useCallback((secret: string) => {
     setSecretPromptOpen(false);
@@ -542,7 +541,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
           // Which stage edges this grid tile touches: its label (top) and
           // controls (bottom) step inside the header / footer bands there,
           // so the video stays edge to edge and nothing sits under the
-          // room's own chrome (docs/44 §4.9 revision 2026-09-05).
+          // room's own chrome.
           const edges =
             variant === 'grid'
               ? { top: Math.floor(i / cols) === 0, bottom: Math.floor(i / cols) === rows - 1 }
@@ -657,7 +656,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
                 Try another secret
               </Button>
             )}
-            {/* D8: "Retry" reloads the page, which kills a live broadcast —
+            {/* "Retry" reloads the page, which kills a live broadcast —
                 so a participant that brought its own stream never gets it.
                 Leaving the room is the non-destructive way out for them. */}
             {!secretRefused && ownId === null && (
@@ -704,7 +703,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
           EMPTY_ROOM_CARD.body,
           canStartStreaming ? <Button onClick={startStreaming}>Start streaming here</Button> : undefined,
         )}
-      {/* D8: the gated-out state, in place of the empty-room card — "nobody
+      {/* The gated-out state, in place of the empty-room card — "nobody
           is streaming" would be the wrong story when it is our own stream
           being kept out. */}
       {gatedCardShown &&
@@ -765,9 +764,8 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
       <div className={[styles.header, showChrome ? '' : styles.headerHidden].join(' ')} data-panel={panelOpen ? 'true' : 'false'}>
         <div className={styles.headerLeft}>
           {/* The code chip is the share control, as the stream code chip
-              is on a plain stream: click copies the room link (revised
-              2026-09-23; the separate copy icon and the panel's copy
-              buttons are gone — the More menu keeps both copies). */}
+              is on a plain stream: click copies the room link (the More
+              menu offers both copies). */}
           <button
             type="button"
             className={styles.code}
@@ -955,7 +953,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   );
 }
 
-// The `#/room/<code>` route (docs/44 D19): a participant joining by link.
+// The `#/room/<code>` route: a participant joining by link.
 // The grant, if the link carried one, was moved into session storage by
 // App.tsx before this mounted (grantHandoff.ts).
 export function RoomScreen({ code }: { code: string }) {

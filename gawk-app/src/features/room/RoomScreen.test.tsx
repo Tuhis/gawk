@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// R42 (docs/44 §4.9): the room view per mode and per relay state. The room
+// The room view per mode and per relay state. The room
 // control session and every tile's media session are faked at the transport
 // seam (the ViewerScreen test's FakeViewerSession pattern), so each test
 // drives RoomState / RoomEvent through the control session's callbacks and
@@ -277,7 +277,7 @@ describe('RoomScreen people-and-chat panel', () => {
     expect(screen.getByText('streaming')).toBeTruthy();
     // Chat is reserved: absent until the relay advertises the capability.
     expect(screen.queryByText('Chat')).toBeNull();
-    // Revised 2026-09-23: no copy buttons in the panel — the header's code
+    // No copy buttons in the panel: the header's code
     // chip copies the link, the More menu keeps both copies.
     expect(within(panel).queryByRole('button', { name: /Copy room/ })).toBeNull();
     // Not the creator: no detach, no end room.
@@ -297,8 +297,7 @@ describe('RoomScreen people-and-chat panel', () => {
     fireEvent.click(chip);
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(writeText.mock.calls[0]).toEqual([expect.stringMatching(/#\/room\/AB2CD3$/)]);
-    // The code-visibility note (D16) moved from the panel foot to the moment
-    // of sharing.
+    // The code-visibility note shows at the moment of sharing.
     await waitFor(() => expect(screen.getByText(/Room link copied/)).toBeTruthy());
     expect(screen.getByText(/can also see the codes of the streams/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy();
@@ -745,7 +744,7 @@ describe('RoomView with an own broadcast (RM5)', () => {
 });
 
 describe('a gated static room that refused the attach grant (D8)', () => {
-  // BUGS.md: the relay clears ATTACH_OK for a participant who brought no
+  // The relay clears ATTACH_OK for a participant who brought no
   // attach secret, the attach effect is guarded on that flag, so no Attach
   // command is sent and no CommandRejected ever comes back. The state has to
   // speak for itself.

@@ -1,7 +1,7 @@
-// R42 (docs/44 §4.9): every sentence the room view can show for a relay
-// state, in one pure module so each has a test and no component inlines a
-// second wording. Room codes are deliberately absent from every diagnostic
-// string here — the code is a joinable secret (D16) and these lines end up
+// Every sentence the room view can show for a relay state, in one pure module
+// so each has a test and no component inlines a second wording. Room codes are
+// deliberately absent from every diagnostic string here: the code is a
+// joinable secret and these lines end up
 // in logs and pasted diagnostics; only the on-screen chrome shows it.
 
 import type { RoomFailureKind } from '../../transport/room-session';
@@ -32,7 +32,7 @@ export interface Card {
 }
 
 // The line a broadcaster needs under any "you're out of the room" card: the
-// room never owned the broadcast (D1), so leaving it costs the stream nothing.
+// room never owned the broadcast, so leaving it costs the stream nothing.
 export const OWN_STREAM_LIVE_NOTE = 'Your stream is still live on its own code.';
 
 // 4007: the room ended. `reason` is what the preceding RoomEnding said, or
@@ -163,11 +163,10 @@ export const EMPTY_ROOM_CARD: Card = {
   body: 'You’re in the room. Streams appear here the moment someone attaches one.',
 };
 
-// A gated static room (D8) admitted us as a watcher but withheld the attach
-// grant, so ROOM_STATE_FLAG_ATTACH_OK is clear and the own broadcast is not
-// on the stage. Nothing on the wire says this: the attach is never sent, so
-// no CommandRejected comes back — which is exactly how it used to fail
-// silently. This copy is the state's visible form (docs/44 §4.9).
+// A gated static room admitted us as a watcher but withheld the attach grant,
+// so ROOM_STATE_FLAG_ATTACH_OK is clear and the own broadcast is not on the
+// stage. Nothing on the wire says this (the attach is never sent, so no
+// CommandRejected comes back); this copy is the state's only visible form.
 export const ATTACH_GATED_CARD: Card = {
   title: 'Your stream isn’t in this room',
   body: 'This room needs an attach secret before it will carry your stream. You’re in the room and can watch; ask whoever set it up for the secret.',
@@ -186,10 +185,9 @@ export const ATTACH_REFUSED_CARD: Card = {
   body: 'The room refused it. Check the secret and try again — the room code could also be wrong. Your stream is still running either way.',
 };
 
-// The toast for a copied room link. Its second line carries the D16 note —
-// the code reveals the codes of the streams in the room — at the moment of
-// sharing, which is when it matters (it used to sit in the people panel's
-// foot).
+// The toast for a copied room link. Its second line says the room code
+// reveals the codes of the streams in it, at the moment of sharing, which is
+// when it matters.
 export const LINK_COPIED_TOAST = {
   text: 'Room link copied',
   note: 'Anyone with it can also see the codes of the streams in it.',
@@ -198,8 +196,8 @@ export const LINK_COPIED_TOAST = {
 export const RECONNECTING_NOTE = 'Reconnecting to the room…';
 export const DRAINING_NOTE = 'Room server is updating — reconnecting…';
 
-// The Creator chip's help (docs/44 §4.9 revision 2026-09-23). What the
-// creator token grants (D8): detach any attachment and end the room. Not
+// The Creator chip's help. What the creator token grants: detach any
+// attachment and end the room. Not
 // people — there is no command that removes a participant — and a removed
 // stream keeps running and may be attached again, so the copy says so
 // rather than promising a kick.

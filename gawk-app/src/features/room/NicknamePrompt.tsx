@@ -16,7 +16,7 @@ interface Props {
   onCancel?: () => void;
 }
 
-// R42 (docs/44 D10): the first-join nickname prompt — scrim + GlassPanel
+// The first-join nickname prompt — scrim + GlassPanel
 // dialog, remembered per browser (roomPrefs.ts) and editable from the roster.
 export function NicknamePrompt({ initial = '', editing = false, onSubmit, onSkip, onCancel }: Props) {
   const [draft, setDraft] = useState(initial);

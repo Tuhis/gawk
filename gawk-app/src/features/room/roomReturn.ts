@@ -1,4 +1,4 @@
-// R42 (docs/44 §4.8): "start streaming from inside a room". The room view
+// "Start streaming from inside a room". The room view
 // stashes what it knows here and navigates to #/broadcast; the broadcaster
 // page reads it once on mount and treats it as a PENDING room: no panel, no
 // prompt, no re-typed code — the broadcast joins the room by itself the
