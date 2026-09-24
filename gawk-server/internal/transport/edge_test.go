@@ -19,6 +19,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/quic-go/webtransport-go"
+
 	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
@@ -102,6 +104,9 @@ type fakeUpstream struct {
 	streams chan io.Reader
 	closed  chan struct{}
 	once    sync.Once
+	// closeErr is how the session ended, for CloseError: what the origin's
+	// close carried. Set by closeWith before closed is closed.
+	closeErr error
 }
 
 func newFakeUpstream() *fakeUpstream {
@@ -144,6 +149,25 @@ func (f *fakeUpstream) AcceptUniStream(ctx context.Context) (io.Reader, error) {
 func (f *fakeUpstream) Close() error {
 	f.once.Do(func() { close(f.closed) })
 	return nil
+}
+
+// closeWith ends the session as the origin would, with err as its cause.
+// The read loops still see only "upstream closed" — like the real session,
+// whose loops can report a bare EOF — so the code reaches the edge only
+// through CloseError.
+func (f *fakeUpstream) closeWith(err error) {
+	f.once.Do(func() {
+		f.mu.Lock()
+		f.closeErr = err
+		f.mu.Unlock()
+		close(f.closed)
+	})
+}
+
+func (f *fakeUpstream) CloseError() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closeErr
 }
 
 // fakeResolver serves a switchable Origin.
@@ -640,5 +664,67 @@ func TestEdgeLingerOutDeletesDerivedHub(t *testing.T) {
 	}
 	if h.dialCount() != 2 {
 		t.Errorf("dials = %d, want 2 (fresh pull after linger-out)", h.dialCount())
+	}
+}
+
+// R57 (docs/59 D2): the edge passes its origin's terminal close on to its
+// own viewers. It used to discard the upstream's close code and reconstruct
+// an ending from its own pod's state when the Lease went — 4000 for what the
+// origin had closed with 4006 — so a moderator's kill reached every viewer
+// on an edge pod as "broadcast ended".
+func TestEdgeHonoursTheOriginsTerminalClose(t *testing.T) {
+	remote := func(code uint32) error {
+		return &webtransport.SessionError{Remote: true, ErrorCode: webtransport.SessionErrorCode(code)}
+	}
+	cases := []struct {
+		name string
+		// closeErr is how the origin ends the upstream session.
+		closeErr error
+		// moveLease re-homes the broadcast before the edge looks.
+		moveLease bool
+		wantCode  uint32 // 0: the viewer stays, the edge re-attaches
+	}{
+		{"kill (4006) ends the edge's viewers with 4006", remote(wire.CloseCodeTerminatedByOperator), false, wire.CloseCodeTerminatedByOperator},
+		{"end (4000) at the attached origin ends them with 4000", remote(wire.CloseCodeBroadcastEnded), false, wire.CloseCodeBroadcastEnded},
+		{"4000 from an origin the broadcast has left re-attaches", remote(wire.CloseCodeBroadcastEnded), true, 0},
+		{"a drain (4002) re-attaches", remote(wire.CloseCodeServerDraining), false, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newEdgeHarness(t)
+			up1, up2 := newFakeUpstream(), newFakeUpstream()
+			h.queue(up1, up2)
+			if err := h.manager.EnsureEdge(context.Background(), "K7XQ2M"); err != nil {
+				t.Fatalf("EnsureEdge: %v", err)
+			}
+			up1.streams <- bytes.NewReader(buildStreamKeyframe(t, 0, "avc1.42E02A", 900))
+			viewer := &edgeConn{}
+			sub, err := h.registry.Subscribe("K7XQ2M", viewer)
+			if err != nil {
+				t.Fatalf("Subscribe: %v", err)
+			}
+			defer sub.Close()
+
+			if tc.moveLease {
+				h.resolver.set(cluster.Origin{Holder: "pod-new", Addr: "10.0.0.10:4433", Generation: 4}, nil)
+			}
+			up1.closeWith(tc.closeErr)
+
+			if tc.wantCode != 0 {
+				waitFor(t, 5*time.Second, func() bool { _, closed := viewer.closeInfo(); return closed }, "edge viewer closed")
+				if code, _ := viewer.closeInfo(); code != tc.wantCode {
+					t.Fatalf("edge viewer closed with %d, want the origin's %d", code, tc.wantCode)
+				}
+				time.Sleep(time.Second) // past the first retry's jittered backoff (≤ 375 ms)
+				if n := h.dialCount(); n != 1 {
+					t.Fatalf("dials = %d, want 1 — a broadcast the origin ended is not re-attached", n)
+				}
+				return
+			}
+			waitFor(t, 10*time.Second, func() bool { return h.dialCount() == 2 }, "re-attach")
+			if _, closed := viewer.closeInfo(); closed {
+				t.Fatal("the edge viewer was closed; a broadcast that is still live elsewhere must not end here")
+			}
+		})
 	}
 }

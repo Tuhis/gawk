@@ -339,6 +339,15 @@ speaks the same protocol over WAN.
     deltas from origin B, at the cost of one prime per re-attach. Internal
     sessions run tight QUIC timers (idle ~4 s, keepalive ~1 s — in-cluster,
     cheap) so upstream death is detected fast even without the watch.
+    *(Revision 2026-09-24, R57, [docs/59](59-close-notice.md) D2.)* The
+    Lease says *that* a broadcast is over; the origin says *why*. An edge
+    whose upstream closes with a terminal code (4000 at the origin it
+    attached to, or 4006) ends its hub with that same code rather than
+    re-attaching, and a Lease deletion waits up to 500 ms for an attached
+    pull to do so before tearing it down. Reconstructing the reason on the
+    edge pod had told every edge viewer 4000 for a moderator's 4006: an IP
+    ban names no broadcast on an edge pod, and an ID ban could reach its
+    informer after the Lease deletion did.
 
 11. **On losing Lease holdership, an origin demotes itself.** The watch
     tells a pod its Lease was force-taken (NAT rebind, publisher re-homed

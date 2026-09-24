@@ -29,6 +29,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
+	"github.com/Tuhis/gawk/gawk-server/moderation"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -678,4 +679,73 @@ func TestEdgeViewerGetsCloseNoticeWhenTheBroadcastEnds(t *testing.T) {
 	}
 	n, nAt, code, cAt := drainUntilClosed(t, ctx, viewerB)
 	assertNoticedClose(t, "edge viewer", wire.CloseCodeBroadcastEnded, n, nAt, code, cAt)
+}
+
+// The origin's kill reaches its edge sessions as 4006 (removeBroadcast closes
+// "internal edge sessions (so downstream pods tear down too)"), but the edge
+// used to discard its upstream's close code and reconstruct the reason from
+// its OWN pod's state when the Lease went: 4006 only if its ban set named
+// the broadcast ID. An IP ban never does — only the origin knows the
+// broadcaster's address — and an ID ban may not have reached the edge pod's
+// informer yet. Either way the edge's viewers were told 4000 "broadcast
+// ended" for a moderator's kill. The edge now honours the origin's terminal
+// code and closes its viewers with it (notice included).
+func TestEdgeViewerIsToldTheOriginsKillCode(t *testing.T) {
+	cases := []struct {
+		name string
+		ban  func(id string) moderation.Record
+		// Whether the EDGE pod has received the ban before the Lease goes
+		// (false: its informer lags behind the origin's).
+		edgeGot bool
+	}{
+		{"ip ban, known only to the origin", func(string) moderation.Record { return ipBan("127.0.0.1/32", "t") }, true},
+		{"id ban, edge informer lagging", func(id string) moderation.Record { return idBan(id, "t") }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			cs := fake.NewClientset()
+			cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
+			if err != nil {
+				t.Fatalf("GenerateDevCert: %v", err)
+			}
+			pool := x509.NewCertPool()
+			pool.AddCert(cert.Leaf)
+			clientTLS := &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{"h3"}}
+
+			podA := startClusteredPod(t, ctx, cs, "pod-a", cert, pool, 0)
+			podB := startClusteredPod(t, ctx, cs, "pod-b", cert, pool, 0)
+			for _, p := range []*clusteredPod{podA, podB} {
+				go p.coord.Run(ctx)
+			}
+
+			pub := dial(t, ctx, fmt.Sprintf("https://%s/publish", podA.addr()), clientTLS)
+			id, _ := readPublisherHandshake(t, ctx, pub)
+			sendKeyframeStream(t, pub, buildStreamKeyframe(t, 0, "avc1.42E02A", 1200))
+			waitFor(t, 5*time.Second, func() bool { _, ok := podA.srv.PublisherRemote(id); return ok }, "publisher tracked")
+
+			viewerB := dialSubscriber(t, ctx, podB.port, id, clientTLS)
+			recvCtx, recvCancel := context.WithTimeout(ctx, 10*time.Second)
+			readNextKeyframeStream(t, recvCtx, viewerB)
+			recvCancel()
+
+			rec := tc.ban(id)
+			podA.srv.SetModeration(banSet(t, rec))
+			podA.srv.HandleBanAdded(rec)
+			if tc.edgeGot {
+				podB.srv.SetModeration(banSet(t, rec))
+				podB.srv.HandleBanAdded(rec)
+			}
+			// What the origin's OnBroadcastExpired does in production (this
+			// harness does not wire main.go's hub hooks).
+			waitFor(t, 5*time.Second, func() bool { return podA.registry.CheckSubscribe(id) != nil }, "origin killed the broadcast")
+			if err := podA.coord.Delete(ctx, id); err != nil {
+				t.Fatalf("lease delete: %v", err)
+			}
+
+			n, nAt, code, cAt := drainUntilClosed(t, ctx, viewerB)
+			assertNoticedClose(t, "edge viewer", wire.CloseCodeTerminatedByOperator, n, nAt, code, cAt)
+		})
+	}
 }

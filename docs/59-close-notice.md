@@ -1,6 +1,6 @@
 # R57 — Close codes Chrome can read: the in-band close notice
 
-**Status**: shipped 2026-09-24 in one PR, chunks **CN1–CN4**, all done
+**Status**: shipped 2026-09-24 in one PR, chunks **CN1–CN5**, all done
 (§6). Owner decision taken 2026-09-24 (§2).
 
 **Relationship to earlier work**: every terminal close code the relay
@@ -54,6 +54,7 @@ code-driven client behaviour was dead in Chrome:
 | Ending a room in Chrome ends it, for the creator and for the other participants | `room-session.test.ts`, `RoomScreen.test.tsx`; real Chrome run, §8 |
 | No webtransport-go fork | `gawk-server/go.mod` has no `replace` for it |
 | The four wire mirrors agree | golden vector `011700000fa4` in all four (CN1) |
+| A viewer on an edge pod is told the origin's reason, including a kill by IP ban | `TestEdgeViewerIsToldTheOriginsKillCode` (CN5) |
 
 ---
 
@@ -106,21 +107,41 @@ Both native broadcasters already ignore unknown server message types, so a
 native publisher gets the stream and drops it. An older web viewer counts it
 as a malformed stream and logs a warning.
 
-**Across the cascade** (broadcaster → origin → edge → viewer), no notice needs
-to cross the internal hop, because the edge never forwards its upstream close
-code. The edge learns *why* a broadcast is gone from cluster state and closes
-its own viewers itself:
+**Across the cascade** (broadcaster → origin → edge → viewer) the code travels
+hop by hop: the origin closes its edge sessions with it, the edge reads it
+(its client is Go, which reads close codes) and closes its own viewers with
+the same code, and those viewers' adapters send the notice.
 
-- **4000:** the origin's GC deletes the Lease, and the edge's
-  `HandleLeaseDeleted` ends its hub.
-- **4006:** each pod actuates the ban itself (`HandleBanAdded`, or
-  `HandleLeaseDeleted` consulting the ban set) and terminates its hub.
+That middle step was missing until this milestone (§6 CN5). The edge threw
+its upstream's close code away and reconstructed the reason from its own
+pod's state when the Lease went:
 
-Either way the edge's viewers are external subscribe sessions on the edge
-pod, so their adapters send the notice exactly as the origin's do. 4004 goes
-only to a publisher, and publishers connect to the origin. A stripe leg gets
-no notice, but its primary session does, and the primary is what reports the
-end.
+- 4006 only if its own ban set named the broadcast ID;
+- otherwise 4000.
+
+That was wrong for kills. An **IP ban** names no broadcast on an edge pod,
+since only the origin knows the broadcaster's address. An **ID ban** could
+reach the edge pod's informer after the Lease deletion did. Either way every
+edge viewer was told "broadcast ended" for a moderator's kill, in every
+browser.
+
+The edge now:
+
+- ends its hub with the origin's **4006**;
+- ends it with the origin's **4000** unless the Lease has meanwhile moved to
+  another holder or generation (a re-home, docs/22 D11), in which case it
+  re-attaches;
+- reads the close code from the upstream session itself (`CloseError`) when
+  its read loops don't return it, because the first loop to fail cancels
+  the other and a datagram read can fail with a bare EOF.
+
+A Lease deletion waits up to 500 ms for an attached pull to end this way
+before tearing it down, because the informer event can beat the origin's QUIC
+close to the edge pod.
+
+4004 goes only to a publisher, and publishers connect to the origin. A stripe
+leg gets no notice, but its primary session does, and the primary is what
+reports the end.
 
 ### D3 — Notice, settle, then close
 
@@ -192,6 +213,7 @@ terminal close (4000/4004/4006)
 | **CN2** | Relay sends the notice | `closenotice_test.go`: a Go client sees the notice *and then* the same close code for a GC'd broadcast's viewer (4000), a deposed publisher (4004), and a killed broadcast's publisher and viewer (4006); `TestEdgeViewerGetsCloseNoticeWhenTheBroadcastEnds`: a viewer on an **edge** pod gets the notice and 4000 when the origin's broadcast ends; `TestReclaimSupersedesActivePublisher` updated to read through the notice; `go test -race ./...` green | ✅ |
 | **CN3** | Web viewer and broadcaster use it | `connection.test.ts` dispatches the notice without touching media and counts a malformed one; `viewer.test.ts` reports the noticed code when `closed` has none and when the read loop dies first; `broadcaster-resume.test.ts` treats a noticed 4004/4006 as terminal with no resume dial | ✅ |
 | **CN4** | Rooms act on RoomEnding; broadcaster room UX | `room-session.test.ts` RoomEnding + code-less loss → `onEnded`; `RoomScreen.test.tsx` self-end returns without a card, others' end and own-stream removal show a card and return on acknowledge; `BroadcasterScreen.room.test.tsx` a mid-broadcast failure leaves the room and says "Your broadcast stopped" | ✅ |
+| **CN5** | The edge passes on its origin's terminal code | `edge_test.go` `TestEdgeHonoursTheOriginsTerminalClose`: 4006 and 4000 end the edge's viewers with the origin's code and no re-dial, while 4000 after a re-home and a 4002 drain re-attach; `cluster_integration_test.go` `TestEdgeViewerIsToldTheOriginsKillCode`: over a real two-pod cascade, an IP ban and an ID ban the edge pod hasn't seen both reach the edge's viewer as 4006 with the notice (15/15 under `-race`); `TestEdgeViewerGetsCloseNoticeWhenTheBroadcastEnds`: 4000 likewise | ✅ |
 
 ---
 

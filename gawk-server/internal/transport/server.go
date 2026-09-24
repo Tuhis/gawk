@@ -726,9 +726,11 @@ func (s *Server) HandleLeaseDeleted(broadcastID string) {
 	// hub through the ordinary path would close its viewers with 4000 —
 	// "broadcast ended" — when the truthful answer is 4006, and viewer-visible
 	// transparency is the entire reason 4006 was allocated rather than reusing
-	// 4000 (docs/42 D6). Consulting the ban set here makes the arrival order
-	// irrelevant: whichever event this pod sees first, its viewers are told the
-	// same thing.
+	// 4000 (docs/42 D6). This ban-set check is only a fallback: it misses an
+	// IP ban (only the origin knows the broadcaster's address) and an ID ban
+	// this pod has not seen yet. The primary path is the edge pull itself,
+	// which passes the origin's own close code on (R57, docs/59 D2) — and
+	// OnLeaseDeleted below gives an attached pull a bounded chance to do so.
 	//
 	// Deliberately BEFORE the edge teardown below, because terminate() stops
 	// the edge pull itself and then tears the hub down with the right code.

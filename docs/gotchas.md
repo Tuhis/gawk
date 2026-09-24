@@ -200,9 +200,12 @@ Add to it when a new gotcha lands in `docs/`.
   (quic-go/webtransport-go#242). Any code a browser must act on is therefore
   sent in-band first as `SessionClosing` (0x17) and closed a settle later
   (`internal/transport/closenotice.go`). A new terminal code joins
-  `noticedCloseCode`, or Chrome sees a plain drop. Go clients never show the
-  problem, so only a real browser catches a regression.
-  ([docs/59](59-close-notice.md))
+  `noticedCloseCode`, or Chrome sees a plain drop. Go clients do read the
+  code, but not from every call: when a session closes, one pending read can
+  return the `*webtransport.SessionError` while another returns a bare `EOF`
+  or the context error its sibling's cancel caused. Take the error from the
+  loop that has it, or ask the session afterwards (`AcceptUniStream` on a
+  closed session returns its close error). ([docs/59](59-close-notice.md))
 - **Since v0.12.0, `webtransport.Server.Config` must be set or WebKit refuses
   every session** — with a nil `Config` the library advertises
   `WT_MAX_SESSIONS` without the three `WT_INITIAL_MAX_*` SETTINGS the draft
@@ -1217,6 +1220,15 @@ Add to it when a new gotcha lands in `docs/`.
   an edge pull — each pod's monotonic clock has an arbitrary epoch, so a
   forwarded mapping would corrupt viewers' capture→render latency by that
   epoch difference. ([docs/22](22-relay-scale-out.md))
+- **An edge passes on its origin's close code; it doesn't reconstruct it.**
+  The origin closes its edge sessions with 4000 or 4006, and the edge ends
+  its own viewers with that code. Reconstructing the reason from the edge
+  pod's state when the Lease went told every edge viewer 4000 for a
+  moderator's kill: an IP ban names no broadcast on an edge pod, and an ID
+  ban can reach its informer after the Lease deletion does. The Lease says
+  *that* it's over, the origin says *why*; a Lease deletion waits a bounded
+  500 ms for an attached pull to report. ([docs/59](59-close-notice.md) D2,
+  [docs/22](22-relay-scale-out.md) Decision 10)
 
 **Moderation and the admin portal (R39)**
 
