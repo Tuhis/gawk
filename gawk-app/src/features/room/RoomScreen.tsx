@@ -250,15 +250,20 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   useHotkey({ key: '4' }, () => focusIndex(3));
   useHotkey({ key: '0' }, () => setMode('grid'));
 
-  // R32 presets per tile: the focused / grid tiles on the user's choice, the
-  // small tiles on the cheapest (docs/44 §4.7).
+  // Presets per tile: the focused / grid tiles on the user's choice, the
+  // small tiles as cheap as they can be without a re-dial. Delivery and parity
+  // are negotiated at subscribe time, so a tile changing size keeps them; only
+  // what changes live (pacing, interpolation) takes the cheapest setting.
   const [preset, setPresetState] = useState<PresetId>(loadRoomPreset);
   const setPreset = useCallback((id: PresetId) => {
     setPresetState(id);
     saveRoomPreset(id);
   }, []);
   const mainConfig = useMemo(() => presetConfig(preset), [preset]);
-  const smallConfig = useMemo(() => presetConfig('lowest'), []);
+  const smallConfig = useMemo(() => {
+    const cheapest = presetConfig('lowest');
+    return { ...mainConfig, playout: cheapest.playout, interpolation: false };
+  }, [mainConfig]);
 
   // The mixer (docs/44 §4.7): one AudioContext, one master gain, opened on
   // the first tile shown and closed with the screen.

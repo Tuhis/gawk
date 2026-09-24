@@ -227,6 +227,18 @@ describe('RoomScreen modes', () => {
     expect(screen.getAllByTestId('room-tile').map((t) => t.getAttribute('data-variant'))).toEqual(['grid', 'grid', 'grid']);
   });
 
+  it('switching focus never re-dials, whatever the chosen preset', async () => {
+    localStorage.setItem('gawk:room-preset', 'smoother');
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    const created = viewerSessions.length;
+    fireEvent.keyDown(window, { key: '2' });
+    fireEvent.keyDown(window, { key: '3' });
+    fireEvent.keyDown(window, { key: '0' });
+    await act(async () => {});
+    expect(viewerSessions).toHaveLength(created);
+  });
+
   it('hide videos: no tiles, every /subscribe session closed, the control session kept, the card shown', async () => {
     const room = await joinAs();
     await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
