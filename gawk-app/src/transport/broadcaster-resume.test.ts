@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { parseStreamFrameHeader, parseDecoderConfig, STREAM_FRAME_HEADER_SIZE } from './wire';
+import { encodeSessionClosing, parseStreamFrameHeader, parseDecoderConfig, STREAM_FRAME_HEADER_SIZE } from './wire';
 import {
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
   CLOSE_CODE_SERVER_DRAINING,
@@ -394,6 +394,31 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     expect(cbs.onEnded).toHaveBeenCalled();
 
     // Nothing is scheduled behind it either: no second dial, ever.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flush();
+    expect(connectWebTransport).toHaveBeenCalledTimes(1);
+
+    await pipeline.stop();
+  });
+
+  // R57 (docs/59 CN3): what Chrome actually delivers. The relay's close code
+  // never arrives — `closed` rejects "Connection lost." with none — so the
+  // in-band SessionClosing is the only thing that stops a deposed publisher
+  // from resuming straight back into a fight with the one that replaced it,
+  // or a killed one from retrying into its ban.
+  it.each([
+    [CLOSE_CODE_TERMINATED_BY_OPERATOR, /terminated by the server operator/],
+    [CLOSE_CODE_PUBLISHER_SUPERSEDED, /superseded/],
+  ])('an in-band %i notice is terminal even when the close carries no code', async (code, expected) => {
+    const cbs = makeCallbacks();
+    const { pipeline, first } = await startBroadcast(cbs, [ANNOUNCE_K7XQ2M, TOKEN_MSG, encodeSessionClosing(code)]);
+
+    first.die(new Error('Connection lost.'));
+    await flush();
+
+    expect(cbs.onReconnecting).not.toHaveBeenCalled();
+    expect(cbs.onError).toHaveBeenCalledTimes(1);
+    expect(cbs.onError.mock.calls[0][0].message).toMatch(expected);
     await vi.advanceTimersByTimeAsync(60_000);
     await flush();
     expect(connectWebTransport).toHaveBeenCalledTimes(1);

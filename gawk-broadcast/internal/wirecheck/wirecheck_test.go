@@ -65,6 +65,9 @@ const (
 	// sessions actually receive: it is what repoints the R28 reporter on a
 	// foreign relay (docs/40 §4.10), so like the hello above this is coupling
 	// on a message this module really uses.
+	// R57 (docs/59 CN1): SessionClosing, code 4004. Pinned by the allocation
+	// rule; this module never needs to parse it (see TestGoldenSessionClosing).
+	goldenSessionClosingHex      = "011700000fa4"
 	goldenRelayIdentityHex       = "01110006312e34322e30096761776b20686f6d65"
 	goldenRelayIdentityNoNameHex = "01110006312e34322e3000"
 	goldenTelemetryEndpointHex   = "011200003068747470733a2f2f6761776b2e6578616d706c652e636f6d2f6170692f74656c656d657472792f76312f696e67657374"
@@ -333,6 +336,12 @@ func TestWireConstants(t *testing.T) {
 		{"MaxRoomLabelLen", wire.MaxRoomLabelLen, 32},
 		{"MaxRoomIdentityLen", wire.MaxRoomIdentityLen, 64},
 		{"MaxRoomRejectMessageLen", wire.MaxRoomRejectMessageLen, 128},
+		// R57 (docs/59 CN1): the relay's in-band close notice. This module's
+		// publisher reads close codes itself (webtransport-go's client does,
+		// unlike Chrome) and ignores the stream by type, so the pin is the
+		// allocation map's, not a runtime dependency.
+		{"TypeSessionClosing", wire.TypeSessionClosing, 0x17},
+		{"SessionClosingSize", wire.SessionClosingSize, 6},
 		{"RoomCreatorTokenSize", wire.RoomCreatorTokenSize, 16},
 		{"RoomKeySize", wire.RoomKeySize, 6},
 		{"ResumeTokenSize", wire.ResumeTokenSize, 16},
@@ -542,6 +551,24 @@ func TestCapabilitiesSurviveStripedBit(t *testing.T) {
 }
 
 // --- R37 relay identity + telemetry endpoint -------------------------------
+
+// SessionClosing (R57) is relay→client on a publish or subscribe session. The
+// native publisher reads the WebTransport close code directly, so it ignores
+// this stream by type (engine.readServerMessage's default branch); the vector
+// is restated so the four mirrors stay byte-identical.
+func TestGoldenSessionClosing(t *testing.T) {
+	want := mustHex(t, goldenSessionClosingHex)
+	got, err := wire.AppendSessionClosing(nil, wire.CloseCodePublisherSuperseded)
+	if err != nil {
+		t.Fatalf("AppendSessionClosing: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("SessionClosing bytes drifted from the golden vector\n got %x\nwant %x", got, want)
+	}
+	if code, err := wire.ParseSessionClosing(want); err != nil || code != wire.CloseCodePublisherSuperseded {
+		t.Errorf("ParseSessionClosing = %d, %v, want %d", code, err, wire.CloseCodePublisherSuperseded)
+	}
+}
 
 // RelayIdentity is relay-originated (echo route); this module parses it in the
 // GUI's server probe. Both vectors — named and unset-name — are pinned, plus

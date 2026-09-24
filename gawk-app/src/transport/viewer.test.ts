@@ -50,6 +50,7 @@ import { DVR_BUFFER_MS, getDvrGranted, setDvrGranted, setViewerDeliveryMode } fr
 import type { ViewerTransport, ViewerTransportCallbacks } from './viewer-transport';
 import {
   CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_TERMINATED_BY_OPERATOR,
   encodeAudioConfig,
   encodeAudioFrame,
   encodeClockMapping,
@@ -780,6 +781,43 @@ describe('ViewerPipeline', () => {
 
     await vi.waitFor(() => expect(events).toContain('ended'), { timeout: 2000 });
     expect(errors.some((e) => e.closeCode === CLOSE_CODE_BROADCAST_ENDED)).toBe(true);
+  });
+
+  // R57 (docs/59 CN3): what Chrome actually delivers — the relay's close
+  // code never arrives (wt.closed rejects "Connection lost." with none), so
+  // the in-band SessionClosing is the only way the viewer can tell a killed
+  // or ended broadcast from a network drop.
+  it('reports the in-band notice code when wt.closed carries none', async () => {
+    const lost = Object.assign(new Error('Connection lost.'), { source: 'session' });
+    const wt = { closed: new Promise((_, rej) => setTimeout(() => rej(lost), 20)), close: vi.fn() } as unknown as WebTransport;
+    (wt.closed as Promise<unknown>).catch(() => {});
+    connectWebTransport.mockResolvedValue(wt);
+    readDatagrams.mockReturnValue(new Promise(() => {}));
+    readServerStreams.mockImplementation((_wt: unknown, cb: { onSessionClosing?: (c: number) => void }) => {
+      cb.onSessionClosing?.(CLOSE_CODE_TERMINATED_BY_OPERATOR);
+      return new Promise(() => {});
+    });
+    const { cbs, errors, events } = makeCallbacks();
+    const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+    await pipeline.start();
+
+    await vi.waitFor(() => expect(events).toContain('ended'), { timeout: 2000 });
+    expect(errors.map((e) => e.closeCode)).toContain(CLOSE_CODE_TERMINATED_BY_OPERATOR);
+  });
+
+  it('reports the notice code when the read loop dies first and wt.closed never settles', async () => {
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    readDatagrams.mockRejectedValue(new Error('Connection lost.'));
+    readServerStreams.mockImplementation((_wt: unknown, cb: { onSessionClosing?: (c: number) => void }) => {
+      cb.onSessionClosing?.(CLOSE_CODE_BROADCAST_ENDED);
+      return new Promise(() => {});
+    });
+    const { cbs, errors, events } = makeCallbacks();
+    const pipeline = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', {}, cbs);
+    await pipeline.start();
+
+    await vi.waitFor(() => expect(events).toContain('ended'), { timeout: 2000 });
+    expect(errors.map((e) => e.closeCode)).toContain(CLOSE_CODE_BROADCAST_ENDED);
   });
 
   it('freezes on a frame-id gap: discards deltas until the next keyframe', async () => {

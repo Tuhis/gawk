@@ -139,6 +139,12 @@ type edgeUpstream interface {
 	SendDatagram(payload []byte) error
 	AcceptUniStream(ctx context.Context) (io.Reader, error)
 	Close() error
+	// CloseError reports why the session ended once it has — the origin's
+	// *webtransport.SessionError when it closed the session with a code —
+	// and nil while it is still open. The read loops can't be trusted to
+	// return it: the first one to fail cancels the other, and a datagram
+	// read can fail with a bare EOF.
+	CloseError() error
 }
 
 // edgeDialer establishes one upstream session to an origin pod. addr is the
@@ -222,8 +228,32 @@ func (m *EdgeManager) EnsureEdge(ctx context.Context, broadcastID string) error 
 // viewers get the terminal 4000 from the registry's EndBroadcast — which the
 // caller (main's OnLeaseDeleted dispatch) invokes right after this.
 func (m *EdgeManager) OnLeaseDeleted(broadcastID string) {
+	// An attached pull is about to hear why (R57, docs/59 D2): the origin
+	// closes its edge sessions with the terminal code BEFORE it deletes the
+	// Lease, so that close is already in flight. Stopping the pull at once
+	// would race it — the informer event can reach this pod first — and the
+	// caller would then end this pod's viewers with a reconstructed 4000 for
+	// what was a 4006. Give the pull a bounded chance to end the hub with the
+	// origin's own code; past the bound, stop it as before.
+	m.mu.Lock()
+	es := m.edges[broadcastID]
+	m.mu.Unlock()
+	if es != nil {
+		t := time.NewTimer(edgeEndWait)
+		select {
+		case <-es.doneCh:
+		case <-t.C:
+		}
+		t.Stop()
+	}
 	m.StopEdge(broadcastID)
 }
+
+// edgeEndWait bounds OnLeaseDeleted's wait for an attached pull to end on
+// its origin's close. Normally that close is already here; the bound only
+// matters when the upstream is gone without one (a dead origin whose stale
+// Lease was reaped), and it holds up the lease informer, so it stays short.
+const edgeEndWait = 500 * time.Millisecond
 
 // StopEdge synchronously stops the broadcast's edge pull, if any (lease
 // deletion, or the W5 come-home: the real broadcaster claiming this pod
@@ -364,7 +394,7 @@ func (es *edgeSession) run() {
 		es.signalAttached(nil)
 		es.m.log.Info("edge attached", "broadcast_id", es.id, "origin", origin.Addr, "generation", origin.Generation)
 
-		lingered := es.pump(up, pub)
+		lingered, upErr := es.pump(up, pub)
 
 		// Upstream ended (origin drain/crash/4003) or we lingered out. The
 		// prime caches die with the session — a viewer joining before the
@@ -387,6 +417,22 @@ func (es *edgeSession) run() {
 			}
 			break
 		}
+		// The origin ended the broadcast and said why (R57, docs/59 D2): pass
+		// ITS reason on to this pod's viewers, not one reconstructed from
+		// this pod's state when the Lease goes. That reconstruction was
+		// wrong for kills — an IP ban names no broadcast ID here (only the
+		// origin knows the broadcaster's address), and an ID ban may not
+		// have reached this pod's informer yet — so edge viewers were told
+		// 4000 for a moderator's 4006.
+		if code, ok := upstreamTerminalCode(upErr); ok && es.upstreamEndIsFinal(code, origin) {
+			if code == wire.CloseCodeTerminatedByOperator {
+				es.m.registry.TerminateBroadcast(es.id, code, terminationReason)
+			} else {
+				es.m.registry.EndBroadcast(es.id)
+			}
+			es.m.log.Info("edge ended with the origin's close code", "broadcast_id", es.id, "close_code", code)
+			break
+		}
 		if es.ctx.Err() != nil {
 			break
 		}
@@ -402,6 +448,26 @@ func (es *edgeSession) run() {
 		// ours is publisher-less now).
 		es.m.registry.EndBroadcast(es.id)
 	}
+}
+
+// upstreamEndIsFinal decides whether the origin's terminal close ends this
+// pod's copy too. 4006 always does: the ID is banned fleet-wide. 4000 does
+// unless the broadcast has since moved — a Lease at another holder or a
+// newer generation than the one this pull attached at means a re-home, and
+// the pull re-attaches to the new origin instead (docs/22's "never a wrong
+// terminal 4000 while the broadcast is still live at the origin").
+func (es *edgeSession) upstreamEndIsFinal(code uint32, attached cluster.Origin) bool {
+	if code == wire.CloseCodeTerminatedByOperator {
+		return true
+	}
+	now, err := es.m.resolver.Resolve(es.ctx, es.id)
+	if errors.Is(err, cluster.ErrNotFound) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	return now.Holder == attached.Holder && now.Generation == attached.Generation
 }
 
 // edgeBackoffDuration: base·2^attempt with full jitter, capped — the W5
@@ -430,9 +496,24 @@ func (es *edgeSession) backoff(attempt int) bool {
 // pump runs the upstream session's read loops until it dies or the edge
 // lingers out (no local viewers for m.linger). Returns true when it stopped
 // because of the linger (no re-attach wanted).
-func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool) {
+func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool, upstreamErr error) {
 	ctx, cancel := context.WithCancel(es.ctx)
 	defer cancel()
+
+	// How the upstream session ended, as the read loops saw it. Both loops
+	// end together on a close and report it differently — the one that
+	// carries the origin's code is a *webtransport.SessionError, the other
+	// can be a bare EOF — so a session error wins whichever loop got there
+	// first. Our own cancels (linger, StopEdge) are context errors.
+	var endMu sync.Mutex
+	recordEnd := func(err error) {
+		endMu.Lock()
+		defer endMu.Unlock()
+		var se *webtransport.SessionError
+		if upstreamErr == nil || errors.As(err, &se) {
+			upstreamErr = err
+		}
+	}
 
 	est := &timeSyncEstimator{}
 	// The origin's cached ClockMapping is join-primed at attach — usually
@@ -454,6 +535,7 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool)
 		for {
 			dgram, err := up.ReceiveDatagram(ctx)
 			if err != nil {
+				recordEnd(err)
 				return
 			}
 			if len(dgram) >= 2 && dgram[1] == wire.TypeTimeSync {
@@ -495,6 +577,7 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool)
 		for {
 			stream, err := up.AcceptUniStream(ctx)
 			if err != nil {
+				recordEnd(err)
 				return
 			}
 			select {
@@ -570,12 +653,37 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool)
 	}()
 
 	wg.Wait()
+	endMu.Lock()
+	defer endMu.Unlock()
 	select {
 	case <-lingerCh:
-		return true
+		return true, upstreamErr
 	default:
-		return false
 	}
+	var se *webtransport.SessionError
+	if !errors.As(upstreamErr, &se) {
+		if ce := up.CloseError(); ce != nil {
+			upstreamErr = ce
+		}
+	}
+	return false, upstreamErr
+}
+
+// upstreamTerminalCode reports the origin's close code when it ended the
+// upstream session with one that means the broadcast is over — the codes a
+// downstream pod must pass on to its own viewers rather than re-attach
+// through (removeBroadcast closes internal edge sessions with them "so
+// downstream pods tear down too").
+func upstreamTerminalCode(err error) (uint32, bool) {
+	var se *webtransport.SessionError
+	if !errors.As(err, &se) || !se.Remote {
+		return 0, false
+	}
+	switch code := uint32(se.ErrorCode); code {
+	case wire.CloseCodeBroadcastEnded, wire.CloseCodeTerminatedByOperator:
+		return code, true
+	}
+	return 0, false
 }
 
 // internalSubscribePath builds the internal route path WITHOUT the PSK — the
@@ -599,6 +707,30 @@ func (u *webtransportUpstream) SendDatagram(p []byte) error { return u.sess.Send
 
 func (u *webtransportUpstream) AcceptUniStream(ctx context.Context) (io.Reader, error) {
 	return u.sess.AcceptUniStream(ctx)
+}
+
+// closeErrorWait bounds CloseError's wait for a session that is ending to
+// finish closing (the loops can fail a moment before the close capsule is
+// processed).
+const closeErrorWait = 100 * time.Millisecond
+
+func (u *webtransportUpstream) CloseError() error {
+	t := time.NewTimer(closeErrorWait)
+	defer t.Stop()
+	select {
+	case <-u.sess.Context().Done():
+	case <-t.C:
+		return nil // still open: our own cancel ended the pump
+	}
+	// A closed session's stream map holds its close error; any streams
+	// still queued ahead of it are accepted and dropped.
+	ctx, cancel := context.WithTimeout(context.Background(), closeErrorWait)
+	defer cancel()
+	for {
+		if _, err := u.sess.AcceptUniStream(ctx); err != nil {
+			return err
+		}
+	}
 }
 
 func (u *webtransportUpstream) Close() error {

@@ -178,6 +178,53 @@ export const CLOSE_CODE_TERMINATED_BY_OPERATOR = 4006;
 // wire.CloseCodeRoomEnded.
 export const CLOSE_CODE_ROOM_ENDED = 4007;
 
+// SessionClosing (R57, docs/59): relay→client on its own server-opened uni
+// stream, a settle interval BEFORE the relay closes the session with this
+// code. It exists because Chrome never reads a webtransport-go close code —
+// the relay's close packet carries STOP_SENDING on the CONNECT stream ahead
+// of the close capsule, and Chrome fails the session on it ("Connection
+// lost.", no closeCode; quic-go/webtransport-go#242). A client uses it when
+// `closed` settles without a code, and keeps a code it did read. Sent for
+// the terminal codes only (4000, 4004, 4006) on publish/subscribe sessions;
+// room control sessions have RoomEnding instead. Layout: version, type 0x17,
+// uint32 BE code in [4000, 4999] — exactly 6 bytes. Mirrored from Go
+// wire.TypeSessionClosing.
+export const TYPE_SESSION_CLOSING = 0x17;
+export const SESSION_CLOSING_SIZE = 6;
+const MIN_GAWK_CLOSE_CODE = 4000;
+const MAX_GAWK_CLOSE_CODE = 4999;
+
+export function encodeSessionClosing(code: number): Uint8Array<ArrayBuffer> {
+  if (!Number.isInteger(code) || code < MIN_GAWK_CLOSE_CODE || code > MAX_GAWK_CLOSE_CODE) {
+    throw new WireError(`invalid session closing: code ${code} outside ${MIN_GAWK_CLOSE_CODE}-${MAX_GAWK_CLOSE_CODE}`);
+  }
+  const msg = new Uint8Array(SESSION_CLOSING_SIZE);
+  msg[0] = WIRE_VERSION;
+  msg[1] = TYPE_SESSION_CLOSING;
+  new DataView(msg.buffer).setUint32(2, code, false);
+  return msg;
+}
+
+export function parseSessionClosing(msg: Uint8Array): number {
+  if (msg.length < SESSION_CLOSING_SIZE) {
+    throw new WireError(`message too short: ${msg.length} bytes, need ${SESSION_CLOSING_SIZE} for session closing`);
+  }
+  if (msg[0] !== WIRE_VERSION) {
+    throw new WireError(`unsupported version 0x${msg[0].toString(16)}`);
+  }
+  if (msg[1] !== TYPE_SESSION_CLOSING) {
+    throw new WireError(`unexpected message type 0x${msg[1].toString(16)}, want session closing`);
+  }
+  if (msg.length !== SESSION_CLOSING_SIZE) {
+    throw new WireError(`invalid session closing: ${msg.length} bytes, want ${SESSION_CLOSING_SIZE}`);
+  }
+  const code = new DataView(msg.buffer, msg.byteOffset, msg.byteLength).getUint32(2, false);
+  if (code < MIN_GAWK_CLOSE_CODE || code > MAX_GAWK_CLOSE_CODE) {
+    throw new WireError(`invalid session closing: code ${code} outside ${MIN_GAWK_CLOSE_CODE}-${MAX_GAWK_CLOSE_CODE}`);
+  }
+  return code;
+}
+
 // Wire frameIds are uint32 and wrap; consumers must compare them with serial
 // arithmetic (RFC 1982 flavored), not `<`/`>`. `a` is ahead of `b` when the
 // forward distance b→a (mod 2^32) is under half the space — so ids just past

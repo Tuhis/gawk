@@ -31,9 +31,19 @@ export interface Card {
   body: string;
 }
 
+// The line a broadcaster needs under any "you're out of the room" card: the
+// room never owned the broadcast (D1), so leaving it costs the stream nothing.
+export const OWN_STREAM_LIVE_NOTE = 'Your stream is still live on its own code.';
+
 // 4007: the room ended. `reason` is what the preceding RoomEnding said, or
 // null when the close arrived without one (a reconnect into a gone room).
-export function endedCard(reason: number | null): Card {
+// `ownStream`: the reader is a broadcaster whose stream was in the room.
+export function endedCard(reason: number | null, ownStream = false): Card {
+  const card = endedCardFor(reason);
+  return ownStream ? { title: card.title, body: `${card.body} ${OWN_STREAM_LIVE_NOTE}` } : card;
+}
+
+function endedCardFor(reason: number | null): Card {
   switch (reason) {
     case ROOM_END_REASON_CREATOR:
       return { title: 'Room ended', body: 'The room was ended by its creator.' };
@@ -69,6 +79,13 @@ export function errorCard(kind: RoomFailureKind): Card {
       };
   }
 }
+
+// The creator detached OUR stream. Not a toast: the broadcaster is left in a
+// room their stream is no longer part of, which is worth stopping them for.
+export const OWN_REMOVED_CARD: Card = {
+  title: 'Your stream was removed from the room',
+  body: `The room’s creator removed it. ${OWN_STREAM_LIVE_NOTE}`,
+};
 
 // The toast for an attachment the relay removed.
 export function removalToast(label: string, reason: number): string {

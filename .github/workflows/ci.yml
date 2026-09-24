@@ -2228,7 +2228,16 @@ jobs:
           done
           [ "$gone" = 1 ] || { echo "::error::the kill never actuated on the relay"; exit 1; }
           # And the native publisher was told WHY (D15's readable close).
-          grep -q 'terminated by the server operator' dev-pubsim.out
+          # Waited for, not grepped once: the hub leaves the fleet view the
+          # moment the kill actuates, but the publisher's 4006 lands a settle
+          # later — the relay states the code in-band first and closes
+          # 250 ms after (R57, docs/59 D3).
+          told=0
+          for i in $(seq 20); do
+            grep -q 'terminated by the server operator' dev-pubsim.out && { told=1; break; }
+            sleep 0.5
+          done
+          [ "$told" = 1 ] || { echo "::error::the publisher was never told it was terminated"; tail -n 20 dev-pubsim.out; exit 1; }
           echo "portal lane: every property held"
 
       # R50 (docs/51 EB4): the milestone's end-to-end claim, on the one lane

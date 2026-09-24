@@ -726,9 +726,11 @@ func (s *Server) HandleLeaseDeleted(broadcastID string) {
 	// hub through the ordinary path would close its viewers with 4000 —
 	// "broadcast ended" — when the truthful answer is 4006, and viewer-visible
 	// transparency is the entire reason 4006 was allocated rather than reusing
-	// 4000 (docs/42 D6). Consulting the ban set here makes the arrival order
-	// irrelevant: whichever event this pod sees first, its viewers are told the
-	// same thing.
+	// 4000 (docs/42 D6). This ban-set check is only a fallback: it misses an
+	// IP ban (only the origin knows the broadcaster's address) and an ID ban
+	// this pod has not seen yet. The primary path is the edge pull itself,
+	// which passes the origin's own close code on (R57, docs/59 D2) — and
+	// OnLeaseDeleted below gives an attached pull a bounded chance to do so.
 	//
 	// Deliberately BEFORE the edge teardown below, because terminate() stops
 	// the edge pull itself and then tears the hub down with the right code.
@@ -895,14 +897,14 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 					s.log.Warn("publish closed: banned during the upgrade",
 						"broadcast_key", s.broadcastKey(normID), "remote", r.RemoteAddr,
 						"target_type", string(rec.Target.Type))
-					sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeTerminatedByOperator), terminationReason)
+					closeWithNotice(sess, wire.CloseCodeTerminatedByOperator, terminationReason)
 					return
 				}
 				// The broadcast was GC'd between the claim attempt and the
 				// takeover.
 				s.metrics.Connection("publish", metrics.OutcomeNotFound)
 				s.log.Warn("publish takeover failed", "id", normID, "err", err)
-				sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcastEnded), "broadcast ended")
+				closeWithNotice(sess, wire.CloseCodeBroadcastEnded, "broadcast ended")
 				return
 			}
 			if coord := s.clusterCoord(); coord != nil {
@@ -998,7 +1000,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		s.log.Debug("publish ban detail", "id", id, "remote", r.RemoteAddr,
 			"target_type", string(rec.Target.Type), "target", rec.Target.Value,
 			"ban_reason", rec.Reason, "created_by", rec.CreatedBy)
-		sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeTerminatedByOperator), terminationReason)
+		closeWithNotice(sess, wire.CloseCodeTerminatedByOperator, terminationReason)
 		return
 	}
 
@@ -1006,10 +1008,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	// publisher. A false return means a takeover already won while this
 	// session was between its pre-upgrade claim and here — end it rather
 	// than publish into a deposed broadcast.
-	if !pub.BindConn(&webtransportSessionAdapter{sess}) {
+	if !pub.BindConn(&webtransportSessionAdapter{Session: sess, closeNotice: true}) {
 		s.metrics.Connection("publish", metrics.OutcomeConflict)
 		s.log.Info("publisher superseded during setup", "broadcast_id", id)
-		sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodePublisherSuperseded), "superseded by a new publisher session")
+		closeWithNotice(sess, wire.CloseCodePublisherSuperseded, "superseded by a new publisher session")
 		return
 	}
 
@@ -1350,7 +1352,10 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// QUIC retransmission, so parity would be pure egress waste.
 	parityRequested, parityServed := hub.NegotiateParity(
 		r.URL.Query().Get("parity"), s.cfg.ParityDefault, mode != wire.DeliveryDatagrams)
-	adapter := &webtransportSessionAdapter{sess}
+	// A stripe leg gets no close notice: the viewer reads no streams on a
+	// leg (the relay sends legs none), and a leg's death is handled by the
+	// primary's fallback whatever its code (docs/35 §14).
+	adapter := &webtransportSessionAdapter{Session: sess, closeNotice: !isStripeLeg}
 	var sub *hub.Subscriber
 	switch {
 	case isStripeLeg:
@@ -1376,7 +1381,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			// send the terminal code so the viewer shows "broadcast ended"
 			// instead of burning its reconnect budget against a 404.
 			s.metrics.Connection("subscribe", metrics.OutcomeNotFound)
-			sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeBroadcastEnded), "broadcast ended")
+			closeWithNotice(sess, wire.CloseCodeBroadcastEnded, "broadcast ended")
 			return
 		}
 		s.metrics.Connection("subscribe", metrics.OutcomeLimitRejected)
@@ -1557,7 +1562,9 @@ func (s *Server) handleInternalSubscribe(w http.ResponseWriter, r *http.Request)
 	}
 	defer s.trackSession(sess)()
 
-	sub, err := s.registry.SubscribeInternal(normID, &webtransportSessionAdapter{sess})
+	// No close notice: the edge client reads every uni stream here as a
+	// keyframe, and it reads close codes itself (it is Go, not Chrome).
+	sub, err := s.registry.SubscribeInternal(normID, &webtransportSessionAdapter{Session: sess})
 	if err != nil {
 		// The hub vanished between the fence and now (GC race): 4000 tells
 		// the edge the broadcast is over (its own lease watch will agree).
@@ -1678,9 +1685,20 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 
 type webtransportSessionAdapter struct {
 	*webtransport.Session
+	// closeNotice: this is a browser-facing session (publish, external
+	// subscribe), so a terminal close states its code in-band first (R57,
+	// closenotice.go). False on /internal/subscribe, whose edge client reads
+	// every uni stream as a keyframe.
+	closeNotice bool
 }
 
 func (w *webtransportSessionAdapter) CloseWithError(code uint32, reason string) error {
+	if w.closeNotice {
+		// Async: the hub closes every viewer of a broadcast in one pass,
+		// and each session's own handler keeps it alive for the settle.
+		closeWithNoticeAsync(w.Session, code, reason)
+		return nil
+	}
 	return w.Session.CloseWithError(webtransport.SessionErrorCode(code), reason)
 }
 

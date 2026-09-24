@@ -143,6 +143,11 @@ export function BroadcasterScreen() {
   const [stats, setStats] = useState<BroadcastStats | null>(null);
   const [encoderInfo, setEncoderInfo] = useState<EncoderConfigured | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The error ended a broadcast that had been live (an operator kill, a
+  // newer session taking the code, the resume budget spent) — not a start
+  // that never got going. Changes the card's title; see onError.
+  const [errorWhileLive, setErrorWhileLive] = useState(false);
+  const liveRef = useRef(false);
   const [broadcastId, setBroadcastId] = useState<string | null>(null);
   const [reclaimFailedNote, setReclaimFailedNote] = useState<string | null>(null);
   // The hidden-tab watchdog (backgroundWatchdog.ts): the page ends its own
@@ -274,6 +279,8 @@ export function BroadcasterScreen() {
     grantRef.current = grant;
     const { serverUrl, certHashHex, publishSecret } = useTransportStore.getState();
     setError(null);
+    setErrorWhileLive(false);
+    liveRef.current = false;
     setStats(null);
     setEncoderInfo(null);
     // Fresh sample window per broadcast: the pipeline's cumulative counters
@@ -284,6 +291,7 @@ export function BroadcasterScreen() {
 
     const makeCallbacks = (afterFailedReclaim: boolean) => ({
       onSourceStream: (s: MediaStream) => {
+        liveRef.current = true;
         setSourceStream(s);
         setStatus('broadcasting');
       },
@@ -336,9 +344,15 @@ export function BroadcasterScreen() {
       onError: (err: Error) => {
         telemetry.event('error', err.message);
         setError(err.message);
+        setErrorWhileLive(liveRef.current);
         setStatus('error');
+        // The page's room exists only for a live broadcast: a failure takes
+        // the page out of it, so the card saying what happened is what the
+        // broadcaster sees — not a room view still reading LIVE.
+        setRoomTarget(null);
       },
       onEnded: () => {
+        liveRef.current = false;
         // The broadcast is over — final flush now rather than making the
         // service wait out an idle timeout to finalize the session.
         telemetry.event('ended');
@@ -1092,7 +1106,7 @@ export function BroadcasterScreen() {
 
           {status === 'error' ? (
             <>
-              <h1 className={styles.title}>Couldn’t start</h1>
+              <h1 className={styles.title}>{errorWhileLive ? 'Your broadcast stopped' : 'Couldn’t start'}</h1>
               <p className={styles.errorText}>{error}</p>
               <Button onClick={beginStart}>Try again</Button>
             </>

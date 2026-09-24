@@ -12,6 +12,9 @@ import {
   TELEMETRY_HELLO_SIZE,
   TYPE_RELAY_CAPABILITIES,
   TYPE_RELIABLE_CARRIER,
+  TYPE_SESSION_CLOSING,
+  SESSION_CLOSING_SIZE,
+  parseSessionClosing,
   TYPE_STREAM_FRAME,
   TYPE_TELEMETRY_HELLO,
   TYPE_TELEMETRY_ENDPOINT,
@@ -171,6 +174,10 @@ export interface ServerStreamCallbacks {
   // engages only after CAP_STRIPED_DELIVERY is seen, so an older relay (which
   // never sends it) is never dialed for legs.
   onRelayCapabilities?: (caps: RelayCapabilities) => void;
+  // The close code the relay is about to close this session with, stated
+  // in-band because Chrome never reads a webtransport-go close code. The
+  // consumer keeps it for when `closed` settles without one.
+  onSessionClosing?: (code: number) => void;
   // One verbatim datagram record off a reliable carrier stream. The
   // transport feeds it into the same handler as a received datagram — the
   // whole point of the carrier design.
@@ -266,7 +273,8 @@ async function readOneServerStream(
         head1 !== TYPE_RELIABLE_CARRIER &&
         head1 !== TYPE_TELEMETRY_HELLO &&
         head1 !== TYPE_TELEMETRY_ENDPOINT &&
-        head1 !== TYPE_RELAY_CAPABILITIES)
+        head1 !== TYPE_RELAY_CAPABILITIES &&
+        head1 !== TYPE_SESSION_CLOSING)
     ) {
       // Unknown stream kind or version: cancel without wedging the accept
       // loop. Counted as malformed so it is visible in stats.
@@ -325,6 +333,22 @@ async function readOneServerStream(
       } catch (e) {
         carrier.malformed++;
         log.warn('relay capabilities unreadable; striping stays unavailable:', e);
+      }
+      return;
+    }
+
+    if (head1 === TYPE_SESSION_CLOSING) {
+      // R57: fixed 6 bytes; read to EOF and parse strictly. An unreadable
+      // notice costs only the reason shown for the close, never media.
+      for (;;) {
+        if (total > SESSION_CLOSING_SIZE) break;
+        if (!(await readMore())) break;
+      }
+      try {
+        cb.onSessionClosing?.(parseSessionClosing(concatChunks(chunks, total)));
+      } catch (e) {
+        carrier.malformed++;
+        log.warn('session closing notice unreadable:', e);
       }
       return;
     }

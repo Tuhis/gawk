@@ -48,6 +48,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`23`](23-live-viewer-count.md) | R18 — Live viewer count, aggregated across pods |
 | [`26`](26-relay-dvr-buffer.md) | R21 — Relay DVR ring buffer for resilient viewers |
 | [`45`](45-relay-refusal-reasons.md) | R43 — Relay refusal reasons the browser can see (close codes 4008–4011) |
+| [`59`](59-close-notice.md) | R57 — Close codes Chrome can read: the in-band close notice (`SessionClosing`, 0x17) |
 
 ## Delivery and resilience
 

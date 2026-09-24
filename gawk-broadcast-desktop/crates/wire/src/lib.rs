@@ -73,6 +73,13 @@ pub const TYPE_ROOM_HELLO: u8 = 0x13;
 pub const TYPE_ROOM_STATE: u8 = 0x14;
 pub const TYPE_ROOM_EVENT: u8 = 0x15;
 pub const TYPE_ROOM_COMMAND: u8 = 0x16;
+// SessionClosing (R57, docs/59): relay→client on its own uni stream, the close
+// code the relay is about to close the session with — in-band because Chrome
+// never reads a webtransport-go close code. This broadcaster reads the close
+// code itself (wtransport does) and ignores the stream by type; the constant
+// and vector are here because every mirror carries every message.
+pub const TYPE_SESSION_CLOSING: u8 = 0x17;
+pub const SESSION_CLOSING_SIZE: usize = 6;
 
 // Size constants. A change to any of these is a protocol change, not a
 // tuning knob — the constants test pins every one.

@@ -31,6 +31,7 @@ import {
   ROOM_CLIENT_WEB_BROADCASTER,
   ROOM_CLIENT_WEB_VIEWER,
   MAX_ROOM_LABEL_LEN,
+  ROOM_DETACH_REASON_CREATOR,
   ROOM_PARTICIPANT_FLAG_STREAMING,
   type RoomAttachment,
 } from '../../transport/wire';
@@ -51,6 +52,7 @@ import {
   EMPTY_ROOM_CARD,
   HIDDEN_CARD,
   LINK_COPIED_TOAST,
+  OWN_REMOVED_CARD,
   endedCard,
   errorCard,
   rejectionToast,
@@ -360,10 +362,17 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
 
   // Every relay state has a visible form (docs/44 §4.9): removals and
   // rejections are toasts, the rest are cards and pills below.
+  // Except our own stream removed by the creator: that is a card (below),
+  // because it leaves a broadcaster in a room their stream is no longer in.
+  const [ownRemoved, setOwnRemoved] = useState(false);
   useEffect(() => {
     if (!lastRemoval) return;
+    if (ownId !== null && lastRemoval.broadcastId === ownId && lastRemoval.reason === ROOM_DETACH_REASON_CREATOR) {
+      setOwnRemoved(true);
+      return;
+    }
     showToast(removalToast(lastRemoval.label, lastRemoval.reason));
-  }, [lastRemoval, showToast]);
+  }, [lastRemoval, ownId, showToast]);
   useEffect(() => {
     if (!lastRejection) return;
     showToast(rejectionToast(lastRejection.command, lastRejection.reason, lastRejection.message));
@@ -391,6 +400,20 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     if (onLeave) onLeave();
     else window.location.hash = HOME;
   }, [onLeave]);
+
+  // Ending the room ourselves needs no card telling us it ended: once the
+  // relay confirms (status 'ended'), we are simply out — a broadcaster back
+  // on their own live stage, anyone else home. This flag, not the end
+  // reason, says it was us: another creator-token holder ends with the same
+  // reason.
+  const [endRequested, setEndRequested] = useState(false);
+  const endRoom = useCallback(() => {
+    setEndRequested(true);
+    commands.endRoom();
+  }, [commands]);
+  useEffect(() => {
+    if (status === 'ended' && endRequested) leave();
+  }, [status, endRequested, leave]);
 
   const copyLink = useCallback(() => {
     if (code === '') return;
@@ -645,8 +668,18 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
             <Button onClick={leave}>{ownId === null ? 'Home' : 'Back to my stream'}</Button>
           </>,
         )}
-      {status === 'ended' && card(endedCard(endReason).title, endedCard(endReason).body, <Button onClick={leave}>Leave</Button>)}
+      {status === 'ended' &&
+        !endRequested &&
+        card(
+          endedCard(endReason, ownId !== null).title,
+          endedCard(endReason, ownId !== null).body,
+          <Button onClick={leave}>{ownId === null ? 'Leave' : 'Back to my stream'}</Button>,
+        )}
+      {ownRemoved &&
+        status !== 'ended' &&
+        card(OWN_REMOVED_CARD.title, OWN_REMOVED_CARD.body, <Button onClick={leave}>Back to my stream</Button>)}
       {(joined || status === 'reconnecting') &&
+        !ownRemoved &&
         effectiveMode === 'hidden' &&
         !previewOnly &&
         card(
@@ -662,6 +695,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
           </>,
         )}
       {(joined || status === 'reconnecting') &&
+        !ownRemoved &&
         effectiveMode !== 'hidden' &&
         attachments.length === 0 &&
         !gatedOut &&
@@ -877,7 +911,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
             onClose={() => setPanelOpen(false)}
             onDetach={(id) => (own && id === own.broadcastId ? detachOwn() : commands.detach(id))}
             onSetNickname={submitNickname}
-            onEndRoom={() => commands.endRoom()}
+            onEndRoom={endRoom}
             confirmingEnd={confirmingEnd}
             onConfirmingEndChange={setConfirmingEnd}
             ownBroadcastId={own?.broadcastId ?? null}

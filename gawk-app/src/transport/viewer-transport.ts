@@ -138,6 +138,10 @@ export class LocalViewerTransport implements ViewerTransport {
   private abort = new AbortController();
   private closing = false; // close() called — suppress onClosed
   private closedReported = false;
+  // R57 (docs/59): the code the relay said, in-band, it is about to close
+  // this session with. Chrome never reads the close code itself, so a close
+  // (or a drop) that arrives without one reports this instead.
+  private noticedCloseCode: number | undefined;
   private cb: ViewerTransportCallbacks | null = null;
 
   // Stripe state. legs is the CURRENT set; a transition dials a whole fresh set
@@ -242,6 +246,9 @@ export class LocalViewerTransport implements ViewerTransport {
         onTelemetryHello: (hello) => cb.onTelemetryHello?.(hello),
         onTelemetryEndpoint: (url) => cb.onTelemetryEndpoint?.(url),
         onRelayCapabilities: (caps) => cb.onRelayCapabilities?.(caps),
+        onSessionClosing: (code) => {
+          this.noticedCloseCode = code;
+        },
       },
       this.carrier,
       this.abort.signal,
@@ -443,6 +450,7 @@ export class LocalViewerTransport implements ViewerTransport {
   private reportClosed(cb: ViewerTransportCallbacks, closeCode?: number, reason?: string): void {
     if (this.closing || this.closedReported) return;
     this.closedReported = true;
+    closeCode ??= this.noticedCloseCode;
     const message = reason
       ? `WebTransport session closed: ${reason}`
       : 'WebTransport session closed by server';
@@ -452,6 +460,12 @@ export class LocalViewerTransport implements ViewerTransport {
   // An abrupt drop (read loop died, no close frame): message only.
   private reportDropped(cb: ViewerTransportCallbacks, err: Error): void {
     if (this.closing || this.closedReported) return;
+    // The relay said why before it closed (R57): this is that close, not a
+    // drop — Chrome just never delivered its code.
+    if (this.noticedCloseCode !== undefined) {
+      this.reportClosed(cb, this.noticedCloseCode, err.message);
+      return;
+    }
     this.closedReported = true;
     cb.onClosed({ message: err.message });
   }

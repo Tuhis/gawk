@@ -46,6 +46,10 @@ import {
   CLOSE_CODE_STRIPE_LEG_ORPHANED,
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
   CLOSE_CODE_ROOM_ENDED,
+  TYPE_SESSION_CLOSING,
+  SESSION_CLOSING_SIZE,
+  encodeSessionClosing,
+  parseSessionClosing,
   TYPE_ROOM_HELLO,
   TYPE_ROOM_STATE,
   TYPE_ROOM_EVENT,
@@ -754,6 +758,36 @@ describe('resume token (R17 W2)', () => {
     expect(() => parseResumeToken(new Uint8Array([0x01, 0x09, 0x01, 0x42, 0x43]))).toThrow(/resume token/);
     expect(() => encodeResumeToken(new Uint8Array(0))).toThrow(WireError);
     expect(() => encodeResumeToken(new Uint8Array(256))).toThrow(WireError);
+  });
+});
+
+// The in-band close notice. Byte-identical to gawk-server/wire
+// closing_test.go goldenSessionClosingHex.
+describe('SessionClosing (R57)', () => {
+  const GOLDEN_SESSION_CLOSING_HEX = '011700000fa4';
+
+  it('encodes the golden notice byte-for-byte and parses it back', () => {
+    expect(TYPE_SESSION_CLOSING).toBe(0x17);
+    expect(SESSION_CLOSING_SIZE).toBe(6);
+    expect(toHex(encodeSessionClosing(CLOSE_CODE_PUBLISHER_SUPERSEDED))).toBe(GOLDEN_SESSION_CLOSING_HEX);
+    expect(parseSessionClosing(fromHex(GOLDEN_SESSION_CLOSING_HEX))).toBe(CLOSE_CODE_PUBLISHER_SUPERSEDED);
+  });
+
+  it('round-trips every noticed code', () => {
+    for (const c of [CLOSE_CODE_BROADCAST_ENDED, CLOSE_CODE_PUBLISHER_SUPERSEDED, CLOSE_CODE_TERMINATED_BY_OPERATOR]) {
+      expect(parseSessionClosing(encodeSessionClosing(c))).toBe(c);
+    }
+  });
+
+  it('is strict: exact size, version, type, and the gawk code range', () => {
+    expect(() => parseSessionClosing(fromHex('011700000f'))).toThrow(WireError);
+    expect(() => parseSessionClosing(fromHex('011700000fa400'))).toThrow(WireError);
+    expect(() => parseSessionClosing(fromHex('021700000fa4'))).toThrow(WireError);
+    expect(() => parseSessionClosing(fromHex('010900000fa4'))).toThrow(WireError);
+    expect(() => parseSessionClosing(fromHex('011700000f9f'))).toThrow(WireError);
+    expect(() => parseSessionClosing(fromHex('0117000013 88'.replace(' ', '')))).toThrow(WireError);
+    expect(() => encodeSessionClosing(0)).toThrow(WireError);
+    expect(() => encodeSessionClosing(5000)).toThrow(WireError);
   });
 });
 
