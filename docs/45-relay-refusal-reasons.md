@@ -7,6 +7,14 @@ that cannot read them. Proposed as a follow-up to R42, not part of it: it
 changes a relay behaviour every client depends on and touches all four wire
 mirrors.
 
+> **Revision 2026-09-24 (R57, [docs/59](59-close-notice.md)).** Close codes
+> from this relay don't reach Chrome: webtransport-go's close packet puts
+> STOP_SENDING on the CONNECT stream ahead of the close capsule, and Chrome
+> fails the session on it with no code. Close codes 4008–4011 alone would
+> read "Connection lost." exactly like today's refusals. R43 must send each
+> code in-band first as a `SessionClosing` (0x17), whose range already covers
+> 4000–4999, and close after the settle, the way the terminal codes do now.
+
 ## 1. Purpose
 
 Every refusal the relay hands a client today is an HTTP status on the

@@ -269,7 +269,7 @@ message, with golden vectors.
   display-only.
 - **Close code 4007 `RoomEnded`**: terminal for the room session only. The
   participant's media sessions have their own lifecycle. *(Revision
-  2026-09-24, [docs/58](58-close-notice.md) D5.)* Chrome never receives this
+  2026-09-24, [docs/59](59-close-notice.md) D5.)* Chrome never receives this
   code. It fails the session on a STOP_SENDING that arrives ahead of the
   close capsule and reports "Connection lost." with no code
   (docs/gotchas.md). `RoomEnding` is therefore the signal: the client treats
@@ -465,7 +465,7 @@ The canvas itself is the reference for RM4/RM5 and is linked from §12.
   shows "Your broadcast stopped" with the reason. It used to leave the room
   view up, still reading LIVE. Verified by `RoomScreen.test.tsx` ("RoomView
   with an own broadcast"), `BroadcasterScreen.room.test.tsx` and
-  headless-Chrome runs against a local relay (docs/58 §8).
+  headless-Chrome runs against a local relay (docs/59 §8).
 - Reserved space: a speaking indicator on participants and a chat panel
   slot, both hidden until their capabilities arrive (§4.11). The design
   pass should draw them so the v1 layout does not have to move later.

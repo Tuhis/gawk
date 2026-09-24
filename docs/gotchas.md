@@ -191,6 +191,18 @@ Add to it when a new gotcha lands in `docs/`.
   "server didn't enable WebTransport".
 - Go *clients* need `EnableStreamResetPartialDelivery: true` in their
   `quic.Config`. ([docs/02](02-webtransport-hello.md))
+- **Chrome never reads a close code this relay sends.** `CloseWithError`
+  sends STOP_SENDING on the CONNECT stream in the same packet as the close
+  capsule, and *ahead* of it. Chrome fails the session on that frame, so
+  `WebTransport.closed` rejects with "Connection lost." and no code.
+  Measured 2026-09-24: 1 of 84 closes readable in Chrome; Firefox reads them.
+  Upstream calls it a Chromium bug and won't change it
+  (quic-go/webtransport-go#242). Any code a browser must act on is therefore
+  sent in-band first as `SessionClosing` (0x17) and closed a settle later
+  (`internal/transport/closenotice.go`). A new terminal code joins
+  `noticedCloseCode`, or Chrome sees a plain drop. Go clients never show the
+  problem, so only a real browser catches a regression.
+  ([docs/59](59-close-notice.md))
 - **Since v0.12.0, `webtransport.Server.Config` must be set or WebKit refuses
   every session** — with a nil `Config` the library advertises
   `WT_MAX_SESSIONS` without the three `WT_INITIAL_MAX_*` SETTINGS the draft
@@ -1379,6 +1391,13 @@ Add to it when a new gotcha lands in `docs/`.
   before the 4007 — the same shape as the drain window (docs/22). A
   "send then immediately close" anywhere else on a stream has the same
   bug. ([docs/44](44-rooms.md) §11)
+- **A room ends when RoomEnding arrives, not on the 4007.** Chrome never
+  reads the 4007 (see webtransport-go above), so every room end reached it as
+  "Connection lost.". The client took that for an abrupt drop and looped
+  "Reconnecting to the room…" against a room that was gone. `RoomEnding` is
+  the room's in-band close notice, and `RoomSession` treats any session end
+  after it as the end, whatever the code. ([docs/44](44-rooms.md) §4.6,
+  [docs/59](59-close-notice.md) D5)
 - **Per-participant events must not consume the room sequence.** A
   `CommandRejected` goes to one participant; giving it a seq would make
   every other client detect a gap and resync in lockstep. The rule is
