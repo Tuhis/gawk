@@ -7,32 +7,21 @@ import { DecodedPreview } from '../loopback/components/DecodedPreview';
 import { type ViewerStats } from '../../transport/viewer';
 import { ViewerSession, RECONNECT_MAX_ATTEMPTS } from '../../transport/viewer-session';
 import { useTransportStore } from '../../state/transportStore';
-import { BROADCAST_ID_ALPHABET } from '../../transport/wire';
+import { isValidBroadcastId } from '../../lib/broadcastId';
 import { log } from '../../lib/logger';
 
 type Status = 'idle' | 'connecting' | 'watching' | 'reconnecting' | 'stopping' | 'error' | 'ended';
 
+// The debug viewer keeps its own #/debug/view/<id> namespace; #/view/<id>
+// belongs to the production viewer.
 function getBroadcastIdFromHash(): string | null {
-  const hash = window.location.hash;
-  // Debug viewer lives under #/debug/view/<id> — NOT #/view/<id>, which R6
-  // reassigned to the production viewer (App routes it to ViewerScreen). Using
-  // the production path here would bounce the debug viewer into the new UI.
-  const match = hash.match(/^#\/debug\/view\/([a-zA-Z0-9]+)$/);
-  if (!match) return null;
-  const id = match[1].toUpperCase();
-  if (id.length !== 6) return null;
-  for (let i = 0; i < id.length; i++) {
-    if (BROADCAST_ID_ALPHABET.indexOf(id[i]) === -1) return null;
-  }
-  return id;
+  const match = window.location.hash.match(/^#\/debug\/view\/([a-zA-Z0-9]+)$/);
+  const id = match?.[1].toUpperCase();
+  return id !== undefined && isValidBroadcastId(id) ? id : null;
 }
 
 function validateBroadcastId(id: string): boolean {
-  if (id.length !== 6) return false;
-  for (let i = 0; i < id.length; i++) {
-    if (BROADCAST_ID_ALPHABET.indexOf(id[i].toUpperCase()) === -1) return false;
-  }
-  return true;
+  return isValidBroadcastId(id.toUpperCase());
 }
 
 export function ViewPage() {

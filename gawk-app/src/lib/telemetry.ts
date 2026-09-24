@@ -419,9 +419,8 @@ export class TelemetryCollector<T> {
     this.stopped = true;
   }
 
-  // R37 (docs/40 D15): adopt the relay-advertised ingest URL. Arriving on
-  // its own uni stream it races the 0x0D hello, so this is legal before OR
-  // after begin(); a flush blocked by requireAdvertisedUrl unblocks here.
+  // Adopt the relay-advertised ingest URL. It arrives on its own uni stream
+  // and races the hello, so this is legal before or after begin().
   setAdvertisedUrl(url: string): void {
     this.advertisedUrl = url;
   }
@@ -623,8 +622,7 @@ function browserClass(ua: string): string {
 
 function osClass(ua: string): string {
   if (/\bAndroid\b/.test(ua)) return 'Android';
-  // iPadOS reports as Macintosh; the touch-point check is the usual
-  // discriminator and stays coarse enough not to fingerprint.
+  // iPadOS Safari sends a Macintosh UA, so iPads report as macOS.
   if (/\b(iPhone|iPad|iPod)\b/.test(ua)) return 'iOS';
   if (/\bWindows\b/.test(ua)) return 'Windows';
   if (/\bCrOS\b/.test(ua)) return 'ChromeOS';

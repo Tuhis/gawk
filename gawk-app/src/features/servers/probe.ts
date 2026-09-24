@@ -15,7 +15,7 @@
 // causes once (docs/40 §4.4) rather than pretending to diagnose.
 
 import { parseRelayIdentity, type RelayIdentityMessage } from '../../transport/wire';
-import { hexToBytes, openDatagramWriter } from '../../transport/connection';
+import { openDatagramWriter, webTransportInit } from '../../transport/connection';
 
 export const PROBE_SAMPLES = 5;
 export const PROBE_SAMPLE_SPACING_MS = 120;
@@ -54,15 +54,7 @@ export interface ProbeTransport {
 export type ProbeTransportFactory = (url: string, certHashHex: string) => ProbeTransport;
 
 function defaultTransportFactory(url: string, certHashHex: string): ProbeTransport {
-  const init: WebTransportOptions = {
-    requireUnreliable: true,
-    congestionControl: 'low-latency',
-  };
-  const hash = certHashHex.trim();
-  if (hash) {
-    init.serverCertificateHashes = [{ algorithm: 'sha-256', value: hexToBytes(hash) }];
-  }
-  return new WebTransport(url, init) as unknown as ProbeTransport;
+  return new WebTransport(url, webTransportInit({ certHashHex })) as unknown as ProbeTransport;
 }
 
 function sleep(ms: number): Promise<void> {
