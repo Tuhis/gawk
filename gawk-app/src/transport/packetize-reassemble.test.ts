@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { packetizeDecoderConfig, packetizeFrame } from './packetizer';
 import { Reassembler, type AssembledFrame, type AudioPacket } from './reassembler';
 import {
+  MAX_CHUNK_COUNT,
   MAX_CHUNK_PAYLOAD,
   encodeAudioConfig,
   encodeAudioFrame,
@@ -41,6 +42,13 @@ describe('packetizeFrame', () => {
   it('produces one datagram for an empty frame', () => {
     const dgrams = packetizeFrame({ frameId: 0, keyframe: false, timestampUs: 0n }, new Uint8Array(0));
     expect(dgrams.length).toBe(1);
+  });
+
+  it('refuses a frame that needs more than MAX_CHUNK_COUNT chunks', () => {
+    const data = new Uint8Array(MAX_CHUNK_PAYLOAD * MAX_CHUNK_COUNT + 1);
+    expect(() => packetizeFrame({ frameId: 0, keyframe: true, timestampUs: 0n }, data)).toThrow(
+      new RegExp(`max ${MAX_CHUNK_COUNT}`),
+    );
   });
 });
 

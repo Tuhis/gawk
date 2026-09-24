@@ -4,6 +4,7 @@
 // in node; the broadcaster pipeline does the EncodedVideoChunk.copyTo.
 
 import {
+  MAX_CHUNK_COUNT,
   MAX_CHUNK_PAYLOAD,
   MAX_DATAGRAM_SIZE,
   VIDEO_CHUNK_HEADER_SIZE,
@@ -23,8 +24,8 @@ export interface FrameInfo {
 
 // Splits data into datagrams that fit within the path MTU. A zero-length
 // frame still produces one chunk so the frame exists on the wire. Throws
-// WireError (from encodeVideoChunk) if the frame would need more than
-// MAX_CHUNK_COUNT chunks.
+// WireError if the frame would need more than MAX_CHUNK_COUNT chunks, before
+// encoding any of them.
 export function packetizeFrame(
   info: FrameInfo,
   data: Uint8Array,
@@ -32,8 +33,8 @@ export function packetizeFrame(
 ): Uint8Array<ArrayBuffer>[] {
   const maxPayload = Math.min(MAX_CHUNK_PAYLOAD, Math.max(1, pathMaxDatagramSize - VIDEO_CHUNK_HEADER_SIZE));
   const chunkCount = Math.max(1, Math.ceil(data.length / maxPayload));
-  if (chunkCount > 0xffff) {
-    throw new WireError(`frame of ${data.length} bytes needs ${chunkCount} chunks, max 65535`);
+  if (chunkCount > MAX_CHUNK_COUNT) {
+    throw new WireError(`frame of ${data.length} bytes needs ${chunkCount} chunks, max ${MAX_CHUNK_COUNT}`);
   }
   const datagrams: Uint8Array<ArrayBuffer>[] = new Array(chunkCount);
   for (let i = 0; i < chunkCount; i++) {
