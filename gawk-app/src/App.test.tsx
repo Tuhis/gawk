@@ -17,11 +17,21 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 vi.mock('./features/landing/LandingPage', () => ({
   LandingPage: () => <div data-testid="landing" />,
 }));
-vi.mock('./features/viewer/ViewerScreen', () => ({
-  ViewerScreen: ({ broadcastId }: { broadcastId: string }) => (
-    <div data-testid="viewer">{broadcastId}</div>
-  ),
-}));
+vi.mock('./features/viewer/ViewerScreen', async () => {
+  const { useState } = await import('react');
+  return {
+    // Records the broadcast it was mounted for, so a test can tell a remount
+    // from a prop change.
+    ViewerScreen: ({ broadcastId }: { broadcastId: string }) => {
+      const [mountedFor] = useState(broadcastId);
+      return (
+        <div data-testid="viewer" data-mounted-for={mountedFor}>
+          {broadcastId}
+        </div>
+      );
+    },
+  };
+});
 vi.mock('./features/broadcaster/BroadcasterScreen', () => ({
   BroadcasterScreen: () => <div data-testid="broadcaster" />,
 }));
@@ -114,5 +124,22 @@ describe('App browser-support gate', () => {
 
     render(<App />);
     expect(dialog()).toBeTruthy();
+  });
+});
+
+// The viewer holds per-broadcast state (audio controls, telemetry session,
+// diagnostics history); moving to another broadcast must not inherit it.
+describe('App viewer route', () => {
+  it('mounts a fresh viewer for each broadcast', () => {
+    withWebTransport();
+    window.location.hash = '#/view/AAAAAA';
+    render(<App />);
+    expect(screen.getByTestId('viewer').dataset.mountedFor).toBe('AAAAAA');
+    act(() => {
+      window.location.hash = '#/view/BBBBBB';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(screen.getByTestId('viewer').textContent).toBe('BBBBBB');
+    expect(screen.getByTestId('viewer').dataset.mountedFor).toBe('BBBBBB');
   });
 });

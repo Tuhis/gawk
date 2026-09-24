@@ -53,7 +53,7 @@ function renderRoute(route: Route): ReactElement | null {
     case 'broadcaster':
       return <BroadcasterScreen />;
     case 'viewer':
-      return <ViewerScreen broadcastId={route.broadcastId} />;
+      return <ViewerScreen key={route.broadcastId} broadcastId={route.broadcastId} />;
     case 'room':
       return <RoomScreen key={route.code} code={route.code} />;
     case 'join':
