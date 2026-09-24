@@ -33,3 +33,13 @@ export function sameRelayOrigin(a: string, b: string): boolean {
   const na = normalizeRelayOrigin(a);
   return na !== null && na === normalizeRelayOrigin(b);
 }
+
+// The host[:port] a relay URL names, for display. An unparseable value is
+// shown as-is rather than hidden.
+export function relayHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}

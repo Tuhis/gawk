@@ -14,6 +14,7 @@ import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { PlusIcon } from '../../ui/Icons';
 import { getServerDirectoryUrl, isDevEnvironment } from '../../config';
+import { relayHost } from '../../lib/relayUrl';
 import {
   DEFAULT_SERVER_ID,
   certHashWithDevFallback,
@@ -92,14 +93,6 @@ function ProbeCell({ probe }: { probe: RowProbeState | undefined }) {
       {Math.round(probe.rttMs)} ms{detail}
     </span>
   );
-}
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
 }
 
 type Editing =
@@ -439,7 +432,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
           {overrideIsUnsaved && (
             <div className={styles.form}>
               <p className={styles.note}>
-                This session is using <strong>{hostOf(sessionOverrideUrl!)}</strong> from the link
+                This session is using <strong>{relayHost(sessionOverrideUrl!)}</strong> from the link
                 you opened. Save it to pick it again later.
               </p>
               <div className={styles.formActions}>
@@ -458,7 +451,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
             >
               <span className={styles.rowMain}>
                 <span className={styles.rowLabel}>This deployment</span>
-                <span className={styles.rowHost}>{hostOf(defaultUrl)}</span>
+                <span className={styles.rowHost}>{relayHost(defaultUrl)}</span>
               </span>
               <ProbeCell probe={probeResults[DEFAULT_SERVER_ID]} />
               <span className={styles.rowActions}>
@@ -493,8 +486,8 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
                 onClick={() => selectAndClose(entry.id)}
               >
                 <span className={styles.rowMain}>
-                  <span className={styles.rowLabel}>{entry.label || hostOf(entry.url)}</span>
-                  <span className={styles.rowHost}>{hostOf(entry.url)}</span>
+                  <span className={styles.rowLabel}>{entry.label || relayHost(entry.url)}</span>
+                  <span className={styles.rowHost}>{relayHost(entry.url)}</span>
                 </span>
                 <ProbeCell probe={probeResults[entry.id]} />
                 <span className={styles.rowActions}>
@@ -502,7 +495,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
                     className={styles.rowActionBtn}
                     role="button"
                     tabIndex={0}
-                    aria-label={`Edit ${entry.label || hostOf(entry.url)}`}
+                    aria-label={`Edit ${entry.label || relayHost(entry.url)}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       openEdit(entry);
@@ -520,7 +513,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
                     className={styles.rowActionBtn}
                     role="button"
                     tabIndex={0}
-                    aria-label={`Remove ${entry.label || hostOf(entry.url)}`}
+                    aria-label={`Remove ${entry.label || relayHost(entry.url)}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       useTransportStore.getState().removeServer(entry.id);
@@ -559,7 +552,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
                             {offer.label}
                             {offer.managed ? ' · managed' : ''}
                           </span>
-                          <span className={styles.rowHost}>{hostOf(offer.url)}</span>
+                          <span className={styles.rowHost}>{relayHost(offer.url)}</span>
                         </span>
                         <ProbeCell probe={probeResults[key]} />
                         <span className={styles.rowActions}>

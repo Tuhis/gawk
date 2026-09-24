@@ -11,14 +11,7 @@ import { ServerPickerPanel } from './ServerPickerPanel';
 import { ServerIcon } from '../../ui/Icons';
 import { allowCustomRelays } from '../../config';
 import { useTransportStore } from '../../state/transportStore';
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
+import { relayHost } from '../../lib/relayUrl';
 
 export function ServerChip() {
   const serverUrl = useTransportStore((s) => s.serverUrl);
@@ -38,7 +31,7 @@ export function ServerChip() {
         data-testid="server-chip"
       >
         <ServerIcon className={styles.chipIcon} />
-        {quiet ? 'Server' : hostOf(serverUrl)}
+        {quiet ? 'Server' : relayHost(serverUrl)}
       </button>
       {open && <ServerPickerPanel onClose={() => setOpen(false)} />}
     </>

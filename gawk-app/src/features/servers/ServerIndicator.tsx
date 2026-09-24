@@ -9,14 +9,7 @@
 
 import styles from './servers.module.css';
 import { useTransportStore } from '../../state/transportStore';
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
+import { relayHost } from '../../lib/relayUrl';
 
 export function ServerIndicator() {
   const resolvedSource = useTransportStore((s) => s.resolvedSource);
@@ -41,7 +34,7 @@ export function ServerIndicator() {
     <div className={styles.indicator} role="status" data-testid="server-indicator">
       <span className={styles.indicatorHost}>
         {resolvedSource === 'override' ? 'Using server from link: ' : 'Using server: '}
-        {hostOf(serverUrl)}
+        {relayHost(serverUrl)}
       </span>
       {relayLinkNote !== null && <span className={styles.indicatorDetail}>{relayLinkNote}</span>}
       {/* D16: choosing the relay is the telemetry consent; this is the
