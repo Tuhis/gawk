@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 import styles from './stream.module.css';
 import { useTransportStore } from '../../state/transportStore';
 
@@ -12,6 +14,16 @@ export function ServerSettings({ disabled }: Props) {
   const setServerUrl = useTransportStore((s) => s.setServerUrl);
   const setCertHashHex = useTransportStore((s) => s.setCertHashHex);
   const setPublishSecret = useTransportStore((s) => s.setPublishSecret);
+  // The store normalizes (and replaces an invalid URL with the default), so a
+  // half-typed URL lives here until blur/Enter. null = not editing: the field
+  // shows the store's value, including changes made elsewhere.
+  const [urlDraft, setUrlDraft] = useState<string | null>(null);
+
+  const commitUrl = () => {
+    if (urlDraft === null) return;
+    setServerUrl(urlDraft);
+    setUrlDraft(null);
+  };
 
   return (
     <div className={styles.settings}>
@@ -19,8 +31,12 @@ export function ServerSettings({ disabled }: Props) {
         <label htmlFor="server-url">Server URL</label>
         <input
           id="server-url"
-          value={serverUrl}
-          onChange={(e) => setServerUrl(e.target.value)}
+          value={urlDraft ?? serverUrl}
+          onChange={(e) => setUrlDraft(e.target.value)}
+          onBlur={commitUrl}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitUrl();
+          }}
           disabled={disabled}
           placeholder="https://localhost:4433"
           spellCheck={false}
