@@ -416,6 +416,20 @@ async function rawAppendRun(
 // E + F — the production presenter path, left on screen for the audible test
 
 let livePresenter: MsePresenter | null = null;
+// The feed runs until the next "Run probe"; a re-run must stop it, or the old
+// run keeps transcoding and pushing into a presenter the stage no longer shows.
+let liveFeed: ReturnType<typeof setInterval> | null = null;
+let liveTranscoder: AacTranscoder | null = null;
+
+function stopProductionRun(): void {
+  if (liveFeed !== null) clearInterval(liveFeed);
+  liveFeed = null;
+  // After the interval: a push into a closed transcoder reopens its encoder.
+  liveTranscoder?.close();
+  liveTranscoder = null;
+  livePresenter?.dispose();
+  livePresenter = null;
+}
 
 async function productionRun(audioCodecString: string): Promise<void> {
   const video = $('stage') as HTMLVideoElement;
@@ -449,6 +463,7 @@ async function productionRun(audioCodecString: string): Promise<void> {
       timestampUs: BigInt(Math.round(o.timestampUs)), data: o.data,
     })) presenter.pushSegment(seg);
   });
+  liveTranscoder = transcoder;
   // Prime the transcoder before the tier is armed, as production does.
   transcoder.push(pcmFor(0));
   await new Promise((r) => setTimeout(r, 300));
@@ -479,7 +494,7 @@ async function productionRun(audioCodecString: string): Promise<void> {
   };
   // Prime ~3 s, then keep a second of lead topped up in real time.
   for (let i = 0; i < 3; i++) { feedOneSecond(); await new Promise((r) => setTimeout(r, 40)); }
-  setInterval(feedOneSecond, 1000);
+  liveFeed = setInterval(feedOneSecond, 1000);
   await new Promise((r) => setTimeout(r, 600));
 
   await Promise.race([video.play().catch(() => {}), new Promise((r) => setTimeout(r, 2000))]);
@@ -524,6 +539,7 @@ async function productionRun(audioCodecString: string): Promise<void> {
 
 async function run(): Promise<void> {
   ($('run') as HTMLButtonElement).disabled = true;
+  stopProductionRun();
   summary.length = 0;
   results.capturedAt = new Date().toISOString();
 
