@@ -162,24 +162,6 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
 registerProcessor('gawk-audio', GawkAudioProcessor);
 `;
 
-export interface AudioSinkStats {
-  contextState: AudioContextState | null;
-  playheadUs: number | null;
-  contextTime: number | null;
-  // What the device adds between a sample being written and being heard
-  // (docs/20 field finding 13). Load-bearing twice over: the alignment release
-  // hands the cushion over this much early, and the skew metric subtracts it
-  // before the drift trim ever sees a number. On a high-latency output
-  // (Bluetooth, HDMI, a soundbar) it is the difference between lip sync and
-  // a quarter-second of lag, so it is on the overlay rather than implicit.
-  outputLatencyMs: number | null;
-  // The rate the AudioContext actually runs at, which is not necessarily the
-  // one we asked for (docs/20 field finding 8). Diagnostic only — the worklet
-  // resamples to it and all accounting is in content ms — but when audio
-  // sounds slow or the depth looks wrong, this is the first number to read.
-  contextSampleRate: number | null;
-}
-
 export interface AudioSinkCallbacks {
   // The worklet's ~4 Hz report, converted to listener terms — N5 turns this
   // into avSkewMs. The sink reports both halves of the pair because only it
@@ -308,7 +290,10 @@ export class AudioSink {
 
   // The device's own contribution, measured where the browser reports it.
   // outputLatency is the honest number (it includes the OS mixer); baseLatency
-  // is the fallback, and 20 ms a last resort for scopes with neither.
+  // is the fallback, and 20 ms a last resort for scopes with neither. On a
+  // Bluetooth or HDMI output it is the difference between lip sync and a
+  // quarter-second of lag, which is why the alignment and the skew metric
+  // both subtract it.
   private outputLatencyMs(): number {
     const ctx = this.ctx as (AudioContext & { outputLatency?: number }) | null;
     const seconds = ctx?.outputLatency || ctx?.baseLatency || 0.02;
@@ -428,6 +413,13 @@ export class AudioSink {
     this.starting = this.build(sampleRate).catch((e) => {
       log.warn('Audio sink start failed; the stream plays video-only:', e);
       this.teardownNodes();
+      // A context we opened would otherwise stay open until unmount; the failed
+      // start is cached, so nothing will use it. A shared one is its owner's.
+      if (!this.output) {
+        const ctx = this.ctx;
+        this.ctx = null;
+        void ctx?.close().catch(() => {});
+      }
       throw e;
     });
     return this.starting;
@@ -466,10 +458,9 @@ export class AudioSink {
     } else {
       await addWorkletModule(ctx);
     }
-    if (this.disposed) {
-      if (!this.output) void ctx.close();
-      return;
-    }
+    // dispose() already closed the context if it was ours; a second close()
+    // rejects.
+    if (this.disposed) return;
     const node = new AudioWorkletNode(ctx, 'gawk-audio', { outputChannelCount: [2] });
     node.port.onmessage = (e: MessageEvent) => {
       const msg = e.data as {

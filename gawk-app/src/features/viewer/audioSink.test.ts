@@ -815,3 +815,84 @@ describe('AudioSink with an injected output (R42 room mixing)', () => {
     expect((context as unknown as { close: ReturnType<typeof vi.fn> }).close).not.toHaveBeenCalled();
   });
 });
+
+// A sink that opened its own AudioContext must close it exactly once on every
+// failure/teardown path; a shared one is never its to close. The fake follows
+// the spec: close() on an already-closed context rejects with InvalidStateError.
+describe('AudioSink owned-context cleanup', () => {
+  function stubClosableContext(addModule: () => Promise<void>) {
+    const contexts: { state: string; close: ReturnType<typeof vi.fn> }[] = [];
+    class FakeAudioContext {
+      state = 'running';
+      sampleRate = SAMPLE_RATE;
+      destination = {};
+      audioWorklet = { addModule: vi.fn(addModule) };
+      createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() }));
+      resume = vi.fn(() => Promise.resolve());
+      close = vi.fn(() => {
+        if (this.state === 'closed') {
+          return Promise.reject(new DOMException('Context already closed', 'InvalidStateError'));
+        }
+        this.state = 'closed';
+        return Promise.resolve();
+      });
+      constructor() {
+        contexts.push(this);
+      }
+    }
+    class FakeAudioWorkletNode {
+      port = { postMessage: vi.fn(), onmessage: null as unknown };
+      connect = vi.fn();
+      disconnect = vi.fn();
+    }
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    vi.stubGlobal('AudioWorkletNode', FakeAudioWorkletNode);
+    vi.stubGlobal('Blob', class {});
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:stub'), revokeObjectURL: vi.fn() });
+    return contexts;
+  }
+
+  it('closes its own context when the worklet module fails to load', async () => {
+    // e.g. a CSP that blocks blob: worklets.
+    const contexts = stubClosableContext(() =>
+      Promise.reject(new DOMException('Refused to load blob: module', 'AbortError')),
+    );
+    const sink = new AudioSink();
+    await expect(sink.start(SAMPLE_RATE)).rejects.toThrow();
+
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+    expect(sink.contextState).toBeNull();
+    // Unmount later must not close it a second time.
+    sink.dispose();
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes its own context exactly once when disposed during worklet registration', async () => {
+    let finishAddModule: () => void = () => {};
+    const contexts = stubClosableContext(
+      () => new Promise<void>((resolve) => (finishAddModule = resolve)),
+    );
+    const sink = new AudioSink();
+    const started = sink.start(SAMPLE_RATE);
+    sink.dispose();
+    finishAddModule();
+    await started;
+
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0].close).toHaveBeenCalledTimes(1);
+  });
+
+  it('never closes a shared context when the owner fails to register the worklet', async () => {
+    const contexts = stubClosableContext(() => Promise.resolve());
+    const context = new (globalThis as { AudioContext: new () => AudioContext }).AudioContext();
+    const ensureWorklet = vi.fn(() => Promise.reject(new Error('worklet blocked')));
+    const sink = new AudioSink({}, undefined, {
+      output: { context, destination: {} as AudioNode, ensureWorklet },
+    });
+    await expect(sink.start(SAMPLE_RATE)).rejects.toThrow();
+    sink.dispose();
+
+    expect(contexts[0].close).not.toHaveBeenCalled();
+  });
+});
