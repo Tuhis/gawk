@@ -200,3 +200,44 @@ describe('startCapture with a pre-acquired grant', () => {
     expect(handle.track).toBe(track);
   });
 });
+
+describe('MSTP capture pump', () => {
+  it('keeps delivering frames after the frame handler throws once', async () => {
+    vi.resetModules();
+    const { startCapture } = await import('./capture');
+    const sources = [0, 1, 2].map(() => ({ close: vi.fn() }));
+    vi.stubGlobal(
+      'MediaStreamTrackProcessor',
+      class {
+        readable = new ReadableStream({
+          start(c) {
+            for (const f of sources) c.enqueue(f);
+            c.close();
+          },
+        });
+      },
+    );
+    vi.stubGlobal(
+      'VideoFrame',
+      class {
+        close = vi.fn();
+        constructor(_src: unknown, init: { timestamp: number }) {
+          Object.assign(this, init);
+        }
+      },
+    );
+    const stream = fakeStream();
+    const track = stream.getVideoTracks()[0]!;
+    const handle = await startCapture(
+      DEFAULT_CAPTURE_CONFIG,
+      Promise.resolve({ stream, track, audioUnavailable: false }),
+    );
+    let calls = 0;
+    await handle.startFrames(() => {
+      calls++;
+      if (calls === 1) throw new Error('encoder refused the frame');
+    });
+    await vi.waitFor(() => expect(calls).toBe(3));
+    expect(sources.every((f) => f.close.mock.calls.length === 1)).toBe(true);
+  });
+});

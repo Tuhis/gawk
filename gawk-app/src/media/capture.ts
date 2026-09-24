@@ -207,9 +207,19 @@ function createMstpPump(track: MediaStreamTrack): {
             if (done) break;
             if (!frame) continue;
             const arrivalUs = Math.round(performance.now() * 1000);
-            const rebased = new VideoFrame(frame, { timestamp: arrivalUs });
-            frame.close();
-            onFrame(rebased);
+            let rebased: VideoFrame;
+            try {
+              rebased = new VideoFrame(frame, { timestamp: arrivalUs });
+            } finally {
+              frame.close();
+            }
+            // One bad frame must not end the loop: nothing would notice, and
+            // viewers would see a frozen picture on a live-looking broadcast.
+            try {
+              onFrame(rebased);
+            } catch (e) {
+              log.warn('Frame handler failed; dropping the frame:', e);
+            }
           }
         } catch {
           // reader may be cancelled during teardown
