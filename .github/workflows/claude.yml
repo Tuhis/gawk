@@ -50,7 +50,7 @@ jobs:
         # Pinned to main for Claude Code 2.1.280: the v1 tag still installs 2.1.278,
         # which the API rejects for --model claude-opus-5-5 (400
         # claude_code_version_too_old). Return to @v1 once a release ships 2.1.280+.
-        uses: anthropics/claude-code-action@8cf3482550831fb35a4fc3fbf7ca139cf8028b4c
+        uses: anthropics/claude-code-action@9171db3e57d6a3140a37ddc2ba92788584e0ead6
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
