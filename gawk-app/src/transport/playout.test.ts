@@ -1,9 +1,6 @@
-// R12 T2 (docs/17 Decision 5), as reduced by R32: playout is a two-mode
-// setting — 'off' (live-edge, the default) and 'adaptive' (paced presentation;
-// T3 replaces the seed offset with the jitter-tracked controller). The third
-// mode, 'fixed' (R5 Q3's constant 150 ms), was retired from the menu by
-// docs/17 Decision 10 and removed outright by R32 (docs/37). Module state per
-// JS context, read live.
+// Playout is a two-mode setting — 'off' (live-edge, the default) and
+// 'adaptive' (paced presentation with a jitter-tracked offset). Module state
+// per JS context, read live.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { LIVE_EDGE_WINDOW_MS, QUANTILE_RANGE_MS } from './live-edge';
@@ -57,11 +54,11 @@ describe('playout modes (R12 T2)', () => {
   });
 });
 
-// R12 T3 (docs/17 Decision 6): the adaptive offset controller —
-// clamp(p95−min jitter + headroom, [MIN, MAX]), seeded at 150 until the
-// jitter window has warmed up, slewed asymmetrically: up fast
-// (under-buffering drops frames NOW), down slowly and only after the target
-// has sat well below the current offset for a dwell period.
+// The adaptive offset controller — clamp(p95−min jitter + headroom, [MIN,
+// MAX]), seeded at 150 until the jitter window has warmed up, slewed
+// asymmetrically: up fast (under-buffering drops frames NOW), down slowly and
+// only after the target has sat well below the current offset for a dwell
+// period.
 describe('PlayoutController (R12 T3)', () => {
   // Drives update() once per second from t=0; returns the controller.
   function warmedController(jitterMs: number, seconds: number): PlayoutController {
@@ -175,10 +172,9 @@ describe('adaptive mode wiring (R12 T3)', () => {
   });
 });
 
-// R19 (docs/24 Decision 7): resilient mode implies adaptive pacing with a
-// wider controller profile ([150, 2000] ms, seed 500, slew 100/10). The
-// stored playout mode keeps its value + semantics and regains effect the
-// moment resilient mode turns off.
+// Resilient mode implies adaptive pacing with a wider controller profile ([150,
+// 2000] ms, seed 500, slew 100/10). The stored playout mode keeps its value +
+// semantics and regains effect the moment resilient mode turns off.
 describe('resilient playout profile (R19)', () => {
   afterEach(() => {
     setViewerDeliveryMode('live');
@@ -213,8 +209,8 @@ describe('resilient playout profile (R19)', () => {
     let prev = c.offsetMs();
     for (let i = 0; i < 5; i++) {
       // Each rise stays inside stepUpAboveMs so this exercises the slew
-      // regime; a rise larger than that is taken in one step instead (R19
-      // hardening, PLAYOUT-1 — see the suite at the end of this file).
+      // regime; a rise larger than that is taken in one step instead (see
+      // the step-up tests below).
       c.update(prev + RESILIENT_PLAYOUT_PROFILE.stepUpAboveMs - HEADROOM_MS - 1, t);
       const step = c.offsetMs() - prev;
       expect(step).toBeLessThanOrEqual(RESILIENT_PLAYOUT_PROFILE.slewUpMsPerS + 1e-9);
@@ -231,8 +227,7 @@ describe('resilient playout profile (R19)', () => {
     expect(getPlayoutOffsetMs()).toBe(RESILIENT_PLAYOUT_PROFILE.seedMs);
   });
 
-  // The stored mode is 'off' here precisely because that is the case docs/24
-  // finding 16 (review finding LIFECYCLE-2) turns on: a resilient viewer whose
+  // The stored mode is 'off' here deliberately: a resilient viewer whose
   // stored pacing is live-edge is *effectively* adaptive, and must return to
   // live-edge — not to adaptive — the moment resilient mode ends.
   it('the stored playout mode survives a resilient on/off round-trip', () => {
@@ -263,12 +258,11 @@ describe('resilient playout profile (R19)', () => {
   });
 });
 
-// R19 hardening — PLAYOUT-1 (docs/reviews/resilient-mode-review.md). Two
-// halves: the profile must be able to *measure* the envelope it clamps to
-// (the histogram range lived outside the profile and capped the signal at
-// 500 ms), and it must be able to *reach* it in time — slewing at 100 ms/s
-// from a 500 ms seed spends 10 s stuttering on the way to 1500 ms, which is
-// the stutter the mode exists to remove.
+// Two halves: the profile must be able to *measure* the envelope it clamps to
+// (a histogram range below maxMs caps the signal), and it must be able to
+// *reach* it in time — slewing at 100 ms/s from a 500 ms seed spends 10 s
+// stuttering on the way to 1500 ms, which is the stutter the mode exists to
+// remove.
 describe('playout profiles carry their own jitter measurement (R19 PLAYOUT-1)', () => {
   afterEach(() => {
     setViewerDeliveryMode('live');
@@ -276,15 +270,15 @@ describe('playout profiles carry their own jitter measurement (R19 PLAYOUT-1)', 
   });
 
   it('each profile can measure its whole clamp range', () => {
-    // The invariant the bug violated: a clamp the signal cannot express is
-    // dead envelope. Applies to both profiles, so neither drifts back.
+    // A clamp the signal cannot express is dead envelope. Applies to both
+    // profiles, so neither drifts.
     for (const p of [DEFAULT_PLAYOUT_PROFILE, RESILIENT_PLAYOUT_PROFILE]) {
       expect(p.quantileRangeMs).toBeGreaterThanOrEqual(p.maxMs);
     }
   });
 
   it('the resilient profile measures over a shorter window than the default', () => {
-    // PLAYOUT-3: a 60 s window reacts on a minute timescale. Down-direction
+    // A 60 s window reacts on a minute timescale. Down-direction
     // memory lives in the dwell + slew, not in the measurement window.
     expect(RESILIENT_PLAYOUT_PROFILE.jitterWindowMs).toBeLessThan(
       DEFAULT_PLAYOUT_PROFILE.jitterWindowMs,
@@ -339,8 +333,8 @@ describe('playout profiles carry their own jitter measurement (R19 PLAYOUT-1)', 
   });
 });
 
-// R21 (docs/26 Decision 15): three points on one axis, and the deep floor
-// needs BOTH the user's choice and the relay's confirmation.
+// Three points on one axis. The deep floor applies on the user's choice and
+// is walked back only by the relay's explicit denial.
 describe('viewer delivery mode', () => {
   afterEach(() => {
     setViewerDeliveryMode('live');
@@ -365,7 +359,7 @@ describe('viewer delivery mode', () => {
     setViewerDeliveryMode('deep');
     // Applied before the ack arrives: deepening later would make the reorder
     // buffer hold frames longer mid-session, which is a visible multi-second
-    // freeze (docs/26 Decision 7, revised — the E2E pass caught it).
+    // freeze.
     expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);
     setDvrGranted(true);
     expect(getPlayoutProfile()).toBe(DVR_PLAYOUT_PROFILE);

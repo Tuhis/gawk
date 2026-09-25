@@ -1,6 +1,6 @@
 import { getOperatorContact, getOperatorName, getTermsVersion } from '../../config';
 
-// R23 (docs/29 §7). The shipped default Terms of Use. This component is always
+// The shipped default Terms of Use. This component is always
 // in the bundle, so a dev build, an un-configured install, and every
 // override-fetch failure render real, styled content with zero network
 // dependency. Operator name/contact/version are substituted from runtime
@@ -8,9 +8,9 @@ import { getOperatorContact, getOperatorName, getTermsVersion } from '../../conf
 // config.termsUrl (see TermsPage).
 //
 // This text is a protective template written to the operator's stated
-// priorities — it is NOT legal advice. For a deployment exposed beyond a
+// priorities; it is NOT legal advice. For a deployment exposed beyond a
 // closed circle of known people, have a Finnish lawyer review it (see the
-// gawk-app chart README and docs/29 §0).
+// gawk-app chart README and docs/29-terms-and-conditions.md).
 export function BundledTerms() {
   const operator = getOperatorName();
   const contact = getOperatorContact();

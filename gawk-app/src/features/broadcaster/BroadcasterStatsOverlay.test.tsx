@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// R9 M7: the broadcaster overlay renders the encode funnel and this leg's
+// The broadcaster overlay renders the encode funnel and this leg's
 // connection health, degrading to "—" wherever data is unavailable.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -110,7 +110,7 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('Dgrams lost (out)').nextSibling?.textContent).toBe('15');
     expect(screen.getByText('Video bitrate (sent)').nextSibling?.textContent).toBe('12.0 Mbps');
     expect(screen.getByText('Encode mode').nextSibling?.textContent).toBe('hardware');
-    // R18: the relay's live audience push.
+    // The relay's live audience push.
     expect(screen.getByText('Watching').nextSibling?.textContent).toBe('4');
   });
 
@@ -162,8 +162,8 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('At capacity').nextSibling?.textContent).toBe('—');
   });
 
-  // R16 (docs/21 Decision 9): the Feature Gates section is reported-gates-only
-  // and the broadcaster reports none — its overlay must stay unchanged.
+  // The Feature Gates section is reported-gates-only and the broadcaster
+  // reports none — its overlay must stay unchanged.
   it('has no Feature Gates section', () => {
     render(
       <BroadcasterStatsOverlay
@@ -198,8 +198,7 @@ describe('BroadcasterStatsOverlay', () => {
   });
 });
 
-// R15 N6 (docs/20): the broadcaster Audio section appears only when the
-// experimental toggle asked for audio.
+// The broadcaster Audio section appears only when audio was requested.
 describe('BroadcasterStatsOverlay audio section (R15)', () => {
   it('renders no Audio section when the toggle is off', () => {
     render(
@@ -243,9 +242,8 @@ describe('BroadcasterStatsOverlay audio section (R15)', () => {
     );
     expect(screen.getByText('Audio')).toBeTruthy();
     expect(screen.getByText(/opus · 48000 Hz · 2ch/)).toBeTruthy();
-    // docs/20 field finding 13: the encoder delay that used to be written into
-    // every audio timestamp, now measured beside the anchor re-pins that would
-    // step the timeline.
+    // The encoder delay is measured and shown beside the anchor re-pins that
+    // would step the timeline.
     expect(screen.getByText('Encode lag').nextSibling?.textContent).toBe('21.5 ms');
   });
 
@@ -263,10 +261,10 @@ describe('BroadcasterStatsOverlay audio section (R15)', () => {
     expect(screen.getByText('Encode lag').nextSibling?.textContent).toBe('44.0 ms · 2 re-anchors');
   });
 
-  // R24 (docs/30 CG4.2): a browser that can't do audio reads the honest "Not
-  // supported here" even though the raw audioState is 'no-track' (Firefox's
-  // actual landing spot), where the default would misleadingly say "No audio
-  // shared" — as if a picker checkbox would fix it.
+  // A browser that can't do audio reads the honest "Not supported here" even
+  // though the raw audioState is 'no-track' (Firefox's actual landing spot),
+  // where the default would misleadingly say "No audio shared" — as if a
+  // picker checkbox would fix it.
   it('reads "Not supported here" when audio is unsupported, whatever the raw state', () => {
     render(
       <BroadcasterStatsOverlay

@@ -1,4 +1,4 @@
-// R10 P3: WorkerViewerTransport proxies a ViewerTransport over a (fake)
+// WorkerViewerTransport proxies a ViewerTransport over a (fake)
 // transport worker: connect resolves/rejects on the worker's events, data
 // events dispatch to the pipeline callbacks, close() asks for a graceful
 // close then reaps the worker. The final describe wires the proxy to a real
@@ -126,10 +126,10 @@ describe('WorkerViewerTransport', () => {
     // untouched so the pipeline can rebase onto the sample's clock domain.
     const timeSync = { offsetUs: 5_000n, rttMs: 3, timeOriginMs: 1_234.5 };
     const carrier = { streamsOpened: 2, recordsReceived: 40, streamsAborted: 0, malformed: 0 };
-    // R29 finding 2: the buffer is set in whichever realm owns the
-    // WebTransport — here the transport worker — so its verdict has to travel
-    // back out the same way the carrier tallies do, or the gate on the main
-    // thread can only ever report "unknown" on the path that actually matters.
+    // The buffer is set in whichever realm owns the WebTransport — here the
+    // transport worker — so its verdict has to travel back out the same way the
+    // carrier tallies do, or the gate on the main thread can only ever report
+    // "unknown" on the path that actually matters.
     const datagramBuffer = {
       property: 'incomingHighWaterMark' as const,
       requested: 256,
@@ -140,10 +140,10 @@ describe('WorkerViewerTransport', () => {
     };
     worker.emit({ type: 'connStats', stats, timeSync, carrier, datagramBuffer });
     expect(transport.sampleConnectionStats()).toBe(stats);
-    // R5 Q2: the clock-sync sample rides the same push (bigint survives the
+    // The clock-sync sample rides the same push (bigint survives the
     // structured-clone boundary in the real pair).
     expect(transport.sampleTimeSync()).toBe(timeSync);
-    // R19: the carrier tallies ride the same push.
+    // The carrier tallies ride the same push.
     expect(transport.sampleCarrierStats()).toBe(carrier);
     expect(transport.sampleDatagramBuffer()).toBe(datagramBuffer);
   });
@@ -243,7 +243,7 @@ describe('WorkerViewerTransport + TransportWorkerCore end-to-end', () => {
   });
 });
 
-// R30 ST4 (docs/35 §5.6): the stripe plumbing across the worker boundary.
+// The stripe plumbing across the worker boundary.
 describe('WorkerViewerTransport striping (R30)', () => {
   it('forwards setStripe as a stripe command', async () => {
     const worker = new FakeWorker();

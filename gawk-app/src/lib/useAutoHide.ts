@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-// Auto-hiding UI chrome (docs/10 J3). Returns whether controls should be
+// Auto-hiding UI chrome. Returns whether controls should be
 // visible: true on mount and after any pointer/key activity, false after
 // `idleMs` of inactivity. When `enabled` is false (e.g. an overlay is up, or
 // the viewer isn't actively watching) it stays visible and no timer runs.

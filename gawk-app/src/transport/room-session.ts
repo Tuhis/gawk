@@ -1,20 +1,19 @@
-// R42 (docs/44 §4.6, D14): the room CONTROL session. One WebTransport
-// connection to `CONNECT /room/{code}` (or `/room/new` to mint), one
-// bidirectional stream carrying length-prefixed wire records: RoomHello out,
-// RoomState / RoomEvent in, RoomCommand out. No media ever rides this
+// The room CONTROL session. One WebTransport connection to
+// `CONNECT /room/{code}` (or `/room/new` to mint), one bidirectional stream
+// carrying length-prefixed wire records: RoomHello out, RoomState / RoomEvent
+// in, RoomCommand out. No media ever rides this
 // connection — a participant's tiles are ordinary /subscribe sessions
 // (viewer-session.ts) that know nothing about rooms.
 //
-// Reconnect policy (docs/44 §4.5, reconnect.ts): 4007 RoomEnded is the ONLY
+// Reconnect policy (reconnect.ts): 4007 RoomEnded is the ONLY
 // terminal code — the room is gone, the participant's media sessions have
 // their own lifecycle — and a session that ends after a RoomEnding event is
 // terminal whatever its code (Chrome never receives the 4007 itself; see
-// settle() and docs/59). A 4002 drain reconnects
-// immediately, an abrupt drop (home-pod death, proxy upstream loss) follows
-// the shared ladder, and every
-// reconnect re-sends the hello with the remembered nickname and re-attaches
+// settle()). A 4002 drain reconnects immediately, an abrupt drop (home-pod
+// death, proxy upstream loss) follows the shared ladder, and every reconnect
+// re-sends the hello with the remembered nickname and re-attaches
 // whatever this session attached, because a reconnected broadcaster must
-// re-attach before it can detach again (the RM2 contract).
+// re-attach before it can detach again.
 //
 // Sequence gaps: RoomEvent.seq is monotonic per room; a delta with
 // seq > last + 1 means one was missed (a proxy re-establishment, an adoption).
@@ -28,7 +27,7 @@
 // which IS visible and maps to a specific failure.
 
 import { log } from '../lib/logger';
-import { hexToBytes, webTransportInit } from './connection';
+import { bytesToHex, hexToBytes, webTransportInit } from './connection';
 import {
   RECONNECT_MAX_ATTEMPTS,
   isTerminalRoomClose,
@@ -119,15 +118,15 @@ export interface RoomSessionCallbacks {
   onError: (err: RoomConnectError) => void;
 }
 
-// Post-upgrade close codes the relay uses for join failures (RM2 contract):
+// Post-upgrade close codes the relay uses for join failures:
 // the HTTP status it would have answered had the failure been pre-upgrade.
 const CLOSE_NOT_FOUND = 404;
 const CLOSE_FORBIDDEN = 403;
 const CLOSE_FULL = 429;
 
 // The read loop and wt.closed settle in unspecified order; only wt.closed
-// carries the close code (CODE-REVIEW "one event, one authoritative signal").
-// The loop's end waits this long for the code before acting without one.
+// carries the close code. The loop's end waits this long for the code before
+// acting without one.
 const CLOSE_INFO_GRACE_MS = 250;
 
 export const REFUSED_MESSAGE = 'Room not found or refused';
@@ -304,6 +303,14 @@ export class RoomSession {
       }
       throw new RoomConnectError('refused', e instanceof Error ? e.message : String(e));
     }
+    if (this.stopped) {
+      try {
+        wt.close();
+      } catch {
+        // already gone
+      }
+      return;
+    }
     const attempt: Attempt = {
       wt,
       writer: stream.writable.getWriter() as WritableStreamDefaultWriter<Uint8Array>,
@@ -380,7 +387,7 @@ export class RoomSession {
           this.target = { kind: 'join', code: state.code };
         }
         if (state.creatorToken.length > 0) {
-          this.grant = { kind: 'creator', tokenHex: bytesToHexLower(state.creatorToken) };
+          this.grant = { kind: 'creator', tokenHex: bytesToHex(state.creatorToken) };
         }
         this.cb.onState(state);
         return;
@@ -418,9 +425,7 @@ export class RoomSession {
       // from a fresh RoomState.
       const msg = e instanceof WireError ? e.message : String(e);
       log.warn('room control record unreadable; reconnecting:', msg);
-      this.lastReason = `malformed control record: ${msg}`;
-      this.closeAttempt();
-      this.settle(attempt, null, this.lastReason);
+      this.settle(attempt, null, `malformed control record: ${msg}`);
     }
   }
 
@@ -441,6 +446,13 @@ export class RoomSession {
     } catch {
       // the stream is gone
     }
+    // The read loop can end with the session still open (a framing error),
+    // and a reconnect must not leave it behind as a second participant.
+    try {
+      attempt.wt.close();
+    } catch {
+      // already closed
+    }
     if (this.stopped) return;
     this.lastReason = reason;
 
@@ -454,7 +466,7 @@ export class RoomSession {
     // session after it is that ending — even with no code. Chrome never
     // receives the 4007: the relay's close packet puts STOP_SENDING on the
     // CONNECT stream ahead of the close capsule, and Chrome fails the
-    // session on it ("Connection lost."; docs/59). RoomEnding is the room's
+    // session on it ("Connection lost."). RoomEnding is the room's
     // in-band close notice. Reconnecting into the gone room only spun the
     // "Reconnecting…" pill until the budget ran out.
     if (this.endingReason !== null) {
@@ -554,10 +566,4 @@ export class RoomSession {
         if (!a.settled) log.info('room control write failed:', e);
       });
   }
-}
-
-function bytesToHexLower(bytes: Uint8Array): string {
-  let out = '';
-  for (const b of bytes) out += b.toString(16).padStart(2, '0');
-  return out;
 }

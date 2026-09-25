@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 //
-// R42 RM5 (docs/44 §4.8): the broadcaster's Room panel. The publish session
-// and the room control session are both faked at their transport seams; the
-// test walks the real page from "Start a stream" through "New room" to the
-// in-page room view, and asserts the mint carries the running broadcast's ID
-// and resume token, that the own tile appears under the broadcaster's own
-// topbar (direction A: no duplicated controls, "preview only" mode), that a
-// publish resume re-sends Attach, and that Leave lands back on the live page
+// The broadcaster's Room panel. The publish session and the room control
+// session are both faked at their transport seams; the test walks the real
+// page from "Start a stream" through "New room" to the in-page room view, and
+// asserts the mint carries the running broadcast's ID and resume token, that
+// the own tile appears under the broadcaster's own topbar (no duplicated
+// controls, "preview only" mode), that a publish resume re-sends Attach, and that Leave lands back on the live page
 // with the broadcast still running. A room chosen BEFORE the stream is live
 // (a room's "start streaming here", a code or link joined from the pre-start
 // card, or a new room asked for there) is pending until the broadcast can
@@ -179,8 +178,7 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(screen.getByText('Creating the room…')).toBeTruthy();
 
     act(() => room.cbs.onState(mintedState()));
-    // Direction A (docs/44 §4.8 revision 2026-09-05): the broadcaster's own
-    // topbar over the room's stage — LIVE, the broadcast code, Stop /
+    // The broadcaster's own topbar over the room's stage — LIVE, the broadcast code, Stop /
     // Settings / Stats where the live view has them — plus the room pill.
     // The room's own header (the "Room code" pill) is not rendered.
     expect(screen.queryByTitle('Room code')).toBeNull();
@@ -227,16 +225,15 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(room.stopped).toBe(true);
     expect(created).toHaveLength(1);
     // The file's first test pays its warm-up (the whole broadcaster page and
-    // room view rendered cold): 3.8 s of the default 5 s on main's CI
-    // coverage run (36054770006), and over it on a busier runner (PR #375).
+    // room view rendered cold), which can exceed the default 5 s on a busy
+    // CI runner.
   }, 15_000);
 
   // A broadcast that dies under the room (an operator kill, a newer session
-  // taking the code over, the resume budget spent) used to leave the room
-  // view up — LIVE in the topbar, the own tile "away" — with the error card
-  // hidden behind it. The broadcaster page's room only exists for a live
-  // broadcast, so the failure takes the page out of the room and says what
-  // happened; and it says the broadcast STOPPED, not that it "couldn't start".
+  // taking the code over, the resume budget spent) must not leave the room
+  // view up with the error card hidden behind it. The broadcaster page's room
+  // only exists for a live broadcast, so the failure takes the page out of
+  // the room and says the broadcast STOPPED, not that it "couldn't start".
   it('a broadcast that fails while in a room leaves the room and says it stopped', async () => {
     await goLive();
     fireEvent.click(screen.getByRole('button', { name: 'Room' }));

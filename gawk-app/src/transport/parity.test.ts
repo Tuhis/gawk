@@ -99,8 +99,8 @@ describe('recoverChunks', () => {
       const total = n + parity.length;
       // Exhaustive only where it is cheap. The pair count is quadratic and
       // the work per pair linear, so the large n are seconds of JS for no
-      // extra coverage — and they were 5 s on a 2-core CI runner, which is
-      // what this threshold is set by.
+      // extra coverage — about 5 s on a 2-core CI runner, which is what this
+      // threshold is set by.
       //
       // The exhaustive proof lives in the Go mirror, which runs every pair for
       // every n up to 255 in ~1.4 s. This mirror's job is to show the TS codec

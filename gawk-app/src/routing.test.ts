@@ -55,9 +55,9 @@ describe('parseRoute', () => {
   });
 });
 
-// R37 (docs/40 §4.2): the ?relay= grammar on both production routes. The
-// query is split off before path matching, so a query never changes which
-// route matches — only what rides along with it.
+// The ?relay= grammar on both production routes. The query is split off
+// before path matching, so a query never changes which route matches, only
+// what rides along with it.
 describe('parseRoute ?relay=', () => {
   it('carries a valid relay on the viewer route, normalized', () => {
     expect(parseRoute('#/view/AB2CD3?relay=https%3A%2F%2FRelay.Example.com%3A4433%2F')).toEqual({
@@ -112,7 +112,6 @@ describe('parseRoute ?relay=', () => {
   });
 });
 
-// R42 (docs/44 D19): the room and join arms.
 describe('parseRoute rooms (R42)', () => {
   it('maps #/room/<slug> to the room view, keeping the code as typed', () => {
     expect(parseRoute('#/room/TuhisRoom')).toEqual({
@@ -150,7 +149,7 @@ describe('parseRoute rooms (R42)', () => {
       relay: 'https://relay.example.com:4433',
       droppedParams: [],
     });
-    // A static slug is link-only (docs/44 §4.2): the join box refuses it.
+    // A static slug is link-only: the join box refuses it.
     expect(parseRoute('#/join/TuhisRoom')).toEqual({ view: 'redirect', to: '#/' });
     expect(parseRoute('#/join')).toEqual({ view: 'redirect', to: '#/' });
   });

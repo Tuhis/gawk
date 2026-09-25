@@ -1,6 +1,6 @@
-// R42 (docs/44 §4.7): the room's audio mixer. One AudioContext for every
-// tile, a master GainNode as the shared destination, and the one-shot worklet
-// registration the tiles' AudioSinks call through (audioSink.ts AudioOutput).
+// The room's audio mixer. One AudioContext for every tile, a master GainNode
+// as the shared destination, and the one-shot worklet registration the
+// tiles' AudioSinks call through (audioSink.ts AudioOutput).
 //
 // Mixing is client-side and entirely here: each tile keeps its own sink
 // (jitter buffer, drift trim, its own GainNode for the tile's level and

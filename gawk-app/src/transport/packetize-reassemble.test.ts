@@ -1,13 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { packetizeDecoderConfig, packetizeFrame } from './packetizer';
 import { Reassembler, type AssembledFrame, type AudioPacket } from './reassembler';
 import {
+  MAX_CHUNK_COUNT,
   MAX_CHUNK_PAYLOAD,
   encodeAudioConfig,
   encodeAudioFrame,
   encodeClockMapping,
   encodeViewerCount,
+  parseDecoderConfig,
   type AudioConfigMessage,
   type DecoderConfigMessage,
 } from './wire';
@@ -40,6 +42,13 @@ describe('packetizeFrame', () => {
   it('produces one datagram for an empty frame', () => {
     const dgrams = packetizeFrame({ frameId: 0, keyframe: false, timestampUs: 0n }, new Uint8Array(0));
     expect(dgrams.length).toBe(1);
+  });
+
+  it('refuses a frame that needs more than MAX_CHUNK_COUNT chunks', () => {
+    const data = new Uint8Array(MAX_CHUNK_PAYLOAD * MAX_CHUNK_COUNT + 1);
+    expect(() => packetizeFrame({ frameId: 0, keyframe: true, timestampUs: 0n }, data)).toThrow(
+      new RegExp(`max ${MAX_CHUNK_COUNT}`),
+    );
   });
 });
 
@@ -114,6 +123,19 @@ describe('config handling', () => {
   });
 });
 
+// SharedArrayBuffer is not defined on a page that is not cross-origin
+// isolated, which this app never is.
+describe('config packetizing without SharedArrayBuffer', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('accepts a description handed over as a typed-array view', () => {
+    vi.stubGlobal('SharedArrayBuffer', undefined);
+    const backing = new Uint8Array([9, 1, 2, 3, 9]);
+    const cfg = packetizeDecoderConfig('avc1.42E02A', backing.subarray(1, 4));
+    expect(Array.from(parseDecoderConfig(cfg).extradata)).toEqual([1, 2, 3]);
+  });
+});
+
 describe('ordering policy', () => {
   function pushFrame(r: Reassembler, frameId: number, keyframe: boolean) {
     for (const d of packetizeFrame({ frameId, keyframe, timestampUs: BigInt(frameId) }, patternBytes(100, frameId))) {
@@ -122,11 +144,11 @@ describe('ordering policy', () => {
   }
 
   it('rejects a wholly-late delta frame chunk-by-chunk, without assembling it', () => {
-    // Policy shift with R30 (docs/35 §12 finding 2): a frame whose FIRST
-    // chunk already sits behind the emit watermark never builds an assembly
-    // — under striping, such chunks are routinely a recovery-raced leg's
-    // share, and assembling them manufactured phantom incompletes. It is
-    // still dropped, just counted as stale chunks at the door.
+    // A frame whose FIRST chunk already sits behind the emit watermark never
+    // builds an assembly — under striping, such chunks are routinely a
+    // recovery-raced leg's share, and assembling them would manufacture
+    // phantom incompletes. It is still dropped, just counted as stale chunks
+    // at the door.
     const { r, frames } = collector();
     pushFrame(r, 2, false);
     pushFrame(r, 1, false); // arrives entirely after a newer frame was emitted
@@ -139,7 +161,7 @@ describe('ordering policy', () => {
   it('still counts a PARTIALLY-assembled frame that completes late as dropped-late', () => {
     // The narrowed meaning of framesDroppedLate: the assembly began before
     // the watermark passed it, so its chunks keep filling and the completed
-    // frame is dropped at emit — exactly the pre-R30 path.
+    // frame is dropped at emit.
     const { r, frames } = collector();
     const late = packetizeFrame(
       { frameId: 1, keyframe: false, timestampUs: 1n },
@@ -163,11 +185,11 @@ describe('ordering policy', () => {
   });
 
   it('recovers new-session deltas after restart via the stream-keyframe watermark reset', () => {
-    // Since R8, real keyframes arrive over reliable streams and never pass
-    // through the reassembler — the datagram-keyframe watermark reset (test
-    // above) no longer fires in practice. After a broadcaster restart the
-    // watermark must instead be reset via noteStreamKeyframe, or every
-    // new-session delta is dropped as late (R10 field finding, docs/14).
+    // Real keyframes arrive over reliable streams and never pass through the
+    // reassembler — the datagram-keyframe watermark reset (test above) does
+    // not fire in practice. After a broadcaster restart the watermark must
+    // instead be reset via noteStreamKeyframe, or every new-session delta is
+    // dropped as late.
     const { r, frames } = collector();
     pushFrame(r, 100_000, false); // old session's last delta; watermark = 100000
     r.noteStreamKeyframe(3); // restart: new session's keyframe (id 3) via stream
@@ -297,7 +319,7 @@ describe('malformed input', () => {
   });
 });
 
-// R15 N4 (docs/20 Decision 7): the audio demux — packets pass through with no
+// The audio demux — packets pass through with no
 // reassembly (one datagram IS one Opus packet), configs dedupe like the video
 // config, and unknown types still count bad.
 describe('audio demux (R15)', () => {

@@ -1,8 +1,6 @@
-// R37 (docs/40 §4.2): the one relay-URL validation + normalization rule,
-// shared by every write path (store save/edit/migration, directory add) and
-// by the `?relay=` link grammar — credential attachment is normalized-origin
-// equality, and that test is only honest if everything that stores or
-// compares a relay URL normalizes it the same way (F8).
+// The one relay-URL validation and normalization rule. Stored credentials
+// attach by normalized-origin equality, which is only safe if everything that
+// stores or compares a relay URL normalizes it the same way.
 //
 // A relay value is an https origin and nothing else: no credentials, no
 // path, no query, no fragment. `URL.origin` does the heavy lifting
@@ -18,8 +16,7 @@ export function normalizeRelayOrigin(value: string): string | null {
     return null;
   }
   if (url.protocol !== 'https:') return null;
-  // A smuggled credential is rejected outright rather than stripped — a link
-  // carrying one is malformed by the grammar, not "close enough" (D3).
+  // A smuggled credential is rejected outright rather than stripped.
   if (url.username !== '' || url.password !== '') return null;
   if (url.pathname !== '/' && url.pathname !== '') return null;
   if (url.search !== '' || url.hash !== '') return null;
@@ -32,4 +29,14 @@ export function normalizeRelayOrigin(value: string): string | null {
 export function sameRelayOrigin(a: string, b: string): boolean {
   const na = normalizeRelayOrigin(a);
   return na !== null && na === normalizeRelayOrigin(b);
+}
+
+// The host[:port] a relay URL names, for display. An unparseable value is
+// shown as-is rather than hidden.
+export function relayHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }

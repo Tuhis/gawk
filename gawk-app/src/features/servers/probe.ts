@@ -1,26 +1,26 @@
-// R37 (docs/40 §4.4): the server probe — validity + latency over the relay's
-// existing WebTransport /echo route, plus the RelayIdentity the relay sends
-// on a uni stream at session start.
+// The server probe: validity + latency over the relay's existing WebTransport
+// /echo route, plus the RelayIdentity the relay sends on a uni stream at
+// session start.
 //
 // RTT is measured client-side by round-tripping small datagrams and taking
 // the median of the successful samples. The session is held open until the
 // identity stream has been read OR an identity deadline passes, whichever
-// comes first — on a fast link the echoes complete before the relay's uni
+// comes first: on a fast link the echoes complete before the relay's uni
 // stream arrives, and closing on RTT alone would nondeterministically label
-// a current relay as pre-R37 (F5).
+// a current relay as one that sends no identity.
 //
 // Failure is ONE combined state: browsers surface WebTransport failures
 // opaquely, so "unreachable", "not a gawk relay", "invalid certificate" and
 // "origin not allowed" are indistinguishable from JS. The UI copy names all
-// causes once (docs/40 §4.4) rather than pretending to diagnose.
+// causes once rather than pretending to diagnose.
 
 import { parseRelayIdentity, type RelayIdentityMessage } from '../../transport/wire';
-import { hexToBytes, openDatagramWriter } from '../../transport/connection';
+import { openDatagramWriter, webTransportInit } from '../../transport/connection';
 
 export const PROBE_SAMPLES = 5;
 export const PROBE_SAMPLE_SPACING_MS = 120;
 export const PROBE_CONNECT_TIMEOUT_MS = 4000;
-// F5: measured from session ready — long enough for one RTT plus relay
+// Measured from session ready: long enough for one RTT plus relay
 // scheduling, short enough that the panel never feels stuck.
 export const PROBE_IDENTITY_DEADLINE_MS = 1500;
 
@@ -54,15 +54,7 @@ export interface ProbeTransport {
 export type ProbeTransportFactory = (url: string, certHashHex: string) => ProbeTransport;
 
 function defaultTransportFactory(url: string, certHashHex: string): ProbeTransport {
-  const init: WebTransportOptions = {
-    requireUnreliable: true,
-    congestionControl: 'low-latency',
-  };
-  const hash = certHashHex.trim();
-  if (hash) {
-    init.serverCertificateHashes = [{ algorithm: 'sha-256', value: hexToBytes(hash) }];
-  }
-  return new WebTransport(url, init) as unknown as ProbeTransport;
+  return new WebTransport(url, webTransportInit({ certHashHex })) as unknown as ProbeTransport;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -112,8 +104,8 @@ export async function probeRelay(
 
   const readyAt = now();
 
-  // Identity: first uni stream, read fully, parsed leniently — a malformed
-  // message degrades to "no identity", never to a failed probe (F7).
+  // Identity: first uni stream, read fully, parsed leniently: a malformed
+  // message degrades to "no identity", never to a failed probe.
   const identityPromise: Promise<RelayIdentityMessage | null> = (async () => {
     try {
       const streams = wt.incomingUnidirectionalStreams.getReader();
@@ -175,7 +167,7 @@ export async function probeRelay(
     // as failure below.
   }
 
-  // F5: hold for identity up to its deadline, measured from ready.
+  // Hold for identity up to its deadline, measured from ready.
   const identity = await Promise.race([
     identityPromise,
     sleep(Math.max(0, PROBE_IDENTITY_DEADLINE_MS - (now() - readyAt))).then(() => null),
@@ -196,9 +188,9 @@ export async function probeRelay(
   };
 }
 
-// F6: the display-name sanitizer. The name is attacker-influenced trust UI —
-// strip control and bidi-control characters; rendering ALWAYS pairs the
-// result with the normalized host (the caller's job), never replaces it.
+// The name is attacker-influenced trust UI: strip control and bidi-control
+// characters. Rendering ALWAYS pairs the result with the normalized host (the
+// caller's job), never replaces it.
 export function sanitizeIdentityName(name: string): string {
   let out = '';
   for (const ch of name) {

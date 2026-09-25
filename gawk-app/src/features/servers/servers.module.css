@@ -1,9 +1,9 @@
-/* R37 (docs/40 §4.3): the server picker panel, landing chip and in-session
- * indicator. Visual language follows the existing glass panels. */
+/* The server picker panel, landing chip and in-session indicator. Visual
+ * language follows the existing glass panels. */
 
-/* One element dims and centres: a separate scrim underneath a full-screen
- * centring layer meant every "outside" click landed on the centring layer,
- * which had no dismiss handler. */
+/* One element dims and centres: with a separate full-screen centring layer
+ * over the scrim, every "outside" click would land on the centring layer,
+ * which has no dismiss handler. */
 .scrim {
   position: fixed;
   inset: 0;
@@ -78,8 +78,8 @@
    frame between the animation ending and React unmounting.
 
    These MUST come after .scrim and .panel: same specificity (0,1,0), so
-   source order alone decides the winner. Declared above them, .panelOut lost
-   and the panel snapped out while the backdrop faded. */
+   source order alone decides the winner. Declared above them, .panelOut loses
+   and the panel snaps out while the backdrop fades. */
 .scrimOut {
   animation: pickerScrimOut 160ms var(--ease) forwards;
 }
@@ -330,7 +330,7 @@
   flex: none;
 }
 
-/* ── In-session indicator (docs/40 §4.3 F2) ── */
+/* ── In-session indicator ── */
 
 .indicator {
   position: fixed;

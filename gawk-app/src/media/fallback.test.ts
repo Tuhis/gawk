@@ -1,5 +1,4 @@
-// FallbackController decision-core tests (docs/09, chunk I1). Written before
-// the implementation per CODE-REVIEW.md. The controller is pure and
+// FallbackController decision-core tests. The controller is pure and
 // timer-free: time is injected per record, so every scenario here is a
 // deterministic outcome sequence.
 

@@ -1,4 +1,4 @@
-// R11 (docs/16): the broadcast Web Worker entry point — a thin shell around
+// The broadcast Web Worker entry point — a thin shell around
 // BroadcastWorkerCore. All pipeline logic lives in the (DOM-free, unit-tested)
 // core; this file only bridges `postMessage` to it and owns the two things
 // that are genuinely worker-scoped: the capability handshake and the
@@ -47,7 +47,7 @@ ctx.onmessage = (e: MessageEvent) => {
       core.start(cmd);
       break;
     case 'capture':
-      // R15 N3: the audio clone rides along when present. A worker without
+      // The audio clone rides along when present. A worker without
       // AudioEncoder still annotates video-only inside the pipeline
       // (audioLaneSupported) — pipeline placement never changes for audio.
       core.capture(cmd.track, cmd.nativeFps, cmd.audioTrack ?? null, cmd.audioUnavailable ?? false);

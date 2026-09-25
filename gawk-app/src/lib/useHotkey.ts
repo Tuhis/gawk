@@ -19,8 +19,7 @@ export function formatHotkey(h: Hotkey): string {
   return parts.join('+');
 }
 
-// True when the event target is a text field. Exported for the R42 room
-// view's number keys, which must never fire while a nickname is being typed.
+// True when the event target is a text field, where keys are typing.
 export function isEditable(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el || typeof el.tagName !== 'string') return false;
@@ -32,9 +31,18 @@ export function isEditable(target: EventTarget | null): boolean {
   );
 }
 
-// A global keyboard shortcut (docs/10 J4). Exact modifier match, ignores key
-// repeat, and never fires while a text field is focused. The handler is kept
-// in a ref so passing an inline closure doesn't re-subscribe every render.
+// On macOS, Option changes the character `key` reports (Option+Shift+D is
+// 'Î'), so an Alt shortcut's letter also matches by its physical key. Only
+// then: elsewhere `code` would misfire on non-QWERTY layouts.
+function matchesKey(e: KeyboardEvent, key: string, alt: boolean): boolean {
+  const want = key.toLowerCase();
+  if (e.key.toLowerCase() === want) return true;
+  return alt && /^[a-z]$/.test(want) && e.code === `Key${want.toUpperCase()}`;
+}
+
+// A global keyboard shortcut. Exact modifier match, ignores key repeat, and
+// never fires while a text field is focused. The handler is kept in a ref so
+// passing an inline closure doesn't re-subscribe every render.
 export function useHotkey(hotkey: Hotkey, handler: () => void): void {
   const handlerRef = useRef(handler);
   useEffect(() => {
@@ -45,7 +53,7 @@ export function useHotkey(hotkey: Hotkey, handler: () => void): void {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat) return;
       if (isEditable(e.target)) return;
-      if (e.key.toLowerCase() !== hotkey.key.toLowerCase()) return;
+      if (!matchesKey(e, hotkey.key, !!hotkey.alt)) return;
       if (!!hotkey.ctrl !== e.ctrlKey) return;
       if (!!hotkey.alt !== e.altKey) return;
       if (!!hotkey.shift !== e.shiftKey) return;

@@ -1,15 +1,11 @@
-// R30 ST5 (docs/35 §5.4–§5.5), as revised by finding 6.
-//
-// Engagement is no longer detector-gated: a live-edge viewer starts striped at
+// Engagement is not detector-gated: a live-edge viewer starts striped at
 // STRIPE_START_LEGS and only ever grows, and ONLY mode 'off' releases a
-// stripe. The finding-4 burst signature survives as an OBSERVATION
-// (`snapshot().shapeDetected`) — the answer to "is striping earning its
-// connection cost here", which is what the kill criteria are written against —
+// stripe. The burst signature is an OBSERVATION (`snapshot().shapeDetected`),
 // and this file pins both halves separately: the signature's logic, and the
-// engagement policy that no longer consults it.
+// engagement policy that does not consult it.
 //
-// Sizing must still key on burst length, never on a loss rate; growth stays
-// dwelled; a leg-death fallback still backs off before re-dialling.
+// Sizing must key on burst length, never on a loss rate; growth stays
+// dwelled; a leg-death fallback backs off before re-dialling.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -33,7 +29,7 @@ function controller(): StripeController {
   return c;
 }
 
-// STRIPE_START_LEGS equals MAX_STRIPE_LEGS today, so the grow path is only
+// STRIPE_START_LEGS equals MAX_STRIPE_LEGS, so the grow path is only
 // reachable from a lower floor. Production always uses the default.
 function growable(startLegs = 2): StripeController {
   const c = new StripeController(now, startLegs);

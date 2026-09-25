@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// R37 (docs/40 §4.2): route → session override wiring, incl. the D6 gate.
+// Route → session override wiring, incl. the allowCustomRelays gate.
 // The store resolves its default at module-evaluation time, so each case
 // re-imports both modules with the environment already in place.
 async function load() {

@@ -1,5 +1,5 @@
-// R8 S6: imperative glue between React and the viewer Web Worker, kept out of
-// the component so the effect code stays legible. Owns the one-shot
+// Imperative glue between React and the viewer Web Worker, kept out of the
+// component so the effect code stays legible. Owns the one-shot
 // OffscreenCanvas transfer and the boot handshake; the pipeline/reconnect logic
 // lives in the worker's ViewerWorkerCore.
 //
@@ -7,6 +7,7 @@
 // cannot be repeated or reversed), drive with start()/stop() across broadcasts,
 // dispose() on teardown.
 
+import { log } from '../../lib/logger';
 import type { ViewerDeliveryMode } from '../../transport/resilient';
 import type { StripeMode } from '../../transport/stripe';
 import type { ConnectOptions } from '../../transport/connection';
@@ -18,6 +19,11 @@ import type {
   ViewerWorkerOutbound,
 } from '../../transport/viewer-worker-core';
 
+// How long to wait for the worker's boot handshake before falling back. The
+// worker posts 'boot' as soon as its module evaluates, so this only has to
+// cover fetching the script.
+const BOOT_TIMEOUT_MS = 2000;
+
 export interface StartParams {
   serverUrl: string;
   broadcastId: string;
@@ -26,32 +32,35 @@ export interface StartParams {
 
 export interface WorkerViewerCallbacks {
   onEvent: (ev: ViewerWorkerEvent) => void;
-  // The worker reported it lacks the codecs/transport it needs (before any
-  // canvas transfer) — caller should fall back to the main-thread pipeline.
+  // The worker reported it lacks the codecs/transport it needs, or never booted
+  // at all (before any canvas transfer) — caller should fall back to the
+  // main-thread pipeline.
   onUnsupported: () => void;
 }
 
 export interface WorkerViewerOptions {
-  // R22 (docs/27): request the encoded-frame mux fork at init. Set only on
-  // gated (element-fullscreen-less) devices — when false, the init message is
-  // byte-identical to before and no mux code runs in the worker.
+  // Request the encoded-frame mux fork at init. Set only on gated
+  // (element-fullscreen-less) devices — when false, the init message carries
+  // no mux flag and no mux code runs in the worker.
   presentationMux?: boolean;
 }
 
 export class WorkerViewerController {
-  private worker: Worker;
+  private worker: Worker | null = null;
   private canvas: HTMLCanvasElement;
   private cb: WorkerViewerCallbacks;
   private presentationMux: boolean;
 
   private booted = false;
+  private bootFailed = false;
+  private bootTimer: ReturnType<typeof setTimeout> | null = null;
   private supported = false;
   private canvasTransferred = false;
   private disposed = false;
   private pendingStart: StartParams | null = null;
   private armRequested = false;
   private armSent = false;
-  // R22 audio: audio is armed separately because it becomes known later — the
+  // Audio is armed separately because it becomes known later — the
   // Opus-in-MP4 verdict needs the stream's audio config, which arrives (at 1 Hz)
   // well after the video arm. A second `arm` is idempotent in the worker.
   private armAudioRequested = false;
@@ -62,14 +71,46 @@ export class WorkerViewerController {
     this.canvas = canvas;
     this.cb = cb;
     this.presentationMux = opts.presentationMux ?? false;
-    this.worker = new Worker(new URL('../../transport/viewer.worker.ts', import.meta.url), {
-      type: 'module',
-    });
-    this.worker.onmessage = (e: MessageEvent) => this.onMessage(e.data as ViewerWorkerOutbound);
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL('../../transport/viewer.worker.ts', import.meta.url), {
+        type: 'module',
+      });
+    } catch (e) {
+      // e.g. a CSP worker-src violation.
+      this.failBoot(e);
+      return;
+    }
+    this.worker = worker;
+    worker.onmessage = (e: MessageEvent) => this.onMessage(e.data as ViewerWorkerOutbound);
+    // A script that fails to load (a tab from before a deploy asking for the
+    // old hashed chunk) or throws while evaluating never posts 'boot'.
+    worker.onerror = (e) => this.failBoot(e);
+    this.bootTimer = setTimeout(() => this.failBoot('boot timed out'), BOOT_TIMEOUT_MS);
+  }
+
+  // Only before boot: the canvas is transferred after a successful boot, so
+  // until then it is still free for the main-thread pipeline. A worker error
+  // after boot is the worker's own business, not a reason to fall back.
+  private failBoot(reason: unknown): void {
+    if (this.booted || this.bootFailed || this.disposed) return;
+    this.bootFailed = true;
+    this.clearBootTimer();
+    this.worker?.terminate();
+    log.warn('Viewer worker failed to boot; using the main-thread pipeline:', reason);
+    this.cb.onUnsupported();
+  }
+
+  private clearBootTimer(): void {
+    if (this.bootTimer !== null) clearTimeout(this.bootTimer);
+    this.bootTimer = null;
   }
 
   private onMessage(msg: ViewerWorkerOutbound): void {
     if (msg.type === 'boot') {
+      // Too late: the caller has fallen back and may be drawing to the canvas.
+      if (this.bootFailed) return;
+      this.clearBootTimer();
       this.booted = true;
       this.supported = msg.supported;
       if (!msg.supported) {
@@ -84,7 +125,7 @@ export class WorkerViewerController {
   }
 
   private post(cmd: ViewerWorkerCommand, transfer?: Transferable[]): void {
-    this.worker.postMessage(cmd, transfer ?? []);
+    this.worker?.postMessage(cmd, transfer ?? []);
   }
 
   private flushStart(): void {
@@ -93,8 +134,8 @@ export class WorkerViewerController {
     if (!this.canvasTransferred) {
       const offscreen = this.canvas.transferControlToOffscreen();
       this.canvasTransferred = true;
-      // The mux flag is spread in only when set, keeping non-gated init
-      // messages byte-identical (docs/27, carrying R16 Decision 1 forward).
+      // The mux flag is spread in only when set, so a non-gated init message
+      // carries no trace of it.
       this.post(
         { type: 'init', canvas: offscreen, ...(this.presentationMux ? { presentationMux: true } : {}) },
         [offscreen],
@@ -110,7 +151,9 @@ export class WorkerViewerController {
       this.post({ type: 'arm' });
       this.armSent = true;
     }
-    if (this.armAudioRequested && !this.armAudioSent && this.armAudioCodec) {
+    // After the video arm: the worker starts its muxer on the first arm, and
+    // only the video arm comes after the screen has registered a segment sink.
+    if (this.armSent && this.armAudioRequested && !this.armAudioSent && this.armAudioCodec) {
       this.post({ type: 'arm', audio: this.armAudioCodec });
       this.armAudioSent = true;
     }
@@ -129,7 +172,7 @@ export class WorkerViewerController {
     if (this.booted && this.supported && this.canvasTransferred) this.post({ type: 'stop' });
   }
 
-  // R5 Q3 + R12 T2: apply the playout mode inside the worker context.
+  // Apply the playout mode inside the worker context.
   // Safe at any lifecycle point — worker messages queue until the shell runs,
   // and the setting is module state there, independent of start/stop.
   setPlayoutMode(mode: PlayoutMode): void {
@@ -137,13 +180,13 @@ export class WorkerViewerController {
     this.post({ type: 'playout', mode });
   }
 
-  // R12 T4: the experimental interpolation toggle, same crossing semantics.
+  // The interpolation toggle, same crossing semantics.
   setInterpolation(enabled: boolean): void {
     if (this.disposed) return;
     this.post({ type: 'interpolation', enabled });
   }
 
-  // R15 N5: the audio sink's ~4 Hz playhead report (docs/20 Decision 10).
+  // The audio sink's ~4 Hz playhead report.
   // Fire-and-forget: a dropped report just means the worker keeps the
   // previous mapping, and a stale one falls back to the arrival baseline.
   sendAudioPlayhead(heardUs: number | null, atEpochMs: number): void {
@@ -151,7 +194,7 @@ export class WorkerViewerController {
     this.post({ type: 'audioPlayhead', heardUs, atEpochMs });
   }
 
-  // R19: resilient mode for the worker context. Callers send it before
+  // The delivery mode for the worker context. Callers send it before
   // start() (worker messages process in order), so the wider profile is live
   // before the session's first frame.
   setViewerDeliveryMode(mode: ViewerDeliveryMode): void {
@@ -159,7 +202,7 @@ export class WorkerViewerController {
     this.post({ type: 'resilient', mode });
   }
 
-  // R30 (docs/35 §5.5): the stripe mode — a LIVE flip, never a reconnect:
+  // The stripe mode — a LIVE flip, never a reconnect:
   // engagement is in-band (leg dials + the 0x10 level protocol), so the
   // worker's controller applies the change at its next decide().
   setStripeMode(mode: StripeMode): void {
@@ -167,19 +210,18 @@ export class WorkerViewerController {
     this.post({ type: 'stripeMode', mode });
   }
 
-  // R22: start the worker muxer (gated devices, at `watching`). Sent at most
+  // Start the worker muxer (gated devices, at `watching`). Sent at most
   // once — the muxer and its output timeline are session-long and survive
-  // reconnects (docs/27 Decision 3). Buffered until the canvas/init exist.
-  // Guarded on the mux opt-in so a stray call can't break the non-gated
-  // byte-identity guarantee (the worker would ignore it, but the message
-  // itself is the contract).
+  // reconnects. Buffered until the canvas/init exist. Guarded on the mux
+  // opt-in so a non-gated worker never receives an arm (it would ignore it,
+  // but the message itself is the contract).
   armPresentation(): void {
     if (this.disposed || this.armRequested || !this.presentationMux) return;
     this.armRequested = true;
     this.flushArm();
   }
 
-  // R22 audio: start muxing the encoded audio lane too (the screen calls this
+  // Start muxing the encoded audio lane too (the screen calls this
   // once the audio config has probed supported). Never un-armed — an audio track
   // that stopped is handled in the presenter, not by silencing the fork.
   armPresentationAudio(codec: AudioMuxCodec): void {
@@ -191,6 +233,7 @@ export class WorkerViewerController {
 
   dispose(): void {
     this.disposed = true;
-    this.worker.terminate();
+    this.clearBootTimer();
+    this.worker?.terminate();
   }
 }

@@ -1,20 +1,20 @@
-// Viewer reorder / playout buffer (R8, docs/12 Decision 7).
+// Viewer reorder / playout buffer.
 //
-// R8 splits video across two transports: keyframes arrive reliably over
+// Video is split across two transports: keyframes arrive reliably over
 // unidirectional streams, deltas arrive fast-but-lossy over datagrams. That
 // makes the channels race — a delta N+1 can arrive before its keyframe N
 // finishes on the stream. This buffer merges the two by frameId and releases
 // frames to the decoder in decode order.
 //
-// By default this is NOT a fixed-offset de-jitter buffer: the project favors
-// the latest frame over smooth-but-late playback, so there is no constant
-// playout delay and frames are released as soon as they are decodable. R5 Q3
-// adds an *opt-in* smoothed mode (playout.ts, default off): when the viewer
-// enables it, a decodable frame is additionally held until
-// `now >= timestampMs + arrivalBaseline + offset` — a constant offset from
-// the source clock, anchored by the windowed-min arrival baseline. Smoothing
-// adds delay, never patience: every drop/resync policy below fires unchanged.
-// The two bounded waits exist only to disambiguate the two-channel race:
+// By default this is NOT a de-jitter buffer: the project favors the latest
+// frame over smooth-but-late playback, so frames are released as soon as they
+// are decodable. The *opt-in* adaptive playout mode (playout.ts) additionally
+// holds a decodable frame until
+// `now >= timestampMs + arrivalBaseline + offset − decodeLead` — an offset
+// from the source clock, anchored by the windowed-min arrival baseline.
+// Smoothing adds delay, never patience: every drop/resync policy below fires
+// unchanged. The two bounded waits exist only to disambiguate the two-channel
+// race:
 //
 //   - KEYFRAME_WAIT_MS: while waiting for a keyframe (initial sync, or after a
 //     declared gap), decodable-pending frames are held at most this long.
@@ -23,7 +23,9 @@
 //   - DELTA_GAP_GRACE_MS: when the next contiguous delta is missing but later
 //     frames have arrived, wait this long for the straggler before declaring a
 //     gap. A lost delta never retransmits, so this is short — a couple of frame
-//     intervals — after which we freeze and resync at the next keyframe.
+//     intervals, widened only by measured arrival jitter — after which we skip
+//     the frame within the GOP's loss allowance, or freeze and resync at the
+//     next keyframe.
 //
 // Pure and timer-free: the pipeline injects the clock and calls tick()
 // periodically (e.g. once per rendered frame). Fully unit-testable in node.
@@ -53,61 +55,55 @@ import {
 } from './resilient';
 import { frameIdAhead, nextFrameId, type DecoderConfigMessage } from './wire';
 
-// Tunables, named in one place (à la media/fallback.ts) for later real-world
-// tuning. Times are milliseconds.
+// Tunables, named in one place. Times are milliseconds.
 //
 // KEYFRAME_WAIT_MS must cover the real-world latency gap between the two
 // channels, not just reordering jitter: a keyframe is store-and-forwarded as
-// a single large stream (~236 KB at native ultrawide) and was measured (R10
-// field finding, docs/14) landing > 500 ms behind its trailing datagram
-// deltas on a congested peer. At 200 ms those deltas expired before their
-// keyframe arrived, so every GOP degenerated into keyframe-only playback.
-// 1000 ms covers the measured worst case with margin and stays within
-// MAX_BUFFERED_FRAMES (~1.07 s at 60 fps), which remains the memory bound.
+// a single large stream (~236 KB at native ultrawide) and can land > 500 ms
+// behind its trailing datagram deltas on a congested peer. A shorter wait
+// expires those deltas before their keyframe arrives, so every GOP
+// degenerates into keyframe-only playback. 1000 ms covers the measured worst
+// case with margin and stays within MAX_BUFFERED_FRAMES (~1.07 s at 60 fps),
+// which remains the memory bound.
 export const KEYFRAME_WAIT_MS = 1000;
 export const DELTA_GAP_GRACE_MS = 60;
-// Ceiling for the adaptive grace below. 250 ms is not a fresh guess: it is
-// RESILIENT_DELTA_GAP_GRACE_MS, already shipped and measured as the patience a
-// deliberately-buffered viewer wants, and it stays far under KEYFRAME_WAIT_MS
-// (so a widened grace can never age deltas out before their keyframe — docs/14's
-// keyframe-only 2 fps failure) and under MAX_BUFFERED_FRAMES (~8 frames at
-// 30 fps against a 64-frame cap).
+// Ceiling for the adaptive grace below: RESILIENT_DELTA_GAP_GRACE_MS, the
+// measured patience a deliberately-buffered viewer wants. It stays far under
+// KEYFRAME_WAIT_MS (so a widened grace can never age deltas out before their
+// keyframe) and under MAX_BUFFERED_FRAMES (~8 frames at 30 fps against a
+// 64-frame cap).
 export const MAX_DELTA_GAP_GRACE_MS = 250;
 // Hard cap on buffered frames; guards against a lingering stale frame (e.g. a
 // straggler above the decode position after a broadcaster restart) growing the
 // buffer without bound. Oldest-received entries are dropped past this.
 export const MAX_BUFFERED_FRAMES = 64;
 
-// How far the keyframe wait must outlast the playout offset (R21). One GOP at
+// How far the keyframe wait must outlast the playout offset. One GOP at
 // the broadcaster default, so a delta held for its keyframe always survives at
 // least until the following keyframe is due.
 export const KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS = 500;
 
-// R19 (docs/24 Decision 7): the three bounds widen while resilient mode is
-// on — read live per use so the defaults stay byte-identical when it's off.
+// The three bounds widen while resilient mode is on — read live per use.
 function keyframeWaitMs(): number {
   const base = getResilientMode() ? RESILIENT_KEYFRAME_WAIT_MS : KEYFRAME_WAIT_MS;
-  // The wait must outlast the delay the playout offset deliberately imposes
-  // (R21). While waiting for a keyframe, a held delta is dropped once it is
-  // older than this — but its keyframe does not become *due* until the offset
-  // has elapsed, so a wait shorter than the offset ages out every delta before
+  // The wait must outlast the delay the playout offset deliberately imposes.
+  // While waiting for a keyframe, a held delta is dropped once it is older
+  // than this — but its keyframe does not become *due* until the offset has
+  // elapsed, so a wait shorter than the offset ages out every delta before
   // its keyframe can release, leaving keyframe-only playback: 2 fps at a
-  // 500 ms GOP. R19's 2 s wait covered its <=2 s clamp; R21's 3 s buffer
-  // exceeded it. Deriving from the live offset keeps the two in step whatever
+  // 500 ms GOP. Deriving from the live offset keeps the two in step whatever
   // the profile is tuned to. No effect below the base: live-edge (offset 0)
-  // and resilient (~0.5 s) keep exactly the values they had.
+  // and resilient (~0.5 s) keep their base values.
   return Math.max(base, getPlayoutOffsetMs() + KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS);
 }
-// R30 finding 4 (docs/35): the adaptive live-edge grace.
+// The adaptive live-edge grace.
 //
-// DELTA_GAP_GRACE_MS was sized per CONNECTION — "a couple of frame intervals",
-// correct while a frame's datagrams arrived back-to-back on one QUIC
-// connection, where a chunk outstanding past the grace really was lost.
+// DELTA_GAP_GRACE_MS is sized per CONNECTION — "a couple of frame intervals",
+// correct while a frame's datagrams arrive back-to-back on one QUIC
+// connection, where a chunk outstanding past the grace really is lost.
 // Striping spreads each frame over N legs whose mutual skew becomes per-frame
-// completion jitter, and a live Firefox 154 session measured that jitter at
-// 101 ms median / 268 ms p95 against a 60 ms grace: ~1 gap resync per second,
-// against 0.5 % of frames actually lost. Almost every freeze was a frame that
-// was merely LATE.
+// completion jitter, measured at ~100 ms median / ~270 ms p95, so a fixed
+// 60 ms grace freezes on frames that are merely LATE.
 //
 // The lever is the jitter the buffer already measures for the playout offset,
 // and what makes it the right signal is that it separates the two failure
@@ -118,8 +114,8 @@ function keyframeWaitMs(): number {
 // slower to resync.
 //
 // Seed and floor are both DELTA_GAP_GRACE_MS, so a viewer that has not yet
-// measured anything — and any link whose jitter fits inside the shipped
-// constant — behaves exactly as before.
+// measured anything — and any link whose jitter fits inside it — gets exactly
+// the constant.
 export const GRACE_ENVELOPE: SlewEnvelope = {
   seedMs: DELTA_GAP_GRACE_MS,
   minMs: DELTA_GAP_GRACE_MS,
@@ -130,14 +126,13 @@ export const GRACE_ENVELOPE: SlewEnvelope = {
   // changes nothing about when an on-time frame is presented, only how long a
   // hole is tolerated before freezing. A step up is therefore invisible where
   // a stepped offset would be a skip, and under-patience costs a visible
-  // freeze NOW — so a large rise is taken at once (the reasoning
-  // RESILIENT_PLAYOUT_PROFILE uses, with none of its cost). Small wobble still
-  // slews, which keeps freeze behaviour stable and reproducible, and DOWN is
-  // never stepped.
+  // freeze NOW — so a large rise is taken at once. Small wobble still slews,
+  // which keeps freeze behaviour stable and reproducible, and DOWN is never
+  // stepped.
   stepUpAboveMs: 50,
 };
 
-// Module state, like the playout mode and the R29 loss allowance: the buffer
+// Module state, like the playout mode and the loss allowance: the buffer
 // reads it live per advance, and it is driven from the pipeline's stats tick
 // (viewer.ts) because taking a windowed quantile is far too expensive to do
 // per arrival.
@@ -165,11 +160,11 @@ function maxBufferedFrames(): number {
   return getResilientMode() ? RESILIENT_MAX_BUFFERED_FRAMES : MAX_BUFFERED_FRAMES;
 }
 
-// R19 hardening (PLAYOUT-1): the arrival-jitter histogram's geometry belongs
-// to the playout profile that consumes it — a controller clamped to 2000 ms
-// off a histogram that saturates at 500 ms can never buffer more than ~534 ms.
-// Unlike the bounds above, geometry can't be read per use (the histogram is a
-// fixed-shape structure), so the tracker is rebuilt when the profile changes.
+// The arrival-jitter histogram's geometry belongs to the playout profile that
+// consumes it — a controller clamped to 2000 ms off a histogram that saturates
+// at 500 ms can never buffer more than ~534 ms. Unlike the bounds above,
+// geometry can't be read per use (the histogram is a fixed-shape structure), so
+// the tracker is rebuilt when the profile changes.
 function newQuantileTracker(): WindowedQuantileTracker {
   const p = getPlayoutProfile();
   return new WindowedQuantileTracker(
@@ -210,11 +205,10 @@ export interface ReorderStats {
   deltasDropped: number;
   // Times a missing delta was declared a gap and we froze to await a keyframe.
   gapResyncs: number;
-  // R29 FP6 (docs/34 §6): unrecovered frames skipped within the GOP's budget
-  // instead of forfeiting the rest of the GOP. Deliberately NOT folded into
-  // gapResyncs — docs/13's playbook reads that as "delta loss is eating GOPs",
-  // and a skip is the opposite outcome: the GOP survived. One counter meaning
-  // two things would retire a working signal.
+  // Unrecovered frames skipped within the GOP's loss allowance instead of
+  // forfeiting the rest of the GOP. Deliberately NOT folded into gapResyncs,
+  // which reads as "delta loss is eating GOPs"; a skip is the opposite
+  // outcome: the GOP survived.
   framesSkippedWithinAllowance: number;
   // Frames dropped while waiting for a keyframe (undecodable, aged out).
   keyframeWaitDrops: number;
@@ -233,38 +227,42 @@ interface Entry {
 
 export interface ReorderBufferOptions {
   // Invoked when a keyframe arrives serially behind the decode position — the
-  // broadcaster-restart signal (R10 field finding; R5 Q1, docs/15). Frame
-  // timestamps move to a new timeline across a restart, so live-edge baselines
-  // built against the old one must reset. The rare other cause (two keyframe
-  // streams read out of order) costs one harmless baseline rebuild.
+  // broadcaster-restart signal. Frame timestamps move to a new timeline across
+  // a restart, so live-edge baselines built against the old one must reset. The
+  // rare other cause (two keyframe streams read out of order) costs one
+  // harmless baseline rebuild.
   onRestart?: () => void;
-  // Playout offset in ms, read on every advance so a live toggle re-paces
-  // (R5 Q3). 0 = live-edge (the default, via playout.ts); injectable for
-  // tests.
+  // Playout offset in ms, read on every advance so a live toggle re-paces.
+  // 0 = live-edge (the default, via playout.ts); injectable for tests.
   playoutOffsetMs?: () => number;
-  // R12 T2 (docs/17 Decision 4): how much earlier than the presentation
-  // target a frame releases to the decoder. Non-zero only in adaptive mode —
-  // the sink holds the decoded frame for its display slot, so releasing at
-  // target − lead keeps the decoder frame pool bounded while the paint stays
-  // on time. Fixed mode keeps its R5 Q3 semantics (lead 0). Injectable.
+  // How much earlier than the presentation target a frame releases to the
+  // decoder. Non-zero only in adaptive mode — the sink holds the decoded
+  // frame for its display slot, so releasing at target − lead keeps the
+  // decoder frame pool bounded while the paint stays on time. Injectable.
   decodeLeadMs?: () => number;
+  // Whether a frame is known to be a delta (the reassembler saw a datagram of
+  // it). The loss allowance only skips known deltas: a missing frame with no
+  // datagram evidence may be a keyframe still arriving on its stream.
+  // Absent: every missing frame counts as a delta.
+  isDeltaFrame?: (frameId: number) => boolean;
 }
 
 export class ReorderBuffer {
   private onFrame: (frame: ReleasedFrame) => void;
   private now: () => number;
   private onRestart: (() => void) | undefined;
+  private isDeltaFrame: (frameId: number) => boolean;
   private playoutOffsetMs: () => number;
   private decodeLeadMs: () => number;
-  // Windowed min of (arrivalMs − timestampMs): the pacing anchor (R5 Q3).
+  // Windowed min of (arrivalMs − timestampMs): the pacing anchor.
   // Reset with the restart signal — new session, new timestamp timeline.
   // Its window is profile-independent on purpose: `releasableAt` anchors the
   // release schedule on this min, so the offset (≈ p95 − this min) and the
   // anchor have to be measured against the same baseline.
   private arrivalBaseline = new WindowedMinTracker();
-  // Windowed quantile of the same delta (R12 T1): p95 − min is the arrival
-  // jitter, and the same estimator feeds the adaptive playout offset (T3).
-  // Geometry comes from the active playout profile (R19 PLAYOUT-1).
+  // Windowed quantile of the same delta: p95 − min is the arrival jitter, and
+  // the same estimator feeds the adaptive playout offset. Geometry comes from
+  // the active playout profile.
   private arrivalQuantile = newQuantileTracker();
   private quantileProfile = getPlayoutProfile();
 
@@ -275,7 +273,7 @@ export class ReorderBuffer {
   // declared delta gap, or on an explicit resync request (decoder backpressure).
   private waitingForKeyframe = true;
 
-  // R29 FP6: unrecovered frames skipped in the CURRENT GOP. Reset at every
+  // Unrecovered frames skipped in the CURRENT GOP. Reset at every
   // released keyframe, which is what makes the budget per-GOP rather than
   // per-session.
   private gopSkips = 0;
@@ -298,6 +296,7 @@ export class ReorderBuffer {
     this.onFrame = onFrame;
     this.now = now;
     this.onRestart = opts.onRestart;
+    this.isDeltaFrame = opts.isDeltaFrame ?? (() => true);
     this.playoutOffsetMs = opts.playoutOffsetMs ?? getPlayoutOffsetMs;
     this.decodeLeadMs =
       opts.decodeLeadMs ?? (() => (getPlayoutMode() === 'adaptive' ? DECODE_LEAD_MS : 0));
@@ -314,14 +313,18 @@ export class ReorderBuffer {
     }
     // A keyframe BEHIND the decode position (serially) is the restart signal:
     // frameIds reset while we were mid-session. Resync to it immediately —
-    // waiting out the delta-gap grace would stale-drop the new session's
-    // first deltas against the old position, costing an extra GOP of freeze
-    // after every restart (R10 field finding, docs/14). The rare other cause
-    // (two keyframe streams read out of order) costs one brief jump back and
-    // self-heals at the next keyframe.
+    // waiting out the delta-gap grace would stale-drop the new session's first
+    // deltas against the old position, costing an extra GOP of freeze after
+    // every restart. The rare other cause (two keyframe streams read out of
+    // order) costs one brief jump back and self-heals at the next keyframe.
     const backwards =
       this.decodePosition !== null && !frameIdAhead(kf.frameId, this.decodePosition);
     if (backwards) {
+      // Everything buffered belongs to the old session, whose frameIds can sit
+      // serially ahead of the new ones and would pass for the new session's
+      // oldest waiting frames.
+      for (const e of this.buffer.values()) if (!e.keyframe) this.stats.deltasDropped++;
+      this.buffer.clear();
       this.arrivalBaseline.reset();
       this.arrivalQuantile.reset();
       this.onRestart?.();
@@ -377,7 +380,7 @@ export class ReorderBuffer {
     return { ...this.stats, buffered: this.buffer.size };
   }
 
-  // R12 T1: how much later than the session-best delta the slow tail arrives
+  // How much later than the session-best delta the slow tail arrives
   // (windowed p95 − windowed min, ms). Null before any frame.
   arrivalJitterMs(): number | null {
     const nowMs = this.now();
@@ -387,19 +390,11 @@ export class ReorderBuffer {
     return Math.max(0, p95 - min);
   }
 
-  reset(): void {
-    this.buffer.clear();
-    this.decodePosition = null;
-    this.waitingForKeyframe = true;
-    this.arrivalBaseline.reset();
-    this.arrivalQuantile.reset();
-  }
-
   private insert(e: Entry): void {
-    // A resilient-mode flip is a deliberate reconnect (docs/24 Decision 9), so
-    // in production this rebuilds nothing; it keeps the estimator honest if a
-    // context ever does flip mid-session (jitter reads null until it refills,
-    // which the controller treats as "no data" and holds its offset).
+    // A resilient-mode flip is a deliberate reconnect, so in production this
+    // rebuilds nothing; it keeps the estimator honest if a context ever does
+    // flip mid-session (jitter reads null until it refills, which the
+    // controller treats as "no data" and holds its offset).
     const profile = getPlayoutProfile();
     if (profile !== this.quantileProfile) {
       this.quantileProfile = profile;
@@ -441,7 +436,7 @@ export class ReorderBuffer {
       const next = nextFrameId(this.decodePosition);
       const entry = this.buffer.get(next);
       if (entry) {
-        if (this.now() < this.releasableAt(entry)) return; // paced (Q3): tick re-drives
+        if (this.now() < this.releasableAt(entry)) return; // paced: tick re-drives
         this.release(entry);
         continue;
       }
@@ -456,20 +451,20 @@ export class ReorderBuffer {
         continue;
       }
       // No keyframe yet: wait briefly for a straggler delta; past the grace,
-      // either spend one of the GOP's loss allowance (R29 FP6) and carry on,
+      // either spend one of the GOP's loss allowance and carry on,
       // or declare a gap and freeze until the next (reliable) keyframe.
       if (this.shouldDeclareGap()) {
         // The allowance is live-edge only: resilient/DVR deltas ride reliable
         // carriers, so a hole there means something else went wrong and
         // freezing is still the correct response.
         const allowance = getResilientMode() ? 0 : getLossAllowanceFrames();
-        if (this.gopSkips < allowance) {
+        if (this.gopSkips < allowance && this.isDeltaFrame(next)) {
           this.gopSkips++;
           this.stats.framesSkippedWithinAllowance++;
           // Step over the hole and keep decoding. Frames after it reference
           // data that never arrived, so they carry artifacts until the next
-          // keyframe — the trade docs/34 §6 makes explicit, and the reason
-          // the budget is bounded and operator-set rather than unlimited.
+          // keyframe — the reason the budget is bounded and operator-set
+          // rather than unlimited.
           this.decodePosition = next;
           continue;
         }
@@ -487,22 +482,19 @@ export class ReorderBuffer {
   // buffered frames below it by frameId (undecodable / superseded). Returns
   // true if it released a keyframe.
   //
-  // "Due" is part of the selection, not a check applied afterwards, and R21
-  // is why. Picking the freshest keyframe overall and then rejecting it as
-  // not-yet-due livelocks whenever the playout offset exceeds the GOP
-  // interval: at a 3 s offset with a 500 ms GOP, a newer keyframe always
-  // arrives before the current pick comes due, so the pick keeps moving
-  // forward and NOTHING is ever released. The buffer fills for ever, decode
-  // never starts, and every arrival counter keeps climbing while the screen
-  // stays black. R19's <=500 ms offsets hid it: a keyframe came due inside
-  // one GOP interval. Live-edge is unaffected — at offset 0 everything
-  // buffered is due, so this picks exactly what it always did.
+  // "Due" is part of the selection, not a check applied afterwards. Picking
+  // the freshest keyframe overall and then rejecting it as not-yet-due
+  // livelocks whenever the playout offset exceeds the GOP interval: at a 3 s
+  // offset with a 500 ms GOP, a newer keyframe always arrives before the
+  // current pick comes due, so the pick keeps moving forward and NOTHING is
+  // ever released — the buffer fills, decode never starts, and the screen
+  // stays black. At offset 0 (live-edge) everything buffered is due.
   private jumpToKeyframe(): boolean {
     const now = this.now();
     let best: Entry | null = null;
     for (const e of this.buffer.values()) {
       if (!e.keyframe) continue;
-      if (now < this.releasableAt(e)) continue; // paced (Q3): not due yet
+      if (now < this.releasableAt(e)) continue; // paced: not due yet
       if (best === null || e.receivedAtMs > best.receivedAtMs) best = e;
     }
     if (!best) return false;
@@ -519,12 +511,11 @@ export class ReorderBuffer {
     return true;
   }
 
-  // When a frame becomes releasable (R5 Q3). Live-edge (offset 0, the
-  // default) means "now" — the smoothed schedule is
-  // timestampMs + arrivalBaseline + offset, i.e. a constant offset from the
-  // source clock anchored at the best-observed arrival delta. In adaptive
-  // mode (R12 T2) release happens DECODE_LEAD_MS early: the presentation
-  // sink holds the decoded frame for its actual display slot.
+  // When a frame becomes releasable. Live-edge (offset 0, the default) means
+  // "now"; the smoothed schedule is timestampMs + arrivalBaseline + offset,
+  // i.e. an offset from the source clock anchored at the best-observed
+  // arrival delta. In adaptive mode release happens DECODE_LEAD_MS early: the
+  // presentation sink holds the decoded frame for its actual display slot.
   private releasableAt(e: Entry): number {
     const offset = this.playoutOffsetMs();
     if (offset <= 0) return 0;
@@ -535,7 +526,7 @@ export class ReorderBuffer {
 
   // The pacing anchor (windowed min of arrival − timestamp), exposed so the
   // pipeline computes each decoded frame's display target from the same
-  // baseline the release gate uses (R12 T2). Null before any frame.
+  // baseline the release gate uses. Null before any frame.
   arrivalBaselineMs(): number | null {
     return this.arrivalBaseline.min(this.now());
   }
@@ -575,7 +566,7 @@ export class ReorderBuffer {
     this.stats.released++;
     if (entry.keyframe) {
       this.stats.keyframesReleased++;
-      // R29 FP6: a keyframe is a clean reference, so the GOP's loss budget
+      // A keyframe is a clean reference, so the GOP's loss budget
       // starts over. This is what makes the allowance per-GOP — a per-session
       // budget would be spent in the first minute and never help again.
       this.gopSkips = 0;

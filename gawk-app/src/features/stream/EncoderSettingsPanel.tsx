@@ -1,7 +1,9 @@
-// R13 (docs/18 L4): the advanced encoder controls — acceleration tri-state,
-// bitrate override, codec pin. Store-backed like LadderPicker; onChange
-// hands the full EncoderSettings snapshot to a live session. All three are
-// applied via encoder recreate on the next frame — never a stream restart.
+// The advanced encoder controls: acceleration tri-state, bitrate override,
+// codec pin. onChange hands the full EncoderSettings snapshot to a live
+// session. All three are applied via encoder recreate on the next frame,
+// never a stream restart.
+
+import { useState } from 'react';
 
 import styles from './stream.module.css';
 import {
@@ -19,8 +21,8 @@ import { annotate, codecAcceleration } from './supportAnnotations';
 
 interface Props {
   onChange?: (settings: EncoderSettings) => void;
-  // R13 Decision 9 for the codec pin: per-codec probe matrices backing the
-  // option annotations (see useCodecMatrices). null renders unannotated.
+  // Per-codec probe matrices backing the codec-pin annotations
+  // (useCodecMatrices). null renders unannotated.
   codecMatrices?: Map<string, SupportMatrix> | null;
 }
 
@@ -51,8 +53,19 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
 
   const emit = () => onChange?.(encoderSettingsFromStore());
 
-  // Stacked, full-width (like the dev settings) — three fields with full
-  // codec strings overflow the side panel as a row.
+  // Every commit recreates the live encoder, so the field holds what is being
+  // typed ("0" on the way to "0.7", "2" on the way to "25") and commits on
+  // blur/Enter. null = not editing: the field shows the stored value.
+  const [bitrateDraft, setBitrateDraft] = useState<string | null>(null);
+  const commitBitrate = () => {
+    if (bitrateDraft === null) return;
+    const v = bitrateDraft.trim();
+    const mbps = Number(v);
+    setBitrateOverride(v === '' || !Number.isFinite(mbps) || mbps <= 0 ? null : mbps * 1e6);
+    setBitrateDraft(null);
+    emit();
+  };
+
   return (
     <div className={styles.stackedPicker}>
       <div className={styles.field}>
@@ -81,12 +94,11 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
           max={BITRATE_OVERRIDE_MAX / 1e6}
           step={0.5}
           placeholder="auto"
-          value={bitrateOverride === null ? '' : bitrateOverride / 1e6}
-          onChange={(e) => {
-            const v = e.target.value.trim();
-            const mbps = Number(v);
-            setBitrateOverride(v === '' || !Number.isFinite(mbps) || mbps <= 0 ? null : mbps * 1e6);
-            emit();
+          value={bitrateDraft ?? (bitrateOverride === null ? '' : bitrateOverride / 1e6)}
+          onChange={(e) => setBitrateDraft(e.target.value)}
+          onBlur={commitBitrate}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitBitrate();
           }}
         />
       </div>
@@ -114,10 +126,9 @@ export function EncoderSettingsPanel({ onChange, codecMatrices }: Props) {
           })}
         </select>
       </div>
-      {/* R15's "Enable audio (experimental)" checkbox lived here until
-          2026-07-23. System audio is on unconditionally now — there is
-          nothing to configure, and a browser that can't start a source is
-          handled in capture.ts, not by asking the broadcaster. */}
+      {/* No audio toggle: system audio is always on, and a browser that
+          can't start a source is handled in capture.ts, not by asking the
+          broadcaster. */}
     </div>
   );
 }

@@ -8,7 +8,7 @@ interface Props {
   onCancel: () => void;
 }
 
-// R42 (docs/44 D8): the secret a gated static room wants before it will carry
+// The secret a gated static room wants before it will carry
 // our stream. The grant rides RoomHello, not a command, so submitting this
 // re-dials the control session — see RoomView's attachSecret state.
 export function AttachSecretPrompt({ onSubmit, onCancel }: Props) {

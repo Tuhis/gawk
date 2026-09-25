@@ -51,11 +51,11 @@ the doc and link it instead.
   Chromium; falls back to a hidden `<video>` + `requestVideoFrameCallback` on
   Firefox (which lacks MSTP).
 - **Encode/decode**: WebCodecs `VideoEncoder` / `VideoDecoder`. Codec is
-  **negotiated**, not fixed: preference list `avc1.42E02A` → `avc1.640028` →
-  `avc1.42E01F` → `vp09.00.40.08` → `vp09.00.31.08` → `vp8`, each probed with a
-  cascade of hardware/latency config variants. H.264 hardware `realtime` mode
-  is the happy path (Chromium broadcaster on the gaming PC); the fallbacks
-  exist because Firefox's `VideoEncoder` support is much narrower.
+  **negotiated**, not fixed: H.264 profiles and levels first, then VP9, then
+  VP8 (`DEFAULT_CODEC_PREFERENCES` in `gawk-app/src/media/types.ts`), each
+  probed with a cascade of hardware/latency config variants. H.264 hardware
+  `realtime` mode is the happy path (Chromium broadcaster on the gaming PC);
+  the fallbacks exist because Firefox's `VideoEncoder` support is much narrower.
 - **Transport**: WebTransport datagrams (keyframes ride reliable uni streams)
 - **Relay server**: Custom Go server using `github.com/quic-go/webtransport-go`.
   Pub/sub hub — one publisher fans out encoded video datagrams to subscriber

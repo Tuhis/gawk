@@ -1,10 +1,9 @@
-// R17 W2 (docs/22 Decision 5): broadcaster auto-resume. On session death
-// mid-broadcast the pipeline keeps capture + encoder alive and reconnects
-// the transport only, presenting the relay-minted resume token (wire 0x09)
-// on the /publish/{id} claim; on re-attach it forces the next frame to be a
-// keyframe (stream + embedded config) while frameIDs continue — continuity
-// is the viewer's resume-vs-restart signal (Decision 6). Mocks mirror
-// broadcaster-keyframe.test.ts.
+// Broadcaster auto-resume. On session death mid-broadcast the pipeline keeps
+// capture + encoder alive and reconnects the transport only, presenting the
+// relay-minted resume token (wire 0x09) on the /publish/{id} claim; on
+// re-attach it forces the next frame to be a keyframe (stream + embedded
+// config) while frameIDs continue — continuity is the viewer's
+// resume-vs-restart signal. Mocks mirror broadcaster-keyframe.test.ts.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,6 +14,7 @@ import {
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
 } from './wire';
 import { ABRUPT_DROP_RETRY_DELAY_MS } from './reconnect';
+import { CAP_PARITY_CHUNKS, encodeRelayCapabilities } from './parity';
 
 const connectWebTransport = vi.fn();
 const startCapture = vi.fn();
@@ -331,6 +331,27 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     await pipeline.stop();
   });
 
+  // A resume can land on a relay that sends no capabilities (an older pod);
+  // the previous pod's parity level must not carry over.
+  it("drops the previous relay's parity level on resume", async () => {
+    const cbs = makeCallbacks();
+    const caps = encodeRelayCapabilities({ flags: CAP_PARITY_CHUNKS, parityLevel: 2 });
+    const { pipeline, first } = await startBroadcast(cbs, [ANNOUNCE_K7XQ2M, TOKEN_MSG, caps]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(cbs.onStats.mock.calls.at(-1)![0].parityLevel).toBe(2);
+
+    const second = makeFakeWT();
+    connectWebTransport.mockResolvedValueOnce(second.wt);
+    first.die(new Error('connection lost'));
+    await flush();
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS);
+    await flush();
+    expect(cbs.onResumed).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(cbs.onStats.mock.calls.at(-1)![0].parityLevel).toBe(0);
+    await pipeline.stop();
+  });
+
   it('reconnects immediately on a 4002 drain close', async () => {
     const cbs = makeCallbacks();
     const { pipeline, first } = await startBroadcast(cbs);
@@ -351,10 +372,10 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     await pipeline.stop();
   });
 
-  // R39 (docs/42 §4.4): 4006 is the operator's kill. Auto-resuming would
-  // burn the relay's 451 rejection budget for the whole cooldown — and the
-  // browser cannot even read that status (D15), so the pipeline would loop
-  // blind until the ladder ran out. 4004 is here for the same reason it is in
+  // 4006 is the operator's kill. Auto-resuming would burn the relay's 451
+  // rejection budget for the whole cooldown — and the browser cannot even
+  // read that status, so the pipeline would loop blind until the ladder ran
+  // out. 4004 is here for the same reason it is in
   // both natives: "newest publisher wins" only converges if the deposed
   // session stays down.
   it.each([
@@ -380,7 +401,7 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     await pipeline.stop();
   });
 
-  // R57 (docs/59 CN3): what Chrome actually delivers. The relay's close code
+  // What Chrome actually delivers. The relay's close code
   // never arrives — `closed` rejects "Connection lost." with none — so the
   // in-band SessionClosing is the only thing that stops a deposed publisher
   // from resuming straight back into a fight with the one that replaced it,
@@ -463,11 +484,9 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     expect(cbs.onReconnecting).not.toHaveBeenCalled();
   });
 
-  // R17 post-review fix (PR #47; CODE-REVIEW.md: error paths release what
-  // they acquired — a leaked WebTransport session is a zombie publisher
-  // holding the broadcast ID hostage until the tab closes). stop() racing
-  // the in-flight resume dial must close the fresh session, not adopt and
-  // abandon it.
+  // A leaked WebTransport session is a zombie publisher holding the
+  // broadcast ID hostage until the tab closes. stop() racing the in-flight
+  // resume dial must close the fresh session, not adopt and abandon it.
   it('stop() during an in-flight resume dial closes the fresh session', async () => {
     const cbs = makeCallbacks();
     const { pipeline, first } = await startBroadcast(cbs);

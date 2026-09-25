@@ -1,4 +1,4 @@
-// R42: the React glue between RoomSession (transport) and the room store.
+// The React glue between RoomSession (transport) and the room store.
 // One session per mount, keyed on the target; every callback lands in the
 // store, and the hook hands back the commands. The session dials on mount
 // (an explicit event — CODE-REVIEW's effect rule), never on re-render: the
@@ -19,8 +19,6 @@ export interface RoomCommands {
   detach: (broadcastId: string) => void;
   setNickname: (nickname: string) => void;
   endRoom: () => void;
-  // The code the session is joined to (a mint learns it from the first state).
-  code: () => string | null;
 }
 
 export interface UseRoomSessionArgs {
@@ -29,7 +27,7 @@ export interface UseRoomSessionArgs {
   clientKind: number;
   grant: RoomSessionGrant | null;
   // Bump to force a re-dial with an unchanged target and grant — the "try
-  // that key again" case (docs/44 D8). Any change re-dials; the value itself
+  // that key again" case. Any change re-dials; the value itself
   // means nothing.
   dialNonce?: number;
 }
@@ -56,7 +54,7 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
   // The grant is the same kind of thing: content identity, and a CHANGE is a
   // deliberate re-dial (a server change already is one). It has to be — the
   // grant rides RoomHello, so a secret supplied inside the room cannot travel
-  // as a command (docs/44 D8; RoomView's gated-out state).
+  // as a command (see RoomView's gated-out state).
   const grantKey = grant === null ? '' : JSON.stringify(grant);
 
   useEffect(() => {
@@ -65,44 +63,57 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
     const t = targetRef.current;
     if (t === null) return;
     store.setStatus('connecting');
-    const session = new RoomSession(
-      {
-        serverUrl,
-        certHashHex,
-        target: t,
-        nickname: nicknameRef.current,
-        clientKind: clientKindRef.current,
-        grant: grantRef.current,
-      },
-      {
-        onConnected: () => {},
-        onState: (state) => useRoomStore.getState().replaceState(state),
-        onEvent: (ev) => useRoomStore.getState().applyEvent(ev),
-        onReconnecting: (info) => {
-          log.info('room reconnecting:', info.reason);
-          useRoomStore
-            .getState()
-            .setStatus(
-              'reconnecting',
-              info.closeCode === CLOSE_CODE_SERVER_DRAINING ? DRAINING_NOTE : RECONNECTING_NOTE,
-            );
+    // Dial a macrotask later: StrictMode's development mount → cleanup →
+    // mount would otherwise reach the relay twice, and a room mint that
+    // arrives twice is refused the second time.
+    let session: RoomSession | null = null;
+    const dial = setTimeout(() => {
+      const s = new RoomSession(
+        {
+          serverUrl,
+          certHashHex,
+          target: t,
+          nickname: nicknameRef.current,
+          clientKind: clientKindRef.current,
+          grant: grantRef.current,
         },
-        onEnded: (reason) => useRoomStore.getState().setEnded(reason),
-        onError: (err) => {
-          log.error(`room session failed (${err.kind}):`, err.message);
-          useRoomStore.getState().setError(err.kind, err.message);
+        {
+          onConnected: () => {},
+          onState: (state) => useRoomStore.getState().replaceState(state),
+          onEvent: (ev) => useRoomStore.getState().applyEvent(ev),
+          onReconnecting: (info) => {
+            log.info('room reconnecting:', info.reason);
+            useRoomStore
+              .getState()
+              .setStatus(
+                'reconnecting',
+                info.closeCode === CLOSE_CODE_SERVER_DRAINING ? DRAINING_NOTE : RECONNECTING_NOTE,
+              );
+          },
+          onEnded: (reason) => useRoomStore.getState().setEnded(reason),
+          onError: (err) => {
+            log.error(`room session failed (${err.kind}):`, err.message);
+            useRoomStore.getState().setError(err.kind, err.message);
+          },
         },
-      },
-    );
-    sessionRef.current = session;
-    session.start().catch((err) => {
-      if (sessionRef.current !== session) return;
-      log.error(`room session failed (${err.kind}):`, err.message);
-      useRoomStore.getState().setError(err.kind, err.message);
-    });
+      );
+      session = s;
+      sessionRef.current = s;
+      s.start().catch((err) => {
+        if (sessionRef.current !== s) return;
+        log.error(`room session failed (${err.kind}):`, err.message);
+        useRoomStore.getState().setError(err.kind, err.message);
+      });
+    }, 0);
     return () => {
-      if (sessionRef.current === session) sessionRef.current = null;
-      session.stop();
+      clearTimeout(dial);
+      if (session !== null) {
+        if (sessionRef.current === session) sessionRef.current = null;
+        session.stop();
+      }
+      // The store outlives this screen; a later room view must not render
+      // (and dial the tiles of) this room before its own session resets it.
+      useRoomStore.getState().reset();
     };
     // targetKey / grantKey stand in for `target` and `grant` (content
     // identity, see above).
@@ -115,8 +126,7 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
   const detach = useCallback((id: string) => sessionRef.current?.detach(id), []);
   const setNickname = useCallback((n: string) => sessionRef.current?.setNickname(n), []);
   const endRoom = useCallback(() => sessionRef.current?.endRoom(), []);
-  const code = useCallback(() => sessionRef.current?.code ?? null, []);
 
   // One stable object: the room screen's attach effect depends on it.
-  return useMemo(() => ({ attach, detach, setNickname, endRoom, code }), [attach, detach, setNickname, endRoom, code]);
+  return useMemo(() => ({ attach, detach, setNickname, endRoom }), [attach, detach, setNickname, endRoom]);
 }

@@ -31,7 +31,7 @@ interface Props {
   // The broadcaster's own attached broadcast, if any (its row gets Detach
   // even for a non-creator — the attacher may detach its own).
   ownBroadcastId: string | null;
-  // A participant without a broadcast may start one (docs/44 §4.8).
+  // A participant without a broadcast may start one.
   onStartStreaming: (() => void) | null;
 }
 
@@ -42,7 +42,7 @@ function kindLabel(kind: number, flags: number): string {
   return 'viewer';
 }
 
-// R42 (docs/44 §4.9 revision): the people-and-chat panel. Streams (label,
+// The people-and-chat panel. Streams (label,
 // live/away, viewer count, open full-screen, the creator's detach), the
 // roster with its reserved speaking slot and the nickname edit, the reserved
 // chat area (rendered only when the room advertises the capability), and the
@@ -125,7 +125,7 @@ export function RoomPanel({
             const you = p.id === snapshot.yourId;
             return (
               <li key={p.id} className={styles.row} data-testid="person-row">
-                {/* Reserved: the voice speaking indicator (docs/44 §4.11). */}
+                {/* Reserved: the voice speaking indicator. */}
                 <span
                   className={styles.speaking}
                   data-on={(p.flags & ROOM_PARTICIPANT_FLAG_SPEAKING) !== 0 ? 'true' : 'false'}
@@ -185,7 +185,7 @@ export function RoomPanel({
         )}
       </section>
 
-      {/* Reserved (docs/44 §4.11): the chat slot renders only when the room
+      {/* Reserved: the chat slot renders only when the room
           advertises the capability — a v1 relay never does. */}
       {chat && (
         <section className={styles.section}>
@@ -195,9 +195,9 @@ export function RoomPanel({
         </section>
       )}
 
-      {/* The foot (revised 2026-09-23): only what acts on the room. Sharing
-          moved to the header's code chip (and the More menu); End room is
-          a quiet destructive line that asks before it ends anything. */}
+      {/* The foot: only what acts on the room (sharing lives on the header's
+          code chip and the More menu). End room is a quiet destructive line
+          that asks before it ends anything. */}
       {(onStartStreaming || (creator && dynamic)) && (
       <div className={styles.panelFoot}>
         {onStartStreaming && (

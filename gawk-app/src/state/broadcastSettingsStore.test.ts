@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-// R4 (docs/09 I3): the resolution axis defaults to 'auto' when the
-// localStorage key is missing or invalid; a previously persisted explicit
-// rung (including 'native') keeps its exact meaning. The store reads
+// The resolution axis defaults to 'auto' when the localStorage key is
+// missing or invalid; a previously persisted explicit rung (including
+// 'native') keeps its exact meaning. The store reads
 // localStorage at module-evaluation time, so each case resets modules and
 // re-imports with a fresh localStorage.
 
@@ -66,9 +66,8 @@ describe('broadcastSettingsStore resolution selection', () => {
 });
 
 describe('broadcastSettingsStore framerate selection (R13)', () => {
-  // docs/18 Decision 4: the default is 'auto' (probe-resolved — 60 when
-  // hardware supports it, else 30). A previously persisted explicit rung
-  // keeps its exact meaning across the widening.
+  // The default is 'auto' (probe-resolved: 60 when hardware supports it,
+  // else 30). A previously persisted explicit rung keeps its exact meaning.
   it('defaults to auto when nothing is persisted', async () => {
     const s = await loadStore();
     expect(s.framerateSelection).toBe('auto');
@@ -143,5 +142,43 @@ describe('broadcastSettingsStore advanced axes (R13 L4)', () => {
     expect(localStorage.getItem('gawk.codecOverride')).toBe('vp8');
     s.setCodecOverride(null);
     expect(localStorage.getItem('gawk.codecOverride')).toBeNull();
+  });
+});
+
+describe('broadcastSettingsStore with storage unavailable', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('loads defaults and still applies changes when every storage call throws', async () => {
+    const denied = () => {
+      throw new DOMException('Access is denied for this document.', 'SecurityError');
+    };
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(denied);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(denied);
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(denied);
+
+    const s = await loadStore();
+    expect(s).toMatchObject({
+      resolutionSelection: 'auto',
+      framerateSelection: 'auto',
+      hwPreference: 'auto',
+      bitrateOverride: null,
+      codecOverride: null,
+    });
+
+    s.setResolutionSelection(720);
+    s.setFramerateSelection(60);
+    s.setHwPreference('software');
+    s.setBitrateOverride(2_000_000);
+    s.setCodecOverride('vp8');
+    const { useBroadcastSettingsStore } = await import('./broadcastSettingsStore');
+    expect(useBroadcastSettingsStore.getState()).toMatchObject({
+      resolutionSelection: 720,
+      framerateSelection: 60,
+      hwPreference: 'software',
+      bitrateOverride: 2_000_000,
+      codecOverride: 'vp8',
+    });
   });
 });

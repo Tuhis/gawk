@@ -70,9 +70,9 @@ describe('ContextMenu', () => {
 });
 
 // Placement. jsdom measures everything as 0×0, so these stub the menu's
-// rendered size — the anchor math is pure arithmetic over it, and it is
-// load-bearing: a real-browser check caught the bottom-right case covering
-// the very button that opens it (docs/24 review finding PRODUCT-2).
+// rendered size: the anchor math is pure arithmetic over it, and it is
+// load-bearing (the bottom-right case must not cover the very button that
+// opens it).
 describe('ContextMenu placement', () => {
   // The component measures its layout box (offsetWidth/Height) — jsdom
   // reports 0 for both, as it does for getBoundingClientRect.
@@ -111,12 +111,10 @@ describe('ContextMenu placement', () => {
     expect(menu().style.top).toBe('8px');
   });
 
-  // R32 UX1.1. The menu grew past the viewport as milestones added rows (17 in
-  // the worst pre-R32 case, ~740 px at the touch row height) and had neither a
-  // max-height nor an overflow rule — so on a phone in landscape the tail of
-  // the menu simply rendered below the screen with no way to reach it. The
-  // clamp floors `top` at PAD, which keeps the *head* on screen and says
-  // nothing about the tail.
+  // A long menu can outgrow the viewport (a phone in landscape); without a
+  // max-height and an overflow rule its tail renders below the screen with no
+  // way to reach it. The clamp floors `top` at PAD, which keeps the *head* on
+  // screen and says nothing about the tail.
   it('caps its height to the viewport and scrolls, so the last item stays reachable', () => {
     // A menu taller than jsdom's 768 px viewport.
     sized(200, 1400);
@@ -129,12 +127,11 @@ describe('ContextMenu placement', () => {
   });
 });
 
-// R32 UX1.2–UX1.4: the state and availability vocabulary the viewer settings
-// need. Before this, a "checked" item was a '✓' glued onto the label string —
-// no aria-checked, and an accessible name that changed when only the state
-// did — and there was no way to render an option that exists but does not
-// apply, which is why R19/R29/R30 controls were filtered out of the array
-// instead (docs/37 §1.2).
+// The state and availability vocabulary the viewer settings need: a checked
+// item carries aria-checked rather than a '✓' glued onto its label (which
+// would change the accessible name when only the state does), and an option
+// that exists but does not apply renders disabled instead of being filtered
+// out of the array.
 describe('ContextMenu item state', () => {
   const menu = () => screen.getByRole('menu');
 

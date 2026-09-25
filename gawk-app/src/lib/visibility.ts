@@ -14,14 +14,9 @@
 // The counter is what makes an interval answerable. A sample is an instant, but
 // every rate in these stats is measured over the gap between samples, so
 // "hidden right now" cannot say whether the window that produced a number was
-// clean. A delta between two counter readings can, and counter-deltas are
-// already how the live projection and the rollup read this kind of signal
-// (docs/33 TM10) — so this composes with machinery that exists rather than
-// needing its own.
+// clean. A delta between two counter readings can.
 //
-// Lives on the main thread by necessity: `document` does not exist in a worker.
-// That keeps D13 intact — collection stays main-thread and adds no worker
-// message, on either surface.
+// Main thread only: `document` does not exist in a worker.
 
 export interface VisibilitySample {
   documentHidden: boolean;

@@ -36,13 +36,13 @@ import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
 import type { TelemetryHelloMessage } from '../../transport/wire';
 import { buildViewLink } from '../../lib/shareLink';
+import { relayHost } from '../../lib/relayUrl';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
 import { fmt, fmtWatching } from '../../lib/format';
 import { HOME } from '../../routing';
 import { log } from '../../lib/logger';
-// R42 RM5 (docs/44 §4.8): the Room panel and the in-page room view.
 import { RoomView, type RoomHeaderContext } from '../room/RoomScreen';
 import type { RoomTarget } from '../../transport/room-session';
 import { parseGrant, readGrant, type RoomGrant } from '../room/grantHandoff';
@@ -51,9 +51,8 @@ import { BACKGROUND_STOP_NOTE, BackgroundWatchdog } from './backgroundWatchdog';
 import { loadNickname } from '../room/roomPrefs';
 import { parseRoomLink } from '../../lib/roomCode';
 import { MAX_ROOM_LABEL_LEN } from '../../transport/wire';
-// R24 (docs/30): browser-aware capture & audio guidance — words + dismissible
-// reactive notes, gated on the real audio capability (never UA sniffing) and
-// never on the start path.
+// Capture and audio guidance is gated on the real audio capability (never UA
+// sniffing) and never sits on the start path.
 import {
   AUDIO_SETTINGS,
   AUDIO_TIP,
@@ -72,20 +71,18 @@ import {
 
 type Status = 'idle' | 'connecting' | 'broadcasting' | 'reconnecting' | 'stopping' | 'error';
 
-// R42: a room chosen before the broadcast is live, joined — or, for
-// `create`, minted — the moment it is. `nickname` undefined ⇒ the room view
-// asks / remembers as usual; a string or null is an answer the hop from a
-// room already has (roomReturn.ts).
+// A room chosen before the broadcast is live, joined — or, for `create`,
+// minted — the moment it is. `nickname` undefined ⇒ the room view asks /
+// remembers as usual; a string or null is an answer the hop from a room
+// already has (roomReturn.ts).
 type PendingRoom =
   | { kind: 'join'; code: string; grant: RoomGrant | null; nickname: string | null | undefined }
   | { kind: 'create' };
 
-// R15 (docs/20): system audio is unconditional on the production broadcaster
-// since 2026-07-23 — the experimental toggle is gone. capture.ts owns the
-// degradation (a browser that can't start a source gets a video-only grant,
-// reported as audioState 'unavailable'), so there is nothing to decide here.
-// The frozen `#/debug/*` surfaces keep plain DEFAULT_CAPTURE_CONFIG — audio
-// absent — and stay byte-identical.
+// System audio is always requested. capture.ts owns the degradation (a
+// browser that can't start a source gets a video-only grant, reported as
+// audioState 'unavailable'), so there is nothing to decide here. The
+// `#/debug/*` surfaces keep plain DEFAULT_CAPTURE_CONFIG, audio absent.
 const BROADCASTER_CAPTURE_CONFIG: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG, audio: true };
 
 // Stops a display grant after a failed start. A start that fails before the
@@ -122,21 +119,12 @@ function TipLine({ copy }: { copy: TipCopy }) {
   );
 }
 
-function serverHost(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
-
-// The production broadcaster (docs/10 J5): preview-hero, controls float, and
-// R3/R4 feedback as quiet badges. Reuses BroadcastPipeline and the reclaim→mint
-// fallback verbatim; LadderPicker drops into the gear panel. Server URL / cert
-// hash are developer-only (localhost); the publish secret is asked at start
-// when the deploy requires one (config.requirePublishSecret).
+// The production broadcaster: the preview is the hero, controls float over it
+// and encoder feedback shows as quiet badges. A restart reclaims the previous
+// broadcast ID and falls back to minting a new one.
 export function BroadcasterScreen() {
   const pipelineRef = useRef<BroadcastSessionLike | null>(null);
+  const unmountedRef = useRef(false);
   // The display grant of the latest start. The screen owns it (handleStart
   // requests it in the click), so the unmount cleanup releases it: leaving
   // mid-connect stops a session that never consumed it and whose start()
@@ -162,25 +150,25 @@ export function BroadcasterScreen() {
   const watchdogRef = useRef(new BackgroundWatchdog());
   const [backgroundStopNote, setBackgroundStopNote] = useState<string | null>(null);
   const [resumeAttempt, setResumeAttempt] = useState<number | null>(null);
-  // R17 W2: the relay-minted resume token, kept next to the broadcast ID (a
-  // ref, not state — nothing renders it) so a manual restart can reclaim.
+  // The relay-minted resume token, kept next to the broadcast ID (a ref, not
+  // state — nothing renders it) so a manual restart can reclaim.
   const resumeTokenRef = useRef<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [secretPrompt, setSecretPrompt] = useState(false);
   const [secretDraft, setSecretDraft] = useState('');
-  // R37 (docs/40 §4.2 F3): set when a secret-less connect to a non-default
-  // relay failed — the retry path out of an otherwise opaque CONNECT 401.
+  // Set when a secret-less connect to a non-default relay failed: the retry
+  // path out of an otherwise opaque CONNECT 401.
   const [secretPromptNote, setSecretPromptNote] = useState<string | null>(null);
-  // R23 (docs/29): one-time terms acknowledgment, shown before the first
-  // broadcast's transport connect (ahead of the secret prompt below).
+  // One-time terms acknowledgment, shown before the first broadcast's
+  // transport connect (ahead of the secret prompt below).
   const [termsPrompt, setTermsPrompt] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [statsCopied, setStatsCopied] = useState(false);
 
-  // R42 RM5 (docs/44 §4.8): the Room panel. `roomTarget` set ⇒ the page
-  // renders the room view in place of the preview, with the publish session
-  // untouched in pipelineRef — no hash change, the broadcast never stops.
+  // `roomTarget` set ⇒ the page renders the room view in place of the
+  // preview, with the publish session untouched in pipelineRef — no hash
+  // change, the broadcast never stops.
   //
   // A room can only be joined by a LIVE broadcast (the attach is proven with
   // the resume token, which does not exist before the relay minted the ID),
@@ -222,13 +210,13 @@ export function BroadcasterScreen() {
   // broadcaster stays in the room as a participant; no re-attach follows.
   const [ownDetached, setOwnDetached] = useState(false);
 
-  // R24 (docs/30): audio capability answered once, by feature detection. Drives
-  // the browser-aware copy and gates the runtime audio-missing note — Firefox
+  // Audio capability answered once, by feature detection. Drives the
+  // browser-aware copy and gates the runtime audio-missing note — Firefox
   // (unsupported) is never nagged about audio it cannot have.
   const [audioSupported] = useState(() => audioLaneSupported());
   const guidance = audioGuidanceForBrowser(audioSupported);
   // Reactive notes are an onboarding aid: dismissible, and the dismissal is
-  // remembered so an experienced broadcaster is never nagged (decisions 3–4).
+  // remembered so an experienced broadcaster is never nagged.
   const [audioHintDismissed, setAudioHintDismissed] = useState(() =>
     isHintDismissed(HINT_AUDIO_MISSING_KEY),
   );
@@ -240,25 +228,21 @@ export function BroadcasterScreen() {
   // smoothly with it instead of snapping.
   const [tipsOpen, setTipsOpen] = useState(false);
 
-  // R9 M7: rolling stat samples backing "Copy diagnostics" + the sent bitrate.
+  // Rolling stat samples backing "Copy diagnostics" + the sent bitrate.
   const diagRef = useRef(new DiagnosticsBuffer<BroadcastStats>());
 
-  // R28 (docs/33 D13): the send-side collector. Same objects the overlay
-  // renders and the diagnostics buffer already holds — this adds a pipe, not
-  // a measurement.
+  // The send-side telemetry collector samples the same objects the overlay
+  // renders and the diagnostics buffer holds — a pipe, not a measurement.
   const telemetry = useTelemetryCollector<BroadcastStats>('broadcaster');
 
   const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
 
-  // R13 (docs/18 L4): probe matrices for picker + codec-pin annotations —
-  // advisory only; the overlay's Encode mode row shows the runtime truth.
-  // The per-codec set is the expensive one and only probes once the
-  // settings panel is open (lazy — see useCodecMatrices).
+  // Probe matrices for picker + codec-pin annotations — advisory only; the
+  // overlay's Encode mode row shows the runtime truth. The per-codec set is
+  // the expensive one and only probes once the settings panel is open.
   const supportMatrix = useSupportMatrix();
   const codecMatrices = useCodecMatrices(settingsOpen);
 
-  // R37 (docs/40 §4.3, F1): the server picker replaced the dev-only inline
-  // panel; the resolved server renders in the settings section for context.
   const [showServerPicker, setShowServerPicker] = useState(false);
   const resolvedServerUrl = useTransportStore((s) => s.serverUrl);
 
@@ -275,7 +259,7 @@ export function BroadcasterScreen() {
     // session: Safari honours getDisplayMedia only from the user-gesture
     // handler itself, and the worker boot + relay connect that precede
     // capture outlast it ("getDisplayMedia must be called from a user gesture
-    // handler"). Chromium's ~5 s activation window used to hide this. Nothing
+    // handler"); Chromium's ~5 s activation window hides this. Nothing
     // may be awaited above this line. A reclaim that falls back to a mint
     // reuses the same grant — one picker per click.
     const grant = acquireDisplayStream(BROADCASTER_CAPTURE_CONFIG);
@@ -332,8 +316,8 @@ export function BroadcasterScreen() {
         resumeTokenRef.current = token;
         setResumeReady(true);
       },
-      // R17 W2 auto-resume: session death mid-broadcast is no longer
-      // terminal — amber "reconnecting" until the transport re-attaches.
+      // Session death mid-broadcast is not terminal: amber "reconnecting"
+      // until the transport auto-resume re-attaches.
       onReconnecting: (info: { attempt: number }) => {
         telemetry.event('reconnect', `attempt ${info.attempt}`);
         setResumeAttempt(info.attempt);
@@ -343,7 +327,7 @@ export function BroadcasterScreen() {
         telemetry.event('resumed');
         setResumeAttempt(null);
         setStatus('broadcasting');
-        // R42: the relay's grace GC may have dropped the attachment while the
+        // The relay's grace GC may have dropped the attachment while the
         // publisher was away; the room view re-sends Attach (idempotent).
         setAttachEpoch((e) => e + 1);
       },
@@ -367,18 +351,18 @@ export function BroadcasterScreen() {
         pipelineRef.current = null;
         setStatus((prev) => (prev === 'error' ? prev : 'idle'));
       },
-      // R28: this session's telemetry identity (wire 0x0D). A transport
-      // auto-resume delivers a new one, which begins a new telemetry session —
-      // the relay session it describes really is a different one.
+      // This session's telemetry identity. A transport auto-resume delivers a
+      // new one, which begins a new telemetry session — the relay session it
+      // describes really is a different one.
       onTelemetryHello: (hello: TelemetryHelloMessage) => {
         telemetry.begin(hello);
       },
-      // R37 (docs/40 D15/D16): the relay-advertised ingest URL; the
-      // disclosure flips only when this session is on a foreign relay.
+      // The relay-advertised ingest URL; the disclosure flips only when this
+      // session is on a foreign relay.
       onTelemetryEndpoint: (url: string) => {
         telemetry.setAdvertisedUrl(url);
-        // URL-keyed, not id-keyed (G3): a saved duplicate of the deployment's
-        // own relay is not foreign.
+        // URL-keyed, not id-keyed: a saved duplicate of the deployment's own
+        // relay is not foreign.
         if (!resolvedUrlIsDefault()) {
           useTransportStore.getState().setForeignTelemetryActive(true);
         }
@@ -396,12 +380,16 @@ export function BroadcasterScreen() {
       const pipeline = await createBroadcastSession(
         BROADCASTER_CAPTURE_CONFIG,
         serverUrl,
-        // R17 W2: the reclaim needs the resume token from the prior session.
+        // The reclaim needs the resume token from the prior session.
         { certHashHex, publishSecret, resumeToken: resumeTokenRef.current ?? undefined },
         makeCallbacks(false),
         activeId,
         grant,
       );
+      if (unmountedRef.current) {
+        void pipeline.stop();
+        return;
+      }
       pipeline.setLadder(res, framerateSelection);
       pipeline.setEncoderSettings(encoderSettingsFromStore());
       pipelineRef.current = pipeline;
@@ -426,10 +414,9 @@ export function BroadcasterScreen() {
         log.warn('Reclaim failed, falling back to mint:', e);
         setBroadcastId(null);
         resumeTokenRef.current = null;
-        // The latch goes with the token (PR #302 review): the minted session
-        // reports its ID and goes live before its own token arrives, and a
-        // stale `true` here let a pending room dial as a viewer with nothing
-        // to attach.
+        // The latch goes with the token: the minted session reports its ID
+        // and goes live before its own token arrives, and a stale `true` here
+        // would let a pending room dial as a viewer with nothing to attach.
         setResumeReady(false);
         activeId = null;
       }
@@ -444,6 +431,10 @@ export function BroadcasterScreen() {
       undefined,
       grant,
     );
+    if (unmountedRef.current) {
+      void pipeline.stop();
+      return;
+    }
     pipeline.setLadder(res, framerateSelection);
     pipeline.setEncoderSettings(encoderSettingsFromStore());
     pipelineRef.current = pipeline;
@@ -457,11 +448,11 @@ export function BroadcasterScreen() {
       // start() rejection.
       setSourceStream(null);
       pipelineRef.current = null;
-      // R37 (docs/40 §4.2 F3): a connect-phase failure against a non-default
-      // relay with no secret presented is offered as "may require a publish
-      // secret" + retry — the relay answers a missing secret with a 401 the
-      // browser surfaces opaquely, so without this the foreign-secured-relay
-      // case dead-ends indistinguishable from "unreachable".
+      // A connect-phase failure against a non-default relay with no secret
+      // presented is offered as "may require a publish secret" + retry — the
+      // relay answers a missing secret with a 401 the browser surfaces
+      // opaquely, so without this the foreign-secured-relay case dead-ends
+      // indistinguishable from "unreachable".
       const resolved = useTransportStore.getState();
       if (
         e instanceof BroadcastStartError &&
@@ -489,8 +480,8 @@ export function BroadcasterScreen() {
   }, []);
 
   // Past the terms gate: ask for a publish secret first when one is called
-  // for. R37 (docs/40 §4.2 F3): the decision is per resolved server, not per
-  // deployment — config.requirePublishSecret governs only the pinned default
+  // for. The decision is per resolved server, not per deployment —
+  // config.requirePublishSecret governs only the pinned default
   // (pre-filled with any stored value so returning broadcasters just
   // confirm); any other resolved server prompts exactly when its entry holds
   // no secret. Otherwise start straight away.
@@ -507,8 +498,8 @@ export function BroadcasterScreen() {
     void handleStart();
   }, [handleStart]);
 
-  // "Start a stream" entry point. R23 (docs/29 D5): the terms acknowledgment
-  // gate comes first — before connect, before the secret prompt — so nothing
+  // "Start a stream" entry point. The terms acknowledgment gate comes
+  // first — before connect, before the secret prompt — so nothing
   // touches the transport until the broadcaster has accepted (once per terms
   // version). Viewers are never gated; only broadcasting carries the gate.
   const beginStart = useCallback(() => {
@@ -526,7 +517,7 @@ export function BroadcasterScreen() {
   }, [proceedStart]);
 
   const submitSecret = useCallback(() => {
-    // Per-resolved-server storage (F3): the setter writes to whatever entry
+    // Per-resolved-server storage: the setter writes to whatever entry
     // the store resolves to — the default's record, a saved entry, or
     // session-only memory for an unsaved link override.
     useTransportStore.getState().setPublishSecret(secretDraft.trim());
@@ -545,7 +536,11 @@ export function BroadcasterScreen() {
   }, [broadcastId]);
 
   useEffect(() => {
+    unmountedRef.current = false;
     return () => {
+      // A session still being created (the worker boot is awaited) sees this
+      // and stops instead of starting: nothing would ever stop it otherwise.
+      unmountedRef.current = true;
       void pipelineRef.current?.stop();
       if (grantRef.current) releaseGrant(grantRef.current);
     };
@@ -555,9 +550,8 @@ export function BroadcasterScreen() {
   // media" to the browser, so an idle broadcaster's OS dims and then sleeps
   // the display — and on macOS a slept display can stop delivering
   // getDisplayMedia frames, which takes the whole broadcast down rather than
-  // just dimming one desk. Held through 'reconnecting' (R17 auto-resume keeps
-  // capture and the encoder alive across it — the broadcast never stopped).
-  // See lib/useWakeLock.ts.
+  // just dimming one desk. Held through 'reconnecting': auto-resume keeps
+  // capture and the encoder alive across it.
   useWakeLock(status === 'broadcasting' || status === 'reconnecting');
 
   const copyDiagnostics = useCallback(() => {
@@ -581,8 +575,8 @@ export function BroadcasterScreen() {
 
   useHotkey(STATS_HOTKEY, () => setShowStats((s) => !s));
 
-  // R42 RM5: the two ways into a room from the broadcast page — join a code
-  // or link, or create one.
+  // The two ways into a room from the broadcast page: join a code or link,
+  // or create one.
   const live = status === 'broadcasting' || status === 'reconnecting';
   const canMint = live && broadcastId !== null && resumeReady;
   const enterRoom = useCallback((target: RoomTarget, grant: RoomGrant | null) => {
@@ -611,7 +605,7 @@ export function BroadcasterScreen() {
     if (!broadcastId || !token) return;
     enterRoom({ kind: 'mint', broadcastId, resumeTokenHex: token, label: roomLabel.trim() }, null);
   }, [broadcastId, roomLabel, enterRoom]);
-  // A room is minted from a running broadcast (§4.4); asked for before the
+  // A room is minted from a running broadcast; asked for before the
   // stream is live, it waits the same way a join does.
   const newRoom = useCallback(() => {
     if (canMint) {
@@ -709,21 +703,18 @@ export function BroadcasterScreen() {
           />
         </section>
 
-        {/* R24 (docs/30 CG4): a read-only echo of the browser-aware audio
-            status — there is no audio *setting* to offer (R15 graduated to
-            always-on), so this is information, not a control. */}
+        {/* A read-only echo of the browser-aware audio status: audio is
+            always captured, so there is no setting to offer here. */}
         <section className={styles.group}>
           <h3 className={styles.groupTitle}>Audio</h3>
           <p className={styles.settingsAudioNote}>{AUDIO_SETTINGS[guidance]}</p>
         </section>
 
-        {/* R37 (docs/40 §4.3): the server picker replaced the dev-only inline
-            fields (F1) — a production surface gated by allowCustomRelays. */}
         {allowCustomRelays() && (
           <section className={styles.group}>
             <h3 className={styles.groupTitle}>Server</h3>
             <p className={styles.settingsAudioNote}>
-              Broadcasting to {serverHost(resolvedServerUrl)}
+              Broadcasting to {relayHost(resolvedServerUrl)}
             </p>
             <Button
               variant="secondary"
@@ -735,7 +726,6 @@ export function BroadcasterScreen() {
           </section>
         )}
 
-        {/* R23 (docs/29): terms reachable from the broadcaster's settings. */}
         <div className={styles.settingsFoot}>
           <a href="#/terms">Terms of use</a>
         </div>
@@ -743,11 +733,10 @@ export function BroadcasterScreen() {
     </>
   );
 
-  // R42 RM5 (docs/44 §4.8, §4.9 "ways in"; simplified 2026-09-23): the Room
-  // panel — the server picker's idiom (a topbar IconButton opening a glass
-  // sheet). One field joins a code or a link, one button creates a room;
-  // either, used before the stream is live, waits on the card as a pending
-  // room. The name is a line, not a section.
+  // The Room panel, in the server picker's idiom (a topbar IconButton opening
+  // a glass sheet). One field joins a code or a link, one button creates a
+  // room; either, used before the stream is live, waits on the card as a
+  // pending room.
   const roomPanel = roomPanelOpen && (
     <>
       <div className={styles.scrim} onClick={() => setRoomPanelOpen(false)} />
@@ -870,10 +859,9 @@ export function BroadcasterScreen() {
 
   // The live topbar — LIVE · code · watching · badges | sending · stats ·
   // settings · room · stop — is the same element on the plain live stage
-  // and over the room's stage (docs/44 §4.8 revision 2026-09-05, direction
-  // A): in a room it gains the room pill and its Room button toggles the
-  // people panel instead of the join sheet, and it follows the room's
-  // chrome fade and panel offset.
+  // and over the room's stage: in a room it gains the room pill and its Room
+  // button toggles the people panel instead of the join sheet, and it
+  // follows the room's chrome fade and panel offset.
   const topbar = (room: RoomHeaderContext | null) => (
     <div
       className={[styles.topbar, room && !room.showChrome ? styles.topbarHidden : ''].join(' ')}
@@ -897,8 +885,6 @@ export function BroadcasterScreen() {
             Reconnecting{resumeAttempt != null ? ` (attempt ${resumeAttempt})` : ''}…
           </span>
         )}
-        {/* R18 (docs/23 Decision 7): the live audience figure, in the
-            topbar slot docs/10 reserved for it. */}
         {stats?.viewerCount != null && (
           <span className={`${styles.badge} ${styles.watchingBadge}`}>
             <EyeIcon /> {fmtWatching(stats.viewerCount)}
@@ -947,7 +933,6 @@ export function BroadcasterScreen() {
             <PeopleIcon />
           </IconButton>
         ) : (
-          /* R42 RM5: the Room panel, in the server-picker idiom. */
           <IconButton label="Room" onClick={toggleRoomPanel}>
             <PeopleIcon />
           </IconButton>
@@ -959,7 +944,7 @@ export function BroadcasterScreen() {
     </div>
   );
 
-  // R42 RM5 (direction A): the room's stage under the broadcaster's topbar.
+  // The room's stage under the broadcaster's topbar.
   // The preview <video> stays mounted (hidden) so its srcObject survives the
   // hop back; the own tile paints the same stream. No own-tile glass bar —
   // Stop / Settings / Stats are in the topbar, Detach is in the panel — and
@@ -1011,8 +996,8 @@ export function BroadcasterScreen() {
     );
   }
 
-  // R24 (docs/30 CG3): reactive live notes, read from signals that already
-  // exist — stats.audioState (from the pipeline) and the preview stream's
+  // Reactive live notes, read from signals that already exist —
+  // stats.audioState (from the pipeline) and the preview stream's
   // capture surface (UI-local, fully optional-chained so a teardown race or a
   // trackless test fake yields undefined → no hint, never a throw). Each fires
   // only where it is actionable and not previously dismissed.
@@ -1118,12 +1103,8 @@ export function BroadcasterScreen() {
               <Button className={styles.startBtn} onClick={beginStart}>
                 <PlayIcon /> Start a stream
               </Button>
-              {/* R24 (docs/30 CG2): a collapsed-by-default disclosure —
-                  controlled (not native <details>) so the reveal animates its
-                  real height, letting the card grow smoothly with it. Toggling
-                  it touches nothing on the start path. Experienced eyes skip
-                  the one quiet line; a first-timer opens the browser-aware
-                  tips. */}
+              {/* Collapsed by default; toggling it touches nothing on the
+                  start path. */}
               <div className={styles.tips}>
                 <button
                   type="button"
@@ -1204,8 +1185,8 @@ export function BroadcasterScreen() {
       )}
 
       {showServerPicker && <ServerPickerPanel onClose={() => setShowServerPicker(false)} />}
-      {/* R37 (docs/40 §4.3 F2): rendered before capture is granted or a
-          secret entered — the crafted-link warning lives on this screen. */}
+      {/* Rendered before capture is granted or a secret entered, so the
+          crafted-link warning shows before either. */}
       <ServerIndicator />
 
       {secretPrompt && (

@@ -2,8 +2,8 @@ export function fmt(n: number, digits = 1): string {
   return Number.isFinite(n) ? n.toFixed(digits) : '—';
 }
 
-// Nullable-friendly variants for the R9 overlays: connection stats are null
-// wherever the browser doesn't expose them, and render as "—".
+// Nullable-friendly variants: stats the browser doesn't expose are null and
+// render as "—".
 
 export function fmtOr(n: number | null | undefined, digits = 1): string {
   return n == null ? '—' : fmt(n, digits);
@@ -13,10 +13,7 @@ export function fmtInt(n: number | null | undefined): string {
   return n == null || !Number.isFinite(n) ? '—' : String(Math.round(n));
 }
 
-// R18: the "N watching" badge text on both production surfaces. The wire
-// carries the honest total — a lone viewer reads "1 watching" (any
-// "besides you" presentation would be a client-side subtraction; docs/23
-// Decision 1 keeps the raw number).
+// The relay's honest total: a lone viewer reads "1 watching".
 export function fmtWatching(count: number): string {
   return `${count} watching`;
 }

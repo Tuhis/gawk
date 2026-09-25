@@ -7,16 +7,16 @@ import { isValidBroadcastId } from '../../lib/broadcastId';
 import { SITE_DOWNLOAD_URL, SITE_URL, SOURCE_URL } from '../../config';
 import { ServerChip } from '../servers/ServerChip';
 
-// The front door (docs/10 J2). Segmented code entry is the hero; a smaller
+// The front door. Segmented code entry is the hero; a smaller
 // "start a stream" affordance sits below. A friend handed a #/view/<id> link
 // never sees this page.
 export function LandingPage() {
   const [code, setCode] = useState('');
   const valid = isValidBroadcastId(code);
 
-  // R42 (docs/44 D19): a typed code may name a room or a broadcast; the
-  // #/join/ resolver asks the relay and lands on whichever it is. No
-  // "start a room" here on purpose — rooms are made from a running broadcast.
+  // A typed code may name a room or a broadcast; the #/join/ resolver asks
+  // the relay and lands on whichever it is. No "start a room" here on
+  // purpose: rooms are made from a running broadcast.
   const join = (id: string = code) => {
     if (isValidBroadcastId(id)) window.location.hash = `#/join/${id}`;
   };
@@ -50,19 +50,16 @@ export function LandingPage() {
         </button>
       </GlassPanel>
 
-      {/* R37 (docs/40 §4.3): the server chip — quiet on the default relay so
-          join-by-code reads exactly as before; hidden when the deployment
-          disallows custom relays. */}
+      {/* The server chip: quiet on the default relay, hidden when the
+          deployment disallows custom relays. */}
       <div className={styles.chipRow}>
         <ServerChip />
       </div>
 
-      {/* R23 (docs/29): terms reachable from the front door, unobtrusively —
-          joined since the repository went public by a source link, and since
-          R46 (docs/46 §6) by the project site and its Download section, the
-          latter because the native apps are the one thing this UI may send
-          someone to fetch. All the same quiet weight; the outbound ones open
-          a new tab so the join card is never lost. */}
+      {/* Unobtrusive links, all the same quiet weight. "Get the app" is here
+          because the native apps are the one thing this UI may send someone
+          to fetch; the outbound links open a new tab so the join card is
+          never lost. */}
       <footer className={styles.foot}>
         <a href={SITE_URL} target="_blank" rel="noopener noreferrer">
           About

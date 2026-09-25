@@ -1,23 +1,22 @@
-// R22 (docs/27 Decisions 2/5/6): the main-thread half of iPhone native
-// fullscreen. The viewer worker muxes the encoded stream into fMP4 segments
-// (fmp4-muxer.ts); this module owns what must live on the main thread — the
-// ManagedMediaSource, its SourceBuffer, and the hidden presentation <video>
-// the fullscreen tap targets. Constructed only on gated (element-fullscreen-
-// less) devices after the capability probe passes, so every other platform is
-// byte-identical.
+// The main-thread half of iPhone native fullscreen. The viewer worker muxes
+// the encoded stream into fMP4 segments (fmp4-muxer.ts); this module owns what
+// must live on the main thread — the ManagedMediaSource, its SourceBuffer, and
+// the hidden presentation <video> the fullscreen tap targets. Constructed only
+// on gated (element-fullscreen-less) devices after the capability probe
+// passes, so no other platform runs any of it.
 //
 // ManagedMediaSource (MMS) is the MSE variant iPhone actually ships (iOS
 // 17.1+; plain MediaSource may be undefined there). The system paces appends
 // via `streaming` + startstreaming/endstreaming and evicts old buffered
-// ranges itself; where only classic MediaSource exists (desktop Chrome — the
-// CI proof, docs/27 Decision 10) the presenter prunes manually.
+// ranges itself; where only classic MediaSource exists (desktop Chrome, where
+// CI exercises this) the presenter prunes manually.
 
 import { log } from '../../lib/logger';
 import { aacMime, opusMime, type AudioMuxCodec, type Fmp4Track } from '../../transport/fmp4-muxer';
 import { AAC_CODEC } from '../../transport/audio-transcode';
 
 // ---------------------------------------------------------------------------
-// Capability probe (MF2)
+// Capability probe
 
 export interface MseProbeResult {
   supported: boolean;
@@ -27,7 +26,7 @@ export interface MseProbeResult {
 }
 
 // The audio verdict also says WHICH encapsulation won, since that decides
-// whether the worker transcodes (docs/27 finding 4).
+// whether the worker transcodes.
 export interface MseAudioProbe extends MseProbeResult {
   codec: AudioMuxCodec | null;
 }
@@ -68,9 +67,8 @@ export function getMediaSourceCtor(): MediaSourceCtor | null {
   return g.ManagedMediaSource ?? g.MediaSource ?? null;
 }
 
-// The capability verdict for a negotiated codec (docs/27 MF2). H.264-only in
-// v1 (Decision 11): VP8/VP9-in-fMP4 support on iOS is unreliable and the
-// muxing differs, so a VP broadcast probes false and the button falls back to
+// The capability verdict for a negotiated codec. H.264 only: VP8/VP9-in-fMP4
+// support on iOS is unreliable and the muxing differs, so a VP broadcast probes false and the button falls back to
 // CSS pseudo-fullscreen. The trial addSourceBuffer half of the probe is the
 // arm itself — MSE needs an open, element-attached MediaSource before
 // addSourceBuffer is legal, and the arm happens at `watching`, well before
@@ -94,18 +92,17 @@ export function probeMsePresentation(codec: string): MseProbeResult {
   return { supported: true, mime, reason: 'MSE available' };
 }
 
-// R22 audio (docs/27 findings 2 + 4): how (if at all) this device can take the
-// R15 audio lane as an MSE audio track. Two tiers, in cost order — Opus muxed
-// verbatim, else AAC re-encoded from the decoded PCM. Strictly additive: with
-// neither, the native player stays video-only and audio keeps coming from the
-// inline AudioWorklet exactly as before audio muxing existed.
+// How (if at all) this device can take the audio lane as an MSE audio track.
+// Two tiers, in cost order — Opus muxed verbatim, else AAC re-encoded from the
+// decoded PCM. Strictly additive: with neither, the native player stays
+// video-only and audio keeps coming from the inline AudioWorklet.
 //
 // Why two tiers rather than one: Opus-in-MP4 is a WebKit 17 feature ("one or two
 // channel Opus audio in WebM and MPEG-4 containers") and Chrome accepts it, but
-// the on-device pass measured `isTypeSupported('audio/mp4; codecs="opus"')` as
-// **false** on iOS 18.7 through ManagedMediaSource — while AAC is the codec
-// Apple's own HLS mandates. `channels` guards MP4 Opus's one-or-two-channel
-// limit; it does not constrain the AAC tier.
+// iOS 18.7's ManagedMediaSource answers `isTypeSupported('audio/mp4;
+// codecs="opus"')` with **false** — while AAC is the codec Apple's own HLS
+// mandates. `channels` guards MP4 Opus's one-or-two-channel limit; it does not
+// constrain the AAC tier.
 export function probeMseAudio(codec: string | null, channels: number | null): MseAudioProbe {
   if (codec == null) return { supported: false, codec: null, mime: null, reason: 'no audio' };
   if (!/^opus$/i.test(codec)) {
@@ -130,15 +127,15 @@ export function probeMseAudio(codec: string | null, channels: number | null): Ms
       return false;
     }
   };
-  // Opus first: it needs no transcode, and where the runtime takes it (Chrome —
-  // the CI proof) the muxed track is the R15 lane verbatim.
+  // Opus first: it needs no transcode, and where the runtime takes it (Chrome)
+  // the muxed track is the audio lane verbatim.
   const opus = opusMime();
   if (supports(opus)) {
     return { supported: true, codec: 'opus', mime: opus, reason: 'Opus in MP4 available' };
   }
-  // iOS 18.7 / Safari 26.5.2 refuses Opus in MP4 through ManagedMediaSource
-  // (docs/27 finding 4, measured on device) — so fall back to AAC, the codec
-  // Apple's own HLS mandates, by re-encoding the decoded PCM in the worker.
+  // iOS 18.7 / Safari 26.5.2 refuses Opus in MP4 through ManagedMediaSource,
+  // so fall back to AAC, the codec Apple's own HLS mandates, by re-encoding
+  // the decoded PCM in the worker.
   const aac = aacMime(AAC_CODEC);
   if (supports(aac)) {
     return {
@@ -156,7 +153,7 @@ function errText(e: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// The presenter (MF3/MF4)
+// The presenter
 
 export type PresenterSegment =
   | { kind: 'init'; track: Fmp4Track; mime: string; data: Uint8Array }
@@ -165,34 +162,31 @@ export type PresenterSegment =
 export interface MsePresenterStats {
   attached: boolean;
   sourceOpen: boolean;
-  // docs/27 finding 7: ManagedMediaSource's `streaming` — whether the system is
-  // currently asking for data. Null on classic MediaSource (no such attribute)
-  // or before a source exists. The one field that separates "the presenter got
-  // nothing to append" from "the presenter is holding segments the system won't
-  // take", which a capture previously could not tell apart at all.
+  // ManagedMediaSource's `streaming` — whether the system is currently asking
+  // for data. Null on classic MediaSource (no such attribute) or before a
+  // source exists. The one field that separates "the presenter got nothing to
+  // append" from "the presenter is holding segments the system won't take".
   streaming: boolean | null;
   // Segments handed to pushSegment, and media segments dropped there because
-  // their track had no cached init segment. Both silent paths before: the
-  // muxer's counters live in the worker, so a broken worker→main→sink hop and a
-  // parked appender produced byte-identical stats (appended 0, errors 0).
+  // their track had no cached init segment. The muxer's counters live in the
+  // worker, so without these a broken worker→main→sink hop and a parked
+  // appender produce identical stats (appended 0, errors 0).
   received: number;
   droppedNoInit: number;
-  // R22 audio: whether an audio SourceBuffer exists (i.e. audio segments are
+  // Whether an audio SourceBuffer exists (i.e. audio segments are
   // actually being presented), and how many samples it has taken.
   audioTrack: boolean;
   audioSegmentsAppended: number;
   // Whether this MediaSource actually accepted duration = Infinity. False on an
   // open source means the native player will draw a finite timeline and treat
-  // the buffered end as end-of-media (docs/27 finding 1).
+  // the buffered end as end-of-media.
   liveDuration: boolean;
   segmentsAppended: number;
   appendErrors: number;
-  // docs/27 finding 6: WHAT the most recent append failure actually was. The
-  // count alone cost a whole on-device round trip — a capture could say "one
-  // append error" and nothing about WebKit's objection, because the only place
-  // the reason exists is `HTMLMediaElement.error` at the moment it fires, and
-  // the audio drop's rebuild clears it immediately after. Captured at every site
-  // that increments appendErrors; null until one does.
+  // WHAT the most recent append failure actually was. The only place WebKit
+  // gives the reason is `HTMLMediaElement.error` at the moment it fires, and
+  // the audio drop's rebuild clears it immediately after, so it is captured at
+  // every site that increments appendErrors; null until one does.
   lastError: string | null;
   queued: number;
   failed: boolean;
@@ -211,19 +205,19 @@ export const MAX_QUEUED_SEGMENTS = 128;
 export const PRUNE_TRIGGER_S = 30;
 export const PRUNE_KEEP_S = 10;
 
-// While the (fullscreen) video is playing, jumping this far behind the
-// buffered end triggers a catch-up seek — MF4's "seek-to-live keeps native
-// fullscreen near live". Paused (inline, armed) playback never seeks.
 // How long the audio SourceBuffer may exist without receiving a single sample
-// before audio is given up on. Creating it up front (docs/27 finding 5) is what
-// makes the pair addable at all, but it has a cost: until audio appends, the
-// element's buffered range — the INTERSECTION of the tracks — is empty, so video
+// before audio is given up on. Creating it up front is what makes the pair
+// addable at all, but it has a cost: until audio appends, the element's
+// buffered range — the INTERSECTION of the tracks — is empty, so video
 // cannot play either. An audio path that never produces (no AAC encoder on this
 // runtime, a transcoder error) must therefore be detected and dropped, or the
 // presentation is worse than video-only: it is dead. Generous enough for a
 // transcoder to warm up, short enough that nobody watches a blank fullscreen.
 export const AUDIO_FIRST_SAMPLE_TIMEOUT_MS = 3000;
 
+// While the (fullscreen) video is playing, jumping this far behind the
+// buffered end triggers a catch-up seek, which keeps native fullscreen near
+// live. Paused (inline, armed) playback never seeks.
 export const LIVE_CATCHUP_LAG_S = 2;
 export const LIVE_EDGE_REJOIN_S = 0.1;
 
@@ -319,16 +313,11 @@ export class MsePresenter {
     this.prune();
     this.pump();
   };
-  // Per-track, because the two tracks are not equally load-bearing: a video
-  // SourceBuffer error degrades the gate to pseudo-fullscreen, but an AUDIO one
-  // must not take the video presentation down with it — audio is additive, and
-  // on the AAC path it is the least-proven part of the pipeline. (A shared
-  // handler did exactly that: a bad audio append blanked the video.)
   // Compose the failure detail while it is still readable: `video.error` is the
   // only place WebKit says WHY (a rejected init segment reads
   // MEDIA_ERR_SRC_NOT_SUPPORTED, code 4), and `readyState: 'closed'` is how it
   // shows that a bad append took the whole MediaSource down rather than one
-  // buffer (docs/27 finding 6).
+  // buffer.
   private recordError(track: Fmp4Track, what: string): void {
     this.appendErrors++;
     const media = this.video?.error;
@@ -337,6 +326,10 @@ export class MsePresenter {
     this.lastError = `${track}: ${what}${detail}${state}`;
   }
 
+  // Per-track, because the two tracks are not equally load-bearing: a video
+  // SourceBuffer error degrades the gate to pseudo-fullscreen, but an AUDIO one
+  // must not take the video presentation down with it — audio is additive, and
+  // on the AAC path it is the least-proven part of the pipeline.
   private readonly onTrackError = (t: TrackState) => () => {
     this.recordError(t.track, 'SourceBuffer error event');
     if (t.track === 'video') {
@@ -374,8 +367,8 @@ export class MsePresenter {
     };
   }
 
-  // R22 audio: declare which audio mime this presentation will carry, as soon as
-  // the tier is negotiated (docs/27 findings 2 + 4). Called before any audio
+  // Declare which audio mime this presentation will carry, as soon as the
+  // tier is negotiated. Called before any audio
   // bytes exist — `addSourceBuffer` needs only the mime, while the init segment
   // needs the codec's setup bytes, and those arrive later on the AAC path.
   //
@@ -533,14 +526,14 @@ export class MsePresenter {
     }
   }
 
-  // A live presentation must say so: `duration = Infinity` (docs/27 finding 1).
+  // A live presentation must say so: `duration = Infinity`.
   // Left unset, MSE's coded-frame processing raises duration to the newest
   // appended end timestamp, which costs two things on the native player —
   //   * the LIVE badge, replaced by a finite scrub bar over a growing duration;
   //   * the distinction between "the playhead reached the buffered end" and
   //     "the media resource ended". WebKit resolves that ambiguity by pausing
   //     and firing `ended` (where Chromium stalls and resumes on more data), so
-  //     every underrun became a dead player needing a manual tap.
+  //     every underrun leaves a dead player needing a manual tap.
   // Infinity is never less than the highest end timestamp, so appends can't
   // lower it again and one write per MediaSource is enough. It must happen
   // exactly here: the setter throws unless readyState is 'open' with nothing
@@ -617,7 +610,7 @@ export class MsePresenter {
   private ensureSourceBuffer(t: TrackState, mime: string): boolean {
     if (t.sb) {
       if (t.sbMime !== mime) {
-        // Codec change mid-stream (R13 pin / broadcaster swap): changeType
+        // Codec change mid-stream (codec pin / broadcaster swap): changeType
         // where it exists; without it the surface degrades to pseudo.
         try {
           if (typeof t.sb.changeType !== 'function') throw new Error('changeType unavailable');
@@ -648,7 +641,7 @@ export class MsePresenter {
       return true;
     } catch (e) {
       // The trial-addSourceBuffer half of the probe, failing for real: mark
-      // failed so the gate reports pseudo (docs/27 MF2) — but only for video.
+      // failed so the gate reports pseudo — but only for video.
       // Audio is additive: a refused audio SourceBuffer (the plausible
       // Opus-in-MP4 outcome on iOS) leaves the video presentation intact and
       // drops the audio track for good.
@@ -660,10 +653,9 @@ export class MsePresenter {
     }
   }
 
-  // Give up on the audio track without disturbing video: no SourceBuffer is left
-  // half-created, and nothing further is queued (pushSegment drops media with no
-  // cachedInit). The inline AudioWorklet sink keeps playing the audio either way.
-  // Give up on audio without losing video. `rebuild` is for the case where an
+  // Give up on the audio track without disturbing video: nothing further is
+  // queued (pushSegment drops audio once dropped), and the inline AudioWorklet
+  // sink keeps playing the audio either way. `rebuild` is for the case where an
   // audio SourceBuffer already exists and has data: since the element's
   // `buffered` is the intersection of the tracks, leaving a dead audio range
   // attached would freeze video, so the MediaSource is rebuilt video-only (video
@@ -706,7 +698,7 @@ export class MsePresenter {
     }, AUDIO_FIRST_SAMPLE_TIMEOUT_MS);
   }
 
-  // docs/27 finding 7: whether MMS's `streaming === false` may park the queue.
+  // Whether MMS's `streaming === false` may park the queue.
   // Parking is right for a fed element — it is how MMS saves power and bounds
   // its buffer — but it is a DEADLOCK before the element has media: the system
   // asks for data when the element needs more, and an element with no init
@@ -714,8 +706,7 @@ export class MsePresenter {
   // `streaming` already false never takes a single byte, so the element sits at
   // readyState 0 forever and `useFullscreen` tier 2 (which requires
   // HAVE_METADATA) falls to CSS pseudo-fullscreen for the whole session — with
-  // zero appends and zero errors to show for it, which is exactly what the
-  // 2026-07-26 capture reported.
+  // zero appends and zero errors to show for it.
   //
   // So priming appends (the init segment, its SourceBuffer, and the first
   // keyframes behind it) always go through; parking resumes once the element
@@ -755,9 +746,10 @@ export class MsePresenter {
     this.audioTimer = null;
   }
 
-  // MF4: while the (fullscreen) video plays, a playhead that fell behind the
+  // While the (fullscreen) video plays, a playhead that fell behind the
   // buffered end beyond the lag bound jumps back to the live edge. Paused
-  // (armed, inline) video never seeks — Decision 5's loaded-but-paused state.
+  // (armed, inline) video never seeks: it stays loaded-but-paused until the
+  // in-gesture play.
   private maybeCatchUp(): void {
     const video = this.video;
     if (!video || video.paused) return;

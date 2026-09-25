@@ -1,4 +1,4 @@
-// R10 P3: the viewer-worker side of the transport split — a ViewerTransport
+// The viewer-worker side of the transport split — a ViewerTransport
 // that proxies to a dedicated transport worker (transport.worker.ts) over
 // postMessage. One worker per pipeline attempt: connect() spawns it, close()
 // reaps it, so a reconnect gets a fresh session and nothing outlives the

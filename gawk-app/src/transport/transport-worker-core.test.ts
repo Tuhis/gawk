@@ -1,4 +1,4 @@
-// R10 P3: TransportWorkerCore marshals ViewerTransport callbacks into posted
+// TransportWorkerCore marshals ViewerTransport callbacks into posted
 // events with transferred buffers, pushes connection stats on an interval,
 // and reports connect failures / session closes as typed events. No real
 // worker or WebTransport — a fake transport + fake host pin the protocol.
@@ -128,7 +128,7 @@ describe('TransportWorkerCore', () => {
     const connStats = posted.filter((p) => p.event.type === 'connStats');
     expect(connStats.length).toBeGreaterThanOrEqual(2);
     expect(transport.sampleConnectionStats).toHaveBeenCalled();
-    // R5 Q2: the clock-sync sample rides the same push (null from this fake).
+    // The clock-sync sample rides the same push (null from this fake).
     expect(transport.sampleTimeSync).toHaveBeenCalled();
     expect(connStats[0].event.type === 'connStats' && connStats[0].event.timeSync).toBeNull();
   });

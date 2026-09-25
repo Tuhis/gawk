@@ -71,12 +71,12 @@ import { getMaxDecoderQueueSize } from '../config';
 // decoder-backpressure resync are time-based). ~1 frame at 60 fps.
 const REORDER_TICK_MS = 16;
 
-// Keyframe-stall watchdog (Safari field finding, 2026-07-21). A viewer's
-// stream path can wedge while datagrams keep flowing — QUIC datagrams are not
-// flow-controlled, streams are — so keyframes stop dead while deltas arrive at
-// full rate. The reorder buffer then parks in waiting-for-keyframe and ages
-// out every delta, and playback freezes for good: no close code, no error,
-// nothing to reconnect on. The relay evicts such a subscriber itself
+// Keyframe-stall watchdog. A viewer's stream path can wedge (seen on Safari)
+// while datagrams keep flowing — QUIC datagrams are not flow-controlled,
+// streams are — so keyframes stop dead while deltas arrive at full rate. The
+// reorder buffer then parks in waiting-for-keyframe and ages out every delta,
+// and playback freezes for good: no close code, no error, nothing to reconnect
+// on. The relay evicts such a subscriber itself
 // (hub.KeyframeSlowEvictThreshold, ~5 s), so this is the backstop for the case
 // the relay cannot see — deliberately longer than the relay's remedy, so a
 // healthy fleet fixes it server-side first and this never fires.
@@ -84,41 +84,37 @@ const KEYFRAME_STALL_MS = 8000;
 
 // The keyframe watchdog fires only while frames are *still arriving*: that is
 // what distinguishes a wedged stream path from a broadcaster who merely
-// stepped away (which sends no media and must keep its viewers connected —
-// docs/05 D1 keepalive). That guard is correct for what it covers and fatal
-// for what it does not — see SESSION_STALL_MS.
+// stepped away (which sends no media and must keep its viewers connected).
+// The same guard blinds it to total silence — see SESSION_STALL_MS.
 const FRAMES_FLOWING_WINDOW_MS = 1000;
 
-// Dead-session watchdog (BUGS.md, 2026-07-22 paired capture). The keyframe
-// watchdog above cannot fire when *nothing* is arriving, which is exactly the
-// worst failure: the relay had already dropped the subscriber while WebKit
-// surfaced no signal at all — `wt.closed` never resolved and no read loop
-// rejected — so the viewer sat on a dead session for 48 s showing stale stats,
-// no error and no reconnect, needing a manual page reload. Those two signals
-// are the pipeline's only session-end events, so when the browser withholds
-// both there is nothing left but to notice the silence.
+// Dead-session watchdog. The keyframe watchdog above cannot fire when
+// *nothing* is arriving, which is the worst failure: WebKit can leave a
+// session the relay already dropped without any signal at all — `wt.closed`
+// never resolves and no read loop rejects — so the viewer sits on a dead
+// session showing stale stats, with no error and no reconnect. Those two
+// signals are the pipeline's only session-end events, so when the browser
+// withholds both there is nothing left but to notice the silence.
 //
 // Total inbound silence is a sound test because a live session is never
-// silent: the relay's R18 ViewerCount keepalive reaches every subscriber at
-// least every hub.ViewerCountKeepalive (5 s) — including while the broadcaster
-// is away, which is what keeps this from firing on an idle broadcast (the
-// relay-side half of this fix, same change). Three missed keepalives is
-// unambiguous and still well inside the ~30 s QUIC idle timeout.
+// silent: the relay's ViewerCount keepalive reaches every subscriber at least
+// every hub.ViewerCountKeepalive (5 s) — including while the broadcaster is
+// away, which is what keeps this from firing on an idle broadcast. Three
+// missed keepalives is unambiguous and still well inside the ~30 s QUIC idle
+// timeout.
 export const SESSION_STALL_MS = 15000;
 
-// Media-stall watchdog (BUGS.md, 2026-07-26 iPhone Deep-buffer capture). The
-// two watchdogs above leave one gap between them, and it is exactly where the
-// resilient and Deep-buffer modes live: in those modes ALL video rides the
-// stream path (R19 carriers + R8 keyframe streams, and in Deep buffer R21 puts
-// audio on a carrier too), so a wedged stream path stops frames dead — which
-// disqualifies checkKeyframeStall — while the relay's control sideband keeps
-// arriving on datagrams, which holds checkSessionStall off. The captured freeze
-// ran 31 s: 16 s of media death before the relay's own eviction ended the
-// session, then the full SESSION_STALL_MS of silence on top.
+// Media-stall watchdog. The two watchdogs above leave one gap between them,
+// and it is exactly where the resilient and Deep-buffer modes live: in those
+// modes ALL video rides the stream path (carriers + keyframe streams, and in
+// Deep buffer audio rides a carrier too), so a wedged stream path stops
+// frames dead — which disqualifies checkKeyframeStall — while the relay's
+// control sideband keeps arriving on datagrams, which holds checkSessionStall
+// off.
 //
 // Two signals gate it, and both are needed.
 //
-// 1. The broadcaster's own ClockMapping (R5 Q2) is published every
+// 1. The broadcaster's own ClockMapping is published every
 //    CLOCK_MAPPING_INTERVAL_MS (5 s) *only while that broadcaster is capturing*,
 //    and it rides datagrams, so it survives a stream wedge. Requiring
 //    MAPPINGS_PROVING_LIVE of them *since the last media* is what makes this
@@ -128,10 +124,9 @@ export const SESSION_STALL_MS = 15000;
 //    The relay replays its cached mapping to joiners, so one means nothing.
 //
 // 2. Media here is video OR audio, and the audio half is load-bearing:
-//    **screen capture is damage-driven and stops entirely on a static screen**
-//    (docs/19, docs/28), so "no video" is a normal state on a paused game and
-//    can never on its own justify tearing a session down (docs/30 says as much
-//    about even *saying* so to the user). Audio is not damage-driven — it flows
+//    **screen capture is damage-driven and stops entirely on a static screen**,
+//    so "no video" is a normal state on a paused game and can never on its
+//    own justify tearing a session down. Audio is not damage-driven — it flows
 //    at ~50 packets/s for as long as it is shared — so silence on both media at
 //    once cannot be produced by a static screen. It takes a transport failure.
 //
@@ -139,33 +134,29 @@ export const SESSION_STALL_MS = 15000;
 //   - A broadcast with no audio at all is not covered (audioEverActive gates
 //     the whole check). Nothing client-side can distinguish its wedge from its
 //     static screen; firing anyway would reconnect-loop on a paused game.
-//     (The relay's own publisher-stall state — docs/06 revision 2026-09-06 —
-//     answers a different question: no datagrams at all from the page,
-//     TimeSync and ClockMapping included. A static screen keeps pinging and
-//     is not stalled there either; only a frozen page is.)
 //   - A *resilient*-mode wedge is not covered either, for the same reason: audio
-//     rides datagrams there (docs/20 finding 5) and keeps arriving, which is
-//     also what a static screen looks like. Deep buffer is covered because R21
-//     DV5 puts audio on its own carrier, so the wedge takes both.
+//     rides datagrams there and keeps arriving, which is also what a static
+//     screen looks like. Deep buffer is covered because audio rides its own
+//     carrier there, so the wedge takes both.
 // Closing those two needs the relay to say "I have video for you and cannot
-// deliver it", which is a wire addition — see BUGS.md.
+// deliver it", which is a wire addition.
 const MEDIA_STALL_MS = 6000;
 const MAPPINGS_PROVING_LIVE = 2;
 
-// Whether a datagram belongs to the R15 audio lane. Used only to keep audio
-// bytes out of the *video* byte counter; a too-short datagram is left to the
-// reassembler's strict parsing, exactly as before.
+// Whether a datagram belongs to the audio lane. Used only to keep audio bytes
+// out of the *video* byte counter; a too-short datagram is left to the
+// reassembler's strict parsing.
 function isAudioDatagram(dgram: Uint8Array): boolean {
   return dgram.length >= 2 && (dgram[1] === TYPE_AUDIO_FRAME || dgram[1] === TYPE_AUDIO_CONFIG);
 }
 
-// R22: the worker muxer's counters as merged into stats by the worker shell.
+// The worker muxer's counters as merged into stats by the worker shell.
 export type PresentationMuxStats = Fmp4MuxerStats & {
   armed: boolean;
-  // R22 audio, iOS path (docs/27 finding 4): the AAC transcoder's state, null
-  // when this presentation isn't on the AAC path at all. `detail` carries the
-  // runtime's own words when it refuses ('unsupported') or dies ('error') —
-  // which is how an iPhone tells us whether AAC encode is available there.
+  // The AAC transcoder's state (iOS path), null when this presentation isn't on
+  // the AAC path at all. `detail` carries the runtime's own words when it
+  // refuses ('unsupported') or dies ('error') — which is how an iPhone tells us
+  // whether AAC encode is available there.
   audioTranscode?: 'idle' | 'active' | 'unsupported' | 'error' | null;
   audioTranscodeDetail?: string | null;
 };
@@ -179,38 +170,35 @@ export interface ViewerStats extends ReassemblerStats {
   lastDecodeLatencyMs: number;
   isHardwareAccelerated: boolean | null;
   // Dimensions of the newest decoded frame — the stream as actually decoded
-  // (trust the VideoFrame in hand, not metadata — docs/01). Mid-stream ladder
-  // changes (R3/R4) update on the next decoded frame. Null before the first.
+  // (trust the VideoFrame in hand, not metadata). Mid-stream ladder changes
+  // update on the next decoded frame. Null before the first.
   frameWidth: number | null;
   frameHeight: number | null;
-  // R8 keyframe-stream + reorder observability.
+  // Keyframe-stream + reorder observability.
   keyframeStreamsReceived: number;
   reorderGapResyncs: number;
-  // R29 FP6 (docs/34 §6): frames skipped within the GOP's loss budget rather
-  // than forfeiting the rest of the GOP. Its ratio against reorderGapResyncs
-  // is the allowance's whole story — skips are GOPs saved, resyncs are GOPs
-  // lost.
+  // Frames skipped within the GOP's loss budget rather than forfeiting the rest
+  // of the GOP. Its ratio against reorderGapResyncs is the allowance's whole
+  // story — skips are GOPs saved, resyncs are GOPs lost.
   framesSkippedWithinAllowance: number;
-  // R30 finding 4: the live delta-gap grace, which now tracks measured arrival
-  // jitter instead of sitting at a per-connection constant. Reported because
-  // it is the only way to tell a resync that was a real loss from one the
-  // grace was simply too tight to absorb — and because it moves, which
-  // `DELTA_GAP_GRACE_MS` in a doc no longer tells you.
+  // The live delta-gap grace, which tracks measured arrival jitter. Reported
+  // because it is the only way to tell a resync that was a real loss from one
+  // the grace was simply too tight to absorb.
   deltaGapGraceMs: number;
   reorderKeyframeWaitDrops: number;
   reorderBuffered: number;
-  // R9 funnel + stall indicators (docs/13 D5): received → decoded → rendered.
+  // Funnel + stall indicators: received → decoded → rendered.
   // receivedFps counts complete frames arriving (reassembled datagram frames
   // + keyframe streams); renderedFps comes from the RenderSink and is null on
   // the main-thread path (the screen draws there, not the pipeline).
   receivedFps: number;
   renderedFps: number | null;
-  // Which sink paints (R10, docs/14): 'webgl' | '2d' on the worker path, null
-  // on the main-thread path. Note renderedFps is rAF-coalesced since R10 —
-  // ≈min(decoded fps, display Hz); below decoded fps under load is healthy.
+  // Which sink paints: 'webgl' | '2d' on the worker path, null on the
+  // main-thread path. Note renderedFps is rAF-coalesced — ≈min(decoded fps,
+  // display Hz); below decoded fps under load is healthy.
   renderer: RenderSinkKind | null;
-  // Where things actually run (R10, docs/14) — ground truth, not intent, so
-  // a silently-degraded fallback is visible in the overlay / diagnostics.
+  // Where things actually run — ground truth, not intent, so a
+  // silently-degraded fallback is visible in the overlay / diagnostics.
   // pipelineContext: is this pipeline in the viewer worker or the main-thread
   // fallback? transport: are the read loops in the nested transport worker or
   // in-process next to decode?
@@ -220,96 +208,93 @@ export interface ViewerStats extends ReassemblerStats {
   // the last keyframe (recovery bound: should hover at or under the GOP).
   timeSinceLastFrameMs: number | null;
   lastKeyframeAgeMs: number | null;
-  // Time since ANY inbound datagram/stream byte — media, audio, or the R18
-  // count keepalive. This is the one that separates "the broadcaster stepped
-  // away" (climbs to ~5 s, resets) from "the session is dead" (climbs without
-  // bound), which a Copy-diagnostics capture previously could not tell apart.
+  // Time since ANY inbound datagram/stream byte — media, audio, or the count
+  // keepalive. This is the one that separates "the broadcaster stepped away"
+  // (climbs to ~5 s, resets) from "the session is dead" (climbs without
+  // bound).
   timeSinceLastInboundMs: number | null;
-  // R5 Q1 (docs/15): how far the newest decoded frame lags behind this
-  // session's best capture→decode delta (windowed min — clock offset cancels).
-  // ~0 = at live edge; growth = decoder backlog / reorder holds / queue
-  // growth. Null before the first decoded frame. Relative only — absolute
-  // capture→render latency is capToRenderMs (Q2).
+  // How far the newest decoded frame lags behind this session's best
+  // capture→decode delta (windowed min — clock offset cancels). ~0 = at live
+  // edge; growth = decoder backlog / reorder holds / queue growth. Null before
+  // the first decoded frame. Relative only — absolute capture→render latency is
+  // capToRenderMs.
   liveEdgeDriftMs: number | null;
-  // R5 Q2 (docs/15): absolute capture→render latency via the relay clock as
-  // the common reference (broadcaster ClockMapping + this leg's TimeSync
-  // offset). Error ≈ sum of both legs' best-sample rtt/2 asymmetries; a
-  // negative raw value (asymmetry pathology) is clamped to 0. Null until both
-  // clock legs have synced. The render paint follows the measurement point by
-  // at most one display interval.
+  // Absolute capture→render latency via the relay clock as the common reference
+  // (broadcaster ClockMapping + this leg's TimeSync offset). Error ≈ sum of
+  // both legs' best-sample rtt/2 asymmetries; a negative raw value (asymmetry
+  // pathology) is clamped to 0. Null until both clock legs have synced. The
+  // render paint follows the measurement point by at most one display interval.
   capToRenderMs: number | null;
-  // R5 Q2: self-owned relay↔viewer RTT from the TimeSync exchange — works
-  // where WebTransport.getStats() doesn't (no browser ships it today —
-  // Chromium removed its pre-spec impl in 152; see docs/13 D7).
+  // Self-owned relay↔viewer RTT from the TimeSync exchange — works where
+  // WebTransport.getStats() doesn't (no browser ships it).
   timeSyncRttMs: number | null;
-  // R5 Q3: the active playout offset — 0 = live-edge (default), >0 = the
-  // opt-in smoothed mode. Ground truth from the context the pipeline runs in,
-  // so a toggle that failed to cross the worker boundary is visible.
+  // The active playout offset — 0 = live-edge (default), >0 = adaptive
+  // pacing. Ground truth from the context the pipeline runs in, so a toggle
+  // that failed to cross the worker boundary is visible.
   playoutOffsetMs: number;
-  // R12 T2: the playout mode itself ('off' | 'fixed' | 'adaptive') and where
-  // presentation happens — paced on rAF, paced on the timer fallback, or
-  // immediate (live-edge/fixed). Null presentation = main-thread path (the
-  // screen draws there, not the pipeline).
+  // The effective playout mode ('off' | 'adaptive') and where presentation
+  // happens — paced on rAF, paced on the timer fallback, or immediate
+  // (live-edge). Null presentation = main-thread path (the screen draws
+  // there, not the pipeline).
   playoutMode: PlayoutMode;
   presentation: 'paced-raf' | 'paced-timer' | 'immediate' | null;
-  // R12 T4: experimental frame interpolation — 'on'/'off' when available
+  // Experimental frame interpolation — 'on'/'off' when available
   // (WebGL2 sink + adaptive mode), null when this pipeline can't offer it
   // (main-thread path, non-WebGL2 sink, or playout not adaptive). The menu
   // shows the toggle only when non-null.
   interpolation: 'on' | 'off' | null;
-  // R12 T1 (docs/17): jitter, per stats window. Render cadence = how much the
-  // paint intervals deviate from the frames' capture intervals (σ + p95 of
-  // |err|; ≡0 for perfect pacing at any fps) — worker path only, null on the
-  // main-thread path like renderedFps. Arrival jitter = windowed p95 − min of
-  // the reorder buffer's arrival delta. Decode jitter = σ of per-frame decode
-  // time. These are the numbers T2/T3's pacing must move.
+  // Jitter, per stats window. Render cadence = how much the paint intervals
+  // deviate from the frames' capture intervals (σ + p95 of |err|; ≡0 for
+  // perfect pacing at any fps) — worker path only, null on the main-thread path
+  // like renderedFps. Arrival jitter = windowed p95 − min of the reorder
+  // buffer's arrival delta. Decode jitter = σ of per-frame decode time. These
+  // are the numbers adaptive pacing must move.
   renderCadenceStdDevMs: number | null;
   renderCadenceP95Ms: number | null;
   arrivalJitterMs: number | null;
   decodeJitterMs: number | null;
-  // R9 connection health for this leg (relay→viewer); null when the browser
+  // Connection health for this leg (relay→viewer); null when the browser
   // doesn't implement WebTransport.getStats().
   connection: TransportConnectionStats | null;
   // Cumulative video bytes this pipeline received itself — datagram payloads
   // plus whole keyframe StreamFrame messages, mirroring the broadcaster's
   // bytesSent. The overlay's "Video bitrate (recv)" is derived from this
-  // counter because WebTransport.getStats() ships in no browser (docs/13 D7).
+  // counter because WebTransport.getStats() ships in no browser.
   // Undercounts wire truth: no QUIC/UDP overhead, lost datagrams invisible.
   videoBytesReceived: number;
-  // R19 (docs/24 Decision 10): how deltas actually arrive. 'datagrams' is
-  // the default mode; 'reliable' means carrier streams are observed;
-  // 'reliable-requested' is the Decision 8 degradation — reliable was
-  // requested but no carrier has appeared (old relay, or none rotated in
-  // yet), so buffering is resilient while delivery stays datagrams.
+  // How deltas actually arrive. 'datagrams' is the default mode; 'reliable'
+  // means carrier streams are observed; 'reliable-requested' means reliable
+  // was requested but no carrier has appeared (old relay, or none rotated in
+  // yet), so buffering is resilient while delivery stays datagrams; 'dvr'
+  // means the relay confirmed it is serving from a ring.
   deliveryMode: 'datagrams' | 'reliable' | 'reliable-requested' | 'dvr';
-  // R21 (docs/26): the buffer the relay accepted, from the join-time ack.
-  // 0 when it is not serving from a ring, or against a relay too old to say.
+  // The buffer the relay accepted, from the join-time ack. 0 when it is not
+  // serving from a ring, or against a relay too old to say.
   dvrBufferMs: number;
-  // R18 (docs/23 Decision 8): the live "N watching" number the relay fans
-  // out (~1 s cadence; the fleet-global total in cluster mode). Null until
-  // the first push — usually the join-prime — lands.
+  // The live "N watching" number the relay fans out (~1 s cadence; the
+  // fleet-global total in cluster mode). Null until the first push — usually
+  // the join-prime — lands.
   viewerCount: number | null;
-  // R19 carrier tallies from the transport (null before connect / where the
+  // Carrier tallies from the transport (null before connect / where the
   // transport can't report them).
   carrierStreams: number | null;
   carrierRecords: number | null;
   // Carriers ending in a reset — the relay shedding a stalled/superseded GOP
   // tail; each costs at most one resync at the next keyframe.
   carrierStreamsAborted: number | null;
-  // R29 finding 2 (docs/34): how deep this browser's incoming datagram queue
-  // is, and whether it took the depth we asked for. Forwarded verbatim from
-  // the transport — nothing is derived here, because a shallow queue evicting
-  // the head of each frame's burst is the difference between parity repairing
-  // a loss and parity being structurally unable to. Null where the transport
-  // does not report one (fakes, and anything not holding a real session).
+  // How deep this browser's incoming datagram queue is, and whether it took
+  // the depth we asked for. Forwarded verbatim from the transport, because a
+  // shallow queue evicting the head of each frame's burst is the difference
+  // between parity repairing a loss and parity being structurally unable to.
+  // Null where the transport does not report one (fakes, and anything not
+  // holding a real session).
   datagramBuffer: DatagramBufferStats | null;
-  // R30 striped delivery (docs/35 §7) — requested vs active, the R19/R29
-  // rule. stripeActive is the leg count actually carrying deltas (0 =
-  // unstriped); stripeNeeded is the controller's current ceil(p99/6), so
-  // active < needed is the caps-pressure / dial-failure signature. The
-  // detector fields are the auto gate's own inputs: large-frame chunk loss
-  // against small-frame cleanliness is the finding-4 shape, and exposing
-  // both is what makes "why didn't it engage" answerable from a blob.
+  // Striped delivery — requested vs active. stripeActive is the leg count
+  // actually carrying deltas (0 = unstriped); stripeNeeded is the
+  // controller's current ceil(p99/6), so active < needed is the caps-pressure
+  // / dial-failure signature. The detector fields are the burst-shape
+  // detector's inputs: large-frame chunk loss against small-frame
+  // cleanliness.
   stripeMode: StripeMode;
   stripeCapable: boolean;
   stripeActive: number;
@@ -317,25 +302,22 @@ export interface ViewerStats extends ReassemblerStats {
   stripeLargeLossPct: number | null;
   stripeSmallLossPct: number | null;
   stripeLargeChunks: number;
-  // Finding 5: the small-frame half of that evidence, and the size the two
-  // halves were split at. Both were missing, and their absence is what made a
-  // non-engaging detector unarguable from a blob — "the small bucket is empty"
-  // and "the small bucket is clean" read identically without them, and the
-  // empty case is the one that made auto striping unreachable on high-bitrate
-  // streams. splitAtChunks above STRIPE_LARGE_FRAME_CHUNKS means the fixed
-  // line could not fill the bucket and the stream's own median was used.
+  // The small-frame half of that evidence, and the size the two halves were
+  // split at: without them "the small bucket is empty" and "the small bucket
+  // is clean" read identically. splitAtChunks above STRIPE_LARGE_FRAME_CHUNKS
+  // means the fixed line could not fill the bucket and the stream's own
+  // median was used.
   stripeSmallChunks: number;
   stripeSplitAtChunks: number;
-  // Finding 6: striping is always on in live-edge mode, so the question is no
-  // longer "will it engage" but "is it earning its connection cost". This is
-  // the burst signature as an observation, not a gate.
+  // Striping is always on in live-edge mode, so the question is "is it
+  // earning its connection cost". This is the burst signature as an
+  // observation, not a gate.
   stripeShapeDetected: boolean;
   stripeLegDials: number;
   stripeLegDeaths: number;
-  // R15 (docs/20): the audio lane, as observed by this pipeline. audioPresent
-  // flips true on the first AudioConfig/packet and is what gates every piece
-  // of viewer audio UI — a video-only stream renders exactly today's viewer.
-  // 'unsupported' means audio arrived but this scope has no AudioDecoder;
+  // The audio lane, as observed by this pipeline. It leaves 'absent' on the
+  // first AudioConfig/packet, which is what gates every piece of viewer audio
+  // UI. 'unsupported' means audio arrived but this scope has no AudioDecoder;
   // 'error' means the lane died (video plays on).
   audioState: 'absent' | 'active' | 'unsupported' | 'error';
   audioPacketsReceived: number;
@@ -344,39 +326,35 @@ export interface ViewerStats extends ReassemblerStats {
   audioCodec: string | null;
   audioSampleRate: number | null;
   audioChannels: number | null;
-  // R15 N5 (docs/20 Decision 10): A/V skew at the last presented frame —
-  // positive = video ahead of audio (the forgiving direction, and the
-  // expected sign in live-edge mode). Null when there is no audio clock.
-  // Target: median |skew| ≤ 60 ms, p95 ≤ 120 ms.
+  // A/V skew at the last presented frame — positive = video ahead of audio (the
+  // forgiving direction, and the expected sign in live-edge mode). Null when
+  // there is no audio clock. Target: median |skew| ≤ 60 ms, p95 ≤ 120 ms.
   avSkewMs: number | null;
   // How fast the audio timeline advanced against the wall clock over the last
-  // ~1 s: 1 = playing normally, 0 = frozen, null until measurable (docs/20
-  // field finding 12). The discriminator `avSkewMs` never had — a skew read
+  // ~1 s: 1 = playing normally, 0 = frozen, null until measurable. A skew read
   // while this is below 1 is starvation debt still being accrued (it grows at
   // (1 − ratio) per second and collapses when audio recovers), not a stable
   // lip-sync offset. Read the two together, or neither means much.
   avPlayheadAdvance: number | null;
-  // Which clock is in charge (docs/20 Decision 10, revised 2026-07-20). Video
-  // always is: 'video' means audio is aligned to the video presentation
-  // schedule as intended, 'free' means audio is playing without one (no video
-  // baseline yet, or it rebuilt depth after an underrun) and is holding sync
-  // on the drift trim alone. Ground truth, so a degraded alignment is visible
-  // rather than inferred.
+  // Which clock is in charge. Video always is: 'video' means audio is aligned
+  // to the video presentation schedule as intended, 'free' means audio is
+  // playing without one (no video baseline yet, or it rebuilt depth after an
+  // underrun) and is holding sync on the drift trim alone. Ground truth, so a
+  // degraded alignment is visible rather than inferred.
   avMaster: 'video' | 'free' | null;
   // The video presentation schedule as an epoch base — a frame with
   // broadcaster timestamp T is presented at T/1000 + (base − timeOrigin) in
   // the reader's context. The audio sink aligns playback start to it; null
   // until the arrival baseline exists.
   videoScheduleBaseEpochMs: number | null;
-  // R16, reshaped by R22 (docs/27 Decision 8). The pipeline itself never sets
-  // these three: presentationMux is merged in by the viewer *worker shell*
-  // when the mux fork was requested (gated devices only); featureGates and
-  // presentationSurface are attached on the main thread by the viewer screen
-  // before stats reach the overlay / Copy diagnostics.
+  // The pipeline itself never sets these three: presentationMux is merged in by
+  // the viewer *worker shell* when the mux fork was requested (gated devices
+  // only); featureGates and presentationSurface are attached on the main thread
+  // by the viewer screen before stats reach the overlay / Copy diagnostics.
   presentationMux?: PresentationMuxStats;
   featureGates?: FeatureGate[];
   presentationSurface?: PresentationSurfaceStats;
-  // R28 follow-up: was the tab in the background, and for how long?
+  // Was the tab in the background, and for how long?
   //
   // A hidden tab stops firing rAF, so renderedFps falls to 0 while decode
   // carries on perfectly — a difference that is not visible in any other
@@ -390,38 +368,38 @@ export interface ViewerStats extends ReassemblerStats {
   documentHidden?: boolean;
   documentHiddenMs?: number;
 
-  // R15 (docs/20 field finding 6): the audio jitter-buffer's own counters.
-  // Like featureGates/presentationSurface the pipeline never sets these — the
+  // The audio jitter-buffer's own counters. Like
+  // featureGates/presentationSurface the pipeline never sets these — the
   // AudioSink lives on the main thread, so the viewer connection merges them in
-  // from AudioSink.getStats() before stats reach the overlay / Copy
-  // diagnostics (which the worker-assembled stats otherwise omit). Absent when
-  // there is no sink: a video-only stream, or before audio starts.
+  // from AudioSink.getStats() before stats reach the overlay / Copy diagnostics
+  // (which the worker-assembled stats otherwise omit). Absent when there is no
+  // sink: a video-only stream, or before audio starts.
   audioBuffer?: {
     bufferedMs: number;
     targetMs: number;
     alignmentHoldMs: number | null;
     underruns: number;
     gapsConcealed: number;
-    // Holes skipped inside the lead budget rather than filled with silence
-    // (docs/20 field finding 8). Concealments climbing while these stay flat
-    // is normal loss; overflow drops climbing *with* concealments is the
-    // finding-8 latch.
+    // Holes skipped inside the lead budget rather than filled with silence.
+    // Concealments climbing while these stay flat is normal loss; overflow
+    // drops climbing *with* concealments means shedding and concealment are
+    // undoing each other.
     gapsSkipped: number;
     lateDrops: number;
     overflowDrops: number;
-    // Re-anchors: timeline restarts + field-finding-7 stall recoveries. A
-    // climbing count with audio present means the sink keeps stalling.
+    // Re-anchors: timeline restarts + stall recoveries. A climbing count with
+    // audio present means the sink keeps stalling.
     resets: number;
-    // What the output device adds between a sample being written and heard
-    // (docs/20 field finding 13). Read it whenever audio "feels late" and
-    // avSkewMs reads clean: the alignment and the skew metric both correct for
-    // it, so a large value is normal — but it is also the size of the error if
-    // either correction ever regresses.
+    // What the output device adds between a sample being written and heard.
+    // Read it whenever audio "feels late" and avSkewMs reads clean: the
+    // alignment and the skew metric both correct for it, so a large value is
+    // normal — but it is also the size of the error if either correction
+    // ever regresses.
     outputLatencyMs: number | null;
     // The rate the AudioContext actually runs at — not necessarily the one
-    // requested (docs/20 field finding 8). The worklet resamples to it; a
-    // value differing from the stream's rate is normal on macOS, and is the
-    // first thing to check if audio sounds slow.
+    // requested. The worklet resamples to it; a value differing from the
+    // stream's rate is normal on macOS, and is the first thing to check if
+    // audio sounds slow.
     contextSampleRate: number | null;
   } | null;
 }
@@ -432,28 +410,28 @@ export interface ViewerCallbacks {
   onStats: (stats: ViewerStats) => void;
   onError: (err: Error) => void;
   onEnded: () => void;
-  // R15 (docs/20 Decision 7): decoded planar PCM, headed for the main-thread
-  // AudioWorklet sink. On the worker path the host transfers it across; on
-  // the main-thread path it goes straight to the sink. Absent callback = the
-  // consumer doesn't do audio, and the lane is never built.
+  // Decoded planar PCM, headed for the main-thread AudioWorklet sink. On the
+  // worker path the host transfers it across; on the main-thread path it goes
+  // straight to the sink. Absent callback = the consumer doesn't do audio, and
+  // the lane is never built.
   onAudioChunk?: (chunk: DecodedAudioChunk) => void;
   // Broadcaster restart / resync: the sink must flush and re-anchor, or every
-  // packet on the new timeline is late forever (docs/20 Decision 8).
+  // packet on the new timeline is late forever.
   onAudioReset?: () => void;
-  // R22 (docs/27 Decision 3): the encoded-frame fork, fired for every frame
-  // the reorder buffer releases — the same in-order, freeze-on-gap-applied
-  // stream the decoder eats, upstream of decode. The worker shell muxes it to
-  // fMP4 for iPhone native fullscreen. Absent = zero per-frame work.
+  // The encoded-frame fork, fired for every frame the reorder buffer releases —
+  // the same in-order, freeze-on-gap-applied stream the decoder eats, upstream
+  // of decode. The worker shell muxes it to fMP4 for iPhone native fullscreen.
+  // Absent = zero per-frame work.
   onReleasedFrame?: (frame: ReleasedFrame) => void;
-  // R28 (docs/33 D2): this session's telemetry identity, straight off wire
-  // 0x0D. Absent callback = this consumer does not do telemetry.
+  // This session's telemetry identity, straight off wire 0x0D. Absent
+  // callback = this consumer does not do telemetry.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   onTelemetryEndpoint?: (url: string) => void;
-  // R22 audio (docs/27 finding 2): the encoded-AUDIO fork for the same muxer.
-  // Forked at the demux point, not at a playout gate — the muxed timeline is
-  // built from broadcaster timestamps, so arrival order is all this needs, and
-  // audio landing ahead of the paced video release is the audio SourceBuffer's
-  // cushion rather than a skew. Absent = zero per-packet work.
+  // The encoded-AUDIO fork for the same muxer. Forked at the demux point, not
+  // at a playout gate — the muxed timeline is built from broadcaster
+  // timestamps, so arrival order is all this needs, and audio landing ahead of
+  // the paced video release is the audio SourceBuffer's cushion rather than a
+  // skew. Absent = zero per-packet work.
   onAudioMux?: (ev: AudioTapEvent) => void;
 }
 
@@ -461,25 +439,25 @@ export class ViewerPipeline {
   private serverUrl: string;
   private connectOpts: ConnectOptions;
   private cb: ViewerCallbacks;
-  // When set (worker/OffscreenCanvas path, R8 S6), decoded frames are drawn
+  // When set (worker/OffscreenCanvas path), decoded frames are drawn
   // straight to the sink and closed there — never handed to onDecodedFrame,
   // so a VideoFrame never crosses the worker boundary. Null on the main-thread
   // path, where onDecodedFrame draws and the caller closes the frame.
   private renderSink: RenderSink | null;
-  // True once the render sink is sampling A/V skew at presentation for us
-  // (docs/20 field finding 9). While false — the main-thread fallback, or a
-  // sink without the hook — handleDecoded samples at decode, where present ≈
-  // decode because there is no paced hold.
+  // True once the render sink is sampling A/V skew at presentation for us.
+  // While false — the main-thread fallback, or a sink without the hook —
+  // handleDecoded samples at decode, where present ≈ decode because there is no
+  // paced hold.
   private presentationSampled = false;
 
-  // Connection + read loops live behind the transport seam (R10 P3): local
+  // Connection + read loops live behind the transport seam: local
   // (in-process) by default, or proxied to a dedicated transport worker.
   private transport: ViewerTransport | null = null;
   private transportFactory: ViewerTransportFactory;
   private decoder: Decoder | null = null;
   private reassembler: Reassembler | null = null;
   // Merges reliable stream keyframes with lossy datagram deltas by frameId and
-  // owns the freeze-on-gap / drop-to-keyframe ordering policy (R8, docs/12).
+  // owns the freeze-on-gap / drop-to-keyframe ordering policy.
   private reorder: ReorderBuffer | null = null;
   private reorderTimer: number | null = null;
   private stopping = false;
@@ -487,6 +465,9 @@ export class ViewerPipeline {
   // Decoder ops chain so configure completes before any decode and decodes
   // stay in arrival order — same discipline as the loopback pipeline.
   private decoderChain: Promise<void> = Promise.resolve();
+  // Bumped when the decoder is replaced, so failures from the old one and its
+  // abandoned op chain are ignored.
+  private decoderGeneration = 0;
   // WebCodecs requires the first chunk after configure() to be a keyframe;
   // set on every (re)configure, cleared by the first keyframe. This is the
   // decoder-level guard; cross-frame ordering lives in the reorder buffer.
@@ -505,13 +486,13 @@ export class ViewerPipeline {
   private lastFrameHeight: number | null = null;
   private lastStatsAt = 0;
   private statsTimer: number | null = null;
-  // R9 funnel + stall tracking.
+  // Funnel + stall tracking.
   private lastReceivedTotal = 0;
   private lastRenderedTotal = 0;
   private lastFrameReceivedAt: number | null = null;
   private lastKeyframeReceivedAt: number | null = null;
   // Last inbound byte of ANY kind from the relay — media, audio, decoder
-  // config, the R18 count keepalive, a carrier record. Null until the first
+  // config, the count keepalive, a carrier record. Null until the first
   // one arrives, so a viewer that joins an away broadcast and waits for its
   // first keepalive is never torn down by the dead-session watchdog.
   private lastInboundAt: number | null = null;
@@ -524,7 +505,7 @@ export class ViewerPipeline {
   private lastMediaAt: number | null = null;
   private mappingsSinceMedia = 0;
   private audioEverActive = false;
-  // R21: what the relay says it is serving, from the join-time DeliveryAck.
+  // What the relay says it is serving, from the join-time DeliveryAck.
   // Null until it arrives (or forever, against a relay that predates it).
   private servedDelivery: DeliveryServedMode | null = null;
   private servedBufferMs = 0;
@@ -539,26 +520,26 @@ export class ViewerPipeline {
   // this is ground truth about where the pipeline actually runs.
   private pipelineContext: 'worker' | 'main-thread' =
     typeof window === 'undefined' ? 'worker' : 'main-thread';
-  // R5 Q1: drift over the session-best capture→decode delta, observed at
+  // Drift over the session-best capture→decode delta, observed at
   // decoder output (the paint that follows is ≤ one display interval later —
   // a constant the windowed-min baseline cancels).
   private liveEdge = new LiveEdgeTracker();
-  // R5 Q2: the broadcaster's timestamp→relay-clock mapping (last one wins;
+  // The broadcaster's timestamp→relay-clock mapping (last one wins;
   // invalidated by a broadcaster restart) and the newest absolute latency.
   private broadcastClockOffsetUs: bigint | null = null;
   private lastCapToRenderMs: number | null = null;
-  // R18: the relay's latest "N watching" push (last one wins).
+  // The relay's latest "N watching" push (last one wins).
   private viewerCount: number | null = null;
-  // R30 (docs/35 §5.4–§5.5): the stripe controller and its transport truth.
-  // The controller decides a target at the stats cadence; the transport owns
-  // every transition. Striping applies to datagram delivery only — reliable/
-  // DVR ride retransmitting carriers — so the capability is gated on the
-  // requested mode at the one place both are known (onRelayCapabilities).
+  // The stripe controller and its transport truth. The controller decides a
+  // target at the stats cadence; the transport owns every transition. Striping
+  // applies to datagram delivery only — reliable/DVR ride retransmitting
+  // carriers — so the capability is gated on the requested mode at the one
+  // place both are known (onRelayCapabilities).
   private stripe = new StripeController();
   private stripeCapable = false;
   private stripeActive = 0;
   private lastStripeRequested = 0;
-  // R15 (docs/20): the audio lane. Built lazily on the first audio message —
+  // The audio lane. Built lazily on the first audio message —
   // a video-only stream never constructs it, so nothing about this pipeline
   // changes for broadcasts without audio.
   private audioLane: AudioDecodeLane | null = null;
@@ -566,12 +547,12 @@ export class ViewerPipeline {
   // The last audio config the stream declared (wire 0x08), independent of
   // whether a decoder was ever built from it — see the stats assembly.
   private lastAudioConfig: AudioConfigMessage | null = null;
-  // The lane's last counters, retained across its death (CODE-REVIEW.md:
-  // counters survive their owner's deletion). Without this, an audio error
-  // reports "State: Error, decoded 0, format —", which reads as "audio never
-  // worked" instead of "audio worked, then died" — the opposite diagnosis.
+  // The lane's last counters, retained across its death. Without this, an
+  // audio error reports "State: Error, decoded 0, format —", which reads as
+  // "audio never worked" instead of "audio worked, then died" — the opposite
+  // diagnosis.
   private lastAudioStats: ReturnType<AudioDecodeLane['getStats']> | null = null;
-  // R12 T1: per-stats-window decode latencies (σ published as decodeJitterMs).
+  // Per-stats-window decode latencies (σ published as decodeJitterMs).
   private decodeLatencies: number[] = [];
 
   private broadcastId: string;
@@ -595,9 +576,9 @@ export class ViewerPipeline {
   async start(): Promise<void> {
     // A/V skew is sampled where the frame is actually presented, not where it
     // is decoded: the paced sink holds a frame for the playout offset, so a
-    // decode-time sample reads the audio buffering depth as skew (docs/20
-    // field finding 9). The sink calls back at each real presentation with its
-    // own clock, which is the instant the audio playhead must be compared to.
+    // decode-time sample reads the audio buffering depth as skew. The sink
+    // calls back at each real presentation with its own clock, which is the
+    // instant the audio playhead must be compared to.
     if (this.renderSink?.setPresentationObserver) {
       this.renderSink.setPresentationObserver((timestampUs, atMs) =>
         observeVideoPresented(timestampUs, atMs),
@@ -608,41 +589,39 @@ export class ViewerPipeline {
     // Pipeline stages exist before the transport connects: the relay primes a
     // joining viewer with the cached keyframe immediately, and that must land
     // in the reorder buffer, not race the setup.
-    this.decoder = new Decoder({
-      onDecoded: (decoded) => this.handleDecoded(decoded),
-      // A decoder error (unsupported codec, decode failure) is not recoverable
-      // by reconnecting — mark it fatal so the session surfaces it and stops.
-      onError: (e) => this.failDecode(e),
-    });
+    this.decoder = this.newDecoder();
 
     this.reorder = new ReorderBuffer(
       (frame) => this.decodeReleased(frame),
       () => performance.now(),
-      // Broadcaster restart: timestamps move to a new timeline, so the
-      // drift baseline must rebuild against it.
-      { onRestart: () => this.handleBroadcasterRestart() },
+      {
+        // Broadcaster restart: timestamps move to a new timeline, so the
+        // drift baseline must rebuild against it.
+        onRestart: () => this.handleBroadcasterRestart(),
+        isDeltaFrame: (frameId) => this.reassembler?.sawDelta(frameId) ?? false,
+      },
     );
 
     this.reassembler = new Reassembler({
       // A datagram-borne config (legacy path) still applies; keyframes now
       // carry their own config on the stream.
       onConfig: (config) => this.maybeApplyConfig(config),
-      // R5 Q2: the broadcaster's clock mapping — relayed live and replayed to
+      // The broadcaster's clock mapping — relayed live and replayed to
       // late joiners by the relay's cache.
       onClockMapping: (offsetUs) => {
         this.broadcastClockOffsetUs = offsetUs;
         this.mappingsSinceMedia++;
       },
-      // R18: the relay's live viewer count (join-primed, then ~1 s cadence).
+      // The relay's live viewer count (join-primed, then ~1 s cadence).
       onSubscriberCount: (count) => {
         this.viewerCount = count;
       },
-      // R15 (docs/20 Decision 7): the audio lane's demux points. Both are
-      // no-ops without an onAudioChunk consumer, so a viewer that can't play
-      // audio never builds a decoder.
+      // The audio lane's demux points. Both are no-ops without an
+      // onAudioChunk consumer, so a viewer that can't play audio never builds
+      // a decoder.
       onAudioConfig: (config) => {
         this.lastAudioConfig = config;
-        // R22 audio: the mux fork is independent of the decode lane — an iPhone
+        // The mux fork is independent of the decode lane — an iPhone
         // whose WebCodecs can't decode Opus can still hand it to the native
         // player, and a lane that dies must not take the muxed track with it.
         this.cb.onAudioMux?.({
@@ -656,8 +635,7 @@ export class ViewerPipeline {
         const lane = this.ensureAudioLane();
         lane?.configure(config);
       },
-      // R30 (docs/35 §5.5): per-frame arrival truth for the stripe detector —
-      // the in-client port of the loss-profile instrument's arithmetic.
+      // Per-frame arrival truth for the stripe detector.
       onFrameAccounting: (expected, arrived) => this.stripe.observeFrame(expected, arrived),
       onAudioFrame: (packet) => {
         // The media-stall watchdog's reference medium: audio is continuous
@@ -697,30 +675,28 @@ export class ViewerPipeline {
     });
 
     const url = new URL(`/subscribe/${this.broadcastId}`, this.serverUrl);
-    // R19 (docs/24 Decision 6): reliable delivery is negotiated at subscribe
-    // time via the query param — the WebTransport JS API can't set headers.
+    // Reliable delivery is negotiated at subscribe time via the query param —
+    // the WebTransport JS API can't set headers.
     if (this.connectOpts.deliveryMode === 'reliable') {
       url.searchParams.set('delivery', 'reliable');
-      // R21 (docs/26 Decisions 7 + 15): ask for a ring ONLY on the Deep buffer
-      // step. Sending it for plain Resilient mode would have the relay serve
-      // that viewer from a cursor with a 3 s staleness bound while it actually
-      // holds ~0.5 s — the two ends disagreeing about how far behind the
-      // viewer is, which is the mismatch the three-point control exists to
-      // prevent. A relay that does not know the parameter ignores it and
-      // serves R19 carriers, which is the degradation we want.
+      // Ask for a ring ONLY on the Deep buffer step. Sending it for plain
+      // Resilient mode would have the relay serve that viewer from a cursor
+      // with a 3 s staleness bound while it actually holds ~0.5 s — the two
+      // ends disagreeing about how far behind the viewer is. A relay that
+      // does not know the parameter ignores it and serves plain carriers,
+      // which is the degradation we want.
       if (getDeepBuffer()) url.searchParams.set('buffer', String(DVR_BUFFER_MS));
     }
-    // R29 (docs/34 §5.2): only an explicit opt-DOWN travels. Omitting the
-    // parameter is what lets the fleet default apply, and it keeps the URL
-    // byte-identical against a relay that predates R29.
+    // Only an explicit opt-DOWN travels: omitting the parameter is what lets
+    // the fleet default apply.
     if (this.connectOpts.parityLevel != null) {
       url.searchParams.set('parity', String(this.connectOpts.parityLevel));
     }
-    // docs/35 §14: the session-group token, minted per attempt and sent on
-    // EVERY primary dial — striping engages by auto-detect mid-session, so
-    // the primary must already be owned when it does, and the relay rejects
-    // leg dials without it. Legs inherit it for free: dialLeg copies this
-    // URL, params included. A pre-§14 relay ignores the unknown parameter.
+    // The session-group token, minted per attempt and sent on EVERY primary
+    // dial — striping engages after connect, so the primary must already be
+    // owned when it does, and the relay rejects leg dials without it. Legs
+    // inherit it: dialLeg copies this URL, params included. A relay without
+    // striping ignores the unknown parameter.
     url.searchParams.set('owner', mintStripeOwnerToken());
     const transport = this.transportFactory(url.toString(), this.connectOpts);
     this.transport = transport;
@@ -732,26 +708,25 @@ export class ViewerPipeline {
           // is the only thing an away broadcaster's viewer receives, and it is
           // what makes total silence mean "dead session" (SESSION_STALL_MS).
           this.lastInboundAt = performance.now();
-          // Audio rides the same datagram path but is not video: counting it
-          // here overstated "Video bitrate (recv)" by the whole audio lane
-          // whenever audio was on (BUGS.md, 2026-07-22).
-          // R21: the relay's join-time statement of what we are ACTUALLY being
+          // The relay's join-time statement of what we are ACTUALLY being
           // served. Consumed here, before the reassembler ever sees it — it is
           // a pipeline fact, not media.
           if (this.handleDeliveryAck(dgram)) return;
+          // Audio rides the same datagram path but is not video; keep it out
+          // of "Video bitrate (recv)".
           if (!isAudioDatagram(dgram)) this.videoBytesReceived += dgram.byteLength;
           this.reassembler?.push(dgram);
         },
         onKeyframe: (kf) => this.handleKeyframeStream(kf),
-        // R28 (docs/33 D2/D13): pass the session's telemetry identity straight
-        // through. The pipeline neither collects nor sends — it is the wrong
-        // context for both (it may be inside two nested workers), and keeping
-        // the token off ViewerStats keeps it out of Copy diagnostics.
+        // Pass the session's telemetry identity straight through. The pipeline
+        // neither collects nor sends — it is the wrong context for both (it may
+        // be inside two nested workers), and keeping the token off ViewerStats
+        // keeps it out of Copy diagnostics.
         onTelemetryHello: (hello) => this.cb.onTelemetryHello?.(hello),
         onTelemetryEndpoint: (url) => this.cb.onTelemetryEndpoint?.(url),
-        // R30 (docs/35 §5.3): the striping gate. An old relay never sends the
-        // bit, so a new viewer against it never dials a leg — and a reliable/
-        // DVR viewer never stripes regardless (nothing to win there, §3).
+        // The striping gate. A relay without striping never sends the bit, so
+        // a viewer against it never dials a leg — and a reliable/DVR viewer
+        // never stripes regardless (nothing to win there).
         onRelayCapabilities: (caps) => {
           this.stripeCapable = (caps.flags & CAP_STRIPED_DELIVERY) !== 0;
           this.stripe.noteCapable(
@@ -772,24 +747,31 @@ export class ViewerPipeline {
       this.reassembler = null;
       this.reorder = null;
       this.transport = null;
+      this.audioLane?.stop();
+      this.audioLane = null;
       transport.close();
       if (decoder) void decoder.close();
       throw e;
     }
+    // The session can end inside connect() (accepted, then closed); stop()
+    // has already run and nothing would clear timers armed now.
+    if (this.stopping) return;
 
     this.lastStatsAt = performance.now();
     // Bare setInterval (not window.*) so the pipeline runs unchanged inside a
-    // Web Worker (R8 S6), where `window` is undefined.
+    // Web Worker, where `window` is undefined.
     this.statsTimer = setInterval(() => this.publishStats(), 500) as unknown as number;
     this.reorderTimer = setInterval(() => this.reorderTick(), REORDER_TICK_MS) as unknown as number;
   }
 
-  // R15: builds the audio lane on first use. Returns null when this viewer
+  // Builds the audio lane on first use. Returns null when this viewer
   // has no audio consumer (main-thread paths that don't render audio) or the
   // scope lacks AudioDecoder — both annotate and keep video untouched.
   private ensureAudioLane(): AudioDecodeLane | null {
     if (this.audioLane) return this.audioLane;
-    if (this.stopping || !this.cb.onAudioChunk) return null;
+    // A failed lane stays failed: a rebuilt one would never be configured
+    // (the unchanged AudioConfig is deduplicated) yet would read as active.
+    if (this.stopping || !this.cb.onAudioChunk || this.audioState === 'error') return null;
     if (!audioDecodeSupported()) {
       this.audioState = 'unsupported';
       return null;
@@ -809,18 +791,19 @@ export class ViewerPipeline {
     return this.audioLane;
   }
 
-  // Consumes a DeliveryAck (R21, docs/26 Decision 7a) and returns whether the
-  // datagram was one. The relay states the served mode once at join; a
-  // malformed one is dropped and simply leaves the row unknown, because a
-  // diagnostics message must never be able to break playback.
+  // Consumes a DeliveryAck and returns whether the datagram was one. The relay
+  // states the served mode once at join; a malformed one is dropped and simply
+  // leaves the row unknown, because a diagnostics message must never be able to
+  // break playback.
   private handleDeliveryAck(dgram: Uint8Array): boolean {
     if (dgram.length < 2 || dgram[1] !== TYPE_DELIVERY_ACK) return false;
     try {
       const ack = parseDeliveryAck(dgram);
       this.servedDelivery = ack.mode;
       this.servedBufferMs = ack.bufferMs;
-      // Only now is the deeper buffer justified: against a relay that cannot
-      // keep it filled it would be pure latency (docs/26 Decision 7).
+      // The deep profile already applies before the ack; a denial walks it
+      // back, because against a relay that cannot keep it filled it is pure
+      // latency.
       setDvrGranted(ack.mode === 'dvr');
     } catch (e) {
       log.warn('malformed delivery ack; served mode stays unknown:', e);
@@ -833,7 +816,7 @@ export class ViewerPipeline {
     // Keyframes bypass the datagram reassembler, so sync its late-delta
     // watermark here — this is what makes a broadcaster restart (frameIds
     // reset to 0) recover instead of dropping every new-session delta as
-    // late (R10 field finding, docs/14).
+    // late.
     this.reassembler?.noteStreamKeyframe(kf.frameId);
     this.keyframeStreamsReceived++;
     this.videoBytesReceived += kf.streamBytes;
@@ -965,7 +948,7 @@ export class ViewerPipeline {
   // Called by the reorder buffer in decode order. A keyframe may carry a config
   // (stream-embedded); apply it before decoding that keyframe.
   private decodeReleased(frame: ReleasedFrame): void {
-    // R22: the mux fork sees exactly what the decoder is about to see.
+    // The mux fork sees exactly what the decoder is about to see.
     this.cb.onReleasedFrame?.(frame);
     if (frame.config) this.maybeApplyConfig(frame.config);
     this.feedDecoder(frame.keyframe, frame.timestampUs, frame.data);
@@ -979,8 +962,8 @@ export class ViewerPipeline {
     if (totalQueueSize > getMaxDecoderQueueSize()) {
       if (this.reorder) this.reorder.requestResync();
       this.renderSink?.flush?.();
-      // Drop this frame unless it is a keyframe (we need keyframes to recover)
-      // Actually, viewer-level waitingForKeyframe will also drop deltas if true.
+      // Deltas are discarded below until the next keyframe, which is what
+      // recovers.
       this.waitingForKeyframe = true;
     }
 
@@ -988,17 +971,12 @@ export class ViewerPipeline {
       const config = this.pendingConfig;
       this.pendingConfig = null;
 
-      // Annex-B H.264 stream starts with a start code prefix: 0x00000001 (4 bytes) or 0x000001 (3 bytes).
-      const isAnnexB =
-        data.length >= 3 &&
-        data[0] === 0x00 &&
-        data[1] === 0x00 &&
-        (data[2] === 0x01 || (data.length >= 4 && data[2] === 0x00 && data[3] === 0x01));
+      // The config decides the H.264 format, never the frame: an AVCC length
+      // prefix for a 256–511-byte NAL reads 00 00 01 xx, exactly like an
+      // Annex-B start code. An avcC record starts with version 0x01; Annex-B
+      // publishers send empty (or start-code) extradata.
       const isAvcc =
-        !isAnnexB &&
-        config.codec.startsWith('avc1') &&
-        config.extradata.length > 0 &&
-        config.extradata[0] === 0x01;
+        config.codec.startsWith('avc1') && config.extradata.length > 0 && config.extradata[0] === 0x01;
 
       let codec = config.codec;
       let extradata = config.extradata;
@@ -1034,7 +1012,7 @@ export class ViewerPipeline {
       log.info(
         'Applying decoder config:',
         codec,
-        `(${extradata.length}B extradata, detected format: ${isAnnexB ? 'Annex-B' : 'AVCC'}${
+        `(${extradata.length}B extradata, format: ${isAvcc ? 'AVCC' : 'Annex-B/other'}${
           this.preferSoftware ? ', SW fallback' : ''
         })`,
       );
@@ -1064,15 +1042,24 @@ export class ViewerPipeline {
   }
 
   private chainDecoderOp(op: () => void | Promise<void>): void {
+    const generation = this.decoderGeneration;
     this.decoderChain = this.decoderChain.then(op);
     this.decoderChain = this.decoderChain.catch((e) => {
       // configure()/decode() rejections land here — a codec/decode failure.
-      this.failDecode(e instanceof Error ? e : new Error(String(e)));
+      this.failDecode(e instanceof Error ? e : new Error(String(e)), generation);
+    });
+  }
+
+  private newDecoder(): Decoder {
+    const generation = this.decoderGeneration;
+    return new Decoder({
+      onDecoded: (decoded) => this.handleDecoded(decoded),
+      onError: (e) => this.failDecode(e, generation),
     });
   }
 
   // A keyframe serially behind the decode position is the broadcaster-restart
-  // signal (docs/14): the new session's frame timestamps live on a fresh
+  // signal: the new session's frame timestamps live on a fresh
   // clock timeline, invalidating anything derived from the old one — the
   // drift baseline AND the clock mapping (the new session's mapping arrives
   // with its first re-send / relay prime).
@@ -1080,10 +1067,10 @@ export class ViewerPipeline {
     this.liveEdge.reset();
     this.broadcastClockOffsetUs = null;
     this.lastCapToRenderMs = null;
-    // R15 (docs/20 Decision 8): audio timestamps live on the same restarted
-    // timeline — the sink must drop its queue and re-anchor, or every new
-    // packet reads as older than the playhead and is late-dropped forever.
-    // The A/V mapping anchored on the dead timeline goes with it.
+    // Audio timestamps live on the same restarted timeline — the sink must drop
+    // its queue and re-anchor, or every new packet reads as older than the
+    // playhead and is late-dropped forever. The A/V mapping anchored on the
+    // dead timeline goes with it.
     resetAvSync();
     this.cb.onAudioReset?.();
     // Held paced frames are from the old timeline — their targets are junk,
@@ -1106,10 +1093,9 @@ export class ViewerPipeline {
     }
     this.liveEdge.observe(decoded.frame.timestamp);
     this.observeCapToRender(decoded.frame.timestamp);
-    // R15 N5: A/V skew is measured always — in every playout mode, whether or
-    // not audio is driving the targets (docs/20 Decision 10). When the render
-    // sink samples at presentation (field finding 9) we defer to it; otherwise
-    // (main-thread fallback, no paced hold) present ≈ decode, so sample here.
+    // A/V skew is measured in every playout mode. When the render sink
+    // samples at presentation we defer to it; otherwise (main-thread
+    // fallback, no paced hold) present ≈ decode, so sample here.
     if (!this.presentationSampled) observeVideoPresented(decoded.frame.timestamp);
     // Worker path: draw + close in place so the frame never crosses a boundary.
     // Main-thread path: hand it to the callback, which draws and closes it.
@@ -1120,36 +1106,35 @@ export class ViewerPipeline {
     }
   }
 
-  // R12 T2: in adaptive mode, each decoded frame's display slot —
-  // timestamp + arrival baseline + offset, the same schedule the reorder
-  // buffer released it (DECODE_LEAD_MS early) against. Undefined everywhere
-  // else ⇒ the sink presents ASAP, exactly the pre-R12 behavior.
+  // In adaptive mode, each decoded frame's display slot — timestamp + arrival
+  // baseline + offset, the same schedule the reorder buffer released it
+  // (DECODE_LEAD_MS early) against. Undefined everywhere else ⇒ the sink
+  // presents ASAP.
   private displayTargetMs(timestampUs: number): number | undefined {
     if (getPlayoutMode() !== 'adaptive') return undefined;
     const offset = getPlayoutOffsetMs();
     if (offset <= 0) return undefined;
-    // Video is the master clock (docs/20 Decision 10, revised 2026-07-20):
-    // this schedule answers to the arrival baseline and nothing else, and it
-    // is the same one the reorder buffer's release gate uses. Audio aligns to
-    // it — see videoScheduleBaseEpochMs below.
+    // Video is the master clock: this schedule answers to the arrival baseline
+    // and nothing else, and it is the same one the reorder buffer's release
+    // gate uses. Audio aligns to it — see videoScheduleBaseEpochMs below.
     const base = this.reorder?.arrivalBaselineMs();
     if (base == null) return undefined;
     return timestampUs / 1000 + base + offset;
   }
 
-  // The video presentation schedule, published for the audio sink: a frame
-  // with broadcaster timestamp T is presented at T/1000 + base local ms.
-  // Carried as an epoch so the main thread can rebase it off its own
-  // timeOrigin (every worker has its own — see the README gotcha). Null until
-  // the baseline exists. In live-edge mode the offset is 0 and frames present
-  // on release, so the same number describes both modes.
+  // The video presentation schedule, published for the audio sink: a frame with
+  // broadcaster timestamp T is presented at T/1000 + base local ms. Carried as
+  // an epoch so the main thread can rebase it off its own timeOrigin (every
+  // worker has its own). Null until the baseline exists. In live-edge mode the
+  // offset is 0 and frames present on release, so the same number describes
+  // both modes.
   private videoScheduleBaseEpochMs(): number | null {
     const base = this.reorder?.arrivalBaselineMs();
     if (base == null) return null;
     return base + getPlayoutOffsetMs() + timeOriginMs();
   }
 
-  // R5 Q2: absolute capture→render, both sides translated to the relay clock:
+  // Absolute capture→render, both sides translated to the relay clock:
   //   (viewerNow + viewerOffset) − (frame.timestamp + broadcastOffset)
   // Needs both clock legs; until then it stays null. Negative raw values
   // (asymmetry error exceeding the true latency) clamp to 0.
@@ -1179,7 +1164,7 @@ export class ViewerPipeline {
     const reasm = this.reassembler?.getStats();
     const reorder: ReorderStats | undefined = this.reorder?.getStats();
 
-    // R9 funnel: complete frames arriving per second (datagram-reassembled +
+    // Funnel: complete frames arriving per second (datagram-reassembled +
     // stream keyframes), and — on the worker path — frames actually drawn.
     const receivedTotal = (reasm?.framesCompleted ?? 0) + this.keyframeStreamsReceived;
     const receivedFps = dt > 0 ? (receivedTotal - this.lastReceivedTotal) / dt : 0;
@@ -1190,15 +1175,15 @@ export class ViewerPipeline {
       renderedFps = dt > 0 ? (drawn - this.lastRenderedTotal) / dt : 0;
       this.lastRenderedTotal = drawn;
     }
-    // R12 T1: this window's jitter numbers.
+    // This window's jitter numbers.
     const cadence = this.renderSink?.drainCadence?.() ?? null;
     const arrivalJitterMs = this.reorder?.arrivalJitterMs() ?? null;
-    // R12 T3: the adaptive offset controller reads the same jitter estimate
-    // the overlay shows (no-op outside adaptive mode).
+    // The adaptive offset controller reads the same jitter estimate the
+    // overlay shows (no-op outside adaptive mode).
     updatePlayoutController(arrivalJitterMs, now);
-    // R30 finding 4: and so does the adaptive delta-gap grace — the same
-    // number, a different consumer. Driven here rather than per-advance
-    // because arrivalJitterMs() takes a windowed quantile.
+    // And so does the adaptive delta-gap grace — the same number, a different
+    // consumer. Driven here rather than per-advance because arrivalJitterMs()
+    // takes a windowed quantile.
     updateGraceController(arrivalJitterMs, now);
     const lats = this.decodeLatencies;
     this.decodeLatencies = [];
@@ -1209,16 +1194,15 @@ export class ViewerPipeline {
         lats.reduce((a, b) => a + (b - mean) * (b - mean), 0) / lats.length,
       );
     }
-    // R19 delivery-mode ground truth (docs/24 Decisions 8/10): requested is
-    // what this pipeline asked for; carriers observed is what the relay
-    // actually serves.
+    // Delivery-mode ground truth: requested is what this pipeline asked for;
+    // carriers observed is what the relay actually serves.
     const carrier = this.transport?.sampleCarrierStats?.() ?? null;
     // Live lane if it exists, else the folded snapshot from its death.
     const audioStats = this.audioLane?.getStats() ?? this.lastAudioStats;
-    // R21: the relay's own statement wins where we have it — it is the only
-    // thing that can distinguish ring-backed delivery from plain carriers,
-    // since a replayed GOP is byte-identical to a live one. Falls back to the
-    // R19 inference (carriers observed) against a relay too old to say.
+    // The relay's own statement wins where we have it — it is the only thing
+    // that can distinguish ring-backed delivery from plain carriers, since a
+    // replayed GOP is byte-identical to a live one. Falls back to inference
+    // (carriers observed) against a relay too old to say.
     const deliveryMode: ViewerStats['deliveryMode'] =
       this.servedDelivery === 'dvr'
         ? 'dvr'
@@ -1227,10 +1211,10 @@ export class ViewerPipeline {
             ? 'reliable'
             : 'reliable-requested'
           : 'datagrams';
-    // R30 (docs/35 §5.4): the stripe decision runs at this cadence. Sizing
-    // includes the parity symbols riding the same legs; the exact fleet level
-    // is not client-visible per frame, so any parity in the session sizes as
-    // the full k=2 — conservative by at most one leg at a share boundary.
+    // The stripe decision runs at this cadence. Sizing includes the parity
+    // symbols riding the same legs; the exact fleet level is not client-visible
+    // per frame, so any parity in the session sizes as the full k=2 —
+    // conservative by at most one leg at a share boundary.
     this.stripe.noteParityActive((reasm?.parityChunksReceived ?? 0) > 0 ? 2 : 0);
     const stripeTarget = this.stripe.decide();
     if (stripeTarget !== this.lastStripeRequested && this.transport?.setStripe) {
@@ -1247,7 +1231,7 @@ export class ViewerPipeline {
       framesCompleted: reasm?.framesCompleted ?? 0,
       framesDroppedIncomplete: reasm?.framesDroppedIncomplete ?? 0,
       framesDroppedLate: reasm?.framesDroppedLate ?? 0,
-      // R29 (docs/34 §7.1): what parity actually bought this viewer.
+      // What parity actually bought this viewer.
       parityChunksReceived: reasm?.parityChunksReceived ?? 0,
       framesRecoveredByParity: reasm?.framesRecoveredByParity ?? 0,
       parityRecoveryFailures: reasm?.parityRecoveryFailures ?? 0,
@@ -1314,13 +1298,13 @@ export class ViewerPipeline {
       // The STREAM's declared audio format, from the config message — not the
       // decode lane's. They agree whenever decoding works, and where it doesn't
       // (no AudioDecoder in this scope) only the config knows the format at all,
-      // which is exactly the case R22's audio muxing exists to cover: an iPhone
-      // that can't decode Opus itself can still hand it to the native player.
+      // which is the case the audio mux path exists for: an iPhone that can't
+      // decode Opus itself can still hand it to the native player.
       audioCodec: this.lastAudioConfig?.codec ?? audioStats?.codec ?? null,
       audioSampleRate: this.lastAudioConfig?.sampleRate ?? audioStats?.sampleRate ?? null,
       audioChannels: this.lastAudioConfig?.channels ?? audioStats?.channels ?? null,
       // `now` is this window's tick: a skew last measured before the previous
-      // presentation stalled is not a reading (docs/20 field finding 13).
+      // presentation stalled is not a reading.
       avSkewMs: getAvSkewMs(now),
       avPlayheadAdvance: getPlayheadAdvanceRatio(),
       avMaster:
@@ -1330,9 +1314,8 @@ export class ViewerPipeline {
             : 'free'
           : null,
       videoScheduleBaseEpochMs: this.videoScheduleBaseEpochMs(),
-      // R30 (docs/35 §7): requested vs active, plus the detector's own
-      // inputs so a non-engaging detector is arguable from a diagnostics
-      // blob rather than a mystery.
+      // Requested vs active, plus the detector's own inputs so its verdict is
+      // checkable from a diagnostics blob.
       stripeMode: getStripeMode(),
       stripeCapable: this.stripeCapable,
       stripeActive: this.stripeActive,
@@ -1354,37 +1337,28 @@ export class ViewerPipeline {
     void this.stop();
   }
 
-  // A decoder/codec failure: reconnecting re-feeds the same unplayable stream
-  // and fails identically, so this is marked `fatal` — ViewerSession surfaces
-  // it to the user and stops instead of looping. Guarded so the decoder's
-  // error callback and the configure() rejection can't double-report.
-  // A decoder/codec failure: we try to fall back to software-based decoding first.
-  // If it still fails, it's marked fatal — ViewerSession surfaces it to the user.
-  private failDecode(err: Error): void {
-    if (this.stopping) return;
+  // A decoder/codec failure. The first one retries with a software decoder;
+  // a second is marked `fatal`, because reconnecting would re-feed the same
+  // unplayable stream — ViewerSession surfaces it and stops instead of looping.
+  private failDecode(err: Error, generation: number): void {
+    if (this.stopping || generation !== this.decoderGeneration) return;
 
     if (!this.preferSoftware) {
       log.warn('Decode error encountered; trying software decoder fallback:', err.message);
       this.preferSoftware = true;
 
-      // Dispose old decoder
       if (this.decoder) {
         const oldDecoder = this.decoder;
         this.decoder = null;
         void oldDecoder.close();
       }
 
-      // Recreate decoder
-      this.decoder = new Decoder({
-        onDecoded: (decoded) => this.handleDecoded(decoded),
-        onError: (e) => this.failDecode(e),
-      });
-
-      // Reset decoder queue/chain
+      this.decoderGeneration++;
+      this.decoder = this.newDecoder();
       this.decoderChain = Promise.resolve();
       this.waitingForKeyframe = true;
 
-      // Re-trigger configuration
+      // The fresh decoder must be configured again before its first decode.
       if (this.lastConfigMessage) {
         this.pendingConfig = this.lastConfigMessage;
       }

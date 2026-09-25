@@ -1,6 +1,6 @@
-// A/V sync (docs/20 Decision 10, revised 2026-07-20 to video-master): skew
-// measurement on synthetic clocks, the staleness bound, and the drift trim
-// that is the only lever left once playback has started.
+// A/V sync (video-master): skew measurement on synthetic clocks, the
+// staleness bound, and the drift trim that is the only lever left once
+// playback has started.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -80,12 +80,9 @@ describe('av-sync playhead mapping', () => {
 
 // A re-anchor (the audio jitter buffer under-runs, re-primes, and resumes at
 // the live edge) moves the playhead discontinuously by hundreds of ms to
-// seconds. The mapping used to slew toward each report at 20 ms/s, so it left
-// the skew reading ~2 s and creeping for the ~100 s it took to reconverge (the
-// field capture: 1939→2130 over 9.5 s = exactly 20 ms/s); finding 9 patched
-// that with a snap above 250 ms, and finding 12 removed the smoothing
-// altogether — every report is the anchor. These cases stay pinned because
-// they are the ones that hurt.
+// seconds. Every report is the anchor, so the skew must re-align at the next
+// report rather than creep while a smoothed mapping reconverges (at 20 ms/s,
+// ~100 s for a 2 s jump).
 describe('av-sync follows the playhead wherever it goes', () => {
   it('tracks a 2 s playhead jump in one report (was ~2000 ms of slew lag)', () => {
     // Converge: at local 5000 ms the speaker is playing broadcaster ts 5.000 s.
@@ -100,8 +97,8 @@ describe('av-sync follows the playhead wherever it goes', () => {
     const jumped = (t + 2000) * 1000;
     notePlayhead({ heardUs: jumped, atEpochMs: epochFor(t) }, t);
 
-    // A frame at the new live edge reads ~0. Pre-fix the mapping corrected
-    // only 5 ms of the 2 s gap, so it read ~1995 ms.
+    // A frame at the new live edge reads ~0. A slew-limited mapping would
+    // correct only 5 ms of the 2 s gap and read ~1995 ms.
     expect(Math.abs(observeVideoPresented(jumped, t)!)).toBeLessThan(50);
   });
 
@@ -110,8 +107,9 @@ describe('av-sync follows the playhead wherever it goes', () => {
       notePlayhead({ heardUs: t * 1000, atEpochMs: epochFor(t) }, t);
     }
     // The worklet under-runs: its playhead freezes while the wall clock (and
-    // the audio that eventually resumes) keep moving. Pre-fix, each stale
-    // report dragged the mapping down 5 ms and the skew climbed 20 ms/s.
+    // the audio that eventually resumes) keep moving. A slew-limited mapping
+    // would be dragged down 5 ms per stale report while the skew climbed
+    // 20 ms/s.
     const frozen = 5000 * 1000;
     for (let t = 5250; t <= 8000; t += 250) {
       notePlayhead({ heardUs: frozen, atEpochMs: epochFor(t) }, t);
@@ -127,8 +125,8 @@ describe('av-sync follows the playhead wherever it goes', () => {
     notePlayhead({ heardUs: 0, atEpochMs: epochFor(0) }, 0);
     // Reports land with ±40 ms arrival jitter while the playhead advances at
     // 1×. Anchoring on each report puts that jitter straight into the reading
-    // — bounded by the jitter itself, where smoothing it traded a bounded
-    // noise for an unbounded bias (finding 12). The sink's getOutputTimestamp
+    // — bounded by the jitter itself, where smoothing it would trade a bounded
+    // noise for an unbounded bias. The sink's getOutputTimestamp
     // path removes most of this jitter at the source anyway, and the trim's
     // 20 ms deadband absorbs the rest.
     for (let k = 1; k <= 40; k++) {
@@ -142,10 +140,9 @@ describe('av-sync follows the playhead wherever it goes', () => {
   });
 });
 
-// The video-master guarantee (docs/20 Decision 10 revised, field finding 4):
-// av-sync measures, and nothing more. It exports no way to reschedule video,
-// so no audio state — fresh, stale, or absent — can move a video frame. That
-// is the property the revision buys, and this pins it at the module surface.
+// The video-master guarantee: av-sync measures, and nothing more. It exports
+// no way to reschedule video, so no audio state — fresh, stale, or absent —
+// can move a video frame. This pins that at the module surface.
 describe('av-sync cannot reschedule video', () => {
   it('measures skew without exposing any video-side lever', async () => {
     notePlayhead({ heardUs: 500_000, atEpochMs: epochFor(0) }, 0);
@@ -157,8 +154,8 @@ describe('av-sync cannot reschedule video', () => {
   });
 });
 
-// Drift is what remains after the start-time alignment (field finding 4):
-// the worklet runs at 1×, so nothing else can move audio relative to video.
+// Drift is what remains after the start-time alignment: the worklet runs at 1×,
+// so nothing else can move audio relative to video.
 describe('AudioRateController', () => {
   const ctl = () => new AudioRateController();
 
@@ -208,19 +205,18 @@ describe('AudioRateController', () => {
   });
 });
 
-// docs/20 field finding 13 (2026-07-26). Two halves of one root: the skew
-// metric is the ONLY long-run determinant of where audio sits (alignment is a
-// start-time decision and the trim integrates from there), so both what it
-// measures and when it is allowed to be believed are load-bearing.
+// Two halves of one root: the skew metric is the ONLY long-run determinant of
+// where audio sits (alignment is a start-time decision and the trim
+// integrates from there), so both what it measures and when it is allowed to
+// be believed are load-bearing.
 describe('av-sync skew is only believed while it is a measurement', () => {
   // The trim consumes `getAvSkewMs()` off the ~2 Hz stats tick, but the value
   // is only written where a frame is PRESENTED. Throttle presentation — a
   // hidden tab, an occluded window, worker rAF stalling — and audio keeps
   // reporting while the video side goes silent, so the last skew freezes and
-  // the trim integrates it open-loop. The field capture that found this had
-  // `renderedFps: 0` for 6.5 s with `avSkewMs` pinned at -61.5; at that error
-  // the trim adds ~0.25 ms of real delay per second, forever, with nothing
-  // measuring the result.
+  // the trim integrates it open-loop. At a frozen -61.5 ms the trim adds
+  // ~0.25 ms of real delay per second, forever, with nothing measuring the
+  // result.
   it('stops reporting a skew once video presentation stalls', () => {
     notePlayhead({ heardUs: 1_000_000, atEpochMs: epochFor(0) }, 0);
     expect(observeVideoPresented(1_000_000, 0)).toBeCloseTo(0, 3);
@@ -261,19 +257,17 @@ describe('av-sync skew is only believed while it is a measurement', () => {
   });
 });
 
-// docs/20 field finding 12 (the BUGS.md entry): `avSkewMs` read in the
-// thousands on long/stressed sessions while audio was near-correct. Driving
-// the real module reproduces the recorded ramp exactly — a playhead advancing
-// at 0.934x of wall time yields 1986 ms in 30 s, the accelerated capture's
-// figure — which means the number was reporting how far the audio TIMELINE had
-// fallen behind, three separable pieces of which were the estimator's own
-// error rather than anything at the speaker.
+// `avSkewMs` can read in the thousands on long/stressed sessions while audio
+// is near-correct: a playhead advancing at 0.934x of wall time yields 1986 ms
+// in 30 s. The number reports how far the audio TIMELINE has fallen behind;
+// the three pieces below separate the estimator's own error from what is
+// really at the speaker.
 describe('av-sync skew is a measurement, not an extrapolation', () => {
-  // Piece 1: the mapping slew-limited itself toward each report at 20 ms/s, so
-  // any playhead motion faster than that (the buffer skipping a hole, a
-  // re-prime jumping to live) left the mapping behind — a standing over-report
-  // for as long as the motion continued. The report is exact; smoothing an
-  // exact measurement can only add error.
+  // Piece 1: a mapping slew-limited toward each report at 20 ms/s leaves any
+  // faster playhead motion (the buffer skipping a hole, a re-prime jumping to
+  // live) behind — a standing over-report for as long as the motion
+  // continues. The report is exact; smoothing an exact measurement can only
+  // add error.
   it('anchors on each report instead of slewing toward it', () => {
     // Audio that is exactly in sync but whose playhead moves in jumps (stall,
     // then skip to live) rather than smoothly. Read the metric AT each report,
@@ -289,17 +283,17 @@ describe('av-sync skew is a measurement, not an extrapolation', () => {
       const skew = observeVideoPresented(t * 1000, t);
       if (t > 0) worst = Math.max(worst, Math.abs((skew ?? 0) - trueLatenessMs));
     }
-    // Pre-fix the slew could only move 5 ms per report, so it trailed the
-    // sawtooth by up to ~20 ms — a standing error no consumer could see,
-    // bound, or attribute, on top of whatever the true skew was.
+    // A slew of 5 ms per report would trail the sawtooth by up to ~20 ms — a
+    // standing error no consumer could see, bound, or attribute, on top of
+    // whatever the true skew was.
     expect(worst).toBeLessThan(1);
   });
 
-  // Piece 2: with no report, the mapping kept extrapolating at 1x for the whole
-  // 1500 ms staleness window — so a congested main thread (exactly the "stressed
-  // session" in the report) could have the metric inventing up to 1.5 s of skew
-  // out of an assumption. The worklet reports at 4 Hz; past a few intervals the
-  // position is not known, and "unknown" is a better answer than a guess.
+  // Piece 2: with no report, a mapping extrapolated at 1x across a long
+  // staleness window (say 1500 ms) lets a congested main thread invent up to
+  // 1.5 s of skew out of an assumption. The worklet reports at 4 Hz; past a
+  // few intervals the position is not known, and "unknown" is a better answer
+  // than a guess.
   it('stops reporting once it has not heard from the playhead', () => {
     for (let t = 0; t <= 2000; t += 250) {
       notePlayhead({ heardUs: t * 1000, atEpochMs: epochFor(t) }, t);
@@ -309,11 +303,11 @@ describe('av-sync skew is a measurement, not an extrapolation', () => {
   });
 
   // Piece 3 is not an estimator error at all — a starving worklet really does
-  // fall behind, and the metric really should say so. What was missing is any
-  // way to tell that reading apart from a steady lip-sync offset, which is why
-  // three findings have argued over one number. The advance ratio is the
-  // discriminator: ~1 means the audio timeline is keeping up and the skew is
-  // lip sync; below 1 means the skew is accumulating starvation debt.
+  // fall behind, and the metric really should say so. What it needs is a way
+  // to tell that reading apart from a steady lip-sync offset. The advance
+  // ratio is the discriminator: ~1 means the audio timeline is keeping up and
+  // the skew is lip sync; below 1 means the skew is accumulating starvation
+  // debt.
   it('reports how fast the audio timeline is advancing', () => {
     expect(getPlayheadAdvanceRatio()).toBeNull(); // no data yet
 
@@ -322,14 +316,14 @@ describe('av-sync skew is a measurement, not an extrapolation', () => {
     }
     expect(getPlayheadAdvanceRatio()).toBeCloseTo(1, 2);
 
-    // The storm from the capture: the worklet is dry ~7 % of the time.
+    // A starvation storm: the worklet is dry ~7 % of the time.
     resetAvSync();
     for (let t = 0; t <= 30_000; t += 250) {
       notePlayhead({ heardUs: t * 0.934 * 1000, atEpochMs: epochFor(t) }, t);
     }
     expect(getPlayheadAdvanceRatio()).toBeCloseTo(0.934, 2);
     // …and the skew it produces is the debt that ratio predicts, not a
-    // constant offset: ~66 ms per second, the recorded 1986 ms over 30 s.
+    // constant offset: ~66 ms per second, 1986 ms over 30 s.
     expect(observeVideoPresented(30_000 * 1000, 30_000)!).toBeCloseTo(1980, -2);
   });
 

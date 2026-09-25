@@ -3,8 +3,8 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizeTermsHtml } from './sanitize';
 
-// The security gate for the R23 operator override (docs/29 §4.2). Every case
-// here is an XSS the un-sanitized path would ship. If a mutation flips the
+// The security gate for the operator terms override. Every case here is an
+// XSS the un-sanitized path would ship. If a mutation flips the
 // allowlist to a blocklist (or drops the href scheme check), these fail.
 
 describe('sanitizeTermsHtml — safe content is preserved', () => {

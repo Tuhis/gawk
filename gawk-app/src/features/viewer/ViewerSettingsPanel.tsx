@@ -34,14 +34,14 @@ interface Props {
   onClose: () => void;
 }
 
-// R32 UX3 (docs/37 §6.3). The viewer's settings surface, deliberately the same
-// shape as the broadcaster's (scrim + right-side GlassPanel + uppercase group
-// titles) so the product has one settings idiom rather than two.
+// The viewer's settings surface, deliberately the same shape as the
+// broadcaster's (scrim + right-side GlassPanel + uppercase group titles) so
+// the product has one settings idiom rather than two.
 //
 // Rendered by ViewerScreen *inside* the viewer root, never portalled to
-// document.body: in CSS pseudo-fullscreen — the shipping iPhone tier since
-// docs/21 U4 — the fullscreen element IS that root, so anything outside it is
-// invisible. Same for desktop element fullscreen. (docs/37 decision 5.)
+// document.body: in CSS pseudo-fullscreen (the iPhone tier) the fullscreen
+// element IS that root, so anything outside it is invisible. Same for desktop
+// element fullscreen.
 export function ViewerSettingsPanel({
   config,
   interpolationAvailable,
@@ -52,9 +52,9 @@ export function ViewerSettingsPanel({
   onResetAdvanced,
   onClose,
 }: Props) {
-  // Collapsed by default: the whole point of R32 is that an average viewer
-  // never opens this. Controlled rather than a native <details> so it matches
-  // the broadcaster's animated reveal.
+  // Collapsed by default: an average viewer should never need to open this.
+  // Controlled rather than a native <details> so it matches the
+  // broadcaster's animated reveal.
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const groupName = useId();
   const current = resolvePreset(config);
@@ -99,10 +99,9 @@ export function ViewerSettingsPanel({
                 <span className={styles.presetSub}>
                   {preset.sub}
                   {/* Only the controls that actually re-dial say so, or the
-                      disclosure means nothing (docs/37 decision 7). A carrier
-                      preset is reached by renegotiating the subscription; the
-                      pacing-only step between Lowest latency and Balanced is
-                      not. */}
+                      disclosure means nothing. A carrier preset is reached by
+                      renegotiating the subscription; the pacing-only step
+                      between Lowest latency and Balanced is not. */}
                   {preset.delivery !== config.delivery && (
                     <span className={styles.reconnectNote}> {RECONNECT_NOTE}</span>
                   )}
@@ -183,9 +182,8 @@ export function ViewerSettingsPanel({
           )}
         </section>
 
-        {/* R23 (docs/29): terms reachable from the viewer's settings, matching
-            the broadcaster panel's footer. A new tab, so reading them never
-            tears down the live stream. */}
+        {/* A new tab, so reading the terms never tears down the live
+            stream. */}
         <div className={styles.settingsFoot}>
           <a
             href={`${window.location.origin}${window.location.pathname}#/terms`}

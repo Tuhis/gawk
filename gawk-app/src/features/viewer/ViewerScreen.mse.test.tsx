@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// R22 (docs/27): the gated arm/video lifecycle that ViewerScreen.test.tsx
+// The gated arm/video lifecycle that ViewerScreen.test.tsx
 // cannot reach — jsdom always falls back to the main-thread pipeline, whose
 // probe verdict is false by design, so the armed states below are driven
 // through a mocked useViewerConnection instead (the seam the screen actually
@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/react';
-import type { MseProbeResult } from './msePresentation';
+import { MsePresenter, type MseProbeResult } from './msePresentation';
 
 const conn = vi.hoisted(() => ({
   state: {
@@ -88,6 +88,23 @@ afterEach(() => {
 });
 
 describe('ViewerScreen R22 arm lifecycle (gated, mocked connection)', () => {
+  // Both SourceBuffers must exist before the first init segment, so a
+  // presenter created after the audio verdict must still learn its mime.
+  it('hands a late-created presenter the audio mime already known', async () => {
+    const setMime = vi.spyOn(MsePresenter.prototype, 'setExpectedAudioMime');
+    try {
+      conn.state.probe = UNSUPPORTED;
+      conn.state.audioProbe = AUDIO_SUPPORTED;
+      const { rerender } = render(<ViewerScreen broadcastId="AB2CD3" />);
+      conn.state.probe = SUPPORTED;
+      rerender(<ViewerScreen broadcastId="AB2CD3" />);
+      await waitFor(() => expect(conn.state.arm).toHaveBeenCalled());
+      expect(setMime).toHaveBeenCalledWith(AUDIO_SUPPORTED.mime);
+    } finally {
+      setMime.mockRestore();
+    }
+  });
+
   it('arms at watching once the probe passes, mounting the hidden paused video', async () => {
     conn.state.probe = SUPPORTED;
     const { container } = render(<ViewerScreen broadcastId="AB2CD3" />);
@@ -95,7 +112,7 @@ describe('ViewerScreen R22 arm lifecycle (gated, mocked connection)', () => {
     expect(conn.state.setSegmentSink).toHaveBeenCalled();
     const video = container.querySelector('video');
     expect(video).not.toBeNull();
-    // Decision 5: loaded-but-paused — no autoplay attribute.
+    // Loaded-but-paused: no autoplay attribute.
     expect(video!.hasAttribute('autoplay')).toBe(false);
     expect(video!.muted !== undefined).toBe(true);
   });
@@ -115,7 +132,7 @@ describe('ViewerScreen R22 arm lifecycle (gated, mocked connection)', () => {
     expect(container.querySelector('video')).toBeNull();
   });
 
-  // docs/27 finding 7: the worker muxer emits its init segment exactly ONCE
+  // The worker muxer emits its init segment exactly ONCE
   // per session and survives reconnects, so any window with no sink registered
   // costs the presentation every segment after it — permanently and silently
   // (the presenter drops media it has no init for). A reconnect flips status
@@ -139,7 +156,7 @@ describe('ViewerScreen R22 arm lifecycle (gated, mocked connection)', () => {
     expect(conn.state.setSegmentSink).toHaveBeenLastCalledWith(null);
   });
 
-  // A broadcaster restart can change the codec mid-view (R13 pin, or a
+  // A broadcaster restart can change the codec mid-view (a codec pin, or a
   // different broadcaster reclaiming the ID). If the new codec probes false,
   // the armed surface is stale: keeping the ready <video> mounted would let
   // the next fullscreen tap native-present frozen content. The video must
@@ -155,7 +172,7 @@ describe('ViewerScreen R22 arm lifecycle (gated, mocked connection)', () => {
   });
 });
 
-// R22 audio (docs/27 finding 2): only one output may be audible. The muxed
+// Only one output may be audible. The muxed
 // track plays through the native player, which is independently clocked from the
 // inline AudioWorklet sink — both at once is an echo.
 describe('ViewerScreen R22 audio handoff (gated, mocked connection)', () => {

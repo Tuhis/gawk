@@ -31,9 +31,17 @@ class FakePipeline implements PipelineHandle {
     this.startResult = startResult;
   }
 
+  // Settles a 'hold' start; undefined resolves, anything else rejects.
+  settleStart: (err?: unknown) => void = () => {};
+
   start(): Promise<void> {
     if (this.startResult === 'ok') {
       return Promise.resolve();
+    }
+    if (this.startResult === 'hold') {
+      return new Promise((resolve, reject) => {
+        this.settleStart = (err) => (err === undefined ? resolve() : reject(err));
+      });
     }
     const err = new Error('connect failed') as any;
     if (this.startResult === 'fail-4000') {
@@ -73,7 +81,7 @@ class FakePipeline implements PipelineHandle {
 
 // A pipeline's start() outcome: connect, fail without a code, or fail with a
 // terminal close code the relay sent before the dial completed.
-type StartResult = 'ok' | 'fail' | 'fail-4000' | 'fail-4006';
+type StartResult = 'ok' | 'fail' | 'fail-4000' | 'fail-4006' | 'hold';
 
 interface Harness {
   session: ViewerSession;
@@ -127,7 +135,7 @@ describe('reconnectDelayMs', () => {
     ]);
   });
 
-  // R17 W1 (docs/22 Decision 4): the close-code-aware first-retry table.
+  // The close-code-aware first-retry table.
   it('applies the fast first-retry policy per close code', () => {
     // 4002 planned drain ⇒ reconnect now.
     expect(reconnectDelayMs(1, CLOSE_CODE_SERVER_DRAINING)).toBe(0);
@@ -292,9 +300,9 @@ describe('ViewerSession', () => {
     expect(pipelines).toHaveLength(1);
   });
 
-  // R39 (docs/42 §4.4): 4006 joins 4000 in the terminal set, and carries the
-  // distinct reason the end card renders. Without both halves a kill turns
-  // into a reconnect loop against the relay's ban gate.
+  // 4006 joins 4000 in the terminal set, and carries the distinct reason the
+  // end card renders. Without both halves a kill turns into a reconnect loop
+  // against the relay's ban gate.
   it('stops reconnecting and reports "moderated" when closed with code 4006', async () => {
     const { session, pipelines, events, endReasons } = makeHarness();
     await session.start();
@@ -321,6 +329,19 @@ describe('ViewerSession', () => {
     expect(pipelines).toHaveLength(2);
   });
 
+  it('ends exactly once when stop() races a reconnect that the relay ends', async () => {
+    const { session, pipelines, endReasons } = makeHarness(['ok', 'hold']);
+    await session.start();
+    pipelines[0].crash('drop');
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS);
+    expect(pipelines).toHaveLength(2);
+
+    const stopped = session.stop();
+    pipelines[1].settleStart(Object.assign(new Error('ended'), { closeCode: CLOSE_CODE_BROADCAST_ENDED }));
+    await stopped;
+    expect(endReasons).toHaveLength(1);
+  });
+
   // The second terminal check (the reconnect dial's own rejection) has to know
   // about 4006 too — the kill can land between two attempts.
   it('stops reconnecting when a reconnect start rejects with code 4006', async () => {
@@ -339,8 +360,8 @@ describe('ViewerSession', () => {
   });
 });
 
-// R39 (docs/42 §4.4). One named set per role, so the two viewer call sites and
-// the browser broadcaster cannot drift apart.
+// One named set per role, so the two viewer call sites and the browser
+// broadcaster cannot drift apart.
 describe('terminal close-code sets', () => {
   it('holds exactly 4000 and 4006 for viewers', () => {
     expect(isTerminalViewerClose(CLOSE_CODE_BROADCAST_ENDED)).toBe(true);

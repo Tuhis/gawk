@@ -16,19 +16,13 @@ import { applyRouteGrant } from './features/room/grantHandoff';
 import { RoomScreen } from './features/room/RoomScreen';
 import { JoinResolver } from './features/room/JoinResolver';
 
-// Hash-based routing (docs/10 Decision 1): production surfaces at #/,
-// #/broadcast, #/view/<id>; the frozen diagnostic pages under #/debug/*.
-// parseRoute is pure and unit-tested; this shell only subscribes + redirects.
+// Hash-based routing; parseRoute is pure, this shell subscribes and redirects.
 //
-// R37 (docs/40 §4.2): the ?relay= session override is applied synchronously
-// with route resolution — before the route's screen mounts — because the
-// viewer/broadcaster connection effects dial on mount and must never open a
-// real connection to the wrong relay first.
-//
-// R42 (docs/44 §4.8): the `?rt=` grant on a room link is moved into session
-// storage and stripped from the URL in the same synchronous step, for the
-// same reason — the room screen dials on mount and must find its grant
-// already stashed, and the credential must never survive into a copied link.
+// The ?relay= override and the room link's ?rt= grant are applied while the
+// route resolves, before its screen mounts: the screens dial on mount and must
+// never reach the wrong relay first, and the grant must be stashed (and
+// stripped from the URL, so it never survives into a copied link) before the
+// room screen needs it.
 function resolveRoute(hash: string): Route {
   const route = parseRoute(hash);
   applyRouteRelay(route);
@@ -53,7 +47,7 @@ function renderRoute(route: Route): ReactElement | null {
     case 'broadcaster':
       return <BroadcasterScreen />;
     case 'viewer':
-      return <ViewerScreen broadcastId={route.broadcastId} />;
+      return <ViewerScreen key={route.broadcastId} broadcastId={route.broadcastId} />;
     case 'room':
       return <RoomScreen key={route.code} code={route.code} />;
     case 'join':
@@ -92,15 +86,10 @@ function renderRoute(route: Route): ReactElement | null {
 export default function App() {
   const route = useRoute();
 
-  // Detected once per page load, above the route so a direct #/view/<id> link
-  // warns exactly like the landing page does — that link is the one most often
-  // opened by someone who has never seen this app before.
-  //
-  // The acknowledgment is component state and is deliberately NOT persisted:
-  // this is a "your stream will probably fail" warning, not a terms acceptance
-  // (contrast features/terms/acceptance.ts, which stores its version). Every
-  // page load re-warns. It does not re-appear on hash navigation, because that
-  // is not a new load and App never unmounts.
+  // Detected once per page load, above the route, so a direct #/view/<id>
+  // link (the one a first-time visitor opens) warns like the landing page.
+  // The acknowledgment is deliberately not persisted: every page load warns
+  // again, hash navigation does not.
   const [support] = useState(() => detectBrowserSupport(readBrowserEnv()));
   const [acknowledged, setAcknowledged] = useState(false);
 

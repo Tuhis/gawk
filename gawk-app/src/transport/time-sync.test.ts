@@ -1,5 +1,5 @@
-// TimeSync client + estimator (R5 Q2, docs/15). Pure logic under fake clocks:
-// the NTP-style offset math, the min-RTT sample filter, and the ping loop's
+// TimeSync client + estimator. Pure logic under fake clocks: the NTP-style
+// offset math, the min-RTT sample filter, and the ping loop's
 // consume-replies-only contract.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

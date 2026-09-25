@@ -22,7 +22,7 @@ export interface TileEdges {
 
 interface FrameProps {
   attachment: RoomAttachment;
-  // 1-based: the number key that focuses this POV (docs/44 §4.9).
+  // 1-based: the number key that focuses this POV.
   index: number;
   // Position in the focus strip (small tiles only).
   stripIndex?: number;
@@ -101,7 +101,7 @@ function TileFrame({
           {index}
         </span>
         {/* No per-POV viewer count here: the header carries the room's
-            totals and the panel the per-stream figure (docs/44 §4.9). */}
+            totals and the panel the per-stream figure. */}
         <span className={styles.tileLabel} data-live={away ? 'false' : 'true'}>
           {attachment.label || broadcastId}
           {own && <span>· you</span>}
@@ -114,7 +114,7 @@ function TileFrame({
       {!small && (
         <div className={`${styles.tileFoot} ${chromeCls}`}>
           {audioControls}
-          {/* D1: a plain #/view/ link, in a new tab so the room stays. */}
+          {/* A plain #/view/ link, in a new tab so the room stays. */}
           <a
             className={styles.openLink}
             href={buildViewLink(broadcastId)}
@@ -146,7 +146,7 @@ interface Props {
   config: PlaybackConfig;
   audioOutput: AudioOutput | null;
   // Focus mode: every non-focused tile is silenced through its sink, never
-  // torn down (docs/44 §4.7 "audio follows the mode").
+  // torn down.
   suppressed: boolean;
   own: boolean;
   ownControls?: ReactNode;
@@ -192,7 +192,7 @@ export function RoomTile({
     {
       audioOutput: audioOutput ?? undefined,
       audioPrefs: 'session',
-      // The broadcaster hears their own game already (docs/44 §4.7).
+      // The broadcaster hears their own game already.
       initialMuted: own,
       initialVolume,
       roomKey,
@@ -290,10 +290,10 @@ interface OwnProps {
   onFocus: (broadcastId: string) => void;
 }
 
-// RM5 (docs/44 §4.8): the web broadcaster's own tile paints the LOCAL
+// The web broadcaster's own tile paints the LOCAL
 // capture preview — no /subscribe session to their own broadcast, so the
 // room costs them no extra uplink and shows no relay round-trip; and it is
-// muted by construction (they hear their game already, §4.7).
+// muted by construction (they hear their game already).
 export function OwnPreviewTile({
   attachment,
   index,

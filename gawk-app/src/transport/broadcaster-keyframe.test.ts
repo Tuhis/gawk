@@ -1,4 +1,4 @@
-// S4 (docs/12): handleEncoded routes keyframes onto a reliable unidirectional
+// handleEncoded routes keyframes onto a reliable unidirectional
 // stream (config embedded) and deltas onto datagrams. Mocks mirror
 // broadcaster-fallback.test.ts: a fake Encoder whose onEncoded callback the
 // test drives directly, a passthrough preprocessor, a DatagramSender that
@@ -29,7 +29,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./connection', () => ({
   connectWebTransport: (...args: unknown[]) => connectWebTransport(...args),
-  // Time-sync reply loop (R5 Q2): stays open, delivers nothing.
+  // Time-sync reply loop: stays open, delivers nothing.
   readDatagrams: () => new Promise(() => {}),
   DatagramSender: class {
     send = (datagrams: Uint8Array[]) => {
@@ -141,7 +141,6 @@ function makeCaptureHandle() {
 }
 
 function fakeFrame(tsUs: number) {
-  // 1920x1080 avoids the >1080p hardware-probe/cap branch.
   return {
     timestamp: tsUs,
     displayWidth: 1920,
@@ -225,8 +224,8 @@ describe('handleEncoded channel split (R8)', () => {
     await flush();
 
     // Keyframe went to exactly one uni stream, never to datagrams. (The
-    // pipeline also sends TimeSync pings as datagrams since R5 Q2 — only
-    // video chunks count here.)
+    // pipeline also sends TimeSync pings as datagrams — only video chunks
+    // count here.)
     const videoSends = () =>
       h.sends.filter((batch) => batch.some((d) => peekType(d).msgType === TYPE_VIDEO_CHUNK));
     expect(h.streams.length).toBe(1);

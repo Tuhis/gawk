@@ -4,6 +4,7 @@
 // in node; the broadcaster pipeline does the EncodedVideoChunk.copyTo.
 
 import {
+  MAX_CHUNK_COUNT,
   MAX_CHUNK_PAYLOAD,
   MAX_DATAGRAM_SIZE,
   VIDEO_CHUNK_HEADER_SIZE,
@@ -13,6 +14,7 @@ import {
   WireError,
 } from './wire';
 import { MAX_PARITY_DATA_CHUNKS, computeParity, encodeParityChunk } from './parity';
+import { bufferSourceBytes } from '../lib/bytes';
 
 export interface FrameInfo {
   frameId: number; // uint32, monotonic per broadcast session
@@ -22,7 +24,8 @@ export interface FrameInfo {
 
 // Splits data into datagrams that fit within the path MTU. A zero-length
 // frame still produces one chunk so the frame exists on the wire. Throws
-// WireError if the frame would need more than 65535 chunks.
+// WireError if the frame would need more than MAX_CHUNK_COUNT chunks, before
+// encoding any of them.
 export function packetizeFrame(
   info: FrameInfo,
   data: Uint8Array,
@@ -30,8 +33,8 @@ export function packetizeFrame(
 ): Uint8Array<ArrayBuffer>[] {
   const maxPayload = Math.min(MAX_CHUNK_PAYLOAD, Math.max(1, pathMaxDatagramSize - VIDEO_CHUNK_HEADER_SIZE));
   const chunkCount = Math.max(1, Math.ceil(data.length / maxPayload));
-  if (chunkCount > 0xffff) {
-    throw new WireError(`frame of ${data.length} bytes needs ${chunkCount} chunks, max 65535`);
+  if (chunkCount > MAX_CHUNK_COUNT) {
+    throw new WireError(`frame of ${data.length} bytes needs ${chunkCount} chunks, max ${MAX_CHUNK_COUNT}`);
   }
   const datagrams: Uint8Array<ArrayBuffer>[] = new Array(chunkCount);
   for (let i = 0; i < chunkCount; i++) {
@@ -51,14 +54,14 @@ export function packetizeFrame(
 }
 
 // Splits data into datagrams and, when parityLevel > 0, computes up to that
-// many RAID-6 P/Q parity symbols over the chunk PAYLOADS (R29, docs/34).
+// many RAID-6 P/Q parity symbols over the chunk PAYLOADS.
 //
 // Parity covers payloads rather than whole datagrams because payloads are
 // what the viewer reassembles — covering headers would still round-trip on a
 // clean link and fail only under the loss the feature exists for.
 //
 // Deltas only. Callers must not ask for parity on a keyframe: keyframes ride
-// reliable uni streams (R8) and are not exposed to datagram loss.
+// reliable uni streams and are not exposed to datagram loss.
 //
 // A frame needing more than MAX_PARITY_DATA_CHUNKS chunks degrades to plain
 // datagrams rather than throwing — past that bound the Q coefficients wrap
@@ -92,11 +95,14 @@ export function packetizeDecoderConfig(
   codec: string,
   description?: AllowSharedBufferSource,
 ): Uint8Array<ArrayBuffer> {
-  return encodeDecoderConfig({ codec, extradata: toUint8Array(description) });
+  return encodeDecoderConfig({
+    codec,
+    extradata: description ? bufferSourceBytes(description) : new Uint8Array(0),
+  });
 }
 
 // Builds the single StreamFrame message a keyframe travels in over a reliable
-// unidirectional stream (R8): header + the current DecoderConfig datagram
+// unidirectional stream: header + the current DecoderConfig datagram
 // (embedded so a delivered keyframe is self-sufficient to decode) + the encoded
 // keyframe payload. configDatagram may be empty when no config is available yet
 // (the viewer then relies on an earlier one).
@@ -110,10 +116,4 @@ export function packetizeStreamKeyframe(
     configDatagram,
     payload,
   );
-}
-
-function toUint8Array(src?: AllowSharedBufferSource): Uint8Array {
-  if (!src) return new Uint8Array(0);
-  if (src instanceof ArrayBuffer || src instanceof SharedArrayBuffer) return new Uint8Array(src);
-  return new Uint8Array(src.buffer, src.byteOffset, src.byteLength);
 }

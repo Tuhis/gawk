@@ -1,10 +1,10 @@
-// R10 P3: host-agnostic core of the dedicated transport worker.
-// `transport.worker.ts` is a thin `onmessage` shell around this; the core owns
-// one WebTransport session (via LocalViewerTransport — the same connection
-// code the in-process path runs) and marshals its callbacks into postMessage
-// events with transferred buffers, so the decode/render worker receives
-// datagrams and keyframes without the transport thread ever doing decode or
-// render work. DOM-free and unit-testable with a fake host + fake transport.
+// Host-agnostic core of the dedicated transport worker. `transport.worker.ts`
+// is a thin `onmessage` shell around this; the core owns one WebTransport
+// session (via LocalViewerTransport — the same connection code the in-process
+// path runs) and marshals its callbacks into postMessage events with
+// transferred buffers, so the decode/render worker receives datagrams and
+// keyframes without the transport thread ever doing decode or render work.
+// DOM-free and unit-testable with a fake host + fake transport.
 
 import type { CarrierCounters, ConnectOptions, KeyframeStreamFrame } from './connection';
 import type { DatagramBufferStats } from './datagram-buffer';
@@ -22,9 +22,9 @@ import {
 // Decode worker → transport worker.
 export type TransportWorkerCommand =
   | { type: 'connect'; url: string; connectOpts: ConnectOptions }
-  // R30 (docs/35 §5.6): stripe target. The transport worker owns the legs —
-  // they must live beside the primary's session so their datagrams ride the
-  // same posting path with no extra hop.
+  // Stripe target. The transport worker owns the legs — they must live beside
+  // the primary's session so their datagrams ride the same posting path with no
+  // extra hop.
   | { type: 'stripe'; n: number }
   | { type: 'close' };
 
@@ -43,31 +43,28 @@ export type TransportWorkerEvent =
       streamBytes: number;
     }
   | { type: 'closed'; closeCode?: number; reason?: string; message: string }
-  // R28 (docs/33 D2): the session's telemetry identity, forwarded once. It
-  // gets its own message rather than riding the stats push because it is a
-  // bearer credential — keeping it out of ViewerStats is what keeps it out of
-  // the Copy-diagnostics blob a user pastes into a chat.
+  // The session's telemetry identity, forwarded once. It gets its own message
+  // rather than riding the stats push because it is a bearer credential —
+  // keeping it out of ViewerStats is what keeps it out of the Copy-diagnostics
+  // blob a user pastes into a chat.
   | { type: 'telemetryHello'; hello: TelemetryHelloMessage }
   | { type: 'telemetryEndpoint'; url: string }
-  // R29/R30: the relay's capabilities — the stripe controller's gate.
+  // The relay's capabilities — the stripe controller's gate.
   | { type: 'relayCapabilities'; caps: RelayCapabilities }
-  // R30: the stripe width actually engaged (0 = unstriped).
+  // The stripe width actually engaged (0 = unstriped).
   | { type: 'stripeChange'; active: number }
   // Pushed at the stats cadence: connection health + the relay clock-sync
-  // sample (R5 Q2 — measured in this worker, where the reply timing is jitter-
-  // free; bigint crosses postMessage via structured clone) + the R19 carrier
-  // tallies.
+  // sample (measured in this worker, where the reply timing is jitter-free;
+  // bigint crosses postMessage via structured clone) + the carrier tallies.
   | {
       type: 'connStats';
       stats: TransportConnectionStats | null;
       timeSync: TimeSyncStats | null;
       carrier: CarrierCounters | null;
-      // R29 finding 2 (docs/34): the receive-buffer verdict. It can only be
-      // read where the WebTransport lives, which on this path is here — so
-      // without this field the main thread's gate could never report the
-      // placement the loss was actually measured on.
+      // The receive-buffer verdict. It can only be read where the
+      // WebTransport lives, which on this path is here.
       datagramBuffer: DatagramBufferStats | null;
-      // R30: the stripe tallies (docs/35 §7); null on pre-R30 cores.
+      // The stripe tallies; optional so a core without striping can omit them.
       stripe?: StripeTransportStats | null;
     };
 

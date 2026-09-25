@@ -1,7 +1,7 @@
-// S5 (docs/12 Decision 7): the reorder buffer merges reliable stream keyframes
-// with lossy datagram deltas by frameId, releasing in decode order with two
-// bounded waits and NO fixed playout offset. A controlled clock drives the
-// time-based decisions deterministically.
+// The reorder buffer merges reliable stream keyframes with lossy datagram
+// deltas by frameId, releasing in decode order with two bounded waits and no
+// playout offset by default. A controlled clock drives the time-based
+// decisions deterministically.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -46,12 +46,11 @@ const delta = (frameId: number) => ({
   data: new Uint8Array([frameId & 0xff]),
 });
 
-// R29 FP6 (docs/34 §6): this file pins the freeze-on-gap MECHANISM, which the
-// loss allowance did not change — it only moved when the mechanism triggers.
-// Pinning the allowance at 0 here keeps every assertion below meaning exactly
-// what it meant pre-R29, and leaves the new default (1) owned by
-// reorder-allowance.test.ts, where it is asserted directly rather than
-// incidentally.
+// This file pins the freeze-on-gap MECHANISM, which the loss allowance does
+// not change — it only moves when the mechanism triggers. Pinning the
+// allowance at 0 here keeps every assertion below about the mechanism, and
+// leaves the default (1) to reorder-allowance.test.ts, where it is asserted
+// directly rather than incidentally.
 beforeEach(() => setLossAllowanceFrames(0));
 afterEach(() => setLossAllowanceFrames(1));
 
@@ -127,11 +126,11 @@ describe('ReorderBuffer', () => {
   });
 
   it('survives a keyframe that arrives ~500ms behind its trailing deltas (R10 field finding)', () => {
-    // The 2026-07-14 Chrome diagnostics trace (docs/14): keyframes ride the
-    // store-and-forward stream path and can land hundreds of ms after their
-    // trailing deltas arrived via datagrams — a ~236 KB keyframe to a congested
-    // peer regularly took > 500 ms. The deltas held while waiting must survive
-    // that long, or every GOP degenerates into keyframe-only 2 fps playback:
+    // Keyframes ride the store-and-forward stream path and can land hundreds
+    // of ms after their trailing deltas arrived via datagrams — a ~236 KB
+    // keyframe to a congested peer regularly takes > 500 ms. The deltas held
+    // while waiting must survive that long, or every GOP degenerates into
+    // keyframe-only 2 fps playback:
     // deltas expire → keyframe releases alone → instant gap → freeze → repeat.
     const { rb, clock, ids } = harness();
 
@@ -234,6 +233,26 @@ describe('ReorderBuffer', () => {
     expect(ids()).toEqual([100, 101, 0, 1]);
   });
 
+  // frameIds across a restart are not comparable: an old-session frame still
+  // buffered (103) sits serially ahead of the new position and must not pose
+  // as the oldest waiting frame, which declared a gap after every release.
+  it('drops the old session\'s buffered frames on a restart', () => {
+    const { rb, ids, clock } = harness();
+    rb.pushKeyframe(kf(100));
+    rb.pushDelta(delta(101));
+    rb.pushDelta(delta(103)); // 102 lost
+    clock.t += DELTA_GAP_GRACE_MS + 1;
+    rb.tick();
+    clock.t += 200;
+    rb.pushKeyframe(kf(0));
+    for (let i = 1; i <= 10; i++) {
+      clock.t += 16;
+      rb.pushDelta(delta(i));
+    }
+    expect(ids()).toEqual([100, 101, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(rb.getStats().buffered).toBe(0);
+  });
+
   it('ignores an exact-duplicate keyframe of the current position', () => {
     const { rb, ids } = harness();
     rb.pushKeyframe(kf(0));
@@ -296,10 +315,10 @@ describe('ReorderBuffer', () => {
   });
 });
 
-// R5 Q3 (docs/15): opt-in smoothed playout — a decodable frame is released
-// only once `now >= timestampMs + arrivalBaseline + offset`. Off by default;
-// the offset function is injected so these tests control it live. Pacing adds
-// delay, never patience: every drop/resync policy fires unchanged.
+// Opt-in smoothed playout — a decodable frame is released only once `now >=
+// timestampMs + arrivalBaseline + offset`. Off by default; the offset function
+// is injected so these tests control it live. Pacing adds delay, never
+// patience: every drop/resync policy fires unchanged.
 describe('ReorderBuffer smoothed playout (R5 Q3)', () => {
   // Timestamps in these tests are millisecond-scale (µs on the wire).
   const tsKf = (frameId: number, tsMs: number) => ({
@@ -415,9 +434,9 @@ describe('ReorderBuffer smoothed playout (R5 Q3)', () => {
   });
 });
 
-// R12 T1 (docs/17): arrival jitter — windowed p95 of the arrival delta minus
-// the windowed min, observed on every insert. The measurement shares the
-// estimator the adaptive playout controller (T3) reads.
+// Arrival jitter — windowed p95 of the arrival delta minus the windowed min,
+// observed on every insert. The adaptive playout controller reads the same
+// estimator.
 describe('ReorderBuffer arrival jitter (R12 T1)', () => {
   const tsKf = (frameId: number, tsMs: number) => ({
     frameId,
@@ -485,10 +504,9 @@ describe('ReorderBuffer arrival jitter (R12 T1)', () => {
   });
 });
 
-// R12 T2 (docs/17 Decision 4): in adaptive (paced-presentation) mode the
-// release gate retargets to target − DECODE_LEAD_MS — frames reach the sink
-// just in time for their display slot while the pre-decode pace still bounds
-// the decoder frame pool. Fixed mode is untouched (lead 0).
+// In adaptive (paced-presentation) mode the release gate retargets to
+// target − DECODE_LEAD_MS — frames reach the sink just in time for their
+// display slot while the pre-decode pace still bounds the decoder frame pool.
 describe('ReorderBuffer decode lead (R12 T2)', () => {
   const tsKf = (frameId: number, tsMs: number) => ({
     frameId,
@@ -515,12 +533,10 @@ describe('ReorderBuffer decode lead (R12 T2)', () => {
     expect(released).toHaveLength(1);
   });
 
-  // Field findings 2 + 4 (docs/20): R15 briefly had the sink's display target
-  // on the audio playhead while this gate stayed on the arrival baseline, and
-  // the gap between the two schedules froze video wholesale. The revision made
-  // video the master outright — this gate answers to the arrival baseline and
-  // nothing else, and audio aligns to it. Pinned here because "audio is
-  // somewhere in the release decision" is the exact shape of that bug.
+  // Video is the master clock: this gate answers to the arrival baseline and
+  // nothing else, and audio aligns to it. Putting the sink's display target
+  // on the audio playhead while this gate stays on the arrival baseline opens
+  // a gap between the two schedules that freezes video wholesale.
   it('paces on the arrival baseline alone, whatever audio is doing', () => {
     const released: ReleasedFrame[] = [];
     const clock = { t: 1000 };
@@ -548,9 +564,8 @@ describe('ReorderBuffer decode lead (R12 T2)', () => {
   });
 });
 
-// R19 (docs/24 Decision 7): the three bounds widen while resilient mode is
-// on and revert the moment it's off — the default-mode suites above run with
-// it off and are untouched.
+// The three bounds widen while resilient mode is on and revert the moment
+// it's off — the default-mode suites above run with it off.
 describe('ReorderBuffer resilient profile (R19)', () => {
   afterEach(() => setViewerDeliveryModeFlag('live'));
 
@@ -615,11 +630,10 @@ describe('ReorderBuffer resilient profile (R19)', () => {
   });
 });
 
-// R19 hardening — PLAYOUT-1 (docs/reviews/resilient-mode-review.md): the
-// resilient offset envelope goes to 2000 ms, but the signal driving it —
-// arrival jitter — was measured by a histogram whose range is 500 ms, so
-// `p95 − min` saturated at ~500 and the controller could never climb past
-// ~534 ms. The histogram geometry now comes from the active playout profile.
+// The resilient offset envelope goes to 2000 ms, so the signal driving it —
+// arrival jitter — must be measurable that far: a 500 ms histogram range
+// saturates `p95 − min` at ~500 and caps the controller near 534 ms. The
+// histogram geometry comes from the active playout profile.
 //
 // The scenario below is the one the mode exists for: a retransmit stall holds
 // a burst of deltas, then delivers them at once. Every held frame lands in the
@@ -729,7 +743,7 @@ describe('ReorderBuffer arrival jitter under a deep stall (R19 PLAYOUT-1)', () =
     const jitter = h.rb.arrivalJitterMs();
     expect(jitter).not.toBeNull();
     // Live-edge mode never buffers past MAX_PLAYOUT_OFFSET_MS, so the narrow
-    // histogram stays exactly as it shipped — the saturation is by design here.
+    // histogram's saturation is by design here.
     expect(jitter!).toBeLessThanOrEqual(QUANTILE_RANGE_MS + QUANTILE_BIN_MS);
   });
 
@@ -748,11 +762,11 @@ describe('ReorderBuffer arrival jitter under a deep stall (R19 PLAYOUT-1)', () =
     expect(h.rb.arrivalJitterMs()!).toBeGreaterThan(1000);
   });
 
-  // PLAYOUT-3, the second half of the same fix: a 60 s window makes the
-  // resilient offset react on a minute timescale. The resilient profile
-  // measures over a much shorter window, so a cleaned-up link is reflected
-  // in seconds — the down direction stays governed by the controller's dwell
-  // and slew, which is where that memory belongs.
+  // A 60 s window would make the resilient offset react on a minute
+  // timescale. The resilient profile measures over a much shorter window, so
+  // a cleaned-up link is reflected in seconds — the down direction stays
+  // governed by the controller's dwell and slew, which is where that memory
+  // belongs.
   it('ages a stall out of the resilient jitter window within seconds', () => {
     setViewerDeliveryModeFlag('resilient');
     const h = jitterHarness();
@@ -769,15 +783,14 @@ describe('ReorderBuffer arrival jitter under a deep stall (R19 PLAYOUT-1)', () =
   });
 });
 
-// R21 (docs/26): with a deep playout offset, jumpToKeyframe must pick the
-// freshest keyframe that is actually DUE, not the freshest one overall.
+// With a deep playout offset, jumpToKeyframe must pick the freshest keyframe
+// that is actually DUE, not the freshest one overall.
 //
 // Picking the freshest overall livelocks: at a 3 s offset and a 500 ms GOP, a
 // newer keyframe always arrives before the current best comes due, so `best`
 // keeps moving forward and nothing is ever released. The buffer fills for
 // ever, decode never starts, and the viewer shows a black screen while every
-// arrival counter climbs. R19's <=500 ms offsets hid it, because a keyframe
-// came due inside one GOP interval.
+// arrival counter climbs. Offsets under one GOP interval never show it.
 describe('ReorderBuffer under a deep playout offset (R21)', () => {
   afterEach(() => {
     setPlayoutMode('off');
@@ -797,7 +810,7 @@ describe('ReorderBuffer under a deep playout offset (R21)', () => {
     // A LIVE stream: capture timestamps advance with the clock, which is what
     // makes the newest keyframe permanently un-due under a deep offset. (With
     // static timestamps everything is due immediately and the livelock cannot
-    // reproduce — the first version of this test made exactly that mistake.)
+    // reproduce.)
     const stamp = () => BigInt(clock.t * 1000);
     for (let i = 0; i < 20; i++) {
       rb.pushKeyframe({ frameId: i * 10, timestampUs: stamp(), config: null, data: new Uint8Array([1]) });
@@ -815,8 +828,7 @@ describe('ReorderBuffer under a deep playout offset (R21)', () => {
     // And DELTAS must survive the wait, not just keyframes. The keyframe wait
     // has to outlast the delay the playout offset deliberately imposes, or
     // every delta ages out before its keyframe is even due and playback is
-    // keyframe-only — 2 fps at a 500 ms GOP, which is exactly what the E2E
-    // deep-buffer pass measured.
+    // keyframe-only — 2 fps at a 500 ms GOP.
     const deltasReleased = released.filter((f) => f.frameId % 10 !== 0).length;
     expect(deltasReleased).toBeGreaterThan(released.length / 2);
   });

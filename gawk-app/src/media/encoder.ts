@@ -27,10 +27,9 @@ const SW_VARIANTS: ConfigVariant[] = [
   { label: 'prefer-sw',            hardwareAcceleration: 'prefer-software' },
 ];
 
-// R13 (docs/18 Decision 5): the acceleration tri-state selects which
-// variants the cascade may try. 'auto' is the historical behavior (prefer
-// hardware, silently fall back); 'hardware' refuses to run software;
-// 'software' forces it.
+// The acceleration tri-state selects which variants the cascade may try:
+// 'auto' prefers hardware and silently falls back; 'hardware' refuses to run
+// software; 'software' forces it.
 export function configVariantsFor(hwPreference: HwPreference): ConfigVariant[] {
   switch (hwPreference) {
     case 'hardware':
@@ -44,10 +43,9 @@ export function configVariantsFor(hwPreference: HwPreference): ConfigVariant[] {
 
 export type Acceleration = 'hardware' | 'software' | 'unknown';
 
-// Time-based keyframe cadence (docs/08): a keyframe is forced when the frame
-// timestamp is at least the interval past the last keyframe's. Frame-count
-// cadence would stretch the GOP to 24s at the ladder's 5 fps rung. Pure —
-// unit-tested in encoder-keyframe.test.ts.
+// Time-based keyframe cadence: a keyframe is forced when the frame timestamp
+// is at least the interval past the last keyframe's. Frame-count cadence
+// would stretch the GOP to 24s at the ladder's 5 fps rung.
 export class KeyframeCadence {
   private intervalUs: number;
   private lastKeyframeTsUs: number | null = null;
@@ -57,10 +55,10 @@ export class KeyframeCadence {
     this.intervalUs = intervalMs * 1000;
   }
 
-  // R17 W2 (docs/22 Decision 5): make the next frame a keyframe regardless
-  // of cadence. Used on broadcast auto-resume re-attach: the keyframe stream
-  // embeds the current DecoderConfig, so one forced keyframe primes a fresh
-  // relay pod's caches within ~RTT instead of up to one GOP.
+  // Make the next frame a keyframe regardless of cadence. Used on broadcast
+  // auto-resume re-attach: the keyframe stream embeds the current
+  // DecoderConfig, so one forced keyframe primes a fresh relay pod's caches
+  // within ~RTT instead of up to one GOP.
   forceNext(): void {
     this.forced = true;
   }
@@ -171,7 +169,7 @@ export class Encoder {
             const finalConfig = support.config ?? encoderConfig;
             const acceleration = classifyAcceleration(variant, finalConfig.hardwareAcceleration);
             // Hardware-only mode: a supported=true that the browser resolved
-            // to software is a refusal, not a fallback (docs/18 Decision 5).
+            // to software is a refusal, not a fallback.
             if (hwPreference === 'hardware' && acceleration !== 'hardware') {
               attempts.push(`${codec}/${variant.label}: resolved software under hardware-only`);
               continue;
@@ -226,8 +224,6 @@ export class Encoder {
     return this.chosenCodec;
   }
 
-  // R17 W2: force the next encoded frame to be a keyframe (auto-resume
-  // re-attach priming — see KeyframeCadence.forceNext).
   forceNextKeyframe(): void {
     this.cadence.forceNext();
   }

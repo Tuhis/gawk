@@ -69,7 +69,7 @@ export class LoopbackPipeline {
     // Encoder is configured from the FIRST frame's actual dimensions rather
     // than track.getSettings() — Chrome sometimes disagrees with itself,
     // reporting one shape in getSettings() while delivering frames to MSTP
-    // at a different shape, which caused the encoder to silently distort.
+    // at a different shape, which silently distorts the encode.
     let encoderInitStarted = false;
 
     await this.capture.startFrames((frame) => {

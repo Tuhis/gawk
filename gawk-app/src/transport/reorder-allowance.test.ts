@@ -1,4 +1,4 @@
-// R29 FP6: the per-GOP frame-loss allowance (docs/34 §6).
+// The per-GOP frame-loss allowance.
 //
 // Parity reduces how OFTEN a frame is unrecoverable; the allowance bounds what
 // one unrecoverable frame COSTS. Without it a single hole still forfeits the
@@ -100,9 +100,9 @@ describe('per-GOP loss allowance', () => {
   });
 
   it('a skipped frame is NOT counted as a gap resync', () => {
-    // gapResyncs is what docs/13's playbook reads as "delta loss is eating
-    // GOPs". A skip is the opposite outcome — the GOP survived — so counting
-    // it there would make the existing signal mean two things.
+    // gapResyncs reads as "delta loss is eating GOPs". A skip is the opposite
+    // outcome — the GOP survived — so counting it there would make one signal
+    // mean two things.
     const h = harness();
     h.push(1, true);
     h.push(3, false);
@@ -141,5 +141,56 @@ describe('per-GOP loss allowance', () => {
     expect(ids).toContain(4);
     expect(ids).not.toContain(3);
     expect(h.buf.getStats().framesSkippedWithinAllowance).toBe(0);
+  });
+
+  // The budget is for lost DELTA frames. A keyframe rides a reliable stream
+  // and routinely lands after the deltas that follow it; skipping it would
+  // decode the GOP against a missing reference and then read the keyframe
+  // as a broadcaster restart.
+  it('does not skip a frame with no delta evidence (an in-flight keyframe)', () => {
+    const out: number[] = [];
+    let now = 0;
+    const restarts: number[] = [];
+    const deltaIds = new Set<number>();
+    const buf = new ReorderBuffer(
+      (f) => out.push(f.frameId),
+      () => now,
+      { onRestart: () => restarts.push(now), isDeltaFrame: (id) => deltaIds.has(id) },
+    );
+    const push = (frameId: number, keyframe: boolean) => {
+      const base = { frameId, timestampUs: BigInt(frameId) * 16_000n, data: new Uint8Array([frameId]) };
+      if (keyframe) buf.pushKeyframe({ ...base, config: null });
+      else {
+        deltaIds.add(frameId);
+        buf.pushDelta(base);
+      }
+    };
+    push(0, true);
+    for (let i = 1; i < 30; i++) push(i, false);
+    // Keyframe 30 is still on its stream while 31..39 arrive.
+    for (let i = 31; i < 40; i++) {
+      now += 16;
+      push(i, false);
+    }
+    now += 300;
+    buf.tick();
+    expect(out).not.toContain(31);
+    push(30, true);
+
+    expect(out.slice(-10)).toEqual([30, 31, 32, 33, 34, 35, 36, 37, 38, 39]);
+    expect(restarts).toEqual([]);
+    expect(buf.getStats().framesSkippedWithinAllowance).toBe(0);
+  });
+
+  it('still skips a frame the reassembler saw as a delta', () => {
+    const out: number[] = [];
+    let now = 0;
+    const buf = new ReorderBuffer((f) => out.push(f.frameId), () => now, { isDeltaFrame: (id) => id === 2 });
+    buf.pushKeyframe({ frameId: 1, timestampUs: 0n, data: new Uint8Array([1]), config: null });
+    buf.pushDelta({ frameId: 3, timestampUs: 3000n, data: new Uint8Array([3]) });
+    now += 2000;
+    buf.tick();
+    expect(out).toEqual([1, 3]);
+    expect(buf.getStats().framesSkippedWithinAllowance).toBe(1);
   });
 });

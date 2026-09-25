@@ -12,8 +12,8 @@ import { annotate, framerateAcceleration, resolutionAcceleration } from './suppo
 interface Props {
   // Invoked after the store updates so a live pipeline can apply the change.
   onChange?: (resolution: ResolutionSelection, framerate: FramerateSelection) => void;
-  // R13 (docs/18 Decision 9): probe matrix backing the option annotations.
-  // null (probe unavailable / not yet landed) renders options unannotated.
+  // Probe matrix backing the option annotations. null (probe unavailable /
+  // not yet landed) renders options unannotated.
   matrix?: SupportMatrix | null;
 }
 
@@ -27,12 +27,8 @@ function framerateLabel(selection: FramerateSelection): string {
   return selection === 'native' ? 'native' : `${selection} fps`;
 }
 
-// Annotation logic (badge/disable per docs/18 Decision 9) is shared with the
-// advanced codec pin — see ./supportAnnotations.ts.
-
 // Deliberately never disabled as a whole: changing rungs mid-broadcast is a
-// supported, designed-for operation (docs/08) — and the mechanism R4
-// automates behind the "auto" selection (docs/09).
+// supported operation, and the one the "auto" selection automates.
 export function LadderPicker({ onChange, matrix }: Props) {
   const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
   const framerateSelection = useBroadcastSettingsStore((s) => s.framerateSelection);

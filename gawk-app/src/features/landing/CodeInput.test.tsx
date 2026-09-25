@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
-// Segmented broadcast-code input. Behavior is written first (CODE-REVIEW.md):
-// sanitized typing/paste, invalid-char rejection, completion signaling, and
-// the active-box indicator that gives the "auto-advance / step back" feel.
+// Segmented broadcast-code input: sanitized typing/paste, invalid-char
+// rejection, completion signaling, and the active-box indicator that gives
+// the "auto-advance / step back" feel.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';

@@ -1,9 +1,9 @@
-// The viewer's transport seam (R10 P3, docs/14). ViewerPipeline consumes this
-// interface instead of touching WebTransport directly, so the connection +
-// read loops can run either in-process (LocalViewerTransport, below — the
-// main-thread fallback and the no-nested-worker fallback) or in a dedicated
-// transport worker (WorkerViewerTransport), where no decode/render pressure
-// can ever starve the browser's small incoming-datagram queue.
+// The viewer's transport seam. ViewerPipeline consumes this interface instead
+// of touching WebTransport directly, so the connection + read loops can run
+// either in-process (LocalViewerTransport, below — the main-thread fallback and
+// the no-nested-worker fallback) or in a dedicated transport worker
+// (WorkerViewerTransport), where no decode/render pressure can ever starve the
+// browser's small incoming-datagram queue.
 
 import { log } from '../lib/logger';
 import {
@@ -22,8 +22,8 @@ import { MAX_STRIPE_LEGS, encodeStripeState, type TelemetryHelloMessage } from '
 import type { RelayCapabilities } from './parity';
 import { TimeSyncClient, type TimeSyncStats } from './time-sync';
 
-// The one authoritative "session is over" signal (see CODE-REVIEW: one event,
-// one signal). closeCode carries the semantics when the server closed cleanly
+// The one authoritative "session is over" signal: one event, one signal.
+// closeCode carries the semantics when the server closed cleanly
 // (4000 = broadcast ended); an abrupt drop has message only.
 export interface TransportClosedInfo {
   closeCode?: number;
@@ -34,17 +34,17 @@ export interface TransportClosedInfo {
 export interface ViewerTransportCallbacks {
   onDatagram: (dgram: Uint8Array) => void;
   onKeyframe: (kf: KeyframeStreamFrame) => void;
-  // R28 (docs/33 D2): this session's telemetry identity. The transport is
-  // where it arrives (it rides a server uni stream), but nothing here acts on
-  // it — it is forwarded to the pipeline and out to the main thread, which is
-  // the only place collection happens (D13).
+  // This session's telemetry identity. The transport is where it arrives (it
+  // rides a server uni stream), but nothing here acts on it — it is forwarded
+  // to the pipeline and out to the main thread, which is the only place
+  // collection happens.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   onTelemetryEndpoint?: (url: string) => void;
-  // R29/R30: the relay's capabilities (docs/35 §5.3). The stripe controller
-  // gates every engagement on CAP_STRIPED_DELIVERY — a relay that never
-  // advertises is never dialed for legs, which is the whole skew story.
+  // The relay's capabilities. The stripe controller gates every engagement on
+  // CAP_STRIPED_DELIVERY — a relay that never advertises is never dialed for
+  // legs.
   onRelayCapabilities?: (caps: RelayCapabilities) => void;
-  // R30: the stripe width actually engaged (0 = unstriped). Fires on engage,
+  // The stripe width actually engaged (0 = unstriped). Fires on engage,
   // grow and fallback — the requested-vs-active distinction's active half.
   onStripeChange?: (active: number) => void;
   // Fires at most once, and never after close() was called locally.
@@ -64,32 +64,32 @@ export interface ViewerTransport {
   // Latest connection-health sample (null where getStats() is unsupported).
   // Calling it also schedules a refresh where the impl samples on demand.
   sampleConnectionStats(): TransportConnectionStats | null;
-  // Latest relay clock-sync sample (R5 Q2): local→relay clock offset + a
+  // Latest relay clock-sync sample: local→relay clock offset + a
   // self-owned RTT. Null until the first ping/pong completes (or where the
   // session can't send datagrams). Lives in the transport because it owns the
   // reply timing — on the worker path a postMessage hop would add jitter.
   sampleTimeSync(): TimeSyncStats | null;
-  // R19: the reliable-carrier tallies (docs/24 Decision 10) — how the mode
-  // row tells `reliable` from `requested but datagrams served`. Optional so
-  // test fakes without a carrier path keep compiling; null before connect.
+  // The reliable-carrier tallies — how the mode row tells `reliable` from
+  // `requested but datagrams served`. Optional so test fakes without a carrier
+  // path keep compiling; null before connect.
   sampleCarrierStats?(): CarrierCounters | null;
-  // R29 finding 2 (docs/34): what this session's incoming datagram queue was
-  // raised to, and whether the browser honoured it. Lives on the transport
-  // because only the realm holding the WebTransport can set or read the
-  // attribute — on the worker path the main thread has no handle on it at all.
-  // Null before connect, and on transports that never touch a real session.
+  // What this session's incoming datagram queue was raised to, and whether the
+  // browser honoured it. Lives on the transport because only the realm holding
+  // the WebTransport can set or read the attribute — on the worker path the
+  // main thread has no handle on it at all. Null before connect, and on
+  // transports that never touch a real session.
   sampleDatagramBuffer?(): DatagramBufferStats | null;
-  // R30 (docs/35 §5.6): ask for a stripe of n legs (0 disengages). The
-  // transport owns the whole transition — dial-before-suppress, the 0x10
-  // level protocol, leg-death fallback — so the caller only ever states a
-  // target. Optional so pre-R30 fakes keep compiling.
+  // Ask for a stripe of n legs (0 disengages). The transport owns the whole
+  // transition — dial-before-suppress, the 0x10 level protocol, leg-death
+  // fallback — so the caller only ever states a target. Optional so fakes
+  // without striping keep compiling.
   setStripe?(n: number): void;
-  // R30: the live stripe tallies for stats (null before connect).
+  // The live stripe tallies for stats (null before connect).
   sampleStripe?(): StripeTransportStats | null;
   close(): void;
 }
 
-// R30 stripe state as the overlay/controller sees it (docs/35 §7).
+// Stripe state as the overlay/controller sees it.
 export interface StripeTransportStats {
   // Legs currently carrying deltas (0 = unstriped).
   active: number;
@@ -103,14 +103,13 @@ export interface StripeTransportStats {
 
 export type ViewerTransportFactory = (url: string, opts: ConnectOptions) => ViewerTransport;
 
-// docs/35 §14 Decision 1: the viewer-minted session-group token — 8 random
-// bytes as lowercase hex, appended as ?owner= to the primary subscribe dial
-// (viewer.ts) and inherited by every leg dial (dialLeg copies the primary
-// URL). It is the relay's only handle tying one viewer's sessions together,
-// so a primary's death reaps its legs. Minted per pipeline attempt: legs are
-// per-attempt, and a reconnect's fresh set must not share the dead set's
-// identity. Not a credential — the worst a forged token achieves is getting
-// the forger's own sessions reaped.
+// The viewer-minted session-group token — 8 random bytes as lowercase hex,
+// appended as ?owner= to the primary subscribe dial (viewer.ts) and inherited
+// by every leg dial (dialLeg copies the primary URL). It is the relay's only
+// handle tying one viewer's sessions together, so a primary's death reaps its
+// legs. Minted per pipeline attempt: legs are per-attempt, and a reconnect's
+// fresh set must not share the dead set's identity. Not a credential — the
+// worst a forged token achieves is getting the forger's own sessions reaped.
 export function mintStripeOwnerToken(): string {
   const bytes = new Uint8Array(8);
   const c = (globalThis as { crypto?: Crypto }).crypto;
@@ -124,8 +123,8 @@ export function mintStripeOwnerToken(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// In-process transport: exactly the connection handling ViewerPipeline had
-// before the seam (extracted verbatim, including the close-code race below).
+// In-process transport: owns the WebTransport session and its read loops in
+// this realm.
 export class LocalViewerTransport implements ViewerTransport {
   readonly kind: ViewerTransportKind = 'in-process';
   private url: string;
@@ -139,19 +138,20 @@ export class LocalViewerTransport implements ViewerTransport {
   private abort = new AbortController();
   private closing = false; // close() called — suppress onClosed
   private closedReported = false;
-  // R57 (docs/59): the code the relay said, in-band, it is about to close
+  // The code the relay said, in-band, it is about to close
   // this session with. Chrome never reads the close code itself, so a close
   // (or a drop) that arrives without one reports this instead.
   private noticedCloseCode: number | undefined;
   private cb: ViewerTransportCallbacks | null = null;
 
-  // R30 stripe state (docs/35 §5.6). legs is the CURRENT set; a transition
-  // dials a whole fresh set before touching it (make-before-break), so at
-  // every instant either the primary or a complete leg set covers the frame.
+  // Stripe state. legs is the CURRENT set; a transition dials a whole fresh set
+  // before touching it (make-before-break), so at every instant either the
+  // primary or a complete leg set covers the frame.
   private legs: StripeLegSession[] = [];
   private stripeTarget = 0;
   private stripeActive = 0;
   private stripeGeneration = 0; // bumps per transition; stale dials discard
+  private liveStripeGeneration = -1; // the committed leg set's generation
   private stripeRefresh: ReturnType<typeof setInterval> | null = null;
   private stripeStats: StripeTransportStats = {
     active: 0,
@@ -172,33 +172,30 @@ export class LocalViewerTransport implements ViewerTransport {
     this.cb = cb;
     this.sampler = new ConnectionStatsSampler(wt);
 
-    // R29 finding 2 (docs/34): raise the browser's incoming datagram queue
-    // before a single read happens, because it is the queue — not the reader —
-    // that decides whether a frame's burst survives. This is deliberately here
-    // rather than in the shared connectWebTransport: a broadcaster's incoming
-    // queue carries only control traffic, and this class is the one object
-    // that exists in every viewer placement (main thread, viewer worker, and
-    // the nested transport worker), so setting it here reaches all three with
-    // no message plumbing.
+    // Raise the browser's incoming datagram queue before a single read happens,
+    // because it is the queue — not the reader — that decides whether a frame's
+    // burst survives. This is deliberately here rather than in the shared
+    // connectWebTransport: a broadcaster's incoming queue carries only control
+    // traffic, and this class is the one object that exists in every viewer
+    // placement (main thread, viewer worker, and the nested transport worker),
+    // so setting it here reaches all three with no message plumbing.
     this.datagramBuffer = applyIncomingDatagramBuffer(
       (wt as { datagrams?: unknown }).datagrams,
     );
 
-    // Relay clock sync (R5 Q2): ping over this session's datagrams; replies
-    // are intercepted below, before the video path ever sees them. Feature-
+    // Relay clock sync: ping over this session's datagrams; replies are
+    // intercepted below, before the video path ever sees them. Feature-
     // detected so test fakes / odd environments without a writable datagram
-    // stream simply report null. WebKit has only `createWritable()`; before
-    // openDatagramWriter this branch was skipped there, so no ping ever left
-    // a Safari viewer.
+    // stream simply report null. openDatagramWriter covers WebKit, which has
+    // only `createWritable()`.
     const writer = openDatagramWriter(wt);
     if (writer) {
       this.timeSyncWriter = writer;
-      // A ping that never leaves is why `timeSyncRttMs` reads null forever —
-      // which is how both 2026-07-22 Safari captures looked, with no clue as
-      // to the cause because this rejection used to be swallowed outright
-      // (BUGS.md). Still non-fatal (a failed ping must never take the
-      // pipeline down), but no longer silent; logged once so a broken leg
-      // doesn't spam a 0.5 Hz warning for the life of the session.
+      // A ping that never leaves makes `timeSyncRttMs` read null forever,
+      // with no clue as to the cause if this rejection is swallowed. Still
+      // non-fatal (a failed ping must never take the pipeline down), but not
+      // silent; logged once so a broken leg doesn't spam a 0.5 Hz warning for
+      // the life of the session.
       let pingSendLogged = false;
       this.timeSync = new TimeSyncClient(
         (d) =>
@@ -221,13 +218,13 @@ export class LocalViewerTransport implements ViewerTransport {
       });
 
     // Read loops run for the life of the session. Deltas arrive as datagrams;
-    // keyframes arrive as reliable unidirectional streams (R8). On a joining
+    // keyframes arrive as reliable unidirectional streams. On a joining
     // viewer the relay primes us with the last keyframe over a stream, so the
     // first picture typically appears without waiting for the next keyframe.
     void readDatagrams(
       wt,
       (dgram) => {
-        if (this.timeSync?.handleDatagram(dgram)) return; // consumed (R5 Q2)
+        if (this.timeSync?.handleDatagram(dgram)) return; // a TimeSync reply
         cb.onDatagram(dgram);
       },
       this.abort.signal,
@@ -235,11 +232,12 @@ export class LocalViewerTransport implements ViewerTransport {
       .then(() => this.handleReadLoopEnd(cb, wt, null))
       .catch((e) => this.handleReadLoopEnd(cb, wt, e instanceof Error ? e : new Error(String(e))));
 
-    // Server streams (keyframes + R19 carriers): failures here are not fatal
-    // to the session (the next keyframe recovers, and a real drop surfaces
-    // via the datagram loop / wt.closed), so they are logged, not propagated.
-    // Carrier records are verbatim datagrams — they feed the same handler,
-    // and the pipeline never learns which transport delivered the bytes.
+    // Server streams (keyframes + reliable carriers): failures here are not
+    // fatal to the session (the next keyframe recovers, and a real drop
+    // surfaces via the datagram loop / wt.closed), so they are logged, not
+    // propagated. Carrier records are verbatim datagrams — they feed the same
+    // handler, and the pipeline never learns which transport delivered the
+    // bytes.
     void readServerStreams(
       wt,
       {
@@ -259,7 +257,7 @@ export class LocalViewerTransport implements ViewerTransport {
     });
   }
 
-  // --- R30 striping (docs/35 §5.6) -----------------------------------------
+  // --- Striping --------------------------------------------------------------
 
   setStripe(n: number): void {
     const target = Math.max(0, Math.min(MAX_STRIPE_LEGS, Math.floor(n)));
@@ -277,27 +275,27 @@ export class LocalViewerTransport implements ViewerTransport {
     return { ...this.stripeStats, active: this.stripeActive, target: this.stripeTarget };
   }
 
-  // Make-before-break: dial the WHOLE fresh set, and only once every leg is
-  // up switch over (first engage additionally arms the primary suppression).
-  // Any dial failure abandons the transition and keeps the current state —
-  // capacity pressure degrades striping before it degrades the session
-  // (docs/35 §5.8). Duplicates during the overlap are the reassembler's to
-  // drop; holes are structurally impossible because the old cover (primary
-  // or old leg set) stays live until the new one is complete.
+  // Make-before-break: dial the WHOLE fresh set, and only once every leg is up
+  // switch over (first engage additionally arms the primary suppression). Any
+  // dial failure abandons the transition and keeps the current state — capacity
+  // pressure degrades striping before it degrades the session. Duplicates
+  // during the overlap are the reassembler's to drop; holes are structurally
+  // impossible because the old cover (primary or old leg set) stays live until
+  // the new one is complete.
   private async transitionStripe(target: number): Promise<void> {
     const generation = ++this.stripeGeneration;
-    const fresh: StripeLegSession[] = [];
-    try {
-      const dials: Promise<StripeLegSession>[] = [];
-      for (let j = 0; j < target; j++) {
-        this.stripeStats.legDials++;
-        dials.push(this.dialLeg(j, target));
-      }
-      fresh.push(...(await Promise.all(dials)));
-    } catch (e) {
+    const dials: Promise<StripeLegSession>[] = [];
+    for (let j = 0; j < target; j++) {
+      this.stripeStats.legDials++;
+      dials.push(this.dialLeg(j, target));
+    }
+    const settled = await Promise.allSettled(dials);
+    const fresh = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+    const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failure) {
       this.stripeStats.legDialFailures++;
       for (const leg of fresh) leg.close();
-      if (!this.closing) log.warn(`stripe transition to ${target} legs failed; staying at ${this.stripeActive}:`, e);
+      if (!this.closing) log.warn(`stripe transition to ${target} legs failed; staying at ${this.stripeActive}:`, failure.reason);
       return;
     }
     if (this.closing || generation !== this.stripeGeneration) {
@@ -308,31 +306,32 @@ export class LocalViewerTransport implements ViewerTransport {
     const old = this.legs;
     const firstEngage = this.stripeActive === 0;
     this.legs = fresh;
+    this.liveStripeGeneration = generation;
     this.stripeActive = target;
     // Suppress only once the new set is complete; on a grow the suppression
     // is already armed and the width rides the next 1 Hz refresh.
     this.sendStripeState(true, target);
-    // First heartbeat immediately (docs/35 §14 Decision 5): the relay armed
-    // each leg's liveness lease at subscribe, and the 1 Hz refresh below is
-    // what keeps renewing it.
+    // First heartbeat immediately: the relay armed each leg's liveness lease at
+    // subscribe, and the 1 Hz refresh below is what keeps renewing it.
     this.sendLegHeartbeats();
     if (firstEngage) this.startStripeRefresh();
     for (const leg of old) leg.close();
     this.cb?.onStripeChange?.(target);
   }
 
-  // Leg death (docs/35 §5.6): the cover is broken, so restore the primary's
-  // full flow FIRST (the unstripe burst — one datagram loss must not cost
-  // seconds of keyframe-only video), then tear the rest of the set down. The
-  // controller decides whether and when to re-engage.
+  // Leg death: the cover is broken, so restore the primary's full flow FIRST
+  // (the unstripe burst — one datagram loss must not cost seconds of
+  // keyframe-only video), then tear the rest of the set down. The controller
+  // decides whether and when to re-engage.
   private handleLegDeath(generation: number): void {
-    if (this.closing || generation !== this.stripeGeneration || this.stripeActive === 0) return;
+    if (this.closing || generation !== this.liveStripeGeneration || this.stripeActive === 0) return;
     this.stripeStats.legDeaths++;
     this.disengageStripe();
   }
 
   private disengageStripe(): void {
     this.stripeGeneration++;
+    this.liveStripeGeneration = -1;
     this.stopStripeRefresh();
     this.sendUnstripeBurst();
     const old = this.legs;
@@ -389,12 +388,12 @@ export class LocalViewerTransport implements ViewerTransport {
   }
 
   // Each leg gets the same 1 Hz StripeState the primary does, as a liveness
-  // heartbeat (docs/35 §14 Decision 5): the relay reaps a leg that goes
-  // StripeLegLease (20 s) without any inbound datagram — the cross-pod
-  // backstop for legs whose primary lives on a different pod. The relay's
-  // leg route only renews the lease and discards the bytes, so the message
-  // is semantically inert there; failures are swallowed like the primary's
-  // refresh (a leg that cannot send is exactly what the lease is for).
+  // heartbeat: the relay reaps a leg that goes StripeLegLease (20 s) without
+  // any inbound datagram — the cross-pod backstop for legs whose primary lives
+  // on a different pod. The relay's leg route only renews the lease and
+  // discards the bytes, so the message is semantically inert there; failures
+  // are swallowed like the primary's refresh (a leg that cannot send is exactly
+  // what the lease is for).
   private sendLegHeartbeats(): void {
     if (this.stripeActive === 0) return;
     for (const leg of this.legs) leg.heartbeat(this.stripeActive);
@@ -402,10 +401,10 @@ export class LocalViewerTransport implements ViewerTransport {
 
   private startStripeRefresh(): void {
     this.stopStripeRefresh();
-    // Level state at 1 Hz (the R15 audio-config cadence): each send re-arms
-    // the relay's TTL, so a lost refresh costs nothing and a wedged client
-    // fails open to duplicates. The legs heartbeat on the same tick — one
-    // timer owns the whole stripe's liveness signalling.
+    // Level state at 1 Hz: each send re-arms the relay's TTL, so a lost refresh
+    // costs nothing and a wedged client fails open to duplicates. The legs
+    // heartbeat on the same tick — one timer owns the whole stripe's liveness
+    // signalling.
     this.stripeRefresh = setInterval(() => {
       if (this.stripeActive > 0) {
         this.sendStripeState(true, this.stripeActive);
@@ -461,7 +460,7 @@ export class LocalViewerTransport implements ViewerTransport {
   // An abrupt drop (read loop died, no close frame): message only.
   private reportDropped(cb: ViewerTransportCallbacks, err: Error): void {
     if (this.closing || this.closedReported) return;
-    // The relay said why before it closed (R57): this is that close, not a
+    // The relay said why before it closed: this is that close, not a
     // drop — Chrome just never delivered its code.
     if (this.noticedCloseCode !== undefined) {
       this.reportClosed(cb, this.noticedCloseCode, err.message);
@@ -512,11 +511,11 @@ export class LocalViewerTransport implements ViewerTransport {
   }
 }
 
-// One stripe leg's session handle (R30). Deliberately minimal: a leg has no
+// One stripe leg's session handle. Deliberately minimal: a leg has no
 // sampler, no TimeSync, no carrier counters — it is a datagram pipe with a
 // member number, and everything interesting about it lives on the primary.
-// Since §14 it holds one outbound concern of its own: the liveness heartbeat
-// the relay's leg lease is renewed by.
+// Its one outbound concern is the liveness heartbeat the relay's leg lease is
+// renewed by.
 class StripeLegSession {
   readonly abort = new AbortController();
   readonly member: number;

@@ -1,5 +1,5 @@
 // AVCC extradata normalization, shared by the viewer's decoder configuration
-// (viewer.ts) and the R22 fMP4 muxer (fmp4-muxer.ts) — one normalization,
+// (viewer.ts) and the fMP4 muxer (fmp4-muxer.ts) — one normalization,
 // two consumers, no dependencies (this must stay a leaf module: the muxer is
 // bundled standalone for the e2e muxer check).
 

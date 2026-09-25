@@ -60,6 +60,32 @@ describe('FpsGate', () => {
     expect(gate.droppedCount).toBe(0);
   });
 
+  // Capture timestamps carry event-loop jitter; a source at (or just under)
+  // the target must not lose frames to it.
+  it.each([
+    [59.94, 60, 1000],
+    [58, 60, 2000],
+    [29.97, 30, 2000],
+  ])('keeps a jittery %s fps source whole at a %s fps target', (sourceFps, target, jitterUs) => {
+    const gate = new FpsGate();
+    gate.setTargetFps(target);
+    const frames = 6000;
+    let accepted = 0;
+    for (let i = 0; i < frames; i++) {
+      const jitter = ((i * 7) % 5 - 2) * (jitterUs / 2);
+      if (gate.accept(Math.round((i * US) / sourceFps) + jitter)) accepted++;
+    }
+    expect(accepted / frames).toBeGreaterThan(0.99);
+  });
+
+  it('never exceeds the target rate from a faster source', () => {
+    const gate = new FpsGate();
+    gate.setTargetFps(60);
+    const accepted = run(gate, 144, 1440); // 10 seconds
+    expect(accepted.length).toBeGreaterThanOrEqual(599);
+    expect(accepted.length).toBeLessThanOrEqual(601);
+  });
+
   it('re-anchors after a capture stall instead of bursting to catch up', () => {
     const gate = new FpsGate();
     gate.setTargetFps(30);
@@ -146,10 +172,22 @@ describe('FramePreprocessor', () => {
     preprocessor.setTarget('native', 60);
 
     const frame = new MockVideoFrame({ displayWidth: 1920, displayHeight: 1080 }) as unknown as VideoFrame;
-    const result = preprocessor.process(frame, 60);
+    const result = preprocessor.process(frame);
 
     expect(result).toBe(frame);
     expect((frame as any).closed).toBe(false);
+  });
+
+  it('does not gate the native framerate rung', () => {
+    const preprocessor = new FramePreprocessor();
+    preprocessor.setTarget('native', 'native');
+    let passed = 0;
+    for (let i = 0; i < 60; i++) {
+      const frame = new MockVideoFrame({ displayWidth: 1920, displayHeight: 1080 }) as unknown as VideoFrame;
+      (frame as any).timestamp = Math.round((i * 1000000) / 60);
+      if (preprocessor.process(frame)) passed++;
+    }
+    expect(passed).toBe(60);
   });
 
   it('drops frames according to the target framerate', () => {
@@ -162,7 +200,7 @@ describe('FramePreprocessor', () => {
       const ts = Math.round((i * 1000000) / 60);
       const frame = new MockVideoFrame({ displayWidth: 1920, displayHeight: 1080 }) as unknown as VideoFrame;
       (frame as any).timestamp = ts;
-      const res = preprocessor.process(frame, 60);
+      const res = preprocessor.process(frame);
       if (res) {
         results.push(res);
       } else {

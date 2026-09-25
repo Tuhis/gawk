@@ -1,8 +1,7 @@
 // connectWebTransport path-MTU logging. A path maxDatagramSize below the
 // wire MAX_DATAGRAM_SIZE (Firefox negotiates 1024) is a *handled* condition:
-// packetizeFrame sizes chunks to the actual path limit (docs/11), so the log
-// must describe the adaptation — the pre-fix "will be dropped" wording sent a
-// real debugging session chasing a bug that no longer exists.
+// packetizeFrame sizes chunks to the actual path limit, so the log must
+// describe the adaptation rather than claim chunks will be dropped.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -128,9 +127,9 @@ describe('readServerStreams — in-flight task pruning (INGEST-1)', () => {
   it('keeps the working set proportional to open streams, not session length', async () => {
     // A long mobile session accepts thousands of short-lived server streams
     // (keyframe + carrier per GOP). Each must be dropped from the in-flight
-    // set the moment it settles; the pre-fix code kept one settled promise per
-    // stream for the whole session, an unbounded slow leak that bites the
-    // hours-long viewers resilient mode targets.
+    // set the moment it settles; keeping one settled promise per stream for
+    // the whole session is an unbounded slow leak that bites hours-long
+    // viewers.
     const N = 40;
     const kf = () =>
       encodeStreamFrame({ keyframe: true, frameId: 1, timestampUs: 0n }, new Uint8Array(0), new Uint8Array(4).fill(1));
@@ -138,8 +137,8 @@ describe('readServerStreams — in-flight task pruning (INGEST-1)', () => {
     let delivered = 0;
     const incoming = new ReadableStream<ReadableStream<Uint8Array>>({
       // A macrotask gap between accepts drains the microtask queue, so the
-      // previously-accepted stream's task fully settles (and, once fixed,
-      // prunes) before the next stream is accepted. The observed peak then
+      // previously-accepted stream's task fully settles (and prunes) before
+      // the next stream is accepted. The observed peak then
       // reflects true concurrency rather than timing luck.
       pull(controller) {
         return new Promise<void>((resolve) => {
@@ -178,7 +177,6 @@ describe('readServerStreams — in-flight task pruning (INGEST-1)', () => {
     // Every stream was actually read to completion...
     expect(kfCount).toBe(N);
     // ...yet the transport never held more than a couple of tasks at once.
-    // Pre-fix this reached N (the array never shrank).
     expect(peakInFlight).toBeLessThanOrEqual(2);
   });
 });
@@ -328,9 +326,9 @@ describe('readServerStreams — reliable carriers (R19)', () => {
   });
 });
 
-// R28 (docs/33 D2): the telemetry hello arrives as its own server uni stream,
-// and must be dispatched by its wire type rather than mistaken for a keyframe
-// or a carrier — the three now share the same accept loop.
+// The telemetry hello arrives as its own server uni stream, and must be
+// dispatched by its wire type rather than mistaken for a keyframe or a
+// carrier — the three share the same accept loop.
 describe('readServerStreams — telemetry hello (R28)', () => {
   const hello = () =>
     encodeTelemetryHello({
@@ -418,11 +416,10 @@ describe('readServerStreams — telemetry hello (R28)', () => {
   });
 });
 
-// R30 ST4, docs/35 §12 finding 1: the relay has sent RelayCapabilities on the
-// subscribe route since R29 (whenever parity is enabled — the fleet default),
-// but the viewer had no 0x0F branch: every production viewer session counted
-// one malformed stream and logged a warning. The capability is also R30's
-// version-skew gate, so this is both the wart fix and the striping enabler.
+// The relay sends RelayCapabilities on the subscribe route whenever parity is
+// enabled (the fleet default), so the viewer must dispatch 0x0F rather than
+// count every session's copy as a malformed stream. The capability is also
+// the striping version-skew gate.
 describe('readServerStreams — relay capabilities (R29/R30)', () => {
   it('dispatches capabilities to their own callback instead of counting malformed', async () => {
     const caps = encodeRelayCapabilities({
@@ -469,11 +466,10 @@ describe('readServerStreams — relay capabilities (R29/R30)', () => {
 });
 
 // WebKit implements only the current-spec `datagrams.createWritable()`; the
-// deprecated `datagrams.writable` attribute is absent there. Every datagram
-// writer in the app used `.writable`, so a Safari broadcast died at session
-// setup with "undefined is not an object (evaluating
-// 'e.datagrams.writable.getWriter')", and the viewer's TimeSync pings were
-// silently never sent.
+// deprecated `datagrams.writable` attribute is absent there. A writer that
+// assumes `.writable` kills a Safari broadcast at session setup ("undefined is
+// not an object (evaluating 'e.datagrams.writable.getWriter')") and silently
+// drops the viewer's TimeSync pings.
 describe('openDatagramWriter', () => {
   function sink(): { stream: WritableStream<BufferSource>; written: Uint8Array[] } {
     const written: Uint8Array[] = [];
@@ -513,7 +509,7 @@ describe('openDatagramWriter', () => {
   });
 });
 
-// R57 (docs/59 CN3): the relay's in-band close notice. Chrome never reads a
+// The relay's in-band close notice. Chrome never reads a
 // webtransport-go close code, so this stream is how a viewer learns its
 // broadcast ended (4000) or was killed (4006) rather than merely dropped.
 describe('readServerStreams — session closing notice (R57)', () => {

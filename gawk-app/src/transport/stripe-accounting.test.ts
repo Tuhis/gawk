@@ -1,5 +1,5 @@
-// R30 ST5: the reassembler's per-frame arrival accounting — the stripe
-// detector's only input, so its truthfulness IS the detector's truthfulness.
+// The reassembler's per-frame arrival accounting is the stripe detector's only
+// input, so its truthfulness IS the detector's truthfulness.
 
 import { describe, expect, it } from 'vitest';
 
@@ -55,11 +55,11 @@ describe('reassembler frame accounting (R30)', () => {
       encodeParityChunk({ frameId: 7, parityIndex: 0, chunkCount: 3, frameBytes }, parity[0]),
     );
     expect(r.getStats().framesRecoveredByParity).toBe(1);
-    // Deferred (docs/35 §12 finding 2): a recovered frame's report waits out
-    // the leg-skew window, because the "lost" chunk may merely be in flight
-    // on a slower stripe leg. Here it never arrives — genuine loss — so when
-    // the watermark rolls past, the report says exactly that: 2 of 3
-    // delivered, the repair never counted as a delivery.
+    // A recovered frame's report waits out the leg-skew window, because the
+    // "lost" chunk may merely be in flight on a slower stripe leg. Here it
+    // never arrives — genuine loss — so when the watermark rolls past, the
+    // report says exactly that: 2 of 3 delivered, the repair never counted as
+    // a delivery.
     expect(accounting).toEqual([]);
     for (let f = 100; f < 120; f++) r.push(chunk(f, 0, 1, new Uint8Array([9])));
     expect(accounting).toContainEqual([3, 2]);
@@ -75,15 +75,12 @@ describe('reassembler frame accounting (R30)', () => {
   });
 });
 
-// docs/35 §12 finding 2: eager parity recovery (R29's "eager by design")
-// races the slowest stripe leg — a frame completes by recovery while its
-// last chunks are merely in flight, and those stragglers then arrive to a
-// deleted assembly. Two defects fall out, both found by the striped e2e
-// pass on a ZERO-loss loopback: the stragglers created phantom assemblies
-// that died as framesDroppedIncomplete (~130/window against a 30 fps
-// stream), and the recovered frame's accounting reported its raced chunks
-// as lost, which would falsely fire burst-threshold-loss on healthy
-// striped sessions.
+// Eager parity recovery races the slowest stripe leg: a frame completes by
+// recovery while its last chunks are merely in flight, and those stragglers
+// then arrive to a deleted assembly. They must not build phantom assemblies
+// (which die as framesDroppedIncomplete), and the recovered frame's
+// accounting must not report its raced chunks as lost, which would falsely
+// signal burst-threshold loss on healthy striped sessions.
 describe('post-recovery stragglers (docs/35 §12 finding 2)', () => {
   it('a straggler behind the emit watermark creates no phantom assembly', () => {
     const { r } = harness();

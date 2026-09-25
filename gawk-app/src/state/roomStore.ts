@@ -1,7 +1,6 @@
-// R42 (docs/44 §4.6): the live room snapshot and the control session's
-// status, as one zustand store the room screen renders from. NOT persisted —
-// a room is rebuilt from the relay's RoomState on every (re)connect and a
-// stale copy would be exactly the kind of "merged" state D5 forbids.
+// The live room snapshot and the control session's status, which the room
+// screen renders from. Not persisted: a room is rebuilt from the relay's
+// RoomState on every (re)connect, never merged with a stale copy.
 //
 // The delta application is a pure function (applyRoomEvent) so the store
 // stays a thin holder and the event semantics have a unit test each.

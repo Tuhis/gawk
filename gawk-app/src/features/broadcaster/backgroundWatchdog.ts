@@ -1,33 +1,23 @@
-// The hidden-tab watchdog (docs/44 §4.8 revision 2026-09-06, docs/06 the
-// same day). A broadcaster tab left in the background keeps its relay
-// session alive — the browser's network process answers the QUIC keepalives
-// — while, on the main-thread capture path, the frames stop: measured as a
-// slot held and a room tile marked live for five hours on ~50 s of video.
+// The hidden-tab watchdog. A broadcaster tab left in the background keeps its
+// relay session alive — the browser's network process answers the QUIC
+// keepalives — while, on the main-thread capture path, its frames stop.
 //
 // The relay cannot tell that tab from a paused game on a static screen:
-// capture is damage-driven, so both deliver no video (docs/19, docs/28,
-// viewer.ts). The page can: it knows it is hidden. So the page ends its
-// own broadcast after BACKGROUND_STOP_MS hidden with no frame encoded in
-// that span, and says so on the card when the tab comes back.
+// capture is damage-driven, so both deliver no video. The page can: it knows
+// it is hidden. So the page ends its own broadcast after BACKGROUND_STOP_MS
+// hidden with no frame encoded in that span, and says so on the card when the
+// tab comes back.
 //
-// What it does NOT catch, by design: a hidden tab whose frames keep flowing
-// (the worker-offload path on Windows keeps encoding in the background —
-// that stream is fine and stays), and a visible static screen (never
-// hidden, never stopped — docs/30 §7).
-//
-// What it DOES catch beyond the background tab: a fully occluded window on
-// macOS, which Chrome also reports as hidden and where the main-thread path
-// already stops the frames (docs/16). A fullscreen game covering the browser
-// for five minutes therefore ends what was a frozen stream; within the
-// broadcast grace a restart reclaims the same code.
+// By design it leaves alone a hidden tab whose frames keep flowing (the
+// worker-offload path keeps encoding in the background) and a visible static
+// screen. Chrome on macOS also reports a fully occluded window as hidden, and
+// the main-thread path stops its frames too, so a fullscreen game covering
+// the browser for five minutes ends what was already a frozen stream.
 
 export const BACKGROUND_STOP_MS = 5 * 60 * 1000;
 
-// "Hidden or covered": on macOS Chrome reports a fully occluded window as
-// hidden too — a fullscreen game over the browser — and on the main-thread
-// capture path that already freezes the stream, so the stop applies there as
-// well (review of PR #302). Within the broadcast grace a restart reclaims
-// the same code.
+// "Hidden or covered": a fully occluded window counts as hidden (see above).
+// Within the broadcast grace a restart reclaims the same code.
 export const BACKGROUND_STOP_NOTE =
   'Stopped: this window was hidden or covered for 5 minutes with no video. Start again when you’re back — within a few minutes you keep the same code.';
 

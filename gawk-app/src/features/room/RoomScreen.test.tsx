@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// R42 (docs/44 §4.9): the room view per mode and per relay state. The room
+// The room view per mode and per relay state. The room
 // control session and every tile's media session are faked at the transport
 // seam (the ViewerScreen test's FakeViewerSession pattern), so each test
 // drives RoomState / RoomEvent through the control session's callbacks and
@@ -8,6 +8,7 @@
 // videos, that NO /subscribe session exists at all.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 const { roomSessions, roomState, FakeRoomSession, viewerSessions, FakeViewerSession } = vi.hoisted(() => {
@@ -92,6 +93,7 @@ vi.mock('../../transport/viewer-session', () => ({
 
 import { RoomScreen, RoomView } from './RoomScreen';
 import { useRoomStore } from '../../state/roomStore';
+import { useTransportStore } from '../../state/transportStore';
 import {
   ROOM_CLIENT_WEB_VIEWER,
   ROOM_COMMAND_ATTACH,
@@ -226,6 +228,18 @@ describe('RoomScreen modes', () => {
     expect(screen.getAllByTestId('room-tile').map((t) => t.getAttribute('data-variant'))).toEqual(['grid', 'grid', 'grid']);
   });
 
+  it('switching focus never re-dials, whatever the chosen preset', async () => {
+    localStorage.setItem('gawk:room-preset', 'smoother');
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    const created = viewerSessions.length;
+    fireEvent.keyDown(window, { key: '2' });
+    fireEvent.keyDown(window, { key: '3' });
+    fireEvent.keyDown(window, { key: '0' });
+    await act(async () => {});
+    expect(viewerSessions).toHaveLength(created);
+  });
+
   it('hide videos: no tiles, every /subscribe session closed, the control session kept, the card shown', async () => {
     const room = await joinAs();
     await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
@@ -263,7 +277,7 @@ describe('RoomScreen people-and-chat panel', () => {
     expect(screen.getByText('streaming')).toBeTruthy();
     // Chat is reserved: absent until the relay advertises the capability.
     expect(screen.queryByText('Chat')).toBeNull();
-    // Revised 2026-09-23: no copy buttons in the panel — the header's code
+    // No copy buttons in the panel: the header's code
     // chip copies the link, the More menu keeps both copies.
     expect(within(panel).queryByRole('button', { name: /Copy room/ })).toBeNull();
     // Not the creator: no detach, no end room.
@@ -283,8 +297,7 @@ describe('RoomScreen people-and-chat panel', () => {
     fireEvent.click(chip);
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(writeText.mock.calls[0]).toEqual([expect.stringMatching(/#\/room\/AB2CD3$/)]);
-    // The code-visibility note (D16) moved from the panel foot to the moment
-    // of sharing.
+    // The code-visibility note shows at the moment of sharing.
     await waitFor(() => expect(screen.getByText(/Room link copied/)).toBeTruthy());
     expect(screen.getByText(/can also see the codes of the streams/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy();
@@ -386,6 +399,17 @@ describe('RoomScreen people-and-chat panel', () => {
     expect(window.location.hash).toBe('#/broadcast');
   });
 
+  it('"start streaming here" keeps a room link\'s relay across the hop', async () => {
+    useTransportStore.getState().setSessionOverride('https://relay.example:4433');
+    try {
+      await joinAs('tuhis', { attachments: [] });
+      fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
+      expect(window.location.hash).toBe(`#/broadcast?relay=${encodeURIComponent('https://relay.example:4433')}`);
+    } finally {
+      useTransportStore.getState().setSessionOverride(null);
+    }
+  });
+
   it('a guest’s "start streaming here" hands over a null nickname, so the broadcaster asks nothing', async () => {
     render(<RoomScreen code="AB2CD3" />);
     fireEvent.click(screen.getByRole('button', { name: 'Join as a guest' }));
@@ -393,6 +417,30 @@ describe('RoomScreen people-and-chat panel', () => {
     act(() => roomSessions[0].cbs.onState(state({ attachments: [] })));
     fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
     expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: null });
+  });
+
+  it('a guest who later picks a nickname hands it over on "start streaming here"', async () => {
+    render(<RoomScreen code="AB2CD3" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Join as a guest' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ attachments: [] })));
+    fireEvent.click(screen.getByRole('button', { name: 'People and chat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit nickname' }));
+    fireEvent.change(screen.getByLabelText('New nickname'), { target: { value: 'named' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Start streaming here' })[0]);
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: 'named' });
+  });
+
+  it('a nickname changed while the first join is connecting reaches the relay', async () => {
+    localStorage.setItem('gawk:nickname', 'old');
+    render(<RoomScreen code="AB2CD3" />);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    fireEvent.contextMenu(document.querySelector('[data-status]')!);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Change nickname…' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Nickname' }), { target: { value: 'new' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(roomSessions[0].sent).toContainEqual({ kind: 'nick', nickname: 'new' });
   });
 
   it('presetNickname skips the prompt: a string dials with it, null joins as a guest', async () => {
@@ -407,6 +455,29 @@ describe('RoomScreen people-and-chat panel', () => {
     expect(screen.queryByRole('dialog', { name: 'Nickname' })).toBeNull();
     await waitFor(() => expect(roomSessions).toHaveLength(2));
     expect(roomSessions[1].opts.nickname).toBe('');
+  });
+
+  // A name typed on the broadcaster page is bounded in characters there, but
+  // the wire limits are bytes: 20 × 'ä' is 40.
+  it('bounds a handed-in name to the wire limits before it reaches the relay', async () => {
+    const name = 'ä'.repeat(20);
+    const own = {
+      broadcastId: 'AAAAAA',
+      resumeTokenHex: 'b'.repeat(32),
+      label: name,
+      attachEpoch: 0,
+      preview: null,
+      controls: null,
+      onDetach: () => {},
+    };
+    render(<RoomView target={{ kind: 'join', code: 'AB2CD3' }} own={own} presetNickname={name} onLeave={() => {}} />);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(state({ attachments: [] })));
+    const bytes = (s: string) => new TextEncoder().encode(s).length;
+    expect(bytes(room.opts.nickname)).toBeLessThanOrEqual(32);
+    const attach = room.sent.find((c) => (c as { kind: string }).kind === 'attach') as { label: string };
+    expect(bytes(attach.label)).toBeLessThanOrEqual(32);
   });
 });
 
@@ -425,6 +496,38 @@ describe('RoomScreen relay states', () => {
     expect(screen.getByText('Reconnecting to the room…')).toBeTruthy();
     act(() => room.cbs.onReconnecting({ attempt: 2, delayMs: 100, reason: 'drain', closeCode: 4002 }));
     expect(screen.getByText(/Room server is updating/)).toBeTruthy();
+  });
+
+  // The control session and the media sessions are independent: a room
+  // reconnect (a relay rollout drains it) must not cut anyone's video.
+  it('a control-session reconnect keeps every tile and its media session', async () => {
+    const room = await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toHaveLength(3));
+    const created = viewerSessions.length;
+    act(() => room.cbs.onReconnecting({ attempt: 1, delayMs: 0, reason: 'drain', closeCode: 4002 }));
+    expect(screen.getAllByTestId('room-tile')).toHaveLength(3);
+    act(() => room.cbs.onState(state()));
+    expect(viewerSessions).toHaveLength(created);
+    expect(activeViewerIds()).toHaveLength(3);
+  });
+
+  it('entering another room shows nothing of the previous one', async () => {
+    const room = await joinAs();
+    act(() =>
+      room.cbs.onEvent({
+        seq: 4,
+        kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+        attachment: { broadcastId: 'BBBBBB' },
+        reason: ROOM_DETACH_REASON_CREATOR,
+      }),
+    );
+    cleanup();
+    viewerSessions.length = 0;
+
+    render(<RoomScreen code="XY2ZW3" />);
+    expect(viewerSessions).toHaveLength(0);
+    expect(screen.queryByTestId('room-tile')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('an attachment removal drops the tile and toasts', async () => {
@@ -483,6 +586,28 @@ describe('RoomScreen relay states', () => {
     expect(window.location.hash).toBe('#/');
     cleanup();
     expect(room.stopped).toBe(true);
+  });
+});
+
+// main.tsx renders <StrictMode>, which mounts, cleans up and remounts every
+// effect in development. A mint that reached the relay twice was refused the
+// second time ("broadcast is in another room").
+describe('RoomView under StrictMode', () => {
+  it('dials the room once', async () => {
+    render(
+      <StrictMode>
+        <RoomView
+          target={{ kind: 'mint', broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), label: 'mine' }}
+          presetNickname="tuhis"
+          onLeave={() => {}}
+        />
+      </StrictMode>,
+    );
+    await waitFor(() => expect(roomSessions.filter((s) => !s.stopped)).toHaveLength(1));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(roomSessions).toHaveLength(1);
   });
 });
 
@@ -619,7 +744,7 @@ describe('RoomView with an own broadcast (RM5)', () => {
 });
 
 describe('a gated static room that refused the attach grant (D8)', () => {
-  // BUGS.md: the relay clears ATTACH_OK for a participant who brought no
+  // The relay clears ATTACH_OK for a participant who brought no
   // attach secret, the attach effect is guarded on that flag, so no Attach
   // command is sent and no CommandRejected ever comes back. The state has to
   // speak for itself.
@@ -676,6 +801,20 @@ describe('a gated static room that refused the attach grant (D8)', () => {
       label: 'mine',
     });
     expect(screen.queryByText('Your stream isn’t in this room')).toBeNull();
+  });
+
+  it('a later lost session after an accepted secret does not blame the secret', async () => {
+    renderOwn();
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    act(() => roomSessions[0].cbs.onState(state({ flags: 0, attachments: [] })));
+    fireEvent.click(screen.getByRole('button', { name: 'Enter the secret' }));
+    fireEvent.change(screen.getByLabelText('Attach secret'), { target: { value: 'hunter2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+    act(() => roomSessions[1].cbs.onState(state({ flags: ROOM_STATE_FLAG_ATTACH_OK, attachments: [] })));
+    act(() => roomSessions[1].cbs.onError({ kind: 'lost', message: 'lost' }));
+    expect(screen.getByText('Lost the room')).toBeTruthy();
+    expect(screen.queryByText('That secret didn’t work')).toBeNull();
   });
 
   it('with other POVs on the stage it is a pill, not a card over the video', async () => {

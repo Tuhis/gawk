@@ -4,18 +4,16 @@ import styles from './ContextMenu.module.css';
 export interface MenuItem {
   label: string;
   onSelect: () => void;
-  // R32 UX1: selection state, rendered as a mark *and* as ARIA. Before this,
-  // callers glued a '✓' onto the label string, so the accessible name changed
-  // when only the state did and no assistive technology was told the item was
-  // a choice at all. `undefined` keeps a plain `menuitem`.
+  // Selection state, rendered as a mark and as ARIA (never as label text, so
+  // the accessible name stays stable). `undefined` keeps a plain `menuitem`.
   checked?: boolean;
-  // Present but not applicable. The option still renders — removing it is what
-  // made the viewer's menu change length with the delivery mode (docs/37 §1.2)
-  // — it is just inert, skipped by the keyboard, and carries `reason`.
+  // Present but not applicable: still rendered (a menu that changes length
+  // with state is disorienting), but inert, skipped by the keyboard, and
+  // carrying `reason`.
   disabled?: boolean;
   // Why a disabled item is unavailable. Visible text, never a tooltip: touch
   // has no hover, and a grayed row with no explanation is worse than an absent
-  // one (docs/37 decision 4).
+  // one.
   reason?: string;
   // A quiet second line on an *enabled* item — the cost or consequence of
   // choosing it (e.g. "· switching reconnects").
@@ -81,12 +79,10 @@ export function ContextMenu({ items, x, y, anchor = 'top-left', anchorRef, onClo
     // starts at scale(0.97), so the visual box under-reports the layout box
     // by 3 % — enough to drift the menu off its anchor and onto the button.
     const width = el.offsetWidth;
-    // R32 UX1.1: a menu taller than the viewport used to render its tail below
-    // the screen with no way to reach it — the clamp below floors `top` at
-    // PAD, which keeps the *head* on screen and says nothing about the tail.
-    // Cap the height here (rather than in CSS) so the placement math below
-    // measures the box the user will actually see: an uncapped offsetHeight
-    // would push a bottom-right anchor far off the top of the viewport.
+    // Cap the height to the viewport (the clamp below only keeps the head on
+    // screen). Here rather than in CSS so the placement math measures the box
+    // the user will see: an uncapped height would push a bottom-right anchor
+    // off the top of the viewport.
     const available = window.innerHeight - PAD * 2;
     const height = Math.min(el.offsetHeight, available);
     setMaxHeight(available);
@@ -183,8 +179,7 @@ export function ContextMenu({ items, x, y, anchor = 'top-left', anchorRef, onClo
             {...(item.disabled ? { 'aria-disabled': true } : {})}
             // Name is the label; the second line is a *description*. Folding
             // the cost line into the name would make every row's name a
-            // sentence, which is worse to navigate by and would defeat the
-            // point of UX1.2 — a stable, state-free accessible name.
+            // sentence, which is worse to navigate by, and not stable.
             aria-labelledby={labelId}
             {...(secondary ? { 'aria-describedby': noteId } : {})}
             className={[styles.item, i === active && !item.disabled ? styles.active : '']
@@ -194,9 +189,7 @@ export function ContextMenu({ items, x, y, anchor = 'top-left', anchorRef, onClo
             onClick={() => choose(i)}
           >
             {/* The check mark is drawn by CSS off aria-checked, never as a text
-                node: a rendered '✓' would put the state into textContent, i.e.
-                into the accessible name, which is exactly the defect this
-                replaces (labels used to be built as `'Paced playback ✓'`). */}
+                node, which would put the state into the accessible name. */}
             <span id={labelId} className={styles.itemLabel}>
               {item.label}
             </span>

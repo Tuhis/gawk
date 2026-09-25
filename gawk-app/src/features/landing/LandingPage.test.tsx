@@ -6,9 +6,9 @@ import { SITE_DOWNLOAD_URL, SITE_URL, SOURCE_URL } from '../../config';
 
 afterEach(cleanup);
 
-// R42 (docs/44 D19): a typed code goes through #/join/, which asks the relay
-// whether it names a room or a broadcast. The landing page itself never
-// decides — and offers no "start a room" (rooms are made from a broadcast).
+// A typed code goes through #/join/, which asks the relay whether it names a
+// room or a broadcast. The landing page itself never decides, and offers no
+// "start a room" (rooms are made from a broadcast).
 describe('LandingPage join box (R42)', () => {
   it('routes a completed code through #/join/ and offers no start-a-room action', () => {
     window.location.hash = '';
@@ -19,10 +19,9 @@ describe('LandingPage join box (R42)', () => {
   });
 });
 
-// The front-door footer. Both links are quiet by design, so the thing worth
-// pinning down is that they exist and point somewhere real — and that the
-// outbound one carries rel="noopener noreferrer", since it is the only link
-// on this page that leaves the app.
+// The front-door footer. The links are quiet by design, so the thing worth
+// pinning down is that they exist and point somewhere real, and that the ones
+// leaving the app carry rel="noopener noreferrer".
 describe('LandingPage footer', () => {
   it('links to the terms route', () => {
     render(<LandingPage />);
@@ -39,9 +38,9 @@ describe('LandingPage footer', () => {
     expect(source.getAttribute('rel')).toBe('noopener noreferrer');
   });
 
-  // R46 DL5 (docs/46 §6): the project site and, separately, its Download
-  // section — the native apps are the one thing a user of this UI may need
-  // that the UI itself cannot give them. Same quiet weight as the other two.
+  // The project site and, separately, its Download section: the native apps
+  // are the one thing a user of this UI may need that the UI itself cannot
+  // give them.
   it('links to the project site and straight to the app downloads, in new tabs', () => {
     render(<LandingPage />);
     const about = screen.getByRole('link', { name: 'About' });

@@ -6,7 +6,7 @@
   cursor: default;
 }
 
-/* R16 tier 3: CSS pseudo-fullscreen on element-fullscreen-less devices
+/* CSS pseudo-fullscreen on element-fullscreen-less devices
    (iPhone). The root is already fixed inset 0; 100dvh rides over the dynamic
    URL-bar viewport and the z-index lifts it above app chrome. */
 .pseudoFullscreen {
@@ -14,7 +14,7 @@
   z-index: 100;
 }
 
-/* R16: the hidden native-fullscreen <video> (gated devices only). Hidden by
+/* The hidden native-fullscreen <video> (gated devices only). Hidden by
    size/position — never display:none, which breaks webkitEnterFullscreen. */
 .presentationVideo {
   position: absolute;
@@ -188,7 +188,7 @@
   gap: 0.25rem;
 }
 
-/* R18: the "N watching" pill beside the live status — understated, per the
+/* The "N watching" pill beside the live status — understated, per the
    cinematic viewer's restraint. */
 .watching {
   display: inline-flex;
@@ -205,9 +205,8 @@
   white-space: nowrap;
 }
 
-/* R15 (docs/20 Decision 9): audio controls — rendered only when the stream
-   actually carries audio, so a video-only viewer is unchanged. The slider
-   stays compact so the control bar keeps its cinematic restraint. */
+/* Audio controls — rendered only when the stream actually carries audio. The
+   slider stays compact so the control bar keeps its cinematic restraint. */
 .audioControls {
   display: inline-flex;
   align-items: center;
@@ -259,73 +258,13 @@
   border-color: var(--text);
 }
 
-/* Developer-only relay override (dev builds). Deliberately reuses .center /
-   GlassPanel so it reads as the same surface as the connecting/ended cards —
-   it is a debugging affordance, not a product surface, and it must never grow
-   its own visual language. Left-aligned because it holds labelled fields
-   rather than a centred message. */
-/* Its own layer, deliberately ABOVE .center's 15: the status cards
-   (connecting / ended / error) are full-inset siblings at that z-index and come
-   later in DOM order, so sharing it put the panel *under* the error card — i.e.
-   unreachable in the one situation it exists for, a dev build pointed at a
-   relay that will not answer. Below ContextMenu's 50, so the menu that opens it
-   still stacks on top. */
-.devOverlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
-  z-index: 30;
-}
-
-.devPanel {
-  width: min(92vw, 420px);
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
-  text-align: left;
-}
-
-.devField {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.devField > span {
-  font-size: var(--fs-xs);
-  color: var(--muted);
-}
-
-.devField input {
-  width: 100%;
-  min-width: 0;
-  font: inherit;
-  font-family: ui-monospace, monospace;
-  font-size: var(--fs-sm);
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  padding: 0.5rem 0.6rem;
-}
-
-.devActions {
-  display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
-}
-
-/* ── R32 UX3: the viewer settings panel ────────────────────────────────────
+/* ── The viewer settings panel ─────────────────────────────────────────────
    Deliberately the same shape as the broadcaster's settings sheet
    (broadcaster.module.css "Settings sheet"): scrim + right-side panel +
    uppercase group titles, so the product has one settings idiom. Rendered
-   inside the viewer root so it survives CSS pseudo-fullscreen (docs/37
-   decision 5), and *over* the video rather than replacing it — a viewer
-   changes playback mode in order to judge playback. */
+   inside the viewer root so it survives CSS pseudo-fullscreen, and *over* the
+   video rather than replacing it — a viewer changes playback mode in order to
+   judge playback. */
 .settingsScrim {
   position: absolute;
   inset: 0;
@@ -432,8 +371,8 @@
   color: var(--muted);
 }
 
-/* The Advanced disclosure header — collapsed by default, because the whole
-   point of R32 is that an average viewer never opens it. */
+/* The Advanced disclosure header — collapsed by default, because an average
+   viewer should never need to open it. */
 .disclosure {
   display: flex;
   align-items: center;
@@ -517,8 +456,8 @@
 }
 
 /* Present but not applicable — dimmed, never removed, and the row's sub-line
-   carries the reason (docs/37 decision 4: touch has no hover, so a grayed row
-   with no explanation is worse than an absent one). */
+   carries the reason (touch has no hover, so a grayed row with no explanation
+   is worse than an absent one). */
 .rowDisabled {
   cursor: default;
   opacity: 0.55;
@@ -549,11 +488,11 @@
   color: var(--text);
 }
 
-/* ── R32 UX4: the control-bar preset pill ──────────────────────────────────
+/* ── The control-bar preset pill ───────────────────────────────────────────
    The one tuning control an average viewer meets, and the only text control in
    the actions cluster — its label IS the state readout, which is the whole
    reason it is text and not an icon. Auto-hides with the bar like everything
-   else, so the cinematic restraint (R6 J4) survives. */
+   else, so the cinematic restraint survives. */
 .presetPill {
   display: inline-flex;
   align-items: center;

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// R9 M7: the viewer overlay renders full and degraded stats (nulls → "—") and
+// The viewer overlay renders full and degraded stats (nulls → "—") and
 // hosts the copy-diagnostics action.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -135,16 +135,15 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Playout').nextSibling?.textContent).toBe('live-edge');
     expect(screen.getByText('Presentation').nextSibling?.textContent).toBe('Immediate');
     expect(screen.getByText('Interpolation').nextSibling?.textContent).toBe('Off');
-    // R12 T1: the jitter rows.
+    // The jitter rows.
     expect(screen.getByText('Render cadence σ').nextSibling?.textContent).toBe('3.2 ms');
     expect(screen.getByText('Arrival jitter (p95−min)').nextSibling?.textContent).toBe('12 ms');
     expect(screen.getByText('Decode jitter σ').nextSibling?.textContent).toBe('1.4 ms');
-    // R18: the relay's live audience push.
+    // The relay's live audience push.
     expect(screen.getByText('Watching').nextSibling?.textContent).toBe('3');
 
     cleanup();
-    // R32 removed the 'fixed' mode, so live-edge is what anything that is not
-    // adaptive reads as.
+    // Anything that is not adaptive reads as live-edge.
     render(
       <StatsOverlay
         stats={{ ...fullStats(), playoutMode: 'off', playoutOffsetMs: 0 }}
@@ -158,7 +157,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Playout').nextSibling?.textContent).toBe('live-edge');
 
     cleanup();
-    // R12 T2: adaptive mode shows the live offset and the pacing placement.
+    // Adaptive mode shows the live offset and the pacing placement.
     render(
       <StatsOverlay
         stats={{ ...fullStats(), playoutMode: 'adaptive', playoutOffsetMs: 187, presentation: 'paced-raf', interpolation: 'on' }}
@@ -174,7 +173,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Interpolation').nextSibling?.textContent).toBe('On (blend)');
   });
 
-  // R19 (docs/24 Decision 10): the Delivery row tells the truth in all three
+  // The Delivery row tells the truth in all three
   // states; carrier rows appear only outside plain datagram mode.
   it('renders the delivery mode row truthfully in all three states', () => {
     render(
@@ -200,7 +199,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Carrier records').nextSibling?.textContent).toBe('700');
 
     cleanup();
-    // Decision 8 degradation: requested but the relay serves datagrams.
+    // Degraded: requested but the relay serves datagrams.
     render(
       <StatsOverlay
         stats={{ ...fullStats(), deliveryMode: 'reliable-requested', carrierStreams: 0, carrierRecords: 0, carrierStreamsAborted: 0 }}
@@ -241,7 +240,7 @@ describe('StatsOverlay', () => {
     expect(screen.getByText('Received fps').nextSibling?.textContent).toBe('30.2');
   });
 
-  // R16 (docs/21 Decision 9): the Feature Gates section renders only when the
+  // The Feature Gates section renders only when the
   // surface reports at least one gate. The value is a bare ✓/✗; the detail is
   // the value's hover tooltip (title attribute).
   it('renders the Feature Gates section only when gates are reported', () => {
@@ -292,7 +291,7 @@ describe('StatsOverlay', () => {
     expect(screen.queryByText('Feature Gates')).toBeNull();
   });
 
-  // R28 (docs/33 §4.13): the row a viewer reads aloud to an operator. The
+  // The row a viewer reads aloud to an operator. The
   // value is the dashboard's own 8-character prefix; the full 24 stay in the
   // tooltip, where `diagnose()` can be handed all of it.
   it('renders the telemetry session id, short on screen and whole in the tooltip', () => {
@@ -343,8 +342,7 @@ describe('StatsOverlay', () => {
   });
 });
 
-// R15 N6 (docs/20): the Audio section is gated on audio actually being in
-// the stream — a video-only viewer's overlay is unchanged.
+// The Audio section is gated on audio actually being in the stream.
 describe('StatsOverlay audio section (R15)', () => {
   it('renders no Audio section for a video-only stream', () => {
     render(
@@ -391,9 +389,9 @@ describe('StatsOverlay audio section (R15)', () => {
     expect(screen.queryByText('Underruns')).toBeNull();
   });
 
-  // docs/20 field finding 6: the jitter-buffer counters, merged in on the main
-  // thread from the AudioSink, surface as their own rows (buffer depth / target,
-  // underruns, drops) — the "audio starved for cushion" diagnostic.
+  // The jitter-buffer counters, merged in on the main thread from the
+  // AudioSink, surface as their own rows (buffer depth / target, underruns,
+  // drops) — the "audio starved for cushion" diagnostic.
   it('renders the jitter-buffer rows when the sink stats are present', () => {
     render(
       <StatsOverlay
@@ -433,14 +431,13 @@ describe('StatsOverlay audio section (R15)', () => {
     expect(screen.getByText('Late / overflow drops').nextSibling?.textContent).toBe('1 / 0');
     // The stream is 48 kHz (fixture above), the context 44.1 kHz: annotated.
     expect(screen.getByText('Sink rate').nextSibling?.textContent).toBe('44100 Hz (resampling)');
-    // docs/20 field finding 13: the device's own delay. Without this row a
+    // The device's own delay. Without this row a
     // capture cannot tell a correctly-synced Bluetooth session from one where
     // the correction regressed — the two differ by exactly this number.
     expect(screen.getByText('Output latency').nextSibling?.textContent).toBe('128.0 ms');
-    // docs/20 field finding 12: a skew read while the audio timeline is losing
-    // ground is starvation debt, not lip sync — the row says so out loud, so a
-    // capture can no longer be read as a lip-sync error it is not. 0.934x is
-    // the ratio that produced the field capture's 1986 ms over 30 s.
+    // A skew read while the audio timeline is losing ground is starvation
+    // debt, not lip sync — the row says so out loud, so a capture can't be
+    // misread as a lip-sync error.
     expect(screen.getByText('Playhead advance').nextSibling?.textContent).toBe('0.934× (starving)');
   });
 });

@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 //
-// R24 (docs/30) CG1: the pure guidance model. These pin the browser-aware
-// decisions and the note gating without a React tree — the load-bearing rule
-// being that a note NEVER fires on a healthy broadcast or on a browser that
-// can't do audio at all.
+// The pure guidance model. These pin the browser-aware decisions and the note
+// gating without a React tree — the load-bearing rule being that a note NEVER
+// fires on a healthy broadcast or on a browser that can't do audio at all.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {

@@ -1,5 +1,5 @@
-// R11 (docs/16): imperative glue between the broadcaster UI and the broadcast
-// Web Worker, kept out of the component so the screen stays path-agnostic.
+// Imperative glue between the broadcaster UI and the broadcast Web Worker,
+// kept out of the component so the screen stays path-agnostic.
 // WorkerBroadcastSession presents the exact BroadcastPipeline surface
 // (start/stop/setLadder + BroadcastCallbacks) while running the pipeline in a
 // worker; createBroadcastSession() picks worker vs. main-thread per
@@ -219,7 +219,7 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
     }
 
     const nativeFps = acquired.track.getSettings().frameRate ?? null;
-    // R15 N3: the system-audio clone transfers beside the video clone (the
+    // The system-audio clone transfers beside the video clone (the
     // original audio track stays in the local stream, whose teardown stops
     // it). An audio clone failure degrades to video-only — audio must never
     // fail a start the video path would have survived.
@@ -242,8 +242,8 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
           track: clone,
           nativeFps,
           audioTrack: audioClone,
-          // R15 field finding: the pipeline reports 'audio unavailable here'
-          // rather than the indistinguishable 'no audio shared'.
+          // The pipeline reports 'audio unavailable here' rather than the
+          // indistinguishable 'no audio shared'.
           audioUnavailable: acquired.audioUnavailable ?? false,
         },
         audioClone
@@ -344,8 +344,8 @@ function probeTrackTransfer(worker: Worker): boolean {
 }
 
 // Builds the broadcast session for BroadcasterScreen: the worker-offloaded
-// pipeline where the environment supports it (Chromium), the unchanged
-// main-thread BroadcastPipeline otherwise (Firefox, jsdom). Both implement
+// pipeline where the environment supports it, the main-thread
+// BroadcastPipeline otherwise (e.g. Firefox, jsdom). Both implement
 // BroadcastSessionLike, so the caller never branches.
 //
 // `grant` is the display stream the caller requested in its start click:

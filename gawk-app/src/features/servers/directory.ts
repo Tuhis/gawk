@@ -1,9 +1,8 @@
-// R37 (docs/40 §4.5): the server directory — an operator-configured JSON
-// document the picker offers. Fetched when the picker opens, never at boot
-// (D9, the termsUrl rule); errors and timeouts degrade to "directory
-// unavailable" without blocking the panel's own content. Entries are offers,
-// not saves: adding one is the same explicit act as manual entry, and no
-// credential fields exist in the schema.
+// The server directory: an operator-configured JSON document the picker
+// offers. Fetched when the picker opens, never at boot; errors and timeouts
+// degrade to "directory unavailable" without blocking the panel's own content.
+// Entries are offers, not saves: adding one is the same explicit act as manual
+// entry, and no credential fields exist in the schema.
 
 import { normalizeRelayOrigin } from '../../lib/relayUrl';
 
@@ -12,9 +11,9 @@ export const DIRECTORY_MAX_LABEL_LEN = 64;
 
 export interface DirectoryOffer {
   label: string;
-  // Normalized https origin — the same rule as ?relay= values.
+  // Normalized https origin, the same rule as ?relay= values.
   url: string;
-  // Display groundwork for §4.9; no behaviour in R37.
+  // Display only; it changes no behaviour.
   managed: boolean;
 }
 

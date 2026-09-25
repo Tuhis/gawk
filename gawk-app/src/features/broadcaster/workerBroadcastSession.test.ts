@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// R11 K3 acceptance (docs/16): WorkerBroadcastSession drives a fake worker +
-// injected acquire function — the capture handoff (clone transferred, original
-// kept for the preview), typed start failures, local teardown, and the
-// jsdom fallback of createBroadcastSession to the main-thread pipeline.
+// WorkerBroadcastSession against a fake worker + injected acquire function —
+// the capture handoff (clone transferred, original kept for the preview),
+// typed start failures, local teardown, and the jsdom fallback of
+// createBroadcastSession to the main-thread pipeline.
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -162,7 +162,7 @@ describe('WorkerBroadcastSession capture handoff', () => {
     expect(acquired.track.addEventListener).toHaveBeenCalledWith('ended', expect.any(Function));
   });
 
-  // R15 N3: the audio clone transfers beside the video clone when the config
+  // The audio clone transfers beside the video clone when the config
   // asked for audio and the grant delivered a track.
   it('transfers the audio clone alongside the video clone when audio is enabled', async () => {
     const { session, worker, acquired } = makeSession({ audio: true, acquiredAudio: true });

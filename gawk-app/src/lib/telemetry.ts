@@ -1,25 +1,21 @@
-// R28 TM2 (docs/33): the client telemetry collector.
-//
-// This module adds NO measurement. `ViewerStats` and `BroadcastStats` already
-// exist and are already assembled on the main thread before they reach the
-// overlay; the collector subscribes to exactly those objects and ships them.
-// If it ever finds itself computing a metric, it has drifted (docs/33 §1.2).
+// The client telemetry collector. It adds no measurement: it ships the same
+// ViewerStats / BroadcastStats objects the overlay renders.
 //
 // Four properties are load-bearing and every one of them is a test:
 //
-//  1. **Zero PII (D8).** The envelope carries the OBFUSCATED broadcast key the
+//  1. **Zero PII.** The envelope carries the OBFUSCATED broadcast key the
 //     relay handed us — never the raw, joinable ID a viewer obviously knows —
 //     and a coarse browser/OS class reduced here on the device, never the
 //     userAgent string. Nothing else identifying is collected; adding anything
 //     has to be argued for.
-//  2. **Never on the media hot path (D9).** Sampling is a decimated copy of an
+//  2. **Never on the media hot path.** Sampling is a decimated copy of an
 //     already-computed object; sending is fire-and-forget. A failed POST is
 //     retried a few times and then dropped, silently, forever. No user-visible
 //     error, no retry storm, no unbounded buffer. If telemetry can degrade a
 //     stream, the item has failed on its own terms.
 //  3. **Off means off.** No hello, or a hello with enabled=false, means zero
-//     network requests — not a queue that never drains. A relay predating R28
-//     and a fleet with telemetry disabled are the same thing here.
+//     network requests — not a queue that never drains. A relay without
+//     telemetry and a fleet with it disabled are the same thing here.
 //  4. **A truncated session never looks like a complete one.** The per-session
 //     byte budget degrades to events-only and says so on the wire, because a
 //     silently-clipped session would read as a healthy short one.
@@ -31,19 +27,19 @@
 import { log } from './logger';
 import { telemetrySessionId, type TelemetryHelloMessage } from '../transport/wire';
 
-// The release that produced these samples. D15: this IS the schema version.
+// The release that produced these samples; this is the schema version.
 declare const __GAWK_APP_VERSION__: string;
 export const APP_VERSION: string =
   typeof __GAWK_APP_VERSION__ === 'string' ? __GAWK_APP_VERSION__ : '0.0.0-dev';
 
 export type TelemetryRole = 'viewer' | 'broadcaster';
 
-// How often a batch is flushed. ~10 s of ~2 s samples is ~7.5 KB uncompressed —
-// comfortably under the 64 KB keepalive/sendBeacon body cap (docs/33 §4.3).
+// How often a batch is flushed. ~10 s of ~2 s samples is ~7.5 KB uncompressed,
+// comfortably under the 64 KB keepalive/sendBeacon body cap.
 export const FLUSH_INTERVAL_MS = 10_000;
 
 // The nested object carrying the worst reading seen between two emitted
-// samples (docs/33 D16), and the rates it covers.
+// samples, and the rates it covers.
 //
 // Deliberately tiny. Its only consumer is the dip detector, which judges one
 // primary rate per role; the rest are here because they cost a few bytes each
@@ -110,13 +106,11 @@ export interface TelemetryBatch<T> {
   startedAtMs: number;
   samples: TelemetrySample<T>[];
   events: TelemetryEvent[];
-  // Present and true only once the session hit SESSION_BYTE_BUDGET. A reader
-  // must be able to tell a truncated session from a complete one; the rollup
-  // records it (docs/33 §4.5 "Data quality").
+  // Present and true only once the session hit SESSION_BYTE_BUDGET: a reader
+  // must be able to tell a truncated session from a complete one.
   truncated?: true;
-  // R42 (docs/44 §4.10, RM8): the room this session was opened inside, as
-  // the relay's HMAC'd 6-byte key in hex (12 characters) — never the code.
-  // Absent outside a room; the ingest treats it as optional.
+  // The room this session was opened inside, as the relay's HMAC'd 6-byte key
+  // in hex (12 characters), never the code. Absent outside a room.
   roomKey?: string;
 }
 
@@ -176,18 +170,17 @@ export class TelemetryCollector<T> {
   private bytesUsed = 0;
   private truncated = false;
   private lastSampleAt = -Infinity;
-  // The running minimum of INTERVAL_MIN_FIELDS since the last emitted sample
-  // (D16). Null between emissions with nothing yet seen.
+  // The running minimum of INTERVAL_MIN_FIELDS since the last emitted sample.
+  // Null between emissions with nothing yet seen.
   private intervalMin: Record<string, number> | null = null;
   private timer: unknown = null;
   private stopped = false;
-  // R37 (docs/40 D15): the relay-advertised ingest URL (wire 0x12). Wins
-  // over the configured one whenever present.
+  // The relay-advertised ingest URL; wins over the configured one.
   private advertisedUrl: string | null = null;
   // Set once a batch has been abandoned: further failures are not worth
   // logging, and the session's coverage is already imperfect.
   private givenUp = false;
-  // R42: the HMAC'd room key (hex) stamped on every batch while set.
+  // The HMAC'd room key (hex) stamped on every batch while set.
   private roomKey: string | null = null;
 
   constructor(options: TelemetryCollectorOptions<T>) {
@@ -214,8 +207,8 @@ export class TelemetryCollector<T> {
   // carries a well-formed token, and naming a session that was never collected
   // would send an operator hunting for a row that cannot exist.
   //
-  // Unlike the token, this is not a credential (docs/33 §4.2): it names a
-  // session, it does not authorize writing to one. That is what makes it safe
+  // Unlike the token, this is not a credential: it names a session, it does
+  // not authorize writing to one. That is what makes it safe
   // to put on the stats overlay and into a Copy-diagnostics blob.
   get sessionId(): string | null {
     return this.session;
@@ -228,7 +221,7 @@ export class TelemetryCollector<T> {
     return this.truncated;
   }
 
-  // Adopt a session identity from wire 0x0D. A reconnect is a NEW relay
+  // Adopt a session identity from the telemetry hello. A reconnect is a NEW relay
   // session with a NEW token, so this both closes the previous session (final
   // flush) and starts a fresh one — sample histories from two transport
   // sessions must never merge into one row.
@@ -244,9 +237,8 @@ export class TelemetryCollector<T> {
 
     this.token = hello.token;
     // Derived once, defensively: the token has already been strict-parsed off
-    // the wire, so a throw here would only ever be a programming error — and
-    // D9 says telemetry must never be the thing that breaks a stream, least of
-    // all over a display detail. A session with an unnameable id still
+    // the wire, so a throw here would only ever be a programming error, and
+    // telemetry must never be the thing that breaks a stream. A session with an unnameable id still
     // collects; it just cannot be pointed at.
     try {
       this.session = telemetrySessionId(hello.token);
@@ -254,10 +246,9 @@ export class TelemetryCollector<T> {
       this.session = null;
     }
     this.broadcastKey = hello.broadcastKey;
-    // The 250 ms floor is security-load-bearing since R37 (docs/40 §5 G3):
-    // with 0x12 the destination is attacker-influenced, and the hello's
-    // interval is relay-chosen — this clamp is what bounds the reflector
-    // rate a hostile relay can extract. Pinned by its own test.
+    // The 250 ms floor is security-load-bearing: a relay can advertise the
+    // destination and chooses the interval, so this clamp bounds the
+    // reflector rate a hostile relay can extract. Pinned by its own test.
     this.reportIntervalMs = Math.max(hello.reportIntervalMs, 250);
     this.startedAtMs = this.opts.now();
     this.startedAtPerf = perfNow();
@@ -275,15 +266,14 @@ export class TelemetryCollector<T> {
   // overlay keeps its 500 ms tick, and telemetry does not need every one of
   // them. Cheap enough to call from the stats handler.
   //
-  // Decimation alone was lossy in a way that mattered (docs/33 D16): the three
+  // Decimation alone was lossy in a way that mattered: the three
   // discarded ticks between two emitted samples could contain a complete
   // collapse, and nothing downstream could ever know. So the minimum of a few
   // experiential rates is carried across the gap and attached to the emitted
   // sample as `intervalMin`.
   //
   // Deliberately NOT done by emitting the worst tick as the sample: that would
-  // bias every median downward and break the funnel ratios, which are the one
-  // thing D16 must leave untouched.
+  // bias every median downward and break the funnel ratios.
   sample(stats: T): void {
     if (!this.active || this.truncated) return;
     const t = perfNow();
@@ -419,16 +409,15 @@ export class TelemetryCollector<T> {
     this.stopped = true;
   }
 
-  // R37 (docs/40 D15): adopt the relay-advertised ingest URL. Arriving on
-  // its own uni stream it races the 0x0D hello, so this is legal before OR
-  // after begin(); a flush blocked by requireAdvertisedUrl unblocks here.
+  // Adopt the relay-advertised ingest URL. It arrives on its own uni stream
+  // and races the hello, so this is legal before or after begin().
   setAdvertisedUrl(url: string): void {
     this.advertisedUrl = url;
   }
 
-  // R42 (docs/44 §4.10): group this session with its room. The key is the
-  // relay's HMAC over the code (RoomState.key), handed over because a client
-  // cannot compute it; hex-encoded here, and the raw code never travels.
+  // Group this session with its room. The key is the relay's HMAC over the
+  // code (RoomState.key), which a client cannot compute; the raw code never
+  // travels.
   // Legal before or after begin() — the room's control session and the
   // tile's media session race — and null clears it.
   setRoomKey(hex: string | null): void {
@@ -441,15 +430,11 @@ export class TelemetryCollector<T> {
     return this.active && this.advertisedUrl !== null;
   }
 
-  // D15, revised semantics (R37 review R3-A/R3-C): an advertised URL wins;
-  // otherwise the configured URL is used on ANY relay — the pre-R37
-  // behavior. Suppressing on a "foreign" relay was tried first and reverted:
-  // the same fleet is legitimately reached through non-default URLs
-  // (direct IP, alternate DNS, a migrated legacy setting), where the
-  // configured collector shares the fleet key and the batches verify fine.
-  // Truly foreign fleets reject the batches at token verification, which is
-  // bounded waste and honest, exactly as before R37. Re-resolved at every
-  // send, so a late 0x12 redirects subsequent batches (G2).
+  // An advertised URL wins; otherwise the configured URL is used on any relay.
+  // Don't suppress it on a "foreign-looking" relay: the same fleet is reached
+  // through non-default URLs (direct IP, alternate DNS), and a truly foreign
+  // fleet rejects the batches at token verification. Re-resolved at every
+  // send, so a late advertisement redirects later batches.
   private effectiveUrl(): string {
     return this.advertisedUrl ?? this.opts.url;
   }
@@ -497,8 +482,8 @@ export class TelemetryCollector<T> {
   }
 
   private async send(body: string, beacon: boolean, attempt: number): Promise<void> {
-    // Re-resolved per attempt (G2): a 0x12 landing between flushes — or
-    // between retries — redirects the rest of the session's batches.
+    // Re-resolved per attempt: an advertisement landing between flushes or
+    // retries redirects the rest of the session's batches.
     const url = this.effectiveUrl();
     let outcome: boolean | TelemetrySendOutcome = false;
     try {
@@ -520,8 +505,7 @@ export class TelemetryCollector<T> {
     }
     if (attempt >= MAX_SEND_ATTEMPTS) {
       // Dropped, silently and forever. The missing window shows up honestly
-      // as a gap in the batch `seq` sequence (docs/33 §4.5), which is a
-      // diagnosable fact rather than a lie about coverage.
+      // as a gap in the batch `seq` sequence.
       if (!this.givenUp) {
         this.givenUp = true;
         log.info('telemetry batch dropped after retries; collection continues');
@@ -555,17 +539,16 @@ function truncateUtf16Safe(s: string, n: number): string {
   return s.slice(0, end);
 }
 
-// The production transport. Same-origin by default (docs/33 D1), which is what
+// The production transport. Same-origin by default, which is what
 // makes the beacon path work without a preflight it could not perform during
 // unload.
 const defaultTransport: TelemetryTransport = async (url, body, beacon) => {
   if (beacon && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
     try {
       // A Blob carries the content type; sendBeacon cannot set headers.
-      // text/plain is CORS-safelisted (R37, docs/40 D17): no preflight —
-      // which sendBeacon cannot perform during unload — even when the
-      // destination is a foreign relay's ingest. The envelope bytes are
-      // identical; the ingest never dispatched on Content-Type.
+      // text/plain is CORS-safelisted, so there is no preflight (which
+      // sendBeacon cannot perform during unload) even to another origin; the
+      // ingest does not dispatch on Content-Type.
       if (navigator.sendBeacon(url, new Blob([body], { type: 'text/plain;charset=UTF-8' }))) return true;
     } catch {
       // Fall through to fetch — a refused beacon is not a reason to lose the
@@ -578,8 +561,7 @@ const defaultTransport: TelemetryTransport = async (url, body, beacon) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
-      // keepalive lets a flush outlive the document, which is the whole point
-      // of collecting out-of-band (D1).
+      // keepalive lets a flush outlive the document.
       keepalive: body.length < 60_000,
     });
     // 429 and 5xx are worth another attempt; every other rejection is final.
@@ -590,7 +572,7 @@ const defaultTransport: TelemetryTransport = async (url, body, beacon) => {
 };
 
 // Coarse client class, reduced HERE so the raw string never leaves the device
-// (D8). Deliberately crude: browser family + major version, OS family. Anything
+// Deliberately crude: browser family + major version, OS family. Anything
 // finer starts to be a fingerprint, and none of the diagnostics need it.
 export function describeClient(ua?: string): { browser: string; os: string } {
   const s = ua ?? (typeof navigator !== 'undefined' ? navigator.userAgent : '');
@@ -604,12 +586,8 @@ function browserClass(ua: string): string {
     [/\bEdg\/(\d+)/, 'Edge'],
     [/\bOPR\/(\d+)/, 'Opera'],
     [/\bFirefox\/(\d+)/, 'Firefox'],
-    // Headless Chrome says "HeadlessChrome/141", never "Chrome/141", so a
-    // bare Chrome rule reports it as "unknown" — which is how the R20 e2e
-    // harness's own browser looked until it was measured. Headlessness is not
-    // a browser family, so it reports as Chrome; the CI-only distinction is
-    // not worth a field, and telling them apart would edge toward a
-    // fingerprint.
+    // Headless Chrome says "HeadlessChrome/141", never "Chrome/141".
+    // Headlessness is not a browser family, so it reports as Chrome.
     [/\bHeadlessChrome\/(\d+)/, 'Chrome'],
     [/\bChrome\/(\d+)/, 'Chrome'],
     [/\bVersion\/(\d+).*\bSafari\//, 'Safari'],
@@ -623,8 +601,7 @@ function browserClass(ua: string): string {
 
 function osClass(ua: string): string {
   if (/\bAndroid\b/.test(ua)) return 'Android';
-  // iPadOS reports as Macintosh; the touch-point check is the usual
-  // discriminator and stays coarse enough not to fingerprint.
+  // iPadOS Safari sends a Macintosh UA, so iPads report as macOS.
   if (/\b(iPhone|iPad|iPod)\b/.test(ua)) return 'iOS';
   if (/\bWindows\b/.test(ua)) return 'Windows';
   if (/\bCrOS\b/.test(ua)) return 'ChromeOS';

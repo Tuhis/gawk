@@ -1,15 +1,14 @@
-// R13 (docs/18): the encoder-capability probe matrix. Probes
-// (resolution rung × framerate × codec preference × acceleration hint) via
-// VideoEncoder.isConfigSupported() into a support map the picker annotates
-// from and the auto ceiling / auto-fps default resolve against.
+// The encoder-capability probe matrix. Probes (resolution rung × framerate ×
+// codec preference × acceleration hint) via VideoEncoder.isConfigSupported()
+// into a support map the picker annotates from and the auto ceiling /
+// auto-fps default resolve against.
 //
-// Carried assumption (from encoder.ts, verified on Chromium during L1): a
-// 'prefer-hardware' probe answering supported=true is a commitment to
-// hardware — Chromium returns false when it can't do HW. There is no
+// A 'prefer-hardware' probe answering supported=true is a commitment to
+// hardware on Chromium, which returns false when it can't do HW. There is no
 // spec-level "require hardware"; this probe is as close as it gets. The
-// probe is *advisory*: the live configure() result wins (docs/18 Decision
-// 13). On Firefox every prefer-hardware probe is rejected (its
-// VideoEncoder is software-only) and the matrix degrades to all-software.
+// probe is advisory: the live configure() result wins. On Firefox every
+// prefer-hardware probe is rejected (its VideoEncoder is software-only) and
+// the matrix degrades to all-software.
 
 import { computeBitrate, computeTargetSize, RESOLUTION_RUNGS, type ResolutionRung } from './ladder';
 
@@ -30,8 +29,8 @@ export interface SourceDims {
 
 // Pre-capture upper bound for the native rung: probe as if the source were
 // 16:9 4K. Refined from the first real frame's dimensions once capture
-// starts — frames are truth (docs/01), and a matrix probed at the wrong
-// native size would mis-annotate the picker.
+// starts — frames are truth, and a matrix probed at the wrong native size
+// would mis-annotate the picker.
 export const DEFAULT_PROBE_SOURCE: SourceDims = { width: 3840, height: 2160 };
 
 // Concrete framerates the matrix probes. 'native' fps is annotated against
@@ -57,9 +56,9 @@ export type IsConfigSupportedFn = (
 ) => Promise<{ supported?: boolean; config?: VideoEncoderConfig }>;
 
 // Whether this scope can probe at all. When it can't (no WebCodecs — jsdom,
-// exotic browsers) the pipeline skips the matrix entirely and keeps the
-// pre-R13 optimistic defaults: an unavailable probe must not clamp behavior
-// (docs/18 Decision 13 — runtime truth over probe truth).
+// exotic browsers) the pipeline skips the matrix entirely and keeps
+// optimistic defaults: an unavailable probe must not clamp behavior, since
+// runtime truth wins over probe truth.
 export function probeSupported(): boolean {
   return typeof VideoEncoder !== 'undefined' && typeof VideoEncoder.isConfigSupported === 'function';
 }
@@ -74,8 +73,7 @@ const defaultIsConfigSupported: IsConfigSupportedFn = (config) => {
 // Upper bound on simultaneous isConfigSupported calls per prober. On Chrome
 // every pending call holds a real encoder instance (software probes at 4K
 // allocate full encoder contexts) — the broadcaster surface requests ~170
-// combos at load, and unbounded parallelism OOM-crashed the tab (field bug,
-// 2026-07-15).
+// combos at load, and unbounded parallelism OOM-crashes the tab.
 export const MAX_CONCURRENT_PROBES = 4;
 
 export function matrixKey(rung: ResolutionRung, framerate: number): string {
@@ -210,9 +208,10 @@ export interface ProbeMatrixOptions {
   rungs?: readonly ResolutionRung[];
 }
 
-// Probes the full (rung × fps) matrix — a dozen or so isConfigSupported
-// calls, milliseconds each, run concurrently. Rungs that don't shrink the
-// source share the prober's memoized combo with the native rung.
+// Probes the full (rung × fps) matrix — a dozen or so combos, all requested
+// at once; the prober bounds how many isConfigSupported calls are in flight.
+// Rungs that don't shrink the source share the prober's memoized combo with
+// the native rung.
 export async function probeSupportMatrix(
   prober: EncoderSupportProber,
   opts: ProbeMatrixOptions,

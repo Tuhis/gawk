@@ -1,4 +1,4 @@
-// Live-edge drift estimator (R5 Q1, docs/15). Pure module, fake clock.
+// Live-edge drift estimator. Pure module, fake clock.
 
 import { describe, expect, it } from 'vitest';
 import {

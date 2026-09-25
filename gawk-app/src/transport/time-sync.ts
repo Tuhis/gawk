@@ -1,8 +1,8 @@
-// Client side of the TimeSync clock-sync protocol (R5 Q2, docs/15). Both the
-// broadcaster and the viewer run one of these over their existing session:
-// ping the relay every TIME_SYNC_INTERVAL_MS, and from each echoed reply take
-// an NTP-style sample mapping the local performance.now() timeline onto the
-// relay's monotonic clock:
+// Client side of the TimeSync clock-sync protocol. Both the broadcaster and the
+// viewer run one of these over their existing session: ping the relay every
+// TIME_SYNC_INTERVAL_MS, and from each echoed reply take an NTP-style sample
+// mapping the local performance.now() timeline onto the relay's monotonic
+// clock:
 //
 //   rtt      = t1 − t0
 //   offsetUs = serverTimeUs − (t0 + rtt/2)      (relayUs ≈ localUs + offsetUs)
@@ -30,8 +30,7 @@ export interface TimeSyncMeasurement {
   // relayClockUs ≈ localPerformanceUs + offsetUs (signed).
   offsetUs: bigint;
   // Round-trip of the winning sample — also a self-owned RTT for this leg,
-  // independent of WebTransport.getStats() (which no browser ships today —
-  // Chromium removed its pre-spec impl in 152; see docs/13 D7).
+  // independent of WebTransport.getStats() (which no browser ships).
   rttMs: number;
 }
 
@@ -124,7 +123,7 @@ export class TimeSyncClient {
         const msg = parseTimeSync(dgram);
         this.estimator.record(msg.clientTimeUs, msg.serverTimeUs, nowUs(this.now()));
       } catch {
-        // malformed: dropped (strict parsing, R2 discipline)
+        // malformed: dropped (strict parsing)
       }
     }
     return true;

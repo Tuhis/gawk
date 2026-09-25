@@ -1,10 +1,8 @@
-// R12 T4 (docs/17 Decision 7): frame interpolation — EXPERIMENTAL, its own
-// default-off opt-in, and pre-registered for removal if it fails the kill
-// criteria. The scaffold synthesizes a mid frame between consecutive
-// presented frames (30 → 60 fps) with a linear blend; T5 replaces the blend
-// with motion-estimated warping. Ghosting on the blend is the expected
-// scaffold outcome — it validates the two-texture pipeline and this slot
-// scheduling, not the final look.
+// Frame interpolation — EXPERIMENTAL, its own default-off opt-in. It
+// synthesizes a mid frame between consecutive presented frames (30 → 60 fps)
+// with a linear blend. Ghosting on the blend is expected: it is a scaffold
+// that validates the two-texture pipeline and this slot scheduling, not the
+// final look.
 //
 // Interpolation requires adaptive (paced) playout: pacing owns the display
 // slots that the synthesized frame slots between. It is opportunistic — a

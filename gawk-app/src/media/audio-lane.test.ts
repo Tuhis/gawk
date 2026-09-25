@@ -1,4 +1,4 @@
-// R15 N2 (docs/20): the audio lane's pure parts — anchor math, seq wrap,
+// The audio lane's pure parts — anchor math, seq wrap,
 // 1 Hz config re-send — and the core's error containment, driven with fake
 // encoders and senders (no WebCodecs, no MSTP).
 
@@ -306,15 +306,14 @@ describe('AudioLaneCore', () => {
   });
 });
 
-// docs/20 field finding 13 (2026-07-26): audio timestamps must be anchored on
-// the same pipeline stage video's are — capture arrival — or the encoder's own
-// latency is written into the labels and the viewer plays audio that much
-// behind its picture, permanently and invisibly. `capture.ts` stamps a
-// VideoFrame with `performance.now()` at MSTP arrival, *before* encode; the
-// audio anchor used to be established in the encoder's output callback, so it
-// carried MSTP delivery + Opus algorithmic delay + queueing + the one-shot
-// encoder init. Nothing downstream can see it: the timestamps ARE the sync
-// reference, so `avSkewMs` reads a clean zero while lip sync is wrong.
+// Audio timestamps must be anchored on the same pipeline stage video's are —
+// capture arrival — or the encoder's own latency (MSTP delivery + Opus
+// algorithmic delay + queueing + the one-shot encoder init) is written into
+// the labels and the viewer plays audio that much behind its picture,
+// permanently and invisibly. `capture.ts` stamps a VideoFrame with
+// `performance.now()` at MSTP arrival, *before* encode. Nothing downstream can
+// see it: the timestamps ARE the sync reference, so `avSkewMs` reads a clean
+// zero while lip sync is wrong.
 describe('AudioLaneCore timestamp reference point', () => {
   it('stamps packets from the input arrival, not the encoder output', async () => {
     const { factory, encoders } = fakeEncoderFactory();
@@ -331,7 +330,7 @@ describe('AudioLaneCore timestamp reference point', () => {
 
     const frame = parseAudioFrame(sender.sent[0][1]);
     expect(Number(frame.header.timestampUs)).toBe(1_000_000);
-    // The lag is now measured instead of baked in — the number to read when
+    // The lag is measured instead of baked in — the number to read when
     // lip sync is off and the viewer's own metrics look clean.
     expect(core.getStats().encodeLagMs).toBeCloseTo(80, 5);
   });

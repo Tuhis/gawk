@@ -1,4 +1,4 @@
-// R42 (docs/44 §4.8): the one-shot `?rt=` grant hand-off on a room link.
+// The one-shot `?rt=` grant hand-off on a room link.
 //
 // A native broadcaster's "open room view" launches the browser at
 // `#/room/<code>?rt=<grant>`. The grant is a credential (a creator token or a
@@ -10,8 +10,8 @@
 // the tab, and a reload of the same tab still has it (the room session
 // reconnects with the same grant).
 //
-// Grant shapes (this module is the format's one home; RM6's natives and the
-// broadcaster's link field both produce it):
+// Grant shapes (this module is the format's one home; the native
+// broadcasters and the web broadcaster's link field both produce it):
 //   c:<hex32>   a creator token (dynamic rooms)       — also accepted bare
 //   a:<secret>  a static room's attach secret
 import { hashWithoutGrant, type Route } from '../../routing';
@@ -77,7 +77,7 @@ export function clearGrant(code: string): void {
 }
 
 // Called synchronously from App.tsx's route resolution, before the screen
-// renders. A malformed grant is dropped quietly (R26 D7: never fatal) and the
+// renders. A malformed grant is dropped quietly (never fatal) and the
 // URL is still cleaned, so a junk `rt` never lingers either.
 export function applyRouteGrant(route: Route): void {
   if (route.view !== 'room' || route.grant === null) return;

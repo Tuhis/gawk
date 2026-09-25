@@ -1,44 +1,43 @@
-// R15 (docs/20 Decisions 1, 3, 5, 6): the broadcaster's audio lane — audio
-// MediaStreamTrackProcessor → timestamp anchor → AudioEncoder (Opus) → one
-// AudioFrame datagram per packet, with the AudioConfig re-sent at 1 Hz
-// piggybacked on the packet flow (audio has no keyframe to anchor re-emits
-// to). The lane is strictly subordinate to the broadcast: an audio failure
-// tears down the lane only, never the video pipeline.
+// The broadcaster's audio lane — audio MediaStreamTrackProcessor → timestamp
+// anchor → AudioEncoder (Opus) → one AudioFrame datagram per packet, with the
+// AudioConfig re-sent at 1 Hz piggybacked on the packet flow (audio has no
+// keyframe to anchor re-emits to). The lane is strictly subordinate to the
+// broadcast: an audio failure tears down the lane only, never the video
+// pipeline.
 //
 // Split like BroadcastWorkerCore: AudioLaneCore is DOM-free with an
 // injectable encoder factory (unit-tested with fakes); startAudioLane wires
 // the real MediaStreamTrackProcessor + AudioEncoder around it.
 
+import { bufferSourceBytes } from '../lib/bytes';
 import { log } from '../lib/logger';
 import { encodeAudioConfig, encodeAudioFrame, nextFrameId } from '../transport/wire';
 
 // Opus, 48 kHz stereo, 20 ms frames (the WebCodecs defaults), DTX off — a
-// constant packet rate keeps gap detection and the buffer clock trivial
-// (docs/20 Decision 1). Bitrate is a named constant, not a setting, in v1.
+// constant packet rate keeps gap detection and the buffer clock trivial.
+// Bitrate is a named constant, not a setting.
 export const AUDIO_BITRATE_BPS = 128_000;
-// Config re-send cadence (docs/20 Decision 5): lossy-tolerant by repetition.
+// Config re-send cadence: lossy-tolerant by repetition.
 export const AUDIO_CONFIG_RESEND_MS = 1000;
-// Decision 3: if the anchored timestamp drifts more than this from the wall
-// clock, re-anchor and let the viewer buffer absorb the step (expected
-// ~never within a session; cheap insurance).
+// If the anchored timestamp drifts more than this from the wall clock,
+// re-anchor and let the viewer buffer absorb the step (expected ~never within
+// a session; cheap insurance).
 export const AUDIO_ANCHOR_DRIFT_LIMIT_US = 50_000;
 
 // Maps the audio media clock onto the broadcaster's performance.now() µs
-// timeline — the same clock video capture stamps (docs/20 Decision 3). The
-// media clock provides drift-free 20 ms spacing; the anchor pins it to the
-// shared wall clock.
+// timeline — the same clock video capture stamps. The media clock provides
+// drift-free 20 ms spacing; the anchor pins it to the shared wall clock.
 //
-// **Which clock reading pins it is the whole point** (docs/20 field finding
-// 13). `capture.ts` stamps a VideoFrame at MSTP arrival, *before* encode, so
-// audio must be pinned at the same stage — `stamp()` is fed the arrival of an
-// AudioData, and `stamped()` is what the encoder's output callback uses, with
-// no clock of its own. Pinning in the output callback instead (as this did
-// until 2026-07-26) writes the encoder's whole latency — MSTP delivery, Opus
-// algorithmic delay, queueing, and the one-shot `configure()` init — into
-// every audio timestamp for the session, and the viewer then plays audio that
-// far behind its picture. Nothing downstream can see it: these timestamps
-// *are* the reference both media are compared against, so `avSkewMs` reads a
-// clean zero while lip sync is visibly wrong.
+// **Which clock reading pins it is the whole point.** `capture.ts` stamps a
+// VideoFrame at MSTP arrival, *before* encode, so audio must be pinned at the
+// same stage — `stamp()` is fed the arrival of an AudioData, and `stamped()`
+// is what the encoder's output callback uses, with no clock of its own.
+// Pinning in the output callback instead writes the encoder's whole latency —
+// MSTP delivery, Opus algorithmic delay, queueing, and the one-shot
+// `configure()` init — into every audio timestamp for the session, and the
+// viewer then plays audio that far behind its picture. Nothing downstream can
+// see it: these timestamps *are* the reference both media are compared
+// against, so `avSkewMs` reads a clean zero while lip sync is visibly wrong.
 export class AudioTimestampAnchor {
   private anchorUs: number | null = null;
   reanchors = 0;
@@ -159,10 +158,9 @@ export interface AudioLaneStats {
   codec: string;
   bitrateBps: number;
   // How long the encoder took to hand back the packet for an input frame, in
-  // ms (docs/20 field finding 13). This delay used to be *inside* the audio
-  // timestamps and therefore unobservable; now that it is excluded, this is
-  // the number that says how much lip-sync error a regression here would cost.
-  // Null until the first packet is encoded.
+  // ms. The delay is excluded from the audio timestamps, so this is the number
+  // that says how much lip-sync error a regression here would cost. Null until
+  // the first packet is encoded.
   encodeLagMs: number | null;
   // Times the media clock drifted far enough from the wall clock to re-pin the
   // mapping. Each one steps the whole audio timeline against video, so a
@@ -174,7 +172,7 @@ const realAudioEncoderFactory: AudioEncoderFactory = (config, callbacks) => {
   const encoder = new AudioEncoder({
     output: (chunk, meta) => {
       const desc = meta?.decoderConfig?.description;
-      callbacks.output(chunk, desc ? toUint8(desc) : undefined);
+      callbacks.output(chunk, desc ? bufferSourceBytes(desc) : undefined);
     },
     error: (e) => callbacks.error(e instanceof Error ? e : new Error(String(e))),
   });
@@ -187,16 +185,10 @@ const realAudioEncoderFactory: AudioEncoderFactory = (config, callbacks) => {
   };
 };
 
-function toUint8(src: AllowSharedBufferSource): Uint8Array {
-  if (src instanceof ArrayBuffer || src instanceof SharedArrayBuffer) return new Uint8Array(src);
-  const view = src as ArrayBufferView;
-  return new Uint8Array(view.buffer as ArrayBuffer, view.byteOffset, view.byteLength);
-}
 
 // DOM-free lane core. Feed it AudioData-likes; it configures the encoder
-// from the first one (trust the data in hand, never track.getSettings() —
-// the project's capture principle, third medium), stamps encoded packets
-// onto the shared clock, and sends them.
+// from the first one (trust the data in hand, never track.getSettings()),
+// stamps encoded packets onto the shared clock, and sends them.
 export class AudioLaneCore {
   private cb: AudioLaneCallbacks;
   private createEncoder: AudioEncoderFactory;
@@ -244,8 +236,8 @@ export class AudioLaneCore {
       }
     }
     // Pin the shared-clock mapping HERE, at capture arrival — the stage video
-    // is stamped at (docs/20 field finding 13). Before the encoder, so none of
-    // its latency reaches the wire.
+    // is stamped at. Before the encoder, so none of its latency reaches the
+    // wire.
     this.anchor.stamp(data.timestamp, this.now() * 1000);
     this.stats.anchorReanchors = this.anchor.reanchors;
     try {
@@ -284,7 +276,7 @@ export class AudioLaneCore {
   private handleEncoded(chunk: EncodedAudioChunkLike, description?: Uint8Array): void {
     if (this.stopped) return;
     // Opus from WebCodecs normally needs no description; if the encoder
-    // emits one, viewers must get it (docs/20 Decision 5).
+    // emits one, viewers must get it.
     if (description && description.length > 0 && this.stats.sampleRate !== null) {
       this.packetizer.setConfig({
         codec: 'opus',
@@ -298,8 +290,8 @@ export class AudioLaneCore {
     const nowMs = this.now();
     // The mapping was pinned on the input side; this side only applies it, so
     // the encoder's own latency stays out of the timestamp and becomes a
-    // measurement instead (docs/20 field finding 13). The fallback is the old
-    // behavior, for a packet whose input was never observed.
+    // measurement instead. The fallback pins on the output clock, for a packet
+    // whose input was never observed.
     const stampedUs = this.anchor.stamped(chunk.timestamp) ?? this.anchor.stamp(chunk.timestamp, nowMs * 1000);
     this.stats.encodeLagMs = nowMs - stampedUs / 1000;
     let datagrams: Uint8Array<ArrayBuffer>[];
@@ -322,7 +314,7 @@ export class AudioLaneCore {
         this.stats.bytesSent += bytes;
       })
       .catch(() => {
-        // Session dying/resuming — wt.closed owns that story (R17). Audio
+        // Session dying/resuming — wt.closed owns that story. Audio
         // packets are droppable by design; the lane keeps going.
       });
   }

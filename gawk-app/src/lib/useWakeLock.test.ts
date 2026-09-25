@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 //
-// Screen Wake Lock (the macOS idle-dim bug): neither surface plays a media
-// element — the viewer paints decoded VideoFrames onto a canvas, the
-// broadcaster's preview is a muted <video> nobody is watching — so the browser
-// holds no display power-save blocker and the OS dims, then sleeps, the screen
-// mid-stream. These tests pin the two rules the API's shape imposes: the UA
-// drops the lock whenever the document hides and never takes it back, and
-// request() is async, so the surface can go away while one is in flight.
+// Screen Wake Lock: neither surface plays a media element (the viewer paints
+// decoded VideoFrames onto a canvas, the broadcaster's preview is a muted
+// <video> nobody is watching), so the browser holds no display power-save
+// blocker and the OS dims, then sleeps, the screen mid-stream. These tests
+// pin the two rules the API's shape imposes: the UA drops the lock whenever
+// the document hides and never takes it back, and request() is async, so the
+// surface can go away while one is in flight.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { act, cleanup, renderHook } from '@testing-library/react';

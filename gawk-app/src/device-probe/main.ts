@@ -1,18 +1,16 @@
-// R22 device probe (docs/27): a throwaway-but-precise capability harness for the
-// one question the stats overlay cannot answer — WHY the muxed AAC audio track
-// dies on its first append on iOS, leaving native fullscreen silent.
-//
-// It drives the PRODUCTION units (Fmp4Muxer, AacTranscoder, MsePresenter,
-// probeMseAudio) so every verdict transfers straight to the viewer. Nothing here
-// is imported by the app bundle.
+// On-device capability harness for the question the stats overlay cannot
+// answer: WHY the muxed AAC audio track dies on its first append on iOS,
+// leaving native fullscreen silent. It drives the PRODUCTION units
+// (Fmp4Muxer, AacTranscoder, MsePresenter, probeMseAudio) so every verdict
+// transfers straight to the viewer. Nothing here is imported by the app bundle.
 //
 // Sections, in the order a failure would first show up:
-//   A  environment + the R16 device gate
+//   A  environment + the viewer's device gate
 //   B  MediaSource.isTypeSupported matrix (MMS and classic, separately)
 //   C  what this device's AAC encoder ACTUALLY produces (the AudioSpecificConfig)
 //   D  a RAW append of the production init segments, per step, with the error
-//      detail the presenter swallows — plus the same test with the codec string
-//      derived from the encoder's own ASC (the leading hypothesis)
+//      detail the presenter swallows, repeated with the codec string derived
+//      from the encoder's own ASC
 //   E  the production MsePresenter path end to end
 //   F  an audible native-fullscreen test (the ground truth; needs a tap)
 
@@ -23,7 +21,7 @@ import { Fmp4Muxer, aacMime, buildAudioInitSegment, opusMime } from '../transpor
 import { FIXTURE_FRAMES, FIXTURE_FRAME_INTERVAL_US } from '../transport/h264-fixture';
 
 const SAMPLE_RATE = 48_000;
-const OPUS_FRAME_SAMPLES = 960; // 20 ms @ 48 kHz — the R15 lane's packet
+const OPUS_FRAME_SAMPLES = 960; // 20 ms @ 48 kHz, the audio lane's packet
 const VIDEO_CODEC = 'avc1.42E01F'; // the fixture's
 
 const results: Record<string, unknown> = {};
@@ -57,8 +55,9 @@ function probeEnvironment(): void {
   const v = document.createElement('video');
   results.env = {
     userAgent: navigator.userAgent,
-    // R16 Decision 1's gate: its ABSENCE is what routes a device onto the whole
-    // R22 path. If this is true here, the device is not iPhone-shaped.
+    // The viewer's device gate: its ABSENCE is what routes a device onto the
+    // MSE presentation path. If this is true here, the device is not
+    // iPhone-shaped.
     elementFullscreenAvailable: typeof document.documentElement.requestFullscreen === 'function',
     webkitEnterFullscreen: typeof (v as unknown as Record<string, unknown>).webkitEnterFullscreen === 'function',
     ManagedMediaSource: typeof g.ManagedMediaSource,
@@ -115,7 +114,6 @@ function probeTypes(): void {
     ManagedMediaSource: test(g.ManagedMediaSource),
     MediaSource: test(g.MediaSource),
   };
-  // The production verdict, from the production function.
   results.productionProbe = {
     video: probeMsePresentation('avc1.4D4034'),
     audio: probeMseAudio('opus', 2),
@@ -125,8 +123,8 @@ function probeTypes(): void {
 // ---------------------------------------------------------------------------
 // C — what the AAC encoder really produces
 
-// AudioSpecificConfig (ISO 14496-3 §1.6.2.1) — the bytes that go inside `esds`
-// and, on the hypothesis under test, disagree with the hardcoded mp4a.40.2.
+// AudioSpecificConfig (ISO 14496-3 §1.6.2.1): the bytes that go inside `esds`,
+// and the ones that may disagree with the hardcoded mp4a.40.2.
 const ASC_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
   16000, 12000, 11025, 8000, 7350, null, null, null];
 
@@ -296,8 +294,8 @@ function appendAndWait(
   });
 }
 
-// One raw run: both SourceBuffers created up front (docs/27 finding 5), video
-// init, then the audio init built by the production muxer, then media.
+// One raw run: both SourceBuffers created up front, video init, then the audio
+// init built by the production muxer, then media.
 async function rawAppendRun(
   label: string,
   audioCodecString: string,
@@ -416,6 +414,20 @@ async function rawAppendRun(
 // E + F — the production presenter path, left on screen for the audible test
 
 let livePresenter: MsePresenter | null = null;
+// The feed runs until the next "Run probe"; a re-run must stop it, or the old
+// run keeps transcoding and pushing into a presenter the stage no longer shows.
+let liveFeed: ReturnType<typeof setInterval> | null = null;
+let liveTranscoder: AacTranscoder | null = null;
+
+function stopProductionRun(): void {
+  if (liveFeed !== null) clearInterval(liveFeed);
+  liveFeed = null;
+  // After the interval: a push into a closed transcoder reopens its encoder.
+  liveTranscoder?.close();
+  liveTranscoder = null;
+  livePresenter?.dispose();
+  livePresenter = null;
+}
 
 async function productionRun(audioCodecString: string): Promise<void> {
   const video = $('stage') as HTMLVideoElement;
@@ -449,15 +461,15 @@ async function productionRun(audioCodecString: string): Promise<void> {
       timestampUs: BigInt(Math.round(o.timestampUs)), data: o.data,
     })) presenter.pushSegment(seg);
   });
+  liveTranscoder = transcoder;
   // Prime the transcoder before the tier is armed, as production does.
   transcoder.push(pcmFor(0));
   await new Promise((r) => setTimeout(r, 300));
 
   // The fixture looped, with audio interleaved on the same clock. It must keep
-  // running FOREVER, not for a fixed few seconds: the first device pass fed ~4 s,
-  // which had played out by the time the fullscreen tap came — so the native
-  // player showed a frozen last frame and had nothing left to sound. A live
-  // stream is what this is standing in for, so keep it live.
+  // running until the next run, not for a fixed few seconds: a finite feed has
+  // played out by the time the fullscreen tap comes, leaving the native player a
+  // frozen last frame and nothing to sound.
   let frameIndex = 0;
   let audioUs = 0;
   const feedOneSecond = () => {
@@ -479,7 +491,7 @@ async function productionRun(audioCodecString: string): Promise<void> {
   };
   // Prime ~3 s, then keep a second of lead topped up in real time.
   for (let i = 0; i < 3; i++) { feedOneSecond(); await new Promise((r) => setTimeout(r, 40)); }
-  setInterval(feedOneSecond, 1000);
+  liveFeed = setInterval(feedOneSecond, 1000);
   await new Promise((r) => setTimeout(r, 600));
 
   await Promise.race([video.play().catch(() => {}), new Promise((r) => setTimeout(r, 2000))]);
@@ -524,6 +536,7 @@ async function productionRun(audioCodecString: string): Promise<void> {
 
 async function run(): Promise<void> {
   ($('run') as HTMLButtonElement).disabled = true;
+  stopProductionRun();
   summary.length = 0;
   results.capturedAt = new Date().toISOString();
 
@@ -574,10 +587,8 @@ async function run(): Promise<void> {
 
   setStatus('E — production MsePresenter path…');
   // Pick the codec string whose raw run actually got an audio init ACCEPTED.
-  // "No failing steps" is not the same thing and must not be read as success:
-  // on the first device pass the ASC-derived run failed at addSourceBuffer, so
-  // it recorded no audio-init step at all — and the production run then went out
-  // with a codec string iOS had already refused.
+  // "No failing steps" is not the same thing and must not be read as success: a
+  // run that fails at addSourceBuffer records no audio-init step at all.
   const acceptedInit = (r?: { steps?: AppendOutcome[] }) =>
     Boolean(r?.steps?.some((s) => s.step === 'audio init' && s.ok));
   const chosen = acceptedInit(runs.asc_derived) && impl !== AAC_CODEC ? impl : AAC_CODEC;

@@ -1,4 +1,4 @@
-// R8 S6 acceptance: ViewerWorkerCore is unit-testable synchronously with a fake
+// ViewerWorkerCore is unit-testable synchronously with a fake
 // host + fake render sink — no real Worker, OffscreenCanvas, or DOM. Two
 // angles: (1) an injected fake session factory pins the event mapping and the
 // generation guard deterministically; (2) one integration pass with the real
@@ -207,8 +207,8 @@ describe('ViewerWorkerCore mapping (fake session)', () => {
     expect(events).toEqual([{ type: 'connected' }]);
   });
 
-  // R22: the host frame tap rides the session callbacks so the shell's muxer
-  // sees released frames; without a tap the callbacks stay byte-identical.
+  // The host frame tap rides the session callbacks so the shell's muxer sees
+  // released frames; without a tap no fork callback is installed.
   it('threads host.frameTap into the session callbacks as onReleasedFrame', () => {
     const { sink } = fakeSink();
     const tap = vi.fn();
@@ -296,8 +296,8 @@ describe('ViewerWorkerCore integration (real pipeline, mocked I/O)', () => {
     await flush();
 
     {
-      // docs/35 §14: the dial carries a minted ?owner= token; assert the
-      // rest of the URL exactly and the token by shape.
+      // The dial carries a minted ?owner= token; assert the rest of the URL
+      // exactly and the token by shape.
       const [calledUrl] = connectWebTransport.mock.calls[0] as [string, unknown];
       const u = new URL(calledUrl);
       expect(u.searchParams.get('owner')).toMatch(/^[0-9a-f]{16}$/);

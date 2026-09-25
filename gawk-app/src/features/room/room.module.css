@@ -1,4 +1,4 @@
-/* R42 (docs/44 §4.9 revision): the cinematic dock. Video edge to edge in
+/* The cinematic dock. Video edge to edge in
    the viewer's language; a header and a footer overlay that fade after the
    viewer's idle period; an optional people-and-chat panel that pins.
 
@@ -98,7 +98,7 @@
   bottom: calc(var(--chrome-bottom) + 0.25rem);
 }
 
-/* The broadcaster's "preview only" (docs/44 §4.8 revision 2026-09-05): the
+/* The broadcaster's "preview only": the
    own tile alone in the hidden stage mode, full bleed like a focused tile. */
 
 .stage[data-mode='focus'] .tile[data-variant='small'] {
@@ -250,7 +250,7 @@
   padding: 0.1rem 0.4rem;
 }
 
-/* The broadcaster's own glass bar inside their tile (docs/44 §4.9). */
+/* The broadcaster's own glass bar inside their tile. */
 .ownBar {
   position: absolute;
   left: 50%;
@@ -326,7 +326,7 @@
   transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
-/* The chip is the room's share control (revised 2026-09-23). */
+/* The chip is the room's share control. */
 .code:hover {
   border-color: var(--faint);
   color: var(--text);
@@ -562,7 +562,7 @@
   border-radius: 999px;
 }
 
-/* The same pill, but a button: the gated-out state (D8) is actionable —
+/* The same pill, but a button: the gated-out state is actionable —
    clicking it asks for the attach secret. It does not fade with the chrome,
    because it is the only thing saying why a stream is missing. */
 .gatedPill {
@@ -737,7 +737,7 @@
   font-size: 1rem;
 }
 
-/* The reserved speaking indicator (docs/44 §4.11): a fixed-width slot so the
+/* The reserved speaking indicator: a fixed-width slot so the
    roster does not reflow when voice arrives. */
 .speaking {
   width: 8px;
@@ -1037,7 +1037,7 @@
   }
 }
 
-/* The Creator chip beside the room code (revised 2026-09-23), in the room
+/* The Creator chip beside the room code, in the room
    accent the broadcaster's room pill uses, and its help popover. */
 .creatorWrap {
   position: relative;

@@ -47,7 +47,7 @@ import {
   parseTimeSync,
 } from './wire';
 
-// Golden BroadcastAnnounce for ID K7XQ2M (docs/06-multi-broadcaster.md).
+// Golden BroadcastAnnounce for ID K7XQ2M.
 const ANNOUNCE_K7XQ2M = new Uint8Array([0x01, 0x03, 0x06, 0x4b, 0x37, 0x58, 0x51, 0x32, 0x4d]);
 
 interface FakeWT {
@@ -138,10 +138,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// PR #373 review: stop() while start() is still dialing ran teardown() with
-// no session yet, so the dial then resolved into a live publisher nobody owned
-// (a zombie holding the broadcast ID) and went on to consume the screen grant.
-// The auto-resume dial already guarded this race; start() now does too.
+// stop() while start() is still dialing runs teardown() with no session yet,
+// so an unguarded dial resolves into a live publisher nobody owns (a zombie
+// holding the broadcast ID) and goes on to consume the screen grant.
 describe('BroadcastPipeline stop() racing the first dial', () => {
   it('closes the session the dial delivers and never starts capture', async () => {
     const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
@@ -163,8 +162,8 @@ describe('BroadcastPipeline stop() racing the first dial', () => {
   });
 
   // The same race one await later: stop() lands while the pre-capture support
-  // probe runs. teardown() closed the session, but start() still went on to
-  // capture, owning a stream nothing would ever stop.
+  // probe runs. teardown() closed the session, so capturing now would own a
+  // stream nothing ever stops.
   it('does not start capture when stop() lands during the support probe', async () => {
     const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
     connectWebTransport.mockResolvedValue(fake.wt);
@@ -196,6 +195,61 @@ describe('BroadcastPipeline stop() racing the first dial', () => {
     expect(fake.close).toHaveBeenCalled();
     expect(startCapture).not.toHaveBeenCalled();
   });
+
+  it('resolves quietly when the dial fails after stop()', async () => {
+    let rejectDial!: (e: unknown) => void;
+    connectWebTransport.mockReturnValue(new Promise((_, r) => (rejectDial = r)));
+    const cbs = makeCallbacks();
+    const pipeline = makePipeline(cbs, 'K7XQ2M');
+
+    const started = pipeline.start();
+    await pipeline.stop();
+    rejectDial(new Error('Opening handshake failed.'));
+    await expect(started).resolves.toBeUndefined();
+    expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a capture that arrives after stop() while the picker was open', async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
+      connectWebTransport.mockResolvedValue(fake.wt);
+      const source = {
+        capturePath: 'mstp' as const,
+        stream: {} as MediaStream,
+        nativeFps: 60,
+        onEnded: vi.fn(),
+        startFrames: vi.fn(() => Promise.resolve()),
+        stop: vi.fn(),
+      };
+      let grant!: (s: typeof source) => void;
+      const cbs = makeCallbacks();
+      const pipeline = new BroadcastPipeline(
+        { ...DEFAULT_CAPTURE_CONFIG },
+        'https://relay.test:4433',
+        {},
+        cbs,
+        undefined,
+        undefined,
+        () => new Promise((r) => (grant = r)),
+      );
+
+      const started = pipeline.start();
+      await vi.waitFor(() => expect(grant).toBeDefined());
+      await pipeline.stop();
+      grant(source);
+      await expect(started).resolves.toBeUndefined();
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(source.stop).toHaveBeenCalled();
+      expect(source.startFrames).not.toHaveBeenCalled();
+      expect(cbs.onSourceStream).not.toHaveBeenCalled();
+      expect(cbs.onStats).not.toHaveBeenCalled();
+      expect(cbs.onEnded).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('BroadcastPipeline URLs', () => {
@@ -219,7 +273,7 @@ describe('BroadcastPipeline URLs', () => {
     await pipeline.stop();
   });
 
-  // R2: publishing requires the pre-shared secret; it travels as a query
+  // Publishing requires the pre-shared secret; it travels as a query
   // param because the WebTransport JS API cannot set request headers.
   it('appends ?secret= when a publish secret is configured', async () => {
     const fake = makeFakeWT([ANNOUNCE_K7XQ2M]);
@@ -272,9 +326,8 @@ describe('BroadcastPipeline announce handling', () => {
   });
 
   it('does not gate media start on the announce arriving', async () => {
-    // The design locks this: capture/encode begins immediately; only the UI
-    // code display waits for the announce (docs/06, "Announce vs. first
-    // datagrams ordering").
+    // Capture/encode begins immediately; only the UI code display waits for
+    // the announce.
     const fake = makeFakeWT(null); // announce stream never arrives
     connectWebTransport.mockResolvedValue(fake.wt);
     startCapture.mockResolvedValue(makeCaptureHandle());
@@ -317,7 +370,7 @@ describe('BroadcastPipeline start failures', () => {
   });
 });
 
-// R5 Q2 (docs/15): the broadcaster pings the relay for clock sync and, once
+// The broadcaster pings the relay for clock sync and, once
 // an offset sample exists, publishes a ClockMapping so viewers can compute
 // absolute capture→render latency.
 describe('BroadcastPipeline time sync + clock mapping', () => {
@@ -409,7 +462,7 @@ describe('BroadcastPipeline time sync + clock mapping', () => {
   });
 });
 
-// R18 (docs/23 Decision 7): the relay pushes the live viewer count as a
+// The relay pushes the live viewer count as a
 // datagram on the publisher session; the read loop surfaces it in stats
 // without disturbing the TimeSync replies sharing that loop.
 describe('BroadcastPipeline viewer count (R18)', () => {
@@ -463,7 +516,7 @@ describe('BroadcastPipeline viewer count (R18)', () => {
   });
 });
 
-// R11 (docs/16): the media-source seam that lets the broadcast worker inject
+// The media-source seam that lets the broadcast worker inject
 // a transferred-track source in place of main-thread getDisplayMedia capture.
 describe('BroadcastPipeline media-source seam', () => {
   function makeFakeSource() {

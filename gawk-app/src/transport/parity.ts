@@ -1,4 +1,4 @@
-// Forward parity for the datagram delta path (R29, docs/34) — the TypeScript
+// Forward parity for the datagram delta path — the TypeScript
 // mirror of gawk-server/wire/parity.go. Golden vectors keep the two
 // byte-identical; see parity.test.ts.
 //
@@ -11,7 +11,7 @@
 // transmitted chunks reconstruct the frame) from two 256-entry tables.
 //
 // P alone IS the k=1 code. That prefix property is what lets the relay serve
-// every subscriber a prefix of one computation (docs/34 §5.1).
+// every subscriber a prefix of one computation.
 
 import {
   MAX_CHUNK_PAYLOAD,
@@ -51,8 +51,7 @@ export const CAP_PARITY_CHUNKS = 1 << 0;
 
 /**
  * The relay accepts ?stripe=N&leg=j subscribe sessions and StripeState
- * datagrams (R30, docs/35). A viewer that never sees this bit never dials a
- * leg, so a new viewer against an old relay stays byte-identical to pre-R30.
+ * datagrams. A viewer that never sees this bit never dials a leg.
  * Capability growth is new bits in this word, never new bytes — the message
  * is parsed strictly by size on both producer mirrors.
  */

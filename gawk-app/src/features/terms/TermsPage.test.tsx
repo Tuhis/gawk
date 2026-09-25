@@ -28,10 +28,10 @@ describe('TermsPage', () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
-  // R28 (docs/33 D8): always-on collection has to be stated, not merely
-  // permitted by the broad rights Section 6 already reserves. The text must
-  // name both what IS collected and what is NOT — silence about the second
-  // half is what makes a privacy claim unverifiable.
+  // Always-on collection has to be stated, not merely permitted by the broad
+  // rights Section 6 already reserves. The text must name both what IS
+  // collected and what is NOT: silence about the second half is what makes a
+  // privacy claim unverifiable.
   it('states the telemetry practice, including what is not collected', () => {
     render(<TermsPage />);
     expect(screen.getByText(/technical performance measurements/i)).toBeTruthy();

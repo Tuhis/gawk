@@ -3,18 +3,12 @@ import { log } from './logger';
 
 // Screen Wake Lock — keeps the display awake while a stream is running.
 //
-// Why gawk needs it explicitly: browsers hold a display power-save blocker
-// only while an HTMLMediaElement is *playing video*. Neither of our surfaces
-// is one. The viewer decodes with WebCodecs and paints VideoFrames onto a
-// canvas (R8/R10 render sinks — the only <video> in the viewer is the R22 MSE
-// presentation element, which exists on iPhone alone); the broadcaster's
-// preview is a muted local <video> that the OS has no reason to treat as
-// consumption. So the page looks idle, and the OS runs its normal idle timer:
-// on macOS the display dims a couple of minutes in and then sleeps, mid-stream.
-// navigator.wakeLock is the standard opt-out for exactly this case (canvas and
-// WebGL players are the API's motivating example).
+// Browsers hold a display power-save blocker only while an HTMLMediaElement is
+// playing video. The viewer paints WebCodecs frames onto a canvas and the
+// broadcaster's preview is a muted local <video>, so the page looks idle and
+// the OS dims, then sleeps, the display mid-stream.
 //
-// Two rules the API's shape imposes, both covered by useWakeLock.test.ts:
+// Two rules the API's shape imposes:
 //
 //  1. The UA **auto-releases the sentinel whenever the document becomes
 //     hidden** and never re-acquires it. Without the visibilitychange
@@ -30,9 +24,6 @@ import { log } from './logger';
 // again), and a UA that drops the lock for its own reasons is a battery
 // decision we should not fight — the next visibility flip re-asks anyway.
 //
-// Support: Chrome 84+, Safari 16.4+, Firefox 126+. Secure-context only, which
-// WebTransport already requires of every gawk surface.
-
 // Structural, not the lib.dom types: we depend on exactly the two members we
 // call, so the hook compiles the same whether or not the TS DOM lib in use
 // declares WakeLock.

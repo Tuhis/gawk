@@ -1,28 +1,28 @@
-// R24 (docs/30): the broadcaster capture & audio guidance model — the single
-// home for the *decisions* (which words, which note, which browser) and the
-// copy, so the React surfaces stay dumb renderers and the branch logic is
-// unit-tested without a DOM.
+// The broadcaster capture & audio guidance model — the single home for the
+// *decisions* (which words, which note, which browser) and the copy, so the
+// React surfaces stay dumb renderers and the branch logic is unit-tested
+// without a DOM.
 //
-// The cross-browser fact this whole item exists for: audio is Chromium-only in
-// practice (Firefox has neither AudioEncoder nor MediaStreamTrackProcessor and
+// The cross-browser fact behind it: audio is Chromium-only in practice (Firefox has neither AudioEncoder nor MediaStreamTrackProcessor and
 // no system-audio source). We decide that by feature detection — never UA
 // sniffing — reusing the pipeline's own predicate, and we gate on the
 // *capability*, never on the `audioState` string (which cannot tell "Firefox,
 // can't do audio" from "Chromium, box unticked" — both are 'no-track').
 
+import { readStored, writeStored } from '../../lib/storage';
 import { audioLaneSupported } from '../../media/audio-lane';
 import type { BroadcastStats } from '../../transport/broadcaster';
 
-// Re-export so the UI has one import site and one source of truth (CODE-REVIEW
-// one-definition rule): capability answered here, not re-derived per surface.
+// Re-export so the UI has one import site and one source of truth: capability
+// answered here, not re-derived per surface.
 export { audioLaneSupported };
 
-// One home for the union — imported, never re-declared (CODE-REVIEW).
+// One home for the union — imported, never re-declared.
 type AudioState = BroadcastStats['audioState'];
 
 export type AudioGuidance = 'chromium' | 'unsupported';
 
-// ── Copy (the deliverable) ────────────────────────────────────────────────
+// ── Copy ──────────────────────────────────────────────────────────────────
 // All guidance strings live here as named constants; every surface imports
 // them, so nothing inlines a second copy. Curly quotes match the surrounding
 // production UI.
@@ -33,7 +33,7 @@ export const WHOLE_SCREEN_TIP =
   'one app and keep the rest private.';
 
 // A tip line that may name the native apps. Whenever it does, the name is a
-// link to the download page (R46), so the copy carries the split rather than
+// link to the download page, so the copy carries the split rather than
 // the JSX: one home for the words, surfaces stay dumb renderers.
 export type TipCopy = { before: string; link?: string; after?: string };
 
@@ -128,33 +128,21 @@ export function audioReactiveNote(
 // browser-tab share is the reliable audio path — neither is warned. undefined
 // (a browser that doesn't populate displaySurface, or a teardown race) is "no
 // hint", always safe. displaySurface is an advisory *category* here, never
-// pipeline config, so the docs/01 "trust the frame" rule doesn't apply.
+// pipeline config, so the "trust the frame, not the settings" rule doesn't
+// apply.
 export function captureSurfaceNote(displaySurface: string | undefined): { text: string } | null {
   return displaySurface === 'window' ? { text: WINDOW_NOTE } : null;
 }
 
-// ── Dismissal memory (localStorage, gawk:* convention) ─────────────────────
-// Persisting the dismissal is a conscious trade (docs/30 decisions 3–4): it
-// serves "don't nag experienced users" at the cost of not re-warning a
-// forgetful repeat mistake. The two keys are distinct so the two notes dismiss
-// independently. All access is try/catch-guarded — a private-mode / disabled
-// storage must never throw on the broadcast path (terms/acceptance.ts idiom).
-
+// Dismissals persist, so the two notes dismiss independently and an
+// experienced user is not nagged again.
 export const HINT_AUDIO_MISSING_KEY = 'gawk:hint-audio-missing';
 export const HINT_WINDOW_SHARE_KEY = 'gawk:hint-window-share';
 
 export function isHintDismissed(key: string): boolean {
-  try {
-    return localStorage.getItem(key) === '1';
-  } catch {
-    return false; // storage unavailable: show the hint rather than throw
-  }
+  return readStored(key) === '1';
 }
 
 export function dismissHint(key: string): void {
-  try {
-    localStorage.setItem(key, '1');
-  } catch {
-    // Nothing to persist to; the hint may re-show next time, never a throw.
-  }
+  writeStored(key, '1');
 }

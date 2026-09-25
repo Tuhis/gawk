@@ -1,13 +1,12 @@
 // @vitest-environment jsdom
 //
-// R13 codec-pin annotations (docs/18 Decision 9 extended to the codec list):
-// each codec option is badged from its own single-codec matrix — hardware
-// unmarked, ' · software' badge, ' · unsupported' disabled — and the
-// annotation answers "what would pinning this codec get at the current
-// resolution/fps selections".
+// Codec-pin annotations: each codec option is badged from its own
+// single-codec matrix (hardware unmarked, ' · software' badge,
+// ' · unsupported' disabled), and the annotation answers "what would pinning
+// this codec get at the current resolution/fps selections".
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 import { EncoderSettingsPanel } from './EncoderSettingsPanel';
 import type { ResolutionRung } from '../../media/ladder';
@@ -60,6 +59,7 @@ beforeEach(() => {
   s.setFramerateSelection('auto');
   s.setHwPreference('auto');
   s.setCodecOverride(null);
+  s.setBitrateOverride(null);
 });
 
 afterEach(cleanup);
@@ -85,5 +85,63 @@ describe('EncoderSettingsPanel codec annotations', () => {
     render(<EncoderSettingsPanel codecMatrices={makeCodecMatrices()} />);
     // At the 480 rung even H.264 is software in this fake.
     expect(option('H.264 · avc1.4D4034 · software')).toBeDefined();
+  });
+});
+
+// The field must not commit every keystroke: a leading "0" would parse as
+// "auto" and clear the field (0.5–0.9 Mbps only reachable as ".5"), and each
+// intermediate value would recreate the live encoder (typing "25" briefly
+// applies 2 Mbps).
+describe('EncoderSettingsPanel bitrate override', () => {
+  function bitrateInput(): HTMLInputElement {
+    return screen.getByLabelText(/Bitrate/) as HTMLInputElement;
+  }
+
+  it('keeps a leading 0 while typing and commits the sub-1 Mbps value on blur', () => {
+    const onChange = vi.fn();
+    render(<EncoderSettingsPanel onChange={onChange} />);
+
+    fireEvent.change(bitrateInput(), { target: { value: '0' } });
+    expect(bitrateInput().value).toBe('0');
+    fireEvent.change(bitrateInput(), { target: { value: '0.7' } });
+    expect(bitrateInput().value).toBe('0.7');
+    expect(useBroadcastSettingsStore.getState().bitrateOverride).toBeNull();
+
+    fireEvent.blur(bitrateInput());
+    expect(useBroadcastSettingsStore.getState().bitrateOverride).toBe(700_000);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ bitrateOverride: 700_000 }));
+  });
+
+  it('applies only the finished value, not each keystroke', () => {
+    const onChange = vi.fn();
+    render(<EncoderSettingsPanel onChange={onChange} />);
+
+    fireEvent.change(bitrateInput(), { target: { value: '2' } });
+    fireEvent.change(bitrateInput(), { target: { value: '25' } });
+    expect(onChange).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(bitrateInput(), { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ bitrateOverride: 25e6 }));
+  });
+
+  it('treats an empty or non-positive committed value as auto', () => {
+    useBroadcastSettingsStore.getState().setBitrateOverride(8e6);
+    const onChange = vi.fn();
+    render(<EncoderSettingsPanel onChange={onChange} />);
+    expect(bitrateInput().value).toBe('8');
+
+    fireEvent.change(bitrateInput(), { target: { value: '' } });
+    fireEvent.blur(bitrateInput());
+    expect(useBroadcastSettingsStore.getState().bitrateOverride).toBeNull();
+    expect(bitrateInput().value).toBe('');
+
+    act(() => useBroadcastSettingsStore.getState().setBitrateOverride(8e6));
+    expect(bitrateInput().value).toBe('8');
+    fireEvent.change(bitrateInput(), { target: { value: '0' } });
+    fireEvent.keyDown(bitrateInput(), { key: 'Enter' });
+    expect(useBroadcastSettingsStore.getState().bitrateOverride).toBeNull();
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ bitrateOverride: null }));
   });
 });

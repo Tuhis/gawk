@@ -1,5 +1,4 @@
-// A/V sync — "good-enough", **video-master** (docs/20 Decision 10, revised
-// 2026-07-20; the original made audio the master in paced modes).
+// A/V sync — "good-enough", **video-master** (docs/20-system-audio.md).
 //
 // Video is the master clock and is never rescheduled for audio's sake. Audio
 // is the medium with slack to give: one Opus packet per datagram, no
@@ -8,24 +7,22 @@
 // playout offset. So audio waits for video, not the reverse.
 //
 // 1. Skew is measured ALWAYS: avSkewMs = (video timestamp presented) −
-//    (audio timestamp **at the listener**), both on the broadcaster's clock
-//    (Decision 3), so the metric is a subtraction and not a negotiation.
-//    Positive = audio behind video.
+//    (audio timestamp **at the listener**), both on the broadcaster's clock,
+//    so the metric is a subtraction and not a negotiation. Positive = audio
+//    behind video.
 //
-//    "At the listener" is load-bearing, not pedantry (docs/20 field finding
-//    13). The worklet's playhead is the sample it is *writing* into the output
-//    buffer, which the device plays `outputLatency` later; measuring there
-//    makes a perfectly synced stream read −outputLatency, and step 3's trim
-//    then dutifully drives that to zero — i.e. walks audio `outputLatency`
-//    late and calls it success. The sink converts to the heard position
-//    before reporting, because it is the only context that owns the
-//    AudioContext; everything here is in listener terms.
+//    "At the listener" is load-bearing. The worklet's playhead is the sample
+//    it is *writing* into the output buffer, which the device plays
+//    `outputLatency` later; measuring there makes a perfectly synced stream
+//    read −outputLatency, and step 3's trim then drives that to zero —
+//    walking audio `outputLatency` late and calling it success. The sink
+//    converts to the heard position before reporting, because it is the only
+//    context that owns the AudioContext; everything here is in listener terms.
 // 2. Alignment is set ONCE, at the start of playback: audio-buffer.ts holds
-//    the first chunk until the video presentation schedule says it is due
-//    (docs/20 field finding 4). After that the worklet consumes exactly
-//    sampleRate samples per second at 1×, so *no amount of buffering can
-//    change when a given sample is heard* — holding chunks longer only
-//    changes queue depth. Alignment is a start-time decision.
+//    the first chunk until the video presentation schedule says it is due.
+//    After that the worklet consumes exactly sampleRate samples per second at
+//    1×, so *no amount of buffering can change when a given sample is heard*
+//    — holding chunks longer only changes queue depth.
 // 3. Which leaves drift (clock + soundcard, tens of ppm ≈ 100 ms/hour) to a
 //    slow playback-rate trim: AudioRateController below turns measured skew
 //    into a sub-audible rate, never a step, never a skip.
@@ -33,22 +30,19 @@
 // Module state, like playout.ts: the pipeline reads it live, and the main
 // thread pushes playhead reports in (the sink owns an AudioContext, which
 // cannot exist in a worker). Cross-context clocks are handled by carrying
-// absolute epoch ms and rebasing here — the same discipline viewer.ts uses
-// for the nested transport worker's TimeSync samples.
+// absolute epoch ms and rebasing here.
 
 import { timeOriginMs } from './time-sync';
 
 // A playhead report older than this is not a clock: audio stalled, the tab
-// slept, or the sink died. Video falls back to the arrival baseline.
+// slept, or the sink died.
 //
-// It also bounds how far the mapping may be **extrapolated**, which is the
-// part that had to shrink (docs/20 field finding 12). The worklet reports at
-// 4 Hz; past a couple of intervals its position is not known, and at 1500 ms
-// the module would invent up to 1.5 s of skew out of an assumption — on a
-// congested main thread, which is exactly the "stressed session" the field
-// report came from. Three report intervals leaves room for ordinary scheduling
-// jitter and calls anything beyond it unknown, which is a better answer than a
-// guess with no error bar.
+// It also bounds how far the mapping may be **extrapolated**. The worklet
+// reports at 4 Hz; past a couple of intervals its position is not known, and
+// a longer bound would invent that much skew out of an assumption — typically
+// on a congested main thread. Three report intervals leaves room for ordinary
+// scheduling jitter and calls anything beyond it unknown, which is a better
+// answer than a guess with no error bar.
 const PLAYHEAD_STALE_MS = 750;
 // How long the advance ratio looks back. Long enough to span several 4 Hz
 // reports (so one dry quantum does not read as a stall), short enough to track
@@ -62,9 +56,8 @@ const PLAYHEAD_ADVANCE_MIN_SPAN_MS = 500;
 // and fed to the drift trim — so when presentation stalls (a hidden tab, an
 // occluded window, worker rAF throttled) while audio keeps playing, the trim
 // would integrate a frozen number open-loop, adding real, permanent delay
-// nothing is measuring (docs/20 field finding 13). Comfortably above one
-// stats tick (~500 ms) and any single dropped frame, well below the point
-// where the error would matter.
+// nothing is measuring. Comfortably above one stats tick (~500 ms) and any
+// single dropped frame, well below the point where the error would matter.
 const PRESENTATION_STALE_MS = 1000;
 
 export interface PlayheadReport {
@@ -104,22 +97,19 @@ function toLocalMs(epochMs: number): number {
 // Feeds one ~4 Hz report from the audio sink. Cheap and allocation-free —
 // this runs on the same channel as the stats flow, in reverse.
 //
-// The report is **ground truth**, so it becomes the anchor as it stands
-// (docs/20 field finding 12). It used to be low-passed toward the mapping's
-// own prediction at 20 ms/s, with a snap above 250 ms added by finding 9 — but
-// smoothing an exact measurement can only add error, and the error it added
-// was one-directional for as long as the playhead kept moving faster than the
-// cap: a buffer skipping holes, a re-prime jumping to live. That left a
-// standing over-report (~33 ms in the skip pattern the regression test drives)
-// that no consumer could see or bound, on top of the finding-9 case the snap
-// had already patched around. Between reports the worklet drains at exactly
-// 1×, so extrapolation over one report interval is worth ~1 ms; past
+// The report is **ground truth**, so it becomes the anchor as it stands.
+// Don't low-pass it toward the mapping's own prediction: smoothing an exact
+// measurement can only add error, and that error is one-directional for as
+// long as the playhead moves faster than the smoothing cap (a buffer skipping
+// holes, a re-prime jumping to live) — a standing over-report no consumer can
+// see or bound. Between reports the worklet drains at exactly 1×, so
+// extrapolation over one report interval is worth ~1 ms; past
 // PLAYHEAD_STALE_MS it is worth nothing and the clock reads unavailable.
 export function notePlayhead(report: PlayheadReport, nowMs: number = performance.now()): void {
   const localMs = toLocalMs(report.atEpochMs);
   lastReportLocalMs = nowMs;
   if (report.heardUs === null) {
-    // Audio exists but nothing has played yet: no clock to be master of.
+    // Audio exists but nothing has played yet: no clock to measure against.
     mapping = null;
     advanceTrail.length = 0;
     advanceRatio = null;
@@ -130,14 +120,13 @@ export function notePlayhead(report: PlayheadReport, nowMs: number = performance
 }
 
 // Tracks how fast the audio *timeline* is moving against the wall clock, which
-// is what separates the two things `avSkewMs` has always conflated (docs/20
-// field finding 12): a ratio at ~1 means the audio is playing normally and any
-// skew is a genuine lip-sync offset; a ratio below 1 means the worklet is
-// starving and the skew is accumulating starvation debt at exactly
-// (1 − ratio) per second — the 0.934 that produced the field capture's 1986 ms
-// over 30 s. Deliberately reported rather than used to suppress the skew: when
-// audio really has fallen behind, that reading is true and hiding it would be
-// the same mistake in the other direction.
+// is what separates the two things `avSkewMs` conflates: a ratio at ~1 means
+// the audio is playing normally and any skew is a genuine lip-sync offset; a
+// ratio below 1 means the worklet is starving and the skew is accumulating
+// starvation debt at exactly (1 − ratio) per second. Deliberately reported
+// rather than used to suppress the skew: when audio really has fallen behind,
+// that reading is true and hiding it would be the same mistake in the other
+// direction.
 function noteAdvance(localMs: number, heardUs: number): void {
   advanceTrail.push({ localMs, heardUs });
   // Keep the oldest sample that is still at least a window old, so the span
@@ -162,8 +151,8 @@ export function getPlayheadAdvanceRatio(): number | null {
   return advanceRatio;
 }
 
-// The audio clock is only a master while it is fresh. Everything else falls
-// back to the arrival baseline — exactly today's behavior.
+// The audio clock is only usable while its last report is fresh; without it
+// no skew is measured.
 export function audioClockAvailable(nowMs: number = performance.now()): boolean {
   return (
     mapping !== null && lastReportLocalMs !== null && nowMs - lastReportLocalMs <= PLAYHEAD_STALE_MS
@@ -191,14 +180,14 @@ export function observeVideoPresented(
 
 // The last measured skew, or null once it is too old to be one. The staleness
 // bound matters because the consumer is the drift trim: a frozen reading is
-// not a small error, it is an open loop (docs/20 field finding 13).
+// not a small error, it is an open loop.
 export function getAvSkewMs(nowMs: number = performance.now()): number | null {
   if (lastSkewAtMs === null) return null;
   return nowMs - lastSkewAtMs > PRESENTATION_STALE_MS ? null : lastSkewMs;
 }
 
 // Broadcaster restart / reconnect / audio flush: the old anchor belongs to a
-// dead timeline (docs/20 Decision 8).
+// dead timeline.
 export function resetAvSync(): void {
   mapping = null;
   lastReportLocalMs = null;
@@ -208,7 +197,7 @@ export function resetAvSync(): void {
   advanceRatio = null;
 }
 
-// ── Drift trim (docs/20 Decision 10 revised) ──────────────────────────────
+// ── Drift trim ─────────────────────────────────────────────────────────────
 //
 // Alignment is fixed at playback start, so the only lever left is playback
 // *rate*. Clock and soundcard crystals differ by tens of ppm, which is ~100 ms

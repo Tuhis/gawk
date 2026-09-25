@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// Viewer status → overlay mapping (docs/10 J3). ViewerSession is mocked so the
+// Viewer status → overlay mapping. ViewerSession is mocked so the
 // test can drive its callbacks and assert the cinematic state each produces.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,7 +14,7 @@ const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
     onStats: (s: unknown) => void;
     onError: (e: Error) => void;
     onEnded: (reason: 'normal' | 'moderated') => void;
-    // R15: the audio crossing (optional — a session consumer without audio
+    // The audio crossing (optional — a session consumer without audio
     // never sets them).
     onAudioChunk?: (chunk: {
       timestampUs: number;
@@ -23,7 +23,7 @@ const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
       frameCount: number;
     }) => void;
     onAudioReset?: () => void;
-    // R28: wire 0x0D, the session identity the overlay names.
+    // The session identity (wire 0x0D) the overlay names.
     onTelemetryHello?: (hello: {
       enabled: boolean;
       reportIntervalMs: number;
@@ -36,12 +36,12 @@ const { sessions, sessionState, FakeViewerSession } = vi.hoisted(() => {
   const sessionState = { failStartWith: null as Error | null };
   class FakeViewerSession {
     cbs: Cbs;
-    // R19: the connect options carry the delivery negotiation
+    // The connect options carry the delivery negotiation
     // (`deliveryMode: 'reliable'` ⇔ resilient mode) — recorded so a toggle
     // can be asserted at the seam that actually reaches the relay.
     opts: unknown;
-    // The relay address this session was started against — the seam where the
-    // dev server-URL override has to land.
+    // The relay address this session was started against — the seam where a
+    // server-picker selection has to land.
     url: string;
     constructor(url: string, _id: string, opts: unknown, cbs: Cbs) {
       this.cbs = cbs;
@@ -66,8 +66,8 @@ vi.mock('../../transport/viewer-session', () => ({
 }));
 
 // isDevEnvironment() is unconditionally true under vitest
-// (import.meta.env.DEV), so a real viewer's behaviour — the relay-override
-// entry's absence, and the production menu's row ceiling — is only assertable
+// (import.meta.env.DEV), so a real viewer's behaviour — the cert-hash
+// field's absence, and the production menu's row ceiling — is only assertable
 // through a seam. Everything else in config.ts stays real: playout.ts reads
 // getDvrBufferMs() from this same module.
 const devEnv = vi.hoisted(() => ({ value: true }));
@@ -79,10 +79,9 @@ vi.mock('../../config', async (importActual) => ({
 import { ViewerScreen } from './ViewerScreen';
 import { useTransportStore } from '../../state/transportStore';
 
-// ── R32 shared surface helpers ───────────────────────────────────────────────
-// The tuning controls moved from one flat menu to a pill + a settings panel,
-// so every test that used to click a menu row now walks one of these two
-// paths. Selectors changed; the behaviour each test asserts did not.
+// ── Shared surface helpers ───────────────────────────────────────────────────
+// The tuning controls live in a pill + a settings panel; these walk the two
+// paths to them.
 
 /** The two-tap path an average viewer takes to the playback presets. */
 const openPresetMenu = () => fireEvent.click(screen.getByLabelText(/^Playback quality:/));
@@ -93,7 +92,7 @@ const openSettings = () => {
   fireEvent.click(screen.getByText('More settings…'));
 };
 
-/** Expand the panel's Advanced disclosure — collapsed by default (UX3.2). */
+/** Expand the panel's Advanced disclosure — collapsed by default. */
 const openAdvanced = () => fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
 
 const interpolationBox = () =>
@@ -135,7 +134,7 @@ describe('ViewerScreen states', () => {
     expect(screen.getByText('The stream is over.')).toBeTruthy();
   });
 
-  // R39 (docs/42 D6, §4.4): a moderator kill (close code 4006) must NOT read
+  // A moderator kill (close code 4006) must NOT read
   // as an ordinary ending — telling viewers what happened is the entire reason
   // 4006 was allocated instead of reusing 4000.
   it('shows a distinct end card when a moderator ended the broadcast', async () => {
@@ -148,8 +147,8 @@ describe('ViewerScreen states', () => {
   });
 
   // Error-card copy is keyed on the structured kind, never the raw transport
-  // message — that goes to the console only (users found "handshake failed"
-  // and friends meaningless).
+  // message — that goes to the console only ("handshake failed" and friends
+  // mean nothing to a viewer).
 
   it('shows the streamer-offline card when the first connect fails', async () => {
     sessionState.failStartWith = new Error('WebTransportError: Opening handshake failed.');
@@ -171,7 +170,7 @@ describe('ViewerScreen states', () => {
     expect(screen.getByText('Retry')).toBeTruthy();
   });
 
-  // R18 (docs/23 Decision 8): the live audience badge beside the status. The
+  // The live audience badge beside the status. The
   // wire carries the honest total, so a lone viewer reads "1 watching".
   it('renders the watching badge from the pushed viewer count', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
@@ -200,22 +199,17 @@ describe('ViewerScreen states', () => {
   });
 });
 
-// R5 Q3 + R12 T2, revised by docs/17 Decision 10 (2026-07-23): the production
-// viewer has ONE playout toggle — "Paced playback" (the R12 adaptive
-// paced-presentation mode) — persisted as one mode and applied to the
-// (main-thread, in these tests) pipeline context. R32 removed the retired
-// fixed 150 ms mode outright, so pacing is now purely a property of the chosen
-// preset. Since the default flip (user decision 2026-07-15), a fresh browser
-// defaults to adaptive + interpolation.
+// The production viewer has ONE pacing control — paced playback (the adaptive
+// mode) — persisted as one mode and applied to the (main-thread, in these
+// tests) pipeline context. Pacing is purely a property of the chosen preset,
+// and a fresh browser defaults to adaptive + interpolation.
 describe('ViewerScreen playout modes', () => {
   function cleanupPlayout() {
     setPlayoutMode('off');
     devEnv.value = true;
-    // All five R32 keys, not just the playout ones: the preset is derived from
-    // every one of them (docs/37 decision 1), so a delivery value left behind
-    // by an earlier test now changes what this one renders. The leakage
-    // predates R32 — the R19 migration test used to clear `viewer-delivery` by
-    // hand — but a derived pill makes it bite everywhere instead of once.
+    // All five preset keys, not just the playout ones: the preset is derived
+    // from every one of them, so a delivery value left behind by an earlier
+    // test changes what this one renders.
     localStorage.removeItem('gawk:playout-mode');
     localStorage.removeItem('gawk:smoothed-playout');
     localStorage.removeItem('gawk:interpolation');
@@ -229,10 +223,10 @@ describe('ViewerScreen playout modes', () => {
   const openMenu = () =>
     fireEvent.contextMenu(screen.getByText('connecting').closest('div')!.parentElement!);
 
-  // R32 UX4: pacing is now a property of the preset, reached from the
-  // control-bar pill. `openPresets` is the two-tap path an average viewer
-  // takes; `checkedPreset` reads the state off ARIA rather than off a '✓'
-  // glued into the label (UX1.2).
+  // Pacing is a property of the preset, reached from the control-bar pill.
+  // `openPresets` is the two-tap path an average viewer takes;
+  // `checkedPreset` reads the state off ARIA rather than off a '✓' glued into
+  // the label.
   const openPresets = () => fireEvent.click(screen.getByLabelText(/^Playback quality:/));
   const pickPreset = (label: string) =>
     fireEvent.click(screen.getByRole('menuitemradio', { name: label }));
@@ -252,18 +246,15 @@ describe('ViewerScreen playout modes', () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     expect(getPlayoutMode()).toBe('adaptive');
-    // The default state IS a preset — "Balanced" is defined to be today's
-    // shipping configuration, so R32 changes no behaviour on a fresh install.
+    // The default state IS a preset: "Balanced" is the shipping configuration.
     expect(screen.getByLabelText('Playback quality: Balanced')).toBeTruthy();
     openPresets();
     expect(checkedPreset()).toBe('Balanced');
     cleanupPlayout();
   });
 
-  // docs/17 Decision 10 retired the fixed 150 ms mode from the production
-  // menu; R32 removed it outright (owner decision 2026-07-29), so there is no
-  // build in which a pacing row exists in the menu at all. Pacing is a
-  // property of the preset and nothing else.
+  // There is no build in which a pacing row exists in the menu at all: pacing
+  // is a property of the preset and nothing else.
   it('offers no fixed-playout entry in any build', async () => {
     cleanupPlayout();
     render(<ViewerScreen broadcastId="AB2CD3" />);
@@ -273,7 +264,7 @@ describe('ViewerScreen playout modes', () => {
     expect(screen.queryByText(/Smooth playback/)).toBeNull();
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
 
-    // The pacing binary is now the step between the two live-edge presets.
+    // The pacing binary is the step between the two live-edge presets.
     openPresets();
     pickPreset('Lowest latency');
     expect(getPlayoutMode()).toBe('off');
@@ -284,10 +275,9 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 
-  // A viewer carrying 'fixed' — from before docs/17 Decision 10 retired it, or
-  // from a dev build that could still select it until R32 — lands on adaptive,
-  // the mode fixed was a worse approximation of. Unconditional now: there is no
-  // build left that can honour the stored value.
+  // A viewer carrying a stored 'fixed' (a removed mode) lands on adaptive, the
+  // mode fixed was a worse approximation of — in every build, since none can
+  // honour the stored value.
   it('migrates a stored fixed mode to adaptive in every build', async () => {
     cleanupPlayout();
     localStorage.setItem('gawk:playout-mode', 'fixed');
@@ -316,9 +306,8 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 
-  // docs/17 Decision 10 re-pointed the legacy hop: an R5 viewer who opted into
-  // "Smooth playback" was asking for smoothing, and adaptive is the mode that
-  // now delivers it. (It also lands them where the menu has a control.)
+  // A viewer who opted into the legacy "Smooth playback" was asking for
+  // smoothing, and adaptive is the mode that delivers it.
   it('migrates the legacy smoothed-playout preference: on → adaptive, explicit off → off', async () => {
     cleanupPlayout();
     localStorage.setItem('gawk:smoothed-playout', '1');
@@ -328,7 +317,7 @@ describe('ViewerScreen playout modes', () => {
     cleanup();
 
     // A viewer who explicitly turned the old smoothing off chose live-edge;
-    // the default flip must not overrule them.
+    // the adaptive default must not overrule them.
     cleanupPlayout();
     localStorage.setItem('gawk:smoothed-playout', '0');
     render(<ViewerScreen broadcastId="AB2CD3" />);
@@ -337,10 +326,10 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 
-  // R12 T4 + default flip: interpolation defaults ON and the surface is the
-  // disable path. R32 UX5.3 changes *when* it renders: it is present from the
-  // first paint, disabled with a reason, rather than materialising a row a
-  // second into the session when the first stats sample lands.
+  // Interpolation defaults ON and the surface is the disable path. It is
+  // present from the first paint, disabled with a reason, rather than
+  // materialising a row a second into the session when the first stats
+  // sample lands.
   it('interpolation defaults on and toggles off through the settings panel', async () => {
     cleanupPlayout();
     render(<ViewerScreen broadcastId="AB2CD3" />);
@@ -381,10 +370,10 @@ describe('ViewerScreen playout modes', () => {
     cleanupPlayout();
   });
 
-  // Review finding LIFECYCLE-2 (docs/reviews/resilient-mode-review.md): the
-  // entry was gated on the *stored* mode, but resilient mode overrides the
-  // *effective* one to adaptive — so a resilient viewer whose stored playout
-  // is 'off' had interpolation running with no way to turn it off.
+  // Resilient mode overrides the *effective* playout mode to adaptive, so a
+  // resilient viewer whose stored playout is 'off' has interpolation running
+  // and must still be able to turn it off; gating the control on the *stored*
+  // mode would hide it.
   it('offers interpolation under resilient mode even when the stored mode is not adaptive', async () => {
     cleanupPlayout();
     localStorage.removeItem('gawk:resilient-mode');
@@ -416,9 +405,9 @@ describe('ViewerScreen playout modes', () => {
   });
 
   // The other half of "effective mode": with a carrier delivery mode off and
-  // the stored mode not adaptive, nothing is interpolating. R32 UX5.1 keeps
-  // the control *present* and says why, instead of removing it — a row that
-  // vanishes teaches nothing.
+  // the stored mode not adaptive, nothing is interpolating. The control stays
+  // *present* and says why, instead of being removed — a row that vanishes
+  // teaches nothing.
   it('disables interpolation with a reason when the effective mode is not adaptive', async () => {
     cleanupPlayout();
     localStorage.setItem('gawk:playout-mode', 'off');
@@ -434,11 +423,8 @@ describe('ViewerScreen playout modes', () => {
   });
 });
 
-// Review finding PRODUCT-2 (docs/reviews/resilient-mode-review.md): every
-// menu-only setting — above all R19's "Resilient mode (mobile networks)",
-// which exists *for* phones — was reachable through a right-click alone, an
-// affordance touch devices do not have. The control bar carries a visible
-// overflow button that opens the same menu.
+// A right-click is an affordance touch devices do not have, so the control
+// bar carries a visible overflow button that opens the same menu.
 describe('ViewerScreen menu button (touch reachability)', () => {
   function clearPrefs() {
     // Every key the preset derives from — see cleanupPlayout above.
@@ -472,12 +458,10 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(screen.getByText('Playback settings…')).toBeTruthy();
   });
 
-  // R32 UX4.4/UX4.5: the menu is actions-only. This is the assertion that
-  // stops the next milestone quietly appending its knob here — which is
-  // exactly how it reached seventeen rows, eleven of them tuning (docs/37 §1).
+  // The menu is actions-only. This is the assertion that stops a new tuning
+  // knob from quietly being appended here.
   it('carries no tuning rows and stays short', async () => {
-    // A production build: the dev-only relay override is what a real viewer
-    // never sees, and the ceiling that matters is theirs.
+    // A production build: the ceiling that matters is a real viewer's.
     devEnv.value = false;
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
@@ -498,8 +482,7 @@ describe('ViewerScreen menu button (touch reachability)', () => {
       expect(screen.queryByText(pattern)).toBeNull();
     }
     // Stats, Fullscreen, Playback settings…, Copy link, Terms of use, Leave —
-    // plus Mute on a stream that carries audio. Seven, against the seventeen
-    // this menu had grown to (docs/37 §1).
+    // plus Mute on a stream that carries audio.
     expect(rows.length).toBeLessThanOrEqual(7);
     devEnv.value = true;
   });
@@ -516,9 +499,8 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
-  // The point of the fix, carried over to R32's pill: a phone viewer on a
-  // lossy link can reach the mode in two taps, and reaching it negotiates
-  // reliable delivery.
+  // A phone viewer on a lossy link can reach the mode in two taps from the
+  // pill, and reaching it negotiates reliable delivery.
   it('picks a delivery mode from the preset pill and reconnects with reliable delivery', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
@@ -532,7 +514,7 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(sessions[1].opts).toMatchObject({ deliveryMode: 'reliable' });
     expect(localStorage.getItem('gawk:viewer-delivery')).toBe('resilient');
 
-    // R21 (docs/26 Decision 15): one axis, now four points — a radio group, so
+    // One axis, four points — a radio group, so
     // the active one is checked and the others are reachable.
     tap(screen.getByLabelText(/^Playback quality:/));
     expect(
@@ -547,7 +529,7 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(localStorage.getItem('gawk:viewer-delivery')).toBe('deep');
   });
 
-  // R32 UX5.5: the pacing-only step must not re-dial. Delivery and parity are
+  // The pacing-only step must not re-dial. Delivery and parity are
   // in useViewerConnection's session-effect deps; pacing is not, and the
   // "· switching reconnects" annotation would be a lie if this changed.
   it('does not reconnect when a preset changes only pacing', async () => {
@@ -564,8 +546,7 @@ describe('ViewerScreen menu button (touch reachability)', () => {
   });
 
   it('migrates an R19 resilient viewer to resilient, never to deep', async () => {
-    // A 10x latency change nobody asked for would be the worst possible way
-    // to introduce this (docs/26 Decision 15).
+    // Never deep: that would be a 10x latency change nobody asked for.
     localStorage.removeItem('gawk:viewer-delivery');
     localStorage.setItem('gawk:resilient-mode', '1');
     render(<ViewerScreen broadcastId="AB2CD3" />);
@@ -577,10 +558,9 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     ).toBe('true');
   });
 
-  // R30 (docs/35 §5.5): striping. Live-edge only, persisted, and — unlike
-  // delivery/parity — applied LIVE: no session teardown. R32 moves it into the
-  // panel's Advanced section and, per UX5.1, keeps it *present and disabled*
-  // off live-edge instead of removing it.
+  // Striping: live-edge only, persisted, and — unlike delivery/parity —
+  // applied LIVE, with no session teardown. It lives in the panel's Advanced
+  // section and stays *present and disabled* off live-edge.
   it('picks a stripe mode from the panel without reconnecting, live-edge only', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
@@ -603,10 +583,9 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(sessions).toHaveLength(1);
   });
 
-  // R32 UX5.1: off live-edge, parity and striping stay on screen, disabled,
-  // each carrying its own reason. Before R32 they were filtered out of the
-  // array, so the menu changed length with the delivery mode and a viewer who
-  // had seen "Loss protection" once could not find it again (docs/37 §1.2).
+  // Off live-edge, parity and striping stay on screen, disabled, each
+  // carrying its own reason: removed, a viewer who had seen "Loss protection"
+  // once could not find it again.
   it('grays parity and striping with reasons under a carrier delivery mode', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
@@ -624,9 +603,8 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(screen.getByText(/already handles bursts/)).toBeTruthy();
   });
 
-  // R32 UX3.1 + UX4.1/UX4.2 + UX3.3: the Custom rule the owner asked for —
-  // Custom appears only once something advanced is off its default, applying a
-  // preset is a complete configuration, and Reset advanced undoes the
+  // Custom appears only once something advanced is off its default, applying
+  // a preset is a complete configuration, and Reset advanced undoes the
   // deviation without touching the preset.
   it('shows Custom only after an advanced change, and resets back', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
@@ -647,9 +625,37 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(screen.getByLabelText('Playback quality: Balanced')).toBeTruthy();
   });
 
-  // Decision 2, and the risk it carries: a preset is a *complete*
-  // configuration, so picking one puts the advanced knobs back. The pill would
-  // otherwise read "Balanced" over a forced-off striping setting.
+  // Parity is negotiated only on live edge; off it, a parity change has
+  // nothing to renegotiate.
+  it('does not reconnect for a parity reset under a carrier delivery mode', async () => {
+    localStorage.setItem('gawk:viewer-delivery', 'resilient');
+    localStorage.setItem('gawk:parity-level', '0');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    openSettings();
+    openAdvanced();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset advanced' }));
+    expect(localStorage.getItem('gawk:parity-level')).toBeNull();
+    expect(sessions).toHaveLength(1);
+    localStorage.removeItem('gawk:viewer-delivery');
+  });
+
+  // Applying a live preset resets a live viewer's parity, which re-dials, so
+  // the row must say so like the delivery-changing rows do.
+  it('marks a preset that will reconnect because it resets parity', async () => {
+    localStorage.setItem('gawk:parity-level', '1');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    tap(screen.getByLabelText(/^Playback quality:/));
+    expect(screen.getByRole('menuitemradio', { name: 'Balanced' }).textContent).toContain('reconnects');
+    localStorage.removeItem('gawk:parity-level');
+  });
+
+  // A preset is a *complete* configuration, so picking one puts the advanced
+  // knobs back. The pill would otherwise read "Balanced" over a forced-off
+  // striping setting.
   it('picking a preset resets the advanced knobs to their defaults', async () => {
     localStorage.setItem('gawk:stripe-mode', 'off');
     localStorage.setItem('gawk:parity-level', '0');
@@ -673,11 +679,10 @@ describe('ViewerScreen menu button (touch reachability)', () => {
   });
 });
 
-// R16 gate + R22 MSE surface (docs/21 Decision 1, docs/27): the device gate,
-// the hidden presentation video, and the Feature Gates overlay section. jsdom
-// has no Element Fullscreen API, so a bare render is a *gated* device on the
-// main-thread pipeline (worker unavailable in jsdom ⇒ tier 3 only, probe
-// verdict false — docs/27 Decision 11); the non-gated cases install
+// The device gate, the hidden presentation video, and the Feature Gates
+// overlay section. jsdom has no Element Fullscreen API, so a bare render is a
+// *gated* device on the main-thread pipeline (worker unavailable in jsdom ⇒
+// tier 3 only, probe verdict false); the non-gated cases install
 // document.documentElement.requestFullscreen first.
 describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
   const installElementFullscreen = () => {
@@ -745,7 +750,7 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
     expect(blob.samples).toHaveLength(1);
     expect(blob.samples[0].stats.featureGates).toEqual([
       { name: 'NativeVideoFullscreen', active: false, detail: 'main-thread pipeline → pseudo' },
-      // R29 finding 2: this sample carries no datagramBuffer, and the gate says
+      // This sample carries no datagramBuffer, and the gate says
       // so rather than guessing — the distinction Copy diagnostics has to
       // preserve for a remote read to mean anything.
       { name: 'DatagramReceiveBuffer', active: false, detail: 'unknown' },
@@ -758,18 +763,18 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
       muxErrors: 0,
       segmentsAppended: 0,
       appendErrors: 0,
-      // docs/27 finding 7: no presenter on this path, so nothing was received,
+      // No presenter on this path, so nothing was received,
       // queued or dropped, and there is no MediaSource to report a `streaming`
       // state for.
       segmentsReceived: 0,
       segmentsQueued: 0,
       segmentsDroppedNoInit: 0,
       mmsStreaming: null,
-      // docs/27 finding 6: null until an append actually fails.
+      // Null until an append actually fails.
       lastAppendError: null,
       bufferedMs: null,
       bufferedAheadMs: null,
-      // R22: no MediaSource on this path, so no live-duration verdict; and with
+      // No MediaSource on this path, so no live-duration verdict; and with
       // no audio in the fixture stream there is nothing to mux or probe.
       liveDuration: null,
       audioMode: 'none',
@@ -790,7 +795,7 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
     });
   });
 
-  // R29 finding 2 (docs/34): the gate has to distinguish three states, because
+  // The gate has to distinguish three states, because
   // the failure it exists for is a SILENT one — a browser that accepts the
   // assignment and ignores it looks identical to success from the call site,
   // and that is exactly how a fleet-wide no-op would ship unnoticed.
@@ -820,9 +825,9 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
     expect(value.textContent).toBe('✓');
     expect(value.getAttribute('title')).toBe('256 datagrams (was 8)');
 
-    // R29 finding 3: the write landed on the LEGACY attribute, which is not
-    // the drop threshold. This must NOT read green — it is exactly the state
-    // that shipped a confident gate over a fix that changed nothing.
+    // The write landed on the LEGACY attribute, which is not the drop
+    // threshold. This must NOT read green: that would be a confident gate over
+    // a fix that changes nothing.
     act(() =>
       sessions[0].cbs.onStats({
         datagramBuffer: {
@@ -877,8 +882,7 @@ describe('ViewerScreen presentation surface (R16 gate + R22 MSE)', () => {
   });
 });
 
-// R15 N4 (docs/20 Decision 9): the conditional-audio-UI criterion — audio
-// controls exist only when the stream actually carries audio.
+// Audio controls exist only when the stream actually carries audio.
 //
 // jsdom has no Web Audio, so these stub the minimum the sink touches. That is
 // deliberate: the UI must appear only where audio can actually *play*, so the
@@ -906,7 +910,7 @@ function stubWebAudio() {
   });
 }
 
-// R28 (docs/33 §4.13): the operator's end of a phone call — "open stats and
+// The operator's end of a phone call — "open stats and
 // read me the session id" has to work end to end, from wire 0x0D to a row on
 // screen. The token below is the shared golden one; its middle 12 bytes are
 // the sessionId both the relay and the ingest name this session by.
@@ -960,7 +964,7 @@ describe('ViewerScreen telemetry session id (R28)', () => {
     const body = (writeText.mock.calls[0] as unknown as [string])[0];
     expect(JSON.parse(body).telemetrySessionId).toBe(SESSION_ID);
     // The blob gets pasted into chats; the bearer half of the token must not
-    // ride along (lib/telemetry.ts, docs/33 §4.2).
+    // ride along.
     expect(body).not.toContain(HELLO.token);
     expect(body).not.toContain('a1a2a3a4a5a6a7a8');
   });
@@ -1034,8 +1038,7 @@ describe('ViewerScreen audio UI (R15)', () => {
   });
 });
 
-// R37 (docs/40 §4.3): the server picker replaced the dev-only relay panel.
-// The viewer needs it reachable in-session because a viewer is usually opened
+// The viewer needs the server picker reachable in-session because a viewer is usually opened
 // straight from a share link (an iPhone joining a code against a laptop's
 // relay never passes through #/broadcast). Selecting a server is a deliberate
 // teardown + reconnect: useViewerConnection depends on the store's resolved
@@ -1059,7 +1062,7 @@ describe('viewer server picker', () => {
     delete window.__GAWK_CONFIG__;
   });
 
-  // D6: the deployment-level gate removes the whole surface.
+  // The deployment-level gate removes the whole surface.
   it('is not offered when the deployment disallows custom relays', async () => {
     window.__GAWK_CONFIG__ = { allowCustomRelays: false };
     render(<ViewerScreen broadcastId="AB2CD3" />);
@@ -1068,7 +1071,7 @@ describe('viewer server picker', () => {
     expect(screen.queryByText('Server…')).toBeNull();
   });
 
-  // F1: the picker is a production surface — offered outside dev builds too;
+  // The picker is a production surface — offered outside dev builds too;
   // only the cert-hash field stays dev-gated.
   it('is offered outside a dev build, without the cert-hash field', async () => {
     devEnv.value = false;
@@ -1105,7 +1108,7 @@ describe('viewer server picker', () => {
     });
     fireEvent.click(screen.getByText('Save'));
 
-    // Adding never selects (D2's explicit-act rule) — the select is its own
+    // Adding never selects — the select is its own
     // click, and THAT is the deliberate teardown + reconnect.
     expect(sessions).toHaveLength(1);
     fireEvent.click(screen.getByRole('option', { name: /Test relay/ }));
@@ -1114,7 +1117,7 @@ describe('viewer server picker', () => {
     expect(sessions[1].url).toBe('https://api.gawk.example:4433');
     expect((sessions[1].opts as { certHashHex: string }).certHashHex).toBe('abc123');
     // Persisted through the same store the broadcaster reads, as a saved
-    // entry + selection (R37 replaced the single gawk.serverUrl key).
+    // entry + selection.
     const stored = JSON.parse(localStorage.getItem('gawk.servers')!) as Array<{
       id: string;
       url: string;
@@ -1127,9 +1130,9 @@ describe('viewer server picker', () => {
   });
 
   // The situation the picker must cover: a viewer aimed at a relay that will
-  // not answer. It must be reachable *while the error card is up* — the old
-  // dev panel's first implementation was covered by the error card exactly
-  // here. jsdom cannot see stacking; this pins the requirement behaviourally,
+  // not answer. It must be reachable *while the error card is up* — a panel
+  // sharing the card's layer would be covered by it exactly here. jsdom
+  // cannot see stacking; this pins the requirement behaviourally,
   // and the layering itself is verified in a real browser.
   it('is reachable while the connection-failed card is showing', async () => {
     sessionState.failStartWith = new Error('WebTransportError: Opening handshake failed.');
@@ -1161,7 +1164,7 @@ describe('viewer server picker', () => {
     expect(useTransportStore.getState().serverUrl).toBe('https://localhost:4433');
   });
 
-  // F2: the in-session indicator renders on this screen for a non-default
+  // The in-session indicator renders on this screen for a non-default
   // resolution — and not at all on the default server.
   it('shows the in-session indicator only on a non-default server', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
@@ -1175,7 +1178,7 @@ describe('viewer server picker', () => {
   });
 });
 
-// The macOS idle-dim bug: the viewer paints a canvas, so the browser holds no
+// The viewer paints a canvas, so the browser holds no
 // display power-save blocker and the OS dims/sleeps the screen mid-stream
 // (fullscreen included). The hook's own rules are pinned in
 // lib/useWakeLock.test.ts; what this covers is the wiring — that the lock

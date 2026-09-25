@@ -1,8 +1,6 @@
-// R37 (docs/40 §4.3): the landing-page server chip — the only new element on
-// the front door. Quiet (muted) on the default server so join-by-code reads
-// exactly as before; prominent when a non-default server is selected. Hidden
-// entirely when the deployment disallows custom relays (D6). Opens the
-// picker panel.
+// The landing-page server chip. Quiet (muted) on the default server so it
+// doesn't compete with join-by-code; prominent when a non-default server is
+// selected. Hidden entirely when the deployment disallows custom relays.
 
 import { useState } from 'react';
 
@@ -11,14 +9,7 @@ import { ServerPickerPanel } from './ServerPickerPanel';
 import { ServerIcon } from '../../ui/Icons';
 import { allowCustomRelays } from '../../config';
 import { useTransportStore } from '../../state/transportStore';
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
+import { relayHost } from '../../lib/relayUrl';
 
 export function ServerChip() {
   const serverUrl = useTransportStore((s) => s.serverUrl);
@@ -38,7 +29,7 @@ export function ServerChip() {
         data-testid="server-chip"
       >
         <ServerIcon className={styles.chipIcon} />
-        {quiet ? 'Server' : hostOf(serverUrl)}
+        {quiet ? 'Server' : relayHost(serverUrl)}
       </button>
       {open && <ServerPickerPanel onClose={() => setOpen(false)} />}
     </>

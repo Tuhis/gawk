@@ -785,6 +785,37 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   edges). One shared "is audience" predicate for the three loops would stop
   them drifting apart again.
 
+## Web broadcaster: a stream stopped inside the room view still reads LIVE
+
+- **Found**: 2026-09-25, gawk-app code review. Reproduced with a
+  BroadcasterScreen test: go live, create a room, then stop.
+- **What happens**: when a broadcast ends normally while the room view is
+  showing (the topbar Stop, the browser's "Stop sharing" bar, or the
+  hidden-tab watchdog), `roomTarget` stays set, so the page keeps the room
+  view: the topbar still says LIVE, the background-stop note is never shown,
+  there is no Start button, and the broadcaster's own tile becomes a viewer of
+  its own ended broadcast. Leaving the room is the only way back.
+- **Related**: PR #375 (R57) makes the *error* path leave the room view
+  (`onError` → `setRoomTarget(null)`); the normal-end path shares the same
+  callbacks and was left to that change to avoid two conflicting edits.
+- **Fix would start**: in `BroadcasterScreen`'s `onEnded`, leave the room view
+  the same way (or turn the room into a pending room so Start rejoins it), and
+  gate the topbar's LIVE badge on `status`. Test-first in
+  `BroadcasterScreen.room.test.tsx`.
+
+## Room tile stays "offline" after its viewer session gives up
+
+- **Found**: 2026-09-25, gawk-app code review (traced, not probed).
+- **What happens**: a tile whose `/subscribe` session ends in `error` (a
+  refused first dial, or a spent reconnect budget) shows "This stream is
+  offline right now." for good, while the roster says the stream is live.
+  ViewerSession never re-dials by policy, and the tile offers no retry;
+  switching to Hide videos and back is the only way out.
+- **Fix would start**: re-create the tile's session when its attachment flips
+  back to live or on a tap. The canvas can be transferred to the worker only
+  once, so this needs the tile body keyed on an attempt counter (a new
+  canvas per attempt), not a re-run of the connection effect.
+
 (The "Telemetry SQL console: the `rollups` view rots after boot, and any
 unpruned `sessions` query OOMs" entry was resolved 2026-09-22: views
 re-register on drift, and the engine runs inside a stated memory, thread

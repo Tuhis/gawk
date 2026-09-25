@@ -1,11 +1,10 @@
-// R15 (docs/20 Decisions 7-9): the viewer's main-thread audio sink — an
-// AudioContext + AudioWorklet ring buffer fed with planar PCM from the
-// pipeline's decode lane, with a GainNode for volume and mute-as-output-pause.
+// The viewer's main-thread audio sink — an AudioContext + AudioWorklet ring
+// buffer fed with planar PCM from the pipeline's decode lane, with a GainNode
+// for volume and mute-as-output-pause.
 //
-// This is the first deliberate decoded-media crossing in the project (R8/R10
-// keep video frames inside the worker): AudioContext cannot exist in a
-// dedicated worker, so the PCM has to reach this thread. Only plain
-// ArrayBuffers cross — see audio-decode.ts.
+// Decoded audio crosses threads while video frames stay inside the worker:
+// AudioContext cannot exist in a dedicated worker, so the PCM has to reach
+// this thread. Only plain ArrayBuffers cross — see audio-decode.ts.
 //
 // The worklet processor ships as a source string turned into a Blob URL. It
 // has to be a separate script by construction (addModule takes a URL), and a
@@ -29,7 +28,7 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
     this.underruns = 0;
     this.lastReportAt = 0;
     this.playheadUs = null;
-    // Drift trim only (docs/20 Decision 10 revised). The base read rate comes
+    // Drift trim only. The base read rate comes
     // from the content-vs-context sample rates and is computed per chunk.
     this.trim = 1;
     // The context's own rate — an AudioWorkletGlobalScope global. The context
@@ -37,7 +36,7 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
     // back the device rate (44.1 kHz is routine) while Opus decodes to 48 kHz.
     // Reading one source sample per output frame there plays 8.8 % slow and a
     // semitone low, so the rate ratio is part of the read position, not an
-    // assumption (docs/20 field finding 8).
+    // assumption.
     this.contextRate = sampleRate;
     // Cumulative content ms this worklet has accepted. Paired with the sink's
     // own delivered total, it lets the sink add back chunks that were in
@@ -67,10 +66,10 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
   // rate the context runs at, and is directly comparable to the durations the
   // jitter buffer thinks in.
   //
-  // This is the number findings 7 and 8 were both missing: the buffer used to
-  // maintain a shadow of this queue from deliveries and drain deltas, which
-  // could diverge (undelivered chunks, an assumed context rate, a suspended
-  // context) with no way to notice. The queue's owner reports it instead.
+  // The queue's owner reports this rather than the jitter buffer keeping a
+  // shadow of it from deliveries and drain deltas, which could diverge
+  // (undelivered chunks, an assumed context rate, a suspended context) with no
+  // way to notice.
   queuedMs() {
     let ms = 0;
     for (let i = 0; i < this.queue.length; i++) {
@@ -142,8 +141,8 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // ~4 Hz playhead/depth report (docs/20 Decision 10 measures skew from it,
-    // field finding 8 takes the depth from it).
+    // ~4 Hz playhead/depth report: the A/V skew and the buffer depth are both
+    // measured from it.
     if (currentTime - this.lastReportAt >= 0.25) {
       this.lastReportAt = currentTime;
       this.port.postMessage({
@@ -162,30 +161,12 @@ class GawkAudioProcessor extends AudioWorkletProcessor {
 registerProcessor('gawk-audio', GawkAudioProcessor);
 `;
 
-export interface AudioSinkStats {
-  contextState: AudioContextState | null;
-  playheadUs: number | null;
-  contextTime: number | null;
-  // What the device adds between a sample being written and being heard
-  // (docs/20 field finding 13). Load-bearing twice over: the alignment release
-  // hands the cushion over this much early, and the skew metric subtracts it
-  // before the drift trim ever sees a number. On a high-latency output
-  // (Bluetooth, HDMI, a soundbar) it is the difference between lip sync and
-  // a quarter-second of lag, so it is on the overlay rather than implicit.
-  outputLatencyMs: number | null;
-  // The rate the AudioContext actually runs at, which is not necessarily the
-  // one we asked for (docs/20 field finding 8). Diagnostic only — the worklet
-  // resamples to it and all accounting is in content ms — but when audio
-  // sounds slow or the depth looks wrong, this is the first number to read.
-  contextSampleRate: number | null;
-}
-
 export interface AudioSinkCallbacks {
-  // The worklet's ~4 Hz report, converted to listener terms — N5 turns this
-  // into avSkewMs. The sink reports both halves of the pair because only it
-  // can produce them coherently: `heardUs` is the sample at the speaker and
+  // The worklet's ~4 Hz report, converted to listener terms — av-sync turns
+  // this into avSkewMs. The sink reports both halves of the pair because only
+  // it can produce them coherently: `heardUs` is the sample at the speaker and
   // `atEpochMs` is when it is there, which `getOutputTimestamp()` gives as one
-  // measurement (docs/20 field finding 13).
+  // measurement.
   onPlayhead?: (report: { heardUs: number | null; atEpochMs: number }) => void;
 }
 
@@ -193,8 +174,8 @@ export function audioSinkSupported(): boolean {
   return typeof AudioContext !== 'undefined' && typeof AudioWorkletNode !== 'undefined';
 }
 
-// R42 (docs/44 §4.7): an injected output. By default a sink owns its own
-// AudioContext (the single viewer, unchanged); a room hands every tile the
+// An injected output. By default a sink owns its own AudioContext (the
+// single viewer); a room hands every tile the
 // SAME context and a destination node (the master gain), so N tiles mix
 // client-side into one output. The worklet module is per context and can be
 // registered only once per context ('gawk-audio' is already registered' is
@@ -206,7 +187,7 @@ export interface AudioOutput {
   ensureWorklet: () => Promise<void>;
 }
 
-// Field finding 7 (docs/20): the worklet posts a playhead report every ~250 ms
+// The worklet posts a playhead report every ~250 ms
 // as long as its AudioContext is running — even while underrunning. A gap this
 // long means the context was suspended (Safari does this at will) or the
 // worklet died: the buffer's depth estimate is frozen above the overflow
@@ -217,14 +198,14 @@ const STALL_RECOVERY_MS = 1000;
 
 // How long after the last decoded chunk a worklet underrun still describes
 // audio health. Past it there is simply no audio to play, and a dry quantum is
-// the correct outcome rather than a defect worth counting (BUGS.md).
+// the correct outcome rather than a defect worth counting.
 const AUDIO_EXPECTED_MS = 1000;
 
 // How far the video presentation schedule must move before audio re-anchors to
-// it (docs/20 field finding 11). Sits between the two populations it has to
-// separate: PlayoutController slews at most 50 ms/s, so a ~500 ms stats tick
-// moves the schedule ~25 ms at the very most, while the pacing toggle this
-// exists for moves it by the whole playout offset (140–190 ms measured).
+// it. Sits between the two populations it has to separate: PlayoutController
+// slews at most 50 ms/s, so a ~500 ms stats tick moves the schedule ~25 ms at
+// the very most, while the pacing toggle this exists for moves it by the
+// whole playout offset (140–190 ms).
 const SCHEDULE_REANCHOR_MS = 100;
 // Floor on the interval between re-anchors, so a baseline that oscillates can
 // never turn the fix into a stutter.
@@ -271,10 +252,10 @@ export class AudioSink {
   // the pipeline's stats; null until the video baseline exists.
   private videoPresentationMs: ((timestampUs: number) => number | null) | null = null;
   // The video schedule's offset at the last refresh, and when we last acted on
-  // a change in it (docs/20 field finding 11).
+  // a change in it.
   private lastScheduleProbeMs: number | null = null;
   private lastReanchorAtMs = -Infinity;
-  // R42: the shared output, when this sink does not own its context.
+  // The shared output, when this sink does not own its context.
   private readonly output: AudioOutput | null;
 
   constructor(
@@ -288,10 +269,10 @@ export class AudioSink {
     this.now = now;
     this.buffer = new AudioJitterBuffer((chunk) => this.forward(chunk), profile, {
       now,
-      // Field finding 7: hold the alignment cushion until the worklet node
+      // Hold the alignment cushion until the worklet node
       // exists, so it is never released into a null node and lost.
       sinkReady: () => this.node !== null,
-      // Video-master alignment (docs/20 field finding 4): hand a chunk to the
+      // Video-master alignment: hand a chunk to the
       // worklet early by exactly the latency the device adds, so it is *heard*
       // when the matching video frame is presented.
       schedule: () => {
@@ -308,7 +289,10 @@ export class AudioSink {
 
   // The device's own contribution, measured where the browser reports it.
   // outputLatency is the honest number (it includes the OS mixer); baseLatency
-  // is the fallback, and 20 ms a last resort for scopes with neither.
+  // is the fallback, and 20 ms a last resort for scopes with neither. On a
+  // Bluetooth or HDMI output it is the difference between lip sync and a
+  // quarter-second of lag, which is why the alignment and the skew metric
+  // both subtract it.
   private outputLatencyMs(): number {
     const ctx = this.ctx as (AudioContext & { outputLatency?: number }) | null;
     const seconds = ctx?.outputLatency || ctx?.baseLatency || 0.02;
@@ -316,8 +300,7 @@ export class AudioSink {
   }
 
   // The worklet's report, translated from "the sample being written" to "the
-  // sample being heard, and when" — the pair av-sync's mapping anchors on
-  // (docs/20 field finding 13).
+  // sample being heard, and when" — the pair av-sync's mapping anchors on.
   //
   // getOutputTimestamp() is the exact answer and needs no latency estimate:
   // contextTime is the position actually audible and performanceTime is the
@@ -372,13 +355,12 @@ export class AudioSink {
     this.buffer.tick();
   }
 
-  // docs/20 field finding 11: when the video presentation schedule moves under
-  // already-playing audio — turning Paced playback off drops it by the whole
-  // playout offset — the alignment chosen at start is simply wrong from then
-  // on, and nothing downstream can repair it: the worklet runs at 1×, so after
-  // release no buffering can move a sample (finding 4). Unlike finding 10 there
-  // is no reconnect and therefore no flush to correct; re-anchoring has to be
-  // deliberate. It costs a short silence, which is the right trade against
+  // When the video presentation schedule moves under already-playing audio —
+  // turning Paced playback off drops it by the whole playout offset — the
+  // alignment chosen at start is simply wrong from then on, and nothing
+  // downstream can repair it: the worklet runs at 1×, so after release no
+  // buffering can move a sample. There is no reconnect and therefore no flush
+  // to correct it; re-anchoring has to be deliberate. It costs a short silence, which is the right trade against
   // minutes of visible lip-sync error, and it only ever fires on a deliberate
   // user action that already changes playback.
   private reanchorIfScheduleMoved(): void {
@@ -421,13 +403,20 @@ export class AudioSink {
 
   // Creates the context. Must be called from a user gesture (the viewer's
   // join click) — a context created outside one starts 'suspended' and the
-  // screen shows tap-to-unmute (docs/20 Decision 9).
+  // screen shows tap-to-unmute.
   async start(sampleRate: number): Promise<void> {
     if (this.disposed) return;
     if (this.starting) return this.starting;
     this.starting = this.build(sampleRate).catch((e) => {
       log.warn('Audio sink start failed; the stream plays video-only:', e);
       this.teardownNodes();
+      // A context we opened would otherwise stay open until unmount; the failed
+      // start is cached, so nothing will use it. A shared one is its owner's.
+      if (!this.output) {
+        const ctx = this.ctx;
+        this.ctx = null;
+        void ctx?.close().catch(() => {});
+      }
       throw e;
     });
     return this.starting;
@@ -435,8 +424,8 @@ export class AudioSink {
 
   // Creating the context at the decoder's rate is the good case — no
   // resampling, and the worklet's ratio is exactly 1. But the option is not
-  // guaranteed: a browser may reject an unsupported rate outright (which used
-  // to take the whole stream video-only) or quietly hand back the device rate.
+  // guaranteed: a browser may reject an unsupported rate outright (which would
+  // take the whole stream video-only) or quietly hand back the device rate.
   // Ask, fall back, then believe `ctx.sampleRate` rather than the request.
   private openContext(sampleRate: number): AudioContext {
     try {
@@ -448,9 +437,9 @@ export class AudioSink {
   }
 
   private async build(sampleRate: number): Promise<void> {
-    // R42: a shared context is opened by its owner at whatever rate it chose;
-    // the worklet's per-chunk rate ratio (field finding 8) absorbs the
-    // mismatch exactly as it does when a browser hands back the device rate.
+    // A shared context is opened by its owner at whatever rate it chose; the
+    // worklet's per-chunk rate ratio absorbs the mismatch exactly as it does
+    // when a browser hands back the device rate.
     const ctx = this.output ? this.output.context : this.openContext(sampleRate);
     this.ctx = ctx;
     this.contextSampleRate = ctx.sampleRate ?? null;
@@ -466,10 +455,9 @@ export class AudioSink {
     } else {
       await addWorkletModule(ctx);
     }
-    if (this.disposed) {
-      if (!this.output) void ctx.close();
-      return;
-    }
+    // dispose() already closed the context if it was ours; a second close()
+    // rejects.
+    if (this.disposed) return;
     const node = new AudioWorkletNode(ctx, 'gawk-audio', { outputChannelCount: [2] });
     node.port.onmessage = (e: MessageEvent) => {
       const msg = e.data as {
@@ -496,11 +484,10 @@ export class AudioSink {
       if (msg.underruns > 0) {
         // Underrunning with nothing to play is silence working, not a defect:
         // once the stream dies the worklet reports a dry quantum ~375×/s
-        // forever, which buried the counter's real signal under six figures of
-        // noise exactly when it was being read to diagnose a freeze (BUGS.md,
-        // 2026-07-22). Report zero rather than skipping the call: the re-prime
-        // side effect must still run, so audio that resumes rebuilds its
-        // cushion instead of restarting at ~0 ms depth (field finding 6).
+        // forever, which would bury the counter's real signal under noise.
+        // Report zero rather than skipping the call: the re-prime side effect
+        // must still run, so audio that resumes rebuilds its cushion instead
+        // of restarting at ~0 ms depth.
         this.buffer.noteUnderrun(this.audioExpected() ? msg.underruns : 0);
       }
       this.cb.onPlayhead?.(this.heardSample(msg.playheadUs, msg.contextTime));
@@ -531,7 +518,7 @@ export class AudioSink {
     return this.lastPushAtMs !== null && this.now() - this.lastPushAtMs <= AUDIO_EXPECTED_MS;
   }
 
-  // Field finding 7: if the worklet has stopped reporting while audio is still
+  // If the worklet has stopped reporting while audio is still
   // arriving, its context was suspended (or it died) and the jitter buffer is
   // now dropping every chunk with no recovery. Wake the context and flush both
   // sides so audio resumes at the live edge the instant the worklet runs again,
@@ -553,7 +540,7 @@ export class AudioSink {
   }
 
   // Returns whether the chunk reached the worklet — the buffer counts depth
-  // only on delivery (field finding 7). A null node (still booting) or a
+  // only on delivery. A null node (still booting) or a
   // throwing/closed port both mean "not delivered".
   private forward(chunk: AudioChunk): boolean {
     const node = this.node;
@@ -582,9 +569,8 @@ export class AudioSink {
     }
   }
 
-  // Broadcaster restart / viewer reconnect: drop everything and re-anchor
-  // (docs/20 Decision 8). Without it every packet on the new timeline reads
-  // as late forever.
+  // Broadcaster restart / viewer reconnect: drop everything and re-anchor.
+  // Without it every packet on the new timeline reads as late forever.
   flush(): void {
     this.buffer.flush();
     this.lastRate = 1;
@@ -605,7 +591,7 @@ export class AudioSink {
   setMuted(muted: boolean): void {
     this.muted = muted;
     // Output pause, not a pipeline pause: stats keep flowing, unmute is
-    // instant (docs/20 Decision 9).
+    // instant.
     if (this.gain) this.gain.gain.value = muted ? 0 : this.volume;
   }
 
@@ -632,9 +618,8 @@ export class AudioSink {
   // (iOS: phone calls, Siri, Control Center, backgrounding) that lib.dom's
   // AudioContextState type doesn't know about. It means the same thing as
   // 'suspended' here — no audio is flowing and only resume() from a fresh
-  // gesture restarts it — so treating only 'suspended' as blocked let the
-  // tap-to-unmute affordance disappear (needsGesture went false) while the
-  // context was still silent.
+  // gesture restarts it — so treating only 'suspended' as blocked would hide
+  // the tap-to-unmute affordance while the context is still silent.
   private isGestureBlocked(): boolean {
     const state = this.ctx?.state as AudioContextState | 'interrupted' | undefined;
     return state === 'suspended' || state === 'interrupted';
@@ -678,8 +663,8 @@ export class AudioSink {
   }
 }
 
-// Registers the worklet processor on a context, once. Exported for the R42
-// room mixer, which owns a shared context and must call this exactly once
+// Registers the worklet processor on a context, once. Exported for the room
+// mixer, which owns a shared context and must call this exactly once
 // for it (a second registration of 'gawk-audio' rejects).
 export async function addWorkletModule(ctx: AudioContext): Promise<void> {
   const url = URL.createObjectURL(new Blob([PROCESSOR_SOURCE], { type: 'application/javascript' }));

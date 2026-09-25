@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 //
-// R42 (docs/44 §4.8, RM6 acceptance): the `?rt=` grant hand-off happens in
-// App's route resolution — BEFORE the room screen's first render — so the
-// screen mounts with the grant already in session storage and a URL that no
-// longer carries it. Asserted at the App level because that ordering is the
-// whole point: a rewrite in an effect would run after the screen dialed.
+// The `?rt=` grant hand-off happens in App's route resolution, BEFORE the
+// room screen's first render, so the screen mounts with the grant already in
+// session storage and a URL that no longer carries it. Asserted at the App
+// level because that ordering is the whole point: a rewrite in an effect
+// would run after the screen dialed.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';

@@ -24,6 +24,7 @@ import {
   RoomRecordReader,
   TYPE_ROOM_COMMAND,
   TYPE_ROOM_HELLO,
+  TYPE_ROOM_STATE,
   encodeRoomEvent,
   encodeRoomRecord,
   encodeRoomState,
@@ -42,6 +43,8 @@ interface FakeWt {
   // What the client wrote, parsed back into records.
   written: Uint8Array[];
   push(record: Uint8Array): void;
+  // Raw bytes on the control stream, bypassing the record framing.
+  pushRaw(bytes: Uint8Array): void;
   // End the session: the readable closes and wt.closed settles with the code.
   end(closeCode?: number, reason?: string): void;
   // Break it: wt.closed rejects.
@@ -55,6 +58,9 @@ const fakes: FakeWt[] = [];
 let refuseNext = false;
 // When set, every constructed session's `ready` rejects (a dead relay).
 let refuseAll = false;
+// When set, createBidirectionalStream() waits for releaseStream().
+let holdStream = false;
+let releaseStream: () => void = () => {};
 
 function installFakeWebTransport() {
   vi.stubGlobal(
@@ -85,6 +91,7 @@ function installFakeWebTransport() {
           written,
           closeCalls: 0,
           push: (rec) => this.readableCtl.enqueue(encodeRoomRecord(rec)),
+          pushRaw: (bytes) => this.readableCtl.enqueue(bytes),
           end: (closeCode, reason) => {
             try {
               this.readableCtl.close();
@@ -121,6 +128,7 @@ function installFakeWebTransport() {
       }
       private writable: WritableStream<Uint8Array>;
       async createBidirectionalStream() {
+        if (holdStream) await new Promise<void>((r) => (releaseStream = r));
         return { readable: this.readable, writable: this.writable };
       }
       close() {
@@ -181,6 +189,7 @@ beforeEach(() => {
   fakes.length = 0;
   refuseNext = false;
   refuseAll = false;
+  holdStream = false;
   installFakeWebTransport();
   vi.useFakeTimers();
 });
@@ -418,9 +427,8 @@ describe('RoomSession endings', () => {
     s.stop();
   });
 
-  // What Chrome actually delivers (measured 2026-09-24 in a net-log,
-  // docs/59): the relay's close packet carries STOP_SENDING on the CONNECT stream AHEAD of the 4007
-  // capsule (quic-go packs control frames before stream data), and Chrome
+  // What Chrome actually delivers: the relay's close packet carries
+  // STOP_SENDING on the CONNECT stream AHEAD of the 4007 capsule (quic-go packs control frames before stream data), and Chrome
   // fails the session on it — wt.closed rejects "Connection lost." with no
   // code. The RoomEnding that preceded it is the relay's word that
   // the room is over; reconnecting into a gone room only looped the
@@ -504,6 +512,48 @@ describe('RoomSession endings', () => {
     expect(cb.onEnded).toHaveBeenCalledWith(null);
     expect(cb.onError).not.toHaveBeenCalled();
     s.stop();
+  });
+
+  it('a malformed record closes the session and reconnects', async () => {
+    const { s, cb } = await connected();
+    fakes[0].push(new Uint8Array([1, TYPE_ROOM_STATE, 0xff]));
+    await flush();
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS + 1000);
+    await flush();
+    expect(fakes[0].closeCalls).toBeGreaterThan(0);
+    expect(cb.onReconnecting).toHaveBeenCalledTimes(1);
+    expect(fakes).toHaveLength(2);
+    s.stop();
+  });
+
+  it('a framing error closes the old session before reconnecting', async () => {
+    const { s, cb } = await connected();
+    fakes[0].pushRaw(new Uint8Array([0x00, 0x01]));
+    await flush();
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS + 1000);
+    await flush();
+    expect(cb.onReconnecting).toHaveBeenCalledTimes(1);
+    expect(fakes).toHaveLength(2);
+    expect(fakes[0].closeCalls).toBe(1);
+    s.stop();
+  });
+
+  it('stop() while the control stream opens closes the session and joins nothing', async () => {
+    const { cb } = makeCallbacks();
+    holdStream = true;
+    const s = new RoomSession(
+      { serverUrl: 'https://relay.test:4433', certHashHex: '', target: { kind: 'join', code: 'TuhisRoom' }, nickname: 'me', clientKind: ROOM_CLIENT_WEB_VIEWER, grant: null },
+      cb,
+    );
+    const started = s.start();
+    await flush();
+    s.stop();
+    releaseStream();
+    await started.catch(() => {});
+    await flush();
+    expect(fakes[0].closeCalls).toBe(1);
+    expect(fakes[0].written).toHaveLength(0);
+    expect(cb.onConnected).not.toHaveBeenCalled();
   });
 
   it('stop() closes the transport and fires nothing', async () => {

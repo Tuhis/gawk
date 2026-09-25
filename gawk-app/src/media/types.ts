@@ -8,31 +8,28 @@ export interface CaptureConfig {
   height: number;
   bitrate: number;
   framerate: number;
-  // R13 (docs/18): acceleration tri-state. Absent means 'auto' — the
-  // historical prefer-hardware-then-fall-back cascade.
+  // Absent means 'auto': prefer hardware, fall back to software.
   hwPreference?: HwPreference;
-  // Time-based (docs/08): frame-count cadence would stretch the GOP to 24s
-  // at the ladder's 5 fps rung. A short 500ms GOP bounds recovery from a lost
-  // or gap-discarded frame to <=0.5s (a delta referencing a missing frame
-  // corrupts everything until the next keyframe — see viewer freeze-on-gap).
+  // Time-based, not frame-count: a frame-count cadence would stretch the GOP
+  // to 24s at the ladder's 5 fps rung. A short 500ms GOP bounds recovery from
+  // a lost or gap-discarded frame to <=0.5s (a delta referencing a missing
+  // frame corrupts everything until the next keyframe).
   keyframeIntervalMs: number;
-  // R15 (docs/20 Decision 6): request system audio in the getDisplayMedia
-  // grant. Absent/false is byte-identical to the pre-audio capture call.
-  // Snapshot at broadcast start — the one R13 live-apply exception (an audio
-  // track can't be added without re-prompting).
+  // Request system audio in the getDisplayMedia grant. Snapshot at broadcast
+  // start and never live-applied: an audio track can't be added without
+  // re-prompting.
   audio?: boolean;
 }
 
-// Ordered by preference. Encoder walks this list and picks the first one
+// Ordered by preference. The encoder walks this list and picks the first one
 // isConfigSupported() approves for the negotiated width/height/framerate.
-// - H.264 baseline lvl 4.2 / lvl 3.1: HW on Chromium/Safari, best decode compat.
-// - H.264 high/main/baseline fallback ladder.
-// - VP9 profile 0 lvl 4.0 / lvl 3.1: cross-browser software, sometimes HW.
+// - H.264 Main L5.2 / L5.1 first: the levels that fit 4K capture. Main, not
+//   High, because Chrome's VideoDecoder cannot decode High at L5.1/L5.2.
+// - Then a baseline/main/high ladder at L4.2, L4.0 and L3.1 for smaller
+//   captures and encoders that reject the higher levels.
+// - VP9 profile 0 L4.0 / L3.1: cross-browser software, sometimes HW.
 // - VP8: universal software fallback.
 export const DEFAULT_CODEC_PREFERENCES: string[] = [
-  // Chrome's VideoDecoder cannot decode H.264 High Profile Level 5.1 or 5.2
-  // 'avc1.640034', // H.264 High Profile Level 5.2 (4K @ 60fps)
-  // 'avc1.640033', // H.264 High Profile Level 5.1 (4K @ 30fps)
   'avc1.4D4034', // H.264 Main Profile Level 5.2 (4K @ 60fps)
   'avc1.4D4033', // H.264 Main Profile Level 5.1 (4K @ 30fps)
   'avc1.42E02A', // H.264 Constrained Baseline Profile Level 4.2

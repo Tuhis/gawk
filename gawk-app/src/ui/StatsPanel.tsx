@@ -4,12 +4,11 @@ import { GlassPanel } from './GlassPanel';
 import { IconButton } from './IconButton';
 import { CloseIcon } from './Icons';
 
-// The shared sectioned stats overlay (R9 M7, docs/13): the viewer and
-// broadcaster overlays are both thin row-builders over this. Values arrive
+// The shared sectioned stats overlay: the viewer and broadcaster overlays are
+// thin row-builders over this. Values arrive
 // pre-formatted ("—" for unavailable) so the panel stays purely presentational.
 
-// The optional third element renders as a hover tooltip on the value (R16:
-// the Feature Gates rows keep their value to ✓/✗ and put the detail here).
+// The optional third element renders as a hover tooltip on the value.
 export type StatsRow = [label: string, value: string, title?: string];
 
 export interface StatsSection {
@@ -22,9 +21,8 @@ interface Props {
   sections: StatsSection[];
   footer?: ReactNode;
   onClose: () => void;
-  // Copy-diagnostics action (docs/13 D8): the owning screen serializes its
-  // sample history to JSON and writes the clipboard; the panel just hosts
-  // the button and the "Copied" flash.
+  // Copy diagnostics: the owning screen serializes and writes the clipboard;
+  // the panel hosts the button and the "Copied" flash.
   onCopy?: () => void;
   copied?: boolean;
 }

@@ -1,8 +1,8 @@
-// R13 pipeline-integration tests (docs/18, chunk L2): the advanced encoder
-// settings — bitrate override, codec pin, acceleration tri-state — reach the
-// encoder's negotiated config, changes recreate the encoder mid-stream, and
-// the old >1080p@>30 force-cap is gone (an explicit 4K@60 choice is honored
-// as-is). Same fake-encoder harness shape as broadcaster-fallback.test.ts.
+// Advanced encoder settings pipeline-integration tests: bitrate override,
+// codec pin and acceleration tri-state reach the encoder's negotiated config,
+// changes recreate the encoder mid-stream, and an explicit 4K@60 choice is
+// honored as-is (no >1080p force-cap). Same fake-encoder harness shape as
+// broadcaster-fallback.test.ts.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -26,6 +26,7 @@ const h = vi.hoisted(() => ({
   frameCb: { value: null as null | ((frame: unknown) => void) },
   constraintCalls: [] as MediaTrackConstraints[],
   constraintsReject: { value: false },
+  flushHangs: { value: false },
 }));
 
 vi.mock('./connection', () => ({
@@ -90,7 +91,7 @@ vi.mock('../media/encoder', () => ({
       this.disposed = true;
     }
     close() {
-      return Promise.resolve();
+      return h.flushHangs.value ? new Promise<void>(() => {}) : Promise.resolve();
     }
   },
 }));
@@ -218,6 +219,7 @@ beforeEach(() => {
   h.frameCb.value = null;
   h.constraintCalls.length = 0;
   h.constraintsReject.value = false;
+  h.flushHangs.value = false;
 });
 
 afterEach(() => {
@@ -286,6 +288,48 @@ describe('mid-stream settings changes', () => {
     expect(h.encoders[0].disposed).toBe(true);
     expect(h.encoders[1].config.bitrate).toBe(2_000_000);
     await p.stop();
+  });
+
+  // A settings re-probe that races the first real-dimensions refine must
+  // probe at the real source, not at the pre-capture placeholder.
+  it('a settings change during the first refine keeps the real source dims', async () => {
+    let gated = false;
+    const held: (() => void)[] = [];
+    const prober = new EncoderSupportProber(
+      (config) =>
+        new Promise((resolve) => {
+          const answer = () => resolve({ supported: true, config });
+          if (gated) held.push(answer);
+          else answer();
+        }),
+    );
+    const p = await startPipeline(undefined, { prober });
+    gated = true;
+    clock.t += 33;
+    h.frameCb.value!(fakeFrame(Math.round(clock.t * 1000), 2560, 1440));
+    await flush();
+    p.setEncoderSettings({ ...DEFAULT_ENCODER_SETTINGS, hwPreference: 'software' });
+    gated = false;
+    for (let i = 0; i < 50 && held.length > 0; i++) {
+      held.splice(0).forEach((answer) => answer());
+      await flush();
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    const matrix = (p as unknown as { matrix: { source: { width: number; height: number } } }).matrix;
+    expect(matrix.source).toEqual({ width: 2560, height: 1440 });
+    await p.stop();
+  });
+
+  it('stop() closes the session without waiting on an encoder flush', async () => {
+    const p = await startPipeline();
+    await prime();
+    const wt = (await connectWebTransport.mock.results[0].value) as { close: ReturnType<typeof vi.fn> };
+    h.flushHangs.value = true;
+    const stopped = p.stop();
+    await flush();
+    expect(wt.close).toHaveBeenCalled();
+    await expect(stopped).resolves.toBeUndefined();
+    expect(h.encoders[0].disposed).toBe(true);
   });
 
   it('setting identical settings is a no-op (no encoder churn)', async () => {
@@ -432,7 +476,7 @@ describe('capture alignment via applyConstraints (docs/18 Decision 6, L3)', () =
   });
 });
 
-// docs/33 D17: telemetry has to know what the stream was ASKED to be, or a
+// Telemetry has to know what the stream was ASKED to be, or a
 // sustained shortfall is indistinguishable from a stream configured that way.
 // Recorded from what the encoder COMMITTED to, never from the settings that
 // asked for it — a rung can be refused, clamped or renegotiated.

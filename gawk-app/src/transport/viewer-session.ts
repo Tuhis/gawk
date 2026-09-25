@@ -27,7 +27,7 @@ import {
 } from './reconnect';
 
 // The reconnect policy lives in reconnect.ts (shared with the broadcaster's
-// auto-resume since R17 W2); re-exported so existing importers keep working.
+// auto-resume); re-exported so existing importers keep working.
 export {
   ABRUPT_DROP_RETRY_DELAY_MS,
   RECONNECT_MAX_ATTEMPTS,
@@ -40,7 +40,7 @@ export {
 // - 'unreachable': the first connect failed — we never saw the stream. A
 //   WebTransportError hides the HTTP status, so "no such broadcast" (404),
 //   "full" (429), a bad cert and a dead relay all land here (see the policy
-//   note above); the UI copy hedges toward the common case (see BUGS.md).
+//   note above); the UI copy hedges toward the common case.
 // - 'lost': we were watching and the reconnect budget ran out.
 // - 'unplayable': fatal by pipeline verdict (e.g. undecodable codec) —
 //   retrying would fail identically.
@@ -49,11 +49,11 @@ export type ViewerErrorKind = 'unreachable' | 'lost' | 'unplayable';
 // Why the session ended for good — carried to the UI so the end card can say
 // something true rather than one string for every ending. Typed rather than
 // passing the raw close code because the screen must not re-derive wire
-// semantics ("Shared constants have exactly one definition per language").
+// semantics.
 // - 'normal': the user stopped, or the relay ended the broadcast (4000).
-// - 'moderated': close code 4006 — the operator terminated this broadcast
-//   (R39, docs/42 §4.4). Telling the viewer is the whole reason 4006 exists
-//   as a code of its own instead of reusing 4000.
+// - 'moderated': close code 4006 — the operator terminated this broadcast.
+//   Telling the viewer is the whole reason 4006 exists as a code of its own
+//   instead of reusing 4000.
 export type ViewerEndReason = 'normal' | 'moderated';
 
 export interface ViewerSessionCallbacks {
@@ -70,19 +70,19 @@ export interface ViewerSessionCallbacks {
   // The session is over for good: user stop, or after a fatal error. The
   // reason drives the end-card copy; every call site decides it explicitly.
   onEnded: (reason: ViewerEndReason) => void;
-  // R15 (docs/20): decoded audio, and the sink-reset signal. Forwarded
-  // verbatim from each pipeline attempt — a reconnect builds a fresh
-  // pipeline, and the new one's first packets need a re-anchored sink.
+  // Decoded audio, and the sink-reset signal. Forwarded verbatim from each
+  // pipeline attempt — a reconnect builds a fresh pipeline, and the new one's
+  // first packets need a re-anchored sink.
   onAudioChunk?: (chunk: DecodedAudioChunk) => void;
   onAudioReset?: () => void;
-  // R22 (docs/27 Decision 3): the encoded-frame fork for the fMP4 muxer,
-  // forwarded from every pipeline attempt so the mux stream continues across
-  // reconnects. Absent = no fork is ever installed (non-gated devices).
+  // The encoded-frame fork for the fMP4 muxer, forwarded from every pipeline
+  // attempt so the mux stream continues across reconnects. Absent = no fork is
+  // ever installed (non-gated devices).
   onReleasedFrame?: (frame: ReleasedFrame) => void;
-  // R28 (docs/33 D2): the telemetry identity, forwarded from every pipeline
-  // attempt. A reconnect is a NEW relay session and gets a NEW token, so this
-  // fires again — the collector must treat each as a fresh session rather than
-  // as a repeat of the first.
+  // The telemetry identity, forwarded from every pipeline attempt. A reconnect
+  // is a NEW relay session and gets a NEW token, so this fires again — the
+  // collector must treat each as a fresh session rather than as a repeat of the
+  // first.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   onTelemetryEndpoint?: (url: string) => void;
 }
@@ -202,14 +202,14 @@ export class ViewerSession {
         }
       },
       onEnded: () => this.handlePipelineEnded(),
-      // R15: a reconnect means a fresh pipeline on a possibly-restarted
-      // timeline — reset the sink before its first packets land.
       ...(this.cb.onAudioChunk ? { onAudioChunk: (c) => this.cb.onAudioChunk?.(c) } : {}),
       ...(this.cb.onAudioReset ? { onAudioReset: () => this.cb.onAudioReset?.() } : {}),
       ...(this.cb.onReleasedFrame ? { onReleasedFrame: (f) => this.cb.onReleasedFrame?.(f) } : {}),
       ...(this.cb.onTelemetryHello ? { onTelemetryHello: (h) => this.cb.onTelemetryHello?.(h) } : {}),
       ...(this.cb.onTelemetryEndpoint ? { onTelemetryEndpoint: (u: string) => this.cb.onTelemetryEndpoint?.(u) } : {}),
     };
+    // A reconnect means a fresh pipeline on a possibly-restarted timeline —
+    // reset the sink before its first packets land.
     this.cb.onAudioReset?.();
     return this.createPipeline(this.serverUrl, this.broadcastId, this.connectOpts, inner);
   }
@@ -221,7 +221,7 @@ export class ViewerSession {
       return;
     }
     // 4000 (broadcast ended) and 4006 (terminated by the operator) both mean
-    // stay down — see isTerminalViewerClose (R39, docs/42 §4.4).
+    // stay down — see isTerminalViewerClose.
     if (isTerminalViewerClose(this.lastCloseCode)) {
       log.info(`Broadcast ended by server (code ${this.lastCloseCode}). Stopping.`);
       this.stopped = true;
@@ -284,13 +284,15 @@ export class ViewerSession {
       } else {
         this.lastCloseCode = null;
       }
+      // stop() raced this attempt and fires the one onEnded itself.
+      if (this.stopped) return;
       if (isTerminalViewerClose(this.lastCloseCode)) {
         log.info(`Broadcast ended by server during reconnect (code ${this.lastCloseCode}).`);
         this.stopped = true;
         this.cb.onEnded(this.endReason());
         return;
       }
-      if (!this.stopped) this.scheduleReconnect();
+      this.scheduleReconnect();
       return;
     } finally {
       this.starting = null;

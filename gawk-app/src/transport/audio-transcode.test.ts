@@ -9,11 +9,10 @@ import {
   type TranscoderDeps,
 } from './audio-transcode';
 
-// docs/27 finding 6, measured on iPhone (iOS 18.7 / Safari 26.5.2) by the R22
-// device probe: Safari's AudioEncoder hands back the WHOLE `esds` payload — a
+// Safari's AudioEncoder (iPhone) hands back the WHOLE `esds` payload — a
 // complete ES_Descriptor — as `decoderConfig.description`, where the WebCodecs
-// spec (and Chrome) hand back the bare AudioSpecificConfig. These are the real
-// 39 bytes from the device. Note the 4-byte 0x80-continuation descriptor sizes:
+// spec (and Chrome) hand back the bare AudioSpecificConfig. These are real
+// 39 bytes from an iPhone. Note the 4-byte 0x80-continuation descriptor sizes:
 // Apple writes the long form even for tiny payloads.
 const SAFARI_DESCRIPTION = Uint8Array.from(
   (
@@ -116,6 +115,21 @@ describe('AacTranscoder description normalization', () => {
     emit();
     expect(t.getStats().codec).toBe(AAC_CODEC);
     expect(outputs[0]).toEqual(ASC);
+  });
+
+  it('reports the format of the encoder that produced each output', () => {
+    const outputs: { sampleRate: number; channels: number; description: Uint8Array | null }[] = [];
+    const { deps, emit } = depsEmitting(ASC);
+    const t = new AacTranscoder((o) => outputs.push(o), deps);
+    t.push(pcm());
+    emit();
+    t.push({ timestampUs: 20_000, sampleRate: 44_100, channels: [new Float32Array(882)], frameCount: 882 });
+    emit();
+    expect(outputs.map(({ sampleRate, channels }) => ({ sampleRate, channels }))).toEqual([
+      { sampleRate: 48_000, channels: 2 },
+      { sampleRate: 44_100, channels: 1 },
+    ]);
+    expect(outputs[1].description).not.toBeNull();
   });
 
   it('is a no-op on the Chrome shape', () => {

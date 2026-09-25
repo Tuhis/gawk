@@ -1,15 +1,19 @@
-// Pre-encode frame preprocessing for the R3 ladder: framerate gating
+// Pre-encode frame preprocessing for the ladder: framerate gating
 // (timestamp-based dropping) and resolution scaling (OffscreenCanvas).
-// Runs between capture and encoder; capture always stays at native.
-// See docs/08-resolution-framerate-picker.md.
+// Runs between capture and encoder; capture always stays at native, and the
+// native framerate rung is never gated.
 
 import { computeTargetSize, type FramerateRung, type ResolutionRung } from './ladder';
 
 // Timestamp-based frame gate. Maintains a virtual schedule (nextDueUs)
 // advanced by the target interval; frames arriving before their slot are
 // dropped. A gap larger than one interval (capture stall, target change)
-// re-anchors the schedule — we never burst to "catch up". Pure logic, no
-// WebCodecs/DOM, unit-tested in preprocess.test.ts.
+// re-anchors the schedule — we never burst to "catch up".
+//
+// A frame up to a quarter interval early still takes its slot: capture
+// timestamps carry event-loop jitter, and a strict test drops ~10% of a
+// source running at or just under the target. The schedule still advances a
+// full interval per accepted frame, so the output never exceeds the target.
 export class FpsGate {
   private intervalUs: number | null = null;
   private nextDueUs: number | null = null;
@@ -33,7 +37,7 @@ export class FpsGate {
       this.nextDueUs = timestampUs + this.intervalUs;
       return true;
     }
-    if (timestampUs < this.nextDueUs) {
+    if (timestampUs < this.nextDueUs - this.intervalUs / 4) {
       this.dropped++;
       return false;
     }
@@ -71,15 +75,8 @@ export class FramePreprocessor {
   // Returns the frame to encode (the input itself, or a scaled replacement
   // with the same timestamp), or null when the fps gate drops it. The input
   // frame is closed unless returned as-is.
-  process(frame: VideoFrame, nativeFps: number | null): VideoFrame | null {
-    let targetFps: number | null = null;
-    if (this.framerateRung !== 'native') {
-      targetFps = this.framerateRung;
-    } else if (nativeFps !== null) {
-      targetFps = nativeFps;
-    }
-
-    this.gate.setTargetFps(targetFps);
+  process(frame: VideoFrame): VideoFrame | null {
+    this.gate.setTargetFps(this.framerateRung === 'native' ? null : this.framerateRung);
 
     if (!this.gate.accept(frame.timestamp)) {
       frame.close();

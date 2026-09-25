@@ -2,10 +2,8 @@
 //
 // The app-level browser-support gate. The requirements it pins are that the
 // warning reaches a *direct viewer link* and not just the landing page, that
-// acknowledging it never outlives the page load — and, since the relay's
-// WebKit refusal was fixed (docs/gotchas.md, the webtransport-go
-// `Server.Config` entry), that a browser which has WebTransport is never
-// warned by engine.
+// acknowledging it never outlives the page load, and that a browser which has
+// WebTransport is never warned by engine.
 //
 // The route screens are stubbed: this asserts where the gate sits, and the real
 // screens would drag transports and capture into a jsdom run for no added
@@ -17,11 +15,21 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 vi.mock('./features/landing/LandingPage', () => ({
   LandingPage: () => <div data-testid="landing" />,
 }));
-vi.mock('./features/viewer/ViewerScreen', () => ({
-  ViewerScreen: ({ broadcastId }: { broadcastId: string }) => (
-    <div data-testid="viewer">{broadcastId}</div>
-  ),
-}));
+vi.mock('./features/viewer/ViewerScreen', async () => {
+  const { useState } = await import('react');
+  return {
+    // Records the broadcast it was mounted for, so a test can tell a remount
+    // from a prop change.
+    ViewerScreen: ({ broadcastId }: { broadcastId: string }) => {
+      const [mountedFor] = useState(broadcastId);
+      return (
+        <div data-testid="viewer" data-mounted-for={mountedFor}>
+          {broadcastId}
+        </div>
+      );
+    },
+  };
+});
 vi.mock('./features/broadcaster/BroadcasterScreen', () => ({
   BroadcasterScreen: () => <div data-testid="broadcaster" />,
 }));
@@ -65,8 +73,7 @@ describe('App browser-support gate', () => {
     expect(screen.getByTestId('landing')).toBeTruthy();
   });
 
-  // The regression pin: Safari was warned about by user agent while the relay
-  // refused WebKit. With that fixed, a Safari that has the API is supported.
+  // No engine check: a Safari that has the API is supported.
   it('does not warn Safari by engine when it has WebTransport', () => {
     withWebTransport();
     setUserAgent(SAFARI);
@@ -114,5 +121,22 @@ describe('App browser-support gate', () => {
 
     render(<App />);
     expect(dialog()).toBeTruthy();
+  });
+});
+
+// The viewer holds per-broadcast state (audio controls, telemetry session,
+// diagnostics history); moving to another broadcast must not inherit it.
+describe('App viewer route', () => {
+  it('mounts a fresh viewer for each broadcast', () => {
+    withWebTransport();
+    window.location.hash = '#/view/AAAAAA';
+    render(<App />);
+    expect(screen.getByTestId('viewer').dataset.mountedFor).toBe('AAAAAA');
+    act(() => {
+      window.location.hash = '#/view/BBBBBB';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(screen.getByTestId('viewer').textContent).toBe('BBBBBB');
+    expect(screen.getByTestId('viewer').dataset.mountedFor).toBe('BBBBBB');
   });
 });
