@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.46.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.46.0...gawk-app/v0.46.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **app:** bugs and comment cleanup from a full code review ([#376](https://github.com/Tuhis/gawk/issues/376)) ([3bbc86e](https://github.com/Tuhis/gawk/commit/3bbc86e6d66bdbcd11c5bf494fc7df5c7d22d0a5))
+* **app:** enable Safari broadcasting (WebKit datagram writer, in-gesture screen picker) ([#373](https://github.com/Tuhis/gawk/issues/373)) ([ea8ebb0](https://github.com/Tuhis/gawk/commit/ea8ebb012703adfcd08d0fa47c9722fc6c7a89c0))
+* **r57:** close codes Chrome can read, and rooms that end cleanly ([#375](https://github.com/Tuhis/gawk/issues/375)) ([41fef4d](https://github.com/Tuhis/gawk/commit/41fef4d1ce6d7864c21d04e29dd27324bf24dfde))
+
 ## [0.46.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.45.2...gawk-app/v0.46.0) (2026-09-23)
 
 
