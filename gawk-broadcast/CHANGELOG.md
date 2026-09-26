@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.2](https://github.com/Tuhis/gawk/compare/gawk-broadcast/v1.15.1...gawk-broadcast/v1.15.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* **r57:** close codes Chrome can read, and rooms that end cleanly ([#375](https://github.com/Tuhis/gawk/issues/375)) ([41fef4d](https://github.com/Tuhis/gawk/commit/41fef4d1ce6d7864c21d04e29dd27324bf24dfde))
+
 ## [1.15.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast/v1.15.0...gawk-broadcast/v1.15.1) (2026-09-21)
 
 

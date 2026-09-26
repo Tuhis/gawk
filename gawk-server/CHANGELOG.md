@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.1](https://github.com/Tuhis/gawk/compare/gawk-server/v0.29.0...gawk-server/v0.29.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **r57:** close codes Chrome can read, and rooms that end cleanly ([#375](https://github.com/Tuhis/gawk/issues/375)) ([41fef4d](https://github.com/Tuhis/gawk/commit/41fef4d1ce6d7864c21d04e29dd27324bf24dfde))
+
 ## [0.29.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.28.1...gawk-server/v0.29.0) (2026-09-23)
 
 
