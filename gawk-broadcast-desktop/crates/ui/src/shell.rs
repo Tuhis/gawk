@@ -23,6 +23,7 @@
 
 use crate::messages::{StartFailure, can_mint, first_line, message};
 use crate::{MainWindow, StatRow, debuglog, diagnostics, refresh_captions, version};
+use gawk_engine::RoomGrant;
 use gawk_engine::clock::{Clock, MonotonicClock};
 use gawk_engine::config::{self, Config, DEFAULT_SERVER_NAME, ServerProfile};
 use gawk_engine::sender::Sender;
@@ -227,9 +228,9 @@ pub struct Shell {
     uplink: gawk_engine::uplink::UplinkMonitor,
     uplink_warned: bool,
     /// R42: the grant the "Open room view" link carries — the creator token
-    /// (hex) of a room this session minted, or the static room's attach
-    /// key. In memory only: it is a one-broadcast affair.
-    room_grant: String,
+    /// of a room this session minted, or the static room's attach key. In
+    /// memory only: it is a one-broadcast affair.
+    room_grant: Option<RoomGrant>,
     /// Set when the user clicked Detach/Leave, so the RoomDetached that
     /// follows is read as "we left" rather than "the creator removed us".
     room_leaving: bool,
@@ -377,7 +378,7 @@ pub fn run(
         health_countdown: 0,
         uplink: gawk_engine::uplink::UplinkMonitor::new(),
         uplink_warned: false,
-        room_grant: String::new(),
+        room_grant: None,
         room_leaving: false,
         nick_timer: slint::Timer::default(),
         nick_sent: String::new(),
@@ -848,7 +849,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                     return;
                 };
                 let key = sh.cfg.room_attach_secret.clone();
-                sh.room_grant = key.clone();
+                sh.room_grant = attach_grant(&key);
                 sh.room_leaving = false;
                 drop(sh);
                 log::info!("room join requested");
@@ -870,7 +871,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 let Some(session) = sh.session.clone() else {
                     return;
                 };
-                sh.room_grant.clear();
+                sh.room_grant = None;
                 sh.room_leaving = false;
                 drop(sh);
                 log::info!("room mint requested");
@@ -1011,9 +1012,9 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         }
     };
     sh.room_grant = if room_code.is_empty() {
-        String::new()
+        None
     } else {
-        sh.cfg.room_attach_secret.clone()
+        attach_grant(&sh.cfg.room_attach_secret)
     };
     sh.room_leaving = false;
     reset_room_ui(ui);
@@ -1282,7 +1283,8 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
         EngineEvent::RoomState(s) => {
             let sh = shell.borrow();
             let attached = s.has(&sh.broadcast_id);
-            let link = gawk_engine::room_link(&sh.cfg.resolve_app_url(), &s.code, &sh.room_grant);
+            let link =
+                gawk_engine::room_link(&sh.cfg.resolve_app_url(), &s.code, sh.room_grant.as_ref());
             // Never the code: the HMAC'd key is the log handle.
             log::info!(
                 "room state: key {} · {} broadcasts · {} participants · attached {attached}",
@@ -1302,8 +1304,9 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             creator_token_hex,
         } => {
             let mut sh = shell.borrow_mut();
-            sh.room_grant = creator_token_hex;
-            let link = gawk_engine::room_link(&sh.cfg.resolve_app_url(), &code, &sh.room_grant);
+            sh.room_grant = Some(RoomGrant::Creator(creator_token_hex));
+            let link =
+                gawk_engine::room_link(&sh.cfg.resolve_app_url(), &code, sh.room_grant.as_ref());
             drop(sh);
             log::info!("room minted");
             ui.set_room_code(code.into());
@@ -1348,6 +1351,11 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             );
         }
     }
+}
+
+/// A static room's attach key as the room-view grant; none when unset.
+fn attach_grant(key: &str) -> Option<RoomGrant> {
+    (!key.is_empty()).then(|| RoomGrant::Attach(key.to_owned()))
 }
 
 /// The room card back to "no room session": the inputs stay, the live
@@ -1408,7 +1416,7 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     sh.reporter.finish();
     // The room session lives as long as the broadcast it attaches; the
     // engine already stopped it.
-    sh.room_grant.clear();
+    sh.room_grant = None;
     sh.room_leaving = false;
     drop(sh);
     reset_room_ui(ui);
