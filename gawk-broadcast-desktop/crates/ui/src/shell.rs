@@ -378,6 +378,21 @@ pub fn run(
         }
     }
 
+    // A room saved as a pasted link (before the fix for #381's review) held
+    // its grant in the clear: keep the code, move the grant to its wrapped
+    // field, and rewrite the file.
+    if let Some(input) = parse_room_input(&cfg.room)
+        && input.grant.is_some()
+    {
+        store_room_choice(&mut cfg, &input);
+        log::info!("moved a stored room link's grant into the credential store");
+        if let Some(p) = &cfg_path
+            && let Err(e) = config::save(p, &cfg, &*creds())
+        {
+            log::warn!("could not save the room settings: {e}");
+        }
+    }
+
     let (msg_tx, msg_rx) = mpsc::channel();
     let shell = Rc::new(RefCell::new(Shell {
         platform,
@@ -1288,7 +1303,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             if let Some(ui) = ui_weak.upgrade() {
                 let raw = ui.get_room_input().to_string();
                 match parse_room_input(&raw) {
-                    Some(input) => choose_room(&ui, &shell, &raw, input),
+                    Some(input) => choose_room(&ui, &shell, input),
                     None => {
                         ui.set_room_input_echo("That isn't a room code or a room link.".into());
                         ui.set_room_input_ok(false);
@@ -1302,12 +1317,11 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         let ui_weak = ui_weak.clone();
         ui.on_room_join_recent(move |code| {
             if let Some(ui) = ui_weak.upgrade() {
-                let code = code.to_string();
                 let input = RoomInput {
-                    code: code.clone(),
+                    code: code.to_string(),
                     grant: None,
                 };
-                choose_room(&ui, &shell, &code, input);
+                choose_room(&ui, &shell, input);
             }
         });
     }
@@ -1324,6 +1338,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                     sh.pending_create = true;
                     sh.cfg.room.clear();
                     sh.cfg.room_attach_secret.clear();
+                    sh.cfg.room_creator_token.clear();
                     save_config(&mut sh);
                     refresh_ready(&ui, &sh.cfg, true);
                     return;
@@ -1367,6 +1382,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 sh.pending_create = false;
                 sh.cfg.room.clear();
                 sh.cfg.room_attach_secret.clear();
+                sh.cfg.room_creator_token.clear();
                 save_config(&mut sh);
                 refresh_ready(&ui, &sh.cfg, false);
             }
@@ -1382,6 +1398,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 sh.room_leaving = true;
                 sh.cfg.room.clear();
                 sh.cfg.room_attach_secret.clear();
+                sh.cfg.room_creator_token.clear();
                 save_config(&mut sh);
                 refresh_ready(&ui, &sh.cfg, sh.pending_create);
                 if let Some(session) = sh.session.clone() {
@@ -1660,7 +1677,7 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
             };
             let creator = match grant {
                 Some(RoomGrant::Creator(hex)) => hex.clone(),
-                _ => String::new(),
+                _ => sh.cfg.room_creator_token.clone(),
             };
             (code.clone(), attach, creator)
         }
@@ -2107,6 +2124,7 @@ fn forget_pending_room(sh: &mut Shell, code: &str) {
     if !code.is_empty() && pending.is_some_and(|p| p.eq_ignore_ascii_case(code)) {
         sh.cfg.room.clear();
         sh.cfg.room_attach_secret.clear();
+        sh.cfg.room_creator_token.clear();
         save_config(sh);
     }
 }
@@ -2183,22 +2201,9 @@ fn begin_room_session(sh: &mut Shell, key: &str) {
 /// A room was chosen in the sheet (docs/60 D8). It becomes the room the
 /// next broadcast joins, and when live it is joined now. The grant a pasted
 /// link carried wins over a key on file for that room.
-fn choose_room(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, raw: &str, input: RoomInput) {
+fn choose_room(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, input: RoomInput) {
     let mut sh = shell.borrow_mut();
-    let attach = match &input.grant {
-        Some(RoomGrant::Attach(k)) => k.clone(),
-        _ => sh
-            .cfg
-            .room_attach_key(&input.code)
-            .unwrap_or_default()
-            .to_owned(),
-    };
-    let creator = match &input.grant {
-        Some(RoomGrant::Creator(hex)) => hex.clone(),
-        _ => String::new(),
-    };
-    sh.cfg.room = raw.trim().to_string();
-    sh.cfg.room_attach_secret = attach.clone();
+    let (attach, creator) = store_room_choice(&mut sh.cfg, &input);
     sh.pending_create = false;
     save_config(&mut sh);
     refresh_ready(ui, &sh.cfg, false);
@@ -2223,6 +2228,30 @@ fn choose_room(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, raw: &str, input: Ro
     ui.set_room_code(input.code.into());
     ui.set_room_link("".into());
     ui.set_room_status("Joining the room…".into());
+}
+
+/// Records the chosen room as the one the next broadcast joins, and
+/// returns its (attach key, creator token hex).
+///
+/// `room` is stored in the clear, so it holds only the code: a pasted
+/// link's grant goes to the wrapped `roomAttachSecret` or
+/// `roomCreatorToken` (review of #381).
+fn store_room_choice(cfg: &mut Config, input: &RoomInput) -> (String, String) {
+    let attach = match &input.grant {
+        Some(RoomGrant::Attach(k)) => k.clone(),
+        _ => cfg
+            .room_attach_key(&input.code)
+            .unwrap_or_default()
+            .to_owned(),
+    };
+    let creator = match &input.grant {
+        Some(RoomGrant::Creator(hex)) => hex.clone(),
+        _ => String::new(),
+    };
+    cfg.room = input.code.clone();
+    cfg.room_attach_secret = attach.clone();
+    cfg.room_creator_token = creator.clone();
+    (attach, creator)
 }
 
 /// A static room's attach key as the room-view grant; none when unset.
@@ -2815,6 +2844,57 @@ mod tests {
     }
 
     // --- docs/60 DR3: the redesign's view logic ---------------------------
+
+    // Review finding on #381: a pasted link's `?rt=` grant is a credential.
+    // `room` is stored in the clear, so it must hold only the code; the
+    // attach key and the creator token go to their wrapped fields.
+    #[test]
+    fn a_pasted_links_grant_never_reaches_the_file_in_the_clear() {
+        use gawk_engine::config::{load, save};
+        struct Wrap;
+        impl config::Credentials for Wrap {
+            fn wrap(&self, v: &str) -> String {
+                if v.is_empty() {
+                    String::new()
+                } else {
+                    format!("wrapped:{}", v.chars().rev().collect::<String>())
+                }
+            }
+            fn unwrap(&self, s: &str) -> String {
+                s.strip_prefix("wrapped:")
+                    .map_or_else(|| s.to_owned(), |v| v.chars().rev().collect())
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("gawk-shell-grant-{}", std::process::id()));
+        let path = dir.join("broadcast.json");
+        let token = "5a".repeat(16);
+        for (raw, secret) in [
+            (
+                "https://gawk.ioio.fi/#/room/lan-party?rt=a%3Ak3ysecret".to_string(),
+                "k3ysecret".to_string(),
+            ),
+            (
+                format!("https://gawk.ioio.fi/#/room/K7XQ2M?rt=c:{token}"),
+                token.clone(),
+            ),
+        ] {
+            let mut cfg = Config::default();
+            let input = parse_room_input(&raw).unwrap();
+            let (attach, creator) = store_room_choice(&mut cfg, &input);
+            assert_eq!(cfg.room, input.code, "room holds the code only");
+            assert!(attach == secret || creator == secret);
+            save(&path, &cfg, &Wrap).unwrap();
+            let on_disk = std::fs::read_to_string(&path).unwrap();
+            assert!(!on_disk.contains(&secret), "grant in the clear: {on_disk}");
+            // The grant survives the round trip, for the next go-live.
+            let (loaded, _) = load(&path, &Wrap);
+            assert!(
+                loaded.room_attach_secret == secret || loaded.room_creator_token == secret,
+                "{loaded:?}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn quality_line_names_the_next_broadcast() {

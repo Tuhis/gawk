@@ -175,8 +175,9 @@ it; chosen while live, it is joined now.
 
 | Config key | Meaning |
 |---|---|
-| `room` | The room the next broadcast joins: a dynamic code, a static slug, or a pasted `…/#/room/<CODE>` link; blank = no room. Re-attached on every resume. |
+| `room` | The code (or static slug) of the room the next broadcast joins; blank = no room. A pasted link is reduced to its code. Re-attached on every resume. |
 | `roomAttachSecret` | That room's attach key, from a pasted link's `?rt=a:…` or typed when the room asked for it (DPAPI-wrapped like the publish secret) |
+| `roomCreatorToken` | That room's creator token, from a pasted link's `?rt=c:…` (wrapped the same way) |
 | `recentRooms` | "Your rooms": the rooms this app joined, saved ones first, at most 8 unsaved; each keeps its attach key (wrapped the same way) |
 | `nickname` | Your name in the room, and what your tile is called (blank = the relay picks one). Editable while live: the roster and the tile follow. |
 

@@ -114,6 +114,10 @@ pub struct Config {
     /// the tile. A pre-2026-09-14 profile's `roomLabel` key is ignored on
     /// load (serde default) and gone after the next save.
     pub nickname: String,
+    /// The creator token (hex) of the room in `room`, when a pasted link
+    /// carried one — a credential (DPAPI-wrapped on Windows, like the attach
+    /// key). `room` itself only ever holds the code.
+    pub room_creator_token: String,
     /// "Your rooms" (docs/60 D8), see [`Config::remember_room`].
     pub recent_rooms: Vec<RecentRoom>,
     /// Set while a broadcast is live, cleared when it ends inside the app:
@@ -492,6 +496,7 @@ pub fn load(path: &Path, creds: &dyn Credentials) -> (Config, Option<String>) {
             cfg.publish_secret = creds.unwrap(&cfg.publish_secret);
             cfg.last_resume_token = creds.unwrap(&cfg.last_resume_token);
             cfg.room_attach_secret = creds.unwrap(&cfg.room_attach_secret);
+            cfg.room_creator_token = creds.unwrap(&cfg.room_creator_token);
             for r in &mut cfg.recent_rooms {
                 r.attach_secret = creds.unwrap(&r.attach_secret);
             }
@@ -578,6 +583,7 @@ pub fn save(path: &Path, cfg: &Config, creds: &dyn Credentials) -> Result<(), St
     stored.publish_secret = creds.wrap(&cfg.publish_secret);
     stored.last_resume_token = creds.wrap(&cfg.last_resume_token);
     stored.room_attach_secret = creds.wrap(&cfg.room_attach_secret);
+    stored.room_creator_token = creds.wrap(&cfg.room_creator_token);
     for r in &mut stored.recent_rooms {
         r.attach_secret = creds.wrap(&r.attach_secret);
     }

@@ -74,11 +74,14 @@ deliberate differences are listed in §5.
 
 Capture, encode, audio, the sender, the session lifecycle, resume, the
 identity latch, telemetry, the uplink monitor, the relay and the wire.
-Every existing config key keeps its meaning. The new keys (`recentRooms`,
-`wasLive`, `lastSource`) default to absent, so an old file loads unchanged.
-Room attach keys stored in `recentRooms` are credentials: DPAPI-wrapped on
-Windows and plaintext in the mode-0600 file on macOS, like
-`roomAttachSecret` (docs/54 D12).
+Every existing config key keeps its meaning, except that `room` now only
+ever holds a code: a pasted link's `?rt=` grant goes to the wrapped
+`roomAttachSecret` or the new `roomCreatorToken`, and a file that stored a
+link is rewritten that way at launch. The new keys (`recentRooms`,
+`roomCreatorToken`, `wasLive`, `lastSource`) default to absent, so an old
+file loads unchanged. Room attach keys in `recentRooms` and the creator
+token are credentials: DPAPI-wrapped on Windows and plaintext in the
+mode-0600 file on macOS, like `roomAttachSecret` (docs/54 D12).
 
 ## 5. Differences from the canvas
 
