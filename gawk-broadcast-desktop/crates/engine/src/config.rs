@@ -54,6 +54,26 @@ pub struct ServerProfile {
     pub publish_secret: String,
 }
 
+/// One room in "Your rooms" (docs/60 D8): the rooms this app joined, most
+/// recent first, with the ones the user saved kept.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RecentRoom {
+    /// The code or static slug, as last joined.
+    pub code: String,
+    /// Starred: never dropped by the cap, listed first.
+    pub saved: bool,
+    /// Unix seconds of the last join.
+    pub last_joined: u64,
+    /// The static room's attach key, when it needed one — a credential
+    /// (DPAPI-wrapped on Windows, like `roomAttachSecret`).
+    pub attach_secret: String,
+}
+
+/// How many rooms "Your rooms" keeps. Saved rooms are never dropped to make
+/// room, so the list can exceed this only by saved ones.
+pub const MAX_RECENT_ROOMS: usize = 8;
+
 /// The persisted settings. Field names are the wire-visible JSON keys —
 /// lowerCamelCase, matching the Linux broadcaster's file where shared.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -94,9 +114,70 @@ pub struct Config {
     /// the tile. A pre-2026-09-14 profile's `roomLabel` key is ignored on
     /// load (serde default) and gone after the next save.
     pub nickname: String,
+    /// "Your rooms" (docs/60 D8), see [`Config::remember_room`].
+    pub recent_rooms: Vec<RecentRoom>,
+    /// Set while a broadcast is live, cleared when it ends inside the app:
+    /// still set at launch means the app died live (docs/60 D12).
+    pub was_live: bool,
+    /// The last source shared (Windows, docs/60 D5): `display:<label>` or
+    /// `window:<title>`. Blank = none yet.
+    pub last_source: String,
 }
 
 impl Config {
+    /// Records a room join in "Your rooms": moves it to the front with the
+    /// time, keeps its saved star, and stores the attach key when one was
+    /// used (an empty key keeps the one on file). Codes compare
+    /// case-insensitively, as the relay joins them. Beyond
+    /// [`MAX_RECENT_ROOMS`], the oldest unsaved rooms go.
+    pub fn remember_room(&mut self, code: &str, attach_secret: &str, now: u64) {
+        let code = code.trim();
+        if code.is_empty() {
+            return;
+        }
+        let mut entry = match self
+            .recent_rooms
+            .iter()
+            .position(|r| r.code.eq_ignore_ascii_case(code))
+        {
+            Some(i) => self.recent_rooms.remove(i),
+            None => RecentRoom::default(),
+        };
+        entry.code = code.to_owned();
+        entry.last_joined = now;
+        if !attach_secret.is_empty() {
+            entry.attach_secret = attach_secret.to_owned();
+        }
+        self.recent_rooms.insert(0, entry);
+        while self.recent_rooms.len() > MAX_RECENT_ROOMS {
+            match self.recent_rooms.iter().rposition(|r| !r.saved) {
+                Some(i) => {
+                    self.recent_rooms.remove(i);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// Stars or unstars a room in "Your rooms".
+    pub fn set_room_saved(&mut self, code: &str, saved: bool) {
+        if let Some(r) = self
+            .recent_rooms
+            .iter_mut()
+            .find(|r| r.code.eq_ignore_ascii_case(code))
+        {
+            r.saved = saved;
+        }
+    }
+
+    /// The stored attach key for a room in "Your rooms", if any.
+    pub fn room_attach_key(&self, code: &str) -> Option<&str> {
+        self.recent_rooms
+            .iter()
+            .find(|r| r.code.eq_ignore_ascii_case(code) && !r.attach_secret.is_empty())
+            .map(|r| r.attach_secret.as_str())
+    }
+
     /// The selected custom server profile, or `None` when the built-in
     /// default is selected (blank/`"default"`/unknown name — the default's
     /// identity is never a stored profile's).
@@ -411,6 +492,9 @@ pub fn load(path: &Path, creds: &dyn Credentials) -> (Config, Option<String>) {
             cfg.publish_secret = creds.unwrap(&cfg.publish_secret);
             cfg.last_resume_token = creds.unwrap(&cfg.last_resume_token);
             cfg.room_attach_secret = creds.unwrap(&cfg.room_attach_secret);
+            for r in &mut cfg.recent_rooms {
+                r.attach_secret = creds.unwrap(&r.attach_secret);
+            }
             for p in &mut cfg.servers {
                 p.publish_secret = creds.unwrap(&p.publish_secret);
             }
@@ -494,6 +578,9 @@ pub fn save(path: &Path, cfg: &Config, creds: &dyn Credentials) -> Result<(), St
     stored.publish_secret = creds.wrap(&cfg.publish_secret);
     stored.last_resume_token = creds.wrap(&cfg.last_resume_token);
     stored.room_attach_secret = creds.wrap(&cfg.room_attach_secret);
+    for r in &mut stored.recent_rooms {
+        r.attach_secret = creds.wrap(&r.attach_secret);
+    }
     for p in &mut stored.servers {
         p.publish_secret = creds.wrap(&p.publish_secret);
     }
@@ -737,6 +824,89 @@ mod tests {
         assert_eq!(migrated.room, "lan-party");
         assert_eq!(migrated.room_attach_secret, "k3y");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // docs/60 D8, D12, D5: the redesign's keys round-trip, and a room's
+    // attach key is a credential like roomAttachSecret.
+    #[test]
+    fn redesign_keys_round_trip_with_room_keys_wrapped() {
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-recent-{}", std::process::id()));
+        let path = dir.join("broadcast.json");
+        let mut cfg = Config {
+            was_live: true,
+            last_source: "display:Display 1".into(),
+            ..Default::default()
+        };
+        cfg.remember_room("lan-party", "k3y", 100);
+        cfg.remember_room("K7XQ2M", "", 200);
+        cfg.set_room_saved("lan-party", true);
+        save(&path, &cfg, &Reversing).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"recentRooms\""), "{raw}");
+        assert!(raw.contains("\"attachSecret\": \"wrapped:k3y\""), "{raw}");
+        assert!(!raw.contains("\"k3y\""), "attach key in the clear: {raw}");
+        assert!(raw.contains("\"wasLive\": true"), "{raw}");
+        assert!(
+            raw.contains("\"lastSource\": \"display:Display 1\""),
+            "{raw}"
+        );
+        let (loaded, warn) = load(&path, &Reversing);
+        assert!(warn.is_none());
+        assert_eq!(loaded, cfg);
+        assert_eq!(loaded.room_attach_key("LAN-PARTY"), Some("k3y"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_file_without_the_redesign_keys_loads_with_defaults() {
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-norecent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broadcast.json");
+        std::fs::write(&path, br#"{"room": "lan-party", "nickname": "Juho"}"#).unwrap();
+        let (loaded, warn) = load(&path, &Plaintext);
+        assert!(warn.is_none());
+        assert!(loaded.recent_rooms.is_empty());
+        assert!(!loaded.was_live);
+        assert_eq!(loaded.last_source, "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn recent_rooms_move_to_the_front_and_cap_without_dropping_saved_ones() {
+        let mut cfg = Config::default();
+        cfg.remember_room("saved-one", "k", 1);
+        cfg.set_room_saved("saved-one", true);
+        for i in 0..10u64 {
+            cfg.remember_room(&format!("room-{i}"), "", 10 + i);
+        }
+        assert_eq!(cfg.recent_rooms.len(), MAX_RECENT_ROOMS);
+        assert_eq!(cfg.recent_rooms[0].code, "room-9");
+        assert!(
+            cfg.recent_rooms.iter().any(|r| r.code == "saved-one"),
+            "the cap never drops a saved room"
+        );
+        assert!(!cfg.recent_rooms.iter().any(|r| r.code == "room-0"));
+
+        // A re-join (any case) moves it to the front, keeps its star and
+        // its key when no new key is given.
+        cfg.remember_room("SAVED-ONE", "", 99);
+        let front = &cfg.recent_rooms[0];
+        assert_eq!(
+            (front.code.as_str(), front.saved, front.last_joined),
+            ("SAVED-ONE", true, 99)
+        );
+        assert_eq!(front.attach_secret, "k");
+        assert_eq!(
+            cfg.recent_rooms
+                .iter()
+                .filter(|r| r.code.eq_ignore_ascii_case("saved-one"))
+                .count(),
+            1
+        );
+        // A blank code is not a room.
+        let before = cfg.recent_rooms.clone();
+        cfg.remember_room("  ", "", 1);
+        assert_eq!(cfg.recent_rooms, before);
     }
 
     #[test]
