@@ -1229,7 +1229,10 @@ Add to it when a new gotcha lands in `docs/`.
   moderator's kill: an IP ban names no broadcast on an edge pod, and an ID
   ban can reach its informer after the Lease deletion does. The Lease says
   *that* it's over, the origin says *why*; a Lease deletion waits a bounded
-  500 ms for an attached pull to report. ([docs/59](59-close-notice.md) D2,
+  500 ms for an attached pull to report. That kill never passes through
+  `Server.terminate`, so the edge counts it in
+  `gawk_moderation_terminations_total` itself, or the pod reports 0 for a
+  kill it carried out. ([docs/59](59-close-notice.md) D2,
   [docs/22](22-relay-scale-out.md) Decision 10)
 
 **Moderation and the admin portal (R39)**
