@@ -853,6 +853,7 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
     ratio, so it would also wave leg-A chunk loss through as a single-viewer
     problem. It went `unavailable` here only for lack of
     `peerMedianDropped`.
+
   The two `readapi` producers also divide *lifetime* counters, the same
   dilution `live.go` already fixed with its windowed ratio. So even a
   chunk-based ratio would hide a loss episode that starts late in a long
