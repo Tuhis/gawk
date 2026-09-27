@@ -195,6 +195,9 @@ fn main() {
                     .borrow_mut()
                     .platform_mut::<Windows>()
                     .refresh_picker(&ui);
+                // The list's indices moved: select the remembered source
+                // again (docs/60 D5).
+                shell::reselect_source(&ui, &shell);
             }
         });
     });
