@@ -1316,7 +1316,7 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             log::info!("attached to the room");
             ui.set_room_attached(true);
         }
-        EngineEvent::RoomDetached { reason } => {
+        EngineEvent::RoomDetached { reason, .. } => {
             let mut sh = shell.borrow_mut();
             let left = sh.room_leaving;
             sh.room_leaving = false;
