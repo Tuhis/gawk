@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.29.1](https://github.com/Tuhis/gawk/compare/gawk-server/v0.29.0...gawk-server/v0.29.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **r57:** close codes Chrome can read, and rooms that end cleanly ([#375](https://github.com/Tuhis/gawk/issues/375)) ([41fef4d](https://github.com/Tuhis/gawk/commit/41fef4d1ce6d7864c21d04e29dd27324bf24dfde))
+* **server:** an edge that ends on its origin's 4006 counts the kill ([#379](https://github.com/Tuhis/gawk/issues/379)) ([6292144](https://github.com/Tuhis/gawk/commit/6292144cc5bc4a58b442330d8cb4bbae3c17e20b))
+
 ## [0.29.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.28.1...gawk-server/v0.29.0) (2026-09-23)
 
 
