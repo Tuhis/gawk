@@ -139,6 +139,14 @@ A Lease deletion waits up to 500 ms for an attached pull to end this way
 before tearing it down, because the informer event can beat the origin's QUIC
 close to the edge pod.
 
+An edge that ends its hub on the origin's 4006 counts the kill in its own
+`gawk_moderation_terminations_total`. That path bypasses `Server.terminate`,
+which counts the kills a Ban event actuates, and without the count the edge
+pod reported 0 for a kill it carried out. The e2e-cluster tier asserts a
+count on every pod, so it failed on every release PR after CN5 shipped. Each
+pod counts a kill once: whichever of the two paths removes the hub counts it,
+and the other finds nothing to remove.
+
 4004 goes only to a publisher, and publishers connect to the origin. A stripe
 leg gets no notice, but its primary session does, and the primary is what
 reports the end.
@@ -213,7 +221,7 @@ terminal close (4000/4004/4006)
 | **CN2** | Relay sends the notice | `closenotice_test.go`: a Go client sees the notice *and then* the same close code for a GC'd broadcast's viewer (4000), a deposed publisher (4004), and a killed broadcast's publisher and viewer (4006); `TestEdgeViewerGetsCloseNoticeWhenTheBroadcastEnds`: a viewer on an **edge** pod gets the notice and 4000 when the origin's broadcast ends; `TestReclaimSupersedesActivePublisher` updated to read through the notice; `go test -race ./...` green | ✅ |
 | **CN3** | Web viewer and broadcaster use it | `connection.test.ts` dispatches the notice without touching media and counts a malformed one; `viewer.test.ts` reports the noticed code when `closed` has none and when the read loop dies first; `broadcaster-resume.test.ts` treats a noticed 4004/4006 as terminal with no resume dial | ✅ |
 | **CN4** | Rooms act on RoomEnding; broadcaster room UX | `room-session.test.ts` RoomEnding + code-less loss → `onEnded`; `RoomScreen.test.tsx` self-end returns without a card, others' end and own-stream removal show a card and return on acknowledge; `BroadcasterScreen.room.test.tsx` a mid-broadcast failure leaves the room and says "Your broadcast stopped" | ✅ |
-| **CN5** | The edge passes on its origin's terminal code | `edge_test.go` `TestEdgeHonoursTheOriginsTerminalClose`: 4006 and 4000 end the edge's viewers with the origin's code and no re-dial, while 4000 after a re-home and a 4002 drain re-attach; `cluster_integration_test.go` `TestEdgeViewerIsToldTheOriginsKillCode`: over a real two-pod cascade, an IP ban and an ID ban the edge pod hasn't seen both reach the edge's viewer as 4006 with the notice (15/15 under `-race`); `TestEdgeViewerGetsCloseNoticeWhenTheBroadcastEnds`: 4000 likewise | ✅ |
+| **CN5** | The edge passes on its origin's terminal code | `edge_test.go` `TestEdgeHonoursTheOriginsTerminalClose`: 4006 and 4000 end the edge's viewers with the origin's code and no re-dial, while 4000 after a re-home and a 4002 drain re-attach; `cluster_integration_test.go` `TestEdgeViewerIsToldTheOriginsKillCode`: over a real two-pod cascade, an IP ban and an ID ban the edge pod hasn't seen both reach the edge's viewer as 4006 with the notice (15/15 under `-race`), and each pod counts exactly one termination, including after the ID ban reaches the edge late; `TestEdgeViewerGetsCloseNoticeWhenTheBroadcastEnds`: 4000 likewise | ✅ |
 
 ---
 

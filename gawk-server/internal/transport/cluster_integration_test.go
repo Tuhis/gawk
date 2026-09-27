@@ -746,6 +746,25 @@ func TestEdgeViewerIsToldTheOriginsKillCode(t *testing.T) {
 
 			n, nAt, code, cAt := drainUntilClosed(t, ctx, viewerB)
 			assertNoticedClose(t, "edge viewer", wire.CloseCodeTerminatedByOperator, n, nAt, code, cAt)
+
+			// Every pod that held the broadcast counts its own kill, however
+			// it learned of it — the metric's contract, and what the
+			// e2e-cluster tier asserts fleet-wide. The edge's kill came off
+			// its upstream's 4006, not a Ban event, and counted nowhere
+			// (release PR #374's e2e-cluster: "only 1/2 pods counted a
+			// termination").
+			waitFor(t, 5*time.Second, func() bool {
+				return podA.srv.metrics.TerminationCount() == 1 && podB.srv.metrics.TerminationCount() == 1
+			}, "one termination counted on each pod")
+			// A Ban event that reaches the edge only now finds nothing to
+			// kill, and must not count the same kill twice.
+			if !tc.edgeGot {
+				podB.srv.SetModeration(banSet(t, rec))
+				podB.srv.HandleBanAdded(rec)
+			}
+			if got := podB.srv.metrics.TerminationCount(); got != 1 {
+				t.Errorf("edge TerminationCount after its own Ban event = %v, want 1", got)
+			}
 		})
 	}
 }

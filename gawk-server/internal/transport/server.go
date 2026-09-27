@@ -682,6 +682,9 @@ func (s *Server) SetCluster(c ClusterCoordinator, podName string) {
 	em := newEdgeManager(s.registry, c,
 		newEdgeDialer(s.cfg.InternalServerName, s.cfg.InternalPSK, nil, s.log),
 		podName, s.log)
+	// Every pod that held a killed broadcast counts its own kill (R39), and
+	// an edge's usually arrives as its origin's 4006 rather than a Ban event.
+	em.terminated = s.metrics.Termination
 	s.wiring.Store(&clusterWiring{coord: c, edges: em})
 	s.onDrain = func() {
 		em.Stop()

@@ -167,6 +167,12 @@ type EdgeManager struct {
 	podName  string
 	linger   time.Duration
 	log      *slog.Logger
+	// terminated is told about each broadcast this pod's edge pull
+	// terminated on its origin's 4006 (the pod's kill counter, set by
+	// SetCluster). A kill that arrives this way never passes through
+	// Server.terminate, which counts the ones a Ban event actuates. Nil in
+	// the unit harness.
+	terminated func()
 
 	baseCtx    context.Context
 	cancelBase context.CancelFunc
@@ -426,7 +432,11 @@ func (es *edgeSession) run() {
 		// 4000 for a moderator's 4006.
 		if code, ok := upstreamTerminalCode(upErr); ok && es.upstreamEndIsFinal(code, origin) {
 			if code == wire.CloseCodeTerminatedByOperator {
-				es.m.registry.TerminateBroadcast(es.id, code, terminationReason)
+				// Counted only if this removed the hub: a Ban event that got
+				// here first went through Server.terminate, which counted it.
+				if es.m.registry.TerminateBroadcast(es.id, code, terminationReason) && es.m.terminated != nil {
+					es.m.terminated()
+				}
 			} else {
 				es.m.registry.EndBroadcast(es.id)
 			}
