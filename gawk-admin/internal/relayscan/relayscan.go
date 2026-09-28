@@ -409,7 +409,8 @@ func (s *Scanner) scrapePod(ctx context.Context, addr string) Pod {
 		p.RoomsErr = rErr.Error()
 		// A 404 here, with broadcasts answering, is a relay that predates
 		// R49 — not the missing-token case get() would name.
-		if errors.Is(rErr, errNotFound) {
+		var nf *notFoundError
+		if errors.As(rErr, &nf) {
 			p.RoomsErr = "/internal/admin/rooms returned 404: the relay predates R49"
 		}
 	default:
@@ -436,7 +437,7 @@ func (s *Scanner) get(ctx context.Context, addr, path string, out any) error {
 		// 404 means the relay has no credential configured (§4.3) — worth
 		// saying plainly, because it is the most likely misconfiguration.
 		if resp.StatusCode == http.StatusNotFound {
-			return fmt.Errorf("%s returned 404: the relay has no -admin-api-token configured: %w", path, errNotFound)
+			return &notFoundError{path: path}
 		}
 		return fmt.Errorf("%s returned %d", path, resp.StatusCode)
 	}
@@ -486,9 +487,13 @@ func aggregate(pods []Pod) []Aggregate {
 	return out
 }
 
-// errNotFound marks a 404 from a pod, so a caller can tell "this route does
-// not exist" from every other failure.
-var errNotFound = errors.New("not found")
+// notFoundError is a 404 from a pod, typed so a caller can tell "this route
+// does not exist" from every other failure without parsing the message.
+type notFoundError struct{ path string }
+
+func (e *notFoundError) Error() string {
+	return e.path + " returned 404: the relay has no -admin-api-token configured"
+}
 
 // aggregateRooms lists every room some reachable pod is home for. Exactly one
 // pod is home for a room; should two briefly claim it (an adoption racing a
