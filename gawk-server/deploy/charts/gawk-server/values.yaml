@@ -113,10 +113,11 @@ moderation:
   # namespace. "file:/path/to/bans.json" is the dev/compose lane, reloaded on
   # change and on SIGHUP — set it here only if you are mounting such a file.
   source: k8s
-  # The relay's read-only admin API (docs/42 §4.5): GET /internal/admin/broadcasts
-  # and /internal/admin/config on the ops listener (ClusterIP-only, port
-  # metrics.port). These are how gawk-admin enumerates live broadcasts and shows
-  # each pod's effective config.
+  # The relay's read-only admin API (docs/42 §4.5): GET /internal/admin/broadcasts,
+  # /internal/admin/config and /internal/admin/rooms (R49, docs/50) on the ops
+  # listener (ClusterIP-only, port metrics.port). These are how gawk-admin
+  # enumerates live broadcasts and room rosters and shows each pod's effective
+  # config.
   #
   # THE SURFACE STAYS DARK UNTIL A CREDENTIAL IS SET: with neither token nor
   # OIDC issuer configured the routes answer 404, not 401. Setting one is what

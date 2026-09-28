@@ -319,6 +319,9 @@ func run() error {
 		Auth:            adminAuth,
 		Log:             log,
 	}
+	if roomReg != nil {
+		adminOpts.Rooms = roomReg.AdminRooms
+	}
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Run(runCtx) }()

@@ -28,6 +28,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Tuhis/gawk/gawk-server/adminapi"
 	"github.com/Tuhis/gawk/gawk-server/events"
 	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
 	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
@@ -1525,6 +1526,54 @@ func (r *Registry) Stats() map[string]RoomStats {
 		}
 		out[r.opts.Obfuscate(code)] = row
 	}
+	return out
+}
+
+// AdminRooms snapshots every room this pod is HOME for, with raw codes, the
+// roster and live attachment state, for the ops listener's
+// GET /internal/admin/rooms (R49, docs/50 D2). It walks the rooms under the
+// lock the way the hub's AdminStats walks hubs.
+//
+// Proxy sessions are not rooms here — a proxy pod has nothing in r.rooms —
+// so a consumer that merges every pod's answer sees each room once. Rows are
+// sorted by code and participants by ID, so the response is stable.
+func (r *Registry) AdminRooms() []adminapi.Room {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]adminapi.Room, 0, len(r.rooms))
+	for code, rm := range r.rooms {
+		if rm.ended {
+			continue
+		}
+		row := adminapi.Room{
+			Code: code, Key: r.opts.Obfuscate(code), Kind: rm.kind,
+			DisplayCode: rm.display, DisplayName: rm.name, CreatedAt: rm.createdAt.UTC(),
+			Attachments:  make([]adminapi.RoomAttachment, 0, len(rm.attachments)),
+			Participants: make([]adminapi.RoomParticipant, 0, len(rm.participants)),
+		}
+		if !rm.emptySince.IsZero() {
+			t := rm.emptySince.UTC()
+			row.EmptySince = &t
+		}
+		for _, a := range rm.attachments {
+			row.Attachments = append(row.Attachments, adminapi.RoomAttachment{
+				BroadcastID: a.id, Label: a.label, Live: a.live, Viewers: a.viewers,
+				AttachedAt: a.attachedAt.UTC(),
+			})
+		}
+		for _, p := range rm.participants {
+			rec := p.recordLocked()
+			row.Participants = append(row.Participants, adminapi.RoomParticipant{
+				ID: int(rec.ID), Nickname: rec.Nickname, ClientKind: clientKind(rec.Kind),
+				Streaming: rec.Flags&wire.RoomParticipantFlagStreaming != 0,
+				Speaking:  rec.Flags&wire.RoomParticipantFlagSpeaking != 0,
+				Identity:  rec.Identity,
+			})
+		}
+		sort.Slice(row.Participants, func(i, j int) bool { return row.Participants[i].ID < row.Participants[j].ID })
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
 	return out
 }
 

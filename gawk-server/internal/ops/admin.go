@@ -1,7 +1,8 @@
 package ops
 
-// The R39 relay admin API (docs/42 §4.5): two READ-ONLY routes on the ops
-// listener, live only when a credential is configured.
+// The R39 relay admin API (docs/42 §4.5): READ-ONLY routes on the ops
+// listener, live only when a credential is configured — broadcasts and
+// config since R39, rooms since R49 (docs/50 D2).
 //
 // KILL AND BAN VERBS ARE DELIBERATELY ABSENT, and must stay absent. The Ban
 // CR is the single write path into enforcement (docs/42 D2): relays act on
@@ -11,7 +12,7 @@ package ops
 // would be invisible until an operator needed it not to be.
 //
 // These are also the only responses in the relay that carry RAW broadcast IDs
-// (docs/42 D8): this listener is ClusterIP-only AND credential-gated, which
+// and room codes (docs/42 D8, docs/50 D2): this listener is ClusterIP-only AND credential-gated, which
 // is strictly more protected than /statusz — whose HMAC-only shape is
 // unchanged and asserted byte-identical in the tests.
 
@@ -31,6 +32,7 @@ import (
 const (
 	SchemaAdminBroadcasts = adminapi.SchemaBroadcasts
 	SchemaAdminConfig     = adminapi.SchemaConfig
+	SchemaAdminRooms      = adminapi.SchemaRooms
 )
 
 // AdminOptions wires the admin routes. A nil *AdminOptions — or one whose
@@ -50,7 +52,12 @@ type AdminOptions struct {
 	// address. Supplied by the transport (which owns session bookkeeping);
 	// nil simply omits the field.
 	PublisherRemote func(id string) (netip.Addr, bool)
-	// Auth gates both routes.
+	// Rooms snapshots the rooms this pod is home for, with raw codes and
+	// the live roster (R49, docs/50 D2). Nil — -rooms off — serves an
+	// empty list: a relay without rooms has nothing to say, and the
+	// credential gate is the only gate the route needs (D11).
+	Rooms func() []adminapi.Room
+	// Auth gates every route.
 	Auth *AdminAuth
 	Log  *slog.Logger
 }
@@ -86,6 +93,18 @@ func registerAdmin(mux *http.ServeMux, opts *AdminOptions) bool {
 				Schema: SchemaAdminBroadcasts, Pod: opts.Pod, Broadcasts: rows,
 			})
 		})))
+	mux.Handle("GET /internal/admin/rooms",
+		opts.guard(log, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			rows := []adminapi.Room{}
+			if opts.Rooms != nil {
+				rows = opts.Rooms()
+			}
+			// Room kill/end verbs are absent for the same reason kill and ban
+			// are: the Room CR is the write path.
+			writeAdminJSON(w, log, adminapi.RoomsResponse{
+				Schema: SchemaAdminRooms, Pod: opts.Pod, Rooms: rows,
+			})
+		})))
 	mux.Handle("GET /internal/admin/config",
 		opts.guard(log, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			writeAdminJSON(w, log, adminConfigResponse{
@@ -115,8 +134,8 @@ func (o *AdminOptions) guard(log *slog.Logger, next http.Handler) http.Handler {
 
 func writeAdminJSON(w http.ResponseWriter, log *slog.Logger, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	// The response carries raw broadcast IDs — joinable capabilities. No
-	// intermediary may hold one.
+	// The response carries raw broadcast IDs and room codes — joinable
+	// capabilities. No intermediary may hold one.
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Warn("admin api encode failed", "err", err)
