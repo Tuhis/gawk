@@ -24,6 +24,7 @@ import (
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
+	"github.com/Tuhis/gawk/gawk-server/internal/clientinfo"
 	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
@@ -783,6 +784,12 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := r.PathValue("id")
+	// R59 (docs/61 D3): the mint path starts a broadcast; every claim of an
+	// existing ID continues one.
+	startKind := metrics.BroadcastResumed
+	if id == "" {
+		startKind = metrics.BroadcastNew
+	}
 	var pub *hub.Publisher
 	var err error
 	var sess *webtransport.Session
@@ -1064,6 +1071,9 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.metrics.Connection("publish", metrics.OutcomeAccepted)
+	client := clientinfo.FromQuery(r.URL.Query())
+	s.metrics.BroadcastStarted(startKind, client)
+	pub.SetClient(client)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "publish", "broadcast_id", id)
 
 	// R29 (docs/34 §4.4): tell the producer what this fleet supports, so it
@@ -1430,6 +1440,18 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			maybeAnswerTimeSync(sess, dgram, legLimiter)
 		}
 	}
+	// R59 (docs/61 D4, D5): a viewer's primary session is a join, and the
+	// web app marks its automatic reconnects. Legs returned above; edge
+	// pulls use their own route.
+	joinKind := metrics.JoinFirst
+	if r.URL.Query().Get("rejoin") == "1" {
+		joinKind = metrics.JoinRejoin
+	}
+	delivery := deliveryLabel(mode)
+	s.metrics.ViewerJoined(joinKind, delivery, clientinfo.FromQuery(r.URL.Query()))
+	joinedAt := time.Now()
+	defer func() { s.metrics.ViewerLeft(delivery, time.Since(joinedAt)) }()
+
 	// R21 (docs/26 Decision 7a): tell the viewer what it was ACTUALLY served.
 	// A DVR-replayed GOP is byte-identical to a live one, so without this the
 	// viewer cannot tell an honoured request from a downgrade, or from a relay
@@ -1495,6 +1517,17 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		maybeAnswerTimeSync(sess, dgram, tsLimiter)
 	}
+}
+
+// deliveryLabel names a negotiated delivery mode for the R59 usage labels.
+func deliveryLabel(mode wire.DeliveryMode) string {
+	switch mode {
+	case wire.DeliveryReliable:
+		return "reliable"
+	case wire.DeliveryDVR:
+		return "dvr"
+	}
+	return "datagrams"
 }
 
 // handleInternalSubscribe serves a downstream EDGE pod pulling this

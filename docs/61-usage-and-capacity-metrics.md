@@ -37,10 +37,11 @@ series cannot answer:
 |---|---|
 | Broadcasts started per day counts new broadcasts, not reconnects | `TestBroadcastsStartedCountsMintAsNewAndClaimAsResumed` (UM1) |
 | Viewer joins exclude stripe legs, internal pulls and automatic reconnects | `TestViewerJoinsCountPrimariesOnly` (UM1); `viewer-session.test.ts` rejoin test (UM2) |
-| Broadcast duration, peak viewers and watch time are recorded when they end | `TestBroadcastEndObservesDurationAndPeak`, `TestViewerSessionSecondsObservedOnClose` (UM1) |
+| Broadcast duration, peak viewers and watch time are recorded when they end | `TestBroadcastEndObservesDurationAndPeak`, `TestBroadcastEndForcedAndEdge`, `TestViewerJoinsCountPrimariesOnly` (UM1) |
 | The client mix is visible with bounded labels | `TestClientLabelsNormalize` (UM1); URL tests in UM2 and UM3 |
-| Codec and resolution come from the media, not a client claim | `TestMediaInfoFromH264SPS`, `…VP8`, `…VP9` (UM1) |
+| Codec and resolution come from the media, not a client claim | `TestMediaInfoFromH264SPS`, `…VP8`, `…VP9`, `TestHubProbesCodecAndHeightFromMedia` (UM1) |
 | Every cap is a metric | `TestLimitGaugesExportConfiguredCaps` (UM1) |
+| The client mix is exported per origin broadcast, never by edges | `TestBroadcastInfoGaugeLabels`, `TestBroadcastInfoGaugeOriginOnly` (UM1) |
 | `gawk-admin` is scrapeable on a listener that is never routed publicly | UM4 tests; `helm template` shows no metrics port on the Ingress |
 | No new label can carry a raw broadcast ID, an IP, a user agent or a location | code review against §3 D1 and D6; the collector tests assert the label sets |
 | The dashboard's usage rows read the new series in production | UM6: every new panel returns data after the release deploys |
@@ -170,15 +171,16 @@ per-session gauge; `gawk_viewer_joins_total` carries `app`, `os` and
 
 One const gauge per configured cap, from the same `config.Config` the
 registry is built from: `max_broadcasts`, `max_subscribers` (per broadcast),
-`max_total_subscribers`, `max_bandwidth_bps`, `dvr_max_bytes`, `max_rooms`,
+`max_total_subscribers`, `max_bandwidth_bytes` (bytes per second), `dvr_max_bytes`, `max_rooms`,
 `max_room_broadcasts`, `max_room_participants`, `conn_rate_limit`,
 `conn_burst_limit`. `0` means unlimited, as in the flags. No new knob, so
 nothing new to plumb through `registryOptions`.
 
-### D8 — Rooms opened are counted
+### D8 — Dynamic room mints are counted
 
-`gawk_rooms_opened_total{kind}` (`static`, `dynamic`) counts rooms this pod
-opens, alongside the existing `gawk_rooms_live` gauge.
+`gawk_rooms_minted_total` counts dynamic rooms this pod mints, alongside the
+existing `gawk_rooms_live{kind}` gauge. Static rooms are declared as Room
+CRs, not opened by anyone, so they have no creation event worth counting.
 
 ### D9 — `gawk-admin` gets its own metrics listener
 
@@ -216,7 +218,7 @@ repository, not code. UM5 covers them and the self-hosting doc.
 | `gawk_broadcast_peak_viewers` | histogram | — | relay (origin) |
 | `gawk_broadcast_info` | gauge | `broadcast`, `codec`, `resolution`, `app`, `os`, `browser` | relay (origin) |
 | `gawk_limit` | gauge | `name` | relay |
-| `gawk_rooms_opened_total` | counter | `kind` | relay |
+| `gawk_rooms_minted_total` | counter | — | relay |
 | `gawk_admin_build_info` | gauge | `version` | admin |
 | `gawk_admin_http_requests_total` | counter | `route`, `code` | admin |
 | `gawk_admin_db_pool_*` | gauge/counter | — | admin |
@@ -231,7 +233,7 @@ repository, not code. UM5 covers them and the self-hosting doc.
 
 | Chunk | Scope | Acceptance criteria |
 |---|---|---|
-| UM1 | **Relay**: D1 label normalisation; D2 media probe (codec, SPS/VP8/VP9 resolution); D3–D5 counters and histograms in the transport handlers and at origin hub removal; D6 info gauge in the registry collector; D7 `gawk_limit`; D8 rooms opened | Tests named in §1; the collector tests assert exact label sets; `go test -race ./...` green; `/statusz` unchanged |
+| UM1 | **Relay**: D1 label normalisation; D2 media probe (codec, SPS/VP8/VP9 resolution); D3–D5 counters and histograms in the transport handlers and at origin hub removal; D6 info gauge in the registry collector; D7 `gawk_limit`; D8 rooms minted | Tests named in §1; the collector tests assert exact label sets; `go test -race ./...` green; `/statusz` unchanged |
 | UM2 | **Web app**: `app`/`os`/`browser` on the publish and subscribe dials; `rejoin=1` on every `ViewerSession` pipeline after the first | URL tests for both dials (params present, and legs inheriting them); `viewer-session.test.ts` asserts the first pipeline has no `rejoin` and the second has `rejoin=1`; vitest, lint and `tsc -b` green |
 | UM3 | **Desktop broadcaster**: `app=desktop` and `os` from the build target on the publish dial | `relay.rs` URL test per target; `cargo test` green |
 | UM4 | **`gawk-admin`**: D9 listener, collectors and instrumentation; flag, env and chart values (`metrics.enabled`, `port`, `serviceMonitor.*`) | Unit tests: the listener serves `/metrics`; `off` starts none; the route label is the pattern, not the path; `helm template` renders the Service and, only when enabled, the ServiceMonitor, and the Ingress never gets the port |

@@ -4743,7 +4743,7 @@ leg, record no durations or client mix, and hide the caps in env vars;
 **Scope** (chunks UM1–UM6 in [docs/61](docs/61-usage-and-capacity-metrics.md)):
 
 - **UM1** — relay: started/joins counters, duration and peak histograms,
-  the per-broadcast info gauge, `gawk_limit`, rooms opened.
+  the per-broadcast info gauge, `gawk_limit`, dynamic rooms minted.
 - **UM2** — web app: client identity on both dials, `rejoin=1` on
   reconnects.
 - **UM3** — desktop broadcaster: client identity on the publish dial.

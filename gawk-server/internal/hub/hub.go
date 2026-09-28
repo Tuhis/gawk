@@ -34,7 +34,9 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-server/events"
 	"github.com/Tuhis/gawk/gawk-server/internal/broadcastid"
+	"github.com/Tuhis/gawk/gawk-server/internal/clientinfo"
 	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
+	"github.com/Tuhis/gawk/gawk-server/internal/mediaprobe"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
@@ -328,6 +330,12 @@ type Options struct {
 	// origin stamps its Lease so a room homed on another pod shows the
 	// tile away (docs/44 §4.9). Nil in single-pod mode.
 	OnPublisherStalled func(broadcastID string, stalled bool)
+	// OnOriginEnded reports an ORIGIN hub's removal (grace expiry, end, or
+	// termination) with its lifetime and peak audience, for the R59 usage
+	// histograms (docs/61 D5). Invoked outside the lock; nil disables it. A
+	// hub that never had a publisher (an edge that flipped roles before one
+	// arrived) reports nothing.
+	OnOriginEnded func(BroadcastEnd)
 	// OnEvent receives one R50 bus event per broadcast lifecycle transition
 	// (docs/51 D4): started, ended with its reason, the away/back pair and
 	// the coalesced viewer counts. It MUST NOT block — most call sites hold
@@ -366,6 +374,16 @@ func (o Options) carrierWriteTimeout() time.Duration {
 // keyframe replaced an in-flight one), "slow" is a stalling subscriber,
 // "bandwidth" is the configured egress cap, "open_failed" is a session-level
 // stream-open failure.
+// BroadcastEnd is one origin broadcast's lifetime, reported through
+// Options.OnOriginEnded when its hub is removed. Duration runs from the hub's
+// creation to its publisher's last disconnect, so the grace period is not
+// counted; PeakViewers is the largest global viewer count the origin
+// computed (stripe legs excluded).
+type BroadcastEnd struct {
+	Duration    time.Duration
+	PeakViewers uint32
+}
+
 type KeyframeDrops struct {
 	Superseded uint64 `json:"superseded"`
 	Slow       uint64 `json:"slow"`
@@ -544,6 +562,13 @@ type Stats struct {
 	DVRRingBytes   int    `json:"dvrRingBytes,omitempty"`
 	DVRRingGops    int    `json:"dvrRingGops,omitempty"`
 	DVRResyncs     uint64 `json:"dvrResyncs,omitempty"`
+
+	// R59 usage labels (docs/61 D6), metrics-only: /statusz is unchanged.
+	// Client is the publisher's self-description; Codec is the codec family
+	// and CodedHeight the coded height read from its media (0 = not probed).
+	Client      clientinfo.Info `json:"-"`
+	Codec       string          `json:"-"`
+	CodedHeight int             `json:"-"`
 }
 
 // TotalStats aggregates stats across all active and past broadcasts.
@@ -733,6 +758,19 @@ type broadcastHub struct {
 	// survives a reclaim, so it is the lifetime of the BROADCAST rather than
 	// of one session. Never exposed on /statusz.
 	startedAt time.Time
+
+	// R59 usage labels and lifetime (docs/61 D2, D5, D6). client is what the
+	// current publisher session's dial named itself; codec and codedHeight
+	// are read from the media (reset with the other per-session caches, the
+	// codec may differ). publisherLeftAt is the last publisher disconnect,
+	// the end of the broadcast's active life if grace then expires;
+	// peakViewers is the largest global count the origin computed.
+	client          clientinfo.Info
+	codec           string
+	avccConfig      bool
+	codedHeight     int
+	publisherLeftAt time.Time
+	peakViewers     uint32
 
 	// dvr is this broadcast's R21 window, nil until a DVR subscriber joins
 	// (docs/26 Decision 11) and shared by every one of them.
@@ -1292,6 +1330,11 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	b.cachedKeyframe = nil
 	b.cachedKeyframeID = 0
 	b.cachedKeyframeHasConfig = false
+	// The codec may differ too; the new session's first config and keyframe
+	// re-probe it (R59). The client is re-stamped by the transport.
+	b.codec = ""
+	b.avccConfig = false
+	b.codedHeight = 0
 	// New session, new clock timeline: the old mapping is meaningless (R5 Q2).
 	b.cachedClockMapping = nil
 	// New session, possibly new audio config (or none at all — the toggle may
@@ -1485,6 +1528,7 @@ func (r *Registry) PumpViewerCounts(now time.Time) {
 			continue
 		}
 		g := b.globalViewersLocked()
+		b.peakViewers = max(b.peakViewers, g)
 		r.busViewers(b.id, local, int(g), false)
 		if b.viewerCountEverEmitted && g == b.lastViewerCount &&
 			now.Sub(b.lastViewerCountEmitAt) < ViewerCountKeepalive {
@@ -1960,6 +2004,9 @@ func (r *Registry) Stats() RegistryStats {
 			BandwidthDroppedDatagrams: b.bandwidthDroppedDatagrams,
 			BandwidthDroppedBytes:     b.bandwidthDroppedBytes,
 			HasConfig:                 b.cachedKeyframeHasConfig,
+			Client:                    b.client,
+			Codec:                     b.codec,
+			CodedHeight:               b.codedHeight,
 			CachedKeyframeID:          b.cachedKeyframeID,
 			CachedKeyframeBytes:       len(b.cachedKeyframe),
 			KeyframeStreamsIn:         b.keyframeStreamsIn,
@@ -2121,6 +2168,21 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 
 	delete(r.hubs, id)
 
+	// R59 (docs/61 D5): the broadcast's active life ends at its publisher's
+	// last disconnect, or now if a forced removal deposes a live one. A hub
+	// that never had a publisher has no life to report.
+	var end *BroadcastEnd
+	if !b.edge && (b.publisherActive || !b.publisherLeftAt.IsZero()) {
+		endAt := b.publisherLeftAt
+		if b.publisherActive {
+			endAt = time.Now()
+		}
+		end = &BroadcastEnd{
+			Duration:    max(endAt.Sub(b.startedAt), 0),
+			PeakViewers: max(b.peakViewers, b.globalViewersLocked()),
+		}
+	}
+
 	// Depose a live publisher, exactly as TakeOverPublish does. Only the
 	// force path can reach a live one (the guard above rejects the others),
 	// and marking it closed here is what stops its deferred Close from
@@ -2232,6 +2294,9 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 	// fleet-wide (R17 W4).
 	if !edge && r.opts.OnBroadcastExpired != nil {
 		r.opts.OnBroadcastExpired(id)
+	}
+	if end != nil && r.opts.OnOriginEnded != nil {
+		r.opts.OnOriginEnded(*end)
 	}
 	// Origin only, like the lease delete above: an edge hub is derived state,
 	// and its teardown is not the broadcast ending (R17 W4).
@@ -2359,6 +2424,7 @@ func (p *Publisher) HandleDatagram(dgram []byte) {
 			b.countBad()
 			return
 		}
+		p.noteConfig(dgram)
 		p.relayDatagram(dgram)
 	case wire.TypeParityChunk:
 		// R29: validated then relayed verbatim. Deliberately NOT routed
@@ -2518,10 +2584,24 @@ func (p *Publisher) IngestKeyframeStream(stream io.Reader) error {
 func (p *Publisher) onKeyframe(msg []byte, hdr wire.StreamFrameHeader) {
 	b := p.hub
 	r := b.registry
+	cfg, payload := splitKeyframe(msg, hdr)
+	var cfgProbe configProbe
+	if cfg != nil {
+		cfgProbe = probeConfig(cfg)
+	}
+	kfHeight := mediaprobe.KeyframeHeight(payload)
 	r.mu.Lock()
 	if p.closed {
 		r.mu.Unlock()
 		return
+	}
+	if cfg != nil {
+		b.applyConfigProbeLocked(cfgProbe)
+	}
+	// An AVCC H.264 keyframe carries no SPS; its height came from the
+	// config's extradata, and a length prefix must not overwrite it.
+	if kfHeight > 0 && !b.avccConfig {
+		b.codedHeight = kfHeight
 	}
 	b.cachedKeyframe = msg
 	if b.dvr != nil {
@@ -2564,6 +2644,80 @@ func (p *Publisher) onKeyframe(msg []byte, hdr wire.StreamFrameHeader) {
 	}
 }
 
+// configProbe is what a DecoderConfig says about the media (R59, docs/61 D2).
+type configProbe struct {
+	codec  string
+	avcc   bool
+	height int
+}
+
+// probeConfig reads the codec family, and for AVCC H.264 the coded height,
+// from a DecoderConfig datagram. Header-only; called outside the lock.
+func probeConfig(dgram []byte) configProbe {
+	dc, err := wire.ParseDecoderConfig(dgram)
+	if err != nil {
+		return configProbe{}
+	}
+	family := mediaprobe.CodecFamily(dc.Codec)
+	return configProbe{
+		codec:  family,
+		avcc:   family == mediaprobe.CodecH264 && len(dc.Extradata) > 0,
+		height: mediaprobe.ExtradataHeight(family, dc.Extradata),
+	}
+}
+
+// applyConfigProbeLocked records a config's probe on the hub. Caller holds
+// r.mu.
+func (b *broadcastHub) applyConfigProbeLocked(c configProbe) {
+	if c.codec == "" {
+		return
+	}
+	b.codec = c.codec
+	b.avccConfig = c.avcc
+	if c.height > 0 {
+		b.codedHeight = c.height
+	}
+}
+
+// noteConfig probes a DecoderConfig datagram for the usage labels.
+func (p *Publisher) noteConfig(dgram []byte) {
+	c := probeConfig(dgram)
+	r := p.hub.registry
+	r.mu.Lock()
+	if !p.closed {
+		p.hub.applyConfigProbeLocked(c)
+	}
+	r.mu.Unlock()
+}
+
+// splitKeyframe returns a StreamFrame message's embedded DecoderConfig
+// datagram (nil when ConfigLen is 0) and its encoded payload. The lengths
+// were validated when the message was read.
+func splitKeyframe(msg []byte, hdr wire.StreamFrameHeader) (cfg, payload []byte) {
+	off := wire.StreamFrameHeaderSize
+	end := off + int(hdr.ConfigLen)
+	if end > len(msg) {
+		return nil, nil
+	}
+	if hdr.ConfigLen > 0 {
+		cfg = msg[off:end]
+	}
+	return cfg, msg[end:]
+}
+
+// SetClient records the publisher session's self-description (R59,
+// docs/61 D1) for the per-broadcast info gauge. A deposed or closed session
+// is ignored, like SetTelemetrySession.
+func (p *Publisher) SetClient(info clientinfo.Info) {
+	r := p.hub.registry
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.closed {
+		return
+	}
+	p.hub.client = info
+}
+
 // Close releases the publisher slot and schedules the GC grace timer. On a
 // publisher that was deposed by TakeOverPublish it is a no-op — the slot
 // belongs to the new publisher, and arming the grace timer here is exactly
@@ -2582,6 +2736,7 @@ func (p *Publisher) Close() {
 	b.publisherActive = false
 	b.publisherSessionID = ""
 	b.publisher = nil
+	b.publisherLeftAt = time.Now()
 
 	if r.opts.BroadcastGrace > 0 {
 		gen := b.generation
