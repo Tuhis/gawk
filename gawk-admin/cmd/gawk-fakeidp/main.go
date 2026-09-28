@@ -1,7 +1,9 @@
 // Command gawk-fakeidp is a TEST-ONLY OIDC issuer for the docs/41 compose
 // lane and the kind e2e tier: discovery, a JWKS, a real authorization-code +
 // PKCE flow the portal SPA can drive from a browser, refresh-token rotation
-// for its silent renew, and a /mint endpoint for scripts.
+// for its silent renew, a client-credentials grant for one confidential
+// service client (R49's rooms-reader bot, docs/50 D9), and a /mint endpoint
+// for scripts.
 //
 // It auto-approves every authorization request as one fixed operator — there
 // is no login page, no consent and no user database, which is exactly what
@@ -46,6 +48,10 @@ func main() {
 		subject  = flag.String("subject", "e2e-operator", "the `sub` minted tokens carry")
 		email    = flag.String("email", "operator@e2e.invalid", "the `email` minted tokens carry")
 		lifetime = flag.Duration("lifetime", 15*time.Minute, "access-token lifetime")
+
+		serviceClientID     = flag.String("service-client-id", "gawk-rooms-bot", "the confidential client the client_credentials grant accepts")
+		serviceClientSecret = flag.String("service-client-secret", "dev-rooms-bot-secret", "that client's secret")
+		serviceRole         = flag.String("service-role", "rooms-reader", "the role its service-account tokens carry")
 	)
 	flag.Parse()
 	if *issuer == "" {
@@ -60,6 +66,10 @@ func main() {
 		Subject:  *subject,
 		Email:    *email,
 		Lifetime: *lifetime,
+
+		ServiceClientID:     *serviceClientID,
+		ServiceClientSecret: *serviceClientSecret,
+		ServiceRole:         *serviceRole,
 	})
 	if err != nil {
 		log.Fatalf("gawk-fakeidp: %v", err)
@@ -76,6 +86,13 @@ type idpConfig struct {
 	Subject  string
 	Email    string
 	Lifetime time.Duration
+	// ServiceClientID / ServiceClientSecret are the one confidential client
+	// the client_credentials grant accepts, and ServiceRole the role its
+	// service-account tokens carry — the Keycloak shape docs/self-hosting
+	// §9.8 describes, minus Keycloak. An empty ID disables the grant.
+	ServiceClientID     string
+	ServiceClientSecret string
+	ServiceRole         string
 	// Now is the clock; nil means time.Now. A test seam.
 	Now func() time.Time
 }
@@ -149,7 +166,7 @@ func (i *idp) discovery(w http.ResponseWriter, _ *http.Request) {
 		"token_endpoint":                        i.cfg.Issuer + "/token",
 		"jwks_uri":                              i.cfg.Issuer + "/keys",
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token", "client_credentials"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"subject_types_supported":               []string{"public"},
@@ -248,9 +265,46 @@ func (i *idp) token(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		i.respondTokens(w, "")
+	case "client_credentials":
+		i.clientCredentials(w, r)
 	default:
-		tokenError(w, "unsupported_grant_type", "use authorization_code or refresh_token")
+		tokenError(w, "unsupported_grant_type", "use authorization_code, refresh_token or client_credentials")
 	}
+}
+
+// clientCredentials is a service account's grant: the client authenticates
+// with its own secret (HTTP Basic or form fields, both of RFC 6749 §2.3.1),
+// and the token names the service account, carries the service role, and
+// comes with no refresh token and no id_token — a machine asks again.
+func (i *idp) clientCredentials(w http.ResponseWriter, r *http.Request) {
+	id, secret, ok := r.BasicAuth()
+	if !ok {
+		id, secret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
+	}
+	if i.cfg.ServiceClientID == "" || id != i.cfg.ServiceClientID || secret != i.cfg.ServiceClientSecret {
+		w.Header().Set("WWW-Authenticate", `Basic realm="gawk-fakeidp"`)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_client", "error_description": "unknown client or wrong secret"})
+		return
+	}
+	now := i.cfg.Now()
+	writeJSON(w, map[string]any{
+		"access_token": i.sign(map[string]any{
+			"iss": i.cfg.Issuer,
+			"aud": i.cfg.Audience,
+			// Keycloak names a client's service account this way.
+			"sub": "service-account-" + id,
+			"azp": id,
+			"iat": now.Add(-time.Minute).Unix(),
+			"exp": now.Add(i.cfg.Lifetime).Unix(),
+			"resource_access": map[string]any{
+				i.cfg.Audience: map[string]any{"roles": []any{i.cfg.ServiceRole}},
+			},
+		}),
+		"token_type": "Bearer",
+		"expires_in": int(i.cfg.Lifetime.Seconds()),
+	})
 }
 
 func (i *idp) respondTokens(w http.ResponseWriter, nonce string) {

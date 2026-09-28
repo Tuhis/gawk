@@ -673,6 +673,18 @@ an operator can grant a subscribe-only NATS user for `gawk.room.>`
 view: everything above about the control stream still applies to an
 integration that must *participate*.
 
+**Dated note, 2026-09-29 (R49).** The bot-facing read surface shipped: a
+bot that only needs to say who is in a room and post a way in can read
+`GET /api/v1/rooms` and `GET /api/v1/rooms/{name}` on `gawk-admin` — live
+roster, attachments with live state, and a join link — as a
+client-credentials service identity holding the read-only `rooms-reader`
+role, and subscribe a webhook to `room.attached` / `_detached` /
+`room.participant_joined` / `_left` instead of running a NATS consumer
+([docs/50](50-rooms-read-api.md), self-hosting §9.8). The roster still lives
+only on the home pod (D5); `gawk-admin` reads it from the relay's
+credential-gated `/internal/admin/rooms`. The participant record's `speaking`
+and `identity` fields are exposed there, still false and empty.
+
 - **Room text chat**: a `RoomCommand` sub-range (`0x40–0x4F`) and matching
   `RoomEvent` kinds; messages fan out over the control stream from the
   home pod; no persistence in v1 of chat either. Requires only D10's

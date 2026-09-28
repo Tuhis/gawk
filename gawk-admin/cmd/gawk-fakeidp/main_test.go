@@ -61,6 +61,49 @@ func claimsOf(t *testing.T, jwt string) map[string]any {
 	return m
 }
 
+// R49 (docs/50 D9): the service client's client_credentials grant mints a
+// service-account token carrying only the service role, with no refresh or
+// id token — and a wrong secret, from either credential spelling, is refused.
+func TestClientCredentialsGrant(t *testing.T) {
+	i, err := newIDP(idpConfig{
+		Issuer: "http://localhost:8088/idp", ClientID: "gawk-admin-spa", Audience: "gawk-admin",
+		Role: "operator", ServiceClientID: "bot", ServiceClientSecret: "s3cret", ServiceRole: "rooms-reader",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// HTTP Basic, the way most clients send it.
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader("grant_type=client_credentials"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("bot", "s3cret")
+	rec := httptest.NewRecorder()
+	i.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if _, ok := resp["refresh_token"]; ok {
+		t.Error("a client_credentials response carried a refresh token")
+	}
+	claims := claimsOf(t, resp["access_token"].(string))
+	if claims["sub"] != "service-account-bot" || claims["aud"] != "gawk-admin" {
+		t.Errorf("claims = %v", claims)
+	}
+	roles := claims["resource_access"].(map[string]any)["gawk-admin"].(map[string]any)["roles"].([]any)
+	if len(roles) != 1 || roles[0] != "rooms-reader" {
+		t.Errorf("roles = %v, want exactly rooms-reader", roles)
+	}
+
+	// Form fields work too; a wrong secret does not.
+	if rec := postForm(t, i, "/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {"bot"}, "client_secret": {"s3cret"}}); rec.Code != http.StatusOK {
+		t.Errorf("form credentials = %d", rec.Code)
+	}
+	if rec := postForm(t, i, "/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {"bot"}, "client_secret": {"nope"}}); rec.Code != http.StatusUnauthorized {
+		t.Errorf("wrong secret = %d, want 401", rec.Code)
+	}
+}
+
 // The whole flow the portal SPA drives, in the order it drives it: discovery,
 // authorize (auto-approved, code + state echoed to the redirect URI), the
 // PKCE code exchange, the id_token nonce, and refresh with rotation.

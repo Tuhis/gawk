@@ -96,6 +96,24 @@ echo "$ME" | jq -e '.roles | index("operator")' >/dev/null \
   || fail "/api/v1/me does not carry the operator role: $ME"
 echo "PASS: bare requests 401, the IdP's token authenticates with the operator role"
 
+# R49 (docs/50 D1, D9): a bot's service account, through the recipe
+# self-hosting §9.8 gives — a client_credentials token from its own client —
+# reaches /me with ONLY the rooms-reader role and nothing an operator can.
+# Rooms are off in this install, so the room reads themselves are 404 here;
+# this asserts the chart's default -rooms-reader-role reached the binary and
+# scopes the role.
+BOT_TOKEN=$("${CURL[@]}" -u gawk-rooms-bot:dev-rooms-bot-secret -d grant_type=client_credentials \
+  "http://127.0.0.1:$IDP_PORT/token" | jq -r .access_token)
+[ -n "$BOT_TOKEN" ] && [ "$BOT_TOKEN" != null ] || fail "the fake IdP's client_credentials grant minted no token"
+BOT_ME=$("${CURL[@]}" -f -H "Authorization: Bearer $BOT_TOKEN" "http://127.0.0.1:$ADMIN_PORT/api/v1/me") \
+  || fail "/api/v1/me refused the rooms-reader service account"
+echo "$BOT_ME" | jq -e '.roles == ["rooms-reader"]' >/dev/null \
+  || fail "the service account's /api/v1/me does not carry exactly rooms-reader: $BOT_ME"
+code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $BOT_TOKEN" \
+  "http://127.0.0.1:$ADMIN_PORT/api/v1/broadcasts")
+[ "$code" = "403" ] || fail "a rooms-reader token got $code from /api/v1/broadcasts (want 403)"
+echo "PASS: a client_credentials rooms-reader token reaches /me and is 403 on the operator's routes"
+
 # ------------------------------------- 3. a live broadcast in the fleet view
 "$PUBSIM" -url "$RELAY_URL" -insecure -duration 300s \
   > "$OUT/pubsim-admin.out" 2> "$OUT/pubsim-admin.err" &
