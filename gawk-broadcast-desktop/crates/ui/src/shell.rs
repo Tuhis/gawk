@@ -1334,13 +1334,11 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_show_room_sheet(false);
                 let mut sh = shell.borrow_mut();
+                let live = sh.session.is_some();
+                sh.pending_create = store_room_create(&mut sh.cfg, live);
+                save_config(&mut sh);
+                refresh_ready(&ui, &sh.cfg, sh.pending_create);
                 let Some(session) = sh.session.clone() else {
-                    sh.pending_create = true;
-                    sh.cfg.room.clear();
-                    sh.cfg.room_attach_secret.clear();
-                    sh.cfg.room_creator_token.clear();
-                    save_config(&mut sh);
-                    refresh_ready(&ui, &sh.cfg, true);
                     return;
                 };
                 sh.room_grant = None;
@@ -2254,6 +2252,17 @@ fn store_room_choice(cfg: &mut Config, input: &RoomInput) -> (String, String) {
     (attach, creator)
 }
 
+/// "Create a new room" (docs/60 D8), for the config: the new room replaces
+/// the stored one whether live or not, so the next go-live doesn't return
+/// to the old room. A create is one-shot, so nothing takes its place.
+/// Returns whether it is a pending create (not live).
+fn store_room_create(cfg: &mut Config, live: bool) -> bool {
+    cfg.room.clear();
+    cfg.room_attach_secret.clear();
+    cfg.room_creator_token.clear();
+    !live
+}
+
 /// A static room's attach key as the room-view grant; none when unset.
 fn attach_grant(key: &str) -> Option<RoomGrant> {
     (!key.is_empty()).then(|| RoomGrant::Attach(key.to_owned()))
@@ -2844,6 +2853,31 @@ mod tests {
     }
 
     // --- docs/60 DR3: the redesign's view logic ---------------------------
+
+    // Review of #381: creating a room while live left the old room as the
+    // pending one, so the next go-live (and a crash resume) went back to it.
+    #[test]
+    fn creating_a_room_replaces_the_stored_one_idle_or_live() {
+        for live in [false, true] {
+            let mut cfg = Config {
+                room: "old-room".into(),
+                room_attach_secret: "k".into(),
+                room_creator_token: "ab".repeat(16),
+                ..Default::default()
+            };
+            let pending = store_room_create(&mut cfg, live);
+            assert_eq!(pending, !live, "a pending create only while idle");
+            assert_eq!(
+                (
+                    cfg.room.as_str(),
+                    cfg.room_attach_secret.as_str(),
+                    cfg.room_creator_token.as_str()
+                ),
+                ("", "", ""),
+                "live {live}: the old room must not be rejoined"
+            );
+        }
+    }
 
     // Review finding on #381: a pasted link's `?rt=` grant is a credential.
     // `room` is stored in the clear, so it must hold only the code; the
