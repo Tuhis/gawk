@@ -27,7 +27,7 @@ feature set exists).
 | R6 | [Production UI](#r6--production-ui) | ✅ done (J1–J6); manual browser verify passed 2026-07-14 ([docs/10](docs/10-production-ui.md)) |
 | R7 | [Hardware-supported controls & capture constraints](#r7--hardware-supported-controls--capture-constraints) | ⤳ superseded by R13 |
 | R8 | [Worker Offloading & Reliable Keyframes](#r8--worker-offloading--reliable-keyframes) | ✅ done (S1–S7: reliable keyframes + worker offload); browser-verified 2026-07-14 ([docs/12](docs/12-worker-and-reliable-keyframes.md)) |
-| R9 | [Observability & metrics](#r9--observability--metrics) | ✅ done (M1–M7); manually verified 2026-07-14; M8 (Grafana) still deferred ([docs/13](docs/13-observability.md)) |
+| R9 | [Observability & metrics](#r9--observability--metrics) | ✅ done (M1–M7); manually verified 2026-07-14; M8 (Grafana) superseded by R59 — the dashboard lives in Grafana, not the repo ([docs/13](docs/13-observability.md), [docs/61](docs/61-usage-and-capacity-metrics.md)) |
 | R10 | [Viewer render performance](#r10--viewer-render-performance) | ✅ done — P1–P3 + decoder-queue bump + field-finding fixes (keyframe wait 1 s, relay zombie eviction) implemented and re-verified on Chrome + Firefox 2026-07-14 (P4 remainder deferred) ([docs/14](docs/14-viewer-render-performance.md)) |
 | R11 | [Broadcaster worker offload](#r11--broadcaster-worker-offload) | ⚠️ implemented 2026-07-14 (K1–K4); automated gates green, but the **manual browser verify failed 2026-08-03**: on macOS the broadcaster overlay reads `Pipeline: Main thread` in every browser tried, i.e. the worker path is not being taken (BUGS.md) ([docs/16](docs/16-broadcaster-worker-offload.md)) |
 | R12 | [Viewer playback smoothing](#r12--viewer-playback-smoothing) | ✅ T1–T4 implemented 2026-07-15 (measurement + paced presentation + adaptive offset + interpolation scaffold); **adaptive + interpolation are the viewer defaults since 2026-07-15**; manual browser verify done 2026-07-19; T5 (motion-estimated interpolation) + T6 (findings) not started/droppable ([docs/17](docs/17-viewer-playback-smoothing.md)) |
@@ -77,6 +77,7 @@ feature set exists).
 | R56 | [Linux in the desktop workspace, and retiring the Go broadcaster](#r56--linux-in-the-desktop-workspace-and-retiring-the-go-broadcaster) | 🔧 designed 2026-09-24 (owner decisions OD1–OD15), not started (LX0–LX9) — a third shell `crates/app-linux` in `gawk-broadcast-desktop/` sharing the engine, wire, `main.slint` and audio lane; the Linux layer rebuilt, not ported: `ashpd` portal, **in-process** `gstreamer-rs` with R14's hardware-only cascade, the docs/39 app-audio tee on an in-process `pipewire-rs` connection, one monotonic clock, no MPEG-TS pipe; new identity `gawk-broadcast-linux` / `gawk-broadcast://linux`; tarball, x86_64, Ubuntu 24.04-class floor; desktop workspace to 2.0.0. **The Go app is frozen to fixes only from 2026-09-24**; one deprecation release (LX8), removed after the NVIDIA + AMD/Intel KDE Wayland pass (LX9), leaving `gawk-pubsim` as Go test tooling ([docs/58](docs/58-linux-desktop-broadcaster.md)) |
 | R57 | [Close codes Chrome can read](#r57--close-codes-chrome-can-read) | ✅ shipped 2026-09-24 (CN1–CN4) — Chrome never read a relay close code (webtransport-go sends STOP_SENDING ahead of the close capsule; 1 of 84 arrived), so 4000/4004/4006 now travel in-band first as `SessionClosing` (0x17) and a room ends on its `RoomEnding`; the broadcaster's room view returns to the live stage when the room ends or its stream is removed ([docs/59](docs/59-close-notice.md)) |
 | R58 | [Desktop broadcaster redesign](#r58--desktop-broadcaster-redesign) | 🔧 designed 2026-09-28 in a Claude Design pass, owner-approved the same day; DR1–DR5 implemented 2026-09-28, DR6 (the hardware pass) owner-pending — the shared `main.slint` window becomes pages (Ready, Live, Settings, Advanced, the Windows picker) in the web app's tokens with one primary action each; Windows picks and remembers a source; saved and recent rooms, one room field with no attach-key field, an in-app roster with Watch links, and creator controls (remove a stream, end the room) revising docs/44 D13 with no wire change; a stopped summary with Go live again, a crash-resume question, banners for notices; and the room-view grant fixed to the SPA's `c:`/`a:` format ([docs/60](docs/60-desktop-redesign.md)) |
+| R59 | [Usage and capacity metrics](#r59--usage-and-capacity-metrics) | 🔧 designed 2026-09-29 (owner decisions OD1–OD7), UM1–UM6 in progress — the `gawk.ioio.fi` Grafana dashboard (kept in Grafana, replacing R9 M8's checked-in JSON) needs series the relay doesn't have: new vs resumed broadcasts, viewer joins without stripe legs or reconnects, broadcast and watch durations, peak viewers, a client/codec/resolution mix with a closed label vocabulary (client identity as dial query params, codec and resolution parsed from the media), the caps as `gawk_limit`, and a metrics listener for `gawk-admin` ([docs/61](docs/61-usage-and-capacity-metrics.md)) |
 
 ---
 
@@ -534,8 +535,8 @@ and true glass-to-glass latency are non-goals (the latter stays R5's,
 slotting into the same overlay row later).
 
 **Status**: done — implemented 2026-07-14 (chunks M1–M7), manually verified
-2026-07-14; M8 — the Grafana dashboard and optional QUIC tracer — remains
-deferred (needs dedicated time with the live homelab Prometheus/Grafana).
+2026-07-14; M8 — the Grafana dashboard and optional QUIC tracer — was
+superseded on 2026-09-29 by R59 (the dashboard lives in Grafana).
 All automated gates green. Two
 implementation notes fed back into the doc: the metric naming split into
 `gawk_broadcast_*` (per-broadcast label) vs `gawk_relay_*` (lifetime totals)
@@ -4726,6 +4727,33 @@ room support was a code field, an attach-key field and a status sentence.
 
 **Status**: 🔧 designed and approved 2026-09-28; DR1–DR5 implemented
 2026-09-28; DR6 owner-pending.
+
+---
+
+## R59 — Usage and capacity metrics
+
+**Goal**: the production dashboard answers how gawk is used and how close it
+is to its limits, from Prometheus alone.
+
+**Why**: rebuilding the dashboard on 2026-09-29 showed that the existing
+series can't tell a new broadcast from a reconnect or a viewer from a stripe
+leg, record no durations or client mix, and hide the caps in env vars;
+`gawk-admin` has no metrics at all.
+
+**Scope** (chunks UM1–UM6 in [docs/61](docs/61-usage-and-capacity-metrics.md)):
+
+- **UM1** — relay: started/joins counters, duration and peak histograms,
+  the per-broadcast info gauge, `gawk_limit`, rooms opened.
+- **UM2** — web app: client identity on both dials, `rejoin=1` on
+  reconnects.
+- **UM3** — desktop broadcaster: client identity on the publish dial.
+- **UM4** — `gawk-admin`: a metrics listener, chart Service and
+  ServiceMonitor.
+- **UM5** — deployment: scrape `gawk-admin`, `gawk-telemetry` and the admin
+  database.
+- **UM6** — the dashboard's usage rows move to the new series.
+
+**Status**: 🔧 designed 2026-09-29; UM1–UM6 in progress.
 
 ---
 
