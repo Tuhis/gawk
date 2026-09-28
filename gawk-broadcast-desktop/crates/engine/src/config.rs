@@ -70,8 +70,8 @@ pub struct RecentRoom {
     pub attach_secret: String,
 }
 
-/// How many rooms "Your rooms" keeps. Saved rooms are never dropped to make
-/// room, so the list can exceed this only by saved ones.
+/// How many rooms "Your rooms" keeps. Saved rooms and the room just joined
+/// are never dropped to make room, so the list can exceed this only by those.
 pub const MAX_RECENT_ROOMS: usize = 8;
 
 /// The persisted settings. Field names are the wire-visible JSON keys —
@@ -153,10 +153,11 @@ impl Config {
             entry.attach_secret = attach_secret.to_owned();
         }
         self.recent_rooms.insert(0, entry);
+        // The room just joined (index 0) is never the one evicted.
         while self.recent_rooms.len() > MAX_RECENT_ROOMS {
-            match self.recent_rooms.iter().rposition(|r| !r.saved) {
+            match self.recent_rooms[1..].iter().rposition(|r| !r.saved) {
                 Some(i) => {
-                    self.recent_rooms.remove(i);
+                    self.recent_rooms.remove(i + 1);
                 }
                 None => break,
             }
@@ -913,6 +914,31 @@ mod tests {
         let before = cfg.recent_rooms.clone();
         cfg.remember_room("  ", "", 1);
         assert_eq!(cfg.recent_rooms, before);
+    }
+
+    // Review of #381: with every other room saved, the cap evicted the room
+    // just joined (and the key typed for it), since it was the only unsaved
+    // entry.
+    #[test]
+    fn the_cap_never_evicts_the_room_just_joined() {
+        let mut cfg = Config::default();
+        for i in 0..MAX_RECENT_ROOMS as u64 {
+            let code = format!("saved-{i}");
+            cfg.remember_room(&code, "", i);
+            cfg.set_room_saved(&code, true);
+        }
+        cfg.remember_room("new", "k", 100);
+        assert_eq!(cfg.recent_rooms[0].code, "new");
+        assert_eq!(cfg.room_attach_key("new"), Some("k"));
+        assert_eq!(
+            cfg.recent_rooms.iter().filter(|r| r.saved).count(),
+            MAX_RECENT_ROOMS,
+            "no saved room dropped either"
+        );
+        // The next join may evict the older unsaved one, never the new one.
+        cfg.remember_room("newer", "", 101);
+        assert_eq!(cfg.recent_rooms[0].code, "newer");
+        assert!(!cfg.recent_rooms.iter().any(|r| r.code == "new"));
     }
 
     #[test]
