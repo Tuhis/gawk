@@ -191,17 +191,23 @@ func FeedEventTypes() []string {
 	return append(AllEventTypes(), ActivityEventTypes()...)
 }
 
-// WebhookEventTypes is the subset of AllEventTypes the dispatcher may forward
-// to a webhook.
+// WebhookEventTypes is every row type the dispatcher may forward to a
+// webhook: the moderation vocabulary plus, since R49 (docs/50 D6), the four
+// room activity types a bot subscribes to. Which of them a given webhook
+// receives is its filter's decision (WebhookWants); this is the ceiling.
 //
-// Today it is the whole vocabulary — every stored event is a moderation event
-// and every moderation event pages someone. It exists as its own helper
-// because the two stop being the same list at R49 (docs/50 D6), when R50's
-// ingested activity events become stored-but-not-forwarded by default, and
-// because docs/52 D7 holds THIS list — not AllEventTypes — equal to the
-// AsyncAPI `webhook` channel's messages.
+// room.participant_updated and the delta types are not here: a bot announcing
+// every rename or viewer-count tick is noise, and the read API has the
+// numbers. docs/52 D7 holds THIS list equal to the AsyncAPI `webhook`
+// channel's messages, so a type outside it cannot be forwarded, listed or
+// documented.
 func WebhookEventTypes() []string {
-	return AllEventTypes()
+	return append(AllEventTypes(),
+		EventRoomAttached,
+		EventRoomDetached,
+		EventRoomParticipantJoined,
+		EventRoomParticipantLeft,
+	)
 }
 
 // IsEventType reports whether t is in the closed vocabulary. The API validates
@@ -411,6 +417,9 @@ type Webhook struct {
 	Enabled   bool
 	CreatedAt time.Time
 	CreatedBy string
+	// Events is the event filter (R49, docs/50 D8): nil receives every
+	// moderation event and no activity event; a list is exact.
+	Events []string
 }
 
 // DeliveryState is a webhook delivery's lifecycle.

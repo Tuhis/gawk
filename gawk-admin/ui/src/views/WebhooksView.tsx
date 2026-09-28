@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
-import type { Webhook, WebhookTestResult } from '../api/types.ts';
+import type { Webhook, WebhookEventName, WebhookTestResult } from '../api/types.ts';
 import { AuthRedirect } from '../auth/session.ts';
 import { Dialog } from '../components/Dialog.tsx';
 import { useLoader } from '../lib/useLoader.ts';
@@ -112,6 +112,7 @@ export function WebhooksView() {
               <th>Name</th>
               <th>URL</th>
               <th>Enabled</th>
+              <th>Events</th>
               <th>Source</th>
               <th>Actions</th>
             </tr>
@@ -135,6 +136,7 @@ export function WebhooksView() {
                       <span className={ui.badge}>disabled</span>
                     )}
                   </td>
+                  <td>{describeEvents(w.events)}</td>
                   <td>
                     {locked ? (
                       <span className={ui.badgeWarn}>from config</span>
@@ -255,6 +257,33 @@ export function WebhooksView() {
   );
 }
 
+const MODERATION_EVENTS: WebhookEventName[] = [
+  'broadcast.killed',
+  'ban.created',
+  'ban.expired',
+  'ban.removed',
+  'content_flag.raised',
+  'room.created',
+  'room.ended',
+  'room.secret_rotated',
+];
+
+const ACTIVITY_EVENTS: WebhookEventName[] = [
+  'room.attached',
+  'room.detached',
+  'room.participant_joined',
+  'room.participant_left',
+];
+
+const REJOINED: WebhookEventName = 'room.participant_rejoined';
+
+/** The filter as a table cell: the default in words, a list as its size. */
+function describeEvents(events: WebhookEventName[] | null | undefined) {
+  if (events == null) return <span className={ui.dim}>moderation (default)</span>;
+  if (events.length === 0) return <span className={ui.badgeWarn}>none</span>;
+  return <span title={events.join(', ')}>{events.length} selected</span>;
+}
+
 /**
  * A fresh Standard Webhooks secret: `whsec_` + base64 of 24 random bytes,
  * the form every verifier library decodes itself (docs/52 D5). WebCrypto,
@@ -286,7 +315,23 @@ function WebhookEditor({
   // place in the system where a signing key is on screen after creation.
   const [secret, setSecret] = useState(() => (webhook ? '' : generateSecret()));
   const [enabled, setEnabled] = useState(webhook?.enabled ?? true);
+  // The event filter (R49, docs/50 D8). "Default" sends null — every
+  // moderation event, no room activity — which is what an ops pager wants;
+  // a bot chooses the room events it posts about.
+  const [custom, setCustom] = useState(webhook?.events != null);
+  const [picked, setPicked] = useState<Set<WebhookEventName>>(
+    () => new Set(webhook?.events ?? MODERATION_EVENTS),
+  );
   const [busy, setBusy] = useState(false);
+
+  function toggle(e: WebhookEventName, on: boolean) {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(e);
+      else next.delete(e);
+      return next;
+    });
+  }
 
   async function save() {
     setBusy(true);
@@ -296,6 +341,11 @@ function WebhookEditor({
         url: url.trim(),
         enabled,
         ...(secret ? { secret } : {}),
+        // Always sent: an update REPLACES the filter, so leaving it out
+        // would quietly reset a bot's subscription to the default.
+        events: custom
+          ? [...MODERATION_EVENTS, ...ACTIVITY_EVENTS, REJOINED].filter((e) => picked.has(e))
+          : null,
       };
       if (webhook?.id) await api.updateWebhook(webhook.id, body);
       else await api.createWebhook(body);
@@ -340,6 +390,62 @@ function WebhookEditor({
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
         Enabled
       </label>
+      <fieldset className={ui.field}>
+        <legend>Events</legend>
+        <div className={ui.segmented}>
+          <label className={ui.segment}>
+            <input
+              type="radio"
+              name="wh-events"
+              checked={!custom}
+              onChange={() => setCustom(false)}
+            />
+            Moderation (default)
+          </label>
+          <label className={ui.segment}>
+            <input
+              type="radio"
+              name="wh-events"
+              checked={custom}
+              onChange={() => setCustom(true)}
+            />
+            Choose events
+          </label>
+        </div>
+        {custom ? (
+          <>
+            <p className={ui.dim}>Moderation</p>
+            {MODERATION_EVENTS.map((e) => (
+              <label key={e} className={ui.row}>
+                <input type="checkbox" checked={picked.has(e)} onChange={(ev) => toggle(e, ev.target.checked)} />
+                <code className={ui.mono}>{e}</code>
+              </label>
+            ))}
+            <p className={ui.dim}>
+              Room activity — needs the relay event bus. Carries room codes and nicknames.
+            </p>
+            {ACTIVITY_EVENTS.map((e) => (
+              <label key={e} className={ui.row}>
+                <input type="checkbox" checked={picked.has(e)} onChange={(ev) => toggle(e, ev.target.checked)} />
+                <code className={ui.mono}>{e}</code>
+              </label>
+            ))}
+            <label className={ui.row}>
+              <input
+                type="checkbox"
+                checked={picked.has(REJOINED)}
+                onChange={(ev) => toggle(REJOINED, ev.target.checked)}
+              />
+              <span>
+                Also the reconnect pair when a room moves to another relay pod (
+                <code className={ui.mono}>{REJOINED}</code>)
+              </span>
+            </label>
+          </>
+        ) : (
+          <p className={ui.dim}>Every moderation event; no room activity.</p>
+        )}
+      </fieldset>
       <div className={ui.actions}>
         <button type="button" disabled={busy} onClick={() => void save()}>
           Save

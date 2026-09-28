@@ -93,7 +93,7 @@ GAWK_ADMIN_WEBHOOK_SECRET_{{ regexReplaceAll "[^A-Za-z0-9]" . "_" | upper }}
 
 {{/*
 notifications.webhooks -> the -static-webhooks JSON knob. The shape is
-config.parseStaticWebhooks': [{"name","url","secretEnv"[,"enabled"]}]. No
+config.parseStaticWebhooks': [{"name","url","secretEnv"[,"enabled"][,"events"]}]. No
 `secret` key exists in it, and that is the point — a signing key in a values
 file is a signing key in every GitOps diff.
 */}}
@@ -106,6 +106,10 @@ file is a signing key in every GitOps diff.
 {{- $entry := dict "name" .name "url" .url "secretEnv" (include "gawk-admin.webhookSecretEnv" .name) -}}
 {{- if hasKey . "enabled" -}}
 {{- $_ := set $entry "enabled" .enabled -}}
+{{- end -}}
+{{- /* R49 (docs/50 D8): absent keeps the default filter; the binary validates the names at start-up. */ -}}
+{{- if hasKey . "events" -}}
+{{- $_ := set $entry "events" .events -}}
 {{- end -}}
 {{- $entries = append $entries $entry -}}
 {{- end -}}

@@ -16,6 +16,8 @@ func withStaticWebhooks() harnessOption {
 		disabled := false
 		c.StaticWebhooks = []config.StaticWebhook{
 			{Name: "paging", URL: "https://ntfy.example/gawk", SecretEnv: "PAGING_SECRET", Secret: "Y2hhcnQtc2VjcmV0"},
+			{Name: "bot", URL: "https://bot.example/gawk", SecretEnv: "BOT_SECRET", Secret: "Ym90",
+				Events: []string{"room.participant_joined"}},
 			{Name: "parked", URL: "https://parked.example/gawk", SecretEnv: "PARKED_SECRET", Secret: "cw==", Enabled: &disabled},
 		}
 	})
@@ -50,7 +52,7 @@ func TestListWebhooksMergesBothSourcesWithoutSecrets(t *testing.T) {
 		Webhooks []wireWebhook `json:"webhooks"`
 	}
 	h.decode(http.MethodGet, "/api/v1/webhooks", nil, http.StatusOK, &body)
-	if len(body.Webhooks) != 3 {
+	if len(body.Webhooks) != 4 {
 		t.Fatalf("webhooks = %+v", body.Webhooks)
 	}
 	bySource := map[string]int{}
@@ -66,7 +68,7 @@ func TestListWebhooksMergesBothSourcesWithoutSecrets(t *testing.T) {
 			t.Fatalf("a chart webhook with no explicit enabled must render as enabled: %+v", wh)
 		}
 	}
-	if bySource[api.SourceConfig] != 2 || bySource[api.SourceUI] != 1 {
+	if bySource[api.SourceConfig] != 3 || bySource[api.SourceUI] != 1 {
 		t.Fatalf("sources = %v", bySource)
 	}
 }
@@ -158,6 +160,9 @@ func TestWebhookValidation(t *testing.T) {
 		// The Standard Webhooks key rule (docs/52 D5): a secret that does
 		// not decode as base64 could never verify at any receiver.
 		{"undecodable whsec_ secret", map[string]any{"name": "a", "url": "https://x.example", "secret": "whsec_not base64!", "enabled": true}},
+		// R49 D8: an unknown filter entry would silently never page.
+		{"an unknown event in the filter", map[string]any{"name": "a", "url": "https://x.example", "secret": "cw==", "enabled": true,
+			"events": []string{"room.participant_joined", "room.participant_updated"}}},
 		{"a secret that is not base64", map[string]any{"name": "a", "url": "https://x.example", "secret": "hunter2", "enabled": true}},
 	}
 	for _, tc := range cases {
@@ -214,5 +219,65 @@ func TestTestSendWithoutADispatcher(t *testing.T) {
 	code := h.errorCode(http.MethodPost, "/api/v1/webhooks/paging/test", map[string]any{}, http.StatusServiceUnavailable)
 	if code != api.CodeUnavailable {
 		t.Fatalf("code = %q", code)
+	}
+}
+
+// R49 RA4 (docs/50 D8): the event filter round-trips — null is the default,
+// a list is exact, an update replaces it — and a chart-defined webhook's
+// filter is rendered from the chart and cannot be changed here.
+func TestWebhookEventFilter(t *testing.T) {
+	h := newHarness(t, withStaticWebhooks())
+
+	var plain wireWebhook
+	h.decode(http.MethodPost, "/api/v1/webhooks", map[string]any{
+		"name": "pager", "url": "https://p.example", "secret": "cw==", "enabled": true,
+	}, http.StatusCreated, &plain)
+	if plain.Events != nil {
+		t.Fatalf("a webhook created without a filter has %v, want null (the default)", *plain.Events)
+	}
+
+	var bot wireWebhook
+	h.decode(http.MethodPost, "/api/v1/webhooks", map[string]any{
+		"name": "mumble-bot", "url": "https://b.example", "secret": "cw==", "enabled": true,
+		"events": []string{"room.participant_joined", "room.participant_rejoined"},
+	}, http.StatusCreated, &bot)
+	if bot.Events == nil || len(*bot.Events) != 2 {
+		t.Fatalf("created filter = %v", bot.Events)
+	}
+	stored, err := h.store.GetWebhookByName(t.Context(), "mumble-bot")
+	if err != nil || len(stored.Events) != 2 {
+		t.Fatalf("stored filter = %v (err=%v)", stored.Events, err)
+	}
+
+	// An update replaces the filter; omitting it restores the default.
+	var updated wireWebhook
+	h.decode(http.MethodPut, "/api/v1/webhooks/"+bot.ID, map[string]any{
+		"name": "mumble-bot", "url": "https://b.example", "enabled": true,
+		"events": []string{"room.attached"},
+	}, http.StatusOK, &updated)
+	if updated.Events == nil || len(*updated.Events) != 1 || (*updated.Events)[0] != "room.attached" {
+		t.Fatalf("updated filter = %v", updated.Events)
+	}
+	h.decode(http.MethodPut, "/api/v1/webhooks/"+bot.ID, map[string]any{
+		"name": "mumble-bot", "url": "https://b.example", "enabled": true,
+	}, http.StatusOK, &updated)
+	if updated.Events != nil {
+		t.Fatalf("an update without a filter kept %v, want the default", *updated.Events)
+	}
+
+	// The chart-defined filter is visible, and the webhook is still immutable.
+	var body struct {
+		Webhooks []wireWebhook `json:"webhooks"`
+	}
+	h.decode(http.MethodGet, "/api/v1/webhooks", nil, http.StatusOK, &body)
+	for _, wh := range body.Webhooks {
+		if wh.Name == "bot" && (wh.Events == nil || len(*wh.Events) != 1) {
+			t.Fatalf("the chart filter is not rendered: %+v", wh)
+		}
+	}
+	if code := h.errorCode(http.MethodPut, "/api/v1/webhooks/bot", map[string]any{
+		"name": "bot", "url": "https://bot.example/gawk", "enabled": true, "events": []string{"room.attached"},
+	}, http.StatusConflict); code != api.CodeSourceImmutable {
+		t.Fatalf("PUT on a chart webhook's filter code = %q", code)
 	}
 }

@@ -130,7 +130,9 @@ func TestWebhookChannelIsWebhookEligibility(t *testing.T) {
 
 	var want []string
 	for _, row := range store.WebhookEventTypes() {
-		typ, ok := events.ModerationType(row)
+		// Since R49 the list holds activity rows too (docs/50 D6), which map
+		// by prefix rather than through the moderation table.
+		typ, ok := store.CloudEventsType(row)
 		if !ok {
 			t.Fatalf("WebhookEventTypes lists %q, which has no CloudEvents type", row)
 		}

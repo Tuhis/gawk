@@ -159,6 +159,7 @@ describe('CRUD on portal-created webhooks (§4.7)', () => {
       url: 'https://pager.example/hook',
       enabled: true,
       secret: generated,
+      events: null,
     });
     // Exactly once: the form is gone after the save, and nothing on the page
     // shows the secret again.
@@ -219,6 +220,8 @@ describe('CRUD on portal-created webhooks (§4.7)', () => {
       name: 'discord',
       url: 'https://new.example',
       enabled: true,
+      // Always sent: an update replaces the filter (docs/50 D8).
+      events: null,
     });
   });
 
@@ -277,5 +280,69 @@ describe('CRUD on portal-created webhooks (§4.7)', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
     expect(await screen.findByText(/defined in the chart values/)).toBeTruthy();
     expect(session.calls.some((c) => c.init.method === 'DELETE')).toBe(true);
+  });
+});
+
+describe('the event filter (R49, docs/50 D8)', () => {
+  const BOT: Webhook = {
+    id: 'e2b0f6f0-0000-4000-8000-000000000002',
+    name: 'mumble-bot',
+    url: 'https://bot.example/hook',
+    enabled: true,
+    source: 'ui',
+    events: ['room.participant_joined', 'room.detached'],
+  };
+
+  it('shows the default and a chosen filter in the list', async () => {
+    mount([FROM_PORTAL, BOT]);
+    await screen.findByText('mumble-bot');
+    expect(within(rowFor('discord')).getByText('moderation (default)')).toBeTruthy();
+    expect(within(rowFor('mumble-bot')).getByText('2 selected')).toBeTruthy();
+  });
+
+  it('subscribes a new webhook to room activity only', async () => {
+    const session = mount([], (path, init) =>
+      path === 'api/v1/webhooks' && init.method === 'POST' ? json(BOT, 201) : json({}),
+    );
+    await waitFor(() => expect(session.calls.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Add webhook' }));
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'mumble-bot' } });
+    fireEvent.change(screen.getByLabelText('URL'), { target: { value: 'https://bot.example/hook' } });
+    fireEvent.click(screen.getByLabelText('Choose events'));
+    // Choosing starts from the moderation set — the default made explicit —
+    // so a bot unticks what it does not want.
+    for (const e of ['broadcast.killed', 'ban.created', 'ban.expired', 'ban.removed',
+      'content_flag.raised', 'room.created', 'room.ended', 'room.secret_rotated']) {
+      fireEvent.click(screen.getByLabelText(e));
+    }
+    fireEvent.click(screen.getByLabelText('room.participant_joined'));
+    fireEvent.click(screen.getByLabelText('room.attached'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(session.calls.some((c) => c.init.method === 'POST')).toBe(true);
+    });
+    const post = session.calls.find((c) => c.init.method === 'POST');
+    expect((bodyOf(post!) as { events?: string[] }).events).toEqual([
+      'room.attached',
+      'room.participant_joined',
+    ]);
+  });
+
+  it('opens an existing filter as chosen and can return it to the default', async () => {
+    const session = mount([BOT], (_path, init) =>
+      init.method === 'PUT' ? json({ ...BOT, events: null }) : json({}),
+    );
+    await screen.findByText('mumble-bot');
+    fireEvent.click(within(rowFor('mumble-bot')).getByRole('button', { name: 'Edit' }));
+    expect((screen.getByLabelText('room.participant_joined') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText('room.participant_left') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByLabelText('Moderation (default)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => {
+      expect(session.calls.some((c) => c.init.method === 'PUT')).toBe(true);
+    });
+    const put = session.calls.find((c) => c.init.method === 'PUT');
+    expect((bodyOf(put!) as { events?: unknown }).events).toBeNull();
   });
 });

@@ -9,13 +9,22 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/store/storetest"
 )
 
+// hooks is a set of chart-defined webhooks with the default filter.
+func hooks(names ...string) []store.ConfigWebhook {
+	out := make([]store.ConfigWebhook, 0, len(names))
+	for _, n := range names {
+		out = append(out, store.ConfigWebhook{Name: n})
+	}
+	return out
+}
+
 func TestDeliveryQueueLifecycle(t *testing.T) {
 	s := storetest.New(t)
 	ctx := t.Context()
 
 	ev, err := s.AppendEventAndEnqueue(ctx,
 		store.Event{Type: store.EventBroadcastKilled, Actor: "op"},
-		[]string{"ntfy", "slack", "ntfy"}) // the duplicate name yields ONE row
+		hooks("ntfy", "slack", "ntfy")) // the duplicate name yields ONE row
 	if err != nil {
 		t.Fatalf("AppendEventAndEnqueue: %v", err)
 	}
@@ -95,7 +104,7 @@ func TestClaimDueDeliveriesNeverDoubleClaims(t *testing.T) {
 
 	names := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
 	if _, err := s.AppendEventAndEnqueue(ctx,
-		store.Event{Type: store.EventBanCreated, Actor: "op"}, names); err != nil {
+		store.Event{Type: store.EventBanCreated, Actor: "op"}, hooks(names...)); err != nil {
 		t.Fatalf("AppendEventAndEnqueue: %v", err)
 	}
 
@@ -159,7 +168,7 @@ func TestAppendEventAndEnqueueIsOneWrite(t *testing.T) {
 
 	ev, err := s.AppendEventAndEnqueue(ctx,
 		store.Event{Type: store.EventBroadcastKilled, Actor: "op"},
-		[]string{"ntfy-oncall"})
+		hooks("ntfy-oncall"))
 	if err != nil {
 		t.Fatalf("AppendEventAndEnqueue: %v", err)
 	}
@@ -199,7 +208,7 @@ func TestAppendEventAndEnqueueRollsBackTheEventOnAFailedEnqueue(t *testing.T) {
 
 	_, err := s.AppendEventAndEnqueue(ctx,
 		store.Event{Type: store.EventBroadcastKilled, Actor: "op"},
-		[]string{"bad\x00name"})
+		hooks("bad\x00name"))
 	if err == nil {
 		t.Fatal("AppendEventAndEnqueue with an unstorable webhook name did not error")
 	}

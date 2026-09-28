@@ -111,6 +111,9 @@ func isRoomEvent(rowType string) bool {
 // the vocabulary of (EnforcementState, RoomKey, TargetType) and the named
 // PayloadString keys.
 func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
+	if ev.Category == store.CategoryActivity {
+		return buildBusEvent(ev, externalURL)
+	}
 	typ, ok := events.ModerationType(ev.Type)
 	if !ok {
 		// A row type the contract does not know is a bug in whichever
@@ -181,6 +184,41 @@ func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 	}
 	full := events.New(typ, EventID(ev.ID), events.SourceAdmin, subject, ev.OccurredAt.UTC(), data)
 	return project(full, delivery)
+}
+
+// buildBusEvent renders an ACTIVITY row — one R50 ingested from the relay
+// bus — as the event a webhook that subscribed to it receives (R49, docs/50
+// D7): the bus event itself, as the row holds it verbatim, with the same
+// `id`, `source`, `type`, `subject`, `time` and `data`, through the same
+// projection every other type goes through. Nothing type-specific is added
+// here: which activity rows reach this function at all is the webhook
+// filter's decision, made at enqueue.
+func buildBusEvent(ev store.Event, externalURL string) (events.Event, error) {
+	var row struct {
+		Event json.RawMessage `json:"event"`
+	}
+	if err := json.Unmarshal(ev.Payload, &row); err != nil || len(row.Event) == 0 {
+		return events.Event{}, fmt.Errorf("notify: activity row %d carries no bus event", ev.ID)
+	}
+	var full events.Event
+	if err := json.Unmarshal(row.Event, &full); err != nil {
+		return events.Event{}, fmt.Errorf("notify: activity row %d: decoding its bus event: %w", ev.ID, err)
+	}
+	if want, ok := store.CloudEventsType(ev.Type); !ok || full.Type != want {
+		// The row type and the event it carries disagree: a producer bug,
+		// and delivering either reading would be a guess.
+		return events.Event{}, fmt.Errorf("notify: activity row %d is %q but carries a %q event", ev.ID, ev.Type, full.Type)
+	}
+	path := portalPath
+	if isRoomEvent(ev.Type) {
+		path = roomsPortalPath
+	}
+	// The row's key column holds the room's HMAC'd key for a room event
+	// (eventbus.Event.key), which is what the portal filters by.
+	return project(full, events.Delivery{
+		Summary:   ev.PayloadString(store.PayloadSummary),
+		PortalURL: deepLink(externalURL, path, ev.BroadcastKey),
+	})
 }
 
 // project is the webhook projection of docs/52 D4 as D9 left it: the same

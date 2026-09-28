@@ -15,7 +15,7 @@ import (
 // a value it was never handed, no matter how it marshals. The dispatcher uses
 // GetWebhookByName when it actually needs to sign.
 func (s *Store) ListWebhooks(ctx context.Context) ([]Webhook, error) {
-	const q = `SELECT id, name, url, enabled, created_at, created_by
+	const q = `SELECT id, name, url, enabled, created_at, created_by, events
 		FROM webhooks ORDER BY created_at DESC, name ASC`
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
@@ -25,7 +25,7 @@ func (s *Store) ListWebhooks(ctx context.Context) ([]Webhook, error) {
 	out := []Webhook{}
 	for rows.Next() {
 		var w Webhook
-		if err := rows.Scan(&w.ID, &w.Name, &w.URL, &w.Enabled, &w.CreatedAt, &w.CreatedBy); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.URL, &w.Enabled, &w.CreatedAt, &w.CreatedBy, &w.Events); err != nil {
 			return nil, fmt.Errorf("store: list webhooks: %w", err)
 		}
 		w.CreatedAt = w.CreatedAt.UTC()
@@ -46,10 +46,10 @@ func (s *Store) CreateWebhook(ctx context.Context, w Webhook) (Webhook, error) {
 		w.CreatedAt = s.now()
 	}
 	w.CreatedAt = w.CreatedAt.UTC()
-	const q = `INSERT INTO webhooks (id, name, url, secret, enabled, created_at, created_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
-		RETURNING id, name, url, enabled, created_at, created_by`
-	row := s.pool.QueryRow(ctx, q, w.ID, w.Name, w.URL, w.Secret, w.Enabled, w.CreatedAt, w.CreatedBy)
+	const q = `INSERT INTO webhooks (id, name, url, secret, enabled, created_at, created_by, events)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		RETURNING id, name, url, enabled, created_at, created_by, events`
+	row := s.pool.QueryRow(ctx, q, w.ID, w.Name, w.URL, w.Secret, w.Enabled, w.CreatedAt, w.CreatedBy, w.Events)
 	out, err := scanWebhookNoSecret(row)
 	if isUniqueViolation(err, "") {
 		return Webhook{}, ErrDuplicateName
@@ -60,7 +60,8 @@ func (s *Store) CreateWebhook(ctx context.Context, w Webhook) (Webhook, error) {
 	return out, nil
 }
 
-// UpdateWebhook replaces a UI-created webhook's name, URL and enabled flag.
+// UpdateWebhook replaces a UI-created webhook's name, URL, enabled flag and
+// event filter (a nil Events restores the default).
 //
 // An empty Secret KEEPS the stored one: the API never returns a secret, so the
 // portal's edit form cannot round-trip it, and requiring one on every edit
@@ -68,10 +69,11 @@ func (s *Store) CreateWebhook(ctx context.Context, w Webhook) (Webhook, error) {
 func (s *Store) UpdateWebhook(ctx context.Context, w Webhook) (Webhook, error) {
 	const q = `UPDATE webhooks
 		SET name = $2, url = $3, enabled = $4,
-		    secret = CASE WHEN $5::text = '' THEN secret ELSE $5::text END
+		    secret = CASE WHEN $5::text = '' THEN secret ELSE $5::text END,
+		    events = $6
 		WHERE id = $1
-		RETURNING id, name, url, enabled, created_at, created_by`
-	row := s.pool.QueryRow(ctx, q, w.ID, w.Name, w.URL, w.Enabled, w.Secret)
+		RETURNING id, name, url, enabled, created_at, created_by, events`
+	row := s.pool.QueryRow(ctx, q, w.ID, w.Name, w.URL, w.Enabled, w.Secret, w.Events)
 	out, err := scanWebhookNoSecret(row)
 	if isUniqueViolation(err, "") {
 		return Webhook{}, ErrDuplicateName
@@ -100,9 +102,9 @@ func (s *Store) DeleteWebhook(ctx context.Context, id uuid.UUID) error {
 // This is the dispatcher's accessor (AP7) — the one place a secret leaves the
 // database — and no HTTP handler should call it.
 func (s *Store) GetWebhookByName(ctx context.Context, name string) (Webhook, error) {
-	const q = `SELECT id, name, url, secret, enabled, created_at, created_by FROM webhooks WHERE name = $1`
+	const q = `SELECT id, name, url, secret, enabled, created_at, created_by, events FROM webhooks WHERE name = $1`
 	var w Webhook
-	err := s.pool.QueryRow(ctx, q, name).Scan(&w.ID, &w.Name, &w.URL, &w.Secret, &w.Enabled, &w.CreatedAt, &w.CreatedBy)
+	err := s.pool.QueryRow(ctx, q, name).Scan(&w.ID, &w.Name, &w.URL, &w.Secret, &w.Enabled, &w.CreatedAt, &w.CreatedBy, &w.Events)
 	if err != nil {
 		return Webhook{}, noRows(err)
 	}
@@ -112,7 +114,7 @@ func (s *Store) GetWebhookByName(ctx context.Context, name string) (Webhook, err
 
 func scanWebhookNoSecret(row pgx.Row) (Webhook, error) {
 	var w Webhook
-	if err := row.Scan(&w.ID, &w.Name, &w.URL, &w.Enabled, &w.CreatedAt, &w.CreatedBy); err != nil {
+	if err := row.Scan(&w.ID, &w.Name, &w.URL, &w.Enabled, &w.CreatedAt, &w.CreatedBy, &w.Events); err != nil {
 		return Webhook{}, err
 	}
 	w.CreatedAt = w.CreatedAt.UTC()

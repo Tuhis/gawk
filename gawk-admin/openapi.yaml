@@ -1796,6 +1796,38 @@ components:
           type: string
           enum: [config, ui]
           description: '`config` is defined in chart values and read-only here; `ui` was created through this API.'
+        events:
+          type: [array, 'null']
+          description: The event filter. `null` receives every moderation event and no room activity event.
+          items: { $ref: '#/components/schemas/WebhookEvent' }
+
+    WebhookEvent:
+      type: string
+      description: |
+        A value of a webhook's `events` filter. With no filter (`null`) a
+        webhook receives every moderation event and none of the four room
+        activity events; a list is exact. The activity events are only
+        delivered on a deployment with the relay event bus configured.
+
+        `room.participant_rejoined` is not an event type. When a room moves
+        to another relay pod its participants reconnect, which the bus reports
+        as a `room.participant_left` (`reason: home_moved`) and
+        `room.participant_joined` (`rejoin: true`) pair. Both halves are
+        dropped unless the filter lists `room.participant_rejoined`.
+      enum:
+        - broadcast.killed
+        - ban.created
+        - ban.expired
+        - ban.removed
+        - content_flag.raised
+        - room.created
+        - room.ended
+        - room.secret_rotated
+        - room.attached
+        - room.detached
+        - room.participant_joined
+        - room.participant_left
+        - room.participant_rejoined
 
     WebhookRequest:
       type: object
@@ -1811,6 +1843,14 @@ components:
             Write-only signing secret. Required on create. On update, empty or
             absent keeps the stored secret.
         enabled: { type: boolean }
+        events:
+          type: [array, 'null']
+          description: |
+            The event filter. Absent or `null` keeps the default: every
+            moderation event and no room activity event. A list is exact. An
+            update replaces the filter, so omitting it restores the default.
+            An unknown value returns `400`.
+          items: { $ref: '#/components/schemas/WebhookEvent' }
 
     WebhooksPage:
       type: object

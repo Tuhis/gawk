@@ -1637,6 +1637,23 @@ jobs:
           done
           echo "guard names the missing knob and docs/42 in all three cases"
 
+      # R49 (docs/50 D1, D8): the rooms-reader role and a chart webhook's event
+      # filter both reach the binary — the R2 rule, "does the knob actually
+      # reach production?" — and a webhook without a filter renders none, so
+      # it keeps the default.
+      - name: admin chart renders the rooms-reader role and webhook event filters
+        run: |
+          set -euo pipefail
+          out=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG \
+            --set oidc.roomsReaderRole=mumble-bot \
+            --set-json 'notifications.webhooks=[{"name":"bot","url":"https://b.example/h","secret":"cw==","events":["room.participant_joined"]},{"name":"pager","url":"https://p.example/h","secret":"cw=="}]')
+          grep -A1 'GAWK_ADMIN_ROOMS_READER_ROLE' <<<"$out" | grep -q '"mumble-bot"'
+          hooks=$(grep -A1 'GAWK_ADMIN_STATIC_WEBHOOKS' <<<"$out" | tail -1)
+          grep -q '\\"events\\":\[\\"room.participant_joined\\"\],\\"name\\":\\"bot\\"' <<<"$hooks"
+          if grep -q '\\"events\\":[^]]*\],\\"name\\":\\"pager\\"' <<<"$hooks"; then
+            echo "::error::a webhook with no events rendered a filter: $hooks"; exit 1
+          fi
+
       # HA of the moderation plane is a chart property (docs/42 D16), not a
       # later migration.
       - name: admin chart defaults to 2 replicas with a PodDisruptionBudget

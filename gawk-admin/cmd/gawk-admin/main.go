@@ -186,7 +186,7 @@ func run(args []string, getenv func(string) string) error {
 		OnOutcome:    om.Event,
 		Ingest: &eventbus.StoreIngester{
 			Store:          st,
-			ConfigWebhooks: dispatcher.ConfigWebhookNames(),
+			ConfigWebhooks: dispatcher.ConfigWebhooks(),
 			Notify:         dispatcher.Kick,
 		},
 	})

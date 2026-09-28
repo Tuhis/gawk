@@ -141,7 +141,7 @@ func TestActivityRowsDoNotPageAnyone(t *testing.T) {
 
 	if _, err := s.AppendBusEvent(ctx, store.Event{
 		Type: store.EventRoomParticipantJoined, Actor: "system",
-	}, "pod-a:1", []string{"ops-pager"}); err != nil {
+	}, "pod-a:1", hooks("ops-pager")); err != nil {
 		t.Fatal(err)
 	}
 	// The mapped room.ended, by contrast, is the row a receiver has had since
@@ -149,7 +149,7 @@ func TestActivityRowsDoNotPageAnyone(t *testing.T) {
 	if _, err := s.AppendBusEvent(ctx, store.Event{
 		Type: store.EventRoomEnded, Category: store.CategoryModeration, Actor: "system",
 		Payload: json.RawMessage(`{"room":"pf4tzn"}`),
-	}, "pod-a:2", []string{"ops-pager"}); err != nil {
+	}, "pod-a:2", hooks("ops-pager")); err != nil {
 		t.Fatal(err)
 	}
 

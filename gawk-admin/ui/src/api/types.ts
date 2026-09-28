@@ -314,6 +314,27 @@ export interface Relay {
 
 export type WebhookSource = 'config' | 'ui';
 
+/**
+ * A value of a webhook's event filter (R49, docs/50 D8). The moderation types,
+ * the four room activity types, and `room.participant_rejoined`, which is not
+ * an event but opts into the reconnect pair a room's move to another relay pod
+ * produces.
+ */
+export type WebhookEventName =
+  | 'broadcast.killed'
+  | 'ban.created'
+  | 'ban.expired'
+  | 'ban.removed'
+  | 'content_flag.raised'
+  | 'room.created'
+  | 'room.ended'
+  | 'room.secret_rotated'
+  | 'room.attached'
+  | 'room.detached'
+  | 'room.participant_joined'
+  | 'room.participant_left'
+  | 'room.participant_rejoined';
+
 export interface Webhook {
   /** Absent for config-sourced rows: they have no database identity. */
   id?: string;
@@ -321,6 +342,11 @@ export interface Webhook {
   url: string;
   enabled: boolean;
   source: WebhookSource;
+  /**
+   * The event filter. `null` (or absent, from an older server) is the
+   * default: every moderation event and no room activity event.
+   */
+  events?: WebhookEventName[] | null;
 }
 
 /** `POST /api/v1/webhooks/{name}/test` — the delivery outcome, for both sources. */
@@ -379,4 +405,6 @@ export interface CreateWebhookRequest {
   /** Write-only: the API never returns a secret, for either source (§4.7). */
   secret?: string;
   enabled: boolean;
+  /** `null` keeps the default filter; an update replaces the filter. */
+  events?: WebhookEventName[] | null;
 }

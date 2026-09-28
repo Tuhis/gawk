@@ -250,6 +250,10 @@ type webhookJSON struct {
 	URL     string `json:"url"`
 	Enabled bool   `json:"enabled"`
 	Source  string `json:"source"`
+	// Events is the filter (R49, docs/50 D8), null for the default: every
+	// moderation event and no activity event. Always present, so a client
+	// can tell "default" from a field this server does not know.
+	Events []string `json:"events"`
 }
 
 // linksFor builds the per-broadcast deep links, omitting either when its base

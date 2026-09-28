@@ -445,6 +445,8 @@ type wireWebhook struct {
 	URL     string `json:"url"`
 	Enabled bool   `json:"enabled"`
 	Source  string `json:"source"`
+	// Events is the R49 filter; a pointer so a test tells null from [].
+	Events *[]string `json:"events"`
 }
 
 // liveSnapshot builds a one-broadcast, two-pod fleet view.

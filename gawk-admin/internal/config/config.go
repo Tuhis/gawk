@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-server/oidcroles"
 )
 
@@ -52,6 +53,10 @@ type StaticWebhook struct {
 	// Enabled defaults to true; a chart-defined webhook can be parked
 	// without deleting its values entry.
 	Enabled *bool `json:"enabled,omitempty"`
+	// Events is the webhook's event filter (R49, docs/50 D8). Absent means
+	// every moderation event and no activity event — what every webhook
+	// received before R49; a list is exact and is validated at start-up.
+	Events []string `json:"events,omitempty"`
 }
 
 // IsEnabled reports whether this webhook should receive deliveries. Absent
@@ -453,8 +458,26 @@ func parseStaticWebhooks(raw string, getenv func(string) string) ([]StaticWebhoo
 		if h.Secret == "" {
 			return nil, fmt.Errorf("-static-webhooks[%s]: environment variable %s is empty", h.Name, h.SecretEnv)
 		}
+		// An unknown event name is a typo that would silently never page;
+		// refusing to start is the visible outcome (docs/50 D8).
+		if err := store.ValidateWebhookEvents(h.Events); err != nil {
+			return nil, fmt.Errorf("-static-webhooks[%s]: %w", h.Name, err)
+		}
 	}
 	return hooks, nil
+}
+
+// ConfigWebhooks is the enabled chart-defined webhooks as the recording path
+// hands them to the store: name and filter (docs/50 D8). Config webhooks are
+// not rows, so the enqueue cannot read their filters itself.
+func (c Config) ConfigWebhooks() []store.ConfigWebhook {
+	var out []store.ConfigWebhook
+	for _, h := range c.StaticWebhooks {
+		if h.IsEnabled() {
+			out = append(out, store.ConfigWebhook{Name: h.Name, Events: h.Events})
+		}
+	}
+	return out
 }
 
 // LogAttrs is the startup log line's payload: every knob a pod resolved, with

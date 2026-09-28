@@ -200,10 +200,22 @@ config:
 #         url: https://example.invalid/hook
 #         secret: "a-literal-key-for-a-throwaway-environment"
 #         enabled: false
+#       - name: mumble-bot
+#         url: https://bot.example.org/gawk
+#         secretRef: {name: gawk-admin-webhooks, key: mumble-bot}
+#         events: [room.attached, room.detached, room.participant_joined]
+#
+# `events` (R49, docs/50 D8) is the webhook's filter. Absent, it receives every
+# moderation event and none of the room activity events — what every webhook
+# received before R49. A list is exact: moderation types, `room.attached`,
+# `room.detached`, `room.participant_joined`, `room.participant_left`, and
+# `room.participant_rejoined` to also receive the reconnect pair a room's move
+# to another relay pod produces. An unknown name stops the portal from starting.
+# The activity events need the relay event bus (`eventbus` below).
 #
 # The receiver sees ban REASONS (they are operator-chosen text and may carry
-# private context) but never a raw broadcast ID or IP — see docs/self-hosting.md
-# for what a receiver must verify.
+# private context), raw broadcast IDs and room codes, and room nicknames — but
+# never an IP. See docs/self-hosting.md §9.5 for what a receiver must verify.
 notifications:
   webhooks: []
 

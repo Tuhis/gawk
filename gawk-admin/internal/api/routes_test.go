@@ -876,7 +876,7 @@ func TestEventsCursorPaginationAndDeliveryVisibility(t *testing.T) {
 			err error
 		)
 		if i == 4 {
-			ev, err = h.store.AppendEventAndEnqueue(ctx, seed, []string{"ntfy"})
+			ev, err = h.store.AppendEventAndEnqueue(ctx, seed, []store.ConfigWebhook{{Name: "ntfy"}})
 		} else {
 			ev, err = h.store.AppendEvent(ctx, seed)
 		}

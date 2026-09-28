@@ -245,6 +245,8 @@ func TestStaticWebhookRejections(t *testing.T) {
 		"unset secret env":  `[{"name":"a","url":"https://x/y","secretEnv":"NOT_SET_ANYWHERE"}]`,
 		"bad url":           `[{"name":"a","url":"not-a-url","secretEnv":"S"}]`,
 		"duplicate names":   `[{"name":"a","url":"https://x/y","secretEnv":"S"},{"name":"a","url":"https://x/z","secretEnv":"S"}]`,
+		// R49 D8: a typo in the filter would silently never page.
+		"unknown event": `[{"name":"a","url":"https://x/y","secretEnv":"S","events":["room.participant_joind"]}]`,
 	}
 	for name, raw := range cases {
 		env := minimal()
@@ -353,5 +355,24 @@ func TestMetricsAddr(t *testing.T) {
 	}
 	if cfg.MetricsAddr != ":7777" {
 		t.Errorf("flag: MetricsAddr = %q, want :7777 (the flag wins over the env)", cfg.MetricsAddr)
+	}
+}
+
+// R49 D8: a chart webhook's `events` list is parsed, and only enabled
+// webhooks reach the enqueue, each with its own filter.
+func TestStaticWebhookEventFilter(t *testing.T) {
+	env := minimal()
+	env["GAWK_ADMIN_STATIC_WEBHOOKS"] = `[{"name":"pager","url":"https://p.example/h","secretEnv":"S"},
+	  {"name":"bot","url":"https://b.example/h","secretEnv":"S","events":["room.participant_joined","room.participant_rejoined"]},
+	  {"name":"parked","url":"https://x.example/h","secretEnv":"S","enabled":false,"events":["room.attached"]}]`
+	env["S"] = "c2Vrcml0"
+	cfg, err := ParseFlags(nil, envFrom(env))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	hooks := cfg.ConfigWebhooks()
+	if len(hooks) != 2 || hooks[0].Name != "pager" || hooks[0].Events != nil ||
+		hooks[1].Name != "bot" || len(hooks[1].Events) != 2 {
+		t.Fatalf("ConfigWebhooks = %+v", hooks)
 	}
 }

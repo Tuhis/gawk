@@ -59,13 +59,14 @@ func (s *Store) AppendEvent(ctx context.Context, e Event) (Event, error) {
 // failed delivery must be seen" (and R40's "a flag must reach a human")
 // inherit this pipe, so the two writes commit together or not at all.
 //
-// configNames are the enabled CHART-defined webhooks, which are not rows here;
-// the enabled UI-created set is read INSIDE the transaction so a concurrent
-// webhook edit cannot split the decision from the write. A UI name shadowed by
-// a config name yields one delivery row (the queue is keyed by name), which
-// the dispatcher's resolve() signs with the config secret — the same
-// config-wins rule notify applies at send time (docs/42 D9).
-func (s *Store) AppendEventAndEnqueue(ctx context.Context, e Event, configNames []string) (Event, error) {
+// config are the enabled CHART-defined webhooks with their filters, which are
+// not rows here; the enabled UI-created set is read INSIDE the transaction so
+// a concurrent webhook edit cannot split the decision from the write. A UI
+// name shadowed by a config name yields at most one delivery row (the queue is
+// keyed by name), which the dispatcher's resolve() signs with the config
+// secret — the same config-wins rule notify applies at send time (docs/42 D9).
+// Each webhook's filter decides whether it is a receiver (docs/50 D8).
+func (s *Store) AppendEventAndEnqueue(ctx context.Context, e Event, config []ConfigWebhook) (Event, error) {
 	if e.OccurredAt.IsZero() {
 		e.OccurredAt = s.now()
 	}
@@ -89,7 +90,7 @@ func (s *Store) AppendEventAndEnqueue(ctx context.Context, e Event, configNames 
 		return Event{}, fmt.Errorf("store: append event: %w", err)
 	}
 
-	if err := s.enqueueDeliveriesTx(ctx, tx, out.ID, configNames); err != nil {
+	if err := s.enqueueDeliveriesTx(ctx, tx, out.ID, out, config); err != nil {
 		return Event{}, err
 	}
 
@@ -360,31 +361,38 @@ func actorOrOperator(actor string) string {
 	return actor
 }
 
-// enqueueDeliveriesTx writes one pending delivery row per enabled webhook,
-// inside the caller's transaction.
+// enqueueDeliveriesTx writes one pending delivery row per enabled webhook
+// whose filter wants ev (WebhookWants), inside the caller's transaction.
 //
-// configNames are the enabled CHART-defined webhooks, which are not rows; the
+// config are the enabled CHART-defined webhooks, which are not rows; the
 // enabled UI-created set is read INSIDE the transaction so a concurrent
 // webhook edit cannot split the decision from the write. A UI name shadowed by
-// a config name yields one delivery row — the queue is keyed by name, and the
-// dispatcher signs with the config secret (docs/42 D9).
-func (s *Store) enqueueDeliveriesTx(ctx context.Context, tx pgx.Tx, eventID int64, configNames []string) error {
-	seen := make(map[string]struct{}, len(configNames))
-	names := make([]string, 0, len(configNames))
-	for _, n := range configNames {
-		if _, dup := seen[n]; dup {
+// a config name yields at most one delivery row — the queue is keyed by name,
+// the dispatcher signs with the config secret (docs/42 D9), and it is the
+// CONFIG webhook's filter that decides, so a shadowed row's filter never
+// reaches a receiver it does not describe.
+func (s *Store) enqueueDeliveriesTx(ctx context.Context, tx pgx.Tx, eventID int64, ev Event, config []ConfigWebhook) error {
+	seen := make(map[string]struct{}, len(config))
+	names := make([]string, 0, len(config))
+	for _, h := range config {
+		if _, dup := seen[h.Name]; dup {
 			continue
 		}
-		seen[n] = struct{}{}
-		names = append(names, n)
+		seen[h.Name] = struct{}{}
+		if WebhookWants(h.Events, ev) {
+			names = append(names, h.Name)
+		}
 	}
-	rows, err := tx.Query(ctx, `SELECT name FROM webhooks WHERE enabled = true`)
+	rows, err := tx.Query(ctx, `SELECT name, events FROM webhooks WHERE enabled = true`)
 	if err != nil {
 		return fmt.Errorf("store: append event: list webhooks: %w", err)
 	}
 	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
+		var (
+			n      string
+			filter []string
+		)
+		if err := rows.Scan(&n, &filter); err != nil {
 			rows.Close()
 			return fmt.Errorf("store: append event: list webhooks: %w", err)
 		}
@@ -392,7 +400,9 @@ func (s *Store) enqueueDeliveriesTx(ctx context.Context, tx pgx.Tx, eventID int6
 			continue
 		}
 		seen[n] = struct{}{}
-		names = append(names, n)
+		if WebhookWants(filter, ev) {
+			names = append(names, n)
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {

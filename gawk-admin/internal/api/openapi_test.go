@@ -433,8 +433,27 @@ func checkEventTypes(doc *oasDoc, ops map[string]oasOp, types []string) []error 
 				"response field are one vocabulary, not two lists that agree today", ref))
 	}
 
-	// WebhookEventTypes is a SUBSET of AllEventTypes, by construction. R49 is
-	// where the two first differ; nothing may leave the subset behind.
+	// R49 (docs/50 D8): the webhook filter's enum is exactly what the API
+	// accepts — WebhookEventTypes plus the one filter-only token — so a value
+	// the document offers is never a 400, and one the API takes is never
+	// undocumented. Both `events` fields reference it rather than restating it.
+	if filter, err := enumOf(doc, "WebhookEvent"); err != nil {
+		errs = append(errs, err)
+	} else {
+		errs = append(errs, compareVocabularies("(d) webhook event", store.WebhookFilterTypes(), filter,
+			"store.WebhookFilterTypes()", "openapi.yaml's WebhookEvent enum")...)
+	}
+	for _, schema := range []string{"Webhook", "WebhookRequest"} {
+		props := propertiesOf(doc, resolveSchema(doc, map[string]any{"$ref": "#/components/schemas/" + schema}))
+		items, _ := props["events"]["items"].(map[string]any)
+		if ref, _ := items["$ref"].(string); ref != "#/components/schemas/WebhookEvent" {
+			errs = append(errs, fmt.Errorf("(d) %s.events items are %q, want a $ref to WebhookEvent", schema, ref))
+		}
+	}
+
+	// WebhookEventTypes is a SUBSET of the stored event types, by
+	// construction: since R49 it holds four activity types beside the
+	// moderation vocabulary; nothing may leave the subset behind.
 	all := map[string]bool{}
 	for _, tpe := range types {
 		all[tpe] = true
@@ -754,6 +773,7 @@ func schemaFixtures() map[string]any {
 	webhook := webhookJSON{
 		ID: "7b8c9d0e-1f20-4314-8526-3748596a7b8c", Name: "moderation-log",
 		URL: "https://log.example.org/gawk", Enabled: true, Source: SourceUI,
+		Events: []string{store.EventRoomParticipantJoined},
 	}
 	live, viewers := true, 3
 	attLinks := attachmentLinksJSON{Watch: "https://gawk.example/#/view/ABC234"}
@@ -800,7 +820,7 @@ func schemaFixtures() map[string]any {
 		"EventBusHealth":    bus,
 		"EventBusPod":       busPod,
 		"Webhook":           webhook,
-		"WebhookRequest":    webhookRequest{Name: "moderation-log", URL: "https://log.example.org/gawk", Secret: "aw==", Enabled: true},
+		"WebhookRequest":    webhookRequest{Name: "moderation-log", URL: "https://log.example.org/gawk", Secret: "aw==", Enabled: true, Events: []string{store.EventRoomAttached}},
 		"WebhooksPage":      webhooksPageJSON{Webhooks: []webhookJSON{webhook}},
 		"WebhookTestResult": TestResult{OK: false, Status: 502, Error: "502 Bad Gateway", DeliveryID: "d-1"},
 		"Room":              room,

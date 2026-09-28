@@ -25,8 +25,9 @@ import (
 //     delivery into exactly-once at the table.
 //   - Activity rows are pruned by age; moderation rows are the audit trail and
 //     are never pruned here.
-//   - Activity types are not webhook-eligible by default. R49 is where four of
-//     them become so, and it says so in WebhookEventTypes, not here.
+//   - Activity types are not webhook-eligible by default. R49 made four of
+//     them deliverable to a webhook that lists them (WebhookEventTypes,
+//     WebhookWants), never to one that does not.
 
 // Event categories.
 const (
@@ -87,6 +88,21 @@ func RowTypeForBusType(busType string) (string, bool) {
 	return "", false
 }
 
+// CloudEventsType maps any stored row type to its CloudEvents type: a
+// moderation row through the contract's own table, an activity row by the
+// prefix it was stripped of (docs/52 D6 (e)).
+func CloudEventsType(rowType string) (string, bool) {
+	if t, ok := events.ModerationType(rowType); ok {
+		return t, true
+	}
+	for _, a := range ActivityEventTypes() {
+		if a == rowType {
+			return events.TypePrefix + rowType, true
+		}
+	}
+	return "", false
+}
+
 // AppendBusEvent inserts one row ingested from the relay event bus, ignoring a
 // duplicate, and fans it out to webhooks when its type is webhook-eligible.
 //
@@ -99,7 +115,7 @@ func RowTypeForBusType(busType string) (string, bool) {
 // wrote before R50 (room.closed becomes room.ended, docs/51 D5). The insert
 // and the delivery rows commit together, the same rule AppendEventAndEnqueue
 // exists for: an event that claims to be recorded must have its fan-out.
-func (s *Store) AppendBusEvent(ctx context.Context, e Event, source string, configNames []string) (inserted bool, err error) {
+func (s *Store) AppendBusEvent(ctx context.Context, e Event, source string, config []ConfigWebhook) (inserted bool, err error) {
 	if source == "" {
 		return false, fmt.Errorf("store: append bus event: empty source (the dedup key)")
 	}
@@ -137,12 +153,13 @@ func (s *Store) AppendBusEvent(ctx context.Context, e Event, source string, conf
 		return false, fmt.Errorf("store: append bus event: %w", err)
 	}
 
-	// Only webhook-eligible types fan out. The activity types are not on that
-	// list today — R49 is where four of them join it — so an ingested join
-	// does not page anyone, while the mapped room.ended keeps reaching every
-	// receiver that has always had it.
+	// Only webhook-eligible types fan out, and each webhook's filter decides
+	// whether it is one of the receivers (R49, docs/50 D8): an ingested join
+	// reaches only a webhook that asked for joins, while the mapped room.ended
+	// keeps reaching every receiver that has always had it.
 	if isWebhookEventType(e.Type) {
-		if err := s.enqueueDeliveriesTx(ctx, tx, id, configNames); err != nil {
+		e.Payload = payload
+		if err := s.enqueueDeliveriesTx(ctx, tx, id, e, config); err != nil {
 			return false, err
 		}
 	}

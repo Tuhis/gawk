@@ -19,6 +19,11 @@ type webhookRequest struct {
 	// secret, so the portal's edit form cannot round-trip one (§4.7).
 	Secret  string `json:"secret,omitempty"`
 	Enabled bool   `json:"enabled"`
+	// Events is the event filter (R49, docs/50 D8): absent or null keeps the
+	// default — every moderation event, no activity event — and a list is
+	// exact. An update replaces it, so an edit that omits it restores the
+	// default.
+	Events []string `json:"events"`
 }
 
 // handleListWebhooks merges the two sources (D9): chart-defined webhooks from
@@ -35,10 +40,10 @@ func (a *API) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]webhookJSON, 0, len(rows)+len(a.opts.Config.StaticWebhooks))
 	for _, h := range a.opts.Config.StaticWebhooks {
-		out = append(out, webhookJSON{Name: h.Name, URL: h.URL, Enabled: h.IsEnabled(), Source: SourceConfig})
+		out = append(out, webhookJSON{Name: h.Name, URL: h.URL, Enabled: h.IsEnabled(), Source: SourceConfig, Events: h.Events})
 	}
 	for _, h := range rows {
-		out = append(out, webhookJSON{ID: h.ID.String(), Name: h.Name, URL: h.URL, Enabled: h.Enabled, Source: SourceUI})
+		out = append(out, webhookJSON{ID: h.ID.String(), Name: h.Name, URL: h.URL, Enabled: h.Enabled, Source: SourceUI, Events: h.Events})
 	}
 	writeJSON(w, http.StatusOK, webhooksPageJSON{Webhooks: out})
 }
@@ -59,7 +64,7 @@ func (a *API) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := a.opts.Store.CreateWebhook(r.Context(), store.Webhook{
 		Name: name, URL: strings.TrimSpace(req.URL), Secret: req.Secret,
-		Enabled: req.Enabled, CreatedAt: a.now(), CreatedBy: id.Actor(),
+		Enabled: req.Enabled, CreatedAt: a.now(), CreatedBy: id.Actor(), Events: req.Events,
 	})
 	if err != nil {
 		a.fail(w, r, "create the webhook", err)
@@ -68,7 +73,7 @@ func (a *API) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	a.log.Info("webhook created", "name", created.Name, "actor", id.Actor())
 	writeJSON(w, http.StatusCreated, webhookJSON{
 		ID: created.ID.String(), Name: created.Name, URL: created.URL,
-		Enabled: created.Enabled, Source: SourceUI,
+		Enabled: created.Enabled, Source: SourceUI, Events: created.Events,
 	})
 }
 
@@ -92,6 +97,7 @@ func (a *API) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := a.opts.Store.UpdateWebhook(r.Context(), store.Webhook{
 		ID: rowID, Name: name, URL: strings.TrimSpace(req.URL), Secret: req.Secret, Enabled: req.Enabled,
+		Events: req.Events,
 	})
 	if err != nil {
 		a.fail(w, r, "update the webhook", err)
@@ -100,7 +106,7 @@ func (a *API) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	a.log.Info("webhook updated", "name", updated.Name, "actor", id.Actor())
 	writeJSON(w, http.StatusOK, webhookJSON{
 		ID: updated.ID.String(), Name: updated.Name, URL: updated.URL,
-		Enabled: updated.Enabled, Source: SourceUI,
+		Enabled: updated.Enabled, Source: SourceUI, Events: updated.Events,
 	})
 }
 
@@ -193,6 +199,10 @@ func (a *API) validateWebhook(w http.ResponseWriter, req webhookRequest, create 
 	if create && strings.TrimSpace(req.Secret) == "" {
 		writeError(w, http.StatusBadRequest, CodeBadRequest,
 			"secret is required: every webhook is signed with its own key")
+		return "", false
+	}
+	if err := store.ValidateWebhookEvents(req.Events); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, err.Error())
 		return "", false
 	}
 	if req.Secret != "" {
