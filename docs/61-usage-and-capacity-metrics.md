@@ -1,7 +1,9 @@
 # R59 — Usage and capacity metrics
 
 **Status**: designed 2026-09-29 with the owner (decisions OD1–OD7, §2);
-chunks **UM1–UM6** (§5).
+chunks **UM1–UM6** (§5). UM1–UM4 implemented 2026-09-29, and UM5's
+self-hosting doc; the fleet's GitOps values (UM5) and the dashboard (UM6)
+need the release deployed.
 
 **Relationship to earlier work**: R9 (docs/13) made the relay scrapeable and
 gave it the per-leg counters. Its M8 was a Grafana dashboard checked in at
