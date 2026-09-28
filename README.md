@@ -30,8 +30,8 @@ images, and a **[self-hosting guide](docs/self-hosting.md)**.
 - **Join by code** — no accounts, no installs for broadcasters or viewers
 - **Scales horizontally** — a self-federating relay fleet carries hundreds
   of broadcasts and ~1,000 viewers on a single hot broadcast
-- **Native broadcasters** for Linux and Windows with true hardware encode
-  (the browser cannot hardware-encode on Linux — [why](docs/19-linux-native-broadcaster.md))
+- **Native broadcasters** for Linux, Windows and macOS with true hardware
+  encode (the browser cannot hardware-encode on Linux — [why](docs/19-linux-native-broadcaster.md))
 - **System and per-application audio**, Opus, synchronized off a shared clock
 - **Resilience opt-ins** — reliable carrier streams, a relay-side DVR
   buffer, and forward parity for lossy viewer links
@@ -72,6 +72,7 @@ flowchart LR
         B1["Browser<br/>getDisplayMedia + WebCodecs"]
         B2["gawk-broadcast<br/>native Linux, GPU encode"]
         B3["gawk-broadcast.exe<br/>native Windows, GPU encode"]
+        B4["gawk-broadcast.app<br/>native macOS, GPU encode"]
     end
     subgraph FLEET["Relay fleet (Go)"]
         LB["UDP load balancer"]
@@ -82,6 +83,7 @@ flowchart LR
     B1 -- "WebTransport<br/>QUIC datagrams" --> LB
     B2 --> LB
     B3 --> LB
+    B4 --> LB
     LB --> R1
     R1 -- "edge pull" --> R2
     R1 --> V
@@ -304,8 +306,9 @@ actually linked into that artifact:
 [admin UI](gawk-admin/ui/THIRD-PARTY-NOTICES.md).
 Regenerate with `python3 tools/licenses/gen-notices.py`; CI gates every
 dependency against a permissive allowlist. The one non-standard entry: the
-Windows broadcaster's GUI uses **Slint** under its Royalty-free Desktop
-License v2.0, whose attribution requirement this badge satisfies:
+desktop broadcasters' GUI (Windows and macOS, one shared Slint UI) uses
+**Slint** under its Royalty-free Desktop License v2.0, whose attribution
+requirement this badge satisfies:
 
 <a href="https://slint.dev">
   <picture>
