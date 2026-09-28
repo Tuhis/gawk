@@ -132,9 +132,59 @@ func TestPruneLeavesTheAuditTrailAlone(t *testing.T) {
 	}
 }
 
-// TestActivityRowsDoNotPageAnyone: the activity types are not webhook-eligible
-// (R49 is where four of them become so), so ingesting a join must enqueue no
-// delivery even with a webhook configured.
+// R49 review finding (PR #388): since an activity row can have deliveries —
+// any webhook that lists a room activity type — the prune must take the
+// expired rows' delivery rows with them. Before the fix the DELETE hit the
+// deliveries' foreign key, failed as a whole, and nothing was ever pruned
+// again.
+func TestPruneTakesExpiredActivityDeliveriesWithIt(t *testing.T) {
+	s := storetest.New(t)
+	ctx := t.Context()
+	old := time.Now().Add(-100 * time.Hour)
+	bot := []store.ConfigWebhook{{Name: "bot", Events: []string{store.EventRoomParticipantJoined}}}
+	join := json.RawMessage(`{"event":{"data":{"nickname":"tuhis","rejoin":false}}}`)
+
+	if _, err := s.AppendBusEvent(ctx, store.Event{
+		Type: store.EventRoomParticipantJoined, Actor: "system", OccurredAt: old, Payload: join,
+	}, "pod-a:1", bot); err != nil {
+		t.Fatal(err)
+	}
+	// A second expired row with no delivery, and a fresh one with one.
+	if _, err := s.AppendBusEvent(ctx, store.Event{
+		Type: store.EventRoomParticipantLeft, Actor: "system", OccurredAt: old,
+	}, "pod-a:2", bot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendBusEvent(ctx, store.Event{
+		Type: store.EventRoomParticipantJoined, Actor: "system", OccurredAt: time.Now(), Payload: join,
+	}, "pod-a:3", bot); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.PruneActivityEvents(ctx, time.Now().Add(-72*time.Hour))
+	if err != nil {
+		t.Fatalf("prune with a delivered activity row: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("pruned %d rows, want 2", n)
+	}
+	left, err := s.ListEvents(ctx, store.EventQuery{Category: store.CategoryActivity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 {
+		t.Fatalf("%d activity rows left, want the fresh one", len(left))
+	}
+	byEvent, err := s.ListDeliveriesForEvents(ctx, []int64{left[0].ID})
+	if err != nil || len(byEvent[left[0].ID]) != 1 {
+		t.Fatalf("the fresh row's delivery = %v (err=%v), want it untouched", byEvent[left[0].ID], err)
+	}
+}
+
+// TestActivityRowsDoNotPageAnyone: with the default filter no webhook receives
+// an activity row (R49 made four types deliverable only to a webhook that
+// lists them), so ingesting a join must enqueue no delivery even with a
+// webhook configured.
 func TestActivityRowsDoNotPageAnyone(t *testing.T) {
 	s := storetest.New(t)
 	ctx := t.Context()

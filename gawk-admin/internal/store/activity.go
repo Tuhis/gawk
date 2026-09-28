@@ -182,8 +182,20 @@ func isWebhookEventType(t string) bool {
 // PruneActivityEvents deletes activity rows older than the cutoff and returns
 // how many went. Moderation rows are never touched: the audit trail is the one
 // thing in this table nobody is allowed to age out.
+//
+// Since R49 an activity row can have deliveries (a webhook that lists a room
+// activity type), and webhook_deliveries references its event with no
+// cascade. So the expired rows' deliveries go in the SAME statement: the
+// foreign key is checked at the end of the statement, and a prune that
+// deleted only the events would fail as a whole on the first delivered row —
+// and keep failing every tick, pruning nothing (PR #388 review).
 func (s *Store) PruneActivityEvents(ctx context.Context, olderThan time.Time) (int64, error) {
-	const q = `DELETE FROM moderation_events WHERE category = 'activity' AND occurred_at < $1`
+	const q = `WITH doomed AS (
+			SELECT id FROM moderation_events WHERE category = 'activity' AND occurred_at < $1
+		), deliveries AS (
+			DELETE FROM webhook_deliveries WHERE event_id IN (SELECT id FROM doomed)
+		)
+		DELETE FROM moderation_events WHERE id IN (SELECT id FROM doomed)`
 	tag, err := s.pool.Exec(ctx, q, olderThan.UTC())
 	if err != nil {
 		return 0, fmt.Errorf("store: prune activity events: %w", err)
