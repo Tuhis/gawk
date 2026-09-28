@@ -44,12 +44,17 @@ info:
     token without that role gets `403`. There are no cookies and no
     server-side session.
 
-    The served copy of this document names the role claim value this
-    deployment is configured with (`-operator-role`). The repository copy uses
-    the symbolic name `operator`.
+    The served copy of this document names the role claim values this
+    deployment is configured with (`-operator-role`, `-rooms-reader-role`).
+    The repository copy uses the symbolic names `operator` and
+    `rooms-reader`.
 
     Service identities use the client-credentials grant against the same
-    provider. `docs/self-hosting.md` §9.8 has a worked example.
+    provider. `docs/self-hosting.md` §9.8 has a worked example. A bot that
+    only reads rooms should hold `rooms-reader`, which reaches `getMe`,
+    `listRooms` and `getRoom` and nothing else. Those operations return raw
+    room codes and join links, so a `rooms-reader` token can join every
+    room in the deployment.
 
     The routes that need no token: `GET /auth/config` returns the issuer,
     client ID and audience a browser client needs; `GET /api/v1/openapi.json`
@@ -247,8 +252,8 @@ paths:
       description: |
         Call this first. A `200` confirms the token carries the required role,
         and the body reports server-side defaults and enabled features that a
-        client should read rather than hard-code.
-      x-gawk-roles: [operator]
+        a client should read rather than hard-code.
+      x-gawk-roles: [operator, rooms-reader]
       responses:
         '200':
           description: The caller's identity and this deployment's defaults.
@@ -923,19 +928,25 @@ paths:
       tags: [rooms]
       summary: List rooms
       description: |
-        Returns every room custom resource, static rooms first. Only served
-        when the deployment enables rooms (`features.rooms` in
-        `GET /api/v1/me`); otherwise the path returns `404`.
+        Returns every room, static rooms first, as a summary with counts and
+        a join link. Only served when the deployment enables rooms
+        (`features.rooms` in `GET /api/v1/me`); otherwise the path returns
+        `404`.
+
+        A row merges the room's custom resource with the live state of the
+        relay pod that is home for it. `live: false` means no reachable pod
+        is home for the room, so who is in it is unknown, not zero. Use
+        `getRoom` for the attachments and the participant list.
 
         A room whose custom resource could not be decoded is still listed by
         name, with an empty `kind`, so that it can be deleted.
-      x-gawk-roles: [operator]
+      x-gawk-roles: [operator, rooms-reader]
       x-gawk-requires: rooms
       responses:
         '200':
           description: All rooms.
           x-gawk-sensitive: true
-          x-gawk-sensitive-reason: '`name` and `code` are the raw room code.'
+          x-gawk-sensitive-reason: '`name`, `code` and `links.join` carry the raw room code.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RoomsPage' }
@@ -946,7 +957,14 @@ paths:
                     code: team-standup
                     displayName: Team standup
                     maxBroadcasts: 4
-                    attachments: 2
+                    live: true
+                    links:
+                      join: https://gawk.example/#/room/team-standup
+                    counts:
+                      participants: 3
+                      streaming: 2
+                      watching: 1
+                      attachments: 2
                     homeHolder: gawk-server-7c9f8b6d5-2xk4p
                     key: 3c7d91fe20ab
                     createdAt: '2026-09-01T07:00:00Z'
@@ -996,7 +1014,10 @@ paths:
                   code: team-standup
                   displayName: Team standup
                   maxBroadcasts: 4
-                  attachments: 0
+                  live: false
+                  links:
+                    join: https://gawk.example/#/room/team-standup
+                  counts: { participants: 0, streaming: 0, watching: 0, attachments: 0 }
                   createdAt: '2026-09-16T09:31:00Z'
                   hasAttachSecret: true
                   managed: true
@@ -1041,7 +1062,8 @@ paths:
                   name: team-standup
                   kind: static
                   code: team-standup
-                  attachments: 0
+                  live: false
+                  counts: { participants: 0, streaming: 0, watching: 0, attachments: 0 }
                   hasAttachSecret: true
                   managed: true
                 attachSecret: s3cr3t-rotated-key-shown-once
@@ -1081,6 +1103,71 @@ paths:
         '500': { $ref: '#/components/responses/Internal' }
 
   /api/v1/rooms/{name}:
+    get:
+      operationId: getRoom
+      tags: [rooms]
+      summary: Get a room with its attachments and participants
+      description: |
+        Returns the `listRooms` row for one room plus `attachments` and
+        `participants`. `{name}` accepts any spelling of the room code.
+
+        When `live` is `false` no reachable relay pod is home for the room:
+        `participants` is empty because it is unknown, and each attachment
+        comes from the custom resource without `live` or `viewers`.
+      x-gawk-roles: [operator, rooms-reader]
+      x-gawk-requires: rooms
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The room code, in any spelling.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The room.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: Contains the raw room code, join link and raw broadcast IDs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Room' }
+              example:
+                name: team-standup
+                kind: static
+                code: team-standup
+                displayName: Team standup
+                live: true
+                links:
+                  join: https://gawk.example/#/room/team-standup
+                counts: { participants: 3, streaming: 2, watching: 1, attachments: 2 }
+                attachments:
+                  - broadcastId: ABC234
+                    label: main pc
+                    live: true
+                    viewers: 3
+                    attachedAt: '2026-09-16T09:32:00Z'
+                    links:
+                      watch: https://gawk.example/#/view/ABC234
+                  - broadcastId: DEF567
+                    label: laptop
+                    live: false
+                    viewers: 0
+                    attachedAt: '2026-09-16T09:40:00Z'
+                    links:
+                      watch: https://gawk.example/#/view/DEF567
+                participants:
+                  - { id: 1, nickname: tuhis, clientKind: native, streaming: true, speaking: false }
+                  - { id: 2, nickname: kaveri, clientKind: web-broadcaster, streaming: true, speaking: false }
+                  - { id: 3, nickname: guest-3, clientKind: web-viewer, streaming: false, speaking: false }
+                homeHolder: gawk-server-7c9f8b6d5-2xk4p
+                key: 3c7d91fe20ab
+                createdAt: '2026-09-01T07:00:00Z'
+                hasAttachSecret: true
+                managed: true
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
     delete:
       operationId: deleteRoom
       tags: [rooms]
@@ -1750,8 +1837,11 @@ components:
 
     Room:
       type: object
-      description: One room custom resource.
-      required: [name, kind, code, attachments, hasAttachSecret, managed]
+      description: |
+        One room: its custom resource merged with the live state of the relay
+        pod that is home for it. `attachments` and `participants` are present
+        only in `getRoom`.
+      required: [name, kind, code, live, counts, hasAttachSecret, managed]
       properties:
         name:
           type: string
@@ -1768,10 +1858,19 @@ components:
           type: integer
           format: int32
           description: Per-room override. Absent or `0` means the fleet default.
+        live:
+          type: boolean
+          description: Whether a reachable relay pod is home for the room. When `false`, who is in the room is unknown.
+        links: { $ref: '#/components/schemas/RoomLinks' }
+        counts: { $ref: '#/components/schemas/RoomCounts' }
         attachments:
-          type: integer
-          format: int32
-          description: Number of broadcasts currently attached.
+          type: array
+          description: The attached broadcasts in attach order. Only in `getRoom`.
+          items: { $ref: '#/components/schemas/RoomAttachment' }
+        participants:
+          type: array
+          description: Everyone in the room. Only in `getRoom`; empty when `live` is `false`.
+          items: { $ref: '#/components/schemas/RoomParticipant' }
         homeHolder:
           type: string
           description: The pod holding the room's lease. Empty until a pod has homed it.
@@ -1789,6 +1888,87 @@ components:
         managed:
           type: boolean
           description: '`true` for rooms created through this API. Rooms applied with `kubectl` are listed and deletable but not managed.'
+
+    RoomLinks:
+      type: object
+      description: Absent when the deployment has no `-app-base-url`.
+      required: [join]
+      properties:
+        join:
+          type: string
+          description: Opens the room in the gawk app. Contains the room code.
+
+    RoomCounts:
+      type: object
+      required: [participants, streaming, watching, attachments]
+      properties:
+        participants:
+          type: integer
+          format: int32
+          description: People in the room. `0` when the room is not live.
+        streaming:
+          type: integer
+          format: int32
+          description: Participants with a broadcast attached.
+        watching:
+          type: integer
+          format: int32
+          description: Participants without one. `streaming + watching = participants`.
+        attachments:
+          type: integer
+          format: int32
+          description: Broadcasts attached to the room.
+
+    RoomAttachment:
+      type: object
+      required: [broadcastId]
+      properties:
+        broadcastId:
+          type: string
+          description: The raw broadcast ID. Joinable.
+        label: { type: string }
+        live:
+          type: boolean
+          description: '`false` while the broadcaster is away. Absent when the room is not live.'
+        viewers:
+          type: integer
+          format: int32
+          description: Viewers of this broadcast. Absent when the room is not live.
+        attachedAt: { type: string, format: date-time }
+        links: { $ref: '#/components/schemas/AttachmentLinks' }
+
+    AttachmentLinks:
+      type: object
+      description: Absent when the deployment has no `-app-base-url`.
+      required: [watch]
+      properties:
+        watch:
+          type: string
+          description: Opens the broadcast in the gawk app.
+
+    RoomParticipant:
+      type: object
+      required: [id, nickname, clientKind, streaming, speaking]
+      properties:
+        id:
+          type: integer
+          format: int32
+          description: Per-room participant ID. Re-issued if the room moves to another relay pod.
+        nickname:
+          type: string
+          description: Chosen by the participant. Unauthenticated free text.
+        clientKind:
+          type: string
+          enum: [web-viewer, web-broadcaster, native]
+        streaming:
+          type: boolean
+          description: Whether one of the room's attachments is this participant's broadcast.
+        speaking:
+          type: boolean
+          description: Reserved for a voice bridge. Always `false` today.
+        identity:
+          type: string
+          description: Reserved for an authenticated identity. Absent today.
 
     RoomsPage:
       type: object

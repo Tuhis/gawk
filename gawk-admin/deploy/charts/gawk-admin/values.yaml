@@ -123,6 +123,12 @@ oidc:
   operatorRole: operator
   # Reserved for R40's flag-only service identity. No R39 route consults it.
   flaggerRole: flagger
+  # R49 (docs/50 D1): the read-only role for a bot's client-credentials
+  # service identity. It reaches exactly GET /api/v1/rooms,
+  # GET /api/v1/rooms/{name} and GET /api/v1/me — and those return raw room
+  # codes and join links, so a token holding it can join every room. Empty
+  # grants it nowhere. Recipe: docs/self-hosting.md §9.8.
+  roomsReaderRole: rooms-reader
 
 # How gawk-admin finds relay pods (docs/42 D12). The relay chart's HEADLESS
 # metrics Service publishes one A record per ready pod; a plain ClusterIP would

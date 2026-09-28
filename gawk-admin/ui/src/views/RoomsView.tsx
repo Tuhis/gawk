@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import { ApiError } from '../api/client.ts';
-import type { Room, RoomWithSecret } from '../api/types.ts';
+import type { Room, RoomParticipant, RoomWithSecret } from '../api/types.ts';
 import { AuthRedirect } from '../auth/session.ts';
 import { Dialog } from '../components/Dialog.tsx';
 import { formatInstant } from '../lib/format.ts';
@@ -14,10 +14,13 @@ import ui from '../styles/ui.module.css';
  * one-time attach secret and deleted here; dynamic rooms are listed and can be
  * ended, which deletes their CR and every relay pod's informer sees it.
  *
- * Raw room codes are on screen — the same three-places rule as broadcast IDs
- * (docs/42 D8, docs/44 D16): this OIDC-gated portal, the API, Postgres. They
- * never leave through a webhook, which carries the HMAC'd `key` instead, and
- * `?key=` on the route is how such a webhook lands on the right row.
+ * Raw room codes are on screen, as broadcast IDs are (docs/42 D8, docs/44
+ * D16). `?key=` on the route is how a webhook naming a room's HMAC'd key lands
+ * on the right row.
+ *
+ * Since R49 (docs/50 D10) each row shows who is there — counts and a live
+ * mark from the room's home relay pod — and expands into the roster and the
+ * attachments, fetched from the same `GET /api/v1/rooms/{name}` a bot reads.
  *
  * The attach secret is shown EXACTLY ONCE, in the reveal panel after a create
  * or a rotation. The API has no route that returns it again; an operator who
@@ -40,6 +43,7 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
   const [reveal, setReveal] = useState<RoomWithSecret | null>(null);
   const [rotating, setRotating] = useState<Room | null>(null);
   const [ending, setEnding] = useState<Room | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -141,6 +145,7 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
                 <th>Code</th>
                 <th>Kind</th>
                 <th>Name</th>
+                <th>People</th>
                 <th>Broadcasts</th>
                 <th>Home</th>
                 <th>Key</th>
@@ -151,81 +156,115 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
             </thead>
             <tbody>
               {shown.map((r) => (
-                <tr key={r.name}>
-                  <td className={ui.mono}>
-                    <strong>{r.code}</strong>
-                    {!r.managed && r.kind === 'static' ? (
-                      <span
-                        className={ui.badgeWarn}
-                        title="Applied with kubectl, not created here; the portal deletes it only on your explicit request and leaves its Secret alone"
-                      >
-                        kubectl
-                      </span>
-                    ) : null}
-                  </td>
-                  <td>
-                    <span className={r.kind === 'static' ? ui.badgeOk : ui.badge}>
-                      {r.kind || 'unreadable'}
-                    </span>
-                  </td>
-                  <td>{r.displayName ?? ''}</td>
-                  <td>
-                    {r.attachments}
-                    {r.maxBroadcasts ? <span className={ui.dim}> / {r.maxBroadcasts}</span> : null}
-                  </td>
-                  <td className={ui.mono}>
-                    {r.homeHolder ?? <span className={ui.dim}>not homed</span>}
-                    {r.emptySince ? (
-                      <span className={ui.dim} title={`empty since ${formatInstant(r.emptySince)}`}>
-                        {' '}
-                        (empty)
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className={ui.mono}>{r.key ?? ''}</td>
-                  <td>
-                    {r.kind === 'dynamic' ? (
-                      <span className={ui.dim}>creator token</span>
-                    ) : r.hasAttachSecret ? (
-                      <span className={ui.badgeOk}>attach secret</span>
-                    ) : (
-                      <span className={ui.badge}>open</span>
-                    )}
-                  </td>
-                  <td className={ui.nowrap}>{r.createdAt ? formatInstant(r.createdAt) : ''}</td>
-                  <td>
-                    <div className={ui.actions}>
-                      {r.kind === 'static' ? (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          title={
-                            r.hasAttachSecret
-                              ? 'Mint a new attach secret; the old one stops working immediately'
-                              : 'Add an attach secret to this open room'
-                          }
-                          onClick={() => {
-                            setActionError(null);
-                            setRotating(r);
-                          }}
-                        >
-                          {r.hasAttachSecret ? 'Rotate secret' : 'Add secret'}
-                        </button>
-                      ) : null}
+                <Fragment key={r.name}>
+                  <tr>
+                    <td className={ui.mono}>
                       <button
                         type="button"
-                        className={ui.danger}
-                        disabled={busy}
-                        onClick={() => {
-                          setActionError(null);
-                          setEnding(r);
-                        }}
+                        aria-expanded={expanded === r.name}
+                        aria-label={`${expanded === r.name ? 'Hide' : 'Show'} who is in ${r.code}`}
+                        onClick={() => setExpanded(expanded === r.name ? null : r.name)}
                       >
-                        {r.kind === 'dynamic' ? 'End room' : 'Delete'}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+                        {expanded === r.name ? '▾' : '▸'}
+                      </button>{' '}
+                      <strong>{r.code}</strong>
+                      {!r.managed && r.kind === 'static' ? (
+                        <span
+                          className={ui.badgeWarn}
+                          title="Applied with kubectl, not created here; the portal deletes it only on your explicit request and leaves its Secret alone"
+                        >
+                          kubectl
+                        </span>
+                      ) : null}
+                    </td>
+                    <td>
+                      <span className={r.kind === 'static' ? ui.badgeOk : ui.badge}>
+                        {r.kind || 'unreadable'}
+                      </span>
+                    </td>
+                    <td>{r.displayName ?? ''}</td>
+                    <td>
+                      {r.live ? (
+                        <>
+                          <span className={ui.badgeOk}>live</span> {r.counts.participants}
+                          {r.counts.streaming ? (
+                            <span className={ui.dim}> ({r.counts.streaming} streaming)</span>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span
+                          className={ui.dim}
+                          title="No reachable relay pod is home for this room, so who is in it is unknown"
+                        >
+                          not live
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {r.counts.attachments}
+                      {r.maxBroadcasts ? <span className={ui.dim}> / {r.maxBroadcasts}</span> : null}
+                    </td>
+                    <td className={ui.mono}>
+                      {r.homeHolder ?? <span className={ui.dim}>not homed</span>}
+                      {r.emptySince ? (
+                        <span className={ui.dim} title={`empty since ${formatInstant(r.emptySince)}`}>
+                          {' '}
+                          (empty)
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className={ui.mono}>{r.key ?? ''}</td>
+                    <td>
+                      {r.kind === 'dynamic' ? (
+                        <span className={ui.dim}>creator token</span>
+                      ) : r.hasAttachSecret ? (
+                        <span className={ui.badgeOk}>attach secret</span>
+                      ) : (
+                        <span className={ui.badge}>open</span>
+                      )}
+                    </td>
+                    <td className={ui.nowrap}>{r.createdAt ? formatInstant(r.createdAt) : ''}</td>
+                    <td>
+                      <div className={ui.actions}>
+                        {r.kind === 'static' ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            title={
+                              r.hasAttachSecret
+                                ? 'Mint a new attach secret; the old one stops working immediately'
+                                : 'Add an attach secret to this open room'
+                            }
+                            onClick={() => {
+                              setActionError(null);
+                              setRotating(r);
+                            }}
+                          >
+                            {r.hasAttachSecret ? 'Rotate secret' : 'Add secret'}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className={ui.danger}
+                          disabled={busy}
+                          onClick={() => {
+                            setActionError(null);
+                            setEnding(r);
+                          }}
+                        >
+                          {r.kind === 'dynamic' ? 'End room' : 'Delete'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {expanded === r.name ? (
+                    <tr className={ui.recessed}>
+                      <td colSpan={10}>
+                        <RoomDetail name={r.name} />
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -308,6 +347,113 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
         </Dialog>
       ) : null}
     </section>
+  );
+}
+
+const KIND_LABEL: Record<RoomParticipant['clientKind'], string> = {
+  'web-viewer': 'web viewer',
+  'web-broadcaster': 'web broadcaster',
+  native: 'native app',
+};
+
+/**
+ * One room's roster and attachments, loaded when its row is expanded. A room
+ * that is not live has an empty roster because it is UNKNOWN, and says so
+ * rather than claiming nobody is there.
+ */
+function RoomDetail({ name }: { name: string }) {
+  const api = useApi();
+  const load = useCallback(() => api.room(name), [api, name]);
+  const { data, error, loading } = useLoader<Room>(load);
+  if (error) return <p className={ui.error}>{error}</p>;
+  if (!data) return loading ? <p className={ui.dim}>Loading…</p> : null;
+  const participants = data.participants ?? [];
+  const attachments = data.attachments ?? [];
+  return (
+    <div className={ui.grid2}>
+      <div>
+        <h3>People</h3>
+        {!data.live ? (
+          <p className={ui.dim}>
+            Not live: no reachable relay pod is home for this room, so who is in it is unknown.
+          </p>
+        ) : participants.length === 0 ? (
+          <p className={ui.dim}>Nobody is in the room.</p>
+        ) : (
+          <table className={ui.table}>
+            <thead>
+              <tr>
+                <th>Nickname</th>
+                <th>Client</th>
+                <th>State</th>
+              </tr>
+            </thead>
+            <tbody>
+              {participants.map((p) => (
+                <tr key={p.id}>
+                  <td className={ui.breakable}>{p.nickname}</td>
+                  <td>{KIND_LABEL[p.clientKind] ?? p.clientKind}</td>
+                  <td>
+                    {p.streaming ? <span className={ui.badgeOk}>streaming</span> : 'watching'}
+                    {p.speaking ? <span className={ui.badge}>speaking</span> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {data.links?.join ? (
+          <p>
+            <a href={data.links.join} target="_blank" rel="noreferrer">
+              Join link
+            </a>
+          </p>
+        ) : null}
+      </div>
+      <div>
+        <h3>Broadcasts</h3>
+        {attachments.length === 0 ? (
+          <p className={ui.dim}>Nothing is attached.</p>
+        ) : (
+          <table className={ui.table}>
+            <thead>
+              <tr>
+                <th>Label</th>
+                <th>Broadcast</th>
+                <th>State</th>
+                <th>Viewers</th>
+              </tr>
+            </thead>
+            <tbody>
+              {attachments.map((a) => (
+                <tr key={a.broadcastId}>
+                  <td className={ui.breakable}>{a.label ?? ''}</td>
+                  <td className={ui.mono}>
+                    {a.links?.watch ? (
+                      <a href={a.links.watch} target="_blank" rel="noreferrer">
+                        {a.broadcastId}
+                      </a>
+                    ) : (
+                      a.broadcastId
+                    )}
+                  </td>
+                  <td>
+                    {a.live === undefined ? (
+                      <span className={ui.dim}>unknown</span>
+                    ) : a.live ? (
+                      <span className={ui.badgeOk}>live</span>
+                    ) : (
+                      <span className={ui.badgeWarn}>away</span>
+                    )}
+                  </td>
+                  <td>{a.viewers ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
   );
 }
 

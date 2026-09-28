@@ -151,7 +151,13 @@ func substituteRoles(doc map[string]any, roles map[string]string) {
 					out = append(out, r)
 					continue
 				}
-				if actual, mapped := roles[name]; mapped && actual != "" {
+				if actual, mapped := roles[name]; mapped {
+					if actual == "" {
+						// A role this deployment grants nowhere (R49's
+						// -rooms-reader-role set empty): the served copy
+						// must not name a role no token can carry.
+						continue
+					}
 					name = actual
 				}
 				out = append(out, name)

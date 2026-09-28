@@ -77,6 +77,8 @@ spec:
               value: {{ .Values.oidc.operatorRole | quote }}
             - name: GAWK_ADMIN_FLAGGER_ROLE
               value: {{ .Values.oidc.flaggerRole | quote }}
+            - name: GAWK_ADMIN_ROOMS_READER_ROLE
+              value: {{ .Values.oidc.roomsReaderRole | quote }}
             # The system of record. Same Secret the migration hook Job reads,
             # by construction (one helper).
             {{- include "gawk-admin.pgDsnEnv" . | nindent 12 }}

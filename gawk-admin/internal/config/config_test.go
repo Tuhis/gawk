@@ -50,8 +50,8 @@ func TestDefaults(t *testing.T) {
 	if cfg.KillCooldown != 10*time.Minute {
 		t.Errorf("KillCooldown = %v, want 10m", cfg.KillCooldown)
 	}
-	if cfg.OperatorRole != "operator" || cfg.FlaggerRole != "flagger" {
-		t.Errorf("roles = %q/%q, want operator/flagger", cfg.OperatorRole, cfg.FlaggerRole)
+	if cfg.OperatorRole != "operator" || cfg.FlaggerRole != "flagger" || cfg.RoomsReaderRole != "rooms-reader" {
+		t.Errorf("roles = %q/%q/%q, want operator/flagger/rooms-reader", cfg.OperatorRole, cfg.FlaggerRole, cfg.RoomsReaderRole)
 	}
 	if cfg.Namespace != "production" {
 		t.Errorf("Namespace = %q, want production (from POD_NAMESPACE)", cfg.Namespace)

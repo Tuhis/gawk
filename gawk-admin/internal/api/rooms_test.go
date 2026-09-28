@@ -155,12 +155,39 @@ func withRoomsEnabled() harnessOption {
 
 // The wire shape, declared independently so a rename fails a test.
 type wireRoom struct {
-	Name            string `json:"name"`
-	Kind            string `json:"kind"`
-	Code            string `json:"code"`
-	DisplayName     string `json:"displayName"`
-	MaxBroadcasts   int    `json:"maxBroadcasts"`
-	Attachments     int    `json:"attachments"`
+	Name          string `json:"name"`
+	Kind          string `json:"kind"`
+	Code          string `json:"code"`
+	DisplayName   string `json:"displayName"`
+	MaxBroadcasts int    `json:"maxBroadcasts"`
+	Live          bool   `json:"live"`
+	Links         *struct {
+		Join string `json:"join"`
+	} `json:"links"`
+	Counts struct {
+		Participants int `json:"participants"`
+		Streaming    int `json:"streaming"`
+		Watching     int `json:"watching"`
+		Attachments  int `json:"attachments"`
+	} `json:"counts"`
+	Attachments *[]struct {
+		BroadcastID string `json:"broadcastId"`
+		Label       string `json:"label"`
+		Live        *bool  `json:"live"`
+		Viewers     *int   `json:"viewers"`
+		AttachedAt  string `json:"attachedAt"`
+		Links       *struct {
+			Watch string `json:"watch"`
+		} `json:"links"`
+	} `json:"attachments"`
+	Participants *[]struct {
+		ID         int    `json:"id"`
+		Nickname   string `json:"nickname"`
+		ClientKind string `json:"clientKind"`
+		Streaming  bool   `json:"streaming"`
+		Speaking   bool   `json:"speaking"`
+		Identity   string `json:"identity"`
+	} `json:"participants"`
 	HomeHolder      string `json:"homeHolder"`
 	Key             string `json:"key"`
 	CreatedAt       string `json:"createdAt"`
@@ -227,7 +254,7 @@ func TestRoomsListRendersBothKinds(t *testing.T) {
 		t.Fatalf("static row = %+v", st)
 	}
 	if dy.Kind != "dynamic" || dy.Code != "R7K3MX" || dy.Key != "9c1d2e3f4a5b" || dy.HomeHolder != "gawk-server-0" ||
-		dy.Attachments != 2 || dy.HasAttachSecret || dy.Managed || dy.CreatedAt != "2026-09-03T18:00:00Z" {
+		dy.Counts.Attachments != 2 || dy.HasAttachSecret || dy.Managed || dy.CreatedAt != "2026-09-03T18:00:00Z" {
 		t.Fatalf("dynamic row = %+v", dy)
 	}
 	// The list never carries a secret, under any name.

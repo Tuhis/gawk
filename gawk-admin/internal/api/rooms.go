@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -70,7 +69,19 @@ type roomJSON struct {
 	Code          string `json:"code"`
 	DisplayName   string `json:"displayName,omitempty"`
 	MaxBroadcasts int    `json:"maxBroadcasts,omitempty"`
-	Attachments   int    `json:"attachments"`
+	// Live is true when a reachable relay pod is home for the room, which is
+	// what makes the roster and the attachment state below known (R49,
+	// docs/50 D3). False means "unknown", not "empty".
+	Live bool `json:"live"`
+	// Links carries the join link, omitted without -app-base-url.
+	Links *roomLinksJSON `json:"links,omitempty"`
+	// Counts replaces R42's integer `attachments` (docs/50 D4).
+	Counts roomCountsJSON `json:"counts"`
+	// Attachments and Participants are the DETAIL projection
+	// (GET /rooms/{name}); a list row omits both. Pointers so a detail with
+	// nobody in it says `[]` while a list row says nothing.
+	Attachments  *[]roomAttachmentJSON  `json:"attachments,omitempty"`
+	Participants *[]roomParticipantJSON `json:"participants,omitempty"`
 	// HomeHolder is the pod holding the room's lease; empty when no pod has
 	// homed the room yet (a static room nobody has joined).
 	HomeHolder string `json:"homeHolder,omitempty"`
@@ -88,6 +99,54 @@ type roomJSON struct {
 	Managed bool `json:"managed"`
 }
 
+type roomLinksJSON struct {
+	// Join is <appBaseUrl>/#/room/<displayCode>.
+	Join string `json:"join"`
+}
+
+// roomCountsJSON sums a room. Participants, Streaming and Watching are 0 when
+// the room is not live: nobody is known to be there.
+type roomCountsJSON struct {
+	Participants int `json:"participants"`
+	// Streaming counts participants with a broadcast attached; Watching the
+	// rest. They sum to Participants.
+	Streaming   int `json:"streaming"`
+	Watching    int `json:"watching"`
+	Attachments int `json:"attachments"`
+}
+
+// roomAttachmentJSON is one attached broadcast. Live and Viewers are absent
+// when the room is not live: the CR says what is attached, never whether it
+// is streaming.
+type roomAttachmentJSON struct {
+	// BroadcastID is raw and joinable (docs/50 D5).
+	BroadcastID string               `json:"broadcastId"`
+	Label       string               `json:"label,omitempty"`
+	Live        *bool                `json:"live,omitempty"`
+	Viewers     *int                 `json:"viewers,omitempty"`
+	AttachedAt  string               `json:"attachedAt,omitempty"`
+	Links       *attachmentLinksJSON `json:"links,omitempty"`
+}
+
+type attachmentLinksJSON struct {
+	// Watch is <appBaseUrl>/#/view/<broadcastId>.
+	Watch string `json:"watch"`
+}
+
+// roomParticipantJSON is one person in a live room, as its home pod sees it.
+type roomParticipantJSON struct {
+	ID       int    `json:"id"`
+	Nickname string `json:"nickname"`
+	// ClientKind is web-viewer, web-broadcaster or native — the R51 events'
+	// vocabulary.
+	ClientKind string `json:"clientKind"`
+	Streaming  bool   `json:"streaming"`
+	// Speaking is reserved for a voice bridge; false today.
+	Speaking bool `json:"speaking"`
+	// Identity is reserved for an authenticated identity; empty today.
+	Identity string `json:"identity,omitempty"`
+}
+
 // roomWithSecretJSON is the 201 (create) and 200 (rotate) body: the room plus
 // the ONE-TIME secret. This is the only shape that ever carries it.
 type roomWithSecretJSON struct {
@@ -103,7 +162,7 @@ func renderRoom(obj kube.RoomObject) roomJSON {
 		Code:            rooms.DisplayCode(&r),
 		DisplayName:     r.Spec.DisplayName,
 		MaxBroadcasts:   r.Spec.MaxBroadcasts,
-		Attachments:     len(r.Status.Attachments),
+		Counts:          roomCountsJSON{Attachments: len(r.Status.Attachments)},
 		Key:             r.Status.Key,
 		HasAttachSecret: r.Spec.AttachSecretRef != nil,
 		Managed:         obj.Managed,
@@ -122,7 +181,8 @@ func renderRoom(obj kube.RoomObject) roomJSON {
 	return out
 }
 
-// handleListRooms lists both kinds from the CR list, newest first.
+// handleListRooms lists both kinds — the CR list merged with the fleet scan
+// (roomview.go) — static first, then newest first, as summaries with counts.
 //
 // A CR that could not be decoded is reported by name with its kind blank
 // rather than dropped: an operator who cannot see a stuck object cannot fix
@@ -133,24 +193,41 @@ func (a *API) handleListRooms(w http.ResponseWriter, r *http.Request) {
 		a.failRoom(w, r, "list rooms", err)
 		return
 	}
-	out := make([]roomJSON, 0, len(list))
-	for _, obj := range list {
-		if obj.Err != nil {
-			a.log.Warn("room CR could not be decoded; listing it by name only", "crName", obj.Name, "err", obj.Err)
-			out = append(out, roomJSON{Name: obj.Name, Code: obj.Name})
-			continue
-		}
-		out = append(out, renderRoom(obj))
+	writeJSON(w, http.StatusOK, roomsPageJSON{Rooms: a.mergeRooms(list, a.liveRooms(r.Context()), false)})
+}
+
+// handleGetRoom is one room in full: the summary plus its attachments and
+// roster (R49, docs/50 D4). {name} accepts any spelling of the code.
+func (a *API) handleGetRoom(w http.ResponseWriter, r *http.Request) {
+	name, ok := roomName(w, r)
+	if !ok {
+		return
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Kind != out[j].Kind {
-			// Static rooms first: they are the ones an operator manages;
-			// dynamic ones come and go.
-			return out[i].Kind == rooms.KindStatic
+	list, err := a.opts.Rooms.List(r.Context())
+	if err != nil {
+		a.failRoom(w, r, "look up the room", err)
+		return
+	}
+	// The merge runs over the one CR it needs, not the whole list; the scan
+	// is filtered the same way, so a scan-only room is still found.
+	var mine []kube.RoomObject
+	for _, obj := range list {
+		if obj.Name == name {
+			mine = append(mine, obj)
 		}
-		return out[i].CreatedAt > out[j].CreatedAt
-	})
-	writeJSON(w, http.StatusOK, roomsPageJSON{Rooms: out})
+	}
+	live := a.liveRooms(r.Context())
+	for code := range live {
+		if code != name {
+			delete(live, code)
+		}
+	}
+	rows := a.mergeRooms(mine, live, true)
+	if len(rows) == 0 {
+		writeError(w, http.StatusNotFound, CodeNotFound, "no such room")
+		return
+	}
+	writeJSON(w, http.StatusOK, rows[0])
 }
 
 // handleCreateRoom creates a static room (docs/44 D2, D4).
@@ -219,7 +296,9 @@ func (a *API) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	// The code is a joinable secret (docs/44 D16); no key exists until a pod
 	// homes the room, so the log names nothing but the kind.
 	a.log.Info("static room created", "actor", id.Actor(), "withAttachSecret", secret != "")
-	writeJSON(w, http.StatusCreated, roomWithSecretJSON{Room: renderRoom(created), AttachSecret: secret})
+	room := renderRoom(created)
+	room.Links = a.roomLinks(room.Code)
+	writeJSON(w, http.StatusCreated, roomWithSecretJSON{Room: room, AttachSecret: secret})
 }
 
 // handleRotateRoomSecret mints a fresh attach secret for a static room and
@@ -248,7 +327,9 @@ func (a *API) handleRotateRoomSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	a.recordRoom(r.Context(), store.EventRoomSecretRotated, id.Actor(), obj)
 	a.log.Info("room attach secret rotated", "actor", id.Actor(), "roomKey", obj.Room.Status.Key)
-	writeJSON(w, http.StatusOK, roomWithSecretJSON{Room: renderRoom(obj), AttachSecret: secret})
+	room := renderRoom(obj)
+	room.Links = a.roomLinks(room.Code)
+	writeJSON(w, http.StatusOK, roomWithSecretJSON{Room: room, AttachSecret: secret})
 }
 
 // handleDeleteRoom deletes a room of either kind. For a dynamic room this is

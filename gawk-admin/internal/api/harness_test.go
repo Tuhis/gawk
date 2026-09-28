@@ -248,6 +248,7 @@ func buildHarness(t *testing.T, s *store.Store, opts ...harnessOption) *harness 
 		Tester:     h.test,
 		Config: config.Config{
 			OperatorRole:     "operator",
+			RoomsReaderRole:  "rooms-reader",
 			KillCooldown:     10 * time.Minute,
 			AppBaseURL:       "https://gawk.example",
 			TelemetryBaseURL: "https://telemetry.example",
@@ -261,15 +262,17 @@ func buildHarness(t *testing.T, s *store.Store, opts ...harnessOption) *harness 
 				next.ServeHTTP(w, r.WithContext(identity.NewContext(r.Context(), h.identity)))
 			})
 		},
-		RequireRole: func(role string) func(http.Handler) http.Handler {
+		RequireRole: func(roles ...string) func(http.Handler) http.Handler {
 			return func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					id, _ := identity.FromContext(r.Context())
-					if !id.HasRole(role) {
-						w.WriteHeader(http.StatusForbidden)
-						return
+					for _, role := range roles {
+						if id.HasRole(role) {
+							next.ServeHTTP(w, r)
+							return
+						}
 					}
-					next.ServeHTTP(w, r)
+					w.WriteHeader(http.StatusForbidden)
 				})
 			}
 		},

@@ -75,6 +75,9 @@ type Config struct {
 	OIDCRolesClaim string // dot-path template to the roles array; oidcroles.Placeholder is substituted per segment
 	OperatorRole   string // the role every R39 route requires
 	FlaggerRole    string // reserved for R40's service identity; unused by any R39 route
+	// RoomsReaderRole grants exactly the two room reads and /me (R49,
+	// docs/50 D1) — a bot's service identity. Empty grants it nowhere.
+	RoomsReaderRole string
 
 	PGDSN string
 
@@ -198,6 +201,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"role every R39 route requires")
 	flaggerRole := fs.String("flagger-role", env("GAWK_ADMIN_FLAGGER_ROLE", "flagger"),
 		"reserved for R40: the role granting flag-only rights; unused by any R39 route")
+	roomsReaderRole := fs.String("rooms-reader-role", env("GAWK_ADMIN_ROOMS_READER_ROLE", "rooms-reader"),
+		"role granting GET /api/v1/rooms, GET /api/v1/rooms/{name} and GET /api/v1/me only (R49); empty grants it nowhere")
 	pgDSN := fs.String("pg-dsn", env("GAWK_ADMIN_PG_DSN", ""), "PostgreSQL DSN (required)")
 	relayScanTarget := fs.String("relay-scan-target", env("GAWK_ADMIN_RELAY_SCAN_TARGET", ""),
 		"DNS name of the relay headless metrics Service; its A records are the pods (required)")
@@ -261,6 +266,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		OIDCRolesClaim:   strings.TrimSpace(*rolesClaim),
 		OperatorRole:     strings.TrimSpace(*operatorRole),
 		FlaggerRole:      strings.TrimSpace(*flaggerRole),
+		RoomsReaderRole:  strings.TrimSpace(*roomsReaderRole),
 		PGDSN:            *pgDSN,
 		RelayScanTarget:  *relayScanTarget,
 		RelayAdminToken:  *relayAdminToken,
@@ -476,6 +482,7 @@ func (c Config) LogAttrs() []any {
 		"oidcRolesClaim", c.RolesClaimPath(),
 		"operatorRole", c.OperatorRole,
 		"flaggerRole", c.FlaggerRole,
+		"roomsReaderRole", c.RoomsReaderRole,
 		"pgDsn", set(c.PGDSN),
 		"relayScanTarget", c.RelayScanTarget,
 		"relayOpsPort", c.RelayOpsPort,

@@ -14,7 +14,9 @@ const STATIC: Room = {
   code: 'TuhisRoom',
   displayName: "Tuhis' room",
   maxBroadcasts: 4,
-  attachments: 1,
+  live: true,
+  links: { join: 'https://gawk.example/#/room/TuhisRoom' },
+  counts: { participants: 3, streaming: 1, watching: 2, attachments: 1 },
   homeHolder: 'gawk-server-0',
   key: '9c1d2e3f4a5b',
   createdAt: '2026-09-03T18:00:00Z',
@@ -26,7 +28,8 @@ const OPEN_KUBECTL: Room = {
   name: 'ourroom',
   kind: 'static',
   code: 'ourroom',
-  attachments: 0,
+  live: false,
+  counts: { participants: 0, streaming: 0, watching: 0, attachments: 0 },
   hasAttachSecret: false,
   managed: false,
 };
@@ -35,7 +38,8 @@ const DYNAMIC: Room = {
   name: 'r7k3mx',
   kind: 'dynamic',
   code: 'R7K3MX',
-  attachments: 2,
+  live: false,
+  counts: { participants: 0, streaming: 0, watching: 0, attachments: 2 },
   homeHolder: 'gawk-server-1',
   key: '1a2b3c4d5e6f',
   createdAt: '2026-09-03T18:05:00Z',
@@ -131,11 +135,82 @@ describe('the room list (docs/44 D20)', () => {
   });
 });
 
+describe('who is in a room (R49, docs/50 D10)', () => {
+  const DETAIL: Room = {
+    ...STATIC,
+    attachments: [
+      {
+        broadcastId: 'ABC234',
+        label: 'main pc',
+        live: true,
+        viewers: 3,
+        links: { watch: 'https://gawk.example/#/view/ABC234' },
+      },
+      { broadcastId: 'DEF567', label: 'laptop', live: false, viewers: 0 },
+    ],
+    participants: [
+      { id: 1, nickname: 'tuhis', clientKind: 'native', streaming: true, speaking: false },
+      { id: 2, nickname: 'kaveri', clientKind: 'web-viewer', streaming: false, speaking: false },
+    ],
+  };
+
+  it('shows the counts and a live mark, and says "not live" rather than zero', async () => {
+    mount([STATIC, DYNAMIC]);
+    await screen.findByText('TuhisRoom');
+    const st = within(rowFor('TuhisRoom'));
+    expect(st.getByText('live')).toBeTruthy();
+    expect(st.getByText('(1 streaming)')).toBeTruthy();
+    const dy = within(rowFor('R7K3MX'));
+    expect(dy.getByText('not live')).toBeTruthy();
+    expect(dy.getByText('2')).toBeTruthy(); // attachments, from the CR
+  });
+
+  it('expands a row into the roster and the attachments from GET /rooms/{name}', async () => {
+    const session = mount([STATIC], (path) =>
+      path === 'api/v1/rooms/tuhisroom' ? json(DETAIL) : json({}),
+    );
+    await screen.findByText('TuhisRoom');
+    expect(session.calls.some((c) => c.path === 'api/v1/rooms/tuhisroom')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Show who is in TuhisRoom' }));
+
+    expect(await screen.findByText('kaveri')).toBeTruthy();
+    expect(screen.getByText('tuhis')).toBeTruthy();
+    expect(screen.getByText('native app')).toBeTruthy();
+    expect(screen.getByText('main pc')).toBeTruthy();
+    expect(screen.getByText('away')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'ABC234' }).getAttribute('href')).toBe(
+      'https://gawk.example/#/view/ABC234',
+    );
+    expect(screen.getByRole('link', { name: 'Join link' }).getAttribute('href')).toBe(
+      'https://gawk.example/#/room/TuhisRoom',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide who is in TuhisRoom' }));
+    expect(screen.queryByText('kaveri')).toBeNull();
+  });
+
+  it('says the roster is unknown for a room that is not live', async () => {
+    mount([DYNAMIC], (path) =>
+      path === 'api/v1/rooms/r7k3mx'
+        ? json({
+            ...DYNAMIC,
+            attachments: [{ broadcastId: 'ABC234' }, { broadcastId: 'DEF567' }],
+            participants: [],
+          })
+        : json({}),
+    );
+    await screen.findByText('R7K3MX');
+    fireEvent.click(screen.getByRole('button', { name: 'Show who is in R7K3MX' }));
+    expect(await screen.findByText(/who is in it is unknown/)).toBeTruthy();
+    expect(screen.getAllByText('unknown').length).toBe(2);
+  });
+});
+
 describe('creating a static room', () => {
   it('sends the form and reveals the one-time secret exactly once', async () => {
     const session = mount([], (path, init) =>
       path === 'api/v1/rooms' && init.method === 'POST'
-        ? json({ room: { ...STATIC, attachments: 0 }, attachSecret: 'AttachSecretValue12345678' }, 201)
+        ? json({ room: { ...STATIC, live: false }, attachSecret: 'AttachSecretValue12345678' }, 201)
         : json({}),
     );
     await waitFor(() => expect(session.calls.length).toBeGreaterThan(0));

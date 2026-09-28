@@ -160,6 +160,25 @@ func TestTheServedRolesAreThisDeploymentsClaimValues(t *testing.T) {
 	}
 }
 
+// R49: a role this deployment grants nowhere (-rooms-reader-role set empty)
+// drops out of the served document rather than naming a role no token here
+// can carry; the other role on the same operation stays.
+func TestAnUnconfiguredRoleDropsOutOfTheServedDocument(t *testing.T) {
+	d := newDoc(t, openapi.Options{Roles: map[string]string{"operator": "gawk-mod", "rooms-reader": ""}})
+	served := string(d.JSON())
+	if strings.Contains(served, `"rooms-reader"`) {
+		t.Fatal("the served document names rooms-reader although this deployment grants it nowhere")
+	}
+	if !strings.Contains(served, `"operationId":"getRoom"`) || !strings.Contains(served, `"x-gawk-roles":["gawk-mod"]`) {
+		t.Fatal("getRoom lost its operator role along with the unconfigured one")
+	}
+
+	d = newDoc(t, openapi.Options{Roles: map[string]string{"operator": "gawk-mod", "rooms-reader": "bot"}})
+	if !strings.Contains(string(d.JSON()), `"x-gawk-roles":["gawk-mod","bot"]`) {
+		t.Fatal("a configured rooms-reader role is not substituted beside the operator's")
+	}
+}
+
 // With no mapping — every deployment that kept the default — the document is
 // served exactly as written.
 func TestTheSymbolicRolesSurviveWithNoMapping(t *testing.T) {

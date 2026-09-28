@@ -37,11 +37,47 @@ export interface Me {
 
 export type RoomKind = 'static' | 'dynamic';
 
+/** Everyone in a live room, as its home relay pod sees them (R49). */
+export interface RoomParticipant {
+  id: number;
+  /** Chosen by the participant: unauthenticated free text. */
+  nickname: string;
+  clientKind: 'web-viewer' | 'web-broadcaster' | 'native';
+  streaming: boolean;
+  /** Reserved for a voice bridge; false today. */
+  speaking: boolean;
+  identity?: string;
+}
+
 /**
- * `GET /api/v1/rooms` rows (R42). `name` is the raw code — a joinable secret
- * exactly like a broadcast ID (docs/44 D16), portal-only. `key` is the fleet's
- * HMAC'd handle, empty until a relay pod has homed the room; it is what a
- * webhook's `?key=` deep link filters by.
+ * One attached broadcast. `live` and `viewers` are absent when the room is not
+ * live: the CR says what is attached, never whether it is streaming.
+ */
+export interface RoomAttachment {
+  broadcastId: string;
+  label?: string;
+  live?: boolean;
+  viewers?: number;
+  attachedAt?: string;
+  links?: { watch: string };
+}
+
+export interface RoomCounts {
+  participants: number;
+  /** Participants with a broadcast attached; `watching` is the rest. */
+  streaming: number;
+  watching: number;
+  attachments: number;
+}
+
+/**
+ * `GET /api/v1/rooms` rows (R42, reshaped in R49). `name` is the raw code — a
+ * joinable secret exactly like a broadcast ID (docs/44 D16). `key` is the
+ * fleet's HMAC'd handle, empty until a relay pod has homed the room.
+ *
+ * `live` says whether a reachable relay pod is home for the room; when false
+ * the counts of people are unknown, not zero. `attachments` and
+ * `participants` are only on `GET /api/v1/rooms/{name}` (docs/50 D4).
  */
 export interface Room {
   name: string;
@@ -50,7 +86,11 @@ export interface Room {
   code: string;
   displayName?: string;
   maxBroadcasts?: number;
-  attachments: number;
+  live: boolean;
+  links?: { join: string };
+  counts: RoomCounts;
+  attachments?: RoomAttachment[];
+  participants?: RoomParticipant[];
   homeHolder?: string;
   key?: string;
   createdAt?: string;
