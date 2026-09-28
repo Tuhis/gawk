@@ -94,7 +94,9 @@ pub enum EngineEvent {
     /// The room now lists this broadcast.
     RoomAttached,
     /// The room no longer lists this broadcast (or this session left).
-    RoomDetached { reason: String },
+    /// `by_creator` is set when the room's creator removed it — the shell
+    /// shows that as a card rather than a status line (docs/60 D10).
+    RoomDetached { reason: String, by_creator: bool },
     /// The room control session is over for good: the room ended (4007),
     /// the join was refused, or a reconnect gave up. Attached media sessions
     /// have their own lifecycle and are untouched.
@@ -307,6 +309,25 @@ impl Session {
             let _ = h
                 .requests
                 .send(RoomRequest::SetNickname(nickname.to_owned()));
+        }
+    }
+
+    /// Removes another stream from the room (creator only): a Detach with
+    /// that broadcast's ID. The relay answers with the attachment removed,
+    /// or rejects it without the creator grant.
+    pub fn room_remove(&self, broadcast_id: &str) {
+        if let Some(h) = self.room.lock().unwrap().as_ref() {
+            let _ = h
+                .requests
+                .send(RoomRequest::Remove(broadcast_id.to_owned()));
+        }
+    }
+
+    /// Ends the room for everyone (creator only). The relay's RoomEnding and
+    /// 4007 close then end the room session as for any other room end.
+    pub fn room_end(&self) {
+        if let Some(h) = self.room.lock().unwrap().as_ref() {
+            let _ = h.requests.send(RoomRequest::EndRoom);
         }
     }
 

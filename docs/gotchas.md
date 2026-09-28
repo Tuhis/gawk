@@ -1422,6 +1422,14 @@ Add to it when a new gotcha lands in `docs/`.
   the room's in-band close notice, and `RoomSession` treats any session end
   after it as the end, whatever the code. ([docs/44](44-rooms.md) §4.6,
   [docs/59](59-close-notice.md) D5)
+- **A room link's `?rt=` grant has one format, and it is the SPA's.**
+  `grantHandoff.ts` reads `c:<hex32>` as a creator token and `a:<secret>`
+  as an attach key; a bare value is read only as a creator token. The
+  native apps sent both bare, so a static room's attach key never reached
+  the room view (or, being 32 hex digits, was taken for a creator token).
+  Anything that builds or parses a room link formats the grant with the
+  prefix and parses it the way `parseGrant` does. The desktop apps' copy is
+  `gawk_engine::RoomGrant`. ([docs/60](60-desktop-redesign.md) D14)
 - **Per-participant events must not consume the room sequence.** A
   `CommandRejected` goes to one participant; giving it a seq would make
   every other client detect a gap and resync in lockstep. The rule is

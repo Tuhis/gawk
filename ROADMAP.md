@@ -76,6 +76,7 @@ feature set exists).
 | R55 | [Broadcasting over Wi-Fi](#r55--broadcasting-over-wi-fi) | 🔧 designed 2026-09-23 (owner decisions OD1–OD6 taken 2026-09-24), not started (WU0–WU6; WU4 deferred) — leg-A loss from a Mac on Wi-Fi (AWDL) freezes viewers; deltas ride one 150 ms-deadline reliable stream per GOP from the Rust desktop broadcaster (R19's carrier, reversed) behind a new `CapUplinkCarriers` relay capability, always on when supported, with a warned Advanced → Legacy escape hatch; QoS marking shipped; silent by default, a plain status line on measured harm; the AirDrop-pausing **Improve** helper decided after WU2 ([docs/57](docs/57-wifi-uplink.md)) |
 | R56 | [Linux in the desktop workspace, and retiring the Go broadcaster](#r56--linux-in-the-desktop-workspace-and-retiring-the-go-broadcaster) | 🔧 designed 2026-09-24 (owner decisions OD1–OD15), not started (LX0–LX9) — a third shell `crates/app-linux` in `gawk-broadcast-desktop/` sharing the engine, wire, `main.slint` and audio lane; the Linux layer rebuilt, not ported: `ashpd` portal, **in-process** `gstreamer-rs` with R14's hardware-only cascade, the docs/39 app-audio tee on an in-process `pipewire-rs` connection, one monotonic clock, no MPEG-TS pipe; new identity `gawk-broadcast-linux` / `gawk-broadcast://linux`; tarball, x86_64, Ubuntu 24.04-class floor; desktop workspace to 2.0.0. **The Go app is frozen to fixes only from 2026-09-24**; one deprecation release (LX8), removed after the NVIDIA + AMD/Intel KDE Wayland pass (LX9), leaving `gawk-pubsim` as Go test tooling ([docs/58](docs/58-linux-desktop-broadcaster.md)) |
 | R57 | [Close codes Chrome can read](#r57--close-codes-chrome-can-read) | ✅ shipped 2026-09-24 (CN1–CN4) — Chrome never read a relay close code (webtransport-go sends STOP_SENDING ahead of the close capsule; 1 of 84 arrived), so 4000/4004/4006 now travel in-band first as `SessionClosing` (0x17) and a room ends on its `RoomEnding`; the broadcaster's room view returns to the live stage when the room ends or its stream is removed ([docs/59](docs/59-close-notice.md)) |
+| R58 | [Desktop broadcaster redesign](#r58--desktop-broadcaster-redesign) | 🔧 designed 2026-09-28 in a Claude Design pass, owner-approved the same day; DR1–DR5 implemented 2026-09-28, DR6 (the hardware pass) owner-pending — the shared `main.slint` window becomes pages (Ready, Live, Settings, Advanced, the Windows picker) in the web app's tokens with one primary action each; Windows picks and remembers a source; saved and recent rooms, one room field with no attach-key field, an in-app roster with Watch links, and creator controls (remove a stream, end the room) revising docs/44 D13 with no wire change; a stopped summary with Go live again, a crash-resume question, banners for notices; and the room-view grant fixed to the SPA's `c:`/`a:` format ([docs/60](docs/60-desktop-redesign.md)) |
 
 ---
 
@@ -4700,6 +4701,31 @@ over a patched fork of the library (docs/59 OD1).
 
 **Status**: ✅ shipped 2026-09-24, verified in real Chrome for all four codes
 (docs/59 §8).
+
+---
+
+## R58 — Desktop broadcaster redesign
+
+**Goal**: the desktop window is simple for a first broadcast, flexible for a
+power user, and looks like the rest of gawk; rooms work from inside it.
+
+**Why**: the shared window (docs/54 D11) grew one card per milestone into a
+settings form with Start in the middle, in a palette of its own, and its
+room support was a code field, an attach-key field and a status sentence.
+
+**Scope** (chunks DR1–DR6 in [docs/60](docs/60-desktop-redesign.md)):
+
+- **DR1** — engine: the room roster (nicknames, streaming, speaking),
+  remove-a-stream and end-room commands, and the `c:`/`a:` room-view grant.
+- **DR2** — config: saved and recent rooms, the crash flag, the last source.
+- **DR3** — the shell's view logic as tested pure functions.
+- **DR4** — `main.slint` rewritten as pages on shared primitives in the web
+  app's tokens.
+- **DR5** — the Windows source default and memory; macOS unchanged.
+- **DR6** — the owner's hardware pass on Windows and macOS.
+
+**Status**: 🔧 designed and approved 2026-09-28; DR1–DR5 implemented
+2026-09-28; DR6 owner-pending.
 
 ---
 

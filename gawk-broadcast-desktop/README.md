@@ -56,8 +56,8 @@ For an *unreleased* build, every green CI run uploads an artifact:
 gh run download --name gawk-broadcast-windows-x86_64-<commit sha>
 ```
 
-**Which build am I running?** The window header shows `v1.0.0+g1a2b3c4` —
-the release plus the commit it was built from. That matches the artifact
+**Which build am I running?** The foot of the first page (and of Settings)
+shows `v1.0.0+g1a2b3c4` — the release plus the commit it was built from. That matches the artifact
 name and `BUILD-INFO.txt`, so a screenshot is enough to identify a build.
 The same string is the first line of `debug.log` and the `appVersion` key
 in **Copy diagnostics**. There is no `--version` flag: a windowed EXE has
@@ -70,8 +70,8 @@ Grab `gawk-broadcast-macos-arm64.zip` from the same
 open `gawk-broadcast-macos` (drag it to Applications first if you like).
 It is signed with a Developer ID and notarized, so a fresh account opens
 it without a Gatekeeper dialog. Then: **Choose what to share…** opens
-macOS's own picker — one window, one app, or a display — and **Start
-broadcast**. The picker path needs no Screen Recording permission.
+macOS's own picker — one window, one app, or a display — and **Go live**.
+The picker path needs no Screen Recording permission.
 
 | Requirement | Why |
 |---|---|
@@ -81,11 +81,12 @@ broadcast**. The picker path needs no Screen Recording permission.
 Sharing a window or an app sends **only that app's audio**; sharing a
 display sends the whole system's (except gawk-broadcast's own). If an app
 stays silent — some games play audio through a helper process — the window
-offers **Use whole-system audio**, which re-opens the picker on a display.
+offers **Share all sound instead**, which re-opens the picker on a display.
 
 Settings live in `~/Library/Application Support/gawk/broadcast.json`
 (mode 0600: credentials sit in it as plain text, as on Linux), next to
-`debug.log`. **Settings… ⌘,** opens the same card as the checkbox.
+`debug.log`. **Settings… ⌘,** opens the same page as the header's
+Settings button.
 
 **A CI build is different.** Every green CI run uploads
 `gawk-broadcast-macos-<commit sha>` (`gh run download --name …`), but a
@@ -134,8 +135,9 @@ exist there); Windows 11 removes it. Closing the window ends the broadcast
   (QUIC). Networks that block UDP block this.
 - **Toasts don't appear during a fullscreen game** — Focus Assist eats
   them; the in-window status is the truth.
-- Anything else: expand **Details**, click **Copy diagnostics**, and send
-  the JSON along with `debug.log`, below.
+- Anything else: open **Details** while live (or **Settings → Advanced**),
+  click **Copy diagnostics**, and send the JSON along with `debug.log`,
+  below.
 
 ### `debug.log`
 
@@ -163,24 +165,33 @@ Blank settings mean "the default", resolved at use, never at save
 
 ## Rooms
 
-The **Room** card (R42, [docs/44](../docs/44-rooms.md) §4.8) attaches the
-running broadcast to a room, on a relay started with `-rooms`:
+The **Room** row (R42, [docs/44](../docs/44-rooms.md) §4.8; the R58 layout,
+[docs/60](../docs/60-desktop-redesign.md) D8–D10) adds the broadcast to a
+room, on a relay started with `-rooms`. **Add** opens a sheet with one
+field for a room code or a pasted room link, **Create a new room**, and
+**Your rooms**. Chosen before going live, the room shows on the Ready page
+("Joins when you go live") and is joined on every start until you dismiss
+it; chosen while live, it is joined now.
 
-| Field | Config key | Meaning |
-|---|---|---|
-| Room code or link | `room` | A dynamic code, a static slug, or a pasted `…/#/room/<CODE>` link; blank = no room. Joined on every start, re-attached on every resume. |
-| Attach key | `roomAttachSecret` | A static room's attach secret (DPAPI-wrapped like the publish secret) |
-| Nickname | `nickname` | Your name in the room, and what your tile is called (blank = the relay picks one). Editable while live: the roster and the tile follow. |
+| Config key | Meaning |
+|---|---|
+| `room` | The code (or static slug) of the room the next broadcast joins; blank = no room. A pasted link is reduced to its code. Re-attached on every resume. |
+| `roomAttachSecret` | That room's attach key, from a pasted link's `?rt=a:…` or typed when the room asked for it (DPAPI-wrapped like the publish secret) |
+| `roomCreatorToken` | That room's creator token, from a pasted link's `?rt=c:…` (wrapped the same way) |
+| `recentRooms` | "Your rooms": the rooms this app joined, saved ones first, at most 8 unsaved; each keeps its attach key (wrapped the same way) |
+| `nickname` | Your name in the room, and what your tile is called (blank = the relay picks one). Editable while live: the roster and the tile follow. |
 
-While live, **Attach** joins the room in the field, **New room** mints a
-dynamic room from this broadcast (the app is its creator), and
-**Detach** / **Leave room** removes the attachment and closes the room
-session — the broadcast itself keeps going. **Open room view** launches
-the browser at `<app URL>/#/room/<CODE>?rt=<grant>`, where the grant is
-the creator token of a room you minted or the static room's attach key;
-the SPA moves it out of the URL before rendering. A room ending (close
-code 4007) or a refused command shows in the card's status line and never
-touches the broadcast.
+A gated static room admits you as a watcher and the window asks for its
+key in place. In a room, Live shows who is streaming (with **Watch**,
+which opens that stream in the browser) and who is watching; a room you
+created adds **Manage**: remove a stream, or end the room for everyone.
+**Leave room** removes the attachment and closes the room session; the
+broadcast itself keeps going. **Copy room link** copies a plain room link
+for friends. **Open room view** launches the browser at
+`<app URL>/#/room/<CODE>?rt=<grant>`, where the grant is `c:<creator token>`
+for a room you made or `a:<attach key>` for a gated static room; the SPA
+moves it out of the URL before rendering. Someone else ending the room,
+or removing your stream, shows a card; your broadcast is untouched.
 
 ## Building
 

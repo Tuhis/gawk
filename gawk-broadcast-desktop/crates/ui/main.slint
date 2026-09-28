@@ -1,13 +1,14 @@
-// The gawk-broadcast window (WB6, docs/38 D12): the Linux GUI's card
-// architecture plus the capture picker, Fluent-adjacent spacing, and the
-// gawk accent shared with gawk-app so the two broadcasters read as one
-// product. One window; window-is-the-app.
+// The gawk-broadcast window, shared by the Windows and macOS shells
+// (docs/54 D11): the platforms differ in properties and one card — the
+// Windows picker page or the macOS Share card, chosen by `system-picker` —
+// never in a forked file.
 //
-// Shared by the Windows and macOS shells (docs/54 D11): the platforms differ
-// in properties and one card — the Windows picker card or the macOS Share
-// card, chosen by `system-picker` — never in a forked file.
+// R58 (docs/60): pages instead of a card stack (D1), in the web app's
+// visual language (D2, the tokens of gawk-app/src/styles/global.css), with
+// one primary action per page (D3). Still one window, and the window is the
+// app (docs/38 D12).
 
-import { Button, ComboBox, LineEdit, ScrollView, CheckBox } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 
 export struct WindowRow {
     hwnd: int,
@@ -27,145 +28,1253 @@ export struct StatRow {
     value: string,
 }
 
-global Palette {
-    out property <color> bg: #14161a;
-    out property <color> card: #1d2026;
-    out property <color> card-border: #2a2e36;
-    out property <color> text: #e8eaf0;
+// One line of the in-app roster (docs/60 D9): a stream in the room.
+export struct RoomRow {
+    name: string,
+    detail: string,
+    initial: string,
+    tint: int,
+    you: bool,
+    away: bool,
+    speaking: bool,
+    broadcast-id: string,
+    watch-link: string,
+    removable: bool,
+}
+
+// One line of "Your rooms" (docs/60 D8).
+export struct RecentRow {
+    code: string,
+    detail: string,
+    saved: bool,
+}
+
+// gawk-app/src/styles/global.css, verbatim where a value exists there.
+global T {
+    out property <color> bg: #0a0b0d;
+    out property <color> chrome: #08090b;
+    out property <color> s1: #121317;
+    out property <color> s2: #171920;
+    out property <color> s3: #1d2029;
+    out property <color> border: #262a33;
+    out property <color> border-soft: #1c2028;
+    out property <color> text: #e8eaed;
     out property <color> muted: #9aa1ad;
-    out property <color> accent: #6b8afe;      // gawk-app --accent
-    out property <color> live: #37c26f;
-    out property <color> resume: #e8b339;      // heartbeat amber (Linux GUI)
-    out property <color> danger: #8b2c2c;
-}
+    out property <color> faint: #626873;
+    out property <color> accent: #6b8afe;
+    out property <color> accent-text: #aebeff;
+    out property <color> accent-soft: #6b8afe24;
+    out property <color> accent-line: #6b8afe59;
+    out property <color> live: #e5484d;
+    out property <color> live-soft: #e5484d24;
+    out property <color> live-text: #ff8589;
+    out property <color> danger-text: #f0686c;
+    out property <color> danger-line: #e5484d80;
+    out property <color> ok: #30a46c;
+    out property <color> warn: #d0a215;
+    out property <color> warn-soft: #d0a21517;
+    out property <color> warn-line: #d0a21552;
+    out property <color> warn-text: #e6c14d;
+    out property <color> scrim: #050506a8;
+    out property <color> glass: #000000a0;
 
-component Card inherits Rectangle {
-    in property <string> title;
-    background: Palette.card;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: Palette.card-border;
-    VerticalLayout {
-        padding: 14px;
-        spacing: 8px;
-        if root.title != "": Text {
-            text: root.title;
-            color: Palette.muted;
-            font-size: 11px;
-            letter-spacing: 1px;
+    // Avatar fills (the roster's initials), picked by index.
+    public pure function tint(i: int) -> color {
+        if (Math.mod(i, 6) == 0) {
+            return #aebeff;
         }
-        @children
+        if (Math.mod(i, 6) == 1) {
+            return #f2b57a;
+        }
+        if (Math.mod(i, 6) == 2) {
+            return #8fd1b5;
+        }
+        if (Math.mod(i, 6) == 3) {
+            return #c7a8f5;
+        }
+        if (Math.mod(i, 6) == 4) {
+            return #f5a8c0;
+        }
+        return #9ad0f5;
     }
 }
 
-component TabButton inherits Rectangle {
-    in property <string> label;
-    in property <bool> active;
+// Stroke icons on a 24-unit grid.
+global Icons {
+    out property <string> settings: "M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M13 7a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M7 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M15 17a2 2 0 1 0 4 0a2 2 0 1 0 -4 0";
+    out property <string> chevron-right: "M10 7l5 5-5 5";
+    out property <string> chevron-down: "M7 10l5 5 5-5";
+    out property <string> back: "M15 6l-6 6 6 6";
+    out property <string> close: "M6 6l12 12M18 6L6 18";
+    out property <string> plus: "M12 5v14M5 12h14";
+    out property <string> check: "M5 12.5l4.5 4.5L19 7";
+    out property <string> stop: "M8 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2H8a2 2 0 0 1 -2 -2V8a2 2 0 0 1 2 -2z";
+    out property <string> link: "M10 14a4 4 0 0 0 5.7 0l3 -3a4 4 0 0 0 -5.7 -5.7l-1 1M14 10a4 4 0 0 0 -5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1 -1";
+    out property <string> copy: "M10 8h8a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-8a2 2 0 0 1 -2 -2v-8a2 2 0 0 1 2 -2zM16 8V6a2 2 0 0 0 -2 -2H6a2 2 0 0 0 -2 2v8a2 2 0 0 0 2 2h2";
+    out property <string> external: "M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1 -2 2H6a2 2 0 0 1 -2 -2V8a2 2 0 0 1 2 -2h4";
+    out property <string> activity: "M3 12h4l3 -8 4 16 3 -8h4";
+    out property <string> refresh: "M20 11a8 8 0 0 0 -14.9 -3M4 5v4h4M4 13a8 8 0 0 0 14.9 3M20 19v-4h-4";
+    out property <string> star: "M12 3.5L14.6 8.8L20.5 9.7L16.2 13.8L17.2 19.6L12 16.9L6.8 19.6L7.8 13.8L3.5 9.7L9.4 8.8Z";
+    out property <string> alert: "M12 4L21 20H3ZM12 10v4M12 17.5v0.5";
+    out property <string> speaker: "M4 9v6h4l5 4V5L8 9H4zM16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12";
+    out property <string> users: "M5.5 8a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0 -7 0M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14a6.5 6.5 0 0 1 3.5 6";
+    out property <string> eye: "M2 12C4 8 7.5 5 12 5C16.5 5 20 8 22 12C20 16 16.5 19 12 19C7.5 19 4 16 2 12ZM9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0";
+    out property <string> gauge: "M4 16a8 8 0 1 1 16 0M12 16l4 -5";
+    out property <string> monitor: "M5 4h14a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2H5a2 2 0 0 1 -2 -2V6a2 2 0 0 1 2 -2zM8 20h8M12 16v4";
+    out property <string> window: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2H5a2 2 0 0 1 -2 -2V6a2 2 0 0 1 2 -2zM3 9h18";
+    out property <string> leave: "M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-4M10 16l-4 -4 4 -4M6 12h10";
+    out property <string> key: "M4 15a4 4 0 1 0 8 0a4 4 0 1 0 -8 0M11 12l9 -9M17 6l3 3";
+    out property <string> signal: "M12 20V10M7 20v-5M17 20V5";
+}
+
+component Icon inherits Path {
+    in property <color> ink: T.muted;
+    in property <length> size: 18px;
+    in property <bool> filled;
+    width: self.size;
+    height: self.size;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    stroke: self.ink;
+    stroke-width: 1.8px;
+    stroke-line-cap: round;
+    stroke-line-join: round;
+    fill: self.filled ? self.ink : transparent;
+    accessible-role: none;
+}
+
+// The web app's <Button> (docs/10): primary is the near-white fill, never a
+// coloured one; danger is an outline.
+component Btn inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    // 0 primary, 1 secondary, 2 ghost, 3 danger, 4 accent
+    in property <int> kind: 1;
+    in property <bool> enabled: true;
+    in property <bool> large;
+    in property <bool> small;
     callback clicked;
-    height: 30px;
-    border-radius: 6px;
-    background: active ? Palette.accent.with-alpha(0.18) : transparent;
-    Text {
-        text: root.label;
-        color: root.active ? Palette.accent : Palette.muted;
-        vertical-alignment: center;
-        horizontal-alignment: center;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    property <color> fg: self.kind == 0 ? #0a0b0d
+        : self.kind == 2 ? (ta.has-hover ? T.text : T.muted)
+        : self.kind == 3 ? T.danger-text
+        : self.kind == 4 ? T.accent-text
+        : T.text;
+    height: self.large ? 52px : self.small ? 32px : 40px;
+    border-radius: self.large ? 12px : self.small ? 8px : 10px;
+    border-width: 1px;
+    opacity: self.enabled ? 1 : 0.45;
+    background: self.kind == 0 ? (ta.has-hover && self.enabled ? #ffffff : T.text)
+        : self.kind == 1 ? (ta.has-hover && self.enabled ? T.s1 : T.s2)
+        : self.kind == 2 ? (ta.has-hover && self.enabled ? #ffffff0d : transparent)
+        : self.kind == 3 ? (ta.has-hover && self.enabled ? T.live-soft : transparent)
+        : T.accent-soft;
+    border-color: self.kind == 1 ? (ta.has-hover && self.enabled ? T.faint : T.border)
+        : self.kind == 3 ? (ta.has-hover && self.enabled ? T.live : T.danger-line)
+        : self.kind == 4 ? T.accent-line
+        : transparent;
+    accessible-role: button;
+    accessible-label: self.text;
+    accessible-enabled: self.enabled;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
     }
-    TouchArea {
+    HorizontalLayout {
+        padding-left: root.small ? 12px : 16px;
+        padding-right: root.small ? 12px : 16px;
+        spacing: 8px;
+        alignment: center;
+        cross-axis-alignment: center;
+        if root.icon != "": Icon {
+            commands: root.icon;
+            ink: root.fg;
+            size: root.small ? 15px : 17px;
+        }
+        Text {
+            text: root.text;
+            color: root.fg;
+            font-size: root.large ? 16px : root.small ? 13px : 14px;
+            font-weight: root.kind == 0 ? 600 : 500;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
         clicked => {
             root.clicked();
         }
     }
 }
 
-export component MainWindow inherits Window {
-    title: "gawk-broadcast";
-    // The title-bar and taskbar icon (R44, docs/53 D6): the shared mark,
-    // embedded into the binary by slint-build (its default for Rust output),
-    // so the EXE stays a single file. Explorer's icon is a separate surface —
-    // the linked resource from build.rs — and both come from the same SVG.
-    icon: @image-url("../../../assets/icon/png/gawk-256.png");
-    background: Palette.bg;
-    preferred-width: 520px;
-    preferred-height: 760px;
-    min-width: 420px;
+component IconBtn inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <color> ink: T.muted;
+    in property <length> box: 40px;
+    in property <bool> filled;
+    callback clicked;
+    width: self.box;
+    height: self.box;
+    border-radius: 10px;
+    background: ta.has-hover ? #ffffff0d : transparent;
+    accessible-role: button;
+    accessible-label: self.label;
+    accessible-action-default => {
+        root.clicked();
+    }
+    Icon {
+        commands: root.icon;
+        ink: ta.has-hover ? T.text : root.ink;
+        filled: root.filled;
+        size: root.box >= 40px ? 18px : 15px;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
 
-    // ----- header state -----
-    // The build version ("v1.0.0+g1a2b3c4"). In the header rather than buried
-    // in Details because the question it answers — "is the EXE you are looking
-    // at the one I fixed?" — is asked about a screenshot, and a screenshot only
-    // ever shows the top of the window.
+// A quiet text action at the end of a row: "Change ›".
+component RowLink inherits Rectangle {
+    in property <string> text;
+    in property <bool> chevron: true;
+    callback clicked;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    height: 32px;
+    border-radius: 8px;
+    background: ta.has-hover ? #ffffff0d : transparent;
+    accessible-role: button;
+    accessible-label: self.text;
+    accessible-action-default => {
+        root.clicked();
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 4px;
+        spacing: 2px;
+        cross-axis-alignment: center;
+        Text {
+            text: root.text;
+            color: ta.has-hover ? T.text : T.muted;
+            font-size: 13px;
+        }
+        if root.chevron: Icon {
+            commands: Icons.chevron-right;
+            ink: ta.has-hover ? T.text : T.muted;
+            size: 15px;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// 0 neutral, 1 accent, 2 warn, 3 glass (over the preview)
+component Pill inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <int> kind;
+    in property <color> dot: Colors.transparent;
+    in property <bool> clickable;
+    in property <bool> mono;
+    in property <string> mono-font;
+    callback clicked;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    height: 28px;
+    border-radius: 14px;
+    border-width: 1px;
+    background: self.kind == 1 ? T.accent-soft : self.kind == 2 ? T.warn-soft : self.kind == 3 ? T.glass : T.s1;
+    border-color: self.kind == 1 ? T.accent-line : self.kind == 2 ? T.warn-line : self.kind == 3 ? #ffffff14
+        : (ta.has-hover && self.clickable ? T.faint : T.border);
+    accessible-role: AccessibleRole.text;
+    accessible-label: self.text;
+    accessible-action-default => {
+        if (root.clickable) {
+            root.clicked();
+        }
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        cross-axis-alignment: center;
+        if root.dot != Colors.transparent: Rectangle {
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: root.dot;
+        }
+        if root.icon != "": Icon {
+            commands: root.icon;
+            size: 14px;
+            ink: root.kind == 1 ? T.accent-text : root.kind == 2 ? T.warn-text : root.kind == 3 ? T.text : T.muted;
+        }
+        Text {
+            text: root.text;
+            font-size: 12.5px;
+            font-family: root.mono ? root.mono-font : "";
+            color: root.kind == 1 ? T.accent-text : root.kind == 2 ? T.warn-text : root.kind == 3 ? T.text
+                : (ta.has-hover && root.clickable ? T.text : T.muted);
+        }
+        if root.clickable: Icon {
+            commands: Icons.chevron-down;
+            size: 14px;
+            ink: T.muted;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.clickable;
+        mouse-cursor: root.clickable ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component Kicker inherits Text {
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    color: T.muted;
+}
+
+// A rounded list; its rows draw their own dividers.
+component List inherits Rectangle {
+    vertical-stretch: 0;
+    background: T.s1;
+    border-width: 1px;
+    border-color: T.border;
+    border-radius: 16px;
+    clip: true;
+    VerticalLayout {
+        @children
+    }
+}
+
+component RowIco inherits Rectangle {
+    in property <string> icon;
+    in property <bool> accent;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: self.accent ? #6b8afe2e : T.s3;
+    Icon {
+        commands: root.icon;
+        ink: root.accent ? T.accent-text : T.muted;
+    }
+}
+
+component Row inherits Rectangle {
+    in property <bool> first;
+    in property <bool> tinted;
+    // A whole-row click target; controls inside the row sit above it.
+    in property <bool> clickable;
+    in property <bool> enabled: true;
+    callback clicked;
+    min-height: 52px;
+    background: self.tinted ? #6b8afe12 : (self.clickable && self.enabled && rta.has-hover ? #ffffff08 : transparent);
+    opacity: self.enabled ? 1 : 0.5;
+    if !root.first: Rectangle {
+        y: 0;
+        height: 1px;
+        background: T.border-soft;
+    }
+    rta := TouchArea {
+        enabled: root.clickable && root.enabled;
+        mouse-cursor: root.clickable && root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            root.clicked();
+        }
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 10px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 12px;
+        cross-axis-alignment: center;
+        @children
+    }
+}
+
+component RowText inherits VerticalLayout {
+    in property <string> title;
+    in property <string> sub;
+    in property <color> sub-color: T.muted;
+    horizontal-stretch: 1;
+    spacing: 1px;
+    alignment: center;
+    Text {
+        text: root.title;
+        color: T.text;
+        font-size: 14px;
+        font-weight: 500;
+        overflow: elide;
+    }
+    if root.sub != "": Text {
+        text: root.sub;
+        color: root.sub-color;
+        font-size: 12.5px;
+        overflow: elide;
+    }
+}
+
+component Seg inherits Rectangle {
+    in property <[string]> options;
+    in-out property <int> current;
+    in property <bool> enabled: true;
+    callback changed(int);
+    height: 40px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: T.border;
+    background: T.s2;
+    opacity: self.enabled ? 1 : 0.5;
+    HorizontalLayout {
+        padding: 3px;
+        spacing: 2px;
+        for o[i] in root.options: Rectangle {
+            horizontal-stretch: 1;
+            border-radius: 7px;
+            background: root.current == i ? T.s3 : transparent;
+            border-width: root.current == i ? 1px : 0px;
+            border-color: T.border;
+            accessible-role: button;
+            accessible-label: o;
+            accessible-checked: root.current == i;
+            accessible-action-default => {
+                if (root.enabled) {
+                    root.current = i;
+                    root.changed(i);
+                }
+            }
+            Text {
+                width: 100%;
+                height: 100%;
+                text: o;
+                color: root.current == i ? T.text : T.muted;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.current = i;
+                    root.changed(i);
+                }
+            }
+        }
+    }
+}
+
+component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <string> label;
+    in property <bool> password;
+    in property <bool> enabled: true;
+    in property <string> font-family;
+    callback edited(string);
+    callback accepted(string);
+    height: 40px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: ti.has-focus ? T.accent : T.border;
+    background: T.s2;
+    opacity: self.enabled ? 1 : 0.5;
+    ti := TextInput {
+        x: 12px;
+        width: parent.width - 24px;
+        height: 100%;
+        vertical-alignment: center;
+        single-line: true;
+        text <=> root.text;
+        enabled: root.enabled;
+        color: T.text;
+        font-size: 14px;
+        font-family: root.font-family;
+        selection-background-color: #6b8afe66;
+        input-type: root.password ? InputType.password : InputType.text;
+        accessible-label: root.label != "" ? root.label : root.placeholder;
+        edited => {
+            root.edited(self.text);
+        }
+        accepted => {
+            root.accepted(self.text);
+        }
+    }
+    if root.text == "": Text {
+        x: 12px;
+        width: parent.width - 24px;
+        height: 100%;
+        vertical-alignment: center;
+        text: root.placeholder;
+        color: T.faint;
+        font-size: 14px;
+        overflow: elide;
+        accessible-role: none;
+    }
+
+    public function focus-field() {
+        ti.focus();
+    }
+}
+
+component LabeledField inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> password;
+    in property <bool> enabled: true;
+    in property <string> font-family;
+    callback edited(string);
+    spacing: 6px;
+    Text {
+        text: root.label;
+        color: T.muted;
+        font-size: 12.5px;
+    }
+    Field {
+        text <=> root.text;
+        label: root.label;
+        placeholder: root.placeholder;
+        password: root.password;
+        enabled: root.enabled;
+        font-family: root.font-family;
+        edited(t) => {
+            root.edited(t);
+        }
+    }
+}
+
+// The landing page's six-box code, big or small.
+component CodeBoxes inherits HorizontalLayout {
+    in property <[string]> chars;
+    in property <bool> small;
+    in property <string> font-family;
+    in property <bool> dim;
+    spacing: self.small ? 6px : 8px;
+    alignment: center;
+    for c in root.chars: Rectangle {
+        width: root.small ? 34px : 50px;
+        height: root.small ? 40px : 58px;
+        border-radius: root.small ? 8px : 10px;
+        border-width: 1px;
+        border-color: T.border;
+        background: T.s2;
+        opacity: root.dim ? 0.5 : 1;
+        Text {
+            text: c;
+            color: T.text;
+            font-size: root.small ? 18px : 27px;
+            font-weight: 600;
+            font-family: root.font-family;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component Meter inherits HorizontalLayout {
+    in property <float> level;
+    spacing: 2px;
+    cross-axis-alignment: end;
+    height: 14px;
+    for i in 10: Rectangle {
+        width: 3px;
+        height: 4px + 10px * Math.min(1, (i + 1) / 10);
+        border-radius: 1px;
+        background: root.level * 10 > i ? T.ok : T.s3;
+    }
+}
+
+component Avatar inherits Rectangle {
+    in property <string> initial;
+    in property <int> tint;
+    in property <bool> ring;
+    in property <bool> speaking;
+    width: 30px;
+    height: 30px;
+    border-radius: 15px;
+    background: T.tint(self.tint);
+    border-width: self.speaking ? 2px : 0px;
+    border-color: T.ok;
+    if root.ring: Rectangle {
+        x: -4px;
+        y: -4px;
+        width: 38px;
+        height: 38px;
+        border-radius: 19px;
+        border-width: 2px;
+        border-color: T.accent;
+    }
+    Text {
+        text: root.initial;
+        color: #0a0b0d;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A dismissible notice with an optional one-click fix (docs/60 D13).
+component Banner inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+    in property <string> icon;
+    in property <bool> warn: true;
+    in property <string> action;
+    in property <bool> dismissible: true;
+    callback act;
+    callback dismiss;
+    vertical-stretch: 0;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: self.warn ? T.warn-line : T.accent-line;
+    background: self.warn ? T.warn-soft : T.accent-soft;
+    HorizontalLayout {
+        padding: 12px;
+        padding-left: 14px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: start;
+            Icon {
+                commands: root.icon;
+                ink: root.warn ? T.warn-text : T.accent-text;
+            }
+        }
+        VerticalLayout {
+            spacing: 8px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.title == "" ? root.body : root.title + " " + root.body;
+                color: T.text;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            if root.action != "" || root.dismissible: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                if root.action != "": Btn {
+                    text: root.action;
+                    small: true;
+                    clicked => {
+                        root.act();
+                    }
+                }
+                if root.dismissible: Btn {
+                    text: "Dismiss";
+                    kind: 2;
+                    small: true;
+                    clicked => {
+                        root.dismiss();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A bottom sheet over the page: scrim, grab handle, title and close.
+component Sheet inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <length> sheet-height: 620px;
+    callback close;
+    background: T.scrim;
+    TouchArea {
+        clicked => {
+            root.close();
+        }
+    }
+    Rectangle {
+        y: parent.height - self.height;
+        height: Math.min(root.sheet-height, parent.height - 40px);
+        background: T.s1;
+        border-radius: 20px;
+        border-width: 1px;
+        border-color: T.border;
+        // Eats clicks so they don't reach the scrim.
+        TouchArea { }
+        VerticalLayout {
+            padding: 20px;
+            padding-top: 8px;
+            spacing: 14px;
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 36px;
+                    height: 4px;
+                    border-radius: 2px;
+                    background: T.border;
+                }
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text {
+                        text: root.title;
+                        color: T.text;
+                        font-size: 17px;
+                        font-weight: 600;
+                    }
+                    if root.subtitle != "": Text {
+                        text: root.subtitle;
+                        color: T.muted;
+                        font-size: 12.5px;
+                        wrap: word-wrap;
+                    }
+                }
+                IconBtn {
+                    icon: Icons.close;
+                    label: "Close";
+                    clicked => {
+                        root.close();
+                    }
+                }
+            }
+            @children
+        }
+    }
+}
+
+// A centred card over a scrim, for questions that block (docs/60 D10, D13).
+component Modal inherits Rectangle {
+    in property <length> card-width: 420px;
+    background: T.scrim;
+    TouchArea { }
+    Rectangle {
+        width: Math.min(root.card-width, parent.width - 48px);
+        height: box.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: T.s1;
+        border-radius: 16px;
+        border-width: 1px;
+        border-color: T.border;
+        box := VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            @children
+        }
+    }
+}
+
+// A key/value list (details, the stopped summary).
+component Stats inherits Rectangle {
+    in property <[StatRow]> rows;
+    vertical-stretch: 0;
+    background: T.s1;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: T.border;
+    VerticalLayout {
+        padding: 12px;
+        padding-left: 14px;
+        spacing: 6px;
+        alignment: start;
+        for row in root.rows: HorizontalLayout {
+            spacing: 12px;
+            Text {
+                text: row.label;
+                color: T.muted;
+                font-size: 12.5px;
+                width: 40%;
+            }
+            Text {
+                text: row.value;
+                color: T.text;
+                font-size: 12.5px;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// The live page's code, rows and Stop: below the preview in a narrow
+// window, a right-hand column in a wide one (D7). Everything it shows comes
+// in through properties; everything it does goes out through callbacks.
+component LiveSide inherits VerticalLayout {
+    in property <bool> live;
+    in property <string> code;
+    in property <[string]> code-chars;
+    in property <string> join-link;
+    in property <string> mono-font;
+    in property <string> copied-note;
+    in property <string> audio-line;
+    in property <float> audio-level;
+    in property <string> connection-line;
+    in property <bool> connection-ok;
+    in property <bool> resuming;
+    in property <bool> wide;
+    in property <string> room-code;
+    in property <string> room-link;
+    in property <string> room-status;
+    in property <bool> room-active;
+    in property <bool> room-creator;
+    in property <int> room-streaming;
+    in property <int> room-watching;
+    in property <[RoomRow]> room-rows;
+    in property <string> room-watchers;
+    in property <[string]> room-watcher-initials;
+    in property <bool> room-needs-key;
+    in-out property <string> room-key-input;
+    callback copy-link();
+    callback copy-code();
+    callback copy-room-link();
+    callback open-link(string);
+    callback open-room-sheet();
+    callback open-manage();
+    callback room-key-submit();
+    callback open-details();
+    callback leave-room();
+    callback stop();
+    spacing: 14px;
+    alignment: root.wide ? LayoutAlignment.start : LayoutAlignment.stretch;
+
+    // The code: six boxes and the link, or a wait while the relay mints it.
+    VerticalLayout {
+        spacing: 8px;
+        if root.code != "": CodeBoxes {
+            chars: root.code-chars;
+            font-family: root.mono-font;
+            small: root.room-code != "";
+        }
+        if root.code != "": Text {
+            text: root.join-link;
+            color: T.muted;
+            font-size: 12.5px;
+            font-family: root.mono-font;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        if root.code == "": Text {
+            text: "Getting your code…";
+            color: T.muted;
+            font-size: 14px;
+            horizontal-alignment: center;
+        }
+    }
+
+    // D3: the one primary action. In a room, the room link.
+    if root.room-code == "": HorizontalLayout {
+        spacing: 10px;
+        Btn {
+            kind: 0;
+            horizontal-stretch: 1;
+            icon: Icons.link;
+            text: "Copy link";
+            enabled: root.join-link != "";
+            clicked => {
+                root.copy-link();
+            }
+        }
+        Btn {
+            icon: Icons.copy;
+            text: "Copy code";
+            enabled: root.code != "";
+            clicked => {
+                root.copy-code();
+            }
+        }
+    }
+    if root.room-code != "": HorizontalLayout {
+        spacing: 10px;
+        Btn {
+            kind: 0;
+            horizontal-stretch: 1;
+            icon: Icons.link;
+            text: "Copy room link";
+            enabled: root.room-link != "";
+            clicked => {
+                root.copy-room-link();
+            }
+        }
+        Btn {
+            icon: Icons.external;
+            text: "Open room view";
+            enabled: root.room-link != "";
+            clicked => {
+                root.open-link(root.room-link);
+            }
+        }
+    }
+    if root.copied-note != "": Text {
+        text: root.copied-note;
+        color: T.ok;
+        font-size: 12.5px;
+        horizontal-alignment: center;
+    }
+
+    // Not in a room: three plain rows.
+    if !root.room-active: List {
+        Row {
+            first: true;
+            RowIco {
+                icon: Icons.speaker;
+            }
+            RowText {
+                title: root.audio-line != "" ? root.audio-line : "Sound";
+            }
+            Meter {
+                level: root.audio-level;
+            }
+        }
+        Row {
+            RowIco {
+                icon: Icons.users;
+            }
+            RowText {
+                title: "Not in a room";
+                sub: root.room-status;
+            }
+            RowLink {
+                text: "Add to a room";
+                clicked => {
+                    root.open-room-sheet();
+                }
+            }
+        }
+        Row {
+            RowIco {
+                icon: Icons.signal;
+            }
+            RowText {
+                title: root.resuming ? "Reconnecting" : root.connection-ok ? "Connection steady" : "Upload is struggling";
+            }
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.resuming || !root.connection-ok ? T.warn : T.ok;
+            }
+            Text {
+                text: root.connection-line;
+                color: T.muted;
+                font-size: 12.5px;
+            }
+        }
+    }
+
+    // In a room (D9): who is here, and the creator's controls.
+    if root.room-active: List {
+        HorizontalLayout {
+            height: 40px;
+            padding-left: 14px;
+            padding-right: 10px;
+            spacing: 8px;
+            cross-axis-alignment: center;
+            Kicker {
+                text: "IN THE ROOM";
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: root.room-streaming + " streaming · " + root.room-watching + " watching";
+                color: T.muted;
+                font-size: 12.5px;
+            }
+            if root.room-creator: RowLink {
+                text: "Manage";
+                clicked => {
+                    root.open-manage();
+                }
+            }
+        }
+        if root.room-needs-key: Row {
+            tinted: true;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 8px;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                Text {
+                    text: "This room needs a key to add your stream. You're watching until then.";
+                    color: T.text;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Field {
+                        horizontal-stretch: 1;
+                        label: "Room key";
+                        placeholder: "Room key";
+                        password: true;
+                        text <=> root.room-key-input;
+                        accepted => {
+                            root.room-key-submit();
+                        }
+                    }
+                    Btn {
+                        kind: 0;
+                        text: "Add my stream";
+                        enabled: root.room-key-input != "";
+                        clicked => {
+                            root.room-key-submit();
+                        }
+                    }
+                }
+            }
+        }
+        for r in root.room-rows: Row {
+            Avatar {
+                initial: r.initial;
+                tint: r.tint;
+                ring: r.you;
+                speaking: r.speaking;
+            }
+            RowText {
+                title: r.you ? r.name + " (you)" : r.name;
+                sub: r.detail;
+                sub-color: r.away ? T.warn-text : T.muted;
+            }
+            if !r.you && r.watch-link != "": RowLink {
+                text: "Watch";
+                chevron: false;
+                clicked => {
+                    root.open-link(r.watch-link);
+                }
+            }
+        }
+        if root.room-watchers != "": Row {
+            HorizontalLayout {
+                spacing: -6px;
+                for w[i] in root.room-watcher-initials: Rectangle {
+                    width: 26px;
+                    height: 26px;
+                    border-radius: 13px;
+                    border-width: 2px;
+                    border-color: T.s1;
+                    // The fourth bubble is the "+N" overflow.
+                    background: i == 3 ? #3a3f4b : T.tint(i + 3);
+                    Text {
+                        text: w;
+                        color: i == 3 ? T.text : #0a0b0d;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            Text {
+                text: root.room-watchers;
+                color: T.muted;
+                font-size: 12.5px;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+        }
+        if root.room-status != "": Row {
+            Text {
+                text: root.room-status;
+                color: T.muted;
+                font-size: 12.5px;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    if root.room-active: HorizontalLayout {
+        spacing: 12px;
+        cross-axis-alignment: center;
+        Text {
+            text: root.audio-line != "" ? root.audio-line : "Sound";
+            color: T.muted;
+            font-size: 12.5px;
+        }
+        Meter {
+            level: root.audio-level;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: root.resuming || !root.connection-ok ? T.warn : T.ok;
+        }
+        Text {
+            text: root.connection-line;
+            color: T.muted;
+            font-size: 12.5px;
+        }
+    }
+
+    if !root.wide: Rectangle {
+        vertical-stretch: 1;
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        if root.room-active: Btn {
+            kind: 2;
+            icon: Icons.leave;
+            text: "Leave room";
+            clicked => {
+                root.leave-room();
+            }
+        }
+        if !root.wide: Btn {
+            kind: 2;
+            icon: Icons.activity;
+            text: "Details";
+            clicked => {
+                root.open-details();
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+        // Starting has no session to stop yet.
+        Btn {
+            kind: 3;
+            icon: Icons.stop;
+            text: "Stop";
+            enabled: root.live;
+            clicked => {
+                root.stop();
+            }
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "gawk";
+    // The title-bar and taskbar icon (R44, docs/53 D6): the shared mark,
+    // embedded into the binary by slint-build, so the EXE stays a single file.
+    icon: @image-url("../../../assets/icon/png/gawk-256.png");
+    background: T.bg;
+    preferred-width: 520px;
+    preferred-height: 800px;
+    min-width: 440px;
+    min-height: 600px;
+
+    // ----- header / identity -----
+    // The build version ("v1.0.0+g1a2b3c4"): the question it answers — "is
+    // the EXE you are looking at the one I fixed?" — is asked about a
+    // screenshot, so it stays on the first page.
     in property <string> app-version: "";
     in property <string> state-label: "Not broadcasting";
     in property <bool> live: false;
     in property <bool> busy: false;            // starting or live
     in property <bool> resuming: false;
     in property <string> status-line: "";      // "Reconnecting… (attempt N)"
-    in property <string> encode-line: "";
+    in property <string> live-elapsed: "";
+    in property <int> watching: 0;
+    in property <bool> watching-known: false;
+    in property <string> server-pill: "";
+
+    // ----- live readouts -----
+    in property <string> encode-line: "";      // the Advanced/details line
+    in property <string> encode-badge: "";     // "1080p60 · H.264 hardware"
     in property <string> audio-line: "";
     in property <float> audio-level: 0.0;
     in property <bool> audio-hint: false;
     in property <string> audio-hint-text: "";
-    in property <string> watching-line: "";
     in property <string> minimized-hint: "";
     in property <string> uplink-warning: "";
+    in property <string> connection-line: "";
+    in property <bool> connection-ok: true;
 
-    // ----- code card -----
+    // ----- code -----
     in property <string> code: "";
+    in property <[string]> code-chars: [];
     in property <string> join-link: "";
     in property <string> copied-note: "";
 
-    // ----- room card (R42, docs/44 §4.8) -----
-    // The inputs persist to the config (settings-edited); the buttons act on
-    // the running session. Idle: the card says what the next start will do.
-    in-out property <string> room-input: "";       // a code, a slug, or a room link
-    in-out property <string> room-attach-key: "";
-    // The nickname also names the tile (one name, as on the web page) and
-    // may change while live: room-nickname-edited renames on the relay.
+    // ----- ready rows -----
+    in property <string> quality-line: "";
+
+    // ----- rooms (docs/44, docs/60 D8–D10) -----
+    in-out property <string> room-input: "";       // the sheet's code-or-link field
+    in property <string> room-input-echo: "";      // what the field was read as
+    in property <bool> room-input-ok: false;
     in-out property <string> room-nickname: "";
+    in property <string> room-pending: "";         // joins/creates when live
+    in property <string> room-pending-detail: "";
     in property <bool> room-active: false;         // a room control session exists
     in property <bool> room-attached: false;
-    in property <string> room-code: "";            // the joined/minted code
+    in property <string> room-code: "";
     in property <string> room-status: "";
     in property <string> room-link: "";
+    in property <bool> room-creator: false;
+    in property <int> room-streaming: 0;
+    in property <int> room-watching: 0;
+    in property <[RoomRow]> room-rows: [];
+    in property <string> room-watchers: "";
+    in property <[string]> room-watcher-initials: [];
+    in property <bool> room-needs-key: false;
+    in-out property <string> room-key-input: "";
+    in property <[RecentRow]> recent-rooms: [];
+    in property <string> room-card-title: "";
+    in property <string> room-card-body: "";
+    in-out property <bool> show-room-sheet: false;
+    in-out property <bool> show-manage: false;
+    in-out property <bool> editing-name: false;
 
     // ----- thumbnail -----
     in property <image> thumbnail;
     in property <bool> show-thumbnail: false;
 
-    // ----- error card -----
+    // ----- error -----
     in property <string> error-text: "";
     in property <bool> can-mint: false;
 
-    // ----- share card (macOS, docs/54 D11) -----
+    // ----- share (macOS, docs/54 D11) -----
     // True on macOS: content is chosen in the system picker
     // (SCContentSharingPicker, docs/54 D4), so the Share card replaces the
-    // Windows picker card, lists nothing itself, and stays up while live —
-    // "Change…" re-picks without stopping the broadcast.
+    // Windows picker page, lists nothing itself, and can re-pick while live.
     in property <bool> system-picker: false;
     in property <string> share-summary: "";      // what was picked; empty = nothing yet
     in property <string> share-mode-label: "";   // "this app's audio" / "whole-system audio"
     in property <bool> share-picker-available: true;
 
-    // The join/room code face. Consolas is a Windows font; a platform
-    // without it would fall back to a proportional face.
+    // The code face. Consolas is a Windows font; macOS sets Menlo.
     in property <string> mono-font: "Consolas";
 
-    // ----- picker -----
+    // ----- picker (Windows) -----
     in property <[WindowRow]> windows: [];
     in property <[MonitorRow]> monitors: [];
     in-out property <int> picker-tab: 0;
     in-out property <int> selected-window: -1;
     in-out property <int> selected-monitor: -1;
 
-    // ----- controls -----
+    // ----- resume and the stopped summary (docs/60 D11, D12) -----
     in property <string> resume-code: "";
+    in property <bool> resume-offer: false;
+    in property <string> resume-room: "";
+    in property <bool> summary-visible: false;
+    in property <string> summary-title: "";
+    in property <[StatRow]> summary-rows: [];
+
+    // ----- pages (docs/60 D1): 0 ready/live, 1 picker, 2 settings, 3 advanced -----
+    in-out property <int> page: 0;
 
     // ----- settings -----
-    in-out property <bool> show-settings: false;
     // R37 SP9 server profiles: index 0 is always the built-in default relay,
     // then one entry per saved custom server. The shell owns the mapping.
     in property <[string]> server-labels: ["Default relay"];
+    in property <[string]> server-urls: [];
     in-out property <int> set-server: 0;
     in property <bool> server-is-custom: false;
     in-out property <string> set-server-name: "";
@@ -176,45 +1285,63 @@ export component MainWindow inherits Window {
     in-out property <string> set-telemetry: "";
     in-out property <int> set-resolution: 1;   // index into labels below
     in-out property <int> set-framerate: 1;
-    in property <[string]> resolution-labels: ["2560×1440", "1920×1080 (default)", "1280×720", "854×480", "Custom"];
+    in property <[string]> resolution-labels: ["1440p", "1080p", "720p", "480p", "Custom"];
     in-out property <string> set-custom-width: "";
     in-out property <string> set-custom-height: "";
-    in property <[string]> framerate-labels: ["120 fps", "60 fps (default)", "30 fps", "5 fps"];
+    in property <[string]> framerate-labels: ["120 fps", "60 fps", "30 fps", "5 fps"];
     in property <string> caption-broadcast: "";
     in property <string> caption-diag: "";
     in property <string> terms-link: "";
 
-    // ----- stats -----
+    // ----- details -----
     in-out property <bool> show-details: false;
     in property <[StatRow]> stats-rows: [];
 
     // ----- close confirm -----
     in-out property <bool> confirm-close: false;
 
+    // Local UI state.
+    property <bool> wide: self.width >= 900px;
+    property <bool> uplink-dismissed;
+    property <bool> audio-dismissed;
+    property <bool> minimized-dismissed;
+    property <bool> show-secret;
+
     callback refresh-picker();
     callback choose-content();
+    callback source-picked();
     callback start-broadcast();
     callback resume-broadcast();
     callback stop-broadcast();
     callback copy-link();
     callback copy-code();
+    callback copy-room-link();
     callback copy-diagnostics();
     callback settings-edited();
     callback server-selected();
     callback add-server();
     callback remove-server();
     callback switch-to-system-audio();
-    callback room-attach();
-    callback room-new();
-    callback room-nickname-edited();
-    callback room-nickname-accepted();   // Enter: rename now, no debounce
+    callback room-input-edited();
+    callback room-join();
+    callback room-create();
+    callback room-join-recent(string);
+    callback room-toggle-saved(string);
+    callback room-pending-dismiss();
     callback room-detach();
+    callback room-remove(string);
+    callback room-end();
+    callback room-key-submit();
+    callback room-card-dismiss();
+    callback room-nickname-edited();
+    callback room-nickname-accepted();   // Enter or Save: rename now, no debounce
+    callback summary-dismiss();
+    callback resume-dismiss();
     callback open-link(string);
     callback quit-confirmed();
 
-    // macOS (docs/54 D11): Slint already gives the app menu About (the
-    // bundle's name and version) and Quit ⌘Q; this adds Settings… ⌘, beside
-    // it. Windows has no menu bar, so the bar exists only in picker mode.
+    // macOS (docs/54 D11): Slint already gives the app menu About and Quit
+    // ⌘Q; this adds Settings… ⌘, beside it. Windows has no menu bar.
     if root.system-picker: MenuBar {
         Menu {
             title: "Broadcast";
@@ -223,693 +1350,1375 @@ export component MainWindow inherits Window {
                 // Slint's Control is the platform's primary modifier: ⌘ here.
                 shortcut: @keys(Control + ",");
                 activated => {
-                    root.show-settings = true;
+                    root.page = 2;
                 }
             }
         }
     }
 
-    ScrollView {
-        VerticalLayout {
-            padding: 16px;
-            spacing: 12px;
+    // The soft glow behind the idle pages (the landing page's, docs/10).
+    if !root.busy && root.page == 0: Rectangle {
+        x: -40px;
+        y: -60px;
+        width: parent.width + 80px;
+        height: 380px;
+        background: @radial-gradient(circle, #6b8afe1f 0%, #6b8afe00 60%);
+        opacity: 0.9;
+    }
 
-            // ================= header =================
-            Card {
+    VerticalLayout {
+        // ================= header =================
+        HorizontalLayout {
+            height: 56px;
+            padding-left: root.page == 0 ? 20px : 12px;
+            padding-right: 16px;
+            spacing: 10px;
+            cross-axis-alignment: center;
+
+            if root.page != 0: IconBtn {
+                icon: Icons.back;
+                label: "Back";
+                clicked => {
+                    root.page = root.page == 3 ? 2 : 0;
+                }
+            }
+            if root.page != 0: Text {
+                text: root.page == 1 ? "Choose what to share" : root.page == 2 ? "Settings" : "Advanced";
+                color: T.text;
+                font-size: 17px;
+                font-weight: 600;
+            }
+            if root.page == 0 && !root.busy: Image {
+                source: @image-url("../../../assets/icon/png/gawk-256.png");
+                width: 24px;
+                height: 24px;
+            }
+            if root.page == 0 && !root.busy: Text {
+                text: "gawk";
+                color: T.text;
+                font-size: 15px;
+                font-weight: 700;
+                letter-spacing: 0.6px;
+            }
+            // LIVE, or the amber RECONNECTING that replaces it (D13).
+            if root.page == 0 && root.busy: Rectangle {
+                height: 28px;
+                horizontal-stretch: 0;
+                border-radius: 6px;
+                background: root.resuming ? T.warn-soft : root.live ? T.live-soft : T.s2;
+                accessible-role: text;
+                accessible-label: root.resuming ? "Reconnecting" : root.live ? "Live " + root.live-elapsed : "Starting";
                 HorizontalLayout {
-                    spacing: 10px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 7px;
+                    cross-axis-alignment: center;
                     Rectangle {
-                        width: 12px;
-                        height: 12px;
-                        y: 4px;
-                        border-radius: 6px;
-                        background: root.resuming ? Palette.resume
-                            : root.live ? Palette.live
-                            : Palette.muted.with-alpha(0.4);
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.resuming ? T.warn : root.live ? T.live : T.faint;
                     }
+                    Text {
+                        text: root.resuming ? "RECONNECTING" : root.live ? "LIVE" : "STARTING";
+                        color: root.resuming ? T.warn-text : root.live ? T.live-text : T.muted;
+                        font-size: 11.5px;
+                        font-weight: 700;
+                        letter-spacing: 1.2px;
+                    }
+                    if root.live && !root.resuming && root.live-elapsed != "": Text {
+                        text: root.live-elapsed;
+                        color: T.text;
+                        font-size: 11.5px;
+                        font-weight: 500;
+                    }
+                }
+            }
+            if root.page == 0 && root.busy && root.room-code != "": Pill {
+                kind: 1;
+                icon: Icons.users;
+                text: root.room-code;
+            }
+            if root.page == 0 && root.busy && root.watching-known: Pill {
+                icon: Icons.eye;
+                text: root.room-code != "" ? root.watching + " on you" : root.watching + " watching";
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            if root.page == 1: IconBtn {
+                icon: Icons.refresh;
+                label: "Refresh the list";
+                clicked => {
+                    root.refresh-picker();
+                }
+            }
+            if root.page == 0 && !root.busy && root.server-pill != "": Pill {
+                dot: T.ok;
+                text: root.server-pill;
+                clickable: true;
+                clicked => {
+                    root.page = 2;
+                }
+            }
+            if root.page == 0: IconBtn {
+                icon: Icons.settings;
+                label: "Settings";
+                clicked => {
+                    root.page = 2;
+                }
+            }
+        }
+
+        // ================= ready (idle) =================
+        if root.page == 0 && !root.busy: ScrollView {
+            vertical-stretch: 1;
+            ready := VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 4px;
+                padding-bottom: 16px;
+                spacing: 14px;
+
+                if root.error-text != "": Rectangle {
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: T.danger-line;
+                    background: T.live-soft;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+                        Text {
+                            text: root.error-text;
+                            color: T.text;
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        if root.can-mint: HorizontalLayout {
+                            alignment: start;
+                            Btn {
+                                text: "Start a new broadcast instead";
+                                small: true;
+                                clicked => {
+                                    root.start-broadcast();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ----- the app died live (D12) -----
+                if root.resume-offer: VerticalLayout {
+                    spacing: 18px;
+                    alignment: start;
+                    padding-top: 12px;
+                    VerticalLayout {
+                        spacing: 8px;
+                        Kicker {
+                            text: "WELCOME BACK";
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "Pick up where you left off?";
+                            color: T.text;
+                            font-size: 22px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: "gawk closed while you were live. Go live again on the same code and anyone still on the page picks you up by themselves.";
+                            color: T.muted;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                    Rectangle {
+                        background: T.s1;
+                        border-radius: 16px;
+                        border-width: 1px;
+                        border-color: T.border;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 16px;
+                            CodeBoxes {
+                                chars: root.code-chars;
+                                font-family: root.mono-font;
+                            }
+                            if root.resume-room != "": HorizontalLayout {
+                                alignment: center;
+                                Pill {
+                                    kind: 1;
+                                    icon: Icons.users;
+                                    text: root.resume-room;
+                                }
+                            }
+                            Btn {
+                                kind: 0;
+                                large: true;
+                                text: "Resume on " + root.resume-code;
+                                clicked => {
+                                    root.resume-broadcast();
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        Btn {
+                            kind: 2;
+                            text: "Start with a new code instead";
+                            clicked => {
+                                root.resume-dismiss();
+                            }
+                        }
+                    }
+                }
+
+                // ----- stopped: the summary and Go live again (D11) -----
+                if !root.resume-offer && root.summary-visible: VerticalLayout {
+                    spacing: 16px;
+                    alignment: start;
                     VerticalLayout {
                         spacing: 4px;
                         Text {
-                            text: root.state-label;
-                            color: Palette.text;
-                            font-size: 18px;
+                            text: root.summary-title;
+                            color: T.text;
+                            font-size: 22px;
                             font-weight: 600;
-                        }
-                        if root.status-line != "": Text {
-                            text: root.status-line;
-                            color: Palette.resume;
-                            font-size: 12px;
-                        }
-                        if root.encode-line != "": Text {
-                            text: root.encode-line;
-                            color: Palette.muted;
-                            font-size: 12px;
                             wrap: word-wrap;
                         }
-                        if root.audio-line != "": HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: root.audio-line;
-                                color: Palette.muted;
-                                font-size: 12px;
-                            }
-                            Rectangle {
-                                width: 90px;
-                                height: 6px;
-                                y: 5px;
-                                border-radius: 3px;
-                                background: Palette.card-border;
-                                Rectangle {
-                                    x: 0;
-                                    width: parent.width * min(1.0, root.audio-level);
-                                    height: parent.height;
-                                    border-radius: 3px;
-                                    background: Palette.live;
-                                }
-                            }
+                        Text {
+                            text: "Stats from this broadcast.";
+                            color: T.muted;
+                            font-size: 14px;
                         }
-                        if root.audio-hint: HorizontalLayout {
-                            spacing: 8px;
+                    }
+                    Stats {
+                        rows: root.summary-rows;
+                    }
+                    if root.resume-code != "": Rectangle {
+                        background: T.s1;
+                        border-radius: 16px;
+                        border-width: 1px;
+                        border-color: T.border;
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 12px;
+                            alignment: start;
+                            CodeBoxes {
+                                small: true;
+                                alignment: start;
+                                chars: root.code-chars;
+                                font-family: root.mono-font;
+                            }
                             Text {
-                                text: root.audio-hint-text;
-                                color: Palette.resume;
-                                font-size: 12px;
+                                text: "Go live again soon and the same link keeps working. Anyone still on the page picks you up again automatically.";
+                                color: T.muted;
+                                font-size: 12.5px;
                                 wrap: word-wrap;
                             }
-                            Button {
-                                text: "Use whole-system audio";
+                            Btn {
+                                kind: 0;
+                                large: true;
+                                text: "Go live again on " + root.resume-code;
                                 clicked => {
-                                    root.switch-to-system-audio();
+                                    root.resume-broadcast();
                                 }
                             }
                         }
-                        if root.watching-line != "": Text {
-                            text: root.watching-line;
-                            color: Palette.text;
-                            font-size: 13px;
-                        }
-                        if root.minimized-hint != "": Text {
-                            text: root.minimized-hint;
-                            color: Palette.resume;
-                            font-size: 12px;
-                            wrap: word-wrap;
-                        }
-                        if root.uplink-warning != "": Text {
-                            text: root.uplink-warning;
-                            color: Palette.resume;
-                            font-size: 12px;
-                            wrap: word-wrap;
-                        }
                     }
-                    // Last child, right-aligned within whatever width it is
-                    // given: that puts it against the card's inner right edge
-                    // no matter how the layout splits the slack, which a
-                    // left-aligned Text would not.
-                    if root.app-version != "": Text {
-                        text: root.app-version;
-                        color: Palette.muted;
-                        font-size: 11px;
-                        horizontal-alignment: right;
-                        vertical-alignment: top;
-                        horizontal-stretch: 1;
+                    HorizontalLayout {
+                        alignment: center;
+                        Btn {
+                            kind: 2;
+                            text: "Done, start over with a new code";
+                            clicked => {
+                                root.summary-dismiss();
+                            }
+                        }
                     }
                 }
-            }
 
-            // ================= error =================
-            if root.error-text != "": Card {
-                Text {
-                    text: root.error-text;
-                    color: #e07a7a;
-                    font-size: 13px;
-                    wrap: word-wrap;
-                }
-                if root.can-mint: Button {
-                    text: "Start a new broadcast instead";
-                    clicked => {
-                        root.start-broadcast();
-                    }
-                }
-            }
-
-            // ================= share (macOS system picker) =================
-            if root.system-picker: Card {
-                title: "SHARE";
-                if root.share-summary == "": Text {
-                    text: "Nothing chosen yet — pick a window, an app or a display.";
-                    color: Palette.muted;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                }
-                if root.share-summary != "": VerticalLayout {
-                    spacing: 2px;
-                    Text {
-                        text: root.share-summary;
-                        color: Palette.text;
-                        font-size: 13px;
-                        overflow: elide;
-                    }
-                    if root.share-mode-label != "": Text {
-                        text: root.share-mode-label;
-                        color: Palette.muted;
-                        font-size: 12px;
-                    }
-                }
-                // The 1 Hz "what viewers see", from the live stream's own
-                // frames (docs/54 D11) — no second stream, no second grant.
-                if root.show-thumbnail: Image {
-                    source: root.thumbnail;
-                    width: 100%;
-                    image-fit: contain;
-                    max-height: 180px;
-                }
-                HorizontalLayout {
-                    Button {
-                        text: root.share-summary == "" ? "Choose what to share…" : "Change…";
-                        enabled: root.share-picker-available;
-                        clicked => {
-                            root.choose-content();
+                // ----- ready (D4) -----
+                if !root.resume-offer && !root.summary-visible: VerticalLayout {
+                    spacing: 14px;
+                    HorizontalLayout {
+                        cross-axis-alignment: center;
+                        Kicker {
+                            text: "YOU'RE SHARING";
+                            horizontal-stretch: 1;
+                        }
+                        if !root.system-picker || root.share-picker-available: RowLink {
+                            text: "Change";
+                            clicked => {
+                                if (root.system-picker) {
+                                    root.choose-content();
+                                } else {
+                                    root.page = 1;
+                                }
+                            }
                         }
                     }
-                    Rectangle { }
-                }
-            }
-
-            // ================= picker (Windows, idle only) =================
-            if !root.busy && !root.system-picker: Card {
-                title: "SHARE";
-                HorizontalLayout {
-                    spacing: 6px;
-                    TabButton {
-                        label: "Share an app";
-                        active: root.picker-tab == 0;
-                        clicked => {
-                            root.picker-tab = 0;
+                    // The selected source, as a card (not a live preview:
+                    // nothing captures while idle).
+                    source-card := Rectangle {
+                        height: 168px;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: T.border;
+                        background: T.s1;
+                        property <bool> has-window: !root.system-picker && root.picker-tab == 0 && root.selected-window >= 0 && root.selected-window < root.windows.length;
+                        property <bool> has-monitor: !root.system-picker && root.picker-tab == 1 && root.selected-monitor >= 0 && root.selected-monitor < root.monitors.length;
+                        property <bool> has-mac: root.system-picker && root.share-summary != "";
+                        property <string> source-title: self.has-window ? root.windows[root.selected-window].title
+                            : self.has-monitor ? root.monitors[root.selected-monitor].label
+                            : self.has-mac ? root.share-summary : "Nothing chosen yet";
+                        accessible-role: button;
+                        accessible-label: "You're sharing: " + self.source-title;
+                        accessible-action-default => {
+                            if (root.system-picker) {
+                                root.choose-content();
+                            } else {
+                                root.page = 1;
+                            }
                         }
-                    }
-                    TabButton {
-                        label: "Share a screen";
-                        active: root.picker-tab == 1;
-                        clicked => {
-                            root.picker-tab = 1;
-                        }
-                    }
-                    Rectangle { }
-                    Button {
-                        text: "Refresh";
-                        clicked => {
-                            root.refresh-picker();
-                        }
-                    }
-                }
-                if root.picker-tab == 0: VerticalLayout {
-                    spacing: 2px;
-                    for w[i] in root.windows: Rectangle {
-                        height: 34px;
-                        border-radius: 6px;
-                        background: root.selected-window == i
-                            ? Palette.accent.with-alpha(0.22) : transparent;
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-right: 8px;
-                            spacing: 8px;
-                            if w.has-icon: Image {
-                                source: w.icon;
-                                width: 18px;
-                                height: 18px;
-                                y: 8px;
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 12px;
+                            padding: 16px;
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 56px;
+                                    height: 56px;
+                                    border-radius: 16px;
+                                    background: T.s3;
+                                    if source-card.has-window && root.windows[root.selected-window].has-icon: Image {
+                                        source: root.windows[root.selected-window].icon;
+                                        width: 32px;
+                                        height: 32px;
+                                    }
+                                    if !(source-card.has-window && root.windows[root.selected-window].has-icon): Icon {
+                                        commands: source-card.has-window ? Icons.window : Icons.monitor;
+                                        size: 26px;
+                                    }
+                                }
                             }
                             Text {
-                                text: w.title;
-                                color: Palette.text;
-                                font-size: 13px;
-                                vertical-alignment: center;
+                                text: source-card.source-title;
+                                color: T.text;
+                                font-size: 15px;
+                                font-weight: 500;
+                                horizontal-alignment: center;
                                 overflow: elide;
                             }
+                            if !source-card.has-window && !source-card.has-monitor && !source-card.has-mac: Text {
+                                text: root.system-picker ? "macOS shows its own picker. Choose one app window or a whole display." : "Pick an app or a display to share.";
+                                color: T.muted;
+                                font-size: 12.5px;
+                                horizontal-alignment: center;
+                                wrap: word-wrap;
+                            }
                         }
                         TouchArea {
+                            mouse-cursor: pointer;
                             clicked => {
-                                root.selected-window = i;
-                                root.selected-monitor = -1;
+                                if (root.system-picker) {
+                                    root.choose-content();
+                                } else {
+                                    root.page = 1;
+                                }
                             }
                         }
                     }
-                    if root.windows.length == 0: Text {
-                        text: "No shareable windows found — Refresh after opening the app you want to share.";
-                        color: Palette.muted;
+
+                    List {
+                        Row {
+                            first: true;
+                            RowIco {
+                                icon: Icons.speaker;
+                            }
+                            RowText {
+                                title: "Sound";
+                                sub: root.system-picker ? (root.share-mode-label != "" ? root.share-mode-label : "A window shares its app's sound. A display shares everything.")
+                                    : root.picker-tab == 0 ? "Only this app's sound · follows what you share" : "Everything you hear on this computer";
+                            }
+                        }
+                        Row {
+                            tinted: root.room-pending != "";
+                            RowIco {
+                                icon: Icons.users;
+                                accent: root.room-pending != "";
+                            }
+                            RowText {
+                                title: root.room-pending != "" ? root.room-pending : "Room";
+                                sub: root.room-pending != "" ? root.room-pending-detail : "Stream on your own, or together with friends";
+                            }
+                            if root.room-pending == "": RowLink {
+                                text: "Add";
+                                clicked => {
+                                    root.show-room-sheet = true;
+                                }
+                            }
+                            if root.room-pending != "": IconBtn {
+                                icon: Icons.close;
+                                label: "Don't join " + root.room-pending;
+                                box: 32px;
+                                clicked => {
+                                    root.room-pending-dismiss();
+                                }
+                            }
+                        }
+                        Row {
+                            RowIco {
+                                icon: Icons.gauge;
+                            }
+                            RowText {
+                                title: "Quality";
+                                sub: root.quality-line;
+                            }
+                            RowLink {
+                                text: "Change";
+                                clicked => {
+                                    root.page = 2;
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        vertical-stretch: 1;
+                        min-height: 4px;
+                    }
+                    Btn {
+                        kind: 0;
+                        large: true;
+                        text: root.room-pending != "" && root.room-pending-detail != "Made when you go live" ? "Go live in " + root.room-pending : "Go live";
+                        clicked => {
+                            root.start-broadcast();
+                        }
+                    }
+                    Text {
+                        text: root.room-pending != "" ? "Your stream also gets its own code, as always." : "You'll get a code to send to friends.";
+                        color: T.muted;
                         font-size: 12px;
-                        wrap: word-wrap;
+                        horizontal-alignment: center;
                     }
                 }
-                if root.picker-tab == 1: VerticalLayout {
-                    spacing: 2px;
-                    for m[i] in root.monitors: Rectangle {
-                        height: 34px;
-                        border-radius: 6px;
-                        background: root.selected-monitor == i
-                            ? Palette.accent.with-alpha(0.22) : transparent;
-                        Text {
-                            x: 8px;
-                            text: m.label;
-                            color: Palette.text;
-                            font-size: 13px;
-                            vertical-alignment: center;
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 10px;
+                    padding-top: 6px;
+                    if root.app-version != "": Text {
+                        text: root.app-version;
+                        color: T.muted;
+                        font-size: 12px;
+                    }
+                    if root.app-version != "": Text {
+                        text: "·";
+                        color: T.muted;
+                        font-size: 12px;
+                    }
+                    Text {
+                        text: "Terms of use";
+                        color: T.muted;
+                        font-size: 12px;
+                        accessible-role: button;
+                        accessible-action-default => {
+                            root.open-link(root.terms-link);
                         }
                         TouchArea {
+                            mouse-cursor: pointer;
                             clicked => {
-                                root.selected-monitor = i;
-                                root.selected-window = -1;
+                                root.open-link(root.terms-link);
                             }
                         }
                     }
                 }
             }
+        }
 
-            // ================= controls =================
+        // ================= live =================
+        if root.page == 0 && root.busy: ScrollView {
+            vertical-stretch: 1;
             HorizontalLayout {
-                spacing: 8px;
-                if !root.busy: Button {
-                    text: "Start broadcast";
-                    primary: true;
-                    clicked => {
-                        root.start-broadcast();
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 4px;
+                padding-bottom: 16px;
+                spacing: 20px;
+
+                // ----- left: preview, notices, and (wide) details -----
+                VerticalLayout {
+                    spacing: 12px;
+                    horizontal-stretch: root.wide ? 2 : 1;
+                    Rectangle {
+                        height: root.wide ? 360px : root.room-code != "" ? 196px : 248px;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: T.border-soft;
+                        background: #101216;
+                        clip: true;
+                        if root.show-thumbnail: Image {
+                            width: 100%;
+                            height: 100%;
+                            source: root.thumbnail;
+                            image-fit: contain;
+                            accessible-label: "What viewers see";
+                        }
+                        if !root.show-thumbnail && !root.resuming: Text {
+                            width: 100%;
+                            height: 100%;
+                            text: root.live ? "What viewers see" : "Starting…";
+                            color: T.muted;
+                            font-size: 12.5px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        if root.resuming: Rectangle {
+                            background: #0a0b0d99;
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 8px;
+                                Text {
+                                    text: "Lost the connection to the server";
+                                    color: T.text;
+                                    font-size: 14px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: root.status-line;
+                                    color: T.muted;
+                                    font-size: 12.5px;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+                        if root.encode-badge != "": Pill {
+                            kind: 3;
+                            width: self.preferred-width;
+                            text: root.encode-badge;
+                            x: parent.width - self.width - 10px;
+                            y: parent.height - self.height - 10px;
+                        }
+                        if root.system-picker && root.share-picker-available: Pill {
+                            kind: 3;
+                            icon: Icons.window;
+                            text: root.share-summary != "" ? root.share-summary + " · Change" : "Change";
+                            clickable: true;
+                            width: Math.min(self.preferred-width, parent.width - 20px);
+                            x: 10px;
+                            y: parent.height - self.height - 10px;
+                            clicked => {
+                                root.choose-content();
+                            }
+                        }
+                    }
+
+                    if root.resuming: Banner {
+                        icon: Icons.eye;
+                        body: "People watching see your last frame. They pick up again by themselves when you're back. Nobody has to rejoin.";
+                        dismissible: false;
+                    }
+                    if root.uplink-warning != "" && !root.uplink-dismissed: Banner {
+                        icon: Icons.alert;
+                        body: root.uplink-warning;
+                        action: "Open quality settings";
+                        act => {
+                            root.page = 2;
+                        }
+                        dismiss => {
+                            root.uplink-dismissed = true;
+                        }
+                    }
+                    if root.audio-hint && !root.audio-dismissed: Banner {
+                        icon: Icons.speaker;
+                        warn: false;
+                        body: root.audio-hint-text;
+                        action: "Share all sound instead";
+                        act => {
+                            root.switch-to-system-audio();
+                        }
+                        dismiss => {
+                            root.audio-dismissed = true;
+                        }
+                    }
+                    if root.minimized-hint != "" && !root.minimized-dismissed: Banner {
+                        icon: Icons.window;
+                        body: root.minimized-hint;
+                        dismiss => {
+                            root.minimized-dismissed = true;
+                        }
+                    }
+
+                    if root.wide: HorizontalLayout {
+                        cross-axis-alignment: center;
+                        Kicker {
+                            text: "DETAILS";
+                            horizontal-stretch: 1;
+                        }
+                        Btn {
+                            kind: 2;
+                            small: true;
+                            icon: Icons.copy;
+                            text: "Copy diagnostics";
+                            clicked => {
+                                root.copy-diagnostics();
+                            }
+                        }
+                    }
+                    if root.wide: Stats {
+                        rows: root.stats-rows;
+                    }
+                    if !root.wide: LiveSide {
+                        wide: false;
+                        live: root.live;
+                        code: root.code;
+                        code-chars: root.code-chars;
+                        join-link: root.join-link;
+                        mono-font: root.mono-font;
+                        copied-note: root.copied-note;
+                        audio-line: root.audio-line;
+                        audio-level: root.audio-level;
+                        connection-line: root.connection-line;
+                        connection-ok: root.connection-ok;
+                        resuming: root.resuming;
+                        room-code: root.room-code;
+                        room-link: root.room-link;
+                        room-status: root.room-status;
+                        room-active: root.room-active;
+                        room-creator: root.room-creator;
+                        room-streaming: root.room-streaming;
+                        room-watching: root.room-watching;
+                        room-rows: root.room-rows;
+                        room-watchers: root.room-watchers;
+                        room-watcher-initials: root.room-watcher-initials;
+                        room-needs-key: root.room-needs-key;
+                        room-key-input <=> root.room-key-input;
+                        copy-link => {
+                            root.copy-link();
+                        }
+                        copy-code => {
+                            root.copy-code();
+                        }
+                        copy-room-link => {
+                            root.copy-room-link();
+                        }
+                        open-link(l) => {
+                            root.open-link(l);
+                        }
+                        open-room-sheet => {
+                            root.show-room-sheet = true;
+                        }
+                        open-manage => {
+                            root.show-manage = true;
+                        }
+                        room-key-submit => {
+                            root.room-key-submit();
+                        }
+                        open-details => {
+                            root.show-details = true;
+                        }
+                        leave-room => {
+                            root.room-detach();
+                        }
+                        stop => {
+                            root.stop-broadcast();
+                        }
                     }
                 }
-                if !root.busy && root.resume-code != "": Button {
-                    text: "Resume " + root.resume-code;
-                    clicked => {
-                        root.resume-broadcast();
+
+                // ----- right column in a wide window (D7) -----
+                if root.wide: LiveSide {
+                    width: 360px;
+                    wide: true;
+                    live: root.live;
+                    code: root.code;
+                    code-chars: root.code-chars;
+                    join-link: root.join-link;
+                    mono-font: root.mono-font;
+                    copied-note: root.copied-note;
+                    audio-line: root.audio-line;
+                    audio-level: root.audio-level;
+                    connection-line: root.connection-line;
+                    connection-ok: root.connection-ok;
+                    resuming: root.resuming;
+                    room-code: root.room-code;
+                    room-link: root.room-link;
+                    room-status: root.room-status;
+                    room-active: root.room-active;
+                    room-creator: root.room-creator;
+                    room-streaming: root.room-streaming;
+                    room-watching: root.room-watching;
+                    room-rows: root.room-rows;
+                    room-watchers: root.room-watchers;
+                    room-watcher-initials: root.room-watcher-initials;
+                    room-needs-key: root.room-needs-key;
+                    room-key-input <=> root.room-key-input;
+                    copy-link => {
+                        root.copy-link();
                     }
-                }
-                if root.busy: Button {
-                    text: root.live ? "Stop broadcast" : "Starting…";
-                    clicked => {
+                    copy-code => {
+                        root.copy-code();
+                    }
+                    copy-room-link => {
+                        root.copy-room-link();
+                    }
+                    open-link(l) => {
+                        root.open-link(l);
+                    }
+                    open-room-sheet => {
+                        root.show-room-sheet = true;
+                    }
+                    open-manage => {
+                        root.show-manage = true;
+                    }
+                    room-key-submit => {
+                        root.room-key-submit();
+                    }
+                    open-details => {
+                        root.show-details = true;
+                    }
+                    leave-room => {
+                        root.room-detach();
+                    }
+                    stop => {
                         root.stop-broadcast();
                     }
                 }
             }
+        }
 
-            // ================= code card =================
-            if root.code != "": Card {
-                title: "JOIN CODE";
-                Text {
-                    text: root.code;
-                    color: Palette.text;
-                    font-size: 30px;
-                    font-family: root.mono-font;
-                    letter-spacing: 4px;
-                }
-                if root.join-link != "": Text {
-                    text: root.join-link;
-                    color: Palette.muted;
-                    font-size: 12px;
-                    overflow: elide;
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    Button {
-                        text: "Copy link";
-                        clicked => {
-                            root.copy-link();
-                        }
-                    }
-                    Button {
-                        text: "Copy code";
-                        clicked => {
-                            root.copy-code();
-                        }
-                    }
-                    if root.copied-note != "": Text {
-                        text: root.copied-note;
-                        color: Palette.live;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                    }
-                }
+        // ================= choose what to share (Windows) =================
+        if root.page == 1: VerticalLayout {
+            vertical-stretch: 1;
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 16px;
+            spacing: 14px;
+            Seg {
+                options: ["Apps and games", "Whole display"];
+                current <=> root.picker-tab;
             }
-
-            // ================= room (R42) =================
-            Card {
-                title: "ROOM";
-                if root.room-code != "": HorizontalLayout {
-                    spacing: 8px;
-                    Text {
-                        text: root.room-code;
-                        color: Palette.text;
-                        font-size: 22px;
-                        font-family: root.mono-font;
-                        letter-spacing: 3px;
-                        vertical-alignment: center;
-                    }
-                    Rectangle { }
-                    if root.room-link != "": Button {
-                        text: "Open room view";
-                        clicked => {
-                            root.open-link(root.room-link);
-                        }
-                    }
-                }
-                if root.room-status != "": Text {
-                    text: root.room-status;
-                    color: root.room-attached ? Palette.live : Palette.muted;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                }
-                if !root.room-active: VerticalLayout {
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
                     spacing: 6px;
-                    Text {
-                        text: "Room code or link (blank = no room)";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                    LineEdit {
-                        text <=> root.room-input;
-                        placeholder-text: "K7XQ2M, lan-party, or https://…/#/room/…";
-                        edited => {
-                            root.settings-edited();
+                    if root.picker-tab == 0: VerticalLayout {
+                        spacing: 6px;
+                        for w[i] in root.windows: Rectangle {
+                            height: 48px;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: root.selected-window == i ? T.accent : T.border;
+                            background: root.selected-window == i ? #6b8afe14 : (wta.has-hover ? T.s2 : T.s1);
+                            accessible-role: button;
+                            accessible-label: w.title;
+                            accessible-checked: root.selected-window == i;
+                            accessible-action-default => {
+                                root.selected-window = i;
+                                root.selected-monitor = -1;
+                            }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                cross-axis-alignment: center;
+                                if w.has-icon: Image {
+                                    source: w.icon;
+                                    width: 20px;
+                                    height: 20px;
+                                }
+                                if !w.has-icon: Icon {
+                                    commands: Icons.window;
+                                }
+                                Text {
+                                    text: w.title;
+                                    color: T.text;
+                                    font-size: 13.5px;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                if root.selected-window == i: Icon {
+                                    commands: Icons.check;
+                                    ink: T.accent;
+                                    size: 16px;
+                                }
+                            }
+                            wta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.selected-window = i;
+                                    root.selected-monitor = -1;
+                                }
+                            }
                         }
-                    }
-                    Text {
-                        text: "Attach key (static rooms only)";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                    LineEdit {
-                        text <=> root.room-attach-key;
-                        input-type: InputType.password;
-                        edited => {
-                            root.settings-edited();
-                        }
-                    }
-                    Text {
-                        text: "Nickname (also names your tile)";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                    LineEdit {
-                        text <=> root.room-nickname;
-                        edited => {
-                            root.room-nickname-edited();
-                        }
-                        accepted => {
-                            root.room-nickname-accepted();
-                        }
-                    }
-                    if !root.busy && root.room-input != "": Text {
-                        text: "Joins this room when the broadcast starts.";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    if root.busy && !root.room-active: Button {
-                        text: "Attach";
-                        enabled: root.room-input != "";
-                        clicked => {
-                            root.room-attach();
-                        }
-                    }
-                    if root.busy && !root.room-active: Button {
-                        text: "New room";
-                        clicked => {
-                            root.room-new();
-                        }
-                    }
-                    if root.room-active: Button {
-                        text: root.room-attached ? "Detach" : "Leave room";
-                        clicked => {
-                            root.room-detach();
-                        }
-                    }
-                }
-            }
-
-            // ================= live thumbnail (mode 1) =================
-            if root.show-thumbnail && !root.system-picker: Card {
-                title: "WHAT VIEWERS SEE";
-                Image {
-                    source: root.thumbnail;
-                    width: 100%;
-                    image-fit: contain;
-                    max-height: 180px;
-                }
-            }
-
-            // ================= stats =================
-            Card {
-                HorizontalLayout {
-                    CheckBox {
-                        text: "Details";
-                        checked <=> root.show-details;
-                    }
-                }
-                if root.show-details: VerticalLayout {
-                    spacing: 4px;
-                    for row in root.stats-rows: HorizontalLayout {
-                        Text {
-                            text: row.label;
-                            color: Palette.muted;
-                            font-size: 12px;
-                            width: 45%;
-                        }
-                        Text {
-                            text: row.value;
-                            color: Palette.text;
-                            font-size: 12px;
+                        if root.windows.length == 0: Text {
+                            text: "No shareable windows found. Open the app you want to share, then refresh.";
+                            color: T.muted;
+                            font-size: 12.5px;
                             wrap: word-wrap;
                         }
                     }
-                    Button {
-                        text: "Copy diagnostics";
-                        clicked => {
-                            root.copy-diagnostics();
+                    if root.picker-tab == 1: VerticalLayout {
+                        spacing: 6px;
+                        for m[i] in root.monitors: Rectangle {
+                            height: 48px;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: root.selected-monitor == i ? T.accent : T.border;
+                            background: root.selected-monitor == i ? #6b8afe14 : (mta.has-hover ? T.s2 : T.s1);
+                            accessible-role: button;
+                            accessible-label: m.label;
+                            accessible-checked: root.selected-monitor == i;
+                            accessible-action-default => {
+                                root.selected-monitor = i;
+                                root.selected-window = -1;
+                            }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 12px;
+                                cross-axis-alignment: center;
+                                Icon {
+                                    commands: Icons.monitor;
+                                }
+                                Text {
+                                    text: m.label;
+                                    color: T.text;
+                                    font-size: 13.5px;
+                                    horizontal-stretch: 1;
+                                }
+                                if root.selected-monitor == i: Icon {
+                                    commands: Icons.check;
+                                    ink: T.accent;
+                                    size: 16px;
+                                }
+                            }
+                            mta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.selected-monitor = i;
+                                    root.selected-window = -1;
+                                }
+                            }
                         }
                     }
                 }
             }
-
-            // ================= settings =================
-            Card {
-                HorizontalLayout {
-                    CheckBox {
-                        text: "Settings";
-                        checked <=> root.show-settings;
+            Banner {
+                warn: false;
+                icon: Icons.speaker;
+                body: root.picker-tab == 0 ? "Sharing an app streams only that app's sound. Voice calls and music stay private." : "Sharing a display streams everything you hear on this computer.";
+                dismissible: false;
+            }
+            HorizontalLayout {
+                spacing: 12px;
+                cross-axis-alignment: center;
+                Text {
+                    text: root.picker-tab == 0 ? "Fullscreen game not listed? Pick Whole display." : "Works with exclusive-fullscreen games.";
+                    color: T.muted;
+                    font-size: 12.5px;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                }
+                Btn {
+                    kind: 0;
+                    text: "Share this";
+                    enabled: (root.picker-tab == 0 && root.selected-window >= 0) || (root.picker-tab == 1 && root.selected-monitor >= 0);
+                    clicked => {
+                        root.source-picked();
+                        root.page = 0;
                     }
                 }
-                if root.show-settings: VerticalLayout {
-                    spacing: 8px;
-                    Text {
-                        text: "Server";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        ComboBox {
-                            model: root.server-labels;
-                            current-index <=> root.set-server;
-                            enabled: !root.busy;
-                            selected => {
-                                root.server-selected();
-                            }
-                        }
-                        Button {
-                            text: "Add";
-                            enabled: !root.busy;
-                            clicked => {
-                                root.add-server();
-                            }
-                        }
-                        if root.server-is-custom: Button {
-                            text: "Remove";
-                            enabled: !root.busy;
-                            clicked => {
-                                root.remove-server();
-                            }
-                        }
-                    }
-                    // The default's identity is not editable (its URL is the
-                    // build's pinned fleet); only custom servers expose name
-                    // and URL. The secret below edits whichever is selected —
-                    // the default's credential slot stays editable (F4).
-                    if root.server-is-custom: VerticalLayout {
-                        spacing: 8px;
-                        Text {
-                            text: "Server name";
-                            color: Palette.muted;
-                            font-size: 11px;
-                        }
-                        LineEdit {
-                            text <=> root.set-server-name;
-                            enabled: !root.busy;
-                            edited => {
-                                root.settings-edited();
-                            }
-                        }
-                        Text {
-                            text: "Relay URL";
-                            color: Palette.muted;
-                            font-size: 11px;
-                        }
-                        LineEdit {
-                            text <=> root.set-relay;
-                            enabled: !root.busy;
-                            edited => {
-                                root.settings-edited();
-                            }
-                        }
-                    }
-                    Text {
-                        text: "App URL, for join links (blank = the default)";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                    LineEdit {
-                        text <=> root.set-app-url;
-                        enabled: !root.busy;
-                        edited => {
-                            root.settings-edited();
-                        }
-                    }
-                    Text {
-                        text: "Publish secret (if the relay needs one)";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                    LineEdit {
-                        text <=> root.set-secret;
-                        enabled: !root.busy;
-                        input-type: InputType.password;
-                        edited => {
-                            root.settings-edited();
-                        }
-                    }
-                    Text {
-                        text: "Peak bitrate in Mbps (blank = 12)";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                    LineEdit {
-                        text <=> root.set-bitrate;
-                        enabled: !root.busy;
-                        edited => {
-                            root.settings-edited();
-                        }
-                    }
-                    Text {
-                        text: "Telemetry URL (blank = default, \"off\" = send nothing)";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                    LineEdit {
-                        text <=> root.set-telemetry;
-                        enabled: !root.busy;
-                        edited => {
-                            root.settings-edited();
-                        }
+            }
+        }
+
+        // ================= settings (D6) =================
+        if root.page == 2: ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 4px;
+                padding-bottom: 20px;
+                spacing: 22px;
+                alignment: start;
+
+                if root.busy: Banner {
+                    warn: false;
+                    icon: Icons.gauge;
+                    body: "Settings apply to the next broadcast.";
+                    dismissible: false;
+                }
+
+                VerticalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Kicker {
+                        text: "QUALITY";
                     }
                     Text {
                         text: "Resolution";
-                        color: Palette.muted;
-                        font-size: 11px;
+                        color: T.muted;
+                        font-size: 12.5px;
+                    }
+                    Seg {
+                        options: root.resolution-labels;
+                        current <=> root.set-resolution;
+                        enabled: !root.busy;
+                        changed => {
+                            root.settings-edited();
+                        }
+                    }
+                    if root.set-resolution == 4: Text {
+                        text: "Custom size is set in Advanced (now " + (root.set-custom-width == "" ? "not set" : root.set-custom-width + "×" + root.set-custom-height) + ").";
+                        color: T.muted;
+                        font-size: 12.5px;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Frame rate";
+                        color: T.muted;
+                        font-size: 12.5px;
+                    }
+                    Seg {
+                        options: root.framerate-labels;
+                        current <=> root.set-framerate;
+                        enabled: !root.busy;
+                        changed => {
+                            root.settings-edited();
+                        }
                     }
                     HorizontalLayout {
-                        spacing: 6px;
-                        for label[i] in root.resolution-labels: TabButton {
-                            label: label;
-                            active: root.set-resolution == i;
-                            clicked => {
-                                if (!root.busy) {
-                                    root.set-resolution = i;
+                        Text {
+                            text: "Upload cap";
+                            color: T.muted;
+                            font-size: 12.5px;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: root.set-bitrate == "" ? "12 Mbps (default)" : root.set-bitrate + " Mbps";
+                            color: T.text;
+                            font-size: 14px;
+                        }
+                    }
+                    // A slider over 2–40 Mbps; blank means the default (12).
+                    cap-slider := Rectangle {
+                        height: 24px;
+                        property <float> value: root.set-bitrate == "" ? 12 : Math.clamp(root.set-bitrate.to-float(), 2, 40);
+                        property <float> frac: (self.value - 2) / 38;
+                        accessible-role: slider;
+                        accessible-label: "Upload cap in Mbps";
+                        accessible-value: self.value;
+                        accessible-value-minimum: 2;
+                        accessible-value-maximum: 40;
+                        accessible-value-step: 1;
+                        accessible-action-increment => {
+                            if (!root.busy) {
+                                root.set-bitrate = Math.min(40, Math.round(self.value) + 1);
+                                root.settings-edited();
+                            }
+                        }
+                        accessible-action-decrement => {
+                            if (!root.busy) {
+                                root.set-bitrate = Math.max(2, Math.round(self.value) - 1);
+                                root.settings-edited();
+                            }
+                        }
+                        opacity: root.busy ? 0.5 : 1;
+                        Rectangle {
+                            x: 9px;
+                            y: (parent.height - self.height) / 2;
+                            width: parent.width - 18px;
+                            height: 6px;
+                            border-radius: 3px;
+                            background: T.s3;
+                            Rectangle {
+                                x: 0;
+                                width: parent.width * cap-slider.frac;
+                                height: 100%;
+                                border-radius: 3px;
+                                background: T.accent;
+                            }
+                        }
+                        Rectangle {
+                            x: (parent.width - 18px) * cap-slider.frac;
+                            y: (parent.height - self.height) / 2;
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 9px;
+                            background: T.text;
+                        }
+                        TouchArea {
+                            enabled: !root.busy;
+                            mouse-cursor: pointer;
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.down || (e.kind == PointerEventKind.move && self.pressed)) {
+                                    root.set-bitrate = Math.round(2 + 38 * Math.clamp((self.mouse-x - 9px) / (self.width - 18px), 0, 1));
+                                }
+                                if (e.kind == PointerEventKind.up) {
                                     root.settings-edited();
                                 }
                             }
+                            moved => {
+                                root.set-bitrate = Math.round(2 + 38 * Math.clamp((self.mouse-x - 9px) / (self.width - 18px), 0, 1));
+                            }
                         }
                     }
-                    if root.set-resolution == 4: VerticalLayout {
-                        spacing: 4px;
+                    HorizontalLayout {
                         Text {
-                            text: "Custom size, up to 3840×2160 — a bounding box; the stream keeps the source's aspect ratio inside it";
-                            color: Palette.muted;
-                            font-size: 11px;
+                            text: "Lower it if people watching see stutter.";
+                            color: T.muted;
+                            font-size: 12.5px;
+                            horizontal-stretch: 1;
                             wrap: word-wrap;
                         }
-                        HorizontalLayout {
-                            spacing: 6px;
-                            LineEdit {
-                                text <=> root.set-custom-width;
-                                placeholder-text: "width";
-                                enabled: !root.busy;
-                                edited => {
-                                    root.settings-edited();
+                        if root.set-bitrate != "" && !root.busy: RowLink {
+                            text: "Use default";
+                            chevron: false;
+                            clicked => {
+                                root.set-bitrate = "";
+                                root.settings-edited();
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Kicker {
+                        text: "SERVER";
+                    }
+                    List {
+                        for label[i] in root.server-labels: Row {
+                            first: i == 0;
+                            clickable: true;
+                            enabled: !root.busy;
+                            clicked => {
+                                root.set-server = i;
+                                root.server-selected();
+                            }
+                            accessible-role: button;
+                            accessible-label: label;
+                            accessible-checked: root.set-server == i;
+                            accessible-action-default => {
+                                if (!root.busy) {
+                                    root.set-server = i;
+                                    root.server-selected();
                                 }
+                            }
+                            Rectangle {
+                                width: 18px;
+                                height: 18px;
+                                border-radius: 9px;
+                                border-width: root.set-server == i ? 5px : 1.5px;
+                                border-color: root.set-server == i ? T.accent : T.faint;
+                            }
+                            RowText {
+                                title: label;
+                                sub: i < root.server-urls.length ? root.server-urls[i] : "";
+                            }
+                            if i > 0 && root.set-server == i && !root.busy: RowLink {
+                                text: "Edit";
+                                clicked => {
+                                    root.page = 3;
+                                }
+                            }
+                        }
+                        Row {
+                            clickable: true;
+                            enabled: !root.busy;
+                            clicked => {
+                                root.add-server();
+                                root.page = 3;
+                            }
+                            accessible-role: button;
+                            accessible-label: "Add a server";
+                            accessible-action-default => {
+                                if (!root.busy) {
+                                    root.add-server();
+                                    root.page = 3;
+                                }
+                            }
+                            Icon {
+                                commands: Icons.plus;
+                                size: 16px;
                             }
                             Text {
-                                text: "×";
-                                color: Palette.muted;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                            LineEdit {
-                                text <=> root.set-custom-height;
-                                placeholder-text: "height";
-                                enabled: !root.busy;
-                                edited => {
-                                    root.settings-edited();
-                                }
+                                text: "Add a server";
+                                color: T.muted;
+                                font-size: 14px;
+                                horizontal-stretch: 1;
                             }
                         }
                     }
-                    Text {
-                        text: "Framerate";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        for label[i] in root.framerate-labels: TabButton {
-                            label: label;
-                            active: root.set-framerate == i;
-                            clicked => {
-                                if (!root.busy) {
-                                    root.set-framerate = i;
-                                    root.settings-edited();
-                                }
-                            }
+                }
+
+                List {
+                    Row {
+                        first: true;
+                        clickable: true;
+                        clicked => {
+                            root.page = 3;
+                        }
+                        accessible-role: button;
+                        accessible-label: "Advanced";
+                        accessible-action-default => {
+                            root.page = 3;
+                        }
+                        RowText {
+                            title: "Advanced";
+                            sub: "Server details, custom size, diagnostics";
+                        }
+                        Icon {
+                            commands: Icons.chevron-right;
+                            size: 16px;
                         }
                     }
-                    if root.busy: Text {
-                        text: "Settings apply to the next broadcast.";
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
+                }
+
+                VerticalLayout {
+                    spacing: 6px;
                     Text {
                         text: root.caption-broadcast;
-                        color: Palette.muted;
-                        font-size: 11px;
-                    }
-                    Text {
-                        text: root.caption-diag;
-                        color: Palette.muted;
-                        font-size: 11px;
+                        color: T.muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
                     }
                     HorizontalLayout {
                         spacing: 4px;
                         Text {
                             text: "By broadcasting you accept the operator's";
-                            color: Palette.muted;
-                            font-size: 11px;
+                            color: T.muted;
+                            font-size: 12px;
                         }
                         Text {
                             text: "terms of use.";
-                            color: Palette.accent;
-                            font-size: 11px;
+                            color: T.accent;
+                            font-size: 12px;
+                            accessible-role: button;
+                            accessible-action-default => {
+                                root.open-link(root.terms-link);
+                            }
                             TouchArea {
+                                mouse-cursor: pointer;
                                 clicked => {
                                     root.open-link(root.terms-link);
                                 }
                             }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    if root.app-version != "": Text {
+                        text: "gawk " + root.app-version;
+                        color: T.muted;
+                        font-size: 12px;
+                    }
+                }
+            }
+        }
+
+        // ================= advanced (D6) =================
+        if root.page == 3: ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 4px;
+                padding-bottom: 20px;
+                spacing: 22px;
+                alignment: start;
+
+                VerticalLayout {
+                    spacing: 10px;
+                    HorizontalLayout {
+                        cross-axis-alignment: center;
+                        Kicker {
+                            text: root.server-is-custom ? "SERVER · " + root.set-server-name : "SERVER · OFFICIAL";
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        if root.server-is-custom: Btn {
+                            kind: 3;
+                            small: true;
+                            text: "Remove";
+                            enabled: !root.busy;
+                            clicked => {
+                                root.remove-server();
+                                root.page = 2;
+                            }
+                        }
+                    }
+                    // The default's identity is not editable (its URL is the
+                    // build's pinned fleet); only custom servers expose name
+                    // and URL. The secret edits whichever is selected — the
+                    // default's credential slot stays editable (docs/40 F4).
+                    if root.server-is-custom: LabeledField {
+                        label: "Name";
+                        text <=> root.set-server-name;
+                        enabled: !root.busy;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    if root.server-is-custom: LabeledField {
+                        label: "Relay address";
+                        placeholder: "https://relay.example.com:4433";
+                        text <=> root.set-relay;
+                        font-family: root.mono-font;
+                        enabled: !root.busy;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    LabeledField {
+                        label: "Web address for join links";
+                        placeholder: "Blank uses the official site";
+                        text <=> root.set-app-url;
+                        font-family: root.mono-font;
+                        enabled: !root.busy;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Publish secret";
+                            color: T.muted;
+                            font-size: 12.5px;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Field {
+                                horizontal-stretch: 1;
+                                label: "Publish secret";
+                                placeholder: "Only if the relay asks for one";
+                                text <=> root.set-secret;
+                                password: !root.show-secret;
+                                font-family: root.mono-font;
+                                enabled: !root.busy;
+                                edited => {
+                                    root.settings-edited();
+                                }
+                            }
+                            Btn {
+                                text: root.show-secret ? "Hide" : "Show";
+                                clicked => {
+                                    root.show-secret = !root.show-secret;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Kicker {
+                        text: "SIZE AND UPLOAD";
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        cross-axis-alignment: center;
+                        Field {
+                            width: 120px;
+                            label: "Custom width";
+                            placeholder: "width";
+                            text <=> root.set-custom-width;
+                            font-family: root.mono-font;
+                            enabled: !root.busy;
+                            edited => {
+                                root.set-resolution = 4;
+                                root.settings-edited();
+                            }
+                        }
+                        Text {
+                            text: "×";
+                            color: T.muted;
+                        }
+                        Field {
+                            width: 120px;
+                            label: "Custom height";
+                            placeholder: "height";
+                            text <=> root.set-custom-height;
+                            font-family: root.mono-font;
+                            enabled: !root.busy;
+                            edited => {
+                                root.set-resolution = 4;
+                                root.settings-edited();
+                            }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    Text {
+                        text: "Up to 3840×2160. The stream keeps your screen's shape inside this box. Typing here selects Custom.";
+                        color: T.muted;
+                        font-size: 12.5px;
+                        wrap: word-wrap;
+                    }
+                    LabeledField {
+                        label: "Upload cap in Mbps (blank = 12)";
+                        text <=> root.set-bitrate;
+                        font-family: root.mono-font;
+                        enabled: !root.busy;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Kicker {
+                        text: "DIAGNOSTICS";
+                    }
+                    LabeledField {
+                        label: "Diagnostics address (blank = default, \"off\" = send nothing)";
+                        text <=> root.set-telemetry;
+                        font-family: root.mono-font;
+                        enabled: !root.busy;
+                        edited => {
+                            root.settings-edited();
+                        }
+                    }
+                    Text {
+                        text: root.caption-diag;
+                        color: T.muted;
+                        font-size: 12.5px;
+                        wrap: word-wrap;
+                    }
+                    if root.encode-line != "": Text {
+                        text: "Encoder: " + root.encode-line;
+                        color: T.muted;
+                        font-size: 12.5px;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 10px;
+                        cross-axis-alignment: center;
+                        Btn {
+                            icon: Icons.copy;
+                            text: "Copy diagnostics";
+                            clicked => {
+                                root.copy-diagnostics();
+                            }
+                        }
+                        if root.copied-note != "": Text {
+                            text: root.copied-note;
+                            color: T.ok;
+                            font-size: 12.5px;
                         }
                     }
                 }
@@ -917,44 +2726,372 @@ export component MainWindow inherits Window {
         }
     }
 
-    // ================= close-while-live confirm =================
-    if root.confirm-close: Rectangle {
-        background: #000000aa;
-        TouchArea { }
-        Rectangle {
-            width: 340px;
-            height: 130px;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            background: Palette.card;
-            border-radius: 10px;
-            border-width: 1px;
-            border-color: Palette.card-border;
+    // ================= sheets and cards =================
+
+    // Add to a room (D8). Idle, the choice becomes the pending room; live,
+    // it joins now.
+    if root.show-room-sheet: Sheet {
+        title: root.room-active ? "Room " + root.room-code : "Add to a room";
+        subtitle: root.room-active ? root.room-status : "Stream alongside friends. Viewers see everyone's screen in one place.";
+        sheet-height: 640px;
+        close => {
+            root.show-room-sheet = false;
+            root.editing-name = false;
+        }
+        if !root.room-active: HorizontalLayout {
+            spacing: 8px;
+            Field {
+                horizontal-stretch: 1;
+                label: "Room code or link";
+                placeholder: "Room code, or paste a room link";
+                text <=> root.room-input;
+                edited => {
+                    root.room-input-edited();
+                }
+                accepted => {
+                    if (root.room-input-ok) {
+                        root.room-join();
+                    }
+                }
+            }
+            Btn {
+                kind: 0;
+                text: "Join";
+                enabled: root.room-input-ok;
+                clicked => {
+                    root.room-join();
+                }
+            }
+        }
+        if !root.room-active && root.room-input-echo != "": Text {
+            text: root.room-input-echo;
+            color: root.room-input-ok ? T.muted : T.danger-text;
+            font-size: 12.5px;
+        }
+        if !root.room-active: Text {
+            text: "or";
+            color: T.muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+        }
+        if !root.room-active: HorizontalLayout {
+            spacing: 12px;
+            cross-axis-alignment: center;
+            Btn {
+                icon: Icons.plus;
+                text: "Create a new room";
+                clicked => {
+                    root.room-create();
+                }
+            }
+            Text {
+                text: root.busy ? "You get a room code to share." : "It's made when you go live, and you get a code to share.";
+                color: T.muted;
+                font-size: 12.5px;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+        }
+        if !root.room-active && root.recent-rooms.length > 0: Kicker {
+            text: "YOUR ROOMS";
+        }
+        if !root.room-active && root.recent-rooms.length > 0: ScrollView {
+            vertical-stretch: 1;
+            min-height: 120px;
             VerticalLayout {
-                padding: 16px;
-                spacing: 14px;
+                alignment: start;
+                List {
+                    for r[i] in root.recent-rooms: Row {
+                        first: i == 0;
+                        IconBtn {
+                            box: 32px;
+                            icon: Icons.star;
+                            filled: r.saved;
+                            ink: r.saved ? T.accent : T.muted;
+                            label: r.saved ? "Unsave " + r.code : "Save " + r.code;
+                            clicked => {
+                                root.room-toggle-saved(r.code);
+                            }
+                        }
+                        RowText {
+                            title: r.code;
+                            sub: r.detail;
+                        }
+                        Btn {
+                            small: true;
+                            text: "Join";
+                            clicked => {
+                                root.room-join-recent(r.code);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if root.room-active || root.recent-rooms.length == 0: Rectangle {
+            vertical-stretch: 1;
+        }
+        // The name: one line, "Joining as name · Change name".
+        Rectangle {
+            border-radius: 12px;
+            background: T.s2;
+            HorizontalLayout {
+                padding: 10px;
+                padding-left: 14px;
+                spacing: 10px;
+                cross-axis-alignment: center;
+                if !root.editing-name: Text {
+                    text: root.room-nickname == "" ? "No name yet: the room picks one for you." : (root.room-active ? "In the room as " : "Joining as ") + root.room-nickname;
+                    color: T.text;
+                    font-size: 13px;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                if !root.editing-name: RowLink {
+                    text: "Change name";
+                    chevron: false;
+                    clicked => {
+                        root.editing-name = true;
+                    }
+                }
+                if root.editing-name: Field {
+                    horizontal-stretch: 1;
+                    label: "Your name in the room";
+                    placeholder: "Your name";
+                    text <=> root.room-nickname;
+                    edited => {
+                        root.room-nickname-edited();
+                    }
+                    accepted => {
+                        root.room-nickname-accepted();
+                        root.editing-name = false;
+                    }
+                }
+                if root.editing-name: Btn {
+                    small: true;
+                    text: "Save";
+                    enabled: root.room-nickname != "";
+                    clicked => {
+                        root.room-nickname-accepted();
+                        root.editing-name = false;
+                    }
+                }
+            }
+        }
+        if root.room-active: HorizontalLayout {
+            spacing: 8px;
+            Btn {
+                kind: 2;
+                icon: Icons.leave;
+                text: "Leave room";
+                clicked => {
+                    root.room-detach();
+                    root.show-room-sheet = false;
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            Btn {
+                icon: Icons.external;
+                text: "Open room view";
+                enabled: root.room-link != "";
+                clicked => {
+                    root.open-link(root.room-link);
+                }
+            }
+        }
+    }
+
+    // Manage room: the creator's controls (D9).
+    if root.show-manage: Sheet {
+        title: "Room " + root.room-code;
+        subtitle: "You made this room.";
+        sheet-height: 600px;
+        close => {
+            root.show-manage = false;
+        }
+        Rectangle {
+            border-radius: 16px;
+            border-width: 1px;
+            border-color: T.border;
+            background: T.s2;
+            HorizontalLayout {
+                padding: 14px;
+                spacing: 10px;
+                cross-axis-alignment: center;
                 Text {
-                    text: "You're live — stop the broadcast and quit?";
-                    color: Palette.text;
-                    font-size: 14px;
-                    wrap: word-wrap;
+                    text: root.room-code;
+                    color: T.text;
+                    font-size: 20px;
+                    font-weight: 600;
+                    font-family: root.mono-font;
+                    letter-spacing: 3px;
+                    horizontal-stretch: 1;
                 }
-                HorizontalLayout {
-                    spacing: 8px;
-                    Button {
-                        text: "Keep broadcasting";
-                        clicked => {
-                            root.confirm-close = false;
-                        }
-                    }
-                    Button {
-                        text: "Stop and quit";
-                        primary: true;
-                        clicked => {
-                            root.quit-confirmed();
-                        }
+                Btn {
+                    kind: 0;
+                    small: true;
+                    icon: Icons.link;
+                    text: "Copy link";
+                    clicked => {
+                        root.copy-room-link();
                     }
                 }
+            }
+        }
+        Kicker {
+            text: "STREAMS IN THIS ROOM";
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            min-height: 120px;
+            VerticalLayout {
+                alignment: start;
+                List {
+                    for r[i] in root.room-rows: Row {
+                        first: i == 0;
+                        Avatar {
+                            initial: r.initial;
+                            tint: r.tint;
+                            ring: r.you;
+                        }
+                        RowText {
+                            title: r.you ? r.name + " (you)" : r.name;
+                            sub: r.detail;
+                            sub-color: r.away ? T.warn-text : T.muted;
+                        }
+                        if r.removable: Btn {
+                            kind: 2;
+                            small: true;
+                            text: "Remove";
+                            clicked => {
+                                root.room-remove(r.broadcast-id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Text {
+            text: "Removing a stream takes it out of the room. It stays live on its own code.";
+            color: T.muted;
+            font-size: 12.5px;
+            wrap: word-wrap;
+        }
+        Btn {
+            kind: 3;
+            icon: Icons.close;
+            text: "End room for everyone";
+            clicked => {
+                root.room-end();
+                root.show-manage = false;
+            }
+        }
+        Text {
+            text: "Everyone's stream keeps running on its own code.";
+            color: T.muted;
+            font-size: 12.5px;
+            horizontal-alignment: center;
+        }
+    }
+
+    // Details, in the narrow window (the wide one shows them inline).
+    if root.show-details && !root.wide: Sheet {
+        title: "Details";
+        sheet-height: 620px;
+        close => {
+            root.show-details = false;
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                Stats {
+                    rows: root.stats-rows;
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            cross-axis-alignment: center;
+            Btn {
+                icon: Icons.copy;
+                text: "Copy diagnostics";
+                clicked => {
+                    root.copy-diagnostics();
+                }
+            }
+            if root.copied-note != "": Text {
+                text: root.copied-note;
+                color: T.ok;
+                font-size: 12.5px;
+            }
+        }
+    }
+
+    // The room ended, or the creator removed this stream (D10).
+    if root.room-card-title != "": Modal {
+        Rectangle {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background: T.s3;
+            Icon {
+                commands: Icons.users;
+                size: 22px;
+            }
+        }
+        Text {
+            text: root.room-card-title;
+            color: T.text;
+            font-size: 17px;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.room-card-body;
+            color: T.muted;
+            font-size: 14px;
+            wrap: word-wrap;
+        }
+        Btn {
+            kind: 0;
+            text: "Back to my stream";
+            clicked => {
+                root.room-card-dismiss();
+            }
+        }
+    }
+
+    // ================= close-while-live confirm (docs/38 D12) =================
+    if root.confirm-close: Modal {
+        card-width: 400px;
+        Text {
+            text: "You're live. Stop and quit?";
+            color: T.text;
+            font-size: 17px;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.watching-known && root.watching > 0 ? "Closing gawk ends your broadcast for the " + root.watching + (root.watching == 1 ? " person" : " people") + " watching." : "Closing gawk ends your broadcast.";
+            color: T.muted;
+            font-size: 14px;
+            wrap: word-wrap;
+        }
+        Btn {
+            kind: 0;
+            text: "Keep broadcasting";
+            clicked => {
+                root.confirm-close = false;
+            }
+        }
+        Btn {
+            kind: 3;
+            text: "Stop and quit";
+            clicked => {
+                root.quit-confirmed();
             }
         }
     }

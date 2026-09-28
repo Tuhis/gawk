@@ -78,6 +78,29 @@ pub struct RoomAttachmentInfo {
     pub viewer_count: u32,
 }
 
+/// One participant, owned, as the shell's roster shows it (docs/60 D9).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RoomPerson {
+    pub id: u16,
+    pub nickname: String,
+    /// One of the wire's `ROOM_CLIENT_*` kinds.
+    pub kind: u8,
+    /// The participant owns an attached broadcast.
+    pub streaming: bool,
+    /// Reserved for voice (docs/44 §4.11); shown when the relay sets it.
+    pub speaking: bool,
+}
+
+fn person(p: &wire::RoomParticipant<'_>) -> RoomPerson {
+    RoomPerson {
+        id: p.id,
+        nickname: p.nickname.to_owned(),
+        kind: p.kind,
+        streaming: p.flags & wire::ROOM_PARTICIPANT_FLAG_STREAMING != 0,
+        speaking: p.flags & wire::ROOM_PARTICIPANT_FLAG_SPEAKING != 0,
+    }
+}
+
 /// The small owned summary of the room the engine keeps for its shell:
 /// replaced from every RoomState and patched from every RoomEvent.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -95,7 +118,10 @@ pub struct RoomSummary {
     /// only form a log line may carry.
     pub key_hex: String,
     pub attachments: Vec<RoomAttachmentInfo>,
+    /// `people.len()`, kept for the status line.
     pub participants: u32,
+    /// Who is in the room, in the relay's order.
+    pub people: Vec<RoomPerson>,
 }
 
 impl RoomSummary {
@@ -110,7 +136,21 @@ impl RoomSummary {
             key_hex: hex_encode(s.key),
             attachments: s.attachments.iter().map(attachment_info).collect(),
             participants: s.participants.len() as u32,
+            people: s.participants.iter().map(person).collect(),
         }
+    }
+
+    fn upsert_person(&mut self, p: RoomPerson) {
+        match self.people.iter_mut().find(|x| x.id == p.id) {
+            Some(x) => *x = p,
+            None => self.people.push(p),
+        }
+        self.participants = self.people.len() as u32;
+    }
+
+    fn remove_person(&mut self, id: u16) {
+        self.people.retain(|x| x.id != id);
+        self.participants = self.people.len() as u32;
     }
 
     fn upsert(&mut self, a: RoomAttachmentInfo) {
@@ -172,6 +212,11 @@ pub enum RoomRequest {
     /// idempotent Attach with the new label when our broadcast is listed,
     /// and every later hello (reconnect, mint) carries the new name.
     SetNickname(String),
+    /// Remove another broadcast from the room (creator only): Detach with
+    /// its ID. The session stays up.
+    Remove(String),
+    /// End the room for everyone (creator only).
+    EndRoom,
 }
 
 // --- URLs ----------------------------------------------------------------
@@ -578,6 +623,7 @@ async fn serve_room(ctx: &mut RoomCtx, conn: Arc<dyn RoomConn>) -> Serve {
                             _ => {
                                 let _ = ctx.events.send(EngineEvent::RoomDetached {
                                     reason: "you left the room".into(),
+                                    by_creator: false,
                                 });
                                 break Serve::Done;
                             }
@@ -588,12 +634,40 @@ async fn serve_room(ctx: &mut RoomCtx, conn: Arc<dyn RoomConn>) -> Serve {
                             break Serve::Lost;
                         }
                     }
+                    Some(RoomRequest::Remove(broadcast_id)) => {
+                        let rec = command_record(&wire::RoomCommand {
+                            kind: wire::ROOM_COMMAND_DETACH,
+                            broadcast_id,
+                            ..wire::RoomCommand::default()
+                        });
+                        let written = match rec {
+                            Ok(rec) => conn.write(&rec).await.is_ok(),
+                            Err(_) => false,
+                        };
+                        if !written {
+                            break Serve::Lost;
+                        }
+                    }
+                    Some(RoomRequest::EndRoom) => {
+                        let rec = command_record(&wire::RoomCommand {
+                            kind: wire::ROOM_COMMAND_END_ROOM,
+                            ..wire::RoomCommand::default()
+                        });
+                        let written = match rec {
+                            Ok(rec) => conn.write(&rec).await.is_ok(),
+                            Err(_) => false,
+                        };
+                        if !written {
+                            break Serve::Lost;
+                        }
+                    }
                     None => break Serve::Stopped,
                 }
             }
             _ = &mut leave_timer, if local.leaving => {
                 let _ = ctx.events.send(EngineEvent::RoomDetached {
                     reason: "you left the room".into(),
+                    by_creator: false,
                 });
                 break Serve::Done;
             }
@@ -765,13 +839,12 @@ fn handle_event(
         .map(|i| i.broadcast_id.clone());
     let is_ours = |id: &str| our_id.as_deref() == Some(id);
     match ev.kind {
-        wire::ROOM_EVENT_PARTICIPANT_JOINED => {
-            local.summary.participants += 1;
+        wire::ROOM_EVENT_PARTICIPANT_JOINED | wire::ROOM_EVENT_PARTICIPANT_UPDATED => {
+            local.summary.upsert_person(person(&ev.participant));
         }
         wire::ROOM_EVENT_PARTICIPANT_LEFT => {
-            local.summary.participants = local.summary.participants.saturating_sub(1);
+            local.summary.remove_person(ev.participant.id);
         }
-        wire::ROOM_EVENT_PARTICIPANT_UPDATED => return Ok(None),
         wire::ROOM_EVENT_ATTACHMENT_ADDED | wire::ROOM_EVENT_ATTACHMENT_UPDATED => {
             let ours = is_ours(&ev.attachment.broadcast_id);
             local.summary.upsert(attachment_info(&ev.attachment));
@@ -788,6 +861,7 @@ fn handle_event(
                 local.attached_gen = None;
                 let _ = ctx.events.send(EngineEvent::RoomDetached {
                     reason: detach_message(ev.reason),
+                    by_creator: ev.reason == wire::ROOM_DETACH_REASON_CREATOR,
                 });
                 if local.leaving {
                     return Ok(Some(Serve::Done));
@@ -1483,6 +1557,7 @@ mod tests {
             h.event().await,
             EngineEvent::RoomDetached {
                 reason: detach_message(wire::ROOM_DETACH_REASON_PUBLISHER),
+                by_creator: false,
             }
         );
         let _ = h.task.await;
@@ -1555,6 +1630,210 @@ mod tests {
         let c = relay.next_command().await;
         assert_eq!(c.kind, wire::ROOM_COMMAND_ATTACH);
         assert_eq!(c.label, "Kuusi");
+        h.stop.send(true).unwrap();
+        let _ = h.task.await;
+    }
+
+    fn participant(id: u16, nickname: &'static str, flags: u8) -> wire::RoomParticipant<'static> {
+        wire::RoomParticipant {
+            id,
+            kind: wire::ROOM_CLIENT_WEB_VIEWER,
+            flags,
+            nickname,
+            identity: "",
+        }
+    }
+
+    // docs/60 D9: the roster is the snapshot's participants, patched by the
+    // participant events (joined, updated, left), with the streaming and
+    // speaking flags read out.
+    #[tokio::test]
+    async fn the_roster_follows_the_snapshot_and_the_participant_events() {
+        let (conn, mut relay) = scripted();
+        let mut h = Harness::start(join_cfg(), vec![Ok(conn)]);
+        relay.next().await; // hello
+        relay.send_state(&wire::RoomState {
+            participants: vec![
+                participant(7, "Juho's PC", wire::ROOM_PARTICIPANT_FLAG_STREAMING),
+                participant(8, "mika", 0),
+            ],
+            ..snapshot(1, vec![])
+        });
+        match h.event().await {
+            EngineEvent::RoomState(s) => {
+                assert_eq!(s.participants, 2);
+                assert_eq!(s.people[0].nickname, "Juho's PC");
+                assert!(s.people[0].streaming && !s.people[0].speaking);
+                assert!(!s.people[1].streaming);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        relay.send_event(&wire::RoomEvent {
+            seq: 2,
+            kind: wire::ROOM_EVENT_PARTICIPANT_JOINED,
+            participant: participant(9, "sanna", 0),
+            ..wire::RoomEvent::default()
+        });
+        match h.event().await {
+            EngineEvent::RoomState(s) => {
+                assert_eq!(s.participants, 3);
+                assert_eq!(s.people[2].nickname, "sanna");
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // An update replaces the record in place: mika starts streaming and
+        // speaking, renamed.
+        relay.send_event(&wire::RoomEvent {
+            seq: 3,
+            kind: wire::ROOM_EVENT_PARTICIPANT_UPDATED,
+            participant: participant(
+                8,
+                "mika!",
+                wire::ROOM_PARTICIPANT_FLAG_STREAMING | wire::ROOM_PARTICIPANT_FLAG_SPEAKING,
+            ),
+            ..wire::RoomEvent::default()
+        });
+        match h.event().await {
+            EngineEvent::RoomState(s) => {
+                assert_eq!(s.participants, 3);
+                let mika = &s.people[1];
+                assert_eq!(mika.nickname, "mika!");
+                assert!(mika.streaming && mika.speaking);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        relay.send_event(&wire::RoomEvent {
+            seq: 4,
+            kind: wire::ROOM_EVENT_PARTICIPANT_LEFT,
+            participant: wire::RoomParticipant {
+                id: 8,
+                ..wire::RoomParticipant::default()
+            },
+            ..wire::RoomEvent::default()
+        });
+        match h.event().await {
+            EngineEvent::RoomState(s) => {
+                assert_eq!(s.participants, 2);
+                assert!(s.people.iter().all(|p| p.id != 8));
+            }
+            other => panic!("{other:?}"),
+        }
+        h.stop.send(true).unwrap();
+        let _ = h.task.await;
+    }
+
+    // docs/60 D9: the creator removes another stream with a Detach naming
+    // it; the session stays up, and the removal is a summary change, not a
+    // RoomDetached (that one is ours only).
+    #[tokio::test]
+    async fn remove_detaches_another_stream_and_keeps_the_session() {
+        let (conn, mut relay) = scripted();
+        let mut h = Harness::start(join_cfg(), vec![Ok(conn)]);
+        relay.next().await;
+        h.set_identity(0);
+        let theirs = wire::RoomAttachment {
+            broadcast_id: "ABCDEF".into(),
+            label: "mika",
+            live: true,
+            viewer_count: 3,
+        };
+        relay.send_state(&wire::RoomState {
+            flags: wire::ROOM_STATE_FLAG_ATTACH_OK
+                | wire::ROOM_STATE_FLAG_CREATOR
+                | wire::ROOM_STATE_FLAG_DYNAMIC,
+            ..snapshot(1, vec![ours(true), theirs.clone()])
+        });
+        h.event().await;
+        assert_eq!(relay.next_command().await.kind, wire::ROOM_COMMAND_ATTACH);
+
+        h.requests
+            .send(RoomRequest::Remove("ABCDEF".into()))
+            .unwrap();
+        let c = relay.next_command().await;
+        assert_eq!(
+            (c.kind, c.broadcast_id.as_str()),
+            (wire::ROOM_COMMAND_DETACH, "ABCDEF")
+        );
+        relay.send_event(&wire::RoomEvent {
+            seq: 2,
+            kind: wire::ROOM_EVENT_ATTACHMENT_REMOVED,
+            attachment: wire::RoomAttachment {
+                broadcast_id: "ABCDEF".into(),
+                ..wire::RoomAttachment::default()
+            },
+            reason: wire::ROOM_DETACH_REASON_CREATOR,
+            ..wire::RoomEvent::default()
+        });
+        match h.event().await {
+            EngineEvent::RoomState(s) => {
+                assert!(s.has("K7XQ2M") && !s.has("ABCDEF"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            !h.task.is_finished(),
+            "removing someone else is not leaving"
+        );
+        h.stop.send(true).unwrap();
+        let _ = h.task.await;
+    }
+
+    #[tokio::test]
+    async fn end_room_sends_the_command_and_the_4007_ends_the_session() {
+        let (conn, mut relay) = scripted();
+        let mut h = Harness::start(join_cfg(), vec![Ok(conn)]);
+        relay.next().await;
+        relay.send_state(&snapshot(1, vec![]));
+        h.event().await;
+        h.requests.send(RoomRequest::EndRoom).unwrap();
+        assert_eq!(relay.next_command().await.kind, wire::ROOM_COMMAND_END_ROOM);
+        relay.send_event(&wire::RoomEvent {
+            seq: 2,
+            kind: wire::ROOM_EVENT_ROOM_ENDING,
+            reason: wire::ROOM_END_REASON_CREATOR,
+            ..wire::RoomEvent::default()
+        });
+        relay.close(SessionClose::Code(wire::CLOSE_CODE_ROOM_ENDED));
+        assert_eq!(
+            h.event_not_state().await,
+            EngineEvent::RoomEnded {
+                reason: room_end_message(Some(wire::ROOM_END_REASON_CREATOR)),
+            }
+        );
+        let _ = h.task.await;
+    }
+
+    // docs/60 D10: the creator removing OUR stream is flagged, so the shell
+    // can show it as a card.
+    #[tokio::test]
+    async fn our_removal_by_the_creator_is_flagged() {
+        let (conn, mut relay) = scripted();
+        let mut h = Harness::start(join_cfg(), vec![Ok(conn)]);
+        relay.next().await;
+        h.set_identity(0);
+        relay.send_state(&snapshot(1, vec![ours(true)]));
+        h.event().await;
+        assert_eq!(relay.next_command().await.kind, wire::ROOM_COMMAND_ATTACH);
+        relay.send_event(&wire::RoomEvent {
+            seq: 2,
+            kind: wire::ROOM_EVENT_ATTACHMENT_REMOVED,
+            attachment: wire::RoomAttachment {
+                broadcast_id: "K7XQ2M".into(),
+                ..wire::RoomAttachment::default()
+            },
+            reason: wire::ROOM_DETACH_REASON_CREATOR,
+            ..wire::RoomEvent::default()
+        });
+        assert_eq!(
+            h.event().await,
+            EngineEvent::RoomDetached {
+                reason: detach_message(wire::ROOM_DETACH_REASON_CREATOR),
+                by_creator: true,
+            }
+        );
         h.stop.send(true).unwrap();
         let _ = h.task.await;
     }

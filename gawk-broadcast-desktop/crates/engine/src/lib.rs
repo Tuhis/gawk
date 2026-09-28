@@ -104,19 +104,80 @@ pub fn join_link(app_url: &str, broadcast_id: &str) -> String {
     format!("{}/#/view/{}", app_url.trim_end_matches('/'), broadcast_id)
 }
 
-/// Builds the room view link the "Open room view" button launches (docs/44
-/// §4.8): `<app-url>/#/room/<CODE>?rt=<grant>`, where the grant is the
-/// creator token (hex) of a room this session minted or a static room's
-/// attach key — the SPA moves it into session storage and rewrites the hash
-/// before rendering, the same one-shot pattern as `?relay=`. No grant ⇒ a
-/// plain participant link.
-pub fn room_link(app_url: &str, code: &str, grant: &str) -> String {
-    let base = format!("{}/#/room/{}", app_url.trim_end_matches('/'), code);
-    if grant.is_empty() {
-        return base;
+/// What a room link's `?rt=` carries: the credential that lets the room view
+/// act for this broadcaster.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoomGrant {
+    /// A dynamic room's creator token, hex.
+    Creator(String),
+    /// A static room's attach key.
+    Attach(String),
+}
+
+impl RoomGrant {
+    /// The grant as the `rt` parameter's value, in gawk-app's format
+    /// (`grantHandoff.ts` is its home): `c:<hex>` or `a:<key>`.
+    pub fn to_rt(&self) -> String {
+        match self {
+            RoomGrant::Creator(hex) => format!("c:{hex}"),
+            RoomGrant::Attach(key) => format!("a:{key}"),
+        }
     }
-    let grant: String = url::form_urlencoded::byte_serialize(grant.as_bytes()).collect();
-    format!("{base}?rt={grant}")
+
+    /// Reads an `rt` value the way gawk-app's `parseGrant` does: `a:` (or
+    /// `a.`) and a non-empty key, else a 32-digit hex creator token with an
+    /// optional `c:`/`c.` prefix. Anything else is no grant.
+    pub fn parse(raw: &str) -> Option<RoomGrant> {
+        let v = raw.trim();
+        if let Some(key) = v.strip_prefix("a:").or_else(|| v.strip_prefix("a.")) {
+            return (!key.is_empty()).then(|| RoomGrant::Attach(key.to_owned()));
+        }
+        let hex = v
+            .strip_prefix("c:")
+            .or_else(|| v.strip_prefix("c."))
+            .unwrap_or(v);
+        (hex.len() == 32 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+            .then(|| RoomGrant::Creator(hex.to_ascii_lowercase()))
+    }
+}
+
+/// What the room field held: the code, and the grant a pasted room link
+/// carried in its `?rt=`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomInput {
+    pub code: String,
+    pub grant: Option<RoomGrant>,
+}
+
+/// Reads the room field: a bare code or slug, or a room link with its
+/// grant (docs/60 D8). `None` for an empty or unusable input.
+pub fn parse_room_input(input: &str) -> Option<RoomInput> {
+    let code = parse_room_code(input)?;
+    let grant = input
+        .trim()
+        .split_once("#/room/")
+        .and_then(|(_, rest)| rest.split_once('?'))
+        .and_then(|(_, query)| {
+            let query = query.split('#').next().unwrap_or("");
+            url::form_urlencoded::parse(query.as_bytes())
+                .find(|(k, _)| k == "rt")
+                .map(|(_, v)| v.into_owned())
+        })
+        .and_then(|rt| RoomGrant::parse(&rt));
+    Some(RoomInput { code, grant })
+}
+
+/// Builds the room view link the "Open room view" button launches (docs/44
+/// §4.8): `<app-url>/#/room/<CODE>?rt=<grant>`. The SPA moves the grant into
+/// session storage and rewrites the hash before rendering, the same one-shot
+/// pattern as `?relay=`. No grant ⇒ a plain participant link.
+pub fn room_link(app_url: &str, code: &str, grant: Option<&RoomGrant>) -> String {
+    let base = format!("{}/#/room/{}", app_url.trim_end_matches('/'), code);
+    let Some(grant) = grant else {
+        return base;
+    };
+    let rt: String = url::form_urlencoded::byte_serialize(grant.to_rt().as_bytes()).collect();
+    format!("{base}?rt={rt}")
 }
 
 /// Reads a room code out of what a user pasted into the Room card: a bare
@@ -146,21 +207,92 @@ pub fn parse_room_code(input: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    // The `rt` value is gawk-app's grant format (grantHandoff.ts): `c:<hex>`
+    // for a creator token, `a:<key>` for an attach key. A bare value is read
+    // only as a creator token, so a bare attach key never reached the room
+    // view (docs/60 D14).
     #[test]
-    fn room_link_carries_the_grant_as_rt() {
+    fn room_link_carries_the_grant_in_the_spa_format() {
         assert_eq!(
-            room_link("https://gawk.ioio.fi/", "K7XQ2M", ""),
+            room_link("https://gawk.ioio.fi/", "K7XQ2M", None),
             "https://gawk.ioio.fi/#/room/K7XQ2M"
         );
+        let creator = RoomGrant::Creator("de".repeat(16));
         assert_eq!(
-            room_link("https://gawk.ioio.fi", "K7XQ2M", "deadbeef"),
-            "https://gawk.ioio.fi/#/room/K7XQ2M?rt=deadbeef"
+            room_link("https://gawk.ioio.fi", "K7XQ2M", Some(&creator)),
+            format!(
+                "https://gawk.ioio.fi/#/room/K7XQ2M?rt=c%3A{}",
+                "de".repeat(16)
+            )
         );
         // A static room's attach key can be anything; it is form-encoded.
+        let attach = RoomGrant::Attach("k 3&y".into());
         assert_eq!(
-            room_link("https://gawk.ioio.fi", "lan-party", "k 3&y"),
-            "https://gawk.ioio.fi/#/room/lan-party?rt=k+3%26y"
+            room_link("https://gawk.ioio.fi", "lan-party", Some(&attach)),
+            "https://gawk.ioio.fi/#/room/lan-party?rt=a%3Ak+3%26y"
         );
+    }
+
+    #[test]
+    fn grants_parse_like_the_spa() {
+        let hex = "AB".repeat(16);
+        assert_eq!(
+            RoomGrant::parse(&hex),
+            Some(RoomGrant::Creator("ab".repeat(16)))
+        );
+        assert_eq!(
+            RoomGrant::parse(&format!("c:{hex}")),
+            Some(RoomGrant::Creator("ab".repeat(16)))
+        );
+        assert_eq!(
+            RoomGrant::parse("a:k3y"),
+            Some(RoomGrant::Attach("k3y".into()))
+        );
+        assert_eq!(
+            RoomGrant::parse("a.k3y"),
+            Some(RoomGrant::Attach("k3y".into()))
+        );
+        assert_eq!(RoomGrant::parse("a:"), None);
+        assert_eq!(RoomGrant::parse("k3y"), None, "a bare key is no grant");
+        assert_eq!(RoomGrant::parse(""), None);
+        // Round trip through the link builder's format.
+        let g = RoomGrant::Attach("k 3&y".into());
+        assert_eq!(RoomGrant::parse(&g.to_rt()), Some(g));
+    }
+
+    #[test]
+    fn room_input_reads_the_grant_of_a_pasted_link() {
+        assert_eq!(
+            parse_room_input("lan-party"),
+            Some(RoomInput {
+                code: "lan-party".into(),
+                grant: None
+            })
+        );
+        assert_eq!(
+            parse_room_input("https://gawk.ioio.fi/#/room/lan-party?rt=a%3Ak+3%26y"),
+            Some(RoomInput {
+                code: "lan-party".into(),
+                grant: Some(RoomGrant::Attach("k 3&y".into()))
+            })
+        );
+        let hex = "0f".repeat(16);
+        assert_eq!(
+            parse_room_input(&format!("https://gawk.ioio.fi/#/room/K7XQ2M?rt=c:{hex}")),
+            Some(RoomInput {
+                code: "K7XQ2M".into(),
+                grant: Some(RoomGrant::Creator(hex))
+            })
+        );
+        // A junk grant is ignored; the code still joins.
+        assert_eq!(
+            parse_room_input("https://gawk.ioio.fi/#/room/K7XQ2M?rt=nope"),
+            Some(RoomInput {
+                code: "K7XQ2M".into(),
+                grant: None
+            })
+        );
+        assert_eq!(parse_room_input("not a code"), None);
     }
 
     #[test]
