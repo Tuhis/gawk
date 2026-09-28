@@ -136,6 +136,10 @@ impl std::error::Error for StartError {}
 /// (the browser WebTransport API cannot set headers, and the two
 /// broadcasters must authenticate identically). The token is only sent when
 /// BOTH an ID and a token are present.
+///
+/// Every dial also names the client for the relay's usage metrics (R59,
+/// docs/61 D1): `app=desktop` and the build target's `os`. New vs resumed the
+/// relay tells from the path.
 pub fn publish_url(
     relay_url: &str,
     broadcast_id: &str,
@@ -159,12 +163,20 @@ pub fn publish_url(
         if !broadcast_id.is_empty() && !resume_token_hex.is_empty() {
             q.append_pair("resume", resume_token_hex);
         }
-    }
-    if url.query() == Some("") {
-        url.set_query(None);
+        q.append_pair("app", "desktop");
+        q.append_pair("os", CLIENT_OS);
     }
     Ok(url.into())
 }
+
+/// The `os` this build reports on its dials, from the relay's closed
+/// vocabulary (docs/61 D1).
+#[cfg(target_os = "windows")]
+pub const CLIENT_OS: &str = "windows";
+#[cfg(target_os = "macos")]
+pub const CLIENT_OS: &str = "macos";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub const CLIENT_OS: &str = "linux";
 
 #[cfg(test)]
 mod tests {
@@ -172,10 +184,11 @@ mod tests {
 
     #[test]
     fn mint_reclaim_and_credential_rules() {
+        let id = format!("app=desktop&os={CLIENT_OS}");
         // Mint: no ID, no resume param even if a stale token exists.
         assert_eq!(
             publish_url("https://api.gawk.ioio.fi:4433", "", "s3cret", "deadbeef").unwrap(),
-            "https://api.gawk.ioio.fi:4433/publish?secret=s3cret"
+            format!("https://api.gawk.ioio.fi:4433/publish?secret=s3cret&{id}")
         );
         // Reclaim: ID and token both present.
         assert_eq!(
@@ -186,21 +199,35 @@ mod tests {
                 "deadbeef"
             )
             .unwrap(),
-            "https://api.gawk.ioio.fi:4433/publish/K7XQ2M?secret=s3cret&resume=deadbeef"
+            format!(
+                "https://api.gawk.ioio.fi:4433/publish/K7XQ2M?secret=s3cret&resume=deadbeef&{id}"
+            )
         );
         // No secret configured: parameter omitted entirely.
         assert_eq!(
             publish_url("https://localhost:4433", "", "", "").unwrap(),
-            "https://localhost:4433/publish"
+            format!("https://localhost:4433/publish?{id}")
         );
         // Token without an ID is never sent (a mint must not carry a stale
         // token), and an ID without a token sends a bare reclaim the R17
         // relay will refuse with 403 — but that refusal is the relay's call.
         assert_eq!(
             publish_url("https://localhost:4433", "K7XQ2M", "", "").unwrap(),
-            "https://localhost:4433/publish/K7XQ2M"
+            format!("https://localhost:4433/publish/K7XQ2M?{id}")
         );
         assert!(publish_url("http://localhost:4433", "", "", "").is_err());
         assert!(publish_url("not a url", "", "", "").is_err());
+    }
+
+    #[test]
+    fn client_os_matches_the_build_target() {
+        let want = if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
+        assert_eq!(CLIENT_OS, want);
     }
 }
