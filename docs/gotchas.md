@@ -1071,6 +1071,13 @@ Add to it when a new gotcha lands in `docs/`.
   listed `objc2` for the Windows EXE, and one generated on Linux listed
   `dlib`. `gen-notices.py` passes `no-proc-macro`; a proc macro is never in
   the artifact anyway. ([docs/54](54-macos-native-broadcaster.md) §11, MB7)
+- **Don't gate fps by minimum spacing from the last admitted frame.**
+  Damage-driven capture stamps frames on the display's vsync grid, so 60 fps
+  content on a 144 Hz monitor arrives 13.9/20.8 ms apart. A gate that needs
+  ~16 ms since the last frame drops every short gap and never makes it up,
+  and the result was 36 fps (a 144 Hz source: 48). Gate on a virtual
+  schedule with an early allowance, as both `FpsGate`s now do.
+  ([docs/38](38-windows-native-broadcaster.md) D6)
 
 **Native macOS broadcaster (R52)**
 

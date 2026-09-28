@@ -30,6 +30,30 @@ pub fn fit_within(src_w: u32, src_h: u32, box_w: u32, box_h: u32) -> (u32, u32) 
     (even_floor(w as u32), even_floor(h as u32))
 }
 
+/// The smallest longer side [`encode_size`] raises a tiny source to — the
+/// floor the Custom rung already clamps a box to (docs/38 D11).
+pub const MIN_ENCODE_SIDE: u32 = 128;
+
+/// The encoder's dimensions for a `src`-sized capture under a
+/// `box_w`×`box_h` rung: [`fit_within`] into the box, except that a source
+/// smaller than the box encodes at its own size. The rung caps the encode;
+/// it is not a target to scale up to — a 1280×720 window under the 1080p
+/// rung stretched to 1920×1080 cost the encoder 2.25× the pixels for detail
+/// that was never there. Only a source whose longer side is under
+/// [`MIN_ENCODE_SIDE`] is raised, to that.
+pub fn encode_size(src_w: u32, src_h: u32, box_w: u32, box_h: u32) -> (u32, u32) {
+    if src_w == 0 || src_h == 0 {
+        return fit_within(src_w, src_h, box_w, box_h);
+    }
+    let floor = |v: u32| v.max(MIN_ENCODE_SIDE);
+    fit_within(
+        src_w,
+        src_h,
+        box_w.min(floor(src_w)),
+        box_h.min(floor(src_h)),
+    )
+}
+
 /// The centered placement of a `src`-aspect image on an `out_w`×`out_h`
 /// surface: `Some((left, top, width, height))` when bars are needed (the
 /// mid-broadcast window-resize case — the encoder's dimensions are fixed,
@@ -96,6 +120,41 @@ mod tests {
     fn degenerate_inputs_fall_back_to_the_box() {
         assert_eq!(fit_within(0, 0, 1920, 1080), (1920, 1080));
         assert_eq!(fit_within(100, 0, 1280, 720), (1280, 720));
+    }
+
+    #[test]
+    fn encode_size_never_upscales_a_source_smaller_than_the_box() {
+        // A 1280×720 window under the default 1080p rung encodes at its
+        // own size, not stretched up to 1920×1080.
+        assert_eq!(encode_size(1280, 720, 1920, 1080), (1280, 720));
+        // Smaller than the box on both sides, aspect unlike the box's.
+        assert_eq!(encode_size(1000, 800, 1920, 1080), (1000, 800));
+        // Odd window sizes still floor to even for NV12.
+        assert_eq!(encode_size(1279, 721, 1920, 1080), (1278, 720));
+    }
+
+    #[test]
+    fn encode_size_only_upscales_up_to_the_minimum_side() {
+        // A tiny window is raised only until its longer side reaches
+        // MIN_ENCODE_SIDE, aspect kept.
+        assert_eq!(encode_size(100, 50, 1920, 1080), (128, 64));
+    }
+
+    #[test]
+    fn encode_size_downscales_like_fit_within() {
+        // Larger than the box on either side: the box still binds.
+        assert_eq!(encode_size(2560, 1440, 1920, 1080), (1920, 1080));
+        assert_eq!(encode_size(3440, 1440, 1920, 1080), (1920, 804));
+        // Taller than the box but narrower: height pins, width derives.
+        assert_eq!(encode_size(1600, 1200, 1920, 1080), (1440, 1080));
+        // Exactly the box.
+        assert_eq!(encode_size(1920, 1080, 1920, 1080), (1920, 1080));
+    }
+
+    #[test]
+    fn encode_size_falls_back_to_the_box_for_degenerate_sources() {
+        assert_eq!(encode_size(0, 0, 1920, 1080), (1920, 1080));
+        assert_eq!(encode_size(100, 0, 1280, 720), (1280, 720));
     }
 
     #[test]

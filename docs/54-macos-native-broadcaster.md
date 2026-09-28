@@ -316,6 +316,9 @@ platforms.
 Inherited from docs/38 D11, including the fit rule: the picked content's
 size is fitted into the rung's bounding box preserving aspect (the shared
 `fit.rs`), and SCK is asked for the fitted size so the compositor scales.
+Since 2026-09-28 the fit never upscales (docs/38 D11's second amendment,
+`fit::encode_size`): content smaller than the box streams at its own
+pixel size.
 Retina: a 5K display fitted to 1080p is a 2.67× downscale in the
 compositor — the same path Apple's own screen sharing uses; V-5 measures
 whether it costs frame pacing at 60 fps.
