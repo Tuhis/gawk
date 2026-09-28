@@ -23,9 +23,9 @@ gawk-broadcast -url https://relay.example   # …or somebody else's
 
 It speaks the existing publisher protocol byte for byte — zero server,
 wire or viewer changes — by importing the relay's own `wire` package. Windows
-has its own native broadcaster
+and macOS have their own native broadcasters
 ([`gawk-broadcast-desktop`](../gawk-broadcast-desktop/README.md)); the browser
-broadcaster remains the path for macOS, for Linux machines without a usable
+broadcaster remains the path for Intel Macs, for Linux machines without a usable
 hardware encoder, and for anyone who doesn't want to install anything.
 
 **Why does this exist?** The browser cannot hardware-encode on Linux — a
