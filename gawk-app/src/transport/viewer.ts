@@ -66,6 +66,7 @@ import {
   type TelemetryHelloMessage,
 } from './wire';
 import { getMaxDecoderQueueSize } from '../config';
+import { appendClientIdentity } from './client-identity';
 
 // How often the reorder buffer is advanced (its bounded waits and the
 // decoder-backpressure resync are time-based). ~1 frame at 60 fps.
@@ -698,6 +699,11 @@ export class ViewerPipeline {
     // inherit it: dialLeg copies this URL, params included. A relay without
     // striping ignores the unknown parameter.
     url.searchParams.set('owner', mintStripeOwnerToken());
+    // R59 (docs/61 D1, D4): who this viewer is, for the relay's usage
+    // metrics, and whether it is reconnecting rather than arriving. Legs copy
+    // the URL; the relay never counts a leg, so the copies are harmless.
+    appendClientIdentity(url);
+    if (this.connectOpts.rejoin) url.searchParams.set('rejoin', '1');
     const transport = this.transportFactory(url.toString(), this.connectOpts);
     this.transport = transport;
     try {

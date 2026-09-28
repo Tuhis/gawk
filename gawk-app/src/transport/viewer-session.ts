@@ -113,6 +113,8 @@ export class ViewerSession {
   private starting: Promise<void> | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private attempt = 0;
+  // Pipelines built so far: every one after the first is a rejoin (R59).
+  private pipelinesBuilt = 0;
   private stopped = false;
   private lastReason = 'session closed';
   private lastCloseCode: number | null = null;
@@ -211,7 +213,10 @@ export class ViewerSession {
     // A reconnect means a fresh pipeline on a possibly-restarted timeline —
     // reset the sink before its first packets land.
     this.cb.onAudioReset?.();
-    return this.createPipeline(this.serverUrl, this.broadcastId, this.connectOpts, inner);
+    // Every pipeline after the first is this viewer reconnecting, and says so
+    // on the dial so the relay counts one viewer, not one per attempt (R59).
+    const opts = this.pipelinesBuilt++ > 0 ? { ...this.connectOpts, rejoin: true } : this.connectOpts;
+    return this.createPipeline(this.serverUrl, this.broadcastId, opts, inner);
   }
 
   private handlePipelineEnded(): void {

@@ -259,7 +259,7 @@ describe('BroadcastPipeline URLs', () => {
     startCapture.mockResolvedValue(makeCaptureHandle());
     const pipeline = makePipeline(makeCallbacks());
     await pipeline.start();
-    expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish', {});
+    expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish?app=web', {});
     await pipeline.stop();
   });
 
@@ -269,7 +269,7 @@ describe('BroadcastPipeline URLs', () => {
     startCapture.mockResolvedValue(makeCaptureHandle());
     const pipeline = makePipeline(makeCallbacks(), 'K7XQ2M');
     await pipeline.start();
-    expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish/K7XQ2M', {});
+    expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish/K7XQ2M?app=web', {});
     await pipeline.stop();
   });
 
@@ -287,7 +287,7 @@ describe('BroadcastPipeline URLs', () => {
       makeCallbacks(),
     );
     await pipeline.start();
-    expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish?secret=s3cret', opts);
+    expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish?secret=s3cret&app=web', opts);
     await pipeline.stop();
   });
 
@@ -304,7 +304,7 @@ describe('BroadcastPipeline URLs', () => {
       'K7XQ2M',
     );
     await pipeline.start();
-    expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish/K7XQ2M?secret=s3cret', opts);
+    expect(connectWebTransport).toHaveBeenCalledWith('https://relay.test:4433/publish/K7XQ2M?secret=s3cret&app=web', opts);
     await pipeline.stop();
   });
 });
