@@ -33,8 +33,8 @@ your laptop in about five minutes with a self-signed certificate.
 | `gawk-telemetry` *(optional)* | Per-session diagnostics. **Off by default; skip it on a first install.** | Internal only, plus one same-origin ingest path |
 | `gawk-admin` *(optional)* | The moderation portal: fleet-wide kill, durable ID/IP bans, signed webhooks. **Off by default; skip it on a first install.** | ClusterIP by default; an OIDC-gated Ingress is a deliberate opt-in ([§9](#9-gawk-admin--the-moderation-portal-r39)) |
 
-The native broadcasters (`gawk-broadcast` for Linux,
-`gawk-broadcast-windows`) are **not** deployed — they are binaries a
+The native broadcasters (`gawk-broadcast` for Linux, `gawk-broadcast-windows`
+and `gawk-broadcast-macos`) are **not** deployed — they are binaries a
 broadcaster downloads and runs against your relay. Nothing here installs
 them.
 
@@ -379,7 +379,7 @@ so a Linux broadcaster in a browser is software-encoding and will feel it.
 [`gawk-broadcast`](../gawk-broadcast/README.md) exists for this: portal
 capture plus a hardware GStreamer pipeline.
 
-Both native broadcasters default to the reference deployment, so point them
+The native broadcasters default to the reference deployment, so point them
 at yours:
 
 ```sh
@@ -390,7 +390,7 @@ or set the relay URL in the GUI's settings. Set the telemetry URL to `off`
 unless you are running your own telemetry service — the pairing rule already
 means a non-default relay reports nowhere, but being explicit costs nothing.
 
-Both send their own `Origin` header rather than an `https://` one, so they
+They all send their own `Origin` header rather than an `https://` one, so they
 have to be in the relay's `allowedOrigins` — see the table in
 [§4.2](#42-relay-values).
 
