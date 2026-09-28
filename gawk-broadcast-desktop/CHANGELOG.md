@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v1.5.2...gawk-broadcast-desktop/v1.6.0) (2026-09-28)
+
+
+### Features
+
+* **broadcast-desktop:** redesigned window — pages, gawk's look, rooms in the app (R58) ([#381](https://github.com/Tuhis/gawk/issues/381)) ([c837de4](https://github.com/Tuhis/gawk/commit/c837de4a5dc0ef7d387f48064dfa7857e92bde0b))
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** no upscaling of small windows, no fps-gate drops on high-refresh displays ([#385](https://github.com/Tuhis/gawk/issues/385)) ([6129f39](https://github.com/Tuhis/gawk/commit/6129f3906595651aa2f0e7a078a789f8cdae9c9f))
+
 ## [1.5.2](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v1.5.1...gawk-broadcast-desktop/v1.5.2) (2026-09-27)
 
 
