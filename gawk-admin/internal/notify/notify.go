@@ -124,6 +124,10 @@ type Options struct {
 	BatchSize      int
 	Concurrency    int
 	RequestTimeout time.Duration
+
+	// OnOutcome, when set, is told each delivery attempt's outcome for the
+	// metrics listener (R59, docs/61 D9): "delivered", "retry" or "failed".
+	OnOutcome func(outcome string)
 }
 
 // Dispatcher fans events out to webhooks and drains the delivery queue.
@@ -180,6 +184,12 @@ func New(opts Options) (*Dispatcher, error) {
 }
 
 func (d *Dispatcher) now() time.Time { return d.opts.Now() }
+
+func (d *Dispatcher) outcome(o string) {
+	if d.opts.OnOutcome != nil {
+		d.opts.OnOutcome(o)
+	}
+}
 
 // Record persists one event AND queues one pending delivery per ENABLED
 // webhook, merged across both sources (docs/42 D9), in a single Postgres
@@ -380,6 +390,7 @@ func (d *Dispatcher) deliver(ctx context.Context, del store.Delivery, r resoluti
 		d.finish(ctx, del, err, false)
 		return
 	}
+	d.outcome("delivered")
 	if err := d.opts.Store.MarkDelivered(ctx, del.ID, d.now()); err != nil {
 		d.log.Warn("recording a delivered webhook failed", "webhook", r.target.name, "deliveryId", del.ID, "err", err)
 		return
@@ -398,6 +409,7 @@ func (d *Dispatcher) finish(ctx context.Context, del store.Delivery, cause error
 	msg := cause.Error()
 	delay, ok := retryDelay(del.Attempts)
 	if terminal || !ok {
+		d.outcome("failed")
 		if err := d.opts.Store.MarkDeliveryFailed(ctx, del.ID, msg); err != nil {
 			d.log.Warn("recording a failed webhook delivery failed", "deliveryId", del.ID, "err", err)
 			return
@@ -406,6 +418,7 @@ func (d *Dispatcher) finish(ctx context.Context, del store.Delivery, cause error
 			"eventId", del.EventID, "attempts", del.Attempts, "err", msg)
 		return
 	}
+	d.outcome("retry")
 	if err := d.opts.Store.ScheduleRetry(ctx, del.ID, d.now().Add(delay), msg); err != nil {
 		d.log.Warn("scheduling a webhook retry failed", "deliveryId", del.ID, "err", err)
 	}

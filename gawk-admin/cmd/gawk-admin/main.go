@@ -42,6 +42,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/eventbus"
 	"github.com/Tuhis/gawk/gawk-admin/internal/kube"
 	"github.com/Tuhis/gawk/gawk-admin/internal/notify"
+	"github.com/Tuhis/gawk/gawk-admin/internal/opsmetrics"
 	"github.com/Tuhis/gawk/gawk-admin/internal/portal"
 	"github.com/Tuhis/gawk/gawk-admin/internal/relayscan"
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
@@ -95,6 +96,14 @@ func run(args []string, getenv func(string) string) error {
 	}
 	defer st.Close()
 
+	// R59 (docs/61 D9): the portal's own health, on its own listener. A nil
+	// *Metrics (the listener is off) records nothing and wraps nothing.
+	var om *opsmetrics.Metrics
+	if cfg.MetricsAddr != "" {
+		om = opsmetrics.New(version)
+		om.RegisterPool(st.Pool())
+	}
+
 	// Authentication resolves the issuer in the BACKGROUND (§4.8): an
 	// unreachable IdP must not crashloop both replicas, so New only refuses a
 	// configuration that could never be safe. Until it resolves, authenticated
@@ -131,7 +140,7 @@ func run(args []string, getenv func(string) string) error {
 	// The dispatcher is constructed on every replica because Record runs
 	// inline on whichever one served the mutation; only its send LOOP is
 	// singleton work, started from the leadership callback below.
-	dispatcher, err := notify.New(notify.Options{Store: st, Config: cfg, Log: log})
+	dispatcher, err := notify.New(notify.Options{Store: st, Config: cfg, Log: log, OnOutcome: om.Delivery})
 	if err != nil {
 		return err
 	}
@@ -174,6 +183,7 @@ func run(args []string, getenv func(string) string) error {
 		Replicas:     cfg.EventBusReplicas,
 		Insecure:     cfg.EventBusInsecure,
 		Log:          log,
+		OnOutcome:    om.Event,
 		Ingest: &eventbus.StoreIngester{
 			Store:          st,
 			ConfigWebhooks: dispatcher.ConfigWebhookNames(),
@@ -262,7 +272,7 @@ func run(args []string, getenv func(string) string) error {
 	// The security headers wrap EVERYTHING, including 404s and the SPA itself:
 	// the CSP is what stands between an XSS and the in-memory access token,
 	// and a response that skips it is the one an attacker looks for.
-	root := auth.SecurityHeaders(cfg.OIDCIssuer)(mux)
+	root := auth.SecurityHeaders(cfg.OIDCIssuer)(om.Middleware(mux))
 
 	election, err := kube.NewElection(kube.LeaderOptions{
 		Client:    clientset,
@@ -312,6 +322,21 @@ func run(args []string, getenv func(string) string) error {
 		}
 		errCh <- nil
 	}()
+	// The metrics listener serves /metrics and nothing else. Its failure is
+	// logged, not fatal: a scrape target going dark must not take the portal
+	// with it.
+	var metricsSrv *http.Server
+	if om != nil {
+		mmux := http.NewServeMux()
+		mmux.Handle("GET /metrics", om.Handler())
+		metricsSrv = &http.Server{Addr: cfg.MetricsAddr, Handler: mmux, ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			log.Info("metrics listening", "addr", cfg.MetricsAddr)
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("metrics listener failed", "addr", cfg.MetricsAddr, "err", err)
+			}
+		}()
+	}
 
 	select {
 	case err := <-errCh:
@@ -320,6 +345,9 @@ func run(args []string, getenv func(string) string) error {
 		log.Info("shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if metricsSrv != nil {
+			_ = metricsSrv.Shutdown(shutdownCtx)
+		}
 		_ = srv.Shutdown(shutdownCtx)
 		return <-errCh
 	}

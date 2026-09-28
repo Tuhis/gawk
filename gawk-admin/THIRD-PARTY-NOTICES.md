@@ -14,16 +14,16 @@ script for what counts as a dependency here and why.
 
 **Scope:** `go list -deps ./...` in `gawk-admin/`.
 
-## Summary — 54 packages
+## Summary — 60 packages
 
 | License (as declared) | Packages |
 |---|---:|
 | `Apache-2.0` | 18 |
 | `BSD-3-Clause` | 14 |
-| `MIT` | 12 |
+| `MIT` | 14 |
+| `Apache-2.0 OR UNKNOWN` | 6 |
 | `Apache-2.0 OR MIT OR Apache-2.0` | 2 |
 | `Apache-2.0 OR MIT OR BSD-3-Clause` | 2 |
-| `Apache-2.0 OR UNKNOWN` | 2 |
 | `Apache-2.0 OR BSD-3-Clause` | 1 |
 | `Apache-2.0 OR MIT` | 1 |
 | `BSD-2-Clause` | 1 |
@@ -33,6 +33,8 @@ script for what counts as a dependency here and why.
 
 | Package | Version | License | Copyright |
 |---|---|---|---|
+| `github.com/beorn7/perks` | v1.0.1 | `MIT` | Copyright (C) 2013 Blake Mizerany |
+| `github.com/cespare/xxhash/v2` | v2.3.0 | `MIT` | Copyright (c) 2016 Caleb Spare |
 | `github.com/coreos/go-oidc/v3` | v3.20.0 | `Apache-2.0 OR UNKNOWN` | Copyright 2014 CoreOS, Inc |
 | `github.com/davecgh/go-spew` | v1.1.2-0.20180830191138-d8f796af33cc | `ISC` | Copyright (c) 2012-2016 Dave Collins <dave@davec.name> |
 | `github.com/emicklei/go-restful/v3` | v3.13.0 | `MIT` | Copyright (c) 2012,2013 Ernest Micklei |
@@ -61,6 +63,10 @@ script for what counts as a dependency here and why.
 | `github.com/nats-io/nkeys` | v0.4.16 | `Apache-2.0` | — |
 | `github.com/nats-io/nuid` | v1.0.1 | `Apache-2.0` | — |
 | `github.com/pmezard/go-difflib` | v1.0.1-0.20181226105442-5d4384ee4fb2 | `BSD-2-Clause` | Copyright (c) 2013, Patrick Mezard |
+| `github.com/prometheus/client_golang` | v1.24.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors<br>Copyright 2013-2015 Blake Mizerany, Björn Rabenstein<br>Copyright 2010 The Go Authors |
+| `github.com/prometheus/client_model` | v0.6.3 | `Apache-2.0 OR UNKNOWN` | Copyright 2012-2015 The Prometheus Authors |
+| `github.com/prometheus/common` | v0.70.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2015 The Prometheus Authors |
+| `github.com/prometheus/procfs` | v0.21.1 | `Apache-2.0 OR UNKNOWN` | Copyright 2014-2015 The Prometheus Authors |
 | `github.com/spf13/pflag` | v1.0.9 | `BSD-3-Clause` | Copyright (c) 2012 Alex Ogier. All rights reserved<br>Copyright (c) 2012 The Go Authors. All rights reserved |
 | `github.com/x448/float16` | v0.8.4 | `MIT` | Copyright (c) 2019 Montgomery Edwards⁴⁴⁸ and Faye Amacker |
 | `go.yaml.in/yaml/v2` | v2.4.4 | `Apache-2.0 OR MIT` | Copyright (c) 2006 Kirill Simonov<br>Copyright 2011-2016 Canonical Ltd |
@@ -95,9 +101,9 @@ their copyright line are shown once, with every holder listed in the table
 above — that line is the part the license requires be retained, and the
 boilerplate around it is identical by construction.
 
-### 1. Apache-2.0 — 15 packages
+### 1. Apache-2.0 — 19 packages
 
-Applies to: `github.com/go-jose/go-jose/v4`, `github.com/go-openapi/jsonpointer`, `github.com/go-openapi/jsonreference`, `github.com/go-openapi/swag`, `github.com/google/gnostic-models`, `github.com/modern-go/concurrent`, `github.com/modern-go/reflect2`, `github.com/nats-io/nats.go`, `github.com/nats-io/nkeys`, `github.com/nats-io/nuid`, `k8s.io/api`, `k8s.io/apimachinery` — and 3 more
+Applies to: `github.com/go-jose/go-jose/v4`, `github.com/go-openapi/jsonpointer`, `github.com/go-openapi/jsonreference`, `github.com/go-openapi/swag`, `github.com/google/gnostic-models`, `github.com/modern-go/concurrent`, `github.com/modern-go/reflect2`, `github.com/nats-io/nats.go`, `github.com/nats-io/nkeys`, `github.com/nats-io/nuid`, `github.com/prometheus/client_golang`, `github.com/prometheus/client_model` — and 7 more
 
 ```
 Apache License
@@ -1883,35 +1889,50 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 16. MIT — 9 packages
+### 16. MIT — 10 packages
 
-Applies to: `github.com/emicklei/go-restful/v3`, `github.com/fxamacker/cbor/v2`, `github.com/jackc/pgpassfile`, `github.com/jackc/pgservicefile`, `github.com/jackc/pgx/v5`, `github.com/jackc/puddle/v2`, `github.com/josharian/intern`, `github.com/json-iterator/go`, `github.com/x448/float16`
+Applies to: `github.com/cespare/xxhash/v2`, `github.com/emicklei/go-restful/v3`, `github.com/fxamacker/cbor/v2`, `github.com/jackc/pgpassfile`, `github.com/jackc/pgservicefile`, `github.com/jackc/pgx/v5`, `github.com/jackc/puddle/v2`, `github.com/josharian/intern`, `github.com/json-iterator/go`, `github.com/x448/float16`
 
 ```
+Copyright (c) 2016 Caleb Spare
+
 MIT License
 
-Copyright (c) 2016 json-iterator
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 17. MIT — 1 package
+### 17. MIT — 2 packages
+
+Applies to: `github.com/beorn7/perks`, `github.com/mailru/easyjson`
+
+```
+Copyright (c) 2016 Mail.Ru Group
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### 18. MIT — 1 package
 
 Applies to: `github.com/golang-migrate/migrate/v4`
 
@@ -1946,7 +1967,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 18. MIT — 1 package
+### 19. MIT — 1 package
 
 Applies to: `github.com/jackc/pgerrcode`
 
@@ -1997,20 +2018,6 @@ THE UNIVERSITY OF CALIFORNIA SPECIFICALLY DISCLAIMS ANY WARRANTIES, INCLUDING, B
 WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. THE SOFTWARE PROVIDED HEREUNDER IS ON AN "AS IS"
 BASIS, AND THE UNIVERSITY OF CALIFORNIA HAS NO OBLIGATIONS TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
 MODIFICATIONS.
-```
-
-### 19. MIT — 1 package
-
-Applies to: `github.com/mailru/easyjson`
-
-```
-Copyright (c) 2016 Mail.Ru Group
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ### 20. MIT — 1 package
@@ -2064,6 +2071,69 @@ This product includes software developed at CoreOS, Inc.
 ```
 
 ### 22. UNKNOWN — 1 package
+
+Applies to: `github.com/prometheus/client_golang`
+
+```
+Prometheus instrumentation library for Go applications
+Copyright 2012-2015 The Prometheus Authors
+
+This product includes software developed at
+SoundCloud Ltd. (http://soundcloud.com/).
+
+
+The following components are included in this product:
+
+perks - a fork of https://github.com/bmizerany/perks
+https://github.com/beorn7/perks
+Copyright 2013-2015 Blake Mizerany, Björn Rabenstein
+See https://github.com/beorn7/perks/blob/master/README.md for license details.
+
+Go support for Protocol Buffers - Google's data interchange format
+http://github.com/golang/protobuf/
+Copyright 2010 The Go Authors
+See source code for license details.
+```
+
+### 23. UNKNOWN — 1 package
+
+Applies to: `github.com/prometheus/client_model`
+
+```
+Data model artifacts for Prometheus.
+Copyright 2012-2015 The Prometheus Authors
+
+This product includes software developed at
+SoundCloud Ltd. (http://soundcloud.com/).
+```
+
+### 24. UNKNOWN — 1 package
+
+Applies to: `github.com/prometheus/common`
+
+```
+Common libraries shared by Prometheus Go components.
+Copyright 2015 The Prometheus Authors
+
+This product includes software developed at
+SoundCloud Ltd. (http://soundcloud.com/).
+```
+
+### 25. UNKNOWN — 1 package
+
+Applies to: `github.com/prometheus/procfs`
+
+```
+procfs provides functions to retrieve system, kernel and process
+metrics from the pseudo-filesystem proc.
+
+Copyright 2014-2015 The Prometheus Authors
+
+This product includes software developed at
+SoundCloud Ltd. (http://soundcloud.com/).
+```
+
+### 26. UNKNOWN — 1 package
 
 Applies to: `sigs.k8s.io/randfill`
 

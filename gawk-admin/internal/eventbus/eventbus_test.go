@@ -76,6 +76,29 @@ func leading(t *testing.T, url string, ing Ingester) *Consumer {
 	return c
 }
 
+// outcomeLog collects the consumer's R59 OnOutcome reports.
+type outcomeLog struct {
+	mu   sync.Mutex
+	seen map[string]int
+}
+
+func (o *outcomeLog) count(outcome string) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.seen[outcome]
+}
+
+// recordOutcomes hooks a log into a consumer that has not started running.
+func recordOutcomes(c *Consumer) *outcomeLog {
+	o := &outcomeLog{seen: map[string]int{}}
+	c.opts.OnOutcome = func(outcome string) {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		o.seen[outcome]++
+	}
+	return o
+}
+
 func newConsumer(t *testing.T, url string, ing Ingester) *Consumer {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -174,6 +197,7 @@ func TestConsumesAndIngestsOnce(t *testing.T) {
 	url := runNATS(t)
 	ing := &fakeIngest{}
 	c := leading(t, url, ing)
+	outcomes := recordOutcomes(c)
 
 	publish(t, url, "pod-a:1", events.TypeRoomOpened, "aa11bb22cc33",
 		events.RoomOpenedData{RoomCode: "pf4tzn", RoomKey: "aa11bb22cc33", Kind: events.RoomKindDynamic})
@@ -189,6 +213,8 @@ func TestConsumesAndIngestsOnce(t *testing.T) {
 	}()
 
 	waitFor(t, "two ingested events", func() bool { return ing.count() == 2 })
+	// R59: each stored row is one "stored" outcome on /metrics.
+	waitFor(t, "two stored outcomes", func() bool { return outcomes.count("stored") == 2 })
 	want := []string{events.TypeRoomOpened, events.TypeRoomParticipantJoined}
 	got := ing.types()
 	for i := range want {
@@ -213,6 +239,7 @@ func TestDeltasAreNotStored(t *testing.T) {
 	url := runNATS(t)
 	ing := &fakeIngest{}
 	c := leading(t, url, ing)
+	outcomes := recordOutcomes(c)
 
 	publish(t, url, "pod-a:1", events.TypeBroadcastViewers, "3f9a1c4e7b2d",
 		events.BroadcastViewersData{BroadcastID: "k7m2q9", BroadcastKey: "3f9a1c4e7b2d",
@@ -223,6 +250,10 @@ func TestDeltasAreNotStored(t *testing.T) {
 	go func() { _ = c.Run(ctx) }()
 
 	waitFor(t, "the live view to see the delta", func() bool { return len(c.Live()) == 1 })
+	waitFor(t, "a live outcome", func() bool { return outcomes.count("live") == 1 })
+	if n := outcomes.count("stored"); n != 0 {
+		t.Errorf("a delta was reported stored %d times", n)
+	}
 	if ing.count() != 0 {
 		t.Errorf("a delta was ingested as a row: %v", ing.types())
 	}

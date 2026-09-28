@@ -1,0 +1,21 @@
+{{- if .Values.metrics.enabled }}
+# The SECOND listener: the portal's own health for a Prometheus scrape (R59,
+# docs/61 D9). ClusterIP only and never behind the Ingress, which routes the
+# portal Service alone.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gawk-admin.fullname" . }}-metrics
+  labels:
+    {{- include "gawk-admin.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gawk-admin.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -236,7 +237,11 @@ func TestRetryScheduleAndTerminalFailure(t *testing.T) {
 	cfg := config.Config{StaticWebhooks: []config.StaticWebhook{
 		{Name: "pager", URL: rec.url("/pager"), SecretEnv: "S", Secret: "c2VjcmV0"},
 	}}
-	d := newDispatcher(t, st, cfg, func(o *Options) { o.Now = clk.Now })
+	var outcomes []string
+	d := newDispatcher(t, st, cfg, func(o *Options) {
+		o.Now = clk.Now
+		o.OnOutcome = func(outcome string) { outcomes = append(outcomes, outcome) }
+	})
 
 	ev := mustRecord(t, d, killEvent("ZXQ7K2"))
 
@@ -296,6 +301,10 @@ func TestRetryScheduleAndTerminalFailure(t *testing.T) {
 	}
 	if got := rec.count(); got != MaxAttempts {
 		t.Fatalf("receiver saw %d requests, want %d", got, MaxAttempts)
+	}
+	// R59: every rung of the ladder is a "retry" on /metrics, the last a "failed".
+	if want := []string{"retry", "retry", "retry", "retry", "failed"}; !slices.Equal(outcomes, want) {
+		t.Errorf("outcomes = %v, want %v", outcomes, want)
 	}
 
 	// Terminal means terminal: no further clock advance revives it.

@@ -62,8 +62,12 @@ func (w StaticWebhook) IsEnabled() bool { return w.Enabled == nil || *w.Enabled 
 type Config struct {
 	Mode Mode
 
-	Addr        string // the single HTTP listener: SPA, /api/v1, /auth/config, /healthz, /readyz
+	Addr        string // the portal listener: SPA, /api/v1, /auth/config, /healthz, /readyz
 	ExternalURL string // portal base URL: the OIDC redirect base and the portalUrl in webhook payloads
+
+	// MetricsAddr is the Prometheus listener (R59, docs/61 D9): its own port,
+	// never routed by the Ingress. Empty when disabled ("off").
+	MetricsAddr string
 
 	OIDCIssuer     string
 	OIDCClientID   string
@@ -179,6 +183,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 	fs := flag.NewFlagSet("gawk-admin", flag.ContinueOnError)
 	addr := fs.String("addr", env("GAWK_ADMIN_ADDR", ":8090"), "HTTP listen address for the portal and API")
+	metricsAddr := fs.String("metrics-addr", env("GAWK_ADMIN_METRICS_ADDR", ":8091"),
+		"HTTP listen address for /metrics, a separate listener never routed publicly; \"off\" disables it")
 	externalURL := fs.String("external-url", env("GAWK_ADMIN_EXTERNAL_URL", ""),
 		"portal base URL; the OIDC redirect base and the portalUrl in webhook payloads (required)")
 	issuer := fs.String("oidc-issuer", env("GAWK_ADMIN_OIDC_ISSUER", ""), "OIDC issuer URL (required)")
@@ -247,6 +253,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	cfg := Config{
 		Mode:             mode,
 		Addr:             *addr,
+		MetricsAddr:      metricsListen(*metricsAddr),
 		ExternalURL:      strings.TrimRight(*externalURL, "/"),
 		OIDCIssuer:       strings.TrimRight(*issuer, "/"),
 		OIDCClientID:     *clientID,
@@ -461,6 +468,7 @@ func (c Config) LogAttrs() []any {
 	return []any{
 		"mode", string(c.Mode),
 		"addr", c.Addr,
+		"metricsAddr", c.MetricsAddr,
 		"externalUrl", c.ExternalURL,
 		"oidcIssuer", c.OIDCIssuer,
 		"oidcClientId", c.OIDCClientID,
@@ -491,4 +499,14 @@ func (c Config) LogAttrs() []any {
 		"logLevel", c.LogLevel.String(),
 		"logFormat", c.LogFormat,
 	}
+}
+
+// metricsListen maps the -metrics-addr value to a listen address; "off" (or an
+// empty value) disables the listener.
+func metricsListen(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "off" {
+		return ""
+	}
+	return v
 }
