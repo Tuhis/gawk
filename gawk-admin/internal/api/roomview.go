@@ -53,7 +53,15 @@ func (a *API) mergeRooms(list []kube.RoomObject, live map[string]relayscan.RoomA
 		seen[obj.Name] = true
 		if obj.Err != nil {
 			a.log.Warn("room CR could not be decoded; listing it by name only", "crName", obj.Name, "err", obj.Err)
-			out = append(out, roomJSON{Name: obj.Name, Code: obj.Name})
+			// Listed by name so it can be deleted — and still live when a pod
+			// is home for it: a broken CR must not hide the roster.
+			row := roomJSON{Name: obj.Name, Code: obj.Name}
+			if l, ok := live[obj.Name]; ok {
+				a.applyLive(&row, l, detail)
+			} else {
+				a.applyCRAttachments(&row, nil, detail)
+			}
+			out = append(out, row)
 			continue
 		}
 		row := renderRoom(obj)

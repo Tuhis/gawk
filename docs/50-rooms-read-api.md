@@ -202,7 +202,10 @@ next reader does not re-derive it.
   and the relays view says why (only when rooms are on in `gawk-admin`).
 - **`-rooms-reader-role` set empty grants the role nowhere**: the two reads
   fall back to operator-only, and the served OpenAPI document drops the
-  role rather than naming one no token can carry.
+  role rather than naming one no token can carry. Empty has to arrive as the
+  flag: the config reads an empty `GAWK_ADMIN_*` variable as unset, i.e. the
+  default, so the chart renders `-rooms-reader-role=` in `args` for
+  `oidc.roomsReaderRole: ""` instead of the env var (caught in review).
 - **The filter.** An empty list (`[]`) receives nothing — it is exact, not
   "default". A `PUT` replaces the filter, so omitting `events` restores the
   default; the portal always sends it. Where a chart webhook shadows a UI

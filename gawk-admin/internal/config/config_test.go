@@ -360,6 +360,25 @@ func TestMetricsAddr(t *testing.T) {
 
 // R49 D8: a chart webhook's `events` list is parsed, and only enabled
 // webhooks reach the enqueue, each with its own filter.
+// R49 D1: the rooms-reader role can be switched OFF. An empty env var cannot
+// say so — getenv cannot tell "set to empty" from "unset", and unset means
+// the default — so the explicit flag is the way, and the chart renders it
+// (review finding, 2026-09-29).
+func TestRoomsReaderRoleCanBeTurnedOff(t *testing.T) {
+	cfg, err := ParseFlags([]string{"-rooms-reader-role="}, envFrom(minimal()))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.RoomsReaderRole != "" {
+		t.Fatalf("RoomsReaderRole = %q with -rooms-reader-role=, want empty (granted nowhere)", cfg.RoomsReaderRole)
+	}
+	env := minimal()
+	env["GAWK_ADMIN_ROOMS_READER_ROLE"] = "mumble-bot"
+	if cfg, _ := ParseFlags(nil, envFrom(env)); cfg.RoomsReaderRole != "mumble-bot" {
+		t.Fatalf("RoomsReaderRole = %q from the env, want mumble-bot", cfg.RoomsReaderRole)
+	}
+}
+
 func TestStaticWebhookEventFilter(t *testing.T) {
 	env := minimal()
 	env["GAWK_ADMIN_STATIC_WEBHOOKS"] = `[{"name":"pager","url":"https://p.example/h","secretEnv":"S"},

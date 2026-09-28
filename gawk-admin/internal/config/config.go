@@ -207,7 +207,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	flaggerRole := fs.String("flagger-role", env("GAWK_ADMIN_FLAGGER_ROLE", "flagger"),
 		"reserved for R40: the role granting flag-only rights; unused by any R39 route")
 	roomsReaderRole := fs.String("rooms-reader-role", env("GAWK_ADMIN_ROOMS_READER_ROLE", "rooms-reader"),
-		"role granting GET /api/v1/rooms, GET /api/v1/rooms/{name} and GET /api/v1/me only (R49); empty grants it nowhere")
+		"role granting GET /api/v1/rooms, GET /api/v1/rooms/{name} and GET /api/v1/me only (R49); -rooms-reader-role= grants it nowhere (an empty env var reads as unset)")
 	pgDSN := fs.String("pg-dsn", env("GAWK_ADMIN_PG_DSN", ""), "PostgreSQL DSN (required)")
 	relayScanTarget := fs.String("relay-scan-target", env("GAWK_ADMIN_RELAY_SCAN_TARGET", ""),
 		"DNS name of the relay headless metrics Service; its A records are the pods (required)")

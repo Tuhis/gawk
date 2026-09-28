@@ -143,6 +143,20 @@ func TestRoomsWithAnUnreachableHomeRenderFromTheCR(t *testing.T) {
 	}
 }
 
+// A CR that cannot be decoded is still listed by name — and when a pod is home
+// for that room, its live roster is not thrown away with the CR (review
+// finding, 2026-09-29).
+func TestAnUndecodableCRKeepsItsLiveRoster(t *testing.T) {
+	broken := kube.RoomObject{Name: "tuhisroom", Err: errors.New("spec.kind: bad value")}
+	h := newHarnessWithoutPostgres(t, withRooms(newFakeRooms(broken), &memoryRecorder{}))
+	h.fleet.set(relayscan.Snapshot{Rooms: []relayscan.RoomAggregate{liveRoom("tuhisroom", "TuhisRoom", "gawk-server-1")}})
+	var r wireRoom
+	h.decode(http.MethodGet, "/api/v1/rooms/tuhisroom", nil, http.StatusOK, &r)
+	if r.Kind != "" || !r.Live || r.Counts.Participants != 3 || r.Participants == nil || len(*r.Participants) != 3 {
+		t.Fatalf("room = %+v", r)
+	}
+}
+
 // A room some pod is home for but that has no CR is still shown (the union).
 func TestRoomsOnlyTheScanKnowsAreListed(t *testing.T) {
 	h := newHarnessWithoutPostgres(t, withRooms(newFakeRooms(), &memoryRecorder{}))
