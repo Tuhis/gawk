@@ -121,12 +121,13 @@ impl Pipeline {
         // The capture item comes FIRST now: its size decides the encode
         // resolution. The configured rung is a bounding box, never a
         // stretch target (docs/38 D11 amendment) — the encoder runs at the
-        // source's aspect fitted inside it, one side pinned to the box.
+        // source's aspect fitted inside it, and a source smaller than the
+        // box at its own size — never upscaled.
         let item = wgc::create_item(params.target).map_err(|e| {
             StartFailure::Capture(format!("could not open the capture target: {e}"))
         })?;
         let (enc_width, enc_height) = match wgc::item_size(&item) {
-            Ok(size) => gawk_capture::fit::fit_within(
+            Ok(size) => gawk_capture::fit::encode_size(
                 size.Width.max(0) as u32,
                 size.Height.max(0) as u32,
                 params.width,
@@ -139,8 +140,8 @@ impl Pipeline {
             }
         };
         log::info!(
-            "encode resolution {enc_width}x{enc_height} (source aspect fitted into the \
-             {}x{} box)",
+            "encode resolution {enc_width}x{enc_height} (source fitted into the {}x{} box, \
+             never upscaled)",
             params.width,
             params.height
         );

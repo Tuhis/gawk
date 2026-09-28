@@ -4,7 +4,7 @@
 //! Settings, rooms, the session lifecycle and stats are the shell's.
 
 use crate::pipeline::{self, Pipeline};
-use gawk_capture::fit::fit_within;
+use gawk_capture::fit::encode_size;
 use gawk_capture::sck::StreamSettings;
 use gawk_capture::sck_picker::{Picked, Picker, PickerEvent};
 use gawk_engine::config::{self, Config};
@@ -67,10 +67,10 @@ fn live_capture(media: Option<&dyn Media>) -> Option<&gawk_capture::sck::Capture
         .and_then(|p| p.capture())
 }
 
-/// The rung box fitted to the picked content (docs/54 D9).
+/// The picked content fitted into the rung box, never upscaled (docs/54 D9).
 fn stream_settings(cfg: &Config, picked: &Picked) -> StreamSettings {
     let (box_w, box_h, fps, _) = cfg.resolve_rung();
-    let (width, height) = fit_within(picked.width, picked.height, box_w, box_h);
+    let (width, height) = encode_size(picked.width, picked.height, box_w, box_h);
     StreamSettings { width, height, fps }
 }
 

@@ -262,7 +262,13 @@ deviation notes); we own the encoder, so we can.
 - **VFR discipline**: WGC is damage-driven, like PipeWire. Frames pass
   through drop-only gating to the target fps — never synthesize CFR (R14
   Decision 13's invariant). Timestamps come from the frame's
-  `SystemRelativeTime` (QPC-based).
+  `SystemRelativeTime` (QPC-based). The gate keeps a virtual schedule
+  with a quarter-interval early allowance, the browser broadcaster's gate
+  (amended 2026-09-28). It used to require a minimum spacing from the last
+  admitted frame, which quietly dropped frames on high-refresh displays:
+  WGC stamps frames on the vsync grid, so 60 fps content on a 144 Hz
+  monitor arrives 13.9/20.8 ms apart. Every short gap was dropped, which
+  took that content to 36 fps and a 144 Hz source to 48.
 - **Minimized windows**: WGC delivers no frames for minimized windows (they
   are not composited). The ROADMAP's "works even when minimized" claim is
   recorded here as **optimistic pending verification** (V-2 in §10); the
@@ -438,6 +444,27 @@ then fixed for the session, so a mid-broadcast aspect change (window
 resize) letterboxes inside the converter — centered, studio-black bars —
 rather than stretching. The GUI's encode line and the diagnostics rung
 show the fitted dimensions, not the box.
+
+**The box caps the encode; it never scales a source up** (amended
+2026-09-28). The fit used to pin one side to the box even when the source
+was smaller, so a 1280×720 window under the default rung was upscaled to
+1920×1080. That meant 2.25× the pixels through the VideoProcessor and the
+encoder for detail that was never captured. `fit::encode_size` fits
+into `min(box, source)` instead, so a window smaller than the box encodes
+at its own physical size. The one exception is a source whose longer side
+is under 128 px (the Custom rung's floor), which is raised to 128. The
+trade-off: the encoder's dimensions are still fixed at start, so a
+window that starts small and is then enlarged stays at its starting size
+(scaled down into it) until the next broadcast. Previously it would have
+used the box.
+
+| Acceptance | Verified by |
+|---|---|
+| A source smaller than the box on both sides encodes at its own (even-floored) size | `fit::tests::encode_size_never_upscales_a_source_smaller_than_the_box` |
+| A source larger than the box on either side fits the box exactly as before | `fit::tests::encode_size_downscales_like_fit_within` |
+| A source under 128 px on its longer side is raised only to 128 | `fit::tests::encode_size_only_upscales_up_to_the_minimum_side` |
+| 60 fps content on 144/165 Hz vsync grids passes the 60 fps gate (≥ 99 %) | `gate::tests::vsync_quantized_content_at_the_target_passes_untouched` |
+| A 144 Hz source is still capped to 60 fps | `gate::tests::a_high_refresh_source_is_still_capped_to_the_target` |
 
 ### D12 — GUI: Slint, one window, the Linux app's information architecture plus the capture picker
 
