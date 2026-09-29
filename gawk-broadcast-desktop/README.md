@@ -342,7 +342,7 @@ Quirks that will bite you:
   `tools/icon` derivative, copied in and checked with `iconutil` by
   `tools/macos/bundle.sh`, docs/53 D11). On Wayland it is the installed
   desktop entry matching the app ID, so an uninstalled binary shows the
-  stock icon until `install-desktop.sh` runs.
+  stock icon until the `.deb` (docs/63) or `install-desktop.sh` installs it.
 
 ## Layout
 
