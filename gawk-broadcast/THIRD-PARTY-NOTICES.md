@@ -27,10 +27,10 @@ script for what counts as a dependency here and why.
 
 | Package | Version | License | Copyright |
 |---|---|---|---|
-| `gioui.org` | v0.10.2 | `Unlicense OR MIT` | Copyright (c) 2019 The Gio authors |
+| `gioui.org` | v0.10.3 | `Unlicense OR MIT` | Copyright (c) 2019 The Gio authors |
 | `gioui.org/shader` | v1.0.9 | `Unlicense OR MIT` | Copyright (c) 2019 The Gio authors |
 | `github.com/dunglas/httpsfv` | v1.1.1 | `BSD-3-Clause` | Copyright (c) 2020 Kévin Dunglas. All rights reserved |
-| `github.com/go-text/typesetting` | v0.3.4 | `Unlicense OR BSD-3-Clause` | Copyright 2021 The go-text authors |
+| `github.com/go-text/typesetting` | v0.3.5 | `Unlicense OR BSD-3-Clause` | Copyright 2021 The go-text authors |
 | `github.com/godbus/dbus/v5` | v5.2.2 | `BSD-2-Clause` | Copyright (c) 2013, Georg Reinke (<guelfey at gmail dot com>), Google |
 | `github.com/quic-go/qpack` | v0.6.0 | `MIT` | Copyright 2019 Marten Seemann |
 | `github.com/quic-go/quic-go` | v0.62.0 | `MIT` | Copyright (c) 2016 the quic-go authors & Google, Inc |
