@@ -12,6 +12,9 @@ gawk-engine = { path = "../engine" }
 # bundled CMakeLists predates CMake 3.5, so builds need
 # CMAKE_POLICY_VERSION_MINIMUM=3.5 in the environment (set in CI).
 opus = "0.3"
+# The portable pwgraph controller reports refused links (and the Linux
+# modules narrate into debug.log) through the facade.
+log = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -33,7 +36,6 @@ windows-core = "0.62"
 [target.'cfg(target_os = "linux")'.dependencies]
 gstreamer = { version = "0.25", features = ["v1_24"] }
 gstreamer-app = { version = "0.25", features = ["v1_24"] }
-log = "0.4"
 pipewire = "0.10"
 
 # The headless-PipeWire integration harness (tests/support/pwtest.rs).
