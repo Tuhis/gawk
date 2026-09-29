@@ -1157,8 +1157,21 @@ Add to it when a new gotcha lands in `docs/`.
   entry is the only source.** winit 0.30 has no `xdg-toplevel-icon-v1`, so
   Slint's `Window.icon` reaches X11 but not Wayland. GNOME and KDE resolve
   the icon from `set_xdg_app_id` through `fi.ioio.gawk.broadcast.desktop`;
-  until `install-desktop.sh` has run, the window shows the stock icon.
-  ([docs/53](53-app-icons.md) §6, [docs/58](58-linux-desktop-broadcaster.md) OD7)
+  until the `.deb` or `install-desktop.sh` has installed it, the window
+  shows the stock icon.
+  ([docs/53](53-app-icons.md) §6, [docs/63](63-linux-deb-package.md))
+- **`dpkg-shlibdeps` can't see what winit `dlopen()`s.** xkbcommon,
+  Wayland, EGL/GL and the X11 libraries are loaded by soname at runtime, so
+  they are not `NEEDED` entries and the `.deb` names them by hand. "It
+  resolves after install" isn't proof: the GStreamer plugins pull most of
+  them in transitively, which hid a missing `libxrender1`. `test-deb.sh`
+  requires each from a direct dependency, in a fresh container, never the
+  build one (its `-dev` packages satisfy anything).
+  ([docs/63](63-linux-deb-package.md) D4, D8)
+- **An old per-user desktop entry shadows the `.deb`'s.** `~/.local/share`
+  comes before `/usr/share`, so an earlier `install-desktop.sh` entry keeps
+  launching the tarball binary. Run `install-desktop.sh --uninstall` first.
+  ([docs/63](63-linux-deb-package.md) D9)
 - **Never build zbus with its `tokio` feature in the desktop workspace.**
   ashpd's *default* feature is `tokio`, which turns on `zbus/tokio`. Cargo
   unifies features, so every zbus user in the process then needs a tokio

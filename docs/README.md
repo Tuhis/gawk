@@ -127,6 +127,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`56`](56-admin-mcp.md) | R54 — MCP server for the `gawk-admin` API: Claude Code acts as the signed-in operator via the MCP OAuth flow against the deployment's IdP; tools generated from the OpenAPI contract, mutations on by default (`-mcp-mutations=false` for read-only) |
 | [`61`](61-usage-and-capacity-metrics.md) | R59 — Usage and capacity metrics: new vs resumed broadcasts, viewer joins, durations, client mix, caps as metrics, `gawk-admin` metrics; replaces R9 M8 |
 | [`62`](62-rooms-manager-role.md) | R60 — The `rooms-manager` role: static room create and delete for a bot's service identity, deleting only the rooms it created |
+| [`63`](63-linux-deb-package.md) | R61 — A `.deb` for the Linux broadcaster: the launcher entry and icon installed system-wide, `Depends` from `dpkg-shlibdeps` plus what the app `dlopen()`s, install-tested in fresh containers |
 
 ## Conventions
 

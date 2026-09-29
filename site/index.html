@@ -238,7 +238,13 @@
         </div>
         <p class="dl-ver" data-dl-version>Latest release</p>
         <a class="btn btn-primary dl-btn" data-dl-link href="https://github.com/Tuhis/gawk/releases?q=gawk-broadcast-desktop%2F" target="_blank" rel="noopener">Download for Linux <span aria-hidden="true">↓</span></a>
-        <p>Unpack it and run <code>gawk-broadcast-linux</code>; <code>install-desktop.sh</code> adds it to your launcher. Needs Ubuntu 24.04 or newer (or equivalent) and a hardware H.264 encoder; tested on KDE Plasma (Wayland). The INSTALL.md inside lists the packages.</p>
+        <!-- R61 (docs/63): the .deb, shown only once the manifest lists one
+             (site.js), so an older release never gets a dead button. -->
+        <div data-dl-alt="gawk-broadcast-linux-x86_64.deb" hidden>
+          <a class="btn btn-outline dl-btn" data-dl-alt-link href="https://github.com/Tuhis/gawk/releases?q=gawk-broadcast-desktop%2F" download>Download .deb <span aria-hidden="true">↓</span></a>
+          <p>Ubuntu 24.04+ or Debian 13+: <code>sudo apt install ./gawk-broadcast-linux-x86_64.deb</code> brings the packages it needs, the launcher entry and the icon. If you used the tarball's <code>install-desktop.sh</code> before, run it with <code>--uninstall</code> first.</p>
+        </div>
+        <p>The tarball, for other distributions: unpack it and run <code>gawk-broadcast-linux</code>; <code>install-desktop.sh</code> adds it to your launcher. Needs Ubuntu 24.04 or newer (or equivalent) and a hardware H.264 encoder; tested on KDE Plasma (Wayland). The INSTALL.md inside lists the packages.</p>
         <p class="dl-sum" data-dl-sum hidden><span>sha256</span><code data-dl-sha></code></p>
       </div>
       <div class="card dl" data-dl="gawk-broadcast" data-dl-superseded-by="gawk-broadcast-linux">

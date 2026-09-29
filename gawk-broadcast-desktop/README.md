@@ -147,8 +147,14 @@ shows the packet counts behind it.
 
 ## Linux
 
-Grab `gawk-broadcast-linux-x86_64.tar.gz` from the same
-**[Releases page](https://github.com/Tuhis/gawk/releases)** (from
+On Ubuntu 24.04+ or Debian 13+, grab `gawk-broadcast-linux-x86_64.deb`
+from the same **[Releases page](https://github.com/Tuhis/gawk/releases)**
+and run `sudo apt install ./gawk-broadcast-linux-x86_64.deb`. It brings the
+GStreamer and portal packages, the launcher entry and the icon. On Wayland
+the icon only appears once that entry is installed (docs/63). If you used the
+tarball's `install-desktop.sh` before, run it with `--uninstall` first.
+
+Elsewhere, grab `gawk-broadcast-linux-x86_64.tar.gz` (from
 `gawk-broadcast-desktop/v2.0.0` on), unpack it and run
 `./gawk-broadcast-linux`; `./install-desktop.sh` adds a launcher entry and
 icon. The tarball's `INSTALL.md` has the package lines for apt, dnf and

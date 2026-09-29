@@ -79,6 +79,7 @@ feature set exists).
 | R58 | [Desktop broadcaster redesign](#r58--desktop-broadcaster-redesign) | ✅ shipped 2026-09-29 (DR1–DR6) — designed 2026-09-28 in a Claude Design pass and owner-approved the same day; DR1–DR5 implemented 2026-09-28, the DR6 hardware pass done by the owner on Windows and macOS 2026-09-29 — the shared `main.slint` window becomes pages (Ready, Live, Settings, Advanced, the Windows picker) in the web app's tokens with one primary action each; Windows picks and remembers a source; saved and recent rooms, one room field with no attach-key field, an in-app roster with Watch links, and creator controls (remove a stream, end the room) revising docs/44 D13 with no wire change; a stopped summary with Go live again, a crash-resume question, banners for notices; and the room-view grant fixed to the SPA's `c:`/`a:` format ([docs/60](docs/60-desktop-redesign.md)) |
 | R59 | [Usage and capacity metrics](#r59--usage-and-capacity-metrics) | 🔧 designed 2026-09-29 (owner decisions OD1–OD7); UM1–UM4 implemented 2026-09-29, UM5 (fleet values) and UM6 (dashboard) follow the release — the `gawk.ioio.fi` Grafana dashboard (kept in Grafana, replacing R9 M8's checked-in JSON) needs series the relay doesn't have: new vs resumed broadcasts, viewer joins without stripe legs or reconnects, broadcast and watch durations, peak viewers, a client/codec/resolution mix with a closed label vocabulary (client identity as dial query params, codec and resolution parsed from the media), the caps as `gawk_limit`, and a metrics listener for `gawk-admin` ([docs/61](docs/61-usage-and-capacity-metrics.md)) |
 | R60 | [The `rooms-manager` role](#r60--the-rooms-manager-role) | ✅ **implemented 2026-09-29** (RW1–RW3 in one PR): a second bot role on `gawk-admin` beside R49's `rooms-reader`, for a Mumble bot that keeps a room per voice channel — `POST /api/v1/rooms`, `DELETE /api/v1/rooms/{name}` and `/me`, nothing else (`-rooms-manager-role`, chart `oidc.roomsManagerRole`, `off` grants it nowhere). Every portal room now records its creator's `sub` on the `Room` CR, and a caller without `operator` deletes only the static rooms it created (`403 room_not_owned` otherwise), checked and deleted as one UID-bound operation. The fake IdP's bot client carries both roles. **Verified 2026-09-29** on the reference deployment (gawk-admin 1.6.0, a Keycloak client-credentials service account) and against the compose stack's fake IdP ([docs/62](docs/62-rooms-manager-role.md) §7) |
+| R61 | [A `.deb` for the Linux broadcaster](#r61--a-deb-for-the-linux-broadcaster) | 🔧 **implemented 2026-09-30** (DB1–DB3 in one PR), owner's install pass open: `gawk-broadcast-linux-x86_64.deb` beside the tarball, so the launcher entry and icon land in `/usr/share` and the Wayland icon works without `install-desktop.sh`; install-tested in fresh Ubuntu 24.04 and Debian 13 containers. Amends docs/58 OD7 ([docs/63](docs/63-linux-deb-package.md)) |
 
 ---
 
@@ -4802,6 +4803,36 @@ reference deployment the same day with a Keycloak service account holding
 both bot roles, and against the compose stack's fake IdP
 ([docs/62](docs/62-rooms-manager-role.md) §7). Nothing is open on the gawk
 side; the Mumble bot itself lives in its own repository.
+
+---
+
+## R61 — A `.deb` for the Linux broadcaster
+
+**Goal**: installing the Linux app gives it its icon in the launcher, the
+taskbar and notifications, and pulls in the packages it needs.
+
+**Why**: on Wayland the icon comes only from a desktop entry matching the
+window's app ID. winit drops the window's own icon there. The tarball ships
+that entry, but nothing installs it until the user runs `install-desktop.sh`,
+so most installs showed the stock icon. docs/58 OD7 had ruled packages out
+without recorded reasoning; the owner chose `.deb` on 2026-09-30.
+
+**Scope** (chunks DB1–DB3 in [docs/63](docs/63-linux-deb-package.md)):
+
+- **DB1** — `tools/linux/build-deb.sh` (plain `dpkg-deb`, `Depends` from
+  `dpkg-shlibdeps` plus the dlopen and runtime lists, no maintainer
+  scripts) and `tools/linux/test-deb.sh`.
+- **DB2** — CI: build in `linux`, install-test in a fresh `ubuntu:24.04` /
+  `debian:trixie` matrix (`linux-deb`), attach only when that passed.
+- **DB3** — the site's `.deb` button, INSTALL.md, the desktop README,
+  docs/58 amendment, gotchas.
+
+**Non-goals**: an apt repository or a signed package (D7); Flatpak and
+AppImage (§2 Rejected); aarch64.
+
+**Status**: 🔧 implemented 2026-09-30. The owner's install pass on KDE
+Plasma (Wayland) from the first release that carries the package is open
+(docs/63 §4).
 
 ---
 
