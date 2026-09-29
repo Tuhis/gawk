@@ -168,8 +168,10 @@ read-only RBAC on `bans` and the pod's `POD_NAME`/`POD_NAMESPACE` identity.
 the deployed shape.
 
 **The `-admin-*` flags** gate the relay's read-only admin API —
-`GET /internal/admin/broadcasts` and `GET /internal/admin/config` on the
-**ops listener** (docs/42 §4.5), the machine surface `gawk-admin` uses to
+`GET /internal/admin/broadcasts`, `GET /internal/admin/config` and, since
+R49, `GET /internal/admin/rooms` (the live roster of every room this pod is
+home for; an empty list with `-rooms` off, docs/50 D2) on the **ops
+listener** (docs/42 §4.5), the machine surface `gawk-admin` uses to
 enumerate a fleet.
 
 *The surface stays dark until a credential exists*: with `-admin-api-token`

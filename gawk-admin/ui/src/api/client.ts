@@ -224,6 +224,11 @@ export class ApiClient {
     return (await this.json<{ rooms: Room[] }>('rooms')).rooms ?? [];
   }
 
+  /** One room with its roster and attachments (R49); `name` in any spelling. */
+  room(name: string): Promise<Room> {
+    return this.json<Room>(`rooms/${encodeURIComponent(name)}`);
+  }
+
   /** `201 {room, attachSecret?}` — the secret is shown once and never again. */
   createRoom(req: CreateRoomRequest): Promise<RoomWithSecret> {
     return this.post<RoomWithSecret>('rooms', req);

@@ -25,7 +25,11 @@ type fakePod struct {
 	// failBroadcasts / failConfig make one endpoint answer 500.
 	failBroadcasts bool
 	failConfig     bool
-	hits           atomic.Int64
+	// rooms is what /internal/admin/rooms serves; noRooms makes the route
+	// absent (404), the shape of a relay that predates R49.
+	rooms   []relayscan.Room
+	noRooms bool
+	hits    atomic.Int64
 }
 
 func (p *fakePod) start(t *testing.T) string {
@@ -63,6 +67,20 @@ func (p *fakePod) start(t *testing.T) string {
 			Schema: relayscan.SchemaConfig, Pod: p.name, Version: p.version,
 			Config: map[string]any{"addr": ":4433", "publishSecret": "<set>"},
 		})
+	})
+	mux.HandleFunc("GET /internal/admin/rooms", func(w http.ResponseWriter, r *http.Request) {
+		if !auth(w, r) {
+			return
+		}
+		if p.noRooms {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		rooms := p.rooms
+		if rooms == nil {
+			rooms = []relayscan.Room{}
+		}
+		_ = json.NewEncoder(w).Encode(relayscan.RoomsResponse{Schema: relayscan.SchemaRooms, Pod: p.name, Rooms: rooms})
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -156,6 +174,48 @@ func TestPodFailureDegradesOnlyThatPod(t *testing.T) {
 	}
 	if !sawUnreachable {
 		t.Fatalf("the failing pod was not marked unreachable: %+v", snap.Pods)
+	}
+}
+
+// R49 RA2 (docs/50 D3): every pod's home rooms are merged into one list,
+// each tagged with the pod that holds its roster.
+func TestScanCollectsHomeRoomsAcrossPods(t *testing.T) {
+	a := &fakePod{name: "gawk-server-0", rooms: []relayscan.Room{{Code: "tuhisroom", Kind: "static",
+		Participants: []relayscan.RoomParticipant{{ID: 1, Nickname: "tuhis"}}}}}
+	b := &fakePod{name: "gawk-server-1", rooms: []relayscan.Room{{Code: "abcdef", Kind: "dynamic"}}}
+	sc, _ := relayscan.New(relayscan.Options{Resolve: relayscan.StaticResolver(a.start(t), b.start(t))})
+	snap, err := sc.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if len(snap.Rooms) != 2 || snap.Rooms[0].Code != "abcdef" || snap.Rooms[1].Code != "tuhisroom" {
+		t.Fatalf("rooms = %+v", snap.Rooms)
+	}
+	r, ok := snap.Room("tuhisroom")
+	if !ok || r.Pod != "gawk-server-0" || len(r.Participants) != 1 || r.Participants[0].Nickname != "tuhis" {
+		t.Fatalf("Room(tuhisroom) = %+v, %v", r, ok)
+	}
+	if _, ok := snap.Room("nosuchroom"); ok {
+		t.Fatal("found a room nobody is home for")
+	}
+}
+
+// A pod that answers broadcasts but not rooms is still reachable, says why its
+// rooms are missing, and contributes none — its broadcasts stay visible.
+func TestRoomsFailureKeepsThePodReachable(t *testing.T) {
+	pod := &fakePod{name: "old", noRooms: true,
+		broadcasts: []relayscan.Broadcast{bc("EEE234", "k", "origin", true, "203.0.113.3", 1, 1)}}
+	sc, _ := relayscan.New(relayscan.Options{Resolve: relayscan.StaticResolver(pod.start(t))})
+	snap, err := sc.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	p := snap.Pods[0]
+	if !p.Reachable || len(snap.Broadcasts) != 1 {
+		t.Fatalf("a rooms failure hid the pod: %+v", p)
+	}
+	if !strings.Contains(p.RoomsErr, "predates R49") || len(snap.Rooms) != 0 {
+		t.Fatalf("roomsErr = %q, rooms = %+v", p.RoomsErr, snap.Rooms)
 	}
 }
 

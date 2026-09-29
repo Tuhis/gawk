@@ -68,3 +68,66 @@ type BroadcastsResponse struct {
 	Pod        string      `json:"pod"`
 	Broadcasts []Broadcast `json:"broadcasts"`
 }
+
+// SchemaRooms names GET /internal/admin/rooms (R49, docs/50 D2).
+const SchemaRooms = "gawk.admin.rooms.v1"
+
+// Room is one row of GET /internal/admin/rooms: a room THIS POD IS HOME FOR,
+// with the live roster and attachment state that exist nowhere else — the
+// Room CR never holds the roster (docs/44 D5). Proxy rows are not listed: a
+// proxying pod knows only a session count, and the home pod is the truth.
+type Room struct {
+	// Code is the RAW, normalized room code — a joinable secret (docs/44
+	// D16), carried here on docs/42 D8's terms: ClusterIP-only and
+	// credential-gated. It equals the Room CR's name.
+	Code string `json:"code"`
+	// Key is the HMAC'd handle /statusz and the metrics use.
+	Key string `json:"key"`
+	// Kind is "static" or "dynamic" (rooms.KindStatic / KindDynamic).
+	Kind        string    `json:"kind"`
+	DisplayCode string    `json:"displayCode"`
+	DisplayName string    `json:"displayName,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	// EmptySince is set while the room has no participants and its empty
+	// grace is running.
+	EmptySince   *time.Time        `json:"emptySince,omitempty"`
+	Attachments  []RoomAttachment  `json:"attachments"`
+	Participants []RoomParticipant `json:"participants"`
+}
+
+// RoomAttachment is one broadcast attached to a room, in attach order.
+type RoomAttachment struct {
+	// BroadcastID is the RAW broadcast ID (docs/50 D5): what makes a watch
+	// link work.
+	BroadcastID string `json:"broadcastId"`
+	Label       string `json:"label,omitempty"`
+	// Live is false while the broadcaster is away (within its grace).
+	Live       bool      `json:"live"`
+	Viewers    int       `json:"viewers"`
+	AttachedAt time.Time `json:"attachedAt"`
+}
+
+// RoomParticipant is one control session in a room.
+type RoomParticipant struct {
+	// ID is the per-room participant ID; a new home pod re-issues it.
+	ID       int    `json:"id"`
+	Nickname string `json:"nickname"`
+	// ClientKind is the R51 contract's closed vocabulary
+	// (events.ClientKind*): web-viewer, web-broadcaster or native.
+	ClientKind string `json:"clientKind"`
+	// Streaming is true while one of the room's attachments is this
+	// participant's broadcast.
+	Streaming bool `json:"streaming"`
+	// Speaking is reserved for a voice bridge and false today.
+	Speaking bool `json:"speaking"`
+	// Identity is reserved for an authenticated identity and empty today
+	// (docs/44 §4.11).
+	Identity string `json:"identity,omitempty"`
+}
+
+// RoomsResponse is the body of GET /internal/admin/rooms.
+type RoomsResponse struct {
+	Schema string `json:"schema"`
+	Pod    string `json:"pod"`
+	Rooms  []Room `json:"rooms"`
+}

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-server/oidcroles"
 )
 
@@ -52,6 +53,10 @@ type StaticWebhook struct {
 	// Enabled defaults to true; a chart-defined webhook can be parked
 	// without deleting its values entry.
 	Enabled *bool `json:"enabled,omitempty"`
+	// Events is the webhook's event filter (R49, docs/50 D8). Absent means
+	// every moderation event and no activity event — what every webhook
+	// received before R49; a list is exact and is validated at start-up.
+	Events []string `json:"events,omitempty"`
 }
 
 // IsEnabled reports whether this webhook should receive deliveries. Absent
@@ -75,6 +80,9 @@ type Config struct {
 	OIDCRolesClaim string // dot-path template to the roles array; oidcroles.Placeholder is substituted per segment
 	OperatorRole   string // the role every R39 route requires
 	FlaggerRole    string // reserved for R40's service identity; unused by any R39 route
+	// RoomsReaderRole grants exactly the two room reads and /me (R49,
+	// docs/50 D1) — a bot's service identity. Empty grants it nowhere.
+	RoomsReaderRole string
 
 	PGDSN string
 
@@ -198,6 +206,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"role every R39 route requires")
 	flaggerRole := fs.String("flagger-role", env("GAWK_ADMIN_FLAGGER_ROLE", "flagger"),
 		"reserved for R40: the role granting flag-only rights; unused by any R39 route")
+	roomsReaderRole := fs.String("rooms-reader-role", env("GAWK_ADMIN_ROOMS_READER_ROLE", "rooms-reader"),
+		"role granting GET /api/v1/rooms, GET /api/v1/rooms/{name} and GET /api/v1/me only (R49); \"off\" grants it nowhere")
 	pgDSN := fs.String("pg-dsn", env("GAWK_ADMIN_PG_DSN", ""), "PostgreSQL DSN (required)")
 	relayScanTarget := fs.String("relay-scan-target", env("GAWK_ADMIN_RELAY_SCAN_TARGET", ""),
 		"DNS name of the relay headless metrics Service; its A records are the pods (required)")
@@ -261,6 +271,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		OIDCRolesClaim:   strings.TrimSpace(*rolesClaim),
 		OperatorRole:     strings.TrimSpace(*operatorRole),
 		FlaggerRole:      strings.TrimSpace(*flaggerRole),
+		RoomsReaderRole:  roleOrOff(*roomsReaderRole),
 		PGDSN:            *pgDSN,
 		RelayScanTarget:  *relayScanTarget,
 		RelayAdminToken:  *relayAdminToken,
@@ -447,8 +458,26 @@ func parseStaticWebhooks(raw string, getenv func(string) string) ([]StaticWebhoo
 		if h.Secret == "" {
 			return nil, fmt.Errorf("-static-webhooks[%s]: environment variable %s is empty", h.Name, h.SecretEnv)
 		}
+		// An unknown event name is a typo that would silently never page;
+		// refusing to start is the visible outcome (docs/50 D8).
+		if err := store.ValidateWebhookEvents(h.Events); err != nil {
+			return nil, fmt.Errorf("-static-webhooks[%s]: %w", h.Name, err)
+		}
 	}
 	return hooks, nil
+}
+
+// ConfigWebhooks is the enabled chart-defined webhooks as the recording path
+// hands them to the store: name and filter (docs/50 D8). Config webhooks are
+// not rows, so the enqueue cannot read their filters itself.
+func (c Config) ConfigWebhooks() []store.ConfigWebhook {
+	var out []store.ConfigWebhook
+	for _, h := range c.StaticWebhooks {
+		if h.IsEnabled() {
+			out = append(out, store.ConfigWebhook{Name: h.Name, Events: h.Events})
+		}
+	}
+	return out
 }
 
 // LogAttrs is the startup log line's payload: every knob a pod resolved, with
@@ -476,6 +505,7 @@ func (c Config) LogAttrs() []any {
 		"oidcRolesClaim", c.RolesClaimPath(),
 		"operatorRole", c.OperatorRole,
 		"flaggerRole", c.FlaggerRole,
+		"roomsReaderRole", c.RoomsReaderRole,
 		"pgDsn", set(c.PGDSN),
 		"relayScanTarget", c.RelayScanTarget,
 		"relayOpsPort", c.RelayOpsPort,
@@ -499,6 +529,18 @@ func (c Config) LogAttrs() []any {
 		"logLevel", c.LogLevel.String(),
 		"logFormat", c.LogFormat,
 	}
+}
+
+// roleOrOff maps an optional role knob to its claim value; "off" (or an empty
+// value) grants the role nowhere. "off" is the spelling that survives the env:
+// an empty GAWK_ADMIN_* variable reads as unset, i.e. the default role — the
+// same reason -metrics-addr has it (R59).
+func roleOrOff(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "off" {
+		return ""
+	}
+	return v
 }
 
 // metricsListen maps the -metrics-addr value to a listen address; "off" (or an

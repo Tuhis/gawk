@@ -809,6 +809,35 @@ catalogue your deployment serves at `/api/v1/asyncapi.json`
 sentence for a receiver that renders nothing else, and `data.portalUrl` is a
 deep link into the portal.
 
+**Which events a webhook gets.** Without an `events` list a webhook receives
+every moderation event — kills, bans, room created/ended/secret rotated — and
+nothing else, which is what an ops pager wants. With a list it receives
+exactly the listed types. Four room activity events can only be had that way
+(R49, [docs/50](50-rooms-read-api.md)): `room.attached`, `room.detached`,
+`room.participant_joined` and `room.participant_left`, each delivered as the
+relay's own bus event with `summary` and `portalUrl` added. They need the
+event bus ([§12](#12-the-event-bus-nats--r50)); with it off, they never fire.
+
+```yaml
+notifications:
+  webhooks:
+    - name: ops-pager            # no events: moderation only, as always
+      url: https://ntfy.example.com/gawk-moderation
+      secretRef: { name: gawk-admin-webhooks, key: ops-pager }
+    - name: mumble-bot
+      url: https://bot.example.org/gawk
+      secretRef: { name: gawk-admin-webhooks, key: mumble-bot }
+      events: [room.attached, room.detached, room.participant_joined]
+```
+
+When a room moves to another relay pod (a rollout, a pod restart) its
+participants reconnect, and the bus reports a `room.participant_left` with
+`reason: home_moved` followed by a `room.participant_joined` with
+`rejoin: true`. Nobody came or went, so both are dropped unless the list also
+names `room.participant_rejoined`. An unknown name in the list stops the
+portal from starting (chart) or is a `400` (portal-created webhooks, whose
+form has the same picker).
+
 **What your receiver must do**, and none of it is optional:
 
 - **Verify the signature** before parsing anything. An unverified webhook
@@ -947,7 +976,7 @@ redacts every secret-bearing field at the source, so the portal never holds
 one), any media, or cluster credentials beyond `Ban` CRUD and a leader Lease in
 one namespace — that is the entire Role the chart creates.
 
-Two more things worth naming rather than discovering:
+More things worth naming rather than discovering:
 
 - **A database reader can forge webhook signatures** for portal-created
   webhooks, because their secrets are rows. Chart-defined webhooks keep their
@@ -957,6 +986,12 @@ Two more things worth naming rather than discovering:
   (§12), which the portal records as *activity* — never as a moderation event,
   never as a ban — and which a webhook may forward. It yields nothing else: the
   relay's user can publish and cannot read the stream or reconfigure it.
+  Since R49 such an event can reach a webhook that subscribed to room
+  activity; it still reaches none that did not.
+- **A leaked `rooms-reader` token is a join link to every room** until it
+  expires (R49, [§9.8](#a-service-identity-for-a-bot)): the room reads return
+  raw room codes and attached broadcast IDs. It yields no write, no ban and no
+  address.
 - **Rotating `config.resumeTokenKey` revokes every resume token fleet-wide**,
   instantly, for every broadcaster. It is the largest hammer in the box and it
   is not a moderation tool — but on a day when it is the right one, it is
@@ -1014,15 +1049,27 @@ A bot is not a person, so it does not do the browser flow. Give it its own
 2. Client scopes → make sure the **audience** the portal validates (`aud`,
    normally the `gawk-admin` client ID) lands in this client's tokens too.
    Without it the portal answers `401`, correctly.
-3. Service account roles → assign the role the bot needs. Today that is the
-   **operator role**, which is the whole portal — kill and ban included. Give a
-   bot that role only when you mean it; R49 adds a read-only `rooms-reader`.
+3. Service account roles → assign the role the bot needs, as a **client
+   role of the `gawk-admin` client** (the portal reads
+   `resource_access.<audience>.roles`). There are two:
 
-   The claim value is `operator` unless you renamed it with `-operator-role`
-   (`oidc.operatorRole` in the chart). You never have to guess which: the
-   document your deployment serves states the value it expects, per operation,
-   under `x-gawk-roles` — the repository copy names roles symbolically, the
-   served copy names yours.
+   - **`rooms-reader`** reaches exactly `GET /api/v1/rooms`,
+     `GET /api/v1/rooms/{name}` and `GET /api/v1/me` (R49,
+     [docs/50](50-rooms-read-api.md)). It is what a bot that posts who is in
+     a room needs. Those two reads return raw room codes, join links and
+     broadcast IDs, so **a `rooms-reader` token can join every room and
+     watch every attached broadcast in the deployment** — it cannot kill,
+     ban, end a room, read bans or see a publisher's address.
+   - **`operator`** is the whole portal, kill and ban included. Give a bot
+     that role only when you mean it.
+
+   The claim values are `operator` and `rooms-reader` unless you renamed
+   them with `-operator-role` / `-rooms-reader-role` (`oidc.operatorRole` /
+   `oidc.roomsReaderRole` in the chart; set the latter empty — `off` on the
+   flag or its env var — to grant it
+   nowhere). You never have to guess: the document your deployment serves
+   states the values it expects, per operation, under `x-gawk-roles` — the
+   repository copy names roles symbolically, the served copy names yours.
 
 Then:
 
@@ -1037,10 +1084,38 @@ $ curl -s -H "Authorization: Bearer $TOKEN" \
 {
   "email": "",
   "subject": "service-account-gawk-bot",
-  "roles": ["operator"],
+  "roles": ["rooms-reader"],
   "defaults": { "killCooldownSeconds": 600 },
   "features": { "rooms": true }
 }
+
+$ curl -s -H "Authorization: Bearer $TOKEN" \
+    https://admin.gawk.example.com/api/v1/rooms/TuhisRoom | jq '{live, links, counts, participants}'
+{
+  "live": true,
+  "links": { "join": "https://gawk.example.com/#/room/TuhisRoom" },
+  "counts": { "participants": 3, "streaming": 2, "watching": 1, "attachments": 2 },
+  "participants": [
+    { "id": 1, "nickname": "tuhis", "clientKind": "native", "streaming": true, "speaking": false },
+    …
+  ]
+}
+```
+
+`live: false` means no reachable relay pod is home for the room right now, so
+who is in it is unknown — not that it is empty. Pair the reads with a webhook
+subscribed to the room events ([§9.5](#95-webhooks)) and the bot fetches a
+room when an event names it instead of polling.
+
+The compose stack's fake IdP ([docs/41](41-local-dev-stack.md)) has the same
+shape for trying this locally: client `gawk-rooms-bot`, secret
+`dev-rooms-bot-secret`, role `rooms-reader`, token endpoint
+`http://localhost:8088/idp/token` (start the stack with `ADMIN_ROOMS=1`):
+
+```console
+$ TOKEN=$(curl -s -u gawk-rooms-bot:dev-rooms-bot-secret -d grant_type=client_credentials \
+    http://localhost:8088/idp/token | jq -r .access_token)
+$ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8088/api/v1/rooms | jq
 ```
 
 `/api/v1/me` is the probe worth calling first: it proves the token is accepted
@@ -1120,7 +1195,18 @@ handle broadcasts use (never the code), `gawk_rooms_live{kind}`,
 `gawk_room_participants{room}`, `gawk_room_attachments{room}` and
 `gawk_room_proxied_sessions`; telemetry sessions carry the room key so the
 R31 UI can list a room's sessions. Room codes are joinable secrets: they
-appear in no log at Info, no webhook, and no `/statusz`.
+appear in no log at Info and no `/statusz`. They do appear in webhook
+deliveries about a room ([§9.5](#95-webhooks), docs/52 D9) and in
+`gawk-admin`'s room reads.
+
+**Reading rooms from your own software** — which rooms are live, who is in
+one, what is attached, and a join link to post — is
+`GET /api/v1/rooms` and `GET /api/v1/rooms/{name}` on `gawk-admin`, for an
+operator or a `rooms-reader` service identity
+([§9.8](#a-service-identity-for-a-bot)). The roster lives only on the room's
+home relay pod, so `gawk-admin` reads it from each pod's ops listener
+(`/internal/admin/rooms`, the same credential-gated surface the broadcasts
+view uses) behind a 2-second cache.
 
 ## 11. Troubleshooting
 

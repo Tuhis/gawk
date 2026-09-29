@@ -21,6 +21,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/coreos/go-oidc/v3/oidc/oidctest"
 
+	"github.com/Tuhis/gawk/gawk-server/adminapi"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
@@ -87,7 +88,7 @@ func TestAdminRoutesAreDarkWithoutACredential(t *testing.T) {
 			} else {
 				h, _ = adminHandler(t, config.Config{}, tc.auth, nil)
 			}
-			for _, path := range []string{"/internal/admin/broadcasts", "/internal/admin/config"} {
+			for _, path := range []string{"/internal/admin/broadcasts", "/internal/admin/config", "/internal/admin/rooms"} {
 				// Unauthenticated AND with a plausible credential: both 404.
 				for _, bearer := range []string{"", adminToken} {
 					if w := get(h, path, bearer); w.Code != http.StatusNotFound {
@@ -112,22 +113,25 @@ func TestAdminStaticTokenAuth(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 
-	if w := get(h, "/internal/admin/broadcasts", adminToken); w.Code != http.StatusOK {
-		t.Fatalf("GET with the right token = %d, want 200", w.Code)
-	}
-	for _, tc := range []struct{ name, bearer string }{
-		{"no header", ""},
-		{"wrong token", "not-the-token"},
-		{"right token with a trailing byte", adminToken + "x"},
-		{"a prefix of the token", adminToken[:len(adminToken)-1]},
-		{"empty credential", " "},
-	} {
-		w := get(h, "/internal/admin/broadcasts", tc.bearer)
-		if w.Code != http.StatusUnauthorized {
-			t.Errorf("%s: status = %d, want 401", tc.name, w.Code)
+	// R49 (docs/50 D2): the rooms route sits behind exactly the same gate.
+	for _, path := range []string{"/internal/admin/broadcasts", "/internal/admin/rooms"} {
+		if w := get(h, path, adminToken); w.Code != http.StatusOK {
+			t.Fatalf("GET %s with the right token = %d, want 200", path, w.Code)
 		}
-		if body := w.Body.String(); strings.Contains(body, adminToken) {
-			t.Errorf("%s: the response echoed the configured token: %q", tc.name, body)
+		for _, tc := range []struct{ name, bearer string }{
+			{"no header", ""},
+			{"wrong token", "not-the-token"},
+			{"right token with a trailing byte", adminToken + "x"},
+			{"a prefix of the token", adminToken[:len(adminToken)-1]},
+			{"empty credential", " "},
+		} {
+			w := get(h, path, tc.bearer)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("%s %s: status = %d, want 401", path, tc.name, w.Code)
+			}
+			if body := w.Body.String(); strings.Contains(body, adminToken) {
+				t.Errorf("%s %s: the response echoed the configured token: %q", path, tc.name, body)
+			}
 		}
 	}
 
@@ -217,6 +221,8 @@ func TestStatuszStaysByteIdenticalOnBothListeners(t *testing.T) {
 	withAdmin := Handler(r, nil, promReg, discardLog, nil, &AdminOptions{
 		Registry: r, Config: config.Config{AdminAPIToken: adminToken},
 		Auth: staticAuth(t, adminToken), Log: discardLog,
+		// R49: a relay serving the rooms route too (docs/50 RA1).
+		Rooms: func() []adminapi.Room { return []adminapi.Room{{Code: "tuhisroom", Key: "k"}} },
 	})
 	// ...the same listener with it disabled...
 	promReg2 := metrics.NewBaseRegistry("test-version")
@@ -254,6 +260,55 @@ func TestStatuszStaysByteIdenticalOnBothListeners(t *testing.T) {
 	if !strings.Contains(first, r.ObfuscateID(id)) {
 		t.Errorf("/statusz is not keyed by ObfuscateID:\n%s", first)
 	}
+}
+
+// R49 RA1 (docs/50 D2, D11): the rooms route serves what the registry
+// snapshot says, raw code and all, never cached — and a relay with -rooms off
+// (no snapshot function) answers an empty LIST, not null and not a 404.
+func TestAdminRoomsRoute(t *testing.T) {
+	t.Run("rooms off", func(t *testing.T) {
+		h, _ := adminHandler(t, config.Config{AdminAPIToken: adminToken}, staticAuth(t, adminToken), nil)
+		w := get(h, "/internal/admin/rooms", adminToken)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		want := `{"schema":"gawk.admin.rooms.v1","pod":"gawk-server-abc123","rooms":[]}` + "\n"
+		if got := w.Body.String(); got != want {
+			t.Errorf("body = %q, want %q", got, want)
+		}
+	})
+	t.Run("rooms on", func(t *testing.T) {
+		r := hub.NewRegistry(discardLog, hub.Options{})
+		created := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+		h := Handler(r, nil, metrics.NewBaseRegistry("v"), discardLog, nil, &AdminOptions{
+			Registry: r, Pod: "gawk-server-abc123", Auth: staticAuth(t, adminToken), Log: discardLog,
+			Rooms: func() []adminapi.Room {
+				return []adminapi.Room{{
+					Code: "tuhisroom", Key: "hmac", Kind: "static", DisplayCode: "TuhisRoom", CreatedAt: created,
+					Attachments:  []adminapi.RoomAttachment{{BroadcastID: "ABC23Z", Label: "pc", Live: true, Viewers: 2, AttachedAt: created}},
+					Participants: []adminapi.RoomParticipant{{ID: 1, Nickname: "tuhis", ClientKind: "native", Streaming: true}},
+				}}
+			},
+		})
+		w := get(h, "/internal/admin/rooms", adminToken)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		if w.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store — the body carries room codes", w.Header().Get("Cache-Control"))
+		}
+		var got adminapi.RoomsResponse
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Schema != SchemaAdminRooms || got.Pod != "gawk-server-abc123" || len(got.Rooms) != 1 {
+			t.Fatalf("response = %+v", got)
+		}
+		rm := got.Rooms[0]
+		if rm.Code != "tuhisroom" || rm.Attachments[0].BroadcastID != "ABC23Z" || rm.Participants[0].Nickname != "tuhis" {
+			t.Errorf("room = %+v", rm)
+		}
+	})
 }
 
 // The config route serves the redacted view and nothing else. The
@@ -306,6 +361,7 @@ func TestAdminAPIExposesNoWriteVerbs(t *testing.T) {
 		for _, path := range []string{
 			"/internal/admin/broadcasts", "/internal/admin/config",
 			"/internal/admin/broadcasts/ABC23Z/kill", "/internal/admin/bans",
+			"/internal/admin/rooms", "/internal/admin/rooms/tuhisroom",
 		} {
 			w := httptest.NewRecorder()
 			req := httptest.NewRequest(method, path, nil)
@@ -598,9 +654,11 @@ func TestAdminJWTAuthRejections(t *testing.T) {
 		{"valid token whose roles claim is not an array", idp.token(idp.url, testAud, time.Now().Add(time.Hour), `{"nested":"object"}`), http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := get(h, "/internal/admin/broadcasts", tc.token)
-			if w.Code != tc.want {
-				t.Errorf("status = %d, want %d (body %q)", w.Code, tc.want, w.Body.String())
+			for _, path := range []string{"/internal/admin/broadcasts", "/internal/admin/rooms"} {
+				w := get(h, path, tc.token)
+				if w.Code != tc.want {
+					t.Errorf("%s: status = %d, want %d (body %q)", path, w.Code, tc.want, w.Body.String())
+				}
 			}
 		})
 	}

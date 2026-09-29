@@ -688,6 +688,54 @@ func TestRequireRoleWithAnEmptyRolePanics(t *testing.T) {
 	a.RequireRole("")
 }
 
+// R49 RA3 (docs/50 D1): a route two roles may call admits either one and
+// refuses a token holding neither — and an empty role list is a wiring panic,
+// never "admit everyone".
+func TestRequireAnyRoleAdmitsEitherRoleAndRefusesNeither(t *testing.T) {
+	idp := newFakeIDP(t)
+	a := newTestAuth(t, testConfig(t, idp.url()), Options{})
+	h := a.Middleware(a.RequireAnyRole(testOperator, "rooms-reader")(okHandler()))
+	withRoles := func(roles ...any) string {
+		return idp.mint(t, idp.claims(func(c map[string]any) {
+			c["resource_access"] = map[string]any{testAudience: map[string]any{"roles": roles}}
+		}))
+	}
+	for _, tc := range []struct {
+		name  string
+		token string
+		want  int
+	}{
+		{"operator", withRoles(testOperator), http.StatusOK},
+		{"rooms-reader", withRoles("rooms-reader"), http.StatusOK},
+		{"both", withRoles("rooms-reader", testOperator), http.StatusOK},
+		{"neither", withRoles("flagger"), http.StatusForbidden},
+		{"none at all", withRoles(), http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := do(t, h, http.MethodGet, "/api/v1/rooms", tc.token)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body %q)", rec.Code, tc.want, rec.Body.String())
+			}
+			if tc.want == http.StatusForbidden {
+				if e := decodeError(t, rec); e.Code != CodeForbidden {
+					t.Errorf("code = %q, want %q", e.Code, CodeForbidden)
+				}
+			}
+		})
+	}
+
+	for _, roles := range [][]string{nil, {""}, {testOperator, "  "}} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("RequireAnyRole(%q) returned a middleware; want a panic at wiring time", roles)
+				}
+			}()
+			a.RequireAnyRole(roles...)
+		}()
+	}
+}
+
 // docs/42 §6 "OIDC provider down": no new logins, enforcement untouched — the
 // portal degrades. It does not die, and it must not take both replicas into
 // CrashLoopBackOff over an IdP restart (D16).

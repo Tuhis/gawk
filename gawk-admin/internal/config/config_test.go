@@ -50,8 +50,8 @@ func TestDefaults(t *testing.T) {
 	if cfg.KillCooldown != 10*time.Minute {
 		t.Errorf("KillCooldown = %v, want 10m", cfg.KillCooldown)
 	}
-	if cfg.OperatorRole != "operator" || cfg.FlaggerRole != "flagger" {
-		t.Errorf("roles = %q/%q, want operator/flagger", cfg.OperatorRole, cfg.FlaggerRole)
+	if cfg.OperatorRole != "operator" || cfg.FlaggerRole != "flagger" || cfg.RoomsReaderRole != "rooms-reader" {
+		t.Errorf("roles = %q/%q/%q, want operator/flagger/rooms-reader", cfg.OperatorRole, cfg.FlaggerRole, cfg.RoomsReaderRole)
 	}
 	if cfg.Namespace != "production" {
 		t.Errorf("Namespace = %q, want production (from POD_NAMESPACE)", cfg.Namespace)
@@ -245,6 +245,8 @@ func TestStaticWebhookRejections(t *testing.T) {
 		"unset secret env":  `[{"name":"a","url":"https://x/y","secretEnv":"NOT_SET_ANYWHERE"}]`,
 		"bad url":           `[{"name":"a","url":"not-a-url","secretEnv":"S"}]`,
 		"duplicate names":   `[{"name":"a","url":"https://x/y","secretEnv":"S"},{"name":"a","url":"https://x/z","secretEnv":"S"}]`,
+		// R49 D8: a typo in the filter would silently never page.
+		"unknown event": `[{"name":"a","url":"https://x/y","secretEnv":"S","events":["room.participant_joind"]}]`,
 	}
 	for name, raw := range cases {
 		env := minimal()
@@ -353,5 +355,52 @@ func TestMetricsAddr(t *testing.T) {
 	}
 	if cfg.MetricsAddr != ":7777" {
 		t.Errorf("flag: MetricsAddr = %q, want :7777 (the flag wins over the env)", cfg.MetricsAddr)
+	}
+}
+
+// R49 D8: a chart webhook's `events` list is parsed, and only enabled
+// webhooks reach the enqueue, each with its own filter.
+// R49 D1: the rooms-reader role can be switched OFF. An empty env var cannot
+// say so — getenv cannot tell "set to empty" from "unset", and unset means
+// the default — so the explicit flag is the way, and the chart renders it
+// (review finding, 2026-09-29).
+func TestRoomsReaderRoleCanBeTurnedOff(t *testing.T) {
+	cfg, err := ParseFlags([]string{"-rooms-reader-role="}, envFrom(minimal()))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.RoomsReaderRole != "" {
+		t.Fatalf("RoomsReaderRole = %q with -rooms-reader-role=, want empty (granted nowhere)", cfg.RoomsReaderRole)
+	}
+	env := minimal()
+	env["GAWK_ADMIN_ROOMS_READER_ROLE"] = "mumble-bot"
+	if cfg, _ := ParseFlags(nil, envFrom(env)); cfg.RoomsReaderRole != "mumble-bot" {
+		t.Fatalf("RoomsReaderRole = %q from the env, want mumble-bot", cfg.RoomsReaderRole)
+	}
+	// "off" is how the env says it — R59's -metrics-addr convention — and
+	// what the chart renders for oidc.roomsReaderRole: "".
+	env["GAWK_ADMIN_ROOMS_READER_ROLE"] = "off"
+	if cfg, _ := ParseFlags(nil, envFrom(env)); cfg.RoomsReaderRole != "" {
+		t.Fatalf("RoomsReaderRole = %q with the env set to off, want empty (granted nowhere)", cfg.RoomsReaderRole)
+	}
+	if cfg, _ := ParseFlags([]string{"-rooms-reader-role", "off"}, envFrom(minimal())); cfg.RoomsReaderRole != "" {
+		t.Fatalf("RoomsReaderRole = %q with -rooms-reader-role off, want empty", cfg.RoomsReaderRole)
+	}
+}
+
+func TestStaticWebhookEventFilter(t *testing.T) {
+	env := minimal()
+	env["GAWK_ADMIN_STATIC_WEBHOOKS"] = `[{"name":"pager","url":"https://p.example/h","secretEnv":"S"},
+	  {"name":"bot","url":"https://b.example/h","secretEnv":"S","events":["room.participant_joined","room.participant_rejoined"]},
+	  {"name":"parked","url":"https://x.example/h","secretEnv":"S","enabled":false,"events":["room.attached"]}]`
+	env["S"] = "c2Vrcml0"
+	cfg, err := ParseFlags(nil, envFrom(env))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	hooks := cfg.ConfigWebhooks()
+	if len(hooks) != 2 || hooks[0].Name != "pager" || hooks[0].Events != nil ||
+		hooks[1].Name != "bot" || len(hooks[1].Events) != 2 {
+		t.Fatalf("ConfigWebhooks = %+v", hooks)
 	}
 }

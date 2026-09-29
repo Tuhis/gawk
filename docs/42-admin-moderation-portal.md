@@ -778,10 +778,11 @@ the chart's values and the startup log.
 | `-relay-admin-token` | *(required)* | Bearer for `/internal/admin/*` (must equal the relay's `-admin-api-token`). |
 | `-namespace` | `POD_NAMESPACE` | Where Ban CRs live. |
 | `-kill-cooldown` | `10m` | Default plain-kill ID-ban duration (D5). |
-| `-static-webhooks` | `""` | JSON list `[{"name","url","secretEnv"}]` rendered from `notifications.webhooks` chart values — `secretEnv` names an env var wired from a k8s Secret, so signing keys never sit in the values file. Immutable from the UI (D9, §4.10). |
+| `-static-webhooks` | `""` | JSON list `[{"name","url","secretEnv"[,"enabled"][,"events"]}]` rendered from `notifications.webhooks` chart values — `secretEnv` names an env var wired from a k8s Secret, so signing keys never sit in the values file. Immutable from the UI (D9, §4.10). `events` is R49's per-webhook filter (docs/50 D8). |
 | `-app-base-url` | `""` | Watch deep links (empty hides them). |
 | `-telemetry-base-url` | `""` | Telemetry deep links (empty hides them). |
 | `-flagger-role` | `flagger` | Reserved for R40: the role granting *flag-only* rights to client-credentials service identities (§4.11). Unused by any route in R39. |
+| `-rooms-reader-role` | `rooms-reader` | R49 (docs/50 D1): the read-only role reaching exactly `GET /api/v1/rooms`, `GET /api/v1/rooms/{name}` and `GET /api/v1/me`, for a bot's client-credentials service identity. `off` grants it nowhere (an empty env var reads as unset and keeps the default, so the chart renders `off` for `oidc.roomsReaderRole: ""` — R59's `-metrics-addr` convention). Chart `oidc.roomsReaderRole`. |
 
 ### 4.13 Helm & deployment footprint
 

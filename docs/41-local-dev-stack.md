@@ -580,6 +580,13 @@ Three mechanisms are load-bearing:
   GAWK_DEV_CERT precedent — deliberately absent from the chart). The browser
   reaches it through the published port, the portal process through its own
   listener; the Keycloak frontend/backchannel split, answered with one path.
+- **A bot's service identity too** (R49, docs/50 D9): the fake IdP also
+  serves the `client_credentials` grant for one confidential client,
+  `gawk-rooms-bot` / `dev-rooms-bot-secret`, whose tokens carry only
+  `rooms-reader` — `curl -u gawk-rooms-bot:dev-rooms-bot-secret -d
+  grant_type=client_credentials ${ADMIN_URL}/idp/token`. With
+  `ADMIN_ROOMS=1` that token reads `/api/v1/rooms` (the file-sourced
+  `devroom` included) and is 403 everywhere an operator is not.
 - **Break-glass parity.** `kubectl --kubeconfig dev/generated/kubeconfig get
   bans` works against the dev control plane — the docs/42 §9.6 emergency
   surface, practisable locally, adoption and all.

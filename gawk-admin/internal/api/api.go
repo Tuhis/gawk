@@ -168,8 +168,9 @@ type Options struct {
 	// internal/auth; api never validates a token itself.
 	Authn func(http.Handler) http.Handler
 	// RequireRole wraps a handler so it runs only when the context identity
-	// carries role. Supplied by internal/auth.
-	RequireRole func(role string) func(http.Handler) http.Handler
+	// carries at least one of roles (the configured claim values, never the
+	// symbolic names). Supplied by internal/auth's RequireAnyRole.
+	RequireRole func(roles ...string) func(http.Handler) http.Handler
 
 	// Recorder and Tester are AP7's dispatcher. Both have safe defaults so
 	// this package is testable without internal/notify.
@@ -236,7 +237,10 @@ func New(opts Options) (*API, error) {
 		Version:     opts.Version,
 		// The served copy names the roles THIS deployment expects, not the
 		// symbolic ones the repository file carries (docs/49 D6).
-		Roles: map[string]string{RoleOperator: opts.Config.OperatorRole},
+		Roles: map[string]string{
+			RoleOperator:    opts.Config.OperatorRole,
+			RoleRoomsReader: opts.Config.RoomsReaderRole,
+		},
 	}
 	contract, err := openapi.New(docOpts)
 	if err != nil {
@@ -272,8 +276,14 @@ func (a *API) handleGetEventSchema(w http.ResponseWriter, r *http.Request) {
 // It is not the string the role check compares against: that is
 // Config.OperatorRole, which a deployment renames to match its IdP's claim.
 // The table names the role the API means; protect resolves it to the role this
-// deployment calls it. R49 adds `rooms-reader` beside it.
+// deployment calls it.
 const RoleOperator = "operator"
+
+// RoleRoomsReader is the symbolic read-only role for a bot's service identity
+// (R49, docs/50 D1): exactly the two room reads and /me, resolved to
+// Config.RoomsReaderRole. The model is one role per capability, so the routes
+// it reaches name it beside RoleOperator rather than the operator implying it.
+const RoleRoomsReader = "rooms-reader"
 
 // Features a route may require. A route whose Requires names a feature that is
 // off is NOT registered, so the catch-all answers its path with the documented
@@ -334,7 +344,7 @@ var routeTable = []routeEntry{
 	{Route{Method: "GET", Pattern: "/api/v1/schemas/events/{name}"},
 		func(a *API) http.HandlerFunc { return a.handleGetEventSchema }},
 
-	{Route{Method: "GET", Pattern: "/api/v1/me", Roles: []string{RoleOperator}},
+	{Route{Method: "GET", Pattern: "/api/v1/me", Roles: []string{RoleOperator, RoleRoomsReader}},
 		func(a *API) http.HandlerFunc { return a.handleMe }},
 
 	{Route{Method: "GET", Pattern: "/api/v1/broadcasts", Roles: []string{RoleOperator}},
@@ -369,8 +379,10 @@ var routeTable = []routeEntry{
 	// fall through to the catch-all's 404, exactly like R40's reserved route,
 	// so nothing can be reached that the ServiceAccount could not act on
 	// anyway.
-	{Route{Method: "GET", Pattern: "/api/v1/rooms", Roles: []string{RoleOperator}, Requires: RequiresRooms},
+	{Route{Method: "GET", Pattern: "/api/v1/rooms", Roles: []string{RoleOperator, RoleRoomsReader}, Requires: RequiresRooms},
 		func(a *API) http.HandlerFunc { return a.handleListRooms }},
+	{Route{Method: "GET", Pattern: "/api/v1/rooms/{name}", Roles: []string{RoleOperator, RoleRoomsReader}, Requires: RequiresRooms},
+		func(a *API) http.HandlerFunc { return a.handleGetRoom }},
 	{Route{Method: "POST", Pattern: "/api/v1/rooms", Roles: []string{RoleOperator}, Requires: RequiresRooms},
 		func(a *API) http.HandlerFunc { return a.handleCreateRoom }},
 	{Route{Method: "POST", Pattern: "/api/v1/rooms/{name}/rotate-secret", Roles: []string{RoleOperator}, Requires: RequiresRooms},
@@ -448,22 +460,48 @@ func (a *API) wrap(r Route, h http.HandlerFunc) http.Handler {
 	if len(r.Roles) == 0 {
 		return h
 	}
-	return a.protect(h)
+	return a.protect(h, r.Roles)
 }
 
 // protect wraps a handler in the injected authentication and role check. Both
 // are optional so the package is testable standalone; in production main.go
-// supplies them and every route below is behind a valid token carrying the
-// operator role (D17).
-func (a *API) protect(h http.HandlerFunc) http.Handler {
+// supplies them and every route below is behind a valid token carrying one of
+// its table roles (D17), resolved to this deployment's claim values.
+func (a *API) protect(h http.HandlerFunc, symbolic []string) http.Handler {
 	var handler http.Handler = h
 	if a.opts.RequireRole != nil {
-		handler = a.opts.RequireRole(a.opts.Config.OperatorRole)(handler)
+		handler = a.opts.RequireRole(a.resolveRoles(symbolic)...)(handler)
 	}
 	if a.opts.Authn != nil {
 		handler = a.opts.Authn(handler)
 	}
 	return handler
+}
+
+// resolveRoles maps the table's symbolic roles to the configured claim
+// values. A role configured empty is granted nowhere and drops out; the
+// operator role cannot be empty (config refuses to start), so every protected
+// route keeps at least one role and RequireAnyRole never sees an empty list.
+func (a *API) resolveRoles(symbolic []string) []string {
+	out := make([]string, 0, len(symbolic))
+	for _, s := range symbolic {
+		var actual string
+		switch s {
+		case RoleOperator:
+			actual = a.opts.Config.OperatorRole
+		case RoleRoomsReader:
+			actual = a.opts.Config.RoomsReaderRole
+		default:
+			// An unknown symbolic name is a table bug. Passing it through
+			// verbatim fails closed: no IdP issues a claim named after it by
+			// accident, and the drift test names every role the document uses.
+			actual = s
+		}
+		if actual != "" {
+			out = append(out, actual)
+		}
+	}
+	return out
 }
 
 // Healthz is liveness: the process is running. It deliberately does NOT touch

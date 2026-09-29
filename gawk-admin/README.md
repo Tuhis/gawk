@@ -209,8 +209,11 @@ Two consequences worth knowing before turning it on:
 - The reconciler's once-a-minute **room sweep is retired** while the bus is on.
   A room's end now arrives from the relay that ended it, with its reason, and
   is recorded as the same `room.ended` row a webhook receiver has always got.
-- Activity types are **not** webhook-eligible. Ingesting a thousand joins pages
-  nobody.
+- Activity rows reach **no** webhook by default. Ingesting a thousand joins
+  pages nobody; four room activity types (`room.attached`, `room.detached`,
+  `room.participant_joined`, `room.participant_left`) are delivered only to a
+  webhook whose `events` list names them (R49,
+  [`docs/50`](../docs/50-rooms-read-api.md) D8).
 
 Setup, including the two scoped NATS users:
 [`docs/self-hosting.md`](../docs/self-hosting.md) §12.

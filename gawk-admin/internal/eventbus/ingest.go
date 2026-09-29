@@ -34,10 +34,11 @@ type StoreIngester struct {
 	// operator-recorded room.ended before writing a "system" one. It mirrors
 	// the reconciler's own window.
 	RoomDedupWindow time.Duration
-	// ConfigWebhooks are the enabled chart-defined webhook names, which are
-	// not rows. Passed through to the fan-out so the mapped room.ended keeps
-	// reaching a chart-configured receiver exactly as the sweep's did.
-	ConfigWebhooks []string
+	// ConfigWebhooks are the enabled chart-defined webhooks and their
+	// filters, which are not rows. Passed through to the fan-out so the
+	// mapped room.ended keeps reaching a chart-configured receiver exactly as
+	// the sweep's did, and a receiver that asked for joins gets them (R49).
+	ConfigWebhooks []store.ConfigWebhook
 	// Notify wakes the webhook dispatcher after a row that fans out. Without
 	// it the delivery still goes, on the dispatcher's next poll; with it a
 	// receiver hears about a room ending as promptly as it did when the
@@ -103,7 +104,7 @@ func (e Event) roomName() string {
 // Rows is what ingesting needs from the store, and nothing more.
 type Rows interface {
 	// AppendBusEvent inserts the row unless its source has been seen before.
-	AppendBusEvent(ctx context.Context, e store.Event, source string, configNames []string) (bool, error)
+	AppendBusEvent(ctx context.Context, e store.Event, source string, config []store.ConfigWebhook) (bool, error)
 	// RoomEndedSince reports whether a room.ended naming this room was
 	// recorded at or after `since` — the portal's own record of an operator
 	// ending it, which the bus must not duplicate.

@@ -83,6 +83,9 @@ type Authenticator interface {
 	// RequireRole runs next only when the context identity carries role. It
 	// must be wrapped by Middleware; a valid token without the role is 403.
 	RequireRole(role string) func(http.Handler) http.Handler
+	// RequireAnyRole is RequireRole for a route more than one role may call
+	// (R49: the room reads admit operator OR rooms-reader, docs/50 D1).
+	RequireAnyRole(roles ...string) func(http.Handler) http.Handler
 }
 
 var _ Authenticator = (*Auth)(nil)
@@ -612,6 +615,25 @@ func (a *Auth) RequireRole(role string) func(http.Handler) http.Handler {
 	if strings.TrimSpace(role) == "" {
 		panic("auth: RequireRole(\"\"): with no required role every valid token would be an operator")
 	}
+	return a.RequireAnyRole(role)
+}
+
+// RequireAnyRole refuses a valid token that carries none of roles (403).
+//
+// The R39 role model is one role per capability, not a hierarchy (docs/50
+// D1): a route a second role may call names both, rather than one role
+// implying the other. It panics on an empty list or an empty entry for
+// RequireRole's reason — either would quietly admit every valid token.
+func (a *Auth) RequireAnyRole(roles ...string) func(http.Handler) http.Handler {
+	if len(roles) == 0 {
+		panic("auth: RequireAnyRole(): with no required role every valid token would be admitted")
+	}
+	for _, role := range roles {
+		if strings.TrimSpace(role) == "" {
+			panic("auth: RequireAnyRole with an empty role: every valid token would be admitted")
+		}
+	}
+	roles = append([]string(nil), roles...)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			setSecurityHeaders(w, a.csp)
@@ -623,12 +645,19 @@ func (a *Auth) RequireRole(role string) func(http.Handler) http.Handler {
 				writeError(w, http.StatusInternalServerError, CodeInternal, "authentication middleware is not wired")
 				return
 			}
-			if !id.HasRole(role) {
-				a.log.Debug("role missing", "role", role, "subject", id.Subject)
-				writeError(w, http.StatusForbidden, CodeForbidden, "this account does not hold the "+role+" role")
+			for _, role := range roles {
+				if id.HasRole(role) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			a.log.Debug("role missing", "roles", roles, "subject", id.Subject)
+			if len(roles) == 1 {
+				writeError(w, http.StatusForbidden, CodeForbidden, "this account does not hold the "+roles[0]+" role")
 				return
 			}
-			next.ServeHTTP(w, r)
+			writeError(w, http.StatusForbidden, CodeForbidden,
+				"this account holds none of the roles "+strings.Join(roles, ", "))
 		})
 	}
 }

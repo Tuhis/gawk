@@ -2,7 +2,8 @@
 // docs/42 D12, §4.5).
 //
 // It resolves the relay's headless metrics Service to pod IPs and scrapes each
-// pod's credential-gated /internal/admin/broadcasts and /internal/admin/config.
+// pod's credential-gated /internal/admin/broadcasts, /internal/admin/config
+// and, since R49, /internal/admin/rooms (docs/50 D3).
 // This is the same discovery shape gawk-telemetry's relayscrape already
 // proves in production (an injectable resolver plus an injectable HTTP client,
 // so tests need neither DNS nor a network), and it was chosen over listing
@@ -29,6 +30,7 @@ package relayscan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -48,6 +50,7 @@ import (
 const (
 	SchemaBroadcasts = adminapi.SchemaBroadcasts
 	SchemaConfig     = adminapi.SchemaConfig
+	SchemaRooms      = adminapi.SchemaRooms
 )
 
 // DefaultCacheTTL is the aggregate cache window (§4.7: "≤2 s cache").
@@ -73,6 +76,18 @@ type Broadcast = adminapi.Broadcast
 
 // BroadcastsResponse is GET /internal/admin/broadcasts — the relay's own type.
 type BroadcastsResponse = adminapi.BroadcastsResponse
+
+// Room is one room as its home pod sees it — the relay's own type (R49).
+type Room = adminapi.Room
+
+// RoomAttachment and RoomParticipant are a room's rows — the relay's types.
+type (
+	RoomAttachment  = adminapi.RoomAttachment
+	RoomParticipant = adminapi.RoomParticipant
+)
+
+// RoomsResponse is GET /internal/admin/rooms — the relay's own type.
+type RoomsResponse = adminapi.RoomsResponse
 
 // ConfigResponse is GET /internal/admin/config. Config is decoded
 // structurally: the relay's sanitized config is a map of knob names to values
@@ -102,6 +117,12 @@ type Pod struct {
 	Config     map[string]any
 	ConfigErr  string
 	Broadcasts []Broadcast
+	// Rooms are the rooms this pod is home for (R49). Scraped independently
+	// like Config: a pod that answers broadcasts but not rooms — a relay
+	// predating R49, or a hiccup — stays reachable, contributes no rooms, and
+	// says why in RoomsErr.
+	Rooms    []Room
+	RoomsErr string
 }
 
 // Placement is one pod's view of a broadcast in the aggregate.
@@ -122,6 +143,13 @@ type Aggregate struct {
 	Pods              []Placement
 }
 
+// RoomAggregate is one live room with the pod that is home for it.
+type RoomAggregate struct {
+	Room
+	// Pod names the home pod — the only pod that holds the roster.
+	Pod string
+}
+
 // Snapshot is one whole-fleet view.
 type Snapshot struct {
 	At   time.Time
@@ -129,6 +157,10 @@ type Snapshot struct {
 	// Broadcasts are sorted by ID so the portal's table does not reshuffle
 	// between refreshes.
 	Broadcasts []Aggregate
+	// Rooms are every room some reachable pod is home for, sorted by code
+	// (R49, docs/50 D3). A room whose home pod did not answer is simply
+	// absent: the portal renders it from its CR as not live.
+	Rooms []RoomAggregate
 	// PodsResolved / PodsAnswered make partial coverage visible rather than
 	// letting an empty answer look like an empty fleet.
 	PodsResolved int
@@ -143,6 +175,16 @@ func (s Snapshot) Broadcast(id string) (Aggregate, bool) {
 		}
 	}
 	return Aggregate{}, false
+}
+
+// Room finds one live room by normalized code.
+func (s Snapshot) Room(code string) (RoomAggregate, bool) {
+	for _, r := range s.Rooms {
+		if r.Code == code {
+			return r, true
+		}
+	}
+	return RoomAggregate{}, false
 }
 
 // Resolver returns the current pod addresses to scrape ("10.42.0.7:2112").
@@ -297,6 +339,7 @@ func (s *Scanner) scan(ctx context.Context, now time.Time) (Snapshot, error) {
 		}
 	}
 	snap.Broadcasts = aggregate(pods)
+	snap.Rooms = aggregateRooms(pods)
 	return snap, nil
 }
 
@@ -309,8 +352,10 @@ func (s *Scanner) scrapePod(ctx context.Context, addr string) Pod {
 		bErr  error
 		cfg   ConfigResponse
 		cErr  error
+		rooms RoomsResponse
+		rErr  error
 	)
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		bErr = s.get(ctx, addr, "/internal/admin/broadcasts", &bcast)
@@ -323,6 +368,13 @@ func (s *Scanner) scrapePod(ctx context.Context, addr string) Pod {
 		cErr = s.get(ctx, addr, "/internal/admin/config", &cfg)
 		if cErr == nil && cfg.Schema != SchemaConfig {
 			cErr = fmt.Errorf("unexpected schema %q (want %q)", cfg.Schema, SchemaConfig)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		rErr = s.get(ctx, addr, "/internal/admin/rooms", &rooms)
+		if rErr == nil && rooms.Schema != SchemaRooms {
+			rErr = fmt.Errorf("unexpected schema %q (want %q)", rooms.Schema, SchemaRooms)
 		}
 	}()
 	wg.Wait()
@@ -349,6 +401,21 @@ func (s *Scanner) scrapePod(ctx context.Context, addr string) Pod {
 			p.Name = cfg.Pod
 		}
 	}
+	switch {
+	case !p.Reachable:
+		// The pod is already reported as down; a second error says nothing.
+	case rErr != nil:
+		s.opts.Log.Debug("relayscan: pod rooms scrape failed", "addr", addr, "err", rErr)
+		p.RoomsErr = rErr.Error()
+		// A 404 here, with broadcasts answering, is a relay that predates
+		// R49 — not the missing-token case get() would name.
+		var nf *notFoundError
+		if errors.As(rErr, &nf) {
+			p.RoomsErr = "/internal/admin/rooms returned 404: the relay predates R49"
+		}
+	default:
+		p.Rooms = rooms.Rooms
+	}
 	return p
 }
 
@@ -370,7 +437,7 @@ func (s *Scanner) get(ctx context.Context, addr, path string, out any) error {
 		// 404 means the relay has no credential configured (§4.3) — worth
 		// saying plainly, because it is the most likely misconfiguration.
 		if resp.StatusCode == http.StatusNotFound {
-			return fmt.Errorf("%s returned 404: the relay has no -admin-api-token configured", path)
+			return &notFoundError{path: path}
 		}
 		return fmt.Errorf("%s returned %d", path, resp.StatusCode)
 	}
@@ -417,6 +484,34 @@ func aggregate(pods []Pod) []Aggregate {
 		out = append(out, *agg)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// notFoundError is a 404 from a pod, typed so a caller can tell "this route
+// does not exist" from every other failure without parsing the message.
+type notFoundError struct{ path string }
+
+func (e *notFoundError) Error() string {
+	return e.path + " returned 404: the relay has no -admin-api-token configured"
+}
+
+// aggregateRooms lists every room some reachable pod is home for. Exactly one
+// pod is home for a room; should two briefly claim it (an adoption racing a
+// lease expiry), the first pod in scrape order (sorted by address) stands, so
+// the answer is stable.
+func aggregateRooms(pods []Pod) []RoomAggregate {
+	seen := map[string]bool{}
+	var out []RoomAggregate
+	for _, p := range pods {
+		for _, r := range p.Rooms {
+			if seen[r.Code] {
+				continue
+			}
+			seen[r.Code] = true
+			out = append(out, RoomAggregate{Room: r, Pod: p.Name})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
 	return out
 }
 

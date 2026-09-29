@@ -219,7 +219,7 @@ type fakeRows struct {
 	err       error
 }
 
-func (f *fakeRows) AppendBusEvent(_ context.Context, e store.Event, source string, _ []string) (bool, error) {
+func (f *fakeRows) AppendBusEvent(_ context.Context, e store.Event, source string, _ []store.ConfigWebhook) (bool, error) {
 	f.appended = append(f.appended, e)
 	f.sources = append(f.sources, source)
 	return f.inserted, f.err

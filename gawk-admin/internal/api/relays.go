@@ -32,6 +32,11 @@ func (a *API) handleListRelays(w http.ResponseWriter, r *http.Request) {
 			// truth.
 			row.Error = p.ConfigErr
 		}
+		if row.Error == "" && p.RoomsErr != "" && a.opts.Rooms != nil {
+			// Its rooms read as not live because of this (docs/50 §6); with
+			// rooms off nothing depends on the route, so nothing is said.
+			row.Error = p.RoomsErr
+		}
 		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, relaysPageJSON{Relays: out, Bus: a.busHealth(r)})

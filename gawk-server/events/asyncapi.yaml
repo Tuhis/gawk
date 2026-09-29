@@ -209,9 +209,18 @@ channels:
       added).
 
       **A message is listed here if and only if it can be delivered to a
-      webhook.** The moderation events always are; R49 makes the room
-      activity events opt-in per webhook. `webhook.test` is what the
-      portal's *Send test* button sends and travels nowhere else.
+      webhook.** A webhook with no `events` list receives every moderation
+      event and nothing else. The four room activity events
+      (`room.attached`, `room.detached`, `room.participant_joined`,
+      `room.participant_left`) are delivered only to a webhook whose
+      `events` list names them, and are the bus event itself: same `id`,
+      `source`, `subject`, `time` and `data`, with `summary` and
+      `portalUrl` added. When a room moves to another relay pod its
+      participants reconnect and the bus reports a
+      `participant_left` (`reason: home_moved`) and `participant_joined`
+      (`rejoin: true`) pair; both halves are dropped unless the webhook also
+      lists `room.participant_rejoined`. `webhook.test` is what the portal's
+      *Send test* button sends and travels nowhere else.
 
       Headers on every delivery:
 
@@ -243,6 +252,14 @@ channels:
         $ref: '#/components/messages/roomEnded'
       roomSecretRotated:
         $ref: '#/components/messages/roomSecretRotated'
+      roomAttached:
+        $ref: '#/components/messages/roomAttached'
+      roomDetached:
+        $ref: '#/components/messages/roomDetached'
+      roomParticipantJoined:
+        $ref: '#/components/messages/roomParticipantJoined'
+      roomParticipantLeft:
+        $ref: '#/components/messages/roomParticipantLeft'
       webhookTest:
         $ref: '#/components/messages/webhookTest'
     x-gawk-webhook-headers:
@@ -288,6 +305,10 @@ operations:
       - $ref: '#/channels/webhook/messages/roomCreated'
       - $ref: '#/channels/webhook/messages/roomEnded'
       - $ref: '#/channels/webhook/messages/roomSecretRotated'
+      - $ref: '#/channels/webhook/messages/roomAttached'
+      - $ref: '#/channels/webhook/messages/roomDetached'
+      - $ref: '#/channels/webhook/messages/roomParticipantJoined'
+      - $ref: '#/channels/webhook/messages/roomParticipantLeft'
       - $ref: '#/channels/webhook/messages/webhookTest'
 
 components:

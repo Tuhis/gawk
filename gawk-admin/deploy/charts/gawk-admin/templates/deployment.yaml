@@ -77,6 +77,10 @@ spec:
               value: {{ .Values.oidc.operatorRole | quote }}
             - name: GAWK_ADMIN_FLAGGER_ROLE
               value: {{ .Values.oidc.flaggerRole | quote }}
+            # R49 (docs/50 D1): empty grants the role nowhere. An empty env var
+            # would read as unset (the default role), so it is rendered "off".
+            - name: GAWK_ADMIN_ROOMS_READER_ROLE
+              value: {{ .Values.oidc.roomsReaderRole | default "off" | quote }}
             # The system of record. Same Secret the migration hook Job reads,
             # by construction (one helper).
             {{- include "gawk-admin.pgDsnEnv" . | nindent 12 }}

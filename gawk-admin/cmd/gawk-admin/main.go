@@ -186,7 +186,7 @@ func run(args []string, getenv func(string) string) error {
 		OnOutcome:    om.Event,
 		Ingest: &eventbus.StoreIngester{
 			Store:          st,
-			ConfigWebhooks: dispatcher.ConfigWebhookNames(),
+			ConfigWebhooks: dispatcher.ConfigWebhooks(),
 			Notify:         dispatcher.Kick,
 		},
 	})
@@ -213,7 +213,7 @@ func run(args []string, getenv func(string) string) error {
 		Config:      cfg,
 		Version:     version,
 		Authn:       authn.Middleware,
-		RequireRole: authn.RequireRole,
+		RequireRole: authn.RequireAnyRole,
 		Recorder:    dispatcher,
 		Tester:      dispatcher,
 		// Readiness is the AND of "the schema is one we can serve" and "we can

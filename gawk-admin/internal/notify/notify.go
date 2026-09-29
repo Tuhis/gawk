@@ -209,7 +209,7 @@ func (d *Dispatcher) outcome(o string) {
 // an event is queued the moment it is recorded even if the leader is mid
 // handover. The Kick that follows wakes a loop only where one is running.
 func (d *Dispatcher) Record(ctx context.Context, ev store.Event) (store.Event, error) {
-	saved, err := d.opts.Store.AppendEventAndEnqueue(ctx, ev, d.configNames())
+	saved, err := d.opts.Store.AppendEventAndEnqueue(ctx, ev, d.opts.Config.ConfigWebhooks())
 	if err != nil {
 		return store.Event{}, err
 	}
@@ -218,24 +218,13 @@ func (d *Dispatcher) Record(ctx context.Context, ev store.Event) (store.Event, e
 	return saved, nil
 }
 
-// configNames lists the enabled CHART-defined webhook names — the half of the
-// D9 merge the store cannot see, because config webhooks are never rows. The
-// UI-created half, and the config-wins collision rule, live in the store's
-// transaction; resolve() applies the same precedence again at send time.
-// ConfigWebhookNames is configNames for callers outside this package — R50's
-// bus ingest, which writes its own rows and therefore needs the same
-// chart-defined half of the D9 merge that Record passes.
-func (d *Dispatcher) ConfigWebhookNames() []string { return d.configNames() }
-
-func (d *Dispatcher) configNames() []string {
-	var names []string
-	for _, h := range d.opts.Config.StaticWebhooks {
-		if h.IsEnabled() {
-			names = append(names, h.Name)
-		}
-	}
-	return names
-}
+// ConfigWebhooks lists the enabled CHART-defined webhooks with their filters —
+// the half of the D9 merge the store cannot see, because config webhooks are
+// never rows. The UI-created half, the config-wins collision rule and the
+// filter decision (docs/50 D8) live in the store's transaction; resolve()
+// applies the same precedence again at send time. Exported for R50's bus
+// ingest, which writes its own rows and needs the same half Record passes.
+func (d *Dispatcher) ConfigWebhooks() []store.ConfigWebhook { return d.opts.Config.ConfigWebhooks() }
 
 // Kick asks the local loop for an immediate pass. Non-blocking and coalescing,
 // like kube.Reconciler.Kick; on a non-leader replica there is no loop to wake
