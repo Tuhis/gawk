@@ -19,6 +19,7 @@
 
 use crate::pwgraph::{Controller, Daemon, Event, Graph, Kind, Link, RegistryEvent};
 use pipewire as pw;
+use pw::proxy::ProxyT;
 use pw::types::ObjectType;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -169,6 +170,9 @@ struct Shared {
     queue: RefCell<Vec<RegistryEvent>>,
     done_seq: Cell<i32>,
     fatal: RefCell<Option<String>>,
+    /// Errors against our own objects (a refused link, most often), by
+    /// proxy id, until the controller asks.
+    refusals: RefCell<HashMap<u32, String>>,
 }
 
 struct PwDaemon {
@@ -241,6 +245,14 @@ impl Daemon for PwDaemon {
             Handle::Node(n) => drop(n),
             Handle::Link(l) => drop(l),
         }
+    }
+
+    fn refused(&mut self, h: &Handle) -> Option<String> {
+        let id = match h {
+            Handle::Node(n) => n.upcast_ref().id(),
+            Handle::Link(l) => l.upcast_ref().id(),
+        };
+        self.shared.refusals.borrow_mut().remove(&id)
     }
 
     fn roundtrip(&mut self, graph: &mut Graph) -> Result<(), String> {
@@ -320,6 +332,7 @@ fn run(
         queue: RefCell::new(Vec::new()),
         done_seq: Cell::new(-1),
         fatal: RefCell::new(None),
+        refusals: RefCell::new(HashMap::new()),
     });
 
     let _core_listener = {
@@ -331,10 +344,14 @@ fn run(
                 }
             })
             .error(move |id, _seq, res, message| {
-                // Errors against other objects are per-object failures — a
-                // refused link, most often — and must not end the plane.
+                let text = format!("PipeWire error {res}: {message}");
                 if id == pw::core::PW_ID_CORE {
-                    *fatal.fatal.borrow_mut() = Some(format!("PipeWire error {res}: {message}"));
+                    *fatal.fatal.borrow_mut() = Some(text);
+                } else {
+                    // A per-object failure — a refused link, most often. It
+                    // must not end the plane; the controller drops that
+                    // link and reports it (check_refused).
+                    fatal.refusals.borrow_mut().insert(id, text);
                 }
             })
             .register()
@@ -443,6 +460,12 @@ fn run(
         if !events.is_empty() {
             ctl.apply(events);
             send(ctl.changed(&mut daemon));
+        }
+        if !shared.refusals.borrow().is_empty() {
+            send(ctl.check_refused(&mut daemon));
+            // Refusals of objects that are not links (the sink) or of links
+            // already gone have nothing to act on.
+            shared.refusals.borrow_mut().clear();
         }
         match requests.try_recv() {
             Ok(Request::Watch) => send(ctl.apps_event(true).into_iter().collect()),

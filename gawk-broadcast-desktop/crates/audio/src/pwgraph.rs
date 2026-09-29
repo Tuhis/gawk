@@ -465,6 +465,10 @@ pub trait Daemon {
     fn create_sink(&mut self, name: &str, channels: &[String]) -> Result<Self::Handle, String>;
     fn create_link(&mut self, link: Link) -> Result<Self::Handle, String>;
     fn destroy(&mut self, handle: Self::Handle);
+    /// Whether the daemon has since refused this object: a refusal arrives
+    /// AFTER the create call handed back a proxy, as an error on that
+    /// proxy's id. Answers once per refusal.
+    fn refused(&mut self, handle: &Self::Handle) -> Option<String>;
     /// Waits until the daemon has processed everything sent, applying the
     /// registry events that arrived meanwhile to `graph`.
     fn roundtrip(&mut self, graph: &mut Graph) -> Result<(), String>;
@@ -526,6 +530,32 @@ impl<D: Daemon> Controller<D> {
         let mut out = Vec::new();
         out.extend(self.apps_event(false));
         out.extend(self.reconcile(daemon));
+        out
+    }
+
+    /// Drops every link the daemon has refused since it was created, and
+    /// reports it: a refused link counted as held would never be retried,
+    /// leaving the app silent while the card said it was linked (PR #398
+    /// review). The next registry change re-plans and recreates it — not
+    /// this call, so a link the daemon keeps refusing cannot spin.
+    pub fn check_refused(&mut self, daemon: &mut D) -> Vec<Event> {
+        let refused: Vec<(Link, String)> = self
+            .links
+            .iter()
+            .filter_map(|(l, h)| daemon.refused(h).map(|why| (*l, why)))
+            .collect();
+        let mut out = Vec::new();
+        for (l, why) in refused {
+            if let Some(h) = self.links.remove(&l) {
+                daemon.destroy(h);
+            }
+            log::warn!(
+                "PipeWire refused the link from port {} into port {}: {why}",
+                l.out_port,
+                l.in_port
+            );
+            out.extend(self.links_event(true, Some(why)));
+        }
         out
     }
 
@@ -1115,6 +1145,9 @@ mod tests {
         pending: Vec<RegistryEvent>,
         refuse_links: bool,
         sink_channels: Vec<String>,
+        /// Links the daemon refuses AFTER handing back a proxy — a core
+        /// error on the proxy's id, as the real daemon reports it.
+        refuse_later: Vec<u32>,
     }
 
     impl Daemon for FakeDaemon {
@@ -1158,6 +1191,11 @@ mod tests {
         }
         fn destroy(&mut self, h: u32) {
             self.live.retain(|&x| x != h);
+        }
+        fn refused(&mut self, h: &u32) -> Option<String> {
+            let i = self.refuse_later.iter().position(|x| x == h)?;
+            self.refuse_later.remove(i);
+            Some("link refused by the daemon".into())
         }
         fn roundtrip(&mut self, graph: &mut Graph) -> Result<(), String> {
             for e in std::mem::take(&mut self.pending) {
@@ -1309,5 +1347,41 @@ mod tests {
         c.capture(&mut d, Some("game")).unwrap();
         c.apply([RegistryEvent::Remove(900)]);
         assert_eq!(c.sink_serial(), None);
+    }
+
+    /// Review finding (PR #398): a link the daemon refuses asynchronously
+    /// must not stay counted as held — it is dropped, reported, and
+    /// recreated on the next registry change, never in a retry storm.
+    #[test]
+    fn a_link_the_daemon_refuses_later_is_dropped_reported_and_retried() {
+        let (mut c, mut d) = with_game();
+        c.capture(&mut d, Some("game")).unwrap();
+        assert_eq!(c.link_count(), 2);
+        let h = *c.links.values().next().unwrap();
+        d.refuse_later.push(h);
+
+        let ev = c.check_refused(&mut d);
+        assert_eq!(c.link_count(), 1);
+        assert!(!d.live.contains(&h), "the refused proxy is destroyed");
+        assert!(
+            ev.iter().any(|e| matches!(
+                e,
+                Event::Links {
+                    links: 1,
+                    error: Some(_),
+                    ..
+                }
+            )),
+            "{ev:?}"
+        );
+        assert!(
+            c.check_refused(&mut d).is_empty(),
+            "no retry until the graph changes"
+        );
+        assert_eq!(
+            links_of(&c.changed(&mut d)),
+            [2],
+            "re-planned on the next change"
+        );
     }
 }
