@@ -1,8 +1,9 @@
 # R60 — The `rooms-manager` role (docs/62)
 
 **Status**: designed and implemented 2026-09-29 (RW1–RW3 in one PR,
-gawk-admin 1.6.0); **verified on the reference deployment 2026-09-29**
-(§7). Open: RW3's compose-stack run of the recipe. Chunks **RW1–RW3**
+gawk-admin 1.6.0); **verified on the reference deployment and against the
+compose stack 2026-09-29** (§7). Nothing on the gawk side is open; the
+Mumble bot itself lives in mumisija. Chunks **RW1–RW3**
 (`RW` = Rooms Write). Touches `gawk-admin` only (kube client, API, config,
 chart, fake IdP) and the docs. No relay change, no wire change, no
 migration. **Depends on R42** ([docs/44](44-rooms.md)) for static rooms and
@@ -141,3 +142,18 @@ room with the service account's `sub` as the actor. The run was repeated
 after an unrelated power outage the same evening, with identical results.
 That meets the §4 success criterion; what is left is the bot itself, in
 mumisija.
+
+### Compose stack (RW3)
+
+The same recipe ran against the docs/41 stack with `ADMIN_ROOMS=1`, as
+self-hosting §9.8 describes it: a `gawk-rooms-bot` / `dev-rooms-bot-secret`
+client-credentials token from the fake IdP, whose `/me` carries exactly
+`rooms-reader` and `rooms-manager`. The bot created `gaming-cs2` (201),
+read it back under another spelling (`Gaming-CS2`, 200), got `409
+room_exists` creating it again, `403 room_not_owned` deleting a room the
+operator created (`op-room`, left in place), `403 forbidden` on
+`/broadcasts` and `rotate-secret`, and deleted its own room (204, then 404).
+The Events view recorded the bot's creates and deletes under
+`service-account-gawk-rooms-bot` and the operator's under its email. The run
+used only the admin slice (`docker compose up admin`), as its own compose
+project on other ports, beside a stack another worktree had running.
