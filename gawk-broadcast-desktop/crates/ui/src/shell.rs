@@ -2674,7 +2674,7 @@ fn stat_rows(
         value: value.into(),
     };
     let na = || "n/a".to_string();
-    let mut rows = base_stat_rows(st, &row, &na);
+    let mut rows = base_stat_rows(st, loss, network, &row, &na);
     // Linux only (docs/58 D6, D16): the portal path reports its share mode,
     // and a rebuilt capture is the one place a viewer's freeze is recorded.
     if !st.share_mode.is_empty() {
@@ -2691,6 +2691,8 @@ fn stat_rows(
 
 fn base_stat_rows(
     st: &gawk_engine::stats::Stats,
+    loss: &LossMonitor,
+    network: Option<NetworkFacts>,
     row: &dyn Fn(&str, String) -> StatRow,
     na: &dyn Fn() -> String,
 ) -> Vec<StatRow> {
