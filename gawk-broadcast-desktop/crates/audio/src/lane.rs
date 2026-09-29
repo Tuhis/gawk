@@ -32,6 +32,25 @@ pub struct Block<'a> {
     pub timestamp_us: u64,
 }
 
+impl<'a> Block<'a> {
+    /// The Linux audio pipeline's fixed caps (docs/58 D7: F32LE, 48 kHz,
+    /// stereo, interleaved) in the ASBD vocabulary the lane reads — so the
+    /// format still goes through [`PcmFormat::from_asbd`]'s checks rather
+    /// than around them.
+    pub fn f32_stereo(buffers: &'a [&'a [u8]], frames: usize, timestamp_us: u64) -> Self {
+        Self {
+            format_id: crate::pcm::FORMAT_LINEAR_PCM,
+            format_flags: crate::pcm::FLAG_IS_FLOAT,
+            sample_rate: f64::from(gawk_engine::media::AUDIO_SAMPLE_RATE),
+            channels: u32::from(gawk_engine::media::AUDIO_CHANNELS),
+            bits_per_channel: 32,
+            frames,
+            buffers,
+            timestamp_us,
+        }
+    }
+}
+
 /// What one fed block produced.
 #[derive(Debug, Default)]
 pub struct Output {

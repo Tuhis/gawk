@@ -1,6 +1,6 @@
 [package]
 name = "gawk-audio"
-description = "WASAPI process/system loopback capture + Opus encode (WB5, docs/38 D8)"
+description = "Audio capture + Opus encode: WASAPI, ScreenCaptureKit and PipeWire/GStreamer (docs/38 D8, docs/54 D6, docs/58 D7/D8)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -25,3 +25,18 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_PropertiesSystem",
 ] }
 windows-core = "0.62"
+
+# Linux (R56, docs/58 D7/D8): the system-audio cascade in GStreamer, into the
+# shared libopus lane, and the docs/39 app-audio tee on an in-process
+# PipeWire connection of its own. Capped at the Ubuntu 24.04 floor (OD14):
+# GStreamer 1.24, PipeWire 1.0.
+[target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = { version = "0.25", features = ["v1_24"] }
+gstreamer-app = { version = "0.25", features = ["v1_24"] }
+log = "0.4"
+pipewire = "0.10"
+
+# The headless-PipeWire integration harness (tests/support/pwtest.rs).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+serde_json = "1"

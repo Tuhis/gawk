@@ -15,7 +15,7 @@ use gawk_engine::media::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE};
 pub const FORMAT_LINEAR_PCM: u32 = 0x6C70_636D;
 
 // `AudioFormatFlags` bits (CoreAudioBaseTypes.h).
-const FLAG_IS_FLOAT: u32 = 1 << 0;
+pub const FLAG_IS_FLOAT: u32 = 1 << 0;
 const FLAG_IS_BIG_ENDIAN: u32 = 1 << 1;
 const FLAG_IS_SIGNED_INTEGER: u32 = 1 << 2;
 const FLAG_IS_NON_INTERLEAVED: u32 = 1 << 5;
