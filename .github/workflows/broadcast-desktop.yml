@@ -264,6 +264,9 @@ jobs:
     defaults:
       run:
         working-directory: gawk-broadcast-desktop
+        # A container job's default shell is `sh` (dash here), which has
+        # no `set -o pipefail`; the runner-image jobs get bash implicitly.
+        shell: bash
     env:
       CARGO_TARGET_DIR: /tmp/target
       # Link the host artifacts with lld (the container setup installs it).
@@ -661,6 +664,9 @@ jobs:
     defaults:
       run:
         working-directory: gawk-broadcast-desktop
+        # A container job's default shell is `sh` (dash here), which has
+        # no `set -o pipefail`; the runner-image jobs get bash implicitly.
+        shell: bash
     env:
       CARGO_TARGET_DIR: /tmp/target
       # libopus is compiled in statically (the vendored cmake build), as on
