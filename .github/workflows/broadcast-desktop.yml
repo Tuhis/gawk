@@ -678,20 +678,18 @@ jobs:
         with:
           ref: ${{ inputs.attach_to || github.sha }}
       - uses: ./.github/actions/linux-container-setup
+      # Again, now that the container has git: the first checkout could only
+      # download a tarball (no .git), and the commit must be resolved by git.
+      # A backfill's `attach_to` may be a tag (with a `/`, which an artifact
+      # name rejects) or a short SHA (which attach-release would never find
+      # under build's full one) — PR #398 review.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
 
       - name: Resolve the commit being built
         id: source
-        # GITHUB_SHA is the dispatched ref on a backfill; the checkout is the
-        # truth. The API-download checkout (no git before the setup action)
-        # has no .git, so ask git only when there is one.
-        run: |
-          set -euo pipefail
-          if git rev-parse HEAD >/dev/null 2>&1; then
-            sha=$(git rev-parse HEAD)
-          else
-            sha="${{ inputs.attach_to || github.sha }}"
-          fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # -p: only the Linux shell's graph, so feature unification is exactly
       # the shipped binary's.
