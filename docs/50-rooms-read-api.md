@@ -7,7 +7,7 @@ open). Open: the two manual checks in RA5's criteria — the self-hosting
 recipe run against the compose stack and against Keycloak on the reference
 deployment — and the end-to-end success criterion below. *(2026-09-29: the
 Keycloak half is done — `rooms-reader` exists on the reference deployment's
-`gawk-admin` client, held by the `mumisija-gawk` service account, and its
+`gawk-admin` client, held by a Keycloak client-credentials service account, and its
 token read `GET /rooms` and `GET /rooms/{name}` (docs/62 §7). The success
 criterion, a live room with broadcasts and participants plus the webhook,
 is still open.)* Chunks **RA1–RA5**

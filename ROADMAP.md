@@ -78,7 +78,7 @@ feature set exists).
 | R57 | [Close codes Chrome can read](#r57--close-codes-chrome-can-read) | ✅ shipped 2026-09-24 (CN1–CN4) — Chrome never read a relay close code (webtransport-go sends STOP_SENDING ahead of the close capsule; 1 of 84 arrived), so 4000/4004/4006 now travel in-band first as `SessionClosing` (0x17) and a room ends on its `RoomEnding`; the broadcaster's room view returns to the live stage when the room ends or its stream is removed ([docs/59](docs/59-close-notice.md)) |
 | R58 | [Desktop broadcaster redesign](#r58--desktop-broadcaster-redesign) | ✅ shipped 2026-09-29 (DR1–DR6) — designed 2026-09-28 in a Claude Design pass and owner-approved the same day; DR1–DR5 implemented 2026-09-28, the DR6 hardware pass done by the owner on Windows and macOS 2026-09-29 — the shared `main.slint` window becomes pages (Ready, Live, Settings, Advanced, the Windows picker) in the web app's tokens with one primary action each; Windows picks and remembers a source; saved and recent rooms, one room field with no attach-key field, an in-app roster with Watch links, and creator controls (remove a stream, end the room) revising docs/44 D13 with no wire change; a stopped summary with Go live again, a crash-resume question, banners for notices; and the room-view grant fixed to the SPA's `c:`/`a:` format ([docs/60](docs/60-desktop-redesign.md)) |
 | R59 | [Usage and capacity metrics](#r59--usage-and-capacity-metrics) | 🔧 designed 2026-09-29 (owner decisions OD1–OD7); UM1–UM4 implemented 2026-09-29, UM5 (fleet values) and UM6 (dashboard) follow the release — the `gawk.ioio.fi` Grafana dashboard (kept in Grafana, replacing R9 M8's checked-in JSON) needs series the relay doesn't have: new vs resumed broadcasts, viewer joins without stripe legs or reconnects, broadcast and watch durations, peak viewers, a client/codec/resolution mix with a closed label vocabulary (client identity as dial query params, codec and resolution parsed from the media), the caps as `gawk_limit`, and a metrics listener for `gawk-admin` ([docs/61](docs/61-usage-and-capacity-metrics.md)) |
-| R60 | [The `rooms-manager` role](#r60--the-rooms-manager-role) | ✅ **implemented 2026-09-29** (RW1–RW3 in one PR): a second bot role on `gawk-admin` beside R49's `rooms-reader`, for the mumisija Mumble bot's room per channel — `POST /api/v1/rooms`, `DELETE /api/v1/rooms/{name}` and `/me`, nothing else (`-rooms-manager-role`, chart `oidc.roomsManagerRole`, `off` grants it nowhere). Every portal room now records its creator's `sub` on the `Room` CR, and a caller without `operator` deletes only the static rooms it created (`403 room_not_owned` otherwise), checked and deleted as one UID-bound operation. The fake IdP's bot client carries both roles. **Verified on the reference deployment 2026-09-29** (gawk-admin 1.6.0, Keycloak service account `mumisija-gawk`, docs/62 §7). Open: the recipe run against the compose stack ([docs/62](docs/62-rooms-manager-role.md)) |
+| R60 | [The `rooms-manager` role](#r60--the-rooms-manager-role) | ✅ **implemented 2026-09-29** (RW1–RW3 in one PR): a second bot role on `gawk-admin` beside R49's `rooms-reader`, for a Mumble bot that keeps a room per voice channel — `POST /api/v1/rooms`, `DELETE /api/v1/rooms/{name}` and `/me`, nothing else (`-rooms-manager-role`, chart `oidc.roomsManagerRole`, `off` grants it nowhere). Every portal room now records its creator's `sub` on the `Room` CR, and a caller without `operator` deletes only the static rooms it created (`403 room_not_owned` otherwise), checked and deleted as one UID-bound operation. The fake IdP's bot client carries both roles. **Verified 2026-09-29** on the reference deployment (gawk-admin 1.6.0, a Keycloak client-credentials service account) and against the compose stack's fake IdP ([docs/62](docs/62-rooms-manager-role.md) §7) |
 
 ---
 
@@ -4779,7 +4779,7 @@ and the dashboard (UM6) follow the release.
 **Goal**: a bot's service identity can create static rooms and delete the
 ones it created, without the `operator` role.
 
-**Why**: the mumisija Mumble bot (its roadmap item 10) keeps one permanent
+**Why**: a Mumble bot, in its own repository, keeps one permanent
 static room per voice channel and removes the rooms of channels that are no
 longer configured. R49 gave it the reads; the writes needed `operator`,
 which can also kill, ban and read publisher IPs.
@@ -4799,8 +4799,9 @@ rotation or ending rooms for the bot; exposing the creator on the API.
 
 **Status**: ✅ implemented 2026-09-29 (gawk-admin 1.6.0) and verified on the
 reference deployment the same day with a Keycloak service account holding
-both bot roles ([docs/62](docs/62-rooms-manager-role.md) §7). Open: the
-recipe run against the compose stack.
+both bot roles, and against the compose stack's fake IdP
+([docs/62](docs/62-rooms-manager-role.md) §7). Nothing is open on the gawk
+side; the Mumble bot itself lives in its own repository.
 
 ---
 
