@@ -315,6 +315,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.server == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # A bound, not a budget: the p90 is ~10 min. The shared Go cache sits on
+    # CephFS, whose kernel client on these nodes can hang a reader outright
+    # (CVE-2026-80527, go-shared-cache). Without this, a hang holds a runner
+    # slot for GitHub's 6-hour default. The same bound applies to `broadcast`,
+    # `telemetry` and `admin`.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: gawk-server
@@ -388,6 +394,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.broadcast == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
     # Resolved rather than echoed back: `attach_to` may be a tag or a branch,
     # and the release gate compares commit SHAs. This is also the single fact
     # that ties the artifact, the gate and the thing actually compiled
@@ -950,6 +957,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.telemetry == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: gawk-telemetry
@@ -1064,6 +1072,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.admin == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:18-alpine

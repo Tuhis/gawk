@@ -139,9 +139,13 @@ Add to it when a new gotcha lands in `docs/`.
   here-string (`grep -q … <<<"$var"`) — no pipeline, no SIGPIPE. Producers that
   are read to the end (`grep -c`, `grep -B/-A`) are not exposed to it.
 - **On the self-hosted runners, CI's Go caches are shared and persistent** —
-  GOMODCACHE and GOCACHE point at one CephFS volume that every runner on every
-  node reads and writes at the same moment (`.github/actions/go-shared-cache`,
-  mounted by ioio `actions-runners/ci-cache.yaml`). Two consequences. A
+  GOMODCACHE and GOCACHE point at a CephFS volume that every runner on a node
+  reads and writes at the same moment (`.github/actions/go-shared-cache`,
+  mounted by ioio `actions-runners/ci-cache.yaml`). Each node has its own
+  subdirectory. Don't merge them into one tree while the nodes' kernel lacks
+  the CVE-2026-80527 fix: a CephFS reader then sleeps forever once a client on
+  another node touches the same file, and that hung a CI job for 18 minutes.
+  Two consequences of sharing at all. A
   `go clean -cache` or `-modcache` in a workflow deletes the cache out from
   under every concurrent job; the two tmpfs reclaims that do this are gated on
   `GO_SHARED_CACHE`, and any new one must be too. And a warm GOCACHE would

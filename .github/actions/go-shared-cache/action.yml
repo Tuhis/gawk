@@ -1,21 +1,25 @@
-# The self-hosted runners mount a shared, persistent CephFS volume at
-# /mnt/ci-cache (ioio actions-runners/ci-cache.yaml). This action points the
-# job's Go module and build caches at it. On any runner without the mount, a
-# GitHub-hosted one or a fork's, it does nothing and the job keeps its own
-# caches.
+# The self-hosted runners mount a persistent CephFS volume at /mnt/ci-cache
+# (ioio actions-runners/ci-cache.yaml). This action points the job's Go module
+# and build caches at it. On any runner without the mount, a GitHub-hosted one
+# or a fork's, it does nothing and the job keeps its own caches.
 #
-# Why a shared filesystem and not actions/cache: restores on these pods run at
-# about 6 MB/s into a RAM tmpfs, so every cache measured here lost to
-# rebuilding (docs/38 D18). The volume needs no restore step, and every runner
-# on every node reads and writes it at once. Measured 2026-09-30 on
-# gawk-server, one pod per node:
+# Why a network filesystem and not actions/cache: restores on these pods run
+# at about 6 MB/s into a RAM tmpfs, so every cache measured here lost to
+# rebuilding (docs/38 D18). The volume needs no restore step.
 #
-#     go vet ./...                     cold 132-280s  ->  warm 13-46s
-#     go test -race (compile only)     cold 138-389s  ->  warm 37-51s
+# It is shared by every runner on the SAME node, not across nodes: each node
+# mounts its own subdirectory. The nodes' kernel has CVE-2026-80527, which
+# makes a CephFS reader sleep forever once another client touches the same
+# file. A tree shared across nodes hung this repository's `admin` job for 18
+# minutes on its first cold fill (run 36633210514, attempt 2). ioio's
+# ci-cache.yaml has the detail and says when the split can go.
 #
-# That includes three nodes filling one cache from empty concurrently. Go's
-# module-cache locking uses flock, which CephFS enforces across nodes, and
-# `go mod verify` was clean afterwards.
+# Measured on this PR's own run (36633210514), attempt 1 (no cache) vs 3 (warm):
+#
+#     server  go vet 125s -> 18s    go test -race 311s -> 177s
+#     admin   go vet  72s -> 10s    go test -race 143s ->  51s
+#     tidy    go mod tidy (5 modules) 25s -> 2s
+#     e2e     build relay + fixture publisher 120s -> 9s
 #
 # Three rules follow from the cache being shared and persistent:
 #
