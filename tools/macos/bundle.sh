@@ -39,6 +39,19 @@ sed "s/@VERSION@/$version/g" "$here/Info.plist.in" > "$app/Contents/Info.plist"
 printf 'APPL????' > "$app/Contents/PkgInfo"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
+# The Dock and Finder icon (CFBundleIconFile "gawk"): a tools/icon
+# derivative, committed and drift-checked like the .ico (docs/53 D2). macOS
+# never shows a window's icon, so without this file the app is a blank tile.
+# iconutil is the independent witness that macOS itself can read the file
+# tools/icon wrote, down to the 1024 px Retina Dock element.
+icns="$root/assets/icon/gawk.icns"
+[ -f "$icns" ] || { echo "error: $icns not found — run 'go run ./tools/icon generate'" >&2; exit 1; }
+cp "$icns" "$app/Contents/Resources/gawk.icns"
+iconset=$(mktemp -d)/gawk.iconset
+iconutil -c iconset -o "$iconset" "$icns"
+[ -f "$iconset/icon_512x512@2x.png" ] || { echo "error: $icns has no 1024 px (512@2x) element" >&2; exit 1; }
+rm -rf "$(dirname "$iconset")"
+
 # --options runtime is the hardened runtime notarization requires. --timestamp
 # only for a real identity: an ad-hoc signature cannot carry a secure
 # timestamp, and asking for one makes codesign contact Apple for nothing.

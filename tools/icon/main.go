@@ -1,6 +1,6 @@
 // Command icon generates and checks the gawk application icon (R44, docs/53).
 //
-//	go run ./tools/icon generate            # re-render assets/icon/{png,gawk.ico,gawk.res}
+//	go run ./tools/icon generate            # re-render assets/icon/{png,gawk.ico,gawk.res,gawk.icns}
 //	go run ./tools/icon check               # fail if the committed files drift from gawk.svg
 //	go run ./tools/icon verify-exe FILE.exe # fail unless FILE.exe carries an icon resource
 //
@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	svgName = "gawk.svg"
-	icoName = "gawk.ico"
-	resName = "gawk.res"
-	pngDir  = "png"
+	svgName  = "gawk.svg"
+	icoName  = "gawk.ico"
+	resName  = "gawk.res"
+	icnsName = "gawk.icns"
+	pngDir   = "png"
 	// tolerance is the largest per-channel difference the check accepts.
 	// x/image/vector uses float32 for the larger sizes and Go fuses
 	// multiply-adds on arm64, so a rendering on another architecture may
@@ -100,6 +101,8 @@ func pngPath(dir string, size int) string {
 	return filepath.Join(dir, pngDir, fmt.Sprintf("gawk-%d.png", size))
 }
 
+// renderSource renders every size any derivative needs: Sizes, plus the
+// .icns-only 512 and 1024. Pick the Sizes subset for the PNGs, .ico and .res.
 func renderSource(dir string) (map[int]*image.NRGBA, error) {
 	data, err := os.ReadFile(filepath.Join(dir, svgName))
 	if err != nil {
@@ -109,7 +112,28 @@ func renderSource(dir string) (map[int]*image.NRGBA, error) {
 	if err != nil {
 		return nil, err
 	}
-	return RenderAll(doc)
+	images, err := RenderAll(doc)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range ICNSSizes {
+		if _, ok := images[s]; ok {
+			continue
+		}
+		if images[s], err = Render(doc, s); err != nil {
+			return nil, err
+		}
+	}
+	return images, nil
+}
+
+// pick is the subset of images at the given sizes.
+func pick(images map[int]*image.NRGBA, sizes []int) map[int]*image.NRGBA {
+	out := make(map[int]*image.NRGBA, len(sizes))
+	for _, s := range sizes {
+		out[s] = images[s]
+	}
+	return out
 }
 
 // Generate renders the SVG and writes every derivative.
@@ -130,18 +154,25 @@ func Generate(dir string) error {
 			return err
 		}
 	}
-	ico, err := WriteICO(images)
+	ico, err := WriteICO(pick(images, Sizes))
 	if err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, icoName), ico, 0o644); err != nil {
 		return err
 	}
-	res, err := WriteRES(images)
+	res, err := WriteRES(pick(images, Sizes))
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, resName), res, 0o644)
+	if err := os.WriteFile(filepath.Join(dir, resName), res, 0o644); err != nil {
+		return err
+	}
+	icns, err := WriteICNS(pick(images, ICNSSizes))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, icnsName), icns, 0o644)
 }
 
 // Check re-renders the SVG and compares the committed derivatives against it,
@@ -207,6 +238,24 @@ func Check(dir string) error {
 		}
 		if err := compare(img, images[s]); err != nil {
 			return fmt.Errorf("%s: %d px: %w", resName, s, err)
+		}
+	}
+
+	icns, err := os.ReadFile(filepath.Join(dir, icnsName))
+	if err != nil {
+		return err
+	}
+	elems, err := ParseICNS(icns)
+	if err != nil {
+		return fmt.Errorf("%s: %w", icnsName, err)
+	}
+	for _, e := range icnsTypes {
+		img, ok := elems[e.Type]
+		if !ok {
+			return fmt.Errorf("%s: no %s (%d px) element", icnsName, e.Type, e.Size)
+		}
+		if err := compare(img, images[e.Size]); err != nil {
+			return fmt.Errorf("%s: %s (%d px): %w", icnsName, e.Type, e.Size, err)
 		}
 	}
 	return nil

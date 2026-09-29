@@ -331,6 +331,12 @@ Quirks that will bite you:
   there is no `rc.exe`/`llvm-rc` step to install. The window's own icon is
   `Window.icon` in `crates/ui/main.slint`, embedded by slint-build. CI checks the
   resource actually landed (`tools/icon verify-exe`) — docs/53.
+- **`Window.icon` only reaches Windows and X11.** winit drops it on macOS and
+  Wayland. The macOS Dock icon is the bundle's `gawk.icns` (another
+  `tools/icon` derivative, copied in and checked with `iconutil` by
+  `tools/macos/bundle.sh`, docs/53 D11). On Wayland it is the installed
+  desktop entry matching the app ID, so an uninstalled binary shows the
+  stock icon until `install-desktop.sh` runs.
 
 ## Layout
 

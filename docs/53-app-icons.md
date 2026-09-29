@@ -58,6 +58,7 @@ What already exists, so the reader does not go looking:
 | D8 | **CI proves the resource landed.** `go run ../tools/icon verify-exe target/…/gawk-broadcast.exe` runs in `broadcast-windows.yml`'s `build` job right after the link: it walks the PE's `.rsrc` directory and fails unless `RT_GROUP_ICON` and `RT_ICON` are present. | The roadmap's condition: "the design doc owns proving that in CI before anything else". An icon resource that the linker silently dropped would be invisible until someone opened Explorer; the walk is forty lines of `debug/pe` and answers the R2 question at the only point it can be asked. |
 | D9 | **Sizes**: 16, 24, 32, 48, 64, 128, 256 — PNG set, `.ico` and `.res` all carry the same seven. | The freedesktop hicolor set that GNOME and KDE actually ask for, plus the four Explorer view sizes (16/32/48/256) and the 24 px Windows title bar. |
 | D10 | **The CLI, `gawk-pw-helper` and the browser app are untouched.** No tray icon (R14 Decision 15, docs/38 OD7), no installer or signing (docs/38 OD6/D17, R47 for signing), no macOS. | Roadmap non-goals, restated so nobody re-derives them. |
+| D11 | **macOS: a generated `gawk.icns`, named by `CFBundleIconFile`** (added 2026-09-30, after R52 shipped the macOS app with no icon). `tools/icon` writes `assets/icon/gawk.icns` with PNG elements `icp4 ic11 icp5 ic12 ic07 ic13 ic08 ic14 ic09 ic10` (16 through 512 pt at 1x and 2x — 16 to 1024 px); `check` parses it back and compares every element's pixels like the `.ico`'s. 512 and 1024 px are rendered for the `.icns` only and are not committed as PNGs, so D9's set is unchanged. `tools/macos/bundle.sh` copies it into `Contents/Resources/` and runs `iconutil --convert iconset` on it, failing unless the 1024 px element comes out. | macOS ignores a window's icon (winit applies `Window.icon` on Windows and X11 only), so the Dock, Finder and the app switcher take the icon from the bundle or show a blank tile. Generated in Go for D2's reason — the Linux-hosted icon job has no `iconutil` — and PNG-only because macOS has read PNG in every one of these types since 10.7, which is also what `iconutil` writes. `iconutil` in the macOS job is the independent reader: it is Apple's own parser, so a file it accepts is one the Dock can draw. 1024 px is the 512 pt Retina Dock size; without it macOS upscales the 512. |
 
 ### Rejected
 
@@ -142,3 +143,9 @@ takes no network input.
   the shipped binary. Nothing in CI sets it; do not.
 - **A notification that names an icon the theme cannot resolve shows no
   icon at all**, not the stock one — hence D5's fallback.
+- **macOS and Wayland both drop Slint's `Window.icon`** (added 2026-09-30).
+  winit 0.30 applies it on Windows and X11 only: on macOS the Dock reads
+  the bundle's `.icns` (D11), and on Wayland — no `xdg-toplevel-icon-v1` in
+  winit — the compositor resolves the icon from the `app_id` through the
+  installed desktop entry, so an uninstalled Linux binary shows the stock
+  icon (D3/D4 are the whole mechanism there, as they were for Gio).

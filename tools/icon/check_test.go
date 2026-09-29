@@ -19,7 +19,7 @@ func copyIconDir(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Join(dst, pngDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{svgName, icoName, resName} {
+	for _, name := range []string{svgName, icoName, resName, icnsName} {
 		data, err := os.ReadFile(filepath.Join(src, name))
 		if err != nil {
 			t.Fatal(err)
@@ -51,7 +51,7 @@ func TestCommittedDerivativesMatchTheSource(t *testing.T) {
 func TestGenerateThenCheckIsClean(t *testing.T) {
 	dir := copyIconDir(t)
 	// Wipe the derivatives; Generate must recreate every one of them.
-	for _, name := range []string{icoName, resName} {
+	for _, name := range []string{icoName, resName, icnsName} {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil {
 			t.Fatal(err)
 		}
@@ -115,6 +115,7 @@ func TestCheckFailsOnAMissingIcoEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	images = pick(images, Sizes)
 	delete(images, 24)
 	ico, err := WriteICO(images)
 	if err != nil {
