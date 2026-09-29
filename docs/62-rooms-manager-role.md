@@ -1,8 +1,8 @@
 # R60 — The `rooms-manager` role (docs/62)
 
-**Status**: designed and implemented 2026-09-29 (RW1–RW3 in one PR).
-Open: the §9.8 recipe run against Keycloak on the reference deployment, and
-the success criterion in §4 once the Mumble bot uses it. Chunks **RW1–RW3**
+**Status**: designed and implemented 2026-09-29 (RW1–RW3 in one PR,
+gawk-admin 1.6.0); **verified on the reference deployment 2026-09-29**
+(§7). Open: RW3's compose-stack run of the recipe. Chunks **RW1–RW3**
 (`RW` = Rooms Write). Touches `gawk-admin` only (kube client, API, config,
 chart, fake IdP) and the docs. No relay change, no wire change, no
 migration. **Depends on R42** ([docs/44](44-rooms.md)) for static rooms and
@@ -113,3 +113,31 @@ the delete.
 - **Turning it off**: `oidc.roomsManagerRole: ""` in the chart (or
   `-rooms-manager-role off`). Rooms the bot created stay until an operator
   deletes them.
+
+## 7. Verification on the reference deployment (2026-09-29)
+
+Keycloak realm `production`, gawk-admin 1.6.0. The §9.8 recipe was followed
+in Keycloak: client roles `rooms-reader` and `rooms-manager` on the
+`gawk-admin` client (neither existed before; R49's had not been created
+either), and a confidential client `mumisija-gawk` with only the
+client-credentials grant, an audience mapper to `gawk-admin`, and both roles
+on its service account. Its secret stays in Keycloak until the Mumble bot is
+built.
+
+With that client's token, against `gawk-admin.ioio.fi`:
+
+| Request | Result |
+|---|---|
+| `GET /me` | 200, roles `rooms-manager`, `rooms-reader` |
+| `POST /rooms` `r60-bot-test` | 201, with a join link |
+| `GET /rooms/r60-bot-test` | 200, `kind: static`, `managed: true` |
+| `POST /rooms` again | 409 `room_exists` |
+| `DELETE /rooms/tuhistestlab` (a room kept in git) | 403 `room_not_owned`; the CR is unchanged |
+| `GET /broadcasts`, `POST …/rotate-secret`, `POST …/end` | 403 `forbidden` |
+| `DELETE /rooms/r60-bot-test` | 204; then `GET` is 404 |
+
+`moderation_events` records `room.created` and `room.ended` for the test
+room with the service account's `sub` as the actor. The run was repeated
+after an unrelated power outage the same evening, with identical results.
+That meets the §4 success criterion; what is left is the bot itself, in
+mumisija.
