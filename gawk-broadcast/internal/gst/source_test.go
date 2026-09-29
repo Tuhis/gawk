@@ -556,6 +556,49 @@ func TestChildDeathSurfacesWithStderr(t *testing.T) {
 	}
 }
 
+// The adoption race behind CI's intermittent 10-minute hang of
+// TestChildDeathSurfacesWithStderr (PR #388, 2026-09-29): the child outlives
+// the live-probe window, then dies before attempt() adopts it. Its pump used
+// to read `adopted == false`, retire as a lost cascade attempt without closing
+// the frame channel, and attempt() then adopted a dead child — a session live
+// with no frames, forever. The hook widens that gap deterministically.
+//
+// Widening it also exposed the second half: once the pump does wait for the
+// adoption, it can reach restartCapture before the cascade had recorded the
+// winning candidate, and rebuilt from a zero Candidate — a nil-func panic in
+// BuildPipeline. attempt() now records the winner under the adoption lock.
+func TestAChildDyingBeforeAdoptionStillEndsTheStream(t *testing.T) {
+	fp := &fakePortal{}
+	bin := fakeBinary(t, "sleep 0.05\necho 'ERROR: device disappeared' >&2\nexit 1\n")
+	var once sync.Once
+	testHookAfterLiveProbe = func() {
+		// First attempt only: long enough for the child to die and its pump
+		// to finish before adoption.
+		once.Do(func() { time.Sleep(500 * time.Millisecond) })
+	}
+	t.Cleanup(func() { testHookAfterLiveProbe = nil })
+	s := newSource(t, Options{Binary: bin, OpenPortal: fp.open, LiveProbeWindow: 10 * time.Millisecond})
+
+	frames, err := s.Start(context.Background())
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ended := make(chan struct{})
+	go func() {
+		for range frames {
+		}
+		close(ended)
+	}()
+	select {
+	case <-ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the frame channel never closed: a child that died before adoption left the session live with no frames")
+	}
+	if err := s.Err(); err == nil || !strings.Contains(err.Error(), "device disappeared") {
+		t.Errorf("Err() = %v, want the child's last words", err)
+	}
+}
+
 // A clean Stop is not a failure: the child dies because we killed it.
 func TestStopIsNotAnError(t *testing.T) {
 	fp := &fakePortal{}

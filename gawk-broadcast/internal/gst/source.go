@@ -263,7 +263,10 @@ type Source struct {
 // a cascade attempt that dies in its probe window is the cascade's failure to
 // report, not the session's.
 type pumpHandle struct {
-	done    chan struct{}
+	done chan struct{}
+	// decided is closed by attempt() once adopted is final: set, or never
+	// to be set. The pump reads adopted only after it (see pump).
+	decided chan struct{}
 	adopted atomic.Bool
 
 	// anchor maps this child's PES PTS onto the engine clock (see ptsAnchor).
@@ -740,13 +743,8 @@ func (s *Source) cascadePass(ctx context.Context, stream *portal.Stream, first C
 						"width", s.cfg.Width, "height", s.cfg.Height,
 						"fps", s.cfg.Fps, "bitrate_bps", s.cfg.BitrateBps, "gop_ms", s.cfg.GOPMs,
 						"audio", audio != nil)
-					s.mu.Lock()
-					s.encoder = cand.Name
-					// The winner, so a mid-session rebuild starts from the
-					// encoder that was working rather than from the top.
-					s.cand = cand
-					s.captureMode, s.captureModeSet = mode, true
-					s.mu.Unlock()
+					// The winner (encoder, candidate, capture mode) was
+					// recorded by attempt() under the adoption lock.
 					return nil
 				}
 				failures = append(failures, fmt.Sprintf("%s (capture %s): %v", cand.Element, mode, err))
@@ -798,7 +796,7 @@ func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candid
 	// consuming the channel, so even an attempt that goes on to lose its probe
 	// window can put frames on the wire, and each such run has to be a
 	// self-contained GOP.
-	h := &pumpHandle{done: make(chan struct{}), newEpoch: rebuild, droppingGOP: rebuild}
+	h := &pumpHandle{done: make(chan struct{}), decided: make(chan struct{}), newEpoch: rebuild, droppingGOP: rebuild}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -807,10 +805,15 @@ func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candid
 
 	// The live probe: did it survive long enough to believe?
 	if err := liveProbe(kid, s.opts.LiveProbeWindow); err != nil {
+		close(h.decided)
 		<-h.done
 		drain(s.frames)
 		drain(s.audio)
 		return err
+	}
+
+	if testHookAfterLiveProbe != nil {
+		testHookAfterLiveProbe()
 	}
 
 	s.mu.Lock()
@@ -823,6 +826,7 @@ func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candid
 		// to close as well. A double close is a panic, and the ownership rule
 		// that prevents it is that exactly one *adopted* pump exists.
 		s.mu.Unlock()
+		close(h.decided)
 		kid.stop()
 		<-h.done
 		return errCaptureStopped
@@ -831,9 +835,22 @@ func (s *Source) attempt(ctx context.Context, stream *portal.Stream, cand Candid
 	// the child is either killed here or visible to Stop as s.kid.
 	h.adopted.Store(true)
 	s.kid = kid
+	// The winner, recorded HERE rather than by the cascade after this returns:
+	// the adopted pump may reach restartCapture the moment decided closes (a
+	// child dying right after adoption), and a rebuild starts from s.cand —
+	// the encoder that was working, not the top of the ladder. Read unset,
+	// it is a zero Candidate, and BuildPipeline panics on it.
+	s.encoder = cand.Name
+	s.cand = cand
+	s.captureMode, s.captureModeSet = mode, true
 	s.mu.Unlock()
+	close(h.decided)
 	return nil
 }
+
+// testHookAfterLiveProbe runs between a passed live probe and the adoption
+// decision. Tests only: it is how the adoption race is made deterministic.
+var testHookAfterLiveProbe func()
 
 // errCaptureStopped ends a cascade that has been overtaken by Stop. It is not
 // a diagnosis — nothing failed — so no shell renders it: the engine's own
@@ -1049,6 +1066,13 @@ func (s *Source) pump(kid *child, h *pumpHandle) {
 	}
 	waitErr := kid.wait()
 
+	// Wait for attempt() to decide this child's fate before reading it. A
+	// child can outlive the probe window and die before it is adopted; a pump
+	// that read `adopted` right away would retire as a lost attempt without
+	// closing the frame channel, and attempt() would then adopt a dead child —
+	// a session live with no frames, forever (the hang CI hit, 2026-09-29).
+	// attempt() always decides, and decides before it waits on h.done.
+	<-h.decided
 	if !h.adopted.Load() {
 		// A cascade attempt that lost its probe: its post-mortem is the
 		// cascade's failure list, and the frame channel belongs to whoever
