@@ -23,6 +23,9 @@ fn is_zero_u32(v: &u32) -> bool {
 fn is_zero_u8(v: &u8) -> bool {
     *v == 0
 }
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,6 +119,19 @@ pub struct Stats {
     pub audio_bytes_sent: u64,
     pub audio_configs_sent: u64,
     pub audio_packets_dropped: u64,
+
+    /// Linux (docs/58 D6/D14, the Go app's fields — `gawk-telemetry` already
+    /// types all three, from R35): completed mid-session capture rebuilds,
+    /// each a freeze a viewer saw. Absent at zero, so the Windows and macOS
+    /// wire is unchanged (G12).
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub capture_restarts: u64,
+    /// What the portal picker returned: "screen" or "window".
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub share_mode: String,
+    /// The application whose audio is captured, by process binary.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub audio_app: String,
 }
 
 #[cfg(test)]
@@ -142,6 +158,9 @@ mod tests {
             audio_sample_rate: 48_000,
             audio_channels: 2,
             audio_bitrate_bps: 128_000,
+            capture_restarts: 2,
+            share_mode: "window".into(),
+            audio_app: "hl2_linux".into(),
             ..Default::default()
         };
         let v = serde_json::to_value(&full).unwrap();
@@ -194,6 +213,9 @@ mod tests {
             "audioBytesSent",
             "audioConfigsSent",
             "audioPacketsDropped",
+            "captureRestarts",
+            "shareMode",
+            "audioApp",
         ]
         .into_iter()
         .map(String::from)
@@ -213,6 +235,9 @@ mod tests {
             "targetWidth",
             "audioState",
             "audioCodec",
+            "captureRestarts",
+            "shareMode",
+            "audioApp",
         ] {
             assert!(!obj.contains_key(absent), "{absent} should be absent");
         }
