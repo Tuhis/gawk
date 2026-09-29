@@ -1,9 +1,8 @@
 # R59 — Usage and capacity metrics
 
-**Status**: designed 2026-09-29 with the owner (decisions OD1–OD7, §2);
-chunks **UM1–UM6** (§5). UM1–UM4 implemented 2026-09-29, and UM5's
-self-hosting doc; the fleet's GitOps values (UM5) and the dashboard (UM6)
-need the release deployed.
+**Status**: done. Designed 2026-09-29 with the owner (decisions OD1–OD7,
+§2); chunks **UM1–UM6** (§5). UM1–UM4 implemented 2026-09-29, UM5 deployed
+and UM6 built on the reference deployment 2026-09-30 (§6).
 
 **Relationship to earlier work**: R9 (docs/13) made the relay scrapeable and
 gave it the per-leg counters. Its M8 was a Grafana dashboard checked in at
@@ -244,3 +243,41 @@ repository, not code. UM5 covers them and the self-hosting doc.
 
 UM1 comes first; UM2–UM4 are independent of each other; UM5 needs UM4
 released; UM6 needs everything deployed.
+
+---
+
+## 6. Verification on the reference deployment (2026-09-30)
+
+**UM5**: Prometheus shows `up == 1` for `gawk-admin-metrics` (both pods),
+`gawk-telemetry-metrics` and the CNPG exporter of `postgres-gawk-admin`
+(both instances).
+
+**UM6**: the `gawk.ioio.fi` dashboard (version 4) now reads the new series:
+
+- The summary stats are *New broadcasts* (`gawk_broadcasts_started_total{kind="new"}`)
+  and *Viewer joins* (`gawk_viewer_joins_total{kind="first"}`). The daily bars
+  split broadcasts into new/resumed and joins into first/rejoin.
+- A new *Sessions & clients* row shows broadcast length, viewer watch time
+  and peak viewers as bucket distributions over the selected range; live
+  broadcasts by codec/resolution and by broadcaster client; and joins by
+  delivery and by client.
+- The cap lines on the capacity panels (viewers per pod, broadcasts per pod,
+  busiest broadcast, DVR ring, rooms) come from `gawk_limit`, and a
+  *Configured limits* table lists every cap. No panel hardcodes a cap any more.
+- A new *gawk-admin & database* row shows portal requests and failed probes;
+  events ingested and webhook deliveries; the pgx pool; and CNPG exporter
+  health, database size, replication lag, backends and commits.
+
+Every new query returned data against production at the current time. Two
+things are still expected:
+
+- The per-day and per-hour bars fill in from the first full window after
+  the deploy.
+- `gawk_admin_webhook_deliveries_total` has no series until a webhook
+  delivery happens.
+
+A caveat for reading the counters: `increase()` cannot see a labelled
+counter's first increment, because the series is born at 1. Each label
+combination therefore undercounts by one the first time a relay pod sees
+it (and again after each pod restart). Rare client combinations are the
+ones this visibly affects.
