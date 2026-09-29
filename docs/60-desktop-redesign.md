@@ -1,8 +1,9 @@
 # R58 — Desktop broadcaster redesign (docs/60)
 
 **Status**: designed 2026-09-28 in a Claude Design pass and approved by the
-owner the same day; chunks **DR1–DR6** (§6), DR1–DR5 implemented
-2026-09-28, DR6 owner-pending. Status lives in
+owner the same day; chunks **DR1–DR6** (§6), all done: DR1–DR5
+implemented 2026-09-28, DR6 passed on Windows and macOS 2026-09-29.
+Status lives in
 [`ROADMAP.md`](../ROADMAP.md).
 
 **Relationship to earlier work**: the window is the one both desktop shells
@@ -114,5 +115,5 @@ mode-0600 file on macOS, like `roomAttachSecret` (docs/54 D12).
   Linux and `cargo test --workspace` on `macos-latest`.
 - DR4–DR5: the Slint compile runs inside every build. The Windows-only glue
   is linted by the `cargo xwin clippy` job.
-- DR6: the owner's hardware pass, recorded here with its date and outcome
-  when it happens.
+- DR6: the owner's hardware pass, done 2026-09-29 on the gaming PC
+  (Windows) and a Mac: every item in the DR6 acceptance row passed on both.
