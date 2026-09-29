@@ -69,6 +69,19 @@ permissions:
 # — and a release-PR merge's push is the run that attaches release assets. The
 # run_id fallback gives every non-PR run a group of its own, which is the same
 # thing as no concurrency at all.
+# BUILDKIT LAYER CACHE, in the in-cluster registry (zot, ioio
+# actions-runners/registry-cache.yaml, on TrueNAS iSCSI storage rather than
+# Ceph). The zot instance that already mirrors base images also takes pushes,
+# and a cache it serves over the LAN does not have the problem GitHub's Actions
+# cache had here (see the `docker` job). Only pushes to main WRITE (one
+# `:main` ref per image); everything else reads. Release images
+# (release-please.yml) never use it: they ship, and this registry takes
+# unauthenticated pushes from inside the cluster. Empty on a hosted runner, which
+# cannot reach it.
+env:
+  LAYER_CACHE: ${{ vars.RUNNER_LABEL && 'registry-cache.actions-runners.svc.cluster.local:5000/gawk-ci-cache' || '' }}
+  LAYER_CACHE_WRITE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
@@ -247,15 +260,15 @@ jobs:
           # The relay refuses to start without a certificate, so a bare run is
           # not a health check — `-dev-cert` gives it a self-signed one and
           # /healthz on the ops port is the answer.
-          relay='{"context":"gawk-server","dockerfile":"gawk-server/deploy/Dockerfile","tag":"gawk-server:ci","run_args":"-dev-cert -addr :4433 -metrics-addr :2112","probe_port":2112,"probe_path":"/healthz"}'
-          spa='{"context":"gawk-app","dockerfile":"gawk-app/deploy/Dockerfile","tag":"gawk-app:ci","run_args":"","probe_port":8080,"probe_path":"/"}'
+          relay='{"context":"gawk-server","dockerfile":"gawk-server/deploy/Dockerfile","cache":"gawk-server","tag":"gawk-server:ci","run_args":"-dev-cert -addr :4433 -metrics-addr :2112","probe_port":2112,"probe_path":"/healthz"}'
+          spa='{"context":"gawk-app","dockerfile":"gawk-app/deploy/Dockerfile","cache":"gawk-app","tag":"gawk-app:ci","run_args":"","probe_port":8080,"probe_path":"/"}'
           # R28: the build context is the REPO ROOT, not the module dir —
           # gawk-telemetry consumes gawk-server/wire through a local `replace`
           # (docs/33 D12), so the relay module's tree must be present.
           # R31: this is the ONLY cgo image, and `read_port` is what asks it
           # whether the DuckDB engine actually opened; `metrics_port` asks
           # whether its view probe ran in the shipped image.
-          tel='{"context":".","dockerfile":"gawk-telemetry/deploy/Dockerfile","tag":"gawk-telemetry:ci","run_args":"-telemetry-key 0000000000000000000000000000000000000000000000000000000000000000 -data-dir /tmp/d -log-level warn","probe_port":8080,"probe_path":"/healthz","read_port":8081,"metrics_port":8082}'
+          tel='{"context":".","dockerfile":"gawk-telemetry/deploy/Dockerfile","cache":"gawk-telemetry","tag":"gawk-telemetry:ci","run_args":"-telemetry-key 0000000000000000000000000000000000000000000000000000000000000000 -data-dir /tmp/d -log-level warn","probe_port":8080,"probe_path":"/healthz","read_port":8081,"metrics_port":8082}'
           # R39: repo-root context again, and for the same reason as telemetry
           # — gawk-admin reaches gawk-server/moderation through a local
           # `replace` (docs/42 D13).
@@ -269,7 +282,7 @@ jobs:
           # gawk-admin cannot serve without a cluster (docs/42 §4.14), so it
           # carries no probe: `expect_exit_message` asserts it gets all the way
           # to the one failure a cluster-less run must have. See the step.
-          adm='{"context":".","dockerfile":"gawk-admin/deploy/Dockerfile","tag":"gawk-admin:ci","run_args":"-addr :8090 -pg-dsn postgres://127.0.0.1:1/none?sslmode=disable -external-url https://admin.invalid -oidc-issuer https://id.invalid -oidc-client-id ci -oidc-audience ci -relay-scan-target relays.invalid -relay-admin-token ci -namespace ci -log-level warn","expect_exit_message":"kubernetes:"}'
+          adm='{"context":".","dockerfile":"gawk-admin/deploy/Dockerfile","cache":"gawk-admin","tag":"gawk-admin:ci","run_args":"-addr :8090 -pg-dsn postgres://127.0.0.1:1/none?sslmode=disable -external-url https://admin.invalid -oidc-issuer https://id.invalid -oidc-client-id ci -oidc-audience ci -relay-scan-target relays.invalid -relay-admin-token ci -namespace ci -log-level warn","expect_exit_message":"kubernetes:"}'
           images=""
           add() { images="${images:+$images,}$1"; }
           if [ "$server" = true ]; then add "$relay"; fi
@@ -2242,7 +2255,30 @@ jobs:
             echo "HOST_UID=$(id -u)"
             echo "HOST_GID=$(id -g)"
           } >> .env
-          docker compose up -d --build --wait
+          # The layer cache (see LAYER_CACHE at the top). compose gets it
+          # from a CI-only override file, so docker-compose.yml, which is what a
+          # contributor runs, stays free of this cluster's registry. Service
+          # names map to the same caches the `docker` job uses: they build the
+          # same Dockerfiles.
+          files=(-f docker-compose.yml)
+          if [ -n "$LAYER_CACHE" ]; then
+            override="$RUNNER_TEMP/ci-layer-cache.yml"
+            echo "services:" > "$override"
+            for pair in relay:gawk-server app:gawk-app fakeidp:gawk-fakeidp admin:gawk-admin admin-migrate:gawk-admin; do
+              svc=${pair%%:*}; cache=${pair#*:}
+              {
+                echo "  $svc:"
+                echo "    build:"
+                echo "      cache_from: [\"type=registry,ref=$LAYER_CACHE/$cache:main\"]"
+                if [ "$LAYER_CACHE_WRITE" = true ]; then
+                  echo "      cache_to: [\"type=registry,ref=$LAYER_CACHE/$cache:main,mode=max,image-manifest=true,oci-mediatypes=true\"]"
+                fi
+              } >> "$override"
+            done
+            cat "$override"
+            files+=(-f "$override")
+          fi
+          docker compose "${files[@]}" up -d --build --wait
 
       # The whole point of the milestone in one assertion: the frontend is
       # handed the hash of the certificate the relay actually presents. A
@@ -2923,6 +2959,9 @@ jobs:
           # `load` so the next step can actually RUN what was just built.
           load: true
           tags: ${{ matrix.tag }}
+          cache-from: ${{ env.LAYER_CACHE && format('type=registry,ref={0}/{1}:main', env.LAYER_CACHE, matrix.cache) || '' }}
+          cache-to: ${{ env.LAYER_CACHE && env.LAYER_CACHE_WRITE == 'true' && format('type=registry,ref={0}/{1}:main,mode=max,image-manifest=true,oci-mediatypes=true', env.LAYER_CACHE, matrix.cache) || '' }}
+          # (Superseded below, pending the A/B in this PR.)
           # NO LAYER CACHE, and that is the fast configuration — measured, and
           # the opposite of what everyone expects.
           #
@@ -2955,6 +2994,44 @@ jobs:
           # Before re-adding any of this: re-run that A/B. The result depends on
           # this repository's build being small (a 32s `go build`) and the link
           # to GitHub's cache being slow, and either could change.
+
+      # TEMPORARY (this PR only): the A/B the comment above asks for, re-run
+      # against the in-cluster registry. Same runner, same builder, builds in
+      # series: cold+export (what a main push pays), cold after a source-only
+      # change (today), and the same change built with the registry cache.
+      - name: "A/B (temporary): registry layer cache vs none"
+        if: env.LAYER_CACHE != ''
+        run: |
+          set -euo pipefail
+          ref="$LAYER_CACHE/ab-test/${{ matrix.cache }}:run-${{ github.run_id }}"
+          ctx="${{ matrix.context }}"; df="${{ matrix.dockerfile }}"
+          case "${{ matrix.cache }}" in
+            gawk-server)    touch_file=gawk-server/cmd/gawk-server/main.go ;;
+            gawk-app)       touch_file=gawk-app/src/main.tsx ;;
+            gawk-telemetry) touch_file=gawk-telemetry/cmd/gawk-telemetry/main.go ;;
+            gawk-admin)     touch_file=gawk-admin/cmd/gawk-admin/main.go ;;
+          esac
+          b() {
+            local t0 t1
+            t0=$(date +%s.%N)
+            docker buildx build -f "$df" --progress=plain "$@" "$ctx" > /tmp/ab.log 2>&1 || { tail -60 /tmp/ab.log; exit 1; }
+            t1=$(date +%s.%N)
+            awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.0f", b-a}'
+          }
+          docker buildx prune -af >/dev/null
+          cold_export=$(b --cache-to "type=registry,ref=$ref,mode=max,image-manifest=true,oci-mediatypes=true")
+          echo "// ci a/b $(date +%s%N)" >> "$touch_file"
+          docker buildx prune -af >/dev/null
+          cold=$(b)
+          docker buildx prune -af >/dev/null
+          warm=$(b --cache-from "type=registry,ref=$ref")
+          grep -E "importing cache|CACHED" /tmp/ab.log | head -20 || true
+          git checkout -- "$touch_file"
+          line="| ${{ matrix.cache }} | ${cold_export}s | ${cold}s | ${warm}s |"
+          echo "$line"
+          { echo "| image | cold + cache export | cold, source changed | registry cache, source changed |"
+            echo "|---|---|---|---|"
+            echo "$line"; } >> "$GITHUB_STEP_SUMMARY"
 
       # **Building an image is not evidence that it runs.**
       #
