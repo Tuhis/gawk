@@ -783,6 +783,7 @@ the chart's values and the startup log.
 | `-telemetry-base-url` | `""` | Telemetry deep links (empty hides them). |
 | `-flagger-role` | `flagger` | Reserved for R40: the role granting *flag-only* rights to client-credentials service identities (§4.11). Unused by any route in R39. |
 | `-rooms-reader-role` | `rooms-reader` | R49 (docs/50 D1): the read-only role reaching exactly `GET /api/v1/rooms`, `GET /api/v1/rooms/{name}` and `GET /api/v1/me`, for a bot's client-credentials service identity. `off` grants it nowhere (an empty env var reads as unset and keeps the default, so the chart renders `off` for `oidc.roomsReaderRole: ""` — R59's `-metrics-addr` convention). Chart `oidc.roomsReaderRole`. |
+| `-rooms-manager-role` | `rooms-manager` | R60 (docs/62 D1): the provisioning role reaching exactly `POST /api/v1/rooms`, `DELETE /api/v1/rooms/{name}` and `GET /api/v1/me`; without `operator` it deletes only the static rooms its own `sub` created (D3). `off` grants it nowhere, as for `-rooms-reader-role`. Chart `oidc.roomsManagerRole`. |
 
 ### 4.13 Helm & deployment footprint
 

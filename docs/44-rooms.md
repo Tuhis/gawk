@@ -685,6 +685,11 @@ only on the home pod (D5); `gawk-admin` reads it from the relay's
 credential-gated `/internal/admin/rooms`. The participant record's `speaking`
 and `identity` fields are exposed there, still false and empty.
 
+**Dated note, 2026-09-29 (R60).** The write half for the same bot: the
+`rooms-manager` role creates static rooms and deletes the ones its own
+service account created, enforced by a creator stamp on the `Room` CR
+([docs/62](62-rooms-manager-role.md)).
+
 - **Room text chat**: a `RoomCommand` sub-range (`0x40–0x4F`) and matching
   `RoomEvent` kinds; messages fan out over the control stream from the
   home pod; no persistence in v1 of chat either. Requires only D10's
