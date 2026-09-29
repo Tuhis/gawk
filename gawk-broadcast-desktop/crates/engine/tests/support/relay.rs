@@ -190,7 +190,7 @@ pub fn config(relay: &Relay, id: &str, token_hex: &str) -> SessionConfig {
         broadcast_id: id.into(),
         resume_token_hex: token_hex.into(),
         publish_secret: SECRET.into(),
-        origin: gawk_engine::defaults::ORIGIN.into(),
+        origin: gawk_engine::defaults::origin().into(),
         insecure: true,
         ..SessionConfig::default()
     }

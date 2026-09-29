@@ -22,14 +22,16 @@ pub enum StartFailure {
 pub fn message(failure: &StartFailure, app_url: &str) -> String {
     match failure {
         // Sentinel first — never shadowed by generic rendering.
-        StartFailure::NoHardwareEncoder => gawk_encode::cascade::refusal_message(
-            app_url,
-            if gawk_engine::defaults::THIS == &gawk_engine::defaults::MACOS {
-                "a Mac"
+        StartFailure::NoHardwareEncoder => {
+            use gawk_engine::defaults::{LINUX, MACOS, this};
+            if this() == &LINUX {
+                gawk_encode::cascade::linux_refusal_message(app_url)
+            } else if this() == &MACOS {
+                gawk_encode::cascade::refusal_message(app_url, "a Mac")
             } else {
-                "Windows"
-            },
-        ),
+                gawk_encode::cascade::refusal_message(app_url, "Windows")
+            }
+        }
         StartFailure::Capture(msg) => format!("Could not start screen capture: {msg}"),
         StartFailure::Relay(se) => relay_message(se),
     }

@@ -75,18 +75,56 @@ pub mod defaults {
         os: "macOS",
     };
 
-    /// The distribution this build is: macOS on macOS, Windows everywhere
-    /// else. Not `cfg(windows)`, because the Windows shell is linted and
-    /// tested on Linux hosts too (docs/38 D18) and must keep its identity
-    /// there.
-    pub const THIS: &Distribution = if cfg!(target_os = "macos") {
-        &MACOS
-    } else {
-        &WINDOWS
+    /// The Linux distribution (R56, docs/58 OD10). Unlike the other two it
+    /// is never chosen by the target OS: the Linux shell injects it with
+    /// [`set_this`], because the Windows shell is linted and tested on Linux
+    /// hosts too (docs/38 D18) and must keep its identity there.
+    pub const LINUX: Distribution = Distribution {
+        name: "gawk-broadcast-linux",
+        origin: "gawk-broadcast://linux",
+        asset: "gawk-broadcast-linux-x86_64.tar.gz",
+        os: "Linux",
     };
 
+    static THIS: std::sync::OnceLock<&'static Distribution> = std::sync::OnceLock::new();
+
+    /// What [`this`] is when no shell injected an identity: macOS on macOS,
+    /// Windows everywhere else — the pre-R56 rule, byte for byte.
+    const fn target_default() -> &'static Distribution {
+        if cfg!(target_os = "macos") {
+            &MACOS
+        } else {
+            &WINDOWS
+        }
+    }
+
+    /// The distribution this build is (docs/58 D2). The shell injects its
+    /// identity; the target OS does not choose it. Unset, it is the pre-R56
+    /// rule, so `app-windows`, `app-macos`, the engine's relay suite and
+    /// every host test keep today's identity. A Cargo feature was rejected:
+    /// `cargo test --workspace` unifies features across crates, so
+    /// `app-linux` enabling one would flip `app-windows`'s host tests too.
+    pub fn this() -> &'static Distribution {
+        THIS.get().copied().unwrap_or(target_default())
+    }
+
+    /// Injects this binary's identity, first thing in `main`, before anything
+    /// reads [`this`]. Idempotent for the same value; a second, different
+    /// value panics, so two shells can never race each other.
+    pub fn set_this(dist: &'static Distribution) {
+        let set = *THIS.get_or_init(|| dist);
+        assert!(
+            set == dist,
+            "distribution already set to {}, refusing {}",
+            set.name,
+            dist.name
+        );
+    }
+
     /// This build's Origin header — see [`Distribution::origin`].
-    pub const ORIGIN: &str = THIS.origin;
+    pub fn origin() -> &'static str {
+        this().origin
+    }
 
     /// The fixed rung (docs/38 D11): 1080p60, 500 ms GOP, 12 Mbps peak
     /// (peak-constrained VBR; typical motion averages ~75 % of it).
@@ -349,11 +387,22 @@ mod tests {
                 os: "macOS",
             }
         );
+        assert_eq!(
+            defaults::LINUX,
+            defaults::Distribution {
+                name: "gawk-broadcast-linux",
+                origin: "gawk-broadcast://linux",
+                asset: "gawk-broadcast-linux-x86_64.tar.gz",
+                os: "Linux",
+            }
+        );
     }
 
-    /// A macOS build is the macOS distribution; every other target is the
-    /// Windows one — including the Linux hosts the Windows shell is tested
-    /// and linted on (docs/38 D18), which is why this is not `cfg(windows)`.
+    /// Unset, a macOS build is the macOS distribution and every other
+    /// target is the Windows one — including the Linux hosts the Windows
+    /// shell is tested and linted on (docs/38 D18), which is why this is not
+    /// `cfg(windows)`. The injected Linux identity is tested in its own test
+    /// binary (tests/identity_linux.rs), so the global never leaks here.
     #[test]
     fn this_build_is_the_distribution_of_its_target() {
         let want = if cfg!(target_os = "macos") {
@@ -361,8 +410,8 @@ mod tests {
         } else {
             &defaults::WINDOWS
         };
-        assert_eq!(defaults::THIS, want);
-        assert_eq!(defaults::ORIGIN, want.origin);
+        assert_eq!(defaults::this(), want);
+        assert_eq!(defaults::origin(), want.origin);
     }
 
     #[test]
