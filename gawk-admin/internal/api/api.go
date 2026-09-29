@@ -238,8 +238,9 @@ func New(opts Options) (*API, error) {
 		// The served copy names the roles THIS deployment expects, not the
 		// symbolic ones the repository file carries (docs/49 D6).
 		Roles: map[string]string{
-			RoleOperator:    opts.Config.OperatorRole,
-			RoleRoomsReader: opts.Config.RoomsReaderRole,
+			RoleOperator:     opts.Config.OperatorRole,
+			RoleRoomsReader:  opts.Config.RoomsReaderRole,
+			RoleRoomsManager: opts.Config.RoomsManagerRole,
 		},
 	}
 	contract, err := openapi.New(docOpts)
@@ -284,6 +285,13 @@ const RoleOperator = "operator"
 // Config.RoomsReaderRole. The model is one role per capability, so the routes
 // it reaches name it beside RoleOperator rather than the operator implying it.
 const RoleRoomsReader = "rooms-reader"
+
+// RoleRoomsManager is the symbolic provisioning role for a bot's service
+// identity (R60, docs/62 D1): static room create, delete of the rooms that
+// identity created, and /me, resolved to Config.RoomsManagerRole. The
+// ownership half is not a route property — deleteRoom enforces it for a
+// caller that holds this role without the operator's.
+const RoleRoomsManager = "rooms-manager"
 
 // Features a route may require. A route whose Requires names a feature that is
 // off is NOT registered, so the catch-all answers its path with the documented
@@ -344,7 +352,7 @@ var routeTable = []routeEntry{
 	{Route{Method: "GET", Pattern: "/api/v1/schemas/events/{name}"},
 		func(a *API) http.HandlerFunc { return a.handleGetEventSchema }},
 
-	{Route{Method: "GET", Pattern: "/api/v1/me", Roles: []string{RoleOperator, RoleRoomsReader}},
+	{Route{Method: "GET", Pattern: "/api/v1/me", Roles: []string{RoleOperator, RoleRoomsReader, RoleRoomsManager}},
 		func(a *API) http.HandlerFunc { return a.handleMe }},
 
 	{Route{Method: "GET", Pattern: "/api/v1/broadcasts", Roles: []string{RoleOperator}},
@@ -383,13 +391,13 @@ var routeTable = []routeEntry{
 		func(a *API) http.HandlerFunc { return a.handleListRooms }},
 	{Route{Method: "GET", Pattern: "/api/v1/rooms/{name}", Roles: []string{RoleOperator, RoleRoomsReader}, Requires: RequiresRooms},
 		func(a *API) http.HandlerFunc { return a.handleGetRoom }},
-	{Route{Method: "POST", Pattern: "/api/v1/rooms", Roles: []string{RoleOperator}, Requires: RequiresRooms},
+	{Route{Method: "POST", Pattern: "/api/v1/rooms", Roles: []string{RoleOperator, RoleRoomsManager}, Requires: RequiresRooms},
 		func(a *API) http.HandlerFunc { return a.handleCreateRoom }},
 	{Route{Method: "POST", Pattern: "/api/v1/rooms/{name}/rotate-secret", Roles: []string{RoleOperator}, Requires: RequiresRooms},
 		func(a *API) http.HandlerFunc { return a.handleRotateRoomSecret }},
 	{Route{Method: "POST", Pattern: "/api/v1/rooms/{name}/end", Roles: []string{RoleOperator}, Requires: RequiresRooms},
 		func(a *API) http.HandlerFunc { return a.handleEndRoom }},
-	{Route{Method: "DELETE", Pattern: "/api/v1/rooms/{name}", Roles: []string{RoleOperator}, Requires: RequiresRooms},
+	{Route{Method: "DELETE", Pattern: "/api/v1/rooms/{name}", Roles: []string{RoleOperator, RoleRoomsManager}, Requires: RequiresRooms},
 		func(a *API) http.HandlerFunc { return a.handleDeleteRoom }},
 }
 
@@ -491,6 +499,8 @@ func (a *API) resolveRoles(symbolic []string) []string {
 			actual = a.opts.Config.OperatorRole
 		case RoleRoomsReader:
 			actual = a.opts.Config.RoomsReaderRole
+		case RoleRoomsManager:
+			actual = a.opts.Config.RoomsManagerRole
 		default:
 			// An unknown symbolic name is a table bug. Passing it through
 			// verbatim fails closed: no IdP issues a claim named after it by

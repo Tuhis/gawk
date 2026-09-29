@@ -388,6 +388,30 @@ func TestRoomsReaderRoleCanBeTurnedOff(t *testing.T) {
 	}
 }
 
+// R60 D6 (docs/62): the rooms-manager role defaults on, is renamed from the
+// flag or the env, and is switched off the same way as rooms-reader.
+func TestRoomsManagerRole(t *testing.T) {
+	cfg, err := ParseFlags(nil, envFrom(minimal()))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.RoomsManagerRole != "rooms-manager" {
+		t.Fatalf("RoomsManagerRole = %q by default, want rooms-manager", cfg.RoomsManagerRole)
+	}
+	env := minimal()
+	env["GAWK_ADMIN_ROOMS_MANAGER_ROLE"] = "mumble-provisioner"
+	if cfg, _ := ParseFlags(nil, envFrom(env)); cfg.RoomsManagerRole != "mumble-provisioner" {
+		t.Fatalf("RoomsManagerRole = %q from the env, want mumble-provisioner", cfg.RoomsManagerRole)
+	}
+	env["GAWK_ADMIN_ROOMS_MANAGER_ROLE"] = "off"
+	if cfg, _ := ParseFlags(nil, envFrom(env)); cfg.RoomsManagerRole != "" {
+		t.Fatalf("RoomsManagerRole = %q with the env set to off, want empty (granted nowhere)", cfg.RoomsManagerRole)
+	}
+	if cfg, _ := ParseFlags([]string{"-rooms-manager-role", "off"}, envFrom(minimal())); cfg.RoomsManagerRole != "" {
+		t.Fatalf("RoomsManagerRole = %q with -rooms-manager-role off, want empty", cfg.RoomsManagerRole)
+	}
+}
+
 func TestStaticWebhookEventFilter(t *testing.T) {
 	env := minimal()
 	env["GAWK_ADMIN_STATIC_WEBHOOKS"] = `[{"name":"pager","url":"https://p.example/h","secretEnv":"S"},

@@ -83,6 +83,9 @@ type Config struct {
 	// RoomsReaderRole grants exactly the two room reads and /me (R49,
 	// docs/50 D1) — a bot's service identity. Empty grants it nowhere.
 	RoomsReaderRole string
+	// RoomsManagerRole grants static room create, delete of the rooms the
+	// caller created, and /me (R60, docs/62 D1). Empty grants it nowhere.
+	RoomsManagerRole string
 
 	PGDSN string
 
@@ -208,6 +211,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"reserved for R40: the role granting flag-only rights; unused by any R39 route")
 	roomsReaderRole := fs.String("rooms-reader-role", env("GAWK_ADMIN_ROOMS_READER_ROLE", "rooms-reader"),
 		"role granting GET /api/v1/rooms, GET /api/v1/rooms/{name} and GET /api/v1/me only (R49); \"off\" grants it nowhere")
+	roomsManagerRole := fs.String("rooms-manager-role", env("GAWK_ADMIN_ROOMS_MANAGER_ROLE", "rooms-manager"),
+		"role granting POST /api/v1/rooms, DELETE /api/v1/rooms/{name} on rooms the caller created, and GET /api/v1/me only (R60); \"off\" grants it nowhere")
 	pgDSN := fs.String("pg-dsn", env("GAWK_ADMIN_PG_DSN", ""), "PostgreSQL DSN (required)")
 	relayScanTarget := fs.String("relay-scan-target", env("GAWK_ADMIN_RELAY_SCAN_TARGET", ""),
 		"DNS name of the relay headless metrics Service; its A records are the pods (required)")
@@ -272,6 +277,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		OperatorRole:     strings.TrimSpace(*operatorRole),
 		FlaggerRole:      strings.TrimSpace(*flaggerRole),
 		RoomsReaderRole:  roleOrOff(*roomsReaderRole),
+		RoomsManagerRole: roleOrOff(*roomsManagerRole),
 		PGDSN:            *pgDSN,
 		RelayScanTarget:  *relayScanTarget,
 		RelayAdminToken:  *relayAdminToken,
@@ -506,6 +512,7 @@ func (c Config) LogAttrs() []any {
 		"operatorRole", c.OperatorRole,
 		"flaggerRole", c.FlaggerRole,
 		"roomsReaderRole", c.RoomsReaderRole,
+		"roomsManagerRole", c.RoomsManagerRole,
 		"pgDsn", set(c.PGDSN),
 		"relayScanTarget", c.RelayScanTarget,
 		"relayOpsPort", c.RelayOpsPort,

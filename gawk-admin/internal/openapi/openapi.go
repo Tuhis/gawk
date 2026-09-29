@@ -49,8 +49,9 @@ type Options struct {
 	// Substituting here is the same move `servers[0].url` makes: everything
 	// deployment-specific in the served copy is what that deployment expects.
 	//
-	// An unmapped symbolic name is left as written — R49's `rooms-reader` is
-	// not configurable, so it needs no entry.
+	// An unmapped symbolic name is left as written; one mapped to "" (a role
+	// the deployment grants nowhere, e.g. `-rooms-manager-role off`) is
+	// dropped.
 	Roles map[string]string
 }
 

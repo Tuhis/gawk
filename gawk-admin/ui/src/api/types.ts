@@ -378,6 +378,7 @@ export type ApiErrorCode =
   | 'room_exists'
   | 'room_not_static'
   | 'room_not_dynamic'
+  | 'room_not_owned'
   | 'unavailable'
   | 'internal';
 

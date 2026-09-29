@@ -81,6 +81,9 @@ spec:
             # would read as unset (the default role), so it is rendered "off".
             - name: GAWK_ADMIN_ROOMS_READER_ROLE
               value: {{ .Values.oidc.roomsReaderRole | default "off" | quote }}
+            # R60 (docs/62 D6): the same "off" rule.
+            - name: GAWK_ADMIN_ROOMS_MANAGER_ROLE
+              value: {{ .Values.oidc.roomsManagerRole | default "off" | quote }}
             # The system of record. Same Secret the migration hook Job reads,
             # by construction (one helper).
             {{- include "gawk-admin.pgDsnEnv" . | nindent 12 }}

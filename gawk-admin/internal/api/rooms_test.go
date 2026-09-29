@@ -63,7 +63,7 @@ func (f *fakeRooms) CreateStatic(_ context.Context, req kube.StaticRoom) (string
 	if _, exists := f.rooms[code]; exists {
 		return "", kube.ErrRoomExists
 	}
-	obj := kube.RoomObject{Name: code, Managed: true}
+	obj := kube.RoomObject{Name: code, Managed: true, CreatedBy: req.CreatedBy}
 	obj.Room.Name = code
 	obj.Room.Spec = rooms.RoomSpec{Kind: rooms.KindStatic, DisplayCode: req.Code,
 		DisplayName: req.DisplayName, MaxBroadcasts: req.MaxBroadcasts}
@@ -93,12 +93,17 @@ func (f *fakeRooms) RotateSecret(_ context.Context, name string) (string, error)
 	return "ROTATED-" + name, nil
 }
 
-func (f *fakeRooms) DeleteExisting(_ context.Context, name string) (kube.RoomObject, error) {
+func (f *fakeRooms) DeleteExisting(_ context.Context, name string, check func(kube.RoomObject) error) (kube.RoomObject, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	obj, ok := f.rooms[name]
 	if !ok {
 		return kube.RoomObject{}, kube.ErrRoomNotFound
+	}
+	if check != nil {
+		if err := check(obj); err != nil {
+			return obj, err
+		}
 	}
 	delete(f.rooms, name)
 	return obj, nil
