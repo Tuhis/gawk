@@ -358,9 +358,14 @@ describe('ServerPickerPanel add/edit form', () => {
 describe('ServerPickerPanel probe quality dot', () => {
   const dotFor = async (probeFn: ProbeFn) => {
     render(<ServerPickerPanel onClose={() => {}} probeFn={probeFn} />);
+    // Wait for the probe's verdict, not just for a dot: the panel renders a
+    // `pending` dot under the same test id while the probe is in flight, and
+    // returning that one read as a failure whenever the probe resolved a tick
+    // later than the first poll (CI, 2026-09-29).
     return await waitFor(() => {
       const dot = document.querySelector('[data-testid="probe-dot"]');
       expect(dot).toBeTruthy();
+      expect(dot!.getAttribute('data-quality')).not.toBe('pending');
       return dot!;
     });
   };
