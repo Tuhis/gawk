@@ -43,12 +43,6 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
-          {{- if not .Values.oidc.roomsReaderRole }}
-          # R49 (docs/50 D1): an empty role must mean "granted nowhere", and an
-          # empty env var cannot say that — the binary reads it as unset and
-          # takes the default. The flag can.
-          args: ["-rooms-reader-role="]
-          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
@@ -83,10 +77,10 @@ spec:
               value: {{ .Values.oidc.operatorRole | quote }}
             - name: GAWK_ADMIN_FLAGGER_ROLE
               value: {{ .Values.oidc.flaggerRole | quote }}
-            {{- if .Values.oidc.roomsReaderRole }}
+            # R49 (docs/50 D1): empty grants the role nowhere. An empty env var
+            # would read as unset (the default role), so it is rendered "off".
             - name: GAWK_ADMIN_ROOMS_READER_ROLE
-              value: {{ .Values.oidc.roomsReaderRole | quote }}
-            {{- end }}
+              value: {{ .Values.oidc.roomsReaderRole | default "off" | quote }}
             # The system of record. Same Secret the migration hook Job reads,
             # by construction (one helper).
             {{- include "gawk-admin.pgDsnEnv" . | nindent 12 }}

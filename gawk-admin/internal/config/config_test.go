@@ -377,6 +377,15 @@ func TestRoomsReaderRoleCanBeTurnedOff(t *testing.T) {
 	if cfg, _ := ParseFlags(nil, envFrom(env)); cfg.RoomsReaderRole != "mumble-bot" {
 		t.Fatalf("RoomsReaderRole = %q from the env, want mumble-bot", cfg.RoomsReaderRole)
 	}
+	// "off" is how the env says it — R59's -metrics-addr convention — and
+	// what the chart renders for oidc.roomsReaderRole: "".
+	env["GAWK_ADMIN_ROOMS_READER_ROLE"] = "off"
+	if cfg, _ := ParseFlags(nil, envFrom(env)); cfg.RoomsReaderRole != "" {
+		t.Fatalf("RoomsReaderRole = %q with the env set to off, want empty (granted nowhere)", cfg.RoomsReaderRole)
+	}
+	if cfg, _ := ParseFlags([]string{"-rooms-reader-role", "off"}, envFrom(minimal())); cfg.RoomsReaderRole != "" {
+		t.Fatalf("RoomsReaderRole = %q with -rooms-reader-role off, want empty", cfg.RoomsReaderRole)
+	}
 }
 
 func TestStaticWebhookEventFilter(t *testing.T) {

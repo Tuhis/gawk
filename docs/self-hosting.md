@@ -1065,7 +1065,8 @@ A bot is not a person, so it does not do the browser flow. Give it its own
 
    The claim values are `operator` and `rooms-reader` unless you renamed
    them with `-operator-role` / `-rooms-reader-role` (`oidc.operatorRole` /
-   `oidc.roomsReaderRole` in the chart; set the latter empty to grant it
+   `oidc.roomsReaderRole` in the chart; set the latter empty — `off` on the
+   flag or its env var — to grant it
    nowhere). You never have to guess: the document your deployment serves
    states the values it expects, per operation, under `x-gawk-roles` — the
    repository copy names roles symbolically, the served copy names yours.

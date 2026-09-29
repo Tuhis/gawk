@@ -1654,14 +1654,11 @@ jobs:
             echo "::error::a webhook with no events rendered a filter: $hooks"; exit 1
           fi
           # Empty must mean OFF. An empty env var reads as unset, i.e. the
-          # default role, so the chart passes the explicit flag instead.
+          # default role, so the chart renders "off" (R59's convention).
           off=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG \
             --set oidc.roomsReaderRole= --show-only templates/deployment.yaml)
-          grep -q -- '"-rooms-reader-role="' <<<"$off" || {
-            echo "::error::oidc.roomsReaderRole='' did not render -rooms-reader-role= — the role stays granted"; exit 1; }
-          if grep -q 'GAWK_ADMIN_ROOMS_READER_ROLE' <<<"$off"; then
-            echo "::error::an empty oidc.roomsReaderRole still rendered the env var"; exit 1
-          fi
+          grep -A1 'GAWK_ADMIN_ROOMS_READER_ROLE' <<<"$off" | grep -q '"off"' || {
+            echo "::error::oidc.roomsReaderRole='' did not render GAWK_ADMIN_ROOMS_READER_ROLE=off — the role stays granted"; exit 1; }
 
       # HA of the moderation plane is a chart property (docs/42 D16), not a
       # later migration.

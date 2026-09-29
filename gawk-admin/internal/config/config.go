@@ -207,7 +207,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	flaggerRole := fs.String("flagger-role", env("GAWK_ADMIN_FLAGGER_ROLE", "flagger"),
 		"reserved for R40: the role granting flag-only rights; unused by any R39 route")
 	roomsReaderRole := fs.String("rooms-reader-role", env("GAWK_ADMIN_ROOMS_READER_ROLE", "rooms-reader"),
-		"role granting GET /api/v1/rooms, GET /api/v1/rooms/{name} and GET /api/v1/me only (R49); -rooms-reader-role= grants it nowhere (an empty env var reads as unset)")
+		"role granting GET /api/v1/rooms, GET /api/v1/rooms/{name} and GET /api/v1/me only (R49); \"off\" grants it nowhere")
 	pgDSN := fs.String("pg-dsn", env("GAWK_ADMIN_PG_DSN", ""), "PostgreSQL DSN (required)")
 	relayScanTarget := fs.String("relay-scan-target", env("GAWK_ADMIN_RELAY_SCAN_TARGET", ""),
 		"DNS name of the relay headless metrics Service; its A records are the pods (required)")
@@ -271,7 +271,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		OIDCRolesClaim:   strings.TrimSpace(*rolesClaim),
 		OperatorRole:     strings.TrimSpace(*operatorRole),
 		FlaggerRole:      strings.TrimSpace(*flaggerRole),
-		RoomsReaderRole:  strings.TrimSpace(*roomsReaderRole),
+		RoomsReaderRole:  roleOrOff(*roomsReaderRole),
 		PGDSN:            *pgDSN,
 		RelayScanTarget:  *relayScanTarget,
 		RelayAdminToken:  *relayAdminToken,
@@ -529,6 +529,18 @@ func (c Config) LogAttrs() []any {
 		"logLevel", c.LogLevel.String(),
 		"logFormat", c.LogFormat,
 	}
+}
+
+// roleOrOff maps an optional role knob to its claim value; "off" (or an empty
+// value) grants the role nowhere. "off" is the spelling that survives the env:
+// an empty GAWK_ADMIN_* variable reads as unset, i.e. the default role — the
+// same reason -metrics-addr has it (R59).
+func roleOrOff(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "off" {
+		return ""
+	}
+	return v
 }
 
 // metricsListen maps the -metrics-addr value to a listen address; "off" (or an
