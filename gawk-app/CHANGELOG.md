@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.47.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.46.1...gawk-app/v0.47.0) (2026-09-29)
+
+
+### Features
+
+* **r59:** usage and capacity metrics for the gawk.ioio.fi dashboard ([#387](https://github.com/Tuhis/gawk/issues/387)) ([cb9d188](https://github.com/Tuhis/gawk/commit/cb9d1884a19092b38213bf6edeec5cad2c3805d4))
+
 ## [0.46.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.46.0...gawk-app/v0.46.1) (2026-09-27)
 
 
