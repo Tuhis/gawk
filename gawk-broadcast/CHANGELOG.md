@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.3](https://github.com/Tuhis/gawk/compare/gawk-broadcast/v1.15.2...gawk-broadcast/v1.15.3) (2026-09-29)
+
+
+### Bug Fixes
+
+* **broadcast:** a capture child that dies just after its probe no longer hangs the broadcast ([#389](https://github.com/Tuhis/gawk/issues/389)) ([4b1259c](https://github.com/Tuhis/gawk/commit/4b1259cc2ed13b07dffd1f726229e95588c8408a))
+
 ## [1.15.2](https://github.com/Tuhis/gawk/compare/gawk-broadcast/v1.15.1...gawk-broadcast/v1.15.2) (2026-09-27)
 
 

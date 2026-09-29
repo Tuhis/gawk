@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v1.6.0...gawk-broadcast-desktop/v1.7.0) (2026-09-29)
+
+
+### Features
+
+* **r59:** usage and capacity metrics for the gawk.ioio.fi dashboard ([#387](https://github.com/Tuhis/gawk/issues/387)) ([cb9d188](https://github.com/Tuhis/gawk/commit/cb9d1884a19092b38213bf6edeec5cad2c3805d4))
+
 ## [1.6.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v1.5.2...gawk-broadcast-desktop/v1.6.0) (2026-09-28)
 
 

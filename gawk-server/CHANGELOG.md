@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.30.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.29.1...gawk-server/v0.30.0) (2026-09-29)
+
+
+### Features
+
+* **admin:** rooms read API, rooms-reader role and opt-in room activity webhooks (R49) ([#388](https://github.com/Tuhis/gawk/issues/388)) ([0c134c1](https://github.com/Tuhis/gawk/commit/0c134c1f7e0c77df890a9ff218e21591e9ce0aa9))
+* **r59:** usage and capacity metrics for the gawk.ioio.fi dashboard ([#387](https://github.com/Tuhis/gawk/issues/387)) ([cb9d188](https://github.com/Tuhis/gawk/commit/cb9d1884a19092b38213bf6edeec5cad2c3805d4))
+
 ## [0.29.1](https://github.com/Tuhis/gawk/compare/gawk-server/v0.29.0...gawk-server/v0.29.1) (2026-09-27)
 
 
