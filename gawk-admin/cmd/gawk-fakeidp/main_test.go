@@ -67,7 +67,7 @@ func claimsOf(t *testing.T, jwt string) map[string]any {
 func TestClientCredentialsGrant(t *testing.T) {
 	i, err := newIDP(idpConfig{
 		Issuer: "http://localhost:8088/idp", ClientID: "gawk-admin-spa", Audience: "gawk-admin",
-		Role: "operator", ServiceClientID: "bot", ServiceClientSecret: "s3cret", ServiceRole: "rooms-reader",
+		Role: "operator", ServiceClientID: "bot", ServiceClientSecret: "s3cret", ServiceRoles: []string{"rooms-reader"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +101,33 @@ func TestClientCredentialsGrant(t *testing.T) {
 	}
 	if rec := postForm(t, i, "/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {"bot"}, "client_secret": {"nope"}}); rec.Code != http.StatusUnauthorized {
 		t.Errorf("wrong secret = %d, want 401", rec.Code)
+	}
+}
+
+// R60 (docs/62 D7): the service client carries every role -service-role
+// lists — by default both bot roles, the token shape the Mumble bot uses.
+func TestServiceRolesFlag(t *testing.T) {
+	if got := splitRoles("rooms-reader, rooms-manager,"); len(got) != 2 || got[0] != "rooms-reader" || got[1] != "rooms-manager" {
+		t.Fatalf("splitRoles = %q", got)
+	}
+	if got := splitRoles("rooms-reader"); len(got) != 1 || got[0] != "rooms-reader" {
+		t.Fatalf("a single role = %q", got)
+	}
+	i, err := newIDP(idpConfig{
+		Issuer: "http://localhost:8088/idp", ClientID: "gawk-admin-spa", Audience: "gawk-admin",
+		Role: "operator", ServiceClientID: "bot", ServiceClientSecret: "s3cret",
+		ServiceRoles: splitRoles(defaultServiceRoles),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := postForm(t, i, "/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {"bot"}, "client_secret": {"s3cret"}})
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	claims := claimsOf(t, resp["access_token"].(string))
+	roles := claims["resource_access"].(map[string]any)["gawk-admin"].(map[string]any)["roles"].([]any)
+	if len(roles) != 2 || roles[0] != "rooms-reader" || roles[1] != "rooms-manager" {
+		t.Errorf("roles = %v, want rooms-reader and rooms-manager", roles)
 	}
 }
 
