@@ -22,6 +22,15 @@
     executionMode: "branch",
   },
 
+  // Refresh every lockfile weekly. Without this Renovate only bumps direct
+  // dependencies, so a security fix that lands in a transitive one (undici
+  // under jsdom, 2026-09) never gets a PR even when the existing ranges
+  // already allow it, and the Dependabot alerts just accumulate.
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["before 6am on monday"],
+  },
+
   packageRules: [
     {
       description: "Bump the Kubernetes libraries together — api/apimachinery/client-go must move in lockstep, and splitting them (as PRs #62/#63/#65 were) invites incompatible partial upgrades.",
