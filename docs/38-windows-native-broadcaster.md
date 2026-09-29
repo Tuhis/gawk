@@ -699,6 +699,20 @@ and the 1.1 GB xwin SDK (~3 min, against 1m09s to fetch it from Microsoft)
 all lose. Only the 11 MB `cargo-xwin` binary is cached — seconds restored
 against ~63 s of compiling it.
 
+**Revised 2026-09-30: sccache against in-cluster storage.** This paragraph
+said to re-measure against in-cluster storage, not GitHub's cache CDN, and
+that the third-party 93% was the only part worth caching. That is now what
+happens. Every self-hosted Rust job (`lint`, `test`, `build`, `linux`)
+wraps rustc in sccache (`.github/actions/rust-shared-cache`), backed by a
+WebDAV server in the cluster on TrueNAS storage (ioio
+`actions-runners/sccache.yaml`). Caching is per compiled unit, so nothing
+is restored up front, and a cold run costs no more than before.
+- **Not cached:** proc-macros, build scripts and link steps (including the
+  release profile's thin LTO) still run every time.
+- **Fork PRs:** they receive no `SCCACHE_WEBDAV_PASSWORD` secret, so they
+  build uncached and cannot write objects that shipped binaries are later
+  linked from.
+
 That 5.5 GB is a constraint on the **build**, not just on caching — a
 distinction the first CI run on real hardware made expensive to miss. `_work`
 is a 4 Gi RAM-backed emptyDir, and this job wants three trees in it: an msvc
