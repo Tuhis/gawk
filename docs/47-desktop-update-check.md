@@ -20,6 +20,16 @@ AU3's validator compares against `defaults::THIS.name` and
 workspace itself was renamed from `gawk-broadcast-windows` (R52 MB0), which
 changes nothing in the manifest names above.
 
+**2026-09-29 (R56 LX6)**: Linux joined the desktop workspace as a fourth
+native app, and D5's Linux row moves to it: distribution
+`gawk-broadcast-linux`, asset `gawk-broadcast-linux-x86_64.tar.gz`, manifest
+`releases/gawk-broadcast-linux/latest.json`
+([docs/58](58-linux-desktop-broadcaster.md) D13). `THIS` became
+`defaults::this()`, which the Linux shell injects (docs/58 D2), so AU3's
+validator reads `this().name` and `this().asset`. The Go app is frozen
+(docs/58 OD6), so AU1 and AU2 are not built for it; the check reaches Linux
+users through AU3 in the Rust app.
+
 ## 1. Purpose
 
 Both desktop broadcasters are distributed as fixed-name GitHub Release assets

@@ -115,18 +115,26 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   every object it creates is a proxy on its own connection with no
   `object.linger`, so the daemon reaps them however it dies. Don't give it
   media, and don't make it linger (`docs/39`). **Frozen to `fix` commits
-  since 2026-09-24** (R56, `docs/58`): Linux is moving into
+  since 2026-09-24** (R56, `docs/58`): Linux now ships from
   `gawk-broadcast-desktop` as a third shell, and this app is removed once
-  that passes its hardware pass, leaving only `gawk-pubsim` as Go test
+  that passes its hardware pass (LX7), leaving only `gawk-pubsim` as Go test
   tooling. Build no new features here — the one exception is LX8's single
   `feat(broadcast)` deprecation release (`docs/58` D15).
-- `gawk-broadcast-desktop` — native Windows broadcaster (R34), and from R52
-  the macOS one too: a **Rust Cargo workspace**, not a Go module (renamed
-  from `gawk-broadcast-windows` in R52 MB0, `docs/54` D2). One workspace
-  version and release unit, but the **distribution** names stay per platform:
-  the `gawk-broadcast-windows-*` EXE/artifact, the
+- `gawk-broadcast-desktop` — native Windows broadcaster (R34), from R52 the
+  macOS one and from R56 the Linux one (`crates/app-linux`,
+  `gawk-broadcast-linux`, `docs/58`): a **Rust Cargo workspace**, not a Go
+  module (renamed from `gawk-broadcast-windows` in R52 MB0, `docs/54` D2).
+  One workspace version and release unit, but the **distribution** names
+  stay per platform: the `gawk-broadcast-windows-*` EXE/artifact, the
   `releases/gawk-broadcast-windows/latest.json` manifest and the telemetry
-  `kind` did not change with the directory. Its `crates/wire` is the **fourth
+  `kind` did not change with the directory. The distribution identity is
+  `engine::defaults::this()`, which the **shell injects** (`set_this`); the
+  target OS never picks it, because the Windows shell is built and tested on
+  Linux hosts (`docs/58` D2). The Linux shell runs GStreamer and a PipeWire
+  control connection **in-process** (`docs/58` OD3/OD4), and everything
+  that compiles Linux code in CI runs in an `ubuntu:24.04` container
+  (`docs/58` D12); its zbus must never get the `tokio` feature
+  (`docs/gotchas.md`). Its `crates/wire` is the **fourth
   wire mirror** (vectors restated, never imported); its Windows CI jobs **run
   on the self-hosted Linux runners, cross-compiled to msvc with cargo-xwin** —
   see `docs/38` D18 before touching it, especially the clang-cl/libopus

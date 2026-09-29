@@ -2,14 +2,17 @@
 
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FTuhis%2Fgawk%2Fbadges%2Fgawk-broadcast-desktop.json)](../docs/43-coverage-reporting.md)
 
-The native desktop broadcasters for **Windows** and **macOS**: share one
-application — its window plus **that app's own audio** — or the whole
-desktop, hardware-encoded, straight to the gawk relay over WebTransport.
-On Windows that is WASAPI process loopback and Media Foundation
-([docs/38](../docs/38-windows-native-broadcaster.md)); on a Mac,
+The native desktop broadcasters for **Windows**, **macOS** and **Linux**:
+share one application — its window plus **that app's own audio** — or the
+whole desktop, hardware-encoded, straight to the gawk relay over
+WebTransport. On Windows that is WASAPI process loopback and Media
+Foundation ([docs/38](../docs/38-windows-native-broadcaster.md)); on a Mac,
 ScreenCaptureKit through the system picker and VideoToolbox's low-latency
 encoder ([docs/54](../docs/54-macos-native-broadcaster.md), and
-[macOS](#macos) below). Read the design doc before changing anything here —
+[macOS](#macos) below); on Linux, the desktop's screen-share portal,
+GStreamer's hardware encoders in-process and a PipeWire tee for one app's
+audio ([docs/58](../docs/58-linux-desktop-broadcaster.md), and
+[Linux](#linux) below). Read the design doc before changing anything here —
 every structural choice is a numbered decision there.
 
 **Status:** implemented and CI-gated; the on-hardware acceptance pass on a
@@ -142,6 +145,59 @@ is watching, and it goes away by itself once the loss stops. It can't be
 dismissed: while viewers are losing video, you should know. **Details**
 shows the packet counts behind it.
 
+## Linux
+
+Grab `gawk-broadcast-linux-x86_64.tar.gz` from the same
+**[Releases page](https://github.com/Tuhis/gawk/releases)** (from
+`gawk-broadcast-desktop/v2.0.0` on), unpack it and run
+`./gawk-broadcast-linux`; `./install-desktop.sh` adds a launcher entry and
+icon. The tarball's `INSTALL.md` has the package lines for apt, dnf and
+pacman.
+
+| Requirement | Why |
+|---|---|
+| Ubuntu 24.04 or newer, or equivalent (glibc 2.39, GStreamer 1.24, PipeWire 1.0) | the build's floor (docs/58 OD14) |
+| xdg-desktop-portal and your desktop's backend | the only way to capture on Wayland; tested on KDE Plasma |
+| A hardware H.264 encoder that `vulkanh264enc`, `nvh264enc` or `vah264enc` can drive | no software fallback: the browser covers that |
+
+**Choose what to share…** opens the desktop's own picker. For a window, the
+Sound row's **Choose** names whose audio goes out: the apps playing sound
+now, **Whole system** or **No audio**. The portal never says whose window
+was picked, so the app asks instead of guessing. The last one used is
+preselected.
+
+Settings live in `~/.config/gawk/broadcast.json` (honouring
+`XDG_CONFIG_HOME`): the older Go app's file, read as it is, so relays,
+secrets, rooms and the encoder cache carry over. Four keys are Linux-only
+and hand-edited:
+
+| Key | Effect |
+|---|---|
+| `encoder` | Pin one cascade element (`vulkanh264enc`, `nvh264enc`, `vah264enc`); it is still trialled |
+| `audioDevice` | Pin a PulseAudio device name; skips the audio cascade and the whose-audio step |
+| `audioApp` | The last app chosen (written by the app) |
+| `lastGoodAudioSource` | The audio cascade's cached winner (written by the app) |
+
+`GAWK_DUMP_H264=<path>` in the environment writes every access unit as sent
+(Annex-B) to that file, for a bitstream bug report.
+
+**A CI build**: every green run uploads
+`gawk-broadcast-linux-x86_64-<commit sha>`, the same tarball a release
+attaches.
+
+When it doesn't work, on Linux:
+
+- **"No working hardware H.264 encoder was found"**: check
+  `gst-inspect-1.0 vah264enc` (or `nvh264enc`, `vulkanh264enc`); the
+  plugins come from `gstreamer1.0-plugins-bad`. `debug.log` lists each
+  candidate's trial verdict.
+- **"No screen-share portal found"**: install `xdg-desktop-portal` and the
+  backend for your desktop, then log in again.
+- **Relay refuses the connection** (`origin rejected` in the relay log):
+  the relay's `allowedOrigins` needs `gawk-broadcast://linux`.
+- **The whose-audio list is empty**: an app appears only while it plays
+  sound.
+
 ## Requirements
 
 | Requirement | Check |
@@ -231,9 +287,13 @@ or removing your stream, shows a card; your broadcast is untouched.
 ## Building
 
 Any host builds and tests the portable crates (wire, engine); the
-Windows-only crates compile empty off-Windows so `cargo test` works
-anywhere. The pinned toolchain in `rust-toolchain.toml` auto-installs via
-rustup.
+Windows- and macOS-only code compiles empty elsewhere. A **Linux** host also
+builds the Linux shell, which links GStreamer and PipeWire, so it needs
+their headers: on Ubuntu 24.04, `libgstreamer1.0-dev
+libgstreamer-plugins-base1.0-dev libpipewire-0.3-dev libfontconfig-dev
+libxkbcommon-dev clang cmake pkg-config` (`clang` is for the PipeWire
+bindings' bindgen). The pinned toolchain in `rust-toolchain.toml`
+auto-installs via rustup.
 
 ```
 cargo test                                # golden vectors, chunking, defaults
@@ -256,6 +316,14 @@ Quirks that will bite you:
   a `/usr/bin/clang-cl` shim carrying `-mssse3 -msse4.1` (or libopus
   fails), and the MSVC SDK. All three are baked into the CI runner image —
   see docs/38 D18 before reproducing it by hand.
+- **The Linux integration tests need a sound server and GStreamer's
+  plugins.** `crates/audio/tests/pwctl_daemon.rs` starts a private
+  PipeWire, WirePlumber and session bus (`pipewire wireplumber dbus
+  pipewire-bin`), and the gst tests use `videotestsrc` and a test-only
+  `x264enc` (`gstreamer1.0-plugins-{base,good,bad,ugly}
+  gstreamer1.0-pipewire`). Without them those tests skip; CI sets
+  `GAWK_REQUIRE_PIPEWIRE=1 GAWK_REQUIRE_GST=1`, which turns a skip into a
+  failure.
 - **The EXE's icon is a linked `.res`, not a compiled `.rc`.**
   `crates/app-windows/build.rs` hands `assets/icon/gawk.res` (generated from the
   shared SVG by `go run ./tools/icon generate`, committed) straight to the
@@ -270,12 +338,13 @@ Quirks that will bite you:
 |---|---|
 | `crates/wire` | The wire-format mirror — see below |
 | `crates/engine` | Session lifecycle, send policy, resume supervisor. No GUI, no COM/WinRT; media enters through traits, the network through a `RelaySession` seam |
-| `crates/capture` | Windows.Graphics.Capture frame source + window/monitor picker enumeration; on macOS the ScreenCaptureKit stream and the system content picker (`sck`, `sck_picker`), with their frame policy in the portable `sck_policy` |
-| `crates/encode` | Hardware H.264, trial-gated: the Media Foundation MFT cascade on Windows, VideoToolbox's low-latency session (`vt`) on macOS; the Annex-B and cadence rules are portable |
-| `crates/audio` | Opus under R25's contract: WASAPI process/system loopback on Windows; on macOS the portable PCM shim and audio lane fed by ScreenCaptureKit's audio (`pcm`, `lane`) |
+| `crates/capture` | Windows.Graphics.Capture frame source + window/monitor picker enumeration; on macOS the ScreenCaptureKit stream and the system content picker (`sck`, `sck_picker`), with their frame policy in the portable `sck_policy`; on Linux the screen-share portal (`portal`) and the one-clock mapper (`pwclock`) |
+| `crates/encode` | Hardware H.264, trial-gated: the Media Foundation MFT cascade on Windows, VideoToolbox's low-latency session (`vt`) on macOS, the GStreamer cascade in-process on Linux (`gst`, with its plan in the portable `gst_policy`); the Annex-B and cadence rules are portable |
+| `crates/audio` | Opus under R25's contract: WASAPI process/system loopback on Windows; on macOS the portable PCM shim and audio lane fed by ScreenCaptureKit's audio (`pcm`, `lane`); on Linux the system cascade in GStreamer (`gstsrc`) and the app-audio control plane on its own PipeWire connection (`pwctl`, with its graph rules in the portable `pwgraph`) |
 | `crates/ui` | The window both apps show (`main.slint`, compiled once) and the shell that drives it (`shell`: settings, rooms, the session lifecycle, stats, diagnostics) — each app plugs in a `Platform` and a `Media` pipeline |
 | `crates/app-windows` | The Windows platform — WGC picker, Media Foundation pipeline, toasts, DPAPI — built as `gawk-broadcast.exe` |
-| `crates/app-macos` | The macOS platform — system picker, ScreenCaptureKit → VideoToolbox pipeline — built as `gawk-broadcast-macos`, bundled as `gawk-broadcast-macos.app` by `tools/macos/bundle.sh` (R52, [docs/54](../docs/54-macos-native-broadcaster.md); in progress — a stub off macOS) |
+| `crates/app-macos` | The macOS platform — system picker, ScreenCaptureKit → VideoToolbox pipeline — built as `gawk-broadcast-macos`, bundled as `gawk-broadcast-macos.app` by `tools/macos/bundle.sh` (R52, [docs/54](../docs/54-macos-native-broadcaster.md); a stub off macOS) |
+| `crates/app-linux` | The Linux platform — portal Share card, whose-audio sheet, the cascade × capture-ladder walk with mid-session rebuild, D-Bus notifications — built as `gawk-broadcast-linux`, packed with `tools/linux/` into the tarball (R56, [docs/58](../docs/58-linux-desktop-broadcaster.md); a stub off Linux) |
 
 ### The wire crate is a mirror, not an implementation
 

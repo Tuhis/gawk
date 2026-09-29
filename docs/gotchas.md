@@ -1121,6 +1121,41 @@ Add to it when a new gotcha lands in `docs/`.
   this; the network notice reads the QUIC counter.
   ([docs/57](57-wifi-uplink.md) OD7)
 
+**Native Linux broadcaster, in the desktop workspace (R56)**
+
+- **Never build zbus with its `tokio` feature in the desktop workspace.**
+  ashpd's *default* feature is `tokio`, which turns on `zbus/tokio`. Cargo
+  unifies features, so every zbus user in the process then needs a tokio
+  runtime, including code in Slint's stack that calls zbus on the GUI thread.
+  The result is a launch panic: "there is no reactor running". Use ashpd's
+  `async-io` feature; its futures still poll from a tokio runtime.
+  ([docs/58](58-linux-desktop-broadcaster.md) §11 F-2)
+- **A buffer's capture time is `base_time + running time`, never
+  `base_time + PTS`.** GstVideoEncoder subclasses may shift their output
+  segment: x264enc moves PTS by 1000 hours to keep DTS positive. Take every
+  timestamp through the segment of the pad it was seen on.
+  ([docs/58](58-linux-desktop-broadcaster.md) §11 F-3)
+- **Don't `Drop` buffers in a gstreamer-rs 0.25 buffer probe.** It trips a
+  `gst_mini_object_unref: assertion 'mini_object != NULL'` critical per
+  buffer. To stop a source after N frames, make the probe blocking
+  (`BLOCK | BUFFER`) and return `Ok` to hold it and `Pass` to let a buffer
+  through. ([docs/58](58-linux-desktop-broadcaster.md) §11 F-4)
+- **Pin the pipeline's clock.** `pipewiresrc` provides a clock of its own,
+  and a pipeline picks the most upstream provider. `use_clock` with the
+  system clock in its monotonic mode is what makes GStreamer's time the
+  engine's `Instant`. ([docs/58](58-linux-desktop-broadcaster.md) D4)
+- **A trial's latency check means nothing after EOS**, which flushes every
+  held frame out. Feed live, stop, wait, and snapshot before draining.
+  ([docs/58](58-linux-desktop-broadcaster.md) §11 F-4)
+- **The portal's stream `size` is in compositor coordinates, not pixels.**
+  A 2560×1440 monitor at 150 % reports 1707×960, so the other shells'
+  never-upscale rule would under-size a scaled display.
+  ([docs/58](58-linux-desktop-broadcaster.md) §11 F-7)
+- **A `#[path]` on a module inside an inline `mod` resolves from a directory
+  that may not exist** (`src/<file>/<mod>/`), and Linux will not `..` out of
+  a directory that isn't there. Declare the shared test harness at the top
+  of the file instead.
+
 **Single-application audio on Linux (R35)**
 
 - **`application.process.binary` is not in PipeWire's registry global
