@@ -1,0 +1,72 @@
+# The self-hosted runners mount a persistent CephFS volume at /mnt/ci-cache
+# (ioio actions-runners/ci-cache.yaml). This action points the job's Go module
+# and build caches at it. On any runner without the mount, a GitHub-hosted one
+# or a fork's, it does nothing and the job keeps its own caches.
+#
+# Why a network filesystem and not actions/cache: restores on these pods run
+# at about 6 MB/s into a RAM tmpfs, so every cache measured here lost to
+# rebuilding (docs/38 D18). The volume needs no restore step.
+#
+# It is shared by every runner on the SAME node, not across nodes: each node
+# mounts its own subdirectory. The nodes' kernel has CVE-2026-80527, which
+# makes a CephFS reader sleep forever once another client touches the same
+# file. A tree shared across nodes hung this repository's `admin` job for 18
+# minutes on its first cold fill (run 36633210514, attempt 2). ioio's
+# ci-cache.yaml has the detail and says when the split can go.
+#
+# Measured on this PR's own run (36633210514), attempt 1 (no cache) vs 3 (warm):
+#
+#     server  go vet 125s -> 18s    go test -race 311s -> 177s
+#     admin   go vet  72s -> 10s    go test -race 143s ->  51s
+#     tidy    go mod tidy (5 modules) 25s -> 2s
+#     e2e     build relay + fixture publisher 120s -> 9s
+#
+# Three rules follow from the cache being shared and persistent:
+#
+#  * -count=1 goes into GOFLAGS. A persistent GOCACHE would otherwise answer
+#    `go test` with "(cached)" for any package whose inputs Go can see as
+#    unchanged. Some tests have inputs Go cannot see: the broadcast relay
+#    integration test shells out to `go build` of the relay, so a cached PASS
+#    there could outlive the relay change that breaks it. Only test RESULTS
+#    stop being cached; compiled packages still are, and that is where the
+#    time goes. Commands that do not take -count (vet, build, mod, list) ignore
+#    it.
+#  * Nothing may `go clean -cache` it. Other jobs are reading it at the same
+#    moment. The jobs that clean their tmpfs cache to make room gate that
+#    step on GO_SHARED_CACHE, which this action exports.
+#  * setup-go's own cache is off on these runners
+#    (`cache: ${{ !vars.RUNNER_LABEL }}`). It would restore a tarball into the
+#    tmpfs paths this action then abandons, at the same ~6 MB/s.
+#
+# Run it AFTER setup-go: setup-go resolves the cache paths from `go env` when
+# it runs, and this action overrides them through GITHUB_ENV.
+name: Shared Go cache
+description: Point GOMODCACHE/GOCACHE at the runners' shared CephFS cache when mounted; a no-op elsewhere.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        root=/mnt/ci-cache
+        if ! mountpoint -q "$root"; then
+          echo "No shared cache mounted at $root: keeping this job's own Go caches."
+          exit 0
+        fi
+        # A new CephFS subvolume belongs to root. Every runner is the same
+        # uid, so the first job to arrive takes the directory once.
+        if [ ! -w "$root" ]; then
+          sudo chown "$(id -u):$(id -g)" "$root"
+        fi
+        mkdir -p "$root/go/mod" "$root/go/build"
+        {
+          echo "GOMODCACHE=$root/go/mod"
+          echo "GOCACHE=$root/go/build"
+          echo "GOFLAGS=${GOFLAGS:+$GOFLAGS }-count=1"
+          echo "GO_SHARED_CACHE=true"
+        } >> "$GITHUB_ENV"
+        # The subvolume quota is the volume's size, so df reports the cache's
+        # real headroom. Go trims entries unused for 5 days by itself.
+        echo "Shared Go cache: $root/go (GOFLAGS += -count=1)"
+        df -h "$root" | sed 's/^/  /'

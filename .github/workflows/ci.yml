@@ -315,6 +315,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.server == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # A bound, not a budget: the p90 is ~10 min. The shared Go cache sits on
+    # CephFS, whose kernel client on these nodes can hang a reader outright
+    # (CVE-2026-80527, go-shared-cache). Without this, a hang holds a runner
+    # slot for GitHub's 6-hour default. The same bound applies to `broadcast`,
+    # `telemetry` and `admin`.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: gawk-server
@@ -323,7 +329,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
+          # Off on the self-hosted runners, whose Go caches live on the
+          # shared CephFS volume instead (go-shared-cache, next step); on a
+          # hosted runner (a fork's own run) setup-go's cache is the only one.
+          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-server/go.sum
+      - uses: ./.github/actions/go-shared-cache
       # quic-go asks for ~7 MiB UDP buffers and a stock kernel caps them
       # at 2 MiB — low enough that loopback datagrams drop under -race load
       # (run 29663246454 lost a delta and hung a carrier test for the full
@@ -362,7 +373,11 @@ jobs:
       # runs 35315043704 and 35315939106 with every test already green.
       # The MODULE cache is left alone: setup-go saves it, and re-downloading
       # it next run would cost far more than it frees.
+      # Never on the shared CephFS cache (go-shared-cache): there is no tmpfs
+      # to free there, and cleaning it would pull the cache out from under
+      # every job reading it concurrently.
       - name: Free the Go build cache before the coverage toolchain
+        if: env.GO_SHARED_CACHE != 'true'
         run: go clean -cache
       - uses: ./.github/actions/coverage
         with:
@@ -379,6 +394,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.broadcast == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
     # Resolved rather than echoed back: `attach_to` may be a tag or a branch,
     # and the release gate compares commit SHAs. This is also the single fact
     # that ties the artifact, the gate and the thing actually compiled
@@ -410,7 +426,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-broadcast/go.mod
+          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-broadcast/go.sum
+      - uses: ./.github/actions/go-shared-cache
       # Gio's build dependencies (docs/19 Decision 14) — the honest price of
       # a native Wayland GUI. Keep in sync with gawk-broadcast/README.md.
       #
@@ -939,6 +957,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.telemetry == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: gawk-telemetry
@@ -947,11 +966,13 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-telemetry/go.mod
+          cache: ${{ !vars.RUNNER_LABEL }}
           # R31 (UD18/§8 Q1) gave this module its first third-party dependency
           # and therefore its first go.sum: the DuckDB driver, imported only
           # behind the `duckdb` build tag. The untagged build below still links
           # none of it.
           cache-dependency-path: gawk-telemetry/go.sum
+      - uses: ./.github/actions/go-shared-cache
       - name: gofmt
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
@@ -1026,7 +1047,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-telemetry/go.mod
+          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-telemetry/go.sum
+      - uses: ./.github/actions/go-shared-cache
       - name: the built page fetches nothing off-origin
         working-directory: gawk-telemetry
         run: go test ./internal/dashboard/ -run 'TestNoExternalAssetReferences|TestServesTheEmbeddedPage'
@@ -1049,6 +1072,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.admin == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:18-alpine
@@ -1078,7 +1102,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-admin/go.mod
+          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-admin/go.sum
+      - uses: ./.github/actions/go-shared-cache
       - name: gofmt
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
@@ -1127,7 +1153,11 @@ jobs:
       # runs 35315043704 and 35315939106 with every test already green.
       # The MODULE cache is left alone: setup-go saves it, and re-downloading
       # it next run would cost far more than it frees.
+      # Never on the shared CephFS cache (go-shared-cache): there is no tmpfs
+      # to free there, and cleaning it would pull the cache out from under
+      # every job reading it concurrently.
       - name: Free the Go build cache before the coverage toolchain
+        if: env.GO_SHARED_CACHE != 'true'
         run: go clean -cache
       - uses: ./.github/actions/coverage
         with:
@@ -1190,7 +1220,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-admin/go.mod
+          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-admin/go.sum
+      - uses: ./.github/actions/go-shared-cache
       - name: the built portal fetches nothing off-origin
         working-directory: gawk-admin
         run: >-
@@ -1323,7 +1355,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-admin/go.mod
+          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-admin/go.sum
+      - uses: ./.github/actions/go-shared-cache
       - name: the previous release's store tests, against THIS branch's schema
         run: |
           set -euo pipefail
@@ -1388,6 +1422,11 @@ jobs:
           # cache-restore time anyway (2m20s of 2m45s, at ~6 MB/s), so it loses
           # nothing by fetching what it needs directly from the proxy.
           cache: false
+      # The shared CephFS cache does not have that problem. Nothing is restored
+      # into the tmpfs, so the fat graph costs volume quota, not a leaner job's
+      # workspace. It is also what stops this job re-fetching those 660MB on
+      # every run.
+      - uses: ./.github/actions/go-shared-cache
       - name: go mod tidy leaves every module unchanged
         run: |
           for mod in gawk-server gawk-broadcast gawk-telemetry gawk-admin tools/icon; do
@@ -1436,6 +1475,7 @@ jobs:
           # duckdb-tagged graph it does pull is exactly the fat working set
           # that job's comment warns about handing to leaner jobs.
           cache: false
+      - uses: ./.github/actions/go-shared-cache
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
@@ -1493,6 +1533,7 @@ jobs:
         with:
           go-version-file: gawk-server/go.mod
           cache: false # same reasoning as `tidy` and `licenses`
+      - uses: ./.github/actions/go-shared-cache
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -2172,9 +2213,11 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
+          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
+      - uses: ./.github/actions/go-shared-cache
       # See the server job — the probe below is QUIC over loopback.
       - name: Ensure UDP buffer limits for quic-go
         run: |
@@ -2434,10 +2477,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
+          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
             gawk-telemetry/go.sum
+      - uses: ./.github/actions/go-shared-cache
       # See the server job — the relay↔pubsim↔browser leg is QUIC over
       # loopback.
       - name: Ensure UDP buffer limits for quic-go
@@ -2582,10 +2627,12 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
+          cache: ${{ !vars.RUNNER_LABEL_DISK }}
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
             gawk-telemetry/go.sum
+      - uses: ./.github/actions/go-shared-cache
       # See the server job. net.core sysctls are host-global (not namespaced),
       # so this also covers the relay pods inside the kind node.
       - name: Ensure UDP buffer limits for quic-go
@@ -3072,7 +3119,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: tools/icon/go.mod
+          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: tools/icon/go.sum
+      - uses: ./.github/actions/go-shared-cache
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test ./...
