@@ -33,8 +33,9 @@ your laptop in about five minutes with a self-signed certificate.
 | `gawk-telemetry` *(optional)* | Per-session diagnostics. **Off by default; skip it on a first install.** | Internal only, plus one same-origin ingest path |
 | `gawk-admin` *(optional)* | The moderation portal: fleet-wide kill, durable ID/IP bans, signed webhooks. **Off by default; skip it on a first install.** | ClusterIP by default; an OIDC-gated Ingress is a deliberate opt-in ([§9](#9-gawk-admin--the-moderation-portal-r39)) |
 
-The native broadcasters (`gawk-broadcast` for Linux, `gawk-broadcast-windows`
-and `gawk-broadcast-macos`) are **not** deployed — they are binaries a
+The native broadcasters (`gawk-broadcast-linux`, `gawk-broadcast-windows` and
+`gawk-broadcast-macos`, and the older Go Linux app `gawk-broadcast`) are
+**not** deployed — they are binaries a
 broadcaster downloads and runs against your relay. Nothing here installs
 them.
 
@@ -156,9 +157,10 @@ config:
   # fine for a first smoke test and wrong to leave in place.
   allowedOrigins:
     - https://gawk.example.com     # CHANGEME: the web app
-    - gawk-broadcast://native      # the Linux native broadcaster
+    - gawk-broadcast://linux       # the Linux native broadcaster
     - gawk-broadcast://windows     # the Windows native broadcaster
     - gawk-broadcast://macos       # the macOS native broadcaster
+    - gawk-broadcast://native      # the older Go Linux app, and gawk-pubsim
 
   # Capacity. Defaults are conservative; raise them against your uplink.
   maxSubscribers: 15               # per broadcast
@@ -177,7 +179,8 @@ Three kinds of client, and only the first two go in the list:
 | Client | Origin it sends | Action |
 |---|---|---|
 | The web app | `https://` + the app's Ingress host | **Add it.** Must match `ingress.host` exactly |
-| `gawk-broadcast` (Linux) | `gawk-broadcast://native` | **Add it** if anyone will broadcast from the Linux app |
+| `gawk-broadcast-linux` | `gawk-broadcast://linux` | **Add it** if anyone will broadcast from Linux |
+| `gawk-broadcast` (the older Go Linux app) and `gawk-pubsim` | `gawk-broadcast://native` | **Keep it** while anyone still runs the Go app; the dev stack's simulated publishers send it too |
 | `gawk-broadcast-windows` | `gawk-broadcast://windows` | **Add it** if anyone will broadcast from Windows |
 | `gawk-broadcast-macos` | `gawk-broadcast://macos` | **Add it** if anyone will broadcast from a Mac |
 | Relay pods, in cluster mode | `gawk-server://native-internal-edge` | **Do not add it.** Built in |

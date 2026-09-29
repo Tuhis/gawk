@@ -152,9 +152,9 @@ impl Reporter {
                     version.into()
                 },
                 surface: "broadcaster",
-                // The distribution, not the host: see defaults::THIS.
-                browser: crate::defaults::THIS.name,
-                os: crate::defaults::THIS.os,
+                // The distribution, not the host: see defaults::this.
+                browser: crate::defaults::this().name,
+                os: crate::defaults::this().os,
             },
             clock,
             send,
@@ -509,8 +509,8 @@ mod tests {
         assert_eq!(v["final"], true);
         assert_eq!(v["app"]["version"], "1.2.3");
         assert_eq!(v["app"]["surface"], "broadcaster");
-        assert_eq!(v["app"]["browser"], crate::defaults::THIS.name);
-        assert_eq!(v["app"]["os"], crate::defaults::THIS.os);
+        assert_eq!(v["app"]["browser"], crate::defaults::this().name);
+        assert_eq!(v["app"]["os"], crate::defaults::this().os);
         assert!(v["samples"].as_array().is_some());
         assert!(v["events"].as_array().is_some());
         assert!(v.get("truncated").is_none(), "truncated omitted when false");

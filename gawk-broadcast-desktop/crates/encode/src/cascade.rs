@@ -68,6 +68,21 @@ per-application audio and background-window capture."
     )
 }
 
+/// The Linux refusal (R56, docs/58 G4). The reason is the Go app's, not the
+/// other two platforms': on Linux the browser cannot hardware-encode at all
+/// (docs/19), so "the browser hardware-encodes fine on this PC" would be
+/// false. What is true is that the browser works here with a software
+/// encoder, at a CPU cost — and that this app never becomes one.
+pub fn linux_refusal_message(app_url: &str) -> String {
+    format!(
+        "No working hardware H.264 encoder was found on this PC, so gawk-broadcast \
+can't start — it deliberately has no software encoder. The browser broadcaster at \
+{app_url} works on this PC with software encoding, which costs some CPU. If this PC \
+does have a hardware encoder, check that the GStreamer plugin packages \
+(gstreamer1.0-plugins-bad, with its va, nvcodec and vulkan elements) are installed."
+    )
+}
+
 /// Why the cascade refused (G3). Carries the enumerated-but-rejected trail
 /// for diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -433,6 +448,13 @@ mod tests {
         assert!(msg.contains("per-application audio"));
         // docs/54 D7: the macOS wording.
         assert!(refusal_message("x", "a Mac").contains("hardware-encodes fine on a Mac;"));
+        // docs/58 G4: Linux names this PC, and never claims the browser
+        // hardware-encodes there.
+        let linux = linux_refusal_message("https://gawk.ioio.fi");
+        assert!(linux.contains("deliberately has no software encoder"));
+        assert!(linux.contains("https://gawk.ioio.fi"));
+        assert!(linux.contains("this PC"));
+        assert!(!linux.contains("hardware-encodes fine"));
     }
 
     #[test]

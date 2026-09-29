@@ -23,6 +23,13 @@ export struct MonitorRow {
     label: string,
 }
 
+// One application emitting audio, for the whose-audio step (Linux, docs/58 D9).
+export struct AudioAppRow {
+    name: string,
+    binary: string,
+    streams: int,
+}
+
 export struct StatRow {
     label: string,
     value: string,
@@ -1250,7 +1257,23 @@ export component MainWindow inherits Window {
     in property <bool> system-picker: false;
     in property <string> share-summary: "";      // what was picked; empty = nothing yet
     in property <string> share-mode-label: "";   // "this app's audio" / "whole-system audio"
+    in property <bool> share-window: false;       // the pick was one window (the card's icon)
     in property <bool> share-picker-available: true;
+    // What the Share card says before anything is picked: the platform's
+    // picker is its own (macOS: SCContentSharingPicker; Linux: the portal).
+    in property <string> share-empty-hint: "macOS shows its own picker. Choose one app window or a whole display.";
+    // The in-window menu bar (macOS only; split from system-picker for
+    // Linux, which has the Share card but no menu bar — docs/58 D9).
+    in property <bool> native-menu: false;
+
+    // ----- whose audio (Linux, docs/58 D9 — docs/39 D5's card) -----
+    // Shown after a WINDOW pick, before Start: the portal never says whose
+    // window it was, so the user names whose sound goes out.
+    in property <bool> whose-audio: false;
+    in property <[AudioAppRow]> audio-apps: [];
+    // Index into audio-apps; -1 = whole system, -2 = no audio.
+    in-out property <int> audio-choice: -1;
+    in-out property <bool> show-audio-sheet: false;
 
     // The code face. Consolas is a Windows font; macOS sets Menlo.
     in property <string> mono-font: "Consolas";
@@ -1325,6 +1348,7 @@ export component MainWindow inherits Window {
     callback remove-server();
     callback switch-to-system-audio();
     callback network-notice-help();
+    callback audio-choice-changed();
     callback room-input-edited();
     callback room-join();
     callback room-create();
@@ -1344,8 +1368,9 @@ export component MainWindow inherits Window {
     callback quit-confirmed();
 
     // macOS (docs/54 D11): Slint already gives the app menu About and Quit
-    // ⌘Q; this adds Settings… ⌘, beside it. Windows has no menu bar.
-    if root.system-picker: MenuBar {
+    // ⌘Q; this adds Settings… ⌘, beside it. Windows and Linux have no menu
+    // bar (docs/58 D9).
+    if root.native-menu: MenuBar {
         Menu {
             title: "Broadcast";
             MenuItem {
@@ -1704,7 +1729,7 @@ export component MainWindow inherits Window {
                                         height: 32px;
                                     }
                                     if !(source-card.has-window && root.windows[root.selected-window].has-icon): Icon {
-                                        commands: source-card.has-window ? Icons.window : Icons.monitor;
+                                        commands: source-card.has-window || (source-card.has-mac && root.share-window) ? Icons.window : Icons.monitor;
                                         size: 26px;
                                     }
                                 }
@@ -1718,7 +1743,7 @@ export component MainWindow inherits Window {
                                 overflow: elide;
                             }
                             if !source-card.has-window && !source-card.has-monitor && !source-card.has-mac: Text {
-                                text: root.system-picker ? "macOS shows its own picker. Choose one app window or a whole display." : "Pick an app or a display to share.";
+                                text: root.system-picker ? root.share-empty-hint : "Pick an app or a display to share.";
                                 color: T.muted;
                                 font-size: 12.5px;
                                 horizontal-alignment: center;
@@ -1747,6 +1772,12 @@ export component MainWindow inherits Window {
                                 title: "Sound";
                                 sub: root.system-picker ? (root.share-mode-label != "" ? root.share-mode-label : "A window shares its app's sound. A display shares everything.")
                                     : root.picker-tab == 0 ? "Only this app's sound · follows what you share" : "Everything you hear on this computer";
+                            }
+                            if root.whose-audio: RowLink {
+                                text: "Choose";
+                                clicked => {
+                                    root.show-audio-sheet = true;
+                                }
                             }
                         }
                         Row {
@@ -2743,6 +2774,82 @@ export component MainWindow inherits Window {
 
     // Add to a room (D8). Idle, the choice becomes the pending room; live,
     // it joins now.
+    // Whose audio? (Linux, docs/58 D9, docs/39 D5): the applications
+    // playing sound now, live, plus the two fixed rows.
+    if root.show-audio-sheet: Sheet {
+        title: "Whose audio?";
+        subtitle: "Your desktop's picker doesn't say whose window you chose, so pick whose sound viewers hear.";
+        sheet-height: 520px;
+        close => {
+            root.show-audio-sheet = false;
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            min-height: 160px;
+            List {
+                for app[i] in root.audio-apps: Row {
+                    first: i == 0;
+                    clickable: true;
+                    tinted: root.audio-choice == i;
+                    clicked => {
+                        root.audio-choice = i;
+                        root.audio-choice-changed();
+                        root.show-audio-sheet = false;
+                    }
+                    RowIco {
+                        icon: Icons.speaker;
+                        accent: root.audio-choice == i;
+                    }
+                    RowText {
+                        title: app.name;
+                        sub: app.binary + (app.streams == 1 ? " · 1 stream" : " · " + app.streams + " streams");
+                    }
+                }
+                Row {
+                    first: root.audio-apps.length == 0;
+                    clickable: true;
+                    tinted: root.audio-choice == -1;
+                    clicked => {
+                        root.audio-choice = -1;
+                        root.audio-choice-changed();
+                        root.show-audio-sheet = false;
+                    }
+                    RowIco {
+                        icon: Icons.monitor;
+                        accent: root.audio-choice == -1;
+                    }
+                    RowText {
+                        title: "Whole system";
+                        sub: "Everything you hear on this computer";
+                    }
+                }
+                Row {
+                    clickable: true;
+                    tinted: root.audio-choice == -2;
+                    clicked => {
+                        root.audio-choice = -2;
+                        root.audio-choice-changed();
+                        root.show-audio-sheet = false;
+                    }
+                    RowIco {
+                        icon: Icons.close;
+                        accent: root.audio-choice == -2;
+                    }
+                    RowText {
+                        title: "No audio";
+                        sub: "Video only";
+                    }
+                }
+            }
+        }
+        Text {
+            text: "Apps appear here when they play sound — start the game's audio first if the list looks empty.";
+            color: T.muted;
+            font-size: 12.5px;
+            wrap: word-wrap;
+        }
+    }
+
     if root.show-room-sheet: Sheet {
         title: root.room-active ? "Room " + root.room-code : "Add to a room";
         subtitle: root.room-active ? root.room-status : "Stream alongside friends. Viewers see everyone's screen in one place.";

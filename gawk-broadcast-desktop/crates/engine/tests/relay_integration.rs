@@ -184,7 +184,7 @@ struct Participant {
 impl Participant {
     async fn join(relay: &Relay, code: &str) -> Participant {
         let url = gawk_engine::room::room_url(&relay.url, code, "", "").unwrap();
-        let conn = gawk_engine::transport::dial_room(&url, gawk_engine::defaults::ORIGIN, true)
+        let conn = gawk_engine::transport::dial_room(&url, gawk_engine::defaults::origin(), true)
             .await
             .expect("room join dial");
         let mut msg = Vec::new();

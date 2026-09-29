@@ -59,6 +59,12 @@
         // A distribution with no release yet (docs/54: the Mac app before its
         // first signed release) stays hidden until its manifest is real.
         if (card.hasAttribute('data-dl-until-released')) card.hidden = false;
+        // …and a distribution that replaces another (docs/58 D13: the Linux
+        // app moving into the desktop workspace) hides the one it replaces
+        // only then, so there is always exactly one working Linux card.
+        document
+          .querySelectorAll(`[data-dl-superseded-by="${component}"]`)
+          .forEach((old) => { old.hidden = true; });
       })
       .catch(() => {});
   });

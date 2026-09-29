@@ -1,7 +1,7 @@
-# The native desktop broadcasters: Windows (R34, docs/38) and macOS (R52,
-# docs/54). One Cargo workspace, deliberately a separate top-level component
-# with its own toolchain, CI and release unit (docs/38 D1, docs/54 D1) — not a
-# sibling of the Go gawk-broadcast module. Two binaries, one per shell crate;
+# The native desktop broadcasters: Windows (R34, docs/38), macOS (R52,
+# docs/54) and Linux (R56, docs/58). One Cargo workspace, deliberately a
+# separate top-level component with its own toolchain, CI and release unit
+# (docs/38 D1, docs/54 D1, docs/58 OD1). Three binaries, one per shell crate;
 # everything below the shells is shared.
 [workspace]
 resolver = "2"
@@ -17,6 +17,7 @@ members = [
     "crates/ui",
     "crates/app-windows",
     "crates/app-macos",
+    "crates/app-linux",
 ]
 
 [workspace.package]

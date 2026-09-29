@@ -70,7 +70,7 @@ re-verify.
 flowchart LR
     subgraph SRC["Broadcasters"]
         B1["Browser<br/>getDisplayMedia + WebCodecs"]
-        B2["gawk-broadcast<br/>native Linux, GPU encode"]
+        B2["gawk-broadcast-linux<br/>native Linux, GPU encode"]
         B3["gawk-broadcast.exe<br/>native Windows, GPU encode"]
         B4["gawk-broadcast.app<br/>native macOS, GPU encode"]
     end
@@ -243,8 +243,8 @@ mode, verification, and upgrades.
 |---|---|
 | [`gawk-server/`](gawk-server/) | The Go relay — WebTransport endpoint, pub/sub hub, cluster-mode federation. Image + Helm chart. |
 | [`gawk-app/`](gawk-app/) | React SPA — landing/join, broadcaster, viewer. Image + Helm chart. |
-| [`gawk-broadcast/`](gawk-broadcast/) | Native **Linux** broadcaster (Go) — GUI + CLI, GPU encode via the XDG portal + GStreamer. A binary you run, not a deployed component. |
-| [`gawk-broadcast-desktop/`](gawk-broadcast-desktop/) | Native **Windows** and **macOS** broadcasters (Rust) — Windows.Graphics.Capture + Media Foundation as a single static EXE; ScreenCaptureKit + VideoToolbox as a notarized `.app`. |
+| [`gawk-broadcast-desktop/`](gawk-broadcast-desktop/) | Native **Windows**, **macOS** and **Linux** broadcasters (Rust) — Windows.Graphics.Capture + Media Foundation as a single static EXE; ScreenCaptureKit + VideoToolbox as a notarized `.app`; the XDG portal + GStreamer + PipeWire as a tarball. |
+| [`gawk-broadcast/`](gawk-broadcast/) | The older native **Linux** broadcaster (Go), GUI + CLI, which `gawk-broadcast-linux` replaces; also home to `gawk-pubsim`, the simulated publisher the dev stack uses. |
 | [`gawk-telemetry/`](gawk-telemetry/) | Optional per-session diagnostics — ingest, history, dashboard, MCP. Off by default. Image + Helm chart. |
 | [`gawk-admin/`](gawk-admin/) | Optional moderation portal — fleet-wide kill, durable ID/IP bans, OIDC-gated operator SPA, signed webhooks. Off by default. Image + Helm chart. |
 | [`e2e/`](e2e/) | Browser E2E harness — headless Chrome decoding real relayed frames, plus a kind cluster tier. |
@@ -297,9 +297,10 @@ Every component ships a generated `THIRD-PARTY-NOTICES.md` listing what is
 actually linked into that artifact:
 [relay](gawk-server/THIRD-PARTY-NOTICES.md) ·
 [app](gawk-app/THIRD-PARTY-NOTICES.md) ·
-[Linux broadcaster](gawk-broadcast/THIRD-PARTY-NOTICES.md) ·
+[Linux broadcaster](gawk-broadcast-desktop/THIRD-PARTY-NOTICES-linux.md) ·
 [Windows broadcaster](gawk-broadcast-desktop/THIRD-PARTY-NOTICES.md) ·
 [macOS broadcaster](gawk-broadcast-desktop/THIRD-PARTY-NOTICES-macos.md) ·
+[older Go Linux broadcaster](gawk-broadcast/THIRD-PARTY-NOTICES.md) ·
 [telemetry](gawk-telemetry/THIRD-PARTY-NOTICES.md) ·
 [telemetry UI](gawk-telemetry/ui/THIRD-PARTY-NOTICES.md) ·
 [admin](gawk-admin/THIRD-PARTY-NOTICES.md) ·

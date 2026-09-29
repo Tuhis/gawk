@@ -83,6 +83,23 @@ pub trait Media: Send {
     fn capture_mode(&self) -> Option<&'static str> {
         None
     }
+    /// Linux (docs/58 D6/D14): completed mid-session capture rebuilds.
+    fn capture_restarts(&self) -> u64 {
+        0
+    }
+    /// Linux: what the portal returned, "screen" | "window".
+    fn share_mode(&self) -> Option<&'static str> {
+        None
+    }
+    /// Linux: the binary whose audio is captured, when one application's is.
+    fn audio_app(&self) -> Option<String> {
+        None
+    }
+    /// Linux: the system-audio cascade's winner, to cache as
+    /// `lastGoodAudioSource` and re-verify first next time (docs/58 D7).
+    fn audio_source_to_cache(&self) -> Option<String> {
+        None
+    }
     /// A pump died; the broadcast should end with this message.
     fn take_failure(&self) -> Option<String>;
     /// Tears the media down in dependency order. No zombie capture.
@@ -140,6 +157,12 @@ pub trait Platform: 'static {
     /// `None` — the default — keeps the "dropping some video" line off.
     fn network_facts(&mut self, _relay: std::net::SocketAddr) -> Option<NetworkFacts> {
         None
+    }
+    /// After a successful `prepare_start`: what this start decided that the
+    /// config should remember (Linux: the whose-audio choice, docs/39 D5).
+    /// Returns true when it changed anything; the shell then saves.
+    fn remember(&mut self, _cfg: &mut Config) -> bool {
+        false
     }
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -1629,6 +1652,12 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         }
     };
     sh.capture_mode = prepared.capture_mode;
+    {
+        let sh = &mut *sh;
+        if sh.platform.remember(&mut sh.cfg) {
+            save_config(sh);
+        }
+    }
     // docs/60 D5: the source this broadcast shares is the one to preselect
     // next time.
     if let Some(key) = current_source_key(ui) {
@@ -1855,6 +1884,13 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
                 // Cache the accepted encoder for next launch (D9).
                 if sh.cfg.last_good_encoder != info.encoder {
                     sh.cfg.last_good_encoder = info.encoder.clone();
+                    save_config(&mut sh);
+                }
+                // And, on Linux, the audio cascade's winner (docs/58 D7).
+                if let Some(src) = media.audio_source_to_cache()
+                    && sh.cfg.last_good_audio_source != src
+                {
+                    sh.cfg.last_good_audio_source = src;
                     save_config(&mut sh);
                 }
                 let (_, _, fps, _) = sh.cfg.resolve_rung();
@@ -2594,6 +2630,9 @@ fn merged_stats(sh: &Shell) -> gawk_engine::stats::Stats {
                 st.capture_fps = f;
             }
             st.audio_state = p.audio_state();
+            st.capture_restarts = p.capture_restarts();
+            st.share_mode = p.share_mode().unwrap_or_default().to_owned();
+            st.audio_app = p.audio_app().unwrap_or_default();
         }
     }
     if st.audio_state.is_empty() {
@@ -2635,6 +2674,28 @@ fn stat_rows(
         value: value.into(),
     };
     let na = || "n/a".to_string();
+    let mut rows = base_stat_rows(st, loss, network, &row, &na);
+    // Linux only (docs/58 D6, D16): the portal path reports its share mode,
+    // and a rebuilt capture is the one place a viewer's freeze is recorded.
+    if !st.share_mode.is_empty() {
+        rows.insert(
+            3,
+            row("Capture rebuilds", format!("{}", st.capture_restarts)),
+        );
+        if !st.audio_app.is_empty() {
+            rows.push(row("App audio", st.audio_app.clone()));
+        }
+    }
+    rows
+}
+
+fn base_stat_rows(
+    st: &gawk_engine::stats::Stats,
+    loss: &LossMonitor,
+    network: Option<NetworkFacts>,
+    row: &dyn Fn(&str, String) -> StatRow,
+    na: &dyn Fn() -> String,
+) -> Vec<StatRow> {
     vec![
         row(
             "Watching",

@@ -9,6 +9,13 @@ Gated on one prerequisite that does not exist today: **a release signing
 key** (D1). Split out of R45 on 2026-09-15 so the notify-only half can ship
 while the signing question is settled.
 
+**2026-09-29 (R56 LX6)**: the Linux install path (D6, SU4) now applies to the
+Rust app, `gawk-broadcast-linux` ([docs/58](58-linux-desktop-broadcaster.md)
+D13). The unpacked directory holds **one** binary, with no helper beside it
+(the PipeWire control plane is in-process, docs/58 D8), so D6's "three
+renames" becomes one rename of `gawk-broadcast-linux` next to its
+`share/`. The Go app is frozen and gets no in-place update (docs/58 OD6).
+
 ## 1. Purpose
 
 R45 tells a broadcaster that a newer build exists and opens the release

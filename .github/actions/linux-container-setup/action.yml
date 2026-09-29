@@ -1,0 +1,91 @@
+# Shared by the jobs in .github/workflows/broadcast-desktop.yml that compile
+# Linux code (R56, docs/58 D12): they run in an `ubuntu:24.04` container, not
+# on the runner image, so the build's glibc floor is pinned by the container
+# (OD14) rather than by whenever the runner image is upgraded — and the runner
+# image stays exactly as it is.
+#
+# Everything a job here needs is installed by this one action, so the two
+# jobs cannot drift apart on a package list:
+#
+#  * build: the GStreamer and PipeWire headers the -sys crates link against,
+#    fontconfig/xkbcommon for Slint's winit backend, clang for bindgen
+#    (pipewire-sys), cmake for the vendored libopus, lld for the test links;
+#  * test runtime: a PipeWire daemon, WirePlumber and a session bus for the
+#    headless app-audio harness (docs/39 D7, F6), and the GStreamer plugins
+#    the gst-level tests build pipelines from — `-ugly` only for the
+#    test-only x264enc stub, never a production candidate;
+#  * packaging: desktop-file-utils and binutils (objdump) for the tarball
+#    checks;
+#  * Rust: rustup, then the toolchain rust-toolchain.toml pins.
+#
+# The apt invocation is ci.yml's defensive one (the broadcast job documents
+# every line of it): HTTPS for the Ubuntu archives, IPv4 only, short
+# inactivity timeouts, bounded retries, and update errors surfaced.
+name: Linux container setup
+description: Install the Linux build/test toolchain inside the ubuntu:24.04 container.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+          -exec sed -i 's|http://\([a-z0-9.-]*\)\.ubuntu\.com|https://\1.ubuntu.com|g' {} +
+        cat > /etc/apt/apt.conf.d/99-gawk-ci <<'EOF'
+        Acquire::ForceIPv4 "true";
+        Acquire::Retries "1";
+        Acquire::http::Timeout "15";
+        Acquire::https::Timeout "15";
+        EOF
+        retry() {
+          for attempt in 1 2 3; do
+            [ "$attempt" = 1 ] || sleep $(((attempt - 1) * 15))
+            "$@" && return 0
+            echo "::warning::attempt ${attempt}/3 failed: $*"
+          done
+          return 1
+        }
+        # The stock image has no CA bundle, so the first update runs over the
+        # plain-HTTP index it ships with; everything after it is HTTPS.
+        if [ ! -e /etc/ssl/certs/ca-certificates.crt ]; then
+          find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i 's|https://\([a-z0-9.-]*\)\.ubuntu\.com|http://\1.ubuntu.com|g' {} +
+          retry apt-get -o APT::Update::Error-Mode=any update
+          retry apt-get install -y --no-install-recommends ca-certificates
+          find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i 's|http://\([a-z0-9.-]*\)\.ubuntu\.com|https://\1.ubuntu.com|g' {} +
+        fi
+        retry apt-get -o APT::Update::Error-Mode=any update ||
+          echo "::warning::apt-get update never completed cleanly — installing against whatever indexes we have"
+        retry apt-get install -y --no-install-recommends \
+          ca-certificates curl git xz-utils build-essential clang lld cmake pkg-config \
+          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+          libpipewire-0.3-dev libspa-0.2-dev libfontconfig-dev libxkbcommon-dev \
+          pipewire pipewire-bin wireplumber dbus \
+          gstreamer1.0-tools gstreamer1.0-pipewire \
+          gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+          gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+          desktop-file-utils binutils file python3 || {
+            echo "::error::Build dependencies could not be installed — the Ubuntu archives look unreachable from this runner, not a change in this PR"
+            exit 1
+          }
+        # The checkout belongs to the runner's user, not the container's root:
+        # without this, git refuses it ("dubious ownership") and the version
+        # badge loses its +g<commit> (crates/ui/build.rs asks git).
+        git config --global --add safe.directory '*'
+    - shell: bash
+      working-directory: gawk-broadcast-desktop
+      run: |
+        set -euo pipefail
+        curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        export PATH="$HOME/.cargo/bin:$PATH"
+        # rust-toolchain.toml names the channel (and rustfmt + clippy);
+        # llvm-tools is cargo-llvm-cov's, and must match rustc's LLVM.
+        rustup toolchain install
+        rustup component add llvm-tools-preview
+        rustc --version
+        cargo --version
+        echo "GStreamer $(pkg-config --modversion gstreamer-1.0), PipeWire $(pkg-config --modversion libpipewire-0.3), $(ldd --version | sed -n 1p)"

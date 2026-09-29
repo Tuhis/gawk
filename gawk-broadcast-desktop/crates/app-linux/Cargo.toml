@@ -1,0 +1,46 @@
+[package]
+name = "gawk-broadcast-app-linux"
+description = "The Linux Slint shell — gawk-broadcast-linux (R56, docs/58 D1)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Unique in target/ for the reason docs/54 §11 gave for gawk-broadcast-macos:
+# the Windows shell's binary is already `gawk-broadcast`, and two workspace
+# binaries sharing a name collide on any host that builds both.
+[[bin]]
+name = "gawk-broadcast-linux"
+path = "src/main.rs"
+
+# The platform is a library behind a one-line main.rs (see lib.rs for why).
+[lib]
+name = "gawk_broadcast_app_linux"
+path = "src/lib.rs"
+
+# Everything is Linux-gated. Off Linux this crate is a stub `main`, so the
+# msvc cross-build and the macOS job pay nothing for it; the `linux` container
+# job is where it is built, linted and tested (docs/58 D12).
+[target.'cfg(target_os = "linux")'.dependencies]
+gawk-audio = { path = "../audio" }
+gawk-capture = { path = "../capture" }
+gawk-encode = { path = "../encode" }
+gawk-engine = { path = "../engine" }
+gawk-ui = { path = "../ui" }
+log = "0.4"
+slint = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+# Notifications over org.freedesktop.Notifications (docs/58 D9): the zbus 5
+# already in the graph, on its default async-io executor — never its `tokio`
+# feature (see ../capture/Cargo.toml for why).
+zbus = "5"
+
+# The audio tests reuse the audio crate's headless-PipeWire harness
+# (../audio/tests/support/pwtest.rs, included by path).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+serde_json = "1"
+# Slint's headless testing backend, so the platform's card logic runs
+# against a real MainWindow with no display. Pinned to the slint version,
+# as its internal crates require. Test-only: never in the shipped graph.
+i-slint-backend-testing = "=1.17.1"

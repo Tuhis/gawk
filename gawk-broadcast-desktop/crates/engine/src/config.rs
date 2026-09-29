@@ -126,6 +126,21 @@ pub struct Config {
     /// The last source shared (Windows, docs/60 D5): `display:<label>` or
     /// `window:<title>`. Blank = none yet.
     pub last_source: String,
+    /// Linux (R56, docs/58 D10): the four keys the Go app's file carries.
+    /// Read and written on every OS, so a shared file round-trips; only the
+    /// Linux shell acts on them. `encoder` pins one cascade element
+    /// (`vulkanh264enc`, `nvh264enc`, `vah264enc`), skipping the cascade but
+    /// still trialling it (OD12).
+    pub encoder: String,
+    /// Pins a PulseAudio device name; skips the audio cascade AND the
+    /// whose-audio step, with a visible note (docs/39 D3).
+    pub audio_device: String,
+    /// The binary last chosen in the whose-audio step, preselected next
+    /// time (docs/39 D5).
+    pub audio_app: String,
+    /// The system-audio cascade's cached winner, re-verified before use
+    /// (`pipewire-monitor`, `pulse-default-monitor`).
+    pub last_good_audio_source: String,
 }
 
 impl Config {
@@ -287,7 +302,7 @@ impl Config {
     pub fn resolve_origin(&self) -> String {
         let s = self.origin.trim();
         if s.is_empty() {
-            defaults::ORIGIN.to_owned()
+            defaults::origin().to_owned()
         } else {
             s.to_owned()
         }
@@ -453,9 +468,10 @@ impl Credentials for Plaintext {
     }
 }
 
-/// The config file location: `%APPDATA%\gawk\broadcast.json` on Windows —
-/// same filename as the Linux broadcaster's (no collision is possible
-/// cross-OS, and shared vocabulary keeps docs legible).
+/// The config file location: `%APPDATA%\gawk\broadcast.json` on Windows,
+/// `~/Library/Application Support/gawk/broadcast.json` on macOS, and the Go
+/// Linux app's own file on Linux — one filename everywhere (no collision is
+/// possible cross-OS, and shared vocabulary keeps docs legible).
 pub fn default_path() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -474,15 +490,30 @@ pub fn default_path() -> Option<PathBuf> {
     }
     #[cfg(all(not(windows), not(target_os = "macos")))]
     {
-        // Dev hosts only (the product is Windows): keep the Linux
-        // broadcaster's location so a dev box has one gawk config story.
-        std::env::var_os("HOME").map(|d| {
-            PathBuf::from(d)
-                .join(".config")
-                .join("gawk")
-                .join("broadcast.json")
-        })
+        // Linux (R56, docs/58 D10): the Go app's own file, found the way
+        // Go's os.UserConfigDir finds it, so the two apps share one config
+        // through the overlap window and a user's settings carry over.
+        xdg_path(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
+        )
     }
+}
+
+/// `$XDG_CONFIG_HOME/gawk/broadcast.json`, else `$HOME/.config/…`. A
+/// relative `XDG_CONFIG_HOME` is invalid per the XDG spec and is never
+/// resolved against the working directory: Go's `os.UserConfigDir` errors on
+/// it (the Go app then runs without a config); this falls back to `HOME`.
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
+fn xdg_path(
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    let base = match xdg_config_home.map(PathBuf::from) {
+        Some(dir) if dir.is_absolute() => dir,
+        _ => PathBuf::from(home?).join(".config"),
+    };
+    Some(base.join("gawk").join("broadcast.json"))
 }
 
 /// Loads the config. A missing file is defaults; a CORRUPT file is a warning
@@ -670,7 +701,7 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.resolve_relay_url(), defaults::RELAY_URL);
         assert_eq!(cfg.resolve_app_url(), defaults::APP_URL);
-        assert_eq!(cfg.resolve_origin(), defaults::ORIGIN);
+        assert_eq!(cfg.resolve_origin(), defaults::origin());
         assert_eq!(cfg.resolve_rung(), (1920, 1080, 60, 12_000_000));
 
         let cfg = Config {
@@ -1268,5 +1299,86 @@ mod tests {
             cfg.effective_telemetry_url(Some("https://relay.example/ingest")),
             Some("https://relay.example/ingest".into())
         );
+    }
+
+    /// docs/58 D10: the Linux path honours XDG_CONFIG_HOME, as the Go app
+    /// always did, and falls back to ~/.config.
+    #[test]
+    fn the_linux_path_is_the_go_apps_file() {
+        use std::ffi::OsString;
+        let home = Some(OsString::from("/home/u"));
+        assert_eq!(
+            xdg_path(Some("/x/cfg".into()), home.clone()),
+            Some(PathBuf::from("/x/cfg/gawk/broadcast.json"))
+        );
+        assert_eq!(
+            xdg_path(None, home.clone()),
+            Some(PathBuf::from("/home/u/.config/gawk/broadcast.json"))
+        );
+        // Empty and relative values are not a directory to write into.
+        assert_eq!(
+            xdg_path(Some("".into()), home.clone()),
+            Some(PathBuf::from("/home/u/.config/gawk/broadcast.json"))
+        );
+        assert_eq!(
+            xdg_path(Some("rel/dir".into()), home),
+            Some(PathBuf::from("/home/u/.config/gawk/broadcast.json"))
+        );
+        assert_eq!(xdg_path(None, None), None);
+    }
+
+    /// docs/58 D10's carry-over test: a file the Go app wrote
+    /// (tests/fixtures/go-broadcast.json, produced by the Go
+    /// `config.Config.Save` with every key populated) loads here with the
+    /// same effective relay, secret per server, room, nickname, resume id
+    /// and token, rung, encoder cache and audio preselection.
+    #[test]
+    fn a_go_written_config_loads_with_identical_effective_values() {
+        let dir = std::env::temp_dir().join(format!("gawk-go-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broadcast.json");
+        std::fs::write(&path, include_str!("../tests/fixtures/go-broadcast.json")).unwrap();
+
+        let (mut cfg, warn) = load(&path, &Plaintext);
+        assert!(warn.is_none(), "{warn:?}");
+        // Already migrated in Go (servers present): nothing to do here.
+        assert!(!migrate(&mut cfg));
+
+        assert_eq!(cfg.resolve_relay_url(), "https://relay.home.example:4433");
+        assert_eq!(cfg.resolve_publish_secret(), "homelab-secret");
+        assert_eq!(cfg.resolve_app_url(), "https://gawk.example.org");
+        assert_eq!(cfg.resolve_telemetry_url(), None, "\"off\" carries over");
+        // The default's credentials-only record survives F9 (same fleet).
+        let mut on_default = cfg.clone();
+        on_default.selected_server = DEFAULT_SERVER_NAME.into();
+        assert_eq!(on_default.resolve_relay_url(), defaults::RELAY_URL);
+        assert_eq!(on_default.resolve_publish_secret(), "default-secret");
+
+        assert_eq!(cfg.room, "FRIDAY");
+        assert_eq!(cfg.room_attach_secret, "attach-key");
+        assert_eq!(cfg.nickname, "tuhis");
+        assert_eq!(cfg.last_broadcast_id, "K7XQ2M");
+        assert_eq!(cfg.last_resume_token, "00112233445566778899aabbccddeeff");
+        // A saved bitrate is kept (D5: only the UNSET default drops to 12).
+        assert_eq!(cfg.resolve_rung(), (2560, 1440, 120, 16_000_000));
+        assert_eq!(cfg.last_good_encoder, "nvh264enc");
+        assert_eq!(cfg.encoder, "vah264enc");
+        assert_eq!(cfg.last_good_audio_source, "pipewire-monitor");
+        assert_eq!(
+            cfg.audio_device,
+            "alsa_output.usb-headset.analog-stereo.monitor"
+        );
+        assert_eq!(cfg.audio_app, "hl2_linux");
+        assert!(!cfg.disable_audio);
+
+        // And it round-trips: the Linux keys survive a save by this app.
+        save(&path, &cfg, &Plaintext).unwrap();
+        let (again, _) = load(&path, &Plaintext);
+        assert_eq!(again, cfg);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        for key in ["encoder", "audioDevice", "audioApp", "lastGoodAudioSource"] {
+            assert!(raw.contains(&format!("\"{key}\"")), "{key} missing: {raw}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

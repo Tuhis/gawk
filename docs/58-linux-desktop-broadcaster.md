@@ -1,8 +1,12 @@
 # R56 — Linux in the desktop workspace, and retiring the Go broadcaster
 
 **Status**: designed 2026-09-24; owner decisions OD1–OD15 taken the same
-day. Chunks **LX0–LX9**; none started. **The Go app (`gawk-broadcast/`) is
-frozen to fixes only from 2026-09-24** (OD6, D15). The ROADMAP entry
+day. **LX1–LX6 built 2026-09-29**; LX0's spike was skipped by owner decision
+the same day, with its hardware questions moved into the LX7 pass (§11,
+F-1). LX7 (the on-hardware pass), LX8 (the Go deprecation release, after
+the first desktop release that carries the tarball) and LX9 (removal, after
+LX7) are open. **The Go app (`gawk-broadcast/`) is frozen to fixes only from
+2026-09-24** (OD6, D15). The ROADMAP entry
 ([R56](../ROADMAP.md#r56--linux-in-the-desktop-workspace-and-retiring-the-go-broadcaster))
 carries the summary; this doc restates the decisions so it reads on its own.
 
@@ -984,7 +988,160 @@ real hardware can prove. Both machines, KDE Plasma Wayland, unless noted.
 
 ## 11. Deviations and field findings
 
-None yet. LX0 adds the lessons ledger and the go/no-go here.
+### F-1 — LX0 was skipped: the product was built first (owner, 2026-09-29)
+
+The spike needed both GPUs at hand, and neither was. The owner chose to build
+LX1–LX6 in full and test the finished product instead of a spike. So:
+
+- **D4 is built as written: in-process.** The go/no-go the spike was for is
+  now LX7's first question. V-1 (the crash posture) is measured on the
+  release build, and the `--media-child` fallback stays pre-registered,
+  unbuilt, for the owner to choose if V-1 says so.
+- V-10 and V-11 (idle CPU, `app_id`) move to LX7 with it.
+- The lessons ledger is desk work, so it was written anyway (below).
+
+### F-2 — zbus must not be built with its `tokio` feature
+
+The first launch of the built binary panicked before the window appeared:
+"there is no reactor running, must be called from the context of a Tokio 1.x
+runtime", from zbus's executor. ashpd's default feature is `tokio`, which
+turns on `zbus/tokio`. Cargo unifies features, so every zbus user in the
+process then needs a tokio runtime. That includes code in Slint's stack that
+calls zbus on the GUI thread, which has none. ashpd now uses its `async-io`
+feature, and so zbus uses its own executor thread. The portal's futures
+still poll fine from `capture::portal`'s tokio runtime. A comment in
+`crates/capture/Cargo.toml` records why.
+
+### F-3 — Capture time is `base_time + running time`, never raw PTS
+
+The first live-pipeline test put capture timestamps an hour in the future.
+GstVideoEncoder subclasses may shift their output segment (x264enc moves PTS
+by 1000 hours to keep DTS positive), so a raw PTS is not on the clock. Every
+timestamp, on the encoder's input pad and on the appsinks, is taken through
+the segment of the pad it was seen on. This is D4's "one clock" as actually
+implemented, and it applies to the hardware encoders as much as to the test
+stub.
+
+### F-4 — The trial measures latency before the drain
+
+D5's "≤ 1 frame retained at drain" means nothing after an EOS, because EOS
+flushes everything out. So the trial feeds its frames live, stops at the
+last one with a **blocking** pad probe, waits 400 ms, and snapshots the
+output *before* any drain. An encoder with lookahead fails the row, and a
+test proves it with x264's `rc-lookahead`. Dropping buffers in the probe
+instead trips a `gst_mini_object_unref(NULL)` critical in gstreamer-rs
+0.25's probe trampoline; the blocking probe avoids that.
+
+### F-5 — The codec string comes from each attempt's first live IDR
+
+The trial runs at 640×360, so its SPS names a lower level than the live
+1080p60 stream. The DecoderConfig is therefore derived from each live
+attempt's first IDR (`set_codec` first, then `Sender::restart_codec` when a
+rebuild or a cascade advance changes it, D6), never from the trial.
+
+### F-6 — The thumbnail rides the system-memory rung only, until V-3
+
+D4 keeps the thumbnail only where V-3 shows it costs no zero-copy, and V-3
+has not run yet. `gst_policy::thumbnail_on` therefore enables it on the
+system-memory rung only, where the frame is CPU-visible anyway. Enabling a
+zero-copy rung after V-3 is a one-line policy change, and the download
+elements are already in the plan.
+
+### F-7 — Geometry uses `fit_within`, not the other shells' `encode_size`
+
+Windows and macOS never upscale (`encode_size`). The portal's `size` is in
+compositor coordinates, though, not pixels: a 2560×1440 monitor at 150 %
+reports 1707×960. The no-upscale rule would encode that monitor below the
+rung box. D3's `fit_within` keeps the aspect and pins the box, as the Go app
+did.
+
+### F-8 — Two small shell hooks beyond D1's list
+
+The shared code gained two default-method hooks besides the ones D1 named.
+`Platform::remember` persists the whose-audio choice (`audioApp`) when Start
+is pressed. `Media::audio_source_to_cache` hands back the system cascade's
+winner for `lastGoodAudioSource`. Both are no-ops on Windows and macOS. So
+are the other D14 methods: `Media::capture_restarts`, `share_mode` and
+`audio_app`, whose stats fields are absent when zero or empty, so the
+Windows and macOS wire is unchanged (G12).
+
+### F-9 — The whose-audio card is a sheet off the Share card's Sound row
+
+D9 predates R58's redesign (docs/60), which replaced the card stack D9
+described. After a window pick, the Sound row now shows "Choose", which
+opens a "Whose audio?" sheet. The sheet has the live app list, the two fixed
+rows and D9's caveat line. The Sound row names the choice. Mid-session, the
+shared audio line and the silence banner's switch cover D9's status line.
+The Share card's source icon shows a window for a window pick
+(`share-window`), and the empty card names the desktop's own picker
+(`share-empty-hint`). `native-menu` split from `system-picker` as D9 said.
+
+### F-10 — Smaller calls
+
+- **The refusal** names this PC, and says the browser works here with
+  *software* encoding. "Hardware-encodes fine", the Windows and macOS text,
+  would be false on Linux (`cascade::linux_refusal_message`, G4).
+- **The minimized hint is off on Linux.** Portal capture is damage-driven:
+  a still screen and a minimized window both deliver nothing, and no frame
+  gap tells them apart.
+- **The Vulkan candidate's GOP is forced** at the encoder's input by the
+  same probe that serves forced IDRs, with the shared `KeyframeCadence`. The
+  element has no GOP property this doc could pin (D5's table).
+- **The control plane starts at a window pick**, not at Start, so the
+  whose-audio list is live while the user chooses. At Start it moves into
+  the pipeline, or is stopped when the choice is system or no audio
+  (docs/39 F10).
+- **`pwctl` iterates its loop by hand** instead of running a main loop, so a
+  round trip is "sync, then iterate until done" with no nested loops.
+- **The site keeps the Go card until the new manifest exists.** The new
+  Linux card is `data-dl-until-released` and `data-dl-superseded-by` hides
+  the Go card only once the new card has a release, so there is no window
+  in which the Linux download points at a release without a tarball. D13
+  said "switches".
+- **CI**: since every Linux host build of the workspace now links GStreamer
+  and PipeWire, the host clippy moved from `lint` to `test`, and `test` runs
+  in the `ubuntu:24.04` container. The skip gates are `GAWK_REQUIRE_GST` and
+  `GAWK_REQUIRE_PIPEWIRE`, which turn a skip into a failure. cargo-deny
+  needed one scoped exception: `target-lexicon`, a build-time dependency of
+  `system-deps` (Apache-2.0 WITH LLVM-exception).
+- **`gawk-telemetry` needed no change.** Its schema already types
+  `captureRestarts`, `shareMode` and `audioApp` from R35 (D14's check).
+
+### The lessons ledger (LX0's desk half)
+
+docs/19 "Implementation notes":
+
+| Note | Fate |
+|---|---|
+| 1 Announce read detached | *obsolete*: the shared engine's session owns it |
+| 2 ffmpeg-generated TS fixture | *obsolete*: no MPEG-TS |
+| 3 Integration tests against the real `gawk-server` | *applies*: `tests/gst_to_relay.rs` (LX3) |
+| 4 Capture ladder per encoder (now three rungs) | *applies*: `gst_policy::RUNGS`, `video::walk` (LX2) |
+| 5 Pumps start with the child | *applies in spirit*: frames flow from PLAYING, through the probe window; the pipe-blocking reason is obsolete |
+| 6 A dropped delta drops its GOP | *applies*: the shared `FrameGate` |
+| 7 AUs cloned before the channel | *obsolete*: the appsink buffer is copied into an owned `Vec` |
+| 8 Nominal-rate caps, GPU-memory handoff, converter on the source | *applies*: `gst_policy::encoder_caps`, `live_plan` (LX2) |
+| 9 VBR against a ceiling | *applies*: D5's candidate table |
+| 10 Resolution and fps in the GUI; the 240 Hz observation | *applies*: the shared dropdowns; the `auto-capped` rung |
+| 10b Picker rungs and the blue primary | *obsolete*: the shared R58 UI |
+| 11 Clock-anchored PES PTS | *obsolete*: one clock, F-3 |
+| 12 Gio text fields, and the 20–30 % idle-CPU bug | *obsolete* for Gio; the idle-CPU lesson *applies* as G13 / V-10 (LX7) |
+
+docs/39 §8–§9:
+
+| Finding | Fate |
+|---|---|
+| F1 The binary only via bound properties; two round trips before ready | *applies*: `pwctl` binds clients and output streams, `Graph::merge`, two round trips (tested) |
+| F2 The sink is never recreated | *applies*: `Controller::capture` (tested, against a real daemon too) |
+| F3 Layout from the app's own ports | *applies*: `stream_channels`, then `widest_sink_channels` (tested) |
+| F4 The mid-session switch | *applies*: `Controller::capture(None)`, a re-link (tested) |
+| F5 A capture is always answered with a link count | *applies* (tested) |
+| F6 The harness's three environment lessons | *applies*: `crates/audio/tests/support/pwtest.rs` |
+| F7 The telemetry schema and CI deviations | *applies*: the schema already carries the fields (F-10) |
+| F8 The opening registry burst | *applies, structurally absent*: the listener is registered before the loop first iterates (tested: an app already playing is in the first list) |
+| F9 Persisting the preselection raced the cascade | *obsolete in form*: `Platform::remember` runs on the GUI thread before the start thread exists |
+| F10 "No audio" left the helper running | *applies*: the control plane is stopped on that choice |
+| F11 The skip gate missed subtests | *applies*: `GAWK_REQUIRE_*` turn every skip into a failure |
 
 ## 12. Revisions this doc makes to earlier docs
 

@@ -15,6 +15,12 @@ pub mod lane;
 pub mod level;
 pub mod opusenc;
 pub mod pcm;
+pub mod pwgraph;
+
+#[cfg(target_os = "linux")]
+pub mod gstsrc;
+#[cfg(target_os = "linux")]
+pub mod pwctl;
 pub mod toc;
 
 #[cfg(windows)]

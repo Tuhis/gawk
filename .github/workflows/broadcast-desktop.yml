@@ -1,4 +1,5 @@
-# R34 native Windows broadcaster (docs/38 D18).
+# R34 native Windows broadcaster (docs/38 D18), the R52 macOS one (docs/54)
+# and, from R56, the Linux one (docs/58).
 #
 # The workspace was renamed gawk-broadcast-windows/ -> gawk-broadcast-desktop/
 # in R52 MB0 (docs/54 D2), ahead of the macOS binary joining it; so was this
@@ -6,7 +7,11 @@
 # distribution — the `gawk-broadcast-windows-*` artifact, asset and manifest
 # names are distribution names and deliberately did not change. `macos` (R52
 # MB1, docs/54 D15) is the macOS distribution, and the one job here that runs
-# on a GitHub-hosted runner.
+# on a GitHub-hosted runner. `linux` (R56, docs/58 D12) is the Linux
+# distribution, built in an `ubuntu:24.04` container on the self-hosted runners;
+# `test` runs in the same container, because since R56 every host build of the
+# workspace compiles the GStreamer and PipeWire bindings (see "THE LINUX
+# CONTAINER" below).
 #
 # Runs on the SELF-HOSTED Linux runners, cross-compiling to
 # x86_64-pc-windows-msvc with cargo-xwin. The component is Windows-only; the
@@ -96,6 +101,28 @@
 # touching this workflow need a deliberate re-run of the second before merge.
 # ---------------------------------------------------------------------------
 #
+# ---------------------------------------------------------------------------
+# THE LINUX CONTAINER (R56, 2026-09-29)
+#
+# The workspace now holds a Linux shell whose crates link GStreamer and
+# PipeWire, so ANY build of the workspace for the Linux host — host clippy,
+# the test suite, coverage, the product — needs their headers, clang for
+# bindgen, and a PipeWire daemon to test the app-audio control plane against.
+# docs/58 D12 puts all of it in an `ubuntu:24.04` container job instead of
+# the runner image: the image stays unchanged, and the Linux binary's glibc
+# floor is pinned by the container (OD14), not by whenever the runner image
+# moves. .github/actions/linux-container-setup installs the lot.
+#
+# So host clippy left `lint` for `test`, and `test` runs in the container.
+# The Windows cross-build (`lint`'s xwin clippy, `build`) stays on the runner
+# image exactly as before: the msvc target never compiles the Linux crates.
+#
+# The container's CARGO_TARGET_DIR is under /tmp, not the checkout: _work is
+# the 4Gi RAM-backed volume (see above), and a Linux debug tree measured
+# 2.9 GB before instrumentation. The container's own filesystem is the dind
+# storage volume instead.
+# ---------------------------------------------------------------------------
+#
 # The toolchain lives in the runner image, NOT here — see
 # .github/actions/rust-windows-preflight, which every job below runs first.
 # These jobs install nothing and cache nothing, deliberately. actions/cache
@@ -128,6 +155,7 @@ on:
       # assembly script.
       - "tools/macos/**"
       - ".github/actions/rust-windows-preflight/**"
+      - ".github/actions/linux-container-setup/**"
       - ".github/actions/coverage/**"
       - ".github/actions/publish-coverage-badges/**"
       - "tools/coverage/**"
@@ -145,6 +173,7 @@ on:
       # assembly script.
       - "tools/macos/**"
       - ".github/actions/rust-windows-preflight/**"
+      - ".github/actions/linux-container-setup/**"
       - ".github/actions/coverage/**"
       - ".github/actions/publish-coverage-badges/**"
       - "tools/coverage/**"
@@ -200,10 +229,11 @@ env:
 # in a fork that has no such variable. Why: ci.yml's header.
 
 jobs:
-  # Both clippy passes, because neither alone covers the tree. The msvc one is
-  # the port of what the Windows runner did: it is the pass that lints every
-  # cfg(windows) block. The host one covers what that pass cannot see — the
-  # cfg(unix) code, which no Windows runner ever linted.
+  # The msvc clippy: the port of what the Windows runner did, the pass that
+  # lints every cfg(windows) block. The host pass — the cfg(unix) and, since
+  # R56, cfg(target_os = "linux") code — runs in `test`'s container, because
+  # a Linux host build of the workspace now needs the GStreamer and PipeWire
+  # headers (see "THE LINUX CONTAINER" above).
   lint:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     defaults:
@@ -225,43 +255,33 @@ jobs:
       - name: Clippy (Windows target)
         run: cargo xwin clippy --all-targets --target "$WINDOWS_TARGET" -- -D warnings
 
-      # This job holds two trees, so the reclaim survives the split. Nothing
-      # after this reads the msvc tree and the pod is fresh every run, so
-      # there is no cache to spoil. `df` is logged so that if this ever fails
-      # again the headroom is in the log instead of being guessed at.
-      - name: Reclaim the msvc debug tree
-        run: |
-          du -sh "target/$WINDOWS_TARGET/debug" 2>/dev/null || true
-          rm -rf "target/$WINDOWS_TARGET/debug"
-          df -h /home/runner/_work | tail -1
-
-      - name: Clippy (host)
-        run: cargo clippy --all-targets -- -D warnings
-
+  # Host clippy, the whole workspace's tests and coverage, and the real-relay
+  # integration tiers — in the ubuntu:24.04 container (docs/58 D12).
   test:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    container:
+      image: ubuntu:24.04
     defaults:
       run:
         working-directory: gawk-broadcast-desktop
+        # A container job's default shell is `sh` (dash here), which has
+        # no `set -o pipefail`; the runner-image jobs get bash implicitly.
+        shell: bash
     env:
-      # Link the host artifacts with lld instead of the default bfd: this job
-      # links a test binary per crate, each pulling the whole dependency graph.
-      #
-      # Job-scoped, NOT workflow-scoped, and that distinction cost a run to
-      # find (30688980949). Cargo does not apply target rustflags to host
-      # artifacts when cross-compiling, but does when building for the host —
-      # so with this set workflow-wide, `lint`'s two passes disagreed about the
-      # flags on every proc-macro and build-script unit. The cross clippy built
-      # 107 of them (autocfg, cc, cmake, the derive macros) with no flags, the
-      # host clippy then rebuilt every one: 367 units became 481 and the step
-      # went 2:02 -> 2:58. `lint` runs no linker at all — clippy only checks —
-      # so it was paying that for nothing.
-      #
-      # Scoped to the host triple rather than a bare RUSTFLAGS because the
-      # latter would also reach msvc units, where `-fuse-ld=lld` is a
-      # clang-driver flag lld-link does not accept. `build` is unaffected
-      # either way and is deliberately left out of this.
+      CARGO_TARGET_DIR: /tmp/target
+      # Link the host artifacts with lld (the container setup installs it).
+      # Job-scoped for the reason the pre-R56 job recorded: set workflow-wide
+      # it would reach `lint`'s cross clippy, rebuilding every proc-macro
+      # unit for nothing.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+      # The skip gates (docs/39 F11's lesson, restated for Rust): the
+      # PipeWire harness and the gst-level tests SKIP on a machine that
+      # cannot host them — right for a developer, wrong here. With these set
+      # a missing daemon or element is a failure, so the app-audio control
+      # plane, the kill matrix and the gst plumbing can never silently not
+      # run.
+      GAWK_REQUIRE_PIPEWIRE: "1"
+      GAWK_REQUIRE_GST: "1"
     steps:
       # `inputs.attach_to` is empty on push and pull_request, so this is the
       # ordinary checkout in every case but a backfill. A backfill lints, tests
@@ -270,18 +290,17 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.attach_to || github.sha }}
-      - uses: ./.github/actions/rust-windows-preflight
+      - uses: ./.github/actions/linux-container-setup
+
+      # The host pass lint used to run: every cfg(unix) and
+      # cfg(target_os = "linux") block, the Linux shell included.
+      - name: Clippy (host)
+        run: cargo clippy --all-targets -- -D warnings
 
       # R41 (docs/43): coverage for the Rust workspace. A prebuilt binary
       # pinned by version and fetched from its release, exactly as the
       # `licenses` job in ci.yml installs cargo-deny and for the same reason —
-      # `cargo install` would compile it on every run. Into RUNNER_TEMP because
-      # the self-hosted runner pods are not root.
-      #
-      # llvm-tools-preview is added rather than assumed: the runner image bakes
-      # a system LLVM for the clang-cl cross path, but cargo-llvm-cov needs the
-      # llvm-profdata that MATCHES rustc's LLVM, and a version skew there
-      # produces an unreadable profile rather than an error.
+      # `cargo install` would compile it on every run.
       - name: Install cargo-llvm-cov
         env:
           CARGO_LLVM_COV_VERSION: "0.9.0"
@@ -291,74 +310,63 @@ jobs:
           curl -fsSL "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v${CARGO_LLVM_COV_VERSION}/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz" \
             | tar -xz -C "${RUNNER_TEMP}/bin" cargo-llvm-cov
           echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
-          rustup component add llvm-tools-preview
           "${RUNNER_TEMP}/bin/cargo-llvm-cov" llvm-cov --version
 
-      # Wire golden vectors, chunking, strict-parse rejections, GF(256)
-      # parity, engine defaults, the encoder cascade policy, the SPS parser —
-      # all headless and all portable, which is why they run here unchanged.
-      # The three cfg(windows) WARP tests compile away; they were already
-      # skipping on the hosted Windows runner (docs/38 F-6) and remain on the
-      # on-hardware register.
+      # Wire golden vectors, the engine, the encoder cascade policy and the
+      # gst plan, the SPS parser — and, from R56, the Linux platform against
+      # a real GStreamer and a real, headless PipeWire: the trial runner and
+      # live pipeline with a test-only x264enc (tests/gst_plumbing.rs), the
+      # app-audio control plane's tee, churn, re-targeting and SIGKILL/panic/
+      # clean kill matrix (tests/pwctl_daemon.rs). The three cfg(windows)
+      # WARP tests compile away; they remain on the on-hardware register.
       #
       # `--no-report` here and on the integration step, with one `report` at
-      # the end: the two steps run different test binaries over the same crates,
+      # the end: the steps run different test binaries over the same crates,
       # and reporting per step would publish whichever ran last instead of what
-      # the job as a whole covered. The instrumented build replaces the plain
-      # one rather than adding to it — same compilation, different RUSTFLAGS.
+      # the job as a whole covered.
       - name: Test
         run: cargo llvm-cov --workspace --no-report
 
-      # See the server job in ci.yml — these tests run QUIC over loopback too.
+      # The relay integration tiers shell out to `go build` of gawk-server.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache: false
+
+      # quic-go wants larger UDP buffers than a default kernel allows. In a
+      # container the sysctl may not be ours to set; quic-go then logs a
+      # warning and runs anyway, which is all these tests need.
       - name: Ensure UDP buffer limits for quic-go
         run: |
           need=7340032
-          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
-            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          if [ "$(sysctl -n net.core.rmem_max 2>/dev/null || echo 0)" -lt "$need" ]; then
+            sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need" 2>/dev/null ||
+              echo "::notice::cannot raise UDP buffer limits in this container; quic-go will warn and continue"
           fi
 
       # WB2 integration: the engine against the REAL gawk-server binary —
       # "a hand-written fake would only assert the engine against our belief
       # about the relay, which is the belief most worth doubting in a second
       # implementation of a protocol" (docs/38 D18). Serialized: each test
-      # runs its own relay. On Linux this now also runs the drain-restart
-      # test, which is cfg(unix) and self-skipped on the old Windows job.
-      #
-      # No setup-go step: the runner image bakes Go on PATH (its Dockerfile
-      # says so explicitly, and notes that setup-go resolves through the tool
-      # cache only and never sees that copy). setup-go would pull the 63MiB
-      # toolchain and unpack ~250MB into the RAM-backed _work volume, which
-      # dies with the ephemeral pod and is never reused even once. The baked
-      # Go satisfies gawk-server/go.mod's `go 1.26.0` directive; if a module
-      # ever asks for newer, GOTOOLCHAIN=auto fetches it per-job.
-      #
-      # Worth knowing before optimising this step: ~130s of its ~150s runtime
-      # is inside the FIRST test, which shells out to a cold `go build` of
-      # gawk-server (whose internal/cluster imports k8s.io/client-go, so the
-      # module fetch is large). Tests 2-4 finish ~6s apart off Go's now-warm
-      # build cache. Moving that build earlier saves nothing — it is paid once
-      # either way. Only a warm GOMODCACHE/GOCACHE would, and the place to put
-      # one is the runner image, not actions/cache.
+      # runs its own relay. Includes the cfg(unix) drain-restart test.
       - name: Integration — publish, reject, resume, supersede vs the real relay
         run: cargo llvm-cov --no-report -p gawk-engine --test relay_integration -- --ignored --test-threads=1
 
+      # R56 (docs/58 D12, LX3's G10 row): the live GStreamer pipeline through
+      # the gate and the send pump to the real relay, a rolling restart, and
+      # the forced IDR that re-primes the resumed broadcast — new on Linux.
+      - name: Integration — the Linux pipeline to the real relay, resume re-prime
+        run: cargo llvm-cov --no-report -p gawk-encode --test gst_to_relay -- --ignored
+
       # One report over both tiers. --summary-only drops the per-file arrays:
-      # the badge needs the totals, and the full export of this workspace is
-      # megabytes of JSON to hand to an artifact nothing reads.
+      # the badge needs the totals.
       - name: Coverage report
         run: cargo llvm-cov report --summary-only --json --output-path coverage-llvm.json
-      # The runner's _work is a 4 GiB memory-backed tmpfs (ioio runner spec),
-      # and the llvm-cov-instrumented target tree plus the relay Go build the
-      # integration tier makes fill it once the workspace is R42-sized: the
-      # coverage action then dies installing its Python into the tool cache
-      # with ENOSPC (runs 33864313980, 33890068024). The report above is the
-      # only thing the action needs, so the tree goes before it runs — the
-      # same reclaim the lint job does for the msvc debug tree.
       - name: Reclaim the instrumented target tree
         run: |
-          du -sh target 2>/dev/null || true
-          rm -rf target
-          df -h /home/runner/_work | tail -1
+          du -sh "$CARGO_TARGET_DIR" 2>/dev/null || true
+          rm -rf "$CARGO_TARGET_DIR"
+          df -h /tmp | tail -1
       - uses: ./.github/actions/coverage
         with:
           format: llvm-cov
@@ -643,6 +651,191 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # R56 (docs/58 D11/D12): the Linux distribution, `gawk-broadcast-linux`,
+  # built in the ubuntu:24.04 container so its glibc floor is 24.04's (OD14).
+  # R14's artifact-as-verification pattern: the tarball a tester runs on real
+  # hardware (LX7) is this job's upload, available before merge.
+  linux:
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    container:
+      image: ubuntu:24.04
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    defaults:
+      run:
+        working-directory: gawk-broadcast-desktop
+        # A container job's default shell is `sh` (dash here), which has
+        # no `set -o pipefail`; the runner-image jobs get bash implicitly.
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: /tmp/target
+      # libopus is compiled in statically (the vendored cmake build), as on
+      # Windows and macOS: not a runtime dependency (D11).
+      LIBOPUS_STATIC: "1"
+    steps:
+      # See `test`: a backfill builds the commit it is attaching to.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
+      - uses: ./.github/actions/linux-container-setup
+      # Again, now that the container has git: the first checkout could only
+      # download a tarball (no .git), and the commit must be resolved by git.
+      # A backfill's `attach_to` may be a tag (with a `/`, which an artifact
+      # name rejects) or a short SHA (which attach-release would never find
+      # under build's full one) — PR #398 review.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
+
+      - name: Resolve the commit being built
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # -p: only the Linux shell's graph, so feature unification is exactly
+      # the shipped binary's.
+      - name: Build (release)
+        run: cargo build --release -p gawk-broadcast-app-linux
+
+      # The tarball's layout (D11): the binary, the launcher entry and icons
+      # with install-desktop.sh (R44), INSTALL.md, the Linux notices, LICENSE
+      # and BUILD-INFO.txt. tools/linux/assemble-share.sh owns the share/
+      # layout, as desktop/assemble-share.sh did for the Go app.
+      - name: Assemble the tarball contents
+        run: |
+          set -euo pipefail
+          rm -rf dist && mkdir -p dist/stage
+          cp "$CARGO_TARGET_DIR/release/gawk-broadcast-linux" dist/stage/
+          chmod 755 dist/stage/gawk-broadcast-linux
+          tools/linux/assemble-share.sh ../assets/icon dist/stage
+          cp tools/linux/INSTALL.md THIRD-PARTY-NOTICES-linux.md ../LICENSE dist/stage/
+
+      # The glibc floor is asked of the binary: the newest GLIBC_ symbol
+      # version it references, which must not exceed the container's 2.39
+      # (OD14). The runtime libraries are asserted against an allowlist, so a
+      # new runtime dependency is a reviewed change, not something a tester
+      # discovers (D11).
+      - name: glibc floor and runtime libraries
+        run: |
+          set -euo pipefail
+          bin=dist/stage/gawk-broadcast-linux
+          floor=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "glibc floor: $floor"
+          if [ "$(printf '%s\n' "$floor" GLIBC_2.39 | sort -V | tail -1)" != "GLIBC_2.39" ]; then
+            echo "::error::gawk-broadcast-linux needs $floor, above the Ubuntu 24.04 floor (GLIBC_2.39, docs/58 OD14)"
+            exit 1
+          fi
+          echo "$floor" > dist/glibc-floor
+          # Direct dependencies (NEEDED), not ldd's transitive closure: the
+          # closure is the distro's business; what we link is ours.
+          needed=$(objdump -p "$bin" | awk '/NEEDED/ {print $2}' | sort)
+          echo "$needed"
+          allowed='^(libgstreamer-1\.0|libgstapp-1\.0|libgstbase-1\.0|libgstvideo-1\.0|libgobject-2\.0|libglib-2\.0|libgio-2\.0|libpipewire-0\.3|libfontconfig|libxkbcommon|libgcc_s|libc|libm|libpthread|libdl|librt|ld-linux-x86-64)\.so'
+          unexpected=$(grep -vE "$allowed" <<<"$needed" || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error::gawk-broadcast-linux links libraries INSTALL.md does not name (docs/58 D11):"
+            echo "$unexpected"
+            exit 1
+          fi
+          if grep -q libopus <<<"$needed"; then
+            echo "::error::libopus is linked dynamically; it must be static (LIBOPUS_STATIC, D11)"
+            exit 1
+          fi
+
+      # Asked of the binary: the build commit reached the version badge.
+      # crates/ui/build.rs stamps GITHUB_SHA (a runner default no step can
+      # override), so that is what the binary must carry.
+      - name: The binary carries its build commit
+        run: |
+          grep -aqF "$GITHUB_SHA" dist/stage/gawk-broadcast-linux || {
+            echo "::error::the binary does not embed $GITHUB_SHA — the version badge would show no +g<commit>"
+            exit 1
+          }
+
+      # The launcher entry: install into a scratch XDG_DATA_HOME from a path
+      # carrying every character Exec= quoting must survive, validate it,
+      # check the binary is the one it launches, and uninstall cleanly. The
+      # pre-R56 Go job's check, pointed at the new binary.
+      - name: The desktop entry installs, validates and uninstalls
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d)
+          base=$(mktemp -d)
+          unpacked="$base/a&b \"c\" \$d \\e"
+          mkdir -p "$unpacked"
+          cp -R dist/stage/. "$unpacked/"
+          dead="$base/100%"
+          mkdir -p "$dead"
+          cp -R dist/stage/. "$dead/"
+          if XDG_DATA_HOME="$scratch" "$dead/install-desktop.sh" 2>/dev/null; then
+            echo "::error::install-desktop.sh accepted a path containing '%', which no launcher can start"; exit 1
+          fi
+          XDG_DATA_HOME="$scratch" "$unpacked/install-desktop.sh"
+          entry="$scratch/applications/fi.ioio.gawk.broadcast.desktop"
+          desktop-file-validate "$entry"
+          want='Exec="'"$base"'/a&b \\"c\\" \\$d \\\\e/gawk-broadcast-linux"'
+          grep -qxF -- "$want" "$entry" || {
+            echo "::error::Exec= is not the correctly quoted absolute path of the installed binary:"
+            echo "want: $want"; echo "got:  $(grep '^Exec=' "$entry")"; exit 1; }
+          test -f "$scratch/icons/hicolor/scalable/apps/fi.ioio.gawk.broadcast.svg"
+          test -f "$scratch/icons/hicolor/256x256/apps/fi.ioio.gawk.broadcast.png"
+          XDG_DATA_HOME="$scratch" "$unpacked/install-desktop.sh" --uninstall
+          left=$(find "$scratch" -type f ! -name icon-theme.cache ! -name mimeinfo.cache)
+          if [ -n "$left" ]; then echo "::error::uninstall left files behind:"; echo "$left"; exit 1; fi
+
+      - name: Record build provenance
+        run: |
+          set -euo pipefail
+          {
+            echo "gawk-broadcast-linux (R56, docs/58)"
+            echo "commit:     ${{ steps.source.outputs.sha }}"
+            echo "ref:        ${{ inputs.attach_to || github.ref }}"
+            echo "built:      $(date -u +%FT%TZ)"
+            echo "toolchain:  $(rustc --version)"
+            echo "built-in:   ubuntu:24.04 container ($(ldd --version | sed -n 1p))"
+            echo "gstreamer:  $(pkg-config --modversion gstreamer-1.0) (headers; runtime is your distro's)"
+            echo "pipewire:   $(pkg-config --modversion libpipewire-0.3) (headers; runtime is your distro's)"
+            echo "libopus:    static"
+            echo
+            echo "Minimum glibc to RUN it (check yours with 'ldd --version'): $(cat dist/glibc-floor)"
+            echo
+            echo "=== gawk-broadcast-linux links against ==="
+            ldd dist/stage/gawk-broadcast-linux
+          } | tee dist/stage/BUILD-INFO.txt
+
+      # The tarball itself, flat like the Go app's (D11), and checked by
+      # listing it ONCE into a variable — never `tar -tzf | grep -q` under
+      # pipefail, the trap that published gawk-broadcast-v1.11.0 empty.
+      - name: Pack and check the tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf dist/gawk-broadcast-linux-x86_64.tar.gz -C dist/stage \
+            gawk-broadcast-linux install-desktop.sh share INSTALL.md BUILD-INFO.txt \
+            THIRD-PARTY-NOTICES-linux.md LICENSE
+          listing=$(tar -tzf dist/gawk-broadcast-linux-x86_64.tar.gz)
+          for want in gawk-broadcast-linux install-desktop.sh INSTALL.md BUILD-INFO.txt \
+                      THIRD-PARTY-NOTICES-linux.md LICENSE \
+                      share/applications/fi.ioio.gawk.broadcast.desktop \
+                      share/icons/hicolor/scalable/apps/fi.ioio.gawk.broadcast.svg \
+                      share/icons/hicolor/256x256/apps/fi.ioio.gawk.broadcast.png; do
+            grep -qxF -- "$want" <<<"$listing" || {
+              echo "::error::$want is missing from the tarball"; exit 1; }
+          done
+          # Beside the tarball too, as the EXE's and the bundle's ride beside
+          # them on the release page.
+          cp dist/stage/BUILD-INFO.txt dist/BUILD-INFO-linux.txt
+          cp dist/stage/THIRD-PARTY-NOTICES-linux.md dist/
+          rm -rf dist/stage dist/glibc-floor
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gawk-broadcast-linux-x86_64-${{ steps.source.outputs.sha }}
+          path: gawk-broadcast-desktop/dist/
+          retention-days: 7
+          if-no-files-found: error
+
   # The Windows half of the release-assets story; the Linux one is
   # attach-broadcast-release in ci.yml, and the reasoning for both lives in
   # .github/actions/attach-release-assets. No rebuild — the artifact `build`
@@ -674,12 +867,13 @@ jobs:
   # dispatch: that is true, but it is a coercion rule, and this is not a place
   # to be clever about falsiness.
   attach-release:
-    # `macos` is a soft dependency (R52, docs/54 D13): the Windows release
+    # `macos` and `linux` are soft dependencies (R52 docs/54 D13, R56
+    # docs/58 D13): the Windows release
     # needs lint, test and build green and waits for nothing else — not a
     # macOS flake, not hosted-image drift, not a backfill of a commit older
     # than the macOS bundle. `!cancelled()` is what lets this job run when
     # `macos` failed; the three hard dependencies are then checked by hand.
-    needs: [lint, test, build, macos]
+    needs: [lint, test, build, macos, linux]
     if: >-
       !cancelled() &&
       needs.lint.result == 'success' &&
@@ -712,6 +906,12 @@ jobs:
         with:
           name: gawk-broadcast-macos-${{ needs.build.outputs.sha }}
           path: staging-macos
+      # The Linux tarball (R56, docs/58 D13), likewise.
+      - uses: actions/download-artifact@v8
+        if: needs.linux.result == 'success'
+        with:
+          name: gawk-broadcast-linux-x86_64-${{ needs.build.outputs.sha }}
+          path: staging-linux
 
       # ...with one exception: the manifest has to be the TARGET's, because the
       # gate resolves the tag from it and the version being backfilled is the
@@ -737,6 +937,7 @@ jobs:
         env:
           MACOS_SIGNING: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 != '' }}
           MACOS_BUILT: ${{ needs.macos.result == 'success' }}
+          LINUX_BUILT: ${{ needs.linux.result == 'success' }}
         run: |
           set -euo pipefail
           # NOT `assets`: the repository root already has an `assets/`
@@ -776,6 +977,16 @@ jobs:
             echo "macos=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::the macOS bundle is not attached: no Developer ID signing secrets are configured (docs/54 D13)"
+          fi
+          # The Linux tarball (docs/58 D13): unsigned like the EXE, covered by
+          # the same SHA256SUMS. Soft, as macOS is: a Linux build failure
+          # never holds the Windows release.
+          if [ "$LINUX_BUILT" = "true" ]; then
+            cp staging-linux/gawk-broadcast-linux-x86_64.tar.gz release-assets/
+            cp staging-linux/BUILD-INFO-linux.txt staging-linux/THIRD-PARTY-NOTICES-linux.md release-assets/
+            echo "linux=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the Linux tarball is not attached: the linux job did not succeed for this commit — backfill it with workflow_dispatch attach_to once it does"
           fi
           # Unsigned by design (docs/38 D17) — the checksum is the only
           # integrity check a downloader gets. Written outside the asset
@@ -824,6 +1035,20 @@ jobs:
           distribution: gawk-broadcast-macos
           dir: release-assets
           primary: gawk-broadcast-macos-arm64.zip
+          tag: ${{ steps.attach.outputs.tag }}
+          published-at: ${{ steps.attach.outputs.published_at }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      # The third distribution (R56, docs/58 D13): the site's Linux card and
+      # R45's Linux check read this manifest. The Go app's
+      # releases/gawk-broadcast/latest.json stays where it is, frozen at the
+      # last Go release (LX8).
+      - uses: ./.github/actions/publish-release-manifest
+        if: steps.attach.outputs.attached == 'true' && steps.package.outputs.linux == 'true'
+        with:
+          component: gawk-broadcast-desktop
+          distribution: gawk-broadcast-linux
+          dir: release-assets
+          primary: gawk-broadcast-linux-x86_64.tar.gz
           tag: ${{ steps.attach.outputs.tag }}
           published-at: ${{ steps.attach.outputs.published_at }}
           token: ${{ secrets.GITHUB_TOKEN }}

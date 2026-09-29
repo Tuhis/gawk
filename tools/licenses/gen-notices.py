@@ -571,6 +571,37 @@ COMPONENTS = {
             "gawk-broadcast-desktop", "aarch64-apple-darwin"
         ),
     ),
+    # R56 (docs/58 D11/D12): the Linux tarball ships from the same workspace,
+    # so its notices sit beside the other two under their own name.
+    "linux": dict(
+        path="gawk-broadcast-desktop",
+        file="THIRD-PARTY-NOTICES-linux.md",
+        title="gawk-broadcast-linux",
+        blurb=(
+            "The native Linux broadcaster, `gawk-broadcast-linux`.\n"
+            "\n"
+            "As for the Windows and macOS builds: **Slint** and its `i-slint-*`\n"
+            "crates are used under the **Slint Royalty-free License version 2.0**,\n"
+            "whose attribution condition is met by the \"Made with Slint\" badge on\n"
+            "the project README and release pages, and **libopus** is compiled in\n"
+            "statically through `audiopus_sys` (ISC for the bindings, Xiph's\n"
+            "BSD-3-Clause for the C library).\n"
+            "\n"
+            "The binary **dynamically links** libraries it does not ship, which the\n"
+            "user's distribution provides: **GStreamer** and its plugins (LGPL-2.1 or\n"
+            "later), **PipeWire** (`libpipewire-0.3`, MIT) and the C runtime. The\n"
+            "crates listed below are only the Rust bindings to them; the libraries\n"
+            "themselves are governed by their own terms, not by anything here."
+        ),
+        sources=(
+            "`cargo tree -e normal --target x86_64-unknown-linux-gnu` — build- and "
+            "dev-dependencies (proc macros, bindgen, test harnesses) are excluded "
+            "because they are not part of the shipped executable."
+        ),
+        collect=lambda: collect_cargo(
+            "gawk-broadcast-desktop", "x86_64-unknown-linux-gnu"
+        ),
+    ),
 }
 
 

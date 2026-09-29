@@ -85,6 +85,7 @@ impl Platform for Mac {
 
     fn init_window(&mut self, ui: &MainWindow) {
         ui.set_system_picker(true);
+        ui.set_native_menu(true);
         // Consolas is Windows-only; Menlo ships with every macOS.
         ui.set_mono_font("Menlo".into());
     }

@@ -1,0 +1,31 @@
+{
+  "appUrl": "https://gawk.example.org",
+  "telemetryUrl": "off",
+  "lastBroadcastId": "K7XQ2M",
+  "lastResumeToken": "00112233445566778899aabbccddeeff",
+  "lastGoodEncoder": "nvh264enc",
+  "lastGoodAudioSource": "pipewire-monitor",
+  "audioDevice": "alsa_output.usb-headset.analog-stereo.monitor",
+  "audioApp": "hl2_linux",
+  "servers": [
+    {
+      "name": "default",
+      "url": "https://api.gawk.ioio.fi:4433",
+      "publishSecret": "default-secret"
+    },
+    {
+      "name": "Homelab",
+      "url": "https://relay.home.example:4433",
+      "publishSecret": "homelab-secret"
+    }
+  ],
+  "selectedServer": "Homelab",
+  "room": "FRIDAY",
+  "roomAttachSecret": "attach-key",
+  "nickname": "tuhis",
+  "width": 2560,
+  "height": 1440,
+  "fps": 120,
+  "bitrateBps": 16000000,
+  "encoder": "vah264enc"
+}

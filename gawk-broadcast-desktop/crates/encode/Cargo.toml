@@ -1,6 +1,6 @@
 [package]
 name = "gawk-encode"
-description = "Media Foundation hardware H.264 encoder cascade (WB4, docs/38 D9)"
+description = "Hardware H.264 encode: Media Foundation, VideoToolbox and the GStreamer cascade (docs/38 D9, docs/54 D7, docs/58 D5)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -37,3 +37,17 @@ windows = { version = "0.62", features = [
     "Win32_System_Ole",
     "Win32_System_Variant",
 ] }
+
+# Linux (R56, docs/58 D4/D5): R14's cascade, in-process through gstreamer-rs.
+# Feature-capped at v1_24: the build floor is Ubuntu 24.04's GStreamer 1.24
+# (OD14), and a binding feature above it would link symbols the floor lacks.
+[target.'cfg(target_os = "linux")'.dependencies]
+gawk-engine = { path = "../engine" }
+gstreamer = { version = "0.25", features = ["v1_24"] }
+gstreamer-app = { version = "0.25", features = ["v1_24"] }
+gstreamer-video = { version = "0.25", features = ["v1_24"] }
+
+# tests/gst_plumbing.rs and tests/gst_to_relay.rs: the live pipeline with a
+# test-only software encoder, through the engine to the real relay.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

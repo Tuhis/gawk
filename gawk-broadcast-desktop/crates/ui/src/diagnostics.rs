@@ -1,8 +1,8 @@
 //! `Copy diagnostics` JSON (docs/38 D12.8): the Linux dump's shape with
 //! `kind` = the distribution (`gawk-broadcast-windows`,
-//! `gawk-broadcast-macos` — `defaults::THIS`) and one honest improvement — capture
-//! fps is a real number here (we own capture; the Go shell's is permanently
-//! `"n/a"`). Nullable-pointer semantics survive the port: keys for
+//! `gawk-broadcast-macos`, `gawk-broadcast-linux` — `defaults::this()`) and
+//! one honest improvement — capture fps is a real number here (we own
+//! capture; the Go shell's is permanently `"n/a"`). Nullable-pointer semantics survive the port: keys for
 //! availability-gated numbers are always present, `null` when unmeasured —
 //! an absent number and a zero must stay distinguishable to readers.
 
@@ -80,12 +80,24 @@ struct Diagnostics<'a> {
     audio_bytes_sent: u64,
     audio_configs_sent: u64,
     audio_packets_dropped: u64,
+
+    /// Linux (docs/58 D14): the Go JSON's fields, so no Linux diagnosis
+    /// loses one. Absent where they do not apply.
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    capture_restarts: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    share_mode: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    audio_app: String,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
 fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
@@ -101,7 +113,7 @@ pub fn render(
     timestamp_rfc3339: String,
 ) -> String {
     let d = Diagnostics {
-        kind: gawk_engine::defaults::THIS.name,
+        kind: gawk_engine::defaults::this().name,
         app_version: crate::version::display(),
         timestamp: timestamp_rfc3339,
         broadcast_id,
@@ -159,6 +171,9 @@ pub fn render(
         audio_bytes_sent: st.audio_bytes_sent,
         audio_configs_sent: st.audio_configs_sent,
         audio_packets_dropped: st.audio_packets_dropped,
+        capture_restarts: st.capture_restarts,
+        share_mode: st.share_mode.clone(),
+        audio_app: st.audio_app.clone(),
     };
     serde_json::to_string_pretty(&d).unwrap_or_else(|_| "{}".into())
 }
@@ -179,7 +194,7 @@ mod tests {
             "2026-07-31T00:00:00Z".into(),
         );
         let v: serde_json::Value = serde_json::from_str(&dump).unwrap();
-        assert_eq!(v["kind"], gawk_engine::defaults::THIS.name);
+        assert_eq!(v["kind"], gawk_engine::defaults::this().name);
         assert_eq!(v["state"], "Live");
         assert_eq!(v["broadcastId"], "K7XQ2M");
         assert_eq!(v["captureMode"], "app");
