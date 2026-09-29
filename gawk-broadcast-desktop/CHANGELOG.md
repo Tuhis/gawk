@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v1.8.0...gawk-broadcast-desktop/v2.0.0) (2026-09-29)
+
+
+### Features
+
+* **broadcast-desktop:** Linux shell in the desktop workspace (R56 LX1–LX6) ([#398](https://github.com/Tuhis/gawk/issues/398)) ([c00b8c4](https://github.com/Tuhis/gawk/commit/c00b8c4dcc66e2a086c580649425de40880923df))
+
 ## [1.8.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v1.7.0...gawk-broadcast-desktop/v1.8.0) (2026-09-29)
 
 
