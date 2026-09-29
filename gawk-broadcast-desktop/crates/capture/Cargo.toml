@@ -1,6 +1,6 @@
 [package]
 name = "gawk-capture"
-description = "Windows.Graphics.Capture frame source + picker enumeration (WB3, docs/38 D6)"
+description = "Screen capture: Windows.Graphics.Capture, ScreenCaptureKit and the xdg-desktop-portal (docs/38 D6, docs/54 D4, docs/58 D3)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -51,3 +51,16 @@ objc2-core-media = "0.3"
 objc2-core-video = "0.3"
 objc2-foundation = "0.3"
 objc2-screen-capture-kit = "0.3"
+
+# Linux (R56, docs/58 D3/D4): the ScreenCast portal through ashpd, and the
+# CLOCK_MONOTONIC read behind the one-clock mapper (`pwclock`). ashpd runs on
+# zbus's own async-io executor, NOT its tokio feature: features unify, and
+# zbus built with `tokio` makes every zbus user in the process require a
+# tokio runtime — including the accessibility and settings code in Slint's
+# stack that calls it on the GUI thread (a launch panic, found on the first
+# smoke run). The futures still poll fine from the portal's tokio runtime.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "screencast"] }
+libc = "0.2"
+log = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread"] }

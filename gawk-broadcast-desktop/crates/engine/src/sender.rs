@@ -225,6 +225,24 @@ impl Sender {
         }
     }
 
+    /// Replaces the codec after a mid-session capture rebuild (R56, docs/58
+    /// D6): the rebuilt pipeline may have landed on another capture rung or
+    /// encoder, so the cached DecoderConfig is dropped and re-derived from
+    /// the new lineage's first SPS. [`Sender::set_codec`] stays set-once —
+    /// right while one encoder owns the session — and this is the explicit
+    /// exception, Go's `AccessUnit.EncoderRestarted` as a call. The config
+    /// rides with every keyframe, so the new lineage's first IDR carries it.
+    /// Windows and macOS never call it.
+    pub fn restart_codec(&self, codec: &str) {
+        let mut dgram = Vec::new();
+        if wire::append_decoder_config(&mut dgram, codec, b"").is_err() {
+            return;
+        }
+        let mut st = self.state.lock().unwrap();
+        st.config_datagram = Some(dgram);
+        st.st.codec = codec.to_owned();
+    }
+
     /// Records what the relay says this fleet supports. The CapParityChunks
     /// FLAG gates the level: the flag is what says the relay filters parity
     /// per subscriber — without it, emitting would spray parity at viewers
@@ -1048,5 +1066,42 @@ mod tests {
     async fn uplink_packet_counters_are_unavailable_without_a_quic_stack() {
         let sender = Sender::new(Arc::new(InstantRelay), Arc::new(FakeClock::default()));
         assert!(!sender.stats().uplink_packets_available);
+    }
+
+    /// docs/58 D6: `set_codec` is set-once, and `restart_codec` is the one
+    /// way past it — the next keyframe carries the rebuilt lineage's config.
+    #[tokio::test]
+    async fn restart_codec_replaces_the_config_the_next_keyframe_carries() {
+        let relay = GatedRelay::default();
+        let clock = Arc::new(FakeClock::default());
+        let sender = Sender::new(Arc::new(relay.clone()), clock.clone());
+        let config_for = |codec: &str| {
+            let mut d = Vec::new();
+            wire::append_decoder_config(&mut d, codec, b"").unwrap();
+            d
+        };
+        let carries = |i: usize, codec: &str| {
+            let want = config_for(codec);
+            let w = relay.writes.lock().unwrap();
+            w[i].msg
+                .windows(want.len())
+                .any(|win| win == want.as_slice())
+        };
+
+        sender.set_codec("avc1.640028");
+        sender.set_codec("avc1.42E01F"); // ignored: set-once
+        sender.send_video(kf(1)).await;
+        settle().await;
+        assert!(carries(0, "avc1.640028"));
+        relay.release(0, KeyframeOutcome::Sent);
+        settle().await;
+
+        sender.restart_codec("avc1.4D0032");
+        assert_eq!(sender.stats().codec, "avc1.4D0032");
+        sender.send_video(kf(2)).await;
+        settle().await;
+        assert_eq!(relay.write_count(), 2);
+        assert!(carries(1, "avc1.4D0032"));
+        assert!(!carries(1, "avc1.640028"));
     }
 }
