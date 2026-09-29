@@ -2,18 +2,18 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 2849,
+      "covered": 3062,
       "label": "admin",
-      "pct": 78.5,
-      "total": 3631,
+      "pct": 79.6,
+      "total": 3849,
       "unit": "statements"
     },
     "gawk-admin-ui": {
       "component": "gawk-admin-ui",
-      "covered": 996,
+      "covered": 1031,
       "label": "admin-ui",
-      "pct": 92.1,
-      "total": 1081,
+      "pct": 92.3,
+      "total": 1117,
       "unit": "lines"
     },
     "gawk-app": {
@@ -42,10 +42,10 @@
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 7040,
+      "covered": 7070,
       "label": "relay",
-      "pct": 84.2,
-      "total": 8361,
+      "pct": 84.3,
+      "total": 8389,
       "unit": "statements"
     },
     "gawk-telemetry": {
