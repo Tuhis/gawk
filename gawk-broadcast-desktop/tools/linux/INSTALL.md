@@ -4,10 +4,10 @@ The tarball holds `gawk-broadcast-linux`, the app. `BUILD-INFO.txt` records
 the commit it was built from, the glibc it needs and what it links against.
 
 On Ubuntu 24.04 or newer, or Debian 13 or newer, the same release also has
-`gawk-broadcast-linux-x86_64.deb`, which is simpler:
+`gawk-broadcast_<version>_amd64.deb`, which is simpler:
 
 ```sh
-sudo apt install ./gawk-broadcast-linux-x86_64.deb
+sudo apt install ./gawk-broadcast_*_amd64.deb   # the one you downloaded
 ```
 
 It installs the packages below, the app, and its launcher entry and icon.

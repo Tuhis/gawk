@@ -757,6 +757,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.attach_to || github.sha }}
+          # The parent too: the .deb's name depends on whether this commit
+          # is the one that bumped version.txt (docs/63 D10).
+          fetch-depth: 2
 
       - name: Resolve the commit being built
         id: source
@@ -880,14 +883,38 @@ jobs:
       # install-tested in fresh containers by `linux-deb`, never here, where
       # the -dev packages would satisfy any Depends the package forgot (D8).
       # The changelog's date is the commit's, so a rebuild is byte-stable.
+      #
+      # Only the release commit itself gets the plain version (docs/63 D10):
+      # a push or backfill of the commit that changed version.txt, which is
+      # what the release-please merge does. A PR build is `+pr<N>.g<sha>`,
+      # anything else `+dev.g<sha>`, in the file name and in Version, so an
+      # artifact downloaded from a PR can never pass for a release. A PR is
+      # never a release even when it changes version.txt: the release PR does.
       - name: Build the .deb
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          sha7=$(git rev-parse --short=7 HEAD)
+          if [ "$EVENT" = pull_request ]; then
+            export DEB_VERSION_SUFFIX="+pr${PR_NUMBER}.g${sha7}"
+          else
+            git cat-file -e HEAD^ || { echo "::error::no parent commit to tell a release build from a dev one (fetch-depth)"; exit 1; }
+            if git diff --quiet HEAD^ HEAD -- version.txt; then
+              export DEB_VERSION_SUFFIX="+dev.g${sha7}"
+            fi
+          fi
+          echo "version suffix: '${DEB_VERSION_SUFFIX:-}' (empty = release build)"
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) tools/linux/build-deb.sh \
-            dist/stage/gawk-broadcast-linux ../assets/icon dist/gawk-broadcast-linux-x86_64.deb \
+            dist/stage/gawk-broadcast-linux ../assets/icon dist \
             dist/stage/THIRD-PARTY-NOTICES-linux.md dist/stage/BUILD-INFO.txt
-          dpkg-deb -f dist/gawk-broadcast-linux-x86_64.deb
-          listing=$(dpkg-deb -c dist/gawk-broadcast-linux-x86_64.deb | awk '{print $6}')
+          # Named <package>_<version>_amd64.deb (docs/63 D2), and the version
+          # must be this build's: a stale file would ship under the wrong name.
+          deb="dist/gawk-broadcast_$(tr -d '[:space:]' < version.txt)${DEB_VERSION_SUFFIX:-}_amd64.deb"
+          test -f "$deb" || { echo "::error::$deb was not built"; ls dist; exit 1; }
+          dpkg-deb -f "$deb"
+          listing=$(dpkg-deb -c "$deb" | awk '{print $6}')
           for want in ./usr/bin/gawk-broadcast-linux \
                       ./usr/share/applications/fi.ioio.gawk.broadcast.desktop \
                       ./usr/share/icons/hicolor/scalable/apps/fi.ioio.gawk.broadcast.svg \
@@ -964,7 +991,13 @@ jobs:
             'Acquire::http::Timeout "15";' 'Acquire::https::Timeout "15";' \
             > /etc/apt/apt.conf.d/99-gawk-ci
       - name: Install, check and purge the .deb
-        run: bash gawk-broadcast-desktop/tools/linux/test-deb.sh dist/gawk-broadcast-linux-x86_64.deb
+        shell: bash
+        run: |
+          set -euo pipefail
+          debs=(dist/gawk-broadcast_*_amd64.deb)
+          [ "${#debs[@]}" -eq 1 ] && [ -f "${debs[0]}" ] || {
+            echo "::error::want exactly one .deb in the artifact, found: ${debs[*]}"; exit 1; }
+          bash gawk-broadcast-desktop/tools/linux/test-deb.sh "${debs[0]}"
 
   # The Windows half of the release-assets story; the Linux one is
   # attach-broadcast-release in ci.yml, and the reasoning for both lives in
@@ -1124,8 +1157,14 @@ jobs:
             echo "linux=true" >> "$GITHUB_OUTPUT"
             # The .deb (R61, docs/63 D8) only once it installed cleanly on
             # both floors; the tarball goes out regardless.
-            if [ "$DEB_TESTED" = "true" ]; then
-              cp staging-linux/gawk-broadcast-linux-x86_64.deb release-assets/
+            # A suffixed .deb is a CI build, never a release asset (docs/63
+            # D10): if one reaches here, the gate and the build disagree about
+            # what this commit is, and the tarball goes out without it.
+            debs=(staging-linux/gawk-broadcast_*_amd64.deb)
+            if [ "$DEB_TESTED" = "true" ] && [ "${#debs[@]}" -eq 1 ] && [[ "${debs[0]}" != *+* ]]; then
+              cp "${debs[0]}" release-assets/
+            elif [ "$DEB_TESTED" = "true" ]; then
+              echo "::warning::the .deb is not attached: ${debs[*]} is not a single release-named package (docs/63 D10)"
             else
               echo "::warning::the .deb is not attached: linux-deb did not pass for this commit — backfill it with workflow_dispatch attach_to once it does"
             fi
