@@ -32,7 +32,9 @@ type Rooms interface {
 	List(ctx context.Context) ([]kube.RoomObject, error)
 	CreateStatic(ctx context.Context, req kube.StaticRoom) (secret string, err error)
 	RotateSecret(ctx context.Context, name string) (secret string, err error)
-	DeleteExisting(ctx context.Context, name string) (kube.RoomObject, error)
+	// DeleteExisting deletes the room when check (nil: always) admits the
+	// object as read, bound to that object (docs/62 D4).
+	DeleteExisting(ctx context.Context, name string, check func(kube.RoomObject) error) (kube.RoomObject, error)
 }
 
 // Room error codes, in the {"error":{"code","message"}} envelope.
@@ -43,7 +45,13 @@ const (
 	CodeRoomNotStatic = "room_not_static"
 	// CodeRoomNotDynamic: "end" on a static room, which never ends (409).
 	CodeRoomNotDynamic = "room_not_dynamic"
+	// CodeRoomNotOwned: a caller holding rooms-manager but not operator asked
+	// to delete a room it did not create (403, docs/62 D3).
+	CodeRoomNotOwned = "room_not_owned"
 )
+
+// errRoomNotOwned is deleteRoom's refusal from inside the guarded delete.
+var errRoomNotOwned = errors.New("api: room not created by this caller")
 
 // maxRoomBroadcastsCap bounds the per-room override: the fleet's own
 // -max-room-broadcasts defaults to 4 (docs/44 §4.10) and a room asking for a
@@ -276,12 +284,15 @@ func (a *API) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		DisplayName:      displayName,
 		MaxBroadcasts:    req.MaxBroadcasts,
 		WithAttachSecret: req.WithAttachSecret,
+		// Every portal room records its creator (docs/62 D2); a
+		// rooms-manager caller may later delete exactly these.
+		CreatedBy: id.Subject,
 	})
 	if err != nil {
 		a.failRoom(w, r, "create the room", err)
 		return
 	}
-	created := kube.RoomObject{Name: code, Managed: true}
+	created := kube.RoomObject{Name: code, Managed: true, CreatedBy: id.Subject}
 	created.Room.Spec = rooms.RoomSpec{
 		Kind: rooms.KindStatic, DisplayCode: strings.TrimSpace(req.Code),
 		DisplayName: displayName, MaxBroadcasts: req.MaxBroadcasts,
@@ -354,22 +365,28 @@ func (a *API) deleteRoom(w http.ResponseWriter, r *http.Request, dynamicOnly boo
 	if !ok {
 		return
 	}
-	if dynamicOnly {
-		obj, err := a.lookupRoom(r.Context(), name)
-		if err != nil {
-			a.failRoom(w, r, "look up the room", err)
-			return
+	// A caller admitted by rooms-manager alone deletes only the static rooms
+	// it created (docs/62 D3); an operator deletes anything.
+	ownOnly := !id.HasRole(a.opts.Config.OperatorRole)
+	// Both rules run inside the delete, on the object it removes (D4).
+	check := func(obj kube.RoomObject) error {
+		if ownOnly && (obj.Err != nil || obj.Room.Spec.Kind != rooms.KindStatic || obj.CreatedBy == "" || obj.CreatedBy != id.Subject) {
+			return errRoomNotOwned
 		}
-		if obj.Err == nil && obj.Room.Spec.Kind != rooms.KindDynamic {
-			writeError(w, http.StatusConflict, CodeRoomNotDynamic,
-				"a static room never ends; delete it instead (docs/44 D7)")
-			return
+		if dynamicOnly && obj.Err == nil && obj.Room.Spec.Kind != rooms.KindDynamic {
+			return kube.ErrRoomNotDynamic
 		}
+		return nil
 	}
 	// The event is recorded BEFORE the CR goes, so the reconciler's room
 	// sweep — which sees the deletion on its next pass — finds the operator's
 	// record and does not add a "system" one (store.RoomEndedSince).
-	obj, err := a.opts.Rooms.DeleteExisting(r.Context(), name)
+	obj, err := a.opts.Rooms.DeleteExisting(r.Context(), name, check)
+	if errors.Is(err, errRoomNotOwned) {
+		writeError(w, http.StatusForbidden, CodeRoomNotOwned,
+			"this account may delete only the static rooms it created (docs/62 D3)")
+		return
+	}
 	if err != nil {
 		a.failRoom(w, r, "delete the room", err)
 		return
@@ -419,7 +436,7 @@ func (a *API) failRoom(w http.ResponseWriter, r *http.Request, what string, err 
 		writeError(w, http.StatusConflict, CodeRoomNotStatic,
 			"only a static room has an attach secret; a dynamic room is gated by its creator token (docs/44 D8)")
 	case errors.Is(err, kube.ErrRoomNotDynamic):
-		writeError(w, http.StatusConflict, CodeRoomNotDynamic, "a static room never ends; delete it instead")
+		writeError(w, http.StatusConflict, CodeRoomNotDynamic, "a static room never ends; delete it instead (docs/44 D7)")
 	case errors.Is(err, rooms.ErrInvalidCode):
 		writeError(w, http.StatusBadRequest, CodeBadRequest, err.Error())
 	default:

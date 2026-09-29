@@ -129,6 +129,12 @@ oidc:
   # codes and join links, so a token holding it can join every room. Empty
   # grants it nowhere. Recipe: docs/self-hosting.md §9.8.
   roomsReaderRole: rooms-reader
+  # R60 (docs/62 D1): the provisioning role for the same kind of service
+  # identity. It reaches exactly POST /api/v1/rooms, DELETE
+  # /api/v1/rooms/{name} and GET /api/v1/me, and deletes only the static rooms
+  # that identity created itself. Empty grants it nowhere. Recipe:
+  # docs/self-hosting.md §9.8.
+  roomsManagerRole: rooms-manager
 
 # How gawk-admin finds relay pods (docs/42 D12). The relay chart's HEADLESS
 # metrics Service publishes one A record per ready pod; a plain ClusterIP would

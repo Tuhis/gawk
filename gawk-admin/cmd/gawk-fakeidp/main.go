@@ -2,7 +2,8 @@
 // lane and the kind e2e tier: discovery, a JWKS, a real authorization-code +
 // PKCE flow the portal SPA can drive from a browser, refresh-token rotation
 // for its silent renew, a client-credentials grant for one confidential
-// service client (R49's rooms-reader bot, docs/50 D9), and a /mint endpoint
+// service client (R49's rooms-reader bot, docs/50 D9, which since R60 also
+// holds rooms-manager, docs/62 D7), and a /mint endpoint
 // for scripts.
 //
 // It auto-approves every authorization request as one fixed operator — there
@@ -31,6 +32,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,7 +53,7 @@ func main() {
 
 		serviceClientID     = flag.String("service-client-id", "gawk-rooms-bot", "the confidential client the client_credentials grant accepts")
 		serviceClientSecret = flag.String("service-client-secret", "dev-rooms-bot-secret", "that client's secret")
-		serviceRole         = flag.String("service-role", "rooms-reader", "the role its service-account tokens carry")
+		serviceRole         = flag.String("service-role", defaultServiceRoles, "the roles its service-account tokens carry, comma-separated")
 	)
 	flag.Parse()
 	if *issuer == "" {
@@ -69,7 +71,7 @@ func main() {
 
 		ServiceClientID:     *serviceClientID,
 		ServiceClientSecret: *serviceClientSecret,
-		ServiceRole:         *serviceRole,
+		ServiceRoles:        splitRoles(*serviceRole),
 	})
 	if err != nil {
 		log.Fatalf("gawk-fakeidp: %v", err)
@@ -87,17 +89,32 @@ type idpConfig struct {
 	Email    string
 	Lifetime time.Duration
 	// ServiceClientID / ServiceClientSecret are the one confidential client
-	// the client_credentials grant accepts, and ServiceRole the role its
+	// the client_credentials grant accepts, and ServiceRoles the roles its
 	// service-account tokens carry — the Keycloak shape docs/self-hosting
 	// §9.8 describes, minus Keycloak. An empty ID disables the grant.
 	ServiceClientID     string
 	ServiceClientSecret string
-	ServiceRole         string
+	ServiceRoles        []string
 	// Now is the clock; nil means time.Now. A test seam.
 	Now func() time.Time
 }
 
 const keyID = "fakeidp-key"
+
+// defaultServiceRoles is the bot's token shape: it reads rooms (R49) and
+// provisions its own (R60).
+const defaultServiceRoles = "rooms-reader,rooms-manager"
+
+// splitRoles parses -service-role: comma-separated, blanks dropped.
+func splitRoles(v string) []string {
+	var out []string
+	for _, r := range strings.Split(v, ",") {
+		if r = strings.TrimSpace(r); r != "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
 
 // codeRecord is one outstanding authorization code — single use, PKCE-bound.
 type codeRecord struct {
@@ -288,6 +305,10 @@ func (i *idp) clientCredentials(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_client", "error_description": "unknown client or wrong secret"})
 		return
 	}
+	serviceRoles := make([]any, 0, len(i.cfg.ServiceRoles))
+	for _, r := range i.cfg.ServiceRoles {
+		serviceRoles = append(serviceRoles, r)
+	}
 	now := i.cfg.Now()
 	writeJSON(w, map[string]any{
 		"access_token": i.sign(map[string]any{
@@ -299,7 +320,7 @@ func (i *idp) clientCredentials(w http.ResponseWriter, r *http.Request) {
 			"iat": now.Add(-time.Minute).Unix(),
 			"exp": now.Add(i.cfg.Lifetime).Unix(),
 			"resource_access": map[string]any{
-				i.cfg.Audience: map[string]any{"roles": []any{i.cfg.ServiceRole}},
+				i.cfg.Audience: map[string]any{"roles": serviceRoles},
 			},
 		}),
 		"token_type": "Bearer",

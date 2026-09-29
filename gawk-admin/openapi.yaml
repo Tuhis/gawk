@@ -45,16 +45,19 @@ info:
     server-side session.
 
     The served copy of this document names the role claim values this
-    deployment is configured with (`-operator-role`, `-rooms-reader-role`).
-    The repository copy uses the symbolic names `operator` and
-    `rooms-reader`.
+    deployment is configured with (`-operator-role`, `-rooms-reader-role`,
+    `-rooms-manager-role`). The repository copy uses the symbolic names
+    `operator`, `rooms-reader` and `rooms-manager`.
 
     Service identities use the client-credentials grant against the same
     provider. `docs/self-hosting.md` §9.8 has a worked example. A bot that
     only reads rooms should hold `rooms-reader`, which reaches `getMe`,
     `listRooms` and `getRoom` and nothing else. Those operations return raw
     room codes and join links, so a `rooms-reader` token can join every
-    room in the deployment.
+    room in the deployment. A bot that provisions rooms should hold
+    `rooms-manager`, which reaches `getMe`, `createRoom` and `deleteRoom`
+    and nothing else, and may delete only the static rooms it created
+    itself.
 
     The routes that need no token: `GET /auth/config` returns the issuer,
     client ID and audience a browser client needs; `GET /api/v1/openapi.json`
@@ -126,6 +129,7 @@ info:
     | `401` | `unauthorized` | The bearer token is missing, expired, or has the wrong issuer, audience or signature. |
     | `401` | `idp_unavailable` | OIDC discovery has not completed yet, so no token can be verified. Retry shortly. |
     | `403` | `forbidden` | The token is valid but lacks the required role. Re-authenticating does not help until the role is granted. |
+    | `403` | `room_not_owned` | A `rooms-manager` caller without `operator` tried to delete a room it did not create. |
     | `404` | `not_found` | No such object, or a route for a feature this deployment has disabled. |
     | `409` | `duplicate_active`, `duplicate_name`, `source_immutable`, `ban_not_active`, `room_exists`, `room_not_static`, `room_not_dynamic` | The current state of the object refuses the request. |
     | `429` | `rate_limited` | Too many rejected tokens from your address. Honour `Retry-After` and obtain a fresh token before retrying. Valid tokens never count against this limit. |
@@ -253,7 +257,7 @@ paths:
         Call this first. A `200` confirms the token carries the required role,
         and the body reports server-side defaults and enabled features that a
         a client should read rather than hard-code.
-      x-gawk-roles: [operator, rooms-reader]
+      x-gawk-roles: [operator, rooms-reader, rooms-manager]
       responses:
         '200':
           description: The caller's identity and this deployment's defaults.
@@ -987,7 +991,12 @@ paths:
         With `withAttachSecret: true` the response includes a newly minted
         attach secret. It is returned only in this response and cannot be
         read again; use `rotateRoomSecret` if it is lost.
-      x-gawk-roles: [operator]
+
+        The room records the caller as its creator. A `rooms-manager`
+        caller can later delete the rooms it created, and no others. A code
+        that is already taken returns `409` with code `room_exists`,
+        whoever created the room.
+      x-gawk-roles: [operator, rooms-manager]
       x-gawk-requires: rooms
       requestBody:
         required: true
@@ -1175,7 +1184,13 @@ paths:
       description: |
         Deletes a room of either kind. Every relay pod acts on the deleted
         custom resource; for a dynamic room that closes the sessions in it.
-      x-gawk-roles: [operator]
+
+        A caller that holds `rooms-manager` but not `operator` may delete
+        only a static room it created itself (`createRoom` records the
+        creator). Any other room returns `403` with code `room_not_owned`
+        and is left in place, including rooms created before the creator
+        was recorded.
+      x-gawk-roles: [operator, rooms-manager]
       x-gawk-requires: rooms
       parameters:
         - name: name
@@ -1306,6 +1321,7 @@ components:
         - room_exists
         - room_not_static
         - room_not_dynamic
+        - room_not_owned
 
     ErrorBody:
       type: object

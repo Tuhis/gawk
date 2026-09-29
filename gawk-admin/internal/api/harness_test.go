@@ -249,6 +249,7 @@ func buildHarness(t *testing.T, s *store.Store, opts ...harnessOption) *harness 
 		Config: config.Config{
 			OperatorRole:     "operator",
 			RoomsReaderRole:  "rooms-reader",
+			RoomsManagerRole: "rooms-manager",
 			KillCooldown:     10 * time.Minute,
 			AppBaseURL:       "https://gawk.example",
 			TelemetryBaseURL: "https://telemetry.example",

@@ -1660,6 +1660,23 @@ jobs:
           grep -A1 'GAWK_ADMIN_ROOMS_READER_ROLE' <<<"$off" | grep -q '"off"' || {
             echo "::error::oidc.roomsReaderRole='' did not render GAWK_ADMIN_ROOMS_READER_ROLE=off — the role stays granted"; exit 1; }
 
+      # R60 (docs/62 D6): the rooms-manager role reaches the binary the same
+      # way, and empty renders "off".
+      - name: admin chart renders the rooms-manager role
+        run: |
+          set -euo pipefail
+          out=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG \
+            --set oidc.roomsManagerRole=mumble-provisioner --show-only templates/deployment.yaml)
+          grep -A1 'GAWK_ADMIN_ROOMS_MANAGER_ROLE' <<<"$out" | grep -q '"mumble-provisioner"' || {
+            echo "::error::oidc.roomsManagerRole did not reach GAWK_ADMIN_ROOMS_MANAGER_ROLE"; exit 1; }
+          def=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG --show-only templates/deployment.yaml)
+          grep -A1 'GAWK_ADMIN_ROOMS_MANAGER_ROLE' <<<"$def" | grep -q '"rooms-manager"' || {
+            echo "::error::the chart's default rooms-manager role did not render"; exit 1; }
+          off=$(helm template gawk-admin/deploy/charts/gawk-admin $ADMIN_PG \
+            --set oidc.roomsManagerRole= --show-only templates/deployment.yaml)
+          grep -A1 'GAWK_ADMIN_ROOMS_MANAGER_ROLE' <<<"$off" | grep -q '"off"' || {
+            echo "::error::oidc.roomsManagerRole='' did not render GAWK_ADMIN_ROOMS_MANAGER_ROLE=off — the role stays granted"; exit 1; }
+
       # HA of the moderation plane is a chart property (docs/42 D16), not a
       # later migration.
       - name: admin chart defaults to 2 replicas with a PodDisruptionBudget

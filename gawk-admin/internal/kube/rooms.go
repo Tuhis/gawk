@@ -34,6 +34,13 @@ import (
 // ours to delete with it.
 const AnnotationRoomManaged = "gawk.ioio.fi/room-managed"
 
+// AnnotationRoomCreatedBy records the `sub` of the identity that created a
+// portal room (R60, docs/62 D2). It is what makes a room OWNED: a caller
+// holding only the rooms-manager role may delete a static room exactly when
+// this equals its own subject. A `kubectl apply`'d room and one created before
+// R60 carry none, so only an operator can delete them. Never served.
+const AnnotationRoomCreatedBy = "gawk.ioio.fi/room-created-by"
+
 // RoomSecretKey is the key inside a portal-created attach Secret (docs/44
 // §4.3's `attachSecretRef.key`).
 const RoomSecretKey = "attachSecret"
@@ -68,6 +75,9 @@ type RoomObject struct {
 	// Managed reports the AnnotationRoomManaged stamp: true for a CR the
 	// portal created.
 	Managed bool
+	// CreatedBy is the AnnotationRoomCreatedBy stamp: the creator's `sub`, or
+	// empty for a room nobody is recorded as owning.
+	CreatedBy string
 	// Room is the decoded CR. Err is set instead when the object could not be
 	// decoded, in which case it is reported by name and never acted on.
 	Room rooms.Room
@@ -85,6 +95,9 @@ type StaticRoom struct {
 	MaxBroadcasts int
 	// WithAttachSecret makes CreateStatic mint a Secret and reference it.
 	WithAttachSecret bool
+	// CreatedBy is the caller's `sub`, stamped as AnnotationRoomCreatedBy.
+	// Empty stamps nothing.
+	CreatedBy string
 }
 
 // RoomLister is the read surface the reconciler's room sweep needs.
@@ -177,9 +190,10 @@ func decodeRoom(u *unstructured.Unstructured) RoomObject {
 		return RoomObject{Name: u.GetName(), Err: err}
 	}
 	return RoomObject{
-		Name:    room.Name,
-		Managed: room.Annotations[AnnotationRoomManaged] == "true",
-		Room:    room,
+		Name:      room.Name,
+		Managed:   room.Annotations[AnnotationRoomManaged] == "true",
+		CreatedBy: room.Annotations[AnnotationRoomCreatedBy],
+		Room:      room,
 	}
 }
 
@@ -196,11 +210,15 @@ func (c *RoomClient) CreateStatic(ctx context.Context, req StaticRoom) (string, 
 	if err != nil {
 		return "", err
 	}
+	annotations := map[string]string{AnnotationRoomManaged: "true"}
+	if req.CreatedBy != "" {
+		annotations[AnnotationRoomCreatedBy] = req.CreatedBy
+	}
 	room := &rooms.Room{
 		TypeMeta: metav1.TypeMeta{APIVersion: rooms.SchemeGroupVersion.String(), Kind: rooms.Kind},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        code,
-			Annotations: map[string]string{AnnotationRoomManaged: "true"},
+			Annotations: annotations,
 		},
 		Spec: rooms.RoomSpec{
 			Kind:          rooms.KindStatic,
@@ -304,7 +322,7 @@ func (c *RoomClient) RotateSecret(ctx context.Context, name string) (string, err
 // callers that need to distinguish "ended" from "was not there"; see
 // DeleteExisting.
 func (c *RoomClient) Delete(ctx context.Context, name string) error {
-	_, err := c.DeleteExisting(ctx, name)
+	_, err := c.DeleteExisting(ctx, name, nil)
 	if errors.Is(err, ErrRoomNotFound) {
 		return nil
 	}
@@ -314,13 +332,32 @@ func (c *RoomClient) Delete(ctx context.Context, name string) error {
 // DeleteExisting deletes the named room and returns what it was, or
 // ErrRoomNotFound. The API uses it: a 404 for a room that was never there is
 // more honest than a 204, and the room's kind decides which event to record.
-func (c *RoomClient) DeleteExisting(ctx context.Context, name string) (RoomObject, error) {
+//
+// check, when non-nil, decides on the room as read: a non-nil error refuses
+// the delete and is returned as is, with nothing touched. The delete is then
+// bound to that object by a UID precondition (R60, docs/62 D4), so a room
+// deleted and re-created under the same name in between is not removed
+// unchecked. It is not bound by resourceVersion: the home pod rewrites the
+// room's status (lease, attachments) continually, and such a delete would
+// fail for no reason a caller could act on.
+func (c *RoomClient) DeleteExisting(ctx context.Context, name string, check func(RoomObject) error) (RoomObject, error) {
 	obj, err := c.Get(ctx, name)
 	if err != nil {
 		return RoomObject{}, err
 	}
-	if err := c.ri.Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-		if apierrors.IsNotFound(err) {
+	if check != nil {
+		if err := check(obj); err != nil {
+			return obj, err
+		}
+	}
+	opts := metav1.DeleteOptions{}
+	if uid := obj.Room.UID; uid != "" {
+		opts.Preconditions = &metav1.Preconditions{UID: &uid}
+	}
+	if err := c.ri.Delete(ctx, name, opts); err != nil {
+		// A failed UID precondition is a conflict: the room that was checked
+		// is gone and another holds its name. Report the one asked about.
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
 			return RoomObject{}, ErrRoomNotFound
 		}
 		return RoomObject{}, fmt.Errorf("kube: delete room %s: %w", name, err)

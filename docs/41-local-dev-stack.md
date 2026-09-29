@@ -582,11 +582,14 @@ Three mechanisms are load-bearing:
   listener; the Keycloak frontend/backchannel split, answered with one path.
 - **A bot's service identity too** (R49, docs/50 D9): the fake IdP also
   serves the `client_credentials` grant for one confidential client,
-  `gawk-rooms-bot` / `dev-rooms-bot-secret`, whose tokens carry only
-  `rooms-reader` — `curl -u gawk-rooms-bot:dev-rooms-bot-secret -d
+  `gawk-rooms-bot` / `dev-rooms-bot-secret`, whose tokens carry
+  `rooms-reader` and, since R60, `rooms-manager` (docs/62 D7) —
+  `curl -u gawk-rooms-bot:dev-rooms-bot-secret -d
   grant_type=client_credentials ${ADMIN_URL}/idp/token`. With
   `ADMIN_ROOMS=1` that token reads `/api/v1/rooms` (the file-sourced
-  `devroom` included) and is 403 everywhere an operator is not.
+  `devroom` included), creates static rooms and deletes the ones it
+  created, and is 403 everywhere else an operator is not. The fake IdP's
+  `-service-role` takes a comma-separated list, for a narrower token.
 - **Break-glass parity.** `kubectl --kubeconfig dev/generated/kubeconfig get
   bans` works against the dev control plane — the docs/42 §9.6 emergency
   surface, practisable locally, adoption and all.

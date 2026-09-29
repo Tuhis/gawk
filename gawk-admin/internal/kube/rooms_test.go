@@ -9,8 +9,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/kube"
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
@@ -22,13 +24,21 @@ import (
 // client's fake.
 func newFakeRoomClient(t *testing.T, objs ...runtime.Object) (*kube.RoomClient, *kubefake.Clientset) {
 	t.Helper()
+	c, cs, _ := newFakeRoomClientWithDynamic(t, objs...)
+	return c, cs
+}
+
+// newFakeRoomClientWithDynamic also hands back the dynamic fake, for a test
+// that needs a reactor on the CR verbs.
+func newFakeRoomClientWithDynamic(t *testing.T, objs ...runtime.Object) (*kube.RoomClient, *kubefake.Clientset, *dynamicfake.FakeDynamicClient) {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := rooms.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
 	}
 	dc := dynamicfake.NewSimpleDynamicClient(scheme, objs...)
 	cs := kubefake.NewClientset()
-	return kube.NewRoomClientFor(dc, cs, testNamespace), cs
+	return kube.NewRoomClientFor(dc, cs, testNamespace), cs, dc
 }
 
 func dynamicRoom(name, key string) *rooms.Room {
@@ -253,7 +263,7 @@ func TestRoomClientDeleteRemovesAManagedRoomAndItsSecret(t *testing.T) {
 	if _, err := c.CreateStatic(ctx, kube.StaticRoom{Code: "tuhisroom", WithAttachSecret: true}); err != nil {
 		t.Fatalf("CreateStatic: %v", err)
 	}
-	obj, err := c.DeleteExisting(ctx, "tuhisroom")
+	obj, err := c.DeleteExisting(ctx, "tuhisroom", nil)
 	if err != nil {
 		t.Fatalf("DeleteExisting: %v", err)
 	}
@@ -271,7 +281,7 @@ func TestRoomClientDeleteRemovesAManagedRoomAndItsSecret(t *testing.T) {
 	if err := c.Delete(ctx, "tuhisroom"); err != nil {
 		t.Fatalf("second Delete: %v", err)
 	}
-	if _, err := c.DeleteExisting(ctx, "tuhisroom"); !errors.Is(err, kube.ErrRoomNotFound) {
+	if _, err := c.DeleteExisting(ctx, "tuhisroom", nil); !errors.Is(err, kube.ErrRoomNotFound) {
 		t.Fatalf("second DeleteExisting: err = %v, want ErrRoomNotFound", err)
 	}
 }
@@ -302,7 +312,7 @@ func TestRoomClientDeleteLeavesAnOperatorsSecretAlone(t *testing.T) {
 func TestRoomClientDeleteOfADynamicRoomTouchesNoSecret(t *testing.T) {
 	c, cs := newFakeRoomClient(t, dynamicRoom("r7k3mx", "9c1d2e3f4a5b"))
 	ctx := context.Background()
-	obj, err := c.DeleteExisting(ctx, "r7k3mx")
+	obj, err := c.DeleteExisting(ctx, "r7k3mx", nil)
 	if err != nil || obj.Room.Spec.Kind != rooms.KindDynamic {
 		t.Fatalf("DeleteExisting = %+v, %v", obj, err)
 	}
@@ -337,6 +347,82 @@ func TestRoomClientListReportsBothKindsAndTheirProvenance(t *testing.T) {
 	mine := byName["mine"]
 	if !mine.Managed || rooms.DisplayCode(&mine.Room) != "Mine" {
 		t.Fatalf("portal room = %+v", byName["mine"])
+	}
+}
+
+// R60 (docs/62 D2): a portal create records who made the room, as the
+// caller's `sub`, and a read hands it back — ownership is a fact on the CR.
+func TestRoomClientCreateStaticStampsTheCreator(t *testing.T) {
+	c, _ := newFakeRoomClient(t, kubectlRoom("ourroom", nil))
+	ctx := context.Background()
+	if _, err := c.CreateStatic(ctx, kube.StaticRoom{Code: "botroom", CreatedBy: "service-account-sub"}); err != nil {
+		t.Fatalf("CreateStatic: %v", err)
+	}
+	obj, err := c.Get(ctx, "botroom")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if obj.CreatedBy != "service-account-sub" || obj.Room.Annotations[kube.AnnotationRoomCreatedBy] != "service-account-sub" {
+		t.Fatalf("CreatedBy = %q, annotations %v; want the creator's sub", obj.CreatedBy, obj.Room.Annotations)
+	}
+	if obj, _ := c.Get(ctx, "ourroom"); obj.CreatedBy != "" {
+		t.Fatalf("a kubectl room reports a creator: %q", obj.CreatedBy)
+	}
+}
+
+// R60 (docs/62 D4): a check that refuses leaves the room — and the Secret
+// beside it — exactly where they were, and its error is the answer.
+func TestRoomClientDeleteExistingKeepsTheRoomWhenTheCheckRefuses(t *testing.T) {
+	c, cs := newFakeRoomClient(t)
+	ctx := context.Background()
+	if _, err := c.CreateStatic(ctx, kube.StaticRoom{Code: "tuhisroom", WithAttachSecret: true, CreatedBy: "alice"}); err != nil {
+		t.Fatalf("CreateStatic: %v", err)
+	}
+	errNotYours := errors.New("not yours")
+	var seen kube.RoomObject
+	_, err := c.DeleteExisting(ctx, "tuhisroom", func(obj kube.RoomObject) error {
+		seen = obj
+		return errNotYours
+	})
+	if !errors.Is(err, errNotYours) {
+		t.Fatalf("err = %v, want the check's error", err)
+	}
+	if seen.CreatedBy != "alice" || seen.Room.Spec.Kind != rooms.KindStatic {
+		t.Fatalf("the check saw %+v, want the stored room", seen)
+	}
+	if _, err := c.Get(ctx, "tuhisroom"); err != nil {
+		t.Fatalf("a refused delete removed the room: %v", err)
+	}
+	if _, ok := secretValue(t, cs, "room-tuhisroom", kube.RoomSecretKey); !ok {
+		t.Fatal("a refused delete removed the room's Secret")
+	}
+	// A check that admits deletes as before.
+	if _, err := c.DeleteExisting(ctx, "tuhisroom", func(kube.RoomObject) error { return nil }); err != nil {
+		t.Fatalf("admitted delete: %v", err)
+	}
+	if _, err := c.Get(ctx, "tuhisroom"); !errors.Is(err, kube.ErrRoomNotFound) {
+		t.Fatalf("room still there after an admitted delete: %v", err)
+	}
+}
+
+// R60 (docs/62 D4): the delete is bound to the object the check saw, by UID.
+// A room deleted and re-created under the same name in between is a different
+// object, and the API server refuses the delete instead of removing it
+// unchecked.
+func TestRoomClientDeleteExistingIsBoundToTheCheckedObjectsUID(t *testing.T) {
+	room := kubectlRoom("ourroom", nil)
+	room.UID = types.UID("uid-checked")
+	c, _, dc := newFakeRoomClientWithDynamic(t, room)
+	var got *metav1.Preconditions
+	dc.PrependReactor("delete", "rooms", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		got = action.(k8stesting.DeleteActionImpl).DeleteOptions.Preconditions
+		return false, nil, nil
+	})
+	if _, err := c.DeleteExisting(context.Background(), "ourroom", func(kube.RoomObject) error { return nil }); err != nil {
+		t.Fatalf("DeleteExisting: %v", err)
+	}
+	if got == nil || got.UID == nil || *got.UID != "uid-checked" {
+		t.Fatalf("delete preconditions = %+v, want the checked object's UID", got)
 	}
 }
 

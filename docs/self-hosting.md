@@ -992,6 +992,10 @@ More things worth naming rather than discovering:
   expires (R49, [§9.8](#a-service-identity-for-a-bot)): the room reads return
   raw room codes and attached broadcast IDs. It yields no write, no ban and no
   address.
+- **A leaked `rooms-manager` token can create static rooms** until it expires,
+  and delete the rooms that same service account created (R60,
+  [§9.8](#a-service-identity-for-a-bot)). It cannot delete or change any other
+  room, read a roster, rotate a secret or end a dynamic room.
 - **Rotating `config.resumeTokenKey` revokes every resume token fleet-wide**,
   instantly, for every broadcaster. It is the largest hammer in the box and it
   is not a moderation tool — but on a day when it is the right one, it is
@@ -1060,14 +1064,23 @@ A bot is not a person, so it does not do the browser flow. Give it its own
      broadcast IDs, so **a `rooms-reader` token can join every room and
      watch every attached broadcast in the deployment** — it cannot kill,
      ban, end a room, read bans or see a publisher's address.
+   - **`rooms-manager`** reaches exactly `POST /api/v1/rooms`,
+     `DELETE /api/v1/rooms/{name}` and `GET /api/v1/me` (R60,
+     [docs/62](62-rooms-manager-role.md)). It is what a bot that keeps a
+     static room per channel needs. It creates static rooms, and **deletes
+     only the static rooms that same service account created** — any other
+     room answers `403 room_not_owned`. The portal records the creator's
+     `sub` on each room it creates, so re-creating the bot's client in the
+     IdP (a new `sub`) leaves its old rooms to an operator. A bot usually
+     holds this and `rooms-reader` together.
    - **`operator`** is the whole portal, kill and ban included. Give a bot
      that role only when you mean it.
 
-   The claim values are `operator` and `rooms-reader` unless you renamed
-   them with `-operator-role` / `-rooms-reader-role` (`oidc.operatorRole` /
-   `oidc.roomsReaderRole` in the chart; set the latter empty — `off` on the
-   flag or its env var — to grant it
-   nowhere). You never have to guess: the document your deployment serves
+   The claim values are `operator`, `rooms-reader` and `rooms-manager`
+   unless you renamed them with `-operator-role` / `-rooms-reader-role` /
+   `-rooms-manager-role` (`oidc.operatorRole` / `oidc.roomsReaderRole` /
+   `oidc.roomsManagerRole` in the chart; set either of the latter two empty
+   — `off` on the flag or its env var — to grant it nowhere). You never have to guess: the document your deployment serves
    states the values it expects, per operation, under `x-gawk-roles` — the
    repository copy names roles symbolically, the served copy names yours.
 
@@ -1107,16 +1120,37 @@ who is in it is unknown — not that it is empty. Pair the reads with a webhook
 subscribed to the room events ([§9.5](#95-webhooks)) and the bot fetches a
 room when an event names it instead of polling.
 
+With `rooms-manager` as well, the bot keeps its own rooms. Creating one that
+already exists answers `409 room_exists`, which a provisioning bot can treat
+as done:
+
+```console
+$ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"code": "gaming-cs2", "displayName": "CS2"}' \
+    https://admin.gawk.example.com/api/v1/rooms | jq '.room.links'
+{ "join": "https://gawk.example.com/#/room/gaming-cs2" }
+
+$ curl -s -o /dev/null -w '%{http_code}\n' -X DELETE -H "Authorization: Bearer $TOKEN" \
+    https://admin.gawk.example.com/api/v1/rooms/gaming-cs2
+204
+```
+
 The compose stack's fake IdP ([docs/41](41-local-dev-stack.md)) has the same
 shape for trying this locally: client `gawk-rooms-bot`, secret
-`dev-rooms-bot-secret`, role `rooms-reader`, token endpoint
-`http://localhost:8088/idp/token` (start the stack with `ADMIN_ROOMS=1`):
+`dev-rooms-bot-secret`, roles `rooms-reader` and `rooms-manager`, token
+endpoint `http://localhost:8088/idp/token` (start the stack with
+`ADMIN_ROOMS=1`):
 
 ```console
 $ TOKEN=$(curl -s -u gawk-rooms-bot:dev-rooms-bot-secret -d grant_type=client_credentials \
     http://localhost:8088/idp/token | jq -r .access_token)
 $ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8088/api/v1/rooms | jq
 ```
+
+A room the bot creates there is a `Room` CR with no relay behind it: the
+compose relay takes its static rooms from `dev/rooms.json`
+([docs/41](41-local-dev-stack.md)), so the room lists and deletes but cannot
+be joined.
 
 `/api/v1/me` is the probe worth calling first: it proves the token is accepted
 *and* tells the bot which optional surfaces this deployment serves, so it offers
