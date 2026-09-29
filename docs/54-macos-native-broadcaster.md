@@ -498,6 +498,15 @@ the Windows artifact, the attach job) and adds:
   (`built-by: GitHub-hosted macos-latest`, toolchain, SDK version from
   `xcrun --show-sdk-version`, `signed: ad-hoc (PR build)` or
   `Developer ID + notarized`).
+
+  **Revised 2026-09-30: two parallel jobs.** The single job had grown to a
+  median of about 15 minutes, 17 by R56, the longest in the workflow, with
+  every step waiting on the one before it. `macos-check` now runs fmt,
+  clippy, the tests and the relay integration tier. `macos` runs the
+  release build, signing, bundling and upload. Both use
+  `Swatinem/rust-cache`, which saves only from `main`. `attach-release`
+  attaches the macOS bundle only when both jobs passed, which is what the
+  single job guaranteed by construction.
 - **Trigger paths**: the workspace, `gawk-server/wire/**`, `tools/macos/**`,
   the workflow itself. A docs-only PR starts nothing (G11).
 - **Relay integration on macOS**: the `ignored` real-relay suite runs once
@@ -655,7 +664,7 @@ milestone.
 | Acceptance criterion | Verified by |
 |---|---|
 | `app` → `app-windows` + `app-macos`; `.slint` sources in `crates/ui/`; `cargo test --workspace` green on Linux (host), via `cargo xwin clippy` (msvc), and on `macos-latest` (D15) | CI |
-| The `macos` job: fmt, clippy `-D warnings` on Darwin, tests, release build, ad-hoc-signed bundle artifact `gawk-broadcast-macos-<sha>` with `BUILD-INFO.txt`, `if-no-files-found: error` | CI |
+| The `macos-check` + `macos` jobs (one job until 2026-09-30): fmt, clippy `-D warnings` on Darwin, tests, release build, ad-hoc-signed bundle artifact `gawk-broadcast-macos-<sha>` with `BUILD-INFO.txt`, `if-no-files-found: error` | CI |
 | The real-relay integration suite passes on `macos-latest`: Origin header honoured by an allowlisting relay, rejection status and close code visible, kill-and-restart resume (docs/38 D2 gates, on Darwin) | CI |
 | `gawk-broadcast://macos`, `kind`, distribution + asset names as constants in `engine::defaults`; the docs/47 D5 validator table gains the macOS row with a test | unit |
 | `app-macos` launches on a Mac, shows the window with the D11 cards in their empty state, and quits via ⌘Q; no framework code yet | manual |
