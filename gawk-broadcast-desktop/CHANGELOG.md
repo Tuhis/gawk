@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v1.7.0...gawk-broadcast-desktop/v1.8.0) (2026-09-29)
+
+
+### Features
+
+* **broadcast-desktop:** notice Wi-Fi packet loss on macOS and point at the AWDL fix (R55 WU3) ([#396](https://github.com/Tuhis/gawk/issues/396)) ([23d37e7](https://github.com/Tuhis/gawk/commit/23d37e784882932d41a1d209320dad0fab7f74f7))
+
 ## [1.7.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v1.6.0...gawk-broadcast-desktop/v1.7.0) (2026-09-29)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.5.0...gawk-admin/v1.6.0) (2026-09-29)
+
+
+### Features
+
+* **admin:** rooms-manager role for static room create and delete (R60) ([#395](https://github.com/Tuhis/gawk/issues/395)) ([8c6fb7b](https://github.com/Tuhis/gawk/commit/8c6fb7be10d336725a01875a3f14588a88d658d2))
+
 ## [1.5.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.4.0...gawk-admin/v1.5.0) (2026-09-29)
 
 

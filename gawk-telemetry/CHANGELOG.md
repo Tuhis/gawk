@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.9.0...gawk-telemetry/v1.10.0) (2026-09-29)
+
+
+### Features
+
+* **broadcast-desktop:** notice Wi-Fi packet loss on macOS and point at the AWDL fix (R55 WU3) ([#396](https://github.com/Tuhis/gawk/issues/396)) ([23d37e7](https://github.com/Tuhis/gawk/commit/23d37e784882932d41a1d209320dad0fab7f74f7))
+
 ## [1.9.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.8.0...gawk-telemetry/v1.9.0) (2026-09-23)
 
 
