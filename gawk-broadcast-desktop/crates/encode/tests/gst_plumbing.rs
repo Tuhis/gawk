@@ -235,3 +235,36 @@ fn wait_for(mut done: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+/// Review finding (PR #398): an element that fails DURING the state change
+/// posts its error synchronously; the bus thread must not swallow it before
+/// the start failure is reported, or the caller gets a generic sentence and
+/// the all-inside-pipewiresrc diagnosis breaks.
+#[test]
+fn a_start_failure_names_the_element_that_failed() {
+    if !available() {
+        return;
+    }
+    let plan = LivePlan {
+        video: vec![
+            Element::new("filesrc").prop("location", "/nonexistent/gawk-test"),
+            Element::new("identity").named(gst_policy::ENCODER),
+            Element::new("appsink").named(gst_policy::VIDEO_SINK),
+        ],
+        thumb: Vec::new(),
+        tee: None,
+    };
+    // Several times: the race was the bus thread winning, not always.
+    for _ in 0..5 {
+        let hooks = LiveHooks {
+            on_au: Box::new(|_| {}),
+            on_input: Box::new(|_| {}),
+            on_thumb: Box::new(|_, _, _| {}),
+            on_error: Box::new(|_| {}),
+        };
+        match Live::start(&plan, Candidate::Nvenc, 30, hooks) {
+            Err(text) => assert!(text.starts_with("filesrc:"), "{text}"),
+            Ok(_) => panic!("a missing file cannot start"),
+        }
+    }
+}

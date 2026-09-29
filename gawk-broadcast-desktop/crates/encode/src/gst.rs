@@ -132,17 +132,24 @@ fn bus_error(c: Candidate, msg: &gst::message::Error) -> BusError {
         .and_then(|s| s.downcast_ref::<gst::Element>())
         .map(factory_of)
         .unwrap_or_else(|| "pipeline".into());
-    let mut text = format!("{factory}: {}", msg.error());
+    let text = format!("{factory}: {}", msg.error());
     if let Some(debug) = msg.debug() {
         log::debug!("{factory} error detail: {debug}");
     }
-    if text.len() > 300 {
-        text.truncate(300);
-    }
     BusError {
         culprit: gst_policy::culprit(c, &factory),
-        text,
+        text: clip(text, 300),
     }
+}
+
+/// Shortens an error to at most `max` bytes on a character boundary: GLib
+/// messages can be translated or quote non-ASCII names, and a byte cut
+/// inside a character panics (on the bus thread, outside any fence).
+fn clip(mut text: String, max: usize) -> String {
+    if text.len() > max {
+        text.truncate(text.floor_char_boundary(max));
+    }
+    text
 }
 
 /// A buffer's running time under `segment` — the time the pipeline clock
@@ -393,6 +400,7 @@ pub struct Live {
     pipeline: gst::Pipeline,
     force: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    first_error: Arc<Mutex<Option<String>>>,
     bus_thread: Option<std::thread::JoinHandle<()>>,
     inputs: Arc<AtomicU64>,
 }
@@ -510,10 +518,16 @@ impl Live {
         }
 
         let stop = Arc::new(AtomicBool::new(false));
+        // The first error the bus thread saw, kept for a failed start: an
+        // element failing inside the state change posts its error at once,
+        // and the thread would otherwise take it before the start could
+        // report it (PR #398 review).
+        let first_error: Arc<Mutex<Option<String>>> = Arc::default();
         let bus = pipeline.bus().ok_or("no bus")?;
         let bus_thread = {
             let stop = stop.clone();
             let hooks = hooks.clone();
+            let first_error = first_error.clone();
             std::thread::Builder::new()
                 .name("gst-bus".into())
                 .spawn(move || {
@@ -532,6 +546,10 @@ impl Live {
                             },
                             _ => continue,
                         };
+                        first_error
+                            .lock()
+                            .unwrap()
+                            .get_or_insert_with(|| err.text.clone());
                         fence("bus", || (hooks.on_error)(err));
                     }
                 })
@@ -542,6 +560,7 @@ impl Live {
             pipeline,
             force,
             stop,
+            first_error,
             bus_thread: Some(bus_thread),
             inputs,
         };
@@ -558,20 +577,16 @@ impl Live {
         if let Some(t) = self.bus_thread.take() {
             let _ = t.join();
         }
-        let text = self
-            .pipeline
-            .bus()
-            .and_then(|b| b.pop_filtered(&[gst::MessageType::Error]))
-            .and_then(|m| match m.view() {
-                gst::MessageView::Error(e) => Some(format!(
-                    "{}: {}",
-                    e.src()
-                        .and_then(|s| s.downcast_ref::<gst::Element>())
-                        .map(factory_of)
-                        .unwrap_or_else(|| "pipeline".into()),
-                    e.error()
-                )),
-                _ => None,
+        // What the bus thread already took first; else anything it left.
+        let taken = self.first_error.lock().unwrap().take();
+        let text = taken
+            .or_else(|| {
+                let bus = self.pipeline.bus()?;
+                let msg = bus.pop_filtered(&[gst::MessageType::Error])?;
+                match msg.view() {
+                    gst::MessageView::Error(e) => Some(bus_error(Candidate::Nvenc, e).text),
+                    _ => None,
+                }
             })
             .unwrap_or_else(|| fallback.to_owned());
         let _ = self.pipeline.set_state(gst::State::Null);
@@ -615,5 +630,20 @@ impl Drop for Live {
 fn fence(what: &str, f: impl FnOnce()) {
     if std::panic::catch_unwind(AssertUnwindSafe(f)).is_err() {
         log::error!("{what} callback panicked");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review finding (PR #398): byte 300 inside a multi-byte character
+    /// must not panic — this runs on the bus thread, outside any fence.
+    #[test]
+    fn clipping_an_error_never_splits_a_character() {
+        let text = format!("{}é tail", "x".repeat(299));
+        let clipped = clip(text, 300);
+        assert_eq!(clipped.len(), 299);
+        assert_eq!(clip("short".into(), 300), "short");
     }
 }
