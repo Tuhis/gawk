@@ -1193,6 +1193,9 @@ export component MainWindow inherits Window {
     in property <string> audio-hint-text: "";
     in property <string> minimized-hint: "";
     in property <string> uplink-warning: "";
+    // docs/57 D7: "Your Wi-Fi is dropping some video…" — the shell owns
+    // when it shows, dismissal included (it counts across broadcasts).
+    in property <string> network-notice: "";
     in property <string> connection-line: "";
     in property <bool> connection-ok: true;
 
@@ -1302,7 +1305,6 @@ export component MainWindow inherits Window {
 
     // Local UI state.
     property <bool> wide: self.width >= 900px;
-    property <bool> uplink-dismissed;
     property <bool> audio-dismissed;
     property <bool> minimized-dismissed;
     property <bool> show-secret;
@@ -1322,6 +1324,7 @@ export component MainWindow inherits Window {
     callback add-server();
     callback remove-server();
     callback switch-to-system-audio();
+    callback network-notice-help();
     callback room-input-edited();
     callback room-join();
     callback room-create();
@@ -1923,15 +1926,25 @@ export component MainWindow inherits Window {
                         body: "People watching see your last frame. They pick up again by themselves when you're back. Nobody has to rejoin.";
                         dismissible: false;
                     }
-                    if root.uplink-warning != "" && !root.uplink-dismissed: Banner {
+                    // Connection problems are never dismissible: while viewers
+                    // are losing video the broadcaster sees it, and the line
+                    // goes away by itself when the problem does (docs/57 OD7).
+                    if root.uplink-warning != "": Banner {
                         icon: Icons.alert;
                         body: root.uplink-warning;
                         action: "Open quality settings";
+                        dismissible: false;
                         act => {
                             root.page = 2;
                         }
-                        dismiss => {
-                            root.uplink-dismissed = true;
+                    }
+                    if root.network-notice != "": Banner {
+                        icon: Icons.alert;
+                        body: root.network-notice;
+                        action: "Help";
+                        dismissible: false;
+                        act => {
+                            root.network-notice-help();
                         }
                     }
                     if root.audio-hint && !root.audio-dismissed: Banner {

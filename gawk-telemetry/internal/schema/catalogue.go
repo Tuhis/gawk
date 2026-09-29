@@ -171,7 +171,10 @@ var fieldMeta = map[string]meta{
 	"keyframeStreamsFailed": counter("streams", "Keyframe streams that failed to complete."),
 	"keyframeStreamsSuperseded": counter("streams",
 		"Keyframe streams abandoned because a newer keyframe replaced them. Routine."),
-	"keyframeBytesSent":   counter("bytes", "Bytes sent as keyframe streams."),
+	"keyframeBytesSent": counter("bytes", "Bytes sent as keyframe streams."),
+	"uplinkPacketsSent": counter("packets", "QUIC packets the native broadcaster sent to the relay, summed across resumes."),
+	"uplinkPacketsLost": counter("packets",
+		"QUIC packets the native broadcaster's stack declared lost on the way to the relay. The only local view of leg-A loss: Wi-Fi drops (AWDL on a Mac) move no other counter."),
 	"encoderQueueDepth":   gauge("frames", "Frames waiting inside the encoder. A rising depth is the encoder losing the race."),
 	"lastEncodeLatencyMs": gauge("ms", "Wall time the last frame spent inside the encoder."),
 	"keyframeIntervalMs":  gauge("ms", "Interval between keyframes."),
@@ -233,6 +236,7 @@ var fieldMeta = map[string]meta{
 	"timeSyncAvailable":         {SemBool, "", "Whether clock sync is available on this path."},
 	"viewerCountAvailable":      {SemBool, "", "Whether a viewer count is available on this path."},
 	"resuming":                  {SemBool, "", "Whether the native broadcaster is mid-resume."},
+	"uplinkPacketsAvailable":    {SemBool, "", "Whether the native broadcaster's transport reports QUIC packet counters."},
 
 	// --- objects ------------------------------------------------------------
 	"audioBuffer":         {SemObject, "", "Audio jitter-buffer detail. Its members are flattened into facts for the rules."},

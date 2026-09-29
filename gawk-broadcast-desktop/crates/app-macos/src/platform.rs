@@ -8,6 +8,7 @@ use gawk_capture::fit::encode_size;
 use gawk_capture::sck::StreamSettings;
 use gawk_capture::sck_picker::{Picked, Picker, PickerEvent};
 use gawk_engine::config::{self, Config};
+use gawk_engine::lossnotice::NetworkFacts;
 use gawk_ui::MainWindow;
 use gawk_ui::shell::{Hooks, Media, Platform, Prepared, Shell};
 use std::any::Any;
@@ -140,6 +141,10 @@ impl Platform for Mac {
         // the system's screen-sharing indicator; live, the menu-bar control
         // can re-pick too (D4).
         self.set_active(self.presenting || media.is_some());
+    }
+
+    fn network_facts(&mut self, relay: std::net::SocketAddr) -> Option<NetworkFacts> {
+        crate::network::probe(relay)
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

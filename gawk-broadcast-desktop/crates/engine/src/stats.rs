@@ -79,6 +79,14 @@ pub struct Stats {
 
     pub frames_dropped_at_send: u64,
 
+    /// QUIC's own packet counters, summed over every connection of the
+    /// broadcast (resumes included): the one local view of leg-A loss
+    /// (docs/57 D5). Loss in the air after a successful send moves nothing
+    /// above; these see it through QUIC's ack-based loss detection.
+    pub uplink_packets_available: bool,
+    pub uplink_packets_sent: u64,
+    pub uplink_packets_lost: u64,
+
     pub time_sync_available: bool,
     pub time_sync_rtt_ms: f64,
     pub time_sync_offset_us: i64,
@@ -166,6 +174,9 @@ mod tests {
             "keyframeStreamsSuperseded",
             "keyframeBytesSent",
             "framesDroppedAtSend",
+            "uplinkPacketsAvailable",
+            "uplinkPacketsSent",
+            "uplinkPacketsLost",
             "timeSyncAvailable",
             "timeSyncRttMs",
             "timeSyncOffsetUs",
@@ -209,5 +220,6 @@ mod tests {
         assert_eq!(obj["keyframeIntervalAvailable"], false);
         assert_eq!(obj["viewerCountAvailable"], false);
         assert_eq!(obj["timeSyncAvailable"], false);
+        assert_eq!(obj["uplinkPacketsAvailable"], false);
     }
 }

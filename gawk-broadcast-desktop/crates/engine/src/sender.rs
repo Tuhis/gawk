@@ -15,7 +15,7 @@
 
 use crate::clock::Clock;
 use crate::media::{AUDIO_CONFIG_RESEND_MS, AccessUnit, AudioFormat, AudioPacket};
-use crate::relay::{KeyframeOutcome, RelaySession, SendDatagramError};
+use crate::relay::{KeyframeOutcome, PathCounters, RelaySession, SendDatagramError};
 use crate::stats::Stats;
 use gawk_wire as wire;
 use std::sync::{Arc, Mutex};
@@ -96,6 +96,9 @@ struct State {
     last_rate_us: Option<u64>,
     last_rate_encoded: u64,
     last_rate_sent: u64,
+    /// Packet counters of the connections this broadcast already left
+    /// behind (resumes), so the totals never go backwards.
+    uplink_base: PathCounters,
 }
 
 /// Verifies the first audio packet's bitstream against the advertised config
@@ -147,6 +150,7 @@ impl Sender {
                 last_rate_us: None,
                 last_rate_encoded: 0,
                 last_rate_sent: 0,
+                uplink_base: PathCounters::default(),
             })),
             kf: Arc::new(Mutex::new(KfSlot {
                 cancel: None,
@@ -180,10 +184,14 @@ impl Sender {
     /// caches, video re-primes through its next keyframe, and audio has no
     /// keyframe, so the NEXT packet must carry the config.
     pub fn set_relay(&self, relay: Arc<dyn RelaySession>) {
-        *self.relay.lock().unwrap() = relay;
+        let old = std::mem::replace(&mut *self.relay.lock().unwrap(), relay);
         {
             let mut st = self.state.lock().unwrap();
             st.audio_config_sent = false;
+            if let Some(c) = old.path_counters() {
+                st.uplink_base.sent += c.sent;
+                st.uplink_base.lost += c.lost;
+            }
         }
         let (cancel, had_pending) = {
             let mut kf = self.kf.lock().unwrap();
@@ -677,6 +685,11 @@ impl Sender {
         s.last_rate_us = Some(now_us);
         s.last_rate_encoded = st.encoded_frames;
         s.last_rate_sent = st.sent_frames;
+        if let Some(c) = self.current_relay().path_counters() {
+            st.uplink_packets_available = true;
+            st.uplink_packets_sent = s.uplink_base.sent + c.sent;
+            st.uplink_packets_lost = s.uplink_base.lost + c.lost;
+        }
         st
     }
 
@@ -723,8 +736,8 @@ mod tests {
     use crate::clock::testing::FakeClock;
     use crate::media::AccessUnit;
     use crate::relay::{
-        BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, RelaySession, SendDatagramError,
-        ServerStream, SessionClose,
+        BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, PathCounters, RelaySession,
+        SendDatagramError, ServerStream, SessionClose,
     };
 
     /// Every keyframe write completes immediately; everything else pends.
@@ -983,5 +996,57 @@ mod tests {
             retained <= 2,
             "completed handles must be pruned, found {retained}"
         );
+    }
+
+    /// A relay that reports fixed QUIC packet counters.
+    struct CountingRelay(PathCounters);
+
+    impl RelaySession for CountingRelay {
+        fn send_datagram(&self, _dgram: &[u8]) -> Result<(), SendDatagramError> {
+            Ok(())
+        }
+        fn open_keyframe_stream(&self) -> BoxFuture<'_, Result<Box<dyn KeyframeWriter>, String>> {
+            Box::pin(async { Ok(Box::new(InstantWriter) as Box<dyn KeyframeWriter>) })
+        }
+        fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn receive_datagram(&self) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn closed(&self) -> BoxFuture<'_, SessionClose> {
+            Box::pin(std::future::pending())
+        }
+        fn path_counters(&self) -> Option<PathCounters> {
+            Some(self.0)
+        }
+    }
+
+    // docs/57 D5: the uplink packet counters are per BROADCAST, like every
+    // other counter here — a resume starts a fresh QUIC connection whose
+    // own counters restart at zero, and the old connection's must not
+    // vanish from the totals (a counter that goes backwards reads as a
+    // reset to every rate computed from it).
+    #[tokio::test]
+    async fn uplink_packet_counters_accumulate_across_a_resume() {
+        let first = CountingRelay(PathCounters {
+            sent: 1000,
+            lost: 7,
+        });
+        let sender = Sender::new(Arc::new(first), Arc::new(FakeClock::default()));
+        let st = sender.stats();
+        assert!(st.uplink_packets_available);
+        assert_eq!((st.uplink_packets_sent, st.uplink_packets_lost), (1000, 7));
+
+        sender.set_relay(Arc::new(CountingRelay(PathCounters { sent: 50, lost: 1 })));
+        let st = sender.stats();
+        assert_eq!((st.uplink_packets_sent, st.uplink_packets_lost), (1050, 8));
+    }
+
+    // A transport without counters reports them unavailable, not zero.
+    #[tokio::test]
+    async fn uplink_packet_counters_are_unavailable_without_a_quic_stack() {
+        let sender = Sender::new(Arc::new(InstantRelay), Arc::new(FakeClock::default()));
+        assert!(!sender.stats().uplink_packets_available);
     }
 }

@@ -92,6 +92,25 @@ pub trait RelaySession: Send + Sync + 'static {
     /// is what a shell that still holds the session would otherwise get.
     /// A no-op for a session with nothing to close.
     fn close(&self) {}
+    /// The QUIC stack's own packet counters for this connection — the one
+    /// local view of leg-A loss (docs/57 D5). A datagram lost in the air
+    /// "sent" fine as far as every other counter knows; QUIC's ack-based
+    /// loss detection is what sees it. `None` for a transport without them.
+    fn path_counters(&self) -> Option<PathCounters> {
+        None
+    }
+    /// The relay's address, so a platform can tell which interface carries
+    /// the broadcast (Wi-Fi or not, docs/57 D7). `None` when unknown.
+    fn remote_address(&self) -> Option<std::net::SocketAddr> {
+        None
+    }
+}
+
+/// Cumulative packets sent and declared lost on one connection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PathCounters {
+    pub sent: u64,
+    pub lost: u64,
 }
 
 /// Which phase a start failure happened in. The shells' "Start a new

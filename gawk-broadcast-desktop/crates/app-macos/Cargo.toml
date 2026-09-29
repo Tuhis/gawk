@@ -23,6 +23,8 @@ gawk-capture = { path = "../capture" }
 gawk-encode = { path = "../encode" }
 gawk-engine = { path = "../engine" }
 gawk-ui = { path = "../ui" }
+# The network probe (docs/57 D7): getifaddrs + SIOCGIFMEDIA.
+libc = "0.2"
 log = "0.4"
 # Notifications (docs/54 D11): UNUserNotificationCenter, which needs the
 # bundle identifier — `notify` is the one unsafe module in this crate.

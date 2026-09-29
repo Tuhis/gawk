@@ -6,6 +6,7 @@
 //! availability-gated numbers are always present, `null` when unmeasured —
 //! an absent number and a zero must stay distinguishable to readers.
 
+use gawk_engine::lossnotice::NetworkFacts;
 use gawk_engine::stats::Stats;
 use serde::Serialize;
 
@@ -49,6 +50,12 @@ struct Diagnostics<'a> {
     keyframe_streams_failed: u64,
     keyframe_streams_superseded: u64,
     frames_dropped_at_send: u64,
+    /// QUIC's packet counters (docs/57 D5): the local view of leg-A loss.
+    uplink_packets_sent: Option<u64>,
+    uplink_packets_lost: Option<u64>,
+    /// What the broadcast leaves on (docs/57 D7); null where the platform
+    /// does not probe it (Windows).
+    network: Option<NetworkFacts>,
 
     keyframe_interval_ms: Option<f64>,
     time_sync_rtt_ms: Option<f64>,
@@ -86,6 +93,7 @@ fn is_zero_u8(v: &u8) -> bool {
 /// ("Not broadcasting" / "Starting…" / "Live").
 pub fn render(
     st: &Stats,
+    network: Option<NetworkFacts>,
     broadcast_id: &str,
     state: &str,
     error: &str,
@@ -122,6 +130,13 @@ pub fn render(
         keyframe_streams_failed: st.keyframe_streams_failed,
         keyframe_streams_superseded: st.keyframe_streams_superseded,
         frames_dropped_at_send: st.frames_dropped_at_send,
+        uplink_packets_sent: st
+            .uplink_packets_available
+            .then_some(st.uplink_packets_sent),
+        uplink_packets_lost: st
+            .uplink_packets_available
+            .then_some(st.uplink_packets_lost),
+        network,
         keyframe_interval_ms: st
             .keyframe_interval_available
             .then_some(st.keyframe_interval_ms),
@@ -156,6 +171,7 @@ mod tests {
     fn kind_and_nullable_semantics() {
         let dump = render(
             &Stats::default(),
+            None,
             "K7XQ2M",
             "Live",
             "",
@@ -174,6 +190,9 @@ mod tests {
             "timeSyncRttMs",
             "timeSyncOffsetUs",
             "viewerCount",
+            "uplinkPacketsSent",
+            "uplinkPacketsLost",
+            "network",
         ] {
             assert!(v.get(key).is_some(), "{key} must be present");
             assert!(v[key].is_null(), "{key} must be null when unavailable");
@@ -188,6 +207,7 @@ mod tests {
     fn carries_the_build_version() {
         let dump = render(
             &Stats::default(),
+            None,
             "",
             "Not broadcasting",
             "",
@@ -214,9 +234,33 @@ mod tests {
             ..Default::default()
         };
         let v: serde_json::Value =
-            serde_json::from_str(&render(&st, "", "Live", "", "screen", String::new())).unwrap();
+            serde_json::from_str(&render(&st, None, "", "Live", "", "screen", String::new()))
+                .unwrap();
         assert!((v["captureFps"].as_f64().unwrap() - 59.7).abs() < 1e-9);
         assert_eq!(v["viewerCount"], 3);
         assert!(v.get("broadcastId").is_none());
+    }
+
+    #[test]
+    fn carries_uplink_loss_and_the_network() {
+        let st = Stats {
+            uplink_packets_available: true,
+            uplink_packets_sent: 12_000,
+            uplink_packets_lost: 31,
+            ..Default::default()
+        };
+        let net = Some(NetworkFacts {
+            wifi: true,
+            vpn: true,
+            awdl_up: true,
+        });
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&st, net, "", "Live", "", "screen", String::new()))
+                .unwrap();
+        assert_eq!(v["uplinkPacketsSent"], 12_000);
+        assert_eq!(v["uplinkPacketsLost"], 31);
+        assert_eq!(v["network"]["wifi"], true);
+        assert_eq!(v["network"]["awdlUp"], true);
+        assert_eq!(v["network"]["vpn"], true);
     }
 }

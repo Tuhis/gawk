@@ -381,6 +381,11 @@ impl Session {
         self.shared.lock().unwrap().broadcast_id.clone()
     }
 
+    /// The current connection's relay address (it can change on a resume).
+    pub fn relay_address(&self) -> Option<std::net::SocketAddr> {
+        self.sender.current_relay().remote_address()
+    }
+
     /// Counters, merged from the sender and the session state.
     pub fn stats(&self) -> Stats {
         let mut st = self.sender.stats();

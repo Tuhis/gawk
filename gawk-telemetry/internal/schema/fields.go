@@ -219,11 +219,17 @@ var BroadcasterFields = map[string]Kind{
 	"sentFrames":                KindNumber,
 	"keyframeStreamsSuperseded": KindNumber,
 	"framesDroppedAtSend":       KindNumber,
-	"timeSyncAvailable":         KindBool,
-	"timeSyncOffsetUs":          KindNumber,
-	"viewerCountAvailable":      KindBool,
-	"resumes":                   KindNumber,
-	"resuming":                  KindBool,
+	// R55 (docs/57 D5): the desktop broadcaster's QUIC packet counters —
+	// the first local view of leg-A loss. Loss in the air after a
+	// successful send moves no other broadcaster counter.
+	"uplinkPacketsAvailable": KindBool,
+	"uplinkPacketsSent":      KindNumber,
+	"uplinkPacketsLost":      KindNumber,
+	"timeSyncAvailable":      KindBool,
+	"timeSyncOffsetUs":       KindNumber,
+	"viewerCountAvailable":   KindBool,
+	"resumes":                KindNumber,
+	"resuming":               KindBool,
 	// The capture-side counterpart of resumes: the native broadcaster rebuilt
 	// a capture pipeline that died mid-session instead of ending the
 	// broadcast. Typed because the recovery is silent by design — a stream
