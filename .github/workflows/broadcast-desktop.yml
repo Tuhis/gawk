@@ -874,6 +874,29 @@ jobs:
             ldd dist/stage/gawk-broadcast-linux
           } | tee dist/stage/BUILD-INFO.txt
 
+      # R61 (docs/63): the same binary as a .deb, so the launcher entry and
+      # icons land in /usr/share and the Wayland icon works without
+      # install-desktop.sh. Built here, from the stage the tarball packs;
+      # install-tested in fresh containers by `linux-deb`, never here, where
+      # the -dev packages would satisfy any Depends the package forgot (D8).
+      # The changelog's date is the commit's, so a rebuild is byte-stable.
+      - name: Build the .deb
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) tools/linux/build-deb.sh \
+            dist/stage/gawk-broadcast-linux ../assets/icon dist/gawk-broadcast-linux-x86_64.deb \
+            dist/stage/THIRD-PARTY-NOTICES-linux.md dist/stage/BUILD-INFO.txt
+          dpkg-deb -f dist/gawk-broadcast-linux-x86_64.deb
+          listing=$(dpkg-deb -c dist/gawk-broadcast-linux-x86_64.deb | awk '{print $6}')
+          for want in ./usr/bin/gawk-broadcast-linux \
+                      ./usr/share/applications/fi.ioio.gawk.broadcast.desktop \
+                      ./usr/share/icons/hicolor/scalable/apps/fi.ioio.gawk.broadcast.svg \
+                      ./usr/share/icons/hicolor/256x256/apps/fi.ioio.gawk.broadcast.png \
+                      ./usr/share/doc/gawk-broadcast/copyright; do
+            grep -qxF -- "$want" <<<"$listing" || {
+              echo "::error::$want is missing from the .deb"; exit 1; }
+          done
+
       # The tarball itself, flat like the Go app's (D11), and checked by
       # listing it ONCE into a variable — never `tar -tzf | grep -q` under
       # pipefail, the trap that published gawk-broadcast-v1.11.0 empty.
@@ -910,6 +933,39 @@ jobs:
         if: always() && env.RUSTC_WRAPPER != ''
         run: '"$RUSTC_WRAPPER" --show-stats'
 
+  # R61 (docs/63 D8): install the .deb `linux` built into a FRESH container of
+  # each release INSTALL.md names as a floor. Only a clean image proves the
+  # package's Depends are enough: lintian, apt install from the stock
+  # archive, every linked and dlopen()ed library from a direct dependency,
+  # the plugin files for every GStreamer element, the launcher entry and
+  # icon, and a clean purge (tools/linux/test-deb.sh).
+  linux-deb:
+    needs: linux
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "debian:trixie"]
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: gawk-broadcast-linux-x86_64-${{ needs.linux.outputs.sha }}
+          path: dist
+      # The archive settings linux-container-setup uses, for the same
+      # runners: IPv4 only, short timeouts, bounded retries.
+      - name: apt settings for the self-hosted runners
+        run: |
+          printf '%s\n' 'Acquire::ForceIPv4 "true";' 'Acquire::Retries "3";' \
+            'Acquire::http::Timeout "15";' 'Acquire::https::Timeout "15";' \
+            > /etc/apt/apt.conf.d/99-gawk-ci
+      - name: Install, check and purge the .deb
+        run: bash gawk-broadcast-desktop/tools/linux/test-deb.sh dist/gawk-broadcast-linux-x86_64.deb
+
   # The Windows half of the release-assets story; the Linux one is
   # attach-broadcast-release in ci.yml, and the reasoning for both lives in
   # .github/actions/attach-release-assets. No rebuild — the artifact `build`
@@ -941,13 +997,13 @@ jobs:
   # dispatch: that is true, but it is a coercion rule, and this is not a place
   # to be clever about falsiness.
   attach-release:
-    # `macos` and `linux` are soft dependencies (R52 docs/54 D13, R56
+    # `macos`, `linux` and `linux-deb` are soft dependencies (R52 docs/54 D13, R56
     # docs/58 D13): the Windows release
     # needs lint, test and build green and waits for nothing else — not a
     # macOS flake, not hosted-image drift, not a backfill of a commit older
     # than the macOS bundle. `!cancelled()` is what lets this job run when
     # `macos` failed; the three hard dependencies are then checked by hand.
-    needs: [lint, test, build, macos, macos-check, linux]
+    needs: [lint, test, build, macos, macos-check, linux, linux-deb]
     if: >-
       !cancelled() &&
       needs.lint.result == 'success' &&
@@ -1018,6 +1074,7 @@ jobs:
           # Windows and Linux assets down with it.
           MACOS_BUILT: ${{ needs.macos.result == 'success' && needs.macos-check.result == 'success' }}
           LINUX_BUILT: ${{ needs.linux.result == 'success' }}
+          DEB_TESTED: ${{ needs.linux-deb.result == 'success' }}
         run: |
           set -euo pipefail
           # NOT `assets`: the repository root already has an `assets/`
@@ -1065,6 +1122,13 @@ jobs:
             cp staging-linux/gawk-broadcast-linux-x86_64.tar.gz release-assets/
             cp staging-linux/BUILD-INFO-linux.txt staging-linux/THIRD-PARTY-NOTICES-linux.md release-assets/
             echo "linux=true" >> "$GITHUB_OUTPUT"
+            # The .deb (R61, docs/63 D8) only once it installed cleanly on
+            # both floors; the tarball goes out regardless.
+            if [ "$DEB_TESTED" = "true" ]; then
+              cp staging-linux/gawk-broadcast-linux-x86_64.deb release-assets/
+            else
+              echo "::warning::the .deb is not attached: linux-deb did not pass for this commit — backfill it with workflow_dispatch attach_to once it does"
+            fi
           else
             echo "::warning::the Linux tarball is not attached: the linux job did not succeed for this commit — backfill it with workflow_dispatch attach_to once it does"
           fi
