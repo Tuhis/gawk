@@ -1081,6 +1081,12 @@ Add to it when a new gotcha lands in `docs/`.
 
 **Native macOS broadcaster (R52)**
 
+- **macOS never shows a window's icon; the Dock and Finder read the
+  bundle's `.icns`.** Slint's `Window.icon` (docs/53 D6) is ignored there —
+  winit applies it on Windows and X11 only — so a bundle without
+  `CFBundleIconFile` is a blank tile, with no error anywhere. `bundle.sh`
+  copies `assets/icon/gawk.icns` and checks it with `iconutil`.
+  ([docs/53](53-app-icons.md) D11)
 - **An active `SCContentSharingPicker` puts the system's screen-sharing
   indicator in the menu bar**, whether or not anything is being captured.
   Activating it at launch made an idle app look like it was sharing; it is
@@ -1123,6 +1129,12 @@ Add to it when a new gotcha lands in `docs/`.
 
 **Native Linux broadcaster, in the desktop workspace (R56)**
 
+- **On Wayland the window's own icon is dropped; the installed desktop
+  entry is the only source.** winit 0.30 has no `xdg-toplevel-icon-v1`, so
+  Slint's `Window.icon` reaches X11 but not Wayland. GNOME and KDE resolve
+  the icon from `set_xdg_app_id` through `fi.ioio.gawk.broadcast.desktop`;
+  until `install-desktop.sh` has run, the window shows the stock icon.
+  ([docs/53](53-app-icons.md) §6, [docs/58](58-linux-desktop-broadcaster.md) OD7)
 - **Never build zbus with its `tokio` feature in the desktop workspace.**
   ashpd's *default* feature is `tokio`, which turns on `zbus/tokio`. Cargo
   unifies features, so every zbus user in the process then needs a tokio

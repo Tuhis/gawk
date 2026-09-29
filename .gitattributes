@@ -4,3 +4,4 @@
 assets/icon/png/*.png  -diff linguist-generated=true
 assets/icon/gawk.ico   -diff linguist-generated=true
 assets/icon/gawk.res   -diff linguist-generated=true
+assets/icon/gawk.icns  -diff linguist-generated=true

@@ -3,8 +3,9 @@
 <!--
   gawk-broadcast-macos.app's Info.plist (R52, docs/54 D14). bundle.sh fills
   @VERSION@ from gawk-broadcast-desktop/version.txt, which release-please
-  maintains. No CFBundleIconFile until tools/icon generates an .icns (R44):
-  the mark has one source and its derivatives are generated, never drawn.
+  maintains, and copies assets/icon/gawk.icns into Contents/Resources. The
+  .icns is a tools/icon derivative (R44): the mark has one source and its
+  derivatives are generated, never drawn.
 -->
 <plist version="1.0">
 <dict>
@@ -14,6 +15,11 @@
 	<string>gawk-broadcast</string>
 	<key>CFBundleExecutable</key>
 	<string>gawk-broadcast-macos</string>
+	<!-- The Dock/Finder icon, Contents/Resources/gawk.icns (the extension is
+	     implied). macOS ignores a window's own icon, so this is the only
+	     source of it. -->
+	<key>CFBundleIconFile</key>
+	<string>gawk</string>
 	<!-- docs/54 D13: derived from the project domain the default relay and
 	     app URLs already name. It keys the TCC grant and the notification
 	     center, so it must never change once a release ships; a fork edits
