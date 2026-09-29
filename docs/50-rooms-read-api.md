@@ -5,7 +5,12 @@ the R50 bus, not from a poller); **implemented 2026-09-29** (RA1–RA5 in one
 PR; §7 records what the implementation decided that this document had left
 open). Open: the two manual checks in RA5's criteria — the self-hosting
 recipe run against the compose stack and against Keycloak on the reference
-deployment — and the end-to-end success criterion below. Chunks **RA1–RA5**
+deployment — and the end-to-end success criterion below. *(2026-09-29: the
+Keycloak half is done — `rooms-reader` exists on the reference deployment's
+`gawk-admin` client, held by the `mumisija-gawk` service account, and its
+token read `GET /rooms` and `GET /rooms/{name}` (docs/62 §7). The success
+criterion, a live room with broadcasts and participants plus the webhook,
+is still open.)* Chunks **RA1–RA5**
 (`RA` = Rooms API). Touches `gawk-server` (one read-only route on the ops
 listener, one public type file), `gawk-admin` (routes, a role, the webhook
 event filter, SPA) and the docs. No wire change, no media-path change,
