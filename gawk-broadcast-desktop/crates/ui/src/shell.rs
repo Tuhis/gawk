@@ -237,12 +237,10 @@ pub struct Shell {
     uplink: gawk_engine::uplink::UplinkMonitor,
     uplink_warned: bool,
     /// Loss in the air the bandwidth watchdog cannot see (docs/57 D7), fed
-    /// 1 Hz; fresh per broadcast, like the dismissal flags below.
+    /// 1 Hz; fresh per broadcast.
     loss: LossMonitor,
     loss_notice: Notice,
     network: Option<NetworkFacts>,
-    network_notice_shown: bool,
-    network_notice_dismissed: bool,
     /// R42: the grant the "Open room view" link carries — the creator token
     /// of a room this session minted, or the static room's attach key. In
     /// memory only: it is a one-broadcast affair.
@@ -433,8 +431,6 @@ pub fn run(
         loss: LossMonitor::new(),
         loss_notice: Notice::None,
         network: None,
-        network_notice_shown: false,
-        network_notice_dismissed: false,
         room_grant: None,
         room_leaving: false,
         nick_timer: slint::Timer::default(),
@@ -1563,17 +1559,6 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     ui.on_network_notice_help(|| open_in_browser(NETWORK_HELP_URL));
     {
         let shell = shell.clone();
-        let ui_weak = ui_weak.clone();
-        ui.on_network_notice_dismissed(move || {
-            // Holds for this broadcast; two in a row silence it (D7 p. 6).
-            shell.borrow_mut().network_notice_dismissed = true;
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_network_notice("".into());
-            }
-        });
-    }
-    {
-        let shell = shell.clone();
         ui.on_quit_confirmed(move || {
             // Stop cleanly (bounded), then leave: the relay's grace period,
             // not this app, decides how long viewers wait.
@@ -1666,8 +1651,6 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     sh.loss = LossMonitor::new();
     sh.loss_notice = Notice::None;
     sh.network = None;
-    sh.network_notice_shown = false;
-    sh.network_notice_dismissed = false;
     ui.set_network_notice("".into());
     sh.last_error.clear();
     sh.first_viewer_seen = false;
@@ -2349,12 +2332,6 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     sh.live_since = None;
     // Ended inside the app: no resume question at the next launch (D12).
     sh.cfg.was_live = false;
-    sh.cfg.network_notice_dismissals = gawk_engine::lossnotice::next_dismissal_streak(
-        sh.cfg.network_notice_dismissals,
-        sh.network_notice_shown,
-        sh.network_notice_dismissed,
-    );
-    sh.network_notice_shown = false;
     save_config(&mut sh);
     sh.state = UiState::Idle;
     sh.session = None;
@@ -2520,14 +2497,9 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         }
         sh.loss_notice = notice;
         // The bandwidth line speaks first: when the upload can't keep up,
-        // that is the remedy to read.
-        let show = notice != Notice::None
-            && !sh.uplink_warned
-            && !sh.network_notice_dismissed
-            && !gawk_engine::lossnotice::silenced(sh.cfg.network_notice_dismissals);
-        if show {
-            sh.network_notice_shown = true;
-        }
+        // that is the remedy to read. Neither can be dismissed: while
+        // viewers are losing video, the broadcaster sees it (docs/57 OD7).
+        let show = notice != Notice::None && !sh.uplink_warned;
         ui.set_network_notice(if show { notice.text() } else { "" }.into());
     }
 

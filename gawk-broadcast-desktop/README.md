@@ -138,9 +138,9 @@ In order of preference:
    your network to hop to them, and nothing on the Mac needs turning off.
 
 The line appears only when packets are actually being lost while someone
-is watching, and it goes away by itself. Dismissing it hides it for that
-broadcast; dismiss it in two broadcasts in a row and it stops appearing.
-**Details** always shows the packet loss either way.
+is watching, and it goes away by itself once the loss stops. It can't be
+dismissed: while viewers are losing video, you should know. **Details**
+shows the packet counts behind it.
 
 ## Requirements
 

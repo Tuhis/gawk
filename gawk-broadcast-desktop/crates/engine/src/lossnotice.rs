@@ -25,11 +25,9 @@ use std::collections::VecDeque;
 pub const WINDOW_SECONDS: usize = 10;
 /// Lossy seconds inside the window that raise the notice.
 pub const RAISE_LOSSY_SECONDS: usize = 4;
-/// Consecutive loss-free seconds that clear it.
+/// Consecutive loss-free seconds that clear it. There is no dismissal:
+/// while viewers are losing video the broadcaster sees it (docs/57 OD7).
 pub const CLEAR_AFTER_CLEAN_SECONDS: u32 = 30;
-/// Dismissed in this many broadcasts in a row, it stops appearing
-/// (principle 6).
-pub const SILENCE_AFTER_DISMISSALS: u32 = 2;
 
 /// What the platform knows about the path the broadcast leaves on. `None`
 /// from a platform means "not probed": the notice stays off there (Windows
@@ -88,8 +86,7 @@ impl LossMonitor {
         Self::default()
     }
 
-    /// Whether harm is currently measured (before dismissal and silencing,
-    /// which are the shell's).
+    /// Whether harm is currently measured, whatever the platform's facts.
     pub fn raised(&self) -> bool {
         self.raised
     }
@@ -140,23 +137,6 @@ impl LossMonitor {
             self.window.pop_front();
         }
     }
-}
-
-/// The consecutive-dismissal streak after a broadcast ends (principle 6):
-/// a broadcast where the notice showed and was dismissed extends it; one
-/// where it showed and was left alone resets it; one where it never showed
-/// says nothing.
-pub fn next_dismissal_streak(prev: u32, shown: bool, dismissed: bool) -> u32 {
-    match (shown, dismissed) {
-        (true, true) => prev.saturating_add(1),
-        (true, false) => 0,
-        (false, _) => prev,
-    }
-}
-
-/// Whether the notice may appear at all this broadcast.
-pub fn silenced(streak: u32) -> bool {
-    streak >= SILENCE_AFTER_DISMISSALS
 }
 
 #[cfg(test)]
@@ -291,24 +271,6 @@ mod tests {
             m.observe(&st, WIFI);
         }
         assert_eq!(m.window_loss().0, 0);
-    }
-
-    #[test]
-    fn dismissal_streak() {
-        assert_eq!(next_dismissal_streak(0, true, true), 1);
-        assert_eq!(next_dismissal_streak(1, true, true), 2);
-        assert!(silenced(2));
-        assert!(!silenced(1));
-        assert_eq!(
-            next_dismissal_streak(1, true, false),
-            0,
-            "left alone resets"
-        );
-        assert_eq!(
-            next_dismissal_streak(1, false, false),
-            1,
-            "not shown: no evidence"
-        );
     }
 
     // Principle 3: no jargon where the user acts. Help and Diagnostics are

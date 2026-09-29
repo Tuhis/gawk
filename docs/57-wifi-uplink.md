@@ -73,7 +73,7 @@ compares against.
 | G5 | Compatibility: a carrier-capable broadcaster against a relay without the capability sends datagrams, unchanged; an old broadcaster against a new relay is unchanged; with `-uplink-carriers=false` the relay's `/statusz`, metrics and wire are byte-identical to pre-R55 | integration (real `gawk-server`) + diff assertion |
 | G6 | Wire parity: the new capability bit and any new constant are in `gawk-server/wire`, `wire.ts`, `gawk-broadcast/internal/wirecheck` and `crates/wire`, golden vectors byte-identical | unit (existing mirror tests) |
 | G7 | Viewers untouched: no change in `gawk-app` beyond the `wire.ts` mirror | review |
-| G8 | The app stays quiet unless viewers are affected: on a clean Wi-Fi link (AWDL up, carrier coping) nothing appears; with sustained harm the D7 line appears within 15 s, at most once per broadcast; every string matches D7's copy table, and no **main-flow** string (status line, sheets, Settings) contains a D7 principle-3 banned term — Help and Diagnostics are exempt as principle 3 scopes them | unit (policy + string test) + manual |
+| G8 | The app stays quiet unless viewers are affected: on a clean Wi-Fi link (AWDL up, carrier coping) nothing appears; with sustained harm the D7 line appears within 15 s and stays until the harm stops (revised 2026-09-29, OD7: not dismissible, and it may return later in the same broadcast); every string matches D7's copy table, and no **main-flow** string (status line, sheets, Settings) contains a D7 principle-3 banned term — Help and Diagnostics are exempt as principle 3 scopes them | unit (policy + string test) + manual |
 | G9 | Improve (only if WU4 ships, OD4): from the amber line to "Wi-Fi improved" is **Improve → Continue → the system toggle**, nothing else; afterwards it is automatic on every Wi-Fi broadcast; AirDrop comes back with **no user action** after Stop, `kill -9` of the app, `kill -9` of the helper and a reboot mid-broadcast | manual |
 | G10 | Telemetry says which uplink ran: the broadcaster reports `uplinkMode`, carrier counters and local QUIC loss; the relay reports carrier ingest per broadcast | unit + one real session in the dashboard |
 | G11 | High bitrate: at 50 Mbps / 1440p60 on a Wi-Fi link with ≥ 3× headroom, G1 and G2 hold; on a link without headroom the carrier expires (it does not queue unboundedly) and the D7 status line appears | manual, paired runs |
@@ -90,7 +90,7 @@ compares against.
 | OD4 | "Improve" (pause AirDrop/Handoff via a helper) | **Deferred until after WU2.** The carrier ships first; WU6-style measurement then decides whether residual AWDL harm justifies a privileged helper. Until then the status line has **no button** and Help carries the remedies (D7). |
 | OD5 | Which broadcasters | **The Rust desktop engine first** (Windows + macOS share it). The relay side serves any producer; the Go Linux broadcaster and the browser follow as separate chunks if measurement justifies them. *Revised 2026-09-24:* the Go Linux app is frozen (docs/58 OD6); R56's Rust Linux shell inherits WU2 with the shared engine. |
 | OD6 | QoS marking | **Ship it unconditionally** (D8) — no stop rule. WU5 still proves the marking actually reaches the wire. |
-| OD7 | *(2026-09-29)* The Mac app never noticed AWDL loss | **WU3 ships before WU2**, on QUIC's packet counters alone (D5's local loss, pulled forward as `uplinkPacketsSent`/`uplinkPacketsLost`). Without the carrier the line fires whenever datagram loss is sustained, which is exactly when viewers pause. **Help names the fix**: it carries `sudo ifconfig awdl0 down` and what it turns off, which revises principle 3 for Help only. The status line and Settings stay jargon-free. OD4 stands: no Improve button, nothing privileged. |
+| OD7 | *(2026-09-29)* The Mac app never noticed AWDL loss | **WU3 ships before WU2**, on QUIC's packet counters alone (D5's local loss, pulled forward as `uplinkPacketsSent`/`uplinkPacketsLost`). Without the carrier the line fires whenever datagram loss is sustained, which is exactly when viewers pause. **Help names the fix**: it carries `sudo ifconfig awdl0 down` and what it turns off, which revises principle 3 for Help only. The status line and Settings stay jargon-free. OD4 stands: no Improve button, nothing privileged. **No dismissal**: connection problems stay on screen until they stop, because a broadcaster must remain aware while viewers lose video. This revises principle 6 and G8's "at most once", and also takes Dismiss off the upload-bandwidth warning. |
 
 ## 3. Non-goals
 
@@ -307,7 +307,9 @@ actually suffering, names no protocol, and goes away by itself.
    they look.
 6. **Ask once.** A dismissed message stays dismissed for that broadcast.
    Dismissed in two broadcasts in a row, it stops appearing and the option
-   lives only in Settings.
+   lives only in Settings. *Revised 2026-09-29 (OD7):* this applies to
+   offers (Improve), never to the harm line. Connection problems can't be
+   dismissed; they clear when the loss stops.
 7. **Advice that needs a router belongs in Help,** not in the app's flow.
 
 **The copy** (normative; wording changes go through review like code):
@@ -534,7 +536,7 @@ wait for it — correct, since they are undecodable without it — and F-12's
 |---|---|
 | The D7 policy (Wi-Fi × harm sustained 10 s × viewers > 0 × dismissed × mode state) is a pure function with a table test; the platform probes only translate values | unit |
 | Every D7 row renders with its exact copy; a string test fails if any **main-flow** string (status line, sheets, Settings incl. Advanced) contains a banned term (AWDL, channel, packet, uplink, QUIC, carrier, DSCP, Wi-Fi band); Help is checked for everything except router vocabulary; Diagnostics is not checked | unit |
-| On clean Wi-Fi with AWDL up nothing appears; with injected loss the line appears within 15 s; Not Now holds for the broadcast; two consecutive dismissals stop it | unit (fake clock) + manual |
+| On clean Wi-Fi with AWDL up nothing appears; with injected loss the line appears within 15 s; ~~Not Now holds for the broadcast; two consecutive dismissals stop it~~ the line can't be dismissed and clears by itself (OD7) | unit (fake clock) + manual |
 | No notification, sound or modal is raised by this feature while live | unit + review |
 | Help page (README macOS section, linked from **?**) in D7's order: cable, Improve, router channel | review |
 | Diagnostics shows uplink mode, loss %, carriers expired, AWDL state and channel | unit |
@@ -567,17 +569,15 @@ QUIC's packet loss alone, with no carrier expiries yet:
   address and no wired link does". `vpn` is reported beside `wifi`. The
   decision is a pure `classify` with table tests.
 - *Surface*: a Live-page banner with **Help** (a labelled button rather
-  than a bare **?**) and **Dismiss**. The bandwidth warning takes
-  precedence when both apply. Dismissal holds for the broadcast, and
-  `networkNoticeDismissals` in `broadcast.json` counts the streak. The
+  than a bare **?**) and no Dismiss (OD7). The same goes for the
+  bandwidth warning, which takes precedence when both apply. The
   connection tile reads "Upload is struggling" while harm is measured.
 - *Not built*: the Wi-Fi channel in Diagnostics (CoreWLAN; not needed for
   the line), and the carrier rows, which wait for WU2.
 - *Manual pass, 2026-09-29* (§8): the line appeared with AWDL up and
   cleared after `sudo ifconfig awdl0 down`, on the reference Mac through
-  its VPN. It rose again on a burst with AWDL still down, and Dismiss hid
-  it and counted the streak. Still owner-pending: a second dismissed
-  broadcast silencing it.
+  its VPN. It rose again on a burst with AWDL still down. (That run's
+  build still had a Dismiss button, which the owner then removed.)
 
 ### WU4 — macOS: Improve (deferred — OD4 is decided after WU2)
 
@@ -669,7 +669,7 @@ declared them lost (`uplinkPacketsLost`):
 | 18:40:11 | **line cleared**: 0 lost in the last 10 s | 124 / 126,675 |
 | 18:41:12 | AWDL down, a full minute | 129 / 174,831 |
 | 18:41:30 | **line raised again**, AWDL still down: 18 lost in the last 10 s | 147 / 190,795 |
-| 18:41:51 | stopped; the line had been dismissed (`networkNoticeDismissals` 1) | — |
+| 18:41:51 | stopped (the line had been dismissed; that build still had Dismiss) | — |
 
 With AWDL up the loss ran at ≈ 64 packets a minute (≈ 0.13 %). With it
 down, the first minute lost 5 (≈ 0.01 %), too sparse to raise the line.
