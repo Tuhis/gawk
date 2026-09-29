@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-audio"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "gawk-engine",
  "opus",
@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-broadcast-app-macos"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "block2 0.6.2",
  "gawk-audio",
@@ -1757,6 +1757,7 @@ dependencies = [
  "gawk-encode",
  "gawk-engine",
  "gawk-ui",
+ "libc",
  "log",
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
@@ -1766,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-broadcast-app-windows"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "arboard",
  "gawk-audio",
@@ -1785,7 +1786,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-capture"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -1805,7 +1806,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-encode"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "gawk-engine",
  "log",
@@ -1819,7 +1820,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-engine"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "gawk-wire",
  "serde",
@@ -1832,7 +1833,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-ui"
-version = "1.5.2"
+version = "1.6.0"
 dependencies = [
  "arboard",
  "gawk-encode",
@@ -1847,7 +1848,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-wire"
-version = "1.5.2"
+version = "1.6.0"
 
 [[package]]
 name = "gbm"

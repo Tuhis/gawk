@@ -126,6 +126,10 @@ pub struct Config {
     /// The last source shared (Windows, docs/60 D5): `display:<label>` or
     /// `window:<title>`. Blank = none yet.
     pub last_source: String,
+    /// Broadcasts in a row where the "dropping some video" line was
+    /// dismissed; at two it stops appearing (docs/57 D7 principle 6,
+    /// [`crate::lossnotice::next_dismissal_streak`]).
+    pub network_notice_dismissals: u32,
 }
 
 impl Config {

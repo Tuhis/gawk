@@ -1,8 +1,9 @@
 # R55 — Broadcasting over Wi-Fi: it just works, and speaks only when viewers are affected
 
 **Status**: designed 2026-09-23, owner decisions taken 2026-09-24 (§2).
-Chunks **WU0–WU6**, none started; **WU4 is deferred** until WU2's
-measurement shows whether residual Wi-Fi harm still justifies it (OD4).
+**WU3 implemented 2026-09-29, ahead of WU2** (OD7), its manual pass
+owner-pending; WU0–WU2, WU5 and WU6 not started; **WU4 is deferred** until
+WU2's measurement shows whether residual Wi-Fi harm still justifies it (OD4).
 
 **Relationship to earlier work**: this is R19 ([docs/24](24-viewer-network-resilience.md))
 turned around. R19 made the **relay → viewer** leg (leg B) survive a lossy
@@ -89,6 +90,7 @@ compares against.
 | OD4 | "Improve" (pause AirDrop/Handoff via a helper) | **Deferred until after WU2.** The carrier ships first; WU6-style measurement then decides whether residual AWDL harm justifies a privileged helper. Until then the status line has **no button** and Help carries the remedies (D7). |
 | OD5 | Which broadcasters | **The Rust desktop engine first** (Windows + macOS share it). The relay side serves any producer; the Go Linux broadcaster and the browser follow as separate chunks if measurement justifies them. *Revised 2026-09-24:* the Go Linux app is frozen (docs/58 OD6); R56's Rust Linux shell inherits WU2 with the shared engine. |
 | OD6 | QoS marking | **Ship it unconditionally** (D8) — no stop rule. WU5 still proves the marking actually reaches the wire. |
+| OD7 | *(2026-09-29)* The Mac app never noticed AWDL loss | **WU3 ships before WU2**, on QUIC's packet counters alone (D5's local loss, pulled forward as `uplinkPacketsSent`/`uplinkPacketsLost`). Without the carrier the line fires whenever datagram loss is sustained, which is exactly when viewers pause. **Help names the fix**: it carries `sudo ifconfig awdl0 down` and what it turns off, which revises principle 3 for Help only. The status line and Settings stay jargon-free. OD4 stands: no Improve button, nothing privileged. |
 
 ## 3. Non-goals
 
@@ -294,7 +296,9 @@ actually suffering, names no protocol, and goes away by itself.
    Handoff, viewers, pauses. **Help** is exempt only for router vocabulary
    (it may say "channel" and "5 GHz", because principle 7 sends router
    advice there) and **Diagnostics** is exempt entirely — it is the
-   technical truth, for us.
+   technical truth, for us. *Revised 2026-09-29 (OD7):* Help may also
+   name AWDL and give the `ifconfig` command that takes it down, because
+   until WU4 that command is the fix it would otherwise withhold.
 4. **One action, and it's reversible without thinking.** Anything gawk turns
    off comes back by itself when the broadcast ends, whatever happens to the
    app.
@@ -535,6 +539,46 @@ wait for it — correct, since they are undecodable without it — and F-12's
 | Help page (README macOS section, linked from **?**) in D7's order: cable, Improve, router channel | review |
 | Diagnostics shows uplink mode, loss %, carriers expired, AWDL state and channel | unit |
 
+**As built (2026-09-29, OD7)** — ahead of WU2, so the policy's harm input is
+QUIC's packet loss alone, with no carrier expiries yet:
+
+- *Harm*: packets lost in ≥ 4 of the last 10 s while someone is watching
+  (an unknown viewer count does not suppress it); cleared after 30
+  loss-free seconds. The unit is lossy seconds, not a percentage: at gawk's
+  rates each lossy second is likely a visible pause
+  (`crates/engine/src/lossnotice.rs`, table tests).
+- *Counters*: `quinn::ConnectionStats::path` sent/lost packets through a
+  `RelaySession::path_counters` seam, summed across resumes by the sender;
+  `uplinkPacketsAvailable`/`Sent`/`Lost` in the stats, the diagnostics dump
+  and telemetry (field registry + stored-shape golden). These are
+  cumulative counters instead of D5's `uplinkLossPct`, so a rate can be
+  derived over any window.
+- *Probe*: unprivileged and framework-free (`crates/app-macos/src/network.rs`).
+  A connected UDP socket names the route's local address, `getifaddrs` maps
+  it to an interface, `SIOCGIFMEDIA` says 802.11, and `awdl0`'s `IFF_UP`
+  flag gives the AWDL state. The Windows platform returns no facts, so
+  the line stays off there (D7's later chunk).
+- *A VPN hides the radio* (found on the first hardware run): the reference
+  Mac reaches `api.gawk.ioio.fi` through a WireGuard split tunnel
+  (`utun7`), which has no media, so the first probe said "not Wi-Fi" while
+  every packet crossed en0. A tunnel route (`IFF_POINTOPOINT`) is now
+  looked through, first to the interface a public address routes via,
+  and failing that (a full tunnel) to "an associated Wi-Fi link has an
+  address and no wired link does". `vpn` is reported beside `wifi`. The
+  decision is a pure `classify` with table tests.
+- *Surface*: a Live-page banner with **Help** (a labelled button rather
+  than a bare **?**) and **Dismiss**. The bandwidth warning takes
+  precedence when both apply. Dismissal holds for the broadcast, and
+  `networkNoticeDismissals` in `broadcast.json` counts the streak. The
+  connection tile reads "Upload is struggling" while harm is measured.
+- *Not built*: the Wi-Fi channel in Diagnostics (CoreWLAN; not needed for
+  the line), and the carrier rows, which wait for WU2.
+- *Manual pass, 2026-09-29* (§8): the line appeared with AWDL up and
+  cleared after `sudo ifconfig awdl0 down`, on the reference Mac through
+  its VPN. It rose again on a burst with AWDL still down, and Dismiss hid
+  it and counted the streak. Still owner-pending: a second dismissed
+  broadcast silencing it.
+
 ### WU4 — macOS: Improve (deferred — OD4 is decided after WU2)
 
 Not started until WU2's carrier has been measured on the reference setup. If
@@ -608,6 +652,31 @@ reports of 50–100 ms stalls about once a second, or ~80–90 ms stalls in 1–
 bursts every 10–12 s. Most reports describe **delay** rather than loss, while
 this session's relay counted **loss** — WU0 records both, and the spike
 length, because D3's deadline and G3's bound depend on it.
+
+**WU3 manual pass (2026-09-29).** This is not the WU0 protocol. The
+reference M1 on Wi-Fi reached the production relay through a WireGuard
+split tunnel. It shared one Firefox window at 1778×1080@60, 12 Mbps,
+with 1–2 viewers. The counts are QUIC packets as the broadcaster's stack
+declared them lost (`uplinkPacketsLost`):
+
+| Time (UTC) | State | Packets lost / sent |
+|---|---|---|
+| 18:37:12 | live; `wifi: true, vpn: true, awdl_up: true` | — |
+| 18:38:12 | AWDL up | 51 / 48,070 (0.11 %) |
+| 18:38:59 | **line raised**: 24 lost in the last 10 s | 93 / 87,174 |
+| 18:39:12 | AWDL up | 115 / 97,242 |
+| 18:39:36 | `sudo ifconfig awdl0 down`; probe sees it within 1 s | — |
+| 18:40:11 | **line cleared**: 0 lost in the last 10 s | 124 / 126,675 |
+| 18:41:12 | AWDL down, a full minute | 129 / 174,831 |
+| 18:41:30 | **line raised again**, AWDL still down: 18 lost in the last 10 s | 147 / 190,795 |
+| 18:41:51 | stopped; the line had been dismissed (`networkNoticeDismissals` 1) | — |
+
+With AWDL up the loss ran at ≈ 64 packets a minute (≈ 0.13 %). With it
+down, the first minute lost 5 (≈ 0.01 %), too sparse to raise the line.
+Then a burst of 18 in ten seconds raised it again. So AWDL is the steady
+part of this Mac's leg-A loss, but not all of it: bursts of ordinary
+Wi-Fi loss remain, which is the case the carrier (WU2) exists for. Four
+minutes is not enough to put a share on it.
 
 ## 9. References
 

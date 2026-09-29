@@ -27,6 +27,7 @@ use crate::{
 };
 use gawk_engine::clock::{Clock, MonotonicClock};
 use gawk_engine::config::{self, Config, DEFAULT_SERVER_NAME, ServerProfile};
+use gawk_engine::lossnotice::{LossMonitor, NetworkFacts, Notice};
 use gawk_engine::room::RoomSummary;
 use gawk_engine::sender::Sender;
 use gawk_engine::session::{EngineEvent, Session, SessionConfig};
@@ -135,6 +136,11 @@ pub trait Platform: 'static {
     fn prepare_start(&mut self, ui: &MainWindow, cfg: &Config) -> Result<Prepared, String>;
     /// Every UI tick (250 ms), for platform events that arrive off-thread.
     fn tick(&mut self, _ui: &MainWindow, _media: Option<&dyn Media>) {}
+    /// 1 Hz while live: what carries the broadcast to `relay` (docs/57 D7).
+    /// `None` — the default — keeps the "dropping some video" line off.
+    fn network_facts(&mut self, _relay: std::net::SocketAddr) -> Option<NetworkFacts> {
+        None
+    }
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
@@ -230,6 +236,13 @@ pub struct Shell {
     /// The upload-bandwidth watchdog, fed 1 Hz; fresh per broadcast.
     uplink: gawk_engine::uplink::UplinkMonitor,
     uplink_warned: bool,
+    /// Loss in the air the bandwidth watchdog cannot see (docs/57 D7), fed
+    /// 1 Hz; fresh per broadcast, like the dismissal flags below.
+    loss: LossMonitor,
+    loss_notice: Notice,
+    network: Option<NetworkFacts>,
+    network_notice_shown: bool,
+    network_notice_dismissed: bool,
     /// R42: the grant the "Open room view" link carries — the creator token
     /// of a room this session minted, or the static room's attach key. In
     /// memory only: it is a one-broadcast affair.
@@ -417,6 +430,11 @@ pub fn run(
         health_countdown: 0,
         uplink: gawk_engine::uplink::UplinkMonitor::new(),
         uplink_warned: false,
+        loss: LossMonitor::new(),
+        loss_notice: Notice::None,
+        network: None,
+        network_notice_shown: false,
+        network_notice_dismissed: false,
         room_grant: None,
         room_leaving: false,
         nick_timer: slint::Timer::default(),
@@ -691,6 +709,10 @@ fn read_settings(ui: &MainWindow, cfg: &mut Config) {
 /// [128, 3840] × [128, 2160] (4K is the ceiling) and floor to even (NV12
 /// needs even dimensions). The result is a bounding box: the encode
 /// resolution is the source aspect fitted inside it (docs/38 D11).
+/// Help for the "dropping some video" line (docs/57 D7): the README
+/// section with the remedies, in D7's order.
+const NETWORK_HELP_URL: &str = "https://github.com/Tuhis/gawk/blob/main/gawk-broadcast-desktop/README.md#broadcasting-over-wi-fi-on-a-mac";
+
 /// The uplink warning line: names the active bitrate so the remedy (lower
 /// it) is one thought away.
 fn uplink_warning_text(bitrate_bps: u32) -> String {
@@ -1171,6 +1193,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 let st = merged_stats(&sh);
                 let dump = diagnostics::render(
                     &st,
+                    sh.network,
                     &sh.broadcast_id,
                     state_label(sh.state),
                     &sh.last_error,
@@ -1537,6 +1560,18 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     {
         ui.on_open_link(move |link| open_in_browser(link.as_str()));
     }
+    ui.on_network_notice_help(|| open_in_browser(NETWORK_HELP_URL));
+    {
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_network_notice_dismissed(move || {
+            // Holds for this broadcast; two in a row silence it (D7 p. 6).
+            shell.borrow_mut().network_notice_dismissed = true;
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_network_notice("".into());
+            }
+        });
+    }
     {
         let shell = shell.clone();
         ui.on_quit_confirmed(move || {
@@ -1628,6 +1663,12 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     sh.uplink = gawk_engine::uplink::UplinkMonitor::new();
     sh.uplink_warned = false;
     ui.set_uplink_warning("".into());
+    sh.loss = LossMonitor::new();
+    sh.loss_notice = Notice::None;
+    sh.network = None;
+    sh.network_notice_shown = false;
+    sh.network_notice_dismissed = false;
+    ui.set_network_notice("".into());
     sh.last_error.clear();
     sh.first_viewer_seen = false;
     ui.set_error_text("".into());
@@ -2308,6 +2349,12 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     sh.live_since = None;
     // Ended inside the app: no resume question at the next launch (D12).
     sh.cfg.was_live = false;
+    sh.cfg.network_notice_dismissals = gawk_engine::lossnotice::next_dismissal_streak(
+        sh.cfg.network_notice_dismissals,
+        sh.network_notice_shown,
+        sh.network_notice_dismissed,
+    );
+    sh.network_notice_shown = false;
     save_config(&mut sh);
     sh.state = UiState::Idle;
     sh.session = None;
@@ -2363,6 +2410,7 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     ui.set_show_thumbnail(false);
     ui.set_minimized_hint("".into());
     ui.set_uplink_warning("".into());
+    ui.set_network_notice("".into());
     if let Some(e) = &error {
         ui.set_error_text(e.clone().into());
         ui.set_can_mint(false);
@@ -2443,11 +2491,51 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         }
     }
 
+    // Loss in the air (docs/57 D7): the platform says what the broadcast
+    // leaves on, the policy says whether viewers are paying for it.
+    {
+        let mut guard = shell.borrow_mut();
+        let sh = &mut *guard;
+        let relay = sh.session.as_ref().and_then(|s| s.relay_address());
+        let facts = relay.and_then(|a| sh.platform.network_facts(a));
+        if facts != sh.network {
+            log::info!("network: {facts:?}");
+            sh.network = facts;
+        }
+        let was_raised = sh.loss.raised();
+        let notice = sh.loss.observe(&st, facts);
+        if sh.loss.raised() != was_raised {
+            let (lost, secs) = sh.loss.window_loss();
+            let (level, what) = if sh.loss.raised() {
+                (log::Level::Warn, "raised")
+            } else {
+                (log::Level::Info, "cleared")
+            };
+            log::log!(
+                level,
+                "uplink loss {what}: {lost} packets lost in the last {secs} s ({} lost of {} sent this broadcast), {facts:?}",
+                st.uplink_packets_lost,
+                st.uplink_packets_sent,
+            );
+        }
+        sh.loss_notice = notice;
+        // The bandwidth line speaks first: when the upload can't keep up,
+        // that is the remedy to read.
+        let show = notice != Notice::None
+            && !sh.uplink_warned
+            && !sh.network_notice_dismissed
+            && !gawk_engine::lossnotice::silenced(sh.cfg.network_notice_dismissals);
+        if show {
+            sh.network_notice_shown = true;
+        }
+        ui.set_network_notice(if show { notice.text() } else { "" }.into());
+    }
+
     // The remainder needs the shell only for the pipeline's widgets.
     let sh = shell.borrow();
     if log_health {
         log::info!(
-            "health: capture {} fps, encode {:.1} fps, sent {:.1} fps, keyframe streams {} sent / {} superseded / {} failed, frames dropped at send {}, audio {}",
+            "health: capture {} fps, encode {:.1} fps, sent {:.1} fps, keyframe streams {} sent / {} superseded / {} failed, frames dropped at send {}, packets lost {} of {}, viewers {}, audio {}",
             if st.capture_fps_available {
                 format!("{:.1}", st.capture_fps)
             } else {
@@ -2459,18 +2547,23 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             st.keyframe_streams_superseded,
             st.keyframe_streams_failed,
             st.frames_dropped_at_send,
+            st.uplink_packets_lost,
+            st.uplink_packets_sent,
+            st.viewer_count,
             st.audio_state
         );
     }
 
-    ui.set_stats_rows(ModelRc::new(VecModel::from(stat_rows(&st))));
+    ui.set_stats_rows(ModelRc::new(VecModel::from(stat_rows(
+        &st, &sh.loss, sh.network,
+    ))));
     if let Some(since) = sh.live_since {
         ui.set_live_elapsed(format_elapsed(since.elapsed().as_secs()).into());
     }
     let bytes = st.bytes_sent + st.audio_bytes_sent;
     let rate_bps = bytes.saturating_sub(sh.last_bytes) * 8;
     ui.set_connection_line(format!("{:.1} Mbps", rate_bps as f64 / 1e6).into());
-    ui.set_connection_ok(!sh.uplink_warned);
+    ui.set_connection_ok(!sh.uplink_warned && sh.loss_notice == Notice::None);
     drop(sh);
     shell.borrow_mut().last_bytes = bytes;
     let sh = shell.borrow();
@@ -2537,6 +2630,14 @@ fn merged_stats(sh: &Shell) -> gawk_engine::stats::Stats {
     st
 }
 
+fn percent(part: u64, whole: u64) -> f64 {
+    if whole == 0 {
+        0.0
+    } else {
+        part as f64 * 100.0 / whole as f64
+    }
+}
+
 fn audio_line(state: &str, capture_mode: &str) -> String {
     match state {
         "active" => {
@@ -2552,7 +2653,11 @@ fn audio_line(state: &str, capture_mode: &str) -> String {
     }
 }
 
-fn stat_rows(st: &gawk_engine::stats::Stats) -> Vec<StatRow> {
+fn stat_rows(
+    st: &gawk_engine::stats::Stats,
+    loss: &LossMonitor,
+    network: Option<NetworkFacts>,
+) -> Vec<StatRow> {
     let row = |label: &str, value: String| StatRow {
         label: label.into(),
         value: value.into(),
@@ -2629,6 +2734,40 @@ fn stat_rows(st: &gawk_engine::stats::Stats) -> Vec<StatRow> {
             },
         ),
         row("Dropped at send", format!("{}", st.frames_dropped_at_send)),
+        row(
+            "Packets lost",
+            if st.uplink_packets_available {
+                let (lost, secs) = loss.window_loss();
+                format!(
+                    "{lost} in the last {secs} s · {} of {} ({:.2} %)",
+                    st.uplink_packets_lost,
+                    st.uplink_packets_sent,
+                    percent(st.uplink_packets_lost, st.uplink_packets_sent)
+                )
+            } else {
+                na()
+            },
+        ),
+        row(
+            "Network",
+            match network {
+                Some(n) => format!(
+                    "{}{}{}",
+                    if n.wifi { "Wi-Fi" } else { "not Wi-Fi" },
+                    if n.vpn { " (via VPN)" } else { "" },
+                    if n.wifi {
+                        if n.awdl_up {
+                            " · AWDL up"
+                        } else {
+                            " · AWDL down"
+                        }
+                    } else {
+                        ""
+                    }
+                ),
+                None => na(),
+            },
+        ),
         row(
             "Datagrams",
             format!(

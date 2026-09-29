@@ -6,6 +6,8 @@
 //! the Share card, the menu bar's Settings…, notifications (MB5) — are in.
 
 #[cfg(target_os = "macos")]
+mod network;
+#[cfg(target_os = "macos")]
 mod notify;
 #[cfg(target_os = "macos")]
 mod pipeline;

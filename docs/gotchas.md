@@ -1112,6 +1112,14 @@ Add to it when a new gotcha lands in `docs/`.
   read then `unwrap()`s a `PoisonError` on the UI thread and the app dies.
   A poisoned lane reads as silence.
   ([docs/54](54-macos-native-broadcaster.md) §11, MB4)
+- **No broadcaster send counter sees Wi-Fi loss.** A datagram that AWDL
+  (or anything else on the air) drops has already "sent" fine, so frames
+  dropped at send, keyframe supersedes and sent fps all stay clean while
+  viewers freeze. Only QUIC's ack-based loss detection sees it
+  (`quinn::ConnectionStats::path.lost_packets`, exposed as
+  `uplinkPacketsLost`). The bandwidth watchdog is deliberately blind to
+  this; the network notice reads the QUIC counter.
+  ([docs/57](57-wifi-uplink.md) OD7)
 
 **Single-application audio on Linux (R35)**
 

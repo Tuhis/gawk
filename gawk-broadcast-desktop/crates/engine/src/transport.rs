@@ -6,8 +6,8 @@
 //! CLOSE_WEBTRANSPORT_SESSION capsule as `ApplicationClosed` (gate 2b).
 
 use crate::relay::{
-    BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, RelaySession, SendDatagramError,
-    ServerStream, SessionClose, StartError, StartPhase,
+    BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, PathCounters, RelaySession,
+    SendDatagramError, ServerStream, SessionClose, StartError, StartPhase,
 };
 use crate::room::{RoomConn, RoomDialer};
 use std::sync::Arc;
@@ -225,6 +225,18 @@ impl RelaySession for WtSession {
 
     fn close(&self) {
         self.conn.close(VarInt::from_u32(0), b"");
+    }
+
+    fn path_counters(&self) -> Option<PathCounters> {
+        let path = self.conn.quic_connection().stats().path;
+        Some(PathCounters {
+            sent: path.sent_packets,
+            lost: path.lost_packets,
+        })
+    }
+
+    fn remote_address(&self) -> Option<std::net::SocketAddr> {
+        Some(self.conn.remote_address())
     }
 }
 

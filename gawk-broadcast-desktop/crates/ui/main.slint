@@ -1193,6 +1193,9 @@ export component MainWindow inherits Window {
     in property <string> audio-hint-text: "";
     in property <string> minimized-hint: "";
     in property <string> uplink-warning: "";
+    // docs/57 D7: "Your Wi-Fi is dropping some video…" — the shell owns
+    // when it shows, dismissal included (it counts across broadcasts).
+    in property <string> network-notice: "";
     in property <string> connection-line: "";
     in property <bool> connection-ok: true;
 
@@ -1322,6 +1325,8 @@ export component MainWindow inherits Window {
     callback add-server();
     callback remove-server();
     callback switch-to-system-audio();
+    callback network-notice-help();
+    callback network-notice-dismissed();
     callback room-input-edited();
     callback room-join();
     callback room-create();
@@ -1932,6 +1937,17 @@ export component MainWindow inherits Window {
                         }
                         dismiss => {
                             root.uplink-dismissed = true;
+                        }
+                    }
+                    if root.network-notice != "": Banner {
+                        icon: Icons.alert;
+                        body: root.network-notice;
+                        action: "Help";
+                        act => {
+                            root.network-notice-help();
+                        }
+                        dismiss => {
+                            root.network-notice-dismissed();
                         }
                     }
                     if root.audio-hint && !root.audio-dismissed: Banner {

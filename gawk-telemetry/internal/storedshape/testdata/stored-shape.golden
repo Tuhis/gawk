@@ -343,6 +343,9 @@ sessions.stats.timeSyncAvailable boolean
 sessions.stats.timeSyncOffsetUs number
 sessions.stats.timeSyncRttMs number
 sessions.stats.transport string
+sessions.stats.uplinkPacketsAvailable boolean
+sessions.stats.uplinkPacketsLost number
+sessions.stats.uplinkPacketsSent number
 sessions.stats.videoBytesReceived number
 sessions.stats.videoScheduleBaseEpochMs number
 sessions.stats.viewerCount number

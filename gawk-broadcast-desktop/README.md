@@ -107,6 +107,41 @@ When it doesn't work, on a Mac:
   ([self-hosting](../docs/self-hosting.md)).
 - **The shared window went frozen** — it is minimized; restore it.
 
+### Broadcasting over Wi-Fi on a Mac
+
+If the Live page says **"Your Wi-Fi is dropping some video"**, packets
+are leaving the Mac and not arriving at the server. Each lost packet costs
+viewers a brief pause until the next keyframe, up to half a second. On a
+Mac the usual cause is AWDL, the link behind AirDrop, AirPlay, Sidecar and
+Universal Control: it takes the Wi-Fi radio off your network's channel
+several times a second to listen for nearby Apple devices. In the first
+Mac test this was most of the loss. With AWDL down, viewers' broken
+frames fell from 20–170 a minute to 0–4.
+
+In order of preference:
+
+1. **Use a cable** if you can. Nothing else fixes every cause.
+2. **Take AWDL down while you stream.** In Terminal:
+
+   ```sh
+   sudo ifconfig awdl0 down
+   ```
+
+   AirDrop, AirPlay to other devices, Sidecar and Universal Control stop
+   working until you run `sudo ifconfig awdl0 up` or restart the Mac.
+   macOS can bring the link back up by itself when something asks for it
+   (opening AirDrop in Finder, say); the **Network** row under **Details**
+   shows whether it is up. Turning AirDrop off in Control Center is
+   gentler but leaves the link to the other features.
+3. **If you manage your router**, put its 5 GHz network on channel 149
+   (or 44). AWDL listens on those channels, so the radio stops leaving
+   your network to hop to them, and nothing on the Mac needs turning off.
+
+The line appears only when packets are actually being lost while someone
+is watching, and it goes away by itself. Dismissing it hides it for that
+broadcast; dismiss it in two broadcasts in a row and it stops appearing.
+**Details** always shows the packet loss either way.
+
 ## Requirements
 
 | Requirement | Check |
