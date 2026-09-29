@@ -987,7 +987,11 @@ jobs:
         id: package
         env:
           MACOS_SIGNING: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 != '' }}
-          MACOS_BUILT: ${{ needs.macos.result == 'success' }}
+          # The same two-job condition as the macOS download above: when only
+          # `macos` passed, the bundle was never downloaded, and treating it as
+          # built would fail this step on the missing BUILD-INFO.txt, taking the
+          # Windows and Linux assets down with it.
+          MACOS_BUILT: ${{ needs.macos.result == 'success' && needs.macos-check.result == 'success' }}
           LINUX_BUILT: ${{ needs.linux.result == 'success' }}
         run: |
           set -euo pipefail
@@ -1015,7 +1019,7 @@ jobs:
           # commit predates it), Windows attaches alone with a warning — it
           # never waits on Apple credentials or on the macOS job.
           if [ "$MACOS_BUILT" != "true" ]; then
-            echo "::warning::the macOS bundle is not attached: the macos job did not succeed for this commit — backfill it with workflow_dispatch attach_to once it does"
+            echo "::warning::the macOS bundle is not attached: macos or macos-check did not succeed for this commit — backfill it with workflow_dispatch attach_to once it does"
           elif [ "$MACOS_SIGNING" = "true" ]; then
             if ! grep -q '^signed:    Developer ID + notarized' staging-macos/BUILD-INFO.txt; then
               echo "::error::signing is configured but the macOS bundle is not Developer ID + notarized — refusing to attach it (docs/54 D13)"
