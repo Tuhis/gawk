@@ -227,7 +227,21 @@
     <p class="section-lead">Broadcasting doesn't have to happen in a browser tab. The native apps use your graphics card directly, can share one window along with just that app's audio, and on Linux they're the only way to broadcast with hardware encoding. Viewers still need nothing but a browser.</p>
 
     <div class="cards cards-3 dl-cards">
-      <div class="card dl" data-dl="gawk-broadcast">
+      <!-- R56 (docs/58 D13): the Linux app moved into the desktop workspace.
+           This card shows once that release's manifest exists (site.js) and
+           then supersedes the Go app's card below, so a visitor never gets a
+           button to a release with no Linux tarball on it. -->
+      <div class="card dl" data-dl="gawk-broadcast-linux" data-dl-until-released hidden>
+        <div class="dl-hd">
+          <h3>Linux</h3>
+          <span class="dl-tag">x86-64 · tar.gz</span>
+        </div>
+        <p class="dl-ver" data-dl-version>Latest release</p>
+        <a class="btn btn-primary dl-btn" data-dl-link href="https://github.com/Tuhis/gawk/releases?q=gawk-broadcast-desktop%2F" target="_blank" rel="noopener">Download for Linux <span aria-hidden="true">↓</span></a>
+        <p>Unpack it and run <code>gawk-broadcast-linux</code>; <code>install-desktop.sh</code> adds it to your launcher. Needs Ubuntu 24.04 or newer (or equivalent) and a hardware H.264 encoder; tested on KDE Plasma (Wayland). The INSTALL.md inside lists the packages.</p>
+        <p class="dl-sum" data-dl-sum hidden><span>sha256</span><code data-dl-sha></code></p>
+      </div>
+      <div class="card dl" data-dl="gawk-broadcast" data-dl-superseded-by="gawk-broadcast-linux">
         <div class="dl-hd">
           <h3>Linux</h3>
           <span class="dl-tag">x86-64 · tar.gz</span>

@@ -1,0 +1,22 @@
+[Desktop Entry]
+# The launcher entry for the native Linux broadcaster (R44 docs/53, R56
+# docs/58 D11).
+#
+# The file name, Icon= and StartupWMClass= are all the app ID the window
+# announces (slint::set_xdg_app_id in crates/app-linux — the Wayland app_id
+# and the X11 WM_CLASS); the desktop matches them exactly, and the same app ID
+# as the Go app's entry, so installing this app replaces that one in place.
+# Exec= is relative here and rewritten to an absolute path by
+# install-desktop.sh, because the binary is wherever the tarball was unpacked.
+Type=Application
+Version=1.5
+Name=gawk broadcast
+GenericName=Screen broadcaster
+Comment=Share your screen to viewers at sub-500ms latency
+Exec=gawk-broadcast-linux
+Icon=fi.ioio.gawk.broadcast
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=stream;broadcast;screen;share;game;
+StartupWMClass=fi.ioio.gawk.broadcast
+StartupNotify=false

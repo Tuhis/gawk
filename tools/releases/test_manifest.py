@@ -65,6 +65,10 @@ class Build(unittest.TestCase):
         self.assertEqual(out["tag"], "gawk-broadcast-desktop/v1.13.0")
         out = self.build(component="gawk-broadcast-macos", tag="gawk-broadcast-desktop/v1.13.0")
         self.assertEqual(out["component"], "gawk-broadcast-macos")
+        # R56 (docs/58 D13): Linux is the third, first released at 2.0.0.
+        out = self.build(component="gawk-broadcast-linux", version="2.0.0",
+                         tag="gawk-broadcast-desktop/v2.0.0")
+        self.assertEqual(out["component"], "gawk-broadcast-linux")
 
     def test_pre_rename_windows_tags_still_validate(self):
         # Releases cut before the rename are tagged by the distribution's old
@@ -80,6 +84,9 @@ class Build(unittest.TestCase):
         # The macOS distribution never released under a pre-rename tag.
         with self.assertRaisesRegex(m.ManifestError, "does not match"):
             self.build(component="gawk-broadcast-macos", tag="gawk-broadcast-windows/v1.13.0")
+        # Nor did the Linux one, and it is not the Go app's component.
+        with self.assertRaisesRegex(m.ManifestError, "does not match"):
+            self.build(component="gawk-broadcast-linux", tag="gawk-broadcast/v1.13.0")
 
     def test_legacy_tag_spelling_is_accepted(self):
         # Releases cut before the tag-separator change are `component-vX.Y.Z`,

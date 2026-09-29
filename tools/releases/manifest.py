@@ -48,6 +48,8 @@ _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 TAG_STEMS = {
     "gawk-broadcast-windows": ("gawk-broadcast-desktop", "gawk-broadcast-windows"),
     "gawk-broadcast-macos": ("gawk-broadcast-desktop",),
+    # R56 (docs/58 D13): the third distribution of the desktop release.
+    "gawk-broadcast-linux": ("gawk-broadcast-desktop",),
 }
 
 
