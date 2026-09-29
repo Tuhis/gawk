@@ -45,12 +45,29 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 1
 
-# The single HTTP listener: the SPA, /api/v1, /auth/config, /healthz, /readyz.
+# The portal listener: the SPA, /api/v1, /auth/config, /healthz, /readyz.
 # There is no non-public half to keep off an Ingress (contrast gawk-telemetry's
 # two-Service split) — here the auth boundary is OIDC, not network placement.
 service:
   port: 8090
   annotations: {}
+
+# The portal's own health in Prometheus format (R59, docs/61 D9), on a SECOND
+# listener: a ClusterIP-only Service, never an Ingress. It carries no broadcast
+# IDs, room codes, IPs or users — route patterns, status classes, the database
+# pool and event/webhook outcome counts.
+#
+# The ServiceMonitor needs the prometheus-operator CRDs. With
+# kube-prometheus-stack, set its labels to match that release's selector
+# (typically {release: <its helm release name>}).
+metrics:
+  enabled: true
+  port: 8091
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    interval: 60s
+    scrapeTimeout: 10s
 
 # The portal base URL. It is the OIDC redirect base the SPA registers with the
 # provider AND the portalUrl that webhook payloads carry instead of a raw

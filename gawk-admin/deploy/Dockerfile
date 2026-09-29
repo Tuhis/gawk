@@ -65,4 +65,5 @@ COPY gawk-admin/ui/THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES-ui.md
 # half to keep off an Ingress — the auth boundary here is OIDC, not network
 # placement (D7).
 EXPOSE 8090
+EXPOSE 8091
 ENTRYPOINT ["/gawk-admin"]

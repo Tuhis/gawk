@@ -12,6 +12,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/mediaprobe"
 )
 
 // NewBaseRegistry builds the process-level Prometheus registry: Go runtime +
@@ -73,6 +74,7 @@ type RegistryCollector struct {
 	viewersGlobal       *prometheus.Desc
 	role                *prometheus.Desc
 	cachedKeyframe      *prometheus.Desc
+	info                *prometheus.Desc
 
 	framesRelayed    desc
 	datagramsRelayed desc
@@ -136,6 +138,9 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			[]string{"broadcast", "role"}, nil),
 		cachedKeyframe: prometheus.NewDesc("gawk_broadcast_cached_keyframe_bytes",
 			"Size of the cached keyframe used to prime late joiners.", []string{"broadcast"}, nil),
+		info: prometheus.NewDesc("gawk_broadcast_info",
+			"The broadcast's client and media, always 1, origin hubs only (R59, docs/61 D6): codec and resolution are read from the media; app, os and browser are the publisher's self-description, from a closed vocabulary.",
+			[]string{"broadcast", "codec", "resolution", "app", "os", "browser"}, nil),
 
 		framesRelayed: newDesc("frames_relayed_total",
 			"Frames relayed; rate() approximates relay-side fps.", "kind"),
@@ -208,6 +213,7 @@ func (c *RegistryCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.viewersGlobal
 	ch <- c.role
 	ch <- c.cachedKeyframe
+	ch <- c.info
 	for _, d := range c.counterDescs() {
 		ch <- d.broadcast
 		ch <- d.relay
@@ -269,6 +275,12 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		// and a zero here would read as "no viewers" rather than "not mine".
 		if s.Role == "origin" {
 			gauge(c.viewersGlobal, float64(s.ViewersGlobal), id)
+			codec := s.Codec
+			if codec == "" {
+				codec = mediaprobe.CodecUnknown
+			}
+			gauge(c.info, 1, id, codec, mediaprobe.ResolutionTier(s.CodedHeight),
+				orUnknown(s.Client.App), orUnknown(s.Client.OS), orUnknown(s.Client.Browser))
 		}
 		gauge(c.role, 1, id, s.Role)
 		gauge(c.cachedKeyframe, float64(s.CachedKeyframeBytes), id)
@@ -365,6 +377,7 @@ type ServerMetrics struct {
 	rateLimited    prometheus.Counter
 	originRejected prometheus.Counter
 	terminations   prometheus.Counter
+	usage          usageMetrics
 }
 
 // Connection outcomes (closed enum; see docs/13 D3).
@@ -413,6 +426,7 @@ func NewServerMetrics(reg prometheus.Registerer) *ServerMetrics {
 		}),
 	}
 	reg.MustRegister(m.connections, m.rateLimited, m.originRejected, m.terminations)
+	m.usage = newUsageMetrics(reg)
 	return m
 }
 

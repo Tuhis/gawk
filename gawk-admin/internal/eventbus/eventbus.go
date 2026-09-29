@@ -105,6 +105,10 @@ type Options struct {
 	Log           *slog.Logger
 	Ingest        Ingester
 	Now           func() time.Time
+	// OnOutcome, when set, is told each message's outcome for the metrics
+	// listener (R59, docs/61 D9): "stored", "live", "redeliver" or
+	// "undecodable".
+	OnOutcome func(outcome string)
 }
 
 // Ingester is the store, as this package needs it. An interface so the
@@ -549,6 +553,7 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 	ev, err := decode(msg.Data())
 	if err != nil {
 		c.log.Warn("undecodable bus message, acking", "err", err)
+		c.outcome("undecodable")
 		ack(c.log, msg)
 		return
 	}
@@ -557,6 +562,7 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 	if isDelta(ev.Type) {
 		// Deltas are the live view and nothing else (docs/51 D5).
 		c.remember(ev)
+		c.outcome("live")
 		ack(c.log, msg)
 		return
 	}
@@ -566,13 +572,21 @@ func (c *Consumer) handle(ctx context.Context, msg jetstream.Msg) {
 	}
 	switch _, err := c.opts.Ingest.Ingest(ctx, ev); {
 	case err == nil:
+		c.outcome("stored")
 		ack(c.log, msg)
 	case errors.Is(err, context.Canceled):
 		// Leadership moved or the process is stopping: do NOT ack. The next
 		// leader redelivers and the row is written there.
 	default:
+		c.outcome("redeliver")
 		c.log.Warn("ingest failed, leaving the message for redelivery",
 			"type", ev.Type, "id", ev.ID, "err", err)
+	}
+}
+
+func (c *Consumer) outcome(o string) {
+	if c.opts.OnOutcome != nil {
+		c.opts.OnOutcome(o)
 	}
 }
 

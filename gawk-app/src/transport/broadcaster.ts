@@ -61,6 +61,7 @@ import {
   type ReconnectInfo,
 } from './reconnect';
 import { CLOCK_MAPPING_INTERVAL_MS, TimeSyncClient } from './time-sync';
+import { appendClientIdentity } from './client-identity';
 import {
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
@@ -556,6 +557,9 @@ export class BroadcastPipeline {
     if (this.broadcastId && this.resumeToken) {
       urlObj.searchParams.set('resume', this.resumeToken);
     }
+    // R59 (docs/61 D1): who this broadcaster is, for the relay's usage
+    // metrics. New vs resumed the relay tells from the path.
+    appendClientIdentity(urlObj);
     return urlObj.toString();
   }
 

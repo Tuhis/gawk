@@ -3,6 +3,7 @@
 // drops exactly as ViewerPipeline reports them (onError then onEnded).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ConnectOptions } from './connection';
 import type { ViewerCallbacks } from './viewer';
 import {
   ABRUPT_DROP_RETRY_DELAY_MS,
@@ -176,6 +177,28 @@ describe('ViewerSession', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(pipelines).toHaveLength(2);
     expect(events).toEqual(['connected', `reconnecting:1:${ABRUPT_DROP_RETRY_DELAY_MS}`, 'connected']);
+  });
+
+  it('marks every pipeline after the first as a rejoin (R59)', async () => {
+    const seen: ConnectOptions[] = [];
+    const pipelines: FakePipeline[] = [];
+    const base: ConnectOptions = { deliveryMode: 'reliable' };
+    const session = new ViewerSession('https://relay.test:4433', 'ABC123', base, makeHarness().cb, (_u, _id, opts, cbs) => {
+      seen.push(opts);
+      const p = new FakePipeline(cbs, 'ok');
+      pipelines.push(p);
+      return p;
+    });
+    await session.start();
+    pipelines[0].crash('session closed by server');
+    await vi.advanceTimersByTimeAsync(ABRUPT_DROP_RETRY_DELAY_MS);
+    expect(pipelines).toHaveLength(2);
+
+    expect(seen[0]).toBe(base); // the first dial is untouched: no rejoin
+    expect(seen[0].rejoin).toBeUndefined();
+    expect(seen[1]).toEqual({ deliveryMode: 'reliable', rejoin: true });
+    expect(base.rejoin).toBeUndefined(); // the caller's options are not mutated
+    await session.stop();
   });
 
   it('reconnects immediately (0ms) after a 4002 server drain', async () => {

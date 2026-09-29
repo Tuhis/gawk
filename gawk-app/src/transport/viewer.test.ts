@@ -139,14 +139,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// Every primary dial carries a freshly minted ?owner= token. These URL tests
-// assert everything EXCEPT the token (random per attempt): the token is
-// validated for shape, stripped, and the rest compared exactly.
+// Every primary dial carries a freshly minted ?owner= token and the R59
+// client identity. These URL tests assert everything EXCEPT those two (the
+// token is random per attempt, the identity comes from the user agent and has
+// its own tests): both are validated, stripped, and the rest compared exactly.
 function expectDialed(expectedWithoutOwner: string, opts: unknown): void {
   const call = connectWebTransport.mock.calls.at(-1) as [string, unknown];
   const u = new URL(call[0]);
   expect(u.searchParams.get('owner')).toMatch(/^[0-9a-f]{16}$/);
   u.searchParams.delete('owner');
+  expect(u.searchParams.get('app')).toBe('web');
+  for (const k of ['app', 'os', 'browser']) u.searchParams.delete(k);
   expect(u.toString()).toBe(expectedWithoutOwner);
   expect(call[1]).toBe(opts);
 }
@@ -161,6 +164,17 @@ describe('ViewerPipeline', () => {
     await pipeline.start();
     expectDialed('https://relay.test:4433/subscribe/K7XQ2M', opts);
     await pipeline.stop();
+  });
+
+  it('marks a rejoin with ?rejoin=1 and a first dial with nothing (R59)', async () => {
+    connectWebTransport.mockResolvedValue(makeFakeWT(60_000, {}));
+    readDatagrams.mockReturnValue(new Promise(() => {}));
+    const { cbs } = makeCallbacks();
+    const opts = { rejoin: true };
+    const p = new ViewerPipeline('https://relay.test:4433', 'K7XQ2M', opts, cbs);
+    await p.start();
+    expectDialed('https://relay.test:4433/subscribe/K7XQ2M?rejoin=1', opts);
+    await p.stop();
   });
 
   it('mints a fresh ?owner= token per attempt (docs/35 §14)', async () => {

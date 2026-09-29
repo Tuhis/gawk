@@ -41,6 +41,9 @@ func TestDefaults(t *testing.T) {
 	if cfg.Addr != ":8090" {
 		t.Errorf("Addr = %q, want :8090", cfg.Addr)
 	}
+	if cfg.MetricsAddr != ":8091" {
+		t.Errorf("MetricsAddr = %q, want :8091", cfg.MetricsAddr)
+	}
 	if cfg.RelayOpsPort != 2112 {
 		t.Errorf("RelayOpsPort = %d, want 2112", cfg.RelayOpsPort)
 	}
@@ -324,4 +327,31 @@ func asStrings(attrs []any) []string {
 		out = append(out, fmt.Sprint(a))
 	}
 	return out
+}
+
+// R59 (docs/61 D9): the metrics listener takes its address from the env or
+// the flag, and "off" turns it off rather than falling back to the default.
+func TestMetricsAddr(t *testing.T) {
+	env := minimal()
+	env["GAWK_ADMIN_METRICS_ADDR"] = ":9999"
+	cfg, err := ParseFlags(nil, envFrom(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsAddr != ":9999" {
+		t.Errorf("env: MetricsAddr = %q, want :9999", cfg.MetricsAddr)
+	}
+	env["GAWK_ADMIN_METRICS_ADDR"] = "off"
+	if cfg, err = ParseFlags(nil, envFrom(env)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsAddr != "" {
+		t.Errorf("off: MetricsAddr = %q, want disabled", cfg.MetricsAddr)
+	}
+	if cfg, err = ParseFlags([]string{"-metrics-addr", ":7777"}, envFrom(env)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsAddr != ":7777" {
+		t.Errorf("flag: MetricsAddr = %q, want :7777 (the flag wins over the env)", cfg.MetricsAddr)
+	}
 }

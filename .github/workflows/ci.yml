@@ -1580,6 +1580,40 @@ jobs:
             --set oidc.issuer=https://id.example.com \
             --set oidc.clientId=gawk-admin --set oidc.audience=gawk-admin > /dev/null
 
+      # R59 (docs/61 D9): the portal's metrics listener is on by default behind
+      # its own ClusterIP Service, the Ingress never routes it, the
+      # ServiceMonitor is opt-in, and off really is off.
+      - name: admin chart renders the metrics listener off the Ingress (R59)
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          routed="--set ingress.enabled=true --set ingress.host=admin.example.com --set oidc.issuer=https://id.example.com --set oidc.clientId=gawk-admin --set oidc.audience=gawk-admin"
+
+          # Default: the listener is on, behind its own ClusterIP Service, and
+          # no ServiceMonitor renders without the operator CRDs being asked for.
+          out=$(helm template "$chart" $ADMIN_PG)
+          grep -A1 'name: GAWK_ADMIN_METRICS_ADDR' <<<"$out" | grep -q 'value: ":8091"'
+          grep -qE 'name: .*gawk-admin-metrics$' <<<"$out"
+          if grep -q 'kind: ServiceMonitor' <<<"$out"; then
+            echo "::error::the ServiceMonitor rendered without metrics.serviceMonitor.enabled"; exit 1
+          fi
+          helm template "$chart" $ADMIN_PG --set metrics.serviceMonitor.enabled=true \
+            | grep -q 'kind: ServiceMonitor'
+
+          # The Ingress routes the portal Service and never the metrics port.
+          ing=$(helm template "$chart" $ADMIN_PG $routed --show-only templates/ingress.yaml)
+          if grep -qE 'metrics|8091' <<<"$ing"; then
+            echo "::error::the Ingress routes the metrics listener"; echo "$ing"; exit 1
+          fi
+
+          # Off leaves nothing listening: the env says "off" (an empty value
+          # would fall back to the binary's :8091), and no port or Service.
+          off=$(helm template "$chart" $ADMIN_PG --set metrics.enabled=false)
+          grep -A1 'name: GAWK_ADMIN_METRICS_ADDR' <<<"$off" | grep -q 'value: "off"'
+          if grep -qE 'gawk-admin-metrics|containerPort: 8091' <<<"$off"; then
+            echo "::error::metrics.enabled=false still renders the listener"; exit 1
+          fi
+
       # The chart must refuse to ROUTE a portal that cannot authenticate. The
       # binary enforces auth regardless — what this stops is publishing a public
       # hostname in front of a CrashLoopBackOff, which is a worse failure than a

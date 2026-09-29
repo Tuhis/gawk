@@ -176,6 +176,9 @@ func (s *Server) handleRoomNew(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		return
 	}
+	// The room exists from here whether or not the upgrade below succeeds
+	// (its creator reconnects with the token), so this is where it counts.
+	s.metrics.RoomMinted()
 	sess, err := s.wt.Upgrade(w, r)
 	if err != nil {
 		// The room exists with nobody in it; end it now rather than letting

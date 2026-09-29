@@ -54,6 +54,10 @@ export interface ConnectOptions {
   // get the maximum — a viewer cannot conjure symbols the producer never
   // emitted, so there is deliberately no way to ask for MORE.
   parityLevel?: 0 | 1;
+  // R59 (docs/61 D4): this dial is the viewer session's automatic reconnect,
+  // not a new viewer. ViewerSession sets it on every pipeline after the
+  // first, and ViewerPipeline sends it as `?rejoin=1`.
+  rejoin?: boolean;
 }
 
 // The WebTransportOptions every gawk session dials with. Shared with the

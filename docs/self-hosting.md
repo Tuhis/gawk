@@ -401,10 +401,19 @@ uses RollingUpdate with `maxSurge: 1, maxUnavailable: 0`, so a replacement pod
 is Ready before the old one exits; draining pods send close code 4002 and
 clients reconnect immediately. `helm rollback` is the same motion in reverse.
 
-**Metrics.** The relay serves Prometheus metrics on the ClusterIP ops
-endpoint (`metrics.port`, default 2112). Set
-`metrics.serviceMonitor.enabled: true` if you run prometheus-operator, with
-labels matching your Prometheus's `serviceMonitorSelector`. The symptom →
+**Metrics.** Each server component serves Prometheus metrics on a
+ClusterIP-only port that no Ingress routes:
+
+| Chart | Port (`metrics.port`) | What it tells you |
+|---|---|---|
+| `gawk-server` | 2112 | delivery, loss and capacity ([docs/13](13-observability.md)); usage and the configured caps ([docs/61](61-usage-and-capacity-metrics.md)) |
+| `gawk-admin` | 8091 | portal requests, the database pool, event and webhook outcomes |
+| `gawk-telemetry` | 8082 | build info and the SQL views' health |
+
+If you run prometheus-operator, set `metrics.serviceMonitor.enabled: true` on
+each chart, with labels matching your Prometheus's `serviceMonitorSelector`.
+For the `gawk-admin` database on CloudNativePG, `spec.monitoring.enablePodMonitor:
+true` on the `Cluster` adds the operator's own exporter. The symptom →
 signature playbook is [docs/13](13-observability.md).
 
 **Capacity knobs**, all under `config`:

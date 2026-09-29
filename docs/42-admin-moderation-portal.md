@@ -432,6 +432,11 @@ gawk-admin/
 `GET /auth/config` (unauthenticated SPA bootstrap, §4.8), `GET /healthz`,
 and `GET /readyz` (readyz = Postgres reachable + schema version compatible).
 
+*Revised 2026-09-29 (R59, [docs/61](61-usage-and-capacity-metrics.md) D9):*
+a second listener, `-metrics-addr` (default `:8091`, `off` disables),
+serves `/metrics` alone on its own ClusterIP Service, never on the Ingress.
+The portal listener above is unchanged.
+
 **HA from day one (D16).** The API is stateless — JWT auth (D17), every
 replica serves reads and writes against Postgres — so `replicaCount`
 defaults to **2**. Singleton background work (the reconciler/janitor and the
@@ -761,7 +766,8 @@ the chart's values and the startup log.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-addr` | `:8090` | The single HTTP listener. |
+| `-addr` | `:8090` | The portal listener. |
+| `-metrics-addr` | `:8091` | The Prometheus listener (R59, docs/61 D9); `off` disables it. Never routed by the Ingress. |
 | `-external-url` | *(required)* | Portal base URL — the OIDC redirect base and the `portalUrl` in webhook payloads. |
 | `-oidc-issuer` / `-oidc-client-id` / `-oidc-audience` | *(required)* | The OIDC provider, the SPA's public-client ID, and the audience every accepted JWT must carry. **No client secret exists** — the SPA is a public client with PKCE (§4.8). |
 | `-oidc-roles-claim` | `resource_access.{audience}.roles` | Dot-path to the roles array in the JWT — the default is the Keycloak client-roles shape, `{audience}` substituted into each segment; override for other IdPs. Blank ⇒ refuse to start. The placeholder is `{audience}`, shared with the relay's twin knob (§4.5) so one string means one thing. |

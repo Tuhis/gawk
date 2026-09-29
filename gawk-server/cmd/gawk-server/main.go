@@ -98,6 +98,11 @@ func run() error {
 	busHook := func(ev eventbus.Event) { bus.Publish(ev) }
 	hubOpts := registryOptions(cfg)
 	hubOpts.OnEvent = busHook
+	// R59 (docs/61 D5): an origin broadcast's lifetime lands in the usage
+	// histograms. Late-bound like the bus: the metrics are built after the
+	// registry, and a nil *ServerMetrics records nothing.
+	var sm *metrics.ServerMetrics
+	hubOpts.OnOriginEnded = func(e hub.BroadcastEnd) { sm.BroadcastEnded(e) }
 	if cfg.ClusterMode {
 		hubOpts.OnPublisherClosed = func(id string) {
 			if coord == nil {
@@ -162,7 +167,8 @@ func run() error {
 	// served by the TCP ops endpoint alongside /healthz and /statusz.
 	promReg := metrics.NewBaseRegistry(version)
 	promReg.MustRegister(metrics.NewRegistryCollector(r))
-	sm := metrics.NewServerMetrics(promReg)
+	sm = metrics.NewServerMetrics(promReg)
+	promReg.MustRegister(metrics.NewLimitsCollector(limits(cfg)))
 
 	// R39 moderation (docs/42 §4.3). The set is always constructed and always
 	// scraped — with -moderation-source=off nothing feeds it, every publish
@@ -563,6 +569,23 @@ func chainHook(a, b func(string)) func(string) {
 // §4.10). Nil with -rooms off, so neither the /statusz section nor the room
 // series exist. One function rather than two calls in run because the
 // ORDER is the contract: the source does not exist before the install.
+// limits is the configured caps as gawk_limit series (R59, docs/61 D7). The
+// names follow the flags; 0 = unlimited, as there.
+func limits(cfg config.Config) metrics.Limits {
+	return metrics.Limits{
+		"max_broadcasts":        float64(cfg.MaxBroadcasts),
+		"max_subscribers":       float64(cfg.MaxSubscribers),
+		"max_total_subscribers": float64(cfg.MaxTotalSubscribers),
+		"max_bandwidth_bytes":   float64(cfg.MaxBandwidthBytes),
+		"dvr_max_bytes":         float64(cfg.DVRMaxBytes),
+		"max_rooms":             float64(cfg.MaxRooms),
+		"max_room_broadcasts":   float64(cfg.MaxRoomBroadcasts),
+		"max_room_participants": float64(cfg.MaxRoomParticipants),
+		"conn_rate_limit":       cfg.ConnRateLimit,
+		"conn_burst_limit":      float64(cfg.ConnBurstLimit),
+	}
+}
+
 func installRooms(srv roomsServer, reg *roomsrv.Registry) metrics.RoomStatsSource {
 	if reg == nil {
 		return nil

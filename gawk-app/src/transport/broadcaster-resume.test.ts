@@ -302,7 +302,7 @@ describe('broadcaster auto-resume (R17 W2)', () => {
     // Reclaimed the same broadcast with the token from the 0x09 message.
     expect(connectWebTransport).toHaveBeenCalledTimes(2);
     expect(connectWebTransport.mock.calls[1][0]).toBe(
-      `https://relay.test:4433/publish/K7XQ2M?resume=${TOKEN_HEX}`,
+      `https://relay.test:4433/publish/K7XQ2M?resume=${TOKEN_HEX}&app=web`,
     );
     expect(cbs.onResumed).toHaveBeenCalledTimes(1);
     // The pipeline demanded a keyframe from the encoder on re-attach.

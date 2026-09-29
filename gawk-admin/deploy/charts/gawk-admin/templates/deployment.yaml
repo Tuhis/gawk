@@ -47,9 +47,19 @@ spec:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: GAWK_ADMIN_ADDR
               value: ":{{ .Values.service.port }}"
+            # "off" turns the listener off, so metrics.enabled=false leaves no
+            # open port behind the Service it no longer renders. (An empty env
+            # var would fall back to the binary's default, not disable it.)
+            - name: GAWK_ADMIN_METRICS_ADDR
+              value: {{ if .Values.metrics.enabled }}{{ printf ":%v" .Values.metrics.port | quote }}{{ else }}"off"{{ end }}
             - name: GAWK_ADMIN_EXTERNAL_URL
               value: {{ .Values.externalUrl | quote }}
             # OIDC (docs/42 §4.8). Every one of these is required by the
