@@ -21,15 +21,15 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target x86_64-unknown-linux-gnu` — build- and dev-dependencies (proc macros, bindgen, test harnesses) are excluded because they are not part of the shipped executable.
 
-## Summary — 375 packages
+## Summary — 378 packages
 
 | License (as declared) | Packages |
 |---|---:|
-| `MIT OR Apache-2.0` | 150 |
-| `MIT` | 83 |
+| `MIT OR Apache-2.0` | 151 |
+| `MIT` | 84 |
 | `Apache-2.0 OR MIT` | 44 |
 | `Unicode-3.0` | 22 |
-| `MIT/Apache-2.0` | 13 |
+| `MIT/Apache-2.0` | 14 |
 | `Apache-2.0` | 10 |
 | `MIT OR Apache-2.0 OR Zlib` | 9 |
 | `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0` | 7 |
@@ -140,6 +140,7 @@ script for what counts as a dependency here and why.
 | `fdeflate` | 0.3.7 | `MIT OR Apache-2.0` | — |
 | `femtovg` | 0.25.1 | `MIT OR Apache-2.0` | Copyright 2021 femtovg contributors<br>Copyright 2021 Developers of the femtovg project |
 | `field-offset` | 0.3.6 | `MIT OR Apache-2.0` | Copyright (c) 2016-2021 Diggory Blake, and other contributors |
+| `filetime` | 0.2.29 | `MIT/Apache-2.0` | Copyright (c) 2014 Alex Crichton |
 | `fixed_decimal` | 0.7.2 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
 | `flate2` | 1.1.9 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
 | `float-cmp` | 0.9.0 | `MIT` | Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd |
@@ -245,6 +246,7 @@ script for what counts as a dependency here and why.
 | `memmap2` | 0.9.11 | `MIT OR Apache-2.0` | Copyright (c) 2020 Yevhenii Reizner<br>Copyright (c) 2015 Dan Burkert |
 | `memoffset` | 0.9.1 | `MIT` | Copyright (c) 2017 Gilad Naaman |
 | `minimal-lexical` | 0.2.1 | `MIT/Apache-2.0` | Copyright (c) 2009 The Go Authors. All rights reserved |
+| `minisign-verify` | 0.3.0 | `MIT` | Copyright (c) 2019-2025 Frank Denis<br>Copyright (c) 2006-2009 Graydon Hoare<br>Copyright (c) 2009-2013 Mozilla Foundation |
 | `miniz_oxide` | 0.8.9 | `MIT OR Zlib OR Apache-2.0` | Copyright 2013-2014 RAD Game Tools and Valve Software<br>Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC<br>Copyright (c) 2017 Frommi<br>Copyright (c) 2017-2024 oyvindln<br>Copyright (c) 2020 Frommi |
 | `mio` | 1.2.2 | `MIT` | Copyright (c) 2014 Carl Lerche and other MIO contributors |
 | `moxcms` | 0.8.1 | `BSD-3-Clause OR Apache-2.0` | Copyright 2024 Radzivon Bartoshyk<br>Copyright (c) Radzivon Bartoshyk. All rights reserved |
@@ -350,6 +352,7 @@ script for what counts as a dependency here and why.
 | `syn` | 2.0.119 | `MIT OR Apache-2.0` | — |
 | `sys-locale` | 0.3.2 | `MIT OR Apache-2.0` | Copyright (c) 2021 1Password |
 | `taffy` | 0.10.1 | `MIT` | — |
+| `tar` | 0.4.46 | `MIT OR Apache-2.0` | Copyright (c) The tar-rs Project Contributors |
 | `task-local` | 0.1.1 | `MIT OR Apache-2.0` | Copyright 2025 Bugen Zhao<br>Copyright (c) 2025 Bugen Zhao |
 | `thiserror` | 2.0.19 | `MIT OR Apache-2.0` | — |
 | `thiserror` | 1.0.69 | `MIT OR Apache-2.0` | — |
@@ -681,9 +684,9 @@ You should also get your employer (if you work as a programmer) or school, if an
 The GNU General Public License does not permit incorporating your program into proprietary programs. If your program is a subroutine library, you may consider it more useful to permit linking proprietary applications with the library. If this is what you want to do, use the GNU Lesser General Public License instead of this License. But first, please read <http://www.gnu.org/philosophy/why-not-lgpl.html>.
 ```
 
-### 2. Apache-2.0 — 157 packages
+### 2. Apache-2.0 — 159 packages
 
-Applies to: `ahash`, `arrayvec`, `as-raw-xcb-connection`, `asn1-rs`, `async-channel`, `async-executor`, `async-io`, `async-lock`, `async-process`, `async-signal`, `async-task`, `atomic-waker` — and 145 more
+Applies to: `ahash`, `arrayvec`, `as-raw-xcb-connection`, `asn1-rs`, `async-channel`, `async-executor`, `async-io`, `async-lock`, `async-process`, `async-signal`, `async-task`, `atomic-waker` — and 147 more
 
 ```
 Apache License
@@ -4557,9 +4560,9 @@ Applies to: `untrusted`
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 47. MIT — 216 packages
+### 47. MIT — 218 packages
 
-Applies to: `adler2`, `ahash`, `allocator-api2`, `arrayvec`, `as-raw-xcb-connection`, `asn1-rs`, `async-channel`, `async-executor`, `async-io`, `async-lock`, `async-process`, `async-signal` — and 204 more
+Applies to: `adler2`, `ahash`, `allocator-api2`, `arrayvec`, `as-raw-xcb-connection`, `asn1-rs`, `async-channel`, `async-executor`, `async-io`, `async-lock`, `async-process`, `async-signal` — and 206 more
 
 ```
 Permission is hereby granted, free of charge, to any
@@ -4884,6 +4887,72 @@ SOFTWARE.
 
 ### 57. MIT — 1 package
 
+Applies to: `minisign-verify`
+
+```
+Copyright (c) 2019-2025 Frank Denis
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+--
+
+Code in the src/crypto folder is derived from the rust-crypto project:
+https://github.com/DaGenix/rust-crypto
+
+Original ISC license follows:
+
+Copyright (c) 2006-2009 Graydon Hoare
+Copyright (c) 2009-2013 Mozilla Foundation
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### 58. MIT — 1 package
+
 Applies to: `unicode-ident`
 
 ```
@@ -4928,7 +4997,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### 58. UNKNOWN — 1 package
+### 59. UNKNOWN — 1 package
 
 Applies to: `glib`
 
@@ -4949,7 +5018,7 @@ LGPL or other licenses. For more information check the license of each GNOME
 library.
 ```
 
-### 59. UNKNOWN — 1 package
+### 60. UNKNOWN — 1 package
 
 Applies to: `imgref`
 
@@ -5077,7 +5146,7 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ```
 
-### 60. UNKNOWN — 1 package
+### 61. UNKNOWN — 1 package
 
 Applies to: `memchr`
 
@@ -5087,7 +5156,7 @@ This project is dual-licensed under the Unlicense and MIT licenses.
 You may use this code under the terms of either license.
 ```
 
-### 61. UNKNOWN — 1 package
+### 62. UNKNOWN — 1 package
 
 Applies to: `ring`
 
@@ -5103,7 +5172,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-### 62. UNKNOWN — 1 package
+### 63. UNKNOWN — 1 package
 
 Applies to: `typenum`
 
@@ -5111,7 +5180,7 @@ Applies to: `typenum`
 MIT OR Apache-2.0
 ```
 
-### 63. UNKNOWN — 1 package
+### 64. UNKNOWN — 1 package
 
 Applies to: `webpki-roots`
 
@@ -5179,7 +5248,7 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-### 64. Unlicense — 3 packages
+### 65. Unlicense — 3 packages
 
 Applies to: `byteorder-lite`, `ksni`, `memchr`
 
@@ -5210,7 +5279,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-### 65. Zlib — 11 packages
+### 66. Zlib — 11 packages
 
 Applies to: `bytemuck`, `cursor-icon`, `foldhash`, `glow`, `lru-slab`, `miniz_oxide`, `raw-window-handle`, `slotmap`, `tiny-xlib`, `tinyvec`, `xkeysym`
 
@@ -5232,7 +5301,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 66. Zlib — 2 packages
+### 67. Zlib — 2 packages
 
 Applies to: `zune-core`, `zune-jpeg`
 
@@ -5258,7 +5327,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 67. Zlib — 1 package
+### 68. Zlib — 1 package
 
 Applies to: `tinyvec_macros`
 
