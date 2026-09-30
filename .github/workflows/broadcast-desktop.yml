@@ -477,23 +477,34 @@ jobs:
   # portable crates are tested here AND on Linux; coverage is measured on
   # Linux only (docs/54 D14: one floor, one source of truth).
   #
-  # Nothing is cached, for now: unlike the self-hosted pods, a hosted runner
-  # restores from GitHub's cache CDN at full speed, so actions/cache may well
-  # pay here. Measure a few runs first (docs/38 D18's rule for this workflow).
+  # TWO JOBS, NOT ONE. As a single job this was the longest in the workflow
+  # (median 14.8 min over 19 runs, 17 min by R56). Its steps ran strictly one
+  # after another, and nothing forced that order: the release build consumes
+  # nothing the checks produce, and clippy's check-only tree is not the
+  # release tree. `macos-check` (fmt, clippy, test, the relay integration
+  # tier) and `macos` (release build, sign, bundle, upload) now run side by
+  # side. They are free on a public repository, so the extra runner costs
+  # nothing but a slot in the 5-job macOS concurrency.
+  #
+  # Both jobs use Swatinem/rust-cache. Those 19 runs were the "measure first"
+  # this comment used to ask for. Unlike the self-hosted pods, a hosted runner
+  # restores from GitHub's cache CDN at full speed. Only pushes to main save,
+  # so a PR restores main's cache instead of filling the repository's 10 GB
+  # with a copy per branch. Each job keys its own cache: the check tree (dev
+  # profile) and the release tree share nothing.
   #
   # PR builds are ad-hoc signed and say so in BUILD-INFO.txt. Developer ID
   # signing and notarization arrive with the release path (MB7, docs/54 D13),
   # and only ever on push to main — a pull_request run must never see the
   # signing secrets.
-  macos:
+  # The Darwin half of what `lint` and `test` do for the other two
+  # platforms. attach-release attaches the macOS bundle only when this passed
+  # too, which is what the single job used to guarantee by construction.
+  macos-check:
     runs-on: macos-latest
     defaults:
       run:
         working-directory: gawk-broadcast-desktop
-    env:
-      # Whether Developer ID signing is configured at all (docs/54 D13) —
-      # `secrets` cannot appear in a step's `if`, a job env can.
-      SIGNING_CONFIGURED: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 != '' }}
     steps:
       # See `lint`: a backfill builds the commit it is attaching to.
       - uses: actions/checkout@v7
@@ -507,10 +518,6 @@ jobs:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: gawk-server/go.sum
 
-      - name: Resolve the commit being built
-        id: source
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
       # rust-toolchain.toml pins the compiler; the hosted image's rustup
       # installs it (with rustfmt and clippy) on first use. Printed so the
       # log names the compiler that built the artifact.
@@ -519,6 +526,13 @@ jobs:
           rustc --version
           cargo --version
           echo "macOS $(sw_vers -productVersion), SDK $(xcrun --show-sdk-version)"
+
+      # After `Toolchain`, which is what makes rustup install the pinned
+      # compiler: rust-cache keys on `rustc -vV`.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gawk-broadcast-desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Format
         run: cargo fmt --all --check
@@ -536,6 +550,41 @@ jobs:
       # real gawk-server binary, built on this runner.
       - name: Integration — publish, reject, resume, supersede vs the real relay
         run: cargo test -p gawk-engine --test relay_integration -- --ignored --test-threads=1
+
+  macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: gawk-broadcast-desktop
+    env:
+      # Whether Developer ID signing is configured at all (docs/54 D13) —
+      # `secrets` cannot appear in a step's `if`, a job env can.
+      SIGNING_CONFIGURED: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 != '' }}
+    steps:
+      # See `lint`: a backfill builds the commit it is attaching to.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
+
+      - name: Resolve the commit being built
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # rust-toolchain.toml pins the compiler; the hosted image's rustup
+      # installs it (with rustfmt and clippy) on first use. Printed so the
+      # log names the compiler that built the artifact.
+      - name: Toolchain
+        run: |
+          rustc --version
+          cargo --version
+          echo "macOS $(sw_vers -productVersion), SDK $(xcrun --show-sdk-version)"
+
+      # After `Toolchain`, which is what makes rustup install the pinned
+      # compiler: rust-cache keys on `rustc -vV`.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gawk-broadcast-desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build (release)
         run: cargo build --release --target aarch64-apple-darwin -p gawk-broadcast-app-macos
@@ -873,7 +922,7 @@ jobs:
     # macOS flake, not hosted-image drift, not a backfill of a commit older
     # than the macOS bundle. `!cancelled()` is what lets this job run when
     # `macos` failed; the three hard dependencies are then checked by hand.
-    needs: [lint, test, build, macos, linux]
+    needs: [lint, test, build, macos, macos-check, linux]
     if: >-
       !cancelled() &&
       needs.lint.result == 'success' &&
@@ -902,7 +951,9 @@ jobs:
       # The macOS bundle (R52, docs/54 D14), built from the same commit —
       # when the macos job produced one.
       - uses: actions/download-artifact@v8
-        if: needs.macos.result == 'success'
+        # Both halves: the bundle comes from `macos`, the tests that vouch
+        # for it from `macos-check`.
+        if: needs.macos.result == 'success' && needs.macos-check.result == 'success'
         with:
           name: gawk-broadcast-macos-${{ needs.build.outputs.sha }}
           path: staging-macos
@@ -936,7 +987,11 @@ jobs:
         id: package
         env:
           MACOS_SIGNING: ${{ secrets.APPLE_SIGNING_CERTIFICATE_P12 != '' }}
-          MACOS_BUILT: ${{ needs.macos.result == 'success' }}
+          # The same two-job condition as the macOS download above: when only
+          # `macos` passed, the bundle was never downloaded, and treating it as
+          # built would fail this step on the missing BUILD-INFO.txt, taking the
+          # Windows and Linux assets down with it.
+          MACOS_BUILT: ${{ needs.macos.result == 'success' && needs.macos-check.result == 'success' }}
           LINUX_BUILT: ${{ needs.linux.result == 'success' }}
         run: |
           set -euo pipefail
@@ -964,7 +1019,7 @@ jobs:
           # commit predates it), Windows attaches alone with a warning — it
           # never waits on Apple credentials or on the macOS job.
           if [ "$MACOS_BUILT" != "true" ]; then
-            echo "::warning::the macOS bundle is not attached: the macos job did not succeed for this commit — backfill it with workflow_dispatch attach_to once it does"
+            echo "::warning::the macOS bundle is not attached: macos or macos-check did not succeed for this commit — backfill it with workflow_dispatch attach_to once it does"
           elif [ "$MACOS_SIGNING" = "true" ]; then
             if ! grep -q '^signed:    Developer ID + notarized' staging-macos/BUILD-INFO.txt; then
               echo "::error::signing is configured but the macOS bundle is not Developer ID + notarized — refusing to attach it (docs/54 D13)"
