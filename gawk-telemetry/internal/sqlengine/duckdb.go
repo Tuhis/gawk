@@ -46,6 +46,12 @@ type engine struct {
 	// (PR #350 review).
 	mu    sync.Mutex
 	views []ViewDoc
+
+	// only, when non-nil, is the set of views this engine registers; the rest
+	// stay unregistered and are reported unavailable. A query worker registers
+	// just the views its statement names (openScoped), because registering one
+	// sniffs every file in its tree.
+	only map[string]bool
 }
 
 // viewDrift is DuckDB's binder error for a view whose SELECT * no longer binds
@@ -61,7 +67,10 @@ const viewDrift = "Contents of view were altered"
 var testHookRowsOpen func()
 
 // Open builds an in-memory DuckDB with views over the store's partitions.
-func Open(opts Options) (Engine, error) {
+func Open(opts Options) (Engine, error) { return openScoped(opts, nil) }
+
+// openScoped is Open registering only the named views; nil means all of them.
+func openScoped(opts Options, only map[string]bool) (Engine, error) {
 	if opts.Root == "" {
 		return nil, fmt.Errorf("sqlengine: Root is required")
 	}
@@ -82,6 +91,7 @@ func Open(opts Options) (Engine, error) {
 		db: db, opts: opts,
 		turn:  make(chan struct{}, 1),
 		views: viewDocs(func(string) bool { return false }),
+		only:  only,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout())
 	defer cancel()
@@ -168,7 +178,7 @@ func (e *engine) register(ctx context.Context, all bool) {
 		e.mu.Unlock()
 	}()
 	for name, src := range viewSources(e.opts.Root) {
-		if ok[name] && !all {
+		if ok[name] && !all || e.only != nil && !e.only[name] {
 			continue
 		}
 		// A tree with no files cannot register, so there is nothing to try:

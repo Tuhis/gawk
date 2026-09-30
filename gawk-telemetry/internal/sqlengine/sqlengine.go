@@ -96,8 +96,8 @@ type Options struct {
 	RowLimit int
 	Timeout  time.Duration
 
-	// The engine's budget. It shares a process with public ingest, so what it
-	// may use is stated rather than left to DuckDB's defaults — which are
+	// The engine's budget. Its worker shares a container with public ingest,
+	// so what it may use is stated rather than left to DuckDB's defaults — which are
 	// ~80 % of the container's memory and one thread per core, and which made
 	// every unpruned `sessions` query fail with an OOM (BUGS.md, 2026-08-20).
 	//

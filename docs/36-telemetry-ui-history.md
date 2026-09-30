@@ -616,8 +616,9 @@ to §8 Q1's resolution.
 | An unpruned `sessions` scan answers inside the engine's stated budget (memory, threads, capped spill); the console cannot `SET` its way past it | test (`duckdb_test.go`, `sqlengine_test.go`) |
 | A view that has data and does not answer is visible without anyone opening the console: `gawk_telemetry_sql_view_up` on the metrics listener, alertable through the chart's opt-in PrometheusRule | test (`probe_test.go`, `opsmetrics_test.go`) + CI image smoke |
 | Every stored row path keeps its type forever (D4) | test (`internal/storedshape`, golden) |
+| Repeated queries do not grow the service's own memory: each runs in a short-lived worker process, which is killed at the query's deadline | test (`isolated_duckdb_test.go`) + CI image smoke |
 
-The last four rows were added after the fact (2026-09-22). The original four
+The four rows before the last were added after the fact (2026-09-22). The original four
 all passed on a fresh store while the deployed console had been failing every
 `rollups` query for weeks: DuckDB binds a view's columns at `CREATE VIEW`, and
 the views were registered once at boot over globs that D15 guarantees will
@@ -626,6 +627,20 @@ whole time too, because nothing set DuckDB's budget and its per-thread read
 buffers alone exceeded the pod's share. A criterion checked only against a
 small store that never changes after `Open` catches neither, and nothing but an
 operator's visit would have noticed either, hence the probe.
+
+The last row was added 2026-09-30, and the probe is what exposed it. DuckDB's
+`memory_limit` governs its buffer manager only; the JSON reader's allocations
+(every file's schema sniffed on each bind under `union_by_name`, every scan's
+read buffers) sit outside it, and DuckDB's allocator keeps them for the life
+of the process. Querying every five minutes, the pod climbed 150–500 MiB per
+round to its 2 GiB limit while `duckdb_memory()` reported 0 bytes, stalled
+`/healthz`, and was killed every 30–90 minutes. Lowering `memory_limit` (down
+to 64 MiB) did not change the growth, and reopening the database returned only
+about half of it. So the service no longer opens DuckDB itself:
+`sqlengine.OpenIsolated` re-executes the binary as a one-shot worker per query
+(`GAWK_TELEMETRY_SQL_WORKER=1`, request on stdin, JSON on stdout), workers run
+one at a time, each registers only the views its statement names, and the
+memory leaves with the process. The budget knobs now bound each worker.
 
 #### TH11 — Operator ergonomics
 

@@ -97,10 +97,12 @@ config:
   #     build: the shipped image is compiled `-tags duckdb`, while a binary
   #     built from a fresh clone has no engine and says so (docs/36 §8 Q1).
   querySql: true
-  # The SQL engine's budget. It runs in the same process as public ingest, so
-  # it gets a stated share instead of DuckDB's defaults (~80 % of the
-  # container's memory, one thread per core), which made every unpruned
-  # `sessions` query fail with an OOM.
+  # The SQL engine's budget. Each query runs in a short-lived worker process
+  # in the same container (and cgroup) as public ingest, so it gets a stated
+  # share instead of DuckDB's defaults (~80 % of the container's memory, one
+  # thread per core), which made every unpruned `sessions` query fail with an
+  # OOM. The limit bounds DuckDB's buffer manager only; what the JSON reader
+  # allocates outside it is returned when the worker exits (docs/36 §TH10).
   #
   # sqlMemoryLimit: "auto" is a quarter of resources.limits.memory (read from
   # the cgroup, minimum 128MiB), or a size such as 512MiB.

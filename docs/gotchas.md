@@ -64,6 +64,15 @@ Add to it when a new gotcha lands in `docs/`.
   `preserve_insertion_order=false`, spill capped on the data PVC). Don't
   raise the threads without raising the memory limit.
   ([docs/36](36-telemetry-ui-history.md) §TH10)
+- **DuckDB's `memory_limit` does not bound what `read_json_auto` allocates,
+  and DuckDB keeps it for the life of the process.** Schema sniffing and
+  read buffers live outside the buffer manager: `duckdb_memory()` says 0
+  bytes while RSS climbs, a lower limit only makes queries fail, and closing
+  the database returns about half. In the telemetry pod the 5-minute view
+  probe grew it to the 2 GiB limit every 30–90 minutes. Only process exit
+  returns it, so the service runs every query in a short-lived worker
+  (`sqlengine.OpenIsolated`); never open DuckDB in the service process.
+  ([docs/36](36-telemetry-ui-history.md) §TH10)
 - **A stored telemetry field never changes type and is never renamed.** The
   SQL views union partitions by name, so a field that is a number in old
   rows and a string in new ones turns the column into JSON for every query

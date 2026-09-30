@@ -54,6 +54,12 @@ import (
 var version = "dev"
 
 func main() {
+	// A SQL query worker is this same binary, re-executed by the service for
+	// one query (sqlengine.OpenIsolated). It must not parse flags, open the
+	// store or bind a listener: it answers on stdout and exits.
+	if sqlengine.IsWorker() {
+		os.Exit(sqlengine.RunWorker(os.Stdin, os.Stdout))
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -85,12 +91,14 @@ func run() error {
 
 	// TH10's engine (§8 Q1's resolution). A build without `-tags duckdb` gets
 	// nil here and the console says so plainly — which is a different message
-	// from a query error, and the UI renders it as one.
+	// from a query error, and the UI renders it as one. Every query runs in a
+	// short-lived worker process: DuckDB keeps what it allocates for the life
+	// of the process it runs in, and that must not be this one.
 	var engine readapi.SQLEngine
 	var probeTarget sqlengine.Querier
 	metrics := opsmetrics.New(version, cfg.enableSQL)
 	if cfg.enableSQL {
-		e, err := sqlengine.Open(sqlengine.Options{
+		e, err := sqlengine.OpenIsolated(sqlengine.Options{
 			Root:        cfg.dataDir,
 			MemoryLimit: cfg.sqlMemoryLimit,
 			Threads:     cfg.sqlThreads,
