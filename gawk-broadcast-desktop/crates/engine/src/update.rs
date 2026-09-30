@@ -8,9 +8,19 @@
 //! the manifest is executed or rendered as markup — it yields one version to
 //! compare and one URL, prefix-checked against the project's own releases
 //! path before anything may open it (docs/47 §5).
+//!
+//! R47 (docs/48) adds the download: [`stage`] fetches the release's
+//! `SHA256SUMS` and its minisign signature, verifies the signature against
+//! the one compiled-in [`RELEASE_KEY`] and reads the release version from
+//! the signed trusted comment, then downloads the asset and checks it
+//! against its signed `SHA256SUMS` line. Only then does anything else get
+//! to touch the file (the swap is [`crate::install`]).
 
 use crate::defaults::Distribution;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Where every published manifest lives: the orphan `badges` branch, served
@@ -41,6 +51,33 @@ pub const ENV_OPT_OUT: &str = "GAWK_NO_UPDATE_CHECK";
 const RELEASE_URL_PREFIX: &str = "https://github.com/Tuhis/gawk/releases/tag/";
 const ASSET_URL_PREFIX: &str = "https://github.com/Tuhis/gawk/releases/download/";
 
+/// The release signing key (docs/48 D1, D2): one minisign public key,
+/// compiled in, key ID `EFB62FBC86D13877`. A signature by any other key is
+/// refused, and the app falls back to the R45 notice. Rotating it is a
+/// bridge release (docs/48 §6); `tools/releases/keys/gawk-release.pub` is
+/// the copy CI verifies with, and the two must change together.
+pub const RELEASE_KEY: &str = "RWR3ONGGvC+27y0Zc84TSry1R0nqIo3abz92W34jn0KnRyMUroY2vydy";
+
+/// The release-please component every desktop release is cut as. The
+/// signature's trusted comment is exactly `"<this> <X.Y.Z>"`, so the
+/// version being installed is one the release key vouched for, not one the
+/// unsigned manifest claims (docs/48 D3).
+pub const RELEASE_COMPONENT: &str = "gawk-broadcast-desktop";
+
+/// The two release files that make the download verifiable (docs/48 D1).
+pub const SUMS_NAME: &str = "SHA256SUMS";
+pub const SIG_NAME: &str = "SHA256SUMS.minisig";
+
+/// `SHA256SUMS` and its signature are well under a kilobyte.
+const MAX_SIDECAR: u64 = 64 * 1024;
+
+/// No desktop asset comes near this (the EXE is ~30 MB); a manifest that
+/// claims more is not ours.
+const MAX_ASSET: u64 = 512 * 1024 * 1024;
+
+/// A whole download, not one request: a slow home link still fits.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
 /// This distribution's manifest: `releases/<name>/latest.json`.
 pub fn manifest_url(dist: &Distribution) -> String {
     format!("{MANIFEST_BASE}{}/latest.json", dist.name)
@@ -54,10 +91,35 @@ pub struct Update {
     /// The release page — already checked to be under the project's own
     /// releases path.
     pub release_url: String,
+    /// What an in-place install downloads (R47): present only when the
+    /// manifest lists the asset, `SHA256SUMS` and its signature, each under
+    /// the project's download path. A remembered update (see [`cached`])
+    /// has none. Boxed: it is most of the struct, and [`Outcome`] carries
+    /// an `Update` beside a `String`.
+    pub files: Option<Box<ReleaseFiles>>,
+    /// The Linux `.deb` of this release, by its exact name (docs/48 D9,
+    /// docs/63 D2), when the manifest lists it.
+    pub deb: Option<String>,
+}
+
+/// One downloadable release file, from the manifest's `assets` map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remote {
+    pub name: String,
+    pub url: String,
+    pub size: u64,
+}
+
+/// The files a verified install needs (docs/48 D3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseFiles {
+    pub asset: Remote,
+    pub sums: Remote,
+    pub sig: Remote,
 }
 
 /// The fields of the docs/46 D5 shape this check reads. Unknown keys
-/// (`assets`, `published_at`, `tag`, anything added later) are ignored.
+/// (`published_at`, `tag`, anything added later) are ignored.
 #[derive(Debug, Deserialize)]
 struct Manifest {
     schema: u32,
@@ -65,6 +127,11 @@ struct Manifest {
     version: String,
     release_url: String,
     asset: Asset,
+    /// Every file on the release (docs/46 D5). Read loosely, as a JSON
+    /// value: missing or malformed, the notice still shows and only the
+    /// in-place install is off.
+    #[serde(default)]
+    assets: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,9 +183,48 @@ pub fn evaluate(body: &str, current: &str, dist: &Distribution) -> Option<Update
             .sha256
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    (valid && newer(current, &m.version)).then_some(Update {
+    if !(valid && newer(current, &m.version)) {
+        return None;
+    }
+    let remote = |name: &str| -> Option<Remote> {
+        let listed = m.assets.get(name)?;
+        let url = listed.get("url")?.as_str()?;
+        let size = listed.get("size")?.as_u64()?;
+        (safe_asset_url(url, name) && size <= MAX_ASSET).then(|| Remote {
+            name: name.to_string(),
+            url: url.to_string(),
+            size,
+        })
+    };
+    let files = (|| {
+        Some(Box::new(ReleaseFiles {
+            asset: remote(&m.asset.name)?,
+            sums: remote(SUMS_NAME)?,
+            sig: remote(SIG_NAME)?,
+        }))
+    })();
+    let deb_name = format!("gawk-broadcast_{}_amd64.deb", m.version);
+    let deb = (dist.name == crate::defaults::LINUX.name)
+        .then(|| remote(&deb_name))
+        .flatten()
+        .map(|r| r.name);
+    Some(Update {
         version: m.version,
         release_url: m.release_url,
+        files,
+        deb,
+    })
+}
+
+/// A release file's URL: under the project's download path, ending in the
+/// file's own name, and nothing but the characters a tag path and a file
+/// name use.
+fn safe_asset_url(url: &str, name: &str) -> bool {
+    url.strip_prefix(ASSET_URL_PREFIX).is_some_and(|rest| {
+        rest.ends_with(&format!("/{name}"))
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._/-+".contains(&b))
     })
 }
 
@@ -201,7 +307,192 @@ pub fn cached(version: &str, url: &str, current: &str) -> Option<Update> {
     (newer(current, version) && safe_release_url(url)).then(|| Update {
         version: version.to_string(),
         release_url: url.to_string(),
+        files: None,
+        deb: None,
     })
+}
+
+/// Checks `sig` over `sums` with the public key `key` and returns the
+/// release version the signature's trusted comment names. Refuses a
+/// signature by any other key, a comment that is not exactly
+/// `"gawk-broadcast-desktop X.Y.Z"`, and a version that is not newer than
+/// `current` (docs/48 D3: a manifest pointing at an older signed release is
+/// a no-op, never a rollback).
+pub fn verify_release(sums: &[u8], sig: &str, key: &str, current: &str) -> Result<String, String> {
+    let pk = minisign_verify::PublicKey::from_base64(key)
+        .map_err(|e| format!("the compiled-in key does not parse: {e}"))?;
+    let sig = minisign_verify::Signature::decode(sig)
+        .map_err(|e| format!("the signature does not parse: {e}"))?;
+    pk.verify(sums, &sig, false)
+        .map_err(|e| format!("{SUMS_NAME} is not signed by the release key: {e}"))?;
+    let version = sig
+        .trusted_comment()
+        .strip_prefix(RELEASE_COMPONENT)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .filter(|v| parse_release(v).is_some())
+        .ok_or_else(|| {
+            format!(
+                "the signed comment {:?} does not name a {RELEASE_COMPONENT} release",
+                sig.trusted_comment()
+            )
+        })?;
+    if !newer(current, version) {
+        return Err(format!(
+            "the signed release {version} is not newer than {current}"
+        ));
+    }
+    Ok(version.to_string())
+}
+
+/// The SHA-256 `SHA256SUMS` lists for `name`, in the `sha256sum ./*` shape
+/// the attach job writes (`<hex>  ./<name>`). `None` when the name is
+/// missing or listed twice.
+pub fn sums_entry(sums: &str, name: &str) -> Option<String> {
+    let mut found = None;
+    for line in sums.lines() {
+        let Some((hex, file)) = line.split_once(' ') else {
+            continue;
+        };
+        let file = file.trim_start_matches([' ', '*']);
+        let file = file.strip_prefix("./").unwrap_or(file);
+        if file != name {
+            continue;
+        }
+        if found.is_some() || !is_sha256_hex(hex) {
+            return None;
+        }
+        found = Some(hex.to_string());
+    }
+    found
+}
+
+fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A release asset on disk, verified: the signature over `SHA256SUMS`, the
+/// version in it, and the file's hash against its signed line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Staged {
+    pub version: String,
+    pub file: PathBuf,
+}
+
+/// Downloads and verifies `update`'s asset into `dir` (docs/48 D3):
+/// signature first, then the version it names, then the asset against its
+/// signed hash. Nothing outside `dir` is touched, and a file that fails is
+/// deleted. Blocking — call it off the UI thread.
+pub fn stage(update: &Update, current: &str, dir: &Path) -> Result<Staged, String> {
+    stage_with(update, current, RELEASE_KEY, dir, &fetch, &download)
+}
+
+/// GETs a small file whole: `(url, byte limit)`.
+pub type FetchFn = dyn Fn(&str, u64) -> Result<Vec<u8>, String>;
+/// Streams a file to a path and returns its SHA-256: `(url, path, limit)`.
+pub type DownloadFn = dyn Fn(&str, &Path, u64) -> Result<String, String>;
+
+/// [`stage`] with the key and the network passed in, for the tests.
+pub fn stage_with(
+    update: &Update,
+    current: &str,
+    key: &str,
+    dir: &Path,
+    fetch: &FetchFn,
+    download: &DownloadFn,
+) -> Result<Staged, String> {
+    let files = update
+        .files
+        .as_ref()
+        .ok_or("the manifest does not list a signed release")?;
+    let sig = fetch(&files.sig.url, MAX_SIDECAR)?;
+    let sig = String::from_utf8(sig).map_err(|_| "the signature is not text".to_string())?;
+    let sums = fetch(&files.sums.url, MAX_SIDECAR)?;
+    let version = verify_release(&sums, &sig, key, current)?;
+    if version != update.version {
+        return Err(format!(
+            "the manifest says {} but the signed release is {version}",
+            update.version
+        ));
+    }
+    let sums = String::from_utf8(sums).map_err(|_| format!("{SUMS_NAME} is not text"))?;
+    let want = sums_entry(&sums, &files.asset.name)
+        .ok_or_else(|| format!("{SUMS_NAME} does not list {}", files.asset.name))?;
+
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let file = dir.join(&files.asset.name);
+    let part = dir.join(format!("{}.part", files.asset.name));
+    let got = download(&files.asset.url, &part, files.asset.size.min(MAX_ASSET));
+    let got = match got {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            return Err(e);
+        }
+    };
+    if got != want {
+        let _ = std::fs::remove_file(&part);
+        return Err(format!(
+            "{} does not match its signed hash",
+            files.asset.name
+        ));
+    }
+    std::fs::rename(&part, &file).map_err(|e| format!("{}: {e}", file.display()))?;
+    Ok(Staged { version, file })
+}
+
+/// The download client: the check's fixed User-Agent and nothing else
+/// (docs/48 SU2, docs/47 D2), redirects followed (GitHub serves release
+/// assets from its object store), a whole-transfer timeout.
+fn download_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(DOWNLOAD_TIMEOUT))
+        .user_agent(USER_AGENT)
+        .build()
+        .into()
+}
+
+/// GETs a small file whole, refusing more than `limit` bytes.
+fn fetch(url: &str, limit: u64) -> Result<Vec<u8>, String> {
+    let mut resp = download_agent()
+        .get(url)
+        .call()
+        .map_err(|e| e.to_string())?;
+    resp.body_mut()
+        .with_config()
+        .limit(limit)
+        .read_to_vec()
+        .map_err(|e| e.to_string())
+}
+
+/// Streams `url` into `path` and returns its SHA-256, refusing more than
+/// `limit` bytes.
+fn download(url: &str, path: &Path, limit: u64) -> Result<String, String> {
+    let mut resp = download_agent()
+        .get(url)
+        .call()
+        .map_err(|e| e.to_string())?;
+    let mut body = resp.body_mut().with_config().limit(limit).reader();
+    let mut out = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = body.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        out.write_all(&buf[..n])
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    out.sync_all()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(hex(&hasher.finalize()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Unix seconds as `YYYY-MM-DDTHH:MM:SSZ` — the `lastUpdateCheck` format.
@@ -322,6 +613,9 @@ mod tests {
                 release_url:
                     "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v2.1.0"
                         .into(),
+                // The fixture lists SHA256SUMS but no signature.
+                files: None,
+                deb: None,
             })
         );
     }
@@ -476,6 +770,8 @@ mod tests {
             Some(Update {
                 version: "2.1.0".into(),
                 release_url: url.into(),
+                files: None,
+                deb: None,
             })
         );
         assert_eq!(cached("2.1.0", url, "2.1.0"), None, "already upgraded");
@@ -576,5 +872,308 @@ mod tests {
             check(&url, "2.0.0", &defaults::WINDOWS),
             Outcome::Answered(None)
         );
+    }
+
+    // ---- R47 (docs/48 SU2): the signed download ------------------------
+
+    /// Vectors made by the real minisign (`testdata/r47/regen.sh`) with a
+    /// throwaway test key: `SHA256SUMS` over `asset.bin` named as the EXE.
+    const T_KEY: &str = include_str!("../testdata/r47/test-key.pub");
+    const T_SUMS: &[u8] = include_bytes!("../testdata/r47/SHA256SUMS");
+    const T_ASSET: &[u8] = include_bytes!("../testdata/r47/asset.bin");
+    const T_SIG: &str = include_str!("../testdata/r47/sig-2.1.0.minisig");
+    const T_SIG_OLD: &str = include_str!("../testdata/r47/sig-1.9.0.minisig");
+    const T_SIG_FOREIGN: &str = include_str!("../testdata/r47/sig-foreign.minisig");
+    const T_SIG_OTHER_KEY: &str = include_str!("../testdata/r47/sig-other-key.minisig");
+
+    fn key() -> &'static str {
+        T_KEY.trim()
+    }
+
+    #[test]
+    fn the_compiled_in_key_parses_and_is_the_release_key() {
+        let pk = minisign_verify::PublicKey::from_base64(RELEASE_KEY);
+        assert!(pk.is_ok(), "{pk:?}");
+        let on_disk = include_str!("../../../../tools/releases/keys/gawk-release.pub");
+        assert_eq!(
+            on_disk.lines().nth(1),
+            Some(RELEASE_KEY),
+            "the key CI verifies with and the key the app trusts must be one key"
+        );
+    }
+
+    #[test]
+    fn a_release_signature_yields_its_signed_version() {
+        assert_eq!(
+            verify_release(T_SUMS, T_SIG, key(), "2.0.0"),
+            Ok("2.1.0".into())
+        );
+        assert_eq!(
+            verify_release(T_SUMS, T_SIG, key(), "2.0.0+g1a2b3c4"),
+            Ok("2.1.0".into())
+        );
+    }
+
+    #[test]
+    fn signatures_that_must_not_install_are_refused() {
+        let mut tampered = T_SUMS.to_vec();
+        tampered[0] ^= 1;
+        let cases: [(&str, &[u8], &str, &str); 6] = [
+            ("tampered SHA256SUMS", &tampered, T_SIG, "2.0.0"),
+            ("another key", T_SUMS, T_SIG_OTHER_KEY, "2.0.0"),
+            ("not a desktop release", T_SUMS, T_SIG_FOREIGN, "2.0.0"),
+            ("older than running", T_SUMS, T_SIG_OLD, "2.0.0"),
+            ("the running release itself", T_SUMS, T_SIG, "2.1.0"),
+            (
+                "garbage signature",
+                T_SUMS,
+                "untrusted comment: x\nnope\n",
+                "2.0.0",
+            ),
+        ];
+        for (what, sums, sig, current) in cases {
+            assert!(
+                verify_release(sums, sig, key(), current).is_err(),
+                "{what} must be refused"
+            );
+        }
+        // And the release key does not accept the test key's signature.
+        assert!(verify_release(T_SUMS, T_SIG, RELEASE_KEY, "2.0.0").is_err());
+    }
+
+    #[test]
+    fn sums_lines_are_read_in_the_attach_jobs_shape() {
+        let sums = std::str::from_utf8(T_SUMS).unwrap();
+        let want = hex(&Sha256::digest(T_ASSET));
+        assert_eq!(
+            sums_entry(sums, "gawk-broadcast-windows-x86_64.exe"),
+            Some(want.clone())
+        );
+        assert_eq!(sums_entry(sums, "missing.exe"), None);
+        assert_eq!(
+            sums_entry(&format!("{want} *a.exe\n"), "a.exe"),
+            Some(want.clone())
+        );
+        assert_eq!(
+            sums_entry(&format!("{want}  a.exe\n"), "a.exe"),
+            Some(want.clone())
+        );
+        assert_eq!(
+            sums_entry(&format!("{want}  ./a.exe\n{want}  ./a.exe\n"), "a.exe"),
+            None,
+            "listed twice is ambiguous"
+        );
+        assert_eq!(sums_entry("xyz  ./a.exe\n", "a.exe"), None, "not a hash");
+    }
+
+    /// A manifest listing the R47 files, as the attach job publishes it.
+    fn signed_manifest(dist: &defaults::Distribution, version: &str) -> String {
+        let base = format!(
+            "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v{version}"
+        );
+        let asset = dist.asset;
+        let deb = format!("gawk-broadcast_{version}_amd64.deb");
+        format!(
+            r#"{{
+  "asset": {{"name": "{asset}", "sha256": "{h}", "size": 16, "url": "{base}/{asset}"}},
+  "assets": {{
+    "{asset}": {{"sha256": "{h}", "size": 16, "url": "{base}/{asset}"}},
+    "SHA256SUMS": {{"sha256": "{h}", "size": 185, "url": "{base}/SHA256SUMS"}},
+    "SHA256SUMS.minisig": {{"sha256": "{h}", "size": 290, "url": "{base}/SHA256SUMS.minisig"}},
+    "{deb}": {{"sha256": "{h}", "size": 9, "url": "{base}/{deb}"}}
+  }},
+  "component": "{name}",
+  "release_url": "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v{version}",
+  "schema": 1,
+  "version": "{version}"
+}}"#,
+            h = "e".repeat(64),
+            name = dist.name,
+        )
+    }
+
+    #[test]
+    fn a_signed_manifest_lists_the_files_to_install() {
+        let u = evaluate(
+            &signed_manifest(&defaults::WINDOWS, "2.1.0"),
+            "2.0.0",
+            &defaults::WINDOWS,
+        )
+        .unwrap();
+        let f = u.files.expect("files listed");
+        assert_eq!(f.asset.name, "gawk-broadcast-windows-x86_64.exe");
+        assert_eq!(f.asset.size, 16);
+        assert!(f.sums.url.ends_with("/v2.1.0/SHA256SUMS"));
+        assert!(f.sig.url.ends_with("/v2.1.0/SHA256SUMS.minisig"));
+        assert_eq!(u.deb, None, "only Linux reads the .deb");
+
+        let l = evaluate(
+            &signed_manifest(&defaults::LINUX, "2.1.0"),
+            "2.0.0",
+            &defaults::LINUX,
+        )
+        .unwrap();
+        assert_eq!(l.deb.as_deref(), Some("gawk-broadcast_2.1.0_amd64.deb"));
+        assert!(l.files.is_some());
+    }
+
+    /// The notice is R45's and must survive anything wrong with R47's part
+    /// of the manifest; only the install goes away.
+    #[test]
+    fn a_bad_file_list_keeps_the_notice_and_drops_the_install() {
+        let d = &defaults::WINDOWS;
+        let good = signed_manifest(d, "2.1.0");
+        let cases = [
+            ("no signature", good.replace("\"SHA256SUMS.minisig\"", "\"x.minisig\"")),
+            (
+                "foreign signature url",
+                good.replace(
+                    "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v2.1.0/SHA256SUMS.minisig",
+                    "https://evil.example/SHA256SUMS.minisig",
+                ),
+            ),
+            (
+                "url naming another file",
+                good.replace("/v2.1.0/SHA256SUMS\"", "/v2.1.0/other\""),
+            ),
+            (
+                "oversized asset",
+                good.replace(
+                    r#""size": 16, "url""#,
+                    r#""size": 99999999999, "url""#,
+                ),
+            ),
+            ("assets not an object", {
+                let a = good.find("\"assets\"").unwrap();
+                let b = good.find("\"component\"").unwrap();
+                format!("{}\"assets\": [],\n  {}", &good[..a], &good[b..])
+            }),
+        ];
+        for (what, body) in cases {
+            assert_ne!(body, good, "{what}: the mutation must change the body");
+            let u = evaluate(&body, "2.0.0", d).unwrap_or_else(|| panic!("{what}: notice lost"));
+            assert_eq!(u.files, None, "{what}");
+        }
+    }
+
+    fn update_for(version: &str) -> Update {
+        evaluate(
+            &signed_manifest(&defaults::WINDOWS, version),
+            "2.0.0",
+            &defaults::WINDOWS,
+        )
+        .unwrap()
+    }
+
+    /// Serves the vectors by URL suffix; the asset body is `asset`.
+    fn net(sig: &'static str, asset: &'static [u8]) -> (Box<FetchFn>, Box<DownloadFn>) {
+        let fetch = move |url: &str, _limit: u64| -> Result<Vec<u8>, String> {
+            if url.ends_with("/SHA256SUMS.minisig") {
+                Ok(sig.as_bytes().to_vec())
+            } else if url.ends_with("/SHA256SUMS") {
+                Ok(T_SUMS.to_vec())
+            } else {
+                Err(format!("unexpected fetch {url}"))
+            }
+        };
+        let download = move |url: &str, path: &Path, _limit: u64| -> Result<String, String> {
+            assert!(url.ends_with("/gawk-broadcast-windows-x86_64.exe"), "{url}");
+            std::fs::write(path, asset).map_err(|e| e.to_string())?;
+            Ok(hex(&Sha256::digest(asset)))
+        };
+        (Box::new(fetch), Box::new(download))
+    }
+
+    #[test]
+    fn a_verified_release_is_staged() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join(".gawk-update");
+        let (fetch, download) = net(T_SIG, T_ASSET);
+        let got = stage_with(
+            &update_for("2.1.0"),
+            "2.0.0",
+            key(),
+            &staging,
+            &fetch,
+            &download,
+        )
+        .unwrap();
+        assert_eq!(got.version, "2.1.0");
+        assert_eq!(got.file, staging.join("gawk-broadcast-windows-x86_64.exe"));
+        assert_eq!(std::fs::read(&got.file).unwrap(), T_ASSET);
+        assert!(
+            !staging
+                .join("gawk-broadcast-windows-x86_64.exe.part")
+                .exists()
+        );
+    }
+
+    /// docs/48 SU2: each refusal happens before anything could be renamed,
+    /// and leaves no asset behind.
+    #[test]
+    fn a_release_that_fails_verification_leaves_nothing_staged() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join(".gawk-update");
+        let staged = staging.join("gawk-broadcast-windows-x86_64.exe");
+        let part = staging.join("gawk-broadcast-windows-x86_64.exe.part");
+        let cases: [(&str, &'static str, &'static [u8], &str); 4] = [
+            ("tampered asset", T_SIG, b"gawk test asset, evil\n", "2.1.0"),
+            (
+                "signature by another key",
+                T_SIG_OTHER_KEY,
+                T_ASSET,
+                "2.1.0",
+            ),
+            ("older signed release", T_SIG_OLD, T_ASSET, "2.1.0"),
+            // The manifest claims 2.2.0; the key vouched for 2.1.0.
+            ("manifest version differs", T_SIG, T_ASSET, "2.2.0"),
+        ];
+        for (what, sig, asset, manifest_version) in cases {
+            let (fetch, download) = net(sig, asset);
+            let got = stage_with(
+                &update_for(manifest_version),
+                "2.0.0",
+                key(),
+                &staging,
+                &fetch,
+                &download,
+            );
+            assert!(got.is_err(), "{what}: {got:?}");
+            assert!(!staged.exists() && !part.exists(), "{what}: left a file");
+        }
+        let no_files = Update {
+            files: None,
+            ..update_for("2.1.0")
+        };
+        let (fetch, download) = net(T_SIG, T_ASSET);
+        assert!(stage_with(&no_files, "2.0.0", key(), &staging, &fetch, &download).is_err());
+    }
+
+    /// The download goes out like the check (docs/47 D2): the fixed UA, no
+    /// conditional headers, and it streams to the file with its hash.
+    #[test]
+    fn the_download_carries_nothing_identifying() {
+        let (url, rx) = serve(200, "payload".into());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        let got = download(&url, &path, 1024).unwrap();
+        assert_eq!(got, hex(&Sha256::digest(b"payload")));
+        assert_eq!(std::fs::read(&path).unwrap(), b"payload");
+        let head = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        for line in head.lines().skip(1).filter(|l| !l.is_empty()) {
+            let (k, v) = line.split_once(':').unwrap();
+            let k = k.to_ascii_lowercase();
+            assert!(!k.starts_with("if-") && k != "cookie", "{line}");
+            if k == "user-agent" {
+                assert_eq!(v.trim(), USER_AGENT);
+            }
+        }
+    }
+
+    #[test]
+    fn a_download_over_its_size_is_refused() {
+        let (url, _rx) = serve(200, "x".repeat(2048));
+        let dir = tempfile::tempdir().unwrap();
+        assert!(download(&url, &dir.path().join("f"), 1024).is_err());
     }
 }

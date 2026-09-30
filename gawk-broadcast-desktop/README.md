@@ -75,9 +75,23 @@ notes" and opens the release page; **Dismiss** hides it until the app
 restarts. **Settings → Updates → Check now** asks right away. The request is
 a plain GET with a fixed User-Agent: no version, no identifier, nothing about
 you or your broadcasts. Turn the launch check off with **Settings → Advanced
-→ Check for updates at launch**, or by setting `GAWK_NO_UPDATE_CHECK=1`.
-Downloading and installing is still up to you
+→ Check for updates at launch**, or by setting `GAWK_NO_UPDATE_CHECK=1`
 ([docs/47](../docs/47-desktop-update-check.md)).
+
+**Installing it.** On Windows and from the Linux tarball, the app then
+downloads the new release while you are not broadcasting, and verifies it
+before anything else touches it: `SHA256SUMS` must carry a valid signature
+from the project's release key, which is compiled into the app, and the
+download must match its line there. Once that passes, the line offers
+**Install and relaunch**. Clicking it swaps the new build in beside the old
+one and restarts the app; it is disabled while you are live, and the app
+never restarts on its own. Everything happens in the folder the app runs
+from: a staging folder `.gawk-update` while downloading, and on Windows the
+old EXE kept as `<name>.exe.old` until the next start. If that folder isn't
+writable, or the download fails verification, you get the line above and
+nothing else. A `.deb` install is never replaced by the app; the line names
+the newer package and the `sudo apt install` command instead. macOS keeps the
+notice only for now. ([docs/48](../docs/48-signed-in-place-update.md))
 
 ## macOS
 
@@ -271,6 +285,7 @@ Blank settings mean "the default", resolved at use, never at save
 | App URL (join links) | `https://gawk.ioio.fi` |
 | Telemetry ingest | `https://gawk.ioio.fi/api/telemetry/v1/ingest` (`off` = send nothing) |
 | Update check | On: one GET of the release manifest from GitHub at launch, at most every 15 minutes, or on **Check now** (launch check off in Advanced, or `GAWK_NO_UPDATE_CHECK=1`) |
+| Update download | Windows and the Linux tarball: once a check finds a newer release and you are not live, its asset, `SHA256SUMS` and `SHA256SUMS.minisig` from GitHub, verified against the compiled-in release key before **Install and relaunch** appears (docs/48) |
 | Origin | `gawk-broadcast://windows` — the relay's `-allowed-origins` must include it |
 | Rung | 1080p60, 500 ms GOP, 12 Mbps peak VBR — the resolution is a bounding box: the stream keeps the source's aspect ratio inside it |
 

@@ -650,6 +650,15 @@ exe + `BUILD-INFO.txt` + a copy of the INSTALL doc, 30-day retention,
 cannot run this code meaningfully, so a build a human can run on real
 hardware **before merge** is how it gets tested at all.
 
+**2026-10-01 (R47, [docs/48](48-signed-in-place-update.md) D1):** the EXE
+stays unsigned in the Authenticode sense, and SmartScreen still warns on a
+browser download. The *release set* is now signed: CI signs `SHA256SUMS`
+with the project's minisign key and attaches `SHA256SUMS.minisig`, and the
+app verifies that signature before it installs an update in place. That
+says the bytes came from this project's CI; it says nothing to Windows.
+Whether an EXE the app wrote itself escapes the SmartScreen prompt is
+docs/48 SU3's manual check.
+
 ### D18 — CI: self-hosted Linux, cross-compiled to msvc, integration-tested against the real relay binary
 
 **Revised 2026-07-31.** This decision originally read "`windows-latest`,

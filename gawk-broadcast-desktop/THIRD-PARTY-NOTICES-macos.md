@@ -17,12 +17,12 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target aarch64-apple-darwin` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped bundle.
 
-## Summary — 294 packages
+## Summary — 295 packages
 
 | License (as declared) | Packages |
 |---|---:|
 | `MIT OR Apache-2.0` | 122 |
-| `MIT` | 45 |
+| `MIT` | 46 |
 | `Apache-2.0 OR MIT` | 24 |
 | `Unicode-3.0` | 22 |
 | `Zlib OR Apache-2.0 OR MIT` | 22 |
@@ -186,6 +186,7 @@ script for what counts as a dependency here and why.
 | `memmap2` | 0.9.11 | `MIT OR Apache-2.0` | Copyright (c) 2020 Yevhenii Reizner<br>Copyright (c) 2015 Dan Burkert |
 | `memoffset` | 0.9.1 | `MIT` | Copyright (c) 2017 Gilad Naaman |
 | `minimal-lexical` | 0.2.1 | `MIT/Apache-2.0` | Copyright (c) 2009 The Go Authors. All rights reserved |
+| `minisign-verify` | 0.3.0 | `MIT` | Copyright (c) 2019-2025 Frank Denis<br>Copyright (c) 2006-2009 Graydon Hoare<br>Copyright (c) 2009-2013 Mozilla Foundation |
 | `miniz_oxide` | 0.8.9 | `MIT OR Zlib OR Apache-2.0` | Copyright 2013-2014 RAD Game Tools and Valve Software<br>Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC<br>Copyright (c) 2017 Frommi<br>Copyright (c) 2017-2024 oyvindln<br>Copyright (c) 2020 Frommi |
 | `mio` | 1.2.2 | `MIT` | Copyright (c) 2014 Carl Lerche and other MIO contributors |
 | `moxcms` | 0.8.1 | `BSD-3-Clause OR Apache-2.0` | Copyright 2024 Radzivon Bartoshyk<br>Copyright (c) Radzivon Bartoshyk. All rights reserved |
@@ -4935,7 +4936,73 @@ have been licensed under extremely permissive terms.
 ------------------------------------------------------------------------------
 ```
 
-### 49. UNKNOWN — 1 package
+### 49. MIT — 1 package
+
+Applies to: `minisign-verify`
+
+```
+Copyright (c) 2019-2025 Frank Denis
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+--
+
+Code in the src/crypto folder is derived from the rust-crypto project:
+https://github.com/DaGenix/rust-crypto
+
+Original ISC license follows:
+
+Copyright (c) 2006-2009 Graydon Hoare
+Copyright (c) 2009-2013 Mozilla Foundation
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### 50. UNKNOWN — 1 package
 
 Applies to: `imgref`
 
@@ -5063,7 +5130,7 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ```
 
-### 50. UNKNOWN — 1 package
+### 51. UNKNOWN — 1 package
 
 Applies to: `memchr`
 
@@ -5073,7 +5140,7 @@ This project is dual-licensed under the Unlicense and MIT licenses.
 You may use this code under the terms of either license.
 ```
 
-### 51. UNKNOWN — 1 package
+### 52. UNKNOWN — 1 package
 
 Applies to: `muda`
 
@@ -5099,7 +5166,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/muda.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 52. UNKNOWN — 1 package
+### 53. UNKNOWN — 1 package
 
 Applies to: `ring`
 
@@ -5115,7 +5182,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-### 53. UNKNOWN — 1 package
+### 54. UNKNOWN — 1 package
 
 Applies to: `typenum`
 
@@ -5123,7 +5190,7 @@ Applies to: `typenum`
 MIT OR Apache-2.0
 ```
 
-### 54. UNKNOWN — 1 package
+### 55. UNKNOWN — 1 package
 
 Applies to: `webpki-roots`
 
@@ -5191,7 +5258,7 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-### 55. Unlicense — 2 packages
+### 56. Unlicense — 2 packages
 
 Applies to: `byteorder-lite`, `memchr`
 
@@ -5222,7 +5289,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
-### 56. Zlib — 9 packages
+### 57. Zlib — 9 packages
 
 Applies to: `bytemuck`, `cursor-icon`, `foldhash`, `glow`, `lru-slab`, `miniz_oxide`, `raw-window-handle`, `slotmap`, `tinyvec`
 
@@ -5244,7 +5311,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 57. Zlib — 2 packages
+### 58. Zlib — 2 packages
 
 Applies to: `zune-core`, `zune-jpeg`
 
@@ -5270,7 +5337,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 58. Zlib — 1 package
+### 59. Zlib — 1 package
 
 Applies to: `tinyvec_macros`
 

@@ -14,6 +14,7 @@ pub mod clock;
 pub mod config;
 pub mod dispatch;
 pub mod gate;
+pub mod install;
 pub mod lossnotice;
 pub mod media;
 pub mod relay;

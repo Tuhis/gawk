@@ -1,13 +1,16 @@
 # R47 — Signed in-place update for the desktop broadcasters (docs/48)
 
-**Status**: designed 2026-09-15, refreshed 2026-09-30; **not started**. Chunks **SU1–SU5** (`SU` =
-Signed Update; two-letter prefix per the R21+ convention). **Depends on
-R45** ([docs/47](47-desktop-update-check.md)): this milestone turns R45's
-"vX.Y.Z available" line into an "install and relaunch" button, and reuses
-its manifest fetch, validation, compare, opt-out and dismissal unchanged.
-Gated on one prerequisite that does not exist today: **a release signing
-key** (D1). Split out of R45 on 2026-09-15 so the notify-only half can ship
-while the signing question is settled.
+**Status**: designed 2026-09-15, refreshed 2026-09-30; **implemented
+2026-10-01** (SU1–SU5 in one PR, §7). The first release signed end to end,
+and the SU3/SU4 manual passes on real machines, are the owner's. Chunks
+**SU1–SU5** (`SU` = Signed Update; two-letter prefix per the R21+
+convention). **Depends on R45** ([docs/47](47-desktop-update-check.md)):
+this milestone turns R45's "vX.Y.Z available" line into an "install and
+relaunch" button, and reuses its manifest fetch, validation, compare,
+opt-out and dismissal unchanged. Its prerequisite, **a release signing
+key** (D1), was generated 2026-10-01 (key ID `EFB62FBC86D13877`). Split out
+of R45 on 2026-09-15 so the notify-only half could ship while the signing
+question was settled.
 
 **2026-09-29 (R56 LX6)**: the Linux install path (D6, SU4) now applies to the
 Rust app, `gawk-broadcast-linux` ([docs/58](58-linux-desktop-broadcaster.md)
@@ -210,3 +213,49 @@ afterwards.
   (CI's verify step) and the compiled-in constant (D7), and ship it. No
   bridge is possible: installs in the field reject its signature and fall
   back to the R45 notice, so everyone downloads once by hand.
+
+## 7. Implementation (2026-10-01)
+
+Where the code differs from the decisions above, and why. Each is small;
+none changes a security property except the first, which adds one.
+
+- **The version comes from the signature (D3, added).** A signature over
+  `SHA256SUMS` alone does not say which release it covers, so a manifest
+  could point a verified download at an older signed release and call it
+  newer, defeating D3's ≤-current rule. CI signs with the trusted comment
+  `gawk-broadcast-desktop X.Y.Z`, which minisign's global signature covers;
+  `update::verify_release` reads the version from there, requires it to
+  equal the manifest's and to be newer than the running build.
+- **`minisign-verify`, not `ring` (D7).** minisign 0.11+ signs prehashed
+  (BLAKE2b-512) by default, which `ring` does not implement. D7 named this
+  crate as the fallback; it is MIT, dependency-free, and by minisign's
+  author. The notices gained it (and, for Linux, `tar` and `filetime`).
+- **The swap rules live in `gawk-engine` (`install.rs`), not the shell
+  crates (D7).** They are plain `std::fs` and so testable on any host,
+  while `app-windows` only builds for msvc and `app-linux` needs GStreamer.
+  The shared shell (`ui/src/shell.rs`) picks the layout from the injected
+  distribution; the platform crates did not change.
+- **Windows stages in `.gawk-update/`, not `<exe>.new` (D5).** One staging
+  rule for both platforms. The swap is still two renames beside the EXE,
+  with the old one parked as `<exe>.old` and removed at the next start.
+- **A remembered update re-fetches the manifest at launch.** The config
+  caches only version and URL (R45), so a relaunch inside the 15-minute
+  window had no file list to download. When the build can install in place,
+  that launch asks again instead of waiting.
+- **The Linux tarball is unpacked in-process** (`flate2` + `tar`, Linux
+  only), extracting only the member `gawk-broadcast-linux`; no path in the
+  archive can reach outside the staging directory.
+- **CI signing is `tools/releases/sign-sums.sh`.** It downloads minisign
+  0.12 pinned by SHA-256 (its tarball's signature was checked against the
+  author's key when pinned), signs, and verifies against
+  `tools/releases/keys/gawk-release.pub`. `--self-test` runs the same path
+  with a throwaway key in the `release-tool` job, because `attach-release`
+  never runs on a pull request.
+
+| Chunk | State | Verified |
+|---|---|---|
+| SU1 | Implemented | Key generated offline, secrets set, public key checked in. `sign-sums.sh` refuses a missing secret, a non-release version and a wrong passphrase, and signed with the real secret verifies against the checked-in key (local run, dummy file, version 0.0.1). `test_sign_sums.py` runs the self-test in CI. Owner-pending: the first release carrying `SHA256SUMS.minisig`, and `minisign -Vm` on the downloaded pair. |
+| SU2 | Implemented | `update.rs` tests against vectors from the real minisign (`crates/engine/testdata/r47`): a valid set stages; a tampered asset, another key, an older signed release, the running release, a manifest version that differs from the signed one, and a manifest without signed files are each refused with nothing left staged; the download sends the fixed UA and no conditional headers, and stops at its size limit. |
+| SU3 | Implemented; manual pass owner-pending | Swap, rollback on failure and `.old` cleanup unit-tested in `install.rs`; the button's idle-only rules in `shell.rs`. The Windows 10 VM pass from release N to N+1, including whether SmartScreen prompts, needs two signed releases. |
+| SU4 | Implemented; manual pass owner-pending | `install.rs`: one rename, `share/` untouched, leftover staging removed at start, a read-only directory writes nothing, the `.deb` detected from dpkg's list, a tarball without the binary refused; `shell.rs`: the D9 note text, no download while live, dismissed, given up or without files. The `~/Downloads` and `.deb` passes need two signed releases. |
+| SU5 | Done | The READMEs, `tools/linux/INSTALL.md`, the terms sentence (no `termsVersion` bump, D8), docs/38 D17, gotchas, ROADMAP. |

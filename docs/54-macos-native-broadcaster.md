@@ -1088,6 +1088,12 @@ what MB5 itself added, and how:
   `engine::defaults` (MB1), docs/47 D5 names the macOS row, and MB7 writes
   `releases/gawk-broadcast-macos/latest.json`. The D17 bundle-swap design
   stands; it lands with R47.
+  **2026-10-01:** R45 shipped the notice on macOS too (2026-09-30), and R47
+  shipped the signing, the verified download (`update::stage`) and the
+  Windows/Linux swaps (docs/48 §7). The macOS app shows the notice only:
+  `install::Layout::of` returns `None` for it, so nothing is downloaded.
+  The D17 bundle swap is the one piece left, as a new `Layout` beside
+  those two.
 
 **MB7 (2026-09-23)** — the release path, and where it bent:
 

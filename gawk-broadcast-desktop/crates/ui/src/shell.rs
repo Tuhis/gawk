@@ -27,6 +27,7 @@ use crate::{
 };
 use gawk_engine::clock::{Clock, MonotonicClock};
 use gawk_engine::config::{self, Config, DEFAULT_SERVER_NAME, ServerProfile};
+use gawk_engine::install::{self, Layout, Plan};
 use gawk_engine::lossnotice::{LossMonitor, NetworkFacts, Notice};
 use gawk_engine::room::RoomSummary;
 use gawk_engine::sender::Sender;
@@ -37,6 +38,8 @@ use gawk_engine::{RoomGrant, RoomInput, parse_room_input};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::any::Any;
 use std::cell::RefCell;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
@@ -188,6 +191,12 @@ enum ShellMsg {
     UpdateChecked {
         outcome: Outcome,
         manual: bool,
+    },
+    /// R47: the download for `version` came back — verified and ready to
+    /// swap in, or why not.
+    UpdateStaged {
+        version: String,
+        result: Result<Ready, String>,
     },
 }
 
@@ -385,6 +394,7 @@ pub fn run(
         std::env::consts::ARCH
     );
     platform.launch_log();
+    let install_target = install_target();
 
     let clock = Arc::new(MonotonicClock::new());
     // version::RELEASE, not version::display(): this field doubles as the
@@ -475,7 +485,10 @@ pub fn run(
         room_joined: false,
         room: None,
         room_key_used: String::new(),
-        update: UpdateState::default(),
+        update: UpdateState {
+            target: install_target,
+            ..Default::default()
+        },
     }));
 
     let ui = MainWindow::new().expect("create window");
@@ -1163,13 +1176,20 @@ fn save_config(shell: &mut Shell) {
 
 /// Why this launch skips the update check, or `None` to run it: the
 /// setting, the environment, or a check GitHub answered within the last 15 minutes
-/// (docs/47 D3, D6).
-fn update_check_skip(cfg: &Config, env_opted_out: bool, now: u64) -> Option<&'static str> {
+/// (docs/47 D3, D6). `refetch` waives the 15 minutes (R47): a remembered
+/// update carries no file list, so a build that can install in place asks
+/// again rather than show a notice it cannot act on.
+fn update_check_skip(
+    cfg: &Config,
+    env_opted_out: bool,
+    now: u64,
+    refetch: bool,
+) -> Option<&'static str> {
     if cfg.disable_update_check {
         Some("turned off in settings")
     } else if env_opted_out {
         Some("turned off by GAWK_NO_UPDATE_CHECK")
-    } else if !update::due(&cfg.last_update_check, now) {
+    } else if !refetch && !update::due(&cfg.last_update_check, now) {
         Some("checked within the last 15 minutes")
     } else {
         None
@@ -1188,7 +1208,8 @@ fn start_update_check(ui: &MainWindow, sh: &mut Shell) {
             update::cached(&sh.cfg.update_version, &sh.cfg.update_url, version::RELEASE);
         show_update(ui, sh.update.shown.as_ref());
     }
-    if let Some(why) = update_check_skip(&sh.cfg, env_off, now_unix()) {
+    let refetch = sh.update.shown.is_some() && sh.update.target.is_some();
+    if let Some(why) = update_check_skip(&sh.cfg, env_off, now_unix(), refetch) {
         log::info!("update check skipped: {why}");
         return;
     }
@@ -1227,6 +1248,36 @@ struct UpdateState {
     /// Check now was pressed while the launch check was in flight: that
     /// check's answer is reported as the button's.
     manual_waiting: bool,
+    /// R47: how this build replaces itself, read at startup. `None` when it
+    /// cannot (macOS, docs/54 D17; or no path to itself).
+    target: Option<InstallTarget>,
+    /// A download is in flight.
+    staging: bool,
+    /// A verified build, ready to swap in.
+    ready: Option<Ready>,
+    /// The version this run stops trying to stage: its download failed, or
+    /// this install cannot be updated in place. The R45 line stays.
+    given_up: Option<String>,
+    /// The line under the notice: the `.deb` instructions (docs/48 D9), or
+    /// why an install failed.
+    note: String,
+}
+
+/// How this build replaces itself (docs/48 D5, D6).
+#[derive(Debug, Clone)]
+struct InstallTarget {
+    /// The binary's path as read at startup.
+    exe: PathBuf,
+    layout: Layout,
+    /// The arguments to relaunch with.
+    args: Vec<OsString>,
+}
+
+/// A verified build that will replace the running one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Ready {
+    version: String,
+    binary: PathBuf,
 }
 
 impl UpdateState {
@@ -1234,6 +1285,25 @@ impl UpdateState {
         if let Some(u) = self.shown.take() {
             self.dismissed = Some(u.version);
         }
+    }
+
+    /// The update to download now, if any (docs/48 D4): one that is shown,
+    /// lists signed files, and can be installed here; only while idle, one
+    /// download at a time, and not one already ready or given up on.
+    fn to_stage(&self, idle: bool) -> Option<Update> {
+        let u = self.shown.as_ref()?;
+        let wanted = idle
+            && self.target.is_some()
+            && !self.staging
+            && u.files.is_some()
+            && self.ready.as_ref().is_none_or(|r| r.version != u.version)
+            && self.given_up.as_deref() != Some(u.version.as_str());
+        wanted.then(|| u.clone())
+    }
+
+    /// Whether the shown release is the one staged: the button shows.
+    fn ready_for_shown(&self) -> bool {
+        matches!((&self.shown, &self.ready), (Some(u), Some(r)) if u.version == r.version)
     }
 
     /// Check now was pressed. True means start a check; false means one is
@@ -1292,6 +1362,146 @@ fn update_status_text(outcome: &Outcome) -> String {
         Outcome::Answered(None) => format!("You have the latest version (v{}).", version::RELEASE),
         Outcome::Unreachable(_) => "Couldn't reach GitHub. Try again later.".into(),
     }
+}
+
+/// R47: how this build replaces itself. Read once, at startup, before
+/// anything could rename the binary: after a Linux swap `/proc/self/exe`
+/// reads `<path> (deleted)` (docs/48 D6). Also clears what an earlier update
+/// left beside the binary.
+fn install_target() -> Option<InstallTarget> {
+    let layout = Layout::of(gawk_engine::defaults::this())?;
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            log::info!("in-place update off: no path to this binary ({e})");
+            return None;
+        }
+    };
+    for p in install::cleanup(&exe) {
+        log::info!("removed {}, left by an earlier update", p.display());
+    }
+    Some(InstallTarget {
+        exe,
+        layout,
+        args: std::env::args_os().skip(1).collect(),
+    })
+}
+
+/// Starts the download of the shown update when one is due (docs/48 D4):
+/// after a check answers, and on the idle tick, so an update found while
+/// live downloads once the broadcast ends.
+fn maybe_stage(ui: &MainWindow, sh: &mut Shell) {
+    let Some(u) = sh.update.to_stage(sh.state == UiState::Idle) else {
+        return;
+    };
+    let Some(target) = sh.update.target.clone() else {
+        return;
+    };
+    sh.update.note.clear();
+    match install::plan(&target.exe, target.layout, Path::new(install::DEB_LIST)) {
+        Plan::Deb => {
+            log::info!(
+                "update v{}: a .deb install, so no in-place update",
+                u.version
+            );
+            sh.update.given_up = Some(u.version.clone());
+            sh.update.note = deb_note(&u);
+        }
+        Plan::NotWritable(why) => {
+            log::info!("update v{}: cannot install in place: {why}", u.version);
+            sh.update.given_up = Some(u.version.clone());
+        }
+        Plan::InPlace { staging } => {
+            log::info!("update v{}: downloading and verifying", u.version);
+            let tx = sh.msg_tx.clone();
+            let layout = target.layout;
+            let version = u.version.clone();
+            let spawned = std::thread::Builder::new()
+                .name("update-download".into())
+                .spawn(move || {
+                    let result = update::stage(&u, version::RELEASE, &staging).and_then(|s| {
+                        install::prepare(layout, &s.file, &staging).map(|binary| Ready {
+                            version: s.version,
+                            binary,
+                        })
+                    });
+                    let _ = tx.send(ShellMsg::UpdateStaged {
+                        version: u.version,
+                        result,
+                    });
+                });
+            match spawned {
+                Ok(_) => sh.update.staging = true,
+                Err(e) => {
+                    log::warn!("update download not started: {e}");
+                    sh.update.given_up = Some(version);
+                }
+            }
+        }
+    }
+    show_install(ui, &sh.update);
+}
+
+/// docs/48 D9: what a `.deb` install is told instead of a button.
+fn deb_note(u: &Update) -> String {
+    u.deb.as_ref().map_or(String::new(), |name| {
+        format!("Installed from the .deb: download {name}, then run sudo apt install ./{name}")
+    })
+}
+
+fn show_install(ui: &MainWindow, st: &UpdateState) {
+    ui.set_update_ready(st.ready_for_shown());
+    ui.set_update_note(
+        if st.shown.is_some() {
+            st.note.as_str()
+        } else {
+            ""
+        }
+        .into(),
+    );
+}
+
+/// The Install and relaunch button (docs/48 D4-D6): swap, start the new
+/// build with this one's arguments, and quit. Never while a broadcast is
+/// starting or live; the button is disabled then too.
+fn install_now(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
+    let mut sh = shell.borrow_mut();
+    if sh.state != UiState::Idle {
+        return;
+    }
+    let (Some(target), Some(ready)) = (sh.update.target.clone(), sh.update.ready.take()) else {
+        return;
+    };
+    match install::swap(target.layout, &target.exe, &ready.binary) {
+        Ok(()) => {
+            log::info!("installed v{} over {}", ready.version, target.exe.display());
+            match std::process::Command::new(&target.exe)
+                .args(&target.args)
+                .spawn()
+            {
+                Ok(_) => {
+                    log::info!("started v{}; this build exits", ready.version);
+                    drop(sh);
+                    let _ = slint::quit_event_loop();
+                    return;
+                }
+                Err(e) => {
+                    log::warn!("installed v{} but could not start it: {e}", ready.version);
+                    sh.update.given_up = Some(ready.version.clone());
+                    sh.update.note = format!(
+                        "Installed v{}. Start the app again to use it.",
+                        ready.version
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("update v{} not installed: {e}", ready.version);
+            sh.update.given_up = Some(ready.version.clone());
+            sh.update.note = format!("Couldn't install the update: {e}");
+        }
+    }
+    show_install(ui, &sh.update);
 }
 
 fn show_update(ui: &MainWindow, update: Option<&Update>) {
@@ -1747,6 +1957,16 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             shell.borrow_mut().update.dismiss();
             if let Some(ui) = ui_weak.upgrade() {
                 show_update(&ui, None);
+                show_install(&ui, &shell.borrow().update);
+            }
+        });
+    }
+    {
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_install_update(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                install_now(&ui, &shell);
             }
         });
     }
@@ -2154,6 +2374,23 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
             }
             ui.set_update_checking(false);
             show_update(ui, sh.update.shown.as_ref());
+            show_install(ui, &sh.update);
+            maybe_stage(ui, &mut sh);
+        }
+        ShellMsg::UpdateStaged { version, result } => {
+            let mut sh = shell.borrow_mut();
+            sh.update.staging = false;
+            match result {
+                Ok(ready) => {
+                    log::info!("update v{}: verified, ready to install", ready.version);
+                    sh.update.ready = Some(ready);
+                }
+                Err(e) => {
+                    log::warn!("update v{version}: not installable in place: {e}");
+                    sh.update.given_up = Some(version);
+                }
+            }
+            show_install(ui, &sh.update);
         }
     }
 }
@@ -2662,6 +2899,8 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     {
         let mut sh = shell.borrow_mut();
         if sh.state == UiState::Idle {
+            // R47: an update found while live downloads once idle again.
+            maybe_stage(ui, &mut sh);
             return;
         }
         sh.stats_countdown = sh.stats_countdown.saturating_sub(1);
@@ -3585,18 +3824,41 @@ mod tests {
     fn the_update_check_runs_only_when_on_and_due() {
         let now = 1_790_000_000;
         let cfg = Config::default();
-        assert_eq!(update_check_skip(&cfg, false, now), None);
-        assert!(update_check_skip(&cfg, true, now).is_some(), "env opt-out");
+        assert_eq!(update_check_skip(&cfg, false, now, false), None);
+        assert!(
+            update_check_skip(&cfg, true, now, false).is_some(),
+            "env opt-out"
+        );
         let off = Config {
             disable_update_check: true,
             ..Default::default()
         };
-        assert!(update_check_skip(&off, false, now).is_some(), "setting");
+        assert!(
+            update_check_skip(&off, false, now, false).is_some(),
+            "setting"
+        );
+        assert!(
+            update_check_skip(&off, false, now, true).is_some(),
+            "setting, refetch"
+        );
         let recent = Config {
             last_update_check: update::format_rfc3339(now - 60),
             ..Default::default()
         };
-        assert!(update_check_skip(&recent, false, now).is_some(), "not due");
+        assert!(
+            update_check_skip(&recent, false, now, false).is_some(),
+            "not due"
+        );
+        // R47: a remembered update this build could install asks again.
+        assert_eq!(
+            update_check_skip(&recent, false, now, true),
+            None,
+            "refetch"
+        );
+        assert!(
+            update_check_skip(&recent, true, now, true).is_some(),
+            "env still wins"
+        );
     }
 
     #[test]
@@ -3606,6 +3868,8 @@ mod tests {
             version: "2.1.0".into(),
             release_url: "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v2.1.0"
                 .into(),
+            files: None,
+            deb: None,
         };
 
         let mut cfg = Config::default();
@@ -3645,6 +3909,8 @@ mod tests {
             release_url: format!(
                 "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v{v}"
             ),
+            files: None,
+            deb: None,
         }
     }
 
@@ -3713,6 +3979,8 @@ mod tests {
         let found = Update {
             version: "2.1.0".into(),
             release_url: String::new(),
+            files: None,
+            deb: None,
         };
         assert_eq!(
             update_status_text(&Outcome::Answered(Some(found))),
@@ -3723,5 +3991,98 @@ mod tests {
             format!("You have the latest version (v{}).", version::RELEASE)
         );
         assert!(update_status_text(&Outcome::Unreachable("x".into())).contains("Couldn't reach"));
+    }
+
+    // ---- R47 (docs/48 D4, D9) -------------------------------------------
+
+    fn signed(v: &str) -> Update {
+        let remote = |name: &str| update::Remote {
+            name: name.into(),
+            url: format!(
+                "https://github.com/Tuhis/gawk/releases/download/gawk-broadcast-desktop/v{v}/{name}"
+            ),
+            size: 1,
+        };
+        Update {
+            files: Some(Box::new(update::ReleaseFiles {
+                asset: remote("gawk-broadcast-linux-x86_64.tar.gz"),
+                sums: remote("SHA256SUMS"),
+                sig: remote("SHA256SUMS.minisig"),
+            })),
+            deb: Some(format!("gawk-broadcast_{v}_amd64.deb")),
+            ..release(v)
+        }
+    }
+
+    fn installable(shown: Option<Update>) -> UpdateState {
+        UpdateState {
+            shown,
+            target: Some(InstallTarget {
+                exe: PathBuf::from("/opt/gawk/gawk-broadcast-linux"),
+                layout: Layout::LinuxTarball,
+                args: Vec::new(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_signed_update_downloads_only_while_idle_and_once() {
+        let mut st = installable(Some(signed("2.1.0")));
+        assert_eq!(st.to_stage(false), None, "never while starting or live");
+        assert_eq!(st.to_stage(true), Some(signed("2.1.0")));
+        st.staging = true;
+        assert_eq!(st.to_stage(true), None, "one download at a time");
+        st.staging = false;
+        st.ready = Some(Ready {
+            version: "2.1.0".into(),
+            binary: PathBuf::from("/opt/gawk/.gawk-update/gawk-broadcast-linux"),
+        });
+        assert!(st.ready_for_shown());
+        assert_eq!(st.to_stage(true), None, "already ready");
+        // A newer release replaces the ready one: download it, hide the button.
+        st.shown = Some(signed("2.2.0"));
+        assert!(!st.ready_for_shown());
+        assert_eq!(st.to_stage(true), Some(signed("2.2.0")));
+    }
+
+    #[test]
+    fn nothing_downloads_without_files_a_target_or_after_giving_up() {
+        assert_eq!(
+            installable(Some(release("2.1.0"))).to_stage(true),
+            None,
+            "a remembered update has no file list"
+        );
+        let macos = UpdateState {
+            shown: Some(signed("2.1.0")),
+            ..Default::default()
+        };
+        assert_eq!(macos.to_stage(true), None, "no install target");
+        let mut st = installable(Some(signed("2.1.0")));
+        st.given_up = Some("2.1.0".into());
+        assert_eq!(st.to_stage(true), None);
+        st.shown = Some(signed("2.2.0"));
+        assert!(
+            st.to_stage(true).is_some(),
+            "a newer release is tried afresh"
+        );
+        let mut dismissed = installable(Some(signed("2.1.0")));
+        dismissed.dismiss();
+        assert_eq!(
+            dismissed.to_stage(true),
+            None,
+            "a dismissed notice downloads nothing"
+        );
+    }
+
+    #[test]
+    fn a_deb_install_is_told_the_package_and_the_command() {
+        assert_eq!(
+            deb_note(&signed("2.1.0")),
+            "Installed from the .deb: download gawk-broadcast_2.1.0_amd64.deb, then run \
+             sudo apt install ./gawk-broadcast_2.1.0_amd64.deb"
+        );
+        // No .deb on the release (a soft attach): the plain R45 line.
+        assert_eq!(deb_note(&release("2.1.0")), "");
     }
 }
