@@ -250,6 +250,16 @@ impl Config {
         self.publish_secret.clone()
     }
 
+    /// The pinned default's own publish secret, whichever server is selected
+    /// — what its Edit page shows (R62, docs/64 D15): the credentials-only
+    /// record, or the legacy flat field until migration has run.
+    pub fn default_secret(&self) -> String {
+        match self.servers.iter().find(|p| p.name == DEFAULT_SERVER_NAME) {
+            Some(rec) => rec.publish_secret.clone(),
+            None => self.publish_secret.clone(),
+        }
+    }
+
     /// Stores, rotates, or (`""`) clears the pinned default's publish secret
     /// — the docs/40 F4 rotation path, mirroring the Linux
     /// `Config.SetDefaultSecret`. The record is keyed to the current default
@@ -1244,6 +1254,32 @@ mod tests {
         cfg.set_default_secret("");
         assert!(!cfg.servers.iter().any(|p| p.name == DEFAULT_SERVER_NAME));
         assert_eq!(cfg.resolve_publish_secret(), "");
+    }
+
+    // R62 (docs/64 D15): Edit on the default's row shows the DEFAULT's
+    // secret even while a custom server is selected — never the selected
+    // server's, which is what `resolve_publish_secret` answers.
+    #[test]
+    fn the_default_secret_is_the_defaults_whichever_server_is_selected() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.default_secret(), "");
+        cfg.set_default_secret("official");
+        let name = cfg.add_custom_server();
+        cfg.servers
+            .iter_mut()
+            .find(|p| p.name == name)
+            .unwrap()
+            .publish_secret = "homelab".into();
+        cfg.selected_server = name;
+        assert_eq!(cfg.resolve_publish_secret(), "homelab");
+        assert_eq!(cfg.default_secret(), "official");
+
+        // Before migration the flat field is the default's.
+        let legacy = Config {
+            publish_secret: "flat".into(),
+            ..Config::default()
+        };
+        assert_eq!(legacy.default_secret(), "flat");
     }
 
     // --- R37 phase E: 0x12 precedence + guard --------------------------------

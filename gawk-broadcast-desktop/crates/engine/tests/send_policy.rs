@@ -595,6 +595,69 @@ async fn a_failed_bitstream_check_latches_audio_off_and_touches_no_video_counter
     );
 }
 
+// R62 (docs/64 D8): a quick restart or a resume from pause feeds a NEW
+// pipeline into the same sender. Its codec and audio format describe it, not
+// the last pipeline, and a latched audio refusal belonged to the old encoder.
+#[tokio::test]
+async fn a_new_lineage_describes_the_new_pipeline() {
+    let relay = Arc::new(FakeRelay::default());
+    let clock = Arc::new(FakeClock::default());
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let check_refuse = refuse.clone();
+    let sender = Sender::with_audio_check(
+        relay.clone(),
+        clock.clone(),
+        Some(Box::new(move |_pkt, _fmt| {
+            if check_refuse.load(std::sync::atomic::Ordering::SeqCst) {
+                Err("TOC disagrees".into())
+            } else {
+                Ok(())
+            }
+        })),
+    );
+    sender.set_codec("avc1.640028");
+    sender.set_audio_format(opus_format());
+    sender.send_audio(packet(0));
+    assert_eq!(sender.stats().audio_state, "error");
+    let frame_before = {
+        sender.send_video(delta(10, 1)).await;
+        wire::parse_video_chunk(relay.sent_of_type(wire::TYPE_VIDEO_CHUNK).last().unwrap())
+            .unwrap()
+            .0
+            .frame_id
+    };
+
+    sender.new_lineage();
+    refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        sender.stats().codec,
+        "",
+        "the old codec no longer describes the stream"
+    );
+    assert_eq!(
+        sender.stats().audio_state,
+        "",
+        "the old refusal is not the new encoder's"
+    );
+
+    sender.set_codec("avc1.4D0032");
+    assert_eq!(sender.stats().codec, "avc1.4D0032", "set_codec takes again");
+    sender.set_audio_format(opus_format());
+    sender.send_audio(packet(20_000));
+    assert_eq!(relay.sent_of_type(wire::TYPE_AUDIO_FRAME).len(), 1);
+    sender.send_video(delta(10, 2)).await;
+    let frame_after =
+        wire::parse_video_chunk(relay.sent_of_type(wire::TYPE_VIDEO_CHUNK).last().unwrap())
+            .unwrap()
+            .0
+            .frame_id;
+    assert_eq!(
+        frame_after,
+        frame_before + 1,
+        "the frameId space carries on"
+    );
+}
+
 // --- Windowed fps (the Go engine.go Stats() derivation) --------------------------------
 
 #[tokio::test]

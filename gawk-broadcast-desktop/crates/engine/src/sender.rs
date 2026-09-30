@@ -243,6 +243,30 @@ impl Sender {
         st.st.codec = codec.to_owned();
     }
 
+    /// Starts a new media lineage on the same broadcast (R62, docs/64 D8):
+    /// a quick restart, or a resume from a pause, builds a new pipeline
+    /// whose encoder, codec string and audio format may all differ from the
+    /// last one's. The cached DecoderConfig and audio config are dropped so
+    /// the new pipeline's [`Sender::set_codec`] and
+    /// [`Sender::set_audio_format`] describe it, and the audio bitstream
+    /// check runs again on its first packet. The frameId space and the chunk
+    /// budget carry on, as across a resume: continuity is the resume signal.
+    pub fn new_lineage(&self) {
+        let mut s = self.state.lock().unwrap();
+        s.config_datagram = None;
+        s.st.codec.clear();
+        s.audio_format = None;
+        s.audio_config_datagram = None;
+        s.audio_config_sent = false;
+        s.audio_checked = false;
+        if s.audio_errored {
+            s.audio_errored = false;
+            s.st.audio_state.clear();
+        }
+        // The new encoder's GOP is its own; the cadence is measured afresh.
+        s.last_keyframe_us = 0;
+    }
+
     /// Records what the relay says this fleet supports. The CapParityChunks
     /// FLAG gates the level: the flag is what says the relay filters parity
     /// per subscriber — without it, emitting would spray parity at viewers

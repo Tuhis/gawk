@@ -6,7 +6,9 @@ use crate::clock::Clock;
 use crate::dispatch::{
     SERVER_STREAM_READ_LIMIT, SERVER_STREAM_READ_TIMEOUT_MS, ServerMessage, dispatch_server_message,
 };
-use crate::relay::{RelaySession, SessionClose, StartError, StartPhase, publish_url};
+use crate::relay::{
+    PublishDialer, RelaySession, SessionClose, StartError, StartPhase, publish_url,
+};
 use crate::resume::{
     RESUME_WINDOW, ResumeBackoff, close_code_message, resume_terminal, terminal_for_publisher,
 };
@@ -73,7 +75,13 @@ pub enum EngineEvent {
     /// orders.
     TelemetryEndpoint { url: String },
     /// A reclaim attempt is running (attempt counter for the status line).
+    /// A reclaim the shell asked for ([`Session::republish`]) reports its
+    /// attempts too; the shell decides what a deliberate one shows.
     Resuming { attempt: u32 },
+    /// [`Session::pause`] took effect: the publish leg is closed and nothing
+    /// is published until [`Session::republish`]. The session — and its
+    /// room control session — stays up (R62, docs/64 D9).
+    Paused,
     /// The broadcast is back on a fresh session. The media side should force
     /// an IDR now to re-prime the relay's invalidated keyframe cache
     /// (docs/38 D5's improvement over the Linux engine).
@@ -118,6 +126,15 @@ struct Shared {
     nickname: String,
 }
 
+/// What the shell wants of the publish leg (R62, docs/64 D8–D9). `epoch`
+/// counts [`Session::republish`] calls: a leg serves the epoch it was
+/// dialed under, and a newer one tells it to hand over to a fresh reclaim.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PublishWant {
+    paused: bool,
+    epoch: u64,
+}
+
 /// One running room control session, owned by the publish session.
 struct RoomHandle {
     stop: watch::Sender<bool>,
@@ -140,6 +157,7 @@ pub struct Session {
     shared: Arc<Mutex<Shared>>,
     ts: Arc<TimeSyncClient>,
     stop_tx: watch::Sender<bool>,
+    publish: watch::Sender<PublishWant>,
     run: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// The publish identity the room session attaches with (announce +
     /// token, both known), re-published with a new generation on every
@@ -210,8 +228,25 @@ impl Session {
         clock: Arc<dyn Clock>,
         room_dialer: Arc<dyn RoomDialer>,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<EngineEvent>) {
+        let publish_dialer: Arc<dyn PublishDialer> = Arc::new(transport::WtPublishDialer {
+            origin: cfg.origin.clone(),
+            insecure: cfg.insecure,
+        });
+        Self::start_with_seams(cfg, relay, clock, room_dialer, publish_dialer)
+    }
+
+    /// Every seam injected: the relay, the room dialer, and the dialer the
+    /// resume path reclaims through — so a test can script a reclaim too.
+    pub fn start_with_seams(
+        cfg: SessionConfig,
+        relay: Arc<dyn RelaySession>,
+        clock: Arc<dyn Clock>,
+        room_dialer: Arc<dyn RoomDialer>,
+        publish_dialer: Arc<dyn PublishDialer>,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<EngineEvent>) {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (stop_tx, stop_rx) = watch::channel(false);
+        let (publish_tx, publish_rx) = watch::channel(PublishWant::default());
         let (identity_tx, _) = watch::channel(None);
         let sender = Arc::new(Sender::new(relay.clone(), clock.clone()));
         let ts = {
@@ -237,6 +272,7 @@ impl Session {
             shared: shared.clone(),
             ts: ts.clone(),
             stop_tx,
+            publish: publish_tx,
             run: Mutex::new(None),
             identity: identity_tx.clone(),
             events: events_tx.clone(),
@@ -254,6 +290,9 @@ impl Session {
             clock,
             events: events_tx,
             stop: stop_rx,
+            publish: publish_rx,
+            leg_epoch: 0,
+            dialer: publish_dialer,
             identity: identity_tx,
             room,
         }));
@@ -371,6 +410,34 @@ impl Session {
         });
     }
 
+    /// Stops publishing and keeps the broadcast (R62, docs/64 D9): the
+    /// publish leg closes cleanly — the relay holds the code through its
+    /// grace and viewers see the broadcaster away — while the session, its
+    /// identity and its room control session stay up. The shell shuts its
+    /// media down first; [`EngineEvent::Paused`] follows. Nothing is dialed
+    /// until [`Session::republish`]. A no-op while already paused.
+    pub fn pause(&self) {
+        self.publish.send_if_modified(|w| {
+            let changed = !w.paused;
+            w.paused = true;
+            changed
+        });
+    }
+
+    /// Publishes on a fresh leg under the same identity: after a pause, or —
+    /// while publishing — as the quick restart that carries a new source or
+    /// quality (docs/64 D8). The current leg (if any) closes cleanly, the
+    /// code is reclaimed with the resume token exactly as after a network
+    /// loss ([`EngineEvent::Resuming`], then [`EngineEvent::Resumed`]), and
+    /// the room re-attaches on the new generation. The first attempt dials
+    /// at once: the shell asked for it, so there is no dead relay to pace.
+    pub fn republish(&self) {
+        self.publish.send_modify(|w| {
+            w.paused = false;
+            w.epoch += 1;
+        });
+    }
+
     /// The send surface for the media pumps.
     pub fn sender(&self) -> Arc<Sender> {
         self.sender.clone()
@@ -429,6 +496,13 @@ struct RunCtx {
     clock: Arc<dyn Clock>,
     events: mpsc::UnboundedSender<EngineEvent>,
     stop: watch::Receiver<bool>,
+    publish: watch::Receiver<PublishWant>,
+    /// The republish epoch the current leg was dialed under: the first leg
+    /// serves epoch 0, a reclaim the epoch it read before dialing. A newer
+    /// epoch — however early it was asked for — means the leg is owed a
+    /// replacement.
+    leg_epoch: u64,
+    dialer: Arc<dyn PublishDialer>,
     identity: watch::Sender<Option<Identity>>,
     room: Arc<Mutex<Option<RoomHandle>>>,
 }
@@ -436,6 +510,9 @@ struct RunCtx {
 enum ServeEnd {
     Stopped,
     Closed(SessionClose),
+    /// The shell asked for the leg back: a pause or a republish. The leg is
+    /// already closed.
+    Yielded,
 }
 
 /// Publishes the attach identity once BOTH halves are known. `generation`
@@ -484,7 +561,7 @@ async fn run_loop(mut ctx: RunCtx) {
 async fn run_sessions(ctx: &mut RunCtx) -> EngineEvent {
     let mut relay = ctx.relay.clone();
     loop {
-        match serve_session(ctx, relay.clone()).await {
+        let deliberate = match serve_session(ctx, relay.clone()).await {
             ServeEnd::Stopped => {
                 return EngineEvent::Ended { error: None };
             }
@@ -496,11 +573,19 @@ async fn run_sessions(ctx: &mut RunCtx) -> EngineEvent {
                         error: Some(close_code_message(code)),
                     };
                 }
+                false
             }
-        }
+            ServeEnd::Yielded => {
+                if ctx.publish.borrow().paused && !wait_while_paused(ctx).await {
+                    return EngineEvent::Ended { error: None };
+                }
+                true
+            }
+        };
 
-        // A recoverable loss: reclaim on a fresh session (docs/38 D5).
-        match resume(ctx).await {
+        // A recoverable loss, or a leg the shell asked for: reclaim on a
+        // fresh session (docs/38 D5, docs/64 D8).
+        match resume(ctx, deliberate).await {
             Ok(next) => {
                 ctx.sender.set_relay(next.clone());
                 // The relay dropped this broadcast's caches and the reclaim
@@ -533,8 +618,43 @@ async fn run_sessions(ctx: &mut RunCtx) -> EngineEvent {
     }
 }
 
-/// Serves one relay session until it dies or the shell stops the broadcast.
+/// Holds a paused broadcast (docs/64 D9): no leg, no viewer count, until
+/// the shell republishes (true) or stops (false).
+async fn wait_while_paused(ctx: &mut RunCtx) -> bool {
+    ctx.shared.lock().unwrap().viewer_count = None;
+    let _ = ctx.events.send(EngineEvent::Paused);
+    loop {
+        if *ctx.stop.borrow() {
+            return false;
+        }
+        if !ctx.publish.borrow().paused {
+            return true;
+        }
+        tokio::select! {
+            changed = ctx.stop.changed() => {
+                // A dropped stop Sender is a stop (see serve_session).
+                if changed.is_err() {
+                    return false;
+                }
+            }
+            changed = ctx.publish.changed() => {
+                if changed.is_err() {
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+/// Serves one relay session until it dies, the shell stops the broadcast,
+/// or the shell takes the leg back (a pause or a republish).
 async fn serve_session(ctx: &mut RunCtx, relay: Arc<dyn RelaySession>) -> ServeEnd {
+    // A pause or a republish asked for before this leg came up is owed now.
+    let want = *ctx.publish.borrow_and_update();
+    if want.paused || want.epoch != ctx.leg_epoch {
+        relay.close();
+        return ServeEnd::Yielded;
+    }
     let mut ping = tokio::time::interval(Duration::from_millis(TIME_SYNC_INTERVAL_MS));
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The mapping check runs on a fine cadence; the publisher decides.
@@ -553,6 +673,20 @@ async fn serve_session(ctx: &mut RunCtx, relay: Arc<dyn RelaySession>) -> ServeE
                 // as "no stop yet" would busy-loop changed() forever.
                 if changed.is_err() || *ctx.stop.borrow() {
                     break ServeEnd::Stopped;
+                }
+            }
+            changed = ctx.publish.changed() => {
+                // The Sender lives in the Session, like the stop watch: gone
+                // means the shell dropped it, which is a stop.
+                if changed.is_err() {
+                    break ServeEnd::Stopped;
+                }
+                let want = *ctx.publish.borrow();
+                if want.paused || want.epoch != ctx.leg_epoch {
+                    // Clean close (code 0): the relay sees the publisher
+                    // leave now and holds the code through its grace.
+                    relay.close();
+                    break ServeEnd::Yielded;
                 }
             }
             accepted = relay.accept_uni() => {
@@ -658,9 +792,14 @@ fn handle_datagram(d: &[u8], ctx: &RunCtx) {
 }
 
 /// Reclaims the broadcast on a fresh session, retrying with backoff until it
-/// works, the relay says it never will, or the window closes.
+/// works, the relay says it never will, or the window closes. A
+/// `deliberate` reclaim (the shell's republish) dials its first attempt at
+/// once; a loss waits out the initial delay first.
 /// `Err(None)` = stopped by the shell; `Err(Some(msg))` = gave up.
-async fn resume(ctx: &mut RunCtx) -> Result<Arc<dyn RelaySession>, Option<String>> {
+async fn resume(
+    ctx: &mut RunCtx,
+    deliberate: bool,
+) -> Result<Arc<dyn RelaySession>, Option<String>> {
     let (id, token) = {
         let sh = ctx.shared.lock().unwrap();
         (sh.broadcast_id.clone(), sh.resume_token_hex.clone())
@@ -687,7 +826,11 @@ async fn resume(ctx: &mut RunCtx) -> Result<Arc<dyn RelaySession>, Option<String
             return Err(None);
         }
         let _ = ctx.events.send(EngineEvent::Resuming { attempt });
-        let delay = backoff.next_delay();
+        let delay = if deliberate && attempt == 1 {
+            Duration::ZERO
+        } else {
+            backoff.next_delay()
+        };
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
             changed = ctx.stop.changed() => {
@@ -700,8 +843,14 @@ async fn resume(ctx: &mut RunCtx) -> Result<Arc<dyn RelaySession>, Option<String
             }
         }
 
-        match transport::dial(&url, &ctx.cfg.origin, ctx.cfg.insecure).await {
-            Ok(session) => return Ok(Arc::new(session)),
+        // Read before the dial: a republish asked for while this one is in
+        // flight is newer than the leg it produces, and gets its own.
+        let epoch = ctx.publish.borrow().epoch;
+        match ctx.dialer.dial(&url).await {
+            Ok(session) => {
+                ctx.leg_epoch = epoch;
+                return Ok(session);
+            }
             Err(e) => {
                 if resume_terminal(e.status) || tokio::time::Instant::now() > deadline {
                     ctx.shared.lock().unwrap().resuming = false;

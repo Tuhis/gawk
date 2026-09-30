@@ -106,6 +106,16 @@ pub trait RelaySession: Send + Sync + 'static {
     }
 }
 
+/// Dials a reclaim of the running broadcast (`/publish/{id}?resume=…`): the
+/// seam the session's resume path dials through, so tests can script what a
+/// reclaim finds — the counterpart of [`crate::room::RoomDialer`].
+pub trait PublishDialer: Send + Sync + 'static {
+    fn dial(
+        &self,
+        url: &str,
+    ) -> BoxFuture<'_, Result<std::sync::Arc<dyn RelaySession>, StartError>>;
+}
+
 /// Cumulative packets sent and declared lost on one connection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PathCounters {

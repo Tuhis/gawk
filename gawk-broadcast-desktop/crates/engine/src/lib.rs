@@ -17,6 +17,7 @@ pub mod gate;
 pub mod install;
 pub mod lossnotice;
 pub mod media;
+pub mod probe;
 pub mod relay;
 pub mod resume;
 pub mod room;
