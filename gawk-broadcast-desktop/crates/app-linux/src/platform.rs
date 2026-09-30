@@ -280,6 +280,9 @@ impl Platform for Linux {
         let Some(grant) = self.picked.take() else {
             return Err("Choose what to share first.".into());
         };
+        // This start takes the latest pick, so any switch still asked for
+        // is done by it.
+        self.restart_requested = false;
         let (box_w, box_h, fps, bps) = cfg.resolve_rung();
         // The rung is a bounding box; the portal's size (compositor
         // coordinates) is the aspect to fit (docs/39 D2).
@@ -394,9 +397,14 @@ impl Platform for Linux {
             match p {
                 Picked::Granted(g) => {
                     self.on_picked(ui, g);
-                    // Live: Change on the Sharing row switches the broadcast
-                    // to the new pick on the same code (docs/64 D12).
-                    if media.is_some() {
+                    // On air: Change on the Sharing row switches the
+                    // broadcast to the new pick on the same code (docs/64
+                    // D12). On air is the window's state, not the media's:
+                    // a restart or a resume is on air with no media while
+                    // its pipeline builds (review of #423). Paused, Resume
+                    // uses the pick and nothing restarts.
+                    let on_air = ui.get_busy() && !ui.get_paused();
+                    if media.is_some() || on_air {
                         self.restart_requested = true;
                     }
                 }
@@ -711,6 +719,43 @@ mod tests {
         let prepared = p.prepare_start(&ui, &cfg()).ok().unwrap();
         assert_eq!(prepared.source, "Whole screen · 1920×1080");
         assert!(!prepared.source_is_window);
+    }
+
+    /// Review of #423: a restart or a resume leaves the broadcast on air
+    /// with no media while the new pipeline builds. A pick landing then
+    /// must still switch the broadcast (not wait in `picked` to hijack a
+    /// later, unrelated restart); one landing while paused waits for
+    /// Resume; and a start takes the latest pick, so it settles any request.
+    #[test]
+    fn a_pick_while_on_air_without_media_still_switches() {
+        let ui = window();
+        let mut p = Linux::with_config(&cfg());
+        p.init_window(&ui);
+        let pick = |p: &mut Linux, w: u32| {
+            p.picks_tx
+                .send(Picked::Granted(grant(SourceKind::Monitor, Some((w, 1080)))))
+                .unwrap();
+            p.tick(&ui, None);
+        };
+
+        // On air, the new media still building.
+        ui.set_busy(true);
+        ui.set_live(true);
+        pick(&mut p, 1920);
+        assert!(p.take_restart_request(), "the pick switches the broadcast");
+
+        // Paused: Resume uses the pick; nothing restarts.
+        ui.set_live(false);
+        ui.set_paused(true);
+        pick(&mut p, 2560);
+        assert!(!p.take_restart_request());
+
+        // A start takes whatever is picked now: no request survives it.
+        ui.set_paused(false);
+        ui.set_live(true);
+        pick(&mut p, 3840);
+        p.prepare_start(&ui, &cfg()).ok().unwrap();
+        assert!(!p.take_restart_request());
     }
 
     /// docs/64 D9: a pause hands the grant back, and it is the source

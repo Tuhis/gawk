@@ -645,7 +645,10 @@ pub fn run(
                         let mut sh = shell.borrow_mut();
                         let sh = &mut *sh;
                         sh.platform.tick(&ui, sh.media.as_deref());
-                        sh.platform.take_restart_request()
+                        // Taken only once live: a pick during Starting
+                        // waits for Live, and one mid-restart queues
+                        // behind it (restart_again).
+                        sh.state == UiState::Live && sh.platform.take_restart_request()
                     };
                     // The platform's own picker chose a new source while
                     // live (Linux's portal): switch to it (docs/64 D12).
@@ -1828,8 +1831,14 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 let rung_before = sh.cfg.resolve_rung();
                 let relay_before = sh.cfg.resolve_relay_url();
                 let edit = sh.edit_server.clone();
+                let tested_before = edit_relay_url(&sh.cfg, &edit);
                 sh.edit_server = read_settings(&ui, &mut sh.cfg, &edit);
                 save_config(&mut sh);
+                clear_test_if_moved(
+                    &ui,
+                    &tested_before,
+                    &edit_relay_url(&sh.cfg, &sh.edit_server),
+                );
                 // The lists follow name/URL edits live; the Edit page's
                 // fields are not reseeded (that would move the caret of the
                 // field being typed in).
@@ -3649,6 +3658,17 @@ fn edit_relay_url(cfg: &Config, edit: &str) -> String {
     }
 }
 
+/// Test connection's result belongs to the address it tested: an edit that
+/// moves the address clears it — and re-enables the button a test still
+/// running had disabled, since that test's late answer is then discarded as
+/// stale (review of #423).
+fn clear_test_if_moved(ui: &MainWindow, before: &str, after: &str) {
+    if before != after {
+        ui.set_test_state(0);
+        ui.set_test_result("".into());
+    }
+}
+
 /// Test connection's line: (2 reachable | 3 can't reach, the sentence). The
 /// relay's own name is its operator's claim, so it is quoted beside the
 /// facts, never in place of the address (docs/40 F6).
@@ -4563,6 +4583,26 @@ mod tests {
         seed_edit_fields(&ui, &cfg, DEFAULT_SERVER_NAME);
         assert!(!ui.get_server_is_custom());
         assert_eq!(ui.get_set_secret(), "official");
+    }
+
+    // Review of #423: a test still running when the relay address is edited
+    // must not leave the button stuck on "Testing…" — its answer is for the
+    // old address and is dropped, so the edit clears the test.
+    #[test]
+    fn editing_the_address_clears_a_test_of_the_old_one() {
+        let ui = window();
+        ui.set_test_state(1);
+        clear_test_if_moved(&ui, "https://a.example:4433", "https://a.example:4433");
+        assert_eq!(ui.get_test_state(), 1, "same address: the test runs on");
+        clear_test_if_moved(&ui, "https://a.example:4433", "https://b.example:4433");
+        assert_eq!(ui.get_test_state(), 0, "the button works again");
+        ui.set_test_state(2);
+        ui.set_test_result("Reachable · 24 ms".into());
+        clear_test_if_moved(&ui, "https://b.example:4433", "https://c.example:4433");
+        assert_eq!(
+            (ui.get_test_state(), ui.get_test_result().as_str()),
+            (0, "")
+        );
     }
 
     // A launch with a custom server selected: the shell edits the default
