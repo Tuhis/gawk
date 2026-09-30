@@ -1920,6 +1920,7 @@ dependencies = [
  "arboard",
  "gawk-encode",
  "gawk-engine",
+ "i-slint-backend-testing",
  "log",
  "serde",
  "serde_json",

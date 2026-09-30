@@ -219,6 +219,16 @@ struct Assembly {
 }
 
 impl Pipeline {
+    /// Video to NULL first (synchronously), then audio and the control
+    /// plane, then the pump. The grant is the caller's.
+    fn stop_media(&mut self) {
+        if let Some(s) = self.supervisor.take() {
+            s.stop();
+        }
+        self.audio.stop();
+        self.send_task.abort();
+    }
+
     /// Heavyweight — trials, the live probe, the audio pre-flight — so it
     /// runs on the shell's start thread.
     pub fn build(params: Params, env: MediaEnv) -> Result<Self, StartFailure> {
@@ -515,17 +525,23 @@ impl Media for Pipeline {
     }
 
     fn shutdown(mut self: Box<Self>) {
-        // Video to NULL first (synchronously), then audio and the control
-        // plane, then the pump; the grant goes last, ending the portal
-        // session and the compositor's sharing indicator.
-        if let Some(s) = self.supervisor.take() {
-            s.stop();
-        }
-        self.audio.stop();
-        self.send_task.abort();
+        // The grant goes last, ending the portal session and the
+        // compositor's sharing indicator.
+        self.stop_media();
         if let Some(g) = self.grant.take() {
             g.release();
         }
+    }
+
+    /// A pause or a quick restart (docs/64 D8, D9): the same teardown, but
+    /// the portal grant goes back to the platform instead of being released
+    /// — capture rebuilds already reuse it (D3), and a new pick for every
+    /// pause would put the desktop's picker in front of every Resume.
+    fn shutdown_keep_source(mut self: Box<Self>) -> Option<Box<dyn Any + Send>> {
+        self.stop_media();
+        self.grant
+            .take()
+            .map(|g| Box::new(g) as Box<dyn Any + Send>)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -854,6 +870,52 @@ pub(crate) mod tests {
             sender.stats().encoded_frames,
             settled,
             "nothing after shutdown"
+        );
+    }
+
+    /// docs/64 D8–D9: a pause or a quick restart stops the media like a
+    /// shutdown, but the portal grant comes back to the platform — the next
+    /// start reuses it instead of asking the desktop's picker again.
+    #[test]
+    fn a_pause_hands_the_grant_back_and_stops_the_media() {
+        if !x264_available() {
+            return;
+        }
+        let (env, _rt) = env();
+        let sender = env.sender.clone();
+        let control = Arc::new(Mutex::new(Control::default()));
+        let fd: std::os::fd::OwnedFd = std::fs::File::open("/dev/null").unwrap().into();
+        let grant = gawk_capture::portal::Grant::detached(
+            fd,
+            42,
+            gawk_capture::portal::SourceKind::Window,
+            Some((320, 240)),
+        );
+        let media = Pipeline::assemble(
+            Assembly {
+                grant: Some(grant),
+                ..assembly(vec![Candidate::Nvenc], true, AudioPlan::Off)
+            },
+            env,
+            launcher(&control),
+        )
+        .unwrap_or_else(|_| panic!("the walk adopted nothing"));
+        let media: Box<dyn Media> = Box::new(media);
+        wait_for("frames at the sender", || {
+            sender.stats().encoded_frames >= 5
+        });
+
+        let kept = media.shutdown_keep_source().expect("the grant comes back");
+        let grant = kept
+            .downcast::<gawk_capture::portal::Grant>()
+            .expect("it is the portal grant");
+        assert_eq!(grant.node_id, 42);
+        let settled = sender.stats().encoded_frames;
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            sender.stats().encoded_frames,
+            settled,
+            "nothing after the pause"
         );
     }
 

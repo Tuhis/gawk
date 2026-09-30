@@ -90,6 +90,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`48`](48-signed-in-place-update.md) | R47 — Signed in-place update for the desktop broadcasters (minisign over `SHA256SUMS`, rename-swap install; `.deb` installs get a notice, not a swap) |
 | [`53`](53-app-icons.md) | R44 — App icons for both desktop broadcasters: one SVG, generated + drift-checked derivatives, Gio `app.ID` + desktop entry, Slint `Window.icon` + a linked `.res` |
 | [`60`](60-desktop-redesign.md) | R58 — Desktop broadcaster redesign: pages instead of cards, the web app's visual language, saved rooms, an in-app roster and creator controls |
+| [`64`](64-desktop-ux-pass-2.md) | R62 — Desktop UX pass 2: a probed server status and a non-default server strip, Pause / End and a quick restart on the same code, one Live layout alone or in a room, no setting in two places |
 
 ## Audio
 

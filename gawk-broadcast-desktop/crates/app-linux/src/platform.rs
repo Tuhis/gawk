@@ -48,6 +48,17 @@ pub struct Linux {
     /// kept current by [`Platform::remember`].
     last_app: String,
     device_pin: String,
+    /// A pick landed while live: the shell switches the broadcast to it on
+    /// the same code (docs/64 D12).
+    restart_requested: bool,
+}
+
+/// What the Share card and Live's Sharing row call a grant.
+fn grant_summary(grant: &Grant) -> String {
+    match grant.size {
+        Some((w, h)) if w > 0 => format!("{} · {w}×{h}", grant.kind.label()),
+        _ => grant.kind.label().to_string(),
+    }
 }
 
 impl Linux {
@@ -72,6 +83,7 @@ impl Linux {
             chosen_by_user: false,
             last_app: cfg.audio_app.clone(),
             device_pin: cfg.audio_device.clone(),
+            restart_requested: false,
         }
     }
 
@@ -94,13 +106,7 @@ impl Linux {
         if let Some(old) = self.picked.take() {
             old.release();
         }
-        let (w, h) = grant.size.unwrap_or((0, 0));
-        let size = if w > 0 {
-            format!(" · {w}×{h}")
-        } else {
-            String::new()
-        };
-        ui.set_share_summary(format!("{}{size}", grant.kind.label()).into());
+        ui.set_share_summary(grant_summary(&grant).into());
         ui.set_share_window(grant.kind == SourceKind::Window);
         ui.set_error_text("".into());
         let window = grant.kind == SourceKind::Window;
@@ -274,6 +280,9 @@ impl Platform for Linux {
         let Some(grant) = self.picked.take() else {
             return Err("Choose what to share first.".into());
         };
+        // This start takes the latest pick, so any switch still asked for
+        // is done by it.
+        self.restart_requested = false;
         let (box_w, box_h, fps, bps) = cfg.resolve_rung();
         // The rung is a bounding box; the portal's size (compositor
         // coordinates) is the aspect to fit (docs/39 D2).
@@ -283,6 +292,7 @@ impl Platform for Linux {
         };
         let window = grant.kind == SourceKind::Window;
         let capture_mode = grant.kind.capture_mode();
+        let source = grant_summary(&grant);
         let audio = if cfg.disable_audio {
             self.stop_ctl();
             AudioPlan::Off
@@ -333,10 +343,59 @@ impl Platform for Linux {
         ui.set_share_mode_label("".into());
         Ok(Prepared {
             capture_mode,
+            source,
+            source_is_window: window,
             build: Box::new(move |env| {
                 Pipeline::build(params, env).map(|p| Box::new(p) as Box<dyn Media>)
             }),
         })
+    }
+
+    /// A pause or a quick restart gave the grant back (docs/64 D8, D9): it
+    /// is the source again — unless a pick made while live already replaced
+    /// it, and then it is let go. The whose-audio control plane went with
+    /// the media, so a window grant starts a fresh one for the next start.
+    fn source_returned(&mut self, ui: &MainWindow, source: Box<dyn Any + Send>) {
+        let Ok(grant) = source.downcast::<Grant>() else {
+            return;
+        };
+        if self.picked.is_some() {
+            grant.release();
+            return;
+        }
+        let window = grant.kind == SourceKind::Window;
+        ui.set_share_summary(grant_summary(&grant).into());
+        ui.set_share_window(window);
+        self.picked = Some(*grant);
+        if window && self.device_pin.trim().is_empty() && self.ctl.is_none() {
+            match PwCtl::start() {
+                Ok(c) => self.ctl = Some(c),
+                Err(e) => log::warn!("per-application audio is unavailable: {e}"),
+            }
+        }
+        self.render_audio(ui);
+    }
+
+    fn take_restart_request(&mut self) -> bool {
+        std::mem::take(&mut self.restart_requested)
+    }
+
+    /// The broadcast is over: every broadcast asks the picker again
+    /// (docs/58), so a grant a pause handed back — or a pick made while on
+    /// air — is released, the sharing indicator goes out, and the card is
+    /// empty again (review of #423: End from Paused has no media whose
+    /// shutdown would do it).
+    fn broadcast_ended(&mut self, ui: &MainWindow) {
+        if let Some(g) = self.picked.take() {
+            g.release();
+        }
+        self.stop_ctl();
+        self.restart_requested = false;
+        self.choice = Choice::System;
+        ui.set_share_summary("".into());
+        ui.set_share_window(false);
+        self.render_audio(ui);
+        ui.set_share_mode_label("".into());
     }
 
     fn remember(&mut self, cfg: &mut Config) -> bool {
@@ -355,11 +414,15 @@ impl Platform for Linux {
             self.picking = false;
             match p {
                 Picked::Granted(g) => {
-                    if media.is_some() {
-                        // A pick that raced Start: not this broadcast's.
-                        g.release();
-                    } else {
-                        self.on_picked(ui, g);
+                    self.on_picked(ui, g);
+                    // On air: Change on the Sharing row switches the
+                    // broadcast to the new pick on the same code (docs/64
+                    // D12). On air is the window's state, not the media's:
+                    // a restart or a resume is on air with no media while
+                    // its pipeline builds (review of #423). Paused, Resume
+                    // uses the pick and nothing restarts.
+                    if media.is_some() || gawk_ui::shell::on_air(ui) {
+                        self.restart_requested = true;
                     }
                 }
                 Picked::Cancelled => {}
@@ -385,9 +448,9 @@ impl Platform for Linux {
         } else if let Some(a) = apps {
             self.apply_apps(ui, a);
         }
-        // Re-picking while live is a new broadcast (docs/58 §6): the Share
-        // card offers "Change…" only while idle.
-        ui.set_share_picker_available(media.is_none());
+        // docs/64 D12 (revising docs/58 §6): Change works while live too —
+        // the pick restarts the broadcast on the same code.
+        ui.set_share_picker_available(true);
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
@@ -614,8 +677,11 @@ mod tests {
         assert!(ui.get_share_mode_label().contains("alsa.monitor"));
     }
 
+    /// docs/64 D12 (revising docs/58 §6): a pick while live is the new
+    /// source, and asks the shell once to switch to it on the same code. The
+    /// running grant, handed back by the restart, is then let go.
     #[test]
-    fn a_pick_that_races_a_start_is_released_and_the_card_is_idle_only() {
+    fn a_pick_while_live_switches_the_broadcast_to_it() {
         let ui = window();
         let mut p = Linux::with_config(&cfg());
         struct Live;
@@ -652,11 +718,116 @@ mod tests {
             }
         }
         p.picks_tx
-            .send(Picked::Granted(grant(SourceKind::Monitor, None)))
+            .send(Picked::Granted(grant(
+                SourceKind::Monitor,
+                Some((1920, 1080)),
+            )))
             .unwrap();
         p.tick(&ui, Some(&Live));
-        assert!(p.picked.is_none(), "not this broadcast's pick");
-        assert!(!ui.get_share_picker_available(), "no re-pick while live");
+        assert!(ui.get_share_picker_available(), "Change works while live");
+        assert_eq!(p.picked.as_ref().map(|g| g.node_id), Some(42));
+        assert!(p.take_restart_request(), "the shell is asked to switch");
+        assert!(!p.take_restart_request(), "once");
+
+        // The restart hands the old grant back: the new pick stays.
+        let old = grant(SourceKind::Window, Some((800, 600)));
+        p.source_returned(&ui, Box::new(old));
+        assert_eq!(p.picked.as_ref().map(|g| g.kind), Some(SourceKind::Monitor));
+        let prepared = p.prepare_start(&ui, &cfg()).ok().unwrap();
+        assert_eq!(prepared.source, "Whole screen · 1920×1080");
+        assert!(!prepared.source_is_window);
+    }
+
+    /// Review of #423: a restart or a resume leaves the broadcast on air
+    /// with no media while the new pipeline builds. A pick landing then
+    /// must still switch the broadcast (not wait in `picked` to hijack a
+    /// later, unrelated restart); one landing while paused waits for
+    /// Resume; and a start takes the latest pick, so it settles any request.
+    #[test]
+    fn a_pick_while_on_air_without_media_still_switches() {
+        let ui = window();
+        let mut p = Linux::with_config(&cfg());
+        p.init_window(&ui);
+        let pick = |p: &mut Linux, w: u32| {
+            p.picks_tx
+                .send(Picked::Granted(grant(SourceKind::Monitor, Some((w, 1080)))))
+                .unwrap();
+            p.tick(&ui, None);
+        };
+
+        // On air, the new media still building.
+        ui.set_busy(true);
+        ui.set_live(true);
+        pick(&mut p, 1920);
+        assert!(p.take_restart_request(), "the pick switches the broadcast");
+
+        // Paused: Resume uses the pick; nothing restarts.
+        ui.set_live(false);
+        ui.set_paused(true);
+        pick(&mut p, 2560);
+        assert!(!p.take_restart_request());
+
+        // A start takes whatever is picked now: no request survives it.
+        ui.set_paused(false);
+        ui.set_live(true);
+        pick(&mut p, 3840);
+        p.prepare_start(&ui, &cfg()).ok().unwrap();
+        assert!(!p.take_restart_request());
+    }
+
+    /// Review of #423: End from Paused finds no media to shut down, so the
+    /// grant a pause handed back is let go by the ending itself — the
+    /// compositor's sharing indicator goes out, and the card asks again
+    /// (docs/58: every broadcast asks).
+    #[test]
+    fn an_ending_lets_a_returned_grant_go() {
+        let ui = window();
+        let mut p = Linux::with_config(&cfg());
+        p.init_window(&ui);
+        p.source_returned(
+            &ui,
+            Box::new(grant(SourceKind::Monitor, Some((1920, 1080)))),
+        );
+        assert_eq!(ui.get_share_summary(), "Whole screen · 1920×1080");
+        p.broadcast_ended(&ui);
+        assert!(p.picked.is_none(), "the grant is released");
+        assert!(p.ctl.is_none());
+        assert_eq!(ui.get_share_summary(), "");
+        assert!(!ui.get_whose_audio());
+        assert!(
+            p.prepare_start(&ui, &cfg()).is_err(),
+            "the next broadcast asks"
+        );
+    }
+
+    /// docs/64 D9: a pause hands the grant back, and it is the source
+    /// again — Resume asks the desktop's picker nothing.
+    #[test]
+    fn a_returned_grant_is_the_source_again() {
+        let ui = window();
+        let mut p = Linux::with_config(&cfg());
+        p.init_window(&ui);
+        p.picks_tx
+            .send(Picked::Granted(grant(
+                SourceKind::Monitor,
+                Some((2560, 1440)),
+            )))
+            .unwrap();
+        p.tick(&ui, None);
+        let prepared = p.prepare_start(&ui, &cfg()).ok().unwrap();
+        assert_eq!(prepared.source, "Whole screen · 2560×1440");
+        assert_eq!(ui.get_share_summary(), "", "the grant is the broadcast's");
+        assert!(!p.take_restart_request(), "an idle pick restarts nothing");
+
+        p.source_returned(
+            &ui,
+            Box::new(grant(SourceKind::Monitor, Some((2560, 1440)))),
+        );
+        assert_eq!(ui.get_share_summary(), "Whole screen · 2560×1440");
+        assert!(
+            p.prepare_start(&ui, &cfg()).is_ok(),
+            "no second pick needed"
+        );
     }
 
     fn apps() -> Vec<App> {

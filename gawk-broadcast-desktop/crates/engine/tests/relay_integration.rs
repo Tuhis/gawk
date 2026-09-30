@@ -421,3 +421,103 @@ async fn a_superseded_publisher_stays_down() {
     let _ = rx_b;
     session_a.stop().await;
 }
+
+/// Waits for a RoomState that `ok` accepts; a room or session ending on the
+/// way fails the test.
+async fn room_until(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<EngineEvent>,
+    what: &str,
+    mut ok: impl FnMut(&gawk_engine::room::RoomSummary) -> bool,
+) {
+    loop {
+        match next_event(rx, what, 15).await {
+            EngineEvent::RoomState(s) if ok(&s) => return,
+            EngineEvent::RoomEnded { reason } => panic!("room ended waiting for {what}: {reason}"),
+            EngineEvent::Ended { error } => panic!("session ended waiting for {what}: {error:?}"),
+            _ => {}
+        }
+    }
+}
+
+// R62 (docs/64 D8–D9) against the real relay: a pause closes only the
+// publish leg — the room keeps listing the stream, away — and a republish
+// reclaims the SAME code and re-attaches, without the room session ever
+// ending. A republish while live is the quick restart: the same code again.
+#[tokio::test]
+#[ignore = "builds and runs the real gawk-server (cargo test -- --ignored)"]
+async fn a_pause_keeps_the_room_and_a_republish_resumes_the_same_code() {
+    let relay = Relay::start(&["-publish-secret", SECRET, "-rooms"]);
+    let mut cfg = config(&relay, "", "");
+    cfg.room_new = true;
+    cfg.nickname = "Tuhis".into();
+    let (session, mut rx) = Session::start(cfg, Arc::new(MonotonicClock::new()))
+        .await
+        .unwrap();
+    let (id, _token) = collect_identity(&mut rx).await;
+    let ours_live = |live: bool| {
+        let id = id.clone();
+        move |s: &gawk_engine::room::RoomSummary| {
+            s.attachments
+                .iter()
+                .any(|a| a.broadcast_id == id && a.live == live)
+        }
+    };
+    room_until(&mut rx, "the room listing us live", ours_live(true)).await;
+
+    session.pause();
+    room_until(&mut rx, "the room showing us away", ours_live(false)).await;
+
+    session.republish();
+    let mut resumed = false;
+    loop {
+        match next_event(&mut rx, "the republish", 15).await {
+            EngineEvent::Resumed => resumed = true,
+            EngineEvent::Announce { broadcast_id } => {
+                assert_eq!(broadcast_id, id, "a republish keeps the code");
+            }
+            EngineEvent::RoomState(s) if resumed && ours_live(true)(&s) => break,
+            EngineEvent::RoomEnded { reason } => panic!("the room must survive a pause: {reason}"),
+            EngineEvent::Ended { error } => panic!("ended: {error:?}"),
+            _ => {}
+        }
+    }
+    assert_eq!(session.broadcast_id(), id);
+
+    // The quick restart: a republish while live, no pause in between.
+    session.republish();
+    loop {
+        match next_event(&mut rx, "the restart", 15).await {
+            EngineEvent::Resumed => break,
+            EngineEvent::Paused => panic!("a restart is not a pause"),
+            EngineEvent::RoomEnded { reason } => {
+                panic!("the room must survive a restart: {reason}")
+            }
+            EngineEvent::Ended { error } => panic!("ended: {error:?}"),
+            _ => {}
+        }
+    }
+    assert_eq!(session.broadcast_id(), id);
+    session.stop().await;
+}
+
+// R62 (docs/64 D1): the header's status comes from a probe of the real
+// relay's /echo route — echoed datagrams for the RTT, and the RelayIdentity
+// it sends at session start for the name.
+#[tokio::test]
+#[ignore = "builds and runs the real gawk-server (cargo test -- --ignored)"]
+async fn the_probe_reaches_the_real_relay_and_reads_its_name() {
+    use gawk_engine::probe::{ProbeResult, probe};
+    let relay = Relay::start(&["-server-name", "Test relay"]);
+    match probe(&relay.url, gawk_engine::defaults::origin(), true).await {
+        ProbeResult::Ok { name, .. } => assert_eq!(name.as_deref(), Some("Test relay")),
+        other => panic!("the probe should reach the relay: {other:?}"),
+    }
+    drop(relay);
+
+    // Nothing listening: the one failed state, within the connect timeout.
+    let nobody = format!("https://127.0.0.1:{}", free_udp_port());
+    assert_eq!(
+        probe(&nobody, gawk_engine::defaults::origin(), true).await,
+        ProbeResult::Failed
+    );
+}

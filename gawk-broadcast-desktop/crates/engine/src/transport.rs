@@ -6,8 +6,8 @@
 //! CLOSE_WEBTRANSPORT_SESSION capsule as `ApplicationClosed` (gate 2b).
 
 use crate::relay::{
-    BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, PathCounters, RelaySession,
-    SendDatagramError, ServerStream, SessionClose, StartError, StartPhase,
+    BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, PathCounters, PublishDialer,
+    RelaySession, SendDatagramError, ServerStream, SessionClose, StartError, StartPhase,
 };
 use crate::room::{RoomConn, RoomDialer};
 use std::sync::Arc;
@@ -162,6 +162,23 @@ impl RoomDialer for WtRoomDialer {
         Box::pin(async move {
             let conn = dial_room(&url, &self.origin, self.insecure).await?;
             Ok(Arc::new(conn) as Arc<dyn RoomConn>)
+        })
+    }
+}
+
+/// The transport-backed [`PublishDialer`]: what every production reclaim
+/// dials through.
+pub struct WtPublishDialer {
+    pub origin: String,
+    pub insecure: bool,
+}
+
+impl PublishDialer for WtPublishDialer {
+    fn dial(&self, url: &str) -> BoxFuture<'_, Result<Arc<dyn RelaySession>, StartError>> {
+        let url = url.to_owned();
+        Box::pin(async move {
+            let session = dial(&url, &self.origin, self.insecure).await?;
+            Ok(Arc::new(session) as Arc<dyn RelaySession>)
         })
     }
 }

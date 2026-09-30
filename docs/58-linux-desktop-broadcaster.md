@@ -785,7 +785,10 @@ URL. Nothing else happens.
 
 **Re-pick**: "Change…" while idle drops the held grant and opens the
 picker again. While live, re-picking is not offered: it is a new
-broadcast, as on the Go app.
+broadcast, as on the Go app. *(Revised 2026-10-01, [docs/64](64-desktop-ux-pass-2.md)
+D12: **Change** on Live's Sharing row opens the portal, and the new pick
+restarts the broadcast on the same code. A Pause hands the held grant back,
+so Resume asks the picker nothing.)*
 
 **Capture rebuild**: a window resize that kills `pipewiresrc` → a brief
 freeze → the pipeline rebuilds on the held grant → a keyframe → the Details
