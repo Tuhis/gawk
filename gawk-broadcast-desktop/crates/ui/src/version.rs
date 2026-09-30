@@ -114,4 +114,56 @@ mod tests {
              and the x-release-please-version comment in the workspace Cargo.toml"
         );
     }
+
+    /// The names of the workspace's own crates as `Cargo.lock` lists them:
+    /// the `gawk-*` packages with no `source` (registry and git crates have
+    /// one; the vendored wtransport crates are not `gawk-*`).
+    fn lock_members() -> Vec<String> {
+        let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock"))
+            .expect("the workspace Cargo.lock");
+        raw.split("[[package]]")
+            .skip(1)
+            .filter(|block| !block.contains("\nsource = "))
+            .filter_map(|block| {
+                let name = block.lines().find_map(|l| l.strip_prefix("name = "))?;
+                let name = name.trim_matches('"');
+                name.starts_with("gawk-").then(|| name.to_string())
+            })
+            .collect()
+    }
+
+    /// release-please's `simple` release type rewrites only the annotated
+    /// line in Cargo.toml, so Cargo.lock kept saying 1.8.0 through the 2.0.0
+    /// release and every local build dirtied the tree. A `toml` extra-file
+    /// now bumps the lock's workspace entries, by name — so every workspace
+    /// crate must be in its jsonpath, or a new crate's entry silently stops
+    /// following the release. (The versions themselves cannot be checked
+    /// from a test: cargo corrects the lock before it compiles anything. The
+    /// host clippy job's `--locked` is that guard.)
+    #[test]
+    fn every_workspace_crate_is_in_the_lockfile_bump() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../release-please-config.json"
+        );
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return; // a source tarball of this workspace alone
+        };
+        let config: serde_json::Value = serde_json::from_str(&raw).expect("config is JSON");
+        let jsonpath = config["packages"]["gawk-broadcast-desktop"]["extra-files"]
+            .as_array()
+            .expect("extra-files")
+            .iter()
+            .find(|f| f["path"] == "Cargo.lock")
+            .and_then(|f| f["jsonpath"].as_str())
+            .expect("a Cargo.lock extra-file with a jsonpath");
+        let members = lock_members();
+        assert!(members.len() >= 9, "found only {members:?}");
+        for name in members {
+            assert!(
+                jsonpath.contains(&format!("@.name.value==\"{name}\"")),
+                "{name} is missing from the Cargo.lock jsonpath in release-please-config.json"
+            );
+        }
+    }
 }

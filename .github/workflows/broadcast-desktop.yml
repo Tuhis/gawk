@@ -303,9 +303,13 @@ jobs:
           password: ${{ secrets.SCCACHE_WEBDAV_PASSWORD }}
 
       # The host pass lint used to run: every cfg(unix) and
-      # cfg(target_os = "linux") block, the Linux shell included.
+      # cfg(target_os = "linux") block, the Linux shell included. `--locked`
+      # makes a Cargo.lock that disagrees with the manifests a failure here
+      # rather than a silent rewrite: release-please's Cargo.lock extra-file
+      # must bump the workspace crates in the same release PR (the lock sat
+      # at 1.8.0 through the 2.0.0 release before it did).
       - name: Clippy (host)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       # R41 (docs/43): coverage for the Rust workspace. A prebuilt binary
       # pinned by version and fetched from its release, exactly as the
