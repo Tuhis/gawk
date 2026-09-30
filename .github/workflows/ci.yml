@@ -2759,9 +2759,14 @@ jobs:
       # is collected by the wait step below.
       - name: Start the kind cluster (UDP NodePort mapped to 127.0.0.1:4433) in the background
         run: |
-          ( kind create cluster --config e2e/kind-config.yaml --image "$KIND_NODE_IMAGE" --wait 120s \
-              > e2e/out/kind-create.log 2>&1
-            echo $? > e2e/out/kind-create.rc ) &
+          # rc is captured with `|| rc=$?` because this step runs under bash -e,
+          # which the subshell inherits: a plain `echo $?` after a failing kind
+          # would never run, and the wait step would sit out its full 300s and
+          # report a timeout instead of kind's own failure.
+          ( rc=0
+            kind create cluster --config e2e/kind-config.yaml --image "$KIND_NODE_IMAGE" --wait 120s \
+              > e2e/out/kind-create.log 2>&1 || rc=$?
+            echo "$rc" > e2e/out/kind-create.rc ) &
       - name: Build the relay, gawk-admin and fake-IdP (TEST ONLY, never published) images
         run: |
           cat > e2e/out/images.hcl <<'EOF'
