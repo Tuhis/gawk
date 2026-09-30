@@ -78,6 +78,12 @@ pub enum EngineEvent {
     /// A reclaim the shell asked for ([`Session::republish`]) reports its
     /// attempts too; the shell decides what a deliberate one shows.
     Resuming { attempt: u32 },
+    /// The reclaim was refused for good with this HTTP status (401 wrong
+    /// secret, 403 token refused, 404 the relay no longer holds the code,
+    /// 409, 451 banned): sent just before the `Ended` it causes, so the
+    /// shell can say which (review of #423: only a 404 means a paused code
+    /// expired).
+    ReclaimRefused { status: u16 },
     /// [`Session::pause`] took effect: the publish leg is closed and nothing
     /// is published until [`Session::republish`]. The session — and its
     /// room control session — stays up (R62, docs/64 D9).
@@ -852,8 +858,14 @@ async fn resume(
                 return Ok(session);
             }
             Err(e) => {
-                if resume_terminal(e.status) || tokio::time::Instant::now() > deadline {
+                let refused = resume_terminal(e.status);
+                if refused || tokio::time::Instant::now() > deadline {
                     ctx.shared.lock().unwrap().resuming = false;
+                    if refused {
+                        let _ = ctx
+                            .events
+                            .send(EngineEvent::ReclaimRefused { status: e.status });
+                    }
                     return Err(Some(e.to_string()));
                 }
             }

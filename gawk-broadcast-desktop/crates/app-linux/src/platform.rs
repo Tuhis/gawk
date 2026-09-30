@@ -380,6 +380,24 @@ impl Platform for Linux {
         std::mem::take(&mut self.restart_requested)
     }
 
+    /// The broadcast is over: every broadcast asks the picker again
+    /// (docs/58), so a grant a pause handed back — or a pick made while on
+    /// air — is released, the sharing indicator goes out, and the card is
+    /// empty again (review of #423: End from Paused has no media whose
+    /// shutdown would do it).
+    fn broadcast_ended(&mut self, ui: &MainWindow) {
+        if let Some(g) = self.picked.take() {
+            g.release();
+        }
+        self.stop_ctl();
+        self.restart_requested = false;
+        self.choice = Choice::System;
+        ui.set_share_summary("".into());
+        ui.set_share_window(false);
+        self.render_audio(ui);
+        ui.set_share_mode_label("".into());
+    }
+
     fn remember(&mut self, cfg: &mut Config) -> bool {
         if let Choice::App(b) = &self.choice
             && cfg.audio_app != *b
@@ -756,6 +774,31 @@ mod tests {
         pick(&mut p, 3840);
         p.prepare_start(&ui, &cfg()).ok().unwrap();
         assert!(!p.take_restart_request());
+    }
+
+    /// Review of #423: End from Paused finds no media to shut down, so the
+    /// grant a pause handed back is let go by the ending itself — the
+    /// compositor's sharing indicator goes out, and the card asks again
+    /// (docs/58: every broadcast asks).
+    #[test]
+    fn an_ending_lets_a_returned_grant_go() {
+        let ui = window();
+        let mut p = Linux::with_config(&cfg());
+        p.init_window(&ui);
+        p.source_returned(
+            &ui,
+            Box::new(grant(SourceKind::Monitor, Some((1920, 1080)))),
+        );
+        assert_eq!(ui.get_share_summary(), "Whole screen · 1920×1080");
+        p.broadcast_ended(&ui);
+        assert!(p.picked.is_none(), "the grant is released");
+        assert!(p.ctl.is_none());
+        assert_eq!(ui.get_share_summary(), "");
+        assert!(!ui.get_whose_audio());
+        assert!(
+            p.prepare_start(&ui, &cfg()).is_err(),
+            "the next broadcast asks"
+        );
     }
 
     /// docs/64 D9: a pause hands the grant back, and it is the source

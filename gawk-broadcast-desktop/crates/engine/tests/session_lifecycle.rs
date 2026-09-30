@@ -279,6 +279,61 @@ async fn stopping_while_paused_ends_cleanly_and_dials_nothing() {
     assert!(reclaims.urls.lock().unwrap().is_empty());
 }
 
+/// A dialer whose every reclaim is refused with `status`.
+struct Refusing(u16);
+
+impl PublishDialer for Refusing {
+    fn dial(&self, _url: &str) -> BoxFuture<'_, Result<Arc<dyn RelaySession>, StartError>> {
+        let status = self.0;
+        Box::pin(async move {
+            Err(StartError {
+                phase: StartPhase::Connect,
+                status,
+                message: format!("the relay refused the publish request (status {status})"),
+            })
+        })
+    }
+}
+
+// Review of #423: a refused reclaim says which refusal it was, before the
+// Ended it causes — only a 404 means the relay let the code go.
+#[tokio::test(start_paused = true)]
+async fn a_refused_reclaim_says_its_status_before_the_end() {
+    for status in [404u16, 401] {
+        let cfg = SessionConfig {
+            broadcast_id: "ABC234".into(),
+            resume_token_hex: TOKEN.into(),
+            ..config()
+        };
+        let (session, mut rx) = Session::start_with_seams(
+            cfg,
+            Arc::new(Leg::default()),
+            Arc::new(MonotonicClock::new()),
+            Arc::new(NoRooms),
+            Arc::new(Refusing(status)),
+        );
+        session.pause();
+        expect(&mut rx, EngineEvent::Paused).await;
+        session.republish();
+        let mut refused = None;
+        loop {
+            let ev = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            match ev {
+                EngineEvent::ReclaimRefused { status } => refused = Some(status),
+                EngineEvent::Ended { error } => {
+                    assert!(error.is_some(), "a refused reclaim is an error ending");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(refused, Some(status), "said before the end");
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_second_pause_is_a_no_op() {
     let (session, mut rx, _first, _reclaims) = publishing(vec![]);

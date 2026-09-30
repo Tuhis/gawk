@@ -193,6 +193,11 @@ pub trait Platform: 'static {
     fn take_restart_request(&mut self) -> bool {
         false
     }
+    /// The broadcast is over (End, a failure, a quit): let go of anything
+    /// held for it. Ending from Paused finds no media to shut down, so a
+    /// source handed back at the pause ([`Platform::source_returned`]) is
+    /// released here — Linux's portal grant and its sharing indicator.
+    fn broadcast_ended(&mut self, _ui: &MainWindow) {}
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
@@ -212,10 +217,17 @@ enum ShellMsg {
         media: Box<dyn Media>,
     },
     StartFailed(StartFailure),
-    /// A resume from pause or a quick restart built its new media.
-    Restarted(Box<dyn Media>),
+    /// A resume from pause or a quick restart built its new media, for the
+    /// build generation `build`.
+    Restarted {
+        build: u64,
+        media: Box<dyn Media>,
+    },
     /// It could not: the broadcast ends with this reason.
-    RestartFailed(StartFailure),
+    RestartFailed {
+        build: u64,
+        failure: StartFailure,
+    },
     /// The header's probe of `url` came back (docs/64 D1).
     Probed {
         url: String,
@@ -390,6 +402,12 @@ pub struct Shell {
     /// The selected relay advertised the telemetry endpoint this broadcast
     /// reports to: its operator gets the diagnostics (docs/40 D16).
     foreign_telemetry: bool,
+    /// Which media build is current: bumped by every restart and resume,
+    /// and by every start and end, so a build finishing for a broadcast
+    /// that moved on is recognised and dropped (review of #423).
+    build_gen: u64,
+    /// The status the relay refused this broadcast's last reclaim with.
+    reclaim_refused: Option<u16>,
 }
 
 /// The header probe's state: what was found for which relay, and when to
@@ -459,36 +477,16 @@ fn creds() -> Box<dyn config::Credentials> {
     (hooks().creds)()
 }
 
-/// Runs the broadcaster window until it closes. `wire_platform` connects
-/// the platform's own callbacks (its picker) once the window exists.
-pub fn run(
+/// The shell's state, before any window exists: the runtime, the reporter
+/// and the message channel, around a loaded config. `run` builds one; so
+/// do the tests that drive `handle_message`.
+fn build_shell(
     platform: Box<dyn Platform>,
-    wire_platform: impl FnOnce(&MainWindow, &Rc<RefCell<Shell>>),
-) {
-    let _ = HOOKS.set(platform.hooks());
-
-    let cfg_path = config::default_path();
-    // The debug log lives next to broadcast.json; a windowed EXE has no
-    // stderr, so this file is the only runtime record (docs/38 F-8).
-    let log_path = debuglog::init(cfg_path.as_deref().and_then(|p| p.parent()));
-    // Panics must reach the log: with no console, an unhooked panic is a
-    // thread silently gone (the F-10 symptom class). The default hook still
-    // runs after ours so dev shells keep the stderr backtrace.
-    let default_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let thread = std::thread::current();
-        log::error!("PANIC on thread {:?}: {info}", thread.name().unwrap_or("?"));
-        default_hook(info);
-    }));
-    log::info!(
-        "gawk-broadcast v{} starting on {} {}",
-        version::display(),
-        std::env::consts::OS,
-        std::env::consts::ARCH
-    );
-    platform.launch_log();
-    let install_target = install_target();
-
+    cfg: Config,
+    cfg_path: Option<std::path::PathBuf>,
+    log_path: Option<std::path::PathBuf>,
+    install_target: Option<InstallTarget>,
+) -> Shell {
     let clock = Arc::new(MonotonicClock::new());
     // version::RELEASE, not version::display(): this field doubles as the
     // telemetry schema version and gawk-telemetry groups sessions by it, so
@@ -501,46 +499,8 @@ pub fn run(
         .build()
         .expect("tokio runtime");
 
-    let mut cfg = match &cfg_path {
-        Some(p) => {
-            let (cfg, warn) = config::load(p, &*creds());
-            if let Some(w) = warn {
-                log::warn!("{w}");
-            }
-            cfg
-        }
-        None => Config::default(),
-    };
-    // R37 SP9: fold the legacy flat relay/secret pair into server profiles
-    // (docs/40 §4.1.2). Writing the migrated shape back is what retires the
-    // legacy fields; failure is only a warning — the in-memory shape is
-    // already migrated and the write retries on the next settings save.
-    if config::migrate(&mut cfg) {
-        log::info!("migrated legacy relay settings to server profiles");
-        if let Some(p) = &cfg_path
-            && let Err(e) = config::save(p, &cfg, &*creds())
-        {
-            log::warn!("could not save migrated settings: {e}");
-        }
-    }
-
-    // A room saved as a pasted link (before the fix for #381's review) held
-    // its grant in the clear: keep the code, move the grant to its wrapped
-    // field, and rewrite the file.
-    if let Some(input) = parse_room_input(&cfg.room)
-        && input.grant.is_some()
-    {
-        store_room_choice(&mut cfg, &input);
-        log::info!("moved a stored room link's grant into the credential store");
-        if let Some(p) = &cfg_path
-            && let Err(e) = config::save(p, &cfg, &*creds())
-        {
-            log::warn!("could not save the room settings: {e}");
-        }
-    }
-
     let (msg_tx, msg_rx) = mpsc::channel();
-    let shell = Rc::new(RefCell::new(Shell {
+    Shell {
         platform,
         cfg,
         cfg_path,
@@ -595,7 +555,86 @@ pub fn run(
         left_room: None,
         edit_server: DEFAULT_SERVER_NAME.to_string(),
         foreign_telemetry: false,
+        build_gen: 0,
+        reclaim_refused: None,
+    }
+}
+
+/// Runs the broadcaster window until it closes. `wire_platform` connects
+/// the platform's own callbacks (its picker) once the window exists.
+pub fn run(
+    platform: Box<dyn Platform>,
+    wire_platform: impl FnOnce(&MainWindow, &Rc<RefCell<Shell>>),
+) {
+    let _ = HOOKS.set(platform.hooks());
+
+    let cfg_path = config::default_path();
+    // The debug log lives next to broadcast.json; a windowed EXE has no
+    // stderr, so this file is the only runtime record (docs/38 F-8).
+    let log_path = debuglog::init(cfg_path.as_deref().and_then(|p| p.parent()));
+    // Panics must reach the log: with no console, an unhooked panic is a
+    // thread silently gone (the F-10 symptom class). The default hook still
+    // runs after ours so dev shells keep the stderr backtrace.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        log::error!("PANIC on thread {:?}: {info}", thread.name().unwrap_or("?"));
+        default_hook(info);
     }));
+    log::info!(
+        "gawk-broadcast v{} starting on {} {}",
+        version::display(),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    platform.launch_log();
+    let install_target = install_target();
+
+    let mut cfg = match &cfg_path {
+        Some(p) => {
+            let (cfg, warn) = config::load(p, &*creds());
+            if let Some(w) = warn {
+                log::warn!("{w}");
+            }
+            cfg
+        }
+        None => Config::default(),
+    };
+    // R37 SP9: fold the legacy flat relay/secret pair into server profiles
+    // (docs/40 §4.1.2). Writing the migrated shape back is what retires the
+    // legacy fields; failure is only a warning — the in-memory shape is
+    // already migrated and the write retries on the next settings save.
+    if config::migrate(&mut cfg) {
+        log::info!("migrated legacy relay settings to server profiles");
+        if let Some(p) = &cfg_path
+            && let Err(e) = config::save(p, &cfg, &*creds())
+        {
+            log::warn!("could not save migrated settings: {e}");
+        }
+    }
+
+    // A room saved as a pasted link (before the fix for #381's review) held
+    // its grant in the clear: keep the code, move the grant to its wrapped
+    // field, and rewrite the file.
+    if let Some(input) = parse_room_input(&cfg.room)
+        && input.grant.is_some()
+    {
+        store_room_choice(&mut cfg, &input);
+        log::info!("moved a stored room link's grant into the credential store");
+        if let Some(p) = &cfg_path
+            && let Err(e) = config::save(p, &cfg, &*creds())
+        {
+            log::warn!("could not save the room settings: {e}");
+        }
+    }
+
+    let shell = Rc::new(RefCell::new(build_shell(
+        platform,
+        cfg,
+        cfg_path,
+        log_path,
+        install_target,
+    )));
 
     let ui = MainWindow::new().expect("create window");
     ui.set_app_version(format!("v{}", version::display()).into());
@@ -2472,6 +2511,9 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     sh.reclaim_quiet = false;
     sh.resuming_from_pause = false;
     sh.pending_error = None;
+    sh.reclaim_refused = None;
+    // A build still finishing for an earlier broadcast is not this one's.
+    sh.build_gen += 1;
     show_sharing(ui, &prepared.source, prepared.source_is_window);
     ui.set_upload_host(host_of(&sh.cfg.resolve_relay_url()).into());
     ui.set_live_quality("".into());
@@ -2698,11 +2740,16 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
             ui.set_can_mint(can_mint(&f));
             notify("Broadcast failed to start", first_line(&text), true);
         }
-        ShellMsg::Restarted(media) => {
+        ShellMsg::Restarted { build, media } => {
             let mut sh = shell.borrow_mut();
-            // An End (or a failure) while the media was building: the
-            // session is gone, and so is the reason for this pipeline.
-            if sh.state != UiState::Live || sh.session.is_none() || !sh.restarting {
+            // An End (or a failure) while the media was building, or a
+            // newer build asked for since: the session this pipeline was
+            // built for has moved on.
+            if build != sh.build_gen
+                || sh.state != UiState::Live
+                || sh.session.is_none()
+                || !sh.restarting
+            {
                 log::warn!("restarted media came up after the broadcast moved on; discarding it");
                 media.shutdown();
                 return;
@@ -2721,8 +2768,13 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
                 restart_media(ui, shell);
             }
         }
-        ShellMsg::RestartFailed(f) => {
+        ShellMsg::RestartFailed { build, failure: f } => {
             let mut sh = shell.borrow_mut();
+            // A failure for a broadcast that moved on is not this one's.
+            if build != sh.build_gen {
+                log::warn!("a media build for an earlier broadcast failed; ignoring it");
+                return;
+            }
             sh.restarting = false;
             sh.restart_again = false;
             let app_url = sh.cfg.resolve_app_url();
@@ -2919,6 +2971,10 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             ui.set_status_line("".into());
         }
         EngineEvent::Ended { error } => end_broadcast(ui, shell, error),
+        EngineEvent::ReclaimRefused { status } => {
+            log::warn!("the relay refused the reclaim with status {status}");
+            shell.borrow_mut().reclaim_refused = Some(status);
+        }
         EngineEvent::Paused => {
             log::info!("the publish leg is closed; the session holds the code");
             // No publisher, no count: the pill would state a stale fact.
@@ -3237,21 +3293,42 @@ fn reset_room_ui(ui: &MainWindow) {
     ui.set_room_needs_key(false);
 }
 
+/// The error an ending shows, and whether Ready offers a new code instead
+/// (docs/64 D9). A resume from pause the relay refused with 404 means the
+/// relay let the paused code go: said as that, with a new code one click
+/// away.
+fn ending_error(
+    error: Option<String>,
+    resuming_from_pause: bool,
+    refused: Option<u16>,
+    code: &str,
+) -> (Option<String>, bool) {
+    // Only a 404 is "gone": 401/403/409/451 keep their own reason, and a
+    // relay unreachable for the whole window is a loss, not an expiry.
+    if error.is_some() && resuming_from_pause && refused == Some(404) {
+        return (
+            Some(format!(
+                "The server no longer holds {code}: a paused broadcast is kept for a few \
+                 minutes. Go live for a new code."
+            )),
+            true,
+        );
+    }
+    (error, false)
+}
+
 fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<String>) {
     let mut sh = shell.borrow_mut();
     let was_live = matches!(sh.state, UiState::Live | UiState::Paused);
     // A resume from pause the relay refused: the paused code is gone
     // (docs/64 D9). Said as that, with a new code one click away.
-    let paused_code_gone = error.is_some() && sh.resuming_from_pause;
-    let error = if paused_code_gone {
-        Some(format!(
-            "The server no longer holds {}: a paused broadcast is kept for a few minutes. \
-             Go live for a new code.",
-            sh.broadcast_id
-        ))
-    } else {
-        error.or_else(|| sh.pending_error.take())
-    };
+    let pending = sh.pending_error.take();
+    let (error, paused_code_gone) = ending_error(
+        error.or(pending),
+        sh.resuming_from_pause,
+        sh.reclaim_refused.take(),
+        &sh.broadcast_id,
+    );
     // The summary card (docs/64 D10), read before the session goes: time
     // live, not time paused.
     let summary = sh.live_since.map(|since| {
@@ -3282,6 +3359,8 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     sh.left_room = None;
     sh.foreign_telemetry = false;
     sh.quality_timer.stop();
+    // A build still running for this broadcast finishes for nobody.
+    sh.build_gen += 1;
     // Back on Ready: the header's status looks at the relay again now.
     sh.probe.next_at = None;
     // Ended inside the app: no resume question at the next launch (D12).
@@ -3292,6 +3371,12 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     sh.media_info = None;
     if let Some(m) = sh.media.take() {
         m.shutdown();
+    }
+    // Ending from Paused has no media to shut down: the platform lets go of
+    // what a pause handed back (review of #423).
+    {
+        let sh = &mut *sh;
+        sh.platform.broadcast_ended(ui);
     }
     if let Some(e) = &error {
         log::error!("broadcast ended with error: {e}");
@@ -3574,6 +3659,8 @@ fn republish(
     // audio format describe it, not the last one (docs/64 D8).
     session.sender().new_lineage();
     session.republish();
+    sh.build_gen += 1;
+    let build = sh.build_gen;
     let tx = sh.msg_tx.clone();
     let clock: Arc<dyn gawk_engine::clock::Clock> = sh.clock.clone();
     let rt = sh.rt.handle().clone();
@@ -3589,12 +3676,15 @@ fn republish(
         let built =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (prepared.build)(env)));
         let msg = match built {
-            Ok(Ok(media)) => ShellMsg::Restarted(media),
-            Ok(Err(f)) => ShellMsg::RestartFailed(f),
-            Err(_) => ShellMsg::RestartFailed(StartFailure::Capture(
-                "the media pipeline crashed while restarting (a bug — the details are in the debug log)"
-                    .into(),
-            )),
+            Ok(Ok(media)) => ShellMsg::Restarted { build, media },
+            Ok(Err(failure)) => ShellMsg::RestartFailed { build, failure },
+            Err(_) => ShellMsg::RestartFailed {
+                build,
+                failure: StartFailure::Capture(
+                    "the media pipeline crashed while restarting (a bug — the details are in the debug log)"
+                        .into(),
+                ),
+            },
         };
         let _ = tx.send(msg);
     });
@@ -4583,6 +4673,110 @@ mod tests {
         seed_edit_fields(&ui, &cfg, DEFAULT_SERVER_NAME);
         assert!(!ui.get_server_is_custom());
         assert_eq!(ui.get_set_secret(), "official");
+    }
+
+    /// A platform that captures nothing and counts the hooks the shell calls.
+    #[derive(Default)]
+    struct Counting {
+        ended: Rc<std::cell::Cell<u32>>,
+    }
+
+    impl Platform for Counting {
+        fn hooks(&self) -> Hooks {
+            Hooks {
+                notify: |_, _, _| {},
+                creds: || Box::new(config::Plaintext),
+            }
+        }
+        fn init_window(&mut self, _ui: &MainWindow) {}
+        fn prepare_start(&mut self, _ui: &MainWindow, _cfg: &Config) -> Result<Prepared, String> {
+            Err("nothing to share in a test".into())
+        }
+        fn broadcast_ended(&mut self, _ui: &MainWindow) {
+            self.ended.set(self.ended.get() + 1);
+        }
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
+
+    /// A shell with no config file, on a platform that counts its hooks.
+    fn test_shell() -> (Rc<RefCell<Shell>>, Rc<std::cell::Cell<u32>>) {
+        let platform = Counting::default();
+        let ended = platform.ended.clone();
+        let _ = HOOKS.set(platform.hooks());
+        let shell = build_shell(Box::new(platform), Config::default(), None, None, None);
+        (Rc::new(RefCell::new(shell)), ended)
+    }
+
+    // Review of #423: a media build carries its generation, and one that
+    // finishes after its broadcast moved on (an End, a new Go live) is
+    // dropped — it must not stop the new broadcast or leave its error for
+    // the next End.
+    #[test]
+    fn a_build_for_a_broadcast_that_moved_on_is_dropped() {
+        let ui = window();
+        let (shell, _) = test_shell();
+        shell.borrow_mut().build_gen = 2;
+        handle_message(
+            &ui,
+            &shell,
+            ShellMsg::RestartFailed {
+                build: 1,
+                failure: StartFailure::Capture("the old build's failure".into()),
+            },
+        );
+        assert_eq!(shell.borrow().pending_error, None);
+        // The current build's failure is still the broadcast's.
+        handle_message(
+            &ui,
+            &shell,
+            ShellMsg::RestartFailed {
+                build: 2,
+                failure: StartFailure::Capture("this build's failure".into()),
+            },
+        );
+        assert!(shell.borrow().pending_error.is_some());
+    }
+
+    // Review of #423: only a 404 says the relay let a paused code go; any
+    // other refusal keeps its own error, and offers no new code (minting
+    // would fail the same way after a 401 or a 451).
+    #[test]
+    fn only_a_404_reads_as_the_paused_code_gone() {
+        let err = || Some("lost the connection to the relay and could not resume: x".to_string());
+        let (text, mint) = ending_error(err(), true, Some(404), "HT4M9R");
+        assert!(
+            text.unwrap()
+                .starts_with("The server no longer holds HT4M9R")
+        );
+        assert!(mint);
+        for status in [401, 403, 409, 451] {
+            assert_eq!(
+                ending_error(err(), true, Some(status), "HT4M9R"),
+                (err(), false)
+            );
+        }
+        // Unreachable for the whole window: no status, the real error.
+        assert_eq!(ending_error(err(), true, None, "HT4M9R"), (err(), false));
+        // A 404 on a loss while live is the engine's own sentence.
+        assert_eq!(
+            ending_error(err(), false, Some(404), "HT4M9R"),
+            (err(), false)
+        );
+        assert_eq!(ending_error(None, true, None, "HT4M9R"), (None, false));
+    }
+
+    // Review of #423: an ending tells the platform, so a source handed back
+    // at a pause (Linux's portal grant) is let go when End comes from
+    // Paused, where there is no media to shut down.
+    #[test]
+    fn an_ending_tells_the_platform() {
+        let ui = window();
+        let (shell, ended) = test_shell();
+        shell.borrow_mut().state = UiState::Paused;
+        end_broadcast(&ui, &shell, None);
+        assert_eq!(ended.get(), 1);
     }
 
     // Review of #423: a test still running when the relay address is edited
