@@ -1008,6 +1008,16 @@ the manual pass outcome.
   still in place, so the reconnecting participant waited out the
   staleness window instead of adopting at once. It now re-reads and
   retries like `patchStatus`.
+- **A proxied participant's departure closes the upstream at once**
+  (found 2026-10-01): the proxy on the non-home pod ran its
+  participant→home copy in a goroutine but waited only on the
+  home→participant copy, which blocks on the upstream read. In a quiet
+  room the home sends nothing, so nothing failed against the dead
+  participant stream and the upstream stayed open: the participant stayed
+  on the home's roster, the other participants never got
+  `ParticipantLeft`, and a dynamic room whose last member was proxied
+  never started its empty grace — until the next room event happened to
+  flush it. Both copies are now raced and whichever ends first decides.
 
 ### 11.2 Verified by
 
@@ -1019,6 +1029,7 @@ the manual pass outcome.
 | RM2 wrong token refused | `TestAttachRequiresProofAndGrant`, transport `TestRoomMintJoinAttachAndEnd` (bad proof → `CommandRejected`), `TestRoomJoinStatusVocabulary` (403s) |
 | RM2 grace survives a shorter reconnect | `TestEmptyGraceSurvivesAReconnectShorterThanIt` |
 | Fleet-wide broadcast source: mint on a pod other than the publisher's, away within the refresh interval, removed after the broadcast grace, CR rewritten (review, PR #302) | transport `TestRoomMintOnAnotherPodThanThePublisherFollowsTheLease` (two in-process pods, real coordinators on one fake clientset) and `TestRoomBroadcastsAnswersLocalHubThenOriginLease`; `cluster` `TestLookupServesTheLeaseCache`; `roomsrv` `TestRefreshExpiresUnknownAttachmentsInClusterMode`; `hub` `TestBroadcastStateReportsFleetGlobalViewers` (G, not the local count) |
+| A proxied participant leaving a quiet room leaves the home's roster at once (§11.1, 2026-10-01) | transport `TestRoomProxyParticipantLeavingAQuietRoomLeavesTheHome`; single-pod counterpart `TestRoomParticipantSessionCloseLeavesTheRoster` |
 | Drain release survives a CAS conflict with a concurrent status write | `roomcluster` `TestReleaseRetriesThroughAConflict`; transport `TestRoomProxyPipesAndAdoptsAfterTheHomeDrains` under the fleet fixture's resourceVersion CAS reactor |
 | RM2 every knob reaches the registry | `TestRoomOptionsCarryAllKnobs`, `TestRoomKnobs`, `TestSanitizedCoversEveryConfigField` |
 | RM2 `-rooms` off byte-identical | `TestRoomsOffLeavesNoRoute` (no route, no `/statusz` section), the full pre-R42 suite green, chart "rooms off renders nothing" |

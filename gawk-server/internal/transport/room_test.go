@@ -247,6 +247,31 @@ func TestRoomMintJoinAttachAndEnd(t *testing.T) {
 	}
 }
 
+// A participant whose session closes leaves the roster, and the others
+// are told — the single-pod counterpart of the proxy test in
+// roomcluster_test.go.
+func TestRoomParticipantSessionCloseLeavesTheRoster(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	port, clientTLS, _, _, reg := startRoomServer(t, ctx, nil)
+
+	pub, id, tokenHex := dialPublisherHandshake(t, ctx, port, clientTLS)
+	defer pub.CloseWithError(0, "")
+	creator := openControl(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/room/new?broadcast=%s&resume=%s", port, id, tokenHex), clientTLS, "tuhis")
+	code := strings.ToLower(creator.nextState(t).Code)
+	viewer := openControl(t, ctx, fmt.Sprintf("https://127.0.0.1:%d/room/%s", port, code), clientTLS, "viewer")
+	viewer.nextState(t)
+	joined := creator.nextEvent(t, wire.RoomEventParticipantJoined)
+
+	viewer.sess.CloseWithError(0, "")
+	if e := creator.nextEvent(t, wire.RoomEventParticipantLeft); e.Participant.ID != joined.Participant.ID {
+		t.Fatalf("left = %+v, want participant %d", e.Participant, joined.Participant.ID)
+	}
+	if info, _ := reg.Lookup(code); info.Participants != 1 {
+		t.Fatalf("participants = %d, want 1", info.Participants)
+	}
+}
+
 // The HMAC'd room key is the ONE handle an operator can carry between the
 // relay log, /statusz, RoomState.key and the CR's status.key — so a join by
 // an un-normalized code (upper-case, as the join box types it) must log the

@@ -255,19 +255,39 @@ func (s *Server) proxyRoom(w http.ResponseWriter, r *http.Request, rc *roomClust
 	// sent one (RoomEnded 4007 must reach the client — that is what makes
 	// it terminal) and with the non-terminal draining code otherwise, so
 	// the client reconnects and lands on whichever pod adopts or re-proxies.
+	//
+	// Both copies run in goroutines and are raced: the home→participant
+	// copy blocks on the upstream read, and a quiet room sends nothing that
+	// would fail against a dead participant stream — so waiting on it alone
+	// left a departed participant on the home's roster (and its dynamic room
+	// never emptied) until the next room event.
 	fromClient := make(chan error, 1)
 	go func() {
 		_, err := io.Copy(upstream, client)
 		fromClient <- err
 	}()
-	_, upErr := io.Copy(client, upstream)
-	select {
-	case <-fromClient:
-		// The participant's side ended first (or at the same time).
-		log.Info("room proxy session ended", "reason", sessionEndReason(ctx, upErr))
+	fromHome := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(client, upstream)
+		fromHome <- err
+	}()
+	participantLeft := func(err error) {
+		log.Info("room proxy session ended", "reason", sessionEndReason(ctx, err))
 		sess.CloseWithError(0, "")
 		up.close(0, "participant left")
-	default:
+	}
+	select {
+	case err := <-fromClient:
+		participantLeft(err)
+	case upErr := <-fromHome:
+		select {
+		case err := <-fromClient:
+			// Both ended at once: a dead participant also fails the
+			// home→participant write.
+			participantLeft(err)
+			return
+		default:
+		}
 		code, reason := uint32(wire.CloseCodeServerDraining), "room home lost"
 		var se *webtransport.SessionError
 		if errors.As(upErr, &se) {
