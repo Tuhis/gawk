@@ -125,15 +125,16 @@
 #
 # The toolchain lives in the runner image, NOT here — see
 # .github/actions/rust-windows-preflight, which every job below runs first.
-# These jobs install nothing and cache nothing, deliberately. actions/cache
-# would lose anyway: restore on these runners runs at ~6 MB/s and _work is
-# RAM-backed (a 747MB restore has already caused a mid-build ENOSPC, ci.yml's
-# tidy job documents it), so the target dir, the registry and the MSVC SDK all
-# cost more to restore than to rebuild or refetch. Re-measure before adding
-# one — and if you do, measure against in-cluster storage rather than GitHub's
-# cache CDN, because 93% of the compile time here is third-party dependencies
-# (660 units, 830 CPU-seconds, of which this workspace's own six crates are
-# 59s) and that is the only part worth caching.
+# actions/cache still loses here: restore on these runners runs at ~6 MB/s and
+# _work is RAM-backed (a 747MB restore has already caused a mid-build ENOSPC,
+# ci.yml's tidy job documents it), so the target dir, the registry and the
+# MSVC SDK all cost more to restore than to rebuild or refetch. 93% of the
+# compile time is third-party dependencies (660 units, 830 CPU-seconds, of
+# which this workspace's own six crates are 59s), and that is the part worth
+# caching. It is now cached per compiled unit, not per target dir: every
+# self-hosted Rust job wraps rustc in sccache, backed by an in-cluster WebDAV
+# server (.github/actions/rust-shared-cache). Fork PRs get no password and
+# build uncached.
 #
 # Sequencing, the one real trap: a change to the runner image only reaches
 # these jobs after build-runner-image runs in ioio AND Flux rolls the scale
@@ -248,12 +249,18 @@ jobs:
         with:
           ref: ${{ inputs.attach_to || github.sha }}
       - uses: ./.github/actions/rust-windows-preflight
+      - uses: ./.github/actions/rust-shared-cache
+        with:
+          password: ${{ secrets.SCCACHE_WEBDAV_PASSWORD }}
 
       - name: Format
         run: cargo fmt --all --check
 
       - name: Clippy (Windows target)
         run: cargo xwin clippy --all-targets --target "$WINDOWS_TARGET" -- -D warnings
+      - name: sccache stats
+        if: always() && env.RUSTC_WRAPPER != ''
+        run: '"$RUSTC_WRAPPER" --show-stats'
 
   # Host clippy, the whole workspace's tests and coverage, and the real-relay
   # integration tiers — in the ubuntu:24.04 container (docs/58 D12).
@@ -291,6 +298,9 @@ jobs:
         with:
           ref: ${{ inputs.attach_to || github.sha }}
       - uses: ./.github/actions/linux-container-setup
+      - uses: ./.github/actions/rust-shared-cache
+        with:
+          password: ${{ secrets.SCCACHE_WEBDAV_PASSWORD }}
 
       # The host pass lint used to run: every cfg(unix) and
       # cfg(target_os = "linux") block, the Linux shell included.
@@ -373,6 +383,9 @@ jobs:
           report: gawk-broadcast-desktop/coverage-llvm.json
           component: gawk-broadcast-desktop
           label: broadcast-desktop
+      - name: sccache stats
+        if: always() && env.RUSTC_WRAPPER != ''
+        run: '"$RUSTC_WRAPPER" --show-stats'
 
   build:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
@@ -394,6 +407,9 @@ jobs:
         with:
           ref: ${{ inputs.attach_to || github.sha }}
       - uses: ./.github/actions/rust-windows-preflight
+      - uses: ./.github/actions/rust-shared-cache
+        with:
+          password: ${{ secrets.SCCACHE_WEBDAV_PASSWORD }}
 
       - name: Resolve the commit being built
         id: source
@@ -464,6 +480,9 @@ jobs:
           path: gawk-broadcast-desktop/dist/
           retention-days: 1
           if-no-files-found: error
+      - name: sccache stats
+        if: always() && env.RUSTC_WRAPPER != ''
+        run: '"$RUSTC_WRAPPER" --show-stats'
 
   # R52 MB1 (docs/54 D15): the macOS distribution, on GitHub-hosted
   # `macos-latest` (Apple Silicon) — the one deliberate exception to docs/38
@@ -727,6 +746,9 @@ jobs:
         with:
           ref: ${{ inputs.attach_to || github.sha }}
       - uses: ./.github/actions/linux-container-setup
+      - uses: ./.github/actions/rust-shared-cache
+        with:
+          password: ${{ secrets.SCCACHE_WEBDAV_PASSWORD }}
       # Again, now that the container has git: the first checkout could only
       # download a tarball (no .git), and the commit must be resolved by git.
       # A backfill's `attach_to` may be a tag (with a `/`, which an artifact
@@ -884,6 +906,9 @@ jobs:
           path: gawk-broadcast-desktop/dist/
           retention-days: 7
           if-no-files-found: error
+      - name: sccache stats
+        if: always() && env.RUSTC_WRAPPER != ''
+        run: '"$RUSTC_WRAPPER" --show-stats'
 
   # The Windows half of the release-assets story; the Linux one is
   # attach-broadcast-release in ci.yml, and the reasoning for both lives in

@@ -1,0 +1,98 @@
+# sccache for the Rust jobs in broadcast-desktop.yml, backed by the in-cluster
+# WebDAV server (ioio actions-runners/sccache.yaml, TrueNAS storage).
+#
+# Why a server: 93% of these jobs' compile time is third-party crates (660
+# units; docs/38 D18). actions/cache restores at ~6 MB/s into the runners' RAM
+# tmpfs, and sccache servers must not share a directory. So each rustc
+# invocation's output is one object on a server over the LAN, and a crate
+# already compiled by any earlier job, with the same flags for the same target,
+# is fetched instead of built.
+#
+# Who writes: whoever holds the password, the SCCACHE_WEBDAV_PASSWORD Actions
+# secret, passed in as `password`. GitHub withholds secrets from fork PRs, so a
+# fork's run gets an empty password: this action then does nothing and the
+# build is simply uncached. That is on purpose. The Windows EXE, the Linux
+# tarball and every test binary are linked from these objects, so write access
+# is limited to jobs that already had write access to the repository.
+#
+# Fails OPEN, never closed. RUSTC_WRAPPER is exported only after the sccache
+# server has started and reached its storage. An unreachable server, a missing
+# password or a hosted runner (which cannot reach the cluster) leaves the build
+# exactly as it was.
+#
+# What it cannot cache, per sccache's design: proc-macro and bin crates, build
+# scripts, and every link step, including the release profile's thin LTO.
+# Those still run every time.
+#
+# The same paths every run matter: sccache keys on rustc's arguments, which
+# carry absolute source paths. The runner image (HOME=/home/runner) and the
+# ubuntu:24.04 job containers (HOME=/root) are each identical run to run, so
+# each shares with itself, but the two never share with each other.
+name: Shared Rust compile cache
+description: Wrap rustc in sccache backed by the in-cluster WebDAV server; a no-op without the password.
+
+inputs:
+  password:
+    description: The SCCACHE_WEBDAV_PASSWORD secret. Empty on fork PRs, which disables the cache.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SCCACHE_WEBDAV_PASSWORD: ${{ inputs.password }}
+        SCCACHE_VERSION: "0.18.0"
+        # sha256 of sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz, from the
+        # release's own .sha256 asset.
+        SCCACHE_SHA256: 45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
+        ENDPOINT: http://sccache-webdav.actions-runners.svc.cluster.local:8080
+      run: |
+        set -euo pipefail
+        if [ -z "$SCCACHE_WEBDAV_PASSWORD" ]; then
+          echo "No sccache password (a fork's PR, or a hosted runner): building without the shared Rust cache."
+          exit 0
+        fi
+        # Only the self-hosted pods resolve the in-cluster name; anywhere else
+        # there is nothing to talk to.
+        if ! getent hosts sccache-webdav.actions-runners.svc.cluster.local >/dev/null 2>&1; then
+          echo "The sccache server does not resolve from here: building without the shared Rust cache."
+          exit 0
+        fi
+        bin="$RUNNER_TEMP/sccache-bin"
+        mkdir -p "$bin"
+        tarball="sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+        # Guarded like the server start below: a failed fetch from github.com
+        # or a checksum mismatch means an uncached build, not a red one. The
+        # unverified binary is never run.
+        if ! { curl -fsSL -o "$RUNNER_TEMP/$tarball" \
+                 "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/$tarball" &&
+               echo "$SCCACHE_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c --quiet &&
+               tar -xzf "$RUNNER_TEMP/$tarball" -C "$bin" --strip-components=1 \
+                 "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache"; }; then
+          echo "::warning::could not fetch or verify sccache $SCCACHE_VERSION, so this job builds without the shared Rust cache"
+          exit 0
+        fi
+
+        export SCCACHE_WEBDAV_ENDPOINT="$ENDPOINT"
+        export SCCACHE_WEBDAV_USERNAME=sccache
+        export SCCACHE_WEBDAV_KEY_PREFIX=gawk
+        # One server for the whole job; the default 10-minute idle exit would
+        # drop it between two long steps.
+        export SCCACHE_IDLE_TIMEOUT=0
+        if ! "$bin/sccache" --start-server > "$RUNNER_TEMP/sccache-start.log" 2>&1; then
+          cat "$RUNNER_TEMP/sccache-start.log"
+          echo "::warning::sccache could not start against $ENDPOINT, so this job builds without the shared Rust cache"
+          exit 0
+        fi
+        "$bin/sccache" --show-stats | sed -n '1,4p;/Cache location/p'
+        echo "$bin" >> "$GITHUB_PATH"
+        {
+          echo "SCCACHE_WEBDAV_ENDPOINT=$SCCACHE_WEBDAV_ENDPOINT"
+          echo "SCCACHE_WEBDAV_USERNAME=$SCCACHE_WEBDAV_USERNAME"
+          echo "SCCACHE_WEBDAV_PASSWORD=$SCCACHE_WEBDAV_PASSWORD"
+          echo "SCCACHE_WEBDAV_KEY_PREFIX=$SCCACHE_WEBDAV_KEY_PREFIX"
+          echo "SCCACHE_IDLE_TIMEOUT=0"
+          echo "RUSTC_WRAPPER=$bin/sccache"
+        } >> "$GITHUB_ENV"
+        echo "Shared Rust cache: sccache $SCCACHE_VERSION -> $ENDPOINT"
