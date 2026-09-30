@@ -233,6 +233,11 @@ env:
   # ever applied to this workspace's own crates (cargo never uses incremental
   # for registry dependencies), so the win is small; it is simply free.
   CARGO_INCREMENTAL: "0"
+  # The Cargo profile `build` and `linux` compile with: `ci` (release minus
+  # LTO, Cargo.toml) on a pull request, `release` everywhere else. Only push
+  # and dispatch runs publish or attach binaries, and they always build
+  # `release`, so no released byte comes from the `ci` profile.
+  BUILD_PROFILE: ${{ github.event_name == 'pull_request' && 'ci' || 'release' }}
 
 # Runner pool: `runs-on` reads RUNNER_LABEL, falling back to `ubuntu-latest`
 # in a fork that has no such variable. Why: ci.yml's header.
@@ -427,17 +432,32 @@ jobs:
         id: source
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # The critical path. ~4:31 of this is the third-party dependency set and
-      # ~2:13 is a single serial tail — the app crate's codegen plus thin LTO
-      # plus the link. Dropping `lto = "thin"` shortens that tail but was
-      # measured to cost ~12% MORE total CPU (874 vs 781 CPU-seconds), which
-      # is the wrong trade on a shared runner, and it would change the bytes
-      # BUILD-INFO.txt asks testers to report codegen differences against.
+      # The critical path. Before sccache (#411), ~4:31 of this was the
+      # third-party dependency set and ~2:13 a single serial tail: the app
+      # crate's codegen plus thin LTO plus the link. Dropping `lto = "thin"`
+      # was measured then to cost ~12% MORE total CPU (874 vs 781
+      # CPU-seconds), so `release` keeps it: every pushed, dispatched or
+      # attached EXE is the LTO build BUILD-INFO.txt asks testers to report
+      # codegen differences against.
+      #
+      # With sccache the dependency set is ~100% cache hits and the tail is
+      # nearly all that is left (run 36715790584: 515 of 516 lookups hit,
+      # yet 381s, 5+ minutes of it after the last cached crate). A pull
+      # request therefore builds BUILD_PROFILE=ci, which skips LTO — see the
+      # env block and Cargo.toml.
+      #
+      # That link needs the runner image from ioio 61bbfaa or later. Before
+      # it, libopus was compiled against the DLL CRT (/MD) into this
+      # +crt-static EXE; only the LTO link happened to pull libucrt's
+      # malloc.obj in (the LNK4217 warnings), and a no-LTO link failed on
+      # "undefined symbol: __declspec(dllimport) malloc" (run 36774354477).
+      # The image's clang-cl shim now rewrites /MD to /MT for crt-static
+      # cargo builds.
       # -p: the workspace also holds the macOS shell (R52), which off macOS
       # is a stub binary nobody ships. Naming the package also pins feature
       # unification to exactly the EXE's own graph.
-      - name: Build (release)
-        run: cargo xwin build --release --target "$WINDOWS_TARGET" -p gawk-broadcast-app-windows
+      - name: Build (${{ env.BUILD_PROFILE }})
+        run: cargo xwin build --profile "$BUILD_PROFILE" --target "$WINDOWS_TARGET" -p gawk-broadcast-app-windows
 
       # R44 (docs/53 D8): the icon reaches Explorer through a .res that
       # build.rs hands the linker as a plain input — no resource compiler in
@@ -446,13 +466,13 @@ jobs:
       # resource directory and require RT_GROUP_ICON + RT_ICON. `go -C`
       # because this directory is not a Go module and tools/icon is.
       - name: The EXE carries the icon resource
-        run: go -C ../tools/icon run . verify-exe "$PWD/target/${WINDOWS_TARGET}/release/gawk-broadcast.exe"
+        run: go -C ../tools/icon run . verify-exe "$PWD/target/${WINDOWS_TARGET}/${BUILD_PROFILE}/gawk-broadcast.exe"
 
       - name: Assemble artifact
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp "target/${WINDOWS_TARGET}/release/gawk-broadcast.exe" dist/
+          cp "target/${WINDOWS_TARGET}/${BUILD_PROFILE}/gawk-broadcast.exe" dist/
           # THIRD-PARTY-NOTICES.md discharges the attribution obligations of
           # everything statically linked into the .exe (373 crates incl.
           # libopus); LICENSE is the repo root's (working-directory is
@@ -469,6 +489,8 @@ jobs:
             echo "built:     $(date -Iseconds)"
             echo "toolchain: $(rustc --version)"
             echo "target:    ${WINDOWS_TARGET}"
+            # `ci` (no LTO) marks a pull-request build; anything shipped says `release`.
+            echo "profile:   ${BUILD_PROFILE}"
             # Provenance a tester needs, because it is not what they would
             # assume from a .exe: this binary is cross-compiled on Linux with
             # clang-cl via cargo-xwin, not built by MSVC on Windows. It is the
@@ -778,9 +800,11 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # -p: only the Linux shell's graph, so feature unification is exactly
-      # the shipped binary's.
-      - name: Build (release)
-        run: cargo build --release -p gawk-broadcast-app-linux
+      # the shipped binary's. BUILD_PROFILE: `ci` (no LTO) on a pull request,
+      # `release` otherwise; the reasoning is at `build`'s compile step, and
+      # BUILD-INFO records which one this artifact is.
+      - name: Build (${{ env.BUILD_PROFILE }})
+        run: cargo build --profile "$BUILD_PROFILE" -p gawk-broadcast-app-linux
 
       # The tarball's layout (D11): the binary, the launcher entry and icons
       # with install-desktop.sh (R44), INSTALL.md, the Linux notices, LICENSE
@@ -790,7 +814,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf dist && mkdir -p dist/stage
-          cp "$CARGO_TARGET_DIR/release/gawk-broadcast-linux" dist/stage/
+          cp "$CARGO_TARGET_DIR/${BUILD_PROFILE}/gawk-broadcast-linux" dist/stage/
           chmod 755 dist/stage/gawk-broadcast-linux
           tools/linux/assemble-share.sh ../assets/icon dist/stage
           cp tools/linux/INSTALL.md THIRD-PARTY-NOTICES-linux.md ../LICENSE dist/stage/
@@ -878,6 +902,7 @@ jobs:
             echo "ref:        ${{ inputs.attach_to || github.ref }}"
             echo "built:      $(date -u +%FT%TZ)"
             echo "toolchain:  $(rustc --version)"
+            echo "profile:    ${BUILD_PROFILE}"
             echo "built-in:   ubuntu:24.04 container ($(ldd --version | sed -n 1p))"
             echo "gstreamer:  $(pkg-config --modversion gstreamer-1.0) (headers; runtime is your distro's)"
             echo "pipewire:   $(pkg-config --modversion libpipewire-0.3) (headers; runtime is your distro's)"

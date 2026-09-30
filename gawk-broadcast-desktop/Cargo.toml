@@ -34,6 +34,16 @@ license = "Apache-2.0"
 lto = "thin"
 strip = true
 
+# Pull-request builds only (broadcast-desktop.yml's `build` and `linux`):
+# release without LTO. With sccache serving the dependency set, a PR build's
+# wall time is the serial tail (the app crate's codegen, thin LTO, the link),
+# and LTO is the part of that tail nothing can cache. Pushes to main,
+# dispatches and every released binary still use `release`; a PR artifact's
+# BUILD-INFO names the profile it was built with.
+[profile.ci]
+inherits = "release"
+lto = false
+
 # docs/38 D2 gate 2a: stock wtransport discards the HTTP status of a rejected
 # CONNECT; the vendored copy carries a one-variant patch exposing it.
 [patch.crates-io]
