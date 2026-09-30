@@ -155,7 +155,8 @@ and, if enabled, telemetry).
   version number and open a page under `https://github.com/Tuhis/gawk/releases/`.
 - **The request reveals nothing but its existence** (D2). No version,
   no ID, no conditional header, fixed UA, TLS with normal verification, and
-  `-insecure` cannot weaken it (D10). Frequency is once a day per machine.
+  `-insecure` cannot weaken it (D10). Frequency is at most one automatic
+  check per 15 minutes per machine, plus any the user asks for (§7).
   The opt-out is in the config, the CLI and the environment (D6).
 - **Nothing is written outside the config file.** No download, no
   staging directory, no change to the running binaries.
@@ -172,7 +173,7 @@ and, if enabled, telemetry).
   without bytes. It also means "nobody is being told about vX" is the
   first thing to check when a release does not seem to reach anyone.
 - **Staleness**: `raw.githubusercontent.com` may serve a copy a few
-  minutes old. Against a daily check that is invisible; nothing in the
+  minutes old. Against a 15-minute gate that is barely visible; nothing in the
   client tries to defeat it (D2).
 
 ## 7. Implementation notes (2026-09-30)
@@ -181,7 +182,7 @@ What landed, and where it differs from the text above, which was written
 when there was one Rust app and one Go app:
 
 - **One implementation, three apps.** `crates/engine/src/update.rs` holds
-  the fetch, validation, comparison, the daily gate and the RFC 3339 stamp;
+  the fetch, validation, comparison, the 15-minute gate and the RFC 3339 stamp;
   `crates/ui/src/shell.rs` runs it once at launch on its own thread and
   handles the result. Because the shell and `main.slint` are shared
   (docs/54 D11), Windows, macOS and Linux all get the check from the same
@@ -193,16 +194,34 @@ when there was one Rust app and one Go app:
   opt-out is a checkbox row, "Check for updates at launch", in its own
   UPDATES section on the Advanced page. The Settings page's Advanced row
   mentions updates in its subtitle.
-- **What counts as an answer.** Any HTTP response spends the day's check
+- **What counts as an answer.** Any HTTP response restarts the gate
   (`lastUpdateCheck` moves), including a 404 and a manifest that fails
   validation; only no response at all (offline, DNS, TLS, timeout) leaves
   the stamp for the next launch. That keeps a missing manifest — macOS has
   none until its attach job publishes one — from being fetched on every
   launch.
-- **Once a day means once a day.** A notice the user neither followed nor
-  dismissed is not shown again until the next check, a day later. Nothing
-  persists "the latest version seen"; the timestamp stays the only state
-  (D3).
+- **Owner changes, 2026-09-30 (after the first PR).** Three decisions
+  replace D3 and D7:
+  - **15 minutes, not a day.** The automatic check runs at launch when the
+    last answer is at least 15 minutes old. Each answer is cached in the
+    config (`updateVersion`, `updateUrl`), and a relaunch inside the window
+    shows the notice from the cache. The cached URL is held to the same
+    character rule as a fresh one (§5), and a cached version the running
+    build has caught up with shows nothing.
+  - **Dismiss lasts until restart.** Nothing about a dismissal is stored
+    (the `dismissedUpdateVersion` key from the first PR is gone), so the
+    next launch shows the notice again. Within the run it holds: a launch
+    check that lands after the dismissal and finds the same release keeps
+    the notice hidden (only a newer release, or Check now, shows it).
+  - **A "Check now" button.** Settings has an Updates row showing the
+    running version, with a **Check now** button that asks GitHub
+    immediately, whatever the opt-out and the 15-minute gate say. Its
+    result ("Version 2.1.0 is available.", "You have the latest version",
+    "Couldn't reach GitHub") replaces the row's subtitle, and a newer
+    release also raises the notice. Pressed while the launch check is still
+    in flight, it waits for that check and reports its answer rather than
+    starting a second request. The Advanced checkbox now governs the
+    launch check only.
 - **`GAWK_NO_UPDATE_CHECK`** is honoured by all three apps; any non-empty
   value other than `0` turns the check off. There is no CLI, so no
   `-no-update-check` flag.
@@ -212,10 +231,9 @@ when there was one Rust app and one Go app:
   shell's skip rules and outcome handling are unit-tested; a temporary
   test fetched the live v2.0.0 Windows manifest (an update from 1.0.0) and
   the missing macOS one (silent). The Linux app under Xvfb, built with a
-  faked current version, showed the notice, **Dismiss** wrote
-  `dismissedUpdateVersion`, the checkbox wrote `disableUpdateCheck`, and
-  `GAWK_NO_UPDATE_CHECK=1` logged the skip and made no request.
-  `Cargo.lock` gained no crate.
+  faked current version, showed the notice, **Dismiss** hid it, the
+  checkbox wrote `disableUpdateCheck`, and `GAWK_NO_UPDATE_CHECK=1` logged
+  the skip and made no request. `Cargo.lock` gained no crate.
 - **Open**: AU4's manual line (the notice on a Windows 10 machine) is the
   owner's, when the next desktop release makes a real "newer" exist.
 

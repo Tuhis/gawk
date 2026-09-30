@@ -45,6 +45,11 @@
         {
           "type": "generic",
           "path": "Cargo.toml"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value==\"gawk-audio\" || @.name.value==\"gawk-broadcast-app-linux\" || @.name.value==\"gawk-broadcast-app-macos\" || @.name.value==\"gawk-broadcast-app-windows\" || @.name.value==\"gawk-capture\" || @.name.value==\"gawk-encode\" || @.name.value==\"gawk-engine\" || @.name.value==\"gawk-ui\" || @.name.value==\"gawk-wire\")].version"
         }
       ]
     },

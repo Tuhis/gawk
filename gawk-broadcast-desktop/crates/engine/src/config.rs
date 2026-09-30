@@ -144,12 +144,16 @@ pub struct Config {
     /// The launch-time update check (R45, docs/47 D6): zero value = on, the
     /// `disableAudio` convention. `GAWK_NO_UPDATE_CHECK=1` also turns it off.
     pub disable_update_check: bool,
-    /// When GitHub last answered the check, RFC 3339 UTC; it gates the check
-    /// to once a day (docs/47 D3). A check that got no answer leaves it.
+    /// When GitHub last answered the check, RFC 3339 UTC; it gates the
+    /// automatic check to once per 15 minutes. A check that got no answer
+    /// leaves it.
     pub last_update_check: String,
-    /// The release whose notice the user dismissed; a newer one shows again
-    /// (docs/47 D7).
-    pub dismissed_update_version: String,
+    /// The newer release that answer named (blank = none), and its release
+    /// page: a relaunch inside the 15 minutes shows the notice from these
+    /// rather than asking GitHub again. Dismissing the notice is not stored —
+    /// it lasts until the app restarts.
+    pub update_version: String,
+    pub update_url: String,
 }
 
 impl Config {
@@ -904,9 +908,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // docs/47 D6/D7: the update check's three keys round-trip under their
-    // camelCase names, and a file without them means "check on, never
-    // checked, nothing dismissed".
+    // docs/47 D6: the update check's keys round-trip under their camelCase
+    // names, and a file without them means "check on, never checked,
+    // nothing found".
     #[test]
     fn update_check_keys_round_trip_and_default_to_on() {
         let dir = std::env::temp_dir().join(format!("gawk-cfg-update-{}", std::process::id()));
@@ -917,12 +921,15 @@ mod tests {
         assert!(warn.is_none());
         assert!(!old.disable_update_check);
         assert!(old.last_update_check.is_empty());
-        assert!(old.dismissed_update_version.is_empty());
+        assert!(old.update_version.is_empty());
+        assert!(old.update_url.is_empty());
 
         let cfg = Config {
             disable_update_check: true,
             last_update_check: "2026-09-30T12:00:00Z".into(),
-            dismissed_update_version: "2.1.0".into(),
+            update_version: "2.1.0".into(),
+            update_url: "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v2.1.0"
+                .into(),
             ..Default::default()
         };
         save(&path, &cfg, &Reversing).unwrap();
@@ -932,8 +939,9 @@ mod tests {
             raw.contains("\"lastUpdateCheck\": \"2026-09-30T12:00:00Z\""),
             "{raw}"
         );
+        assert!(raw.contains("\"updateVersion\": \"2.1.0\""), "{raw}");
         assert!(
-            raw.contains("\"dismissedUpdateVersion\": \"2.1.0\""),
+            raw.contains("\"updateUrl\": \"https://github.com/"),
             "{raw}"
         );
         let (loaded, _) = load(&path, &Reversing);

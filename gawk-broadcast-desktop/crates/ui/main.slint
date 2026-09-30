@@ -1185,6 +1185,9 @@ export component MainWindow inherits Window {
     // and its release page (prefix-checked by the engine before it gets here).
     in property <string> update-version: "";
     in property <string> update-url: "";
+    // The Settings "Check now" button: in flight, and what it last found.
+    in property <bool> update-checking: false;
+    in property <string> update-status: "";
     in property <string> state-label: "Not broadcasting";
     in property <bool> live: false;
     in property <bool> busy: false;            // starting or live
@@ -1371,6 +1374,7 @@ export component MainWindow inherits Window {
     callback resume-dismiss();
     callback open-link(string);
     callback dismiss-update();
+    callback check-for-updates();
     callback quit-confirmed();
 
     // macOS (docs/54 D11): Slint already gives the app menu About and Quit
@@ -2550,6 +2554,24 @@ export component MainWindow inherits Window {
                 List {
                     Row {
                         first: true;
+                        RowText {
+                            title: "Updates";
+                            sub: root.update-status != "" ? root.update-status : "You're on " + root.app-version + ".";
+                        }
+                        Btn {
+                            small: true;
+                            text: root.update-checking ? "Checking…" : "Check now";
+                            enabled: !root.update-checking;
+                            clicked => {
+                                root.check-for-updates();
+                            }
+                        }
+                    }
+                }
+
+                List {
+                    Row {
+                        first: true;
                         clickable: true;
                         clicked => {
                             root.page = 3;
@@ -2801,7 +2823,7 @@ export component MainWindow inherits Window {
                             }
                             RowText {
                                 title: "Check for updates at launch";
-                                sub: "Once a day, a small file from GitHub. It carries nothing about you.";
+                                sub: "At most every 15 minutes, a small file from GitHub. It carries nothing about you.";
                             }
                         }
                     }

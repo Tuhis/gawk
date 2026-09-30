@@ -29,8 +29,10 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// The manifest is under 2 KB; anything past this is not one.
 const MAX_BODY: u64 = 64 * 1024;
 
-/// docs/47 D3: at most one check a day per machine.
-const INTERVAL_SECS: u64 = 24 * 60 * 60;
+/// The automatic check runs at most this often per machine (owner decision
+/// 2026-09-30, replacing docs/47 D3's day): a relaunch inside the window
+/// shows the cached result instead of asking again.
+const INTERVAL_SECS: u64 = 15 * 60;
 
 /// The environment opt-out every shell honours (docs/47 D6). Read with
 /// `var_os`, so it needs no console on the windowed Windows EXE.
@@ -176,7 +178,8 @@ pub fn check(url: &str, current: &str, dist: &Distribution) -> Outcome {
 }
 
 /// Whether a check is due: never checked, a stamp that does not parse, a
-/// stamp in the future (a clock that moved back), or 24 h since the last.
+/// stamp in the future (a clock that moved back), or 15 minutes since the
+/// last answered one.
 pub fn due(last_check: &str, now_unix: u64) -> bool {
     match parse_rfc3339(last_check) {
         Some(last) if last <= now_unix => now_unix - last >= INTERVAL_SECS,
@@ -190,10 +193,15 @@ pub fn env_opted_out() -> bool {
     std::env::var_os(ENV_OPT_OUT).is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// Whether the notice for `update` should show, given the version the user
-/// last dismissed: dismissal is per version (docs/47 D7).
-pub fn visible(update: &Update, dismissed: &str) -> bool {
-    update.version != dismissed.trim()
+/// The update the last answered check found, as the config remembers it
+/// (`updateVersion`, `updateUrl`), when it is still newer than the running
+/// build — an upgrade makes it stale, and so does a hand-edited file. The URL
+/// is held to the same rule as a fresh manifest's, because it is opened.
+pub fn cached(version: &str, url: &str, current: &str) -> Option<Update> {
+    (newer(current, version) && safe_release_url(url)).then(|| Update {
+        version: version.to_string(),
+        release_url: url.to_string(),
+    })
 }
 
 /// Unix seconds as `YYYY-MM-DDTHH:MM:SSZ` — the `lastUpdateCheck` format.
@@ -434,16 +442,16 @@ mod tests {
     }
 
     #[test]
-    fn a_check_is_due_daily() {
+    fn a_check_is_due_every_fifteen_minutes() {
         let now = 1_790_000_000; // 2026-09-21
         assert!(due("", now), "never checked");
         assert!(due("yesterday", now), "an unreadable stamp");
-        let hour_ago = format_rfc3339(now - 3600);
-        assert!(!due(&hour_ago, now));
-        let almost = format_rfc3339(now - INTERVAL_SECS + 1);
+        let minute_ago = format_rfc3339(now - 60);
+        assert!(!due(&minute_ago, now));
+        let almost = format_rfc3339(now - 15 * 60 + 1);
         assert!(!due(&almost, now));
-        let day_ago = format_rfc3339(now - INTERVAL_SECS);
-        assert!(due(&day_ago, now));
+        let quarter_ago = format_rfc3339(now - 15 * 60);
+        assert!(due(&quarter_ago, now));
         let future = format_rfc3339(now + 3600);
         assert!(due(&future, now), "a clock that moved back must not stall");
     }
@@ -461,16 +469,21 @@ mod tests {
     }
 
     #[test]
-    fn dismissal_is_per_version() {
-        let u = Update {
-            version: "2.1.0".into(),
-            release_url: String::new(),
-        };
-        assert!(visible(&u, ""));
-        assert!(!visible(&u, "2.1.0"));
-        assert!(
-            visible(&u, "2.0.1"),
-            "a newer release than the dismissed one shows"
+    fn a_cached_update_shows_only_while_newer_and_safe() {
+        let url = "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v2.1.0";
+        assert_eq!(
+            cached("2.1.0", url, "2.0.0"),
+            Some(Update {
+                version: "2.1.0".into(),
+                release_url: url.into(),
+            })
+        );
+        assert_eq!(cached("2.1.0", url, "2.1.0"), None, "already upgraded");
+        assert_eq!(cached("", "", "2.0.0"), None, "nothing cached");
+        assert_eq!(
+            cached("2.1.0", &format!("{url}&calc.exe"), "2.0.0"),
+            None,
+            "a hand-edited URL is held to the manifest's rule"
         );
     }
 

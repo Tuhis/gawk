@@ -66,15 +66,17 @@ The same string is the first line of `debug.log` and the `appVersion` key
 in **Copy diagnostics**. There is no `--version` flag: a windowed EXE has
 no console to print to.
 
-**Is there a newer one?** At launch, at most once a day, the app fetches its
-platform's release manifest (`releases/<platform>/latest.json` on this
-repository's `badges` branch, from `raw.githubusercontent.com`). When a newer
-release exists, a line under the Go live button reads "v2.1.0 available —
-release notes" and opens the release page; **Dismiss** hides it until the
-next release. The request is a plain GET with a fixed User-Agent: no version,
-no identifier, nothing about you or your broadcasts. Turn it off with
-**Settings → Advanced → Check for updates at launch**, or by setting
-`GAWK_NO_UPDATE_CHECK=1`. Downloading and installing is still up to you
+**Is there a newer one?** At launch, at most once every 15 minutes, the app
+fetches its platform's release manifest (`releases/<platform>/latest.json` on
+this repository's `badges` branch, from `raw.githubusercontent.com`); a
+relaunch inside those 15 minutes reuses the last answer. When a newer release
+exists, a line under the Go live button reads "v2.1.0 available — release
+notes" and opens the release page; **Dismiss** hides it until the app
+restarts. **Settings → Updates → Check now** asks right away. The request is
+a plain GET with a fixed User-Agent: no version, no identifier, nothing about
+you or your broadcasts. Turn the launch check off with **Settings → Advanced
+→ Check for updates at launch**, or by setting `GAWK_NO_UPDATE_CHECK=1`.
+Downloading and installing is still up to you
 ([docs/47](../docs/47-desktop-update-check.md)).
 
 ## macOS
@@ -268,7 +270,7 @@ Blank settings mean "the default", resolved at use, never at save
 | Relay | `https://api.gawk.ioio.fi:4433` |
 | App URL (join links) | `https://gawk.ioio.fi` |
 | Telemetry ingest | `https://gawk.ioio.fi/api/telemetry/v1/ingest` (`off` = send nothing) |
-| Update check | On: one GET of the release manifest from GitHub at launch, at most daily (off in Advanced, or `GAWK_NO_UPDATE_CHECK=1`) |
+| Update check | On: one GET of the release manifest from GitHub at launch, at most every 15 minutes, or on **Check now** (launch check off in Advanced, or `GAWK_NO_UPDATE_CHECK=1`) |
 | Origin | `gawk-broadcast://windows` — the relay's `-allowed-origins` must include it |
 | Rung | 1080p60, 500 ms GOP, 12 Mbps peak VBR — the resolution is a bounding box: the stream keeps the source's aspect ratio inside it |
 

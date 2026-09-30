@@ -183,8 +183,12 @@ enum ShellMsg {
     },
     StartFailed(StartFailure),
     Engine(EngineEvent),
-    /// The launch-time update check came back (docs/47 D3).
-    UpdateChecked(Outcome),
+    /// An update check came back: the launch one, or one the Settings button
+    /// asked for (`manual`), which also reports its result in Settings.
+    UpdateChecked {
+        outcome: Outcome,
+        manual: bool,
+    },
 }
 
 /// Sequences resume-token persistence against the announce (docs/22 finding
@@ -303,8 +307,8 @@ pub struct Shell {
     /// The attach key the running room session joined with; remembered with
     /// the room in "Your rooms".
     room_key_used: String,
-    /// The newer release this launch's check found, while its notice shows.
-    update: Option<Update>,
+    /// The update notice and the checks behind it, for this run.
+    update: UpdateState,
 }
 
 /// Sends the current nickname to the running session unless it is the one
@@ -471,7 +475,7 @@ pub fn run(
         room_joined: false,
         room: None,
         room_key_used: String::new(),
-        update: None,
+        update: UpdateState::default(),
     }));
 
     let ui = MainWindow::new().expect("create window");
@@ -497,7 +501,7 @@ pub fn run(
 
     wire_callbacks(&ui, &shell);
     wire_platform(&ui, &shell);
-    start_update_check(&shell.borrow());
+    start_update_check(&ui, &mut shell.borrow_mut());
 
     // One timer drains the message channel and, while broadcasting, ticks
     // stats/thumbnail/hints at 1 Hz. Idle cost: an empty channel poll.
@@ -1158,7 +1162,7 @@ fn save_config(shell: &mut Shell) {
 }
 
 /// Why this launch skips the update check, or `None` to run it: the
-/// setting, the environment, or a check GitHub answered within the last day
+/// setting, the environment, or a check GitHub answered within the last 15 minutes
 /// (docs/47 D3, D6).
 fn update_check_skip(cfg: &Config, env_opted_out: bool, now: u64) -> Option<&'static str> {
     if cfg.disable_update_check {
@@ -1166,42 +1170,127 @@ fn update_check_skip(cfg: &Config, env_opted_out: bool, now: u64) -> Option<&'st
     } else if env_opted_out {
         Some("turned off by GAWK_NO_UPDATE_CHECK")
     } else if !update::due(&cfg.last_update_check, now) {
-        Some("checked within the last day")
+        Some("checked within the last 15 minutes")
     } else {
         None
     }
 }
 
-/// Starts the once-at-launch update check on its own thread (docs/47 D3):
-/// one GET, then a message back to the UI. Nothing schedules another, so no
-/// check ever begins mid-broadcast.
-fn start_update_check(sh: &Shell) {
-    if let Some(why) = update_check_skip(&sh.cfg, update::env_opted_out(), now_unix()) {
+/// The launch-time update check (docs/47 D3, at most every 15 minutes):
+/// shows what the last answered check found, then — when one is due — asks
+/// GitHub again on its own thread. Nothing schedules another; the Settings
+/// button is the only other way a check starts.
+fn start_update_check(ui: &MainWindow, sh: &mut Shell) {
+    let env_off = update::env_opted_out();
+    // Turned off means no notice at all, not even a remembered one.
+    if !sh.cfg.disable_update_check && !env_off {
+        sh.update.shown =
+            update::cached(&sh.cfg.update_version, &sh.cfg.update_url, version::RELEASE);
+        show_update(ui, sh.update.shown.as_ref());
+    }
+    if let Some(why) = update_check_skip(&sh.cfg, env_off, now_unix()) {
         log::info!("update check skipped: {why}");
         return;
     }
+    sh.update.checking = spawn_update_check(sh, false);
+    ui.set_update_checking(sh.update.checking);
+}
+
+/// One check on its own thread, reported back through the message channel.
+/// False when the thread could not be started.
+fn spawn_update_check(sh: &Shell, manual: bool) -> bool {
     let tx = sh.msg_tx.clone();
     let spawned = std::thread::Builder::new()
         .name("update-check".into())
         .spawn(move || {
             let dist = gawk_engine::defaults::this();
             let outcome = update::check(&update::manifest_url(dist), version::RELEASE, dist);
-            let _ = tx.send(ShellMsg::UpdateChecked(outcome));
+            let _ = tx.send(ShellMsg::UpdateChecked { outcome, manual });
         });
-    if let Err(e) = spawned {
+    if let Err(e) = &spawned {
         log::warn!("update check not started: {e}");
+    }
+    spawned.is_ok()
+}
+
+/// The update notice for this run, kept apart from the shell so its rules
+/// can be tested without a window.
+#[derive(Debug, Default)]
+struct UpdateState {
+    /// What the notice shows.
+    shown: Option<Update>,
+    /// The version dismissed this run: an automatic check that finds it
+    /// again leaves the notice hidden until the app restarts.
+    dismissed: Option<String>,
+    /// A check is in flight.
+    checking: bool,
+    /// Check now was pressed while the launch check was in flight: that
+    /// check's answer is reported as the button's.
+    manual_waiting: bool,
+}
+
+impl UpdateState {
+    fn dismiss(&mut self) {
+        if let Some(u) = self.shown.take() {
+            self.dismissed = Some(u.version);
+        }
+    }
+
+    /// Check now was pressed. True means start a check; false means one is
+    /// already in flight, whose answer will be reported as this request's.
+    fn request_manual(&mut self) -> bool {
+        if self.checking {
+            self.manual_waiting = true;
+            return false;
+        }
+        self.checking = true;
+        true
+    }
+
+    /// A check came back with `found` (`None` = no answer, see
+    /// [`apply_update_outcome`]). Returns whether the Settings row should
+    /// report it: the button asked for it, directly or while it was in
+    /// flight. An asked-for answer shows even a dismissed release — that is
+    /// what was asked; an automatic one respects this run's dismissal.
+    fn finish(&mut self, found: Option<Option<Update>>, manual: bool) -> bool {
+        self.checking = false;
+        let manual = manual || std::mem::take(&mut self.manual_waiting);
+        if let Some(found) = found {
+            self.shown = if manual {
+                self.dismissed = None;
+                found
+            } else {
+                found.filter(|u| self.dismissed.as_deref() != Some(u.version.as_str()))
+            };
+        }
+        manual
     }
 }
 
-/// Applies a check's outcome: an answer spends the day's check and may
-/// raise the notice; no answer leaves the stamp for the next launch.
-fn apply_update_outcome(cfg: &mut Config, outcome: Outcome, now: u64) -> Option<Update> {
+/// Applies a check's outcome to the config. An answer restarts the 15
+/// minutes and replaces the cached result; the notice then shows what it
+/// found (`Some(found)`). No answer changes nothing (`None`): the stamp and
+/// any notice already showing stay.
+fn apply_update_outcome(cfg: &mut Config, outcome: &Outcome, now: u64) -> Option<Option<Update>> {
     match outcome {
         Outcome::Answered(found) => {
             cfg.last_update_check = update::format_rfc3339(now);
-            found.filter(|u| update::visible(u, &cfg.dismissed_update_version))
+            cfg.update_version = found.as_ref().map_or(String::new(), |u| u.version.clone());
+            cfg.update_url = found
+                .as_ref()
+                .map_or(String::new(), |u| u.release_url.clone());
+            Some(found.clone())
         }
         Outcome::Unreachable(_) => None,
+    }
+}
+
+/// The Settings button's result line.
+fn update_status_text(outcome: &Outcome) -> String {
+    match outcome {
+        Outcome::Answered(Some(u)) => format!("Version {} is available.", u.version),
+        Outcome::Answered(None) => format!("You have the latest version (v{}).", version::RELEASE),
+        Outcome::Unreachable(_) => "Couldn't reach GitHub. Try again later.".into(),
     }
 }
 
@@ -1650,17 +1739,35 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         ui.on_open_link(move |link| open_in_browser(link.as_str()));
     }
     {
-        // Dismissal is per version (docs/47 D7): a newer release shows again.
+        // Dismissing hides the notice until the app restarts; nothing is
+        // stored, so the next launch shows it again.
         let shell = shell.clone();
         let ui_weak = ui_weak.clone();
         ui.on_dismiss_update(move || {
-            let mut sh = shell.borrow_mut();
-            if let Some(u) = sh.update.take() {
-                sh.cfg.dismissed_update_version = u.version;
-                save_config(&mut sh);
-            }
+            shell.borrow_mut().update.dismiss();
             if let Some(ui) = ui_weak.upgrade() {
                 show_update(&ui, None);
+            }
+        });
+    }
+    {
+        // The Settings button: an explicit ask, so it runs whatever the
+        // opt-out and the 15-minute gate say.
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_check_for_updates(move || {
+            let mut sh = shell.borrow_mut();
+            // A check already in flight (the launch one) answers this click.
+            if sh.update.request_manual() && !spawn_update_check(&sh, true) {
+                sh.update.checking = false;
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_update_checking(sh.update.checking);
+                ui.set_update_status(if sh.update.checking {
+                    "Checking…".into()
+                } else {
+                    "Couldn't start the check.".into()
+                });
             }
         });
     }
@@ -2026,7 +2133,7 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
             notify("Broadcast failed to start", first_line(&text), true);
         }
         ShellMsg::Engine(ev) => handle_engine_event(ui, shell, ev),
-        ShellMsg::UpdateChecked(outcome) => {
+        ShellMsg::UpdateChecked { outcome, manual } => {
             let mut sh = shell.borrow_mut();
             match &outcome {
                 Outcome::Answered(Some(u)) => log::info!(
@@ -2038,12 +2145,15 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
                 Outcome::Answered(None) => log::info!("update check: nothing newer"),
                 Outcome::Unreachable(e) => log::info!("update check got no answer: {e}"),
             }
-            let answered = matches!(outcome, Outcome::Answered(_));
-            sh.update = apply_update_outcome(&mut sh.cfg, outcome, now_unix());
-            if answered {
+            let found = apply_update_outcome(&mut sh.cfg, &outcome, now_unix());
+            if found.is_some() {
                 save_config(&mut sh);
             }
-            show_update(ui, sh.update.as_ref());
+            if sh.update.finish(found, manual) {
+                ui.set_update_status(update_status_text(&outcome).into());
+            }
+            ui.set_update_checking(false);
+            show_update(ui, sh.update.shown.as_ref());
         }
     }
 }
@@ -3490,7 +3600,7 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_spends_the_days_check_and_no_answer_does_not() {
+    fn an_answer_restarts_the_window_and_caches_what_it_found() {
         let now = 1_790_000_000;
         let found = Update {
             version: "2.1.0".into(),
@@ -3499,37 +3609,119 @@ mod tests {
         };
 
         let mut cfg = Config::default();
-        let shown = apply_update_outcome(&mut cfg, Outcome::Answered(Some(found.clone())), now);
-        assert_eq!(shown.as_ref(), Some(&found));
+        let shown = apply_update_outcome(&mut cfg, &Outcome::Answered(Some(found.clone())), now);
+        assert_eq!(shown, Some(Some(found.clone())));
         assert_eq!(cfg.last_update_check, update::format_rfc3339(now));
-
-        let mut cfg = Config::default();
+        assert_eq!(cfg.update_version, "2.1.0");
+        assert_eq!(cfg.update_url, found.release_url);
+        // A relaunch inside the window shows it from the cache.
         assert_eq!(
-            apply_update_outcome(&mut cfg, Outcome::Answered(None), now),
-            None
+            update::cached(&cfg.update_version, &cfg.update_url, "2.0.0"),
+            Some(found.clone())
         );
-        assert_eq!(cfg.last_update_check, update::format_rfc3339(now));
 
+        // "Nothing newer" clears the cache, so a stale notice cannot return.
+        let got = apply_update_outcome(&mut cfg, &Outcome::Answered(None), now + 1000);
+        assert_eq!(got, Some(None));
+        assert_eq!(cfg.last_update_check, update::format_rfc3339(now + 1000));
+        assert!(cfg.update_version.is_empty() && cfg.update_url.is_empty());
+
+        // No answer changes nothing: the stamp and the cache stay.
         let mut cfg = Config {
             last_update_check: "2026-09-01T00:00:00Z".into(),
+            update_version: "2.1.0".into(),
+            update_url: found.release_url.clone(),
             ..Default::default()
         };
-        let got = apply_update_outcome(&mut cfg, Outcome::Unreachable("offline".into()), now);
+        let got = apply_update_outcome(&mut cfg, &Outcome::Unreachable("offline".into()), now);
         assert_eq!(got, None);
-        assert_eq!(
-            cfg.last_update_check, "2026-09-01T00:00:00Z",
-            "stamp unmoved"
-        );
+        assert_eq!(cfg.last_update_check, "2026-09-01T00:00:00Z");
+        assert_eq!(cfg.update_version, "2.1.0");
+    }
 
-        // A dismissed version stays quiet; the check is still spent.
-        let mut cfg = Config {
-            dismissed_update_version: "2.1.0".into(),
+    fn release(v: &str) -> Update {
+        Update {
+            version: v.into(),
+            release_url: format!(
+                "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v{v}"
+            ),
+        }
+    }
+
+    // PR #415 review: a notice dismissed while the launch fetch is in
+    // flight must not come back when that fetch finds the same release.
+    #[test]
+    fn a_dismissed_notice_stays_hidden_when_the_launch_check_finds_it_again() {
+        let mut st = UpdateState {
+            shown: Some(release("2.1.0")), // from the cache
+            checking: true,                // the launch fetch
             ..Default::default()
         };
+        st.dismiss();
+        assert_eq!(st.shown, None);
+        st.finish(Some(Some(release("2.1.0"))), false);
+        assert_eq!(st.shown, None, "dismissed until restart");
+        // A newer release than the dismissed one still shows.
+        st.finish(Some(Some(release("2.2.0"))), false);
+        assert_eq!(st.shown, Some(release("2.2.0")));
+    }
+
+    // Asking explicitly overrides a dismissal: the answer is what was asked.
+    #[test]
+    fn check_now_shows_a_dismissed_release_again() {
+        let mut st = UpdateState {
+            shown: Some(release("2.1.0")),
+            ..Default::default()
+        };
+        st.dismiss();
+        assert!(st.request_manual());
+        assert!(st.finish(Some(Some(release("2.1.0"))), true));
+        assert_eq!(st.shown, Some(release("2.1.0")));
+    }
+
+    // PR #415 review: Check now during the launch fetch must not be a
+    // silent no-op — the in-flight answer is reported as the button's.
+    #[test]
+    fn check_now_during_the_launch_check_reports_that_checks_answer() {
+        let mut st = UpdateState {
+            checking: true, // the launch fetch
+            ..Default::default()
+        };
+        assert!(!st.request_manual(), "no second request");
+        assert!(st.checking);
+        let report = st.finish(Some(None), false);
+        assert!(report, "the button asked, so the row reports");
+        assert!(!st.checking);
+        // The next automatic answer is not the button's.
+        st.checking = true;
+        assert!(!st.finish(Some(None), false));
+    }
+
+    #[test]
+    fn no_answer_keeps_the_notice() {
+        let mut st = UpdateState {
+            shown: Some(release("2.1.0")),
+            checking: true,
+            ..Default::default()
+        };
+        st.finish(None, false);
+        assert_eq!(st.shown, Some(release("2.1.0")));
+    }
+
+    #[test]
+    fn the_settings_button_says_what_the_check_found() {
+        let found = Update {
+            version: "2.1.0".into(),
+            release_url: String::new(),
+        };
         assert_eq!(
-            apply_update_outcome(&mut cfg, Outcome::Answered(Some(found)), now),
-            None
+            update_status_text(&Outcome::Answered(Some(found))),
+            "Version 2.1.0 is available."
         );
-        assert_eq!(cfg.last_update_check, update::format_rfc3339(now));
+        assert_eq!(
+            update_status_text(&Outcome::Answered(None)),
+            format!("You have the latest version (v{}).", version::RELEASE)
+        );
+        assert!(update_status_text(&Outcome::Unreachable("x".into())).contains("Couldn't reach"));
     }
 }

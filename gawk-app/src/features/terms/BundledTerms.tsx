@@ -152,10 +152,11 @@ export function BundledTerms() {
         present operation rather than a warranty.
       </p>
       <p>
-        The native broadcaster applications may, at launch and at most once a day, fetch a small
-        static release-manifest file from GitHub to learn whether a newer version exists. That
-        request goes to GitHub, not to the Operator, and carries no identifier; it can be turned off
-        in the application&rsquo;s settings.
+        The native broadcaster applications may fetch a small static release-manifest file from
+        GitHub to learn whether a newer version exists: at launch, at most once every 15 minutes,
+        and whenever you ask them to check. That request goes to GitHub, not to the Operator, and
+        carries no identifier; the launch check can be turned off in the application&rsquo;s
+        settings.
       </p>
 
       <h2>8. Limitation of liability.</h2>
