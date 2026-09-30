@@ -3062,9 +3062,27 @@ jobs:
           # cache budget — it was pinned at ~10.8 GiB, mostly buildkit blobs,
           # evicting the setup-go entries that six jobs here restore.
           #
+          # RE-RUN 2026-09-30 against IN-CLUSTER storage, and the answer held.
+          # The cache went to the zot registry that mirrors base images (LAN,
+          # TrueNAS storage, not GitHub's CDN), and the Go Dockerfiles were
+          # made manifest-first so a source-only change leaves the `go mod
+          # download` layer reusable. Per image, one runner, builds in series
+          # (PR #410's run 36646730620):
+          #
+          #                   cold+export   cold, src changed   cached, src changed
+          #   gawk-admin         186s             75s                  64s
+          #   gawk-telemetry     219s             64s                 102s
+          #   gawk-server        119s             59s                  61s
+          #   gawk-app            37s             10s                  10s
+          #
+          # These images build from scratch in 10-75s. A cache saves at most
+          # 11s, costs 38s on telemetry, and would add 30-145s of export to
+          # every main push. The slow link was never the whole reason; the
+          # builds are simply cheap.
+          #
           # Before re-adding any of this: re-run that A/B. The result depends on
-          # this repository's build being small (a 32s `go build`) and the link
-          # to GitHub's cache being slow, and either could change.
+          # this repository's build being small (a 32s `go build`), and that
+          # could change.
 
       # **Building an image is not evidence that it runs.**
       #

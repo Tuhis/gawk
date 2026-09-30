@@ -54,13 +54,23 @@ RUN mkdir -p /internal/dashboard && \
 
 FROM golang:1.26-trixie AS build
 WORKDIR /src
+# Manifests before sources: the `go mod download` layer then depends on the
+# go.mod/go.sum files alone, and a persistent build cache (a developer's own
+# `docker compose up --build`) reuses it across every edit that does not touch
+# dependencies, instead of re-downloading every module after each change.
+# gawk-telemetry `replace`s gawk-server with ../gawk-server, so that module's
+# manifests are part of its graph.
+COPY gawk-server/go.mod gawk-server/go.sum ./gawk-server/
+COPY gawk-telemetry/go.mod gawk-telemetry/go.sum ./gawk-telemetry/
+WORKDIR /src/gawk-telemetry
+RUN go mod download
+WORKDIR /src
 COPY gawk-server/ ./gawk-server/
 COPY gawk-telemetry/ ./gawk-telemetry/
 # The bundle lands where //go:embed dist expects it, replacing the committed
 # placeholder directory.
 COPY --from=ui /internal/dashboard/dist/ ./gawk-telemetry/internal/dashboard/dist/
 WORKDIR /src/gawk-telemetry
-RUN go mod download
 ARG VERSION=dev
 # -tags duckdb selects internal/sqlengine's real engine (the untagged build gets
 # the stub). CGO_ENABLED=1 follows from the driver, not from a preference.
