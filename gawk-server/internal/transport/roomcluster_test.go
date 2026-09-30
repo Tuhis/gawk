@@ -438,6 +438,44 @@ func TestRoomProxyPipesAndAdoptsAfterTheHomeDrains(t *testing.T) {
 	}
 }
 
+// A proxied participant that leaves a quiet room must leave the home's
+// roster promptly. The proxy's home→participant copy blocks on the
+// upstream read, and nothing the home sends arrives in a quiet room — so
+// the participant's departure has to close the upstream itself, not wait
+// for the next record to fail against the dead participant stream.
+func TestRoomProxyParticipantLeavingAQuietRoomLeavesTheHome(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	f := newRoomFleet(t)
+	a := f.startRoomPod(t, ctx, "pod-a")
+	b := f.startRoomPod(t, ctx, "pod-b")
+
+	pub, id, tokenHex := dialPublisherHandshake(t, ctx, a.port, f.clientTLS)
+	defer pub.CloseWithError(0, "")
+	creator := openControl(t, ctx, a.url("/room/new?broadcast="+id+"&resume="+tokenHex+"&label=pc"), f.clientTLS, "tuhis")
+	code := strings.ToLower(creator.nextState(t).Code)
+	waitFor(t, 15*time.Second, func() bool {
+		home, ok := b.store.Resolve(code)
+		return ok && home.Live && home.Holder == "pod-a"
+	}, "pod-b to resolve the home")
+
+	joiner := openControl(t, ctx, b.url("/room/"+code), f.clientTLS, "viewer")
+	joiner.nextState(t)
+	joined := creator.nextEvent(t, wire.RoomEventParticipantJoined)
+
+	joiner.sess.CloseWithError(0, "")
+	if e := creator.nextEvent(t, wire.RoomEventParticipantLeft); e.Participant.ID != joined.Participant.ID {
+		t.Fatalf("home saw %+v leave, want participant %d", e.Participant, joined.Participant.ID)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		info, _ := a.reg.Lookup(code)
+		return info.Participants == 1
+	}, "the home roster to drop the proxied participant")
+	waitFor(t, 5*time.Second, func() bool {
+		return roomStatszRows(t, ctx, b, f.clientTLS)[a.hub.ObfuscateID(code)].Participants == 0
+	}, "pod-b to stop counting the proxied participant")
+}
+
 // A static Room CR applied by the operator has no home until its first
 // join: the pod that receives it claims, the other proxies — joinable from
 // both. Deleting the CR ends it on the home with 4007 (operator).

@@ -1644,6 +1644,14 @@ Add to it when a new gotcha lands in `docs/`.
   machine and 0/25 on another. The direct test
   (`TestAStaleInformerViewDoesNotDropAHeldLease`) needs no scheduling luck and
   is what pins it. ([docs/44](44-rooms.md) §4.5)
+- **A bidirectional pipe must race both copies, not wait on one.** The room
+  proxy waited on `io.Copy(participant, upstream)` and ran the other
+  direction in a goroutine; a blocked read never notices that the *other*
+  side's stream died, so in a quiet room a departed proxied participant
+  stayed on the home's roster (no `ParticipantLeft`, no empty grace) until
+  the next room event failed a write against its dead stream. Whichever
+  copy ends first must close the other side.
+  ([docs/44](44-rooms.md) §11.1)
 
 **CI / deployment**
 
