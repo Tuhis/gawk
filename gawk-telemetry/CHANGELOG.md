@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.10.0...gawk-telemetry/v1.10.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **telemetry:** run each SQL query in a short-lived worker process ([#412](https://github.com/Tuhis/gawk/issues/412)) ([f0f7ab8](https://github.com/Tuhis/gawk/commit/f0f7ab8ab2eaf7281da1bbd9827a2ffd0e7ce61f))
+
 ## [1.10.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.9.0...gawk-telemetry/v1.10.0) (2026-09-29)
 
 
