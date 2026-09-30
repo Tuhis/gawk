@@ -41,9 +41,9 @@ reuses D1–D4 and SU2 from here.
 
 **2026-10-01 (owner decision)**: **one** compiled-in public key, not two.
 D2 is revised in place, and "current + next" moves to Rejected. The cost is
-stated in D2 and §6: a planned rotation strands installs that skip the
-bridge release, and a lost or leaked key means one manual download for
-everyone. In both cases R45's notice keeps working, so nobody is left
+stated in D2 and §6: installs that skip a planned rotation's bridge
+release download by hand once, and a lost or leaked key means one manual
+download for everyone. In both cases R45's notice keeps working, so nobody is left
 without a way to update.
 
 ## 1. Purpose
@@ -182,17 +182,22 @@ afterwards.
   offline. Cut a bridge release: its code compiles in the new public key,
   and CI still signs it with the old secret. Leave the bridge as the latest
   release for a while (a week or more) so that installs opened in that
-  time take it. Then replace the repository secret with the new one, and
-  sign every later release with it. Installs that missed the bridge see
+  time take it. `tools/releases/keys/` stays on the old public key for the
+  bridge, because CI's verify step checks the bridge's signature, which
+  is still the old key's. Then, in one commit, replace the repository
+  secret and the public key in `tools/releases/keys/`, and sign every
+  later release with the new key. The compiled-in constant (D7) already
+  changed in the bridge. Installs that missed the bridge see
   the R45 notice and download by hand once. Say so in the release notes of
   the first release signed with the new key.
 - **Retracting a release**: as docs/47 D11 — republish the manifest at the
   previous version and cut a `fix:` release. Clients that already
   installed the bad build take the fix release like any other; D3 keeps
   the retracted manifest from reading as a downgrade prompt.
-- **A lost or leaked secret** (D2): generate a new pair, replace the
-  repository secret, and ship a release that compiles in the new public
-  key. No bridge is possible: installs in the field reject its signature
+- **A lost or leaked secret** (D2): generate a new pair. Then, in one
+  release, replace the repository secret, the public key in
+  `tools/releases/keys/` (CI's verify step) and the compiled-in constant
+  (D7), and ship it. No bridge is possible: installs in the field reject its signature
   and fall back to the R45 notice, so everyone downloads once by hand.
   For a leak, also say in the release notes that the old key is
   compromised, and do not sign anything else with it. Builds in the field
