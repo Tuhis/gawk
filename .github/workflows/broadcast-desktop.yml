@@ -225,10 +225,11 @@ env:
   # ever applied to this workspace's own crates (cargo never uses incremental
   # for registry dependencies), so the win is small; it is simply free.
   CARGO_INCREMENTAL: "0"
-  # The Cargo profile `build` and `linux` compile with: `ci` (release minus
-  # LTO, Cargo.toml) on a pull request, `release` everywhere else. Only push
-  # and dispatch runs publish or attach binaries, and they always build
-  # `release`, so no released byte comes from the `ci` profile.
+  # The Cargo profile `linux` compiles with: `ci` (release minus LTO,
+  # Cargo.toml) on a pull request, `release` everywhere else. Only push and
+  # dispatch runs publish or attach binaries, and they always build
+  # `release`, so no released byte comes from the `ci` profile. The Windows
+  # `build` cannot use it; see its compile step.
   BUILD_PROFILE: ${{ github.event_name == 'pull_request' && 'ci' || 'release' }}
 
 # Runner pool: `runs-on` reads RUNNER_LABEL, falling back to `ubuntu-latest`
@@ -434,14 +435,21 @@ jobs:
       #
       # With sccache the dependency set is ~100% cache hits and the tail is
       # nearly all that is left (run 36715790584: 515 of 516 lookups hit,
-      # yet 381s, 5+ minutes of it after the last cached crate). A pull
-      # request therefore builds BUILD_PROFILE=ci, which skips LTO — see the
-      # env block and Cargo.toml.
+      # yet 381s, 5+ minutes of it after the last cached crate). The `linux`
+      # job skips LTO on pull requests for that reason (BUILD_PROFILE=ci).
+      # This job CANNOT, today: without LTO the link fails with
+      # "undefined symbol: __declspec(dllimport) malloc" (and
+      # __stdio_common_vfprintf) from opus.lib (run 36774354477). libopus is
+      # compiled against the DLL CRT while the EXE is +crt-static, and only
+      # the LTO link happens to pull libucrt's malloc.obj in, which is what
+      # the LNK4217 "locally defined symbol imported" warnings in every
+      # release build are. Fix that mismatch first, then this can follow
+      # `linux`.
       # -p: the workspace also holds the macOS shell (R52), which off macOS
       # is a stub binary nobody ships. Naming the package also pins feature
       # unification to exactly the EXE's own graph.
-      - name: Build (${{ env.BUILD_PROFILE }})
-        run: cargo xwin build --profile "$BUILD_PROFILE" --target "$WINDOWS_TARGET" -p gawk-broadcast-app-windows
+      - name: Build (release)
+        run: cargo xwin build --release --target "$WINDOWS_TARGET" -p gawk-broadcast-app-windows
 
       # R44 (docs/53 D8): the icon reaches Explorer through a .res that
       # build.rs hands the linker as a plain input — no resource compiler in
@@ -450,13 +458,13 @@ jobs:
       # resource directory and require RT_GROUP_ICON + RT_ICON. `go -C`
       # because this directory is not a Go module and tools/icon is.
       - name: The EXE carries the icon resource
-        run: go -C ../tools/icon run . verify-exe "$PWD/target/${WINDOWS_TARGET}/${BUILD_PROFILE}/gawk-broadcast.exe"
+        run: go -C ../tools/icon run . verify-exe "$PWD/target/${WINDOWS_TARGET}/release/gawk-broadcast.exe"
 
       - name: Assemble artifact
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp "target/${WINDOWS_TARGET}/${BUILD_PROFILE}/gawk-broadcast.exe" dist/
+          cp "target/${WINDOWS_TARGET}/release/gawk-broadcast.exe" dist/
           # THIRD-PARTY-NOTICES.md discharges the attribution obligations of
           # everything statically linked into the .exe (373 crates incl.
           # libopus); LICENSE is the repo root's (working-directory is
@@ -473,8 +481,6 @@ jobs:
             echo "built:     $(date -Iseconds)"
             echo "toolchain: $(rustc --version)"
             echo "target:    ${WINDOWS_TARGET}"
-            # `ci` (no LTO) marks a pull-request build; anything shipped says `release`.
-            echo "profile:   ${BUILD_PROFILE}"
             # Provenance a tester needs, because it is not what they would
             # assume from a .exe: this binary is cross-compiled on Linux with
             # clang-cl via cargo-xwin, not built by MSVC on Windows. It is the
@@ -785,7 +791,8 @@ jobs:
 
       # -p: only the Linux shell's graph, so feature unification is exactly
       # the shipped binary's. BUILD_PROFILE: `ci` (no LTO) on a pull request,
-      # `release` otherwise; the reasoning is at `build`'s compile step.
+      # `release` otherwise; the reasoning is at `build`'s compile step, and
+      # BUILD-INFO records which one this artifact is.
       - name: Build (${{ env.BUILD_PROFILE }})
         run: cargo build --profile "$BUILD_PROFILE" -p gawk-broadcast-app-linux
 

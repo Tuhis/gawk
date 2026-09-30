@@ -34,7 +34,8 @@ license = "Apache-2.0"
 lto = "thin"
 strip = true
 
-# Pull-request builds only (broadcast-desktop.yml's `build` and `linux`):
+# Pull-request builds of the Linux shell only (broadcast-desktop.yml's
+# `linux`; the Windows EXE needs LTO to link today, see the `build` job):
 # release without LTO. With sccache serving the dependency set, a PR build's
 # wall time is the serial tail (the app crate's codegen, thin LTO, the link),
 # and LTO is the part of that tail nothing can cache. Pushes to main,
