@@ -56,6 +56,19 @@
         ver.appendChild(document.createTextNode([when, size].filter(Boolean).map((s) => ` · ${s}`).join('')));
         sha.textContent = m.asset.sha256;
         sum.hidden = false;
+        // A second format of the same release (docs/63: the Linux .deb). Its
+        // name carries the version, so it is built from the manifest's own
+        // (already validated) version and looked up exactly, then held to
+        // the primary's URL check.
+        card.querySelectorAll('[data-dl-alt]').forEach((alt) => {
+          const name = alt.dataset.dlAlt.replace('{version}', m.version);
+          const a = m.assets && m.assets[name];
+          if (!a || typeof a.url !== 'string' || !a.url.startsWith('https://github.com/Tuhis/gawk/releases/download/')) return;
+          alt.querySelector('[data-dl-alt-link]').href = a.url;
+          const shown = alt.querySelector('[data-dl-alt-name]');
+          if (shown) shown.textContent = name;
+          alt.hidden = false;
+        });
         // A distribution with no release yet (docs/54: the Mac app before its
         // first signed release) stays hidden until its manifest is real.
         if (card.hasAttribute('data-dl-until-released')) card.hidden = false;
