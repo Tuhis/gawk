@@ -2750,13 +2750,12 @@ jobs:
       - uses: azure/setup-kubectl@v5
         with:
           version: ${{ env.KUBECTL_VERSION }}
-      # IN PARALLEL: the kind cluster comes up in the background while BuildKit
-      # builds all three images at once (bake builds its targets
-      # concurrently). They used to be strictly one after another: relay image
-      # 182s, kind 136s, gawk-admin image 158s, fake IdP 39s (medians over
-      # five runs). The runner reaps orphaned processes only at job end, so
-      # the background `kind create` outlives this step, and its exit status
-      # is collected by the wait step below.
+      # IN PARALLEL: the kind cluster comes up in the background while the
+      # three images are built. They used to be strictly one after another:
+      # relay image 182s, kind 136s, gawk-admin image 158s, fake IdP 39s
+      # (medians over five runs). The runner reaps orphaned processes only at
+      # job end, so the background `kind create` outlives this step, and its
+      # exit status is collected by the wait step below.
       - name: Start the kind cluster (UDP NodePort mapped to 127.0.0.1:4433) in the background
         run: |
           # rc is captured with `|| rc=$?` because this step runs under bash -e,
@@ -2767,24 +2766,44 @@ jobs:
             kind create cluster --config e2e/kind-config.yaml --image "$KIND_NODE_IMAGE" --wait 120s \
               > e2e/out/kind-create.log 2>&1 || rc=$?
             echo "$rc" > e2e/out/kind-create.rc ) &
-      - name: Build the relay, gawk-admin and fake-IdP (TEST ONLY, never published) images
+      # The binaries are compiled HERE, on the runner, where the shared Go
+      # cache is, and packaged by e2e/Dockerfile.prebuilt. Building them
+      # inside the real Dockerfiles cost ~190s of cold `go build` in
+      # BuildKit, a 71s golang image pull and a 74s `npm ci` for a portal UI
+      # this tier never loads (run 36705687148). Those Dockerfiles are still
+      # built and run by the `docker` and `dev-stack` jobs. The flags match
+      # theirs: static, -trimpath, stripped, version "dev".
+      - name: Build the relay, gawk-admin and fake-IdP binaries
+        run: |
+          out="$PWD/e2e/out/prebuilt"
+          mkdir -p "$out"
+          export CGO_ENABLED=0
+          (cd gawk-server && go build -trimpath -ldflags "-s -w -X main.version=dev" \
+            -o "$out/gawk-server" ./cmd/gawk-server)
+          (cd gawk-server && go build -trimpath -ldflags "-s -w" -o "$out/gawk-echo" ./cmd/gawk-echo)
+          (cd gawk-admin && go build -trimpath -ldflags "-s -w -X main.version=dev" \
+            -o "$out/gawk-admin" ./cmd/gawk-admin)
+          (cd gawk-admin && go build -trimpath -o "$out/gawk-fakeidp" ./cmd/gawk-fakeidp)
+          cp e2e/Dockerfile.prebuilt "$out/Dockerfile"
+          ls -l "$out"
+      - name: Package the relay, gawk-admin and fake-IdP (TEST ONLY, never published) images
         run: |
           cat > e2e/out/images.hcl <<'EOF'
           group "default" { targets = ["relay", "admin", "fakeidp"] }
           target "relay" {
-            context    = "gawk-server"
-            dockerfile = "deploy/Dockerfile"
-            tags       = ["gawk-server:e2e"]
+            context = "e2e/out/prebuilt"
+            target  = "relay"
+            tags    = ["gawk-server:e2e"]
           }
           target "admin" {
-            context    = "."
-            dockerfile = "gawk-admin/deploy/Dockerfile"
-            tags       = ["gawk-admin:e2e"]
+            context = "e2e/out/prebuilt"
+            target  = "admin"
+            tags    = ["gawk-admin:e2e"]
           }
           target "fakeidp" {
-            context    = "."
-            dockerfile = "dev/Dockerfile.fakeidp"
-            tags       = ["gawk-fakeidp:e2e"]
+            context = "e2e/out/prebuilt"
+            target  = "fakeidp"
+            tags    = ["gawk-fakeidp:e2e"]
           }
           EOF
           docker buildx bake -f e2e/out/images.hcl --load --provenance=false
