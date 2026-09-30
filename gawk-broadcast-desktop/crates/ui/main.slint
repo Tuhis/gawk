@@ -1185,6 +1185,11 @@ export component MainWindow inherits Window {
     // and its release page (prefix-checked by the engine before it gets here).
     in property <string> update-version: "";
     in property <string> update-url: "";
+    // R47 (docs/48 D4): the release is downloaded and verified, so the line
+    // offers "Install and relaunch"; and the line under it — the .deb
+    // instructions (D9) or why an install failed.
+    in property <bool> update-ready: false;
+    in property <string> update-note: "";
     // The Settings "Check now" button: in flight, and what it last found.
     in property <bool> update-checking: false;
     in property <string> update-status: "";
@@ -1374,6 +1379,7 @@ export component MainWindow inherits Window {
     callback resume-dismiss();
     callback open-link(string);
     callback dismiss-update();
+    callback install-update();
     callback check-for-updates();
     callback quit-confirmed();
 
@@ -1873,6 +1879,28 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
+                    // Never while starting or live (docs/48 D4): shown
+                    // dimmed then, and the click does nothing.
+                    if root.update-ready: Text {
+                        text: "Install and relaunch";
+                        color: root.busy ? T.muted : T.accent;
+                        font-size: 12px;
+                        font-weight: 600;
+                        accessible-role: button;
+                        accessible-enabled: !root.busy;
+                        accessible-action-default => {
+                            if !root.busy {
+                                root.install-update();
+                            }
+                        }
+                        TouchArea {
+                            enabled: !root.busy;
+                            mouse-cursor: root.busy ? default : pointer;
+                            clicked => {
+                                root.install-update();
+                            }
+                        }
+                    }
                     Text {
                         text: "Dismiss";
                         color: T.muted;
@@ -1888,6 +1916,13 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
+                }
+                if root.update-version != "" && root.update-note != "": Text {
+                    text: root.update-note;
+                    color: T.muted;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
                 }
 
                 HorizontalLayout {
