@@ -63,7 +63,7 @@ feature set exists).
 | R42 | [Rooms](#r42--rooms) | ✅ **implemented 2026-09-04** (RM1–RM9 in one PR): wire types 0x13–0x16 + close code 4007 in all four mirrors, single-pod relay + `Room` CRD cluster mode (home-pod lease, proxy, adoption, janitor, kind assert), SPA room view (grid / focus / hide videos, people panel, broadcaster Room panel), native attach on Linux and Windows, admin static-room CRUD + webhooks, telemetry room key. `-rooms` defaults off and off is byte-identical. Open: the §10 manual pass on the reference deployment ([docs/44](docs/44-rooms.md) §11) |
 | R43 | [Relay refusal reasons the browser can see](#r43--relay-refusal-reasons-the-browser-can-see) | 🔧 designed 2026-09-05, not started (RR1–RR5) — non-mandatory follow-up to R42: a refused `CONNECT`'s HTTP status is invisible to the WebTransport JS API, so every relay refusal reads "connection rejected" in the browser; answer policy refusals after the upgrade with new close codes 4008–4011 + a reason, keep rate limiting pre-upgrade ([docs/45](45-relay-refusal-reasons.md)) |
 | R44 | [App icons for the native broadcasters](#r44--app-icons-for-the-native-broadcasters) | 🔧 designed + **IC1–IC5 implemented 2026-09-18** — one SVG (`assets/icon/gawk.svg`) with a Go generator whose PNG/ICO/RES derivatives are committed and pixel-drift-checked in CI; Linux gets `app.ID` + a desktop entry and hicolor set in the tarball with `install-desktop.sh`, and the notifier uses the icon when installed; Windows gets Slint `Window.icon` plus a `.res` linked directly (no resource compiler), with CI walking the EXE's resource tree to prove it landed. **Remaining: the on-desktop manual pass** (docs/53 §4). Packaging + GUI only, zero wire/relay/pipeline change ([docs/53](docs/53-app-icons.md)) |
-| R45 | [Update notification for the desktop broadcasters](#r45--update-notification-for-the-desktop-broadcasters) | 🔧 designed 2026-09-15, not started (AU1–AU5) — a launch-time GET of the R46 `latest.json`, a dismissible "vX.Y.Z available" line under the version badge in both GUIs and one CLI log line; opt-out via config, `-no-update-check`, `GAWK_NO_UPDATE_CHECK=1`. Installing from inside the app is R47 ([docs/47](docs/47-desktop-update-check.md)) |
+| R45 | [Update notification for the desktop broadcasters](#r45--update-notification-for-the-desktop-broadcasters) | 🔧 **implemented 2026-09-30** (AU3–AU5 in one PR; AU1/AU2 dropped with the Go app's freeze, docs/58 OD6): all three desktop shells fetch their R46 `latest.json` at launch, at most daily, with a fixed User-Agent and nothing identifying, and show a dismissible "vX.Y.Z available — release notes" line under Go live; opt-out in Advanced or `GAWK_NO_UPDATE_CHECK=1`; one sentence added to terms §7 without a `termsVersion` bump. Live-checked against the real v2.0.0 manifest under Xvfb; the Windows-VM glance (AU4 manual) is the owner's. Installing from inside the app is R47 ([docs/47](docs/47-desktop-update-check.md)) |
 | R46 | [Download section on the project site](#r46--download-section-on-the-project-site) | ✅ **implemented 2026-09-14** (DL1–DL4 in one PR): the attach jobs publish `releases/<component>/latest.json` to the `badges` branch after a successful attach, and the landing page's new Download section reads it — newest version, date, size, direct link and sha256 per platform, with a working no-script fallback. DL5 (same day): the SPA's landing footer links to the site and straight to that section ([docs/46](docs/46-site-downloads.md)) |
 | R47 | [Signed in-place update for the desktop broadcasters](#r47--signed-in-place-update-for-the-desktop-broadcasters) | 🔧 designed 2026-09-15, not started (SU1–SU5) — **depends on R45** and on a release signing key: minisign over `SHA256SUMS` in both attach jobs, two public keys compiled in, verify-then-rename-swap install on click, never while live ([docs/48](docs/48-signed-in-place-update.md)) |
 | R48 | [OpenAPI contract for the `gawk-admin` API](#r48--openapi-contract-for-the-gawk-admin-api) | ✅ shipped 2026-09-16 (OA1–OA4) — a hand-written OpenAPI 3.1 document for `/api/v1` (webhooks are R51's catalogue, revised 2026-09-16), embedded and served at `GET /api/v1/openapi.json`, held to the code by a two-way Go drift test and `redocly lint`, with an embedded Redoc page at `#/api` and, since 2026-09-21 (OA5), an in-house Console drawer on it that sends any documented operation as the signed-in operator. The contract is the deliverable; no client is shipped ([docs/49](docs/49-admin-openapi.md)) |
@@ -3838,10 +3838,13 @@ relay-driven update channel.
 same release packaging and READMEs) and the two should land as
 separate PRs.
 
-**Status**: designed 2026-09-15, not started — chunks AU1–AU5 in
-[docs/47](docs/47-desktop-update-check.md). One owner item is open before
-AU5: whether the one-sentence terms addition bumps `termsVersion`
-(docs/47 D12, recommendation: no).
+**Status**: implemented 2026-09-30 — AU3, AU4 and AU5 in one PR
+([docs/47](docs/47-desktop-update-check.md) §7). AU1 and AU2 (the Go app)
+are not built: the Go broadcaster is frozen (docs/58 OD6), and Linux users
+get the check from the Rust app. The terms sentence landed without a
+`termsVersion` bump (D12's recommendation). Open: a glance at the notice on
+a Windows machine or VM when the next desktop release is out (AU4's manual
+line).
 
 ---
 
