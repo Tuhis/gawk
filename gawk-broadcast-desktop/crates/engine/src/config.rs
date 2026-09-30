@@ -141,6 +141,15 @@ pub struct Config {
     /// The system-audio cascade's cached winner, re-verified before use
     /// (`pipewire-monitor`, `pulse-default-monitor`).
     pub last_good_audio_source: String,
+    /// The launch-time update check (R45, docs/47 D6): zero value = on, the
+    /// `disableAudio` convention. `GAWK_NO_UPDATE_CHECK=1` also turns it off.
+    pub disable_update_check: bool,
+    /// When GitHub last answered the check, RFC 3339 UTC; it gates the check
+    /// to once a day (docs/47 D3). A check that got no answer leaves it.
+    pub last_update_check: String,
+    /// The release whose notice the user dismissed; a newer one shows again
+    /// (docs/47 D7).
+    pub dismissed_update_version: String,
 }
 
 impl Config {
@@ -892,6 +901,43 @@ mod tests {
         assert!(warn.is_none());
         assert_eq!(loaded, cfg);
         assert_eq!(loaded.room_attach_key("LAN-PARTY"), Some("k3y"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // docs/47 D6/D7: the update check's three keys round-trip under their
+    // camelCase names, and a file without them means "check on, never
+    // checked, nothing dismissed".
+    #[test]
+    fn update_check_keys_round_trip_and_default_to_on() {
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-update-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broadcast.json");
+        std::fs::write(&path, br#"{"nickname": "Juho"}"#).unwrap();
+        let (old, warn) = load(&path, &Reversing);
+        assert!(warn.is_none());
+        assert!(!old.disable_update_check);
+        assert!(old.last_update_check.is_empty());
+        assert!(old.dismissed_update_version.is_empty());
+
+        let cfg = Config {
+            disable_update_check: true,
+            last_update_check: "2026-09-30T12:00:00Z".into(),
+            dismissed_update_version: "2.1.0".into(),
+            ..Default::default()
+        };
+        save(&path, &cfg, &Reversing).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"disableUpdateCheck\": true"), "{raw}");
+        assert!(
+            raw.contains("\"lastUpdateCheck\": \"2026-09-30T12:00:00Z\""),
+            "{raw}"
+        );
+        assert!(
+            raw.contains("\"dismissedUpdateVersion\": \"2.1.0\""),
+            "{raw}"
+        );
+        let (loaded, _) = load(&path, &Reversing);
+        assert_eq!(loaded, cfg);
         std::fs::remove_dir_all(&dir).ok();
     }
 
