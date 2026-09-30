@@ -421,8 +421,7 @@ impl Platform for Linux {
                     // a restart or a resume is on air with no media while
                     // its pipeline builds (review of #423). Paused, Resume
                     // uses the pick and nothing restarts.
-                    let on_air = ui.get_busy() && !ui.get_paused();
-                    if media.is_some() || on_air {
+                    if media.is_some() || gawk_ui::shell::on_air(ui) {
                         self.restart_requested = true;
                     }
                 }

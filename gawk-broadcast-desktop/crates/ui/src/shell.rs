@@ -3587,6 +3587,16 @@ fn resume_from_pause(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     republish(ui, shell, session, prepared);
 }
 
+/// Whether a broadcast is on air: starting or live, including while a
+/// restart or a resume builds its new media and there is none — not Idle,
+/// not Paused. The platforms read it when their own picker hands them a new
+/// source: on air, the pick must switch the broadcast (a restart request),
+/// because the running build already took the old one (review of #423).
+/// Paused, Resume takes the pick and nothing restarts.
+pub fn on_air(ui: &MainWindow) -> bool {
+    ui.get_busy() && !ui.get_paused()
+}
+
 /// The quick restart (docs/64 D8): the running broadcast switches to what
 /// the source and quality settings say now, on the same code. Not
 /// narrated; a request during one runs after it.
@@ -4770,6 +4780,24 @@ mod tests {
     // Review of #423: an ending tells the platform, so a source handed back
     // at a pause (Linux's portal grant) is let go when End comes from
     // Paused, where there is no media to shut down.
+    // Review of #423: one rule for "on air" that both system-picker
+    // platforms read when a pick lands — a restart or resume building its
+    // media is on air with no media; Paused and Idle are not.
+    #[test]
+    fn on_air_is_starting_or_live_media_or_not() {
+        let ui = window();
+        assert!(!on_air(&ui), "idle");
+        ui.set_busy(true);
+        assert!(on_air(&ui), "starting");
+        ui.set_live(true);
+        assert!(on_air(&ui), "live, or a restart building its media");
+        ui.set_live(false);
+        ui.set_paused(true);
+        assert!(!on_air(&ui), "paused: Resume takes the pick");
+        ui.set_busy(false);
+        assert!(!on_air(&ui), "the crash's Paused page");
+    }
+
     #[test]
     fn an_ending_tells_the_platform() {
         let ui = window();

@@ -24,6 +24,10 @@ pub struct Mac {
     /// or live).
     presenting: bool,
     active: bool,
+    /// A pick landed while on air with no media — a restart or a resume
+    /// building its pipeline, which already took the old pick: the shell
+    /// switches the broadcast to it (review of #423).
+    restart_requested: bool,
 }
 
 impl Mac {
@@ -39,6 +43,7 @@ impl Mac {
             events,
             presenting: false,
             active: false,
+            restart_requested: false,
         }
     }
 
@@ -94,6 +99,8 @@ impl Platform for Mac {
         let Some(picked) = self.picked.clone() else {
             return Err("Choose what to share first.".into());
         };
+        // This start takes the latest pick: any switch asked for is done.
+        self.restart_requested = false;
         let (_, _, _, bps) = cfg.resolve_rung();
         let params = pipeline::Params {
             stream: stream_settings(cfg, &picked),
@@ -137,6 +144,11 @@ impl Platform for Mac {
                             }
                             .into(),
                         );
+                    } else if gawk_ui::shell::on_air(ui) {
+                        // On air with no media: a restart or a resume is
+                        // building on the old pick. Switch to this one once
+                        // it is up (review of #423).
+                        self.restart_requested = true;
                     }
                     self.picked = Some(picked);
                 }
@@ -160,6 +172,16 @@ impl Platform for Mac {
 
     fn network_facts(&mut self, relay: std::net::SocketAddr) -> Option<NetworkFacts> {
         crate::network::probe(relay)
+    }
+
+    fn take_restart_request(&mut self) -> bool {
+        std::mem::take(&mut self.restart_requested)
+    }
+
+    /// macOS keeps its pick across broadcasts (the Share card still shows
+    /// it); only a switch still asked for is dropped with the broadcast.
+    fn broadcast_ended(&mut self, _ui: &MainWindow) {
+        self.restart_requested = false;
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
