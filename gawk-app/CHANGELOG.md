@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.48.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.47.0...gawk-app/v0.48.0) (2026-09-30)
+
+
+### Features
+
+* **broadcast-desktop:** check for updates every 15 minutes, add Check now; keep Cargo.lock in step with releases ([#415](https://github.com/Tuhis/gawk/issues/415)) ([bd567e5](https://github.com/Tuhis/gawk/commit/bd567e5dcd30d92d456e28112a7b90bf0c84d88e))
+* **broadcast-desktop:** tell the broadcaster when a newer release exists (R45) ([#414](https://github.com/Tuhis/gawk/issues/414)) ([d35e09a](https://github.com/Tuhis/gawk/commit/d35e09a4fa5494b163507c9b8e01c0089c592da1))
+
 ## [0.47.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.46.1...gawk-app/v0.47.0) (2026-09-29)
 
 

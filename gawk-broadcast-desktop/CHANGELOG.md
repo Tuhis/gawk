@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.1.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.0.0...gawk-broadcast-desktop/v2.1.0) (2026-09-30)
+
+
+### Features
+
+* **broadcast-desktop:** check for updates every 15 minutes, add Check now; keep Cargo.lock in step with releases ([#415](https://github.com/Tuhis/gawk/issues/415)) ([bd567e5](https://github.com/Tuhis/gawk/commit/bd567e5dcd30d92d456e28112a7b90bf0c84d88e))
+* **broadcast-desktop:** ship the Linux broadcaster as a .deb too (R61) ([#406](https://github.com/Tuhis/gawk/issues/406)) ([037a66e](https://github.com/Tuhis/gawk/commit/037a66e99ad88d38d7e4f6ebeaa98328849c7c1f))
+* **broadcast-desktop:** tell the broadcaster when a newer release exists (R45) ([#414](https://github.com/Tuhis/gawk/issues/414)) ([d35e09a](https://github.com/Tuhis/gawk/commit/d35e09a4fa5494b163507c9b8e01c0089c592da1))
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** give the macOS app bundle its Dock icon ([#405](https://github.com/Tuhis/gawk/issues/405)) ([953577e](https://github.com/Tuhis/gawk/commit/953577ef84b5c6fc2ed47ea91ecd9ddbeeca488a))
+
 ## [2.0.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v1.8.0...gawk-broadcast-desktop/v2.0.0) (2026-09-29)
 
 
