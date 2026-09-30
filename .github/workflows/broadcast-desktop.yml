@@ -155,6 +155,10 @@ on:
       # R52 (docs/54 D15): the macOS bundle's Info.plist, entitlements and
       # assembly script.
       - "tools/macos/**"
+      # R47 (docs/48 SU1): the release signing script and the public key the
+      # engine's tests pin against the compiled-in one.
+      - "tools/releases/sign-sums.sh"
+      - "tools/releases/keys/**"
       - ".github/actions/rust-windows-preflight/**"
       - ".github/actions/linux-container-setup/**"
       - ".github/actions/coverage/**"
@@ -173,6 +177,10 @@ on:
       # R52 (docs/54 D15): the macOS bundle's Info.plist, entitlements and
       # assembly script.
       - "tools/macos/**"
+      # R47 (docs/48 SU1): the release signing script and the public key the
+      # engine's tests pin against the compiled-in one.
+      - "tools/releases/sign-sums.sh"
+      - "tools/releases/keys/**"
       - ".github/actions/rust-windows-preflight/**"
       - ".github/actions/linux-container-setup/**"
       - ".github/actions/coverage/**"
@@ -1182,6 +1190,21 @@ jobs:
           (cd release-assets && sha256sum ./* > ../SHA256SUMS)
           mv SHA256SUMS release-assets/
           ls -l release-assets
+      # R47 (docs/48 D1): the release set is signed, so the apps can install
+      # it in place. SHA256SUMS.minisig lands in the asset directory, which
+      # is all it takes for every manifest below to list it. The version is
+      # the manifest's — on a backfill, the swapped-in one of the commit
+      # being attached — and it goes into the signed trusted comment the
+      # apps read it from. A missing secret fails here, before the attach:
+      # a release never goes out unsigned.
+      - name: Sign SHA256SUMS
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import json; print(json.load(open(".release-please-manifest.json"))["gawk-broadcast-desktop"])')
+          bash tools/releases/sign-sums.sh release-assets "$version"
       - uses: ./.github/actions/attach-release-assets
         id: attach
         with:
