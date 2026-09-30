@@ -148,6 +148,26 @@ Add to it when a new gotcha lands in `docs/`.
   check only (`update::safe_release_url`); the roster's watch links are safe
   because the wire decode holds broadcast IDs to their alphabet.
   ([docs/47](47-desktop-update-check.md) §5)
+- **After a self-update renames over the running binary, the process can no
+  longer find itself.** On Linux, `std::env::current_exe()` reads
+  `/proc/self/exe`, which then resolves to `<path> (deleted)`; on Windows
+  the running EXE's own path now names the `.old` copy. The R47 install
+  reads the path once at startup, keeps it, and relaunches that.
+  ([docs/48](48-signed-in-place-update.md) D6)
+- **A signature over `SHA256SUMS` does not say which release it is.** A
+  manifest could point a verified download at an older, signed release and
+  call it newer. R47 signs with the trusted comment
+  `gawk-broadcast-desktop X.Y.Z` (covered by the signature) and installs the
+  version read from there, never the manifest's. Also: minisign 0.11+ signs
+  prehashed (BLAKE2b-512) by default, which `ring` cannot verify, so the
+  apps use `minisign-verify`. ([docs/48](48-signed-in-place-update.md) D3,
+  D7)
+- **The release signing key has two copies that must change together**: the
+  `RELEASE_KEY` constant the apps compile in and
+  `tools/releases/keys/gawk-release.pub`, which CI verifies every signature
+  with. An engine test and a `tools/releases` test each pin one to the other.
+  During a planned rotation the checked-in file stays on the old key until
+  the bridge release is out. ([docs/48](48-signed-in-place-update.md) §6)
 - **`producer | grep -q` under `set -o pipefail` fails on success** — and in CI
   shell that reads as the opposite of what happened. `grep -q` exits at its
   first match, the producer's next write gets EPIPE, and `pipefail` hands the

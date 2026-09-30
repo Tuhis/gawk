@@ -156,7 +156,9 @@ export function BundledTerms() {
         GitHub to learn whether a newer version exists: at launch, at most once every 15 minutes,
         and whenever you ask them to check. That request goes to GitHub, not to the Operator, and
         carries no identifier; the launch check can be turned off in the application&rsquo;s
-        settings.
+        settings. When a newer version exists, the Windows and Linux applications may also
+        download it from GitHub, with its signature, while you are not broadcasting; they replace
+        themselves only when you choose to install it.
       </p>
 
       <h2>8. Limitation of liability.</h2>

@@ -88,6 +88,17 @@ so it replaces that one.
 Settings live in `~/.config/gawk/broadcast.json`, the same file the older Go
 app used. Your relay, secrets, room and encoder cache carry over.
 
+## Updating
+
+When a newer release is out, a line under **Go live** says so. The tarball
+copy then downloads it in the background while you are not broadcasting,
+checks its signature against the release key built into the app, and offers
+**Install and relaunch**. Clicking it replaces `gawk-broadcast-linux` in
+place and restarts the app. The launcher entry keeps working because the
+path does not change. This needs the directory you unpacked into to be
+writable by you; if it isn't, download the new tarball by hand. The `.deb`
+is never replaced by the app: install the newer `.deb` as above.
+
 ## When it doesn't work
 
 - **`error while loading shared libraries: … cannot open shared object file`**:
