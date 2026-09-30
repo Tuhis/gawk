@@ -1,0 +1,39 @@
+# TEST-ONLY images for ci.yml's e2e-cluster job: the relay, gawk-admin and
+# the fake IdP, packaged from binaries the job has ALREADY compiled on the
+# runner. Never published, and never the thing a release ships: the published
+# images come from gawk-server/deploy/Dockerfile and
+# gawk-admin/deploy/Dockerfile, which the `docker` and `dev-stack` jobs build
+# and run.
+#
+# Why not those Dockerfiles here: their `go build` runs inside BuildKit, where
+# the runners' shared Go cache (/mnt/ci-cache, .github/actions/go-shared-cache)
+# cannot reach, so every run compiled all three binaries cold: ~190s, plus a
+# 71s golang image pull and a 74s `npm ci` for a portal UI this tier never
+# loads (run 36705687148). A registry layer cache was measured and rejected
+# (the `docker` job's comment); this is a different trade. It reuses the Go
+# cache the job already has.
+#
+# Each runtime stage mirrors its real counterpart's: same distroless base,
+# nonroot, exec-form ENTRYPOINT, and the same binaries at the same paths (the
+# chart's probes exec /gawk-echo). Keep them in step when those stages change.
+# The job copies this file into the build context as Dockerfile:
+#
+#   e2e/out/prebuilt/{Dockerfile,gawk-server,gawk-echo,gawk-admin,gawk-fakeidp}
+
+FROM gcr.io/distroless/static-debian12:nonroot AS relay
+COPY gawk-server /gawk-server
+COPY gawk-echo /gawk-echo
+EXPOSE 4433/udp
+ENTRYPOINT ["/gawk-server"]
+
+# Built without the portal UI: nothing in this tier loads it (admin-assert.sh
+# drives /api/v1 only), so the binary serves its "UI not built" page.
+FROM gcr.io/distroless/static-debian12:nonroot AS admin
+COPY gawk-admin /gawk-admin
+EXPOSE 8090
+EXPOSE 8091
+ENTRYPOINT ["/gawk-admin"]
+
+FROM gcr.io/distroless/static-debian12:nonroot AS fakeidp
+COPY gawk-fakeidp /gawk-fakeidp
+ENTRYPOINT ["/gawk-fakeidp"]
