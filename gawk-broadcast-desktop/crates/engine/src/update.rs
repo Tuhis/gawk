@@ -106,7 +106,7 @@ pub fn evaluate(body: &str, current: &str, dist: &Distribution) -> Option<Update
     let valid = m.schema == 1
         && m.component == dist.name
         && parse_release(&m.version).is_some()
-        && m.release_url.starts_with(RELEASE_URL_PREFIX)
+        && safe_release_url(&m.release_url)
         && m.asset.url.starts_with(ASSET_URL_PREFIX)
         && m.asset.name == dist.asset
         && m.asset.sha256.len() == 64
@@ -117,6 +117,20 @@ pub fn evaluate(body: &str, current: &str, dist: &Distribution) -> Option<Update
     (valid && newer(current, &m.version)).then_some(Update {
         version: m.version,
         release_url: m.release_url,
+    })
+}
+
+/// The release page is the one manifest value the app opens, and on Windows
+/// it is opened through `cmd /c start`, where `&`, `|`, `^` and `%` are shell
+/// syntax that Rust's argument quoting does not escape. So past the prefix
+/// only the characters a release tag path uses are allowed — a prefix check
+/// alone would let a manifest run a command on click (PR #414 review).
+fn safe_release_url(url: &str) -> bool {
+    url.strip_prefix(RELEASE_URL_PREFIX).is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._/-".contains(&b))
     })
 }
 
@@ -375,6 +389,32 @@ mod tests {
             (
                 "uppercase sha256",
                 good.replace("e188bafc30e9b3204ffd", "E188BAFC30E9B3204FFD"),
+            ),
+            // The release URL reaches `cmd /c start` on Windows, where these
+            // are shell syntax rather than URL characters (PR #414 review).
+            (
+                "cmd separator in release_url",
+                good.replace("/tag/gawk-broadcast-desktop/v9.0.0", "/tag/v9&calc.exe"),
+            ),
+            (
+                "cmd pipe in release_url",
+                good.replace("/tag/gawk-broadcast-desktop/v9.0.0", "/tag/v9|calc"),
+            ),
+            (
+                "cmd variable in release_url",
+                good.replace("/tag/gawk-broadcast-desktop/v9.0.0", "/tag/%COMSPEC%"),
+            ),
+            (
+                "cmd escape in release_url",
+                good.replace("/tag/gawk-broadcast-desktop/v9.0.0", "/tag/v9^x"),
+            ),
+            (
+                "space in release_url",
+                good.replace("/tag/gawk-broadcast-desktop/v9.0.0", "/tag/v9 x"),
+            ),
+            (
+                "bare prefix release_url",
+                good.replace("/tag/gawk-broadcast-desktop/v9.0.0", "/tag/"),
             ),
             ("missing asset", good.replace(r#""asset": {"#, r#""other": {"#)),
             ("not JSON", "<html>rate limited</html>".into()),

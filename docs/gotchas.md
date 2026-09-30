@@ -138,6 +138,16 @@ Add to it when a new gotcha lands in `docs/`.
   `cargo clippy` rebuild every one of them (367 units → 481, the step 2:02 →
   2:58). Scope such flags to the job that needs them.
   ([docs/38](38-windows-native-broadcaster.md) D18)
+- **The desktop shell's `open_in_browser` goes through `cmd /c start` on
+  Windows, so a URL is a command line there.** Rust's argument quoting reacts
+  only to whitespace and quotes (its BatBadBut escaping covers `.bat`/`.cmd`
+  targets, not `cmd` itself), so `&`, `|`, `^` and `%VAR%` in the URL reach
+  cmd.exe as syntax: `…/tag/v9&calc.exe` runs `calc.exe` on click. A URL
+  that comes from outside the app needs a character allowlist, not just a
+  prefix check. The R45 update notice was caught by review with a prefix
+  check only (`update::safe_release_url`); the roster's watch links are safe
+  because the wire decode holds broadcast IDs to their alphabet.
+  ([docs/47](47-desktop-update-check.md) §5)
 - **`producer | grep -q` under `set -o pipefail` fails on success** — and in CI
   shell that reads as the opposite of what happened. `grep -q` exits at its
   first match, the producer's next write gets EPIPE, and `pipefail` hands the

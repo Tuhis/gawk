@@ -147,7 +147,10 @@ and, if enabled, telemetry).
 
 - **This milestone executes nothing and trusts nothing.** The manifest
   yields one comparison and one URL, prefix-checked against the project's
-  own releases path before it is handed to the browser. A manifest an
+  own releases path — and, past the prefix, held to `[A-Za-z0-9._/-]`,
+  because on Windows the URL is opened through `cmd /c start`, where `&`,
+  `|`, `^` and `%` are shell syntax (found in the PR #414 review; see
+  `docs/gotchas.md`) — before it is handed to the browser. A manifest an
   attacker could write (repository write access) can at worst show a
   version number and open a page under `https://github.com/Tuhis/gawk/releases/`.
 - **The request reveals nothing but its existence** (D2). No version,
