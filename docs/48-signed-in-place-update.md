@@ -41,10 +41,10 @@ reuses D1–D4 and SU2 from here.
 
 **2026-10-01 (owner decision)**: **one** compiled-in public key, not two.
 D2 is revised in place, and "current + next" moves to Rejected. The cost is
-stated in D2 and §6: installs that skip a planned rotation's bridge
-release download by hand once, and a lost or leaked key means one manual
-download for everyone. In both cases R45's notice keeps working, so nobody is left
-without a way to update.
+stated in D2 and §6: installs that do not install a rotation's bridge
+release (planned, or after a leak) download by hand once, and a **lost**
+key means one manual download for everyone. In every case R45's notice
+keeps working, so nobody is left without a way to update.
 
 ## 1. Purpose
 
@@ -77,7 +77,7 @@ settings card's disabled state while live (docs/19 Decision 9).
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | **Prerequisite: detached minisign (ed25519) signatures over `SHA256SUMS`, produced in CI, verified against a public key compiled into the apps.** The desktop attach job (`broadcast-desktop.yml` `attach-release`) gains a signing step: `SHA256SUMS.minisig` is attached beside `SHA256SUMS`, and therefore appears in all three distributions' `manifest.assets` with no change to the R46 writer. The secret key and its passphrase are repository secrets used only in that job. The Go app's `ci.yml` `attach-broadcast-release` is not signed (docs/58 OD6: it gets no in-place update). **docs/38 D17 is revised in place with a dated note for this milestone**: the binaries stay unsigned in the Authenticode sense; the *release set* becomes signed. | Signing one file (`SHA256SUMS`) instead of each asset keeps the CI step to one command and the client to one signature plus one hash. Nothing about `badges` publishing changes, so docs/43 §7's "CI writing to the repo cannot loop" argument is untouched — it hinges on `GITHUB_TOKEN`, which a signing secret does not replace. |
-| D2 | **One public key compiled in; rotation is a bridge release, or a manual download when the key is gone.** (Revised 2026-10-01, owner decision; was "current + next".) The app verifies only signatures whose minisign key ID matches its one compiled-in key. Any other key ID → refuse, and fall back to the R45 notice. **Planned rotation** (the old secret is still held and trusted): cut a bridge release that is signed with the old key but compiles in the new one, then sign every later release with the new key. An install that took the bridge verifies everything after it. An install that skipped it, because it was not opened while the bridge was the latest release, sees the R45 notice and downloads by hand once. **Unplanned** (the secret is lost or leaked): no bridge is possible, so every install downloads by hand once, prompted by the R45 notice. | Simplest to operate: one key pair, one secret, one constant, nothing held offline in reserve. Key changes are expected to be rare, and the fallback in every failure case is the R45 notice, which needs no signature. That is today's manual update, not a stranded install. The two-key design bought rotation without a manual step and revocation one release away; the owner judged that not worth a second secret held offline (Rejected). |
+| D2 | **One public key compiled in; rotation is a bridge release, or a manual download when the key is gone.** (Revised 2026-10-01, owner decision; was "current + next".) The app verifies only signatures whose minisign key ID matches its one compiled-in key. Any other key ID → refuse, and fall back to the R45 notice. **Rotation by bridge** (the old secret is still held: a planned rotation, or a leak): cut a bridge release that is signed with the old key but compiles in the new one, then sign every later release with the new key. An install that **installed** the bridge verifies everything after it. Opening the app is not enough: under D4 the swap happens only on the user's click, and never while live. An install that did not install the bridge while it was the latest release sees the R45 notice for the next one and downloads by hand once. After a leak the bridge is also the revocation: signing it with the leaked key gives an attacker nothing they did not have, and each install that takes it stops trusting that key. **Lost secret**: no bridge is possible, so every install downloads by hand once, prompted by the R45 notice. | Simplest to operate: one key pair, one secret, one constant, nothing held offline in reserve. Key changes are expected to be rare, and the fallback in every failure case is the R45 notice, which needs no signature. That is today's manual update, not a stranded install. The two-key design bought rotation without a manual step even when the key is lost; the owner judged that not worth a second secret held offline (Rejected). |
 | D3 | **Verification order: signature, then hash, then anything touches the install directory.** Download the asset, `SHA256SUMS` and `SHA256SUMS.minisig` from `manifest.assets[...].url` (each prefix-checked per docs/47 D5) into a staging location; verify `.minisig` over `SHA256SUMS` with a known key; verify the asset's SHA-256 against its `SHA256SUMS` line; only then rename. The manifest's own `sha256` is a cross-check, not the authority. **Refuse to install any version ≤ the running release.** | The manifest is unsigned and stays that way (signing it would put the key in the badges writer's path); what it can do at worst is point at a *different signed release*. The ≤-current rule turns that into a no-op, so a manifest compromise cannot roll a fleet back to a signed-but-vulnerable build. |
 | D4 | **"Download ready — install and relaunch." The app never restarts itself unprompted.** When R45 finds a newer version and the app is not live, it downloads and verifies in the background and the notice becomes a button. The button is disabled while a broadcast is live and while the resume supervisor holds a session. Clicking it performs the swap and relaunches. Failure at any step reverts to the R45 line with the release-page link. | Roadmap recommendation, adopted. A gaming PC that restarts its broadcaster on its own during a session is worse than one running last week's build. Downloading ahead of the click keeps the click fast; it is tens of MB on the uplink the app already broadcasts over, and only when not live. |
 | D5 | **Windows: rename-swap next to the EXE, no helper process.** Download to `<exe>.new`; on click, rename the running `<exe>` to `<exe>.old` (Windows permits renaming a mapped executable), rename `.new` into place, spawn the new EXE, exit; the new build deletes `.old` at its next launch. Files the app writes itself carry no Mark-of-the-Web, so the SmartScreen "Unblock" step from INSTALL.md is **expected not** to recur — that is an acceptance criterion to verify on a real machine (SU3), not an assumption to ship on. | The `self-replace` pattern; the EXE is the whole product (docs/38 D17) so there is exactly one file to move. If MOTW does recur, minisign is not the fix (Authenticode would be) and Windows stops at "download ready, here is the file" — recorded as an outcome, not designed around. |
@@ -90,8 +90,8 @@ settings card's disabled state while live (docs/19 Decision 9).
 
 - **Auto-restart** after install — D4.
 - **Two compiled-in keys, current + next** (the 2026-09-15 D2; rejected
-  2026-10-01 by the owner). It would make every rotation, planned or
-  forced, an ordinary release with no manual step, at the cost of a second
+  2026-10-01 by the owner). It would make every rotation, including one
+  after a lost key, an ordinary release with no manual step, at the cost of a second
   key pair whose secret is kept offline until needed. One key keeps the
   setup to one secret. Its failure cases (D2) end at the R45 notice, never
   at a stranded install. Revisit if a forced rotation actually happens, or
@@ -163,9 +163,11 @@ afterwards.
   ≤-current rule). Compromise of the signing secret yields the ability to
   push a build to every broadcaster that checks — which is why the secret
   is used only in the attach job, which never runs on `pull_request`
-  (docs/19 Decision 24). With one key (D2) there is no in-band revocation:
-  a leaked key stays trusted by every build in the field until its user
-  downloads a build with a new key by hand. The ≤-current rule still
+  (docs/19 Decision 24). With one key (D2), revoking a leaked key is one
+  bridge release away (§6): each install stops trusting it when it
+  installs the bridge, and installs that miss the bridge keep trusting it
+  until their user downloads a newer build by hand. Revocation is
+  impossible in-band only if the secret is lost as well as leaked. The ≤-current rule still
   applies, so an attacker holding the key has to publish a version higher
   than the one installed, which is visible on the release page.
 - **Authenticode/SmartScreen reputation is explicitly not what this
@@ -181,8 +183,9 @@ afterwards.
 - **Rotating the signing key, planned** (D2): generate the new pair
   offline. Cut a bridge release: its code compiles in the new public key,
   and CI still signs it with the old secret. Leave the bridge as the latest
-  release for a while (a week or more) so that installs opened in that
-  time take it. `tools/releases/keys/` stays on the old public key for the
+  release for a while (a week or more) so that installs can take it.
+  Taking it means clicking install (D4), not just opening the app, so the
+  bridge's release notes ask users to install it. `tools/releases/keys/` stays on the old public key for the
   bridge, because CI's verify step checks the bridge's signature, which
   is still the old key's. Then, in one commit, replace the repository
   secret and the public key in `tools/releases/keys/`, and sign every
@@ -194,11 +197,16 @@ afterwards.
   previous version and cut a `fix:` release. Clients that already
   installed the bad build take the fix release like any other; D3 keeps
   the retracted manifest from reading as a downgrade prompt.
-- **A lost or leaked secret** (D2): generate a new pair. Then, in one
-  release, replace the repository secret, the public key in
-  `tools/releases/keys/` (CI's verify step) and the compiled-in constant
-  (D7), and ship it. No bridge is possible: installs in the field reject its signature
-  and fall back to the R45 notice, so everyone downloads once by hand.
-  For a leak, also say in the release notes that the old key is
-  compromised, and do not sign anything else with it. Builds in the field
-  keep trusting the leaked key until they are replaced (§5).
+- **A leaked secret** (D2): rotate by bridge, as for a planned rotation,
+  but at once. Signing the bridge with the leaked key is the point: field
+  builds already accept anything that key signs, and each one that
+  installs the bridge stops trusting it (§5). Keep the window as short as
+  it can be while still giving installs a chance to take it, and say in
+  the bridge's release notes that the old key is compromised and that
+  users should install now. After the switch, sign nothing more with the
+  leaked key.
+- **A lost secret** (D2): generate a new pair. Then, in one release,
+  replace the repository secret, the public key in `tools/releases/keys/`
+  (CI's verify step) and the compiled-in constant (D7), and ship it. No
+  bridge is possible: installs in the field reject its signature and fall
+  back to the R45 notice, so everyone downloads once by hand.

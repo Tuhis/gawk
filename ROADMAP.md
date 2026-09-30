@@ -3920,9 +3920,10 @@ at an arbitrary binary. So the release set gets a signature first.
   the desktop attach job and therefore listed in the R46 manifests with no
   writer change; the frozen Go app is not signed), not per-asset and not over the manifest. **One public key
   compiled in** (owner decision 2026-10-01; two keys, current + next, was
-  the earlier design). A planned rotation is a bridge release signed with
-  the old key that carries the new one. A lost or leaked key means one
-  manual download for everyone, prompted by the R45 notice.
+  the earlier design). A planned rotation, or one after a leak, is a
+  bridge release signed with the old key that carries the new one; the
+  leak case is also the revocation. A lost key means one manual download
+  for everyone, prompted by the R45 notice.
 - **Verify before touching anything**: signature, then the asset's hash
   against `SHA256SUMS`, then rename. Refuse any version ≤ the running
   one, so a compromised manifest is a no-op rather than a rollback.
