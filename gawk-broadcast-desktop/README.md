@@ -72,10 +72,10 @@ this repository's `badges` branch, from `raw.githubusercontent.com`); a
 relaunch inside those 15 minutes reuses the last answer. When a newer release
 exists, a line under the Go live button reads "v2.1.0 available — release
 notes" and opens the release page; **Dismiss** hides it until the app
-restarts. **Settings → Updates → Check now** asks right away. The request is
+restarts. **Settings → App → Check now** asks right away. The request is
 a plain GET with a fixed User-Agent: no version, no identifier, nothing about
-you or your broadcasts. Turn the launch check off with **Settings → Advanced
-→ Check for updates at launch**, or by setting `GAWK_NO_UPDATE_CHECK=1`
+you or your broadcasts. Turn the launch check off with the **Settings → App
+→ Check for updates** switch, or by setting `GAWK_NO_UPDATE_CHECK=1`
 ([docs/47](../docs/47-desktop-update-check.md)).
 
 **Installing it.** On Windows and from the Linux tarball, the app then
@@ -259,9 +259,9 @@ exist there); Windows 11 removes it. Closing the window ends the broadcast
   (QUIC). Networks that block UDP block this.
 - **Toasts don't appear during a fullscreen game** — Focus Assist eats
   them; the in-window status is the truth.
-- Anything else: open **Details** while live (or **Settings → Advanced**),
-  click **Copy diagnostics**, and send the JSON along with `debug.log`,
-  below.
+- Anything else: open **Details** while live (or **Settings → App →
+  Diagnostics**), click **Copy diagnostics**, and send the JSON along with
+  `debug.log`, below.
 
 ### `debug.log`
 
@@ -284,7 +284,7 @@ Blank settings mean "the default", resolved at use, never at save
 | Relay | `https://api.gawk.ioio.fi:4433` |
 | App URL (join links) | `https://gawk.ioio.fi` |
 | Telemetry ingest | `https://gawk.ioio.fi/api/telemetry/v1/ingest` (`off` = send nothing) |
-| Update check | On: one GET of the release manifest from GitHub at launch, at most every 15 minutes, or on **Check now** (launch check off in Advanced, or `GAWK_NO_UPDATE_CHECK=1`) |
+| Update check | On: one GET of the release manifest from GitHub at launch, at most every 15 minutes, or on **Check now** (launch check off in Settings → App, or `GAWK_NO_UPDATE_CHECK=1`) |
 | Update download | Windows and the Linux tarball: once a check finds a newer release and you are not live, its asset, `SHA256SUMS` and `SHA256SUMS.minisig` from GitHub, verified against the compiled-in release key before **Install and relaunch** appears (docs/48) |
 | Origin | `gawk-broadcast://windows` — the relay's `-allowed-origins` must include it |
 | Rung | 1080p60, 500 ms GOP, 12 Mbps peak VBR — the resolution is a bounding box: the stream keeps the source's aspect ratio inside it |

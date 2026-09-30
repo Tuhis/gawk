@@ -106,6 +106,8 @@ impl Platform for Mac {
         let capture_mode = params.picked.style.capture_mode();
         Ok(Prepared {
             capture_mode,
+            source: params.picked.summary.clone(),
+            source_is_window: capture_mode == "app",
             build: Box::new(move |env| {
                 Pipeline::build(params, env).map(|p| Box::new(p) as Box<dyn Media>)
             }),
@@ -122,7 +124,19 @@ impl Platform for Mac {
                     ui.set_share_mode_label(picked.style.audio_scope().label().into());
                     ui.set_error_text("".into());
                     if let Some(p) = media.and_then(|m| m.as_any().downcast_ref::<Pipeline>()) {
+                        // Live: the running capture switches in place
+                        // (D4), so Live's Sharing row names the new pick.
                         p.repick(&picked);
+                        ui.set_sharing_title(picked.summary.clone().into());
+                        ui.set_sharing_window(picked.style.capture_mode() == "app");
+                        ui.set_sharing_detail(
+                            if picked.style.capture_mode() == "app" {
+                                "Window"
+                            } else {
+                                "Display"
+                            }
+                            .into(),
+                        );
                     }
                     self.picked = Some(picked);
                 }

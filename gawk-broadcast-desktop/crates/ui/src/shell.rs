@@ -29,6 +29,7 @@ use gawk_engine::clock::{Clock, MonotonicClock};
 use gawk_engine::config::{self, Config, DEFAULT_SERVER_NAME, ServerProfile};
 use gawk_engine::install::{self, Layout, Plan};
 use gawk_engine::lossnotice::{LossMonitor, NetworkFacts, Notice};
+use gawk_engine::probe::ProbeResult;
 use gawk_engine::room::RoomSummary;
 use gawk_engine::sender::Sender;
 use gawk_engine::session::{EngineEvent, Session, SessionConfig};
@@ -108,6 +109,15 @@ pub trait Media: Send {
     fn take_failure(&self) -> Option<String>;
     /// Tears the media down in dependency order. No zombie capture.
     fn shutdown(self: Box<Self>);
+    /// Tears the media down like [`Media::shutdown`], but hands back what the
+    /// platform needs to capture the same source again — Linux's portal
+    /// grant — for a pause or a quick restart (docs/64 D8, D9). The platform
+    /// gets it back through [`Platform::source_returned`]. `None`: nothing
+    /// to keep (the platform's own selection is still there).
+    fn shutdown_keep_source(self: Box<Self>) -> Option<Box<dyn Any + Send>> {
+        self.shutdown();
+        None
+    }
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -126,6 +136,11 @@ pub type MediaBuilder = Box<dyn FnOnce(MediaEnv) -> Result<Box<dyn Media>, Start
 pub struct Prepared {
     /// "app" | "screen" — diagnostics and the audio line.
     pub capture_mode: &'static str,
+    /// What is shared, as Live's Sharing row names it: a window's title, a
+    /// display's label, the picker's summary (docs/64 D7).
+    pub source: String,
+    /// The source is one window (the row's icon).
+    pub source_is_window: bool,
     pub build: MediaBuilder,
 }
 
@@ -168,14 +183,26 @@ pub trait Platform: 'static {
     fn remember(&mut self, _cfg: &mut Config) -> bool {
         false
     }
+    /// A pause or a quick restart shut the media down and handed its source
+    /// back ([`Media::shutdown_keep_source`]): keep it for the next
+    /// `prepare_start`, unless a newer pick already replaced it.
+    fn source_returned(&mut self, _ui: &MainWindow, _source: Box<dyn Any + Send>) {}
+    /// The platform's own picker chose a new source while live and wants the
+    /// broadcast to switch to it: true once per request, and the shell does
+    /// a quick restart on the same code (docs/64 D12).
+    fn take_restart_request(&mut self) -> bool {
+        false
+    }
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum UiState {
     Idle,
     Starting,
     Live,
+    /// A session with its publish leg closed and no media (docs/64 D9).
+    Paused,
 }
 
 /// Everything background threads report back to the UI.
@@ -185,6 +212,20 @@ enum ShellMsg {
         media: Box<dyn Media>,
     },
     StartFailed(StartFailure),
+    /// A resume from pause or a quick restart built its new media.
+    Restarted(Box<dyn Media>),
+    /// It could not: the broadcast ends with this reason.
+    RestartFailed(StartFailure),
+    /// The header's probe of `url` came back (docs/64 D1).
+    Probed {
+        url: String,
+        result: ProbeResult,
+    },
+    /// Test connection on the Edit server page came back.
+    Tested {
+        url: String,
+        result: ProbeResult,
+    },
     Engine(EngineEvent),
     /// An update check came back: the launch one, or one the Settings button
     /// asked for (`manual`), which also reports its result in Settings.
@@ -318,6 +359,58 @@ pub struct Shell {
     room_key_used: String,
     /// The update notice and the checks behind it, for this run.
     update: UpdateState,
+    /// A resume from pause or a quick restart is building its media
+    /// (docs/64 D8); a second request while one runs waits for it.
+    restarting: bool,
+    restart_again: bool,
+    /// The running reclaim was asked for by the app, not caused by a loss:
+    /// its first attempt is not narrated (docs/64 OD4).
+    reclaim_quiet: bool,
+    /// The reclaim running is a resume from pause: its failure means the
+    /// relay let the paused code go.
+    resuming_from_pause: bool,
+    /// When the current pause began, and how long earlier ones lasted — the
+    /// summary counts time live, not time paused.
+    paused_since: Option<std::time::Instant>,
+    paused_total: std::time::Duration,
+    /// What the broadcast last sent (width, height, fps), for the summary.
+    last_sent: Option<(u32, u32, u32)>,
+    /// A reason to show when the session's Ended arrives without one (a
+    /// restart that could not build its media).
+    pending_error: Option<String>,
+    /// Debounces a quality change while live into one restart (docs/64 D13).
+    quality_timer: slint::Timer,
+    /// The header's probe of the selected relay (docs/64 D1).
+    probe: ProbeState,
+    /// The room this broadcast just left, for Rejoin (docs/64 D6).
+    left_room: Option<LeftRoom>,
+    /// The server the Edit server page shows (docs/64 D15): a profile name,
+    /// or the reserved default name. Editing never selects.
+    edit_server: String,
+    /// The selected relay advertised the telemetry endpoint this broadcast
+    /// reports to: its operator gets the diagnostics (docs/40 D16).
+    foreign_telemetry: bool,
+}
+
+/// The header probe's state: what was found for which relay, and when to
+/// look again.
+#[derive(Debug, Default)]
+struct ProbeState {
+    url: String,
+    result: Option<ProbeResult>,
+    in_flight: bool,
+    next_at: Option<std::time::Instant>,
+}
+
+/// How often the header looks at the relay again while idle.
+const PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A room left with Leave room: what Rejoin joins again.
+#[derive(Debug, Clone)]
+struct LeftRoom {
+    code: String,
+    attach: String,
+    creator: String,
 }
 
 /// Sends the current nickname to the running session unless it is the one
@@ -489,6 +582,19 @@ pub fn run(
             target: install_target,
             ..Default::default()
         },
+        restarting: false,
+        restart_again: false,
+        reclaim_quiet: false,
+        resuming_from_pause: false,
+        paused_since: None,
+        paused_total: std::time::Duration::ZERO,
+        last_sent: None,
+        pending_error: None,
+        quality_timer: slint::Timer::default(),
+        probe: ProbeState::default(),
+        left_room: None,
+        edit_server: DEFAULT_SERVER_NAME.to_string(),
+        foreign_telemetry: false,
     }));
 
     let ui = MainWindow::new().expect("create window");
@@ -498,15 +604,22 @@ pub fn run(
     {
         let sh = shell.borrow();
         let cfg = &sh.cfg;
-        ui.set_resume_code(cfg.last_broadcast_id.clone().into());
-        ui.set_code_chars(code_chars(&cfg.last_broadcast_id));
-        // docs/60 D12: still marked live at launch means the app died live.
+        // docs/60 D12, docs/64 D11: still marked live at launch means the
+        // app died live — it opens on Paused, with the code to resume.
         let crashed = cfg.was_live && !cfg.last_broadcast_id.is_empty();
-        ui.set_resume_offer(crashed);
         if crashed {
             log::info!("the last broadcast did not end in the app; offering to resume it");
-            let (label, _) = pending_room_view(cfg, false);
-            ui.set_resume_room(label.into());
+            ui.set_resume_code(cfg.last_broadcast_id.clone().into());
+            ui.set_code(cfg.last_broadcast_id.clone().into());
+            ui.set_code_chars(code_chars(&cfg.last_broadcast_id));
+            ui.set_join_link(
+                gawk_engine::join_link(&cfg.resolve_app_url(), &cfg.last_broadcast_id).into(),
+            );
+            ui.set_crash_resume(true);
+            ui.set_paused(true);
+            if !cfg.room.is_empty() {
+                ui.set_room_pending_detail("Rejoins when you resume".into());
+            }
         }
     }
     shell.borrow_mut().platform.init_window(&ui);
@@ -528,10 +641,16 @@ pub fn run(
             move || {
                 if let Some(ui) = ui_weak.upgrade() {
                     pump_messages(&ui, &shell);
-                    {
+                    let restart = {
                         let mut sh = shell.borrow_mut();
                         let sh = &mut *sh;
                         sh.platform.tick(&ui, sh.media.as_deref());
+                        sh.platform.take_restart_request()
+                    };
+                    // The platform's own picker chose a new source while
+                    // live (Linux's portal): switch to it (docs/64 D12).
+                    if restart {
+                        restart_media(&ui, &shell);
                     }
                     tick(&ui, &shell);
                 }
@@ -596,20 +715,38 @@ fn server_labels(cfg: &Config) -> Vec<SharedString> {
     labels
 }
 
-/// The detail line under each server in Settings: its relay address.
-fn server_urls(cfg: &Config) -> Vec<SharedString> {
-    let mut urls = vec![SharedString::from(gawk_engine::defaults::RELAY_URL)];
+/// The detail line under each server in Settings: its relay address, and
+/// for the selected one what the header's probe found ("24 ms", "Can't
+/// reach", docs/64 D15). `probe_note` is empty while unknown.
+fn server_urls(cfg: &Config, probe_note: &str) -> Vec<SharedString> {
+    let selected = selected_combo_index(cfg) as usize;
+    let mut urls = vec![gawk_engine::defaults::RELAY_URL.to_string()];
     for p in custom_profiles(cfg) {
-        urls.push(
-            if p.url.trim().is_empty() {
-                "No address yet".to_string()
-            } else {
-                p.url.trim().to_string()
-            }
-            .into(),
-        );
+        urls.push(if p.url.trim().is_empty() {
+            "No address yet".to_string()
+        } else {
+            p.url.trim().to_string()
+        });
     }
-    urls
+    urls.into_iter()
+        .enumerate()
+        .map(|(i, u)| {
+            if i == selected && !probe_note.is_empty() {
+                format!("{u} · {probe_note}").into()
+            } else {
+                u.into()
+            }
+        })
+        .collect()
+}
+
+/// What the probe found, as a server row's note.
+fn probe_note(probe: &ProbeState) -> String {
+    match &probe.result {
+        Some(ProbeResult::Ok { rtt_ms, .. }) => format!("{rtt_ms} ms"),
+        Some(ProbeResult::Failed) => "Can't reach".into(),
+        None => String::new(),
+    }
 }
 
 /// The combo index of the selected server (0 = default; unknown names fall
@@ -632,14 +769,20 @@ fn combo_index_to_name(cfg: &Config, index: i32) -> String {
         .unwrap_or_else(|| DEFAULT_SERVER_NAME.to_string())
 }
 
-/// Seeds the server dropdown and the per-server fields from the config.
-/// Called on load and whenever the selection or the list changes — NOT on
-/// every keystroke (rewriting a LineEdit's text mid-edit moves the caret).
-fn seed_server_fields(ui: &MainWindow, cfg: &Config) {
+/// Seeds the Settings server list from the config: labels, addresses, the
+/// selection. Called on load and whenever the selection or the list changes.
+fn seed_server_list(ui: &MainWindow, cfg: &Config, probe_note: &str) {
     ui.set_server_labels(ModelRc::new(VecModel::from(server_labels(cfg))));
-    ui.set_server_urls(ModelRc::new(VecModel::from(server_urls(cfg))));
+    ui.set_server_urls(ModelRc::new(VecModel::from(server_urls(cfg, probe_note))));
     ui.set_set_server(selected_combo_index(cfg));
-    match cfg.selected_profile() {
+    ui.set_default_relay(gawk_engine::defaults::RELAY_URL.into());
+}
+
+/// Seeds the Edit server page from the profile it edits (docs/64 D15) —
+/// `edit` is a profile name or the reserved default name — NOT on every
+/// keystroke (rewriting a field's text mid-edit moves the caret).
+fn seed_edit_fields(ui: &MainWindow, cfg: &Config, edit: &str) {
+    match custom_profiles(cfg).into_iter().find(|p| p.name == edit) {
         Some(p) => {
             ui.set_server_is_custom(true);
             ui.set_set_server_name(p.name.clone().into());
@@ -650,13 +793,19 @@ fn seed_server_fields(ui: &MainWindow, cfg: &Config) {
             ui.set_server_is_custom(false);
             ui.set_set_server_name("".into());
             ui.set_set_relay("".into());
-            ui.set_set_secret(cfg.resolve_publish_secret().into());
+            ui.set_set_secret(cfg.default_secret().into());
         }
     }
+    ui.set_test_state(0);
+    ui.set_test_result("".into());
 }
 
 fn seed_settings(ui: &MainWindow, cfg: &Config) {
-    seed_server_fields(ui, cfg);
+    seed_server_list(ui, cfg, "");
+    // The shell's `edit_server` starts at the default: the page's fields
+    // must say the same, or the first unrelated settings edit would write
+    // the selected server's fields into the default's slot.
+    seed_edit_fields(ui, cfg, DEFAULT_SERVER_NAME);
     ui.set_room_nickname(cfg.nickname.clone().into());
     ui.set_set_app_url(cfg.app_url.clone().into());
     ui.set_set_telemetry(cfg.telemetry_url.clone().into());
@@ -689,33 +838,36 @@ fn seed_settings(ui: &MainWindow, cfg: &Config) {
 
 /// Reads the settings widgets back into the config: verbatim including
 /// blanks — blank means "follow the default", and baking today's default in
-/// would pin this user to it forever. The server fields land in the SELECTED
-/// profile (R37 SP9); the legacy flat relay/secret pair stays retired after
-/// migration.
-fn read_settings(ui: &MainWindow, cfg: &mut Config) {
+/// would pin this user to it forever. The server fields land in the profile
+/// the Edit server page shows, `edit` (docs/64 D15), which need not be the
+/// selected one; the legacy flat relay/secret pair stays retired after
+/// migration. Returns the edited profile's name after any rename.
+fn read_settings(ui: &MainWindow, cfg: &mut Config, edit: &str) -> String {
     let secret = ui.get_set_secret().trim().to_string();
-    let selected = cfg.selected_server.clone();
-    let is_custom = cfg.selected_profile().is_some();
+    let mut edited = edit.to_string();
+    let is_custom = custom_profiles(cfg).iter().any(|p| p.name == edit);
     if is_custom {
         // A rename follows the Linux UpdateCustomServer rule: an empty,
         // reserved, or already-taken new name keeps the old one — the name
         // is the selection key, so a collision would make two profiles
         // indistinguishable. The selection follows the rename.
         let new_name = ui.get_set_server_name().trim().to_string();
-        let rename =
-            !new_name.is_empty() && new_name != selected && !cfg.profile_name_taken(&new_name);
+        let rename = !new_name.is_empty() && new_name != edit && !cfg.profile_name_taken(&new_name);
         let p = cfg
             .servers
             .iter_mut()
-            .find(|p| p.name == selected)
-            .expect("selected profile exists");
+            .find(|p| p.name == edit)
+            .expect("edited profile exists");
         if rename {
             p.name = new_name.clone();
         }
         p.url = ui.get_set_relay().trim().to_string();
         p.publish_secret = secret;
         if rename {
-            cfg.selected_server = new_name;
+            if cfg.selected_server == edit {
+                cfg.selected_server = new_name.clone();
+            }
+            edited = new_name;
         }
     } else {
         // The default: the secret edits its credentials-only record (F4 —
@@ -746,6 +898,7 @@ fn read_settings(ui: &MainWindow, cfg: &mut Config) {
         3 => 5,
         _ => 0,
     };
+    edited
 }
 
 /// The custom-resolution parser: both fields must parse to positive
@@ -763,8 +916,7 @@ const NETWORK_HELP_URL: &str = "https://github.com/Tuhis/gawk/blob/main/gawk-bro
 fn uplink_warning_text(bitrate_bps: u32) -> String {
     format!(
         "Your upload can't keep up with the stream, so people watching may see frozen or \
-         delayed video. Lower the upload cap (now {:.0} Mbps) for the next broadcast, or free \
-         up upload bandwidth.",
+         delayed video. Lower the upload cap (now {:.0} Mbps), or free up upload bandwidth.",
         f64::from(bitrate_bps) / 1e6
     )
 }
@@ -807,6 +959,13 @@ fn fmt_mbps(bps: u32) -> String {
 
 /// The Ready page's Quality row (docs/60 D4): what the next broadcast sends.
 fn quality_line(cfg: &Config) -> String {
+    let (title, detail) = quality_rows(cfg);
+    format!("{title} · {detail}")
+}
+
+/// The Paused page's Quality row (docs/64 D9), in Live's shape: what the
+/// next start sends ("1080p · 60 fps"), then its cap ("up to 12 Mbps").
+fn quality_rows(cfg: &Config) -> (String, String) {
     let (w, h, fps, bps) = cfg.resolve_rung();
     let size = match (w, h) {
         (2560, 1440) => "1440p".to_string(),
@@ -815,7 +974,20 @@ fn quality_line(cfg: &Config) -> String {
         (854, 480) => "480p".to_string(),
         (w, h) => format!("up to {w}×{h}"),
     };
-    format!("{size} · {fps} fps · up to {} Mbps", fmt_mbps(bps))
+    (
+        format!("{size} · {fps} fps"),
+        format!("up to {} Mbps", fmt_mbps(bps)),
+    )
+}
+
+/// Live's Quality row: what is actually encoded (the aspect-fitted size,
+/// docs/38 D11), then the encoder and the cap.
+fn live_quality_rows(height: u32, fps: u32, bps: u32) -> (String, String) {
+    (
+        format!("{height}p · {fps} fps"),
+        // The cascade accepts hardware encoders only (docs/38 G3).
+        format!("H.264 hardware · up to {} Mbps", fmt_mbps(bps)),
+    )
 }
 
 /// The host of a URL, for display: `https://gawk.ioio.fi/x` → `gawk.ioio.fi`.
@@ -824,15 +996,23 @@ fn host_of(url: &str) -> String {
     rest.split(['/', '?', '#']).next().unwrap_or("").to_string()
 }
 
-/// The header's server pill: the official site's name, or the selected
-/// custom server's (docs/60 D6).
-fn server_pill(cfg: &Config) -> String {
-    match cfg.selected_profile() {
-        Some(p) if !p.name.trim().is_empty() => p.name.trim().to_string(),
-        Some(p) => host_of(&p.url),
-        None => host_of(gawk_engine::defaults::APP_URL),
-    }
+/// The non-default server strip (docs/64 D3): `None` on the pinned default,
+/// else the server's name (its address when unnamed) and its host.
+fn server_strip(cfg: &Config) -> Option<(String, String)> {
+    let p = cfg.selected_profile()?;
+    let host = host_of(&p.url);
+    let name = if p.name.trim().is_empty() {
+        host.clone()
+    } else {
+        p.name.trim().to_string()
+    };
+    Some((name, host))
 }
+
+/// The strip's disclosure line (docs/40 D16): shown while this broadcast's
+/// diagnostics go to the non-default server's operator.
+const FOREIGN_DIAGNOSTICS_NOTE: &str =
+    "Diagnostics from this broadcast go to this server's operator.";
 
 /// The pending room's detail line when "Create a new room" was chosen
 /// before going live. The window compares against this literal to label
@@ -915,7 +1095,17 @@ fn room_input_echo(input: &str) -> (String, bool) {
 /// "Your rooms".
 fn refresh_ready(ui: &MainWindow, cfg: &Config, pending_create: bool) {
     ui.set_quality_line(quality_line(cfg).into());
-    ui.set_server_pill(server_pill(cfg).into());
+    let (title, detail) = quality_rows(cfg);
+    ui.set_quality_title(title.into());
+    ui.set_quality_detail(detail.into());
+    match server_strip(cfg) {
+        Some((name, host)) => {
+            ui.set_server_custom(true);
+            ui.set_server_name(name.into());
+            ui.set_server_host(host.into());
+        }
+        None => ui.set_server_custom(false),
+    }
     let (label, detail) = pending_room_view(cfg, pending_create);
     ui.set_room_pending(label.into());
     ui.set_room_pending_detail(detail.into());
@@ -945,8 +1135,15 @@ struct RosterView {
 
 /// Builds the roster: streams first (ours, then live, then away), then a
 /// line naming who is only watching. `our_id` is this broadcast's code;
-/// `creator` lets the rows offer Remove.
-fn roster_view(s: &RoomSummary, our_id: &str, app_url: &str, creator: bool) -> RosterView {
+/// `creator` lets the rows offer Remove; `we_paused` names our own away row
+/// for what it is (docs/64 D9: a pause keeps the room).
+fn roster_view(
+    s: &RoomSummary,
+    our_id: &str,
+    app_url: &str,
+    creator: bool,
+    we_paused: bool,
+) -> RosterView {
     let rank = |a: &gawk_engine::room::RoomAttachmentInfo| {
         if a.broadcast_id == our_id {
             0
@@ -967,7 +1164,11 @@ fn roster_view(s: &RoomSummary, our_id: &str, app_url: &str, creator: bool) -> R
             } else {
                 a.label.trim().to_string()
             };
-            let detail = if !a.live {
+            let detail = if !a.live && ours && we_paused {
+                "Paused".to_string()
+            } else if !a.live && ours {
+                "Away".to_string()
+            } else if !a.live {
                 "Away · their stream is paused".to_string()
             } else {
                 match a.viewer_count {
@@ -1060,9 +1261,10 @@ fn format_duration(secs: u64) -> String {
     }
 }
 
-/// The stopped summary's rows (docs/60 D11).
-fn summary_rows(peak: u32, bytes: u64, secs: u64, w: u32, h: u32, fps: u32) -> Vec<StatRow> {
-    let row = |label: &str, value: String| StatRow {
+/// The summary card's tiles (docs/64 D10): time live, most watching,
+/// average upload, what was sent — each a value over what it means.
+fn summary_rows(peak: u32, bytes: u64, secs: u64, height: u32, fps: u32) -> Vec<StatRow> {
+    let tile = |value: String, label: &str| StatRow {
         label: label.into(),
         value: value.into(),
     };
@@ -1072,9 +1274,10 @@ fn summary_rows(peak: u32, bytes: u64, secs: u64, w: u32, h: u32, fps: u32) -> V
         format!("{:.1} Mbps", bytes as f64 * 8.0 / secs as f64 / 1e6)
     };
     vec![
-        row("Most people watching", peak.to_string()),
-        row("Average upload", avg),
-        row("Sent", format!("{w}×{h} · {fps} fps")),
+        tile(format_duration(secs), "live"),
+        tile(peak.to_string(), "most watching"),
+        tile(avg, "average upload"),
+        tile(format!("{height}p{fps}"), "sent"),
     ]
 }
 
@@ -1142,6 +1345,10 @@ fn apply_default_source(ui: &MainWindow, cfg: &Config) {
             ui.set_selected_monitor(-1);
         }
     }
+    // The picker page shows the choice too (a refresh happens with it open).
+    ui.set_draft_tab(ui.get_picker_tab());
+    ui.set_draft_window(ui.get_selected_window());
+    ui.set_draft_monitor(ui.get_selected_monitor());
 }
 
 /// The current picker selection's key, or `None` when nothing is selected.
@@ -1537,15 +1744,34 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         });
     }
     {
+        // Resume: back from a pause on the running session (docs/64 D9), or
+        // — with no session — the persisted code: after a crash (D11) or
+        // the summary card's undo (D10).
         let shell = shell.clone();
         let ui_weak = ui_weak.clone();
         ui.on_resume_broadcast(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                start_broadcast(&ui, &shell, true);
+                let paused = shell.borrow().state == UiState::Paused;
+                if paused {
+                    resume_from_pause(&ui, &shell);
+                } else {
+                    start_broadcast(&ui, &shell, true);
+                }
             }
         });
     }
     {
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_pause_broadcast(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                pause_broadcast(&ui, &shell);
+            }
+        });
+    }
+    {
+        // End (docs/64 D10): live or paused, the session stops and Ready
+        // shows the summary card.
         let shell = shell.clone();
         ui.on_stop_broadcast(move || {
             let sh = shell.borrow();
@@ -1599,14 +1825,41 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         ui.on_settings_edited(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 let mut sh = shell.borrow_mut();
-                read_settings(&ui, &mut sh.cfg);
+                let rung_before = sh.cfg.resolve_rung();
+                let relay_before = sh.cfg.resolve_relay_url();
+                let edit = sh.edit_server.clone();
+                sh.edit_server = read_settings(&ui, &mut sh.cfg, &edit);
                 save_config(&mut sh);
-                // The labels model follows name/URL edits live; the full
-                // reseed is reserved for selection changes (it would move
-                // the caret of the field being typed in).
+                // The lists follow name/URL edits live; the Edit page's
+                // fields are not reseeded (that would move the caret of the
+                // field being typed in).
                 ui.set_server_labels(ModelRc::new(VecModel::from(server_labels(&sh.cfg))));
+                let note = probe_note(&sh.probe);
+                ui.set_server_urls(ModelRc::new(VecModel::from(server_urls(&sh.cfg, &note))));
                 refresh_captions(&ui, &sh.cfg);
                 refresh_ready(&ui, &sh.cfg, sh.pending_create);
+                if sh.cfg.resolve_relay_url() != relay_before {
+                    // The selected server's own address changed: look again.
+                    restart_probe(&ui, &mut sh);
+                }
+                // docs/64 D13: a quality change while live applies itself,
+                // once typing and dragging settle.
+                if sh.state == UiState::Live && sh.cfg.resolve_rung() != rung_before {
+                    let restart_shell = shell.clone();
+                    let restart_ui = ui.as_weak();
+                    sh.quality_timer.start(
+                        slint::TimerMode::SingleShot,
+                        QUALITY_SETTLE,
+                        move || {
+                            if let Some(ui) = restart_ui.upgrade() {
+                                log::info!(
+                                    "quality changed while live: restarting on the same code"
+                                );
+                                restart_media(&ui, &restart_shell);
+                            }
+                        },
+                    );
+                }
             }
         });
     }
@@ -1619,7 +1872,8 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         ui.on_room_nickname_edited(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 let mut sh = shell.borrow_mut();
-                read_settings(&ui, &mut sh.cfg);
+                let edit = sh.edit_server.clone();
+                sh.edit_server = read_settings(&ui, &mut sh.cfg, &edit);
                 save_config(&mut sh);
                 let flush_shell = shell.clone();
                 sh.nick_timer.start(
@@ -1648,24 +1902,39 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 // old selection's values are safe; just repoint and reseed.
                 sh.cfg.selected_server = combo_index_to_name(&sh.cfg, ui.get_set_server());
                 save_config(&mut sh);
-                seed_server_fields(&ui, &sh.cfg);
                 refresh_captions(&ui, &sh.cfg);
                 refresh_ready(&ui, &sh.cfg, sh.pending_create);
+                restart_probe(&ui, &mut sh);
             }
         });
     }
     {
+        // Edit (docs/64 D15): open a server's page without selecting it.
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_edit_server(move |index| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut sh = shell.borrow_mut();
+                sh.edit_server = combo_index_to_name(&sh.cfg, index);
+                seed_edit_fields(&ui, &sh.cfg, &sh.edit_server);
+            }
+        });
+    }
+    {
+        // A new server is one to use: it is selected, and its page opens.
         let shell = shell.clone();
         let ui_weak = ui_weak.clone();
         ui.on_add_server(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 let mut sh = shell.borrow_mut();
                 let name = sh.cfg.add_custom_server();
-                sh.cfg.selected_server = name;
+                sh.cfg.selected_server = name.clone();
+                sh.edit_server = name;
                 save_config(&mut sh);
-                seed_server_fields(&ui, &sh.cfg);
+                seed_edit_fields(&ui, &sh.cfg, &sh.edit_server);
                 refresh_captions(&ui, &sh.cfg);
                 refresh_ready(&ui, &sh.cfg, sh.pending_create);
+                restart_probe(&ui, &mut sh);
             }
         });
     }
@@ -1675,16 +1944,55 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         ui.on_remove_server(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 let mut sh = shell.borrow_mut();
-                let selected = sh.cfg.selected_server.clone();
-                if sh.cfg.selected_profile().is_none() {
+                let edited = sh.edit_server.clone();
+                if !custom_profiles(&sh.cfg).iter().any(|p| p.name == edited) {
                     return; // the pinned default is not removable
                 }
-                sh.cfg.servers.retain(|p| p.name != selected);
-                sh.cfg.selected_server = DEFAULT_SERVER_NAME.to_string();
+                sh.cfg.servers.retain(|p| p.name != edited);
+                if sh.cfg.selected_server == edited {
+                    sh.cfg.selected_server = DEFAULT_SERVER_NAME.to_string();
+                }
+                sh.edit_server = DEFAULT_SERVER_NAME.to_string();
                 save_config(&mut sh);
-                seed_server_fields(&ui, &sh.cfg);
+                seed_edit_fields(&ui, &sh.cfg, &sh.edit_server);
                 refresh_captions(&ui, &sh.cfg);
                 refresh_ready(&ui, &sh.cfg, sh.pending_create);
+                restart_probe(&ui, &mut sh);
+            }
+        });
+    }
+    {
+        // Test connection (docs/64 D15): the header's probe, on demand, for
+        // the server the Edit page shows.
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_test_server(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let sh = shell.borrow();
+                let url = edit_relay_url(&sh.cfg, &sh.edit_server);
+                if url.is_empty() {
+                    ui.set_test_state(3);
+                    ui.set_test_result("Add the relay address first.".into());
+                    return;
+                }
+                ui.set_test_state(1);
+                ui.set_test_result("".into());
+                let origin = sh.cfg.resolve_origin();
+                let tx = sh.msg_tx.clone();
+                sh.rt.spawn(async move {
+                    let result = gawk_engine::probe::probe(&url, &origin, false).await;
+                    let _ = tx.send(ShellMsg::Tested { url, result });
+                });
+            }
+        });
+    }
+    {
+        // The unreachable banner's Try again.
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_probe_now(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                restart_probe(&ui, &mut shell.borrow_mut());
             }
         });
     }
@@ -1744,7 +2052,9 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         ui.on_room_create(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_show_room_sheet(false);
+                ui.set_room_left("".into());
                 let mut sh = shell.borrow_mut();
+                sh.left_room = None;
                 let live = sh.session.is_some();
                 sh.pending_create = store_room_create(&mut sh.cfg, live);
                 save_config(&mut sh);
@@ -1799,11 +2109,17 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     }
     {
         // Leave room: detach and leave, and the next broadcast joins no room.
+        // What was left is kept for Rejoin (docs/64 D6).
         let shell = shell.clone();
         let ui_weak = ui_weak.clone();
         ui.on_room_detach(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 let mut sh = shell.borrow_mut();
+                let code = match &sh.room {
+                    Some(s) => s.code.clone(),
+                    None => ui.get_room_code().to_string(),
+                };
+                sh.left_room = left_room(&code, &sh.room_key_used, sh.room_grant.as_ref());
                 sh.room_leaving = true;
                 sh.cfg.room.clear();
                 sh.cfg.room_attach_secret.clear();
@@ -1814,6 +2130,21 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                     session.room_detach();
                 }
                 ui.set_room_status("Leaving the room…".into());
+            }
+        });
+    }
+    {
+        // Rejoin: the room just left, with the grant it was joined with.
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_room_rejoin(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let left = shell.borrow_mut().left_room.take();
+                ui.set_room_left("".into());
+                if let Some(left) = left {
+                    log::info!("rejoining the room just left");
+                    choose_room(&ui, &shell, rejoin_input(&left));
+                }
             }
         });
     }
@@ -1923,25 +2254,40 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     {
         let shell = shell.clone();
         let ui_weak = ui_weak.clone();
+        // End on the crash's Paused page (docs/64 D11): there is no session
+        // to stop — back to plain Ready, and no question at the next launch.
         ui.on_resume_dismiss(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_resume_offer(false);
+                ui.set_crash_resume(false);
+                ui.set_paused(false);
+                ui.set_code("".into());
+                ui.set_join_link("".into());
                 let mut sh = shell.borrow_mut();
                 sh.cfg.was_live = false;
                 save_config(&mut sh);
+                refresh_ready(&ui, &sh.cfg, sh.pending_create);
             }
         });
     }
     {
+        // The Windows picker's Share this / Switch: remembered, and while
+        // live, switched to at once (docs/64 D12).
         let shell = shell.clone();
         let ui_weak = ui_weak.clone();
         ui.on_source_picked(move || {
-            if let Some(ui) = ui_weak.upgrade()
-                && let Some(key) = current_source_key(&ui)
-            {
-                let mut sh = shell.borrow_mut();
-                sh.cfg.last_source = key;
-                save_config(&mut sh);
+            if let Some(ui) = ui_weak.upgrade() {
+                let live = {
+                    let mut sh = shell.borrow_mut();
+                    if let Some(key) = current_source_key(&ui) {
+                        sh.cfg.last_source = key;
+                        save_config(&mut sh);
+                    }
+                    sh.state == UiState::Live
+                };
+                if live {
+                    log::info!("source changed while live: restarting on the same code");
+                    restart_media(&ui, &shell);
+                }
             }
         });
     }
@@ -2026,6 +2372,7 @@ fn state_label(s: UiState) -> &'static str {
         UiState::Idle => "Not broadcasting",
         UiState::Starting => "Starting…",
         UiState::Live => "Live",
+        UiState::Paused => "Paused",
     }
 }
 
@@ -2034,7 +2381,8 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     if sh.state != UiState::Idle {
         return;
     }
-    read_settings(ui, &mut sh.cfg);
+    let edit = sh.edit_server.clone();
+    sh.edit_server = read_settings(ui, &mut sh.cfg, &edit);
     save_config(&mut sh);
     refresh_captions(ui, &sh.cfg);
 
@@ -2102,7 +2450,23 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     ui.set_state_label("Starting…".into());
     ui.set_copied_note("".into());
     ui.set_summary_visible(false);
-    ui.set_resume_offer(false);
+    ui.set_crash_resume(false);
+    ui.set_paused(false);
+    ui.set_room_left("".into());
+    sh.left_room = None;
+    sh.foreign_telemetry = false;
+    ui.set_server_note("".into());
+    sh.paused_since = None;
+    sh.paused_total = std::time::Duration::ZERO;
+    sh.restarting = false;
+    sh.restart_again = false;
+    sh.reclaim_quiet = false;
+    sh.resuming_from_pause = false;
+    sh.pending_error = None;
+    show_sharing(ui, &prepared.source, prepared.source_is_window);
+    ui.set_upload_host(host_of(&sh.cfg.resolve_relay_url()).into());
+    ui.set_live_quality("".into());
+    ui.set_live_quality_detail("".into());
     if !resume {
         // A mint's code arrives with the announce; until then the last
         // broadcast's code must not show (or be copied) as this one's.
@@ -2291,34 +2655,7 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
                 return;
             }
             sh.session = Some(session);
-            {
-                let info = media.info().clone();
-                // Cache the accepted encoder for next launch (D9).
-                if sh.cfg.last_good_encoder != info.encoder {
-                    sh.cfg.last_good_encoder = info.encoder.clone();
-                    save_config(&mut sh);
-                }
-                // And, on Linux, the audio cascade's winner (docs/58 D7).
-                if let Some(src) = media.audio_source_to_cache()
-                    && sh.cfg.last_good_audio_source != src
-                {
-                    sh.cfg.last_good_audio_source = src;
-                    save_config(&mut sh);
-                }
-                let (_, _, fps, _) = sh.cfg.resolve_rung();
-                ui.set_encode_line(
-                    format!(
-                        "{} — {} · {} · {}×{}@{}",
-                        info.family, info.encoder, info.capture_path, info.width, info.height, fps
-                    )
-                    .into(),
-                );
-                // The cascade accepts hardware encoders only (docs/38 G3).
-                ui.set_encode_badge(format!("{}p{fps} · H.264 hardware", info.height).into());
-                ui.set_show_thumbnail(info.show_thumbnail);
-                sh.media_info = Some(info);
-                sh.media = Some(media);
-            }
+            adopt_media(ui, &mut sh, media);
             sh.state = UiState::Live;
             sh.live_since = Some(std::time::Instant::now());
             // docs/60 D12: set while live; a launch that still finds it set
@@ -2351,6 +2688,69 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
             ui.set_error_text(card.into());
             ui.set_can_mint(can_mint(&f));
             notify("Broadcast failed to start", first_line(&text), true);
+        }
+        ShellMsg::Restarted(media) => {
+            let mut sh = shell.borrow_mut();
+            // An End (or a failure) while the media was building: the
+            // session is gone, and so is the reason for this pipeline.
+            if sh.state != UiState::Live || sh.session.is_none() || !sh.restarting {
+                log::warn!("restarted media came up after the broadcast moved on; discarding it");
+                media.shutdown();
+                return;
+            }
+            adopt_media(ui, &mut sh, media);
+            sh.restarting = false;
+            // Re-prime the relay's caches on whichever leg is up now; the
+            // Resumed handler does the same for a leg that comes up later.
+            if let Some(m) = sh.media() {
+                m.force_idr();
+            }
+            log::info!("restarted on the same code");
+            let again = std::mem::take(&mut sh.restart_again);
+            drop(sh);
+            if again {
+                restart_media(ui, shell);
+            }
+        }
+        ShellMsg::RestartFailed(f) => {
+            let mut sh = shell.borrow_mut();
+            sh.restarting = false;
+            sh.restart_again = false;
+            let app_url = sh.cfg.resolve_app_url();
+            let text = message(&f, &app_url);
+            log::error!("restart failed: {}", first_line(&text));
+            // Nothing to send: the broadcast ends, and Ready says why.
+            sh.pending_error = Some(text);
+            if let Some(session) = sh.session.clone() {
+                sh.rt.spawn(async move { session.stop().await });
+            }
+        }
+        ShellMsg::Probed { url, result } => {
+            let mut sh = shell.borrow_mut();
+            sh.probe.in_flight = false;
+            // A probe of a server that is no longer selected says nothing:
+            // the selected one is probed next, at once.
+            if url != sh.cfg.resolve_relay_url() {
+                sh.probe.next_at = None;
+                return;
+            }
+            sh.probe.next_at = Some(std::time::Instant::now() + PROBE_INTERVAL);
+            if sh.probe.result.as_ref() != Some(&result) {
+                log::info!("probe of the relay: {result:?}");
+            }
+            sh.probe.url = url;
+            sh.probe.result = Some(result);
+            render_probe(ui, &sh);
+        }
+        ShellMsg::Tested { url, result } => {
+            let sh = shell.borrow();
+            if url != edit_relay_url(&sh.cfg, &sh.edit_server) {
+                return;
+            }
+            log::info!("test connection: {result:?}");
+            let (state, text) = test_result_text(&result);
+            ui.set_test_state(state);
+            ui.set_test_result(text.into());
         }
         ShellMsg::Engine(ev) => handle_engine_event(ui, shell, ev),
         ShellMsg::UpdateChecked { outcome, manual } => {
@@ -2456,30 +2856,50 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             // configured one. The user's "off" still wins over both, and the
             // hello/endpoint arrival order doesn't matter (the reporter
             // adopts a session before its URL resolves).
-            let sh = shell.borrow();
+            let mut sh = shell.borrow_mut();
             let effective = sh.cfg.effective_telemetry_url(Some(&url));
             log::info!("relay advertised telemetry ingest {url}; reporting to {effective:?}");
+            // docs/40 D16, docs/64 D3: on a non-default server, diagnostics
+            // going to its operator's ingest is said on the strip.
+            sh.foreign_telemetry =
+                sh.cfg.selected_profile().is_some() && effective.as_deref() == Some(url.as_str());
+            ui.set_server_note(
+                if sh.foreign_telemetry {
+                    FOREIGN_DIAGNOSTICS_NOTE
+                } else {
+                    ""
+                }
+                .into(),
+            );
             sh.reporter.set_url(effective);
         }
         EngineEvent::Resuming { attempt } => {
             log::info!("resuming (attempt {attempt})");
             let sh = shell.borrow();
             sh.reporter.event("resuming", "");
+            // A reclaim the app asked for (a resume from pause, a quick
+            // restart) is not narrated (docs/64 OD4): only a second attempt
+            // — something is actually wrong — shows the reconnect.
+            let quiet = sh.reclaim_quiet && attempt == 1;
             drop(sh);
-            ui.set_resuming(true);
-            ui.set_status_line(
-                if attempt > 1 {
-                    format!("Reconnecting to the relay… (attempt {attempt})")
-                } else {
-                    "Reconnecting to the relay…".to_string()
-                }
-                .into(),
-            );
+            if !quiet {
+                ui.set_resuming(true);
+                ui.set_status_line(
+                    if attempt > 1 {
+                        format!("Reconnecting to the relay… (attempt {attempt})")
+                    } else {
+                        "Reconnecting to the relay…".to_string()
+                    }
+                    .into(),
+                );
+            }
         }
         EngineEvent::Resumed => {
             log::info!("resumed");
-            let sh = shell.borrow();
+            let mut sh = shell.borrow_mut();
             sh.reporter.event("resumed", "");
+            sh.reclaim_quiet = false;
+            sh.resuming_from_pause = false;
             if let Some(m) = sh.media() {
                 // Re-prime the relay's invalidated keyframe cache NOW
                 // instead of waiting out the GOP (docs/38 D5).
@@ -2490,6 +2910,11 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             ui.set_status_line("".into());
         }
         EngineEvent::Ended { error } => end_broadcast(ui, shell, error),
+        EngineEvent::Paused => {
+            log::info!("the publish leg is closed; the session holds the code");
+            // No publisher, no count: the pill would state a stale fact.
+            ui.set_watching_known(false);
+        }
 
         // --- R42 rooms ---
         EngineEvent::RoomState(s) => {
@@ -2513,7 +2938,8 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
                 save_config(&mut sh);
                 refresh_ready(ui, &sh.cfg, sh.pending_create);
             }
-            let roster = roster_view(&s, &sh.broadcast_id, &app_url, s.creator);
+            let paused = sh.state == UiState::Paused;
+            let roster = roster_view(&s, &sh.broadcast_id, &app_url, s.creator, paused);
             ui.set_room_active(true);
             ui.set_room_attached(attached);
             ui.set_room_code(s.code.clone().into());
@@ -2554,8 +2980,11 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             ui.set_room_attached(false);
             if left {
                 sh.room = None;
+                let code = sh.left_room.as_ref().map(|l| l.code.clone());
                 drop(sh);
                 reset_room_ui(ui);
+                // docs/64 D6: the Room row offers the room back.
+                ui.set_room_left(code.unwrap_or_default().into());
             } else if by_creator {
                 // docs/60 D10: a card, and out of the room — a broadcaster is
                 // not left in a room its stream is no longer part of.
@@ -2714,6 +3143,9 @@ fn choose_room(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, input: RoomInput) {
     let mut sh = shell.borrow_mut();
     let (attach, creator) = store_room_choice(&mut sh.cfg, &input);
     sh.pending_create = false;
+    // A room chosen replaces the one just left (docs/64 D6).
+    sh.left_room = None;
+    ui.set_room_left("".into());
     save_config(&mut sh);
     refresh_ready(ui, &sh.cfg, false);
     ui.set_show_room_sheet(false);
@@ -2794,29 +3226,55 @@ fn reset_room_ui(ui: &MainWindow) {
     ui.set_room_watchers("".into());
     ui.set_room_watcher_initials(ModelRc::default());
     ui.set_room_needs_key(false);
-    ui.set_show_manage(false);
 }
 
 fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<String>) {
     let mut sh = shell.borrow_mut();
-    let was_live = sh.state == UiState::Live;
-    // The stopped summary (docs/60 D11), read before the session goes.
+    let was_live = matches!(sh.state, UiState::Live | UiState::Paused);
+    // A resume from pause the relay refused: the paused code is gone
+    // (docs/64 D9). Said as that, with a new code one click away.
+    let paused_code_gone = error.is_some() && sh.resuming_from_pause;
+    let error = if paused_code_gone {
+        Some(format!(
+            "The server no longer holds {}: a paused broadcast is kept for a few minutes. \
+             Go live for a new code.",
+            sh.broadcast_id
+        ))
+    } else {
+        error.or_else(|| sh.pending_error.take())
+    };
+    // The summary card (docs/64 D10), read before the session goes: time
+    // live, not time paused.
     let summary = sh.live_since.map(|since| {
         let st = merged_stats(&sh);
-        let secs = since.elapsed().as_secs();
-        (
-            format!("You were live for {}", format_duration(secs)),
-            summary_rows(
-                sh.peak_viewers,
-                st.bytes_sent + st.audio_bytes_sent,
-                secs,
-                st.width,
-                st.height,
-                st.fps,
-            ),
+        let secs = live_secs(
+            since.elapsed(),
+            sh.paused_total,
+            sh.paused_since.map(|p| p.elapsed()),
+        );
+        let (_, h, fps) = sh.last_sent.unwrap_or((st.width, st.height, st.fps));
+        summary_rows(
+            sh.peak_viewers,
+            st.bytes_sent + st.audio_bytes_sent,
+            secs,
+            h,
+            fps,
         )
     });
     sh.live_since = None;
+    sh.paused_since = None;
+    sh.paused_total = std::time::Duration::ZERO;
+    sh.restarting = false;
+    sh.restart_again = false;
+    sh.reclaim_quiet = false;
+    sh.resuming_from_pause = false;
+    sh.pending_error = None;
+    sh.last_sent = None;
+    sh.left_room = None;
+    sh.foreign_telemetry = false;
+    sh.quality_timer.stop();
+    // Back on Ready: the header's status looks at the relay again now.
+    sh.probe.next_at = None;
     // Ended inside the app: no resume question at the next launch (D12).
     sh.cfg.was_live = false;
     save_config(&mut sh);
@@ -2847,11 +3305,10 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     ui.set_show_room_sheet(false);
     ui.set_show_details(false);
 
-    // A clean stop shows the summary with Go live again; an error shows the
+    // A clean end shows the summary card, with its undo; an error shows the
     // error card on the plain Ready page.
     match (&summary, &error) {
-        (Some((title, rows)), None) => {
-            ui.set_summary_title(title.clone().into());
+        (Some(rows), None) => {
             ui.set_summary_rows(ModelRc::new(VecModel::from(rows.clone())));
             ui.set_summary_visible(true);
         }
@@ -2860,6 +3317,12 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
 
     ui.set_busy(false);
     ui.set_live(false);
+    ui.set_paused(false);
+    ui.set_paused_elapsed("".into());
+    ui.set_room_left("".into());
+    ui.set_server_note("".into());
+    ui.set_live_quality("".into());
+    ui.set_live_quality_detail("".into());
     ui.set_resuming(false);
     ui.set_state_label("Not broadcasting".into());
     ui.set_status_line("".into());
@@ -2868,7 +3331,6 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     ui.set_live_elapsed("".into());
     ui.set_connection_line("".into());
     ui.set_encode_line("".into());
-    ui.set_encode_badge("".into());
     ui.set_audio_line("".into());
     ui.set_audio_hint(false);
     ui.set_show_thumbnail(false);
@@ -2877,7 +3339,7 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     ui.set_network_notice("".into());
     if let Some(e) = &error {
         ui.set_error_text(e.clone().into());
-        ui.set_can_mint(false);
+        ui.set_can_mint(paused_code_gone);
         notify(
             "Broadcast ended unexpectedly",
             "Your screen is no longer being shared.",
@@ -2892,6 +3354,355 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     }
 }
 
+// --- R62 (docs/64): pause, the quick restart, the probe -----------------------
+
+/// How long a quality change while live settles before it applies: a
+/// click, a drag or a typed size becomes one restart (docs/64 D13).
+const QUALITY_SETTLE: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// Seconds live: the broadcast's age minus its pauses.
+fn live_secs(
+    elapsed: std::time::Duration,
+    paused_total: std::time::Duration,
+    current_pause: Option<std::time::Duration>,
+) -> u64 {
+    elapsed
+        .saturating_sub(paused_total)
+        .saturating_sub(current_pause.unwrap_or_default())
+        .as_secs()
+}
+
+/// Live's Sharing row (docs/64 D7): what is being sent.
+fn show_sharing(ui: &MainWindow, source: &str, window: bool) {
+    ui.set_sharing_title(source.into());
+    ui.set_sharing_detail(
+        if window {
+            "Window"
+        } else if source.is_empty() {
+            ""
+        } else {
+            "Display"
+        }
+        .into(),
+    );
+    ui.set_sharing_window(window);
+}
+
+/// Takes a built pipeline into the running broadcast: the caches it
+/// settles, and the lines that describe it.
+fn adopt_media(ui: &MainWindow, sh: &mut Shell, media: Box<dyn Media>) {
+    let info = media.info().clone();
+    // Cache the accepted encoder for next launch (D9).
+    if sh.cfg.last_good_encoder != info.encoder {
+        sh.cfg.last_good_encoder = info.encoder.clone();
+        save_config(sh);
+    }
+    // And, on Linux, the audio cascade's winner (docs/58 D7).
+    if let Some(src) = media.audio_source_to_cache()
+        && sh.cfg.last_good_audio_source != src
+    {
+        sh.cfg.last_good_audio_source = src;
+        save_config(sh);
+    }
+    let (_, _, fps, bps) = sh.cfg.resolve_rung();
+    ui.set_encode_line(
+        format!(
+            "{} — {} · {} · {}×{}@{}",
+            info.family, info.encoder, info.capture_path, info.width, info.height, fps
+        )
+        .into(),
+    );
+    let (quality, detail) = live_quality_rows(info.height, fps, bps);
+    ui.set_live_quality(quality.into());
+    ui.set_live_quality_detail(detail.into());
+    ui.set_show_thumbnail(info.show_thumbnail);
+    sh.last_sent = Some((info.width, info.height, fps));
+    sh.media_info = Some(info);
+    sh.media = Some(media);
+}
+
+/// Pause (docs/64 D9): the media goes (keeping the platform's source), the
+/// session closes its publish leg and holds the code, and the room stays.
+fn pause_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
+    let mut guard = shell.borrow_mut();
+    let sh = &mut *guard;
+    if sh.state != UiState::Live || sh.restarting {
+        return;
+    }
+    let Some(session) = sh.session.clone() else {
+        return;
+    };
+    sh.quality_timer.stop();
+    if let Some(m) = sh.media.take()
+        && let Some(kept) = m.shutdown_keep_source()
+    {
+        sh.platform.source_returned(ui, kept);
+    }
+    sh.media_info = None;
+    session.pause();
+    sh.state = UiState::Paused;
+    sh.paused_since = Some(std::time::Instant::now());
+    sh.reporter.event("paused", "");
+    log::info!("paused (broadcast id {:?})", sh.broadcast_id);
+    drop(guard);
+    ui.set_paused(true);
+    ui.set_live(false);
+    ui.set_state_label("Paused".into());
+    ui.set_paused_elapsed(format_elapsed(0).into());
+    ui.set_resuming(false);
+    ui.set_status_line("".into());
+    ui.set_audio_hint(false);
+    ui.set_minimized_hint("".into());
+    ui.set_uplink_warning("".into());
+    ui.set_network_notice("".into());
+    ui.set_error_text("".into());
+}
+
+/// Resume from a pause: what the rows say now (they could all change), on
+/// the same code, in the same room.
+fn resume_from_pause(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
+    let mut guard = shell.borrow_mut();
+    let sh = &mut *guard;
+    if sh.state != UiState::Paused {
+        return;
+    }
+    let Some(session) = sh.session.clone() else {
+        return;
+    };
+    let prepared = match sh.platform.prepare_start(ui, &sh.cfg) {
+        Ok(p) => p,
+        Err(text) => {
+            // Still paused; the page says what to choose.
+            ui.set_error_text(text.into());
+            return;
+        }
+    };
+    if let Some(since) = sh.paused_since.take() {
+        sh.paused_total += since.elapsed();
+    }
+    sh.state = UiState::Live;
+    sh.resuming_from_pause = true;
+    sh.reporter.event("unpaused", "");
+    log::info!("resuming from pause");
+    drop(guard);
+    ui.set_error_text("".into());
+    ui.set_paused(false);
+    ui.set_paused_elapsed("".into());
+    ui.set_live(true);
+    ui.set_state_label("Live".into());
+    republish(ui, shell, session, prepared);
+}
+
+/// The quick restart (docs/64 D8): the running broadcast switches to what
+/// the source and quality settings say now, on the same code. Not
+/// narrated; a request during one runs after it.
+pub fn restart_media(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
+    let mut guard = shell.borrow_mut();
+    let sh = &mut *guard;
+    if sh.state != UiState::Live {
+        return;
+    }
+    if sh.restarting {
+        sh.restart_again = true;
+        return;
+    }
+    let Some(session) = sh.session.clone() else {
+        return;
+    };
+    sh.quality_timer.stop();
+    if let Some(m) = sh.media.take()
+        && let Some(kept) = m.shutdown_keep_source()
+    {
+        sh.platform.source_returned(ui, kept);
+    }
+    sh.media_info = None;
+    let prepared = match sh.platform.prepare_start(ui, &sh.cfg) {
+        Ok(p) => p,
+        Err(text) => {
+            // Nothing to capture any more: the broadcast ends, saying why.
+            log::error!("restart has no source: {text}");
+            sh.pending_error = Some(text);
+            sh.rt.spawn(async move { session.stop().await });
+            return;
+        }
+    };
+    sh.reporter.event("restart", "");
+    log::info!("restarting on the same code");
+    drop(guard);
+    republish(ui, shell, session, prepared);
+}
+
+/// The shared half of a resume from pause and a quick restart: a new
+/// lineage on the sender, a fresh publish leg under the same identity, and
+/// the new media built off the GUI thread.
+fn republish(
+    ui: &MainWindow,
+    shell: &Rc<RefCell<Shell>>,
+    session: Arc<Session>,
+    prepared: Prepared,
+) {
+    let mut guard = shell.borrow_mut();
+    let sh = &mut *guard;
+    sh.capture_mode = prepared.capture_mode;
+    if sh.platform.remember(&mut sh.cfg) {
+        save_config(sh);
+    }
+    if let Some(key) = current_source_key(ui) {
+        sh.cfg.last_source = key;
+        save_config(sh);
+    }
+    show_sharing(ui, &prepared.source, prepared.source_is_window);
+    // The watchdogs start over with the new media.
+    sh.uplink = gawk_engine::uplink::UplinkMonitor::new();
+    sh.uplink_warned = false;
+    sh.loss = LossMonitor::new();
+    sh.loss_notice = Notice::None;
+    ui.set_uplink_warning("".into());
+    ui.set_network_notice("".into());
+    sh.restarting = true;
+    sh.reclaim_quiet = true;
+    // A new pipeline is a new lineage on the same broadcast: its codec and
+    // audio format describe it, not the last one (docs/64 D8).
+    session.sender().new_lineage();
+    session.republish();
+    let tx = sh.msg_tx.clone();
+    let clock: Arc<dyn gawk_engine::clock::Clock> = sh.clock.clone();
+    let rt = sh.rt.handle().clone();
+    let env = MediaEnv {
+        sender: session.sender(),
+        clock,
+        rt,
+    };
+    drop(guard);
+    std::thread::spawn(move || {
+        // catch_unwind, as at Start: a panic in the bring-up must end the
+        // broadcast visibly, not leave it live with no media.
+        let built =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (prepared.build)(env)));
+        let msg = match built {
+            Ok(Ok(media)) => ShellMsg::Restarted(media),
+            Ok(Err(f)) => ShellMsg::RestartFailed(f),
+            Err(_) => ShellMsg::RestartFailed(StartFailure::Capture(
+                "the media pipeline crashed while restarting (a bug — the details are in the debug log)"
+                    .into(),
+            )),
+        };
+        let _ = tx.send(msg);
+    });
+}
+
+/// Whether the header's probe should run now.
+fn probe_due(p: &ProbeState, now: std::time::Instant) -> bool {
+    !p.in_flight && p.next_at.is_none_or(|t| t <= now)
+}
+
+/// Probes the selected relay in the background (docs/64 D1).
+fn run_probe(ui: &MainWindow, sh: &mut Shell) {
+    let url = sh.cfg.resolve_relay_url();
+    if url != sh.probe.url {
+        sh.probe.url = url.clone();
+        sh.probe.result = None;
+        render_probe(ui, sh);
+    }
+    sh.probe.in_flight = true;
+    let origin = sh.cfg.resolve_origin();
+    let tx = sh.msg_tx.clone();
+    sh.rt.spawn(async move {
+        let result = gawk_engine::probe::probe(&url, &origin, false).await;
+        let _ = tx.send(ShellMsg::Probed { url, result });
+    });
+}
+
+/// The selected server changed, or Try again was pressed: back to
+/// "Checking…", and a probe as soon as nothing else is in flight.
+fn restart_probe(ui: &MainWindow, sh: &mut Shell) {
+    sh.probe.url = sh.cfg.resolve_relay_url();
+    sh.probe.result = None;
+    sh.probe.next_at = None;
+    render_probe(ui, sh);
+    if sh.state == UiState::Idle && !sh.probe.in_flight {
+        run_probe(ui, sh);
+    }
+}
+
+/// The header's status line, the unreachable banner's host and the server
+/// list's note, from the probe.
+fn render_probe(ui: &MainWindow, sh: &Shell) {
+    let (state, rtt) = match &sh.probe.result {
+        None => (0, String::new()),
+        Some(ProbeResult::Ok { rtt_ms, .. }) => (1, format!("{rtt_ms} ms")),
+        Some(ProbeResult::Failed) => (2, String::new()),
+    };
+    ui.set_probe_state(state);
+    ui.set_probe_rtt(rtt.into());
+    ui.set_probe_host(host_of(&sh.cfg.resolve_relay_url()).into());
+    seed_server_list(ui, &sh.cfg, &probe_note(&sh.probe));
+}
+
+/// The relay the Edit server page's Test connection dials: the edited
+/// profile's (empty until it has an address), or the pinned default's.
+fn edit_relay_url(cfg: &Config, edit: &str) -> String {
+    match custom_profiles(cfg).into_iter().find(|p| p.name == edit) {
+        Some(p) if p.url.trim().is_empty() => String::new(),
+        Some(p) => config::resolve_relay_url(&p.url),
+        None => config::resolve_relay_url(""),
+    }
+}
+
+/// Test connection's line: (2 reachable | 3 can't reach, the sentence). The
+/// relay's own name is its operator's claim, so it is quoted beside the
+/// facts, never in place of the address (docs/40 F6).
+fn test_result_text(r: &ProbeResult) -> (i32, String) {
+    match r {
+        ProbeResult::Ok {
+            rtt_ms,
+            name: Some(n),
+        } => (2, format!("Reachable · {rtt_ms} ms · calls itself “{n}”")),
+        ProbeResult::Ok { rtt_ms, name: None } => (2, format!("Reachable · {rtt_ms} ms")),
+        ProbeResult::Failed => (
+            3,
+            "Can't reach this server. Check the address, and that UDP to its port isn't blocked."
+                .into(),
+        ),
+    }
+}
+
+/// What Rejoin needs of a room just left: its code and the grant it was
+/// joined with — the creator token, else the attach key.
+fn left_room(code: &str, key_used: &str, grant: Option<&RoomGrant>) -> Option<LeftRoom> {
+    if code.is_empty() {
+        return None;
+    }
+    let creator = match grant {
+        Some(RoomGrant::Creator(hex)) => hex.clone(),
+        _ => String::new(),
+    };
+    let attach = match grant {
+        Some(RoomGrant::Attach(k)) => k.clone(),
+        _ => key_used.to_owned(),
+    };
+    Some(LeftRoom {
+        code: code.to_owned(),
+        attach,
+        creator,
+    })
+}
+
+/// Rejoin's room choice, as if the link were pasted again.
+fn rejoin_input(l: &LeftRoom) -> RoomInput {
+    let grant = if !l.creator.is_empty() {
+        Some(RoomGrant::Creator(l.creator.clone()))
+    } else if !l.attach.is_empty() {
+        Some(RoomGrant::Attach(l.attach.clone()))
+    } else {
+        None
+    };
+    RoomInput {
+        code: l.code.clone(),
+        grant,
+    }
+}
+
 /// The 1 Hz working tick while broadcasting: stats rows, telemetry sample,
 /// thumbnail, minimized hint, audio line, pipeline failure surfacing.
 fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
@@ -2901,6 +3712,18 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         if sh.state == UiState::Idle {
             // R47: an update found while live downloads once idle again.
             maybe_stage(ui, &mut sh);
+            // Idle: the header's status (docs/64 D1), on its own schedule.
+            if probe_due(&sh.probe, std::time::Instant::now()) {
+                run_probe(ui, &mut sh);
+            }
+            return;
+        }
+        if sh.state == UiState::Paused {
+            // Paused: nothing is sent, so there is nothing to measure — the
+            // badge's clock is all that moves.
+            if let Some(since) = sh.paused_since {
+                ui.set_paused_elapsed(format_elapsed(since.elapsed().as_secs()).into());
+            }
             return;
         }
         sh.stats_countdown = sh.stats_countdown.saturating_sub(1);
@@ -2908,6 +3731,15 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             return;
         }
         sh.stats_countdown = 4; // 4 × 250 ms = 1 s
+        if sh.restarting {
+            // A quick restart has no media for a moment: the watchdogs would
+            // read that as a failing uplink. Only the clock moves.
+            if let Some(since) = sh.live_since {
+                let secs = live_secs(since.elapsed(), sh.paused_total, None);
+                ui.set_live_elapsed(format_elapsed(secs).into());
+            }
+            return;
+        }
         sh.health_countdown = sh.health_countdown.saturating_sub(1);
         log_health = sh.health_countdown == 0;
         if log_health {
@@ -3019,7 +3851,8 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         &st, &sh.loss, sh.network,
     ))));
     if let Some(since) = sh.live_since {
-        ui.set_live_elapsed(format_elapsed(since.elapsed().as_secs()).into());
+        let secs = live_secs(since.elapsed(), sh.paused_total, None);
+        ui.set_live_elapsed(format_elapsed(secs).into());
     }
     let bytes = st.bytes_sent + st.audio_bytes_sent;
     let rate_bps = bytes.saturating_sub(sh.last_bytes) * 8;
@@ -3335,6 +4168,49 @@ fn open_in_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{MonitorRow, WindowRow};
+
+    /// A MainWindow on Slint's testing backend (no display), per thread.
+    fn window() -> MainWindow {
+        i_slint_backend_testing::init_no_event_loop();
+        MainWindow::new().unwrap()
+    }
+
+    fn window_row(title: &str) -> WindowRow {
+        WindowRow {
+            hwnd: 1,
+            pid: 1,
+            title: title.into(),
+            icon: slint::Image::default(),
+            has_icon: false,
+        }
+    }
+
+    // docs/64 D14 (BUGS.md): the picker tab being LOOKED AT decided what a
+    // start captured. Choose a window, open the picker, look at Whole
+    // display, go Back: the window must still be the source.
+    #[test]
+    fn looking_at_the_other_picker_tab_keeps_the_chosen_source() {
+        let ui = window();
+        ui.set_windows(ModelRc::new(VecModel::from(vec![
+            window_row("Discord"),
+            window_row("Counter-Strike 2"),
+        ])));
+        ui.set_monitors(ModelRc::new(VecModel::from(vec![MonitorRow {
+            hmonitor: 1,
+            label: "Display 1".into(),
+        }])));
+        ui.set_picker_tab(0);
+        ui.set_selected_window(1);
+        ui.set_selected_monitor(-1);
+
+        ui.invoke_view_picker_tab(1);
+
+        assert_eq!(
+            current_source_key(&ui).as_deref(),
+            Some("window:Counter-Strike 2")
+        );
+    }
 
     #[test]
     fn bitrate_parser_matches_the_linux_gui() {
@@ -3443,7 +4319,7 @@ mod tests {
         let labels = server_labels(&cfg);
         assert_eq!(labels.len(), 3, "default + 2 customs, no credential row");
         assert_eq!(labels[0], "Official server");
-        let urls = server_urls(&cfg);
+        let urls = server_urls(&cfg, "");
         assert_eq!(urls.len(), labels.len(), "one detail line per server");
         assert_eq!(urls[0], gawk_engine::defaults::RELAY_URL);
         assert_eq!(labels[1], "Juho's homelab");
@@ -3569,16 +4445,143 @@ mod tests {
         assert!(quality_line(&cfg).starts_with("up to 3440×1440 · "));
     }
 
+    // docs/64 D3: the strip names a non-default server and its host, and
+    // never renders on the pinned default.
     #[test]
-    fn server_pill_is_the_site_or_the_custom_server() {
+    fn the_strip_names_a_non_default_server_and_nothing_else() {
         let mut cfg = cfg_with_two_customs();
-        assert_eq!(server_pill(&cfg), "gawk.ioio.fi");
+        assert_eq!(server_strip(&cfg), None, "the default shows no strip");
         cfg.selected_server = "Juho's homelab".into();
-        assert_eq!(server_pill(&cfg), "Juho's homelab");
-        // A nameless profile shows its host.
+        let (name, host) = server_strip(&cfg).unwrap();
+        assert_eq!(name, "Juho's homelab");
+        assert!(!host.is_empty() && !host.contains("://"), "{host}");
+        // A nameless profile is named by its host.
         cfg.selected_server = "  ".into();
-        assert_eq!(server_pill(&cfg), "other.example:4433");
+        assert_eq!(
+            server_strip(&cfg),
+            Some(("other.example:4433".into(), "other.example:4433".into()))
+        );
         assert_eq!(host_of("https://gawk.ioio.fi/#/x"), "gawk.ioio.fi");
+    }
+
+    // docs/64 D15: the selected server's row carries the probe's finding;
+    // the others carry their address alone.
+    #[test]
+    fn the_selected_servers_row_carries_the_probe() {
+        let mut cfg = cfg_with_two_customs();
+        cfg.selected_server = "Juho's homelab".into();
+        let urls = server_urls(&cfg, "41 ms");
+        assert!(!urls[0].contains("41 ms"));
+        assert!(urls[1].ends_with(" · 41 ms"), "{}", urls[1]);
+        assert!(!urls[2].contains("41 ms"));
+        let mut probe = ProbeState::default();
+        assert_eq!(probe_note(&probe), "");
+        probe.result = Some(ProbeResult::Failed);
+        assert_eq!(probe_note(&probe), "Can't reach");
+        probe.result = Some(ProbeResult::Ok {
+            rtt_ms: 24,
+            name: None,
+        });
+        assert_eq!(probe_note(&probe), "24 ms");
+    }
+
+    // docs/64 D1: the probe runs at once when nothing is known, again
+    // after its interval, and never twice at a time.
+    #[test]
+    fn the_probe_runs_when_due_and_one_at_a_time() {
+        let now = std::time::Instant::now();
+        let mut p = ProbeState::default();
+        assert!(probe_due(&p, now), "nothing known: at once");
+        p.in_flight = true;
+        assert!(!probe_due(&p, now), "one at a time");
+        p.in_flight = false;
+        p.next_at = Some(now + PROBE_INTERVAL);
+        assert!(!probe_due(&p, now));
+        assert!(probe_due(&p, now + PROBE_INTERVAL));
+    }
+
+    // docs/64 D15: Test connection dials the EDITED server — the default's
+    // pinned address, a custom one's own, nothing for one without an
+    // address — and quotes the relay's name beside the facts.
+    #[test]
+    fn test_connection_dials_the_edited_server_and_says_what_it_found() {
+        let mut cfg = cfg_with_two_customs();
+        cfg.selected_server = "Juho's homelab".into();
+        assert_eq!(
+            edit_relay_url(&cfg, DEFAULT_SERVER_NAME),
+            config::resolve_relay_url("")
+        );
+        assert_eq!(
+            edit_relay_url(&cfg, "  "),
+            config::resolve_relay_url("https://other.example:4433")
+        );
+        let blank = cfg.add_custom_server();
+        assert_eq!(edit_relay_url(&cfg, &blank), "");
+
+        assert_eq!(
+            test_result_text(&ProbeResult::Ok {
+                rtt_ms: 41,
+                name: Some("Homelab relay".into())
+            }),
+            (2, "Reachable · 41 ms · calls itself “Homelab relay”".into())
+        );
+        assert_eq!(
+            test_result_text(&ProbeResult::Ok {
+                rtt_ms: 41,
+                name: None
+            }),
+            (2, "Reachable · 41 ms".into())
+        );
+        assert_eq!(test_result_text(&ProbeResult::Failed).0, 3);
+    }
+
+    // docs/64 D15: Edit writes to the server it shows — which need not be
+    // the selected one — and a rename follows the selection only when it
+    // renames the selected server.
+    #[test]
+    fn edit_never_switches_servers() {
+        let ui = window();
+        let mut cfg = cfg_with_two_customs();
+        cfg.selected_server = DEFAULT_SERVER_NAME.into();
+        seed_settings(&ui, &cfg);
+        seed_edit_fields(&ui, &cfg, "Juho's homelab");
+        assert!(ui.get_server_is_custom());
+        ui.set_set_server_name("Homelab".into());
+        ui.set_set_secret("s3cret".into());
+        let edited = read_settings(&ui, &mut cfg, "Juho's homelab");
+        assert_eq!(edited, "Homelab");
+        assert_eq!(
+            cfg.selected_server, DEFAULT_SERVER_NAME,
+            "still the default"
+        );
+        let p = cfg.servers.iter().find(|p| p.name == "Homelab").unwrap();
+        assert_eq!(p.publish_secret, "s3cret");
+
+        // The default's page shows the default's own secret.
+        cfg.set_default_secret("official");
+        cfg.selected_server = "Homelab".into();
+        seed_edit_fields(&ui, &cfg, DEFAULT_SERVER_NAME);
+        assert!(!ui.get_server_is_custom());
+        assert_eq!(ui.get_set_secret(), "official");
+    }
+
+    // A launch with a custom server selected: the shell edits the default
+    // until an Edit is clicked, so an unrelated settings change (a quality
+    // click) must not carry the custom server's secret into the default's.
+    #[test]
+    fn a_settings_change_at_launch_leaves_the_default_secret_alone() {
+        let ui = window();
+        let mut cfg = cfg_with_two_customs();
+        cfg.selected_server = "Juho's homelab".into();
+        cfg.servers
+            .iter_mut()
+            .find(|p| p.name == "Juho's homelab")
+            .unwrap()
+            .publish_secret = "homelab-secret".into();
+        seed_settings(&ui, &cfg);
+        read_settings(&ui, &mut cfg, DEFAULT_SERVER_NAME);
+        assert_eq!(cfg.default_secret(), "default-secret", "the default's own");
+        assert_eq!(cfg.resolve_publish_secret(), "homelab-secret");
     }
 
     #[test]
@@ -3684,7 +4687,7 @@ mod tests {
     #[test]
     fn the_roster_lists_ours_then_live_then_away_and_names_the_watchers() {
         let s = room_with_people();
-        let v = roster_view(&s, "K7XQ2M", "https://gawk.ioio.fi", false);
+        let v = roster_view(&s, "K7XQ2M", "https://gawk.ioio.fi", false, false);
         let names: Vec<&str> = v.rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["tuhis", "mika", "sanna"]);
         assert!(v.rows[0].you && v.rows[0].watch_link.is_empty());
@@ -3703,9 +4706,49 @@ mod tests {
     #[test]
     fn the_creator_may_remove_every_stream_but_its_own() {
         let s = room_with_people();
-        let v = roster_view(&s, "K7XQ2M", "https://gawk.ioio.fi", true);
+        let v = roster_view(&s, "K7XQ2M", "https://gawk.ioio.fi", true, false);
         let removable: Vec<bool> = v.rows.iter().map(|r| r.removable).collect();
         assert_eq!(removable, [false, true, true]);
+    }
+
+    // docs/64 D9: a pause keeps the room, and our own away row says what
+    // it is — not "their stream is paused".
+    #[test]
+    fn our_row_says_paused_while_we_are() {
+        let mut s = room_with_people();
+        let ours = s
+            .attachments
+            .iter_mut()
+            .find(|a| a.broadcast_id == "K7XQ2M")
+            .unwrap();
+        ours.live = false;
+        let v = roster_view(&s, "K7XQ2M", "x", false, true);
+        let row = v.rows.iter().find(|r| r.you).unwrap();
+        assert_eq!(row.detail, "Paused");
+        let v = roster_view(&s, "K7XQ2M", "x", false, false);
+        let row = v.rows.iter().find(|r| r.you).unwrap();
+        assert_eq!(row.detail, "Away", "a network loss is not a pause");
+    }
+
+    // docs/64 D6: Rejoin joins the room just left with the grant it was
+    // joined with — the creator token first, else the attach key.
+    #[test]
+    fn rejoin_uses_the_grant_the_room_was_joined_with() {
+        assert!(
+            left_room("", "k", None).is_none(),
+            "no code, nothing to rejoin"
+        );
+        let creator = left_room("P9HDZ3", "", Some(&RoomGrant::Creator("ab".repeat(16)))).unwrap();
+        assert!(matches!(
+            rejoin_input(&creator).grant,
+            Some(RoomGrant::Creator(ref h)) if h == &"ab".repeat(16)
+        ));
+        let keyed = left_room("TuhisRoom", "hunter2", None).unwrap();
+        let input = rejoin_input(&keyed);
+        assert_eq!(input.code, "TuhisRoom");
+        assert!(matches!(input.grant, Some(RoomGrant::Attach(ref k)) if k == "hunter2"));
+        let open = left_room("P9HDZ3", "", None).unwrap();
+        assert!(rejoin_input(&open).grant.is_none());
     }
 
     #[test]
@@ -3713,11 +4756,11 @@ mod tests {
         let mut s = room_with_people();
         s.people.retain(|p| p.streaming || p.nickname == "jussi");
         assert_eq!(
-            roster_view(&s, "K7XQ2M", "x", false).watchers,
+            roster_view(&s, "K7XQ2M", "x", false, false).watchers,
             "jussi is watching"
         );
         s.people.retain(|p| p.streaming);
-        let v = roster_view(&s, "K7XQ2M", "x", false);
+        let v = roster_view(&s, "K7XQ2M", "x", false, false);
         assert_eq!((v.watchers.as_str(), v.watching), ("", 0));
     }
 
@@ -3757,6 +4800,34 @@ mod tests {
         assert!(body.contains("still live on its own code"));
     }
 
+    // docs/64 D9–D10: the clock and the summary count time live, not time
+    // paused.
+    #[test]
+    fn time_live_leaves_the_pauses_out() {
+        use std::time::Duration;
+        let s = |n| Duration::from_secs(n);
+        assert_eq!(live_secs(s(600), s(0), None), 600);
+        assert_eq!(live_secs(s(600), s(120), None), 480);
+        assert_eq!(live_secs(s(600), s(120), Some(s(60))), 420);
+        assert_eq!(live_secs(s(10), s(120), None), 0, "never negative");
+    }
+
+    #[test]
+    fn quality_rows_name_the_size_rate_and_cap() {
+        let cfg = Config::default();
+        assert_eq!(
+            quality_rows(&cfg),
+            ("1080p · 60 fps".into(), "up to 12 Mbps".into())
+        );
+        assert_eq!(
+            live_quality_rows(1080, 60, 12_000_000),
+            (
+                "1080p · 60 fps".into(),
+                "H.264 hardware · up to 12 Mbps".into()
+            )
+        );
+    }
+
     #[test]
     fn clocks_and_the_stopped_summary() {
         assert_eq!(format_elapsed(0), "0:00");
@@ -3768,7 +4839,7 @@ mod tests {
         assert_eq!(format_duration(42 * 60 + 5), "42 minutes");
         assert_eq!(format_duration(72 * 60), "1 h 12 min");
         // 84 MB over 60 s is 11.2 Mbps.
-        let rows = summary_rows(7, 84_000_000, 60, 1920, 1080, 60);
+        let rows = summary_rows(7, 84_000_000, 60, 1080, 60);
         let pairs: Vec<(&str, &str)> = rows
             .iter()
             .map(|r| (r.label.as_str(), r.value.as_str()))
@@ -3776,12 +4847,13 @@ mod tests {
         assert_eq!(
             pairs,
             [
-                ("Most people watching", "7"),
-                ("Average upload", "11.2 Mbps"),
-                ("Sent", "1920×1080 · 60 fps"),
+                ("live", "1 minute"),
+                ("most watching", "7"),
+                ("average upload", "11.2 Mbps"),
+                ("sent", "1080p60"),
             ]
         );
-        assert_eq!(summary_rows(0, 5, 0, 1, 1, 1)[1].value, "n/a");
+        assert_eq!(summary_rows(0, 5, 0, 1, 1)[2].value, "n/a");
         assert_eq!(fmt_mbps(12_000_000), "12");
     }
 

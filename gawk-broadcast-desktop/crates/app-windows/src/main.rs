@@ -50,22 +50,30 @@ impl Platform for Windows {
 
     #[cfg(windows)]
     fn prepare_start(&mut self, ui: &MainWindow, cfg: &Config) -> Result<Prepared, String> {
+        // The chosen source (docs/64 D14): `picker-tab` is committed only by
+        // the picker's Share this / Switch, never by the tab being looked at.
         let tab = ui.get_picker_tab();
-        let target = if tab == 0 {
+        let (target, source) = if tab == 0 {
             let idx = ui.get_selected_window();
             match self.picked_windows.get(idx.max(0) as usize) {
-                Some(w) if idx >= 0 => gawk_capture::wgc::CaptureTarget::Window {
-                    hwnd: w.hwnd,
-                    pid: w.pid,
-                },
+                Some(w) if idx >= 0 => (
+                    gawk_capture::wgc::CaptureTarget::Window {
+                        hwnd: w.hwnd,
+                        pid: w.pid,
+                    },
+                    w.title.clone(),
+                ),
                 _ => return Err("Pick a window (or a screen) to share first.".into()),
             }
         } else {
             let idx = ui.get_selected_monitor();
             match self.picked_monitors.get(idx.max(0) as usize) {
-                Some(m) if idx >= 0 => gawk_capture::wgc::CaptureTarget::Monitor {
-                    hmonitor: m.hmonitor,
-                },
+                Some(m) if idx >= 0 => (
+                    gawk_capture::wgc::CaptureTarget::Monitor {
+                        hmonitor: m.hmonitor,
+                    },
+                    m.label(),
+                ),
                 _ => return Err("Pick a screen (or a window) to share first.".into()),
             }
         };
@@ -96,6 +104,8 @@ impl Platform for Windows {
         };
         Ok(Prepared {
             capture_mode,
+            source_is_window: tab == 0,
+            source,
             build: Box::new(move |env| {
                 pipeline::Pipeline::build(params, env.sender, env.clock, env.rt)
                     .map(|p| Box::new(p) as Box<dyn shell::Media>)

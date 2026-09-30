@@ -23,3 +23,9 @@ slint = "1"
 [build-dependencies]
 slint-build = "1"
 
+[dev-dependencies]
+# Slint's headless testing backend, so the shell's window logic runs against
+# a real MainWindow with no display. Pinned to the slint version, as its
+# internal crates require. Test-only: never in the shipped graph.
+i-slint-backend-testing = "=1.17.1"
+
