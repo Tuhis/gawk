@@ -307,11 +307,8 @@ pub struct Shell {
     /// The attach key the running room session joined with; remembered with
     /// the room in "Your rooms".
     room_key_used: String,
-    /// The newer release the notice shows. Dismissing clears it for this
-    /// run only; the next launch shows it again.
-    update: Option<Update>,
-    /// A check is in flight, so the Settings button does not start another.
-    update_checking: bool,
+    /// The update notice and the checks behind it, for this run.
+    update: UpdateState,
 }
 
 /// Sends the current nickname to the running session unless it is the one
@@ -478,8 +475,7 @@ pub fn run(
         room_joined: false,
         room: None,
         room_key_used: String::new(),
-        update: None,
-        update_checking: false,
+        update: UpdateState::default(),
     }));
 
     let ui = MainWindow::new().expect("create window");
@@ -1188,18 +1184,21 @@ fn start_update_check(ui: &MainWindow, sh: &mut Shell) {
     let env_off = update::env_opted_out();
     // Turned off means no notice at all, not even a remembered one.
     if !sh.cfg.disable_update_check && !env_off {
-        sh.update = update::cached(&sh.cfg.update_version, &sh.cfg.update_url, version::RELEASE);
-        show_update(ui, sh.update.as_ref());
+        sh.update.shown =
+            update::cached(&sh.cfg.update_version, &sh.cfg.update_url, version::RELEASE);
+        show_update(ui, sh.update.shown.as_ref());
     }
     if let Some(why) = update_check_skip(&sh.cfg, env_off, now_unix()) {
         log::info!("update check skipped: {why}");
         return;
     }
-    spawn_update_check(sh, false);
+    sh.update.checking = spawn_update_check(sh, false);
+    ui.set_update_checking(sh.update.checking);
 }
 
 /// One check on its own thread, reported back through the message channel.
-fn spawn_update_check(sh: &mut Shell, manual: bool) {
+/// False when the thread could not be started.
+fn spawn_update_check(sh: &Shell, manual: bool) -> bool {
     let tx = sh.msg_tx.clone();
     let spawned = std::thread::Builder::new()
         .name("update-check".into())
@@ -1208,9 +1207,63 @@ fn spawn_update_check(sh: &mut Shell, manual: bool) {
             let outcome = update::check(&update::manifest_url(dist), version::RELEASE, dist);
             let _ = tx.send(ShellMsg::UpdateChecked { outcome, manual });
         });
-    match spawned {
-        Ok(_) => sh.update_checking = true,
-        Err(e) => log::warn!("update check not started: {e}"),
+    if let Err(e) = &spawned {
+        log::warn!("update check not started: {e}");
+    }
+    spawned.is_ok()
+}
+
+/// The update notice for this run, kept apart from the shell so its rules
+/// can be tested without a window.
+#[derive(Debug, Default)]
+struct UpdateState {
+    /// What the notice shows.
+    shown: Option<Update>,
+    /// The version dismissed this run: an automatic check that finds it
+    /// again leaves the notice hidden until the app restarts.
+    dismissed: Option<String>,
+    /// A check is in flight.
+    checking: bool,
+    /// Check now was pressed while the launch check was in flight: that
+    /// check's answer is reported as the button's.
+    manual_waiting: bool,
+}
+
+impl UpdateState {
+    fn dismiss(&mut self) {
+        if let Some(u) = self.shown.take() {
+            self.dismissed = Some(u.version);
+        }
+    }
+
+    /// Check now was pressed. True means start a check; false means one is
+    /// already in flight, whose answer will be reported as this request's.
+    fn request_manual(&mut self) -> bool {
+        if self.checking {
+            self.manual_waiting = true;
+            return false;
+        }
+        self.checking = true;
+        true
+    }
+
+    /// A check came back with `found` (`None` = no answer, see
+    /// [`apply_update_outcome`]). Returns whether the Settings row should
+    /// report it: the button asked for it, directly or while it was in
+    /// flight. An asked-for answer shows even a dismissed release — that is
+    /// what was asked; an automatic one respects this run's dismissal.
+    fn finish(&mut self, found: Option<Option<Update>>, manual: bool) -> bool {
+        self.checking = false;
+        let manual = manual || std::mem::take(&mut self.manual_waiting);
+        if let Some(found) = found {
+            self.shown = if manual {
+                self.dismissed = None;
+                found
+            } else {
+                found.filter(|u| self.dismissed.as_deref() != Some(u.version.as_str()))
+            };
+        }
+        manual
     }
 }
 
@@ -1691,7 +1744,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         let shell = shell.clone();
         let ui_weak = ui_weak.clone();
         ui.on_dismiss_update(move || {
-            shell.borrow_mut().update = None;
+            shell.borrow_mut().update.dismiss();
             if let Some(ui) = ui_weak.upgrade() {
                 show_update(&ui, None);
             }
@@ -1704,13 +1757,13 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         let ui_weak = ui_weak.clone();
         ui.on_check_for_updates(move || {
             let mut sh = shell.borrow_mut();
-            if sh.update_checking {
-                return;
+            // A check already in flight (the launch one) answers this click.
+            if sh.update.request_manual() && !spawn_update_check(&sh, true) {
+                sh.update.checking = false;
             }
-            spawn_update_check(&mut sh, true);
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_update_checking(sh.update_checking);
-                ui.set_update_status(if sh.update_checking {
+                ui.set_update_checking(sh.update.checking);
+                ui.set_update_status(if sh.update.checking {
                     "Checking…".into()
                 } else {
                     "Couldn't start the check.".into()
@@ -2082,11 +2135,6 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
         ShellMsg::Engine(ev) => handle_engine_event(ui, shell, ev),
         ShellMsg::UpdateChecked { outcome, manual } => {
             let mut sh = shell.borrow_mut();
-            sh.update_checking = false;
-            ui.set_update_checking(false);
-            if manual {
-                ui.set_update_status(update_status_text(&outcome).into());
-            }
             match &outcome {
                 Outcome::Answered(Some(u)) => log::info!(
                     "update available: current {}, latest {}, {}",
@@ -2097,11 +2145,15 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
                 Outcome::Answered(None) => log::info!("update check: nothing newer"),
                 Outcome::Unreachable(e) => log::info!("update check got no answer: {e}"),
             }
-            if let Some(found) = apply_update_outcome(&mut sh.cfg, &outcome, now_unix()) {
+            let found = apply_update_outcome(&mut sh.cfg, &outcome, now_unix());
+            if found.is_some() {
                 save_config(&mut sh);
-                sh.update = found;
-                show_update(ui, sh.update.as_ref());
             }
+            if sh.update.finish(found, manual) {
+                ui.set_update_status(update_status_text(&outcome).into());
+            }
+            ui.set_update_checking(false);
+            show_update(ui, sh.update.shown.as_ref());
         }
     }
 }
@@ -3585,6 +3637,75 @@ mod tests {
         assert_eq!(got, None);
         assert_eq!(cfg.last_update_check, "2026-09-01T00:00:00Z");
         assert_eq!(cfg.update_version, "2.1.0");
+    }
+
+    fn release(v: &str) -> Update {
+        Update {
+            version: v.into(),
+            release_url: format!(
+                "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v{v}"
+            ),
+        }
+    }
+
+    // PR #415 review: a notice dismissed while the launch fetch is in
+    // flight must not come back when that fetch finds the same release.
+    #[test]
+    fn a_dismissed_notice_stays_hidden_when_the_launch_check_finds_it_again() {
+        let mut st = UpdateState {
+            shown: Some(release("2.1.0")), // from the cache
+            checking: true,                // the launch fetch
+            ..Default::default()
+        };
+        st.dismiss();
+        assert_eq!(st.shown, None);
+        st.finish(Some(Some(release("2.1.0"))), false);
+        assert_eq!(st.shown, None, "dismissed until restart");
+        // A newer release than the dismissed one still shows.
+        st.finish(Some(Some(release("2.2.0"))), false);
+        assert_eq!(st.shown, Some(release("2.2.0")));
+    }
+
+    // Asking explicitly overrides a dismissal: the answer is what was asked.
+    #[test]
+    fn check_now_shows_a_dismissed_release_again() {
+        let mut st = UpdateState {
+            shown: Some(release("2.1.0")),
+            ..Default::default()
+        };
+        st.dismiss();
+        assert!(st.request_manual());
+        assert!(st.finish(Some(Some(release("2.1.0"))), true));
+        assert_eq!(st.shown, Some(release("2.1.0")));
+    }
+
+    // PR #415 review: Check now during the launch fetch must not be a
+    // silent no-op — the in-flight answer is reported as the button's.
+    #[test]
+    fn check_now_during_the_launch_check_reports_that_checks_answer() {
+        let mut st = UpdateState {
+            checking: true, // the launch fetch
+            ..Default::default()
+        };
+        assert!(!st.request_manual(), "no second request");
+        assert!(st.checking);
+        let report = st.finish(Some(None), false);
+        assert!(report, "the button asked, so the row reports");
+        assert!(!st.checking);
+        // The next automatic answer is not the button's.
+        st.checking = true;
+        assert!(!st.finish(Some(None), false));
+    }
+
+    #[test]
+    fn no_answer_keeps_the_notice() {
+        let mut st = UpdateState {
+            shown: Some(release("2.1.0")),
+            checking: true,
+            ..Default::default()
+        };
+        st.finish(None, false);
+        assert_eq!(st.shown, Some(release("2.1.0")));
     }
 
     #[test]

@@ -210,13 +210,17 @@ when there was one Rust app and one Go app:
     build has caught up with shows nothing.
   - **Dismiss lasts until restart.** Nothing about a dismissal is stored
     (the `dismissedUpdateVersion` key from the first PR is gone), so the
-    next launch shows the notice again.
+    next launch shows the notice again. Within the run it holds: a launch
+    check that lands after the dismissal and finds the same release keeps
+    the notice hidden (only a newer release, or Check now, shows it).
   - **A "Check now" button.** Settings has an Updates row showing the
     running version, with a **Check now** button that asks GitHub
     immediately, whatever the opt-out and the 15-minute gate say. Its
     result ("Version 2.1.0 is available.", "You have the latest version",
     "Couldn't reach GitHub") replaces the row's subtitle, and a newer
-    release also raises the notice. The Advanced checkbox now governs the
+    release also raises the notice. Pressed while the launch check is still
+    in flight, it waits for that check and reports its answer rather than
+    starting a second request. The Advanced checkbox now governs the
     launch check only.
 - **`GAWK_NO_UPDATE_CHECK`** is honoured by all three apps; any non-empty
   value other than `0` turns the check off. There is no CLI, so no
