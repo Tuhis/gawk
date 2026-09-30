@@ -11,8 +11,9 @@
 FROM golang:1.26-trixie AS build
 WORKDIR /src
 # Manifests before sources: the `go mod download` layer then depends on the
-# go.mod/go.sum files alone, and a layer cache (CI's, in the in-cluster
-# registry) reuses it across every change that does not touch dependencies.
+# go.mod/go.sum files alone, and a persistent build cache (a developer's own
+# `docker compose up --build`) reuses it across every edit that does not touch
+# dependencies, instead of re-downloading every module after each change.
 # gawk-admin `replace`s gawk-server with ../gawk-server, so that module's
 # manifests are part of its graph.
 COPY gawk-server/go.mod gawk-server/go.sum ./gawk-server/
