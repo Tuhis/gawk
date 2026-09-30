@@ -326,13 +326,17 @@ jobs:
         working-directory: gawk-server
     steps:
       - uses: actions/checkout@v7
+      # Hosted runners only (a fork's own run). The self-hosted image bakes Go
+      # on PATH, and setup-go never sees that copy, so it downloaded the same
+      # toolchain again in every job: 8-25s each, 14 jobs a run. The baked Go
+      # satisfies every module's `go` directive; if one ever asks for newer,
+      # GOTOOLCHAIN=auto fetches it once per node into the shared module
+      # cache. The Go caches themselves live on the shared CephFS volume
+      # (go-shared-cache, next step).
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-server/go.mod
-          # Off on the self-hosted runners, whose Go caches live on the
-          # shared CephFS volume instead (go-shared-cache, next step); on a
-          # hosted runner (a fork's own run) setup-go's cache is the only one.
-          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-server/go.sum
       - uses: ./.github/actions/go-shared-cache
       # quic-go asks for ~7 MiB UDP buffers and a stock kernel caps them
@@ -352,6 +356,48 @@ jobs:
       - run: go test -race ./...
         env:
           CGO_ENABLED: "1"
+
+  # The coverage half of `server`. Coverage is a second, race-free run
+  # (why, below), and as steps of one job the two ran back to back: warm,
+  # -race 179s then coverage 98s. As two jobs they run side by side, and
+  # with the shared Go cache warm the second job's compile costs seconds.
+  # It gates exactly what `server` gates: the coverage floor below.
+  server-coverage:
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: gawk-server
+    steps:
+      - uses: actions/checkout@v7
+      # Hosted runners only (a fork's own run). The self-hosted image bakes Go
+      # on PATH, and setup-go never sees that copy, so it downloaded the same
+      # toolchain again in every job: 8-25s each, 14 jobs a run. The baked Go
+      # satisfies every module's `go` directive; if one ever asks for newer,
+      # GOTOOLCHAIN=auto fetches it once per node into the shared module
+      # cache. The Go caches themselves live on the shared CephFS volume
+      # (go-shared-cache, next step).
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+      - uses: ./.github/actions/go-shared-cache
+      # quic-go asks for ~7 MiB UDP buffers and a stock kernel caps them
+      # at 2 MiB — low enough that loopback datagrams drop under -race load
+      # (run 29663246454 lost a delta and hung a carrier test for the full
+      # package timeout). Applies to every job that pushes QUIC over loopback.
+      # The ioio-k8s runner pods can't write net.core sysctls (/proc/sys is
+      # read-only in the container) — the limits are preset on the cluster
+      # nodes instead, so only write when actually below the floor.
+      - name: Ensure UDP buffer limits for quic-go
+        run: |
+          need=7340032
+          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
+            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
+          fi
       # COVERAGE IS A SECOND, RACE-FREE RUN. Measured on this package set, not
       # assumed: combining -race with coverage instrumentation took `wire` from
       # 134s to 574s in CI (run 33657115804) and then past the 600s per-package
@@ -424,9 +470,9 @@ jobs:
         id: source
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-broadcast/go.mod
-          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-broadcast/go.sum
       - uses: ./.github/actions/go-shared-cache
       # Gio's build dependencies (docs/19 Decision 14) — the honest price of
@@ -964,9 +1010,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-telemetry/go.mod
-          cache: ${{ !vars.RUNNER_LABEL }}
           # R31 (UD18/§8 Q1) gave this module its first third-party dependency
           # and therefore its first go.sum: the DuckDB driver, imported only
           # behind the `duckdb` build tag. The untagged build below still links
@@ -1045,9 +1091,9 @@ jobs:
       # Hence a Go toolchain in an otherwise Node job. `ioio-k8s` runners carry
       # the ubuntu-latest toolchain subset, which does not include Go.
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-telemetry/go.mod
-          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-telemetry/go.sum
       - uses: ./.github/actions/go-shared-cache
       - name: the built page fetches nothing off-origin
@@ -1100,9 +1146,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-admin/go.mod
-          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-admin/go.sum
       - uses: ./.github/actions/go-shared-cache
       - name: gofmt
@@ -1125,13 +1171,6 @@ jobs:
       # THIS job rather than a leaner one because the number has to come from a
       # run that has the database and the envtest binaries; the verbose re-run
       # below covers two packages only and would understate the module badly.
-      - run: go test -covermode=set -coverprofile=coverage.out ./...
-      # The guard on the guard. `go test` reports a skipped test as a pass, so
-      # a DSN that never reached the suite — a renamed service, a changed port,
-      # an `env:` block that moved under the wrong key — would look exactly like
-      # success. Re-run the database-backed packages verbosely and fail on the
-      # skip message itself. The kube package rides along for the same reason:
-      # its envtest tests skip without KUBEBUILDER_ASSETS.
       - name: the Postgres-backed and envtest-backed tests actually RAN
         run: |
           set -euo pipefail
@@ -1145,6 +1184,53 @@ jobs:
             echo "::error::the envtest tests SKIPPED — KUBEBUILDER_ASSETS did not reach them, so the Lease/CRD tier proved nothing"
             exit 1
           fi
+
+  # The coverage half of `admin`, split out like `server-coverage`: its
+  # race-free coverage run no longer waits for the -race run. It needs
+  # the same Postgres service and envtest binaries, or the store and
+  # kube packages would skip and the floor would measure less.
+  admin-coverage:
+    needs: changes
+    if: needs.changes.outputs.admin == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: gawk
+          POSTGRES_PASSWORD: gawk
+          POSTGRES_DB: gawkadmin
+        ports:
+          - 5432:5432
+        # Without a health check the first test connects before initdb has
+        # finished and the whole suite fails on a connection refused that has
+        # nothing to do with the code.
+        options: >-
+          --health-cmd "pg_isready -U gawk -d gawkadmin"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: gawk-admin
+    env:
+      # storetest.FreshDSN creates a throwaway database per test off this one,
+      # so the DSN names the maintenance database, not a per-test one.
+      GAWK_ADMIN_TEST_DSN: postgres://gawk:gawk@127.0.0.1:5432/gawkadmin?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: gawk-admin/go.mod
+          cache-dependency-path: gawk-admin/go.sum
+      - uses: ./.github/actions/go-shared-cache
+      - name: install envtest binaries
+        run: |
+          set -euo pipefail
+          echo "KUBEBUILDER_ASSETS=$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1 use -p path)" >> "$GITHUB_ENV"
+      - run: go test -covermode=set -coverprofile=coverage.out ./...
       # Nothing after this point compiles, and the Go build cache is worth
       # gigabytes by now — while the coverage action's setup-python unpacks
       # ~450MB of interpreter into the runner's tool cache on the same volume.
@@ -1169,6 +1255,7 @@ jobs:
   # The moderation portal SPA (gawk-admin/ui). Its own job, mirroring
   # `telemetry-ui`: a TypeScript build is not a Go build, and coupling them
   # would make a lint failure look like a service failure.
+
   admin-ui:
     needs: changes
     if: needs.changes.outputs.admin_ui == 'true'
@@ -1218,9 +1305,9 @@ jobs:
       # phone. Asserted against what actually ships, which is why it runs HERE:
       # the `admin` job does not build the bundle, so these tests skip there.
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-admin/go.mod
-          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-admin/go.sum
       - uses: ./.github/actions/go-shared-cache
       - name: the built portal fetches nothing off-origin
@@ -1353,9 +1440,9 @@ jobs:
           # Tags are how the previous release is found.
           fetch-depth: 0
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-admin/go.mod
-          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: gawk-admin/go.sum
       - uses: ./.github/actions/go-shared-cache
       - name: the previous release's store tests, against THIS branch's schema
@@ -1406,6 +1493,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-server/go.mod
           # No module cache here, deliberately. `go mod tidy` resolves the graph
@@ -1468,6 +1556,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-server/go.mod
           # Same reasoning as the `tidy` job: this job resolves module graphs
@@ -1530,6 +1619,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-server/go.mod
           cache: false # same reasoning as `tidy` and `licenses`
@@ -2211,9 +2301,9 @@ jobs:
       # installed before it can be run.
       - uses: docker/setup-compose-action@v2
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-server/go.mod
-          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
@@ -2475,9 +2565,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-server/go.mod
-          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
@@ -2625,9 +2715,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL_DISK }}
         with:
           go-version-file: gawk-server/go.mod
-          cache: ${{ !vars.RUNNER_LABEL_DISK }}
           cache-dependency-path: |
             gawk-server/go.sum
             gawk-broadcast/go.sum
@@ -2650,14 +2740,6 @@ jobs:
       - uses: ./.github/actions/setup-buildx
       # No layer cache — importing one measured slower than building. The `docker`
       # job carries the numbers.
-      - name: Build the relay image
-        uses: docker/build-push-action@v7
-        with:
-          context: gawk-server
-          file: gawk-server/deploy/Dockerfile
-          push: false
-          load: true
-          tags: gawk-server:e2e
       - name: Install kind (pinned)
         run: |
           sudo curl -fsSLo /usr/local/bin/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
@@ -2668,9 +2750,53 @@ jobs:
       - uses: azure/setup-kubectl@v5
         with:
           version: ${{ env.KUBECTL_VERSION }}
-      - name: Create the kind cluster (UDP NodePort mapped to 127.0.0.1:4433)
+      # IN PARALLEL: the kind cluster comes up in the background while BuildKit
+      # builds all three images at once (bake builds its targets
+      # concurrently). They used to be strictly one after another: relay image
+      # 182s, kind 136s, gawk-admin image 158s, fake IdP 39s (medians over
+      # five runs). The runner reaps orphaned processes only at job end, so
+      # the background `kind create` outlives this step, and its exit status
+      # is collected by the wait step below.
+      - name: Start the kind cluster (UDP NodePort mapped to 127.0.0.1:4433) in the background
         run: |
-          kind create cluster --config e2e/kind-config.yaml --image "$KIND_NODE_IMAGE" --wait 120s
+          # rc is captured with `|| rc=$?` because this step runs under bash -e,
+          # which the subshell inherits: a plain `echo $?` after a failing kind
+          # would never run, and the wait step would sit out its full 300s and
+          # report a timeout instead of kind's own failure.
+          ( rc=0
+            kind create cluster --config e2e/kind-config.yaml --image "$KIND_NODE_IMAGE" --wait 120s \
+              > e2e/out/kind-create.log 2>&1 || rc=$?
+            echo "$rc" > e2e/out/kind-create.rc ) &
+      - name: Build the relay, gawk-admin and fake-IdP (TEST ONLY, never published) images
+        run: |
+          cat > e2e/out/images.hcl <<'EOF'
+          group "default" { targets = ["relay", "admin", "fakeidp"] }
+          target "relay" {
+            context    = "gawk-server"
+            dockerfile = "deploy/Dockerfile"
+            tags       = ["gawk-server:e2e"]
+          }
+          target "admin" {
+            context    = "."
+            dockerfile = "gawk-admin/deploy/Dockerfile"
+            tags       = ["gawk-admin:e2e"]
+          }
+          target "fakeidp" {
+            context    = "."
+            dockerfile = "dev/Dockerfile.fakeidp"
+            tags       = ["gawk-fakeidp:e2e"]
+          }
+          EOF
+          docker buildx bake -f e2e/out/images.hcl --load --provenance=false
+      - name: Wait for the kind cluster, then load the relay image
+        run: |
+          for i in $(seq 300); do [ -s e2e/out/kind-create.rc ] && break; sleep 1; done
+          cat e2e/out/kind-create.log
+          rc=$(cat e2e/out/kind-create.rc 2>/dev/null || echo "timeout")
+          if [ "$rc" != 0 ]; then
+            echo "::error::kind create cluster did not succeed (exit: $rc)"
+            exit 1
+          fi
           kind load docker-image gawk-server:e2e
       # maxSubscribers/maxTotalSubscribers are raised well above the chart
       # defaults (15/50) because this job stacks tiers on one fleet: the R30
@@ -2828,22 +2954,6 @@ jobs:
       # here. It runs AFTER moderation-assert on purpose — that script's
       # charter is that the break-glass surface works with gawk-admin NOT
       # installed.
-      - name: Build the gawk-admin image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: gawk-admin/deploy/Dockerfile
-          push: false
-          load: true
-          tags: gawk-admin:e2e
-      - name: Build the fake-IdP image (TEST ONLY, never published)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: dev/Dockerfile.fakeidp
-          push: false
-          load: true
-          tags: gawk-fakeidp:e2e
       - name: Install gawk-admin with its Postgres and the fake IdP
         run: |
           # Postgres is pulled on the HOST and loaded, like every other image
@@ -3117,9 +3227,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: tools/icon/go.mod
-          cache: ${{ !vars.RUNNER_LABEL }}
           cache-dependency-path: tools/icon/go.sum
       - uses: ./.github/actions/go-shared-cache
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
@@ -3142,7 +3252,7 @@ jobs:
   # download tolerates finding nothing, and the writer treats an empty record
   # set as "nothing moved".
   coverage-badges:
-    needs: [server, broadcast, app, telemetry, telemetry-ui, admin, admin-ui]
+    needs: [server-coverage, broadcast, app, telemetry, telemetry-ui, admin-coverage, admin-ui]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:

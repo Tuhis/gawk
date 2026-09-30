@@ -34,12 +34,15 @@
 #  * Nothing may `go clean -cache` it. Other jobs are reading it at the same
 #    moment. The jobs that clean their tmpfs cache to make room gate that
 #    step on GO_SHARED_CACHE, which this action exports.
-#  * setup-go's own cache is off on these runners
-#    (`cache: ${{ !vars.RUNNER_LABEL }}`). It would restore a tarball into the
-#    tmpfs paths this action then abandons, at the same ~6 MB/s.
+#  * setup-go does not run on these runners at all
+#    (`if: ${{ !vars.RUNNER_LABEL }}`). The runner image bakes Go on PATH.
+#    setup-go never sees that copy, so it re-downloaded the toolchain in every
+#    job (8-25s each), and its own cache restored a tarball into tmpfs paths
+#    this action then abandons. On a hosted runner it still runs, cache and all.
 #
-# Run it AFTER setup-go: setup-go resolves the cache paths from `go env` when
-# it runs, and this action overrides them through GITHUB_ENV.
+# Run it AFTER setup-go wherever setup-go does run: setup-go resolves the
+# cache paths from `go env` when it runs, and this action overrides them
+# through GITHUB_ENV.
 name: Shared Go cache
 description: Point GOMODCACHE/GOCACHE at the runners' shared CephFS cache when mounted; a no-op elsewhere.
 
@@ -68,5 +71,5 @@ runs:
         } >> "$GITHUB_ENV"
         # The subvolume quota is the volume's size, so df reports the cache's
         # real headroom. Go trims entries unused for 5 days by itself.
-        echo "Shared Go cache: $root/go (GOFLAGS += -count=1)"
+        echo "Shared Go cache: $root/go (GOFLAGS += -count=1), $(go version)"
         df -h "$root" | sed 's/^/  /'
