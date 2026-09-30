@@ -1,6 +1,7 @@
 # R45 — Update notification for the desktop broadcasters (docs/47)
 
-**Status**: designed 2026-09-15; **not started**. Chunks **AU1–AU5** (`AU` =
+**Status**: designed 2026-09-15; **AU3–AU5 implemented 2026-09-30** (§7);
+AU1/AU2 not built (the Go app is frozen, see the R56 note below). Chunks **AU1–AU5** (`AU` =
 Auto-Update; two-letter prefix per the R21+ convention). Client code only:
 the version source shipped with R46 (docs/46 D1, D5). Nothing here touches
 the wire format, the relay, the engine pipeline or the browser app.
@@ -146,7 +147,10 @@ and, if enabled, telemetry).
 
 - **This milestone executes nothing and trusts nothing.** The manifest
   yields one comparison and one URL, prefix-checked against the project's
-  own releases path before it is handed to the browser. A manifest an
+  own releases path — and, past the prefix, held to `[A-Za-z0-9._/-]`,
+  because on Windows the URL is opened through `cmd /c start`, where `&`,
+  `|`, `^` and `%` are shell syntax (found in the PR #414 review; see
+  `docs/gotchas.md`) — before it is handed to the browser. A manifest an
   attacker could write (repository write access) can at worst show a
   version number and open a page under `https://github.com/Tuhis/gawk/releases/`.
 - **The request reveals nothing but its existence** (D2). No version,
@@ -170,3 +174,48 @@ and, if enabled, telemetry).
 - **Staleness**: `raw.githubusercontent.com` may serve a copy a few
   minutes old. Against a daily check that is invisible; nothing in the
   client tries to defeat it (D2).
+
+## 7. Implementation notes (2026-09-30)
+
+What landed, and where it differs from the text above, which was written
+when there was one Rust app and one Go app:
+
+- **One implementation, three apps.** `crates/engine/src/update.rs` holds
+  the fetch, validation, comparison, the daily gate and the RFC 3339 stamp;
+  `crates/ui/src/shell.rs` runs it once at launch on its own thread and
+  handles the result. Because the shell and `main.slint` are shared
+  (docs/54 D11), Windows, macOS and Linux all get the check from the same
+  code, and the identity it validates against is `defaults::this()`. D1's
+  compiled-in URL is `update::manifest_url(this())`, pinned per
+  distribution in the tests.
+- **Where it shows.** The notice sits in the Ready page's footer, directly
+  above the version line (R58 moved the version out of a header badge); the
+  opt-out is a checkbox row, "Check for updates at launch", in its own
+  UPDATES section on the Advanced page. The Settings page's Advanced row
+  mentions updates in its subtitle.
+- **What counts as an answer.** Any HTTP response spends the day's check
+  (`lastUpdateCheck` moves), including a 404 and a manifest that fails
+  validation; only no response at all (offline, DNS, TLS, timeout) leaves
+  the stamp for the next launch. That keeps a missing manifest — macOS has
+  none until its attach job publishes one — from being fetched on every
+  launch.
+- **Once a day means once a day.** A notice the user neither followed nor
+  dismissed is not shown again until the next check, a day later. Nothing
+  persists "the latest version seen"; the timestamp stays the only state
+  (D3).
+- **`GAWK_NO_UPDATE_CHECK`** is honoured by all three apps; any non-empty
+  value other than `0` turns the check off. There is no CLI, so no
+  `-no-update-check` flag.
+- **Verified**: engine unit tests cover every AU3 row (the request head is
+  inspected for the fixed User-Agent, no query, no `If-*` headers, no
+  cookie and no version string; every D5 failure is "no update"); the
+  shell's skip rules and outcome handling are unit-tested; a temporary
+  test fetched the live v2.0.0 Windows manifest (an update from 1.0.0) and
+  the missing macOS one (silent). The Linux app under Xvfb, built with a
+  faked current version, showed the notice, **Dismiss** wrote
+  `dismissedUpdateVersion`, the checkbox wrote `disableUpdateCheck`, and
+  `GAWK_NO_UPDATE_CHECK=1` logged the skip and made no request.
+  `Cargo.lock` gained no crate.
+- **Open**: AU4's manual line (the notice on a Windows 10 machine) is the
+  owner's, when the next desktop release makes a real "newer" exist.
+

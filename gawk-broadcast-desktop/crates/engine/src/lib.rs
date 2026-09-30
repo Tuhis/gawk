@@ -25,6 +25,7 @@ pub mod stats;
 pub mod telemetry;
 pub mod timesync;
 pub mod transport;
+pub mod update;
 pub mod uplink;
 
 /// Shipped defaults, all pointing at the production gawk deployment

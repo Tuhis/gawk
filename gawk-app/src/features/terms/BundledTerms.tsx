@@ -151,6 +151,12 @@ export function BundledTerms() {
         thereafter only as aggregate per-session summaries. Like Section 6, this paragraph describes
         present operation rather than a warranty.
       </p>
+      <p>
+        The native broadcaster applications may, at launch and at most once a day, fetch a small
+        static release-manifest file from GitHub to learn whether a newer version exists. That
+        request goes to GitHub, not to the Operator, and carries no identifier; it can be turned off
+        in the application&rsquo;s settings.
+      </p>
 
       <h2>8. Limitation of liability.</h2>
       <p>

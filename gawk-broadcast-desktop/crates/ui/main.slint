@@ -1181,6 +1181,10 @@ export component MainWindow inherits Window {
     // the EXE you are looking at the one I fixed?" — is asked about a
     // screenshot, so it stays on the first page.
     in property <string> app-version: "";
+    // A newer release (R45, docs/47 D7): "v2.1.0", blank = nothing to say,
+    // and its release page (prefix-checked by the engine before it gets here).
+    in property <string> update-version: "";
+    in property <string> update-url: "";
     in property <string> state-label: "Not broadcasting";
     in property <bool> live: false;
     in property <bool> busy: false;            // starting or live
@@ -1314,6 +1318,7 @@ export component MainWindow inherits Window {
     in property <[string]> resolution-labels: ["1440p", "1080p", "720p", "480p", "Custom"];
     in-out property <string> set-custom-width: "";
     in-out property <string> set-custom-height: "";
+    in-out property <bool> set-update-check: true;
     in property <[string]> framerate-labels: ["120 fps", "60 fps", "30 fps", "5 fps"];
     in property <string> caption-broadcast: "";
     in property <string> caption-diag: "";
@@ -1365,6 +1370,7 @@ export component MainWindow inherits Window {
     callback summary-dismiss();
     callback resume-dismiss();
     callback open-link(string);
+    callback dismiss-update();
     callback quit-confirmed();
 
     // macOS (docs/54 D11): Slint already gives the app menu About and Quit
@@ -1842,10 +1848,48 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                HorizontalLayout {
+                // docs/47 D7: an in-window line, not a toast — the portal
+                // and Focus Assist swallow toasts while a broadcaster games.
+                if root.update-version != "": HorizontalLayout {
                     alignment: center;
                     spacing: 10px;
                     padding-top: 6px;
+                    Text {
+                        text: root.update-version + " available — release notes";
+                        color: T.accent;
+                        font-size: 12px;
+                        accessible-role: button;
+                        accessible-action-default => {
+                            root.open-link(root.update-url);
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.open-link(root.update-url);
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Dismiss";
+                        color: T.muted;
+                        font-size: 12px;
+                        accessible-role: button;
+                        accessible-action-default => {
+                            root.dismiss-update();
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.dismiss-update();
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 10px;
+                    padding-top: root.update-version != "" ? 0px : 6px;
                     if root.app-version != "": Text {
                         text: root.app-version;
                         color: T.muted;
@@ -2517,7 +2561,7 @@ export component MainWindow inherits Window {
                         }
                         RowText {
                             title: "Advanced";
-                            sub: "Server details, custom size, diagnostics";
+                            sub: "Server details, custom size, updates, diagnostics";
                         }
                         Icon {
                             commands: Icons.chevron-right;
@@ -2717,6 +2761,48 @@ export component MainWindow inherits Window {
                         enabled: !root.busy;
                         edited => {
                             root.settings-edited();
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Kicker {
+                        text: "UPDATES";
+                    }
+                    List {
+                        Row {
+                            first: true;
+                            clickable: true;
+                            clicked => {
+                                root.set-update-check = !root.set-update-check;
+                                root.settings-edited();
+                            }
+                            accessible-role: checkbox;
+                            accessible-label: "Check for updates at launch";
+                            accessible-checked: root.set-update-check;
+                            accessible-action-default => {
+                                root.set-update-check = !root.set-update-check;
+                                root.settings-edited();
+                            }
+                            Rectangle {
+                                width: 18px;
+                                height: 18px;
+                                border-radius: 5px;
+                                background: root.set-update-check ? T.accent : transparent;
+                                border-width: root.set-update-check ? 0px : 1.5px;
+                                border-color: T.faint;
+                                if root.set-update-check: Icon {
+                                    commands: Icons.check;
+                                    ink: T.text;
+                                    size: 14px;
+                                }
+                            }
+                            RowText {
+                                title: "Check for updates at launch";
+                                sub: "Once a day, a small file from GitHub. It carries nothing about you.";
+                            }
                         }
                     }
                 }

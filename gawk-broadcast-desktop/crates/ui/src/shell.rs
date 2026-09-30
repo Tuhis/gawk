@@ -32,6 +32,7 @@ use gawk_engine::room::RoomSummary;
 use gawk_engine::sender::Sender;
 use gawk_engine::session::{EngineEvent, Session, SessionConfig};
 use gawk_engine::telemetry::{Hello, Reporter};
+use gawk_engine::update::{self, Outcome, Update};
 use gawk_engine::{RoomGrant, RoomInput, parse_room_input};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::any::Any;
@@ -182,6 +183,8 @@ enum ShellMsg {
     },
     StartFailed(StartFailure),
     Engine(EngineEvent),
+    /// The launch-time update check came back (docs/47 D3).
+    UpdateChecked(Outcome),
 }
 
 /// Sequences resume-token persistence against the announce (docs/22 finding
@@ -300,6 +303,8 @@ pub struct Shell {
     /// The attach key the running room session joined with; remembered with
     /// the room in "Your rooms".
     room_key_used: String,
+    /// The newer release this launch's check found, while its notice shows.
+    update: Option<Update>,
 }
 
 /// Sends the current nickname to the running session unless it is the one
@@ -466,6 +471,7 @@ pub fn run(
         room_joined: false,
         room: None,
         room_key_used: String::new(),
+        update: None,
     }));
 
     let ui = MainWindow::new().expect("create window");
@@ -491,6 +497,7 @@ pub fn run(
 
     wire_callbacks(&ui, &shell);
     wire_platform(&ui, &shell);
+    start_update_check(&shell.borrow());
 
     // One timer drains the message channel and, while broadcasting, ticks
     // stats/thumbnail/hints at 1 Hz. Idle cost: an empty channel poll.
@@ -636,6 +643,7 @@ fn seed_settings(ui: &MainWindow, cfg: &Config) {
     ui.set_room_nickname(cfg.nickname.clone().into());
     ui.set_set_app_url(cfg.app_url.clone().into());
     ui.set_set_telemetry(cfg.telemetry_url.clone().into());
+    ui.set_set_update_check(!cfg.disable_update_check);
     ui.set_set_bitrate(if cfg.bitrate_bps == 0 {
         SharedString::new()
     } else {
@@ -703,6 +711,7 @@ fn read_settings(ui: &MainWindow, cfg: &mut Config) {
     cfg.nickname = ui.get_room_nickname().trim().to_string();
     cfg.app_url = ui.get_set_app_url().trim().to_string();
     cfg.telemetry_url = ui.get_set_telemetry().trim().to_string();
+    cfg.disable_update_check = !ui.get_set_update_check();
     cfg.bitrate_bps = parse_bitrate_mbps(ui.get_set_bitrate().as_str());
     (cfg.width, cfg.height) = match ui.get_set_resolution() {
         0 => (2560, 1440),
@@ -1148,6 +1157,67 @@ fn save_config(shell: &mut Shell) {
     }
 }
 
+/// Why this launch skips the update check, or `None` to run it: the
+/// setting, the environment, or a check GitHub answered within the last day
+/// (docs/47 D3, D6).
+fn update_check_skip(cfg: &Config, env_opted_out: bool, now: u64) -> Option<&'static str> {
+    if cfg.disable_update_check {
+        Some("turned off in settings")
+    } else if env_opted_out {
+        Some("turned off by GAWK_NO_UPDATE_CHECK")
+    } else if !update::due(&cfg.last_update_check, now) {
+        Some("checked within the last day")
+    } else {
+        None
+    }
+}
+
+/// Starts the once-at-launch update check on its own thread (docs/47 D3):
+/// one GET, then a message back to the UI. Nothing schedules another, so no
+/// check ever begins mid-broadcast.
+fn start_update_check(sh: &Shell) {
+    if let Some(why) = update_check_skip(&sh.cfg, update::env_opted_out(), now_unix()) {
+        log::info!("update check skipped: {why}");
+        return;
+    }
+    let tx = sh.msg_tx.clone();
+    let spawned = std::thread::Builder::new()
+        .name("update-check".into())
+        .spawn(move || {
+            let dist = gawk_engine::defaults::this();
+            let outcome = update::check(&update::manifest_url(dist), version::RELEASE, dist);
+            let _ = tx.send(ShellMsg::UpdateChecked(outcome));
+        });
+    if let Err(e) = spawned {
+        log::warn!("update check not started: {e}");
+    }
+}
+
+/// Applies a check's outcome: an answer spends the day's check and may
+/// raise the notice; no answer leaves the stamp for the next launch.
+fn apply_update_outcome(cfg: &mut Config, outcome: Outcome, now: u64) -> Option<Update> {
+    match outcome {
+        Outcome::Answered(found) => {
+            cfg.last_update_check = update::format_rfc3339(now);
+            found.filter(|u| update::visible(u, &cfg.dismissed_update_version))
+        }
+        Outcome::Unreachable(_) => None,
+    }
+}
+
+fn show_update(ui: &MainWindow, update: Option<&Update>) {
+    ui.set_update_version(
+        update
+            .map_or(String::new(), |u| format!("v{}", u.version))
+            .into(),
+    );
+    ui.set_update_url(
+        update
+            .map_or(String::new(), |u| u.release_url.clone())
+            .into(),
+    );
+}
+
 /// An RGBA buffer as a Slint image (thumbnails, window icons).
 pub fn rgba_image(w: u32, h: u32, rgba: &[u8]) -> slint::Image {
     let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
@@ -1579,6 +1649,21 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     {
         ui.on_open_link(move |link| open_in_browser(link.as_str()));
     }
+    {
+        // Dismissal is per version (docs/47 D7): a newer release shows again.
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_dismiss_update(move || {
+            let mut sh = shell.borrow_mut();
+            if let Some(u) = sh.update.take() {
+                sh.cfg.dismissed_update_version = u.version;
+                save_config(&mut sh);
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                show_update(&ui, None);
+            }
+        });
+    }
     ui.on_network_notice_help(|| open_in_browser(NETWORK_HELP_URL));
     {
         let shell = shell.clone();
@@ -1941,6 +2026,25 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
             notify("Broadcast failed to start", first_line(&text), true);
         }
         ShellMsg::Engine(ev) => handle_engine_event(ui, shell, ev),
+        ShellMsg::UpdateChecked(outcome) => {
+            let mut sh = shell.borrow_mut();
+            match &outcome {
+                Outcome::Answered(Some(u)) => log::info!(
+                    "update available: current {}, latest {}, {}",
+                    version::RELEASE,
+                    u.version,
+                    u.release_url
+                ),
+                Outcome::Answered(None) => log::info!("update check: nothing newer"),
+                Outcome::Unreachable(e) => log::info!("update check got no answer: {e}"),
+            }
+            let answered = matches!(outcome, Outcome::Answered(_));
+            sh.update = apply_update_outcome(&mut sh.cfg, outcome, now_unix());
+            if answered {
+                save_config(&mut sh);
+            }
+            show_update(ui, sh.update.as_ref());
+        }
     }
 }
 
@@ -3363,5 +3467,69 @@ mod tests {
             live_body("K7XQ2M", "https://gawk.ioio.fi/#/view/K7XQ2M"),
             "Code K7XQ2M · https://gawk.ioio.fi/#/view/K7XQ2M"
         );
+    }
+
+    // docs/47 D3/D6: the setting and the env each turn the check off, and a
+    // check GitHub answered today is not repeated.
+    #[test]
+    fn the_update_check_runs_only_when_on_and_due() {
+        let now = 1_790_000_000;
+        let cfg = Config::default();
+        assert_eq!(update_check_skip(&cfg, false, now), None);
+        assert!(update_check_skip(&cfg, true, now).is_some(), "env opt-out");
+        let off = Config {
+            disable_update_check: true,
+            ..Default::default()
+        };
+        assert!(update_check_skip(&off, false, now).is_some(), "setting");
+        let recent = Config {
+            last_update_check: update::format_rfc3339(now - 60),
+            ..Default::default()
+        };
+        assert!(update_check_skip(&recent, false, now).is_some(), "not due");
+    }
+
+    #[test]
+    fn an_answer_spends_the_days_check_and_no_answer_does_not() {
+        let now = 1_790_000_000;
+        let found = Update {
+            version: "2.1.0".into(),
+            release_url: "https://github.com/Tuhis/gawk/releases/tag/gawk-broadcast-desktop/v2.1.0"
+                .into(),
+        };
+
+        let mut cfg = Config::default();
+        let shown = apply_update_outcome(&mut cfg, Outcome::Answered(Some(found.clone())), now);
+        assert_eq!(shown.as_ref(), Some(&found));
+        assert_eq!(cfg.last_update_check, update::format_rfc3339(now));
+
+        let mut cfg = Config::default();
+        assert_eq!(
+            apply_update_outcome(&mut cfg, Outcome::Answered(None), now),
+            None
+        );
+        assert_eq!(cfg.last_update_check, update::format_rfc3339(now));
+
+        let mut cfg = Config {
+            last_update_check: "2026-09-01T00:00:00Z".into(),
+            ..Default::default()
+        };
+        let got = apply_update_outcome(&mut cfg, Outcome::Unreachable("offline".into()), now);
+        assert_eq!(got, None);
+        assert_eq!(
+            cfg.last_update_check, "2026-09-01T00:00:00Z",
+            "stamp unmoved"
+        );
+
+        // A dismissed version stays quiet; the check is still spent.
+        let mut cfg = Config {
+            dismissed_update_version: "2.1.0".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            apply_update_outcome(&mut cfg, Outcome::Answered(Some(found)), now),
+            None
+        );
+        assert_eq!(cfg.last_update_check, update::format_rfc3339(now));
     }
 }
