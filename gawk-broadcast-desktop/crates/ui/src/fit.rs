@@ -162,6 +162,10 @@ pub struct FitState {
     on_main: bool,
     seen: Option<(f32, f32)>,
     own: Option<Instant>,
+    /// The last height asked for and the size the window had then. A window
+    /// manager that ignores the request (a tiled window) isn't asked the
+    /// same again until the size or the target changes.
+    asked: Option<(f32, (f32, f32))>,
     save_at: Option<Instant>,
 }
 
@@ -185,6 +189,7 @@ impl FitState {
             on_main: true,
             seen: None,
             own: None,
+            asked: None,
             save_at: None,
         }
     }
@@ -252,6 +257,10 @@ impl FitState {
         }
         let changed = std::mem::take(&mut self.pending);
         let mv = fit(o.needs, self.your.1, changed, p)?;
+        if self.asked == Some((mv.client_h, o.size)) {
+            return None;
+        }
+        self.asked = Some((mv.client_h, o.size));
         self.own = Some(o.now);
         Some(mv)
     }
@@ -471,6 +480,9 @@ mod tests {
         needs: Needs,
         arranged: bool,
         work: Rect,
+        /// The window manager does as asked; false stands for one that
+        /// ignores the request (a tiled window).
+        apply: bool,
     }
 
     impl Ticker {
@@ -488,6 +500,7 @@ mod tests {
                 needs: needs(593.0, 623.0),
                 arranged: false,
                 work: Rect::new(0.0, 0.0, 2560.0, 1392.0),
+                apply: true,
             }
         }
 
@@ -511,7 +524,7 @@ mod tests {
                 now,
             };
             let mv = self.fit.step(&o);
-            if let Some(m) = mv {
+            if let Some(m) = mv.filter(|_| self.apply) {
                 self.size.1 = m.client_h;
                 if let Some(y) = m.y {
                     self.y = y;
@@ -644,6 +657,32 @@ mod tests {
         assert_eq!(t.tick(), None);
         assert_eq!(t.fit.your(), DEFAULT_SIZE);
         assert!(!t.fit.waiting());
+    }
+
+    // Review of #433: a window manager that ignores the request (a tiled
+    // window, which on Linux nothing reports) must not get the same move
+    // every tick for the rest of the session.
+    #[test]
+    fn a_move_the_window_manager_ignores_is_not_asked_again() {
+        let mut t = Ticker::new((960, 1050));
+        t.work = Rect::new(0.0, 0.0, 1920.0, 1016.0);
+        t.apply = false;
+        assert_eq!(t.tick().unwrap().reason, Reason::Clamp);
+        for _ in 0..8 {
+            assert_eq!(t.tick(), None);
+        }
+        // A different move is asked for once too: the page needs more
+        // after a change of state, and the cap still holds it.
+        t.state = (true, true);
+        t.needs = needs(1200.0, 1300.0);
+        assert_eq!(t.tick(), None, "the same clamp, still ignored");
+        // When the size does change, fit may ask again.
+        t.apply = true;
+        t.size = (960.0, 900.0);
+        t.arranged = true; // say the tiling changed it
+        t.tick();
+        t.arranged = false;
+        assert_eq!(t.tick().unwrap().client_h, 1016.0 - DECO);
     }
 
     // Review of #433: restoring an arranged window jumps its size back to

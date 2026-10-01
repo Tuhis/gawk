@@ -169,7 +169,9 @@ the window at its default size, which is harmless.
   change more than 500 ms after the shell's own, or one that changed the
   width, but never the jump back from maximized, snapped, zoomed or full
   screen), changes of state, and waiting. Back on the main page it waits a
-  tick, so the rebuilt page's heights settle first. The shell calls it
+  tick, so the rebuilt page's heights settle first. A move the window
+  manager ignored (a tiled window, which Linux doesn't report) isn't asked
+  for again until the window's size or the target changes. The shell calls it
   from the 250 ms tick and once on the first turn of the event loop
   (D13). It applies the move with `set_size` and `set_position` and logs
   it. It saves your size through `take_save()` a second after the last
