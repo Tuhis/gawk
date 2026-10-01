@@ -417,13 +417,6 @@ jobs:
       - name: sccache stats
         if: always() && env.RUSTC_WRAPPER != ''
         run: '"$RUSTC_WRAPPER" --show-stats'
-      # TEMPORARY (debug, revert before merge)
-      - if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: sccache-debug-test-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/sccache-debug.log
-          retention-days: 1
 
   build:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
@@ -1027,13 +1020,6 @@ jobs:
       - name: sccache stats
         if: always() && env.RUSTC_WRAPPER != ''
         run: '"$RUSTC_WRAPPER" --show-stats'
-      # TEMPORARY (debug, revert before merge)
-      - if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: sccache-debug-linux-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/sccache-debug.log
-          retention-days: 1
 
   # R61 (docs/63 D8): install the .deb `linux` built into a FRESH container of
   # each release INSTALL.md names as a floor. Only a clean image proves the
