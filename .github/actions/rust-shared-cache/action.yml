@@ -80,6 +80,8 @@ runs:
         # One server for the whole job; the default 10-minute idle exit would
         # drop it between two long steps.
         export SCCACHE_IDLE_TIMEOUT=0
+        # TEMPORARY (debug, revert before merge): key-level logging.
+        export SCCACHE_LOG=sccache=trace SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-debug.log"
         if ! "$bin/sccache" --start-server > "$RUNNER_TEMP/sccache-start.log" 2>&1; then
           cat "$RUNNER_TEMP/sccache-start.log"
           echo "::warning::sccache could not start against $ENDPOINT, so this job builds without the shared Rust cache"
