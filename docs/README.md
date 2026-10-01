@@ -92,6 +92,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`60`](60-desktop-redesign.md) | R58 — Desktop broadcaster redesign: pages instead of cards, the web app's visual language, saved rooms, an in-app roster and creator controls |
 | [`64`](64-desktop-ux-pass-2.md) | R62 — Desktop UX pass 2: a probed server status and a non-default server strip, Pause / End and a quick restart on the same code, one Live layout alone or in a room, no setting in two places |
 | [`65`](65-source-preview.md) | R63 — Source preview: the Live thumbnail for display shares on Windows, and a 1 Hz capture-only preview of the chosen source on Ready on all three platforms |
+| [`66`](66-desktop-scrolling-and-window-fit.md) | R64 — Desktop scrolling and window fit: only the body scrolls, the page's buttons in a pinned action bar, problems pinned under the header, a window that grows to fit within the screen and remembers your size |
 
 ## Audio
 

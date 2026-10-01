@@ -1235,6 +1235,28 @@ Add to it when a new gotcha lands in `docs/`.
   a directory that isn't there. Declare the shared test harness at the top
   of the file instead.
 
+**The desktop window (Slint, every shell)**
+
+- **Slint sizes a window from its `preferred-height` only when it first
+  shows.** After that the winit backend applies only the min and max
+  constraints. A page that grows its preferred height doesn't grow the
+  window, so window fit has to call `Window::set_size` itself. Checked in
+  `i-slint-backend-winit` 1.17.1 (`winitwindowadapter.rs`).
+  ([docs/66](66-desktop-scrolling-and-window-fit.md) D16)
+- **Binding anything that changes horizontal layout to `root.width` is a
+  binding loop** (`root.layoutinfo-h -> … -> root.layoutinfo-h`): the root's
+  width is bound to its own layout info at compile time. `if root.width <
+  500px: Btn {…}` in the action bar failed the build, and passing the test
+  through a component property didn't help. A `changed width =>` handler
+  that sets a plain property does: a handler isn't a binding.
+  ([docs/66](66-desktop-scrolling-and-window-fit.md) §6a)
+- **`ElementHandle` finds nothing without Slint's debug info.** The
+  testing backend's element search (by id or accessible label) needs the
+  generated code to carry it. It prints a hint and returns an empty result,
+  so every lookup quietly fails. `crates/ui/build.rs` turns it on for debug
+  builds, the tests among them, and leaves release builds without it.
+  ([docs/66](66-desktop-scrolling-and-window-fit.md) WF1)
+
 **Single-application audio on Linux (R35)**
 
 - **`application.process.binary` is not in PipeWire's registry global
