@@ -19,7 +19,7 @@ script for what counts as a dependency here and why.
 
 **Scope:** `cargo tree -e normal --target x86_64-pc-windows-msvc` — build- and dev-dependencies (proc macros, test harnesses) are excluded because they are not part of the shipped executable.
 
-## Summary — 268 packages
+## Summary — 269 packages
 
 | License (as declared) | Packages |
 |---|---:|
@@ -37,6 +37,7 @@ script for what counts as a dependency here and why.
 | `BSD-2-Clause` | 2 |
 | `BSD-3-Clause OR Apache-2.0` | 2 |
 | `BSL-1.0` | 2 |
+| `MIT OR Zlib OR Apache-2.0` | 2 |
 | `Unlicense OR MIT` | 2 |
 | `Zlib` | 2 |
 | `Zlib OR Apache-2.0 OR MIT` | 2 |
@@ -48,7 +49,6 @@ script for what counts as a dependency here and why.
 | `CC0-1.0 OR Apache-2.0` | 1 |
 | `CDLA-Permissive-2.0` | 1 |
 | `MIT / Apache-2.0` | 1 |
-| `MIT OR Zlib OR Apache-2.0` | 1 |
 
 ## Packages
 
@@ -104,7 +104,7 @@ script for what counts as a dependency here and why.
 | `femtovg` | 0.25.1 | `MIT OR Apache-2.0` | Copyright 2021 femtovg contributors<br>Copyright 2021 Developers of the femtovg project |
 | `field-offset` | 0.3.6 | `MIT OR Apache-2.0` | Copyright (c) 2016-2021 Diggory Blake, and other contributors |
 | `fixed_decimal` | 0.7.2 | `Unicode-3.0` | Copyright © 2020-2024 Unicode, Inc |
-| `flate2` | 1.1.9 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
+| `flate2` | 1.1.10 | `MIT OR Apache-2.0` | Copyright (c) 2014-2026 Alex Crichton |
 | `float-cmp` | 0.9.0 | `MIT` | Copyright (c) 2014-2020 Optimal Computing (NZ) Ltd |
 | `fnv` | 1.0.7 | `Apache-2.0 / MIT` | Copyright (c) 2017 Contributors |
 | `foldhash` | 0.2.0 | `Zlib` | Copyright (c) 2024 Orson Peters |
@@ -177,6 +177,7 @@ script for what counts as a dependency here and why.
 | `memoffset` | 0.9.1 | `MIT` | Copyright (c) 2017 Gilad Naaman |
 | `minimal-lexical` | 0.2.1 | `MIT/Apache-2.0` | Copyright (c) 2009 The Go Authors. All rights reserved |
 | `minisign-verify` | 0.3.0 | `MIT` | Copyright (c) 2019-2025 Frank Denis<br>Copyright (c) 2006-2009 Graydon Hoare<br>Copyright (c) 2009-2013 Mozilla Foundation |
+| `miniz_oxide` | 0.9.1 | `MIT OR Zlib OR Apache-2.0` | Copyright 2013-2014 RAD Game Tools and Valve Software<br>Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC<br>Copyright (c) 2017 Frommi<br>Copyright (c) 2017-2024 oyvindln<br>Copyright (c) 2020 Frommi |
 | `miniz_oxide` | 0.8.9 | `MIT OR Zlib OR Apache-2.0` | Copyright 2013-2014 RAD Game Tools and Valve Software<br>Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC<br>Copyright (c) 2017 Frommi<br>Copyright (c) 2017-2024 oyvindln<br>Copyright (c) 2020 Frommi |
 | `mio` | 1.2.2 | `MIT` | Copyright (c) 2014 Carl Lerche and other MIO contributors |
 | `moxcms` | 0.8.1 | `BSD-3-Clause OR Apache-2.0` | Copyright 2024 Radzivon Bartoshyk<br>Copyright (c) Radzivon Bartoshyk. All rights reserved |
