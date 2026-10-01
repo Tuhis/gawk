@@ -67,3 +67,22 @@ jobs:
           tags: |
             ghcr.io/tuhis/gawk-desktop-ci:latest
             ghcr.io/tuhis/gawk-desktop-ci:${{ github.sha }}
+      # The desktop jobs pull through the in-cluster registry cache (see
+      # broadcast-desktop.yml, "THE LINUX CONTAINER"). zot re-syncs a moved tag
+      # on the first request for it, blocking that request for as long as the
+      # whole image takes to fetch — so make this job that first request,
+      # instead of the next desktop job. Advisory: the hourly warmer in ioio
+      # would get there anyway, and outside the cluster the host does not
+      # resolve.
+      - name: Warm the in-cluster registry cache
+        if: env.PUSH == 'true'
+        run: |
+          mirror=registry-cache.actions-runners.svc.cluster.local
+          if ! getent hosts "$mirror" >/dev/null; then
+            echo "No in-cluster registry cache here; nothing to warm."
+            exit 0
+          fi
+          out=$(curl -s -o /dev/null -I --max-time 600 -w '%{http_code} %{time_total}s' \
+            -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' \
+            "http://$mirror:5000/v2/tuhis/gawk-desktop-ci/manifests/latest" || true)
+          echo "registry cache: $out"

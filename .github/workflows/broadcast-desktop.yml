@@ -121,6 +121,20 @@
 # the 4Gi RAM-backed volume (see above), and a Linux debug tree measured
 # 2.9 GB before instrumentation. The container's own filesystem is the dind
 # storage volume instead.
+#
+# Since 2026-10-01 the container is ghcr.io/tuhis/gawk-desktop-ci: still
+# ubuntu:24.04, with linux-container-setup's packages and the pinned toolchain
+# already applied (that action's header and Dockerfile; desktop-ci-image.yml
+# publishes it). The action then takes about 1 s instead of 61-110 s, and
+# stays correct on a stale image.
+#
+# WHERE IT IS PULLED FROM is the DESKTOP_CI_IMAGE repository variable when
+# set, ghcr.io otherwise. On the self-hosted runners it names the in-cluster
+# registry cache (ioio actions-runners/registry-cache.yaml), so the image
+# crosses the LAN rather than the uplink on every job. That cache is then a
+# hard dependency — dockerd has no fallback for a registry it is pointed at
+# directly — so if it breaks, DELETE THE VARIABLE: every job goes back to
+# ghcr.io with no commit. Forks and hosted runners never have it set.
 # ---------------------------------------------------------------------------
 #
 # The toolchain lives in the runner image, NOT here — see
@@ -280,7 +294,7 @@ jobs:
   test:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     container:
-      image: ubuntu:24.04
+      image: ${{ vars.DESKTOP_CI_IMAGE || 'ghcr.io/tuhis/gawk-desktop-ci:latest' }}
     defaults:
       run:
         working-directory: gawk-broadcast-desktop
@@ -760,7 +774,7 @@ jobs:
   linux:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     container:
-      image: ubuntu:24.04
+      image: ${{ vars.DESKTOP_CI_IMAGE || 'ghcr.io/tuhis/gawk-desktop-ci:latest' }}
     outputs:
       sha: ${{ steps.source.outputs.sha }}
     defaults:
