@@ -22,6 +22,7 @@
 //! state crosses the boundary.
 
 use crate::messages::{StartFailure, can_mint, first_line, message};
+use crate::preview::PreviewFrame;
 use crate::{
     MainWindow, RecentRow, RoomRow, StatRow, debuglog, diagnostics, refresh_captions, version,
 };
@@ -198,6 +199,14 @@ pub trait Platform: 'static {
     /// source handed back at the pause ([`Platform::source_returned`]) is
     /// released here — Linux's portal grant and its sharing indicator.
     fn broadcast_ended(&mut self, _ui: &MainWindow) {}
+    /// The Ready page's source preview (docs/65 D4, D7), asked every tick:
+    /// `wanted` while the window is idle on the main page and not minimized,
+    /// and false before every `prepare_start` (D5). The platform runs a
+    /// capture-only preview exactly while it is wanted and something is
+    /// chosen — its [`crate::preview::PreviewSlot`] does the bookkeeping. The default: none.
+    fn preview(&mut self, _ui: &MainWindow, _wanted: bool) -> PreviewFrame {
+        PreviewFrame::Hidden
+    }
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
@@ -1773,6 +1782,32 @@ pub fn rgba_image(w: u32, h: u32, rgba: &[u8]) -> slint::Image {
     slint::Image::from_rgba8(buf)
 }
 
+/// The Ready page's preview for this tick (docs/65 D4): wanted while idle
+/// on the main page with the window in view.
+fn update_preview(ui: &MainWindow, sh: &mut Shell) {
+    let wanted = sh.state == UiState::Idle && ui.get_page() == 0 && !ui.window().is_minimized();
+    show_preview(ui, sh.platform.preview(ui, wanted));
+}
+
+fn show_preview(ui: &MainWindow, frame: PreviewFrame) {
+    match frame {
+        PreviewFrame::Hidden => ui.set_has_preview(false),
+        PreviewFrame::Keep => {}
+        PreviewFrame::New((w, h, rgba)) => {
+            ui.set_preview(rgba_image(w, h, &rgba));
+            ui.set_has_preview(true);
+        }
+    }
+}
+
+/// Resolves a start, a resume or a restart — with the preview stopped
+/// first, so the broadcast's capture never shares the source with it
+/// (docs/65 D5).
+fn prepare(ui: &MainWindow, sh: &mut Shell) -> Result<Prepared, String> {
+    show_preview(ui, sh.platform.preview(ui, false));
+    sh.platform.prepare_start(ui, &sh.cfg)
+}
+
 fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     let ui_weak = ui.as_weak();
 
@@ -2451,7 +2486,7 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     // missing selection is an instant, local error.
     let prepared = {
         let sh = &mut *sh;
-        match sh.platform.prepare_start(ui, &sh.cfg) {
+        match prepare(ui, sh) {
             Ok(p) => p,
             Err(text) => {
                 ui.set_error_text(text.into());
@@ -3563,7 +3598,7 @@ fn resume_from_pause(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     let Some(session) = sh.session.clone() else {
         return;
     };
-    let prepared = match sh.platform.prepare_start(ui, &sh.cfg) {
+    let prepared = match prepare(ui, sh) {
         Ok(p) => p,
         Err(text) => {
             // Still paused; the page says what to choose.
@@ -3620,7 +3655,7 @@ pub fn restart_media(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         sh.platform.source_returned(ui, kept);
     }
     sh.media_info = None;
-    let prepared = match sh.platform.prepare_start(ui, &sh.cfg) {
+    let prepared = match prepare(ui, sh) {
         Ok(p) => p,
         Err(text) => {
             // Nothing to capture any more: the broadcast ends, saying why.
@@ -3829,6 +3864,7 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     let log_health;
     {
         let mut sh = shell.borrow_mut();
+        update_preview(ui, &mut sh);
         if sh.state == UiState::Idle {
             // R47: an update found while live downloads once idle again.
             maybe_stage(ui, &mut sh);
@@ -4693,6 +4729,8 @@ mod tests {
     #[derive(Default)]
     struct Counting {
         ended: Rc<std::cell::Cell<u32>>,
+        /// The preview and start hooks, in call order.
+        calls: Rc<RefCell<Vec<String>>>,
     }
 
     impl Platform for Counting {
@@ -4704,10 +4742,20 @@ mod tests {
         }
         fn init_window(&mut self, _ui: &MainWindow) {}
         fn prepare_start(&mut self, _ui: &MainWindow, _cfg: &Config) -> Result<Prepared, String> {
+            self.calls.borrow_mut().push("prepare".into());
             Err("nothing to share in a test".into())
         }
         fn broadcast_ended(&mut self, _ui: &MainWindow) {
             self.ended.set(self.ended.get() + 1);
+        }
+        /// A source is always chosen: a picture whenever one is wanted.
+        fn preview(&mut self, _ui: &MainWindow, wanted: bool) -> PreviewFrame {
+            self.calls.borrow_mut().push(format!("preview({wanted})"));
+            if wanted {
+                PreviewFrame::New((2, 1, vec![0; 8]))
+            } else {
+                PreviewFrame::Hidden
+            }
         }
         fn as_any_mut(&mut self) -> &mut dyn Any {
             self
@@ -4716,11 +4764,52 @@ mod tests {
 
     /// A shell with no config file, on a platform that counts its hooks.
     fn test_shell() -> (Rc<RefCell<Shell>>, Rc<std::cell::Cell<u32>>) {
+        let (shell, ended, _) = counting_shell();
+        (shell, ended)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn counting_shell() -> (
+        Rc<RefCell<Shell>>,
+        Rc<std::cell::Cell<u32>>,
+        Rc<RefCell<Vec<String>>>,
+    ) {
         let platform = Counting::default();
         let ended = platform.ended.clone();
+        let calls = platform.calls.clone();
         let _ = HOOKS.set(platform.hooks());
-        let shell = build_shell(Box::new(platform), Config::default(), None, None, None);
-        (Rc::new(RefCell::new(shell)), ended)
+        let mut shell = build_shell(Box::new(platform), Config::default(), None, None, None);
+        // No relay probe from a test tick.
+        shell.probe.in_flight = true;
+        (Rc::new(RefCell::new(shell)), ended, calls)
+    }
+
+    // docs/65 D2, D4: idle on the main page, the card shows the platform's
+    // preview; on any other page none is wanted and the card hides it.
+    #[test]
+    fn ready_shows_the_preview_only_on_the_main_page() {
+        let ui = window();
+        let (shell, _, calls) = counting_shell();
+        tick(&ui, &shell);
+        assert!(ui.get_has_preview());
+        assert_eq!(ui.get_preview().size().width, 2);
+        ui.set_page(2);
+        tick(&ui, &shell);
+        assert!(!ui.get_has_preview());
+        assert_eq!(*calls.borrow(), ["preview(true)", "preview(false)"]);
+    }
+
+    // docs/65 D5: a start stops the preview before the platform resolves
+    // what to capture, so the two never share the source.
+    #[test]
+    fn a_start_stops_the_preview_before_it_prepares() {
+        let ui = window();
+        let (shell, _, calls) = counting_shell();
+        tick(&ui, &shell);
+        calls.borrow_mut().clear();
+        start_broadcast(&ui, &shell, false);
+        assert_eq!(*calls.borrow(), ["preview(false)", "prepare"]);
+        assert!(!ui.get_has_preview());
     }
 
     // Review of #423: a media build carries its generation, and one that

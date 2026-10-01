@@ -13,6 +13,8 @@ mod notify;
 mod pipeline;
 #[cfg(target_os = "macos")]
 mod platform;
+#[cfg(target_os = "macos")]
+mod preview;
 
 #[cfg(target_os = "macos")]
 fn main() {

@@ -53,6 +53,34 @@ fn source(fps: u32, w: u32, h: u32) -> Vec<Element> {
     ]
 }
 
+// docs/65 D3: the preview runner, on the preview plan's gate and tail with
+// a test source in place of the portal, delivers the thumbnail's RGBA.
+#[test]
+fn the_preview_delivers_an_rgba_thumbnail_of_the_planned_width() {
+    if !available() {
+        return;
+    }
+    let mut plan = source(30, 640, 360);
+    plan.push(
+        Element::new("videorate")
+            .prop("drop-only", "true")
+            .prop("max-rate", 1),
+    );
+    plan.extend(gst_policy::thumb_tail());
+    let preview = gst::Preview::start(&plan).expect("preview starts");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (w, h, rgba) = loop {
+        if let Some(t) = preview.take() {
+            break t;
+        }
+        assert!(Instant::now() < deadline, "no thumbnail within 5 s");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!((w, h), (gst_policy::THUMB_WIDTH, 180));
+    assert_eq!(rgba.len(), (w * h * 4) as usize);
+    drop(preview);
+}
+
 #[test]
 fn the_trial_runner_accepts_a_well_behaved_encoder_through_the_shared_validator() {
     if !available() {

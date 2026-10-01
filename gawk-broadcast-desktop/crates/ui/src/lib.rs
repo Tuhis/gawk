@@ -16,6 +16,7 @@ slint::include_modules!();
 pub(crate) mod debuglog;
 pub(crate) mod diagnostics;
 pub mod messages;
+pub mod preview;
 pub mod shell;
 pub mod version;
 

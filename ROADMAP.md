@@ -81,6 +81,7 @@ feature set exists).
 | R60 | [The `rooms-manager` role](#r60--the-rooms-manager-role) | ✅ **implemented 2026-09-29** (RW1–RW3 in one PR): a second bot role on `gawk-admin` beside R49's `rooms-reader`, for a Mumble bot that keeps a room per voice channel — `POST /api/v1/rooms`, `DELETE /api/v1/rooms/{name}` and `/me`, nothing else (`-rooms-manager-role`, chart `oidc.roomsManagerRole`, `off` grants it nowhere). Every portal room now records its creator's `sub` on the `Room` CR, and a caller without `operator` deletes only the static rooms it created (`403 room_not_owned` otherwise), checked and deleted as one UID-bound operation. The fake IdP's bot client carries both roles. **Verified 2026-09-29** on the reference deployment (gawk-admin 1.6.0, a Keycloak client-credentials service account) and against the compose stack's fake IdP ([docs/62](docs/62-rooms-manager-role.md) §7) |
 | R61 | [A `.deb` for the Linux broadcaster](#r61--a-deb-for-the-linux-broadcaster) | 🔧 **implemented 2026-09-30** (DB1–DB3 in one PR), owner's install pass open: `gawk-broadcast_<version>_amd64.deb` beside the tarball, so the launcher entry and icon land in `/usr/share` and the Wayland icon works without `install-desktop.sh`; install-tested in fresh Ubuntu 24.04 and Debian 13 containers. Amends docs/58 OD7 ([docs/63](docs/63-linux-deb-package.md)) |
 | R62 | [Desktop UX pass 2](#r62--desktop-ux-pass-2) | 🔧 **implemented 2026-10-01** (DX1–DX5; designed 2026-09-30 in a Claude Design pass, owner decisions OD1–OD10), the owner's hardware pass (DX6) open — the header's always-green server pill becomes a probed status line (`/echo` RTT, Can't reach server) and a non-default server gets docs/40's persistent strip; Stop becomes **Pause** (the Live view with Resume in Pause's place, the code and the room kept, every row still changeable) and **End** (a summary card with an undo); changing the source or the quality while live is an unannounced quick restart on the same code (in place on macOS); Live keeps one layout alone or in a room, the room adding only its card with Leave room in view; Quality gets its own page (from the Quality row) and stays editable while live, Advanced folds into a per-server Edit page, and no setting lives in two places; the Windows picker-tab selection bug is fixed test-first. Revises docs/60 D3, D11, D12 ([docs/64](docs/64-desktop-ux-pass-2.md)) |
+| R63 | [Source preview](#r63--source-preview) | 🔧 **implemented 2026-10-02** (PV1–PV5; designed 2026-10-01, owner decisions OD1–OD4), the owner's hardware pass (PV6) open — Windows shows the Live thumbnail when sharing a display too, and Ready previews the chosen source at 1 Hz on all three platforms through a capture-only stream (WGC, `SCStream`, `pipewiresrc` on the held grant) that runs only while Ready is in view and stops before every start; on macOS the screen-sharing indicator shows while a pick is held (OD1). Revises docs/38 D12.5 and docs/60 D4 ([docs/65](docs/65-source-preview.md)) |
 
 ---
 
@@ -4899,6 +4900,37 @@ owner decisions OD1–OD10 the same day and evening. The engine side is
 verified against the real relay (a pause keeps the room; a republish keeps
 the code). DX6, the owner's hardware pass on Windows, macOS and Linux, is
 open.
+
+## R63 — Source preview
+
+**Goal**: the broadcaster sees what they are about to share before going
+live, and sees what viewers see while live whatever they share.
+
+**Why**: Windows showed the Live thumbnail only for a shared window, so a
+display share left the centre of the Live page empty. Ready showed the
+chosen source's icon and title, so a wrong pick was found in front of
+viewers.
+
+**Scope** (chunks PV1–PV6 in [docs/65](docs/65-source-preview.md)):
+
+- **PV1** — Windows: the Live thumbnail in both capture modes.
+- **PV2** — shell: `PreviewSlot` and `Platform::preview`, the tick's
+  "wanted" rule, the stop before every `prepare_start`, the Ready card.
+- **PV3** — Windows: a capture-only WGC preview.
+- **PV4** — macOS: an `SCStream` preview at 320×180 and 1 fps; the picker
+  active while it runs.
+- **PV5** — Linux: `gst_policy::preview_plan` and the `gst::Preview` runner
+  on the held portal grant.
+- **PV6** — the owner's hardware pass on Windows, macOS and Linux.
+
+**Non-goals**: a smooth (frame-rate) preview (OD3; docs/65 §7 has the
+cost analysis); excluding gawk's window from capture (OD2); thumbnails in
+the Windows picker list.
+
+**Status**: 🔧 implemented 2026-10-02 (PV1–PV5) — designed 2026-10-01 with
+the owner's decisions OD1–OD4. The shell and Linux parts are tested in the
+Linux container; the Windows and macOS platform code is checked by CI's
+cross clippy and macOS job. PV6, the owner's hardware pass, is open.
 
 ---
 
