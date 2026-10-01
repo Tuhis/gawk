@@ -10,12 +10,15 @@ use gawk_audio::pwctl::{Notice, PwCtl};
 use gawk_audio::pwgraph::{App, Event};
 use gawk_capture::fit::fit_within;
 use gawk_capture::portal::{self, Grant, Picked, SourceKind};
+use gawk_encode::{gst, gst_policy};
 use gawk_engine::config::{self, Config};
-use gawk_ui::shell::{Hooks, Media, Platform, Prepared, Shell};
+use gawk_ui::preview::{PreviewFrame, PreviewSlot, PreviewSource};
+use gawk_ui::shell::{Hooks, Media, Platform, Prepared, Shell, Thumb};
 use gawk_ui::{AudioAppRow, MainWindow};
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::any::Any;
 use std::cell::RefCell;
+use std::os::fd::AsRawFd;
 use std::rc::Rc;
 use std::sync::mpsc;
 
@@ -51,6 +54,21 @@ pub struct Linux {
     /// A pick landed while live: the shell switches the broadcast to it on
     /// the same code (docs/64 D12).
     restart_requested: bool,
+    /// Ready's preview of the held grant (docs/65 D3), keyed by `pick_gen`.
+    /// It reads the grant's PipeWire remote, so it stops before the grant
+    /// is taken or let go (D5).
+    preview: PreviewSlot<u64>,
+    /// Bumped whenever `picked` becomes a different grant.
+    pick_gen: u64,
+}
+
+/// The GStreamer preview, as the shell's preview source.
+struct GstPreview(gst::Preview);
+
+impl PreviewSource for GstPreview {
+    fn take(&self) -> Option<Thumb> {
+        self.0.take()
+    }
 }
 
 /// What the Share card and Live's Sharing row call a grant.
@@ -84,6 +102,8 @@ impl Linux {
             last_app: cfg.audio_app.clone(),
             device_pin: cfg.audio_device.clone(),
             restart_requested: false,
+            preview: PreviewSlot::default(),
+            pick_gen: 0,
         }
     }
 
@@ -103,9 +123,11 @@ impl Linux {
 
     fn on_picked(&mut self, ui: &MainWindow, grant: Grant) {
         log::info!("picked {grant:?}");
+        self.preview.stop();
         if let Some(old) = self.picked.take() {
             old.release();
         }
+        self.pick_gen += 1;
         ui.set_share_summary(grant_summary(&grant).into());
         ui.set_share_window(grant.kind == SourceKind::Window);
         ui.set_error_text("".into());
@@ -277,6 +299,9 @@ impl Platform for Linux {
     }
 
     fn prepare_start(&mut self, ui: &MainWindow, cfg: &Config) -> Result<Prepared, String> {
+        // The shell already asked for none (docs/65 D5); this grant is the
+        // broadcast's now either way.
+        self.preview.stop();
         let Some(grant) = self.picked.take() else {
             return Err("Choose what to share first.".into());
         };
@@ -367,6 +392,7 @@ impl Platform for Linux {
         ui.set_share_summary(grant_summary(&grant).into());
         ui.set_share_window(window);
         self.picked = Some(*grant);
+        self.pick_gen += 1;
         if window && self.device_pin.trim().is_empty() && self.ctl.is_none() {
             match PwCtl::start() {
                 Ok(c) => self.ctl = Some(c),
@@ -386,6 +412,7 @@ impl Platform for Linux {
     /// empty again (review of #423: End from Paused has no media whose
     /// shutdown would do it).
     fn broadcast_ended(&mut self, ui: &MainWindow) {
+        self.preview.stop();
         if let Some(g) = self.picked.take() {
             g.release();
         }
@@ -451,6 +478,16 @@ impl Platform for Linux {
         // docs/64 D12 (revising docs/58 §6): Change works while live too —
         // the pick restarts the broadcast on the same code.
         ui.set_share_picker_available(true);
+    }
+
+    fn preview(&mut self, _ui: &MainWindow, wanted: bool) -> PreviewFrame {
+        let want = (wanted && self.picked.is_some()).then_some(self.pick_gen);
+        let grant = self.picked.as_ref().map(|g| (g.fd.as_raw_fd(), g.node_id));
+        self.preview.update(want, |_| {
+            let (fd, node) = grant.ok_or("nothing picked")?;
+            gst::Preview::start(&gst_policy::preview_plan(fd, node))
+                .map(|p| Box::new(GstPreview(p)) as Box<dyn PreviewSource>)
+        })
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

@@ -418,19 +418,46 @@ fn thumb_branch(c: Candidate, rung: CaptureRung) -> Vec<Element> {
     if rung != CaptureRung::SystemMemory {
         b.push(c.download());
     }
-    b.push(Element::new("videoconvertscale"));
-    b.push(Element::caps(format!(
-        "video/x-raw,format=RGBA,width={THUMB_WIDTH},pixel-aspect-ratio=1/1"
-    )));
-    b.push(
+    b.extend(thumb_tail());
+    b
+}
+
+/// The thumbnail's last hops, shared by the live branch and the preview:
+/// scaled to [`THUMB_WIDTH`] RGBA, into an appsink that keeps only the
+/// newest picture.
+pub fn thumb_tail() -> Vec<Element> {
+    vec![
+        Element::new("videoconvertscale"),
+        Element::caps(format!(
+            "video/x-raw,format=RGBA,width={THUMB_WIDTH},pixel-aspect-ratio=1/1"
+        )),
         Element::new("appsink")
             .named(THUMB_SINK)
             .prop("sync", "false")
             .prop("drop", "true")
             .prop("max-buffers", 1)
             .prop("emit-signals", "false"),
-    );
-    b
+    ]
+}
+
+/// Ready's source preview (docs/65 D3): the held grant's node in system
+/// memory, gated to 1 fps before anything is converted, into the
+/// thumbnail's tail. There is no encoder on this path, so there is no
+/// zero-copy for a download to cost (docs/58 OD13 does not apply).
+pub fn preview_plan(fd: i32, node_id: u32) -> Vec<Element> {
+    let mut v = vec![
+        Element::new("pipewiresrc")
+            .named(SOURCE)
+            .prop("fd", fd)
+            .prop("path", node_id)
+            .prop("do-timestamp", "true"),
+        Element::caps("video/x-raw"),
+        Element::new("videorate")
+            .prop("drop-only", "true")
+            .prop("max-rate", 1),
+    ];
+    v.extend(thumb_tail());
+    v
 }
 
 /// The trial's size: "does this element encode at all on this device", not
@@ -744,6 +771,27 @@ mod tests {
             !factories(&plan.thumb).contains(&"cudadownload"),
             "system memory needs no download"
         );
+    }
+
+    #[test]
+    fn the_preview_reads_the_grant_in_system_memory_at_one_fps_without_an_encoder() {
+        let p = preview_plan(7, 42);
+        assert_eq!(p[0].factory, "pipewiresrc");
+        assert_eq!(p[0].get("fd"), Some("7"));
+        assert_eq!(
+            p[0].get("path"),
+            Some("42"),
+            "the node by `path` (see live_plan)"
+        );
+        assert_eq!(p[1].get("caps"), Some("video/x-raw"), "system memory");
+        assert_eq!(p[2].factory, "videorate", "the gate before any conversion");
+        assert_eq!(p[2].get("max-rate"), Some("1"));
+        assert_eq!(p[2].get("drop-only"), Some("true"));
+        assert_eq!(&p[3..], thumb_tail().as_slice());
+        assert_eq!(p.last().unwrap().name, Some(THUMB_SINK));
+        for c in CASCADE {
+            assert!(!factories(&p).contains(&c.element()), "no encoder");
+        }
     }
 
     #[test]

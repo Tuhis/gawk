@@ -497,18 +497,7 @@ impl Live {
                 gst_app::AppSinkCallbacks::builder()
                     .new_sample(move |s| {
                         let sample = s.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                        let info = sample
-                            .caps()
-                            .and_then(|c| gst_video::VideoInfo::from_caps(c).ok());
-                        if let (Some(info), Some(buf)) = (info, sample.buffer())
-                            && let Ok(map) = buf.map_readable()
-                        {
-                            let (w, h) = (info.width(), info.height());
-                            let stride = info.stride()[0] as usize;
-                            let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-                            for row in map.as_slice().chunks(stride).take(h as usize) {
-                                rgba.extend_from_slice(&row[..(w * 4) as usize]);
-                            }
+                        if let Some((w, h, rgba)) = rgba_of(&sample) {
                             fence("thumbnail", || (hooks.on_thumb)(w, h, rgba));
                         }
                         Ok(gst::FlowSuccess::Ok)
@@ -622,6 +611,86 @@ impl Drop for Live {
         if let Some(t) = self.bus_thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+/// A thumbnail's pixels, tightly packed: width, height, RGBA.
+pub type Rgba = (u32, u32, Vec<u8>);
+
+/// A thumbnail sample's pixels.
+fn rgba_of(sample: &gst::Sample) -> Option<Rgba> {
+    let info = gst_video::VideoInfo::from_caps(sample.caps()?).ok()?;
+    let map = sample.buffer()?.map_readable().ok()?;
+    let (w, h) = (info.width(), info.height());
+    let stride = info.stride()[0] as usize;
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for row in map.as_slice().chunks(stride).take(h as usize) {
+        rgba.extend_from_slice(row.get(..(w * 4) as usize)?);
+    }
+    Some((w, h, rgba))
+}
+
+/// Ready's source preview (docs/65 D3): a plan ending in
+/// [`gst_policy::thumb_tail`], with no encoder and no bus thread — nothing
+/// in it can fail a broadcast. Dropping it stops it synchronously, so it
+/// never outlives the grant it reads.
+pub struct Preview {
+    pipeline: gst::Pipeline,
+    thumb: Arc<Mutex<Option<Rgba>>>,
+}
+
+impl Preview {
+    pub fn start(plan: &[Element]) -> Result<Self, String> {
+        init()?;
+        let missing = missing(plan);
+        if !missing.is_empty() {
+            return Err(format!("{} not installed", missing.join(", ")));
+        }
+        let pipeline = gst::Pipeline::new();
+        pipeline.use_clock(Some(&monotonic_clock()));
+        add_chain(&pipeline, plan)?;
+        let thumb: Arc<Mutex<Option<Rgba>>> = Arc::default();
+        {
+            let thumb = thumb.clone();
+            appsink(&pipeline, gst_policy::THUMB_SINK)?.set_callbacks(
+                gst_app::AppSinkCallbacks::builder()
+                    .new_sample(move |s| {
+                        let sample = s.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                        fence("preview", || {
+                            if let Some(t) = rgba_of(&sample) {
+                                *thumb.lock().unwrap() = Some(t);
+                            }
+                        });
+                        Ok(gst::FlowSuccess::Ok)
+                    })
+                    .build(),
+            );
+        }
+        let preview = Self { pipeline, thumb };
+        preview
+            .pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|_| "the preview pipeline would not start".to_owned())?;
+        Ok(preview)
+    }
+
+    /// The newest picture since the last call. Also drains the bus, which
+    /// nothing else watches: an error is a log line, never a failure (D6).
+    pub fn take(&self) -> Option<Rgba> {
+        if let Some(bus) = self.pipeline.bus() {
+            while let Some(msg) = bus.pop() {
+                if let gst::MessageView::Error(e) = msg.view() {
+                    log::info!("preview: {}", e.error());
+                }
+            }
+        }
+        self.thumb.lock().unwrap().take()
+    }
+}
+
+impl Drop for Preview {
+    fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
 
