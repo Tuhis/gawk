@@ -16,9 +16,14 @@
   // / RENOVATE_ALLOWED_COMMANDS (allowedPostUpgradeCommands on older
   // releases). Without it this block is inert — nothing breaks, the notices
   // simply stay stale and CI says so. See CONTRIBUTING.md.
+  //
+  // fileFilters must match every file the generator writes, including the
+  // per-platform `THIRD-PARTY-NOTICES-<os>.md` variants (R52 macOS, R56
+  // Linux). Anything it misses is regenerated and then silently discarded,
+  // which left flate2 1.1.10 (#425) red on `licenses-fresh`.
   postUpgradeTasks: {
     commands: ["python3 tools/licenses/gen-notices.py"],
-    fileFilters: ["**/THIRD-PARTY-NOTICES.md"],
+    fileFilters: ["**/THIRD-PARTY-NOTICES*.md"],
     executionMode: "branch",
   },
 
