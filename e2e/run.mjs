@@ -42,9 +42,13 @@
 //                             withholds ATTACH_OK, the room really lists the
 //                             participant with no attachment); then the
 //                             secret typed in the room re-dials and the
-//                             stream really attaches. This state sends no
-//                             command, so only a real relay proves the flag
-//                             — the unit tests can only fake the snapshot.
+//                             stream really attaches. The gated state sends
+//                             no command, so only a real relay proves the
+//                             flag — the unit tests can only fake the
+//                             snapshot. Last, Leave room must take the stream
+//                             out of the room (the relay keeps attachments
+//                             across a session end) with the broadcast still
+//                             live.
 //   node run.mjs --muxer-check
 //                             R22 MF1 (docs/27 Decision 10) — the production
 //                             fMP4 muxer's output must PLAY in a real Chrome
@@ -1841,6 +1845,28 @@ async function roomsGatedPass({ relayUrl, certHash, opsUrl }) {
     }
     log('secret ok: the re-dial attached the stream and the gated copy is gone');
     writeFileSync(join(OUT, 'rooms-gated-attached.png'), await page.screenshot());
+
+    // Leave room takes the stream out of the room, and the broadcast keeps
+    // running. The relay keeps an attachment across a session end on purpose
+    // (a reload must not detach — docs/44 §4.4), so a leave that only closed
+    // the control session left the stream playing to everyone in the room.
+    // The footer fades after the idle period; a pointer move brings it back.
+    await page.mouse.move(400, 300);
+    await page.getByRole('button', { name: 'Leave room' }).click();
+    await pollFor(
+      async () => {
+        const { rooms } = await relayRooms(opsUrl);
+        return rooms.every((r) => r.attachments === 0 && r.participants === 0);
+      },
+      15_000,
+      500,
+      'the relay to drop the attachment and the participant after Leave room',
+    );
+    const { active } = await relayRooms(opsUrl);
+    if (active.length !== 1) fail(`Leave room should leave the broadcast running (active publishers=${active.length})`);
+    await page.getByRole('button', { name: 'Stop broadcast' }).waitFor({ state: 'visible', timeout: 10_000 });
+    log('leave ok: the stream is out of the room, the broadcast is still live');
+    writeFileSync(join(OUT, 'rooms-gated-left.png'), await page.screenshot());
   } finally {
     await browser.close();
   }

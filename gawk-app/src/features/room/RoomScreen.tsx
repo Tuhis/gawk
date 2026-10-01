@@ -78,6 +78,9 @@ import { useRoomSession } from './useRoomSession';
 // after the same 3 s.
 const CONTROL_IDLE_MS = 3000;
 const TOAST_MS = 4000;
+// How long a broadcaster's leave waits for the relay to confirm its Detach
+// before closing the session anyway: a silent relay must not keep them in.
+export const LEAVE_DETACH_TIMEOUT_MS = 2000;
 const NO_ATTACHMENTS: RoomAttachment[] = [];
 // Below this width the grid degrades to focus; the
 // same breakpoint room.module.css uses for the bottom-sheet panel.
@@ -214,10 +217,13 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   const ownToken = own?.resumeTokenHex ?? null;
   const ownLabel = sanitizeRoomText(own?.label ?? '', MAX_ROOM_LABEL_LEN);
   const ownEpoch = own?.attachEpoch ?? 0;
+  // Set by a leave that is taking our stream out first (leaveRoom below); a
+  // publish auto-resume meanwhile must not put it back.
+  const [leaving, setLeaving] = useState(false);
   useEffect(() => {
-    if (!joined || !attachOk || ownId === null || ownToken === null) return;
+    if (leaving || !joined || !attachOk || ownId === null || ownToken === null) return;
     commands.attach(ownId, ownToken, ownLabel);
-  }, [joined, attachOk, ownId, ownToken, ownLabel, ownEpoch, commands]);
+  }, [leaving, joined, attachOk, ownId, ownToken, ownLabel, ownEpoch, commands]);
 
   // We are in a gated static room that withheld the attach grant, so the
   // effect above sends nothing and our stream stays out of the room. No
@@ -399,6 +405,38 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
     if (onLeave) onLeave();
     else window.location.hash = HOME;
   }, [onLeave]);
+  const leaveRef = useRef(leave);
+  leaveRef.current = leave;
+
+  // Leaving by choice (the leave button, the menu) with our stream in the
+  // room takes it out first. The relay keeps an attachment across a session
+  // end on purpose — a reload must not detach (docs/44 §4.4) — so closing the
+  // session alone left the stream playing to everyone in the room. The
+  // session closes once the relay confirms (our attachment gone from the
+  // roster): stopping it straight after the command would drop the command
+  // unsent. A relay that never confirms is waited out, not waited on. Not
+  // joined (reconnecting), nothing can be sent, so we just go.
+  const ownListed = ownId !== null && attachments.some((a) => a.broadcastId === ownId);
+  const leaveRoom = useCallback(() => {
+    if (leaving) return;
+    if (!joined || !ownListed || ownId === null) {
+      leave();
+      return;
+    }
+    setLeaving(true);
+    commands.detach(ownId);
+  }, [leaving, joined, ownListed, ownId, commands, leave]);
+  // Keyed on the confirmation alone: the broadcaster page hands a fresh
+  // onLeave on every render, which must not restart the wait (leaveRef).
+  useEffect(() => {
+    if (!leaving) return;
+    if (!ownListed || !joined) {
+      leaveRef.current();
+      return;
+    }
+    const t = setTimeout(() => leaveRef.current(), LEAVE_DETACH_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [leaving, ownListed, joined]);
 
   // Ending the room ourselves needs no card telling us it ended: once the
   // relay confirms (status 'ended'), we are simply out — a broadcaster back
@@ -489,7 +527,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
       label: 'Terms of use',
       onSelect: () => window.open(`${window.location.origin}${window.location.pathname}#/terms`, '_blank', 'noopener'),
     },
-    { label: 'Leave room', onSelect: leave },
+    { label: 'Leave room', onSelect: leaveRoom },
   ];
 
   // The secret answers the gated-out state. Setting it re-dials, which is
@@ -895,7 +933,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
           >
             <MoreIcon />
           </IconButton>
-          <IconButton label="Leave room" className={styles.leaveBtn} onClick={leave}>
+          <IconButton label="Leave room" className={styles.leaveBtn} onClick={leaveRoom}>
             <LeaveIcon />
           </IconButton>
         </div>

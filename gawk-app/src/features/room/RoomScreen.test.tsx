@@ -91,13 +91,14 @@ vi.mock('../../transport/viewer-session', () => ({
   RECONNECT_MAX_ATTEMPTS: 10,
 }));
 
-import { RoomScreen, RoomView } from './RoomScreen';
+import { LEAVE_DETACH_TIMEOUT_MS, RoomScreen, RoomView } from './RoomScreen';
 import { useRoomStore } from '../../state/roomStore';
 import { useTransportStore } from '../../state/transportStore';
 import {
   ROOM_CLIENT_WEB_VIEWER,
   ROOM_COMMAND_ATTACH,
   ROOM_DETACH_REASON_CREATOR,
+  ROOM_DETACH_REASON_PUBLISHER,
   ROOM_END_REASON_CREATOR,
   ROOM_EVENT_ATTACHMENT_REMOVED,
   ROOM_EVENT_COMMAND_REJECTED,
@@ -584,6 +585,8 @@ describe('RoomScreen relay states', () => {
     const room = await joinAs();
     fireEvent.click(screen.getByRole('button', { name: 'Leave room' }));
     expect(window.location.hash).toBe('#/');
+    // A viewer brought no stream, so there is nothing to detach.
+    expect(room.sent).not.toContainEqual(expect.objectContaining({ kind: 'detach' }));
     cleanup();
     expect(room.stopped).toBe(true);
   });
@@ -651,25 +654,90 @@ describe('RoomView with an own broadcast (RM5)', () => {
   });
 
   // A broadcaster in a room, joined to someone else's (or its own) room.
+  const ownPreview = { getTracks: () => [] } as unknown as MediaStream;
+  const ownView = (onLeave: () => void) => (
+    <RoomView
+      target={{ kind: 'join', code: 'AB2CD3' }}
+      own={{
+        broadcastId: 'AAAAAA',
+        resumeTokenHex: 'b'.repeat(32),
+        label: 'alpha',
+        attachEpoch: 0,
+        preview: ownPreview,
+        controls: null,
+        onDetach: () => {},
+      }}
+      onLeave={onLeave}
+    />
+  );
   function renderOwn(onLeave: () => void) {
     localStorage.setItem('gawk:nickname', 'tuhis');
-    const preview = { getTracks: () => [] } as unknown as MediaStream;
-    render(
-      <RoomView
-        target={{ kind: 'join', code: 'AB2CD3' }}
-        own={{
-          broadcastId: 'AAAAAA',
-          resumeTokenHex: 'b'.repeat(32),
-          label: 'alpha',
-          attachEpoch: 0,
-          preview,
-          controls: null,
-          onDetach: () => {},
-        }}
-        onLeave={onLeave}
-      />,
-    );
+    return render(ownView(onLeave));
   }
+
+  // The relay keeps an attachment across a session end (a reload must not
+  // detach — docs/44 §4.4), so a leave that only closed the session left the
+  // stream playing in the room. Detach is sent first, and the session closes
+  // once the relay has taken the stream out: closing it right away would drop
+  // the queued command with it.
+  it('leaving takes your stream out of the room first, and leaves once the relay confirms', async () => {
+    const onLeave = vi.fn();
+    renderOwn(onLeave);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(state()));
+    fireEvent.click(screen.getByRole('button', { name: 'Leave room' }));
+    expect(room.sent).toContainEqual({ kind: 'detach', broadcastId: 'AAAAAA' });
+    expect(onLeave).not.toHaveBeenCalled();
+    // A second click while waiting sends nothing more.
+    fireEvent.click(screen.getByRole('button', { name: 'Leave room' }));
+    expect(room.sent.filter((c) => (c as { kind: string }).kind === 'detach')).toHaveLength(1);
+    act(() =>
+      room.cbs.onEvent({
+        seq: 4,
+        kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+        attachment: { broadcastId: 'AAAAAA' },
+        reason: ROOM_DETACH_REASON_PUBLISHER,
+      }),
+    );
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaving does not wait forever on a relay that never confirms the detach', async () => {
+    const onLeave = vi.fn();
+    const { rerender } = renderOwn(() => onLeave());
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(state()));
+    vi.useFakeTimers();
+    try {
+      // The More menu's Leave room is the same leave.
+      fireEvent.click(screen.getByRole('button', { name: 'More options' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Leave room' }));
+      expect(room.sent).toContainEqual({ kind: 'detach', broadcastId: 'AAAAAA' });
+      act(() => vi.advanceTimersByTime(LEAVE_DETACH_TIMEOUT_MS / 2));
+      // The broadcaster page re-renders all the time (its stats) with a fresh
+      // onLeave each time; that must not restart the wait.
+      rerender(ownView(() => onLeave()));
+      act(() => vi.advanceTimersByTime(LEAVE_DETACH_TIMEOUT_MS / 2 - 1));
+      expect(onLeave).not.toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(1));
+      expect(onLeave).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a broadcaster whose stream is not in the room leaves at once, with nothing to detach', async () => {
+    const onLeave = vi.fn();
+    renderOwn(onLeave);
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    act(() => room.cbs.onState(state({ attachments: state().attachments.filter((a) => a.broadcastId !== 'AAAAAA') })));
+    fireEvent.click(screen.getByRole('button', { name: 'Leave room' }));
+    expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(room.sent).not.toContainEqual({ kind: 'detach', broadcastId: 'AAAAAA' });
+  });
 
   it('ending the room yourself goes straight back to the broadcast — no card to dismiss', async () => {
     const onLeave = vi.fn();

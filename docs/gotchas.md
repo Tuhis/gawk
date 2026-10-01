@@ -1537,6 +1537,16 @@ Add to it when a new gotcha lands in `docs/`.
   before the 4007 — the same shape as the drain window (docs/22). A
   "send then immediately close" anywhere else on a stream has the same
   bug. ([docs/44](44-rooms.md) §11)
+- **Closing a room control session does not detach your stream.** The
+  relay keeps an attachment across a session end so a reload doesn't pull
+  the stream out (docs/44 §4.4). A client that leaves a room by choice
+  must send `Detach` itself, and must close the session only after the
+  relay's `AttachmentRemoved` arrives: `RoomSession.stop()` releases the
+  writer synchronously, so a command queued just before it is dropped
+  unsent. This is the client-side twin of the close-discards-data gotcha
+  above. The web broadcaster's Leave room did neither, so the stream kept
+  playing to the room after its owner had left. ([docs/44](44-rooms.md)
+  §4.9 revision 2026-10-02)
 - **A room ends when RoomEnding arrives, not on the 4007.** Chrome never
   reads the 4007 (see webtransport-go above), so every room end reached it as
   "Connection lost.". The client took that for an abrupt drop and looped
