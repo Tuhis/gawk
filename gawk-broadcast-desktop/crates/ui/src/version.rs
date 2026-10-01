@@ -27,13 +27,29 @@ pub const RELEASE: &str = env!("CARGO_PKG_VERSION");
 /// to sit in a window header.
 const SHORT_REV_LEN: usize = 7;
 
+static BUILD_REV: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Hands over the commit this binary was built from, first thing in the
+/// shell's `main`: `set_build_rev(option_env!("GAWK_BUILD_REV"))`, with the
+/// variable stamped by the shell's own build.rs (crates/ui/build_rev.rs).
+///
+/// The shell stamps it rather than this crate so that this crate's compile
+/// does not change with every commit — build_rev.rs has the measurements. A
+/// second call is ignored: there is one build per binary.
+pub fn set_build_rev(rev: Option<&'static str>) {
+    if let Some(rev) = rev {
+        let _ = BUILD_REV.set(rev);
+    }
+}
+
 /// The build string: `1.0.0+g1a2b3c4`, or a bare `1.0.0` when the build had no
-/// VCS information (a source-tarball build).
+/// VCS information (a source-tarball build) or no shell handed one over (the
+/// tests).
 ///
 /// No leading `v` — callers that want one prepend it. This value also lands in
 /// the diagnostics JSON, where a `v` would be noise.
 pub fn display() -> String {
-    compose(RELEASE, option_env!("GAWK_BUILD_REV").unwrap_or(""))
+    compose(RELEASE, BUILD_REV.get().copied().unwrap_or(""))
 }
 
 /// The whole format, split out from the environment lookup so it can be tested

@@ -1073,8 +1073,12 @@ it, are settled once in [docs/19 V9](19-linux-native-broadcaster.md#v9--the-buil
 here is recorded below.
 
 **The stamping mechanism.** Go gets the commit free from `-buildvcs`; Cargo has
-no equivalent, so `crates/app/build.rs` is the whole of it: `GITHUB_SHA` when CI
-sets it, otherwise `git rev-parse HEAD`, emitted as `GAWK_BUILD_REV`. Never
+no equivalent, so a build script is the whole of it: `GITHUB_SHA` when CI
+sets it, otherwise `git rev-parse HEAD`, emitted as `GAWK_BUILD_REV`. Since
+2026-10-01 it is `crates/ui/build_rev.rs`, included by every shell's
+`build.rs`, and the shell hands the value to `gawk_ui::version::set_build_rev`
+at startup. It was gawk-ui's own build script before that, which made the
+workspace's most expensive crate a compile-cache miss on every commit. Never
 `git describe` — that needs tags and the checkout is fetch-depth 1. It may not
 fail the build: a source-tarball build has no `.git`, and the crate falls back
 to the bare release version.

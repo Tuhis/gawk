@@ -193,6 +193,8 @@ fn notify(summary: &str, body: &str, critical: bool) {
 }
 
 fn main() {
+    // The commit build.rs stamped, for the version badge (crates/ui/build_rev.rs).
+    gawk_ui::version::set_build_rev(option_env!("GAWK_BUILD_REV"));
     #[cfg(windows)]
     toast::init();
 

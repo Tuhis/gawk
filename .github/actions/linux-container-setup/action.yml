@@ -73,7 +73,7 @@ runs:
           }
         # The checkout belongs to the runner's user, not the container's root:
         # without this, git refuses it ("dubious ownership") and the version
-        # badge loses its +g<commit> (crates/ui/build.rs asks git).
+        # badge loses its +g<commit> (crates/ui/build_rev.rs asks git).
         git config --global --add safe.directory '*'
     - shell: bash
       working-directory: gawk-broadcast-desktop
