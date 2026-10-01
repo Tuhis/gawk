@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.49.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.49.0...gawk-app/v0.49.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **app:** leaving a room takes your stream out of it ([#432](https://github.com/Tuhis/gawk/issues/432)) ([6f83620](https://github.com/Tuhis/gawk/commit/6f83620eb17d15d3655ad08aa8c8ce9c70f78cde))
+
 ## [0.49.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.48.0...gawk-app/v0.49.0) (2026-10-01)
 
 

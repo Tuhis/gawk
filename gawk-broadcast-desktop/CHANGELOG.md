@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.2.0...gawk-broadcast-desktop/v2.3.0) (2026-10-01)
+
+
+### Features
+
+* **broadcast-desktop:** source preview on Ready and for Windows display shares (R63) ([#431](https://github.com/Tuhis/gawk/issues/431)) ([d3a5df6](https://github.com/Tuhis/gawk/commit/d3a5df6cc9373ec96569bb3e3ebbda0dc322a619))
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** copy the code and link on one click, clear "Copied" ([#427](https://github.com/Tuhis/gawk/issues/427)) ([2a7492b](https://github.com/Tuhis/gawk/commit/2a7492b9e24f631b1da05f014306f022470d058e))
+
 ## [2.2.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.1.0...gawk-broadcast-desktop/v2.2.0) (2026-10-01)
 
 
