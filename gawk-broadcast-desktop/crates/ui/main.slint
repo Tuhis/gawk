@@ -756,9 +756,9 @@ component Tip inherits Rectangle {
 }
 
 // docs/64 D17, code option 1: the six boxes are one copy target. Hover and
-// keyboard focus draw the accent tint and outline and a copy icon after the
-// last box; focus adds the ring; a click copies, and for 1.2 s the icon is a
-// green check under a "Copied" tooltip.
+// keyboard focus draw the accent tint and outline, a copy icon after the
+// last box and a "Click to copy" tooltip; focus adds the ring; a click
+// copies, and for 1.2 s the icon is a green check under a "Copied" tooltip.
 component CopyCode inherits Rectangle {
     in property <[string]> chars;
     in property <string> code;
@@ -782,12 +782,13 @@ component CopyCode inherits Rectangle {
         root.flash = true;
         flash-timer.restart();
     }
+    // Bound to flash: restart() alone never starts a stopped Timer, which
+    // left "Copied" up for good.
     flash-timer := Timer {
         interval: 1200ms;
-        running: false;
+        running: root.flash;
         triggered => {
             root.flash = false;
-            self.running = false;
         }
     }
     if fs.has-focus: Rectangle {
@@ -821,9 +822,9 @@ component CopyCode inherits Rectangle {
             }
         }
     }
-    if root.flash: Tip {
-        text: "Copied";
-        done: true;
+    if root.hot || root.flash: Tip {
+        text: root.flash ? "Copied" : "Click to copy";
+        done: root.flash;
         x: (parent.width - self.width) / 2;
         y: -self.height - 8px;
     }
@@ -833,7 +834,10 @@ component CopyCode inherits Rectangle {
             root.do-copy();
         }
     }
+    // Keyboard focus only: focusing on click would swallow the first press
+    // before the TouchArea under it saw a click.
     fs := FocusScope {
+        focus-on-click: false;
         key-pressed(event) => {
             if (event.text == Key.Return || event.text == " ") {
                 root.do-copy();
@@ -871,12 +875,13 @@ component CopyLink inherits Rectangle {
         root.flash = true;
         flash-timer.restart();
     }
+    // Bound to flash: restart() alone never starts a stopped Timer, which
+    // left "Copied" up for good.
     flash-timer := Timer {
         interval: 1200ms;
-        running: false;
+        running: root.flash;
         triggered => {
             root.flash = false;
-            self.running = false;
         }
     }
     if fs.has-focus: Rectangle {
@@ -923,7 +928,10 @@ component CopyLink inherits Rectangle {
             root.do-copy();
         }
     }
+    // Keyboard focus only: focusing on click would swallow the first press
+    // before the TouchArea under it saw a click.
     fs := FocusScope {
+        focus-on-click: false;
         key-pressed(event) => {
             if (event.text == Key.Return || event.text == " ") {
                 root.do-copy();

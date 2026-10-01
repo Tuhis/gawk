@@ -4289,6 +4289,10 @@ fn open_in_browser(url: &str) {
 mod tests {
     use super::*;
     use crate::{MonitorRow, WindowRow};
+    use i_slint_backend_testing::ElementHandle;
+    use slint::platform::{PointerEventButton, WindowEvent};
+    use std::cell::Cell;
+    use std::time::Duration;
 
     /// A MainWindow on Slint's testing backend (no display), per thread.
     fn window() -> MainWindow {
@@ -5418,5 +5422,89 @@ mod tests {
         );
         // No .deb on the release (a soft attach): the plain R45 line.
         assert_eq!(deb_note(&release("2.1.0")), "");
+    }
+
+    /// Live, with a code and a link, shown so the copy targets lay out and
+    /// take pointer events. The counters count copy-code and copy-link calls.
+    fn live_with_code() -> (MainWindow, Rc<Cell<u32>>, Rc<Cell<u32>>) {
+        let ui = window();
+        ui.window().set_size(slint::LogicalSize::new(480.0, 900.0));
+        ui.set_live(true);
+        ui.set_busy(true);
+        ui.set_code("ABC123".into());
+        ui.set_code_chars(code_chars("ABC123"));
+        ui.set_join_link("https://gawk.ioio.fi/ABC123".into());
+        let codes = Rc::new(Cell::new(0));
+        let links = Rc::new(Cell::new(0));
+        let c = codes.clone();
+        ui.on_copy_code(move || c.set(c.get() + 1));
+        let l = links.clone();
+        ui.on_copy_link(move || l.set(l.get() + 1));
+        ui.show().unwrap();
+        (ui, codes, links)
+    }
+
+    const CODE: &str = "Copy code ABC123";
+    const LINK: &str = "Copy link https://gawk.ioio.fi/ABC123";
+
+    fn target(ui: &MainWindow, label: &str) -> ElementHandle {
+        ElementHandle::find_by_accessible_label(ui, label)
+            .next()
+            .unwrap_or_else(|| panic!("no element labelled {label:?}"))
+    }
+
+    fn shows(ui: &MainWindow, label: &str) -> bool {
+        ElementHandle::find_by_accessible_label(ui, label)
+            .next()
+            .is_some()
+    }
+
+    fn hover(ui: &MainWindow, label: &str) {
+        let e = target(ui, label);
+        let (p, s) = (e.absolute_position(), e.size());
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(p.x + s.width / 2.0, p.y + s.height / 2.0),
+        });
+    }
+
+    // The code and the link copied only on a second click: the FocusScope
+    // over the TouchArea took the first press to grab focus.
+    #[test]
+    fn one_click_copies_the_code_and_the_link() {
+        let (ui, codes, links) = live_with_code();
+        target(&ui, CODE).mock_single_click(PointerEventButton::Left);
+        assert_eq!(codes.get(), 1, "the first click on the code copies it");
+        target(&ui, LINK).mock_single_click(PointerEventButton::Left);
+        assert_eq!(links.get(), 1, "the first click on the link copies it");
+    }
+
+    // "Copied" never went away: the flash Timer was `running: false`, and
+    // restart() only restarts a timer that is already running.
+    #[test]
+    fn the_copied_tip_clears_after_a_moment() {
+        let (ui, _, _) = live_with_code();
+        for label in [CODE, LINK] {
+            target(&ui, label).mock_single_click(PointerEventButton::Left);
+            assert!(shows(&ui, "Copied"), "{label}: a click shows Copied");
+            ui.window().dispatch_event(WindowEvent::PointerExited);
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(1300));
+            assert!(!shows(&ui, "Copied"), "{label}: Copied clears after 1.2 s");
+            assert!(
+                !shows(&ui, "Click to copy"),
+                "{label}: no tip once the pointer has left"
+            );
+        }
+    }
+
+    // The link said "Click to copy" on hover; the code said nothing.
+    #[test]
+    fn hovering_the_code_or_the_link_offers_click_to_copy() {
+        let (ui, _, _) = live_with_code();
+        for label in [CODE, LINK] {
+            ui.window().dispatch_event(WindowEvent::PointerExited);
+            assert!(!shows(&ui, "Click to copy"), "{label}: no tip before hover");
+            hover(&ui, label);
+            assert!(shows(&ui, "Click to copy"), "{label}: hover shows the tip");
+        }
     }
 }
