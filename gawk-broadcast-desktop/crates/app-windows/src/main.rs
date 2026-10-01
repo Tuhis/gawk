@@ -13,10 +13,13 @@ mod dpapi;
 #[cfg(windows)]
 mod pipeline;
 #[cfg(windows)]
+mod preview;
+#[cfg(windows)]
 mod toast;
 
 use gawk_engine::config::{self, Config};
 use gawk_ui::MainWindow;
+use gawk_ui::preview::PreviewFrame;
 use gawk_ui::shell::{self, Hooks, Platform, Prepared};
 use slint::ComponentHandle;
 use std::any::Any;
@@ -29,6 +32,9 @@ struct Windows {
     picked_windows: Vec<gawk_capture::picker::WindowCandidate>,
     #[cfg(windows)]
     picked_monitors: Vec<gawk_capture::picker::MonitorCandidate>,
+    /// Ready's preview of the chosen target (docs/65 D3).
+    #[cfg(windows)]
+    preview: gawk_ui::preview::PreviewSlot<gawk_capture::wgc::CaptureTarget>,
 }
 
 impl Platform for Windows {
@@ -50,33 +56,8 @@ impl Platform for Windows {
 
     #[cfg(windows)]
     fn prepare_start(&mut self, ui: &MainWindow, cfg: &Config) -> Result<Prepared, String> {
-        // The chosen source (docs/64 D14): `picker-tab` is committed only by
-        // the picker's Share this / Switch, never by the tab being looked at.
         let tab = ui.get_picker_tab();
-        let (target, source) = if tab == 0 {
-            let idx = ui.get_selected_window();
-            match self.picked_windows.get(idx.max(0) as usize) {
-                Some(w) if idx >= 0 => (
-                    gawk_capture::wgc::CaptureTarget::Window {
-                        hwnd: w.hwnd,
-                        pid: w.pid,
-                    },
-                    w.title.clone(),
-                ),
-                _ => return Err("Pick a window (or a screen) to share first.".into()),
-            }
-        } else {
-            let idx = ui.get_selected_monitor();
-            match self.picked_monitors.get(idx.max(0) as usize) {
-                Some(m) if idx >= 0 => (
-                    gawk_capture::wgc::CaptureTarget::Monitor {
-                        hmonitor: m.hmonitor,
-                    },
-                    m.label(),
-                ),
-                _ => return Err("Pick a screen (or a window) to share first.".into()),
-            }
-        };
+        let (target, source) = self.chosen(ui)?;
         let capture_mode = if tab == 0 { "app" } else { "screen" };
         let params = {
             let (w, h, fps, bps) = cfg.resolve_rung();
@@ -118,12 +99,63 @@ impl Platform for Windows {
         Err("This binary only captures on Windows (dev shell).".into())
     }
 
+    #[cfg(windows)]
+    fn preview(&mut self, ui: &MainWindow, wanted: bool) -> PreviewFrame {
+        let want = if wanted {
+            self.chosen(ui).ok().map(|(target, _)| target)
+        } else {
+            None
+        };
+        self.preview.update(want, |target| {
+            preview::Preview::start(*target)
+                .map(|p| Box::new(p) as Box<dyn gawk_ui::preview::PreviewSource>)
+        })
+    }
+
+    #[cfg(not(windows))]
+    fn preview(&mut self, _ui: &MainWindow, _wanted: bool) -> PreviewFrame {
+        PreviewFrame::Hidden
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 }
 
 impl Windows {
+    /// The chosen source (docs/64 D14): `picker-tab` is committed only by
+    /// the picker's Share this / Switch, never by the tab being looked at.
+    #[cfg(windows)]
+    fn chosen(
+        &self,
+        ui: &MainWindow,
+    ) -> Result<(gawk_capture::wgc::CaptureTarget, String), String> {
+        if ui.get_picker_tab() == 0 {
+            let idx = ui.get_selected_window();
+            match self.picked_windows.get(idx.max(0) as usize) {
+                Some(w) if idx >= 0 => Ok((
+                    gawk_capture::wgc::CaptureTarget::Window {
+                        hwnd: w.hwnd,
+                        pid: w.pid,
+                    },
+                    w.title.clone(),
+                )),
+                _ => Err("Pick a window (or a screen) to share first.".into()),
+            }
+        } else {
+            let idx = ui.get_selected_monitor();
+            match self.picked_monitors.get(idx.max(0) as usize) {
+                Some(m) if idx >= 0 => Ok((
+                    gawk_capture::wgc::CaptureTarget::Monitor {
+                        hmonitor: m.hmonitor,
+                    },
+                    m.label(),
+                )),
+                _ => Err("Pick a screen (or a window) to share first.".into()),
+            }
+        }
+    }
+
     fn refresh_picker(&mut self, ui: &MainWindow) {
         #[cfg(windows)]
         {
