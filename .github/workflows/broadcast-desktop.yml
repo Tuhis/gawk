@@ -1030,6 +1030,11 @@ jobs:
   linux-deb:
     needs: linux
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # The job takes ~2 min. actions/download-artifact has no timeout of its
+    # own and has hung here (the debian:trixie leg of run 36929260402 sat in
+    # it for 16+ min while the ubuntu leg fetched the same artifact fine);
+    # without a cap that holds a runner pod and the PR for up to 6 hours.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
