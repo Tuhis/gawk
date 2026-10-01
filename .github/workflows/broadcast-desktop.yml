@@ -852,8 +852,9 @@ jobs:
           fi
 
       # Asked of the binary: the build commit reached the version badge.
-      # crates/ui/build.rs stamps GITHUB_SHA (a runner default no step can
-      # override), so that is what the binary must carry.
+      # The shell's build.rs (crates/ui/build_rev.rs) stamps GITHUB_SHA (a
+      # runner default no step can override), so that is what the binary
+      # must carry.
       - name: The binary carries its build commit
         run: |
           grep -aqF "$GITHUB_SHA" dist/stage/gawk-broadcast-linux || {
@@ -993,6 +994,15 @@ jobs:
           path: gawk-broadcast-desktop/dist/
           retention-days: 7
           if-no-files-found: error
+      # The .deb again, alone, for `linux-deb` — the next link of the critical
+      # path. Artifact downloads on these runners crawl (~0.8 MB/s measured:
+      # 34 s for the 26 MB artifact above), and the .deb is 11 MB of it.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gawk-broadcast-linux-deb-${{ steps.source.outputs.sha }}
+          path: gawk-broadcast-desktop/dist/*.deb
+          retention-days: 1
+          if-no-files-found: error
       - name: sccache stats
         if: always() && env.RUSTC_WRAPPER != ''
         run: '"$RUSTC_WRAPPER" --show-stats'
@@ -1018,7 +1028,7 @@ jobs:
           ref: ${{ inputs.attach_to || github.sha }}
       - uses: actions/download-artifact@v8
         with:
-          name: gawk-broadcast-linux-x86_64-${{ needs.linux.outputs.sha }}
+          name: gawk-broadcast-linux-deb-${{ needs.linux.outputs.sha }}
           path: dist
       # The archive settings linux-container-setup uses, for the same
       # runners: IPv4 only, short timeouts, bounded retries.

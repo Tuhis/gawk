@@ -1,8 +1,13 @@
 use std::path::Path;
 
+#[path = "../ui/build_rev.rs"]
+mod build_rev;
+
 fn main() {
-    // The window itself, and the build revision it shows, are compiled and
-    // stamped by gawk-ui (docs/54 D11): this script only links the icon.
+    // The window itself is compiled by gawk-ui (docs/54 D11). The build
+    // revision it shows is stamped here, not there: crates/ui/build_rev.rs
+    // says why.
+    build_rev::emit();
     emit_icon_resource();
 }
 

@@ -33,5 +33,7 @@ pub fn run() {
     // The shell injects its identity; the target OS does not choose it
     // (docs/58 D2). First thing, before anything reads `defaults::this()`.
     gawk_engine::defaults::set_this(&gawk_engine::defaults::LINUX);
+    // The commit build.rs stamped, for the version badge (crates/ui/build_rev.rs).
+    gawk_ui::version::set_build_rev(option_env!("GAWK_BUILD_REV"));
     gawk_ui::shell::run(Box::new(platform::Linux::new()), platform::wire);
 }

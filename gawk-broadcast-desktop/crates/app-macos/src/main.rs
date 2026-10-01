@@ -16,6 +16,8 @@ mod platform;
 
 #[cfg(target_os = "macos")]
 fn main() {
+    // The commit build.rs stamped, for the version badge (crates/ui/build_rev.rs).
+    gawk_ui::version::set_build_rev(option_env!("GAWK_BUILD_REV"));
     notify::init();
     gawk_ui::shell::run(Box::new(platform::Mac::new()), platform::wire);
 }
