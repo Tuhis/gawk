@@ -24,7 +24,7 @@
 use crate::messages::{StartFailure, can_mint, first_line, message};
 use crate::preview::PreviewFrame;
 use crate::{
-    MainWindow, RecentRow, RoomRow, StatRow, debuglog, diagnostics, refresh_captions, version,
+    MainWindow, RecentRow, RoomRow, StatRow, debuglog, diagnostics, fit, refresh_captions, version,
 };
 use gawk_engine::clock::{Clock, MonotonicClock};
 use gawk_engine::config::{self, Config, DEFAULT_SERVER_NAME, ServerProfile};
@@ -206,6 +206,12 @@ pub trait Platform: 'static {
     /// chosen — its [`crate::preview::PreviewSlot`] does the bookkeeping. The default: none.
     fn preview(&mut self, _ui: &MainWindow, _wanted: bool) -> PreviewFrame {
         PreviewFrame::Hidden
+    }
+    /// Where the window and the screen's work area are, for window fit
+    /// (R64, docs/66 D15). `None` — the default — leaves the window's size
+    /// to the user.
+    fn placement(&self, _ui: &MainWindow) -> Option<fit::Placement> {
+        None
     }
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -417,6 +423,8 @@ pub struct Shell {
     build_gen: u64,
     /// The status the relay refused this broadcast's last reclaim with.
     reclaim_refused: Option<u16>,
+    /// Window fit and your size (R64, docs/66 D8–D13).
+    fit: fit::FitState,
 }
 
 /// The header probe's state: what was found for which relay, and when to
@@ -509,6 +517,7 @@ fn build_shell(
         .expect("tokio runtime");
 
     let (msg_tx, msg_rx) = mpsc::channel();
+    let fit = fit::FitState::new((cfg.window_width, cfg.window_height));
     Shell {
         platform,
         cfg,
@@ -566,6 +575,7 @@ fn build_shell(
         foreign_telemetry: false,
         build_gen: 0,
         reclaim_refused: None,
+        fit,
     }
 }
 
@@ -704,15 +714,91 @@ pub fn run(
                         restart_media(&ui, &shell);
                     }
                     tick(&ui, &shell);
+                    fit_tick(&ui, &shell);
                 }
             },
         );
     }
 
+    // docs/66 D10, D13: the window opens at your size, and the first turn of
+    // the event loop fits it to the screen rather than waiting a tick.
+    let (w, h) = shell.borrow().fit.launch_size();
+    if (w, h) != fit::DEFAULT_SIZE {
+        ui.window().set_size(slint::LogicalSize::new(w, h));
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let shell = shell.clone();
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                fit_tick(&ui, &shell);
+            }
+        });
+    }
+
     ui.run().expect("run event loop");
+    save_window_size(&shell);
     // ⌘Q (macOS) ends the event loop without the close dialog: never leave
     // a capture or a publisher session behind the window.
     shutdown_now(&shell);
+}
+
+/// Window fit (R64, docs/66 D8–D16): one look at the window and the main
+/// page, the move that follows if any, and your size saved once it settles.
+fn fit_tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
+    let window = ui.window();
+    let size = window.size().to_logical(window.scale_factor());
+    let mut sh = shell.borrow_mut();
+    let placement = sh.platform.placement(ui);
+    let seen = fit::Observed {
+        size: (size.width, size.height),
+        main_page: ui.get_page() == 0,
+        state: (ui.get_busy() || ui.get_paused(), ui.get_room_active()),
+        needs: fit::Needs {
+            min: ui.get_page_needs_min(),
+            full: ui.get_page_needs(),
+        },
+        placement,
+        arranged: window.is_maximized() || window.is_fullscreen() || window.is_minimized(),
+        now: std::time::Instant::now(),
+    };
+    let mv = sh.fit.step(&seen);
+    if let Some((w, h)) = sh.fit.take_save(seen.now) {
+        store_window_size(&mut sh, w, h);
+    }
+    drop(sh);
+    let Some(mv) = mv else {
+        return;
+    };
+    log::info!(
+        "window fit ({:?}): {} -> {} px{}",
+        mv.reason,
+        size.height.round(),
+        mv.client_h.round(),
+        mv.y.map(|y| format!(", top to {}", y.round()))
+            .unwrap_or_default()
+    );
+    window.set_size(slint::LogicalSize::new(size.width, mv.client_h));
+    if let (Some(y), Some(p)) = (mv.y, placement) {
+        window.set_position(slint::LogicalPosition::new(p.frame.x, y));
+    }
+}
+
+/// Your size, as it stands at quit, if a manual resize hasn't been saved yet.
+fn save_window_size(shell: &Rc<RefCell<Shell>>) {
+    let mut sh = shell.borrow_mut();
+    let due = std::time::Instant::now() + fit::SAVE_DELAY;
+    if let Some((w, h)) = sh.fit.take_save(due) {
+        store_window_size(&mut sh, w, h);
+    }
+}
+
+fn store_window_size(sh: &mut Shell, w: u32, h: u32) {
+    if (sh.cfg.window_width, sh.cfg.window_height) != (w, h) {
+        sh.cfg.window_width = w;
+        sh.cfg.window_height = h;
+        save_config(sh);
+    }
 }
 
 /// Stops the session (bounded) and the media, for a quit.
@@ -1857,12 +1943,13 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             }
         });
     }
+    // Copy link and Copy code confirm in place, in the button and on the
+    // code itself (docs/66 D2, docs/64 D17).
     {
         let ui_weak = ui_weak.clone();
         ui.on_copy_link(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 copy_text(ui.get_join_link().as_str());
-                ui.set_copied_note("Link copied".into());
             }
         });
     }
@@ -1871,7 +1958,6 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         ui.on_copy_code(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 copy_text(ui.get_code().as_str());
-                ui.set_copied_note("Code copied".into());
             }
         });
     }
@@ -2317,12 +2403,12 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 if code.is_empty() {
                     return;
                 }
+                // The button confirms in place (docs/66 D2).
                 copy_text(&gawk_engine::room_link(
                     &sh.cfg.resolve_app_url(),
                     &code,
                     None,
                 ));
-                ui.set_copied_note("Room link copied".into());
             }
         });
     }
@@ -3977,7 +4063,8 @@ fn tick(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         // that is the remedy to read. Neither can be dismissed: while
         // viewers are losing video, the broadcaster sees it (docs/57 OD7).
         let show = notice != Notice::None && !sh.uplink_warned;
-        ui.set_network_notice(if show { notice.text() } else { "" }.into());
+        // One line in the alert slot, with Help beside it (docs/66 D4).
+        ui.set_network_notice(if show { notice.short_text() } else { "" }.into());
     }
 
     // The remainder needs the shell only for the pipeline's widgets.

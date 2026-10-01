@@ -82,6 +82,7 @@ feature set exists).
 | R61 | [A `.deb` for the Linux broadcaster](#r61--a-deb-for-the-linux-broadcaster) | 🔧 **implemented 2026-09-30** (DB1–DB3 in one PR), owner's install pass open: `gawk-broadcast_<version>_amd64.deb` beside the tarball, so the launcher entry and icon land in `/usr/share` and the Wayland icon works without `install-desktop.sh`; install-tested in fresh Ubuntu 24.04 and Debian 13 containers. Amends docs/58 OD7 ([docs/63](docs/63-linux-deb-package.md)) |
 | R62 | [Desktop UX pass 2](#r62--desktop-ux-pass-2) | 🔧 **implemented 2026-10-01** (DX1–DX5; designed 2026-09-30 in a Claude Design pass, owner decisions OD1–OD10), the owner's hardware pass (DX6) open — the header's always-green server pill becomes a probed status line (`/echo` RTT, Can't reach server) and a non-default server gets docs/40's persistent strip; Stop becomes **Pause** (the Live view with Resume in Pause's place, the code and the room kept, every row still changeable) and **End** (a summary card with an undo); changing the source or the quality while live is an unannounced quick restart on the same code (in place on macOS); Live keeps one layout alone or in a room, the room adding only its card with Leave room in view; Quality gets its own page (from the Quality row) and stays editable while live, Advanced folds into a per-server Edit page, and no setting lives in two places; the Windows picker-tab selection bug is fixed test-first. Revises docs/60 D3, D11, D12 ([docs/64](docs/64-desktop-ux-pass-2.md)) |
 | R63 | [Source preview](#r63--source-preview) | 🔧 **implemented 2026-10-02** (PV1–PV5; designed 2026-10-01, owner decisions OD1–OD4), the owner's hardware pass (PV6) open — Windows shows the Live thumbnail when sharing a display too, and Ready previews the chosen source at 1 Hz on all three platforms through a capture-only stream (WGC, `SCStream`, `pipewiresrc` on the held grant) that runs only while Ready is in view and stops before every start; on macOS the screen-sharing indicator shows while a pick is held (OD1). Revises docs/38 D12.5 and docs/60 D4 ([docs/65](docs/65-source-preview.md)) |
+| R64 | [Desktop scrolling and window fit](#r64--desktop-scrolling-and-window-fit) | 🔧 **implemented 2026-10-02** (WF1–WF3; designed the same day in a Claude Design pass, owner decisions OD1–OD5), the owner's hardware pass (WF4) open — on Ready, Live and Paused only the body scrolls: the page's buttons sit in a pinned action bar (Go live; Copy link · Copy code · Pause or Resume · End), problems viewers feel now pin as a one-line strip under the header, and the preview or source card shrinks before anything scrolls. The window grows to fit the page within the screen's work area, moves up rather than under the taskbar, shrinks back only on a change of state, never fights a manual resize and remembers your size between launches; Linux clamps at launch only in v1. Revises docs/64 D6, D9 and docs/60 D7, D13 ([docs/66](docs/66-desktop-scrolling-and-window-fit.md)) |
 
 ---
 
@@ -4931,6 +4932,43 @@ the Windows picker list.
 the owner's decisions OD1–OD4. The shell and Linux parts are tested in the
 Linux container; the Windows and macOS platform code is checked by CI's
 cross clippy and macOS job. PV6, the owner's hardware pass, is open.
+
+---
+
+## R64 — Desktop scrolling and window fit
+
+**Goal**: the desktop window's important buttons are always in reach, and
+the window uses the screen's height when the page needs it.
+
+**Why**: Ready, Live and Paused scroll as one page, buttons included. At the
+default 520 × 800, Live alone needs ≈ 893 px, so Pause and End start below
+the edge the moment you go live. In a room of three it needs ≈ 1,145, and
+the room card shows only its header. Ready after End at the 440 × 600
+minimum puts Go live 61 px below the edge. Some pages will always scroll on
+some screens, so the buttons can't be part of what scrolls.
+
+**Scope** (chunks WF1–WF4 in [docs/66](docs/66-desktop-scrolling-and-window-fit.md)):
+
+- **WF1** — `main.slint`: the four zones, the action bars, the alert slot,
+  Details as the Upload row's link, the elastic preview and source card,
+  the scroll edges, the wide layout, and the heights window fit reads.
+- **WF2** — the shell: window fit and launch size as tested pure functions
+  on the UI tick, manual resizes told apart, and `windowWidth` /
+  `windowHeight` in the config.
+- **WF3** — platform glue: where the window and the work area are, on
+  Windows and macOS; the launch clamp on all three.
+- **WF4** — the owner's hardware pass on Windows, macOS and Linux.
+
+**Non-goals**: a Settings switch for window fit (OD3: a manual resize
+overrides it); growing the window on Linux (docs/66 D14: neither Wayland nor
+winit 0.30 says where the window or the work area is); remembering the
+window's position; changing the width.
+
+**Status**: 🔧 implemented 2026-10-02 (WF1–WF3) — designed the same day,
+owner decisions OD1–OD5. The layout is verified headless: at 440 × 600 the
+bar's controls stay in the window in every state, and each page's
+published height is exact to the pixel. WF4, the owner's hardware pass on
+Windows, macOS and Linux, is open.
 
 ---
 

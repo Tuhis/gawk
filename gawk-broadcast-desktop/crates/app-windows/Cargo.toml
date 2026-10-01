@@ -21,19 +21,24 @@ arboard = "3"
 log = { version = "0.4", features = ["std"] }
 serde_json = "1"
 # Licence note: see ../ui/Cargo.toml. The shell uses slint's runtime API
-# (timers, models, the event loop); the window itself is gawk-ui's.
-slint = "1"
+# (timers, models, the event loop); the window itself is gawk-ui's. The
+# window handle reaches Win32 for window fit (R64, docs/66 D15).
+slint = { version = "1", features = ["raw-window-handle-06"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 serde = { version = "1.0.229", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
 windows = { version = "0.62", features = [
     "Data_Xml_Dom",
     "UI_Notifications",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Gdi",
     "Win32_Security_Cryptography",
     "Win32_System_Com",
+    "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }

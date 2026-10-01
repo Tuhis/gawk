@@ -113,6 +113,12 @@ impl Platform for Mac {
         ui.set_mono_font("Menlo".into());
     }
 
+    /// Window fit (R64, docs/66 D15): the window's frame and its screen's
+    /// visible frame, without the menu bar and the Dock.
+    fn placement(&self, ui: &MainWindow) -> Option<gawk_ui::fit::Placement> {
+        crate::place::placement(ui)
+    }
+
     fn prepare_start(&mut self, _ui: &MainWindow, cfg: &Config) -> Result<Prepared, String> {
         let Some(picked) = self.picked.clone() else {
             return Err("Choose what to share first.".into());

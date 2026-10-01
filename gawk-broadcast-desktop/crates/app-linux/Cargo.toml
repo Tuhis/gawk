@@ -28,7 +28,10 @@ gawk-encode = { path = "../encode" }
 gawk-engine = { path = "../engine" }
 gawk-ui = { path = "../ui" }
 log = "0.4"
-slint = "1"
+# winit's monitor, for window fit's launch clamp (R64, docs/66 D14). The
+# accessor is tied to winit 0.30: a Slint that moves on fails this build
+# loudly rather than changing behaviour.
+slint = { version = "1", features = ["unstable-winit-030"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 # Notifications over org.freedesktop.Notifications (docs/58 D9): the zbus 5
 # already in the graph, on its default async-io executor — never its `tokio`
