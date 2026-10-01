@@ -1786,7 +1786,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-audio"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "gawk-engine",
  "gstreamer",
@@ -1802,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-broadcast-app-linux"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "gawk-audio",
  "gawk-capture",
@@ -1820,7 +1820,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-broadcast-app-macos"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "block2 0.6.2",
  "gawk-audio",
@@ -1838,7 +1838,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-broadcast-app-windows"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "arboard",
  "gawk-audio",
@@ -1857,7 +1857,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-capture"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "ashpd",
  "block2 0.6.2",
@@ -1880,7 +1880,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-encode"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "gawk-engine",
  "gstreamer",
@@ -1897,7 +1897,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-engine"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "flate2",
  "gawk-wire",
@@ -1915,7 +1915,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-ui"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "arboard",
  "gawk-encode",
@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-wire"
-version = "2.1.0"
+version = "2.2.0"
 
 [[package]]
 name = "gbm"

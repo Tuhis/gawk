@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.2.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.1.0...gawk-broadcast-desktop/v2.2.0) (2026-10-01)
+
+
+### Features
+
+* **broadcast-desktop:** desktop UX pass 2 (R62) ([#423](https://github.com/Tuhis/gawk/issues/423)) ([550d316](https://github.com/Tuhis/gawk/commit/550d316adeb61fd2d2df8282c4b260640c14e05f))
+* **broadcast-desktop:** signed in-place update (R47) ([#421](https://github.com/Tuhis/gawk/issues/421)) ([e71ba49](https://github.com/Tuhis/gawk/commit/e71ba490008f10ef21942b60e6a653bb8c7b5ab9))
+
 ## [2.1.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.0.0...gawk-broadcast-desktop/v2.1.0) (2026-09-30)
 
 

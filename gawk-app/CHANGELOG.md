@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.49.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.48.0...gawk-app/v0.49.0) (2026-10-01)
+
+
+### Features
+
+* **broadcast-desktop:** signed in-place update (R47) ([#421](https://github.com/Tuhis/gawk/issues/421)) ([e71ba49](https://github.com/Tuhis/gawk/commit/e71ba490008f10ef21942b60e6a653bb8c7b5ab9))
+
 ## [0.48.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.47.0...gawk-app/v0.48.0) (2026-09-30)
 
 

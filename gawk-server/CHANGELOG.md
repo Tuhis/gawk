@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.1](https://github.com/Tuhis/gawk/compare/gawk-server/v0.30.0...gawk-server/v0.30.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **server:** a proxied room participant who leaves a quiet room leaves the home's roster ([#420](https://github.com/Tuhis/gawk/issues/420)) ([3e1795b](https://github.com/Tuhis/gawk/commit/3e1795b8bb03b10a7bfad1333ba832a312063e15))
+
 ## [0.30.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.29.1...gawk-server/v0.30.0) (2026-09-29)
 
 
