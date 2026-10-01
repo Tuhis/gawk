@@ -167,11 +167,14 @@ the window at its default size, which is harmless.
 - **WF2** — `src/fit.rs`: `fit()` is D8–D9 for one evaluation, and
   `FitState::step()` adds D10–D12 across ticks: manual resizes (a size
   change more than 500 ms after the shell's own, or one that changed the
-  width), changes of state, and waiting. The shell calls it from the 250 ms
-  tick and once on the first turn of the event loop (D13). It applies the
-  move with `set_size` and `set_position` and logs it. It saves your size
-  through `take_save()` a second after the last manual resize, and again
-  at quit. Its tests live beside it, not in `shell.rs`.
+  width, but never the jump back from maximized, snapped, zoomed or full
+  screen), changes of state, and waiting. Back on the main page it waits a
+  tick, so the rebuilt page's heights settle first. The shell calls it
+  from the 250 ms tick and once on the first turn of the event loop
+  (D13). It applies the move with `set_size` and `set_position` and logs
+  it. It saves your size through `take_save()` a second after the last
+  manual resize, and again at quit. Its tests live beside it, not in
+  `shell.rs`.
 - **WF3** — `app-windows/src/place.rs` and `app-macos/src/place.rs` measure.
   The conversions they need (`to_logical`, `from_appkit`,
   `workspace_to_screen`, `differs_from_restore`) are pure functions in

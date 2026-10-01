@@ -158,6 +158,8 @@ pub struct FitState {
     waiting: bool,
     state: Option<(bool, bool)>,
     pending: bool,
+    /// The main page showed on the last tick. It shows at launch.
+    on_main: bool,
     seen: Option<(f32, f32)>,
     own: Option<Instant>,
     save_at: Option<Instant>,
@@ -180,6 +182,7 @@ impl FitState {
             waiting: false,
             state: None,
             pending: false,
+            on_main: true,
             seen: None,
             own: None,
             save_at: None,
@@ -224,7 +227,10 @@ impl FitState {
                 self.save_at = Some(o.now + SAVE_DELAY);
             }
         }
-        self.seen = Some(o.size);
+        // Restoring from an arranged state jumps the size back, often to a
+        // height fit chose: that isn't yours, so the first normal tick after
+        // it starts a new baseline instead.
+        self.seen = if arranged { None } else { Some(o.size) };
 
         if self.state != Some(o.state) {
             self.state = Some(o.state);
@@ -232,7 +238,11 @@ impl FitState {
             self.waiting = false;
         }
 
-        if !o.main_page || arranged || self.waiting {
+        // Back on the main page, its block has just been built: let its
+        // heights settle for a tick before fitting to them.
+        let returned = o.main_page && !self.on_main;
+        self.on_main = o.main_page;
+        if !o.main_page || returned || arranged || self.waiting {
             return None;
         }
         let p = o.placement.as_ref()?;
@@ -636,6 +646,33 @@ mod tests {
         assert!(!t.fit.waiting());
     }
 
+    // Review of #433: restoring an arranged window jumps its size back to
+    // where it was, often a height fit chose. That is not a manual resize:
+    // it must not become your size, be saved, or make fit wait.
+    #[test]
+    fn restoring_a_maximized_window_is_not_a_resize() {
+        let mut t = Ticker::new((0, 0));
+        t.state = (true, true);
+        t.needs = needs(999.0, 1087.0);
+        assert_eq!(t.tick().unwrap().client_h, 1087.0);
+        t.tick();
+        t.tick();
+        t.tick(); // long past the shell's own resize
+        t.arranged = true;
+        t.size = (1920.0, 1000.0);
+        assert_eq!(t.tick(), None);
+        t.arranged = false;
+        t.size = (520.0, 1087.0);
+        assert_eq!(t.tick(), None);
+        assert!(!t.fit.waiting());
+        assert_eq!(t.fit.your(), DEFAULT_SIZE);
+        assert_eq!(t.fit.take_save(t.now() + SAVE_DELAY), None);
+        // And leaving the room still goes back to your size.
+        t.state = (true, false);
+        t.needs = needs(747.0, 835.0);
+        assert_eq!(t.tick().unwrap().client_h, 800.0);
+    }
+
     #[test]
     fn navigation_never_resizes_but_a_change_made_elsewhere_lands_on_return() {
         let mut t = Ticker::new((0, 0));
@@ -646,14 +683,19 @@ mod tests {
         t.main_page = false;
         t.state = (true, false);
         assert_eq!(t.tick(), None);
-        // Back on the main page: the change applies now.
+        // Back on the main page. Its block is new, so the first tick lets
+        // its heights settle (a wrong one here would grow the window for
+        // nothing); the change applies on the next.
         t.main_page = true;
+        t.needs = needs(5000.0, 5000.0);
+        assert_eq!(t.tick(), None);
         t.needs = needs(747.0, 835.0);
         assert_eq!(t.tick().unwrap().client_h, 800.0);
         // Away and back with nothing changed: nothing happens.
         t.main_page = false;
         t.tick();
         t.main_page = true;
+        assert_eq!(t.tick(), None);
         assert_eq!(t.tick(), None);
     }
 
