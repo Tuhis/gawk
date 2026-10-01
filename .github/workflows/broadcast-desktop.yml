@@ -336,7 +336,7 @@ jobs:
       # must bump the workspace crates in the same release PR (the lock sat
       # at 1.8.0 through the 2.0.0 release before it did).
       - name: Clippy (host)
-        run: cargo clippy --locked --all-targets --timings -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       # R41 (docs/43): coverage for the Rust workspace. A prebuilt binary
       # pinned by version and fetched from its release, exactly as the
@@ -422,9 +422,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: sccache-debug-test-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/sccache-debug.log
-            /tmp/target/cargo-timings/
+          path: ${{ runner.temp }}/sccache-debug.log
           retention-days: 1
 
   build:
@@ -827,7 +825,7 @@ jobs:
       # `release` otherwise; the reasoning is at `build`'s compile step, and
       # BUILD-INFO records which one this artifact is.
       - name: Build (${{ env.BUILD_PROFILE }})
-        run: cargo build --profile "$BUILD_PROFILE" -p gawk-broadcast-app-linux --timings
+        run: cargo build --profile "$BUILD_PROFILE" -p gawk-broadcast-app-linux
 
       # The tarball's layout (D11): the binary, the launcher entry and icons
       # with install-desktop.sh (R44), INSTALL.md, the Linux notices, LICENSE
@@ -1034,9 +1032,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: sccache-debug-linux-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/sccache-debug.log
-            /tmp/target/cargo-timings/
+          path: ${{ runner.temp }}/sccache-debug.log
           retention-days: 1
 
   # R61 (docs/63 D8): install the .deb `linux` built into a FRESH container of
