@@ -466,6 +466,20 @@ The canvas itself is the reference for RM4/RM5 and is linked from §12.
   view up, still reading LIVE. Verified by `RoomScreen.test.tsx` ("RoomView
   with an own broadcast"), `BroadcasterScreen.room.test.tsx` and
   headless-Chrome runs against a local relay (docs/59 §8).
+- *(Revision 2026-10-02.)* **Leaving a room by choice takes your stream
+  out of it.** The footer's leave button and More → Leave room send
+  `Detach` for the own broadcast, then close the control session once the
+  relay's `AttachmentRemoved` arrives, or after 2 s if it never does
+  (`LEAVE_DETACH_TIMEOUT_MS`). The broadcast keeps running on its own code.
+  Before this, leave only closed the session. The relay keeps an attachment
+  across a session end on purpose (§4.4: a reload must not detach), so the
+  stream went on playing to everyone in the room, and nothing on the
+  broadcaster's live page said it was still there. Closing straight after
+  the command would not do: `RoomSession.stop()` releases the writer
+  synchronously, so the `Detach` would be dropped unsent. A leave while the
+  session is reconnecting cannot send anything and goes at once. The
+  acknowledge buttons on the ended, removed and error cards are unchanged:
+  in each of those cases the stream is already out, or the session is.
 - Reserved space: a speaking indicator on participants and a chat panel
   slot, both hidden until their capabilities arrive (§4.11). The design
   pass should draw them so the v1 layout does not have to move later.
@@ -1044,6 +1058,7 @@ the manual pass outcome.
 | RM5 the Room panel is one code-or-link field and one create, a pre-start create waits as a pending room and mints when live, and there is no attach-secret field (§4.8 revision 2026-09-23) | `BroadcasterScreen.room.test.tsx` (the nine panel cases listed in that revision); `node e2e/run.mjs --rooms-gated` joins through the new field |
 | RM5 the room code chip copies the room link on both headers, the panel carries no copy buttons, the copy toast carries the code-visibility note, End room (panel or menu) asks before it sends, the creator is not offered "Start streaming here", and the creator sees a Creator chip with an honest help (§4.9 revision 2026-09-23) | `RoomScreen.test.tsx` (chip copy and toast, static chip, panel without copies, the confirm from the panel and from the menu, no start-streaming for the creator, the Creator chip and its help); `BroadcasterScreen.room.test.tsx` (the room pill's copy, the minting broadcaster's Creator chip) |
 | RM5 a gated static room that withheld `ATTACH_OK` says so, and the secret typed in the room re-dials with an attach grant (§11.1, fixed 2026-09-17) | `RoomScreen.test.tsx` (card in place of the empty-room card and no `Attach` sent; pill with other POVs on the stage; the second dial's grant, the stash, then the attach once `ATTACH_OK` arrives; a viewer with nothing to attach stays silent) **and** `node e2e/run.mjs --rooms-gated` — the browser broadcaster against a real `-rooms-file` room: admitted with `attachments: 0` and the copy on screen, then a wrong secret really refused (its card names the secret and offers no reload), then `attachments: 1` and its own tile after the right one. The e2e lane is the load-bearing half: this state sends no command, so only a real relay proves the flag arrives clear — and it is what corrected the assumed error kind, which is `refused`, not `forbidden` |
+| RM5 leaving a room by choice detaches the own stream, waits for the relay's removal (2 s at most, a re-render does not restart the wait), and the broadcast stays live; a viewer's leave detaches nothing (§4.9 revision 2026-10-02) | `RoomScreen.test.tsx` (leave button and More menu, the confirmation, the timeout, nothing to detach), `BroadcasterScreen.room.test.tsx` (the reported flow: "start streaming here", then Leave room) **and** `node e2e/run.mjs --rooms-gated`, whose last step presses Leave room and asserts on the real relay's `/statusz` that the room has 0 attachments while the broadcast is still active. That step failed against the unfixed app |
 | RM4 the dock's overlays and the tiles' chrome do not overlap; header carries the room totals (§4.9 revision 2026-09-05) | `room.module.css` bands; `RoomScreen.test.tsx` (`N streaming`, `M watching`); the dev stack's `--profile rooms` (docs/41 §4.5) is the three-POV fixture it was seen on |
 | RM6 attach visible in another participant's `RoomState` | `gawk-broadcast/internal/engine/room_integration_test.go`, `crates/engine/tests/relay_integration.rs` (ignored; CI runs it on Linux) |
 | RM6 grant hand-off rewritten before first render | `App.room.test.tsx` |

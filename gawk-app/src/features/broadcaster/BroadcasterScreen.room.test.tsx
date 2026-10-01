@@ -5,8 +5,8 @@
 // page from "Start a stream" through "New room" to the in-page room view, and
 // asserts the mint carries the running broadcast's ID and resume token, that
 // the own tile appears under the broadcaster's own topbar (no duplicated
-// controls, "preview only" mode), that a publish resume re-sends Attach, and that Leave lands back on the live page
-// with the broadcast still running. A room chosen BEFORE the stream is live
+// controls, "preview only" mode), that a publish resume re-sends Attach, and that Leave takes the stream out of the
+// room and lands back on the live page with the broadcast still running. A room chosen BEFORE the stream is live
 // (a room's "start streaming here", a code or link joined from the pre-start
 // card, or a new room asked for there) is pending until the broadcast can
 // prove itself, then joins or mints by itself — no panel to re-open, no code
@@ -94,6 +94,8 @@ import { acceptCurrentTerms } from '../terms/acceptance';
 import { useRoomStore } from '../../state/roomStore';
 import {
   ROOM_CLIENT_WEB_BROADCASTER,
+  ROOM_DETACH_REASON_PUBLISHER,
+  ROOM_EVENT_ATTACHMENT_REMOVED,
   ROOM_STATE_FLAG_ATTACH_OK,
   ROOM_STATE_FLAG_CREATOR,
   ROOM_STATE_FLAG_DYNAMIC,
@@ -219,8 +221,19 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     act(() => created[0].callbacks.onResumed?.());
     expect(room.sent.length).toBe(sentBefore + 1);
 
-    // Leave: back on the live page, broadcast untouched, room session stopped.
+    // Leave: the stream comes out of the room, then back on the live page,
+    // broadcast untouched, room session stopped.
     fireEvent.click(screen.getByRole('button', { name: 'Leave room' }));
+    expect(room.sent).toContainEqual({ kind: 'detach', broadcastId: 'AB2CD3' });
+    act(() =>
+      room.cbs.onEvent({
+        seq: 2,
+        kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+        attachment: { broadcastId: 'AB2CD3' },
+        reason: ROOM_DETACH_REASON_PUBLISHER,
+      }),
+    );
+    expect(screen.queryByTestId('room-pill')).toBeNull();
     expect(screen.getByText('LIVE')).toBeTruthy();
     expect(room.stopped).toBe(true);
     expect(created).toHaveLength(1);
@@ -371,6 +384,49 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(screen.getByText('Joining the room…')).toBeTruthy();
     act(() => room.cbs.onState({ ...mintedState(), attachments: [{ broadcastId: 'AB2CD3', label: 'roomie', live: true, viewerCount: 0 }] }));
     expect(room.sent).toContainEqual({ kind: 'attach', broadcastId: 'AB2CD3', resumeTokenHex: TOKEN, label: 'roomie' });
+  });
+
+  // The relay keeps an attachment across a session end on purpose (a reload
+  // must not detach — docs/44 §4.4), so leaving by closing the control
+  // session alone left the stream playing to everyone in the room, with
+  // nothing on the live page saying it was still there.
+  it('leaving a room you started streaming in takes your stream out of it, and the broadcast keeps running', async () => {
+    sessionStorage.setItem('gawk:room-return', JSON.stringify({ code: 'RM2CD3', nickname: 'roomie' }));
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onResumeToken?.(TOKEN);
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    fireEvent.click(screen.getByRole('button', { name: /start a stream/i }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    // Joined as an ordinary participant: no creator token.
+    act(() =>
+      room.cbs.onState({
+        ...mintedState(),
+        flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_ATTACH_OK,
+        creatorToken: new Uint8Array(0),
+        attachments: [{ broadcastId: 'AB2CD3', label: 'roomie', live: true, viewerCount: 2 }],
+      }),
+    );
+    expect(room.sent).toContainEqual({ kind: 'attach', broadcastId: 'AB2CD3', resumeTokenHex: TOKEN, label: 'roomie' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Leave room' }));
+    expect(room.sent).toContainEqual({ kind: 'detach', broadcastId: 'AB2CD3' });
+    // The relay confirms the removal; only then does the session close.
+    act(() =>
+      room.cbs.onEvent({
+        seq: 2,
+        kind: ROOM_EVENT_ATTACHMENT_REMOVED,
+        attachment: { broadcastId: 'AB2CD3' },
+        reason: ROOM_DETACH_REASON_PUBLISHER,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByTestId('room-pill')).toBeNull());
+    expect(room.stopped).toBe(true);
+    expect(screen.getByText('LIVE')).toBeTruthy();
+    expect(created).toHaveLength(1);
   });
 
   it('a guest who starts streaming from a room stays a guest — no nickname prompt either', async () => {
