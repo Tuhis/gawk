@@ -12,9 +12,11 @@ use gawk_capture::fit::fit_within;
 use gawk_capture::portal::{self, Grant, Picked, SourceKind};
 use gawk_encode::{gst, gst_policy};
 use gawk_engine::config::{self, Config};
+use gawk_ui::fit::{Placement, Rect};
 use gawk_ui::preview::{PreviewFrame, PreviewSlot, PreviewSource};
 use gawk_ui::shell::{Hooks, Media, Platform, Prepared, Shell, Thumb};
 use gawk_ui::{AudioAppRow, MainWindow};
+use slint::winit_030::WinitWindowAccessor;
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::any::Any;
 use std::cell::RefCell;
@@ -490,10 +492,37 @@ impl Platform for Linux {
         })
     }
 
+    /// Window fit (R64, docs/66 D14). Wayland tells a client nothing about
+    /// where its window is, and winit 0.30 has no work area, so this says
+    /// only how tall the monitor is, less room for its panels: the window is
+    /// clamped to that at launch and never grows.
+    fn placement(&self, ui: &MainWindow) -> Option<Placement> {
+        let window = ui.window();
+        let client = window.size().to_logical(window.scale_factor());
+        let monitor_h = window
+            .with_winit_window(|w| {
+                w.current_monitor()
+                    .map(|m| m.size().height as f32 / m.scale_factor() as f32)
+            })
+            .flatten()?;
+        Some(Placement {
+            frame: Rect::new(0.0, 0.0, client.width, client.height + TITLE_BAR),
+            client_h: client.height,
+            work: Rect::new(0.0, 0.0, client.width, monitor_h - PANELS),
+            positioned: false,
+            arranged: false,
+        })
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 }
+
+/// What window fit allows for the desktop's panels and the window's title
+/// bar, neither of which Wayland reports (docs/66 D14).
+const PANELS: f32 = 64.0;
+const TITLE_BAR: f32 = 40.0;
 
 /// The Share card and whose-audio callbacks, wired once the window exists.
 pub fn wire(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {

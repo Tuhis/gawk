@@ -259,9 +259,9 @@ exist there); Windows 11 removes it. Closing the window ends the broadcast
   (QUIC). Networks that block UDP block this.
 - **Toasts don't appear during a fullscreen game** — Focus Assist eats
   them; the in-window status is the truth.
-- Anything else: open **Details** while live (or **Settings → App →
-  Diagnostics**), click **Copy diagnostics**, and send the JSON along with
-  `debug.log`, below.
+- Anything else: open **Details** while live (the Upload row's link, or
+  **Settings → App → Diagnostics**), click **Copy diagnostics**, and send
+  the JSON along with `debug.log`, below.
 
 ### `debug.log`
 

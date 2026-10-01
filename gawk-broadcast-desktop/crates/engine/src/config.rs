@@ -154,6 +154,11 @@ pub struct Config {
     /// it lasts until the app restarts.
     pub update_version: String,
     pub update_url: String,
+    /// The window's size as the user last set it by hand, in logical px
+    /// (R64, docs/66 D10). 0 = never set: the window opens at its default.
+    /// Heights that window fit chose are never stored here.
+    pub window_width: u32,
+    pub window_height: u32,
 }
 
 impl Config {
@@ -955,6 +960,32 @@ mod tests {
             "{raw}"
         );
         let (loaded, _) = load(&path, &Reversing);
+        assert_eq!(loaded, cfg);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // docs/66 D10: the user's window size round-trips under its camelCase
+    // names, and a file without it means "never set" (0), not 0 × 0.
+    #[test]
+    fn window_size_keys_round_trip_and_default_to_unset() {
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-window-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broadcast.json");
+        std::fs::write(&path, br#"{"nickname": "Juho"}"#).unwrap();
+        let (old, warn) = load(&path, &Plaintext);
+        assert!(warn.is_none());
+        assert_eq!((old.window_width, old.window_height), (0, 0));
+
+        let cfg = Config {
+            window_width: 560,
+            window_height: 720,
+            ..Default::default()
+        };
+        save(&path, &cfg, &Plaintext).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"windowWidth\": 560"), "{raw}");
+        assert!(raw.contains("\"windowHeight\": 720"), "{raw}");
+        let (loaded, _) = load(&path, &Plaintext);
         assert_eq!(loaded, cfg);
         std::fs::remove_dir_all(&dir).ok();
     }

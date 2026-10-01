@@ -13,6 +13,8 @@ mod dpapi;
 #[cfg(windows)]
 mod pipeline;
 #[cfg(windows)]
+mod place;
+#[cfg(windows)]
 mod preview;
 #[cfg(windows)]
 mod toast;
@@ -115,6 +117,13 @@ impl Platform for Windows {
     #[cfg(not(windows))]
     fn preview(&mut self, _ui: &MainWindow, _wanted: bool) -> PreviewFrame {
         PreviewFrame::Hidden
+    }
+
+    /// Window fit (R64, docs/66 D15): the window's frame and the monitor's
+    /// work area.
+    #[cfg(windows)]
+    fn placement(&self, ui: &MainWindow) -> Option<gawk_ui::fit::Placement> {
+        place::placement(ui)
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

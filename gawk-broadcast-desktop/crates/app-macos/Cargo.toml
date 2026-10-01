@@ -32,4 +32,9 @@ block2 = "0.6"
 objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-user-notifications = "0.3"
+# Window fit (R64, docs/66 D15): the window's frame and its screen's
+# visible frame, reached through the window handle.
+objc2-app-kit = "0.3"
+raw-window-handle = "0.6"
+slint = { version = "1", features = ["raw-window-handle-06"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }

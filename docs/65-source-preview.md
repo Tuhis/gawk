@@ -2,7 +2,8 @@
 
 **Status**: designed 2026-10-01; the owner's decisions OD1–OD4 (§2) taken
 the same day. Chunks **PV1–PV6** (§6): PV1–PV5 implemented 2026-10-02;
-PV6, the owner's hardware pass, open. Status lives in
+PV6, the owner's hardware pass, open. D2 revised 2026-10-02 by R64
+([docs/66](66-desktop-scrolling-and-window-fit.md)). Status lives in
 [`ROADMAP.md`](../ROADMAP.md).
 
 **Relationship to earlier work**: widens the 1 Hz confidence thumbnail of
@@ -45,7 +46,7 @@ The owner raised two gaps:
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | **Windows shows the Live thumbnail in both capture modes.** `show_thumbnail` is true for a window and for a display; the thumbnail is taken from the same frame, in the same place on the frame-pool thread, after the same fps and backpressure gates. *Revises docs/38 D12.5* (mode 1 only). | The Live page is built around the preview (docs/64 D7, D9). One rule on Windows and macOS. |
-| D2 | **Ready previews the chosen source.** Once something is chosen, the source card shows a 1 Hz, about 320-pixel-wide picture of it above the source's title, in place of the icon tile. With nothing chosen, or while no frame has arrived, the card is what it is today. *Revises docs/60 D4.* | Checking the pick before going live is the point of the Ready page. |
+| D2 | *(Revised 2026-10-02, [docs/66](66-desktop-scrolling-and-window-fit.md) D5: the card with a preview gives up height, down to 160 px, before the Ready page scrolls.)* **Ready previews the chosen source.** Once something is chosen, the source card shows a 1 Hz, about 320-pixel-wide picture of it above the source's title, in place of the icon tile. With nothing chosen, or while no frame has arrived, the card is what it is today. *Revises docs/60 D4.* | Checking the pick before going live is the point of the Ready page. |
 | D3 | **The preview is a capture-only stream, owned by the platform.** No encoder, no audio, no network: the same capture API the broadcast uses, opened on the chosen source, sampled once a second into RGBA. Windows: a WGC session on its own D3D11 device, downscaled by the VideoProcessor (`Converter::thumbnail_rgba`). macOS: an `SCStream` on the picker's filter at 320×180 and 1 fps, converted by `nv12_thumbnail`. Linux: `pipewiresrc` on the held portal grant in system memory, `videorate` to 1 fps, `videoconvertscale` to RGBA, into an appsink (`gst_policy::preview_plan`). With no encoder on the path, docs/58 OD13's zero-copy concern does not apply. | The preview reuses the capture each platform already trusts, so what it shows is what the broadcast would capture. |
 | D4 | **It runs only while it can be seen.** The shell asks for a preview while the window is idle (not starting, live or paused), on the main page (not the picker, Settings or Quality), and not minimized. The platform runs one exactly while that holds and a source is chosen, and stops it otherwise. The request is level-triggered, every 250 ms tick, so no transition can leave one running. | An idle app costs nothing again the moment the preview is out of sight. |
 | D5 | **The preview is gone before a broadcast captures.** The shell stops it before every `prepare_start` (Go live, Resume, a quick restart), so the broadcast's capture never shares the source with it. On Linux it is also stopped before a grant is released (a re-pick, an ending), because the pipeline is reading the grant's PipeWire remote. | Two consumers of one portal node, or a pipeline outliving its grant, are failure modes nobody needs to debug. |

@@ -14,6 +14,12 @@
 // the code and Paused is the Live view with its buttons and badge swapped
 // (D9); End leaves a summary card on Ready (D10); the code and the link copy
 // on click (D17); Quality and Settings are two pages (D18).
+//
+// R64 (docs/66): on Ready, Live and Paused only the body scrolls. The
+// page's buttons sit in a pinned action bar (D2), problems viewers feel now
+// in an alert slot under the header (D4), and one elastic element per page
+// gives up height first (D5). The page publishes what it needs for the
+// shell's window fit (D8).
 
 import { ScrollView } from "std-widgets.slint";
 
@@ -74,7 +80,6 @@ struct LiveView {
     code-chars: [string],
     join-link: string,
     mono-font: string,
-    copied-note: string,
     sharing-title: string,
     sharing-detail: string,
     sharing-window: bool,
@@ -204,6 +209,35 @@ component Icon inherits Path {
     accessible-role: none;
 }
 
+// A small tooltip above its parent: "Click to copy", then "Copied".
+component Tip inherits Rectangle {
+    in property <string> text;
+    in property <bool> done;
+    height: 26px;
+    width: tl.preferred-width;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: T.tip-line;
+    background: T.tip;
+    tl := HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 5px;
+        cross-axis-alignment: center;
+        if root.done: Icon {
+            commands: Icons.check;
+            ink: T.ok-text;
+            size: 13px;
+        }
+        Text {
+            text: root.text;
+            color: root.done ? T.ok-text : T.text;
+            font-size: 12px;
+            font-weight: 500;
+        }
+    }
+}
+
 // The web app's <Button> (docs/10): primary is the near-white fill, never a
 // coloured one; danger is an outline. docs/64 D4: primary is the page's next
 // step (one per page), secondary acts now, ghost is low stakes, danger ends
@@ -217,6 +251,18 @@ component Btn inherits Rectangle {
     in property <bool> large;
     in property <bool> small;
     in property <bool> icon-filled;
+    // docs/66 D2: a copy button confirms in place — for 1.2 s a green check
+    // and "Copied", with the button's width held.
+    in property <bool> confirm;
+    // Only the icon shows; the text stays its accessible name (CopyIconBtn
+    // adds the tip).
+    in property <bool> icon-only;
+    out property <bool> hovered: ta.has-hover;
+    out property <bool> flash;
+    // The width with its label shown, in this font, whatever `icon-only`
+    // says: the action bar sizes itself from it (docs/66 D2).
+    out property <length> labelled-width: (root.small ? 24px : 32px)
+        + (root.icon != "" ? (root.small ? 15px : 17px) + 8px : 0px) + measure.preferred-width;
     callback clicked;
     horizontal-stretch: 0;
     vertical-stretch: 0;
@@ -243,23 +289,45 @@ component Btn inherits Rectangle {
     accessible-enabled: self.enabled;
     accessible-action-default => {
         if (root.enabled) {
-            root.clicked();
+            root.press();
         }
     }
+    function press() {
+        if (root.confirm) {
+            root.flash = true;
+        }
+        root.clicked();
+    }
+    Timer {
+        interval: 1200ms;
+        running: root.flash;
+        triggered => {
+            root.flash = false;
+        }
+    }
+    // The label's width at rest, so "Copied" doesn't shrink the button.
+    measure := Text {
+        visible: false;
+        accessible-role: none;
+        text: root.text;
+        font-size: root.large ? 16px : root.small ? 13px : 14px;
+        font-weight: root.kind == 0 ? 600 : 500;
+    }
     HorizontalLayout {
-        padding-left: root.small ? 12px : 16px;
-        padding-right: root.small ? 12px : 16px;
+        padding-left: root.icon-only ? 0px : root.small ? 12px : 16px;
+        padding-right: root.icon-only ? 0px : root.small ? 12px : 16px;
         spacing: 8px;
         alignment: center;
         cross-axis-alignment: center;
         if root.icon != "": Icon {
-            commands: root.icon;
-            ink: root.fg;
-            filled: root.icon-filled;
+            commands: root.flash ? Icons.check : root.icon;
+            ink: root.flash ? T.ok : root.fg;
+            filled: root.icon-filled && !root.flash;
             size: root.small ? 15px : 17px;
         }
-        Text {
-            text: root.text;
+        if !root.icon-only: Text {
+            text: root.flash ? "Copied" : root.text;
+            min-width: root.confirm ? measure.preferred-width : 0px;
             color: root.fg;
             font-size: root.large ? 16px : root.small ? 13px : 14px;
             font-weight: root.kind == 0 ? 600 : 500;
@@ -270,8 +338,39 @@ component Btn inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: pointer;
         clicked => {
+            root.press();
+        }
+    }
+}
+
+// The action bar's Copy code (docs/66 D2): labelled, or an icon when the
+// window is too narrow for the labelled bar (MainWindow's `narrow-bar`).
+// As an icon its name stays the accessible label and becomes the hover tip.
+// The explicit size keeps the tip from widening the button.
+component CopyCodeBtn inherits Rectangle {
+    in property <bool> narrow;
+    in property <bool> enabled: true;
+    callback clicked;
+    out property <length> labelled-width: b.labelled-width;
+    width: root.narrow ? 40px : b.labelled-width;
+    height: 40px;
+    b := Btn {
+        width: 100%;
+        height: 100%;
+        icon: Icons.copy;
+        text: "Copy code";
+        icon-only: root.narrow;
+        confirm: true;
+        enabled: root.enabled;
+        clicked => {
             root.clicked();
         }
+    }
+    if root.narrow && (b.hovered || b.flash): Tip {
+        text: b.flash ? "Copied" : "Copy code";
+        done: b.flash;
+        x: (parent.width - self.width) / 2;
+        y: -self.height - 6px;
     }
 }
 
@@ -722,35 +821,6 @@ component CodeBoxes inherits HorizontalLayout {
             font-family: root.font-family;
             horizontal-alignment: center;
             vertical-alignment: center;
-        }
-    }
-}
-
-// A small tooltip above its parent: "Click to copy", then "Copied".
-component Tip inherits Rectangle {
-    in property <string> text;
-    in property <bool> done;
-    height: 26px;
-    width: tl.preferred-width;
-    border-radius: 7px;
-    border-width: 1px;
-    border-color: T.tip-line;
-    background: T.tip;
-    tl := HorizontalLayout {
-        padding-left: 9px;
-        padding-right: 9px;
-        spacing: 5px;
-        cross-axis-alignment: center;
-        if root.done: Icon {
-            commands: Icons.check;
-            ink: T.ok-text;
-            size: 13px;
-        }
-        Text {
-            text: root.text;
-            color: root.done ? T.ok-text : T.text;
-            font-size: 12px;
-            font-weight: 500;
         }
     }
 }
@@ -1245,6 +1315,45 @@ component ServerStrip inherits Rectangle {
     }
 }
 
+// docs/66 D4: a problem viewers feel right now, as one line pinned under the
+// header, with its fix. Never dismissible (docs/57 OD7).
+component AlertStrip inherits Rectangle {
+    in property <string> text;
+    in property <string> action;
+    callback act;
+    vertical-stretch: 0;
+    height: 44px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: T.warn-line;
+    background: T.warn-soft;
+    accessible-role: AccessibleRole.text;
+    accessible-label: self.text;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 6px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Icon {
+            commands: Icons.alert;
+            ink: T.warn-text;
+        }
+        Text {
+            text: root.text;
+            color: T.text;
+            font-size: 13px;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        if root.action != "": RowLink {
+            text: root.action;
+            clicked => {
+                root.act();
+            }
+        }
+    }
+}
+
 // One tile of the summary card: a value over what it means.
 component StatTile inherits Rectangle {
     in property <string> value;
@@ -1411,6 +1520,7 @@ component RoomCard inherits List {
             small: true;
             icon: Icons.link;
             text: "Copy room link";
+            confirm: true;
             enabled: root.v.room-link != "";
             clicked => {
                 root.copy-room-link();
@@ -1454,18 +1564,19 @@ component RoomCard inherits List {
     }
 }
 
-// The Live page's code, rows, room and buttons: below the preview in a
-// narrow window, a right-hand column in a wide one (D7). The same component
-// is Paused (docs/64 D9): only its buttons differ. Everything it shows comes
-// in through `v`; everything it does goes out through callbacks.
+// The Live page's code, rows and room: below the preview in a narrow window,
+// a right-hand column in a wide one (D7). The same component is Paused
+// (docs/64 D9). Its buttons are the page's action bar (docs/66 D2), not
+// part of it. Everything it shows comes in through `v`; everything it does
+// goes out through callbacks.
 component LiveSide inherits VerticalLayout {
     in property <LiveView> v;
     in property <bool> wide;
     // The room card's actions need two rows (see RoomCard).
     in property <bool> tight;
     in-out property <string> room-key-input;
-    callback copy-link();
     callback copy-code();
+    callback copy-link();
     callback copy-room-link();
     callback open-link(string);
     callback change-source();
@@ -1476,11 +1587,8 @@ component LiveSide inherits VerticalLayout {
     callback leave-room();
     callback rejoin-room();
     callback dismiss-pending();
-    callback pause();
-    callback resume();
-    callback stop();
     spacing: 14px;
-    alignment: root.wide ? LayoutAlignment.start : LayoutAlignment.stretch;
+    alignment: start;
 
     // The code: six boxes and the link, or a wait while the relay mints it.
     VerticalLayout {
@@ -1513,36 +1621,6 @@ component LiveSide inherits VerticalLayout {
             font-size: 14px;
             horizontal-alignment: center;
         }
-    }
-
-    // D3, OD2: your own link is the primary, alone or in a room. Paused, the
-    // primary is Resume, below.
-    HorizontalLayout {
-        spacing: 10px;
-        Btn {
-            kind: root.v.paused ? 1 : 0;
-            horizontal-stretch: 1;
-            icon: Icons.link;
-            text: "Copy link";
-            enabled: root.v.join-link != "";
-            clicked => {
-                root.copy-link();
-            }
-        }
-        Btn {
-            icon: Icons.copy;
-            text: "Copy code";
-            enabled: root.v.code != "";
-            clicked => {
-                root.copy-code();
-            }
-        }
-    }
-    if root.v.copied-note != "": Text {
-        text: root.v.copied-note;
-        color: T.ok;
-        font-size: 12.5px;
-        horizontal-alignment: center;
     }
 
     // D5: the stream list, the same alone and in a room.
@@ -1603,6 +1681,14 @@ component LiveSide inherits VerticalLayout {
             Dot {
                 state: root.v.upload-state;
             }
+            // docs/66 D3: Details is about the connection; the wide window
+            // shows it inline instead.
+            if !root.wide: RowLink {
+                text: "Details";
+                clicked => {
+                    root.open-details();
+                }
+            }
         }
     }
 
@@ -1662,52 +1748,6 @@ component LiveSide inherits VerticalLayout {
         }
         key-submit => {
             root.room-key-submit();
-        }
-    }
-
-    if !root.wide: Rectangle {
-        vertical-stretch: 1;
-    }
-    HorizontalLayout {
-        spacing: 8px;
-        if !root.wide: Btn {
-            kind: 2;
-            icon: Icons.activity;
-            text: "Details";
-            clicked => {
-                root.open-details();
-            }
-        }
-        Rectangle {
-            horizontal-stretch: 1;
-        }
-        // Resume takes Pause's place (docs/64 D9).
-        if root.v.paused: Btn {
-            kind: 0;
-            icon: Icons.play;
-            icon-filled: true;
-            text: "Resume";
-            clicked => {
-                root.resume();
-            }
-        }
-        if !root.v.paused: Btn {
-            icon: Icons.pause;
-            text: "Pause";
-            // Starting has no session to pause yet.
-            enabled: root.v.live && !root.v.starting;
-            clicked => {
-                root.pause();
-            }
-        }
-        Btn {
-            kind: 3;
-            icon: Icons.stop;
-            text: "End";
-            enabled: root.v.live || root.v.paused;
-            clicked => {
-                root.stop();
-            }
         }
     }
 }
@@ -1924,6 +1964,15 @@ export component MainWindow inherits Window {
     // ----- close confirm -----
     in-out property <bool> confirm-close: false;
 
+    // ----- window fit (R64, docs/66 D8) -----
+    // What the main page needs, as client heights: nothing scrolls with its
+    // elastic element (the preview, the source card) at its minimum, and the
+    // same at its natural size. And whether its body scrolls now. The pages
+    // are `if` blocks the root can't reach into, so each publishes its own.
+    out property <length> page-needs-min;
+    out property <length> page-needs;
+    out property <bool> body-scrolls;
+
     // Local UI state.
     property <bool> wide: self.width >= 900px;
     property <bool> audio-dismissed;
@@ -1931,6 +1980,36 @@ export component MainWindow inherits Window {
     property <bool> show-secret;
     // The Live page shows while starting, live or paused (docs/64 D9).
     property <bool> on-air: root.busy || root.paused;
+    // docs/66 D4: the problem the alert slot shows, highest first. 0 none,
+    // 1 reconnecting, 2 the upload can't keep up, 3 the network drops video.
+    // The shell already holds the network line back while the upload one
+    // shows (docs/57 D7).
+    property <int> alert-kind: !root.on-air || root.paused ? 0
+        : root.resuming ? 1
+        : root.uplink-warning != "" ? 2
+        : root.network-notice != "" ? 3 : 0;
+
+    // docs/66 D2: Copy code is an icon when the window is narrower than the
+    // Live bar with it labelled, as the bar measures it in this font. Set
+    // from `changed`, not bound: a binding would make the window's width
+    // constraints depend on its own width (a binding loop).
+    property <length> bar-labelled: 500px;
+    property <bool> narrow-bar: true;
+    init => {
+        root.narrow-bar = self.width < root.bar-labelled;
+    }
+    changed width => {
+        root.narrow-bar = self.width < root.bar-labelled;
+    }
+    changed bar-labelled => {
+        root.narrow-bar = self.width < root.bar-labelled;
+    }
+
+    function publish-fit(needs-min: length, needs: length, scrolls: bool) {
+        root.page-needs-min = needs-min;
+        root.page-needs = needs;
+        root.body-scrolls = scrolls;
+    }
 
     // What the next start shares (Ready's card, Paused's Sharing row): the
     // committed selection on Windows, the system picker's pick elsewhere.
@@ -1952,7 +2031,6 @@ export component MainWindow inherits Window {
         code-chars: root.code-chars,
         join-link: root.join-link,
         mono-font: root.mono-font,
-        copied-note: root.copied-note,
         // Live shows what is being sent; Paused, what Resume will send.
         sharing-title: root.paused ? root.next-source : root.sharing-title,
         sharing-detail: root.paused ? (root.next-is-window ? "Window" : root.next-source != "" ? "Display" : "") : root.sharing-detail,
@@ -2182,677 +2260,854 @@ export component MainWindow inherits Window {
             }
         }
 
+        // docs/66 D4: the alert slot, part of the fixed header zone.
+        if root.page == 0 && root.alert-kind != 0: HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 8px;
+            AlertStrip {
+                text: root.alert-kind == 1 ? "Reconnecting. People watching see your last frame."
+                    : root.alert-kind == 2 ? "Your upload can't keep up" : root.network-notice;
+                action: root.alert-kind == 2 ? "Change quality" : root.alert-kind == 3 ? "Help" : "";
+                act => {
+                    if (root.alert-kind == 2) {
+                        root.page = 4;
+                    } else {
+                        root.network-notice-help();
+                    }
+                }
+            }
+        }
+
         // ================= ready (idle) =================
-        if root.page == 0 && !root.on-air: ScrollView {
+        // docs/66 D1: the body scrolls; the bar with Go live never does. The
+        // source card gives up height before anything scrolls (D5).
+        if root.page == 0 && !root.on-air: ready := VerticalLayout {
             vertical-stretch: 1;
-            VerticalLayout {
-                padding-left: 20px;
-                padding-right: 20px;
-                padding-top: 4px;
-                padding-bottom: 16px;
-                spacing: 14px;
+            // The body but the source card: its two halves, the padding
+            // (4 + 16) and the gaps either side of the card.
+            property <length> rest: ready-top.preferred-height + ready-bottom.preferred-height + 48px;
+            // The card's floor, natural height and ceiling. A preview (docs/65
+            // D2) needs room for its picture and keeps its size; the icon card
+            // can take spare height.
+            property <length> card-min: root.has-preview ? 160px : 120px;
+            property <length> card-natural: root.has-preview ? (root.wide ? 300px : 220px) : 150px;
+            property <length> card-max: root.has-preview ? self.card-natural : 220px;
+            property <length> card-h: Math.max(self.card-min, Math.min(self.card-max, ready-sv.visible-height - self.rest));
+            // The header zone and the bar: the window less the body.
+            property <length> chrome: root.height - ready-sv.visible-height;
+            property <length> needs-min: self.chrome + self.rest + self.card-min;
+            property <length> needs: self.chrome + self.rest + self.card-natural;
+            property <bool> scrolls: ready-body.preferred-height > ready-sv.visible-height + 0.5px;
+            property <bool> more-below: self.scrolls && ready-sv.viewport-y + ready-body.preferred-height > ready-sv.visible-height + 0.5px;
+            init => {
+                root.publish-fit(self.needs-min, self.needs, self.scrolls);
+            }
+            changed needs-min => {
+                root.publish-fit(self.needs-min, self.needs, self.scrolls);
+            }
+            changed needs => {
+                root.publish-fit(self.needs-min, self.needs, self.scrolls);
+            }
+            changed scrolls => {
+                root.publish-fit(self.needs-min, self.needs, self.scrolls);
+            }
 
-                if root.error-text != "": Rectangle {
-                    border-radius: 12px;
-                    border-width: 1px;
-                    border-color: T.danger-line;
-                    background: T.live-soft;
-                    VerticalLayout {
-                        padding: 14px;
-                        spacing: 10px;
-                        Text {
-                            text: root.error-text;
-                            color: T.text;
-                            font-size: 13px;
-                            wrap: word-wrap;
-                        }
-                        if root.can-mint: HorizontalLayout {
-                            alignment: start;
-                            Btn {
-                                text: "Start a new broadcast instead";
-                                small: true;
-                                clicked => {
-                                    root.start-broadcast();
+            Rectangle {
+                vertical-stretch: 1;
+                ready-sv := ScrollView {
+                    width: 100%;
+                    height: 100%;
+                    ready-body := VerticalLayout {
+                        padding-left: 20px;
+                        padding-right: 20px;
+                        padding-top: 4px;
+                        padding-bottom: 16px;
+                        spacing: 14px;
+                        alignment: start;
+
+                        ready-top := VerticalLayout {
+                            spacing: 14px;
+                            if root.error-text != "": Rectangle {
+                                border-radius: 12px;
+                                border-width: 1px;
+                                border-color: T.danger-line;
+                                background: T.live-soft;
+                                VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 10px;
+                                    Text {
+                                        text: root.error-text;
+                                        color: T.text;
+                                        font-size: 13px;
+                                        wrap: word-wrap;
+                                    }
+                                    if root.can-mint: HorizontalLayout {
+                                        alignment: start;
+                                        Btn {
+                                            text: "Start a new broadcast instead";
+                                            small: true;
+                                            clicked => {
+                                                root.start-broadcast();
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    }
-                }
 
-                // D2: the relay didn't answer the probe. Go live stays on.
-                if root.probe-state == 2: Banner {
-                    icon: Icons.alert;
-                    body: "gawk can't reach " + root.probe-host + ". Check that this computer is online. A firewall has to allow UDP to the server's port.";
-                    action: "Try again";
-                    dismissible: false;
-                    act => {
-                        root.probe-now();
-                    }
-                }
-
-                // D10: the summary of the broadcast that just ended, as a
-                // passing notice with its undo.
-                if root.summary-visible: Rectangle {
-                    border-radius: 16px;
-                    border-width: 1px;
-                    border-color: T.accent-line;
-                    background: T.accent-soft;
-                    accessible-role: text;
-                    accessible-label: "Broadcast ended";
-                    VerticalLayout {
-                        padding: 16px;
-                        padding-top: 10px;
-                        spacing: 12px;
-                        HorizontalLayout {
-                            cross-axis-alignment: center;
-                            Kicker {
-                                text: "BROADCAST ENDED";
-                                color: T.accent-text;
-                                horizontal-stretch: 1;
-                            }
-                            Btn {
-                                kind: 2;
-                                small: true;
-                                icon: Icons.close;
-                                text: "Dismiss";
-                                clicked => {
-                                    root.summary-dismiss();
+                            // D2: the relay didn't answer the probe. Go live stays on.
+                            if root.probe-state == 2: Banner {
+                                icon: Icons.alert;
+                                body: "gawk can't reach " + root.probe-host + ". Check that this computer is online. A firewall has to allow UDP to the server's port.";
+                                action: "Try again";
+                                dismissible: false;
+                                act => {
+                                    root.probe-now();
                                 }
                             }
-                        }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            for s in root.summary-rows: StatTile {
-                                value: s.value;
-                                label: s.label;
-                            }
-                        }
-                        if root.resume-code != "": HorizontalLayout {
-                            cross-axis-alignment: center;
-                            Text {
-                                text: "Ended by mistake?";
-                                color: T.muted;
-                                font-size: 12.5px;
-                                horizontal-stretch: 1;
-                            }
-                            RowLink {
-                                text: "Resume on " + root.resume-code;
-                                clicked => {
-                                    root.resume-broadcast();
-                                }
-                            }
-                        }
-                    }
-                }
 
-                HorizontalLayout {
-                    cross-axis-alignment: center;
-                    Kicker {
-                        text: "YOU'RE SHARING";
-                        horizontal-stretch: 1;
-                    }
-                    if root.can-change-source: RowLink {
-                        text: "Change";
-                        clicked => {
-                            root.change-source();
-                        }
-                    }
-                }
-                // What the next broadcast shares, as a card: a 1 Hz preview
-                // of it once one arrives (docs/65 D2), its icon until then.
-                source-card := Rectangle {
-                    height: root.has-preview ? (root.wide ? 300px : 220px) : 150px;
-                    border-radius: 12px;
-                    border-width: 1px;
-                    border-color: T.border;
-                    background: sta.has-hover && root.can-change-source ? T.s2 : T.s1;
-                    accessible-role: button;
-                    accessible-label: "You're sharing: " + (root.next-source != "" ? root.next-source : "nothing chosen yet");
-                    accessible-action-default => {
-                        root.change-source();
-                    }
-                    if root.has-preview: VerticalLayout {
-                        spacing: 10px;
-                        padding: 10px;
-                        padding-bottom: 12px;
-                        Rectangle {
-                            vertical-stretch: 1;
-                            border-radius: 8px;
-                            background: #101216;
-                            clip: true;
-                            Image {
-                                width: 100%;
-                                height: 100%;
-                                source: root.preview;
-                                image-fit: contain;
-                                accessible-label: "Preview of what you're sharing";
-                            }
-                        }
-                        HorizontalLayout {
-                            alignment: center;
-                            spacing: 8px;
-                            if root.has-window && root.windows[root.selected-window].has-icon: Image {
-                                source: root.windows[root.selected-window].icon;
-                                width: 18px;
-                                height: 18px;
-                            }
-                            if !(root.has-window && root.windows[root.selected-window].has-icon): Icon {
-                                commands: root.next-is-window ? Icons.window : Icons.monitor;
-                                size: 16px;
-                            }
-                            Text {
-                                text: root.next-source;
-                                color: T.text;
-                                font-size: 14px;
-                                font-weight: 500;
-                                overflow: elide;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                    if !root.has-preview: VerticalLayout {
-                        alignment: center;
-                        spacing: 12px;
-                        padding: 16px;
-                        HorizontalLayout {
-                            alignment: center;
-                            Rectangle {
-                                width: 56px;
-                                height: 56px;
+                            // D10: the summary of the broadcast that just ended, as a
+                            // passing notice with its undo.
+                            if root.summary-visible: Rectangle {
                                 border-radius: 16px;
-                                background: T.s3;
-                                if root.has-window && root.windows[root.selected-window].has-icon: Image {
-                                    source: root.windows[root.selected-window].icon;
-                                    width: 32px;
-                                    height: 32px;
+                                border-width: 1px;
+                                border-color: T.accent-line;
+                                background: T.accent-soft;
+                                accessible-role: text;
+                                accessible-label: "Broadcast ended";
+                                VerticalLayout {
+                                    padding: 16px;
+                                    padding-top: 10px;
+                                    spacing: 12px;
+                                    HorizontalLayout {
+                                        cross-axis-alignment: center;
+                                        Kicker {
+                                            text: "BROADCAST ENDED";
+                                            color: T.accent-text;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Btn {
+                                            kind: 2;
+                                            small: true;
+                                            icon: Icons.close;
+                                            text: "Dismiss";
+                                            clicked => {
+                                                root.summary-dismiss();
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        for s in root.summary-rows: StatTile {
+                                            value: s.value;
+                                            label: s.label;
+                                        }
+                                    }
+                                    if root.resume-code != "": HorizontalLayout {
+                                        cross-axis-alignment: center;
+                                        Text {
+                                            text: "Ended by mistake?";
+                                            color: T.muted;
+                                            font-size: 12.5px;
+                                            horizontal-stretch: 1;
+                                        }
+                                        RowLink {
+                                            text: "Resume on " + root.resume-code;
+                                            clicked => {
+                                                root.resume-broadcast();
+                                            }
+                                        }
+                                    }
                                 }
-                                if !(root.has-window && root.windows[root.selected-window].has-icon): Icon {
-                                    commands: root.next-is-window ? Icons.window : Icons.monitor;
-                                    size: 26px;
+                            }
+
+                            HorizontalLayout {
+                                cross-axis-alignment: center;
+                                Kicker {
+                                    text: "YOU'RE SHARING";
+                                    horizontal-stretch: 1;
+                                }
+                                if root.can-change-source: RowLink {
+                                    text: "Change";
+                                    clicked => {
+                                        root.change-source();
+                                    }
                                 }
                             }
                         }
-                        Text {
-                            text: root.next-source != "" ? root.next-source : "Nothing chosen yet";
-                            color: T.text;
-                            font-size: 15px;
-                            font-weight: 500;
-                            horizontal-alignment: center;
-                            overflow: elide;
+                        // What the next broadcast shares, as a card: a 1 Hz preview
+                        // of it once one arrives (docs/65 D2), its icon until then.
+                        source-card := Rectangle {
+                            height: ready.card-h;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: T.border;
+                            background: sta.has-hover && root.can-change-source ? T.s2 : T.s1;
+                            accessible-role: button;
+                            accessible-label: "You're sharing: " + (root.next-source != "" ? root.next-source : "nothing chosen yet");
+                            accessible-action-default => {
+                                root.change-source();
+                            }
+                            if root.has-preview: VerticalLayout {
+                                spacing: 10px;
+                                padding: 10px;
+                                padding-bottom: 12px;
+                                Rectangle {
+                                    vertical-stretch: 1;
+                                    border-radius: 8px;
+                                    background: #101216;
+                                    clip: true;
+                                    Image {
+                                        width: 100%;
+                                        height: 100%;
+                                        source: root.preview;
+                                        image-fit: contain;
+                                        accessible-label: "Preview of what you're sharing";
+                                    }
+                                }
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 8px;
+                                    if root.has-window && root.windows[root.selected-window].has-icon: Image {
+                                        source: root.windows[root.selected-window].icon;
+                                        width: 18px;
+                                        height: 18px;
+                                    }
+                                    if !(root.has-window && root.windows[root.selected-window].has-icon): Icon {
+                                        commands: root.next-is-window ? Icons.window : Icons.monitor;
+                                        size: 16px;
+                                    }
+                                    Text {
+                                        text: root.next-source;
+                                        color: T.text;
+                                        font-size: 14px;
+                                        font-weight: 500;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                            if !root.has-preview: VerticalLayout {
+                                alignment: center;
+                                spacing: 12px;
+                                padding: 16px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 56px;
+                                        height: 56px;
+                                        border-radius: 16px;
+                                        background: T.s3;
+                                        if root.has-window && root.windows[root.selected-window].has-icon: Image {
+                                            source: root.windows[root.selected-window].icon;
+                                            width: 32px;
+                                            height: 32px;
+                                        }
+                                        if !(root.has-window && root.windows[root.selected-window].has-icon): Icon {
+                                            commands: root.next-is-window ? Icons.window : Icons.monitor;
+                                            size: 26px;
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: root.next-source != "" ? root.next-source : "Nothing chosen yet";
+                                    color: T.text;
+                                    font-size: 15px;
+                                    font-weight: 500;
+                                    horizontal-alignment: center;
+                                    overflow: elide;
+                                }
+                                if root.next-source == "": Text {
+                                    text: root.system-picker ? root.share-empty-hint : "Pick an app or a display to share.";
+                                    color: T.muted;
+                                    font-size: 12.5px;
+                                    horizontal-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            sta := TouchArea {
+                                enabled: root.can-change-source;
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.change-source();
+                                }
+                            }
                         }
-                        if root.next-source == "": Text {
-                            text: root.system-picker ? root.share-empty-hint : "Pick an app or a display to share.";
-                            color: T.muted;
-                            font-size: 12.5px;
-                            horizontal-alignment: center;
-                            wrap: word-wrap;
+                        ready-bottom := VerticalLayout {
+                            spacing: 14px;
+                            // D5: Sound · Quality, then the Room list on its own.
+                            List {
+                                Row {
+                                    first: true;
+                                    RowIco {
+                                        icon: Icons.speaker;
+                                    }
+                                    RowText {
+                                        title: "Sound";
+                                        sub: root.system-picker ? (root.share-mode-label != "" ? root.share-mode-label : "A window shares its app's sound. A display shares everything.")
+                                            : root.picker-tab == 0 ? "Only this app's sound · follows what you share" : "Everything you hear on this computer";
+                                    }
+                                    if root.whose-audio: RowLink {
+                                        text: "Change";
+                                        clicked => {
+                                            root.show-audio-sheet = true;
+                                        }
+                                    }
+                                }
+                                Row {
+                                    RowIco {
+                                        icon: Icons.gauge;
+                                    }
+                                    RowText {
+                                        title: "Quality";
+                                        sub: root.quality-line;
+                                    }
+                                    RowLink {
+                                        text: "Change";
+                                        clicked => {
+                                            root.page = 4;
+                                        }
+                                    }
+                                }
+                            }
+                            List {
+                                Row {
+                                    first: true;
+                                    tinted: root.room-pending != "";
+                                    RowIco {
+                                        icon: Icons.users;
+                                        accent: root.room-pending != "";
+                                    }
+                                    RowText {
+                                        title: root.room-pending != "" ? (root.room-pending == "New room" ? root.room-pending : "Room " + root.room-pending) : "Room";
+                                        sub: root.room-pending != "" ? root.room-pending-detail
+                                            : root.room-status != "" ? root.room-status : "Stream on your own, or together with friends";
+                                    }
+                                    if root.room-pending == "": RowLink {
+                                        text: "Add";
+                                        clicked => {
+                                            root.show-room-sheet = true;
+                                        }
+                                    }
+                                    if root.room-pending != "": IconBtn {
+                                        icon: Icons.close;
+                                        label: "Don't join " + root.room-pending;
+                                        box: 32px;
+                                        clicked => {
+                                            root.room-pending-dismiss();
+                                        }
+                                    }
+                                }
+                            }
+
+                            // docs/47 D7: an in-window line, not a toast — the portal
+                            // and Focus Assist swallow toasts while a broadcaster games.
+                            if root.update-version != "": HorizontalLayout {
+                                alignment: center;
+                                spacing: 10px;
+                                padding-top: 6px;
+                                Text {
+                                    text: root.update-version + " available — release notes";
+                                    color: T.accent;
+                                    font-size: 12px;
+                                    accessible-role: button;
+                                    accessible-action-default => {
+                                        root.open-link(root.update-url);
+                                    }
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.open-link(root.update-url);
+                                        }
+                                    }
+                                }
+                                // Never while starting or live (docs/48 D4): shown
+                                // dimmed then, and the click does nothing.
+                                if root.update-ready: Text {
+                                    text: "Install and relaunch";
+                                    color: root.busy ? T.muted : T.accent;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    accessible-role: button;
+                                    accessible-enabled: !root.busy;
+                                    accessible-action-default => {
+                                        if !root.busy {
+                                            root.install-update();
+                                        }
+                                    }
+                                    TouchArea {
+                                        enabled: !root.busy;
+                                        mouse-cursor: root.busy ? default : pointer;
+                                        clicked => {
+                                            root.install-update();
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: "Dismiss";
+                                    color: T.muted;
+                                    font-size: 12px;
+                                    accessible-role: button;
+                                    accessible-action-default => {
+                                        root.dismiss-update();
+                                    }
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.dismiss-update();
+                                        }
+                                    }
+                                }
+                            }
+                            if root.update-version != "" && root.update-note != "": Text {
+                                text: root.update-note;
+                                color: T.muted;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                            }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 10px;
+                                padding-top: root.update-version != "" ? 0px : 6px;
+                                if root.app-version != "": Text {
+                                    text: root.app-version;
+                                    color: T.muted;
+                                    font-size: 12px;
+                                }
+                                if root.app-version != "": Text {
+                                    text: "·";
+                                    color: T.muted;
+                                    font-size: 12px;
+                                }
+                                Text {
+                                    text: "Terms of use";
+                                    color: T.muted;
+                                    font-size: 12px;
+                                    accessible-role: button;
+                                    accessible-action-default => {
+                                        root.open-link(root.terms-link);
+                                    }
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.open-link(root.terms-link);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
-                    sta := TouchArea {
-                        enabled: root.can-change-source;
-                        mouse-cursor: pointer;
+                }
+                // D6: a line under the header zone once the body scrolls.
+                if ready-sv.viewport-y < 0: Rectangle {
+                    y: 0;
+                    height: 1px;
+                    background: T.border;
+                }
+            }
+
+            // ----- the action bar (D2) -----
+            Rectangle {
+                height: ready-bar.preferred-height;
+                background: T.bg;
+                // D6: more of the body is below.
+                if ready.more-below: Rectangle {
+                    y: -24px;
+                    height: 24px;
+                    background: @linear-gradient(180deg, #0a0b0d00 0%, #0a0b0deb 100%);
+                }
+                if ready.more-below: Rectangle {
+                    y: 0;
+                    height: 1px;
+                    background: T.border;
+                }
+                ready-bar := VerticalLayout {
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    padding-top: 12px;
+                    padding-bottom: 14px;
+                    spacing: 6px;
+                    Btn {
+                        kind: 0;
+                        large: true;
+                        text: root.room-pending != "" && root.room-pending != "New room" ? "Go live in " + root.room-pending : "Go live";
                         clicked => {
-                            root.change-source();
-                        }
-                    }
-                }
-
-                // D5: Sound · Quality, then the Room list on its own.
-                List {
-                    Row {
-                        first: true;
-                        RowIco {
-                            icon: Icons.speaker;
-                        }
-                        RowText {
-                            title: "Sound";
-                            sub: root.system-picker ? (root.share-mode-label != "" ? root.share-mode-label : "A window shares its app's sound. A display shares everything.")
-                                : root.picker-tab == 0 ? "Only this app's sound · follows what you share" : "Everything you hear on this computer";
-                        }
-                        if root.whose-audio: RowLink {
-                            text: "Change";
-                            clicked => {
-                                root.show-audio-sheet = true;
-                            }
-                        }
-                    }
-                    Row {
-                        RowIco {
-                            icon: Icons.gauge;
-                        }
-                        RowText {
-                            title: "Quality";
-                            sub: root.quality-line;
-                        }
-                        RowLink {
-                            text: "Change";
-                            clicked => {
-                                root.page = 4;
-                            }
-                        }
-                    }
-                }
-                List {
-                    Row {
-                        first: true;
-                        tinted: root.room-pending != "";
-                        RowIco {
-                            icon: Icons.users;
-                            accent: root.room-pending != "";
-                        }
-                        RowText {
-                            title: root.room-pending != "" ? (root.room-pending == "New room" ? root.room-pending : "Room " + root.room-pending) : "Room";
-                            sub: root.room-pending != "" ? root.room-pending-detail
-                                : root.room-status != "" ? root.room-status : "Stream on your own, or together with friends";
-                        }
-                        if root.room-pending == "": RowLink {
-                            text: "Add";
-                            clicked => {
-                                root.show-room-sheet = true;
-                            }
-                        }
-                        if root.room-pending != "": IconBtn {
-                            icon: Icons.close;
-                            label: "Don't join " + root.room-pending;
-                            box: 32px;
-                            clicked => {
-                                root.room-pending-dismiss();
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    vertical-stretch: 1;
-                    min-height: 4px;
-                }
-                Btn {
-                    kind: 0;
-                    large: true;
-                    text: root.room-pending != "" && root.room-pending != "New room" ? "Go live in " + root.room-pending : "Go live";
-                    clicked => {
-                        root.start-broadcast();
-                    }
-                }
-                Text {
-                    text: root.summary-visible ? "You'll get a new code to send to friends."
-                        : root.room-pending != "" ? "Your stream also gets its own code, as always." : "You'll get a code to send to friends.";
-                    color: T.muted;
-                    font-size: 12px;
-                    horizontal-alignment: center;
-                }
-
-                // docs/47 D7: an in-window line, not a toast — the portal
-                // and Focus Assist swallow toasts while a broadcaster games.
-                if root.update-version != "": HorizontalLayout {
-                    alignment: center;
-                    spacing: 10px;
-                    padding-top: 6px;
-                    Text {
-                        text: root.update-version + " available — release notes";
-                        color: T.accent;
-                        font-size: 12px;
-                        accessible-role: button;
-                        accessible-action-default => {
-                            root.open-link(root.update-url);
-                        }
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.open-link(root.update-url);
-                            }
-                        }
-                    }
-                    // Never while starting or live (docs/48 D4): shown
-                    // dimmed then, and the click does nothing.
-                    if root.update-ready: Text {
-                        text: "Install and relaunch";
-                        color: root.busy ? T.muted : T.accent;
-                        font-size: 12px;
-                        font-weight: 600;
-                        accessible-role: button;
-                        accessible-enabled: !root.busy;
-                        accessible-action-default => {
-                            if !root.busy {
-                                root.install-update();
-                            }
-                        }
-                        TouchArea {
-                            enabled: !root.busy;
-                            mouse-cursor: root.busy ? default : pointer;
-                            clicked => {
-                                root.install-update();
-                            }
+                            root.start-broadcast();
                         }
                     }
                     Text {
-                        text: "Dismiss";
+                        text: root.summary-visible ? "You'll get a new code to send to friends."
+                            : root.room-pending != "" ? "Your stream also gets its own code, as always." : "You'll get a code to send to friends.";
                         color: T.muted;
                         font-size: 12px;
-                        accessible-role: button;
-                        accessible-action-default => {
-                            root.dismiss-update();
-                        }
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.dismiss-update();
-                            }
-                        }
-                    }
-                }
-                if root.update-version != "" && root.update-note != "": Text {
-                    text: root.update-note;
-                    color: T.muted;
-                    font-size: 11px;
-                    wrap: word-wrap;
-                    horizontal-alignment: center;
-                }
-
-                HorizontalLayout {
-                    alignment: center;
-                    spacing: 10px;
-                    padding-top: root.update-version != "" ? 0px : 6px;
-                    if root.app-version != "": Text {
-                        text: root.app-version;
-                        color: T.muted;
-                        font-size: 12px;
-                    }
-                    if root.app-version != "": Text {
-                        text: "·";
-                        color: T.muted;
-                        font-size: 12px;
-                    }
-                    Text {
-                        text: "Terms of use";
-                        color: T.muted;
-                        font-size: 12px;
-                        accessible-role: button;
-                        accessible-action-default => {
-                            root.open-link(root.terms-link);
-                        }
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.open-link(root.terms-link);
-                            }
-                        }
+                        horizontal-alignment: center;
                     }
                 }
             }
         }
 
         // ================= live and paused =================
-        if root.page == 0 && root.on-air: ScrollView {
+        // docs/66 D1: the body scrolls; the action bar never does. The
+        // preview gives up height before anything scrolls (D5).
+        if root.page == 0 && root.on-air: live := VerticalLayout {
             vertical-stretch: 1;
-            HorizontalLayout {
-                padding-left: 20px;
-                padding-right: 20px;
-                padding-top: 4px;
-                padding-bottom: 16px;
-                spacing: 20px;
+            // The wide layout's right column lives in an `if`, so it reports
+            // its own height here.
+            property <length> right-h;
+            // The left column's width (less the padding, and in a wide window
+            // the 20 px gap and the 420 px column), and the preview's natural
+            // height: 248 narrow, 16:9 of the column (at most 360) wide.
+            property <length> left-w: root.wide ? root.width - 480px : root.width - 40px;
+            property <length> prev-natural: root.wide ? Math.min(360px, self.left-w * 9 / 16) : 248px;
+            property <length> prev-h: Math.max(160px, Math.min(self.prev-natural, live-sv.visible-height - 32px - live-rest.preferred-height));
+            property <length> right: root.wide ? self.right-h : 0px;
+            // The header zone, the alert slot and the bar: the window less
+            // the body. The body is 4 + 16 padding around max(the preview,
+            // 12, the rest; the right column).
+            property <length> chrome: root.height - live-sv.visible-height;
+            property <length> needs-min: self.chrome + 20px + Math.max(172px + live-rest.preferred-height, self.right);
+            property <length> needs: self.chrome + 20px + Math.max(self.prev-natural + 12px + live-rest.preferred-height, self.right);
+            property <bool> scrolls: live-body.preferred-height > live-sv.visible-height + 0.5px;
+            property <bool> more-below: self.scrolls && live-sv.viewport-y + live-body.preferred-height > live-sv.visible-height + 0.5px;
+            init => {
+                root.publish-fit(self.needs-min, self.needs, self.scrolls);
+            }
+            changed needs-min => {
+                root.publish-fit(self.needs-min, self.needs, self.scrolls);
+            }
+            changed needs => {
+                root.publish-fit(self.needs-min, self.needs, self.scrolls);
+            }
+            changed scrolls => {
+                root.publish-fit(self.needs-min, self.needs, self.scrolls);
+            }
 
-                // ----- left: preview, notices, and (wide) details -----
-                VerticalLayout {
-                    spacing: 12px;
-                    horizontal-stretch: root.wide ? 2 : 1;
-                    Rectangle {
-                        height: root.wide ? 360px : 248px;
-                        border-radius: 10px;
-                        border-width: 1px;
-                        border-color: T.border-soft;
-                        background: #101216;
-                        clip: true;
-                        if root.show-thumbnail: Image {
-                            width: 100%;
-                            height: 100%;
-                            source: root.thumbnail;
-                            image-fit: contain;
-                            accessible-label: "What viewers see";
-                        }
-                        if !root.show-thumbnail && !root.resuming && !root.paused: Text {
-                            width: 100%;
-                            height: 100%;
-                            text: root.live ? "What viewers see" : "Starting…";
-                            color: T.muted;
-                            font-size: 12.5px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                        // Paused: the last frame, dimmed (docs/64 D9).
-                        if root.paused: Rectangle {
-                            background: #0a0b0dcc;
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 8px;
-                                HorizontalLayout {
-                                    alignment: center;
-                                    Icon {
-                                        commands: Icons.pause;
-                                        ink: T.text;
-                                        size: 26px;
-                                    }
+            Rectangle {
+                vertical-stretch: 1;
+                live-sv := ScrollView {
+                    width: 100%;
+                    height: 100%;
+                    live-body := HorizontalLayout {
+                        padding-left: 20px;
+                        padding-right: 20px;
+                        padding-top: 4px;
+                        padding-bottom: 16px;
+                        spacing: 20px;
+
+                        // ----- left: preview, notices, and (wide) details -----
+                        VerticalLayout {
+                            spacing: 12px;
+                            alignment: start;
+                            horizontal-stretch: 1;
+                            preview := Rectangle {
+                                height: live.prev-h;
+                                border-radius: 10px;
+                                border-width: 1px;
+                                border-color: T.border-soft;
+                                background: #101216;
+                                clip: true;
+                                if root.show-thumbnail: Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    source: root.thumbnail;
+                                    image-fit: contain;
+                                    accessible-label: "What viewers see";
                                 }
-                                Text {
-                                    text: "Paused";
-                                    color: T.text;
-                                    font-size: 14px;
-                                    horizontal-alignment: center;
-                                }
-                            }
-                        }
-                        if root.resuming && !root.paused: Rectangle {
-                            background: #0a0b0d99;
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 8px;
-                                Text {
-                                    text: "Lost the connection to the server";
-                                    color: T.text;
-                                    font-size: 14px;
-                                    horizontal-alignment: center;
-                                }
-                                Text {
-                                    text: root.status-line;
+                                if !root.show-thumbnail && !root.resuming && !root.paused: Text {
+                                    width: 100%;
+                                    height: 100%;
+                                    text: root.live ? "What viewers see" : "Starting…";
                                     color: T.muted;
                                     font-size: 12.5px;
                                     horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                // Paused: the last frame, dimmed (docs/64 D9).
+                                if root.paused: Rectangle {
+                                    background: #0a0b0dcc;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 8px;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Icon {
+                                                commands: Icons.pause;
+                                                ink: T.text;
+                                                size: 26px;
+                                            }
+                                        }
+                                        Text {
+                                            text: "Paused";
+                                            color: T.text;
+                                            font-size: 14px;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+                                }
+                                if root.resuming && !root.paused: Rectangle {
+                                    background: #0a0b0d99;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 8px;
+                                        Text {
+                                            text: "Lost the connection to the server";
+                                            color: T.text;
+                                            font-size: 14px;
+                                            horizontal-alignment: center;
+                                        }
+                                        Text {
+                                            text: root.status-line;
+                                            color: T.muted;
+                                            font-size: 12.5px;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            live-rest := VerticalLayout {
+                                spacing: 12px;
+                                // Resume couldn't start (nothing chosen to share, say):
+                                // Paused says why, where the button is.
+                                if root.paused && root.error-text != "": Banner {
+                                    icon: Icons.alert;
+                                    body: root.error-text;
+                                    dismissible: false;
+                                }
+                                // docs/64 D11: the app died live; Resume picks it up.
+                                if root.crash-resume: Banner {
+                                    icon: Icons.alert;
+                                    warn: false;
+                                    body: "gawk closed while you were live. Resume and anyone still on the page picks you up again by themselves.";
+                                    dismissible: false;
+                                }
+                                if root.audio-hint && !root.audio-dismissed && !root.paused: Banner {
+                                    icon: Icons.speaker;
+                                    warn: false;
+                                    body: root.audio-hint-text;
+                                    action: "Share all sound instead";
+                                    act => {
+                                        root.switch-to-system-audio();
+                                    }
+                                    dismiss => {
+                                        root.audio-dismissed = true;
+                                    }
+                                }
+                                if root.minimized-hint != "" && !root.minimized-dismissed && !root.paused: Banner {
+                                    icon: Icons.window;
+                                    body: root.minimized-hint;
+                                    dismiss => {
+                                        root.minimized-dismissed = true;
+                                    }
+                                }
+
+                                if root.wide: HorizontalLayout {
+                                    cross-axis-alignment: center;
+                                    Kicker {
+                                        text: "DETAILS";
+                                        horizontal-stretch: 1;
+                                    }
+                                    Btn {
+                                        kind: 2;
+                                        small: true;
+                                        icon: Icons.copy;
+                                        text: "Copy diagnostics";
+                                        clicked => {
+                                            root.copy-diagnostics();
+                                        }
+                                    }
+                                }
+                                if root.wide: Stats {
+                                    rows: root.stats-rows;
+                                }
+                                if !root.wide: LiveSide {
+                                    wide: false;
+                                    tight: root.width < 500px;
+                                    v: root.lv;
+                                    room-key-input <=> root.room-key-input;
+                                    copy-link => {
+                                        root.copy-link();
+                                    }
+                                    copy-code => {
+                                        root.copy-code();
+                                    }
+                                    copy-room-link => {
+                                        root.copy-room-link();
+                                    }
+                                    open-link(l) => {
+                                        root.open-link(l);
+                                    }
+                                    change-source => {
+                                        root.change-source();
+                                    }
+                                    change-quality => {
+                                        root.page = 4;
+                                    }
+                                    open-room-sheet => {
+                                        root.show-room-sheet = true;
+                                    }
+                                    room-key-submit => {
+                                        root.room-key-submit();
+                                    }
+                                    open-details => {
+                                        root.show-details = true;
+                                    }
+                                    leave-room => {
+                                        root.room-detach();
+                                    }
+                                    rejoin-room => {
+                                        root.room-rejoin();
+                                    }
+                                    dismiss-pending => {
+                                        root.room-pending-dismiss();
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // Resume couldn't start (nothing chosen to share, say):
-                    // Paused says why, where the button is.
-                    if root.paused && root.error-text != "": Banner {
-                        icon: Icons.alert;
-                        body: root.error-text;
-                        dismissible: false;
-                    }
-                    // docs/64 D11: the app died live; Resume picks it up.
-                    if root.crash-resume: Banner {
-                        icon: Icons.alert;
-                        warn: false;
-                        body: "gawk closed while you were live. Resume and anyone still on the page picks you up again by themselves.";
-                        dismissible: false;
-                    }
-                    if root.resuming && !root.paused: Banner {
-                        icon: Icons.eye;
-                        warn: false;
-                        body: "People watching see your last frame. They pick up again by themselves when you're back. Nobody has to rejoin.";
-                        dismissible: false;
-                    }
-                    // Connection problems are never dismissible: while viewers
-                    // are losing video the broadcaster sees it, and the line
-                    // goes away by itself when the problem does (docs/57 OD7).
-                    if root.uplink-warning != "" && !root.paused: Banner {
-                        icon: Icons.alert;
-                        body: root.uplink-warning;
-                        action: "Change quality";
-                        dismissible: false;
-                        act => {
-                            root.page = 4;
-                        }
-                    }
-                    if root.network-notice != "" && !root.paused: Banner {
-                        icon: Icons.alert;
-                        body: root.network-notice;
-                        action: "Help";
-                        dismissible: false;
-                        act => {
-                            root.network-notice-help();
-                        }
-                    }
-                    if root.audio-hint && !root.audio-dismissed && !root.paused: Banner {
-                        icon: Icons.speaker;
-                        warn: false;
-                        body: root.audio-hint-text;
-                        action: "Share all sound instead";
-                        act => {
-                            root.switch-to-system-audio();
-                        }
-                        dismiss => {
-                            root.audio-dismissed = true;
-                        }
-                    }
-                    if root.minimized-hint != "" && !root.minimized-dismissed && !root.paused: Banner {
-                        icon: Icons.window;
-                        body: root.minimized-hint;
-                        dismiss => {
-                            root.minimized-dismissed = true;
-                        }
-                    }
-
-                    if root.wide: HorizontalLayout {
-                        cross-axis-alignment: center;
-                        Kicker {
-                            text: "DETAILS";
-                            horizontal-stretch: 1;
-                        }
-                        Btn {
-                            kind: 2;
-                            small: true;
-                            icon: Icons.copy;
-                            text: "Copy diagnostics";
-                            clicked => {
-                                root.copy-diagnostics();
+                        // ----- right column in a wide window (D7) -----
+                        if root.wide: LiveSide {
+                            width: 420px;
+                            wide: true;
+                            tight: true;
+                            v: root.lv;
+                            property <length> ph: self.preferred-height;
+                            init => {
+                                live.right-h = self.ph;
+                            }
+                            changed ph => {
+                                live.right-h = self.ph;
+                            }
+                            room-key-input <=> root.room-key-input;
+                            copy-link => {
+                                root.copy-link();
+                            }
+                            copy-code => {
+                                root.copy-code();
+                            }
+                            copy-room-link => {
+                                root.copy-room-link();
+                            }
+                            open-link(l) => {
+                                root.open-link(l);
+                            }
+                            change-source => {
+                                root.change-source();
+                            }
+                            change-quality => {
+                                root.page = 4;
+                            }
+                            open-room-sheet => {
+                                root.show-room-sheet = true;
+                            }
+                            room-key-submit => {
+                                root.room-key-submit();
+                            }
+                            open-details => {
+                                root.show-details = true;
+                            }
+                            leave-room => {
+                                root.room-detach();
+                            }
+                            rejoin-room => {
+                                root.room-rejoin();
+                            }
+                            dismiss-pending => {
+                                root.room-pending-dismiss();
                             }
                         }
                     }
-                    if root.wide: Stats {
-                        rows: root.stats-rows;
-                    }
-                    if !root.wide: LiveSide {
-                        wide: false;
-                        tight: root.width < 500px;
-                        v: root.lv;
-                        room-key-input <=> root.room-key-input;
-                        copy-link => {
+                }
+                // D6: a line under the header zone once the body scrolls.
+                if live-sv.viewport-y < 0: Rectangle {
+                    y: 0;
+                    height: 1px;
+                    background: T.border;
+                }
+            }
+
+            // ----- the action bar (D2): the primary and the broadcast's controls -----
+            Rectangle {
+                height: 64px;
+                background: T.bg;
+                // How wide the bar is with Copy code labelled, in this font:
+                // under that, Copy code is an icon (the root's `narrow-bar`).
+                // The padding, three gaps, and 16 px between the two groups.
+                property <length> labelled: 40px + 3 * 8px + 16px + link-btn.labelled-width
+                    + code-btn.labelled-width + rest-btn.labelled-width + end-btn.labelled-width;
+                init => {
+                    root.bar-labelled = self.labelled;
+                }
+                changed labelled => {
+                    root.bar-labelled = self.labelled;
+                }
+                // D6: more of the body is below.
+                if live.more-below: Rectangle {
+                    y: -24px;
+                    height: 24px;
+                    background: @linear-gradient(180deg, #0a0b0d00 0%, #0a0b0deb 100%);
+                }
+                if live.more-below: Rectangle {
+                    y: 0;
+                    height: 1px;
+                    background: T.border;
+                }
+                HorizontalLayout {
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    spacing: 8px;
+                    cross-axis-alignment: center;
+                    // docs/64 OD2: your own link is the primary, alone or in a
+                    // room. Paused, it steps down for Resume (docs/64 D9).
+                    link-btn := Btn {
+                        kind: root.paused ? 1 : 0;
+                        icon: Icons.link;
+                        text: "Copy link";
+                        confirm: true;
+                        enabled: root.join-link != "";
+                        clicked => {
                             root.copy-link();
                         }
-                        copy-code => {
+                    }
+                    code-btn := CopyCodeBtn {
+                        narrow: root.narrow-bar;
+                        enabled: root.code != "";
+                        clicked => {
                             root.copy-code();
                         }
-                        copy-room-link => {
-                            root.copy-room-link();
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                    // Pause, or in its place Resume as the page's primary.
+                    rest-btn := Btn {
+                        kind: root.paused ? 0 : 1;
+                        icon: root.paused ? Icons.play : Icons.pause;
+                        icon-filled: root.paused;
+                        text: root.paused ? "Resume" : "Pause";
+                        // Starting has no session to pause yet.
+                        enabled: root.paused || (root.live && !root.lv.starting);
+                        clicked => {
+                            if (root.paused) {
+                                root.resume-broadcast();
+                            } else {
+                                root.pause-broadcast();
+                            }
                         }
-                        open-link(l) => {
-                            root.open-link(l);
-                        }
-                        change-source => {
-                            root.change-source();
-                        }
-                        change-quality => {
-                            root.page = 4;
-                        }
-                        open-room-sheet => {
-                            root.show-room-sheet = true;
-                        }
-                        room-key-submit => {
-                            root.room-key-submit();
-                        }
-                        open-details => {
-                            root.show-details = true;
-                        }
-                        leave-room => {
-                            root.room-detach();
-                        }
-                        rejoin-room => {
-                            root.room-rejoin();
-                        }
-                        dismiss-pending => {
-                            root.room-pending-dismiss();
-                        }
-                        pause => {
-                            root.pause-broadcast();
-                        }
-                        resume => {
-                            root.resume-broadcast();
-                        }
-                        stop => {
+                    }
+                    end-btn := Btn {
+                        kind: 3;
+                        icon: Icons.stop;
+                        text: "End";
+                        enabled: root.live || root.paused;
+                        clicked => {
                             if (root.crash-resume) {
                                 root.resume-dismiss();
                             } else {
                                 root.stop-broadcast();
                             }
-                        }
-                    }
-                }
-
-                // ----- right column in a wide window (D7) -----
-                if root.wide: LiveSide {
-                    width: 420px;
-                    wide: true;
-                    tight: true;
-                    v: root.lv;
-                    room-key-input <=> root.room-key-input;
-                    copy-link => {
-                        root.copy-link();
-                    }
-                    copy-code => {
-                        root.copy-code();
-                    }
-                    copy-room-link => {
-                        root.copy-room-link();
-                    }
-                    open-link(l) => {
-                        root.open-link(l);
-                    }
-                    change-source => {
-                        root.change-source();
-                    }
-                    change-quality => {
-                        root.page = 4;
-                    }
-                    open-room-sheet => {
-                        root.show-room-sheet = true;
-                    }
-                    room-key-submit => {
-                        root.room-key-submit();
-                    }
-                    open-details => {
-                        root.show-details = true;
-                    }
-                    leave-room => {
-                        root.room-detach();
-                    }
-                    rejoin-room => {
-                        root.room-rejoin();
-                    }
-                    dismiss-pending => {
-                        root.room-pending-dismiss();
-                    }
-                    pause => {
-                        root.pause-broadcast();
-                    }
-                    resume => {
-                        root.resume-broadcast();
-                    }
-                    stop => {
-                        if (root.crash-resume) {
-                            root.resume-dismiss();
-                        } else {
-                            root.stop-broadcast();
                         }
                     }
                 }
@@ -3345,6 +3600,12 @@ export component MainWindow inherits Window {
                 spacing: 10px;
                 alignment: start;
 
+                // docs/66 D4: the alert strip's full text, where its fix is.
+                if root.uplink-warning != "": Banner {
+                    icon: Icons.alert;
+                    body: root.uplink-warning;
+                    dismissible: false;
+                }
                 Text {
                     text: "Resolution";
                     color: T.muted;
@@ -3754,6 +4015,7 @@ export component MainWindow inherits Window {
                 horizontal-stretch: 1;
                 icon: Icons.link;
                 text: "Copy room link";
+                confirm: true;
                 enabled: root.room-link != "";
                 clicked => {
                     root.copy-room-link();

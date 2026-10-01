@@ -64,6 +64,16 @@ impl Notice {
             Notice::Network => "Your network is dropping some video. Viewers may see brief pauses.",
         }
     }
+
+    /// The one-line form the desktop window's alert strip shows (R64,
+    /// docs/66 D4): the first sentence of [`Notice::text`].
+    pub fn short_text(self) -> &'static str {
+        match self {
+            Notice::None => "",
+            Notice::Wifi => "Your Wi-Fi is dropping some video",
+            Notice::Network => "Your network is dropping some video",
+        }
+    }
 }
 
 /// One second's worth of the window.
@@ -281,10 +291,22 @@ mod tests {
             "awdl", "channel", "packet", "uplink", "quic", "carrier", "dscp", "ghz", "band",
         ];
         for n in [Notice::Wifi, Notice::Network] {
-            let t = n.text().to_lowercase();
-            for b in BANNED {
-                assert!(!t.contains(b), "{:?} says {b:?}", n.text());
+            for text in [n.text(), n.short_text()] {
+                let t = text.to_lowercase();
+                for b in BANNED {
+                    assert!(!t.contains(b), "{text:?} says {b:?}");
+                }
             }
+        }
+    }
+
+    // docs/66 D4: the strip's line is the full text's first sentence, so
+    // the two can't drift apart.
+    #[test]
+    fn the_short_text_is_the_first_sentence() {
+        for n in [Notice::None, Notice::Wifi, Notice::Network] {
+            let first = n.text().split(". ").next().unwrap_or("");
+            assert_eq!(n.short_text(), first, "{n:?}");
         }
     }
 }
