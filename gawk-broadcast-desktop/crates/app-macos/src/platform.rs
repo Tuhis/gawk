@@ -10,6 +10,7 @@ use gawk_capture::sck_picker::{Picked, Picker, PickerEvent};
 use gawk_engine::config::{self, Config};
 use gawk_engine::lossnotice::NetworkFacts;
 use gawk_ui::MainWindow;
+use gawk_ui::preview::{PreviewFrame, PreviewSlot, PreviewSource};
 use gawk_ui::shell::{Hooks, Media, Platform, Prepared, Shell};
 use std::any::Any;
 use std::cell::RefCell;
@@ -28,6 +29,15 @@ pub struct Mac {
     /// building its pipeline, which already took the old pick: the shell
     /// switches the broadcast to it (review of #423).
     restart_requested: bool,
+    /// Ready's preview of the pick (docs/65 D3), keyed by `pick_gen`.
+    preview: PreviewSlot<u64>,
+    /// Bumped on every pick: a new pick is a new preview.
+    pick_gen: u64,
+    /// The shell wanted a preview on its last ask: the picker stays active
+    /// with a pick held, so the indicator does not flicker between ticks.
+    preview_wanted: bool,
+    /// A pipeline existed at the last tick.
+    has_media: bool,
 }
 
 impl Mac {
@@ -44,6 +54,10 @@ impl Mac {
             presenting: false,
             active: false,
             restart_requested: false,
+            preview: PreviewSlot::default(),
+            pick_gen: 0,
+            preview_wanted: false,
+            has_media: false,
         }
     }
 
@@ -56,6 +70,10 @@ impl Mac {
             None => self.picker.present(),
         }
         self.active = true;
+    }
+
+    fn previewing(&self) -> bool {
+        self.preview_wanted && self.picked.is_some()
     }
 
     fn set_active(&mut self, active: bool) {
@@ -151,6 +169,7 @@ impl Platform for Mac {
                         self.restart_requested = true;
                     }
                     self.picked = Some(picked);
+                    self.pick_gen += 1;
                 }
                 PickerEvent::Cancelled => {}
                 PickerEvent::Failed(text) => ui.set_error_text(text.into()),
@@ -164,10 +183,27 @@ impl Platform for Mac {
             self.presenting = true;
             self.picker.present_display_for(capture);
         }
-        // Active only while on screen or live, so an idle app never shows
-        // the system's screen-sharing indicator; live, the menu-bar control
-        // can re-pick too (D4).
-        self.set_active(self.presenting || media.is_some());
+        // Active only while on screen, live or previewing a pick, so an app
+        // with nothing picked never shows the system's screen-sharing
+        // indicator (docs/65 OD1); live, the menu-bar control can re-pick
+        // too (D4).
+        self.has_media = media.is_some();
+        self.set_active(self.presenting || self.has_media || self.previewing());
+    }
+
+    fn preview(&mut self, _ui: &MainWindow, wanted: bool) -> PreviewFrame {
+        self.preview_wanted = wanted;
+        let want = (wanted && self.picked.is_some()).then_some(self.pick_gen);
+        if want.is_some() {
+            self.set_active(true);
+        }
+        let picked = self.picked.clone();
+        let frame = self.preview.update(want, |_| {
+            let picked = picked.as_ref().ok_or("nothing picked")?;
+            crate::preview::Preview::start(picked).map(|p| Box::new(p) as Box<dyn PreviewSource>)
+        });
+        self.set_active(self.presenting || self.has_media || self.previewing());
+        frame
     }
 
     fn network_facts(&mut self, relay: std::net::SocketAddr) -> Option<NetworkFacts> {
