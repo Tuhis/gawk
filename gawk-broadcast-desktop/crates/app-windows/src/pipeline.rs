@@ -261,7 +261,6 @@ impl Pipeline {
         let force_idr = Arc::new(AtomicBool::new(false));
         let thumb: Arc<Mutex<Option<Thumb>>> = Arc::new(Mutex::new(None));
         let capture_fps = Arc::new(Mutex::new(FpsMeter::default()));
-        let mode1 = matches!(params.target, CaptureTarget::Window { .. });
         let hwnd = match params.target {
             CaptureTarget::Window { hwnd, .. } => Some(hwnd),
             CaptureTarget::Monitor { .. } => None,
@@ -321,9 +320,10 @@ impl Pipeline {
                     let conv = converter.as_mut().expect("converter just ensured");
                     let nv12 = conv.convert_rotating(&frame.texture)?;
 
-                    // The 1 Hz confidence thumbnail (mode 1 only): a frame
-                    // already in hand, downscaled off the encode path.
-                    if mode1 && ts.saturating_sub(last_thumb_us) >= 1_000_000 {
+                    // The 1 Hz confidence thumbnail, in both modes (docs/65
+                    // D1): a frame already in hand, downscaled off the
+                    // encode path.
+                    if ts.saturating_sub(last_thumb_us) >= 1_000_000 {
                         last_thumb_us = ts;
                         if let Ok(t) = conv.thumbnail_rgba(&frame.texture, 320) {
                             *thumb.lock().unwrap() = Some(t);
@@ -384,8 +384,8 @@ impl Pipeline {
                 capture_path: "zero-copy".into(),
                 width: enc_width,
                 height: enc_height,
-                // The 1 Hz confidence thumbnail is a mode-1 affordance.
-                show_thumbnail: mode1,
+                // The 1 Hz confidence thumbnail, in both modes (docs/65 D1).
+                show_thumbnail: true,
             },
             gpu,
             capture: Some(capture),
