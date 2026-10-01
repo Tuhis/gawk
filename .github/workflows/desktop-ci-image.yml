@@ -63,7 +63,15 @@ jobs:
         with:
           context: .
           file: .github/actions/linux-container-setup/Dockerfile
-          push: ${{ env.PUSH == 'true' }}
+          # Pushing is the `push=` in `outputs`, not the action's `push:` input,
+          # which would add a second output (--push) alongside this one.
+          # zstd layers, not gzip. Every desktop job unpacks the whole image
+          # into its pod's fresh dind, one layer at a time on one core: through
+          # the in-cluster cache the gzip download took ~7 s and the unpack
+          # ~36 s (gawk run 36924378225, `test`). zstd decompresses several
+          # times faster; dockerd, zot and GHCR all take OCI zstd layers.
+          # `force-compression` re-compresses the ubuntu:24.04 base layer too.
+          outputs: type=image,push=${{ env.PUSH }},oci-mediatypes=true,compression=zstd,compression-level=6,force-compression=true
           tags: |
             ghcr.io/tuhis/gawk-desktop-ci:latest
             ghcr.io/tuhis/gawk-desktop-ci:${{ github.sha }}
