@@ -18,11 +18,30 @@
 #    checks;
 #  * Rust: rustup, then the toolchain rust-toolchain.toml pins.
 #
-# The apt invocation is ci.yml's defensive one (the broadcast job documents
-# every line of it): HTTPS for the Ubuntu archives, IPv4 only, short
-# inactivity timeouts, bounded retries, and update errors surfaced.
+# The apt invocation (install-deps.sh) is ci.yml's defensive one (the
+# broadcast job documents every line of it): HTTPS for the Ubuntu archives,
+# IPv4 only, short inactivity timeouts, bounded retries, and update errors
+# surfaced.
+#
+# THE PREBUILT IMAGE. The jobs run in ghcr.io/tuhis/gawk-desktop-ci, which is
+# ubuntu:24.04 with install-deps.sh and the pinned toolchain already applied
+# (Dockerfile beside this file, published by desktop-ci-image.yml). It
+# exists for speed only — on the stock image this took 61-110 s per job,
+# every job, and it is a no-op there now — so it is never trusted to be
+# current:
+#
+#  * apt: the image records install-deps.sh's sha256, and this action runs the
+#    script whenever the file in the checkout hashes differently. A PR that
+#    changes the list gets it installed on top of the old image; the image
+#    catches up when the PR lands on main.
+#  * Rust: `rustup toolchain install` reads rust-toolchain.toml and is a
+#    no-op when the image already has that toolchain, and an install when a
+#    PR bumps it.
+#
+# The action still works unchanged in plain ubuntu:24.04, so pointing a job
+# back at it is the whole rollback.
 name: Linux container setup
-description: Install the Linux build/test toolchain inside the ubuntu:24.04 container.
+description: Install the Linux build/test toolchain inside the ubuntu:24.04 container (a no-op on a current gawk-desktop-ci image).
 
 runs:
   using: composite
@@ -30,60 +49,46 @@ runs:
     - shell: bash
       run: |
         set -euo pipefail
-        export DEBIAN_FRONTEND=noninteractive
-        find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
-          -exec sed -i 's|http://\([a-z0-9.-]*\)\.ubuntu\.com|https://\1.ubuntu.com|g' {} +
-        cat > /etc/apt/apt.conf.d/99-gawk-ci <<'EOF'
-        Acquire::ForceIPv4 "true";
-        Acquire::Retries "1";
-        Acquire::http::Timeout "15";
-        Acquire::https::Timeout "15";
-        EOF
-        retry() {
-          for attempt in 1 2 3; do
-            [ "$attempt" = 1 ] || sleep $(((attempt - 1) * 15))
-            "$@" && return 0
-            echo "::warning::attempt ${attempt}/3 failed: $*"
-          done
-          return 1
-        }
-        # The stock image has no CA bundle, so the first update runs over the
-        # plain-HTTP index it ships with; everything after it is HTTPS.
-        if [ ! -e /etc/ssl/certs/ca-certificates.crt ]; then
-          find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
-            -exec sed -i 's|https://\([a-z0-9.-]*\)\.ubuntu\.com|http://\1.ubuntu.com|g' {} +
-          retry apt-get -o APT::Update::Error-Mode=any update
-          retry apt-get install -y --no-install-recommends ca-certificates
-          find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
-            -exec sed -i 's|http://\([a-z0-9.-]*\)\.ubuntu\.com|https://\1.ubuntu.com|g' {} +
+        want=$(sha256sum "$GITHUB_ACTION_PATH/install-deps.sh" | cut -d' ' -f1)
+        have=$(cat /etc/gawk-desktop-ci/install-deps.sha256 2>/dev/null || true)
+        if [ "$want" = "$have" ]; then
+          echo "The prebuilt image already has this install-deps.sh applied ($want): skipping apt."
+        else
+          echo "install-deps.sh is ${want}; the image has ${have:-none}. Installing."
+          bash "$GITHUB_ACTION_PATH/install-deps.sh"
         fi
-        retry apt-get -o APT::Update::Error-Mode=any update ||
-          echo "::warning::apt-get update never completed cleanly — installing against whatever indexes we have"
-        retry apt-get install -y --no-install-recommends \
-          ca-certificates curl git xz-utils build-essential clang lld cmake pkg-config \
-          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-          libpipewire-0.3-dev libspa-0.2-dev libfontconfig-dev libxkbcommon-dev \
-          pipewire pipewire-bin wireplumber dbus \
-          gstreamer1.0-tools gstreamer1.0-pipewire \
-          gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-          gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
-          desktop-file-utils binutils file python3 || {
-            echo "::error::Build dependencies could not be installed — the Ubuntu archives look unreachable from this runner, not a change in this PR"
-            exit 1
-          }
         # The checkout belongs to the runner's user, not the container's root:
         # without this, git refuses it ("dubious ownership") and the version
         # badge loses its +g<commit> (crates/ui/build_rev.rs asks git).
+        # Per job, not in the image: it is global git config under $HOME,
+        # which the runner points at its own /github/home.
         git config --global --add safe.directory '*'
     - shell: bash
       working-directory: gawk-broadcast-desktop
       run: |
         set -euo pipefail
-        curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        export PATH="$HOME/.cargo/bin:$PATH"
+        # The image keeps rustup in /opt (RUSTUP_HOME, plus the proxies in
+        # /opt/cargo/bin) rather than under $HOME, which the runner remaps to
+        # the RAM-backed _work volume. CARGO_HOME is deliberately left at its
+        # default, $HOME/.cargo: the registry sources' absolute paths are part
+        # of every sccache key, and moving them would miss every crate once.
+        if [ -x /opt/cargo/bin/rustup ]; then
+          echo "RUSTUP_HOME=/opt/rustup" >> "$GITHUB_ENV"
+          export RUSTUP_HOME=/opt/rustup
+          echo /opt/cargo/bin >> "$GITHUB_PATH"
+          export PATH="/opt/cargo/bin:$PATH"
+          # rustup itself refuses to run ("rustup is not installed at
+          # $CARGO_HOME") unless CARGO_HOME is where it was installed; cargo
+          # and rustc do not care. So only this step's rustup calls see it.
+          export CARGO_HOME=/opt/cargo
+        else
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+        fi
         # rust-toolchain.toml names the channel (and rustfmt + clippy);
-        # llvm-tools is cargo-llvm-cov's, and must match rustc's LLVM.
+        # llvm-tools is cargo-llvm-cov's, and must match rustc's LLVM. Both
+        # are no-ops when the image already has them.
         rustup toolchain install
         rustup component add llvm-tools-preview
         rustc --version

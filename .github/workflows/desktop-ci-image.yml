@@ -1,0 +1,69 @@
+# Publishes ghcr.io/tuhis/gawk-desktop-ci, the prebuilt ubuntu:24.04 container
+# broadcast-desktop.yml's `test` and `linux` jobs run in. What is in it and
+# why: .github/actions/linux-container-setup/Dockerfile. Why a stale or
+# missing copy cannot break a build: that action's header.
+#
+# Not part of the release train: the image is CI plumbing, never shipped, so it
+# is tagged by commit and `latest`, not by version, and release-please does
+# not know about it.
+#
+# THE PACKAGE MUST BE PUBLIC. A container job pulls its image before any step
+# runs, without credentials, so a private package fails every desktop job at
+# "Initialize containers". GHCR creates a package private on its first push
+# and has no API to change that — flip it once in the package settings, as
+# was done for every other ghcr.io/tuhis image.
+name: desktop-ci-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/actions/linux-container-setup/**"
+      - "gawk-broadcast-desktop/rust-toolchain.toml"
+      - ".github/workflows/desktop-ci-image.yml"
+  # Build without pushing, so a broken Dockerfile is a red PR rather than a
+  # red main.
+  pull_request:
+    paths:
+      - ".github/actions/linux-container-setup/**"
+      - "gawk-broadcast-desktop/rust-toolchain.toml"
+      - ".github/workflows/desktop-ci-image.yml"
+  # Weekly, for the Ubuntu point updates the per-job `apt-get install` used to
+  # pick up for free. Nothing breaks without it; the image just ages.
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-ci-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  image:
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUSH: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v7
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
+      - uses: docker/login-action@v4
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: .github/actions/linux-container-setup/Dockerfile
+          push: ${{ env.PUSH == 'true' }}
+          tags: |
+            ghcr.io/tuhis/gawk-desktop-ci:latest
+            ghcr.io/tuhis/gawk-desktop-ci:${{ github.sha }}
