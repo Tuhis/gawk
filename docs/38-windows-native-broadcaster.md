@@ -526,7 +526,11 @@ shared with `gawk-app` so the two broadcasters read as one product.
 4. **Code card** — the 6-char code in monospace ("read aloud and typed by
    hand"), the join link `https://gawk.ioio.fi/#/view/<CODE>` (from the
    resolved app URL), `Copy link`, transient "Link copied" confirmation.
-5. **Live confidence thumbnail** (mode 1 only, live only) — a ~1 Hz
+5. *(Revised 2026-10-01, [docs/65](65-source-preview.md) D1–D2: the
+   thumbnail shows in both modes, and Ready previews the chosen source
+   with a capture-only session before going live. The docs/64 Live page is
+   built around the preview, and an empty box on a display share read as
+   broken.)* **Live confidence thumbnail** (mode 1 only, live only) — a ~1 Hz
    downscaled sample of the outgoing frames. This is a **deliberate, narrow
    divergence from R14 Decision 16** ("no preview — you are looking at your
    own screen"): that rationale breaks exactly when capturing an occluded or
@@ -1042,7 +1046,7 @@ trials. WB6 assembles the product.
 | Settings persist/read the D14 file; blank-means-default captions live-computed; panel disabled while live | unit (config) + manual |
 | Close-while-live confirmation; window close ends the broadcast and the capture session (no zombie encode — the `finish()` incident class) | manual |
 | Toasts fire with the D12 urgency mapping; Focus Assist behavior measured (V-8) | manual |
-| 1 Hz thumbnail in mode 1; idle window ~0 % CPU | manual + profiler |
+| 1 Hz thumbnail in mode 1 (both modes since docs/65 D1); idle window ~0 % CPU | manual + profiler |
 | Diagnostics JSON: `kind`, nullable-pointer semantics, browser field names | unit |
 
 ### WB7 — Telemetry

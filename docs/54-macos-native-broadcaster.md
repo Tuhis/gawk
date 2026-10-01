@@ -926,7 +926,10 @@ dated note (docs/README conventions).
   indicator in the menu bar of an app that was sharing nothing. It is now
   activated on present, kept active while live (so the menu-bar control can
   re-pick too, D4), and deactivated after every picker result when idle and
-  on stop.
+  on stop. *(Revised 2026-10-01, [docs/65](65-source-preview.md) OD1: it is
+  also kept active while Ready previews a pick, so the indicator shows
+  whenever a pick is held on Ready. With nothing picked it still never
+  shows.)*
 - **Share-card names need macOS 15.2.** `SCContentFilter`'s
   `includedWindows`/`includedApplications`/`includedDisplays` arrived in
   15.2; on 14.0–15.1 the card says "A window" / "An app" / "A display". The
