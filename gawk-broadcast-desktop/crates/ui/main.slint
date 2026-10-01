@@ -1818,6 +1818,10 @@ export component MainWindow inherits Window {
     // ----- thumbnail -----
     in property <image> thumbnail;
     in property <bool> show-thumbnail: false;
+    // Ready's preview of the chosen source (docs/65 D2): its own pair, so
+    // Live's thumbnail never shows a stale Ready picture or vice versa.
+    in property <image> preview;
+    in property <bool> has-preview: false;
 
     // ----- error -----
     in property <string> error-text: "";
@@ -2286,10 +2290,10 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
-                // What the next broadcast shares, as a card (not a live
-                // preview: nothing captures while idle).
+                // What the next broadcast shares, as a card: a 1 Hz preview
+                // of it once one arrives (docs/65 D2), its icon until then.
                 source-card := Rectangle {
-                    height: 150px;
+                    height: root.has-preview ? (root.wide ? 300px : 220px) : 150px;
                     border-radius: 12px;
                     border-width: 1px;
                     border-color: T.border;
@@ -2299,7 +2303,46 @@ export component MainWindow inherits Window {
                     accessible-action-default => {
                         root.change-source();
                     }
-                    VerticalLayout {
+                    if root.has-preview: VerticalLayout {
+                        spacing: 10px;
+                        padding: 10px;
+                        padding-bottom: 12px;
+                        Rectangle {
+                            vertical-stretch: 1;
+                            border-radius: 8px;
+                            background: #101216;
+                            clip: true;
+                            Image {
+                                width: 100%;
+                                height: 100%;
+                                source: root.preview;
+                                image-fit: contain;
+                                accessible-label: "Preview of what you're sharing";
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 8px;
+                            if root.has-window && root.windows[root.selected-window].has-icon: Image {
+                                source: root.windows[root.selected-window].icon;
+                                width: 18px;
+                                height: 18px;
+                            }
+                            if !(root.has-window && root.windows[root.selected-window].has-icon): Icon {
+                                commands: root.next-is-window ? Icons.window : Icons.monitor;
+                                size: 16px;
+                            }
+                            Text {
+                                text: root.next-source;
+                                color: T.text;
+                                font-size: 14px;
+                                font-weight: 500;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    if !root.has-preview: VerticalLayout {
                         alignment: center;
                         spacing: 12px;
                         padding: 16px;
