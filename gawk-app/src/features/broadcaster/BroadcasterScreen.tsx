@@ -960,7 +960,6 @@ export function BroadcasterScreen({ linkNickname = null }: { linkNickname?: stri
         ? {
             broadcastId,
             resumeTokenHex: resumeTokenRef.current,
-            label: roomLabel.trim(),
             attachEpoch,
             preview: sourceStream,
             controls: null,

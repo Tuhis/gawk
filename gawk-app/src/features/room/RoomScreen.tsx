@@ -92,7 +92,8 @@ export const NARROW_QUERY = '(max-width: 719px)';
 export interface OwnBroadcast {
   broadcastId: string;
   resumeTokenHex: string;
-  label: string;
+  // No label of its own: the stream is labelled with the participant's
+  // nickname (RoomView's attach effect).
   // Bumped after a publish auto-resume: the relay's grace GC may have seen
   // the publisher die, and the attach is re-sent (idempotent) to be sure.
   attachEpoch: number;
@@ -231,7 +232,13 @@ export function RoomView({
   const attachOk = mayAttach(snapshot);
   const ownId = own?.broadcastId ?? null;
   const ownToken = own?.resumeTokenHex ?? null;
-  const ownLabel = sanitizeRoomText(own?.label ?? '', MAX_ROOM_LABEL_LEN);
+  // The stream is labelled with our nickname, always — the relay's form of
+  // it once we have one (a guest's assigned name, a de-duplicating suffix),
+  // else ours. A rename changes this and the effect re-sends the attach,
+  // which refreshes the label on the relay.
+  const you = snapshot?.participants.find((p) => p.id === snapshot.yourId) ?? null;
+  const shownNickname = you?.nickname ?? nickname ?? '';
+  const ownLabel = sanitizeRoomText(shownNickname, MAX_ROOM_LABEL_LEN);
   const ownEpoch = own?.attachEpoch ?? 0;
   // Set by a leave that is taking our stream out first (leaveRoom below); a
   // publish auto-resume meanwhile must not put it back.
@@ -414,8 +421,6 @@ export function RoomView({
 
   const code = snapshot?.code ?? (target.kind === 'join' ? target.code : '');
   const roomKey = snapshot && snapshot.key.length > 0 ? bytesToHex(snapshot.key) : null;
-  const you = snapshot?.participants.find((p) => p.id === snapshot.yourId) ?? null;
-  const shownNickname = you?.nickname ?? nickname ?? '';
 
   const leave = useCallback(() => {
     if (onLeave) onLeave();
@@ -640,7 +645,7 @@ export function RoomView({
   // the hidden card. The attachment is what the roster says about us, or a
   // stand-in while the relay has not listed us yet.
   const ownAttachment =
-    own && (attachments.find((a) => a.broadcastId === own.broadcastId) ?? { broadcastId: own.broadcastId, label: own.label, live: true, viewerCount: 0 });
+    own && (attachments.find((a) => a.broadcastId === own.broadcastId) ?? { broadcastId: own.broadcastId, label: ownLabel, live: true, viewerCount: 0 });
   const previewTile =
     previewOnly && own && own.preview && ownAttachment ? (
       <OwnPreviewTile
