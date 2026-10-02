@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.3.0...gawk-broadcast-desktop/v2.4.0) (2026-10-02)
+
+
+### Features
+
+* **broadcast-desktop:** pinned action bar, window fit and a remembered window size (R64) ([#433](https://github.com/Tuhis/gawk/issues/433)) ([7a4c6f3](https://github.com/Tuhis/gawk/commit/7a4c6f3ffe68699c0920ac5d0752fb0ba41cd19f))
+
 ## [2.3.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.2.0...gawk-broadcast-desktop/v2.3.0) (2026-10-01)
 
 
