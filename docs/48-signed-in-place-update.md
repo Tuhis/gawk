@@ -301,7 +301,11 @@ That is why the bug looked like a missing feature.
   release page it now says why: the `.deb`'s command (D9, unchanged), a
   folder the app can't write (D6), or a download that failed. **Check now
   retries** an install this run gave up on; before this, a failed
-  download stayed failed until a restart.
+  download stayed failed until a restart. It does not retry an update
+  already swapped in whose relaunch failed: that build is on disk, the
+  note says to start the app again, and nothing more downloads until a
+  restart. A second Windows swap would fail on the running `<exe>.old`
+  and report the installed update as not installed.
 
 **Who still updates by hand.** Installs on 2.2.0, 2.3.0 and 2.4.0 carry
 the broken download, so they reach the fixed release through **Download**
@@ -314,4 +318,4 @@ cheap.
 | Chunk | Scope | Verified by |
 |---|---|---|
 | **SU6** | `update.rs`: a limit is the most a file may be (`ureq_limit`) | `a_file_of_exactly_its_limit_is_whole` (a body of exactly the limit is accepted by `download` and `fetch`; one byte over is refused) and `a_release_stages_over_http_at_its_listed_sizes` (the whole of `stage` over a local HTTP server, with every file at its exact listed size), both failing before the fix with the production error. Live: from a 2.2.0 version string, `check` + `stage` against the published 2.3.0 manifest stage the Windows EXE (hash `4d397b01…`, equal to the signed `SHA256SUMS` line) and the Linux tarball, whose binary unpacks. |
-| **SU7** | `main.slint` `UpdateCard` at the top of `ready-top`; `shell.rs` `UpdateState::phase`, the fallback notes, Check now's retry | `the_notice_offers_what_this_copy_can_do` (each phase: nothing shown, re-fetch in flight, offline, downloading, ready, a newer release over a ready one, macOS, given up); `check_now_retries_a_failed_download` (an automatic check keeps the give-up, Check now clears it and the note); `the_bar_stays_in_reach_at_the_minimum_size` (at 440 × 600 the card's **Download**, then **Install and relaunch** and **What's new**, are inside the window). Rendered under Xvfb in all three phases at 520 and 440 px wide. The Windows and Linux manual passes from a fixed release N to N+1 stay SU3/SU4's. |
+| **SU7** | `main.slint` `UpdateCard` at the top of `ready-top`; `shell.rs` `UpdateState::phase`, the fallback notes, Check now's retry | `the_notice_offers_what_this_copy_can_do` (each phase: nothing shown, re-fetch in flight, offline, downloading, ready, a newer release over a ready one, macOS, given up); `check_now_retries_a_failed_download` (an automatic check keeps the give-up, Check now clears it and the note); `an_installed_update_is_not_downloaded_again` (after a failed relaunch, Check now and a newer release stage nothing and the restart note stays); `the_bar_stays_in_reach_at_the_minimum_size` (at 440 × 600 the card's **Download**, then **Install and relaunch** and **What's new**, are inside the window). Rendered under Xvfb in all three phases at 520 and 440 px wide. The Windows and Linux manual passes from a fixed release N to N+1 stay SU3/SU4's. |

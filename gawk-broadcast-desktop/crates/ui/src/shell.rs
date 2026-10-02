@@ -1603,6 +1603,10 @@ struct UpdateState {
     /// The version this run stops trying to stage: its download failed, or
     /// this install cannot be updated in place. The R45 line stays.
     given_up: Option<String>,
+    /// The version swapped in this run whose relaunch failed. It is on
+    /// disk, so nothing more is staged until a restart; unlike `given_up`,
+    /// Check now does not clear it.
+    installed: Option<String>,
     /// The line under the notice: the `.deb` instructions (docs/48 D9), or
     /// why an install failed.
     note: String,
@@ -1634,11 +1638,13 @@ impl UpdateState {
 
     /// The update to download now, if any (docs/48 D4): one that is shown,
     /// lists signed files, and can be installed here; only while idle, one
-    /// download at a time, and not one already ready or given up on.
+    /// download at a time, not one already ready or given up on, and
+    /// nothing once an update is installed.
     fn to_stage(&self, idle: bool) -> Option<Update> {
         let u = self.shown.as_ref()?;
         let wanted = idle
             && self.target.is_some()
+            && self.installed.is_none()
             && !self.staging
             && u.files.is_some()
             && self.ready.as_ref().is_none_or(|r| r.version != u.version)
@@ -1661,6 +1667,7 @@ impl UpdateState {
         let refetching = self.checking
             && u.files.is_none()
             && self.target.is_some()
+            && self.installed.is_none()
             && self.given_up.as_deref() != Some(u.version.as_str());
         if self.ready_for_shown() {
             2
@@ -1695,14 +1702,24 @@ impl UpdateState {
                 self.dismissed = None;
                 // Asking again retries an install this run gave up on: a
                 // download cut off by the network is worth a second try.
+                // An installed update keeps its restart note.
                 self.given_up = None;
-                self.note.clear();
+                if self.installed.is_none() {
+                    self.note.clear();
+                }
                 found
             } else {
                 found.filter(|u| self.dismissed.as_deref() != Some(u.version.as_str()))
             };
         }
         manual
+    }
+
+    /// The swap worked but the new build did not start: `version` is on
+    /// disk, and starting the app again runs it.
+    fn relaunch_failed(&mut self, version: &str) {
+        self.installed = Some(version.to_owned());
+        self.note = format!("Installed v{version}. Start the app again to use it.");
     }
 }
 
@@ -1865,11 +1882,7 @@ fn install_now(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 }
                 Err(e) => {
                     log::warn!("installed v{} but could not start it: {e}", ready.version);
-                    sh.update.given_up = Some(ready.version.clone());
-                    sh.update.note = format!(
-                        "Installed v{}. Start the app again to use it.",
-                        ready.version
-                    );
+                    sh.update.relaunch_failed(&ready.version);
                 }
             }
         }
@@ -5682,6 +5695,26 @@ mod tests {
         st.finish(Some(Some(signed("2.1.0"))), true);
         assert_eq!(st.to_stage(true), Some(signed("2.1.0")));
         assert_eq!(st.note, "", "the old failure no longer applies");
+    }
+
+    /// The swap worked but the new build did not start. It is on disk, so
+    /// nothing downloads again this run, Check now included, and the note
+    /// keeps saying to start the app again. A second Windows swap would
+    /// fail on the running `<exe>.old` and call the update not installed.
+    #[test]
+    fn an_installed_update_is_not_downloaded_again() {
+        let mut st = installable(Some(signed("2.1.0")));
+        st.relaunch_failed("2.1.0");
+        let note = st.note.clone();
+        assert!(st.request_manual());
+        st.finish(Some(Some(signed("2.1.0"))), true);
+        assert_eq!(st.to_stage(true), None, "Check now leaves it installed");
+        assert_eq!(st.note, note, "and still says to start the app again");
+        st.finish(Some(Some(signed("2.2.0"))), false);
+        assert_eq!(st.to_stage(true), None, "nor a newer one, until a restart");
+        st.shown = Some(release("2.2.0"));
+        st.checking = true;
+        assert_eq!(st.phase(), 0, "no download is on its way");
     }
 
     #[test]
