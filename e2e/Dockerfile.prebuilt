@@ -1,9 +1,9 @@
-# TEST-ONLY images for ci.yml's e2e-cluster job: the relay, gawk-admin and
-# the fake IdP, packaged from binaries the job has ALREADY compiled on the
-# runner. Never published, and never the thing a release ships: the published
-# images come from gawk-server/deploy/Dockerfile and
-# gawk-admin/deploy/Dockerfile, which the `docker` and `dev-stack` jobs build
-# and run.
+# TEST-ONLY images for ci.yml's e2e-cluster job and the fast path of its
+# dev-stack job: the relay, gawk-admin and the fake IdP, packaged from
+# binaries the job has ALREADY compiled on the runner. Never published, and
+# never the thing a release ships: the published images come from
+# gawk-server/deploy/Dockerfile and gawk-admin/deploy/Dockerfile, which the
+# `docker` job builds and runs (and dev-stack does too, on its slow path).
 #
 # Why not those Dockerfiles here: their `go build` runs inside BuildKit, where
 # the runners' shared Go cache (/mnt/ci-cache, .github/actions/go-shared-cache)
