@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.4.0...gawk-broadcast-desktop/v2.4.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** make the in-place update download work and show the notice at the top ([#441](https://github.com/Tuhis/gawk/issues/441)) ([4bcd143](https://github.com/Tuhis/gawk/commit/4bcd143481b00f42b4cb66b11cb683fd0b6048be))
+
 ## [2.4.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.3.0...gawk-broadcast-desktop/v2.4.0) (2026-10-02)
 
 
