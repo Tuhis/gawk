@@ -28,6 +28,20 @@
 # carry absolute source paths. The runner image (HOME=/home/runner) and the
 # ubuntu:24.04 job containers (HOME=/root) are each identical run to run, so
 # each shares with itself, but the two never share with each other.
+#
+# So does the same job count. sccache also keys on the content of every source
+# file, and rav1e's build script (via the `built` crate) writes cargo's job
+# count, NUM_JOBS, into a built.rs that rav1e compiles in. Cargo defaults that
+# count to the CPUs it can see, which was each node's core count (16, 24 or 32)
+# inside the limitless dind sidecar, so a job on a different node than the one
+# that filled the cache missed rav1e and everything above it: ravif, image,
+# i_slint_compiler, slint_build, slint and gawk-ui, the ~4 min generated window
+# (measured 2026-10-03: same source at -j3 missed exactly those 8 crates, an
+# identical re-run missed none). rav1e cannot be dropped: i-slint-compiler,
+# i-slint-core and arboard all enable image's AVIF support. Hence the fixed
+# CARGO_BUILD_JOBS below, exported with RUSTC_WRAPPER so every cached job gets
+# it. 16 is kube3's core count; kube2's 32 lose only the parallel phase's
+# headroom, about a minute of the build.
 name: Shared Rust compile cache
 description: Wrap rustc in sccache backed by the in-cluster WebDAV server; a no-op without the password.
 
@@ -94,5 +108,7 @@ runs:
           echo "SCCACHE_WEBDAV_KEY_PREFIX=$SCCACHE_WEBDAV_KEY_PREFIX"
           echo "SCCACHE_IDLE_TIMEOUT=0"
           echo "RUSTC_WRAPPER=$bin/sccache"
+          # Part of the cache key through rav1e's NUM_JOBS; see the header.
+          echo "CARGO_BUILD_JOBS=16"
         } >> "$GITHUB_ENV"
-        echo "Shared Rust cache: sccache $SCCACHE_VERSION -> $ENDPOINT"
+        echo "Shared Rust cache: sccache $SCCACHE_VERSION -> $ENDPOINT (cargo -j16)"
