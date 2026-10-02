@@ -7,14 +7,21 @@
 // answered rides along so the hop never asks twice; a guest stays a guest.
 // Session storage: a reload of the broadcaster tab should not silently
 // re-attach to a room the user already left.
+//
+// A `#/broadcast?room=<code>` link from outside the app (a chat bot's room
+// card) is the same hop without a nickname: App.tsx stashes the code here and
+// strips the parameter before the page mounts, so the room view asks for (or
+// remembers) the nickname as it does for any join.
+import { hashWithoutParam, type Route } from '../../routing';
 
 const KEY = 'gawk:room-return';
 
 export interface RoomReturn {
   code: string;
   // The nickname in use in the room, or null for a guest (the relay names
-  // guests; the broadcaster's session gets its own guest name).
-  nickname: string | null;
+  // guests; the broadcaster's session gets its own guest name). Undefined
+  // when nobody has been asked yet: a `?room=` link.
+  nickname: string | null | undefined;
 }
 
 export function stashRoomReturn(ret: RoomReturn): void {
@@ -33,11 +40,31 @@ export function takeRoomReturn(): RoomReturn | null {
     if (v === null || v === '') return null;
     const parsed = JSON.parse(v) as Partial<RoomReturn>;
     if (typeof parsed.code !== 'string' || parsed.code === '') return null;
+    // JSON drops an undefined nickname, so an absent key means "not asked".
+    if (!('nickname' in parsed)) return { code: parsed.code, nickname: undefined };
     return {
       code: parsed.code,
       nickname: typeof parsed.nickname === 'string' && parsed.nickname !== '' ? parsed.nickname : null,
     };
   } catch {
     return null;
+  }
+}
+
+// Called synchronously from App.tsx's route resolution, before the screen
+// renders: a `?room=` on the broadcast route becomes a pending room, and the
+// parameter leaves the URL so a reload does not join again.
+export function applyRouteRoom(route: Route): void {
+  if (route.view !== 'broadcaster' || route.room === null) return;
+  stashRoomReturn({ code: route.room, nickname: undefined });
+  if (typeof window === 'undefined') return;
+  const cleaned = hashWithoutParam(window.location.hash, 'room');
+  if (cleaned === window.location.hash) return;
+  const url = `${window.location.pathname}${window.location.search}${cleaned}`;
+  try {
+    window.history.replaceState(window.history.state, '', url);
+  } catch {
+    // A history API that refuses (sandboxed iframes) leaves the parameter in
+    // the URL; a reload then joins the room again, which is all it costs.
   }
 }

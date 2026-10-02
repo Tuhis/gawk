@@ -16,7 +16,11 @@ export interface RouteQuery {
 
 export type Route =
   | { view: 'landing' }
-  | ({ view: 'broadcaster' } & RouteQuery)
+  // `room` is a room to join once the stream is live (`?room=<code>`, a link
+  // from outside the app, such as a chat bot's room card). App.tsx moves it
+  // into the room-return stash before the first render. Null when absent or
+  // malformed.
+  | ({ view: 'broadcaster'; room: string | null } & RouteQuery)
   | ({ view: 'viewer'; broadcastId: string } & RouteQuery)
   // A room link. The code is kept as typed (a static slug displays as
   // configured; the relay normalizes it). `grant` is the one-shot `?rt=`
@@ -71,15 +75,31 @@ function parseGrant(query: string): string | null {
   }
 }
 
-// Strip the one-shot `?rt=` parameter from a hash, keeping the path and the
-// other parameters.
-export function hashWithoutGrant(hash: string): string {
+// The broadcast route's `?room=` code, kept as typed like a room link's. A
+// malformed one is ignored: the link still opens the broadcast page.
+function parseRoomParam(query: string): string | null {
+  if (query === '') return null;
+  try {
+    const v = new URLSearchParams(query).get('room');
+    return v !== null && isValidRoomCode(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+// Strip a one-shot parameter from a hash, keeping the path and the other
+// parameters.
+export function hashWithoutParam(hash: string, name: string): string {
   const qIndex = hash.indexOf('?');
   if (qIndex === -1) return hash;
   const params = new URLSearchParams(hash.slice(qIndex + 1));
-  params.delete('rt');
+  params.delete(name);
   const rest = params.toString();
   return rest === '' ? hash.slice(0, qIndex) : `${hash.slice(0, qIndex)}?${rest}`;
+}
+
+export function hashWithoutGrant(hash: string): string {
+  return hashWithoutParam(hash, 'rt');
 }
 
 export function parseRoute(hash: string): Route {
@@ -92,7 +112,7 @@ export function parseRoute(hash: string): Route {
   const path = (qIndex === -1 ? raw : raw.slice(0, qIndex)).replace(/^\//, '').replace(/\/+$/, '');
 
   if (path === '') return { view: 'landing' };
-  if (path === 'broadcast') return { view: 'broadcaster', ...parseQuery(query) };
+  if (path === 'broadcast') return { view: 'broadcaster', room: parseRoomParam(query), ...parseQuery(query) };
   if (path === 'terms') return { view: 'terms' };
 
   if (path === 'view' || path.startsWith('view/')) {

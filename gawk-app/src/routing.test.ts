@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hashWithoutGrant, parseRoute } from './routing';
+import { hashWithoutGrant, hashWithoutParam, parseRoute } from './routing';
 
 const noQuery = { relay: null, droppedParams: [] };
 
@@ -11,7 +11,30 @@ describe('parseRoute', () => {
   });
 
   it('maps #/broadcast to the production broadcaster', () => {
-    expect(parseRoute('#/broadcast')).toEqual({ view: 'broadcaster', ...noQuery });
+    expect(parseRoute('#/broadcast')).toEqual({ view: 'broadcaster', room: null, ...noQuery });
+  });
+
+  it('carries a ?room= code on #/broadcast as typed, and ignores a malformed one', () => {
+    expect(parseRoute('#/broadcast?room=vip-k3q7xzmw2p')).toEqual({
+      view: 'broadcaster',
+      room: 'vip-k3q7xzmw2p',
+      ...noQuery,
+    });
+    expect(parseRoute('#/broadcast?room=AB2CD3&relay=https://relay.example.com')).toEqual({
+      view: 'broadcaster',
+      room: 'AB2CD3',
+      relay: 'https://relay.example.com',
+      droppedParams: [],
+    });
+    for (const bad of ['', 'ab', 'no spaces', 'a/b', 'x'.repeat(64)]) {
+      expect(parseRoute(`#/broadcast?room=${encodeURIComponent(bad)}`)).toEqual({
+        view: 'broadcaster',
+        room: null,
+        ...noQuery,
+      });
+    }
+    // Only the broadcast route reads it.
+    expect(parseRoute('#/view/AB2CD3?room=vip')).toEqual({ view: 'viewer', broadcastId: 'AB2CD3', ...noQuery });
   });
 
   it('maps #/terms to the terms surface (R23)', () => {
@@ -71,6 +94,7 @@ describe('parseRoute ?relay=', () => {
   it('carries a valid relay on the broadcast route', () => {
     expect(parseRoute('#/broadcast?relay=https://relay.example.com:4433')).toEqual({
       view: 'broadcaster',
+      room: null,
       relay: 'https://relay.example.com:4433',
       droppedParams: [],
     });
@@ -95,6 +119,7 @@ describe('parseRoute ?relay=', () => {
   it('ignores unknown parameters silently (left for the R26 grammar)', () => {
     expect(parseRoute('#/broadcast?start=1&res=720')).toEqual({
       view: 'broadcaster',
+      room: null,
       ...noQuery,
     });
   });
@@ -165,5 +190,15 @@ describe('hashWithoutGrant', () => {
       '#/room/AB2CD3?relay=https%3A%2F%2Fx.example',
     );
     expect(hashWithoutGrant('#/room/AB2CD3')).toBe('#/room/AB2CD3');
+  });
+});
+
+describe('hashWithoutParam', () => {
+  it('strips the named parameter only', () => {
+    expect(hashWithoutParam('#/broadcast?room=vip-abc', 'room')).toBe('#/broadcast');
+    expect(hashWithoutParam('#/broadcast?room=vip-abc&relay=https%3A%2F%2Fx.example', 'room')).toBe(
+      '#/broadcast?relay=https%3A%2F%2Fx.example',
+    );
+    expect(hashWithoutParam('#/broadcast', 'room')).toBe('#/broadcast');
   });
 });

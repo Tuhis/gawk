@@ -339,6 +339,19 @@ Start and nothing joined. Settled:
   label defaults to that nickname. A grant the room link carried applies
   through the same session-storage stash the link hand-off uses.
 
+**Revision 2026-10-02 — `#/broadcast?room=<code>`.** A page outside the
+app can now offer "start streaming into this room": the Mumble bot's room
+card (mumisija's gawk plugin) has a *Start streaming* button beside *Open
+room*. The broadcast route reads a well-formed `room` parameter, and
+`App.tsx` hands it to the same `roomReturn.ts` stash "Start streaming
+here" uses, then strips it from the URL with `replaceState` before the
+page mounts. The result is the pending room above: one hop, one use, and
+a reload does not join again. Nobody has been asked for a nickname on
+this path, so the stash carries none, and the room view asks for or
+remembers the name as it does for any join. A malformed code is ignored
+and the link still opens the broadcast page. A grant stashed for the code
+still applies; a link never carries one (`?rt=` stays room-link only).
+
 **Revision 2026-09-23 — the Room panel is one field and one button.**
 The panel had grown four inputs and three buttons: a name section, a
 disabled *New room* with a sentence explaining why, a *room code* field
@@ -1054,6 +1067,7 @@ the manual pass outcome.
 | RM4 browser E2E | `node e2e/run.mjs --rooms` (two pubsims, grid → focus by key → hide-videos asserted on the relay's subscriber counts) |
 | RM5 broadcaster attaches, appears in a roster, away then removal | `BroadcasterScreen.room.test.tsx`; the relay-side away/expiry path in `TestBroadcastLifecycleHooks` and the Go native integration test |
 | RM5 a room chosen before the stream waits and joins by itself; "start streaming here" carries the nickname, a guest stays a guest, nothing is asked twice (§4.8 revision 2026-09-05) | `BroadcasterScreen.room.test.tsx` (pending room from the stash and from the code-or-link field; dismiss), `RoomScreen.test.tsx` (the stash's shape, `presetNickname`), `roomReturn.test.ts` |
+| RM5 `#/broadcast?room=<code>` becomes a pending room, joins with the remembered name, leaves the URL before the page mounts, and a malformed code is ignored (§4.8 revision 2026-10-02) | `routing.test.ts` (`?room=` parsed, invalid ignored, other routes unaffected; `hashWithoutParam`), `roomReturn.test.ts` (`applyRouteRoom` stashes and strips; a stash without a nickname), `BroadcasterScreen.room.test.tsx` (the link's pending room joins with the remembered name) |
 | Live means the page is running: a silent publisher reads as away fleet-wide, ends at the grace only by opt-in; labels unique within a room (§4.9 revision 2026-09-06) | `internal/hub/stall_test.go` (not live after the timeout, any datagram clears it — keyframe, audio, ClockMapping, the transport's TimeSync stamp — ended with 4000 after the grace only with `PublisherStallEnds`, held and away without it, transitions reported once, `0` disables, edge hubs exempt), `cluster`: `TestLookupCarriesTheStallStamp`, `transport`: `TestRoomOnAnotherPodShowsASilentPublisherAway` (lease path and edge-hub path), `internal/roomsrv/label_test.go`, `TestRegistryOptionsCarryAllLimits`, config flag/env/bounds tests |
 | RM5 the Room panel is one code-or-link field and one create, a pre-start create waits as a pending room and mints when live, and there is no attach-secret field (§4.8 revision 2026-09-23) | `BroadcasterScreen.room.test.tsx` (the nine panel cases listed in that revision); `node e2e/run.mjs --rooms-gated` joins through the new field |
 | RM5 the room code chip copies the room link on both headers, the panel carries no copy buttons, the copy toast carries the code-visibility note, End room (panel or menu) asks before it sends, the creator is not offered "Start streaming here", and the creator sees a Creator chip with an honest help (§4.9 revision 2026-09-23) | `RoomScreen.test.tsx` (chip copy and toast, static chip, panel without copies, the confirm from the panel and from the menu, no start-streaming for the creator, the Creator chip and its help); `BroadcasterScreen.room.test.tsx` (the room pill's copy, the minting broadcaster's Creator chip) |

@@ -175,7 +175,8 @@ export function BroadcasterScreen() {
   // so a room chosen before the stream starts becomes `pendingRoom`: the
   // page shows what it will join, and the join fires by itself the moment
   // the broadcast is live. Sources: a room's "start streaming here"
-  // (roomReturn.ts — carrying the nickname already answered there), and the
+  // (roomReturn.ts — carrying the nickname already answered there), a
+  // `#/broadcast?room=` link (the same stash, no nickname yet), and the
   // Room panel's join or create used from the pre-start card.
   const [roomReturn] = useState(takeRoomReturn);
   const [pendingRoom, setPendingRoom] = useState<PendingRoom | null>(() =>
