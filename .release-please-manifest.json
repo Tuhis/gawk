@@ -3,6 +3,6 @@
   "gawk-app": "0.50.0",
   "gawk-broadcast": "1.15.3",
   "gawk-telemetry": "1.10.1",
-  "gawk-broadcast-desktop": "2.4.0",
+  "gawk-broadcast-desktop": "2.4.1",
   "gawk-admin": "1.6.0"
 }
