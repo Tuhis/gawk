@@ -1,7 +1,9 @@
-# Publishes ghcr.io/tuhis/gawk-desktop-ci, the prebuilt ubuntu:24.04 container
-# broadcast-desktop.yml's `test` and `linux` jobs run in. What is in it and
-# why: .github/actions/linux-container-setup/Dockerfile. Why a stale or
-# missing copy cannot break a build: that action's header.
+# Publishes ghcr.io/tuhis/gawk-desktop-ci, the prebuilt ubuntu:24.04 toolchain
+# broadcast-desktop.yml's Linux jobs build with, in two forms: the container
+# image (`latest`) and the runner image of the ioio-k8s-desktop scale set
+# (`runner-*`). What is in them and why:
+# .github/actions/linux-container-setup/Dockerfile. Why a stale or missing
+# copy cannot break a build: that action's header.
 #
 # Not part of the release train: the image is CI plumbing, never shipped, so it
 # is tagged by commit and `latest`, not by version, and release-please does
@@ -71,10 +73,31 @@ jobs:
           # ~36 s (gawk run 36924378225, `test`). zstd decompresses several
           # times faster; dockerd, zot and GHCR all take OCI zstd layers.
           # `force-compression` re-compresses the ubuntu:24.04 base layer too.
+          target: ci
           outputs: type=image,push=${{ env.PUSH }},oci-mediatypes=true,compression=zstd,compression-level=6,force-compression=true
           tags: |
             ghcr.io/tuhis/gawk-desktop-ci:latest
             ghcr.io/tuhis/gawk-desktop-ci:${{ github.sha }}
+      # The `runner` stage: the image the ioio-k8s-desktop scale set runs as
+      # its runner pods (the Dockerfile says why). Same package, `runner-`
+      # tags. The timestamp tag is what ioio's Flux image policy pins and
+      # bumps (ioio clusters/baremetal/actions-runners/image-update.yaml),
+      # exactly as it does for ghcr.io/tuhis/actions-runner; kubelet pulls a
+      # new tag once per node. gzip, not zstd: containerd on the nodes
+      # unpacks it once per tag, not once per job, and gzip is the format
+      # every containerd takes.
+      - name: Runner image tag
+        id: stamp
+        run: echo "ts=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: .github/actions/linux-container-setup/Dockerfile
+          target: runner
+          outputs: type=image,push=${{ env.PUSH }},oci-mediatypes=true
+          tags: |
+            ghcr.io/tuhis/gawk-desktop-ci:runner-latest
+            ghcr.io/tuhis/gawk-desktop-ci:runner-${{ steps.stamp.outputs.ts }}
       # The desktop jobs pull through the in-cluster registry cache (see
       # broadcast-desktop.yml, "THE LINUX CONTAINER"). zot re-syncs a moved tag
       # on the first request for it, blocking that request for as long as the
