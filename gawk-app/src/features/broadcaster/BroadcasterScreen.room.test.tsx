@@ -386,6 +386,26 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(room.sent).toContainEqual({ kind: 'attach', broadcastId: 'AB2CD3', resumeTokenHex: TOKEN, label: 'roomie' });
   });
 
+  it('a #/broadcast?room= link waits as a pending room and joins with the remembered name', async () => {
+    // What applyRouteRoom stashes: the code, no nickname answered yet.
+    sessionStorage.setItem('gawk:room-return', JSON.stringify({ code: 'vip-k3q7xzmw2p' }));
+    localStorage.setItem('gawk:nickname', 'tuhis');
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onResumeToken?.(TOKEN);
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    expect(screen.getByTestId('pending-room').textContent).toContain('vip-k3q7xzmw2p');
+    expect(roomSessions).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /start a stream/i }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    expect(roomSessions[0].opts.target).toEqual({ kind: 'join', code: 'vip-k3q7xzmw2p' });
+    // Not a guest: the name the page already remembers is used, as for any join.
+    expect(roomSessions[0].opts.nickname).toBe('tuhis');
+  });
+
   // The relay keeps an attachment across a session end on purpose (a reload
   // must not detach — docs/44 §4.4), so leaving by closing the control
   // session alone left the stream playing to everyone in the room, with
