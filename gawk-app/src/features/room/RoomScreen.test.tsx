@@ -663,7 +663,6 @@ describe('RoomView with an own broadcast (RM5)', () => {
         own={{
           broadcastId: 'AAAAAA',
           resumeTokenHex: 'b'.repeat(32),
-          label: 'mine',
           attachEpoch: 0,
           preview,
           controls: <button type="button">Stop</button>,
@@ -676,7 +675,8 @@ describe('RoomView with an own broadcast (RM5)', () => {
     const room = roomSessions[0];
     expect(room.opts.target).toMatchObject({ kind: 'mint', broadcastId: 'AAAAAA' });
     act(() => room.cbs.onState(state({ flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR | ROOM_STATE_FLAG_ATTACH_OK })));
-    expect(room.sent).toContainEqual({ kind: 'attach', broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), label: 'mine' });
+    // The stream is labelled with the nickname the relay gave us, nothing else.
+    expect(room.sent).toContainEqual({ kind: 'attach', broadcastId: 'AAAAAA', resumeTokenHex: 'b'.repeat(32), label: 'me' });
 
     const ownTile = screen.getAllByTestId('room-tile').find((t) => t.getAttribute('data-own') === 'true');
     expect(ownTile).toBeTruthy();
@@ -691,6 +691,45 @@ describe('RoomView with an own broadcast (RM5)', () => {
     expect(onDetach).toHaveBeenCalled();
   });
 
+  // The stream's label is the participant's nickname, always (2026-10-03):
+  // the relay refreshes an attachment's label on a re-sent Attach.
+  it('labels the own stream with the nickname and relabels it on every rename', async () => {
+    localStorage.setItem('gawk:nickname', 'tuhis');
+    render(
+      <RoomView
+        target={{ kind: 'join', code: 'AB2CD3' }}
+        own={{
+          broadcastId: 'AAAAAA',
+          resumeTokenHex: 'b'.repeat(32),
+          attachEpoch: 0,
+          preview: null,
+          controls: null,
+          onDetach: () => {},
+        }}
+        onLeave={() => {}}
+      />,
+    );
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    const room = roomSessions[0];
+    const attachLabels = () =>
+      room.sent.filter((c) => (c as { kind: string }).kind === 'attach').map((c) => (c as { label: string }).label);
+    const me = (nickname: string) => ({ id: 7, kind: ROOM_CLIENT_WEB_VIEWER, flags: 0, nickname, identity: '' });
+
+    // The relay's name for us, which may carry its de-duplicating suffix.
+    act(() => room.cbs.onState(state({ attachments: [], participants: [me('tuhis (2)')] })));
+    expect(attachLabels()).toEqual(['tuhis (2)']);
+
+    // A rename from the menu re-labels the stream at once...
+    fireEvent.contextMenu(document.querySelector('[data-status]')!);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Change nickname…' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Nickname' }), { target: { value: 'renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(room.sent).toContainEqual({ kind: 'nick', nickname: 'renamed' });
+    // ...and once more when the relay's answer differs from what we asked.
+    act(() => room.cbs.onState(state({ attachments: [], participants: [me('renamed (2)')] })));
+    expect(attachLabels().at(-1)).toBe('renamed (2)');
+  });
+
   // A broadcaster in a room, joined to someone else's (or its own) room.
   const ownPreview = { getTracks: () => [] } as unknown as MediaStream;
   const ownView = (onLeave: () => void) => (
@@ -699,7 +738,6 @@ describe('RoomView with an own broadcast (RM5)', () => {
       own={{
         broadcastId: 'AAAAAA',
         resumeTokenHex: 'b'.repeat(32),
-        label: 'alpha',
         attachEpoch: 0,
         preview: ownPreview,
         controls: null,
@@ -857,7 +895,6 @@ describe('a gated static room that refused the attach grant (D8)', () => {
   const ownBroadcast = {
     broadcastId: 'AAAAAA',
     resumeTokenHex: 'b'.repeat(32),
-    label: 'mine',
     attachEpoch: 0,
     preview: null,
     controls: null,
@@ -904,7 +941,7 @@ describe('a gated static room that refused the attach grant (D8)', () => {
       kind: 'attach',
       broadcastId: 'AAAAAA',
       resumeTokenHex: 'b'.repeat(32),
-      label: 'mine',
+      label: 'me', // the relay's name for us (state()), not anything the page held
     });
     expect(screen.queryByText('Your stream isn’t in this room')).toBeNull();
   });

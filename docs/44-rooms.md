@@ -377,6 +377,20 @@ alone). Settled with the owner:
   render (`linkNickname.ts`), so a copied link does not pass the name on.
   Other routes ignore the parameter.
 
+**Revision 2026-10-03 (b) — the stream's label is the nickname.** The
+web broadcaster's tile label could drift from its nickname: the label was
+the Room panel's name, fixed when the room opened, while the prompt (a
+`?nick=` prefill edited there) or a later *Change nickname* changed only
+the nickname. Settled with the owner, for now and open to revisiting: the
+own stream is always labelled with the participant's nickname. `RoomView`
+sends the relay's form of the nickname (a guest's assigned name, a
+de-duplicating suffix), else the local one, as the Attach label, and a
+rename re-sends the Attach, which refreshes the label on the relay (an
+idempotent re-attach already did). `OwnBroadcast` no longer carries a
+label. A mint's RoomHello label is still the panel's name; the first
+Attach after the snapshot replaces it. The native broadcasters already
+label with their nickname (`engine/src/room.rs`).
+
 **Revision 2026-09-23 — the Room panel is one field and one button.**
 The panel had grown four inputs and three buttons: a name section, a
 disabled *New room* with a sentence explaining why, a *room code* field
@@ -1094,6 +1108,7 @@ the manual pass outcome.
 | RM5 a room chosen before the stream waits and joins by itself; "start streaming here" carries the nickname, a guest stays a guest, nothing is asked twice (§4.8 revision 2026-09-05) | `BroadcasterScreen.room.test.tsx` (pending room from the stash and from the code-or-link field; dismiss), `RoomScreen.test.tsx` (the stash's shape, `presetNickname`), `roomReturn.test.ts` |
 | RM5 `#/broadcast?room=<code>` becomes a pending room, joins with the remembered name, leaves the URL before the page mounts, and a malformed code is ignored (§4.8 revision 2026-10-02) | `routing.test.ts` (`?room=` parsed, invalid ignored, other routes unaffected; `hashWithoutParam`), `roomReturn.test.ts` (`applyRouteRoom` stashes and strips; a stash without a nickname), `BroadcasterScreen.room.test.tsx` (the link's pending room joins with the remembered name) |
 | RM5 a `?nick=` on a room or broadcast link prefills the nickname prompt (over a remembered name, never joining unasked), is remembered once confirmed, yields to a hop's answer, and leaves the URL before the first render (§4.8 revision 2026-10-03) | `routing.test.ts` (parsed and sanitized on both routes, blank absent, other routes ignore it), `linkNickname.test.ts` (strips only `nick`), `App.room.test.tsx` (the prop reaches the room screen, the hash is already clean at first render), `RoomScreen.test.tsx` (prefilled prompt, remembered on Join, edit and guest paths, `presetNickname` wins), `BroadcasterScreen.room.test.tsx` (the panel line; the pending room's prompt prefilled, then remembered) |
+| RM5 the web broadcaster's stream label is always its nickname, the relay's form of it, and follows every rename (§4.8 revision 2026-10-03 (b)) | `RoomScreen.test.tsx` (labelled with the relay's nickname including its suffix; a menu rename re-sends the Attach with the new name, and again when the relay's answer differs), `BroadcasterScreen.room.test.tsx` (mint, "start streaming here" and leave flows attach under the echoed nickname) |
 | Live means the page is running: a silent publisher reads as away fleet-wide, ends at the grace only by opt-in; labels unique within a room (§4.9 revision 2026-09-06) | `internal/hub/stall_test.go` (not live after the timeout, any datagram clears it — keyframe, audio, ClockMapping, the transport's TimeSync stamp — ended with 4000 after the grace only with `PublisherStallEnds`, held and away without it, transitions reported once, `0` disables, edge hubs exempt), `cluster`: `TestLookupCarriesTheStallStamp`, `transport`: `TestRoomOnAnotherPodShowsASilentPublisherAway` (lease path and edge-hub path), `internal/roomsrv/label_test.go`, `TestRegistryOptionsCarryAllLimits`, config flag/env/bounds tests |
 | RM5 the Room panel is one code-or-link field and one create, a pre-start create waits as a pending room and mints when live, and there is no attach-secret field (§4.8 revision 2026-09-23) | `BroadcasterScreen.room.test.tsx` (the nine panel cases listed in that revision); `node e2e/run.mjs --rooms-gated` joins through the new field |
 | RM5 the room code chip copies the room link on both headers, the panel carries no copy buttons, the copy toast carries the code-visibility note, End room (panel or menu) asks before it sends, the creator is not offered "Start streaming here", and the creator sees a Creator chip with an honest help (§4.9 revision 2026-09-23) | `RoomScreen.test.tsx` (chip copy and toast, static chip, panel without copies, the confirm from the panel and from the menu, no start-streaming for the creator, the Creator chip and its help); `BroadcasterScreen.room.test.tsx` (the room pill's copy, the minting broadcaster's Creator chip) |

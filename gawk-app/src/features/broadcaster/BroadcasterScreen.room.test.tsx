@@ -105,7 +105,8 @@ import {
 const TOKEN = 'c'.repeat(32);
 const fakeStream = { getTracks: () => [], getVideoTracks: () => [] } as unknown as MediaStream;
 
-function mintedState(): RoomState {
+// `nickname` is the relay's echo of the name the session dialed with.
+function mintedState(nickname = 'tuhis'): RoomState {
   return {
     flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_CREATOR | ROOM_STATE_FLAG_ATTACH_OK,
     caps: 0,
@@ -116,7 +117,7 @@ function mintedState(): RoomState {
     creatorToken: new Uint8Array(16),
     key: new Uint8Array(6),
     attachments: [{ broadcastId: 'AB2CD3', label: 'my desk', live: true, viewerCount: 0 }],
-    participants: [{ id: 1, kind: ROOM_CLIENT_WEB_BROADCASTER, flags: 2, nickname: 'tuhis', identity: '' }],
+    participants: [{ id: 1, kind: ROOM_CLIENT_WEB_BROADCASTER, flags: 2, nickname, identity: '' }],
   };
 }
 
@@ -179,7 +180,7 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(room.opts.nickname).toBe('my desk');
     expect(screen.getByText('Creating the room…')).toBeTruthy();
 
-    act(() => room.cbs.onState(mintedState()));
+    act(() => room.cbs.onState(mintedState('my desk')));
     // The broadcaster's own topbar over the room's stage — LIVE, the broadcast code, Stop /
     // Settings / Stats where the live view has them — plus the room pill.
     // The room's own header (the "Room code" pill) is not rendered.
@@ -382,7 +383,9 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(room.opts.nickname).toBe('roomie');
     expect(screen.queryByRole('dialog', { name: 'Nickname' })).toBeNull();
     expect(screen.getByText('Joining the room…')).toBeTruthy();
-    act(() => room.cbs.onState({ ...mintedState(), attachments: [{ broadcastId: 'AB2CD3', label: 'roomie', live: true, viewerCount: 0 }] }));
+    act(() =>
+      room.cbs.onState({ ...mintedState('roomie'), attachments: [{ broadcastId: 'AB2CD3', label: 'roomie', live: true, viewerCount: 0 }] }),
+    );
     expect(room.sent).toContainEqual({ kind: 'attach', broadcastId: 'AB2CD3', resumeTokenHex: TOKEN, label: 'roomie' });
   });
 
@@ -451,7 +454,7 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     // Joined as an ordinary participant: no creator token.
     act(() =>
       room.cbs.onState({
-        ...mintedState(),
+        ...mintedState('roomie'),
         flags: ROOM_STATE_FLAG_DYNAMIC | ROOM_STATE_FLAG_ATTACH_OK,
         creatorToken: new Uint8Array(0),
         attachments: [{ broadcastId: 'AB2CD3', label: 'roomie', live: true, viewerCount: 2 }],
