@@ -577,6 +577,20 @@ and icon match the window. This is verified in V-11. The desktop entry's
 - **Why a container and not the runner image**: the runner image stays
   unchanged, and the build's glibc floor is pinned by the container
   (OD14), not by whenever the runner is upgraded.
+  - *Revision 2026-10-02:* both properties now hold without the container.
+    When the `RUNNER_LABEL_DESKTOP` repository variable is set, the
+    `lint-host`, `test` and `linux` jobs run on a dedicated
+    `ioio-k8s-desktop` scale set.
+    - Its pods run gawk's own toolchain image as the runner: the
+      `gawk-desktop-ci` `runner` stage, which is actions-runner on Ubuntu 24.04
+      plus the same `install-deps.sh` and Rust pin.
+    - So the general runner image is still untouched, and the floor is still
+      24.04's, which the glibc check above verifies.
+    - It removes the 29–62 s that every container job spent unpacking the
+      image into a fresh dind. The jobs run as the image's `runner` user;
+      the PipeWire harness and the gst tests pass that way.
+    - Deleting the variable puts the jobs back in the container. The
+      reasoning is in `broadcast-desktop.yml`, "THE DESKTOP POOL".
 - **The Windows cross-build stays on the runner** (`cargo xwin clippy`,
   `cargo xwin build`, docs/38 D18). The `macos` job is untouched.
 - **The headless-PipeWire harness is ported** from Go `pwtest`: a

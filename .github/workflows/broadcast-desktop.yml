@@ -136,6 +136,21 @@
 # hard dependency — dockerd has no fallback for a registry it is pointed at
 # directly — so if it breaks, DELETE THE VARIABLE: every job goes back to
 # ghcr.io with no commit. Forks and hosted runners never have it set.
+#
+# THE DESKTOP POOL (2026-10-02). Even through that cache, every container job
+# unpacked the image into its pod's fresh, RAM-backed dind first: 29-62 s of
+# "Initialize containers" per job, three jobs per run. When the repository
+# variable RUNNER_LABEL_DESKTOP is set, `lint-host`, `test` and `linux` run on
+# that scale set instead (ioio actions-runners/gawk-desktop.yaml), whose pods
+# run the SAME toolchain as their own image: gawk-desktop-ci's `runner-*`
+# tags, the Dockerfile's `runner` stage. kubelet keeps a tag on the node's
+# disk, so there is nothing to pull per job, and `container:` evaluates to ''
+# — no container at all. Still Ubuntu 24.04 (OD14's floor; the `linux`
+# job's glibc check asks the binary either way), now as the image's `runner`
+# user rather than root.
+#
+# Rollback, again with no commit: DELETE RUNNER_LABEL_DESKTOP, and the three
+# jobs go back to the container on RUNNER_LABEL. Forks never have it set.
 # ---------------------------------------------------------------------------
 #
 # The toolchain lives in the runner image, NOT here — see
@@ -302,9 +317,10 @@ jobs:
   # 8:18 for `linux` + `linux-deb`). The cost is one more pool slot and one
   # more container start.
   lint-host:
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # THE DESKTOP POOL — see "THE LINUX CONTAINER" above.
+    runs-on: ${{ vars.RUNNER_LABEL_DESKTOP || vars.RUNNER_LABEL || 'ubuntu-latest' }}
     container:
-      image: ${{ vars.DESKTOP_CI_IMAGE || 'ghcr.io/tuhis/gawk-desktop-ci:latest' }}
+      image: ${{ !vars.RUNNER_LABEL_DESKTOP && (vars.DESKTOP_CI_IMAGE || 'ghcr.io/tuhis/gawk-desktop-ci:latest') || '' }}
     defaults:
       run:
         working-directory: gawk-broadcast-desktop
@@ -340,9 +356,10 @@ jobs:
   # The whole workspace's tests and coverage, and the real-relay integration
   # tiers — in the ubuntu:24.04 container (docs/58 D12).
   test:
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # THE DESKTOP POOL — see "THE LINUX CONTAINER" above.
+    runs-on: ${{ vars.RUNNER_LABEL_DESKTOP || vars.RUNNER_LABEL || 'ubuntu-latest' }}
     container:
-      image: ${{ vars.DESKTOP_CI_IMAGE || 'ghcr.io/tuhis/gawk-desktop-ci:latest' }}
+      image: ${{ !vars.RUNNER_LABEL_DESKTOP && (vars.DESKTOP_CI_IMAGE || 'ghcr.io/tuhis/gawk-desktop-ci:latest') || '' }}
     defaults:
       run:
         working-directory: gawk-broadcast-desktop
@@ -858,9 +875,10 @@ jobs:
   # R14's artifact-as-verification pattern: the tarball a tester runs on real
   # hardware (LX7) is this job's upload, available before merge.
   linux:
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # THE DESKTOP POOL — see "THE LINUX CONTAINER" above.
+    runs-on: ${{ vars.RUNNER_LABEL_DESKTOP || vars.RUNNER_LABEL || 'ubuntu-latest' }}
     container:
-      image: ${{ vars.DESKTOP_CI_IMAGE || 'ghcr.io/tuhis/gawk-desktop-ci:latest' }}
+      image: ${{ !vars.RUNNER_LABEL_DESKTOP && (vars.DESKTOP_CI_IMAGE || 'ghcr.io/tuhis/gawk-desktop-ci:latest') || '' }}
     outputs:
       sha: ${{ steps.source.outputs.sha }}
     defaults:
@@ -1004,7 +1022,10 @@ jobs:
             echo "built:      $(date -u +%FT%TZ)"
             echo "toolchain:  $(rustc --version)"
             echo "profile:    ${BUILD_PROFILE}"
-            echo "built-in:   ubuntu:24.04 container ($(ldd --version | sed -n 1p))"
+            # A container job here, or the ioio-k8s-desktop pool's runner
+            # image; both are Ubuntu 24.04, and this line says which.
+            if [ -f /.dockerenv ]; then where="container"; else where="runner image"; fi
+            echo "built-in:   $(. /etc/os-release && echo "$PRETTY_NAME") ${where} ($(ldd --version | sed -n 1p))"
             echo "gstreamer:  $(pkg-config --modversion gstreamer-1.0) (headers; runtime is your distro's)"
             echo "pipewire:   $(pkg-config --modversion libpipewire-0.3) (headers; runtime is your distro's)"
             echo "libopus:    static"
