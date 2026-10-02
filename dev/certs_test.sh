@@ -60,21 +60,26 @@ run_certs() { # run_certs <args…> → output in $T/out
         PATH="$T/bin:$PATH"
         export PATH T
         export GAWK_CERTS_NONINTERACTIVE=1
-        export ACME_TXT_POLL=1 ACME_TXT_TIMEOUT=20
+        # A default, not an override: the give-up case passes 3 so that it
+        # gives up in 3 s rather than sitting out the 20.
+        export ACME_TXT_POLL=1 ACME_TXT_TIMEOUT="${ACME_TXT_TIMEOUT:-20}"
         export DNS_TXT_AFTER="${DNS_TXT_AFTER:-}" STUB_LEGO="${STUB_LEGO:-}" STUB_PORT_BUSY="${STUB_PORT_BUSY:-}"
         sh dev/certs.sh "$@"
     ) > "$T/out" 2>&1 &
     _pid=$!
-    _waited=0
+    # Polled in tenths of a second. Most runs finish in well under one, and
+    # a whole-second poll rounded every one of the ~25 runs up to a second
+    # or two of sleeping.
+    _ticks=0
     while kill -0 "$_pid" 2>/dev/null; do
-        if [ "$_waited" -ge "${RUN_TIMEOUT:-60}" ]; then
+        if [ "$_ticks" -ge "$(( ${RUN_TIMEOUT:-60} * 10 ))" ]; then
             kill -9 "$_pid" 2>/dev/null || true
             pkill -9 -f "sh dev/certs.sh" 2>/dev/null || true
-            echo "[timed out after ${_waited}s]" >> "$T/out"
+            echo "[timed out after $(( _ticks / 10 ))s]" >> "$T/out"
             break
         fi
-        sleep 1
-        _waited=$((_waited + 1))
+        sleep 0.1
+        _ticks=$((_ticks + 1))
     done
     wait "$_pid" 2>/dev/null || echo "[exit $?]" >> "$T/out"
 }
