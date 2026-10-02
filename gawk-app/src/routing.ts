@@ -5,6 +5,7 @@
 import { isValidBroadcastId } from './lib/broadcastId';
 import { normalizeRelayOrigin } from './lib/relayUrl';
 import { isValidRoomCode } from './lib/roomCode';
+import { sanitizeNickname } from './features/room/roomPrefs';
 
 export interface RouteQuery {
   // Normalized https origin from a valid ?relay= value, else null.
@@ -19,13 +20,15 @@ export type Route =
   // `room` is a room to join once the stream is live (`?room=<code>`, a link
   // from outside the app, such as a chat bot's room card). App.tsx moves it
   // into the room-return stash before the first render. Null when absent or
-  // malformed.
-  | ({ view: 'broadcaster'; room: string | null } & RouteQuery)
+  // malformed. `nick` is a `?nick=` prefill, as on a room link.
+  | ({ view: 'broadcaster'; room: string | null; nick: string | null } & RouteQuery)
   | ({ view: 'viewer'; broadcastId: string } & RouteQuery)
   // A room link. The code is kept as typed (a static slug displays as
   // configured; the relay normalizes it). `grant` is the one-shot `?rt=`
-  // hand-off, moved out of the URL before the first render.
-  | ({ view: 'room'; code: string; grant: string | null } & RouteQuery)
+  // hand-off, moved out of the URL before the first render. `nick` is a
+  // nickname to prefill the prompt with (`?nick=`, e.g. a chat bot's link
+  // carrying the user's chat name), sanitized; null when absent or blank.
+  | ({ view: 'room'; code: string; grant: string | null; nick: string | null } & RouteQuery)
   // A typed six-character code naming a room or a broadcast; the relay
   // decides. Broadcast-alphabet codes only: static room slugs are link-only.
   | ({ view: 'join'; code: string } & RouteQuery)
@@ -87,6 +90,20 @@ function parseRoomParam(query: string): string | null {
   }
 }
 
+// The `?nick=` prefill, sanitized like a typed nickname (whitespace
+// collapsed, bounded to the wire limit). Blank ⇒ absent.
+function parseNickParam(query: string): string | null {
+  if (query === '') return null;
+  try {
+    const v = new URLSearchParams(query).get('nick');
+    if (v === null) return null;
+    const clean = sanitizeNickname(v);
+    return clean === '' ? null : clean;
+  } catch {
+    return null;
+  }
+}
+
 // Strip a one-shot parameter from a hash, keeping the path and the other
 // parameters.
 export function hashWithoutParam(hash: string, name: string): string {
@@ -112,7 +129,9 @@ export function parseRoute(hash: string): Route {
   const path = (qIndex === -1 ? raw : raw.slice(0, qIndex)).replace(/^\//, '').replace(/\/+$/, '');
 
   if (path === '') return { view: 'landing' };
-  if (path === 'broadcast') return { view: 'broadcaster', room: parseRoomParam(query), ...parseQuery(query) };
+  if (path === 'broadcast') {
+    return { view: 'broadcaster', room: parseRoomParam(query), nick: parseNickParam(query), ...parseQuery(query) };
+  }
   if (path === 'terms') return { view: 'terms' };
 
   if (path === 'view' || path.startsWith('view/')) {
@@ -126,7 +145,7 @@ export function parseRoute(hash: string): Route {
   if (path === 'room' || path.startsWith('room/')) {
     const code = path.slice('room/'.length);
     if (path !== 'room' && isValidRoomCode(code)) {
-      return { view: 'room', code, grant: parseGrant(query), ...parseQuery(query) };
+      return { view: 'room', code, grant: parseGrant(query), nick: parseNickParam(query), ...parseQuery(query) };
     }
     return { view: 'redirect', to: HOME };
   }

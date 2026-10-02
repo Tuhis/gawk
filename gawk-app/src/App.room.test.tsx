@@ -9,11 +9,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
-const seen = vi.hoisted(() => ({ hashAtRender: [] as string[], grantAtRender: [] as (string | null)[] }));
+const seen = vi.hoisted(() => ({
+  hashAtRender: [] as string[],
+  grantAtRender: [] as (string | null)[],
+  nickAtRender: [] as (string | null | undefined)[],
+}));
 
 vi.mock('./features/room/RoomScreen', () => ({
-  RoomScreen: ({ code }: { code: string }) => {
+  RoomScreen: ({ code, linkNickname }: { code: string; linkNickname?: string | null }) => {
     seen.hashAtRender.push(window.location.hash);
+    seen.nickAtRender.push(linkNickname);
     seen.grantAtRender.push(sessionStorage.getItem(`gawk:room-grant:${code.toLowerCase()}`));
     return <div data-testid="room">{code}</div>;
   },
@@ -32,6 +37,7 @@ beforeEach(() => {
   sessionStorage.clear();
   seen.hashAtRender.length = 0;
   seen.grantAtRender.length = 0;
+  seen.nickAtRender.length = 0;
   window.history.replaceState(null, '', '/');
 });
 afterEach(() => {
@@ -48,6 +54,13 @@ describe('App room routes (R42)', () => {
     expect(seen.hashAtRender[0]).toBe('#/room/AB2CD3?relay=https%3A%2F%2Frelay.example.com%3A4433');
     expect(JSON.parse(seen.grantAtRender[0] ?? 'null')).toEqual({ kind: 'creator', tokenHex: TOKEN });
     expect(window.location.href).not.toContain('rt=');
+  });
+
+  it('hands a ?nick= prefill to the room screen and strips it before the first render', () => {
+    window.history.replaceState(null, '', '/#/room/AB2CD3?nick=mumble%20name&relay=https://relay.example.com:4433');
+    render(<App />);
+    expect(seen.nickAtRender[0]).toBe('mumble name');
+    expect(seen.hashAtRender[0]).toBe('#/room/AB2CD3?relay=https%3A%2F%2Frelay.example.com%3A4433');
   });
 
   it('renders the join resolver for a typed code', () => {

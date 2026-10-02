@@ -137,6 +137,9 @@ export interface RoomViewProps {
   // is the nickname; null means "a guest, and stay one"; undefined asks as
   // usual (remembered nickname, else the prompt).
   presetNickname?: string | null;
+  // A `?nick=` link's name (linkNickname.ts): the prompt opens prefilled
+  // with it, even over a remembered nickname. presetNickname wins.
+  linkNickname?: string | null;
   // Replaces the room's own header overlay (code · counts · copy · people ·
   // fullscreen) — the broadcaster's topbar (direction A). It renders inside
   // the stage's coordinate space; the panel offset and the fade are the
@@ -165,7 +168,16 @@ function useMediaMatch(query: string): boolean {
 // stays until closed. Three modes: grid (every POV, all mixed), focus (one
 // large + the rest small in a glass strip, focused audio only), hide videos
 // (no media sessions at all; the control session stays).
-export function RoomView({ target, grant = null, own = null, onLeave, onStartStreaming, presetNickname, header }: RoomViewProps) {
+export function RoomView({
+  target,
+  grant = null,
+  own = null,
+  onLeave,
+  onStartStreaming,
+  presetNickname,
+  linkNickname,
+  header,
+}: RoomViewProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const status = useRoomStore((s) => s.status);
   const snapshot = useRoomStore((s) => s.snapshot);
@@ -177,10 +189,14 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
   const clearRejection = useRoomStore((s) => s.clearRejection);
 
   // The nickname, asked once before the first dial and remembered — or
-  // handed in by the hop from a room (presetNickname), which never asks.
-  const [nickname, setNicknameState] = useState<string | null>(() =>
-    presetNickname === undefined ? loadNickname() : presetNickname && sanitizeNickname(presetNickname),
-  );
+  // handed in by the hop from a room (presetNickname), which never asks. A
+  // link's name always asks, prefilled, so nobody joins under a forwarded
+  // link's name unasked.
+  const [linkPrefill] = useState(() => (presetNickname === undefined && linkNickname ? linkNickname : null));
+  const [nickname, setNicknameState] = useState<string | null>(() => {
+    if (presetNickname !== undefined) return presetNickname && sanitizeNickname(presetNickname);
+    return linkPrefill === null ? loadNickname() : null;
+  });
   const [guest, setGuest] = useState(presetNickname === null);
   const [editingNick, setEditingNick] = useState(false);
   // The Creator chip's help (CreatorBadge); open counts as an overlay.
@@ -972,6 +988,7 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
 
       {!ready && (
         <NicknamePrompt
+          initial={linkPrefill ?? ''}
           onSubmit={(n) => {
             saveNickname(n);
             setNicknameState(n);
@@ -994,13 +1011,14 @@ export function RoomView({ target, grant = null, own = null, onLeave, onStartStr
 // The `#/room/<code>` route: a participant joining by link.
 // The grant, if the link carried one, was moved into session storage by
 // App.tsx before this mounted (grantHandoff.ts).
-export function RoomScreen({ code }: { code: string }) {
+export function RoomScreen({ code, linkNickname = null }: { code: string; linkNickname?: string | null }) {
   const target = useMemo<RoomTarget>(() => ({ kind: 'join', code }), [code]);
   const [grant] = useState(() => readGrant(code));
   return (
     <RoomView
       target={target}
       grant={grant}
+      linkNickname={linkNickname}
       onStartStreaming={() => {
         // Carry a room link's relay: without it the route drops the override
         // and the broadcast would publish to the default relay.
