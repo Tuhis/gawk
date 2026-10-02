@@ -14,6 +14,7 @@ import { UnsupportedBrowserModal } from './ui/UnsupportedBrowserModal';
 import { applyRouteRelay } from './features/servers/relayOverride';
 import { applyRouteGrant } from './features/room/grantHandoff';
 import { applyRouteRoom } from './features/room/roomReturn';
+import { applyRouteNick } from './features/room/linkNickname';
 import { RoomScreen } from './features/room/RoomScreen';
 import { JoinResolver } from './features/room/JoinResolver';
 
@@ -24,12 +25,14 @@ import { JoinResolver } from './features/room/JoinResolver';
 // screens dial on mount and must never reach the wrong relay first, the grant
 // must be stashed (and stripped from the URL, so it never survives into a
 // copied link) before the room screen needs it, and the broadcaster reads its
-// pending room once, on mount.
+// pending room once, on mount. A `?nick=` prefill rides the route into the
+// screen as a prop and leaves the URL the same way.
 function resolveRoute(hash: string): Route {
   const route = parseRoute(hash);
   applyRouteRelay(route);
   applyRouteGrant(route);
   applyRouteRoom(route);
+  applyRouteNick(route);
   return route;
 }
 
@@ -48,11 +51,11 @@ function renderRoute(route: Route): ReactElement | null {
     case 'landing':
       return <LandingPage />;
     case 'broadcaster':
-      return <BroadcasterScreen />;
+      return <BroadcasterScreen linkNickname={route.nick} />;
     case 'viewer':
       return <ViewerScreen key={route.broadcastId} broadcastId={route.broadcastId} />;
     case 'room':
-      return <RoomScreen key={route.code} code={route.code} />;
+      return <RoomScreen key={route.code} code={route.code} linkNickname={route.nick} />;
     case 'join':
       return <JoinResolver key={route.code} code={route.code} />;
     case 'terms':

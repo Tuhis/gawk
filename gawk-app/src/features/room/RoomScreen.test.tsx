@@ -182,6 +182,44 @@ describe('RoomScreen nickname prompt (D10)', () => {
     expect(screen.queryByRole('dialog', { name: 'Nickname' })).toBeNull();
     expect(roomSessions[0].opts.grant).toEqual({ kind: 'creator', tokenHex: 'a'.repeat(32) });
   });
+
+  // A `?nick=` link (a chat bot's room card) prefills; it never joins under
+  // the name by itself, because a forwarded link would carry someone else's.
+  it('a link nickname prefills the prompt, even over a remembered one, and is remembered once confirmed', async () => {
+    localStorage.setItem('gawk:nickname', 'old');
+    render(<RoomScreen code="AB2CD3" linkNickname="mumble-name" />);
+    expect(screen.getByRole('dialog', { name: 'Nickname' })).toBeTruthy();
+    expect(roomSessions).toHaveLength(0);
+    expect((screen.getByRole('textbox', { name: 'Nickname' }) as HTMLInputElement).value).toBe('mumble-name');
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    expect(roomSessions[0].opts.nickname).toBe('mumble-name');
+    expect(localStorage.getItem('gawk:nickname')).toBe('mumble-name');
+  });
+
+  it('a link nickname can still be edited, or declined for a guest join that remembers nothing', async () => {
+    localStorage.setItem('gawk:nickname', 'old');
+    const { unmount } = render(<RoomScreen code="AB2CD3" linkNickname="mumble-name" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Join as a guest' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    expect(roomSessions[0].opts.nickname).toBe('');
+    expect(localStorage.getItem('gawk:nickname')).toBe('old');
+    unmount();
+    useRoomStore.getState().reset();
+
+    render(<RoomScreen code="AB2CD3" linkNickname="mumble-name" />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Nickname' }), { target: { value: 'edited' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(2));
+    expect(roomSessions[1].opts.nickname).toBe('edited');
+  });
+
+  it('a handed-in nickname (the hop from a room) wins over a link nickname and asks nothing', async () => {
+    render(<RoomView target={{ kind: 'join', code: 'AB2CD3' }} presetNickname="handed" linkNickname="mumble-name" />);
+    expect(screen.queryByRole('dialog', { name: 'Nickname' })).toBeNull();
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    expect(roomSessions[0].opts.nickname).toBe('handed');
+  });
 });
 
 describe('RoomScreen modes', () => {

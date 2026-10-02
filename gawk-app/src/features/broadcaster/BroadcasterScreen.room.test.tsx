@@ -406,6 +406,33 @@ describe('BroadcasterScreen Room panel (RM5)', () => {
     expect(roomSessions[0].opts.nickname).toBe('tuhis');
   });
 
+  it('a #/broadcast?room=&nick= link prefills the room view’s prompt with the link’s name, over the remembered one', async () => {
+    sessionStorage.setItem('gawk:room-return', JSON.stringify({ code: 'vip-k3q7xzmw2p' }));
+    localStorage.setItem('gawk:nickname', 'tuhis');
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onResumeToken?.(TOKEN);
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen linkNickname="mumble-name" />);
+    fireEvent.click(screen.getByRole('button', { name: /start a stream/i }));
+    // The room view opens, but asks before dialing: the name came from a link.
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Nickname' })).toBeTruthy());
+    expect(roomSessions).toHaveLength(0);
+    expect((screen.getByRole('textbox', { name: 'Nickname' }) as HTMLInputElement).value).toBe('mumble-name');
+    fireEvent.click(screen.getByRole('button', { name: 'Join' }));
+    await waitFor(() => expect(roomSessions).toHaveLength(1));
+    expect(roomSessions[0].opts.nickname).toBe('mumble-name');
+    expect(localStorage.getItem('gawk:nickname')).toBe('mumble-name');
+  });
+
+  it('a #/broadcast?nick= link prefills the Room panel’s name', async () => {
+    localStorage.setItem('gawk:nickname', 'tuhis');
+    render(<BroadcasterScreen linkNickname="mumble-name" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Room' }));
+    expect(screen.getByRole('dialog', { name: 'Room' }).textContent).toContain('Joining as mumble-name');
+  });
+
   // The relay keeps an attachment across a session end on purpose (a reload
   // must not detach — docs/44 §4.4), so leaving by closing the control
   // session alone left the stream playing to everyone in the room, with

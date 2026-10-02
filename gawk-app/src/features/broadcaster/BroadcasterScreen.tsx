@@ -122,7 +122,8 @@ function TipLine({ copy }: { copy: TipCopy }) {
 // The production broadcaster: the preview is the hero, controls float over it
 // and encoder feedback shows as quiet badges. A restart reclaims the previous
 // broadcast ID and falls back to minting a new one.
-export function BroadcasterScreen() {
+// `linkNickname`: a `#/broadcast?nick=` link's name (linkNickname.ts).
+export function BroadcasterScreen({ linkNickname = null }: { linkNickname?: string | null } = {}) {
   const pipelineRef = useRef<BroadcastSessionLike | null>(null);
   const unmountedRef = useRef(false);
   // The display grant of the latest start. The screen owns it (handleStart
@@ -200,7 +201,10 @@ export function BroadcasterScreen() {
   const nameBeforeEditRef = useRef('');
   const [roomTarget, setRoomTarget] = useState<RoomTarget | null>(null);
   const [roomGrant, setRoomGrant] = useState<RoomGrant | null>(null);
-  const [roomLabel, setRoomLabel] = useState(() => roomReturn?.nickname ?? loadNickname() ?? '');
+  // A link's name prefills the field over the remembered one; while it is
+  // still the name in the field, the room view asks before using it.
+  const [linkNick] = useState(linkNickname);
+  const [roomLabel, setRoomLabel] = useState(() => roomReturn?.nickname ?? linkNick ?? loadNickname() ?? '');
   // The resume token is a ref (nothing renders it); this mirrors "the token
   // has arrived" for the pending-room effect below.
   const [resumeReady, setResumeReady] = useState(false);
@@ -972,8 +976,15 @@ export function BroadcasterScreen() {
           own={own}
           // The one name field: the hop's answer if there was one, else what
           // was typed in the panel (also the tile label), else the room view
-          // asks / remembers as usual.
-          presetNickname={roomNickname !== undefined ? roomNickname : roomLabel.trim() || undefined}
+          // asks / remembers as usual. A link's name, untouched, is asked.
+          presetNickname={
+            roomNickname !== undefined
+              ? roomNickname
+              : linkNick !== null && roomLabel.trim() === linkNick
+                ? undefined
+                : roomLabel.trim() || undefined
+          }
+          linkNickname={linkNick}
           header={topbar}
           onLeave={() => setRoomTarget(null)}
         />

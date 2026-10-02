@@ -11,18 +11,20 @@ describe('parseRoute', () => {
   });
 
   it('maps #/broadcast to the production broadcaster', () => {
-    expect(parseRoute('#/broadcast')).toEqual({ view: 'broadcaster', room: null, ...noQuery });
+    expect(parseRoute('#/broadcast')).toEqual({ view: 'broadcaster', room: null, nick: null, ...noQuery });
   });
 
   it('carries a ?room= code on #/broadcast as typed, and ignores a malformed one', () => {
     expect(parseRoute('#/broadcast?room=vip-k3q7xzmw2p')).toEqual({
       view: 'broadcaster',
       room: 'vip-k3q7xzmw2p',
+      nick: null,
       ...noQuery,
     });
     expect(parseRoute('#/broadcast?room=AB2CD3&relay=https://relay.example.com')).toEqual({
       view: 'broadcaster',
       room: 'AB2CD3',
+      nick: null,
       relay: 'https://relay.example.com',
       droppedParams: [],
     });
@@ -30,6 +32,7 @@ describe('parseRoute', () => {
       expect(parseRoute(`#/broadcast?room=${encodeURIComponent(bad)}`)).toEqual({
         view: 'broadcaster',
         room: null,
+      nick: null,
         ...noQuery,
       });
     }
@@ -95,6 +98,7 @@ describe('parseRoute ?relay=', () => {
     expect(parseRoute('#/broadcast?relay=https://relay.example.com:4433')).toEqual({
       view: 'broadcaster',
       room: null,
+      nick: null,
       relay: 'https://relay.example.com:4433',
       droppedParams: [],
     });
@@ -120,6 +124,7 @@ describe('parseRoute ?relay=', () => {
     expect(parseRoute('#/broadcast?start=1&res=720')).toEqual({
       view: 'broadcaster',
       room: null,
+      nick: null,
       ...noQuery,
     });
   });
@@ -143,9 +148,10 @@ describe('parseRoute rooms (R42)', () => {
       view: 'room',
       code: 'TuhisRoom',
       grant: null,
+      nick: null,
       ...noQuery,
     });
-    expect(parseRoute('#/room/ab2cd3/')).toEqual({ view: 'room', code: 'ab2cd3', grant: null, ...noQuery });
+    expect(parseRoute('#/room/ab2cd3/')).toEqual({ view: 'room', code: 'ab2cd3', grant: null, nick: null, ...noQuery });
   });
 
   it('carries ?relay= and the one-shot ?rt= grant on a room link', () => {
@@ -153,10 +159,44 @@ describe('parseRoute rooms (R42)', () => {
       view: 'room',
       code: 'AB2CD3',
       grant: '0011',
+      nick: null,
       relay: 'https://relay.example.com:4433',
       droppedParams: [],
     });
-    expect(parseRoute('#/room/AB2CD3?rt=')).toEqual({ view: 'room', code: 'AB2CD3', grant: null, ...noQuery });
+    expect(parseRoute('#/room/AB2CD3?rt=')).toEqual({ view: 'room', code: 'AB2CD3', grant: null, nick: null, ...noQuery });
+  });
+
+  it('carries a ?nick= prefill on a room link and on #/broadcast, sanitized like a typed nickname', () => {
+    expect(parseRoute('#/room/AB2CD3?nick=Tuhis')).toEqual({
+      view: 'room',
+      code: 'AB2CD3',
+      grant: null,
+      nick: 'Tuhis',
+      ...noQuery,
+    });
+    expect(parseRoute('#/broadcast?room=AB2CD3&nick=%20Big%20%20%20Tuhis%20')).toEqual({
+      view: 'broadcaster',
+      room: 'AB2CD3',
+      nick: 'Big Tuhis',
+      ...noQuery,
+    });
+    expect(parseRoute('#/broadcast?nick=solo')).toEqual({ view: 'broadcaster', room: null, nick: 'solo', ...noQuery });
+    // Bounded to the wire limit (bytes, whole characters).
+    const long = parseRoute(`#/room/AB2CD3?nick=${encodeURIComponent('ä'.repeat(40))}`);
+    expect(long.view === 'room' && long.nick !== null).toBe(true);
+    expect(new TextEncoder().encode(long.view === 'room' ? (long.nick ?? '') : '').length).toBeLessThanOrEqual(32);
+    // Empty or whitespace-only is absent.
+    for (const blank of ['', '%20%20']) {
+      expect(parseRoute(`#/room/AB2CD3?nick=${blank}`)).toEqual({
+        view: 'room',
+        code: 'AB2CD3',
+        grant: null,
+        nick: null,
+        ...noQuery,
+      });
+    }
+    // Routes without a nickname ignore it.
+    expect(parseRoute('#/view/AB2CD3?nick=x')).toEqual({ view: 'viewer', broadcastId: 'AB2CD3', ...noQuery });
   });
 
   it('redirects a malformed room code home', () => {
