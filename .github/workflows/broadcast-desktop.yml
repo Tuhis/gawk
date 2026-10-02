@@ -114,6 +114,7 @@
 # moves. .github/actions/linux-container-setup installs the lot.
 #
 # So host clippy left `lint` for `test`, and `test` runs in the container.
+# (Since 2026-10-02 host clippy is its own container job, `lint-host`.)
 # The Windows cross-build (`lint`'s xwin clippy, `build`) stays on the runner
 # image exactly as before: the msvc target never compiles the Linux crates.
 #
@@ -289,8 +290,53 @@ jobs:
         if: always() && env.RUSTC_WRAPPER != ''
         run: '"$RUSTC_WRAPPER" --show-stats'
 
-  # Host clippy, the whole workspace's tests and coverage, and the real-relay
-  # integration tiers — in the ubuntu:24.04 container (docs/58 D12).
+  # The host clippy, in the ubuntu:24.04 container (docs/58 D12): every
+  # cfg(unix) and cfg(target_os = "linux") block, the Linux shell included.
+  #
+  # Its own job since 2026-10-02. It was the first step of `test`, and the two
+  # share nothing: clippy's check-only tree is not the instrumented test tree
+  # llvm-cov builds. Serially they made `test` the longest job in the run
+  # (12:47 in run 36933059871: clippy 4:17 before the tests began, against
+  # 8:18 for `linux` + `linux-deb`). The cost is one more pool slot and one
+  # more container start.
+  lint-host:
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    container:
+      image: ${{ vars.DESKTOP_CI_IMAGE || 'ghcr.io/tuhis/gawk-desktop-ci:latest' }}
+    defaults:
+      run:
+        working-directory: gawk-broadcast-desktop
+        # A container job's default shell is `sh` (dash here), which has
+        # no `set -o pipefail`; the runner-image jobs get bash implicitly.
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: /tmp/target
+      # As in `test`: the same flags, or the proc-macro units would not be
+      # the ones sccache already holds for the host.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+    steps:
+      # See `lint`: a backfill lints the commit it is attaching to.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.attach_to || github.sha }}
+      - uses: ./.github/actions/linux-container-setup
+      - uses: ./.github/actions/rust-shared-cache
+        with:
+          password: ${{ secrets.SCCACHE_WEBDAV_PASSWORD }}
+
+      # `--locked` makes a Cargo.lock that disagrees with the manifests a
+      # failure here rather than a silent rewrite: release-please's
+      # Cargo.lock extra-file must bump the workspace crates in the same
+      # release PR (the lock sat at 1.8.0 through the 2.0.0 release before it
+      # did).
+      - name: Clippy (host)
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: sccache stats
+        if: always() && env.RUSTC_WRAPPER != ''
+        run: '"$RUSTC_WRAPPER" --show-stats'
+
+  # The whole workspace's tests and coverage, and the real-relay integration
+  # tiers — in the ubuntu:24.04 container (docs/58 D12).
   test:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     container:
@@ -329,14 +375,24 @@ jobs:
         with:
           password: ${{ secrets.SCCACHE_WEBDAV_PASSWORD }}
 
-      # The host pass lint used to run: every cfg(unix) and
-      # cfg(target_os = "linux") block, the Linux shell included. `--locked`
-      # makes a Cargo.lock that disagrees with the manifests a failure here
-      # rather than a silent rewrite: release-please's Cargo.lock extra-file
-      # must bump the workspace crates in the same release PR (the lock sat
-      # at 1.8.0 through the 2.0.0 release before it did).
-      - name: Clippy (host)
-        run: cargo clippy --locked --all-targets -- -D warnings
+      # The relay integration tiers run the real gawk-server and gawk-devcert.
+      # The container has no Go cache, so building them is a cold module
+      # download and compile: 37 s inside the first integration test in run
+      # 36938371064, with every later test relinking both binaries again.
+      # They are built here instead, in the background while cargo compiles
+      # the tests, and handed to the harness via GAWK_IT_RELAY_BIN_DIR
+      # (crates/engine/tests/support/relay.rs). Collected before the tiers.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache: false
+      - name: Build the relay and devcert (in the background)
+        run: |
+          mkdir -p "$RUNNER_TEMP/relay-bin"
+          ( rc=0
+            go -C ../gawk-server build -o "$RUNNER_TEMP/relay-bin/" ./cmd/gawk-server ./cmd/gawk-devcert \
+              > "$RUNNER_TEMP/relay-bin.log" 2>&1 || rc=$?
+            echo "$rc" > "$RUNNER_TEMP/relay-bin.rc" ) &
 
       # R41 (docs/43): coverage for the Rust workspace. A prebuilt binary
       # pinned by version and fetched from its release, exactly as the
@@ -368,11 +424,17 @@ jobs:
       - name: Test
         run: cargo llvm-cov --workspace --no-report
 
-      # The relay integration tiers shell out to `go build` of gawk-server.
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: gawk-server/go.mod
-          cache: false
+      - name: Collect the relay and devcert
+        run: |
+          for i in $(seq 300); do [ -s "$RUNNER_TEMP/relay-bin.rc" ] && break; sleep 1; done
+          cat "$RUNNER_TEMP/relay-bin.log"
+          rc=$(cat "$RUNNER_TEMP/relay-bin.rc" 2>/dev/null || echo "timeout")
+          if [ "$rc" != 0 ]; then
+            echo "::error::go build of gawk-server/gawk-devcert did not succeed (exit: $rc)"
+            exit 1
+          fi
+          ls -l "$RUNNER_TEMP/relay-bin"
+          echo "GAWK_IT_RELAY_BIN_DIR=$RUNNER_TEMP/relay-bin" >> "$GITHUB_ENV"
 
       # quic-go wants larger UDP buffers than a default kernel allows. In a
       # container the sysctl may not be ours to set; quic-go then logs a
@@ -585,6 +647,16 @@ jobs:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: gawk-server/go.sum
 
+      # Built in the background while clippy and the tests compile, as in
+      # `test`, and handed to the harness via GAWK_IT_RELAY_BIN_DIR.
+      - name: Build the relay and devcert (in the background)
+        run: |
+          mkdir -p "$RUNNER_TEMP/relay-bin"
+          ( rc=0
+            go -C ../gawk-server build -o "$RUNNER_TEMP/relay-bin/" ./cmd/gawk-server ./cmd/gawk-devcert \
+              > "$RUNNER_TEMP/relay-bin.log" 2>&1 || rc=$?
+            echo "$rc" > "$RUNNER_TEMP/relay-bin.rc" ) &
+
       # rust-toolchain.toml pins the compiler; the hosted image's rustup
       # installs it (with rustfmt and clippy) on first use. Printed so the
       # log names the compiler that built the artifact.
@@ -609,6 +681,18 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Collect the relay and devcert
+        run: |
+          for i in $(seq 300); do [ -s "$RUNNER_TEMP/relay-bin.rc" ] && break; sleep 1; done
+          cat "$RUNNER_TEMP/relay-bin.log"
+          rc=$(cat "$RUNNER_TEMP/relay-bin.rc" 2>/dev/null || echo "timeout")
+          if [ "$rc" != 0 ]; then
+            echo "::error::go build of gawk-server/gawk-devcert did not succeed (exit: $rc)"
+            exit 1
+          fi
+          ls -l "$RUNNER_TEMP/relay-bin"
+          echo "GAWK_IT_RELAY_BIN_DIR=$RUNNER_TEMP/relay-bin" >> "$GITHUB_ENV"
 
       # docs/54 MB1: "wtransport works on macOS" is a claim the transport
       # gates should prove, not the crate's README. The same suite `test`
@@ -1098,14 +1182,16 @@ jobs:
   attach-release:
     # `macos`, `linux` and `linux-deb` are soft dependencies (R52 docs/54 D13, R56
     # docs/58 D13): the Windows release
-    # needs lint, test and build green and waits for nothing else — not a
-    # macOS flake, not hosted-image drift, not a backfill of a commit older
-    # than the macOS bundle. `!cancelled()` is what lets this job run when
-    # `macos` failed; the three hard dependencies are then checked by hand.
-    needs: [lint, test, build, macos, macos-check, linux, linux-deb]
+    # needs lint, lint-host, test and build green and waits for nothing else —
+    # not a macOS flake, not hosted-image drift, not a backfill of a commit
+    # older than the macOS bundle. `!cancelled()` is what lets this job run
+    # when `macos` failed; the four hard dependencies are then checked by
+    # hand (`lint-host` joined them when host clippy left `test`).
+    needs: [lint, lint-host, test, build, macos, macos-check, linux, linux-deb]
     if: >-
       !cancelled() &&
       needs.lint.result == 'success' &&
+      needs.lint-host.result == 'success' &&
       needs.test.result == 'success' &&
       needs.build.result == 'success' &&
       (github.event_name == 'push' ||

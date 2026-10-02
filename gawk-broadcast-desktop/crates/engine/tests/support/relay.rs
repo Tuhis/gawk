@@ -33,6 +33,40 @@ pub fn build_tool(name: &str, out: &PathBuf) {
     assert!(status.success(), "go build ./cmd/{name} failed");
 }
 
+/// Names a directory holding an already-built `gawk-server` and
+/// `gawk-devcert`. CI sets it so the relay is compiled in the background
+/// while cargo builds the tests, instead of inside the first test.
+pub const RELAY_BIN_DIR_ENV: &str = "GAWK_IT_RELAY_BIN_DIR";
+
+/// The relay and devcert binaries, resolved once per test binary: from
+/// `GAWK_IT_RELAY_BIN_DIR` when it is set, otherwise built here. Every test
+/// used to run both `go build`s itself, which relinked two binaries per test
+/// even with a warm Go cache.
+pub fn relay_tools() -> &'static (PathBuf, PathBuf) {
+    static TOOLS: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
+    TOOLS.get_or_init(|| {
+        if let Some(dir) = std::env::var_os(RELAY_BIN_DIR_ENV) {
+            let dir = PathBuf::from(dir);
+            let exe = |name: &str| dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+            let (bin, devcert) = (exe("gawk-server"), exe("gawk-devcert"));
+            for path in [&bin, &devcert] {
+                assert!(
+                    path.is_file(),
+                    "{RELAY_BIN_DIR_ENV} is set but {} does not exist",
+                    path.display()
+                );
+            }
+            return (bin, devcert);
+        }
+        let dir = std::env::temp_dir().join(format!("gawk-it-tools-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (bin, devcert) = (dir.join("gawk-server"), dir.join("gawk-devcert"));
+        build_tool("gawk-server", &bin);
+        build_tool("gawk-devcert", &devcert);
+        (bin, devcert)
+    })
+}
+
 pub fn free_udp_port() -> u16 {
     std::net::UdpSocket::bind("127.0.0.1:0")
         .unwrap()
@@ -78,19 +112,17 @@ pub struct Relay {
 static TEST_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 impl Relay {
-    /// Builds (cached by Go's build cache) and starts the real relay. Each
-    /// test gets its own temp dir so parallel `go build -o` calls don't race.
+    /// Starts the real relay (built once per test binary, see
+    /// [`relay_tools`]). Each test gets its own temp dir for its certificate.
     pub fn start(extra_args: &[&str]) -> Relay {
         let seq = TEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let tmp = std::env::temp_dir().join(format!("gawk-it-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
-        let bin = tmp.join("gawk-server");
-        let devcert = tmp.join("gawk-devcert");
-        build_tool("gawk-server", &bin);
-        build_tool("gawk-devcert", &devcert);
+        let (bin, devcert) = relay_tools();
+        let bin = bin.clone();
         let cert_dir = tmp.join("cert");
         if !cert_dir.join("cert.pem").exists() {
-            let out = Command::new(&devcert)
+            let out = Command::new(devcert)
                 .arg("-out")
                 .arg(&cert_dir)
                 .output()
