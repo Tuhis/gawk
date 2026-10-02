@@ -1559,6 +1559,7 @@ fn start_update_check(ui: &MainWindow, sh: &mut Shell) {
     }
     sh.update.checking = spawn_update_check(sh, false);
     ui.set_update_checking(sh.update.checking);
+    show_install(ui, &sh.update);
 }
 
 /// One check on its own thread, reported back through the message channel.
@@ -1602,6 +1603,10 @@ struct UpdateState {
     /// The version this run stops trying to stage: its download failed, or
     /// this install cannot be updated in place. The R45 line stays.
     given_up: Option<String>,
+    /// The version swapped in this run whose relaunch failed. It is on
+    /// disk, so nothing more is staged until a restart; unlike `given_up`,
+    /// Check now does not clear it.
+    installed: Option<String>,
     /// The line under the notice: the `.deb` instructions (docs/48 D9), or
     /// why an install failed.
     note: String,
@@ -1633,11 +1638,13 @@ impl UpdateState {
 
     /// The update to download now, if any (docs/48 D4): one that is shown,
     /// lists signed files, and can be installed here; only while idle, one
-    /// download at a time, and not one already ready or given up on.
+    /// download at a time, not one already ready or given up on, and
+    /// nothing once an update is installed.
     fn to_stage(&self, idle: bool) -> Option<Update> {
         let u = self.shown.as_ref()?;
         let wanted = idle
             && self.target.is_some()
+            && self.installed.is_none()
             && !self.staging
             && u.files.is_some()
             && self.ready.as_ref().is_none_or(|r| r.version != u.version)
@@ -1648,6 +1655,27 @@ impl UpdateState {
     /// Whether the shown release is the one staged: the button shows.
     fn ready_for_shown(&self) -> bool {
         matches!((&self.shown, &self.ready), (Some(u), Some(r)) if u.version == r.version)
+    }
+
+    /// What the notice offers: 2 Install and relaunch; 1 nothing yet, the
+    /// install is on its way (a download in flight, or the launch check
+    /// re-fetching a remembered update's file list); 0 the release page.
+    fn phase(&self) -> i32 {
+        let Some(u) = &self.shown else {
+            return 0;
+        };
+        let refetching = self.checking
+            && u.files.is_none()
+            && self.target.is_some()
+            && self.installed.is_none()
+            && self.given_up.as_deref() != Some(u.version.as_str());
+        if self.ready_for_shown() {
+            2
+        } else if self.staging || refetching {
+            1
+        } else {
+            0
+        }
     }
 
     /// Check now was pressed. True means start a check; false means one is
@@ -1672,12 +1700,26 @@ impl UpdateState {
         if let Some(found) = found {
             self.shown = if manual {
                 self.dismissed = None;
+                // Asking again retries an install this run gave up on: a
+                // download cut off by the network is worth a second try.
+                // An installed update keeps its restart note.
+                self.given_up = None;
+                if self.installed.is_none() {
+                    self.note.clear();
+                }
                 found
             } else {
                 found.filter(|u| self.dismissed.as_deref() != Some(u.version.as_str()))
             };
         }
         manual
+    }
+
+    /// The swap worked but the new build did not start: `version` is on
+    /// disk, and starting the app again runs it.
+    fn relaunch_failed(&mut self, version: &str) {
+        self.installed = Some(version.to_owned());
+        self.note = format!("Installed v{version}. Start the app again to use it.");
     }
 }
 
@@ -1754,6 +1796,7 @@ fn maybe_stage(ui: &MainWindow, sh: &mut Shell) {
         Plan::NotWritable(why) => {
             log::info!("update v{}: cannot install in place: {why}", u.version);
             sh.update.given_up = Some(u.version.clone());
+            sh.update.note = NOT_WRITABLE_NOTE.into();
         }
         Plan::InPlace { staging } => {
             log::info!("update v{}: downloading and verifying", u.version);
@@ -1779,12 +1822,20 @@ fn maybe_stage(ui: &MainWindow, sh: &mut Shell) {
                 Err(e) => {
                     log::warn!("update download not started: {e}");
                     sh.update.given_up = Some(version);
+                    sh.update.note = DOWNLOAD_FAILED_NOTE.into();
                 }
             }
         }
     }
     show_install(ui, &sh.update);
 }
+
+/// Why the notice offers the release page instead of a button. The
+/// details are in the log; the user needs to know only that this copy
+/// won't update itself, and that Check now tries again.
+const NOT_WRITABLE_NOTE: &str = "This copy can't update itself: its folder isn't writable.";
+const DOWNLOAD_FAILED_NOTE: &str =
+    "The download didn't work. Check now in Settings tries again, or download it yourself.";
 
 /// docs/48 D9: what a `.deb` install is told instead of a button.
 fn deb_note(u: &Update) -> String {
@@ -1794,7 +1845,7 @@ fn deb_note(u: &Update) -> String {
 }
 
 fn show_install(ui: &MainWindow, st: &UpdateState) {
-    ui.set_update_ready(st.ready_for_shown());
+    ui.set_update_phase(st.phase());
     ui.set_update_note(
         if st.shown.is_some() {
             st.note.as_str()
@@ -1831,11 +1882,7 @@ fn install_now(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 }
                 Err(e) => {
                     log::warn!("installed v{} but could not start it: {e}", ready.version);
-                    sh.update.given_up = Some(ready.version.clone());
-                    sh.update.note = format!(
-                        "Installed v{}. Start the app again to use it.",
-                        ready.version
-                    );
+                    sh.update.relaunch_failed(&ready.version);
                 }
             }
         }
@@ -2503,6 +2550,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 } else {
                     "Couldn't start the check.".into()
                 });
+                show_install(&ui, &sh.update);
             }
         });
     }
@@ -2970,6 +3018,7 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
                 Err(e) => {
                     log::warn!("update v{version}: not installable in place: {e}");
                     sh.update.given_up = Some(version);
+                    sh.update.note = DOWNLOAD_FAILED_NOTE.into();
                 }
             }
             show_install(ui, &sh.update);
@@ -5587,6 +5636,85 @@ mod tests {
             None,
             "a dismissed notice downloads nothing"
         );
+    }
+
+    /// The notice's offer: the button only for the staged release, a
+    /// "downloading" line while the install is on its way, and the release
+    /// page otherwise.
+    #[test]
+    fn the_notice_offers_what_this_copy_can_do() {
+        assert_eq!(UpdateState::default().phase(), 0, "nothing shown");
+        // A remembered update at launch: the re-fetch is on its way to the
+        // file list, unless it gets no answer.
+        let mut st = installable(Some(release("2.1.0")));
+        st.checking = true;
+        assert_eq!(st.phase(), 1);
+        st.finish(None, false);
+        assert_eq!(st.phase(), 0, "offline: the release page");
+        // Answered with the signed files: downloading, then ready.
+        st.finish(Some(Some(signed("2.1.0"))), false);
+        st.staging = true;
+        assert_eq!(st.phase(), 1);
+        st.staging = false;
+        st.ready = Some(Ready {
+            version: "2.1.0".into(),
+            binary: PathBuf::from("/opt/gawk/.gawk-update/gawk-broadcast-linux"),
+        });
+        assert_eq!(st.phase(), 2);
+        // A newer release than the ready one: no button until it is staged.
+        st.shown = Some(signed("2.2.0"));
+        assert_eq!(st.phase(), 0);
+        st.staging = true;
+        assert_eq!(st.phase(), 1);
+
+        // No in-place install here (macOS), or given up: the release page,
+        // even while a check runs.
+        let macos = UpdateState {
+            shown: Some(release("2.1.0")),
+            checking: true,
+            ..Default::default()
+        };
+        assert_eq!(macos.phase(), 0);
+        let mut gave_up = installable(Some(release("2.1.0")));
+        gave_up.given_up = Some("2.1.0".into());
+        gave_up.checking = true;
+        assert_eq!(gave_up.phase(), 0);
+    }
+
+    /// Check now retries what this run gave up on, so a download cut off
+    /// once is not stuck behind the release page until a restart. An
+    /// automatic check does not.
+    #[test]
+    fn check_now_retries_a_failed_download() {
+        let mut st = installable(Some(signed("2.1.0")));
+        st.given_up = Some("2.1.0".into());
+        st.note = DOWNLOAD_FAILED_NOTE.into();
+        st.finish(Some(Some(signed("2.1.0"))), false);
+        assert_eq!(st.to_stage(true), None, "the automatic check keeps it");
+        assert!(st.request_manual());
+        st.finish(Some(Some(signed("2.1.0"))), true);
+        assert_eq!(st.to_stage(true), Some(signed("2.1.0")));
+        assert_eq!(st.note, "", "the old failure no longer applies");
+    }
+
+    /// The swap worked but the new build did not start. It is on disk, so
+    /// nothing downloads again this run, Check now included, and the note
+    /// keeps saying to start the app again. A second Windows swap would
+    /// fail on the running `<exe>.old` and call the update not installed.
+    #[test]
+    fn an_installed_update_is_not_downloaded_again() {
+        let mut st = installable(Some(signed("2.1.0")));
+        st.relaunch_failed("2.1.0");
+        let note = st.note.clone();
+        assert!(st.request_manual());
+        st.finish(Some(Some(signed("2.1.0"))), true);
+        assert_eq!(st.to_stage(true), None, "Check now leaves it installed");
+        assert_eq!(st.note, note, "and still says to start the app again");
+        st.finish(Some(Some(signed("2.2.0"))), false);
+        assert_eq!(st.to_stage(true), None, "nor a newer one, until a restart");
+        st.shown = Some(release("2.2.0"));
+        st.checking = true;
+        assert_eq!(st.phase(), 0, "no download is on its way");
     }
 
     #[test]

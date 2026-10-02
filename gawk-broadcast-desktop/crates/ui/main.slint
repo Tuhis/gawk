@@ -191,6 +191,7 @@ global Icons {
     out property <string> signal: "M12 20V10M7 20v-5M17 20V5";
     out property <string> server: "M5 4h14a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1H5a1 1 0 0 1 -1 -1V5a1 1 0 0 1 1 -1zM5 14h14a1 1 0 0 1 1 1v4a1 1 0 0 1 -1 1H5a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1zM8 7h.01M8 17h.01";
     out property <string> swap: "M7 7h11l-3 -3M17 17H6l3 3";
+    out property <string> download: "M12 4v11M7 10l5 5 5 -5M5 20h14";
 }
 
 component Icon inherits Path {
@@ -1113,6 +1114,105 @@ component Banner inherits Rectangle {
     }
 }
 
+// The update notice (docs/47 D7, docs/48 D4), at the top of Ready with the
+// other notices (docs/60 D13). A banner with the summary card's header —
+// a kicker and Dismiss — so its two buttons fit the narrowest window.
+component UpdateCard inherits Rectangle {
+    in property <string> version;
+    // MainWindow's update-phase: 0 the release page, 1 downloading, 2 ready.
+    in property <int> phase;
+    // Starting or live: never install then (docs/48 D4).
+    in property <bool> busy;
+    in property <string> note;
+    callback install;
+    callback open-release;
+    callback dismiss;
+    vertical-stretch: 0;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: T.accent-line;
+    background: T.accent-soft;
+    HorizontalLayout {
+        padding: 12px;
+        padding-left: 14px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: start;
+            // Centred on the 32 px header row.
+            padding-top: 7px;
+            Icon {
+                commands: Icons.download;
+                ink: T.accent-text;
+            }
+        }
+        VerticalLayout {
+            spacing: 8px;
+            horizontal-stretch: 1;
+            HorizontalLayout {
+                cross-axis-alignment: center;
+                Kicker {
+                    text: root.phase == 2 ? "UPDATE READY" : "UPDATE AVAILABLE";
+                    color: T.accent-text;
+                    horizontal-stretch: 1;
+                }
+                Btn {
+                    kind: 2;
+                    small: true;
+                    icon: Icons.close;
+                    text: "Dismiss";
+                    clicked => {
+                        root.dismiss();
+                    }
+                }
+            }
+            Text {
+                text: root.phase == 2 ? (root.busy ? "gawk " + root.version + " is ready. Install it once you've stopped broadcasting."
+                    : "gawk " + root.version + " is downloaded and verified. Installing it takes a few seconds and reopens the app.")
+                    : root.phase == 1 ? "Downloading gawk " + root.version + ". You can install it in a moment."
+                    : "gawk " + root.version + " is available.";
+                color: T.text;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            if root.note != "": Text {
+                text: root.note;
+                color: T.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                if root.phase == 2: Btn {
+                    text: "Install and relaunch";
+                    small: true;
+                    enabled: !root.busy;
+                    clicked => {
+                        root.install();
+                    }
+                }
+                if root.phase == 0: Btn {
+                    text: "Download";
+                    icon: Icons.external;
+                    small: true;
+                    clicked => {
+                        root.open-release();
+                    }
+                }
+                if root.phase != 0: Btn {
+                    text: "What's new";
+                    kind: 2;
+                    icon: Icons.external;
+                    small: true;
+                    clicked => {
+                        root.open-release();
+                    }
+                }
+            }
+        }
+    }
+}
+
 // A bottom sheet over the page: scrim, grab handle, title and close.
 component Sheet inherits Rectangle {
     in property <string> title;
@@ -1772,10 +1872,11 @@ export component MainWindow inherits Window {
     // and its release page (prefix-checked by the engine before it gets here).
     in property <string> update-version: "";
     in property <string> update-url: "";
-    // R47 (docs/48 D4): the release is downloaded and verified, so the line
-    // offers "Install and relaunch"; and the line under it — the .deb
-    // instructions (D9) or why an install failed.
-    in property <bool> update-ready: false;
+    // R47 (docs/48 D4): what the notice offers — 0 the release page, 1 the
+    // install is downloading, 2 it is verified: "Install and relaunch"; and
+    // the line under it — the .deb instructions (D9) or why this copy won't
+    // update itself.
+    in property <int> update-phase: 0;
     in property <string> update-note: "";
     // The Settings "Check now" button: in flight, and what it last found.
     in property <bool> update-checking: false;
@@ -2366,6 +2467,24 @@ export component MainWindow inherits Window {
                                 }
                             }
 
+                            // docs/47 D7: in the window, not a toast — the portal and
+                            // Focus Assist swallow toasts while a broadcaster games.
+                            if root.update-version != "": UpdateCard {
+                                version: root.update-version;
+                                phase: root.update-phase;
+                                busy: root.busy;
+                                note: root.update-note;
+                                install => {
+                                    root.install-update();
+                                }
+                                open-release => {
+                                    root.open-link(root.update-url);
+                                }
+                                dismiss => {
+                                    root.dismiss-update();
+                                }
+                            }
+
                             // D10: the summary of the broadcast that just ended, as a
                             // passing notice with its undo.
                             if root.summary-visible: Rectangle {
@@ -2600,77 +2719,10 @@ export component MainWindow inherits Window {
                                 }
                             }
 
-                            // docs/47 D7: an in-window line, not a toast — the portal
-                            // and Focus Assist swallow toasts while a broadcaster games.
-                            if root.update-version != "": HorizontalLayout {
-                                alignment: center;
-                                spacing: 10px;
-                                padding-top: 6px;
-                                Text {
-                                    text: root.update-version + " available — release notes";
-                                    color: T.accent;
-                                    font-size: 12px;
-                                    accessible-role: button;
-                                    accessible-action-default => {
-                                        root.open-link(root.update-url);
-                                    }
-                                    TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => {
-                                            root.open-link(root.update-url);
-                                        }
-                                    }
-                                }
-                                // Never while starting or live (docs/48 D4): shown
-                                // dimmed then, and the click does nothing.
-                                if root.update-ready: Text {
-                                    text: "Install and relaunch";
-                                    color: root.busy ? T.muted : T.accent;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                    accessible-role: button;
-                                    accessible-enabled: !root.busy;
-                                    accessible-action-default => {
-                                        if !root.busy {
-                                            root.install-update();
-                                        }
-                                    }
-                                    TouchArea {
-                                        enabled: !root.busy;
-                                        mouse-cursor: root.busy ? default : pointer;
-                                        clicked => {
-                                            root.install-update();
-                                        }
-                                    }
-                                }
-                                Text {
-                                    text: "Dismiss";
-                                    color: T.muted;
-                                    font-size: 12px;
-                                    accessible-role: button;
-                                    accessible-action-default => {
-                                        root.dismiss-update();
-                                    }
-                                    TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => {
-                                            root.dismiss-update();
-                                        }
-                                    }
-                                }
-                            }
-                            if root.update-version != "" && root.update-note != "": Text {
-                                text: root.update-note;
-                                color: T.muted;
-                                font-size: 11px;
-                                wrap: word-wrap;
-                                horizontal-alignment: center;
-                            }
-
                             HorizontalLayout {
                                 alignment: center;
                                 spacing: 10px;
-                                padding-top: root.update-version != "" ? 0px : 6px;
+                                padding-top: 6px;
                                 if root.app-version != "": Text {
                                     text: root.app-version;
                                     color: T.muted;
