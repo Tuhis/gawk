@@ -162,6 +162,14 @@ Add to it when a new gotcha lands in `docs/`.
   prehashed (BLAKE2b-512) by default, which `ring` cannot verify, so the
   apps use `minisign-verify`. ([docs/48](48-signed-in-place-update.md) D3,
   D7)
+- **ureq's body limit refuses a body of exactly the limit.** Its limit
+  reader errors on the read after `limit` bytes, even when that read would
+  only find the end. Passing a file's known size as the limit therefore
+  fails every download, and that is how R47's install failed silently in
+  every release from 2.2.0 to 2.4.0. `update::ureq_limit` adds the one byte
+  of headroom. Test a limit with a body of exactly its size, over real
+  HTTP, not with a stubbed download.
+  ([docs/48](48-signed-in-place-update.md) §8)
 - **The release signing key has two copies that must change together**: the
   `RELEASE_KEY` constant the apps compile in and
   `tools/releases/keys/gawk-release.pub`, which CI verifies every signature

@@ -453,6 +453,14 @@ fn download_agent() -> ureq::Agent {
         .into()
 }
 
+/// ureq's body limit for "at most `limit` bytes". ureq errors on the read
+/// after `limit` bytes are in, even when that read would find the end, so a
+/// body of exactly `limit` bytes fails; one more byte of headroom accepts
+/// it, and a longer body still fails on its next byte.
+fn ureq_limit(limit: u64) -> u64 {
+    limit.saturating_add(1)
+}
+
 /// GETs a small file whole, refusing more than `limit` bytes.
 fn fetch(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     let mut resp = download_agent()
@@ -461,7 +469,7 @@ fn fetch(url: &str, limit: u64) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())?;
     resp.body_mut()
         .with_config()
-        .limit(limit)
+        .limit(ureq_limit(limit))
         .read_to_vec()
         .map_err(|e| e.to_string())
 }
@@ -473,7 +481,11 @@ fn download(url: &str, path: &Path, limit: u64) -> Result<String, String> {
         .get(url)
         .call()
         .map_err(|e| e.to_string())?;
-    let mut body = resp.body_mut().with_config().limit(limit).reader();
+    let mut body = resp
+        .body_mut()
+        .with_config()
+        .limit(ureq_limit(limit))
+        .reader();
     let mut out = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -1175,5 +1187,88 @@ mod tests {
         let (url, _rx) = serve(200, "x".repeat(2048));
         let dir = tempfile::tempdir().unwrap();
         assert!(download(&url, &dir.path().join("f"), 1024).is_err());
+    }
+
+    /// A limit is the most a file may be, so a file of exactly that size is
+    /// whole. `stage` passes the manifest's own `size`, so every real
+    /// download is at its limit: 2.2.0–2.4.0 refused all of them and only
+    /// ever showed the release-page link.
+    #[test]
+    fn a_file_of_exactly_its_limit_is_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let (url, _rx) = serve(200, "payload".into());
+        assert_eq!(
+            download(&url, &dir.path().join("f"), 7),
+            Ok(hex(&Sha256::digest(b"payload")))
+        );
+        let (url, _rx) = serve(200, "payload".into());
+        assert_eq!(fetch(&url, 7), Ok(b"payload".to_vec()));
+        // One byte under the body is still over the limit.
+        let (url, _rx) = serve(200, "payload".into());
+        assert!(download(&url, &dir.path().join("g"), 6).is_err());
+        let (url, _rx) = serve(200, "payload".into());
+        assert!(fetch(&url, 6).is_err());
+    }
+
+    /// Serves `files` by path, one request per connection, until dropped.
+    fn serve_files(files: Vec<(&'static str, Vec<u8>)>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { return };
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match conn.read(&mut tmp) {
+                        Ok(0) | Err(_) => break,
+                        Ok(k) => buf.extend_from_slice(&tmp[..k]),
+                    }
+                }
+                let head = String::from_utf8_lossy(&buf);
+                let path = head.split(' ').nth(1).unwrap_or("");
+                let body = files.iter().find(|(p, _)| *p == path).map(|(_, b)| b);
+                let (status, body) = body.map_or((404, &[][..]), |b| (200, &b[..]));
+                let _ = conn.write_all(
+                    format!(
+                        "HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = conn.write_all(body);
+            }
+        });
+        base
+    }
+
+    /// The whole of `stage` over HTTP, with the sizes a real manifest gives:
+    /// each file's exact length. The tests above stub the network, which is
+    /// how the limit bug shipped.
+    #[test]
+    fn a_release_stages_over_http_at_its_listed_sizes() {
+        let base = serve_files(vec![
+            ("/SHA256SUMS.minisig", T_SIG.as_bytes().to_vec()),
+            ("/SHA256SUMS", T_SUMS.to_vec()),
+            ("/gawk-broadcast-windows-x86_64.exe", T_ASSET.to_vec()),
+        ]);
+        let remote = |name: &str, size: usize| Remote {
+            name: name.into(),
+            url: format!("{base}/{name}"),
+            size: size as u64,
+        };
+        let u = Update {
+            files: Some(Box::new(ReleaseFiles {
+                asset: remote("gawk-broadcast-windows-x86_64.exe", T_ASSET.len()),
+                sums: remote(SUMS_NAME, T_SUMS.len()),
+                sig: remote(SIG_NAME, T_SIG.len()),
+            })),
+            ..update_for("2.1.0")
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let got = stage_with(&u, "2.0.0", key(), dir.path(), &fetch, &download);
+        let got = got.unwrap();
+        assert_eq!(got.version, "2.1.0");
+        assert_eq!(std::fs::read(&got.file).unwrap(), T_ASSET);
     }
 }

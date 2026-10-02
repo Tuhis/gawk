@@ -49,6 +49,15 @@ release (planned, or after a leak) download by hand once, and a **lost**
 key means one manual download for everyone. In every case R45's notice
 keeps working, so nobody is left without a way to update.
 
+**2026-10-02 (field fix, §8)**: the in-place install never worked in a
+release. Every download in 2.2.0–2.4.0 failed and the notice stayed a
+release-page link, because the download's byte limit, the manifest's exact
+`size`, is one that ureq refuses a body of exactly. Fixed in SU6; installs
+on those three versions download the fixed release by hand once. The same
+pass moves the notice to the top of the Ready page (SU7, docs/47 D7 and
+docs/60 D13 revised), and a notice that falls back to the release page now
+says why.
+
 ## 1. Purpose
 
 R45 tells a broadcaster that a newer build exists and opens the release
@@ -259,3 +268,50 @@ none changes a security property except the first, which adds one.
 | SU3 | Implemented; manual pass owner-pending | Swap, rollback on failure and `.old` cleanup unit-tested in `install.rs`; the button's idle-only rules in `shell.rs`. The Windows 10 VM pass from release N to N+1, including whether SmartScreen prompts, needs two signed releases. |
 | SU4 | Implemented; manual pass owner-pending | `install.rs`: one rename, `share/` untouched, leftover staging removed at start, a read-only directory writes nothing, the `.deb` detected from dpkg's list, a tarball without the binary refused; `shell.rs`: the D9 note text, no download while live, dismissed, given up or without files. The `~/Downloads` and `.deb` passes need two signed releases. |
 | SU5 | Done | The READMEs, `tools/linux/INSTALL.md`, the terms sentence (no `termsVersion` bump, D8), docs/38 D17, gotchas, ROADMAP. |
+
+## 8. Field fix and the notice at the top (2026-10-02)
+
+**What happened.** The owner, on 2.2.0 with 2.3.0 published, saw only the
+release-page link: no download, no button. Run against the live 2.3.0
+manifest, `update::stage` failed with `the response body is larger than
+request limit: 35960832`, which is the EXE's exact size. `stage` passes
+the manifest's `size` as the download's byte limit, and ureq's limit
+reader errors on the read *after* `limit` bytes, even when that read
+would only have found the end. So a body of exactly `limit` bytes always
+fails, and every real download is exactly its listed size. The SU2 tests
+stubbed the network, and the real `download` was tested only well under
+and well over its limit. The shell then gave up for the run without a
+word, which D4 allowed ("failure at any step reverts to the R45 line").
+That is why the bug looked like a missing feature.
+
+**What changes.**
+
+- **SU6 (the fix).** `fetch` and `download` pass ureq one byte of
+  headroom, so the limit means "at most `limit` bytes": a body of exactly
+  the limit is whole, and one byte more is still refused. No security
+  property moves. The limit only bounds the transfer, and the signed hash
+  decides what is installed.
+- **SU7 (the notice).** The notice is a card at the top of the Ready page,
+  with the other notices (docs/47 D7 and docs/60 D13, revised), instead of
+  a 12 px line under the room list. It says which step it is at:
+  *downloading* (also while the launch check re-fetches a remembered
+  update's file list), *ready* with **Install and relaunch** (disabled
+  while starting or live, D4) and **What's new**, or *available* with
+  **Download**, which opens the release page. When it falls back to the
+  release page it now says why: the `.deb`'s command (D9, unchanged), a
+  folder the app can't write (D6), or a download that failed. **Check now
+  retries** an install this run gave up on; before this, a failed
+  download stayed failed until a restart.
+
+**Who still updates by hand.** Installs on 2.2.0, 2.3.0 and 2.4.0 carry
+the broken download, so they reach the fixed release through **Download**
+once. From there it is one click. Rewriting the manifests' `size` fields
+to rescue them was considered and rejected: it would make a data file
+other consumers read (the site, docs/46) lie in order to work around a
+client bug, and the fleet is small enough that one manual download is
+cheap.
+
+| Chunk | Scope | Verified by |
+|---|---|---|
+| **SU6** | `update.rs`: a limit is the most a file may be (`ureq_limit`) | `a_file_of_exactly_its_limit_is_whole` (a body of exactly the limit is accepted by `download` and `fetch`; one byte over is refused) and `a_release_stages_over_http_at_its_listed_sizes` (the whole of `stage` over a local HTTP server, with every file at its exact listed size), both failing before the fix with the production error. Live: from a 2.2.0 version string, `check` + `stage` against the published 2.3.0 manifest stage the Windows EXE (hash `4d397b01…`, equal to the signed `SHA256SUMS` line) and the Linux tarball, whose binary unpacks. |
+| **SU7** | `main.slint` `UpdateCard` at the top of `ready-top`; `shell.rs` `UpdateState::phase`, the fallback notes, Check now's retry | `the_notice_offers_what_this_copy_can_do` (each phase: nothing shown, re-fetch in flight, offline, downloading, ready, a newer release over a ready one, macOS, given up); `check_now_retries_a_failed_download` (an automatic check keeps the give-up, Check now clears it and the note); `the_bar_stays_in_reach_at_the_minimum_size` (at 440 × 600 the card's **Download**, then **Install and relaunch** and **What's new**, are inside the window). Rendered under Xvfb in all three phases at 520 and 440 px wide. The Windows and Linux manual passes from a fixed release N to N+1 stay SU3/SU4's. |

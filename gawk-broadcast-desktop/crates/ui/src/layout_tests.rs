@@ -100,7 +100,12 @@ fn ready_after_end(ui: &MainWindow) {
     ])));
     ui.set_resume_code("K7XQ2M".into());
     ui.set_update_version("v9.9.9".into());
-    ui.set_update_note("Downloaded and checked.".into());
+    // Its tallest: the release page with the .deb's instructions (docs/48 D9).
+    ui.set_update_note(
+        "Installed from the .deb: download gawk-broadcast_9.9.9_amd64.deb, then run \
+         sudo apt install ./gawk-broadcast_9.9.9_amd64.deb"
+            .into(),
+    );
     settle();
 }
 
@@ -165,6 +170,15 @@ fn the_bar_stays_in_reach_at_the_minimum_size() {
     ready_after_end(&ui);
     assert!(ui.get_body_scrolls(), "the fixture must overflow");
     assert_in_reach(&ui, "Go live");
+    // The update notice sits at the top (docs/47 D7, revised), and its
+    // buttons fit the narrowest window.
+    assert_in_reach(&ui, "Download");
+    ui.set_update_note("".into());
+    ui.set_update_phase(2);
+    settle();
+    for label in ["Install and relaunch", "What's new"] {
+        assert_in_reach(&ui, label);
+    }
 
     let ui = window(440.0, 600.0);
     ui.set_server_custom(true);
@@ -228,6 +242,10 @@ fn ready_publishes_what_it_needs() {
     settle();
     assert_needs_exact(&ui, 520.0, "Ready after End, with a preview");
     assert_eq!(by_id(&ui, "MainWindow::source-card").size().height, 220.0);
+    // With every notice up, 440 × 600 scrolls the card out of view, and the
+    // testing backend finds only what is in view. The floor doesn't depend
+    // on what is above the card, so one notice fewer.
+    ui.set_update_version("".into());
     resize(&ui, 440.0, 600.0);
     assert_eq!(by_id(&ui, "MainWindow::source-card").size().height, 160.0);
 }

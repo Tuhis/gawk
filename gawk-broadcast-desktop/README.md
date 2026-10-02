@@ -70,8 +70,8 @@ no console to print to.
 fetches its platform's release manifest (`releases/<platform>/latest.json` on
 this repository's `badges` branch, from `raw.githubusercontent.com`); a
 relaunch inside those 15 minutes reuses the last answer. When a newer release
-exists, a line under the Go live button reads "v2.1.0 available — release
-notes" and opens the release page; **Dismiss** hides it until the app
+exists, a notice at the top of the main page says so, with **Download**
+(the release page) and **Dismiss**, which hides it until the app
 restarts. **Settings → App → Check now** asks right away. The request is
 a plain GET with a fixed User-Agent: no version, no identifier, nothing about
 you or your broadcasts. Turn the launch check off with the **Settings → App
@@ -82,15 +82,16 @@ you or your broadcasts. Turn the launch check off with the **Settings → App
 downloads the new release while you are not broadcasting, and verifies it
 before anything else touches it: `SHA256SUMS` must carry a valid signature
 from the project's release key, which is compiled into the app, and the
-download must match its line there. Once that passes, the line offers
-**Install and relaunch**. Clicking it swaps the new build in beside the old
-one and restarts the app; it is disabled while you are live, and the app
-never restarts on its own. Everything happens in the folder the app runs
+download must match its line there. While it downloads, the notice says
+so; once verification passes, it offers **Install and relaunch**. Clicking
+it swaps the new build in beside the old one and restarts the app; it is
+disabled while you are live, and the app never restarts on its own. Everything happens in the folder the app runs
 from: a staging folder `.gawk-update` while downloading, and on Windows the
 old EXE kept as `<name>.exe.old` until the next start. If that folder isn't
-writable, or the download fails verification, you get the line above and
-nothing else. A `.deb` install is never replaced by the app; the line names
-the newer package and the `sudo apt install` command instead. macOS keeps the
+writable, or the download or its verification fails, the notice keeps
+**Download** and says why; **Check now** tries a failed download again. A
+`.deb` install is never replaced by the app; the notice names the newer
+package and the `sudo apt install` command instead. macOS keeps the
 notice only for now. ([docs/48](../docs/48-signed-in-place-update.md))
 
 ## macOS

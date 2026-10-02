@@ -1559,6 +1559,7 @@ fn start_update_check(ui: &MainWindow, sh: &mut Shell) {
     }
     sh.update.checking = spawn_update_check(sh, false);
     ui.set_update_checking(sh.update.checking);
+    show_install(ui, &sh.update);
 }
 
 /// One check on its own thread, reported back through the message channel.
@@ -1650,6 +1651,26 @@ impl UpdateState {
         matches!((&self.shown, &self.ready), (Some(u), Some(r)) if u.version == r.version)
     }
 
+    /// What the notice offers: 2 Install and relaunch; 1 nothing yet, the
+    /// install is on its way (a download in flight, or the launch check
+    /// re-fetching a remembered update's file list); 0 the release page.
+    fn phase(&self) -> i32 {
+        let Some(u) = &self.shown else {
+            return 0;
+        };
+        let refetching = self.checking
+            && u.files.is_none()
+            && self.target.is_some()
+            && self.given_up.as_deref() != Some(u.version.as_str());
+        if self.ready_for_shown() {
+            2
+        } else if self.staging || refetching {
+            1
+        } else {
+            0
+        }
+    }
+
     /// Check now was pressed. True means start a check; false means one is
     /// already in flight, whose answer will be reported as this request's.
     fn request_manual(&mut self) -> bool {
@@ -1672,6 +1693,10 @@ impl UpdateState {
         if let Some(found) = found {
             self.shown = if manual {
                 self.dismissed = None;
+                // Asking again retries an install this run gave up on: a
+                // download cut off by the network is worth a second try.
+                self.given_up = None;
+                self.note.clear();
                 found
             } else {
                 found.filter(|u| self.dismissed.as_deref() != Some(u.version.as_str()))
@@ -1754,6 +1779,7 @@ fn maybe_stage(ui: &MainWindow, sh: &mut Shell) {
         Plan::NotWritable(why) => {
             log::info!("update v{}: cannot install in place: {why}", u.version);
             sh.update.given_up = Some(u.version.clone());
+            sh.update.note = NOT_WRITABLE_NOTE.into();
         }
         Plan::InPlace { staging } => {
             log::info!("update v{}: downloading and verifying", u.version);
@@ -1779,12 +1805,20 @@ fn maybe_stage(ui: &MainWindow, sh: &mut Shell) {
                 Err(e) => {
                     log::warn!("update download not started: {e}");
                     sh.update.given_up = Some(version);
+                    sh.update.note = DOWNLOAD_FAILED_NOTE.into();
                 }
             }
         }
     }
     show_install(ui, &sh.update);
 }
+
+/// Why the notice offers the release page instead of a button. The
+/// details are in the log; the user needs to know only that this copy
+/// won't update itself, and that Check now tries again.
+const NOT_WRITABLE_NOTE: &str = "This copy can't update itself: its folder isn't writable.";
+const DOWNLOAD_FAILED_NOTE: &str =
+    "The download didn't work. Check now in Settings tries again, or download it yourself.";
 
 /// docs/48 D9: what a `.deb` install is told instead of a button.
 fn deb_note(u: &Update) -> String {
@@ -1794,7 +1828,7 @@ fn deb_note(u: &Update) -> String {
 }
 
 fn show_install(ui: &MainWindow, st: &UpdateState) {
-    ui.set_update_ready(st.ready_for_shown());
+    ui.set_update_phase(st.phase());
     ui.set_update_note(
         if st.shown.is_some() {
             st.note.as_str()
@@ -2503,6 +2537,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 } else {
                     "Couldn't start the check.".into()
                 });
+                show_install(&ui, &sh.update);
             }
         });
     }
@@ -2970,6 +3005,7 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
                 Err(e) => {
                     log::warn!("update v{version}: not installable in place: {e}");
                     sh.update.given_up = Some(version);
+                    sh.update.note = DOWNLOAD_FAILED_NOTE.into();
                 }
             }
             show_install(ui, &sh.update);
@@ -5587,6 +5623,65 @@ mod tests {
             None,
             "a dismissed notice downloads nothing"
         );
+    }
+
+    /// The notice's offer: the button only for the staged release, a
+    /// "downloading" line while the install is on its way, and the release
+    /// page otherwise.
+    #[test]
+    fn the_notice_offers_what_this_copy_can_do() {
+        assert_eq!(UpdateState::default().phase(), 0, "nothing shown");
+        // A remembered update at launch: the re-fetch is on its way to the
+        // file list, unless it gets no answer.
+        let mut st = installable(Some(release("2.1.0")));
+        st.checking = true;
+        assert_eq!(st.phase(), 1);
+        st.finish(None, false);
+        assert_eq!(st.phase(), 0, "offline: the release page");
+        // Answered with the signed files: downloading, then ready.
+        st.finish(Some(Some(signed("2.1.0"))), false);
+        st.staging = true;
+        assert_eq!(st.phase(), 1);
+        st.staging = false;
+        st.ready = Some(Ready {
+            version: "2.1.0".into(),
+            binary: PathBuf::from("/opt/gawk/.gawk-update/gawk-broadcast-linux"),
+        });
+        assert_eq!(st.phase(), 2);
+        // A newer release than the ready one: no button until it is staged.
+        st.shown = Some(signed("2.2.0"));
+        assert_eq!(st.phase(), 0);
+        st.staging = true;
+        assert_eq!(st.phase(), 1);
+
+        // No in-place install here (macOS), or given up: the release page,
+        // even while a check runs.
+        let macos = UpdateState {
+            shown: Some(release("2.1.0")),
+            checking: true,
+            ..Default::default()
+        };
+        assert_eq!(macos.phase(), 0);
+        let mut gave_up = installable(Some(release("2.1.0")));
+        gave_up.given_up = Some("2.1.0".into());
+        gave_up.checking = true;
+        assert_eq!(gave_up.phase(), 0);
+    }
+
+    /// Check now retries what this run gave up on, so a download cut off
+    /// once is not stuck behind the release page until a restart. An
+    /// automatic check does not.
+    #[test]
+    fn check_now_retries_a_failed_download() {
+        let mut st = installable(Some(signed("2.1.0")));
+        st.given_up = Some("2.1.0".into());
+        st.note = DOWNLOAD_FAILED_NOTE.into();
+        st.finish(Some(Some(signed("2.1.0"))), false);
+        assert_eq!(st.to_stage(true), None, "the automatic check keeps it");
+        assert!(st.request_manual());
+        st.finish(Some(Some(signed("2.1.0"))), true);
+        assert_eq!(st.to_stage(true), Some(signed("2.1.0")));
+        assert_eq!(st.note, "", "the old failure no longer applies");
     }
 
     #[test]
