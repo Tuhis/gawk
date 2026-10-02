@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.50.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.49.1...gawk-app/v0.50.0) (2026-10-02)
+
+
+### Features
+
+* **app:** start streaming into a room from a #/broadcast?room= link ([#439](https://github.com/Tuhis/gawk/issues/439)) ([709290e](https://github.com/Tuhis/gawk/commit/709290e8de9ada131d23a59848999780c26bf1c8))
+
 ## [0.49.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.49.0...gawk-app/v0.49.1) (2026-10-01)
 
 
