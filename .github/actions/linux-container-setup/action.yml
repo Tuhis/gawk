@@ -40,6 +40,10 @@
 #
 # The action still works unchanged in plain ubuntu:24.04, so pointing a job
 # back at it is the whole rollback.
+#
+# Since 2026-10-02 the same applies with no container at all: on the
+# ioio-k8s-desktop pool the runner pod IS the image (its `runner` stage), and
+# the job runs as the image's `runner` user, so apt goes through sudo.
 name: Linux container setup
 description: Install the Linux build/test toolchain inside the ubuntu:24.04 container (a no-op on a current gawk-desktop-ci image).
 
@@ -55,7 +59,13 @@ runs:
           echo "The prebuilt image already has this install-deps.sh applied ($want): skipping apt."
         else
           echo "install-deps.sh is ${want}; the image has ${have:-none}. Installing."
-          bash "$GITHUB_ACTION_PATH/install-deps.sh"
+          # Root in the container; `runner` (with sudo) on the
+          # ioio-k8s-desktop pool, whose pods run the image's `runner` stage.
+          if [ "$(id -u)" = 0 ]; then
+            bash "$GITHUB_ACTION_PATH/install-deps.sh"
+          else
+            sudo bash "$GITHUB_ACTION_PATH/install-deps.sh"
+          fi
         fi
         # The checkout belongs to the runner's user, not the container's root:
         # without this, git refuses it ("dubious ownership") and the version
