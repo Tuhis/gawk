@@ -86,8 +86,9 @@ install -m 755 "$bin" "$root/usr/bin/$BIN"
 rm "$root/usr/install-desktop.sh"
 # Exec= is the bare binary name in the checked-in entry (install-desktop.sh
 # rewrites it to an absolute path for the tarball); /usr/bin is on PATH.
-grep -qx "Exec=$BIN" "$root/usr/share/applications/$APP_ID.desktop" || {
-  echo "error: the desktop entry's Exec= is not '$BIN'" >&2; exit 1; }
+# `%u` is where a gawk:// link arrives (R66 docs/68 D11).
+grep -qx "Exec=$BIN %u" "$root/usr/share/applications/$APP_ID.desktop" || {
+  echo "error: the desktop entry's Exec= is not '$BIN %u'" >&2; exit 1; }
 
 for f in "$@"; do
   install -m 644 "$f" "$doc/$(basename "$f")"

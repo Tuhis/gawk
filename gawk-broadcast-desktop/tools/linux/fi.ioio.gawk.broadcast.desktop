@@ -8,15 +8,18 @@
 # as the Go app's entry, so installing this app replaces that one in place.
 # Exec= is relative here and rewritten to an absolute path by
 # install-desktop.sh, because the binary is wherever the tarball was unpacked.
+# %u and MimeType= make it the gawk:// link handler (R66 docs/68 D11): the
+# launcher passes the link as one argument, and a plain launch passes none.
 Type=Application
 Version=1.5
 Name=gawk broadcast
 GenericName=Screen broadcaster
 Comment=Share your screen to viewers at sub-500ms latency
-Exec=gawk-broadcast-linux
+Exec=gawk-broadcast-linux %u
 Icon=fi.ioio.gawk.broadcast
 Terminal=false
 Categories=AudioVideo;Video;
 Keywords=stream;broadcast;screen;share;game;
 StartupWMClass=fi.ioio.gawk.broadcast
 StartupNotify=false
+MimeType=x-scheme-handler/gawk;
