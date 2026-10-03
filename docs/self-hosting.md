@@ -725,6 +725,77 @@ so an IdP outage that starts *after* people are logged in costs nothing until
 their tokens expire. **Enforcement is untouched either way**: relay pods are
 reading CRs, and `kubectl apply` of a `Ban` needs no identity provider at all.
 
+#### 9.3.1 The same IdP for the telemetry dashboard (R53)
+
+If you run `gawk-telemetry` and route its read surface (dashboard, `/v1`,
+`/live`, `/mcp`) through an Ingress, gate it with the same IdP rather than a
+shared basic-auth password. The model is the portal's: a public client with
+code + PKCE, tokens in memory, a role in the token (docs/55). Telemetry gets
+**its own client and role**, so reading diagnostics grants nothing on the
+portal and vice versa; an operator signed into one is signed into the other
+through the IdP session, so following a portal deep link into the dashboard
+opens it without a second login.
+
+1. Client `gawk-telemetry`: **public**, *Standard flow* on, *Direct access
+   grants* off. Valid redirect URIs: `https://<telemetry host>/*` **and**
+   `http://localhost:8081/*`, so the dashboard also logs in through
+   `kubectl port-forward svc/<release>-read 8081:8081` (add
+   `http://localhost:5174/*` for the Vite dev server). Web origins: the same
+   origins.
+2. Client role **`telemetry-reader`** on that client; assign it to the people
+   who may read diagnostics.
+3. Audience: with Keycloak's defaults, `read.oidc.audience` = the client ID.
+4. Access-token lifespan and refresh rotation are the realm settings from
+   §9.3 steps 5–6; nothing new. The live stream ends at its token's `exp` and
+   reconnects with a fresh one, so a removed role locks the dashboard out
+   within one access-token lifetime.
+5. Chart values (exactly one auth mode: the chart refuses `read.basicAuth`
+   and `read.oidc` together, and an Ingress with neither):
+
+   ```yaml
+   read:
+     ingress:
+       enabled: true
+       host: telemetry.gawk.example.com
+     oidc:
+       issuer: https://keycloak.example.com/realms/gawk
+       clientId: gawk-telemetry
+       audience: gawk-telemetry
+       # rolesClaim: resource_access.{audience}.roles   (default)
+       # role: telemetry-reader                         (default)
+   ```
+
+**Claude Code and `/mcp`.** `/mcp` answers an unauthenticated request with
+the MCP authorization challenge, naming this issuer, so Claude Code runs the
+browser login itself. Give it a pre-registered public client rather than
+opening Keycloak's anonymous dynamic registration:
+
+6. Client `gawk-telemetry-mcp`: public, *Standard flow* on, PKCE `S256`
+   required, valid redirect URIs `http://localhost:53682/*` and
+   `http://127.0.0.1:53682/*` (any free port, if it matches the command
+   below), no web origins. Add an *Audience* mapper to its dedicated scope
+   with *Included Client Audience* = `gawk-telemetry`, turn *Full scope
+   allowed* off and add the `gawk-telemetry` client role `telemetry-reader`
+   to its scope.
+7. `claude mcp add --transport http gawk-telemetry https://telemetry.gawk.example.com/mcp --client-id gawk-telemetry-mcp --callback-port 53682`,
+   then `/mcp` → *gawk-telemetry* → authenticate.
+
+The fallback, if your Claude Code or IdP cannot run that flow: a
+**confidential** client `gawk-telemetry-mcp-service` on the
+client-credentials grant, `telemetry-reader` on its service account, the same
+audience mapper, and a client-level access-token lifespan of a few hours. Mint
+a token with the client secret and pass it as a static header
+(`claude mcp add … --header "Authorization: Bearer <token>"`). Revocation is
+then that token's lifetime — acceptable for a read-only surface reached from
+your own machine, and the reason it is the fallback, not the default.
+
+**Without an IdP**, keep `read.basicAuth` (or no Ingress at all and a
+port-forward): OIDC needs the IdP reachable, so a laptop with no network
+cannot log in. When the IdP is down with OIDC on, the dashboard shows an
+IdP-unavailable message and `/readyz` on the read port answers `503`, but the
+pod stays Ready — its probes are on the ingest `/healthz`, so viewers'
+telemetry keeps landing.
+
 ### 9.4 IP bans need `externalTrafficPolicy: Local`
 
 **This one can take your whole deployment out, so decide it before you need

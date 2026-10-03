@@ -449,9 +449,28 @@ services:
 
   # "I'm working on telemetry."
   #     docker compose --profile telemetry up
-  # Reach the dashboard/read API with `docker compose exec` — it is NOT
-  # published, here as everywhere else (CLAUDE.md: that listener is never
-  # routed publicly). Ingest is same-origin through the app's nginx.
+  # The dashboard is at ${TELEMETRY_URL:-http://localhost:8091}, published on
+  # loopback only and gated by OIDC against its own TEST-ONLY fake IdP (R53,
+  # docs/55): sign-in bounces through /idp on the dashboard's own origin and
+  # lands as a `telemetry-reader`. That listener is still never routed
+  # publicly (CLAUDE.md). Ingest is same-origin through the app's nginx.
+  #
+  # A second fakeidp, not the portal's: the issuer is the dashboard's own
+  # origin + /idp (the one-URL trick the portal uses, docs/41 §4.8), and the
+  # token's audience and role are telemetry's, not the portal's.
+  fakeidp-telemetry:
+    profiles: ["telemetry"]
+    build:
+      context: .
+      dockerfile: dev/Dockerfile.fakeidp
+    command:
+      - "-addr=:8080"
+      - "-issuer=${TELEMETRY_URL:-http://localhost:8091}/idp"
+      - "-client-id=gawk-telemetry"
+      - "-audience=gawk-telemetry"
+      - "-role=telemetry-reader"
+    restart: unless-stopped
+
   telemetry:
     profiles: ["telemetry"]
     build:
@@ -467,7 +486,14 @@ services:
     command:
       - "-telemetry-key=${GAWK_TELEMETRY_KEY:-0000000000000000000000000000000000000000000000000000000000000000}"
       - "-ingest-addr=:8080"
-      - "-read-addr=:8081"
+      # Container port == published port == the port in TELEMETRY_URL: the
+      # service fetches its issuer (TELEMETRY_URL/idp) from INSIDE the
+      # container, where that port must reach its own /idp proxy.
+      - "-read-addr=:${TELEMETRY_READ_PORT:-8091}"
+      - "-oidc-issuer=${TELEMETRY_URL:-http://localhost:8091}/idp"
+      - "-oidc-client-id=gawk-telemetry"
+      - "-oidc-audience=gawk-telemetry"
+      - "-dev-oidc-proxy=http://fakeidp-telemetry:8080"
       - "-data-dir=/data"
       - "-relay-addrs=relay:2112"
       - "-scrape-interval=5s"
@@ -478,14 +504,17 @@ services:
       - "-session-idle=2m"
     ports:
       # Ingest, on loopback only — the browser reaches it same-origin through
-      # the app's nginx, so this is for curl. The read/dashboard listener
-      # (8081) is deliberately not published at all.
+      # the app's nginx, so this is for curl.
       - "127.0.0.1:8090:8080"
+      # The dashboard: loopback only whatever BIND_ADDR says, and OIDC-gated.
+      - "127.0.0.1:${TELEMETRY_READ_PORT:-8091}:${TELEMETRY_READ_PORT:-8091}"
     volumes:
       - telemetry-data:/data
     depends_on:
       relay:
         condition: service_healthy
+      fakeidp-telemetry:
+        condition: service_started
 
   # "I'm iterating on the frontend." Vite with HMR over a bind mount, so an
   # edit under gawk-app/src is live without rebuilding an image:

@@ -1,6 +1,6 @@
 {{- if .Values.read.ingress.enabled }}
-{{- if not .Values.read.basicAuth.enabled }}
-{{- fail "read.ingress.enabled requires read.basicAuth.enabled: the read surface aggregates every broadcast on the fleet and must not be reachable unauthenticated once it leaves the cluster (docs/33 D14)" }}
+{{- if not (or .Values.read.basicAuth.enabled .Values.read.oidc.issuer) }}
+{{- fail "read.ingress.enabled requires an auth mode, read.oidc.issuer (the documented path) or read.basicAuth.enabled: the read surface aggregates every broadcast on the fleet and must not be reachable unauthenticated once it leaves the cluster (docs/33 D14, docs/55 D1)" }}
 {{- end }}
 # An INTERNAL-only Ingress for the read surface, at the operator's discretion.
 # Never the public path that carries ingest: this is the surface that shows

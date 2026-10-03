@@ -1,6 +1,6 @@
 # R53 — OIDC for the telemetry read surface
 
-**Status**: designed 2026-09-20 (owner decisions OD1–OD9), not started.
+**Status**: designed 2026-09-20 (owner decisions OD1–OD9); **implemented 2026-10-03** (TO1–TO5 in one PR), manual verification pass (§10) and the reference-deployment switch pending.
 Chunks **TO1–TO5**, landing as **one PR** (OD9). The ROADMAP entry
 ([R53](../ROADMAP.md#r53--oidc-for-the-telemetry-read-surface)) carries the
 summary; the decisions are restated here so the doc reads on its own.
@@ -622,7 +622,31 @@ happens after the release, not in the PR.
 
 ## 11. Deviations and field findings
 
-*(empty until implementation)*
+Recorded at implementation (2026-10-03). Each row says what the design
+said, what shipped, and why.
+
+| Where | Design said | Shipped | Why |
+|---|---|---|---|
+| D2 shape | `Options` as sketched | plus `ResolveRetryMax`, `SigningAlgorithms`, `Resolved()`, `Primed()`, `JWKSFetchTokensLeft()`, `ErrNotReady`, `Role()` | The relay's existing behaviour and its untouched tests needed them (G5). |
+| D2 | one verifier, one behaviour | the `alg` policy is still per consumer: the relay passes a fixed allowlist (`AsymmetricSigningAlgs()`), the portal and telemetry take the provider-advertised set narrowed to that allowlist | Unifying it would have changed one consumer's behaviour inside a "zero behaviour change" refactor. One code path, two inputs; converging them is a separate decision. |
+| D2 | — | relay discovery logs are oidcauth's (one Warn, then Debug repeats) rather than an `admin oidc` Warn per attempt; gawk-admin's startup refusals now start `oidcauth:` | One verifier, one set of log lines. No test assertion changed. |
+| D2 | — | `oidcauth.Identity` gains `Expiry`; `resource.go` adds `RequestResourceURL`, `ProtectedResourceHandler`, `Challenge`, `RefuseBrowserOrigin` | `Expiry` is what the D4 stream cap reads; the rest is TO4's generic helper set for R54 MC3. |
+| D3 | `session.ts`, `pkce.ts`, `session.test.ts` move | the test is **split**: the package keeps the IdP-facing describes and exports its fake-IdP harness as `@gawk/oidc-session/testing`; the two describes that bind to the portal's `ApiClient` stay in `gawk-admin/ui/src/auth/session.test.ts` | The package must not import a consumer. A line-multiset check showed no assertion changed. Constructor options are `configPath` and `storageKeyPrefix`, both required, so a consumer cannot inherit the portal's storage key. |
+| D3 | consumers run the package tests | each consumer's vitest `include` adds `../../common-ts/oidc-session/**/*.test.ts`; `server.fs.allow` and a `paths` entry for `vitest` let Vite and `tsc` reach it; oxlint is given an absolute path | oxlint refuses `..` in a path (docs/gotchas.md). |
+| D10 | `go run ./tools/commonlock` | `go -C tools/commonlock run . {check,update}` | The repo root has no `go.mod`; each tool is its own module. |
+| D10 | tree hash of `HEAD:common-ts/<pkg>` | tree hash of the **working tree** as git would commit it (a throwaway index) — equal to `HEAD:` on CI's clean checkout | Edit → `update` → commit then yields a fresh lock in one commit, instead of recording the pre-edit tree. |
+| D10 | `contents: write` on the job; `common_ts` = `^common-ts/` | `contents: read` (the push uses `COMMON_TS_LOCK_TOKEN`, never `GITHUB_TOKEN`); `common_ts` also matches `tools/commonlock/`, any `package.json` and any `common-ts.lock` | Write authority the job never uses is a liability on a job that runs PR code. A lock also goes stale when a manifest gains or drops a `file:` dependency or a lock is hand-edited. |
+| D10 | — | known gap: two PRs that each edit the package can each pass on their own head and leave `main`'s lock stale after both merge | The check runs on the PR head, not the merge result; the next `common-ts` PR repairs it. Accepted. |
+| D5 | `/v1/me` gated | valid token required, **role not required** | The SPA's missing-role page has to tell "signed in without the role" from "not signed in". |
+| D5/G8 | no response changes with OIDC off except two new routes | security headers are added in every mode (D5's own decision); the G8 test ignores exactly the three header names and asserts everything else byte-identical against a copy of the pre-R53 wiring. `/auth/config` and `/readyz` sit outside the basic-auth gate | D5 and G8 contradicted each other; D5 is the explicit decision. |
+| D6 | `Origin` refused on `/mcp` | refused **in OIDC mode only** | None/basic modes stay byte-identical (G8). |
+| D9 | — | `-dev-oidc-proxy` without OIDC mode refuses to start | A dev proxy to an issuer nobody verifies against is a misconfiguration. |
+| D9 | — | the chart also refuses `read.oidc.issuer` without `clientId`/`audience`, or with an empty `rolesClaim`/`role` | Fail at render, not in a CrashLoopBackOff. |
+| TO2 criteria | `/v1/live`; a 10 s token | `GET /live` (the actual route); a token lapsing in ~2 s | Route name; test time. |
+| TO3 | — | a `401 idp_unavailable` is surfaced as an IdP-unavailable banner without refresh or redirect; a non-JSON 200 from `/auth/config` (an older server's SPA fallback) means none mode; any other answer shows "cannot reach the telemetry service" with a retry | A refresh cannot fix an unreachable IdP, and bouncing to it would loop. |
+| TO3 | `EventSource` semantics kept | written out: an HTTP refusal on the stream is final for the page load (the poll carries it); a network error or close polls, then reconnects after `retry:`; `event: expired` reconnects at once unless the stream lived under 1 s | `EventSource` applied these implicitly; `fetch` does not. |
+| TO5 compose | "telemetry joins the `fakeidp` lane" | a **second** fake IdP, `fakeidp-telemetry`, and the read listener **published on `127.0.0.1:8091`** (it was unpublished); `dev/stack_test.sh` now asserts loopback-only plus `-oidc-issuer` instead of "unpublished" | The portal's fake IdP mints the portal's audience and role. A browser sign-in needs the listener reachable; the gate is what makes publishing it on loopback acceptable. |
+| TO5 recipe | Claude Code path "written up once V-4 verifies" | written up with docs/56 D5's pre-registered public client (`gawk-telemetry-mcp`) and the D6 client-credentials fallback; **V-4 still to run** | docs/56 settled the client shape for both services; the manual pass confirms it. |
 
 ## 12. References
 

@@ -1706,6 +1706,52 @@ jobs:
           helm template gawk-telemetry/deploy/charts/gawk-telemetry --set telemetryKey=00
           --set metrics.serviceMonitor.enabled=true --set metrics.prometheusRule.enabled=true
           | grep -q 'alert: GawkTelemetrySQLViewDown'
+      # R53 (docs/55 D1, D8, D9): the read surface takes exactly one auth mode,
+      # an Ingress never renders without one, read.oidc.* reaches the binary,
+      # the dev /idp/ proxy never renders, and both probes stay on the ingest
+      # /healthz whatever the mode — an IdP outage must never take the pod
+      # out of the public ingest Service.
+      - name: telemetry chart auth modes, OIDC envs and probe paths
+        run: |
+          set -euo pipefail
+          chart=gawk-telemetry/deploy/charts/gawk-telemetry
+          base=(--set telemetryKey=00)
+          ing=(--set read.ingress.enabled=true --set read.ingress.host=t.example.com)
+          oidc=(--set read.oidc.issuer=https://id.example.com/realms/r
+                --set read.oidc.clientId=gawk-telemetry --set read.oidc.audience=gawk-telemetry)
+          basic=(--set read.basicAuth.enabled=true --set read.basicAuth.user=a --set read.basicAuth.password=b)
+          if out=$(helm template "$chart" "${base[@]}" "${ing[@]}" 2>&1); then
+            echo "::error::an Ingress rendered with neither auth mode"; exit 1; fi
+          grep -q 'read.oidc.issuer' <<<"$out" && grep -q 'read.basicAuth.enabled' <<<"$out" || {
+            echo "::error::the Ingress guard does not name both modes"; echo "$out"; exit 1; }
+          if out=$(helm template "$chart" "${base[@]}" "${oidc[@]}" "${basic[@]}" 2>&1); then
+            echo "::error::both auth modes rendered"; exit 1; fi
+          grep -q 'exactly one auth mode' <<<"$out" || { echo "$out"; exit 1; }
+          for missing in clientId audience; do
+            args=("${base[@]}" --set read.oidc.issuer=https://id.example.com/realms/r)
+            [ "$missing" = clientId ] || args+=(--set read.oidc.clientId=gawk-telemetry)
+            [ "$missing" = audience ] || args+=(--set read.oidc.audience=gawk-telemetry)
+            if out=$(helm template "$chart" "${args[@]}" 2>&1); then
+              echo "::error::OIDC rendered with read.oidc.$missing unset"; exit 1; fi
+            grep -q "read.oidc.$missing" <<<"$out" || { echo "$out"; exit 1; }
+          done
+          for mode in oidc basic; do
+            if [ "$mode" = oidc ]; then extra=("${oidc[@]}"); else extra=("${basic[@]}"); fi
+            out=$(helm template "$chart" "${base[@]}" "${ing[@]}" "${extra[@]}")
+            if grep -q 'DEV_OIDC_PROXY' <<<"$out"; then
+              echo "::error::the dev OIDC proxy env rendered"; exit 1; fi
+            probes=$(grep -A3 -E '(readiness|liveness)Probe:' <<<"$out" | grep -E 'path:|port:')
+            [ "$(grep -c 'path: /healthz' <<<"$probes")" = 2 ] && [ "$(grep -c 'port: ingest' <<<"$probes")" = 2 ] || {
+              echo "::error::$mode mode moved a probe off the ingest /healthz"; echo "$probes"; exit 1; }
+          done
+          out=$(helm template "$chart" "${base[@]}" "${oidc[@]}" --show-only templates/deployment.yaml)
+          for env in ISSUER CLIENT_ID AUDIENCE ROLES_CLAIM ROLE; do
+            grep -q "GAWK_TELEMETRY_OIDC_$env\$" <<<"$out" || {
+              echo "::error::GAWK_TELEMETRY_OIDC_$env did not render"; exit 1; }
+          done
+          grep -A1 'GAWK_TELEMETRY_OIDC_ROLE$' <<<"$out" | grep -q '"telemetry-reader"'
+          if helm template "$chart" "${base[@]}" | grep -q 'GAWK_TELEMETRY_OIDC_'; then
+            echo "::error::the default render carries OIDC envs"; exit 1; fi
       # R28 (docs/33 TM3): with telemetry off, the relay chart must render
       # nothing telemetry-related at all — an install that never enables it
       # carries no trace of R28.
