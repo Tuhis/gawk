@@ -451,6 +451,13 @@ parameters `relay=` and `nick=` mean what they mean on the web (docs/40,
 the 2026-10 room nickname). A `relay=` link to a non-default server shows
 docs/40's persistent strip, as the desktop apps do (docs/64 D3).
 
+*Revised 2026-10-03*: the grammar, including a third path,
+`gawk://broadcast?room=&nick=&relay=`, is now defined once for every
+native app in [docs/68](68-desktop-gawk-links.md) D1 and parsed by the
+shared `engine::link` (docs/68 D2), which IO6 uses rather than parsing
+links itself. The broadcaster UI (IO3) handles `broadcast` links by
+prefilling, as the desktop does (docs/68 D4).
+
 ### D21 — Rooms
 
 - **Broadcaster**: the room to attach is chosen in the app before Start

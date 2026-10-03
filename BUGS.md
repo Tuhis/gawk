@@ -884,3 +884,34 @@ alerting; see the gotchas in [`docs/gotchas.md`](docs/gotchas.md).)
 (The Chrome 152 `WebTransport.getStats()` entry was resolved 2026-07-14: not
 a gawk defect — Chromium removed the API entirely; see the gotcha in
 `docs/13-observability.md` D7 and [`docs/gotchas.md`](docs/gotchas.md).)
+
+## Desktop broadcaster: switching servers keeps the room's credentials and presents them to the new server
+
+- **Found**: 2026-10-03, by the bot review of the R66 design (PR #451),
+  confirmed by reading the code (traced, not probed).
+- **What happens**: room credentials are stored by room code alone.
+  `RecentRoom` has no server field, `Config::room_attach_key` matches on
+  the code only, and `cfg.room_attach_secret` / `cfg.room_creator_token`
+  hold the pending room's grant with no server attached
+  (`gawk-broadcast-desktop/crates/engine/src/config.rs`). Picking another
+  server (`on_server_selected` in `crates/ui/src/shell.rs`) repoints
+  `selected_server` and clears neither. At Go live, `start_broadcast`
+  takes `cfg.room_attach_secret` and `cfg.room_creator_token` and presents
+  them (`?attach=` / the creator grant) to whatever `resolve_relay_url()`
+  now returns. Choosing a room from "Your rooms" likewise reuses an attach
+  key saved under that code, whichever server it came from.
+- **Impact**: a static room's attach key for server A is sent to server B
+  whenever the same code is used after a switch. That breaks docs/40 D4's
+  rule that a secret stored for one server is never presented to another.
+  The user chose B themselves, so this is a leak to an operator they
+  picked, not to an arbitrary page. It is also a functional bug: on B the
+  wrong key gets the attach refused, with no hint that a stale key from A
+  was used.
+- **Fix would start**: key room credentials by `(normalized server origin,
+  code)`, both in `RecentRoom` (a `server` field, migrated as "the server
+  selected at load") and for the pending room. Present a credential only
+  when the resolved relay matches. A smaller first step is to clear
+  `room_attach_secret` and `room_creator_token` in `on_server_selected`
+  when the origin changes. **R66 (docs/68 D5a) fixes this** by binding
+  room credentials to their server and checking them at Go live. LH2
+  removes this entry.
