@@ -109,7 +109,7 @@ func waitReady(t *testing.T, a *Auth) {
 func waitPrimed(t *testing.T, a *Auth) {
 	t.Helper()
 	select {
-	case <-a.primed:
+	case <-a.Primed():
 	case <-time.After(10 * time.Second):
 		t.Fatal("the key set was never primed against the fake issuer")
 	}
@@ -315,7 +315,7 @@ func TestVerificationSucceedsFromCacheWithTheIssuerDown(t *testing.T) {
 	fresh := idp.mint(t, idp.claims(func(c map[string]any) { c["sub"] = "another-operator" }))
 	idp.stop()
 	attempts := transport.attempts.Load()
-	tokens := a.throttle.tokensLeft()
+	tokens := a.JWKSFetchTokensLeft()
 
 	rec := do(t, h, http.MethodGet, "/api/v1/me", fresh)
 	if rec.Code != http.StatusOK {
@@ -328,7 +328,7 @@ func TestVerificationSucceedsFromCacheWithTheIssuerDown(t *testing.T) {
 	}
 	// Belt and braces: the fetch throttle sits in FRONT of that transport, so
 	// an unchanged bucket proves the fetch path was not even consulted.
-	if got := a.throttle.tokensLeft(); got != tokens {
+	if got := a.JWKSFetchTokensLeft(); got != tokens {
 		t.Errorf("fetch tokens = %v, want %v: a cached verification must not reach for the network", got, tokens)
 	}
 }
@@ -354,7 +354,7 @@ func TestStartupPrimesTheKeySet(t *testing.T) {
 	}
 	// THROTTLE-EXEMPT: the bucket a genuine rotation draws on is untouched, so
 	// priming can neither be refused by the rate floor nor spend from it.
-	if got := a.throttle.tokensLeft(); got != float64(defaultJWKSFetchBurst) {
+	if got := a.JWKSFetchTokensLeft(); got != float64(defaultJWKSFetchBurst) {
 		t.Errorf("fetch tokens after priming = %v, want the full bucket (%d)", got, defaultJWKSFetchBurst)
 	}
 
@@ -383,7 +383,7 @@ func TestPrimingRetriesWithoutBlockingReadiness(t *testing.T) {
 	// pod goes ready on that alone.
 	waitReady(t, a)
 	select {
-	case <-a.primed:
+	case <-a.Primed():
 		t.Fatal("primed reported success while /keys was 503ing")
 	default:
 	}
@@ -1216,7 +1216,7 @@ func TestConcurrentUnknownKeyRequestsAllSucceedOnOneFetch(t *testing.T) {
 	}
 	// One token, for the herd's single fetch: the warm-up above was answered
 	// from the cache startup primed, and priming itself spent nothing.
-	if got := a.throttle.tokensLeft(); got != float64(defaultJWKSFetchBurst)-1 {
+	if got := a.JWKSFetchTokensLeft(); got != float64(defaultJWKSFetchBurst)-1 {
 		t.Errorf("tokens left = %v, want %v: the herd must cost exactly one",
 			got, float64(defaultJWKSFetchBurst)-1)
 	}

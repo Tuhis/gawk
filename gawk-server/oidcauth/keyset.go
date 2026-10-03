@@ -1,6 +1,6 @@
-package auth
+package oidcauth
 
-// JWKS handling for the portal's token verification (docs/42 §4.8).
+// JWKS handling for token verification (docs/42 §4.5, §4.8; docs/55 D2).
 //
 // The key set is go-oidc's own oidc.RemoteKeySet. R39 shipped a bespoke cache
 // instead, on the premise that RemoteKeySet could not give §4.8 its two named
@@ -25,14 +25,14 @@ package auth
 //
 // It is also at least as strict as the bespoke key filter was: `alg` values
 // outside the asymmetric set are skipped when the JWKS is decoded, and the
-// verifier's own SupportedSigningAlgs allowlist (auth.go, signingAlgs) is
+// verifier's own SupportedSigningAlgs allowlist (verifier.go, signingAlgs) is
 // applied before any key is tried — so "none" and the HMAC family are
 // unreachable from both ends.
 //
 // What upstream does NOT have is a floor on how often a verification may
 // reach the network, nor any way to ask it to fetch. This file fills the first
-// gap; auth.go's primeKeys works around the second, using the exemption and
-// the fetch counter this transport exposes.
+// gap; verifier.go's primeKeys works around the second, using the exemption
+// and the fetch counter this transport exposes.
 
 import (
 	"context"
@@ -79,16 +79,16 @@ var errJWKSThrottled = errors.New("jwks fetch throttled: too many verification m
 // The bucket starts FULL, so a genuine key rotation gets its fetch
 // immediately and costs zero 401s. Only an attack — or a rotation that lands
 // while one is in progress — ever waits, and then for at most one refill
-// interval: 20 seconds at the defaults (defaultJWKSFetchInterval, burst
-// defaultJWKSFetchBurst = 3 fetches per minute). An operator whose token was
+// interval: 20 seconds at the defaults (DefaultJWKSFetchInterval, burst
+// DefaultJWKSFetchBurst = 3 fetches per minute). An operator whose token was
 // minted by the new key inside that window retries and is in.
 //
-// This type — and auth.go's primeKeys, which spends its exemption — is a
-// deliberate twin of gawk-server's internal/ops/auth.go. Sharing them would
-// mean a public package importing go-oidc, importable by the whole relay,
-// which is the dependency containment gawk-server's auth_import_test.go
-// exists to hold. The roles-claim walk moved to gawk-server/oidcroles instead,
-// precisely because it needs no OIDC library at all.
+// R39 shipped this type — and primeKeys, which spends its exemption — twice,
+// once in the relay's internal/ops/auth.go and once in gawk-admin, as
+// deliberate twins kept in step by review. R53 (docs/55 D2) made them one: the
+// relay, the portal and telemetry all verify through this package, and the
+// relay's containment test (internal/ops/auth_import_test.go) lists it among
+// the imports only the ops auth path may reach.
 type jwksThrottle struct {
 	burst    float64
 	interval time.Duration // time to accrue one token
@@ -104,10 +104,10 @@ func newJWKSThrottle(interval time.Duration, burst int, now func() time.Time) *j
 		now = time.Now
 	}
 	if interval <= 0 {
-		interval = defaultJWKSFetchInterval
+		interval = DefaultJWKSFetchInterval
 	}
 	if burst <= 0 {
-		burst = defaultJWKSFetchBurst
+		burst = DefaultJWKSFetchBurst
 	}
 	return &jwksThrottle{
 		burst:    float64(burst),
@@ -154,7 +154,7 @@ type throttledTransport struct {
 	log      *slog.Logger
 
 	// exempt lets exactly one request past the rate floor, and is how startup
-	// priming is "throttle-exempt" (auth.go, primeKeys). A bool rather than a
+	// priming is "throttle-exempt" (verifier.go, primeKeys). A bool rather than a
 	// counter: an attempt that granted an exemption and then rode somebody
 	// else's in-flight fetch must not leave a second one banked.
 	exempt atomic.Bool
