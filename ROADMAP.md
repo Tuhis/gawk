@@ -83,6 +83,7 @@ feature set exists).
 | R62 | [Desktop UX pass 2](#r62--desktop-ux-pass-2) | 🔧 **implemented 2026-10-01** (DX1–DX5; designed 2026-09-30 in a Claude Design pass, owner decisions OD1–OD10), the owner's hardware pass (DX6) open — the header's always-green server pill becomes a probed status line (`/echo` RTT, Can't reach server) and a non-default server gets docs/40's persistent strip; Stop becomes **Pause** (the Live view with Resume in Pause's place, the code and the room kept, every row still changeable) and **End** (a summary card with an undo); changing the source or the quality while live is an unannounced quick restart on the same code (in place on macOS); Live keeps one layout alone or in a room, the room adding only its card with Leave room in view; Quality gets its own page (from the Quality row) and stays editable while live, Advanced folds into a per-server Edit page, and no setting lives in two places; the Windows picker-tab selection bug is fixed test-first. Revises docs/60 D3, D11, D12 ([docs/64](docs/64-desktop-ux-pass-2.md)) |
 | R63 | [Source preview](#r63--source-preview) | 🔧 **implemented 2026-10-02** (PV1–PV5; designed 2026-10-01, owner decisions OD1–OD4), the owner's hardware pass (PV6) open — Windows shows the Live thumbnail when sharing a display too, and Ready previews the chosen source at 1 Hz on all three platforms through a capture-only stream (WGC, `SCStream`, `pipewiresrc` on the held grant) that runs only while Ready is in view and stops before every start; on macOS the screen-sharing indicator shows while a pick is held (OD1). Revises docs/38 D12.5 and docs/60 D4 ([docs/65](docs/65-source-preview.md)) |
 | R64 | [Desktop scrolling and window fit](#r64--desktop-scrolling-and-window-fit) | 🔧 **implemented 2026-10-02** (WF1–WF3; designed the same day in a Claude Design pass, owner decisions OD1–OD5), the owner's hardware pass (WF4) open — on Ready, Live and Paused only the body scrolls: the page's buttons sit in a pinned action bar (Go live; Copy link · Copy code · Pause or Resume · End), problems viewers feel now pin as a one-line strip under the header, and the preview or source card shrinks before anything scrolls. The window grows to fit the page within the screen's work area, moves up rather than under the taskbar, shrinks back only on a change of state, never fights a manual resize and remembers your size between launches; Linux clamps at launch only in v1. Revises docs/64 D6, D9 and docs/60 D7, D13 ([docs/66](docs/66-desktop-scrolling-and-window-fit.md)) |
+| R65 | [iOS app: native broadcaster and viewer](#r65--ios-app-native-broadcaster-and-viewer) | 💡 proposed 2026-10-03 (owner decisions OD1–OD12), not started (IO0–IO8) — a new top-level `gawk-ios` module: SwiftUI over a Rust core (UniFFI) that path-depends on the desktop workspace's wire, engine, encode and audio crates; a ReplayKit Broadcast Upload Extension streams the device screen with app audio through VideoToolbox H.264; a native player (VideoToolbox / libvpx → `AVSampleBufferDisplayLayer`) adds fullscreen, PiP and background audio; rooms, server picker and telemetry in v1; iPhone + iPad, iOS 26+; signed for the owner's own devices, TestFlight/App Store a later milestone. **IO0, a measuring spike of the extension's ~50 MB memory budget, gates the rest** ([docs/67](docs/67-ios-app.md)) |
 
 ---
 
@@ -4979,6 +4980,39 @@ owner decisions OD1–OD5. The layout is verified headless: at 440 × 600 the
 bar's controls stay in the window in every state, and each page's
 published height is exact to the pixel. WF4, the owner's hardware pass on
 Windows, macOS and Linux, is open.
+
+---
+
+## R65 — iOS app: native broadcaster and viewer
+
+**Goal**: broadcast an iPhone or iPad screen, and watch any broadcast in a
+native player with fullscreen, PiP and background audio.
+
+**Why**: iOS Safari has no `getDisplayMedia`, so there is no way to
+broadcast from iOS today; a ReplayKit Broadcast Upload Extension is the only
+way to capture the screen outside your own app. Watching in Safari works but
+has no PiP or background audio, and iPhone fullscreen depends on R22's
+MSE workaround.
+
+**Scope** (chunks IO0–IO8 in [docs/67](docs/67-ios-app.md)):
+
+- **IO0** — throwaway spike: extension memory, thermals and latency against
+  a pre-registered verdict that gates the rest.
+- **IO1** — `gawk-ios` scaffolding, UniFFI, XcodeGen, iOS CI, iOS gating in
+  the shared desktop crates.
+- **IO2** — the broadcast extension (encode, app audio, rotation, resume).
+- **IO3** — the broadcaster UI (code and share, server picker, rooms).
+- **IO4** — the Rust viewer core (reassembly, Opus, libvpx).
+- **IO5** — the native player (AVFoundation timing, PiP, background audio).
+- **IO6** — join by code, `gawk://` links and the rooms view.
+- **IO7** — telemetry kind and R59's `app=ios` label.
+- **IO8** — the owner's on-device pass.
+
+**Non-goals**: TestFlight / App Store distribution (a follow-up milestone),
+mic audio, camera broadcasting, porting R12's adaptive playout, any change
+to the Safari viewer, Android.
+
+**Status**: 💡 proposed 2026-10-03, not started.
 
 ---
 
