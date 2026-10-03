@@ -26,7 +26,7 @@ fn rect(r: RECT) -> Rect {
     )
 }
 
-fn hwnd(ui: &MainWindow) -> Option<HWND> {
+pub(crate) fn hwnd(ui: &MainWindow) -> Option<HWND> {
     let window = ui.window().window_handle();
     match window.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut core::ffi::c_void)),

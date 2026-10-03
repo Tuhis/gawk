@@ -16,6 +16,10 @@ mod pipeline;
 mod place;
 #[cfg(windows)]
 mod preview;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod register;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod single;
 #[cfg(windows)]
 mod toast;
 
@@ -50,6 +54,10 @@ impl Platform for Windows {
             "UniversalApiContract level: {}",
             gawk_capture::wgc::universal_contract_level()
         );
+        // docs/68 D9: here, because this runs once the debug log is up and
+        // only in a launch that did not hand off to a running instance.
+        #[cfg(windows)]
+        register::ensure();
     }
 
     fn init_window(&mut self, ui: &MainWindow) {
@@ -124,6 +132,28 @@ impl Platform for Windows {
     #[cfg(windows)]
     fn placement(&self, ui: &MainWindow) -> Option<gawk_ui::fit::Placement> {
         place::placement(ui)
+    }
+
+    /// A second launch or a link (docs/68 D6): restore a minimized window
+    /// and bring it to the front. The second launch passed its foreground
+    /// right on with `AllowSetForegroundWindow` (D8), which is what lets
+    /// this take focus instead of only flashing the taskbar button.
+    #[cfg(windows)]
+    fn raise_window(&mut self, ui: &MainWindow, _activation: Option<String>) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsIconic, SW_RESTORE, SetForegroundWindow, ShowWindow,
+        };
+        let _ = ui.show();
+        let Some(hwnd) = place::hwnd(ui) else {
+            return;
+        };
+        // SAFETY: `hwnd` is this process's live top-level window.
+        unsafe {
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            let _ = SetForegroundWindow(hwnd);
+        }
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
@@ -236,14 +266,12 @@ fn notify(summary: &str, body: &str, critical: bool) {
 fn main() {
     // The commit build.rs stamped, for the version badge (crates/ui/build_rev.rs).
     gawk_ui::version::set_build_rev(option_env!("GAWK_BUILD_REV"));
+    // Single instance first (docs/68 D8): a second launch hands its link
+    // to the running window and exits here, before touching anything else.
+    let launch = launch();
     #[cfg(windows)]
     toast::init();
 
-    let args: Vec<String> = std::env::args().collect();
-    let launch = gawk_ui::instance::Launch {
-        request: gawk_ui::instance::Request::from_args(&args),
-        inbox: None,
-    };
     shell::run(
         Box::new(Windows::default()),
         |ui, shell| {
@@ -263,4 +291,23 @@ fn main() {
         },
         launch,
     );
+}
+
+/// This launch's link, and the inbox later launches arrive on (docs/68 D6,
+/// D8). With no endpoint (a dev build off Windows, or one that cannot be
+/// set up) the app runs alone with its own link.
+fn launch() -> gawk_ui::instance::Launch {
+    use gawk_ui::instance::{Launch, Request};
+    let args: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    #[cfg(windows)]
+    match single::Pipe::new() {
+        Ok(pipe) => return gawk_ui::instance::launch(&args, Box::new(pipe)),
+        Err(e) => eprintln!("gawk-broadcast: no single instance ({e})"),
+    }
+    Launch {
+        request: Request::from_args(&args),
+        inbox: None,
+    }
 }
