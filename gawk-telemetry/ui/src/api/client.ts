@@ -1,3 +1,4 @@
+import { apiFetch, errorEnvelope } from '../auth/auth.ts';
 import type {
   Annotation,
   BroadcastDetail,
@@ -9,6 +10,7 @@ import type {
   FieldDoc,
   FleetTimeline,
   HistoryPage,
+  Me,
   Meta,
   QueryResult,
   QueryStatus,
@@ -31,6 +33,12 @@ import type {
 //   * **Nothing here carries a field list, a threshold or a rule name.** The
 //     catalogue endpoints exist so the UI does not become the second copy that
 //     drifts (UD8, UD20).
+//
+// And one R53 rule (docs/55 D4): **no bare `fetch` in this file.** Every
+// request goes through `apiFetch`, which is plain `fetch` in none/basic mode
+// and `authorizedFetch` — bearer attached, renewed, 401/403 interpreted — in
+// OIDC mode. A call that reached for `fetch` directly would work in the first
+// mode and silently 401 in the second.
 
 export class ApiError extends Error {
   // A plain field, not a constructor parameter property: `erasableSyntaxOnly`
@@ -45,7 +53,7 @@ export class ApiError extends Error {
 }
 
 async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(path, { cache: 'no-store', signal });
+  const res = await apiFetch(path, { cache: 'no-store', signal });
   if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status);
   return (await res.json()) as T;
 }
@@ -70,6 +78,24 @@ export function fetchLive(signal?: AbortSignal): Promise<Snapshot> {
 
 export function fetchMeta(signal?: AbortSignal): Promise<Meta> {
   return getJSON<Meta>('v1/meta', signal);
+}
+
+/**
+ * Who the bearer token says the reader is (docs/55 D5). OIDC mode only — it
+ * is 404 in none/basic mode — and it needs a valid token but NOT the reader
+ * role, which is what lets the missing-role page say who is signed in.
+ */
+export function fetchMe(signal?: AbortSignal): Promise<Me> {
+  return getJSON<Me>('v1/me', signal);
+}
+
+/** The live stream (UD22). The caller reads the body; see liveStore. */
+export function openLiveStream(signal: AbortSignal): Promise<Response> {
+  return apiFetch('live/stream', {
+    headers: { Accept: 'text/event-stream' },
+    cache: 'no-store',
+    signal,
+  });
 }
 
 // --- TH2: session detail ----------------------------------------------------
@@ -288,7 +314,7 @@ export function fetchAnnotations(
 }
 
 export async function createAnnotation(a: Omit<Annotation, 'id' | 'createdAtMs'>): Promise<Annotation> {
-  const res = await fetch('v1/annotations', {
+  const res = await apiFetch('v1/annotations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(a),
@@ -298,7 +324,7 @@ export async function createAnnotation(a: Omit<Annotation, 'id' | 'createdAtMs'>
 }
 
 export async function deleteAnnotation(id: string): Promise<void> {
-  const res = await fetch(`v1/annotations/${id}`, { method: 'DELETE' });
+  const res = await apiFetch(`v1/annotations/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new ApiError(await errorText(res), res.status);
 }
 
@@ -309,7 +335,7 @@ export function fetchQueryStatus(signal?: AbortSignal): Promise<QueryStatus> {
 }
 
 export async function runQuery(sql: string, signal?: AbortSignal): Promise<QueryResult> {
-  const res = await fetch('v1/query', {
+  const res = await apiFetch('v1/query', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sql }),
@@ -325,6 +351,10 @@ export async function runQuery(sql: string, signal?: AbortSignal): Promise<Query
  * criteria require, and a refusal reads very differently from a syntax error.
  */
 async function errorText(res: Response): Promise<string> {
+  // OIDC mode's gate answers in the `{"error":{"code","message"}}` envelope
+  // (a 429 `rate_limited`, say); its message is the readable part.
+  const env = await errorEnvelope(res);
+  if (env) return env.message;
   try {
     const body = (await res.text()).trim();
     return body || `HTTP ${res.status}`;
@@ -347,7 +377,7 @@ async function errorText(res: Response): Promise<string> {
  * Both mean the same thing to the UI: do not offer the affordance.
  */
 export async function resolveCode(code: string): Promise<string | null> {
-  const res = await fetch('v1/resolve', {
+  const res = await apiFetch('v1/resolve', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code }),
@@ -364,7 +394,7 @@ export async function resolveCode(code: string): Promise<string | null> {
  * share a digest even for the same six characters.
  */
 export async function resolveRoom(room: string): Promise<string | null> {
-  const res = await fetch('v1/resolve', {
+  const res = await apiFetch('v1/resolve', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ room }),
@@ -386,7 +416,7 @@ export async function resolveRoom(room: string): Promise<string | null> {
  */
 export async function probeResolve(): Promise<boolean> {
   try {
-    const res = await fetch('v1/resolve', {
+    const res = await apiFetch('v1/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: '' }),

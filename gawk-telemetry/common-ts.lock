@@ -1,0 +1,4 @@
+# The common-ts packages this component builds against, by git tree hash
+# (docs/55 D10). Generated — do not edit; regenerate with
+#   go -C tools/commonlock run . update
+oidc-session 48b7cd91587712c17ebe4c176e4fcbed621b5d15

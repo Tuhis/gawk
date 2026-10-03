@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react';
 
-import type { Coverage } from '../api/types.ts';
+import { fetchMe } from '../api/client.ts';
+import type { Coverage, Me } from '../api/types.ts';
+import { useAuthStore } from '../auth/auth.ts';
 import { absoluteTime, dur, timeZoneLabel } from '../lib/format.ts';
 import { href, useRoute, type ViewName } from '../router/router.ts';
 import { CLOCK_SKEW_WARN_MS, useMetaStore } from '../state/metaStore.ts';
 import { useLiveStore } from '../state/liveStore.ts';
 import styles from './Chrome.module.css';
 
-// The page furniture: nav, the coverage banner, the pause control and the
-// honesty strip.
+// The page furniture: nav, the coverage banner, the pause control, the
+// honesty strip and — in OIDC mode only — who is signed in.
 //
 // UD13 is the shape here: **the live fleet page stays the landing view.** TM8's
 // surface is what you open when someone says "it's stuttering", and it does
@@ -169,6 +171,53 @@ export function DesktopOnly({ what }: { what: string }) {
     <p className={styles.desktopOnly} role="note">
       {what} is desktop-only. It needs the width to be read honestly, and a
       squeezed version would mislead more than it showed.
+    </p>
+  );
+}
+
+/**
+ * Who is signed in, and the way out (docs/55 TO3). OIDC mode only: in none and
+ * basic mode there is no session here to end — basic auth's credential is the
+ * browser's own — so this renders nothing and the header is as it always was.
+ */
+export function SignedIn() {
+  const mode = useAuthStore((s) => s.mode);
+  const session = useAuthStore((s) => s.session);
+  const [me, setMe] = useState<Me | null>(null);
+  const oidc = mode === 'oidc' && session !== null;
+
+  useEffect(() => {
+    if (!oidc) return;
+    const ctrl = new AbortController();
+    // Best effort: the button matters, the name is a courtesy.
+    fetchMe(ctrl.signal).then(setMe, () => {});
+    return () => ctrl.abort();
+  }, [oidc]);
+
+  if (!oidc) return null;
+  return (
+    <span className={styles.who}>
+      {me ? <span className={styles.whoName}>{me.email || me.subject}</span> : null}
+      <button type="button" className={styles.pause} onClick={() => void session.logout()}>
+        sign out
+      </button>
+    </span>
+  );
+}
+
+/**
+ * The read listener cannot verify ANY token because it has never reached the
+ * identity provider (`401 idp_unavailable`, docs/55 D8). Said plainly, because
+ * the alternative is a page of "HTTP 401"s that reads as the operator's own
+ * login having failed — and signing in again would not help.
+ */
+export function IdpBanner() {
+  const reason = useAuthStore((s) => s.idpUnavailable);
+  if (reason === null) return null;
+  return (
+    <p className={styles.idp} role="alert">
+      The telemetry service cannot reach its identity provider, so it cannot check anyone’s
+      sign-in right now ({reason}). This is on the server’s side; the page keeps retrying.
     </p>
   );
 }

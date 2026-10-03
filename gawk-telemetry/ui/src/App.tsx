@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 
-import { ClockNote, Nav, PauseBar } from './components/Chrome.tsx';
+import { ClockNote, IdpBanner, Nav, PauseBar, SignedIn } from './components/Chrome.tsx';
 import { CommandPalette } from './components/CommandPalette.tsx';
 import { href, useRoute } from './router/router.ts';
 import { useLiveStore } from './state/liveStore.ts';
@@ -66,9 +66,11 @@ export function App() {
         <span className={styles.spacer} />
         <PauseBar />
         <ClockNote />
+        <SignedIn />
       </header>
 
       <main className={styles.main}>
+        <IdpBanner />
         <Route route={route} />
       </main>
 

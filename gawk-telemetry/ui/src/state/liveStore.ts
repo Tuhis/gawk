@@ -1,9 +1,13 @@
 import { create } from 'zustand';
 
-import { fetchLive } from '../api/client.ts';
-import type { Snapshot } from '../api/types.ts';
+import { AuthRedirect } from '@gawk/oidc-session';
 
-// UD22: the live feed is an EventSource, with the 2 s poll as the fallback.
+import { fetchLive, openLiveStream } from '../api/client.ts';
+import type { Snapshot } from '../api/types.ts';
+import { readSse } from '../lib/sse.ts';
+
+// UD22: the live feed is a server-sent event stream, with the 2 s poll as the
+// fallback. (An `EventSource` until docs/55 D4; see `start`.)
 //
 // The projection is unchanged; only its delivery is. What the stream buys is
 // that an idle fleet costs a heartbeat instead of a full payload — the server
@@ -92,14 +96,36 @@ export const useLiveStore = create<LiveState>((set, get) => ({
   /**
    * Start the feed. Returns a teardown.
    *
-   * The EventSource is attempted first and the poll runs only while the stream
-   * is not connected — never both, or an idle fleet would cost exactly what
-   * UD22 exists to avoid.
+   * The stream is attempted first and the poll runs only while the stream is
+   * not connected — never both, or an idle fleet would cost exactly what UD22
+   * exists to avoid.
+   *
+   * Since docs/55 D4 the stream is a `fetch` read through `lib/sse.ts` rather
+   * than an `EventSource`, because in OIDC mode it has to carry a bearer
+   * header, which `EventSource` cannot send. The reconnection policy that
+   * `EventSource` used to apply implicitly is therefore written out here, and
+   * it is the same one:
+   *
+   *   * **An HTTP refusal** (non-2xx, or not an event stream — a `501` from a
+   *     server that cannot flush) is final: `EventSource` fails the connection
+   *     and never retries, and the poll carries the page from then on.
+   *   * **A connection lost or ended** (network error, server close) degrades
+   *     to the poll and reconnects after the server's `retry:` hint — 2 s,
+   *     the poll cadence — or `POLL_MS` before one has been heard. The poll
+   *     stops again the moment the stream reopens.
+   *   * **`event: expired`** (OIDC mode: the server caps a stream at its
+   *     token's `exp`) reconnects AT ONCE, without the poll: the session has
+   *     already renewed the token ahead of expiry, so the next request carries
+   *     the fresh one and the page never notices. A stream that expires
+   *     within a second of opening takes the ordinary delay instead, so a
+   *     server/IdP disagreement cannot become a tight reconnect loop.
    */
   start: () => {
     let stopped = false;
-    let es: EventSource | null = null;
+    let ctrl: AbortController | null = null;
     let timer: ReturnType<typeof setInterval> | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryMs = POLL_MS;
 
     const startPolling = () => {
       if (stopped || timer) return;
@@ -111,44 +137,82 @@ export const useLiveStore = create<LiveState>((set, get) => ({
       if (timer) clearInterval(timer);
       timer = null;
     };
-
-    const connect = () => {
-      if (stopped) return;
-      if (typeof EventSource === 'undefined') {
-        startPolling();
-        return;
-      }
-      try {
-        es = new EventSource('live/stream');
-      } catch {
-        startPolling();
-        return;
-      }
-      es.addEventListener('open', () => {
-        // The stream is live; the poll would now be duplicate work.
-        stopPolling();
-        set({ mode: 'stream', error: null });
-      });
-      es.addEventListener('snapshot', (ev) => {
-        if (get().paused) return;
-        try {
-          const snap = JSON.parse((ev as MessageEvent).data) as Snapshot;
-          set({ snapshot: snap, error: null, lastOkAt: Date.now(), mode: 'stream' });
-        } catch {
-          // A frame we cannot parse is a frame we ignore; the next one is 2 s
-          // away and the last good snapshot is still on screen.
-        }
-      });
-      es.addEventListener('error', () => {
-        // EventSource reconnects on its own, but its backoff is opaque and a
-        // proxy that refuses the stream outright would leave the page silent
-        // forever. Falling back to the poll is what makes the stream optional
-        // rather than load-bearing.
-        startPolling();
-      });
+    const reconnectLater = () => {
+      if (stopped || reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        void connect();
+      }, retryMs);
     };
 
-    connect();
+    const connect = async () => {
+      if (stopped) return;
+      if (!canStream()) {
+        startPolling();
+        return;
+      }
+      ctrl = new AbortController();
+      const signal = ctrl.signal;
+      let res: Response;
+      try {
+        res = await openLiveStream(signal);
+      } catch (e) {
+        // The page is on its way to the IdP; there is nothing left to feed.
+        if (stopped || e instanceof AuthRedirect) return;
+        startPolling();
+        reconnectLater();
+        return;
+      }
+      if (stopped) return;
+      const type = res.headers.get('content-type') ?? '';
+      if (!res.ok || !res.body || !type.includes('text/event-stream')) {
+        // What EventSource calls "fail the connection": no retry. A proxy
+        // that refuses the stream outright would otherwise be retried for
+        // ever while the poll did the work anyway.
+        void res.body?.cancel().catch(() => {});
+        startPolling();
+        return;
+      }
+
+      // The stream is live; the poll would now be duplicate work.
+      stopPolling();
+      set({ mode: 'stream', error: null });
+      const openedAt = Date.now();
+      let expired = false;
+      try {
+        await readSse(
+          res.body,
+          (ev) => {
+            if (ev.event === 'expired') {
+              expired = true;
+              return;
+            }
+            if (ev.event !== 'snapshot' || get().paused) return;
+            try {
+              const snap = JSON.parse(ev.data) as Snapshot;
+              set({ snapshot: snap, error: null, lastOkAt: Date.now(), mode: 'stream' });
+            } catch {
+              // A frame we cannot parse is a frame we ignore; the next one is
+              // 2 s away and the last good snapshot is still on screen.
+            }
+          },
+          (ms) => {
+            retryMs = ms;
+          },
+        );
+      } catch {
+        // Lost mid-stream (or aborted by the teardown, handled just below).
+      }
+      if (stopped) return;
+      if (expired && Date.now() - openedAt >= 1000) {
+        void connect();
+        return;
+      }
+      startPolling();
+      reconnectLater();
+    };
+
+    void connect();
     // A safety net for the case the stream never opens AND never errors, which
     // is what a buffering proxy looks like from in here.
     const openCheck = setTimeout(() => {
@@ -158,11 +222,21 @@ export const useLiveStore = create<LiveState>((set, get) => ({
     return () => {
       stopped = true;
       clearTimeout(openCheck);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       stopPolling();
-      es?.close();
+      ctrl?.abort();
     };
   },
 }));
+
+/** Whether this browser can read a `fetch` response body as a stream. */
+function canStream(): boolean {
+  return (
+    typeof ReadableStream !== 'undefined' &&
+    typeof TextDecoder !== 'undefined' &&
+    typeof AbortController !== 'undefined'
+  );
+}
 
 /**
  * Whether the feed has gone quiet. Computed from the last SUCCESS rather than
