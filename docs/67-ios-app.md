@@ -1,6 +1,6 @@
 # R65 — iOS app: native broadcaster and viewer (docs/67)
 
-**Status**: proposed 2026-10-03. Owner decisions OD1–OD14 (§2) were taken
+**Status**: proposed 2026-10-03. Owner decisions OD1–OD16 (§2) were taken
 the same day in an interview. Chunks **IO0–IO8** (§9) are not started.
 **Work runs Simulator-first (OD13, D26)**: phase S builds and tests
 everything the Simulator can run; phase D starts on devices with **IO0, a
@@ -80,6 +80,8 @@ behaviour under thermal load or PiP. As on every native milestone
 | OD12 | **VP8/VP9 broadcasts play natively through a bundled libvpx**, so every broadcast plays in the app. **IO0 runs first on devices, as a measuring spike.** |
 | OD13 | **Simulator first.** Everything is built and tested in the iOS Simulator before any device work (D26). |
 | OD14 | **Devices**: an iPhone 17 Pro Max and an iPad Pro. **Signing**: the owner's paid Apple Developer Program membership, enrolled when phase D starts; phase S needs no team. |
+| OD15 | **XcodeGen** generates the Xcode project from a checked-in `project.yml` (D2). |
+| OD16 | **Bundle ID `fi.ioio.gawk`, display name "gawk"** (D28). |
 
 ## 3. Alternatives considered and rejected
 
@@ -139,7 +141,8 @@ iOS job (D24).
 XcodeGen reads the checked-in `project.yml`. `*.xcodeproj` is
 git-ignored. A Run Script build phase calls `cargo build` for the active
 SDK and architecture and runs `uniffi-bindgen` into `Shared/`, so Xcode's
-Run builds Rust as well. *Open question Q2.*
+Run builds Rust as well. Chosen by the owner (OD15) over a committed
+`.xcodeproj` (with Xcode 16's synchronized folders) and Tuist.
 
 **Rationale**: `project.pbxproj` merge conflicts are the standard failure of
 a hand-maintained Xcode project. A generated one keeps CI and every
@@ -548,6 +551,24 @@ It's compiled out of release builds and never reachable by a user.
 The extension target is still built in phase S, so linking and
 App Group code are checked, but it first runs on a device.
 
+### D28 — Identifiers
+
+Every identifier hangs off the bundle ID (OD16), which is permanent once the
+app ships, so they're fixed here and nowhere else:
+
+| What | Value |
+|---|---|
+| App bundle ID | `fi.ioio.gawk` |
+| Broadcast extension | `fi.ioio.gawk.BroadcastUpload` |
+| App Group (D17) | `group.fi.ioio.gawk` |
+| Keychain access group (D17) | `$(AppIdentifierPrefix)fi.ioio.gawk.shared` |
+| URL scheme (D20) | `gawk://` |
+| Display name (`CFBundleDisplayName`) | gawk |
+
+The App Store listing name is separate and must be unique across the store.
+It's chosen in the distribution milestone (§5), and may differ from the
+display name.
+
 ## 5. Non-goals
 
 - **TestFlight and App Store distribution.** A follow-up milestone covers
@@ -667,13 +688,9 @@ is Fail. The Conditional re-measure is judged by Pass's criteria at the
 
 ## 11. Open questions
 
-Q1 (signing team) and Q4 (devices) were answered on 2026-10-03 and became
-OD14.
-
-| # | Question |
-|---|---|
-| Q2 | XcodeGen (D2), or a committed `.xcodeproj`, or Tuist? |
-| Q3 | Bundle ID prefix and the app's display name (e.g. `fi.ioio.gawk`, "gawk"). |
+None. All four were answered on 2026-10-03: Q1 (signing team) and Q4
+(devices) became OD14, Q2 (project generation) OD15, and Q3 (bundle ID and
+display name) OD16.
 
 ## 12. Deviations and field findings
 
