@@ -912,5 +912,6 @@ a gawk defect — Chromium removed the API entirely; see the gotcha in
   selected at load") and for the pending room. Present a credential only
   when the resolved relay matches. A smaller first step is to clear
   `room_attach_secret` and `room_creator_token` in `on_server_selected`
-  when the origin changes. R66 (docs/68 D5) already applies that clearing
-  to link-driven switches; this entry covers the manual ones.
+  when the origin changes. **R66 (docs/68 D5a) fixes this** by binding
+  room credentials to their server and checking them at Go live. LH2
+  removes this entry.

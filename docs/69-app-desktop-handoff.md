@@ -43,7 +43,7 @@ remembers what the user chose.
 | G1 | On Windows, macOS and Linux, the broadcaster's pre-start card and the room's "Start streaming here" offer **Open in the desktop app**. The link carries the room, nickname and non-default relay, and never a grant or secret. | unit tests + HO4 |
 | G2 | Clicking it with the app installed opens the app prefilled (R66 G1/G2). Without the app, the page stays put with its state intact, and a **Didn't open?** note offers the download and **Continue in the browser**. | HO4, per browser (V-1) |
 | G3 | The offer never appears on Android, iOS or ChromeOS, on viewer pages or on the landing page | unit tests |
-| G4 | After the user picks **Always use the desktop app**, a broadcast-intent link opens the app on its own, at most once per page load. The page still shows the fallback and a one-click **Stop opening the app**. | unit tests + HO4 |
+| G4 | After the user picks **Always use the desktop app**, a broadcast-intent link opens the app on its own, at most once per room in a tab (D5). The page still shows the fallback and a one-click **Stop opening the app**. | unit tests + HO4 |
 | G5 | `gawk-app` builds links that are byte-identical to R66's canonical `to_gawk` for every vector | unit test on the restated vectors |
 | G6 | An operator can turn the offer off with `config.desktopHandoff: false`, plumbed through the chart | chart template test + unit test |
 | G7 | The browser broadcast flow is unchanged when the offer is ignored: no extra prompt, and Start is the primary action | existing BroadcasterScreen tests stay green + new ones |
@@ -113,10 +113,14 @@ returns R66's canonical `gawk://broadcast?…`.
 - **`relay`**: only when the resolved server isn't the default, the same
   rule as `relayQuerySuffix`. It is the normalized origin of the session
   override or the selected saved server. The desktop matches it against
-  its own saved servers or offers to add it (docs/68 D5).
+  its own saved servers or offers to add it (docs/68 D5). **Omitting it
+  means the default fleet**: in a `gawk://` link, a missing `relay=` is
+  the default, not the receiving app's selected server (docs/68 D1). So
+  "on the default here" carries over even when the desktop app has
+  another server selected.
 - **Never** a grant (`rt`), an attach secret or a publish secret (docs/68
   D1). A static room that needs an attach secret prompts for it in the
-  desktop app, which may already hold it in its recent rooms. This is the
+  desktop app, which may already hold it for that server (docs/68 D5a). This is the
   one way the handoff is less smooth than staying in the browser; §8
   covers it.
 - Parameter order and encoding follow `to_gawk` exactly, so G5 can assert
@@ -146,21 +150,35 @@ returns R66's canonical `gawk://broadcast?…`.
   unavailable, there is no automatic mode and the button still works.
   Absent means offer only. There is no stored "never": dismissing the note
   is enough.
-- **When `"auto"` is set**:
-  - Landing on `#/broadcast` **with `room=`** launches the app once, as the
-    page loads, through V-1's mechanism. That is the link-from-outside
-    case, the Mumble bot's button. A plain `#/broadcast` visit doesn't:
-    the user is in the web app on purpose.
-  - Clicking "Start streaming here" in a room goes straight to the app,
-    since the click provides activation. The browser path is still on the
-    card it would have navigated to. Because "Start streaming here"
-    navigates to `#/broadcast` anyway, this is "launch, then navigate as
-    before". The broadcaster card shows D4's note.
-  - **At most once per page load**, and never again for the same URL in
-    this tab. A sessionStorage flag keyed by the hash means back/forward
-    and reloads don't relaunch.
-  - The note shows "Opening the desktop app automatically · [Stop doing
-    this]". The last action clears the key.
+- **Where the trigger is detected.** `applyRouteRoom` runs in App.tsx's
+  route resolution before `BroadcasterScreen` mounts. It moves `?room=`
+  into the `gawk:room-return` stash and strips it from the hash. By the
+  time the screen can check its own state (D5's "never" conditions are
+  screen state), every visit looks like a plain `#/broadcast`. So the
+  stash records where the hop came from: `RoomReturn` gains
+  `source: 'link' | 'room'`. `applyRouteRoom` writes `'link'`, and
+  `RoomScreen`'s `stashRoomReturn` writes `'room'`. The screen reads it
+  through the existing `takeRoomReturn` on mount. A stash without the
+  field (an older tab) counts as `'room'`, which never auto-launches.
+- **When `"auto"` is set**, there are exactly two triggers:
+  - **A link from outside**: the screen mounts with a stash whose
+    `source` is `'link'` (the Mumble bot's `#/broadcast?room=`). It
+    launches the app once, through V-1's mechanism. A plain `#/broadcast`
+    visit has no stash and never launches: the user is in the web app on
+    purpose.
+  - **"Start streaming here" in a room**: the click handler in
+    `RoomScreen` launches the app itself, since the click provides
+    activation. It then stashes `source: 'room'` and navigates to
+    `#/broadcast` as before. The screen sees `'room'`, doesn't launch a
+    second time, and shows D4's note.
+- **At most once per room in this tab.** A sessionStorage flag
+  `gawk:handoff-done:<code lower-cased>` is set when either trigger fires,
+  and both check it first. A reload has no stash (`takeRoomReturn` reads
+  and clears), so it never relaunches. Following the same room's link
+  again in the same tab doesn't relaunch either; the note's button still
+  does.
+- The note shows "Opened the desktop app automatically · [Stop doing
+  this]". The last action clears the key.
 - **Never automatic**: when D2 hides the offer, when `relay=` was dropped as
   invalid or not allowed (the user should see that note in the browser),
   or while the terms or secret modal is open.
@@ -241,7 +259,7 @@ handler) → the note's "Didn't open? Get the app · Continue in the browser"
 |---|---|---|
 | **HO1** | D3's builder, the restated vectors (after R66 LH1), D7's config and chart | Every R66 vector's canonical link is reproduced byte for byte (G5); no grant or secret can be produced, tested with a grant in the stash; the chart renders `desktopHandoff` with and without the value set (G6) |
 | **HO2** | D1, D2, D4, D6, D8: the button, the room's secondary action, the note, the `NATIVE_TIP` copy | Component tests: the offer shows on the three desktop OS identities and on none of the others, nor on viewer and landing pages (G3); `isDesktopForHandoff` is tested with real UA strings, including iPadOS Safari's `Macintosh` UA with `maxTouchPoints` 5 (hidden) and macOS Safari with 0 (shown); the anchor's `href` carries room, nick and a non-default relay (G1); after a click, Start is still enabled and the pending room is intact (G7, D6). An e2e step in `e2e/run.mjs` clicks the button in headless Chrome with no handler and asserts the page and room chip remain. |
-| **HO3** | D5: the remembered choice and automatic launch, on V-1's mechanism | Unit tests: with `"auto"` set, automatic on exactly two triggers, landing on `#/broadcast?room=` and a room's "Start streaming here" click (whose room travels in the `gawk:room-return` stash, not the URL); a plain `#/broadcast` visit and a `#/broadcast` reached any other way never launch; once per page load; not on reload or back/forward; never on non-desktop OS, with a dropped relay, or with storage unavailable; "Stop doing this" clears it. Merged only after a desktop release containing R66 LH2–LH5. |
+| **HO3** | D5: the remembered choice and automatic launch, on V-1's mechanism | Unit tests, against D5's detection point: with `"auto"` set, `applyRouteRoom` stashes `source: 'link'` and the screen launches once on mount; a room's "Start streaming here" click launches from the handler and the screen, seeing `source: 'room'`, doesn't launch again; a plain `#/broadcast`, a stash without `source`, and a second trigger for a room already in `gawk:handoff-done:<code>` never launch; not on reload; never on non-desktop OS, with a dropped relay, or with storage unavailable; "Stop doing this" clears it. Merged only after a desktop release containing R66 LH2–LH5. |
 | **HO4** | The owner's pass: Chrome, Firefox and Edge on Windows; Chrome, Firefox and Safari on macOS; Chrome and Firefox on Linux; with and without the app installed; V-1 | G1, G2 and G4 recorded per browser in §12 |
 
 ## 10. V-items (recorded in §12)
