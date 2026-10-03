@@ -562,6 +562,14 @@ None.
 - The `cfg(windows)` and macOS code was type-checked only in stub crates
   (clippy for `x86_64-pc-windows-msvc` and `aarch64-apple-darwin` against
   the locked `windows` and objc2 versions). The PR's `build` and `macos`
-  jobs are its first full compile. LH5's CI step is V-1's first answer.
+  jobs are its first full compile. Both were green on #452.
+- **V-1, first answer (CI, `macos-latest`, PR #452).** The handler was
+  installed from `WillFinishLaunching`. A cold `open 'gawk://…'` and a
+  warm one each produced `link event received`, and one process remained.
+- **Review of #452.** A launch link over about 4 KiB failed the handoff
+  every time, because the message cap is 4,096 bytes. The launch then ran
+  as a second instance. `Request::from_args` now cuts such a link just
+  past the parser's 2,048-byte cap, so it always fits one message and the
+  primary still says it's too long.
 
 Open: LH6, with V-1 on a real Mac, V-3 and V-4.

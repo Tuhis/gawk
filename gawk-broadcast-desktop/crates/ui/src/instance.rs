@@ -48,7 +48,8 @@ impl Request {
     pub fn from_args<S: AsRef<str>>(args: &[S]) -> Request {
         match gawk_engine::link::link_argument(args) {
             None => Request::Raise,
-            Some(link) => Request::Open(link),
+            Some(Ok(link)) => Request::Open(Ok(cut_past_cap(link))),
+            Some(Err(())) => Request::Open(Err(())),
         }
     }
 
@@ -88,6 +89,22 @@ impl Request {
             Ok(link.to_owned())
         }))
     }
+}
+
+/// A link over the parser's cap is cut at the first character boundary past
+/// it (review of #452). The parser rejects it as too long either way, and
+/// the cut keeps `open <link>` under [`MAX_MESSAGE`]. A link that didn't
+/// fit failed the handoff on every try, and its launch then ran as a
+/// second instance.
+fn cut_past_cap(mut link: String) -> String {
+    let cap = gawk_engine::link::MAX_LINK_LEN;
+    if link.len() > cap {
+        let end = (cap + 1..=link.len())
+            .find(|&i| link.is_char_boundary(i))
+            .unwrap_or(link.len());
+        link.truncate(end);
+    }
+    link
 }
 
 /// The `--relaunched-from <pid>` an update relaunch carries (D7).
@@ -285,6 +302,30 @@ mod tests {
         assert_eq!(
             Request::from_args(&["app", "gawk://a", "GAWK://b"]),
             Request::Open(Err(()))
+        );
+    }
+
+    // Review of #452: a link over the parser's cap must still fit one
+    // message, or the handoff fails and a second instance starts. It is
+    // cut just past the cap, so the primary still says "too long".
+    #[test]
+    fn an_oversized_link_still_fits_one_message_and_stays_too_long() {
+        use gawk_engine::link::{self, LinkError, MAX_LINK_LEN};
+        for filler in ["x", "é", "€"] {
+            let long = format!("gawk://broadcast?nick={}", filler.repeat(3000));
+            let request = Request::from_args(&["app", long.as_str()]);
+            let Request::Open(Ok(sent)) = &request else {
+                panic!("{request:?}");
+            };
+            assert!(sent.len() > MAX_LINK_LEN && sent.len() <= MAX_LINK_LEN + 4);
+            assert!(request.encode().len() <= MAX_MESSAGE);
+            assert_eq!(link::parse(sent), Err(LinkError::TooLong));
+        }
+        let fits = format!("gawk://broadcast?nick={}", "x".repeat(MAX_LINK_LEN - 22));
+        assert_eq!(fits.len(), MAX_LINK_LEN);
+        assert_eq!(
+            Request::from_args(&["app", fits.as_str()]),
+            Request::Open(Ok(fits.clone()))
         );
     }
 
