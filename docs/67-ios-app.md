@@ -1,10 +1,12 @@
 # R65 — iOS app: native broadcaster and viewer (docs/67)
 
-**Status**: proposed 2026-10-03. Owner decisions OD1–OD12 (§2) were taken
+**Status**: proposed 2026-10-03. Owner decisions OD1–OD14 (§2) were taken
 the same day in an interview. Chunks **IO0–IO8** (§9) are not started.
-**IO0 is a throwaway spike whose pre-registered verdict (§9.1) gates every
-later chunk.** Decisions marked *provisional* are confirmed or revised in
-§12 once IO0 is done. Status lives in [`ROADMAP.md`](../ROADMAP.md).
+**Work runs Simulator-first (OD13, D26)**: phase S builds and tests
+everything the Simulator can run; phase D starts on devices with **IO0, a
+throwaway spike whose pre-registered verdict (§9.1) gates the device
+acceptance of the broadcast extension**. Decisions marked *provisional* are
+confirmed or revised in §12 once IO0 is done. Status lives in [`ROADMAP.md`](../ROADMAP.md).
 
 **Relationship to earlier work**
 
@@ -40,8 +42,8 @@ later chunk.** Decisions marked *provisional* are confirmed or revised in
 
 ### Milestone acceptance criteria
 
-Pre-registered. "Device" means a real iPhone or iPad on iOS 26, on the
-owner's hardware (Q4). CI cannot see ReplayKit, a hardware encoder's
+Pre-registered. "Device" means the owner's iPhone 17 Pro Max or iPad Pro
+on iOS 26 (OD14). CI cannot see ReplayKit, a hardware encoder's
 behaviour under thermal load or PiP. As on every native milestone
 (docs/19, docs/38, docs/54), the device criteria decide whether R65 works.
 
@@ -75,7 +77,9 @@ behaviour under thermal load or PiP. As on every native milestone
 | OD9 | **Shared Rust is used by path, and the build runs from the repo root**, as `gawk-admin` does with `gawk-server`. A semantic change to a shared desktop crate needs a `gawk-ios`-scoped commit in the same PR. |
 | OD10 | **iOS CI runs from the first chunk** on `macos-latest`: Rust cross-builds and tests, plus an unsigned `xcodebuild` with simulator tests. |
 | OD11 | **The broadcast carries app audio** (ReplayKit `audioApp` → Opus through the shared audio crate). Uplink transport is whatever the shared engine does, so R55's carriers arrive when R55 lands them (D12), with no iOS work. |
-| OD12 | **VP8/VP9 broadcasts play natively through a bundled libvpx**, so every broadcast plays in the app. **IO0 runs first, as a measuring spike.** |
+| OD12 | **VP8/VP9 broadcasts play natively through a bundled libvpx**, so every broadcast plays in the app. **IO0 runs first on devices, as a measuring spike.** |
+| OD13 | **Simulator first.** Everything is built and tested in the iOS Simulator before any device work (D26). |
+| OD14 | **Devices**: an iPhone 17 Pro Max and an iPad Pro. **Signing**: the owner's paid Apple Developer Program membership, enrolled when phase D starts; phase S needs no team. |
 
 ## 3. Alternatives considered and rejected
 
@@ -230,8 +234,8 @@ exactly as the macOS shell is above them (docs/54 §5).
 
 ### D8 — Rung: 1080p60, 500 ms GOP, 8 Mbps peak *(provisional)*
 
-- **Size**: ReplayKit delivers native panel pixels (1179 × 2556 on an
-  iPhone 15 Pro, more on an iPad Pro). Fit the upright frame into a
+- **Size**: ReplayKit delivers native panel pixels (≈ 1320 × 2868 on a
+  Pro Max iPhone, more on an iPad Pro; V-6 records the exact size). Fit the upright frame into a
   1920 × 1920 long-edge box with the shared fit rule (`capture::fit::fit_within`; aspect kept, never
   upscale, even dimensions). A portrait phone streams 886 × 1920; landscape
   1920 × 886.
@@ -409,7 +413,8 @@ be tested.
 
 The app observes the Darwin notification and re-reads. Nothing passes
 media, and the extension never waits on the app. **App Groups and Keychain
-sharing need a paid team** (Q1).
+sharing need a paid team** (OD14). In the Simulator they work without
+one, which is what phase S relies on.
 
 ### D18 — Starting and stopping a broadcast
 
@@ -514,6 +519,35 @@ stops video decode.
   for the facts a reader can't derive: the path dependency, the coupling
   rule, and that the extension owns the media path.
 
+### D26 — Simulator first: what phase S can prove, and what waits for a device
+
+| Runs in the iOS Simulator | Device only |
+|---|---|
+| The SwiftUI app, every screen and flow | **The Broadcast Upload Extension**: Apple doesn't run ReplayKit broadcast extensions in the Simulator, and `RPSystemBroadcastPickerView` does nothing there |
+| The Rust core (it's an `aarch64-apple-ios-sim` build, the same code) | **The ~50 MB extension memory limit**: Simulator processes are Mac processes and aren't held to device jetsam limits |
+| The viewer end to end: subscribe, reassembly, parity, libvpx, Opus, `AVSampleBufferDisplayLayer`, the synchronizer, the adaptive offset | **Thermals** and battery |
+| PiP and background audio, functionally | **Hardware encode behaviour**: VideoToolbox in the Simulator runs on the Mac's encoder, so its latency and rate control say nothing about the phone's (V-11) |
+| The broadcast pipeline *below* ReplayKit, fed by D27's synthetic source | ReplayKit's real buffers: orientation attachment, audio format, clocks (V-3, V-4, V-7) |
+| Rooms, links, server picker, telemetry, the App Group and Keychain plumbing | Glass-to-glass latency on the real path |
+| Network changes (Network Link Conditioner on the Mac) | Cellular, and Wi-Fi ↔ cellular handover |
+
+So phase S proves the code is correct and phase D proves it fits. The
+pre-registered memory, thermal and latency criteria (G2, G3, G8, §9.1) are
+judged on devices only. A Simulator number is never quoted as evidence for
+them.
+
+### D27 — A synthetic broadcast source for phase S
+
+The app gains a **debug-only** "Test broadcast" that runs `crates/broadcast`
+**in the app process**, fed by a generated source instead of ReplayKit: a
+moving test pattern with a frame counter and a clock, as `CVPixelBuffer`s
+with the ReplayKit attachments set (portrait, then rotations on a timer),
+plus a tone as `audioApp`-shaped buffers. Same `VideoSource`/`AudioSource`
+seams, same rotation, rung, encode and engine code as the extension.
+It's compiled out of release builds and never reachable by a user.
+The extension target is still built in phase S, so linking and
+App Group code are checked, but it first runs on a device.
+
 ## 5. Non-goals
 
 - **TestFlight and App Store distribution.** A follow-up milestone covers
@@ -574,21 +608,28 @@ our reason (D7). A full fleet or a refused secret says which, in the app.
 
 ## 9. Chunks and acceptance criteria
 
+Chunks run in two phases (OD13). **Phase S, Simulator**: IO1, IO4, IO5,
+IO6, IO3, IO7, and IO2's pipeline on D27's source, each accepted on its
+*Simulator* criteria below. **Phase D, devices**: IO0 first, then IO2's and
+IO5's device criteria, then IO8. IO0's verdict can revise D8 and D12, which
+then lands as a change to the already-built pipeline, not a redesign of
+phase S.
+
 | Chunk | Scope | Accepted when |
 |---|---|---|
-| **IO0** | **Spike (throwaway branch, never merged).** A minimal app and extension linking the engine and `vt.rs` with D4's gating hacked in; broadcast at 1080p60 with app audio to the fleet. Log peak `phys_footprint` every second, thermal state and dropped frames; photograph glass-to-glass. Probe `VTIsHardwareDecodeSupported(kCMVideoCodecType_VP9)` and record the `audioApp` ASBD (V-3) and buffer clocks (V-4). | §9.1's verdict and the V-items are recorded in §12 |
+| **IO0** (phase D, first) | **Spike (throwaway branch, never merged).** A minimal app and extension linking the engine and `vt.rs` with D4's gating hacked in; broadcast at 1080p60 with app audio to the fleet. Log peak `phys_footprint` every second, thermal state and dropped frames; photograph glass-to-glass. Probe `VTIsHardwareDecodeSupported(kCMVideoCodecType_VP9)` and record the `audioApp` ASBD (V-3) and buffer clocks (V-4). | §9.1's verdict and the V-items are recorded in §12 |
 | **IO1** | Scaffolding: D1–D4, D5's identity and origin, D24's CI, D25's component and conventions | CI is green on a PR that touches only a desktop crate; the desktop job's `cargo test` is unchanged with `self-update` on; the iOS host tests pass with it off; the simulator builds both targets |
-| **IO2** | The broadcast extension: D6–D12, D19 | G1 (without the app UI: settings seeded by hand), G2, G3, G4, G5 on a device; G6 on a device; D24's **publisher** integration test (relay restart through the iOS glue) green in CI |
-| **IO3** | The broadcaster UI: D17, D18, the server picker and secrets (D23), room attach (D21) | The code shows within 2 s of the extension's first frame; a non-default server with a secret works; an attach shows in the room's web view (G11's first half) |
+| **IO2** | The broadcast extension: D6–D12, D19, D27 | **Simulator**: D27's test broadcast plays in a desktop Chrome viewer, rotations included, and survives a relay restart. **Device**: G1 (without the app UI: settings seeded by hand), G2, G3, G4, G5 on a device; G6 on a device; D24's **publisher** integration test (relay restart through the iOS glue) green in CI |
+| **IO3** | The broadcaster UI: D17, D18, the server picker and secrets (D23), room attach (D21) | **Simulator** (through D27's source), then on a device: the code shows within 2 s of the extension's first frame; a non-default server with a secret works; an attach shows in the room's web view (G11's first half) |
 | **IO4** | The viewer core: D13, D14, D16; Rust tests on recorded H.264, VP9 and VP8 streams; D24's **viewer** integration test | Tests green in CI, the viewer integration test included; a `DecoderConfig` change mid-stream resets the decoder with no crash; parity recovery passes the restated vectors; the delta-loss rule is tested |
-| **IO5** | The native player: D15, D22 | G7, G8, G9, G10 on a device |
-| **IO6** | Joining and rooms in the viewer: D20, D21 | A `gawk://` link opens the right broadcast; `relay=` shows the strip; G11's second half |
+| **IO5** | The native player: D15, D22 | **Simulator**: G7 (all three codecs play), G9 (PiP and background audio work), G10 (outage via Network Link Conditioner). **Device**: G7–G10, G8's latency included |
+| **IO6** | Joining and rooms in the viewer: D20, D21 | In the Simulator: a `gawk://` link opens the right broadcast; `relay=` shows the strip; G11's second half |
 | **IO7** | Telemetry and metrics: D23's telemetry, D5's `app=ios` in `gawk-server`, the `gawk-ios` kind in `gawk-telemetry` | A test session appears in the telemetry dashboard; relay metrics label it `app="ios"` |
-| **IO8** | The owner's device pass: iPhone and iPad, broadcaster and viewer, H.264/VP9/VP8 sources, battery and thermal notes, D21's tile cap | G1–G12 recorded in §12 |
+| **IO8** | The owner's device pass: iPhone 17 Pro Max and iPad Pro, broadcaster and viewer, H.264/VP9/VP8 sources, battery and thermal notes, D21's tile cap | G1–G12 recorded in §12 |
 
 ### 9.1 IO0 pre-registered verdict
 
-On the owner's iPhone, broadcasting a 3D game at D8's rung for 30 minutes:
+On the iPhone 17 Pro Max, broadcasting a 3D game at D8's rung for 30 minutes:
 
 - **Pass**: peak extension footprint ≤ 40 MB (10 MB under the limit), no
   jetsam, glass-to-glass ≤ 250 ms to a desktop Chrome viewer, thermal state
@@ -622,15 +663,17 @@ is Fail. The Conditional re-measure is judged by Pass's criteria at the
 | V-8 | Footprint and thermal cost of four playing tiles on iPhone vs iPad | D21 |
 | V-9 | Does PiP from `AVSampleBufferDisplayLayer` survive a renderer flush (drop to live)? | D15, D22 |
 | V-10 | Does the relay check `-allowed-origins` on `/subscribe` too? | D5 |
+| V-11 | Does `vt.rs`'s low-latency, hardware-required session open in the Simulator? If not, D27 uses a Simulator-only encoder spec without `RequireHardwareAcceleratedVideoEncoder` (debug builds only) | D27 |
 
 ## 11. Open questions
 
+Q1 (signing team) and Q4 (devices) were answered on 2026-10-03 and became
+OD14.
+
 | # | Question |
 |---|---|
-| Q1 | Is the paid Apple Developer Program membership (the one R52 MB7's notarization needs) the team that signs iOS builds? App Groups and Keychain sharing need it, and free personal teams expire builds after 7 days. |
 | Q2 | XcodeGen (D2), or a committed `.xcodeproj`, or Tuist? |
 | Q3 | Bundle ID prefix and the app's display name (e.g. `fi.ioio.gawk`, "gawk"). |
-| Q4 | Which devices are available for IO0 and IO8 (iPhone model, iPad model)? D8's rung and D21's tile cap depend on them. |
 
 ## 12. Deviations and field findings
 
