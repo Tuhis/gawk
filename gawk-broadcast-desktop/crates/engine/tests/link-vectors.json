@@ -1,0 +1,716 @@
+{
+  "comment": "R66 gawk:// link vectors (docs/68 D1, D2). Each vector is an input and either the parsed link, the dropped parameters and both canonical forms, or the error. Restated, never imported, by gawk-app (R67 HO1) and the iOS app (R65).",
+  "appUrl": "https://gawk.ioio.fi",
+  "vectors": [
+    {
+      "name": "basic: room and nickname",
+      "input": "gawk://broadcast?room=lan-party&nick=Juho",
+      "link": {
+        "kind": "broadcast",
+        "room": "lan-party",
+        "nick": "Juho",
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?room=lan-party&nick=Juho",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=lan-party&nick=Juho"
+    },
+    {
+      "name": "basic: a bare broadcast link",
+      "input": "gawk://broadcast",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast",
+      "https": "https://gawk.ioio.fi/#/broadcast"
+    },
+    {
+      "name": "basic: all three, canonical order",
+      "input": "gawk://broadcast?relay=https%3A%2F%2Frelay.friend.example&nick=a&room=abc",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": "a",
+        "relay": "https://relay.friend.example"
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?room=abc&nick=a&relay=https%3A%2F%2Frelay.friend.example",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc&nick=a&relay=https%3A%2F%2Frelay.friend.example"
+    },
+    {
+      "name": "basic: surrounding whitespace and a fragment are ignored",
+      "input": "  gawk://room/abc#top  ",
+      "link": {
+        "kind": "room",
+        "code": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://room/abc",
+      "https": "https://gawk.ioio.fi/#/room/abc"
+    },
+    {
+      "name": "basic: a room link with nickname and server",
+      "input": "gawk://room/lan-party?nick=Juho&relay=https%3A%2F%2Frelay.friend.example",
+      "link": {
+        "kind": "room",
+        "code": "lan-party",
+        "nick": "Juho",
+        "relay": "https://relay.friend.example"
+      },
+      "dropped": [],
+      "gawk": "gawk://room/lan-party?nick=Juho&relay=https%3A%2F%2Frelay.friend.example",
+      "https": "https://gawk.ioio.fi/#/room/lan-party?nick=Juho&relay=https%3A%2F%2Frelay.friend.example"
+    },
+    {
+      "name": "case/accept: scheme and path in any case, room keeps its case",
+      "input": "GAWK://Broadcast/?room=Lan-Party",
+      "link": {
+        "kind": "broadcast",
+        "room": "Lan-Party",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?room=Lan-Party",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=Lan-Party"
+    },
+    {
+      "name": "case/accept: a watch code is upper-cased",
+      "input": "gawk://WATCH/abc234",
+      "link": {
+        "kind": "watch",
+        "id": "ABC234",
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://watch/ABC234",
+      "https": "https://gawk.ioio.fi/#/view/ABC234"
+    },
+    {
+      "name": "case/reject: parameter names are case-sensitive",
+      "input": "gawk://broadcast?Room=abc&NICK=x",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "Room",
+          "why": "unknown"
+        },
+        {
+          "param": "NICK",
+          "why": "unknown"
+        }
+      ],
+      "gawk": "gawk://broadcast",
+      "https": "https://gawk.ioio.fi/#/broadcast"
+    },
+    {
+      "name": "alphabet/accept: a watch link on another server",
+      "input": "gawk://watch/K7XQ2M?relay=https%3A%2F%2Frelay.friend.example",
+      "link": {
+        "kind": "watch",
+        "id": "K7XQ2M",
+        "relay": "https://relay.friend.example"
+      },
+      "dropped": [],
+      "gawk": "gawk://watch/K7XQ2M?relay=https%3A%2F%2Frelay.friend.example",
+      "https": "https://gawk.ioio.fi/#/view/K7XQ2M?relay=https%3A%2F%2Frelay.friend.example"
+    },
+    {
+      "name": "alphabet/accept: a trailing slash",
+      "input": "gawk://watch/K7XQ2M/",
+      "link": {
+        "kind": "watch",
+        "id": "K7XQ2M",
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://watch/K7XQ2M",
+      "https": "https://gawk.ioio.fi/#/view/K7XQ2M"
+    },
+    {
+      "name": "alphabet/reject: O is not in the alphabet",
+      "input": "gawk://watch/ABC23O",
+      "error": "bad-id"
+    },
+    {
+      "name": "alphabet/reject: 0 is not in the alphabet",
+      "input": "gawk://watch/ABC230",
+      "error": "bad-id"
+    },
+    {
+      "name": "alphabet/reject: five characters",
+      "input": "gawk://watch/ABC23",
+      "error": "bad-id"
+    },
+    {
+      "name": "alphabet/reject: seven characters",
+      "input": "gawk://watch/ABC2345",
+      "error": "bad-id"
+    },
+    {
+      "name": "alphabet/reject: no code",
+      "input": "gawk://watch/",
+      "error": "bad-id"
+    },
+    {
+      "name": "alphabet/reject: an extra segment",
+      "input": "gawk://watch/ABC234/x",
+      "error": "bad-id"
+    },
+    {
+      "name": "slug/accept: three characters",
+      "input": "gawk://room/abc",
+      "link": {
+        "kind": "room",
+        "code": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://room/abc",
+      "https": "https://gawk.ioio.fi/#/room/abc"
+    },
+    {
+      "name": "slug/accept: thirty-two characters",
+      "input": "gawk://room/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "link": {
+        "kind": "room",
+        "code": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://room/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "https": "https://gawk.ioio.fi/#/room/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "slug/accept: a dynamic room's code keeps its case",
+      "input": "gawk://room/k7xq2m",
+      "link": {
+        "kind": "room",
+        "code": "k7xq2m",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://room/k7xq2m",
+      "https": "https://gawk.ioio.fi/#/room/k7xq2m"
+    },
+    {
+      "name": "slug/reject: two characters",
+      "input": "gawk://room/ab",
+      "error": "bad-code"
+    },
+    {
+      "name": "slug/reject: thirty-three characters",
+      "input": "gawk://room/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "error": "bad-code"
+    },
+    {
+      "name": "slug/reject: an underscore",
+      "input": "gawk://room/lan_party",
+      "error": "bad-code"
+    },
+    {
+      "name": "slug/reject: a percent escape",
+      "input": "gawk://room/lan%2Dparty",
+      "error": "bad-code"
+    },
+    {
+      "name": "slug/reject: no code",
+      "input": "gawk://room",
+      "error": "bad-code"
+    },
+    {
+      "name": "slug/reject: an extra segment",
+      "input": "gawk://room/abc/def",
+      "error": "bad-code"
+    },
+    {
+      "name": "slug/reject: a bad room parameter drops only that parameter",
+      "input": "gawk://broadcast?room=ab&nick=x",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": "x",
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "room",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://broadcast?nick=x",
+      "https": "https://gawk.ioio.fi/#/broadcast?nick=x"
+    },
+    {
+      "name": "nick/accept: whitespace collapsed and trimmed",
+      "input": "gawk://broadcast?nick=%20%20Juho%20%20%09K%20",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": "Juho K",
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?nick=Juho%20K",
+      "https": "https://gawk.ioio.fi/#/broadcast?nick=Juho%20K"
+    },
+    {
+      "name": "nick/accept: plus is a space",
+      "input": "gawk://room/abc?nick=Juho+K",
+      "link": {
+        "kind": "room",
+        "code": "abc",
+        "nick": "Juho K",
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://room/abc?nick=Juho%20K",
+      "https": "https://gawk.ioio.fi/#/room/abc?nick=Juho%20K"
+    },
+    {
+      "name": "nick/accept: non-ASCII",
+      "input": "gawk://broadcast?nick=J%C3%BCrgen",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": "Jürgen",
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?nick=J%C3%BCrgen",
+      "https": "https://gawk.ioio.fi/#/broadcast?nick=J%C3%BCrgen"
+    },
+    {
+      "name": "nick/accept: cut to 32 bytes on a character boundary",
+      "input": "gawk://broadcast?nick=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx%C3%A9",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?nick=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "https": "https://gawk.ioio.fi/#/broadcast?nick=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "name": "nick/accept: reserved characters encoded like encodeURIComponent",
+      "input": "gawk://broadcast?nick=O'Neil%20(a%26b%3Dc)!%2B",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": "O'Neil (a&b=c)!+",
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?nick=O'Neil%20(a%26b%3Dc)!%2B",
+      "https": "https://gawk.ioio.fi/#/broadcast?nick=O'Neil%20(a%26b%3Dc)!%2B"
+    },
+    {
+      "name": "nick/reject: blank counts as absent",
+      "input": "gawk://broadcast?nick=%20%20&room=abc",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?room=abc",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc"
+    },
+    {
+      "name": "nick/reject: bytes that aren't UTF-8",
+      "input": "gawk://broadcast?nick=%FF",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "nick",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://broadcast",
+      "https": "https://gawk.ioio.fi/#/broadcast"
+    },
+    {
+      "name": "nick/reject: a bad escape",
+      "input": "gawk://broadcast?nick=%G1",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "nick",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://broadcast",
+      "https": "https://gawk.ioio.fi/#/broadcast"
+    },
+    {
+      "name": "relay/accept: reduced to its origin",
+      "input": "gawk://broadcast?relay=https%3A%2F%2FRelay.Friend.example%3A4433%2F",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": null,
+        "relay": "https://relay.friend.example:4433"
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?relay=https%3A%2F%2Frelay.friend.example%3A4433",
+      "https": "https://gawk.ioio.fi/#/broadcast?relay=https%3A%2F%2Frelay.friend.example%3A4433"
+    },
+    {
+      "name": "relay/accept: the default port is elided",
+      "input": "gawk://broadcast?relay=https%3A%2F%2Frelay.friend.example%3A443",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": null,
+        "relay": "https://relay.friend.example"
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?relay=https%3A%2F%2Frelay.friend.example",
+      "https": "https://gawk.ioio.fi/#/broadcast?relay=https%3A%2F%2Frelay.friend.example"
+    },
+    {
+      "name": "relay/accept: unescaped",
+      "input": "gawk://broadcast?room=abc&relay=https://relay.friend.example",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": "https://relay.friend.example"
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?room=abc&relay=https%3A%2F%2Frelay.friend.example",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc&relay=https%3A%2F%2Frelay.friend.example"
+    },
+    {
+      "name": "relay/accept: the default fleet is no relay at all",
+      "input": "gawk://broadcast?room=abc&relay=https%3A%2F%2Fapi.gawk.ioio.fi%3A4433",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [],
+      "gawk": "gawk://broadcast?room=abc",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc"
+    },
+    {
+      "name": "relay/reject: http",
+      "input": "gawk://broadcast?room=abc&relay=http%3A%2F%2Frelay.friend.example",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "relay",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://broadcast?room=abc",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc"
+    },
+    {
+      "name": "relay/reject: credentials",
+      "input": "gawk://broadcast?room=abc&relay=https%3A%2F%2Fu%3Ap%40relay.friend.example",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "relay",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://broadcast?room=abc",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc"
+    },
+    {
+      "name": "relay/reject: a path",
+      "input": "gawk://broadcast?room=abc&relay=https%3A%2F%2Frelay.friend.example%2Fx",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "relay",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://broadcast?room=abc",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc"
+    },
+    {
+      "name": "relay/reject: a query",
+      "input": "gawk://broadcast?room=abc&relay=https%3A%2F%2Frelay.friend.example%2F%3Fa%3D1",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "relay",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://broadcast?room=abc",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc"
+    },
+    {
+      "name": "relay/reject: not a URL",
+      "input": "gawk://broadcast?room=abc&relay=relay.friend.example",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "relay",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://broadcast?room=abc",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc"
+    },
+    {
+      "name": "secret/accept: room and nickname survive a dropped grant",
+      "input": "gawk://broadcast?room=lan-party&rt=a%3Ak3y&nick=Juho",
+      "link": {
+        "kind": "broadcast",
+        "room": "lan-party",
+        "nick": "Juho",
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "rt",
+          "why": "secret"
+        }
+      ],
+      "gawk": "gawk://broadcast?room=lan-party&nick=Juho",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=lan-party&nick=Juho"
+    },
+    {
+      "name": "secret/reject: secret",
+      "input": "gawk://room/abc?secret=s3cret",
+      "link": {
+        "kind": "room",
+        "code": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "secret",
+          "why": "secret"
+        }
+      ],
+      "gawk": "gawk://room/abc",
+      "https": "https://gawk.ioio.fi/#/room/abc"
+    },
+    {
+      "name": "secret/reject: credential-shaped names in any case",
+      "input": "gawk://broadcast?publishSecret=x&RT=y&token=z&attachKey=k&password=p",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "publishSecret",
+          "why": "secret"
+        },
+        {
+          "param": "RT",
+          "why": "secret"
+        },
+        {
+          "param": "token",
+          "why": "secret"
+        },
+        {
+          "param": "attachKey",
+          "why": "secret"
+        },
+        {
+          "param": "password",
+          "why": "secret"
+        }
+      ],
+      "gawk": "gawk://broadcast",
+      "https": "https://gawk.ioio.fi/#/broadcast"
+    },
+    {
+      "name": "secret/reject: on a watch link",
+      "input": "gawk://watch/ABC234?rt=c%3A00",
+      "link": {
+        "kind": "watch",
+        "id": "ABC234",
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "rt",
+          "why": "secret"
+        }
+      ],
+      "gawk": "gawk://watch/ABC234",
+      "https": "https://gawk.ioio.fi/#/view/ABC234"
+    },
+    {
+      "name": "unknown/accept: unknown parameters are dropped and the link opens",
+      "input": "gawk://broadcast?room=abc&res=1080&fps=60",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "res",
+          "why": "unknown"
+        },
+        {
+          "param": "fps",
+          "why": "unknown"
+        }
+      ],
+      "gawk": "gawk://broadcast?room=abc",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc"
+    },
+    {
+      "name": "unknown/reject: a parameter on the wrong path",
+      "input": "gawk://watch/ABC234?room=abc&nick=x",
+      "link": {
+        "kind": "watch",
+        "id": "ABC234",
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "room",
+          "why": "unknown"
+        },
+        {
+          "param": "nick",
+          "why": "unknown"
+        }
+      ],
+      "gawk": "gawk://watch/ABC234",
+      "https": "https://gawk.ioio.fi/#/view/ABC234"
+    },
+    {
+      "name": "unknown/reject: a repeated parameter keeps the first",
+      "input": "gawk://broadcast?room=abc&room=def",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "room",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://broadcast?room=abc",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc"
+    },
+    {
+      "name": "length/accept: 2,048 bytes",
+      "input": "gawk://broadcast?pad=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "link": {
+        "kind": "broadcast",
+        "room": null,
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "pad",
+          "why": "unknown"
+        }
+      ],
+      "gawk": "gawk://broadcast",
+      "https": "https://gawk.ioio.fi/#/broadcast"
+    },
+    {
+      "name": "length/reject: 2,049 bytes",
+      "input": "gawk://broadcast?pad=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "error": "too-long"
+    },
+    {
+      "name": "path/reject: an unknown path",
+      "input": "gawk://settings",
+      "error": "unknown-path"
+    },
+    {
+      "name": "path/reject: broadcast takes no segment",
+      "input": "gawk://broadcast/abc",
+      "error": "unknown-path"
+    },
+    {
+      "name": "path/reject: no slashes",
+      "input": "gawk:broadcast",
+      "error": "not-gawk"
+    },
+    {
+      "name": "path/reject: a web link",
+      "input": "https://gawk.ioio.fi/#/broadcast?room=abc",
+      "error": "not-gawk"
+    },
+    {
+      "name": "path/reject: the Origin label",
+      "input": "gawk-broadcast://windows",
+      "error": "not-gawk"
+    },
+    {
+      "name": "path/reject: empty",
+      "input": "",
+      "error": "not-gawk"
+    }
+  ]
+}

@@ -9,7 +9,8 @@
 # It proves, in order: lintian finds no error; apt resolves every Depends
 # from the stock archive; the installed binary resolves every shared library,
 # linked or dlopen()ed; the plugin files behind every GStreamer element the
-# app creates are present; the launcher entry validates and names an icon that is installed; and a
+# app creates are present; the launcher entry validates, names an icon that
+# is installed and handles gawk:// links; and a
 # purge removes every file the package installed.
 set -euo pipefail
 
@@ -18,7 +19,8 @@ APP_ID=fi.ioio.gawk.broadcast
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends lintian desktop-file-utils >/dev/null
+# xdg-utils for G9's handler query (R66 docs/68 D11); not a dependency.
+apt-get install -y -qq --no-install-recommends lintian desktop-file-utils xdg-utils >/dev/null
 
 echo "=== lintian"
 # Errors fail; warnings and info are printed for review (no manual page, for
@@ -84,7 +86,13 @@ done
 echo "=== launcher entry and icon"
 entry=/usr/share/applications/$APP_ID.desktop
 desktop-file-validate "$entry"
-grep -qx 'Exec=gawk-broadcast-linux' "$entry"
+grep -qx 'Exec=gawk-broadcast-linux %u' "$entry"
+grep -qx 'MimeType=x-scheme-handler/gawk;' "$entry"
+# G9: the package registers gawk:// through desktop-file-utils' trigger
+# alone (it sets no default), and xdg-mime resolves it to our entry.
+handler=$(xdg-mime query default x-scheme-handler/gawk)
+[ "$handler" = "$APP_ID.desktop" ] || {
+  echo "::error::xdg-mime names '$handler' as the gawk:// handler, not $APP_ID.desktop"; exit 1; }
 grep -qx "Icon=$APP_ID" "$entry"
 test -f /usr/share/icons/hicolor/scalable/apps/$APP_ID.svg
 test -f /usr/share/icons/hicolor/256x256/apps/$APP_ID.png

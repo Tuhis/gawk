@@ -1265,6 +1265,36 @@ Add to it when a new gotcha lands in `docs/`.
   builds, the tests among them, and leaves release builds without it.
   ([docs/66](66-desktop-scrolling-and-window-fit.md) WF1)
 
+**`gawk://` links and single instance (R66)**
+
+- **`cmd /c start "" <url>` cuts a URL at the first `&`.** cmd reads `&` as
+  a command separator, and Rust only quotes an argument that has spaces in
+  it. A one-parameter room link survived that; a `gawk://` link's page
+  (`#/room/<code>?nick=…&relay=…`) lost everything after `nick`. The
+  desktop apps open pages with `rundll32 url.dll,FileProtocolHandler`,
+  which passes the URL to the shell as it is.
+  ([docs/68](68-desktop-gawk-links.md) §12)
+- **winit 0.30 can't raise an open window on Wayland.** `focus_window()`
+  does nothing there, and an xdg-activation token is applied only when a
+  window is created. So the token a second launch forwards can't focus the
+  running window. Read in the winit 0.30.13 source. The Linux app shows a
+  notification instead. ([docs/68](68-desktop-gawk-links.md) §12, V-2)
+- **AppKit installs its own `GURL` Apple Event handler during
+  `finishLaunching`**, and that replaces any handler installed before it.
+  winit 0.30 owns the app delegate and doesn't forward
+  `application:openURLs:`. Install the handler from
+  `NSApplicationWillFinishLaunchingNotification`.
+  ([docs/68](68-desktop-gawk-links.md) D10)
+- **zbus reports a name that's already taken as `Err(Error::NameTaken)`**,
+  not as `Ok(RequestNameReply::Exists)`, when it's requested with
+  `DO_NOT_QUEUE`. A claim that only matches `Exists` turns a lost race into
+  an error. ([docs/68](68-desktop-gawk-links.md) §12)
+- **`CreateMutexW` succeeds on a mutex that already exists**, and returns
+  a handle with `ERROR_ALREADY_EXISTS` set. A claim that keeps that handle
+  holds the mutex open after the owner exits, so an update relaunch that
+  retries the claim never wins it. Close the handle on `ERROR_ALREADY_EXISTS`.
+  ([docs/68](68-desktop-gawk-links.md) D7)
+
 **Single-application audio on Linux (R35)**
 
 - **`application.process.binary` is not in PipeWire's registry global

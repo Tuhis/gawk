@@ -10,6 +10,8 @@
 #[cfg(target_os = "linux")]
 mod audio;
 #[cfg(target_os = "linux")]
+mod instance;
+#[cfg(target_os = "linux")]
 mod notify;
 #[cfg(target_os = "linux")]
 mod pipeline;
@@ -35,5 +37,12 @@ pub fn run() {
     gawk_engine::defaults::set_this(&gawk_engine::defaults::LINUX);
     // The commit build.rs stamped, for the version badge (crates/ui/build_rev.rs).
     gawk_ui::version::set_build_rev(option_env!("GAWK_BUILD_REV"));
-    gawk_ui::shell::run(Box::new(platform::Linux::new()), platform::wire);
+    // Single instance (R66, docs/68 D8): a second launch hands its link,
+    // or just a raise, to the running app over the session bus and exits
+    // here. Lossy: a non-UTF-8 argument is never a link anyway.
+    let args: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let launch = gawk_ui::instance::launch(&args, Box::new(instance::DBus::session()));
+    gawk_ui::shell::run(Box::new(platform::Linux::new()), platform::wire, launch);
 }

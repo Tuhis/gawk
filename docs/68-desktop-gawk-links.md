@@ -1,7 +1,8 @@
 # R66 — `gawk://` links in the desktop broadcaster (docs/68)
 
 **Status**: proposed 2026-10-03. Owner decisions OD1–OD4 (§2) were taken
-the same day. Chunks **LH1–LH6** (§9) are not started. Status lives in
+the same day. **LH1–LH5 were implemented on 2026-10-03.** LH6, the owner's
+pass on each OS, is open. §12 records the deviations. Status lives in
 [`ROADMAP.md`](../ROADMAP.md).
 
 **Relationship to earlier work**
@@ -485,4 +486,103 @@ None.
 
 ## 12. Deviations and field findings
 
-None yet.
+### Implementation, 2026-10-03 (LH1–LH5)
+
+**Deviations from §4**
+
+- **D4, a live link for another server joins nothing.** D4's table applies
+  `room` and `relay` independently, so a live link for `room=X` on another
+  server would have offered to join `X` on the broadcast's own server. A
+  room code names a room on one relay; the same code elsewhere can be
+  someone else's room. The app shows "This link is for room X on <host>.
+  End the broadcast to switch server." and offers nothing to join. A live
+  link for the broadcast's own server asks first, as D4 says. If the
+  broadcast is already in that room, only a new nickname is asked about.
+- **D4, Idle "goes into recents".** `choose_room` makes the room the
+  pending one, as it does for a room chosen in the sheet. The room enters
+  "Your rooms" when a join succeeds, like any other room.
+- **D6, the inbox.** Later launches arrive on a channel of their own
+  (`instance::Launch::inbox`), not on `msg_tx`. The same 250 ms pump drains
+  it on the UI thread, so nothing else changes. `msg_tx` doesn't exist
+  until the shell does, and the endpoint has to be served before that.
+- **D7, `--relaunched-from <pid>`.** The new build retries the claim every
+  100 ms for up to 10 s instead of waiting on the PID. The old process lets
+  go of the endpoint exactly when it exits, so the condition is the same,
+  and no platform needs a process-wait. The PID is only for the log.
+- **D3 on macOS, a cold viewer link.** The launch's own link arrives as an
+  Apple Event after the event loop starts, not in argv (D10). A viewer link
+  that arrives first, within 3 s of launch, opens the browser and the app
+  quits (`Launch::link_in_inbox`). The window shows for a moment before it
+  closes. G6's "no app window behind" holds.
+- **D8 on Linux.** The primary's answer is the D-Bus method reply, not an
+  `ok` line. zbus reports a name that's taken as `Err(NameTaken)`, which
+  the claim reads as "another process is primary". A call times out after
+  5 s, and the launch then runs on its own.
+- **D8 on Windows.** "Grants only the current user" is the DACL
+  `D:P(A;;GA;;;<SID>)`. The first pipe instance is created with
+  `FILE_FLAG_FIRST_PIPE_INSTANCE`, and a primary that doesn't answer
+  within 3 s makes the second launch run on its own. If the endpoint can't
+  be set up, the reason reaches `debug.log` through `Launch::note`: a
+  windowed EXE has no stderr.
+- **D9, where registration runs.** From `Platform::launch_log`, once the
+  debug log is up, rather than straight after D8 in `main`. Every launch
+  that didn't hand off reaches it, including one running without single
+  instance.
+- **D10.** The Apple Event selectors are sent with `msg_send!` and plain
+  `u32` four-char codes. objc2-foundation types them only behind its
+  `objc2-core-services` feature, which would add a framework crate for two
+  integer typedefs. One class both observes the notification and handles
+  the event.
+- **LH5's CI check** also sends a warm link after the cold one and checks
+  that exactly one `gawk-broadcast-macos` process is running.
+
+**Found while building it**
+
+- **Windows opened pages through `cmd /c start`**, which cuts a URL at its
+  first `&`. "Open room view" links carry one parameter and survived; a
+  viewer link's page (`#/room/<code>?nick=…&relay=…`) didn't. The shell
+  now uses `rundll32 url.dll,FileProtocolHandler` (`docs/gotchas.md`).
+- **V-2, answered from the source.** winit 0.30.13's `focus_window()` does
+  nothing on Wayland, and it applies an xdg-activation token only when it
+  creates a window. The forwarded `XDG_ACTIVATION_TOKEN` therefore can't
+  raise the running window. As §8 planned, on Wayland a second launch or a
+  link shows a notification ("gawk broadcast is already open"). X11 still
+  focuses the window. A real raise would need our own
+  `xdg_activation_v1.activate` call on winit's Wayland display. LH6 checks
+  what GNOME and KDE actually do.
+
+**Verified so far**
+
+- In the `ubuntu:24.04` container: fmt and workspace clippy are clean.
+  The engine, `gawk-ui`, wire, app-linux (including three single-instance
+  tests on a private `dbus-daemon`) and app-windows host tests pass. The
+  desktop-entry check, with a path holding `&`, quotes, `$` and `\`,
+  passed in a scratch `ubuntu:24.04`. G9's `xdg-mime query default` named
+  our entry in fresh `ubuntu:24.04` and `debian:trixie`.
+- The `cfg(windows)` and macOS code was type-checked only in stub crates
+  (clippy for `x86_64-pc-windows-msvc` and `aarch64-apple-darwin` against
+  the locked `windows` and objc2 versions). The PR's `build` and `macos`
+  jobs are its first full compile. Both were green on #452.
+- **V-1, first answer (CI, `macos-latest`, PR #452).** The handler was
+  installed from `WillFinishLaunching`. A cold `open 'gawk://…'` and a
+  warm one each produced `link event received`, and one process remained.
+- **Review of #452.** A launch link over about 4 KiB failed the handoff
+  every time, because the message cap is 4,096 bytes. The launch then ran
+  as a second instance. `Request::from_args` now cuts such a link just
+  past the parser's 2,048-byte cap, so it always fits one message and the
+  primary still says it's too long.
+- **Review of #452: the resume identity gets D5a's binding too.** After a
+  crash, the "resume?" offer leaves the shell Idle. A link could then
+  switch servers, and Resume would present the old broadcast's ID and
+  resume token to the new relay. That relay's operator could then
+  supersede the broadcast on its own server (close 4004). Two layers now
+  prevent it:
+  - `lastBroadcastServer` records the server the identity was minted on,
+    stamped at load for older configs. `Config::resume_identity` presents
+    the identity only to that server, which also covers a manual switch in
+    Settings. A mismatch starts a new broadcast.
+  - A link that arrives while the offer is up follows the Paused rules of
+    D4: it asks before changing the room Resume rejoins, and it never
+    switches the server.
+
+Open: LH6, with V-1 on a real Mac, V-3 and V-4.

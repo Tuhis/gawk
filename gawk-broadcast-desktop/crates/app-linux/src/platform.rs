@@ -514,9 +514,49 @@ impl Platform for Linux {
         })
     }
 
+    /// A second launch or a link (R66, docs/68 D6, D8). On X11 winit
+    /// focuses the window (`_NET_ACTIVE_WINDOW`). On Wayland it can't: winit
+    /// 0.30's `focus_window` is a no-op there, and an xdg-activation token
+    /// is applied only when a window is created, never to one that exists
+    /// (V-2). So on Wayland the docs/68 §8 fallback says where the launch
+    /// went, with a notification.
+    fn raise_window(&mut self, ui: &MainWindow, activation: Option<String>) {
+        let _ = ui.show();
+        let wayland = ui
+            .window()
+            .with_winit_window(|w| {
+                w.set_minimized(false);
+                w.focus_window();
+                is_wayland(w)
+            })
+            .unwrap_or(false);
+        if wayland {
+            log::info!(
+                "raise on Wayland: winit cannot apply an activation token to an open window ({})",
+                if activation.is_some() {
+                    "one was passed"
+                } else {
+                    "none was passed"
+                }
+            );
+            crate::notify::notify(
+                "gawk broadcast is already open",
+                "Your link or launch went to the open window.",
+                false,
+            );
+        }
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+}
+
+/// True when winit runs this window on Wayland rather than X11.
+fn is_wayland(w: &slint::winit_030::winit::window::Window) -> bool {
+    use slint::winit_030::winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    w.display_handle()
+        .is_ok_and(|h| matches!(h.as_raw(), RawDisplayHandle::Wayland(_)))
 }
 
 /// What window fit allows for the desktop's panels and the window's title

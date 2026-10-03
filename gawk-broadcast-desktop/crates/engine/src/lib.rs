@@ -15,6 +15,7 @@ pub mod config;
 pub mod dispatch;
 pub mod gate;
 pub mod install;
+pub mod link;
 pub mod lossnotice;
 pub mod media;
 pub mod probe;
@@ -192,8 +193,18 @@ pub struct RoomInput {
 }
 
 /// Reads the room field: a bare code or slug, or a room link with its
-/// grant (docs/60 D8). `None` for an empty or unusable input.
+/// grant (docs/60 D8), or a native `gawk://room/<code>` or
+/// `gawk://broadcast?room=<code>` link (docs/68 D2), which never carries a
+/// grant. `None` for an empty or unusable input.
 pub fn parse_room_input(input: &str) -> Option<RoomInput> {
+    if link::is_gawk_link(input) {
+        let code = match link::parse(input).ok()?.link {
+            link::Link::Room { code, .. } => code,
+            link::Link::Broadcast { room, .. } => room?,
+            link::Link::Watch { .. } => return None,
+        };
+        return Some(RoomInput { code, grant: None });
+    }
     let code = parse_room_code(input)?;
     let grant = input
         .trim()
@@ -335,6 +346,24 @@ mod tests {
             })
         );
         assert_eq!(parse_room_input("not a code"), None);
+    }
+
+    // docs/68 D2: a pasted native link works like a pasted web link, and
+    // never brings a grant with it.
+    #[test]
+    fn room_input_reads_a_pasted_gawk_link() {
+        let lan = Some(RoomInput {
+            code: "lan-party".into(),
+            grant: None,
+        });
+        assert_eq!(parse_room_input(" gawk://room/lan-party?nick=Juho "), lan);
+        assert_eq!(
+            parse_room_input("GAWK://broadcast?room=lan-party&rt=a%3Ak3y"),
+            lan
+        );
+        assert_eq!(parse_room_input("gawk://broadcast?nick=Juho"), None);
+        assert_eq!(parse_room_input("gawk://watch/ABC234"), None);
+        assert_eq!(parse_room_input("gawk://room/ab"), None);
     }
 
     #[test]

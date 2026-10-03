@@ -16,6 +16,7 @@ slint::include_modules!();
 pub(crate) mod debuglog;
 pub(crate) mod diagnostics;
 pub mod fit;
+pub mod instance;
 #[cfg(test)]
 mod layout_tests;
 pub mod messages;

@@ -8,7 +8,7 @@
 # app's entry in place. By hand, for a path without spaces or quotes, it is:
 #
 #   cp -r share/applications share/icons ~/.local/share/
-#   sed -i "s|^Exec=.*|Exec=$PWD/gawk-broadcast-linux|" \
+#   sed -i "s|^Exec=.*|Exec=$PWD/gawk-broadcast-linux %u|" \
 #     ~/.local/share/applications/fi.ioio.gawk.broadcast.desktop
 #
 # The script handles the desktop entry's escaping rules for any path.
@@ -84,7 +84,9 @@ mkdir -p "$apps"
 # re-escaped. Verified against desktop-file-validate and a real GLib
 # launch in the PR #328 review.
 quoted=$(printf '%s' "$gui" | sed -e 's/\\/\\\\\\\\/g' -e 's/["`$]/\\\\&/g')
-{ grep -v '^Exec=' "$entry"; printf 'Exec="%s"\n' "$quoted"; } > "$apps/$APP_ID.desktop"
+# ` %u` after the quoted path: the launcher passes a gawk:// link there
+# (R66 docs/68 D11), and nothing on a plain launch.
+{ grep -v '^Exec=' "$entry"; printf 'Exec="%s" %%u\n' "$quoted"; } > "$apps/$APP_ID.desktop"
 chmod 644 "$apps/$APP_ID.desktop"
 
 n=0
@@ -98,6 +100,11 @@ done
 [ "$n" -gt 0 ] || { echo "no icons found under $share/icons/hicolor" >&2; exit 1; }
 
 refresh
+# Make this entry the gawk:// handler (docs/68 D11). Best-effort, like the
+# cache refreshes: with one handler installed the desktop finds it anyway.
+# --uninstall leaves mimeapps.list alone: with the entry gone the
+# association is dead, and editing the user's own file isn't worth the risk.
+command -v xdg-mime >/dev/null 2>&1 && xdg-mime default "$APP_ID.desktop" x-scheme-handler/gawk 2>/dev/null || true
 echo "installed the $APP_ID launcher entry ($n icon files) into $data"
 # printf, not echo: dash's echo interprets backslash escapes in the path.
 printf 'Exec: %s\n' "$gui"

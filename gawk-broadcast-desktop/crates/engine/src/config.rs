@@ -68,6 +68,9 @@ pub struct RecentRoom {
     /// The static room's attach key, when it needed one — a credential
     /// (DPAPI-wrapped on Windows, like `roomAttachSecret`).
     pub attach_secret: String,
+    /// The server the attach key was stored for, as [`server_key`] (R66,
+    /// docs/68 D5a): the key is only ever presented to that server.
+    pub server: String,
 }
 
 /// How many rooms "Your rooms" keeps. Saved rooms and the room just joined
@@ -89,6 +92,9 @@ pub struct Config {
     pub last_broadcast_id: String,
     /// Hex; a credential like the secret.
     pub last_resume_token: String,
+    /// The server `lastBroadcastId` and `lastResumeToken` were minted on, as
+    /// [`server_key`]: a resume presents them there only (review of #452).
+    pub last_broadcast_server: String,
     pub last_good_encoder: String,
     pub disable_audio: bool,
     /// "app" or "screen" — the Windows-only capture mode (docs/38 D6).
@@ -118,6 +124,10 @@ pub struct Config {
     /// carried one — a credential (DPAPI-wrapped on Windows, like the attach
     /// key). `room` itself only ever holds the code.
     pub room_creator_token: String,
+    /// The server `roomAttachSecret` and `roomCreatorToken` were stored
+    /// for, as [`server_key`] (R66, docs/68 D5a). They are presented to that
+    /// server only; blank with no credentials.
+    pub room_server: String,
     /// "Your rooms" (docs/60 D8), see [`Config::remember_room`].
     pub recent_rooms: Vec<RecentRoom>,
     /// Set while a broadcast is live, cleared when it ends inside the app:
@@ -162,12 +172,14 @@ pub struct Config {
 }
 
 impl Config {
-    /// Records a room join in "Your rooms": moves it to the front with the
-    /// time, keeps its saved star, and stores the attach key when one was
-    /// used (an empty key keeps the one on file). Codes compare
-    /// case-insensitively, as the relay joins them. Beyond
+    /// Records a room join on `server` (a [`server_key`]) in "Your rooms":
+    /// moves it to the front with the time, keeps its saved star, and stores
+    /// the attach key when one was used. An empty key keeps the one on file
+    /// when it was stored for the same server; one stored for another server
+    /// is dropped, since it may never reach this one (docs/68 D5a). Codes
+    /// compare case-insensitively, as the relay joins them. Beyond
     /// [`MAX_RECENT_ROOMS`], the oldest unsaved rooms go.
-    pub fn remember_room(&mut self, code: &str, attach_secret: &str, now: u64) {
+    pub fn remember_room(&mut self, server: &str, code: &str, attach_secret: &str, now: u64) {
         let code = code.trim();
         if code.is_empty() {
             return;
@@ -184,7 +196,10 @@ impl Config {
         entry.last_joined = now;
         if !attach_secret.is_empty() {
             entry.attach_secret = attach_secret.to_owned();
+        } else if entry.server != server {
+            entry.attach_secret.clear();
         }
+        entry.server = server.to_owned();
         self.recent_rooms.insert(0, entry);
         // The room just joined (index 0) is never the one evicted.
         while self.recent_rooms.len() > MAX_RECENT_ROOMS {
@@ -208,12 +223,74 @@ impl Config {
         }
     }
 
-    /// The stored attach key for a room in "Your rooms", if any.
-    pub fn room_attach_key(&self, code: &str) -> Option<&str> {
+    /// The attach key stored for a room in "Your rooms", if one was stored
+    /// for `server` (a [`server_key`]); a key stored for another server is
+    /// never returned (docs/68 D5a).
+    pub fn room_attach_key(&self, server: &str, code: &str) -> Option<&str> {
         self.recent_rooms
             .iter()
-            .find(|r| r.code.eq_ignore_ascii_case(code) && !r.attach_secret.is_empty())
+            .find(|r| {
+                r.code.eq_ignore_ascii_case(code)
+                    && !r.attach_secret.is_empty()
+                    && !server.is_empty()
+                    && r.server == server
+            })
             .map(|r| r.attach_secret.as_str())
+    }
+
+    /// The selected server as a [`server_key`]: what room credentials are
+    /// stored against and checked against (docs/68 D5a).
+    pub fn server_key(&self) -> String {
+        server_key(&self.resolve_relay_url())
+    }
+
+    /// The pending room's attach key and creator token, but only when they
+    /// were stored for the selected server; otherwise both blank, and the
+    /// relay's own prompt asks (docs/68 D5a — the one place they leave).
+    /// The broadcast ID and resume token a Resume reclaims with, but only
+    /// when they were minted on the selected server; otherwise both blank
+    /// (review of #452). A token presented to another relay would let its
+    /// operator supersede the broadcast on its own server (close 4004).
+    pub fn resume_identity(&self) -> (String, String) {
+        let here = self.server_key();
+        if here.is_empty() || self.last_broadcast_server != here {
+            return (String::new(), String::new());
+        }
+        (
+            self.last_broadcast_id.clone(),
+            self.last_resume_token.clone(),
+        )
+    }
+
+    pub fn pending_room_credentials(&self) -> (String, String) {
+        let here = self.server_key();
+        if here.is_empty() || self.room_server != here {
+            return (String::new(), String::new());
+        }
+        (
+            self.room_attach_secret.clone(),
+            self.room_creator_token.clone(),
+        )
+    }
+
+    /// The saved server a link's relay origin names (docs/68 D5): `None`
+    /// for the default fleet (no origin, or the default's own), else
+    /// `Some(Ok(name))` for a custom profile with that origin, and
+    /// `Some(Err(()))` when no saved server has it.
+    pub fn server_for_origin(&self, origin: Option<&str>) -> Option<Result<String, ()>> {
+        let origin = origin?;
+        if relay_origin(defaults::RELAY_URL).as_deref() == Some(origin) {
+            return None;
+        }
+        Some(
+            self.servers
+                .iter()
+                .find(|p| {
+                    p.name != DEFAULT_SERVER_NAME && relay_origin(&p.url).as_deref() == Some(origin)
+                })
+                .map(|p| p.name.clone())
+                .ok_or(()),
+        )
     }
 
     /// The selected custom server profile, or `None` when the built-in
@@ -307,6 +384,30 @@ impl Config {
             publish_secret: String::new(),
         });
         name
+    }
+
+    /// Adds a profile for `url` with no secret, named `name` or, when that
+    /// is taken, `name 2`, `name 3`… — the "Add and switch" of a link that
+    /// names an unknown server (docs/68 D5). Returns the name it got; it
+    /// does not select it.
+    pub fn add_server(&mut self, name: &str, url: &str) -> String {
+        let base = if name.trim().is_empty() {
+            "Server"
+        } else {
+            name.trim()
+        };
+        let mut unique = base.to_owned();
+        let mut i = 2;
+        while self.profile_name_taken(&unique) {
+            unique = format!("{base} {i}");
+            i += 1;
+        }
+        self.servers.push(ServerProfile {
+            name: unique.clone(),
+            url: url.to_owned(),
+            publish_secret: String::new(),
+        });
+        unique
     }
 
     /// True when a profile (the default's record included) claims `name` —
@@ -473,6 +574,37 @@ fn normalize_relay_url(raw: &str) -> String {
     out
 }
 
+/// A relay value as an https origin and nothing else — the docs/40 §4.2
+/// rule, restating gawk-app's `normalizeRelayOrigin`: https only, no
+/// credentials, path `/` or none, no query or fragment, reduced to
+/// `https://host[:port]` with the host lowercased and the default port
+/// elided. `None` for anything else.
+pub fn relay_origin(raw: &str) -> Option<String> {
+    let u = url::Url::parse(raw.trim()).ok()?;
+    if u.scheme() != "https"
+        || !u.username().is_empty()
+        || u.password().is_some()
+        || (u.path() != "/" && !u.path().is_empty())
+        || u.query().is_some()
+        || u.fragment().is_some()
+        || u.host_str().is_none_or(str::is_empty)
+    {
+        return None;
+    }
+    Some(u.origin().ascii_serialization())
+}
+
+/// The key room credentials are bound to (docs/68 D5a): the relay URL's
+/// origin when it is one, else its comparison form — a URL the strict rule
+/// refuses still binds to exactly itself. Blank stays blank and matches
+/// nothing.
+pub fn server_key(relay_url: &str) -> String {
+    if relay_url.trim().is_empty() {
+        return String::new();
+    }
+    relay_origin(relay_url).unwrap_or_else(|| normalize_relay_url(relay_url))
+}
+
 /// Wraps/unwraps the two credential fields for storage. The Windows shell
 /// supplies a DPAPI implementation (docs/38 D14: `dpapi:<base64>`,
 /// per-user, so a copied file leaks nothing on another machine); tests and
@@ -596,6 +728,38 @@ pub fn load(path: &Path, creds: &dyn Credentials) -> (Config, Option<String>) {
 /// binary upgrade that moves the fleet must not present the old relay's
 /// secret to the new host.
 pub fn migrate(cfg: &mut Config) -> bool {
+    let profiles = migrate_profiles(cfg);
+    stamp_room_servers(cfg) || profiles
+}
+
+/// R66 (docs/68 D5a): room credentials stored before they were bound to a
+/// server are stamped with the server selected at load — the assumption
+/// the app made until then, and right for everyone on one server.
+fn stamp_room_servers(cfg: &mut Config) -> bool {
+    let here = cfg.server_key();
+    let mut changed = false;
+    // The resume identity the same way (review of #452).
+    if cfg.last_broadcast_server.is_empty() && !cfg.last_broadcast_id.is_empty() {
+        cfg.last_broadcast_server = here.clone();
+        changed = true;
+    }
+    if cfg.room_server.is_empty()
+        && (!cfg.room_attach_secret.is_empty() || !cfg.room_creator_token.is_empty())
+    {
+        cfg.room_server = here.clone();
+        changed = true;
+    }
+    for r in &mut cfg.recent_rooms {
+        if r.server.is_empty() {
+            r.server = here.clone();
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// The server-profile half of [`migrate`].
+fn migrate_profiles(cfg: &mut Config) -> bool {
     // F9 prune first, so stale default credentials never survive a load.
     let default_key = normalize_relay_url(defaults::RELAY_URL);
     let before = cfg.servers.len();
@@ -689,6 +853,249 @@ fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The default fleet's server key, which room credentials bind to.
+    const S: &str = "https://api.gawk.ioio.fi:4433";
+
+    // --- R66 (docs/68 D5, D5a) ---------------------------------------------
+
+    #[test]
+    fn relay_origin_is_the_web_rule() {
+        for (raw, want) in [
+            (
+                "https://Relay.Example.com:4433",
+                Some("https://relay.example.com:4433"),
+            ),
+            (
+                "https://relay.example.com:4433/",
+                Some("https://relay.example.com:4433"),
+            ),
+            (
+                "https://relay.example.com:443",
+                Some("https://relay.example.com"),
+            ),
+            (
+                "  https://relay.example.com  ",
+                Some("https://relay.example.com"),
+            ),
+            ("http://relay.example.com", None),
+            ("https://u:p@relay.example.com", None),
+            ("https://u@relay.example.com", None),
+            ("https://relay.example.com/path", None),
+            ("https://relay.example.com/?q=1", None),
+            ("https://relay.example.com/#f", None),
+            ("relay.example.com", None),
+            ("", None),
+        ] {
+            assert_eq!(relay_origin(raw).as_deref(), want, "{raw}");
+        }
+        assert_eq!(server_key(""), "");
+        assert_eq!(server_key("https://R.example/"), "https://r.example");
+        // Refused by the strict rule, it still binds to exactly itself.
+        assert_eq!(server_key("https://r.example/p"), "https://r.example/p");
+    }
+
+    #[test]
+    fn a_room_key_is_returned_only_for_the_server_it_was_stored_for() {
+        let mut cfg = Config::default();
+        cfg.remember_room(S, "lan-party", "k3y", 1);
+        assert_eq!(cfg.room_attach_key(S, "LAN-PARTY"), Some("k3y"));
+        assert_eq!(
+            cfg.room_attach_key("https://evil.example", "lan-party"),
+            None
+        );
+        assert_eq!(cfg.room_attach_key("", "lan-party"), None);
+
+        // Joined again on another server with no key: the old key, which
+        // belongs to the first server, goes.
+        cfg.remember_room("https://evil.example", "lan-party", "", 2);
+        assert_eq!(cfg.recent_rooms.len(), 1);
+        assert_eq!(cfg.room_attach_key(S, "lan-party"), None);
+        assert_eq!(
+            cfg.room_attach_key("https://evil.example", "lan-party"),
+            None
+        );
+        assert_eq!(cfg.recent_rooms[0].attach_secret, "");
+
+        // The same server with no key keeps the key on file.
+        cfg.remember_room("https://evil.example", "lan-party", "other", 3);
+        cfg.remember_room("https://evil.example", "lan-party", "", 4);
+        assert_eq!(
+            cfg.room_attach_key("https://evil.example", "lan-party"),
+            Some("other")
+        );
+    }
+
+    #[test]
+    fn pending_room_credentials_follow_the_selected_server() {
+        let mut cfg = Config {
+            room: "lan-party".into(),
+            room_attach_secret: "k3y".into(),
+            room_creator_token: "c0ffee".into(),
+            room_server: S.into(),
+            servers: vec![ServerProfile {
+                name: "Friend".into(),
+                url: "https://relay.friend.example".into(),
+                publish_secret: String::new(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.pending_room_credentials(),
+            ("k3y".to_string(), "c0ffee".to_string())
+        );
+        cfg.selected_server = "Friend".into();
+        assert_eq!(
+            cfg.pending_room_credentials(),
+            (String::new(), String::new())
+        );
+        cfg.selected_server = DEFAULT_SERVER_NAME.into();
+        cfg.room_server.clear();
+        assert_eq!(
+            cfg.pending_room_credentials(),
+            (String::new(), String::new()),
+            "unbound credentials go nowhere"
+        );
+    }
+
+    #[test]
+    fn a_legacy_config_stamps_room_credentials_with_the_selected_server() {
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-d5a-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broadcast.json");
+        std::fs::write(
+            &path,
+            br#"{"room": "lan-party", "roomAttachSecret": "k3y",
+                 "servers": [{"name": "Friend", "url": "https://Relay.Friend.example:4433/"}],
+                 "selectedServer": "Friend",
+                 "recentRooms": [{"code": "lan-party", "attachSecret": "k3y", "lastJoined": 5}]}"#,
+        )
+        .unwrap();
+        let (mut cfg, warn) = load(&path, &Plaintext);
+        assert!(warn.is_none());
+        assert!(cfg.recent_rooms[0].server.is_empty());
+        assert!(migrate(&mut cfg), "stamping is a change to save");
+        let friend = "https://relay.friend.example:4433";
+        assert_eq!(cfg.room_server, friend);
+        assert_eq!(cfg.recent_rooms[0].server, friend);
+        assert_eq!(cfg.room_attach_key(friend, "lan-party"), Some("k3y"));
+        assert_eq!(cfg.room_attach_key(S, "lan-party"), None);
+        // Idempotent.
+        assert!(!migrate(&mut cfg));
+
+        save(&path, &cfg, &Plaintext).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("\"roomServer\": \"https://relay.friend.example:4433\""),
+            "{raw}"
+        );
+        assert!(
+            raw.contains("\"server\": \"https://relay.friend.example:4433\""),
+            "{raw}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // Review of #452: the reclaim identity (ID and resume token) goes only
+    // to the server it was minted on. A token presented elsewhere lets that
+    // operator supersede the broadcast on its own server.
+    #[test]
+    fn the_resume_identity_goes_only_to_the_server_it_was_minted_on() {
+        let mut cfg = Config {
+            last_broadcast_id: "K7XQ2M".into(),
+            last_resume_token: "aa11".into(),
+            last_broadcast_server: S.into(),
+            ..friend_cfg()
+        };
+        assert_eq!(
+            cfg.resume_identity(),
+            ("K7XQ2M".to_string(), "aa11".to_string())
+        );
+        cfg.selected_server = "Friend".into();
+        assert_eq!(cfg.resume_identity(), (String::new(), String::new()));
+        cfg.selected_server.clear();
+        cfg.last_broadcast_server.clear();
+        assert_eq!(
+            cfg.resume_identity(),
+            (String::new(), String::new()),
+            "an unbound identity goes nowhere"
+        );
+    }
+
+    #[test]
+    fn a_legacy_resume_identity_is_stamped_with_the_selected_server() {
+        let mut cfg = Config {
+            last_broadcast_id: "K7XQ2M".into(),
+            last_resume_token: "aa11".into(),
+            selected_server: "Friend".into(),
+            ..friend_cfg()
+        };
+        assert!(migrate(&mut cfg));
+        assert_eq!(cfg.last_broadcast_server, "https://relay.friend.example");
+        assert_eq!(cfg.resume_identity().0, "K7XQ2M");
+        assert!(!migrate(&mut cfg));
+        // Nothing to bind, nothing stamped.
+        let mut fresh = Config::default();
+        assert!(!migrate(&mut fresh));
+        assert!(fresh.last_broadcast_server.is_empty());
+    }
+
+    fn friend_cfg() -> Config {
+        Config {
+            servers: vec![ServerProfile {
+                name: "Friend".into(),
+                url: "https://relay.friend.example".into(),
+                publish_secret: String::new(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_pending_room_without_credentials_is_not_stamped() {
+        let mut cfg = Config {
+            room: "lan-party".into(),
+            ..Default::default()
+        };
+        assert!(!migrate(&mut cfg));
+        assert!(cfg.room_server.is_empty());
+    }
+
+    #[test]
+    fn a_link_origin_names_the_default_a_saved_server_or_none() {
+        let mut cfg = Config::default();
+        cfg.servers.push(ServerProfile {
+            name: "Friend".into(),
+            url: "https://Relay.Friend.example:4433/".into(),
+            publish_secret: "s".into(),
+        });
+        // The default's credentials-only record is never a match.
+        cfg.set_default_secret("d");
+        assert_eq!(cfg.server_for_origin(None), None);
+        assert_eq!(cfg.server_for_origin(Some(S)), None);
+        assert_eq!(
+            cfg.server_for_origin(Some("https://relay.friend.example:4433")),
+            Some(Ok("Friend".to_string()))
+        );
+        assert_eq!(
+            cfg.server_for_origin(Some("https://relay.friend.example")),
+            Some(Err(()))
+        );
+    }
+
+    #[test]
+    fn add_server_names_it_uniquely_and_does_not_select_it() {
+        let mut cfg = Config::default();
+        let a = cfg.add_server("relay.friend.example", "https://relay.friend.example");
+        let b = cfg.add_server("relay.friend.example", "https://relay.friend.example:4433");
+        let c = cfg.add_server("default", "https://x.example");
+        assert_eq!(a, "relay.friend.example");
+        assert_eq!(b, "relay.friend.example 2");
+        assert_eq!(c, "default 2");
+        assert_eq!(cfg.servers[1].url, "https://relay.friend.example:4433");
+        assert!(cfg.servers.iter().all(|p| p.publish_secret.is_empty()));
+        assert!(cfg.selected_server.is_empty());
+    }
 
     /// docs/54 D12 (the Linux rule, unchanged): on Unix the credentials sit
     /// in the file as plaintext, so the file is the owner's alone.
@@ -903,8 +1310,8 @@ mod tests {
             last_source: "display:Display 1".into(),
             ..Default::default()
         };
-        cfg.remember_room("lan-party", "k3y", 100);
-        cfg.remember_room("K7XQ2M", "", 200);
+        cfg.remember_room(S, "lan-party", "k3y", 100);
+        cfg.remember_room(S, "K7XQ2M", "", 200);
         cfg.set_room_saved("lan-party", true);
         save(&path, &cfg, &Reversing).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -919,7 +1326,7 @@ mod tests {
         let (loaded, warn) = load(&path, &Reversing);
         assert!(warn.is_none());
         assert_eq!(loaded, cfg);
-        assert_eq!(loaded.room_attach_key("LAN-PARTY"), Some("k3y"));
+        assert_eq!(loaded.room_attach_key(S, "LAN-PARTY"), Some("k3y"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1007,10 +1414,10 @@ mod tests {
     #[test]
     fn recent_rooms_move_to_the_front_and_cap_without_dropping_saved_ones() {
         let mut cfg = Config::default();
-        cfg.remember_room("saved-one", "k", 1);
+        cfg.remember_room(S, "saved-one", "k", 1);
         cfg.set_room_saved("saved-one", true);
         for i in 0..10u64 {
-            cfg.remember_room(&format!("room-{i}"), "", 10 + i);
+            cfg.remember_room(S, &format!("room-{i}"), "", 10 + i);
         }
         assert_eq!(cfg.recent_rooms.len(), MAX_RECENT_ROOMS);
         assert_eq!(cfg.recent_rooms[0].code, "room-9");
@@ -1022,7 +1429,7 @@ mod tests {
 
         // A re-join (any case) moves it to the front, keeps its star and
         // its key when no new key is given.
-        cfg.remember_room("SAVED-ONE", "", 99);
+        cfg.remember_room(S, "SAVED-ONE", "", 99);
         let front = &cfg.recent_rooms[0];
         assert_eq!(
             (front.code.as_str(), front.saved, front.last_joined),
@@ -1038,7 +1445,7 @@ mod tests {
         );
         // A blank code is not a room.
         let before = cfg.recent_rooms.clone();
-        cfg.remember_room("  ", "", 1);
+        cfg.remember_room(S, "  ", "", 1);
         assert_eq!(cfg.recent_rooms, before);
     }
 
@@ -1050,19 +1457,19 @@ mod tests {
         let mut cfg = Config::default();
         for i in 0..MAX_RECENT_ROOMS as u64 {
             let code = format!("saved-{i}");
-            cfg.remember_room(&code, "", i);
+            cfg.remember_room(S, &code, "", i);
             cfg.set_room_saved(&code, true);
         }
-        cfg.remember_room("new", "k", 100);
+        cfg.remember_room(S, "new", "k", 100);
         assert_eq!(cfg.recent_rooms[0].code, "new");
-        assert_eq!(cfg.room_attach_key("new"), Some("k"));
+        assert_eq!(cfg.room_attach_key(S, "new"), Some("k"));
         assert_eq!(
             cfg.recent_rooms.iter().filter(|r| r.saved).count(),
             MAX_RECENT_ROOMS,
             "no saved room dropped either"
         );
         // The next join may evict the older unsaved one, never the new one.
-        cfg.remember_room("newer", "", 101);
+        cfg.remember_room(S, "newer", "", 101);
         assert_eq!(cfg.recent_rooms[0].code, "newer");
         assert!(!cfg.recent_rooms.iter().any(|r| r.code == "new"));
     }
@@ -1462,7 +1869,13 @@ mod tests {
 
         let (mut cfg, warn) = load(&path, &Plaintext);
         assert!(warn.is_none(), "{warn:?}");
-        // Already migrated in Go (servers present): nothing to do here.
+        // Already migrated in Go (servers present): the only change is
+        // binding the room's attach key to the selected server (docs/68 D5a).
+        let before = cfg.clone();
+        assert!(migrate(&mut cfg));
+        assert_eq!(cfg.servers, before.servers);
+        assert_eq!(cfg.selected_server, before.selected_server);
+        assert_eq!(cfg.room_server, "https://relay.home.example:4433");
         assert!(!migrate(&mut cfg));
 
         assert_eq!(cfg.resolve_relay_url(), "https://relay.home.example:4433");

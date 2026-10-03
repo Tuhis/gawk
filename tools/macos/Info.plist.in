@@ -32,6 +32,20 @@
 	<string>gawk-broadcast</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<!-- R66 (docs/68 D10): gawk:// links open this app. LaunchServices
+	     registers the scheme when the bundle is first launched or copied;
+	     the link arrives as a GURL Apple Event, never in argv. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>fi.ioio.gawk.broadcast.link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>gawk</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleShortVersionString</key>
 	<string>@VERSION@</string>
 	<key>CFBundleVersion</key>
