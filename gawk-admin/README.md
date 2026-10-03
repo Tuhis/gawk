@@ -21,7 +21,7 @@ the relay enforces bans on its own, from `Ban` custom resources that a
 | `internal/store` | Postgres — the system of record (bans, events, webhooks, deliveries). |
 | `internal/kube` | `Ban` CR client, the reconciler/janitor, leader election. |
 | `internal/relayscan` | Headless-DNS pod discovery + the relay's `/internal/admin/*` scrape. |
-| `internal/auth` | OIDC JWT validation (cached JWKS) and role authorization. |
+| `internal/auth` | The portal's binding of the shared OIDC verifier (`gawk-server/oidcauth`: JWT validation, cached JWKS, role authorization). |
 | `internal/api` | `/api/v1`. |
 | `internal/openapi` | Serves `openapi.yaml` at `/api/v1/openapi.json` with this deployment's base URL substituted, and the event contract (`gawk-server/events`) at `/api/v1/asyncapi.json` and `/api/v1/schemas/events/`. |
 | `internal/portal` | The SPA, embedded with `go:embed`. |

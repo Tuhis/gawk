@@ -154,7 +154,9 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   (the `Room` CR types and code rules) and, since R51, `events` (the
   CloudEvents envelope, every event's `data` type, the JSON Schemas, the
   AsyncAPI catalogue and the golden vectors; same reason `wire` is public:
-  reuse, never mirror) — so its **image builds from the repo root**.
+  reuse, never mirror) and, since R53, `oidcauth` — the **one** OIDC
+  verifier, shared by the relay's ops listener, the portal and telemetry;
+  never copy it (`docs/55` D2) — so its **image builds from the repo root**.
   A semantic change to any of those packages needs a `gawk-admin`-scoped
   commit in the same PR (`CONTRIBUTING.md` has the release-coupling rule). Two prohibitions travel
   with it: the relay's `/internal/admin/*` routes may carry **raw broadcast IDs
@@ -165,6 +167,13 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   D8; don't "restore" the webhook projection that stripped them.
   Its migrations are forward-only and **a merged migration file is
   immutable**; CI enforces both (`docs/42` §4.15).
+- `common-ts/` — shared **TypeScript only** (R53): repo-internal npm packages
+  with no build step, consumed by the operator SPAs via `file:` (today
+  `oidc-session`, the hand-rolled OIDC flow of `gawk-admin` and
+  `gawk-telemetry`). Shared Go never goes here — it is a public package in
+  `gawk-server`. Each consumer commits a `common-ts.lock`; that lock is what
+  makes a shared change release every consumer (`docs/55` D10,
+  `CONTRIBUTING.md`). `gawk-app` must never consume it.
 - `docs/` — per-milestone design notes. Each component has `deploy/`
   (Dockerfile + Helm chart); `.github/workflows/` holds CI + release automation.
 
