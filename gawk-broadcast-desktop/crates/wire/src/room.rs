@@ -369,8 +369,9 @@ fn check_prefix(msg: &[u8], msg_type: u8, min_len: usize) -> Result<(), WireErro
 
 /// Mirrors broadcastid.Normalize: upper-case, exactly BROADCAST_ID_LENGTH
 /// bytes, every byte in the alphabet. Reuses the crate's alphabet; the only
-/// place the room parsers allocate.
-fn normalize_broadcast_id(raw: &[u8]) -> Option<String> {
+/// place the room parsers allocate. Public as a helper, not a wire type: the
+/// engine's `gawk://watch/<ID>` parser validates with it (docs/68 D2).
+pub fn normalize_broadcast_id(raw: &[u8]) -> Option<String> {
     if raw.len() != BROADCAST_ID_LENGTH {
         return None;
     }
