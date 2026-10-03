@@ -302,12 +302,14 @@ fn launch() -> gawk_ui::instance::Launch {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     #[cfg(windows)]
-    match single::Pipe::new() {
+    let note = match single::Pipe::new() {
         Ok(pipe) => return gawk_ui::instance::launch(&args, Box::new(pipe)),
-        Err(e) => eprintln!("gawk-broadcast: no single instance ({e})"),
-    }
+        Err(e) => Some(format!("no single instance ({e})")),
+    };
+    #[cfg(not(windows))]
+    let note = None;
     Launch {
-        request: Request::from_args(&args),
-        inbox: None,
+        note,
+        ..Launch::new(Request::from_args(&args), None)
     }
 }

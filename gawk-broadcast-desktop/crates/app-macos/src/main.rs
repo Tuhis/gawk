@@ -31,9 +31,11 @@ fn main() {
     let (tx, rx) = std::sync::mpsc::channel();
     let inbox = link::init(tx).then_some(rx);
     let args: Vec<String> = std::env::args().collect();
+    // The launch's own link comes through the inbox too (docs/68 D3).
+    let link_in_inbox = inbox.is_some();
     let launch = gawk_ui::instance::Launch {
-        request: gawk_ui::instance::Request::from_args(&args),
-        inbox,
+        link_in_inbox,
+        ..gawk_ui::instance::Launch::new(gawk_ui::instance::Request::from_args(&args), inbox)
     };
     gawk_ui::shell::run(Box::new(platform::Mac::new()), platform::wire, launch);
 }
