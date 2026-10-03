@@ -4,7 +4,6 @@ package ops
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +23,8 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
+	"github.com/Tuhis/gawk/gawk-server/oidcauth"
+	"github.com/Tuhis/gawk/gawk-server/oidcauth/oidcauthtest"
 )
 
 const (
@@ -375,22 +375,31 @@ func TestAdminAPIExposesNoWriteVerbs(t *testing.T) {
 }
 
 // --- the JWT path, against a fake issuer -------------------------------
+//
+// The issuer is oidcauthtest.Issuer (R53, docs/55 D2), shared with
+// gawk-admin's suite and telemetry's. What remains here is the vocabulary this
+// suite was written in, so the tests themselves read exactly as they did.
 
 // rotationKey is the key every rotation test rotates TO. Shared because RSA
 // keygen is the slowest thing in this file; each fakeIDP still starts with a
 // key of its own, so "signed by another issuer's key" stays a real forgery.
-var rotationKey = sync.OnceValue(newRSAKey)
+var rotationKey = sync.OnceValue(oidcauthtest.NewRSAKey)
 
-func newRSAKey() *rsa.PrivateKey {
-	k, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		panic("generating test key: " + err.Error())
-	}
-	return k
-}
+// The names this suite asserts against, which moved into oidcauth with the
+// code they describe.
+const (
+	defaultJWKSFetchInterval = oidcauth.DefaultJWKSFetchInterval
+	defaultJWKSFetchBurst    = oidcauth.DefaultJWKSFetchBurst
+)
+
+// counter reads a count the way an atomic.Int64 field would.
+type counter func() int64
+
+func (c counter) Load() int64 { return c() }
 
 type fakeIDP struct {
-	srv *httptest.Server
+	// srv is the issuer itself; srv.Close() takes it off the network.
+	srv *oidcauthtest.Issuer
 	// priv is the key the issuer STARTS with. Never reassigned, so the tests
 	// that never rotate can read it directly.
 	priv *rsa.PrivateKey
@@ -398,91 +407,33 @@ type fakeIDP struct {
 
 	// keyFetches counts JWKS requests that reached the wire. A test that
 	// stops the server and still verifies is proving this did not move.
-	keyFetches atomic.Int64
-
-	mu       sync.Mutex
-	handler  *oidctest.Server // replaced wholesale on rotation, never mutated
-	signer   *rsa.PrivateKey
-	kid      string
-	delay    time.Duration
-	keysDown bool // when true, only /keys 503s — discovery still answers
+	keyFetches counter
 }
 
 func newFakeIDP(t *testing.T) *fakeIDP {
 	t.Helper()
-	priv := newRSAKey()
-	f := &fakeIDP{priv: priv}
-	f.srv = httptest.NewServer(f)
-	f.url = f.srv.URL
-	f.useKey(testKeyID, priv)
-	t.Cleanup(f.srv.Close) // idempotent; tests that stop the issuer early call it too
-	return f
-}
-
-func (f *fakeIDP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	f.mu.Lock()
-	h, delay, keysDown := f.handler, f.delay, f.keysDown
-	f.mu.Unlock()
-	if r.URL.Path == "/keys" {
-		f.keyFetches.Add(1)
-		if keysDown {
-			// Discovery answers, the key set does not — the shape a
-			// half-restarted IdP has, and the one that must not stop this
-			// relay from starting.
-			http.Error(w, "key set unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if delay > 0 {
-			// A JWKS that takes a human-visible moment, so a herd of
-			// concurrent verifications demonstrably overlaps inside one fetch
-			// rather than racing through it one at a time.
-			select {
-			case <-time.After(delay):
-			case <-r.Context().Done():
-				return
-			}
-		}
-	}
-	h.ServeHTTP(w, r)
+	priv := oidcauthtest.NewRSAKey()
+	iss := oidcauthtest.NewIssuer(t, testKeyID, priv)
+	return &fakeIDP{srv: iss, priv: priv, url: iss.URL(), keyFetches: iss.KeyFetches}
 }
 
 // useKey makes kid/key the only key the issuer advertises and signs with — a
 // hard rotation, which is the case a cached verifier is most likely to get
 // wrong.
-func (f *fakeIDP) useKey(kid string, key *rsa.PrivateKey) {
-	h := &oidctest.Server{PublicKeys: []oidctest.PublicKey{
-		{PublicKey: key.Public(), KeyID: kid, Algorithm: oidc.RS256},
-	}}
-	h.SetIssuer(f.srv.URL)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.handler = h
-	f.signer = key
-	f.kid = kid
-}
+func (f *fakeIDP) useKey(kid string, key *rsa.PrivateKey) { f.srv.UseKey(kid, key) }
 
 // delayKeys makes every subsequent JWKS request take d.
-func (f *fakeIDP) delayKeys(d time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.delay = d
-}
+func (f *fakeIDP) delayKeys(d time.Duration) { f.srv.DelayKeys(d) }
 
 // downKeys toggles whether /keys 503s. Discovery keeps answering either way,
 // which is the split that separates "the relay started" from "the key set is
 // primed".
-func (f *fakeIDP) downKeys(down bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.keysDown = down
-}
+func (f *fakeIDP) downKeys(down bool) { f.srv.SetKeysDown(down) }
 
 // token mints a JWT with the issuer's CURRENT key. iss/aud/exp default to the
 // good values; roles is the Keycloak client-roles path this relay defaults to.
 func (f *fakeIDP) token(iss, aud string, exp time.Time, rolesJSON string) string {
-	f.mu.Lock()
-	key, kid := f.signer, f.kid
-	f.mu.Unlock()
+	kid, key := f.srv.SigningKey()
 	return f.tokenWith(key, kid, iss, aud, exp, rolesJSON)
 }
 
@@ -496,7 +447,7 @@ func (f *fakeIDP) tokenWith(key *rsa.PrivateKey, kid, iss, aud string, exp time.
 		strconv.FormatInt(exp.Unix(), 10),
 		strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10),
 		aud, rolesJSON)
-	return oidctest.SignIDToken(key, kid, oidc.RS256, claims)
+	return oidcauthtest.Sign(key, kid, claims)
 }
 
 // goodToken is the happy path: right issuer, right audience, unexpired, with
@@ -513,25 +464,26 @@ func (f *fakeIDP) unverifiable(kid string) string {
 	return f.tokenWith(rotationKey(), kid, f.url, testAud, time.Now().Add(time.Hour), `["operator"]`)
 }
 
-// countingTransport counts every HTTP attempt, reached or refused. The
-// issuer's own counter cannot see a request to a stopped server, so a "verify
-// offline" test built on it alone would pass against an implementation that
-// tries the IdP every time and shrugs off the error — which is exactly the
-// behaviour that guarantee forbids (a connect timeout on every request while
-// the IdP is away). This sees the attempt.
+// countingTransport exposes oidcauthtest.CountingTransport's attempt count
+// under the name this suite reads it by. The issuer's own counter cannot see a
+// request to a stopped server; this sees the attempt.
 type countingTransport struct {
-	base     http.RoundTripper
-	attempts atomic.Int64
-}
-
-func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	c.attempts.Add(1)
-	return c.base.RoundTrip(r)
+	attempts counter
 }
 
 func countingClient() (*http.Client, *countingTransport) {
-	tr := &countingTransport{base: http.DefaultTransport}
-	return &http.Client{Transport: tr, Timeout: 10 * time.Second}, tr
+	client, tr := oidcauthtest.CountingClient()
+	return client, &countingTransport{attempts: tr.Attempts}
+}
+
+// throttleTokensLeft reads the shared verifier's JWKS fetch bucket without
+// spending from it: an unchanged, non-empty bucket is direct evidence that a
+// verification never consulted the fetch path.
+func (a *AdminAuth) throttleTokensLeft() float64 {
+	if a.oidc == nil {
+		return 0
+	}
+	return a.oidc.JWKSFetchTokensLeft()
 }
 
 // testClock is a hand-wound clock: the fetch bucket's refill is a property of
@@ -581,7 +533,7 @@ func newOIDCAuth(t *testing.T, f *fakeIDP, extra func(*AdminAuthOptions)) *Admin
 	}
 	a := NewAdminAuth(t.Context(), opts)
 	select {
-	case <-a.resolved:
+	case <-a.oidc.Resolved():
 	case <-time.After(10 * time.Second):
 		t.Fatal("OIDC discovery never resolved against the fake issuer")
 	}
@@ -602,7 +554,7 @@ func oidcAuth(t *testing.T, f *fakeIDP, extra func(*AdminAuthOptions)) *AdminAut
 func waitPrimed(t *testing.T, a *AdminAuth) {
 	t.Helper()
 	select {
-	case <-a.primed:
+	case <-a.oidc.Primed():
 	case <-time.After(10 * time.Second):
 		t.Fatal("the key set was never primed against the fake issuer")
 	}
@@ -672,92 +624,11 @@ func noRolesToken(f *fakeIDP) string {
 	return oidctest.SignIDToken(f.priv, testKeyID, oidc.RS256, claims)
 }
 
-// --- the JWKS cache and its rate floor (auth.go) ------------------------
-
-// The two numbers the doc comment promises an operator: three fetches back to
-// back from cold, then one per twenty seconds.
-func TestJWKSThrottleDefaultsAreThreeFetchesPerMinute(t *testing.T) {
-	if defaultJWKSFetchBurst != 3 {
-		t.Errorf("defaultJWKSFetchBurst = %d, want 3", defaultJWKSFetchBurst)
-	}
-	if defaultJWKSFetchInterval != 20*time.Second {
-		t.Errorf("defaultJWKSFetchInterval = %v, want 20s (three per minute)", defaultJWKSFetchInterval)
-	}
-}
-
-// The bucket starts FULL, so a key rotation on an otherwise idle relay gets
-// its fetch immediately and costs zero 401s.
-func TestJWKSThrottleStartsFullAndRefillsOnePerInterval(t *testing.T) {
-	clk := newTestClock()
-	th := newJWKSThrottle(defaultJWKSFetchInterval, defaultJWKSFetchBurst, clk.now)
-
-	for i := range defaultJWKSFetchBurst {
-		if !th.allow() {
-			t.Fatalf("fetch %d refused from a full bucket", i+1)
-		}
-	}
-	if th.allow() {
-		t.Fatal("the bucket handed out more than its burst without time passing")
-	}
-
-	// One tick short of the interval is still refused; the interval exactly is
-	// allowed. This is the worst-case rotation delay the comment claims.
-	clk.advance(defaultJWKSFetchInterval - time.Nanosecond)
-	if th.allow() {
-		t.Fatal("a token accrued before the refill interval elapsed")
-	}
-	clk.advance(time.Nanosecond)
-	if !th.allow() {
-		t.Fatalf("no token after a full %v refill interval", defaultJWKSFetchInterval)
-	}
-
-	// And it never accrues past the burst, however long it idles.
-	clk.advance(24 * time.Hour)
-	for i := range defaultJWKSFetchBurst {
-		if !th.allow() {
-			t.Fatalf("fetch %d refused after a long idle", i+1)
-		}
-	}
-	if th.allow() {
-		t.Fatal("the bucket accumulated past its burst while idle")
-	}
-}
-
-// Zero and negative values are the caller asking for the default, never for an
-// unthrottled or a permanently locked bucket.
-func TestJWKSThrottleZeroOptionsMeanTheDefaults(t *testing.T) {
-	for _, th := range []*jwksThrottle{
-		newJWKSThrottle(0, 0, nil),
-		newJWKSThrottle(-time.Second, -4, nil),
-	} {
-		if th.burst != float64(defaultJWKSFetchBurst) || th.interval != defaultJWKSFetchInterval {
-			t.Errorf("burst %v interval %v, want the defaults", th.burst, th.interval)
-		}
-	}
-}
-
-func TestJWKSThrottleIsSafeUnderConcurrentUse(t *testing.T) {
-	th := newJWKSThrottle(time.Hour, 5, time.Now)
-	var wg sync.WaitGroup
-	granted := make([]bool, 64)
-	for i := range granted {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			granted[i] = th.allow()
-		}()
-	}
-	wg.Wait()
-	n := 0
-	for _, ok := range granted {
-		if ok {
-			n++
-		}
-	}
-	if n != 5 {
-		t.Errorf("granted %d tokens concurrently, want exactly the burst (5)", n)
-	}
-}
+// --- the JWKS cache and its rate floor (oidcauth) -----------------------
+//
+// The bucket's own arithmetic is tested where it lives, in
+// gawk-server/oidcauth (keyset_test.go); these are what it does to real
+// requests on this listener.
 
 // THE THROTTLE BITES. A caller feeding tokens signed by keys the issuer never
 // advertised misses the key cache every single time, which is what makes
@@ -1060,7 +931,7 @@ func TestAdminJWTPrimingRetriesWithoutBlockingStartup(t *testing.T) {
 		t.Fatalf("JWT while the key set is down = %d, want 401", w.Code)
 	}
 	select {
-	case <-auth.primed:
+	case <-auth.oidc.Primed():
 		t.Fatal("primed reported success while /keys was 503ing")
 	default:
 	}

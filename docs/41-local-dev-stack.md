@@ -487,7 +487,7 @@ stack in 90 days.
 |---|---|---|
 | `sim` | `pubsim` | `build: {context: ./gawk-broadcast, dockerfile: ../dev/Dockerfile.pubsim}`. Command: `-url https://relay:4433 -insecure -fps 30`. `depends_on: {relay: {condition: service_healthy}}`. `-insecure` is correct here and only here: an in-container Go client dialing a self-signed relay over the compose network. Its `GAWK_PUBSIM_ID=` stdout line is the join code — the compose logs are how a developer gets it. |
 | `rooms` (added 2026-09-05, R42) | `pubsim-a`, `pubsim-b` | The same image twice, each with `-room devroom -label "POV A"/"POV B"`: two broadcasters already attached to the **static** room `devroom` that `dev/rooms/rooms.json` defines, so the room link is the same every time (`${APP_ORIGIN}/#/room/devroom`) and nothing has to be scraped from a log. A third POV is the developer's own browser broadcast, joined from the pre-start card's Room panel or the room's "Start streaming here" (docs/44 §4.8). `-insecure` here is the same single rationale as `pubsim`'s; `dev/stack_test.sh` asserts it appears in no other kind of service. **Rooms themselves are on in the default lane** — `GAWK_ROOMS=1` (`ROOMS=` turns them off) with `GAWK_ROOMS_FILE=/dev-rooms/rooms.json` (the `./dev/rooms` directory bind-mounted read-only, a directory so an editor's atomic-rename save is still seen by the relay's mtime poll) and a 10-minute empty grace — although the relay's own default is off (docs/44 D17): §4.8's "the default `up` is the whole product" applies. The relay runs single-pod here, so static rooms come from the file source, not `Room` CRs; dynamic rooms are in-memory and minted from any live broadcast. **`GAWK_MAX_BROADCASTS` is raised to 20** (`MAX_BROADCASTS=`): the relay's default of 5 was reached on the first afternoon with this profile — three synthetic publishers plus a couple of browser tabs — and a mint past the cap reaches the browser only as "WebTransport connection rejected"; the relay log carries the real reason. **The connection rate limit is raised too** (`CONN_RATE_LIMIT`/`CONN_BURST_LIMIT`, 50/s, burst 200): it is per source address and the whole host is one address to the containerised relay (the Docker gateway), so with production's 3/s burst 10 a single three-tile room view — one room dial plus 3 × (1 + 4 stripe legs) — exhausts the bucket and its legs fail with `ERR_QUIC_PROTOCOL_ERROR`, the relay logging nothing (a 429 before the upgrade). |
-| `telemetry` | `telemetry` | `build: {context: ., dockerfile: gawk-telemetry/deploy/Dockerfile}` (**repo root context**). `-session-idle 2m` (must exceed the client's 10 s flush; see `e2e/README.md`). Ingest published on `127.0.0.1` only; the read/dashboard listener is **not** published at all — reach it with `docker compose exec`. Requires `GAWK_TELEMETRY_KEY` on both relay and service. |
+| `telemetry` | `telemetry` | `build: {context: ., dockerfile: gawk-telemetry/deploy/Dockerfile}` (**repo root context**). `-session-idle 2m` (must exceed the client's 10 s flush; see `e2e/README.md`). Ingest published on `127.0.0.1` only; the read/dashboard listener is **not** published at all — reach it with `docker compose exec`. *(Since R53 the read listener is published on `127.0.0.1:8091`, OIDC-gated against `fakeidp-telemetry` — §4.8.)* Requires `GAWK_TELEMETRY_KEY` on both relay and service. |
 | `app-dev` | `app-dev` | `image: node:26-alpine`, working dir a bind mount of `./gawk-app`, command `npm run dev -- --host 0.0.0.0 --port 5173`, published on `${BIND_ADDR}:5173:5173`, with an anonymous volume over `/app/node_modules` so the container's install is not shadowed by the host's. When this profile is on, `app` does not start. |
 
 **The compose stack is not a replacement for the editor loop, and the docs
@@ -593,6 +593,20 @@ Three mechanisms are load-bearing:
 - **Break-glass parity.** `kubectl --kubeconfig dev/generated/kubeconfig get
   bans` works against the dev control plane — the docs/42 §9.6 emergency
   surface, practisable locally, adoption and all.
+
+**The `telemetry` profile joins this lane (R53, docs/55 TO5).** Its read
+listener is OIDC-gated like the portal, against a **second** fake IdP,
+`fakeidp-telemetry` (client `gawk-telemetry`, audience `gawk-telemetry`,
+role `telemetry-reader`), by the same one-issuer-URL trick: the issuer is
+`${TELEMETRY_URL:-http://localhost:8091}/idp`, served by telemetry's own
+`-dev-oidc-proxy`, so the read listener's container port equals its
+published port. That listener is now **published, on `127.0.0.1` only**,
+whatever `BIND_ADDR` says — before R53 it was not published at all, and the
+reason it may be now is the gate. `dev/stack_test.sh` asserts both halves:
+loopback-only, and never without `-oidc-issuer`. The portal's fake IdP is
+not reused because its tokens carry the portal's audience and role; SSO
+between the two is a real-IdP property, verified on the reference
+deployment (docs/55 V-1), not here.
 
 On a LAN (`BIND_ADDR`): the portal follows it, and `ADMIN_URL` must then name
 the LAN address (it is both the page origin and the issuer base) — same rule

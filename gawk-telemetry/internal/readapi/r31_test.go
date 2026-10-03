@@ -6,6 +6,7 @@ package readapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -985,6 +986,58 @@ func TestLiveStreamSendsASnapshotAndThenGoesQuiet(t *testing.T) {
 	}
 	if !strings.Contains(first, "event: snapshot") {
 		t.Errorf("first frame is not a snapshot: %q", first)
+	}
+}
+
+// docs/55 D4: a stream authorized by a bearer token ends at that token's
+// `exp`, with a final `event: expired`, so revoking the role at the IdP bounds
+// how long an open stream keeps delivering (G4).
+func TestLiveStreamEndsAtItsDeadlineWithAnExpiredEvent(t *testing.T) {
+	f := newFixture(t)
+	deadline := time.Now().Add(300 * time.Millisecond)
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.api.Handler().ServeHTTP(w, r.WithContext(WithStreamDeadline(r.Context(), deadline)))
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/live/stream", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("the stream did not end at its deadline: %v", err)
+	}
+	if time.Now().Before(deadline) {
+		t.Error("the stream ended before its deadline")
+	}
+	if !strings.Contains(string(body), "event: snapshot") {
+		t.Errorf("no snapshot before expiry: %q", body)
+	}
+	if !strings.HasSuffix(string(body), "event: expired\ndata: {}\n\n") {
+		t.Errorf("the stream did not end with event: expired: %q", body)
+	}
+}
+
+// A deadline already in the past (or a zero one) ends the stream at once
+// rather than opening an unbounded one: the cap fails closed.
+func TestLiveStreamWithAPastDeadlineExpiresImmediately(t *testing.T) {
+	f := newFixture(t)
+	for _, deadline := range []time.Time{{}, time.Now().Add(-time.Second)} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/live/stream", nil)
+		f.api.Handler().ServeHTTP(rec, req.WithContext(WithStreamDeadline(req.Context(), deadline)))
+		if !strings.HasSuffix(rec.Body.String(), "event: expired\ndata: {}\n\n") {
+			t.Errorf("deadline %v: body %q, want an immediate expiry", deadline, rec.Body)
+		}
+		if strings.Contains(rec.Body.String(), "event: snapshot") {
+			t.Errorf("deadline %v: a snapshot was sent past the deadline", deadline)
+		}
 	}
 }
 

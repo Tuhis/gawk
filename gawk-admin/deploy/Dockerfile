@@ -26,15 +26,22 @@
 #
 # Only the manifests are copied before `npm ci`, so a source-only change reuses
 # the dependency layer.
+#
+# The stage mirrors the repository layout under /src (docs/55 D3): the UI
+# depends on the shared session package as `file:../../common-ts/oidc-session`,
+# and `npm ci` links that path, so it has to resolve here exactly as it does
+# in a checkout. The package's own package.json is one of the manifests — it is
+# what `npm ci` reads — and its source follows with the UI's. The same layout
+# also puts vite.config.ts's `../internal/portal/dist` where the Go stage
+# collects it, with no path rewriting.
 FROM node:26-alpine AS ui
-WORKDIR /ui
+WORKDIR /src/gawk-admin/ui
 COPY gawk-admin/ui/package.json gawk-admin/ui/package-lock.json ./
+COPY common-ts/oidc-session/package.json /src/common-ts/oidc-session/
 RUN npm ci
+COPY common-ts/oidc-session/ /src/common-ts/oidc-session/
 COPY gawk-admin/ui/ ./
-# vite.config.ts writes to ../internal/portal/dist, so give it that shape.
-RUN mkdir -p /internal/portal && \
-    sed -i "s#'../internal/portal/dist'#'/internal/portal/dist'#" vite.config.ts && \
-    npm run build
+RUN npm run build
 
 FROM golang:1.26-trixie AS build
 WORKDIR /src
@@ -53,7 +60,7 @@ COPY gawk-server/ ./gawk-server/
 COPY gawk-admin/ ./gawk-admin/
 # The bundle lands where //go:embed dist expects it, alongside the committed
 # placeholder README.md that keeps the embed compilable on a fresh clone.
-COPY --from=ui /internal/portal/dist/ ./gawk-admin/internal/portal/dist/
+COPY --from=ui /src/gawk-admin/internal/portal/dist/ ./gawk-admin/internal/portal/dist/
 WORKDIR /src/gawk-admin
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \

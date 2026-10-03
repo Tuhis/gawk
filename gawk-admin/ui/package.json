@@ -5,15 +5,17 @@
   "version": "0.0.0",
   "type": "module",
   "//yaml": "Redoc's browser build statically imports `yaml` but declares it only as an OPTIONAL PEER, so whether it resolves depends on hoisting: it did on a developer machine and did not in the image build. Declared as a direct dependency so the build is deterministic rather than lucky.",
+  "//lint": "The shared session package (common-ts/oidc-session, docs/55 D3) is linted from here with this app's config: it has no toolchain of its own. oxlint refuses a PATH containing '..', hence the absolute path.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "oxlint",
+    "lint": "oxlint . \"$(cd ../../common-ts/oidc-session && pwd)\"",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@gawk/oidc-session": "file:../../common-ts/oidc-session",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "redoc": "2.5.4",

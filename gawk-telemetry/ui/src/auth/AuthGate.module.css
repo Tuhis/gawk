@@ -1,0 +1,35 @@
+.centred {
+  max-width: 60ch;
+  margin: 15vh auto 0;
+  padding: 0 var(--sp-4);
+  color: var(--text);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.centred h1 {
+  font-size: var(--fs-lg);
+  margin: 0 0 var(--sp-3);
+}
+
+.centred button {
+  background: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.centred button:hover {
+  background: var(--panel-hover);
+}
+
+.error {
+  color: var(--bad);
+}
+
+.dim {
+  color: var(--text-dim);
+}

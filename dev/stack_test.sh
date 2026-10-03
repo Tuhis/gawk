@@ -137,15 +137,23 @@ check "telemetry does not start without its profile" \
     sh -c '! docker compose --env-file /dev/null config --services | grep -q "^telemetry$"'
 check "the telemetry profile adds telemetry" in_profile telemetry telemetry
 
-# The read/dashboard listener is never routed publicly (CLAUDE.md), so it is
-# not published at all — reach it with `docker compose exec`. Asserted on the
-# CONTAINER port: a published mapping renders as `target: 8081`, whatever host
-# port it was given.
-if COMPOSE_PROFILES=telemetry dc config 2>/dev/null | grep -q 'target: 8081'; then
-    fail "the telemetry read listener is published"
+# The read/dashboard listener is never routed publicly (CLAUDE.md). Since R53
+# it is published for the browser's sign-in, so what is asserted is the
+# posture that makes that safe: loopback only, and never without the OIDC
+# gate (docs/55).
+tm_cfg=$(COMPOSE_PROFILES=telemetry dc config --format json 2>/dev/null)
+tm_ports=$(printf '%s' "$tm_cfg" | jq -r '.services.telemetry.ports[] | "\(.host_ip // "*") \(.target)"' 2>/dev/null)
+if printf '%s\n' "$tm_ports" | grep -q '^127\.0\.0\.1 8091$' && ! printf '%s\n' "$tm_ports" | grep -qv '^127\.0\.0\.1 '; then
+    ok "the telemetry listeners are published on loopback only"
 else
-    ok "the telemetry read listener is not published"
+    fail "the telemetry listeners are not loopback-only: $tm_ports"
 fi
+if printf '%s' "$tm_cfg" | jq -e '.services.telemetry.command | any(startswith("-oidc-issuer=http"))' >/dev/null 2>&1; then
+    ok "the published dashboard is OIDC-gated"
+else
+    fail "the telemetry dashboard is published without -oidc-issuer"
+fi
+check "the telemetry profile adds its fake IdP" in_profile telemetry fakeidp-telemetry
 
 # §5: -insecure belongs to exactly one kind of client — the in-container Go
 # publisher on the compose network (`pubsim` and, since R42, the `rooms`

@@ -148,7 +148,9 @@ ingest:
 read:
   port: 8081
   # Optional internal-only Ingress for operators who want the dashboard at a
-  # URL. Turn basicAuth on if you do.
+  # URL. It needs exactly one auth mode: read.oidc (the documented path) or
+  # read.basicAuth. The chart refuses an Ingress with neither, and refuses
+  # both at once (docs/55 D1).
   ingress:
     enabled: false
     className: nginx-int
@@ -162,6 +164,20 @@ read:
     user: ""
     password: ""
     passwordRef: {}
+  # OIDC for the read surface (R53, docs/55): the dashboard runs the code+PKCE
+  # flow against this issuer and every /v1, /live and /mcp request carries a
+  # bearer JWT holding `role`. Setting `issuer` turns the mode on; clientId and
+  # audience are then required. Recipe: docs/self-hosting.md (Keycloak client
+  # `gawk-telemetry`, client role `telemetry-reader`). The pod's probes stay on
+  # the ingest /healthz either way: an IdP outage never takes ingest down
+  # (docs/55 D8).
+  oidc:
+    issuer: ""
+    clientId: ""
+    audience: ""
+    # Where the roles live in the token; `{audience}` is replaced by audience.
+    rolesClaim: "resource_access.{audience}.roles"
+    role: telemetry-reader
 
 # The service's own health, in Prometheus format, on a THIRD listener: a
 # ClusterIP-only Service, never an Ingress. It carries no broadcast, session or

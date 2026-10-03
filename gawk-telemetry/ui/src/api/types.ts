@@ -105,6 +105,18 @@ export interface Snapshot {
 // --- meta -------------------------------------------------------------------
 
 /** What this deployment can do and where its boundaries are. Asked once. */
+/**
+ * `GET /v1/me` (docs/55 D5): the identity the bearer token carries. OIDC mode
+ * only. `roles` is what the token grants on this client — the missing-role
+ * page shows it, because "which roles DO I have?" is the operator's next
+ * question.
+ */
+export interface Me {
+  subject: string;
+  email?: string;
+  roles?: string[];
+}
+
 export interface Meta {
   retentionDays: number;
   /** The raw-retention boundary as an instant. Older sessions are rollup-only. */

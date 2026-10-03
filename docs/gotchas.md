@@ -1456,8 +1456,34 @@ Add to it when a new gotcha lands in `docs/`.
   rate-limit token and touches no network — instead of starting a fresh
   fetch. Production shrugs (the client's retry gets a clean fetch); a test
   asserting "the refilled token buys the next verification" flakes on loaded
-  runners. `keyset_test.go`'s rotation-under-attack test documents and
+  runners. `gawk-server/oidcauth/keyset_test.go`'s rotation-under-attack test documents and
   absorbs the window with a bounded retry.
+- **`EventSource` cannot send an `Authorization` header**, so a bearer-gated
+  SSE endpoint needs a `fetch` + `ReadableStream` parser instead
+  (`gawk-telemetry/ui/src/lib/sse.ts`). Putting the token in the URL lands it
+  in Ingress logs and history; a cookie brings back CSRF. Two traps come
+  with the parser: an SSE event with **no `data:` line is never
+  dispatched** (the server's final `event: expired` therefore carries
+  `data: {}`), and the reconnect rules `EventSource` applied implicitly —
+  retry delay, giving up on a non-2xx — must be written out by hand.
+  ([docs/55](55-telemetry-oidc.md) D4)
+- **Kubernetes readiness is pod-wide.** An unready pod leaves *every*
+  Service that selects it. `gawk-telemetry` serves the public ingest and the
+  OIDC-gated read surface from one pod, so its read-side `/readyz` (IdP
+  discovery) must never be its readinessProbe: an IdP outage would pull the
+  pod out of the ingest Service and 503 every viewer's telemetry. The chart
+  keeps both probes on the ingest `/healthz` and CI asserts it.
+  ([docs/55](55-telemetry-oidc.md) D8)
+- **A push made with the default `GITHUB_TOKEN` starts no workflow run**, so
+  a CI job that commits to a PR branch with it leaves the new head with no
+  checks and branch protection unable to merge. That is one reason the
+  `common-ts-lock` job is check-only rather than bumping locks itself.
+  ([docs/55](55-telemetry-oidc.md) D10, §11)
+- **oxlint refuses a path argument containing `..`**, so a consumer SPA
+  lints `common-ts/` through an absolute path (`$(cd ../../common-ts/… &&
+  pwd)` in the lint script). And `go run ./tools/<x>` does not work from the
+  repo root, which has no `go.mod`: each tool is its own module, run as
+  `go -C tools/<x> run . …`.
 - **client-go's `LeaderElector.Run` returns for good on leadership loss** — it
   never re-campaigns: its godoc does note the stopped-holding-the-lease
   return, but nothing warns that campaigning again is the caller's job. A

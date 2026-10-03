@@ -57,7 +57,7 @@ pre-telemetry charts — asserted in CI, not merely intended.
 ```mermaid
 flowchart LR
     V["viewers + broadcasters"] -- "POST …/ingest<br/>(same-origin path on the frontend Ingress)" --> I[":8080 ingest<br/>PUBLIC"]
-    O["operator"] -- "port-forward /<br/>internal Ingress + basic auth" --> R[":8081 read<br/>NEVER PUBLIC"]
+    O["operator"] -- "port-forward /<br/>internal Ingress + OIDC" --> R[":8081 read<br/>NEVER PUBLIC"]
     I --> S[("NDJSON partitions<br/>+ permanent rollups")]
     R --> S
     R --> D["dashboard · read API · MCP"]
@@ -66,12 +66,31 @@ flowchart LR
 | Listener | Default | Carries | Exposure |
 |----------|---------|---------|----------|
 | ingest | `:8080` | `POST /api/telemetry/v1/ingest` | **Public**, via a same-origin path on the frontend's Ingress |
-| read | `:8081` | dashboard, read API, MCP | **Never public** — ClusterIP, port-forward, or an internal Ingress with basic auth |
+| read | `:8081` | dashboard, read API, MCP | **Never public** — ClusterIP, port-forward, or an internal Ingress gated by OIDC (or basic auth) |
 | metrics | `:8082` | `GET /metrics` (build info, SQL view probe) | ClusterIP only, for a Prometheus scrape; no identifiers |
 
 The read side aggregates every broadcast on the fleet and should be no
 more reachable than the relay's `/statusz`. The chart refuses to render a
-read Ingress without basic auth.
+read Ingress without an auth mode.
+
+The read listener has three auth modes, exactly one at a time
+([docs/55](../docs/55-telemetry-oidc.md) D1):
+
+| Mode | Set | Gate | Use it for |
+|------|-----|------|------------|
+| none | nothing | none | ClusterIP + port-forward (the default) |
+| oidc | `-oidc-issuer`, `-oidc-client-id`, `-oidc-audience` | bearer JWT carrying `-oidc-role` | any Ingress; the same IdP as `gawk-admin` ([recipe](../docs/self-hosting.md#931-the-same-idp-for-the-telemetry-dashboard-r53)) |
+| basic | `-read-user`, `-read-password` | HTTP basic auth | no IdP; a laptop with no network |
+
+In OIDC mode the dashboard signs in with code + PKCE and holds its tokens
+in memory; `/v1/*`, `/live*` and `/mcp` need the role, `/v1/me` only a
+valid token, and the page shell, `/auth/config` and `/readyz` are open. The
+live stream ends at its token's expiry and reconnects with a fresh one, so
+removing the role locks a reader out within one access-token lifetime.
+`/readyz` on the read port reports IdP discovery (503 while unresolved), but
+the pod's probes stay on the ingest `/healthz`: an IdP outage never takes
+ingest down. Security headers (CSP, `frame-ancestors 'none'`) are sent in
+every mode.
 
 The metrics listener is separate because a scraper holds none of the read
 listener's credentials. It carries the SQL console's health:
@@ -106,6 +125,13 @@ Code at it through the same port-forward:
 ```json
 { "mcpServers": { "gawk": { "type": "http", "url": "http://localhost:8081/mcp" } } }
 ```
+
+With OIDC on, `/mcp` answers an unauthenticated request with the MCP
+authorization challenge (`401` + `resource_metadata`, RFC 9728 metadata at
+`/.well-known/oauth-protected-resource/mcp` naming the issuer), and Claude
+Code runs the browser sign-in itself against a pre-registered public
+client; requests carrying an `Origin` header are refused. Setup, and a
+client-credentials fallback: [self-hosting §9.3.1](../docs/self-hosting.md#931-the-same-idp-for-the-telemetry-dashboard-r53).
 
 Start with `diagnose(sessionId)` — it runs the
 [bottleneck playbook](../docs/13-observability.md#bottleneck-playbook) and
@@ -201,7 +227,11 @@ Every flag has a `GAWK_TELEMETRY_*` environment fallback
 | `-sql-probe-interval` | `GAWK_TELEMETRY_SQL_PROBE_INTERVAL` | `5m` (`0` disables the view probe) |
 | `-metrics-addr` | `GAWK_TELEMETRY_METRICS_ADDR` | `:8082` (ClusterIP only; `off` disables) |
 | `-stats-key` | `GAWK_TELEMETRY_STATS_KEY` | (empty = the find-a-stream lookup is off) |
-| `-read-user` / `-read-password` | `GAWK_TELEMETRY_READ_USER` / `_PASSWORD` | (empty = no auth) |
+| `-read-user` / `-read-password` | `GAWK_TELEMETRY_READ_USER` / `_PASSWORD` | (empty = no basic auth) |
+| `-oidc-issuer` / `-oidc-client-id` / `-oidc-audience` | `GAWK_TELEMETRY_OIDC_ISSUER` / `_CLIENT_ID` / `_AUDIENCE` | (empty = no OIDC; all three or none, never with basic auth) |
+| `-oidc-roles-claim` | `GAWK_TELEMETRY_OIDC_ROLES_CLAIM` | `resource_access.{audience}.roles` |
+| `-oidc-role` | `GAWK_TELEMETRY_OIDC_ROLE` | `telemetry-reader` |
+| `-dev-oidc-proxy` | `GAWK_TELEMETRY_DEV_OIDC_PROXY` | (empty; dev only — serves `/idp/` from this URL, never in the chart) |
 | `-ingest-rate` / `-ingest-burst` | `GAWK_TELEMETRY_INGEST_RATE` / `_BURST` | `300` / `1200` (global) |
 | `-ingest-session-rate` / `-ingest-session-burst` | `GAWK_TELEMETRY_INGEST_SESSION_RATE` / `_SESSION_BURST` | `1` / `10` (per session) |
 | `-cors-origin` | `GAWK_TELEMETRY_CORS_ORIGIN` | (empty) |

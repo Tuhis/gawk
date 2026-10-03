@@ -318,14 +318,31 @@ def collect_cargo(workspace: str, target: str) -> list[Package]:
     return sorted(seen.values(), key=lambda p: p.name.lower())
 
 
+def npm_runtime_entries(lock: dict) -> dict[str, dict]:
+    """The lockfile's third-party runtime packages, keyed by install path.
+
+    Excludes the root (""), build tooling (`dev: true`) and the repo's OWN
+    `file:` packages under common-ts/ (docs/55 D3). npm records one of those
+    twice — the `node_modules/@gawk/…` symlink (`link: true`, no licence
+    field) and its target, a path outside `node_modules/` — and neither is
+    third-party code: it is this repository's, under this repository's
+    licence, and listing it as a dependency would be both wrong and a
+    "declares no license" failure in `--check`.
+    """
+    return {
+        path: entry
+        for path, entry in lock["packages"].items()
+        if path
+        and not entry.get("dev")
+        and not entry.get("link")
+        and "node_modules/" in path
+    }
+
+
 def collect_npm(project: str) -> list[Package]:
     cwd = REPO / project
     lock = json.loads((cwd / "package-lock.json").read_text(encoding="utf-8"))
-    runtime = {
-        path: entry
-        for path, entry in lock["packages"].items()
-        if path and not entry.get("dev")
-    }
+    runtime = npm_runtime_entries(lock)
     # Licence *texts* only exist on disk, so install exactly the runtime tree.
     had_node_modules = (cwd / "node_modules").is_dir()
     run(["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], cwd)
@@ -478,8 +495,9 @@ COMPONENTS = {
         path="gawk-telemetry",
         blurb=(
             "The optional diagnostics service, listed as the *deployed* image builds\n"
-            "it: `-tags duckdb`. A default (tag-free) build links no third-party Go\n"
-            "code at all. The bundled dashboard UI is covered by\n"
+            "it: `-tags duckdb`. A default (tag-free) build links only the OIDC\n"
+            "verifier's dependencies (go-oidc, go-jose, x/oauth2). The bundled\n"
+            "dashboard UI is covered by\n"
             "`ui/THIRD-PARTY-NOTICES.md`."
         ),
         sources="`go list -deps -tags duckdb ./...` in `gawk-telemetry/`.",
@@ -708,9 +726,8 @@ def check() -> int:
         lock = json.loads(
             (REPO / project / "package-lock.json").read_text(encoding="utf-8")
         )
-        for path, entry in lock["packages"].items():
-            if not path or entry.get("dev"):
-                continue  # build tooling is not redistributed
+        # Build tooling is not redistributed, and first-party links are ours.
+        for path, entry in npm_runtime_entries(lock).items():
             checked += 1
             name = re.sub(r"^.*node_modules/", "", path)
             declared = NPM_LICENSE_OVERRIDES.get(name) or entry.get("license")

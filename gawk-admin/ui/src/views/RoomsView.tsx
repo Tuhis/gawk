@@ -3,7 +3,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useApi } from '../auth/AuthContext.tsx';
 import { ApiError } from '../api/client.ts';
 import type { Room, RoomParticipant, RoomWithSecret } from '../api/types.ts';
-import { AuthRedirect } from '../auth/session.ts';
+import { AuthRedirect } from '@gawk/oidc-session';
 import { Dialog } from '../components/Dialog.tsx';
 import { formatInstant } from '../lib/format.ts';
 import { useLoader } from '../lib/useLoader.ts';

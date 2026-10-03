@@ -9,7 +9,7 @@ import { createContext, useContext, useMemo, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react';
 
 import { ApiClient } from '../api/client.ts';
-import type { AuthSession, SessionState } from './session.ts';
+import type { AuthSession, SessionState } from '@gawk/oidc-session';
 
 interface AuthContextValue {
   session: AuthSession;

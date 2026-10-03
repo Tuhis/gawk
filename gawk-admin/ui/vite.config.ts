@@ -82,6 +82,11 @@ export default defineConfig({
   // The IdP must list the dev origin as a valid redirect URI for the public
   // client, or the authorization request is refused before it reaches us.
   server: {
+    // `@gawk/oidc-session` is a `file:` link to ../../common-ts (docs/55 D3),
+    // and Vite resolves it to that real path — outside this project, where the
+    // dev server (and vitest, which runs the package's own tests from here)
+    // refuses to read by default.
+    fs: { allow: ['.', '../../common-ts'] },
     proxy: Object.fromEntries(
       ['/api', '/auth', '/healthz', '/readyz'].map((path) => [
         path,
@@ -101,11 +106,27 @@ export default defineConfig({
   //
   // main.tsx is the only exclusion beyond the tests themselves: it is the
   // `createRoot` bootstrap, which runs in a browser and asserts nothing.
+  //
+  // The shared session package (docs/55 D3) is counted too: it is bundled into
+  // this SPA exactly as it was when it lived in src/auth, so leaving it out
+  // would move the badge without any code having changed. `allowExternal` is
+  // what lets v8 count a file outside this project; its harness (testing.ts)
+  // is test code and excluded like the tests.
   test: {
+    // The shared session package (docs/55 D3) is tested where it lives, by
+    // this run: it has no toolchain of its own. Every consumer's vitest
+    // includes it, so a change to it is exercised against each of them.
+    include: ['src/**/*.test.{ts,tsx}', '../../common-ts/oidc-session/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/**/*.{ts,tsx}'],
-      exclude: ['src/**/*.test.{ts,tsx}', 'src/main.tsx'],
+      include: ['src/**/*.{ts,tsx}', '**/common-ts/oidc-session/*.ts'],
+      exclude: [
+        'src/**/*.test.{ts,tsx}',
+        'src/main.tsx',
+        '**/common-ts/oidc-session/*.test.ts',
+        '**/common-ts/oidc-session/testing.ts',
+      ],
+      allowExternal: true,
       reporter: ['text-summary', 'json-summary'],
       reportsDirectory: 'coverage',
     },

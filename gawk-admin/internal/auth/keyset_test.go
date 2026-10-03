@@ -1,7 +1,8 @@
 package auth
 
-// The JWKS rate floor (keyset.go). Two layers: the bucket's own arithmetic,
-// and what it does to real requests once oidc.RemoteKeySet is behind it.
+// The JWKS rate floor, against real requests once oidc.RemoteKeySet is behind
+// it. The floor itself lives in gawk-server/oidcauth (keyset.go) since R53
+// (docs/55 D2), and the bucket's own arithmetic is tested there.
 
 import (
 	"net/http"
@@ -35,94 +36,6 @@ func (c *testClock) advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.t = c.t.Add(d)
-}
-
-// --- the bucket -------------------------------------------------------------
-
-// The two numbers the doc comment promises an operator: three fetches back to
-// back from cold, then one per twenty seconds.
-func TestJWKSThrottleDefaultsAreThreeFetchesPerMinute(t *testing.T) {
-	if defaultJWKSFetchBurst != 3 {
-		t.Errorf("defaultJWKSFetchBurst = %d, want 3", defaultJWKSFetchBurst)
-	}
-	if defaultJWKSFetchInterval != 20*time.Second {
-		t.Errorf("defaultJWKSFetchInterval = %v, want 20s (three per minute)", defaultJWKSFetchInterval)
-	}
-}
-
-// The bucket starts FULL, so a key rotation on an otherwise idle process gets
-// its fetch immediately and costs zero 401s.
-func TestJWKSThrottleStartsFullAndRefillsOnePerInterval(t *testing.T) {
-	clk := newTestClock()
-	th := newJWKSThrottle(defaultJWKSFetchInterval, defaultJWKSFetchBurst, clk.now)
-
-	for i := range defaultJWKSFetchBurst {
-		if !th.allow() {
-			t.Fatalf("fetch %d refused from a full bucket", i+1)
-		}
-	}
-	if th.allow() {
-		t.Fatal("the bucket handed out more than its burst without time passing")
-	}
-
-	// One token short of the interval is still refused; the interval exactly
-	// is allowed. This is the worst-case rotation delay the comment claims.
-	clk.advance(defaultJWKSFetchInterval - time.Nanosecond)
-	if th.allow() {
-		t.Fatal("a token accrued before the refill interval elapsed")
-	}
-	clk.advance(time.Nanosecond)
-	if !th.allow() {
-		t.Fatalf("no token after a full %v refill interval", defaultJWKSFetchInterval)
-	}
-
-	// And it never accrues past the burst, however long it idles.
-	clk.advance(24 * time.Hour)
-	for i := range defaultJWKSFetchBurst {
-		if !th.allow() {
-			t.Fatalf("fetch %d refused after a long idle", i+1)
-		}
-	}
-	if th.allow() {
-		t.Fatal("the bucket accumulated past its burst while idle")
-	}
-}
-
-// Zero and negative values are the caller asking for the default, never for an
-// unthrottled or a permanently locked bucket.
-func TestJWKSThrottleZeroOptionsMeanTheDefaults(t *testing.T) {
-	clk := newTestClock()
-	th := newJWKSThrottle(0, 0, clk.now)
-	if th.burst != float64(defaultJWKSFetchBurst) || th.interval != defaultJWKSFetchInterval {
-		t.Fatalf("zero options gave burst %v interval %v, want the defaults", th.burst, th.interval)
-	}
-	th = newJWKSThrottle(-time.Second, -4, clk.now)
-	if th.burst != float64(defaultJWKSFetchBurst) || th.interval != defaultJWKSFetchInterval {
-		t.Fatalf("negative options gave burst %v interval %v, want the defaults", th.burst, th.interval)
-	}
-}
-
-func TestJWKSThrottleIsSafeUnderConcurrentUse(t *testing.T) {
-	th := newJWKSThrottle(time.Hour, 5, time.Now)
-	var wg sync.WaitGroup
-	granted := make([]bool, 64)
-	for i := range granted {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			granted[i] = th.allow()
-		}()
-	}
-	wg.Wait()
-	n := 0
-	for _, ok := range granted {
-		if ok {
-			n++
-		}
-	}
-	if n != 5 {
-		t.Errorf("granted %d tokens concurrently, want exactly the burst (5)", n)
-	}
 }
 
 // --- the floor, against real requests ---------------------------------------
@@ -161,7 +74,7 @@ func TestUnverifiableTokensCannotFetchMoreThanTheBucketAllows(t *testing.T) {
 		t.Errorf("JWKS fetches = %d for %d unverifiable tokens, want the burst (%d) plus the priming fetch",
 			got, attempts, defaultJWKSFetchBurst)
 	}
-	if got := a.throttle.tokensLeft(); got != 0 {
+	if got := a.JWKSFetchTokensLeft(); got != 0 {
 		t.Errorf("tokens left = %v, want 0: the bucket should be spent", got)
 	}
 }
@@ -226,7 +139,7 @@ func TestRotationDuringAnAttackWaitsExactlyOneRefillInterval(t *testing.T) {
 			t.Fatalf("drain %d: status = %d, want 401", i, rec.Code)
 		}
 	}
-	if got := a.throttle.tokensLeft(); got != 0 {
+	if got := a.JWKSFetchTokensLeft(); got != 0 {
 		t.Fatalf("tokens left = %v after the drain, want 0", got)
 	}
 
@@ -296,7 +209,7 @@ func TestAThrottledFetchLeavesTheCachedKeysWorking(t *testing.T) {
 		token := idp.mintWith(t, keyB(), "forged-kid-"+strconv.Itoa(i), idp.claims())
 		do(t, h, http.MethodGet, "/api/v1/me", token)
 	}
-	if got := a.throttle.tokensLeft(); got != 0 {
+	if got := a.JWKSFetchTokensLeft(); got != 0 {
 		t.Fatalf("tokens left = %v, want 0 — the test is not exercising the throttled path", got)
 	}
 

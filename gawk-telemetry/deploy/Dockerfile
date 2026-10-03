@@ -42,15 +42,23 @@
 #
 # Only the manifests are copied before `npm ci`, so a source-only change reuses
 # the dependency layer.
+#
+# The stage mirrors the repository layout under /src (docs/55 D3), exactly as
+# gawk-admin's does: the UI depends on the shared session package as
+# `file:../../common-ts/oidc-session`, and `npm ci` links that path, so it has
+# to resolve here exactly as it does in a checkout. The package's own
+# package.json is one of the manifests — it is what `npm ci` reads — and its
+# source follows with the UI's. The same layout puts vite.config.ts's
+# `../internal/dashboard/dist` where the Go stage collects it, so the sed that
+# used to rewrite that path is gone.
 FROM node:26-alpine AS ui
-WORKDIR /ui
+WORKDIR /src/gawk-telemetry/ui
 COPY gawk-telemetry/ui/package.json gawk-telemetry/ui/package-lock.json ./
+COPY common-ts/oidc-session/package.json /src/common-ts/oidc-session/
 RUN npm ci
+COPY common-ts/oidc-session/ /src/common-ts/oidc-session/
 COPY gawk-telemetry/ui/ ./
-# vite.config.ts writes to ../internal/dashboard/dist, so give it that shape.
-RUN mkdir -p /internal/dashboard && \
-    sed -i "s#'../internal/dashboard/dist'#'/internal/dashboard/dist'#" vite.config.ts && \
-    npm run build
+RUN npm run build
 
 FROM golang:1.26-trixie AS build
 WORKDIR /src
@@ -69,7 +77,7 @@ COPY gawk-server/ ./gawk-server/
 COPY gawk-telemetry/ ./gawk-telemetry/
 # The bundle lands where //go:embed dist expects it, replacing the committed
 # placeholder directory.
-COPY --from=ui /internal/dashboard/dist/ ./gawk-telemetry/internal/dashboard/dist/
+COPY --from=ui /src/gawk-telemetry/internal/dashboard/dist/ ./gawk-telemetry/internal/dashboard/dist/
 WORKDIR /src/gawk-telemetry
 ARG VERSION=dev
 # -tags duckdb selects internal/sqlengine's real engine (the untagged build gets

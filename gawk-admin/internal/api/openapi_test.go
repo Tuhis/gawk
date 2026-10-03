@@ -275,7 +275,12 @@ func sameSet(a, b []string) bool {
 // token — and its codes never pass through internal/api at all. A check that
 // walked only this package called the document "held to the code" while
 // describing the most common failure path wrongly.
-var errorCodePackages = []string{".", "../auth"}
+//
+// Since R53 (docs/55 D2) the code that writes those auth codes is the shared
+// verifier, gawk-server/oidcauth, which internal/auth only configures — so the
+// walk reads that package's source, through the same relative path this
+// module's `replace` of gawk-server uses.
+var errorCodePackages = []string{".", "../../../gawk-server/oidcauth"}
 
 // notUnderAPIv1 are codes a package declares that no /api/v1 response can
 // carry, with the reason. They are excluded from the document's enum on the

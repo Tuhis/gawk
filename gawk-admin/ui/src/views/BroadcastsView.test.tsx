@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { BroadcastsView } from './BroadcastsView.tsx';
 import type { Broadcast } from '../api/types.ts';
 import { AuthProvider } from '../auth/AuthContext.tsx';
-import { AuthRedirect } from '../auth/session.ts';
+import { AuthRedirect } from '@gawk/oidc-session';
 import { bodyOf, json, renderWithSession, stubSession } from '../testing/harness.tsx';
 
 afterEach(cleanup);

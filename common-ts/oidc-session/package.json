@@ -1,0 +1,12 @@
+{
+  "name": "@gawk/oidc-session",
+  "private": true,
+  "license": "Apache-2.0",
+  "version": "0.0.0",
+  "type": "module",
+  "//": "Repo-internal, never published (docs/55 D3). No build step: `exports` point at the TypeScript source, which each consuming SPA's Vite and vitest resolve directly. No dependencies of any kind, and no node_modules of its own: the tests resolve vitest and jsdom from the consumer whose vitest run includes them. `./testing` is the fake-IdP harness, for test files only. A change here must bump every consumer's common-ts.lock (docs/55 D10; `go -C tools/commonlock run . update`).",
+  "exports": {
+    ".": "./session.ts",
+    "./testing": "./testing.ts"
+  }
+}

@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import type { Webhook, WebhookEventName, WebhookTestResult } from '../api/types.ts';
-import { AuthRedirect } from '../auth/session.ts';
+import { AuthRedirect } from '@gawk/oidc-session';
 import { Dialog } from '../components/Dialog.tsx';
 import { useLoader } from '../lib/useLoader.ts';
 import ui from '../styles/ui.module.css';

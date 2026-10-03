@@ -4,15 +4,17 @@
   "license": "Apache-2.0",
   "version": "0.0.0",
   "type": "module",
+  "//lint": "The shared session package (common-ts/oidc-session, docs/55 D3) is linted from here with this app's config: it has no toolchain of its own. oxlint refuses a PATH containing '..', hence the absolute path.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "oxlint",
+    "lint": "oxlint . \"$(cd ../../common-ts/oidc-session && pwd)\"",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@gawk/oidc-session": "file:../../common-ts/oidc-session",
     "@tanstack/react-virtual": "^3.14.9",
     "echarts": "^6.1.0",
     "react": "^19.2.7",

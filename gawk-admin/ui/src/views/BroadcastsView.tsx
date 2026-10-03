@@ -4,7 +4,7 @@ import { useApi } from '../auth/AuthContext.tsx';
 import { ApiError, enforcementNotice } from '../api/client.ts';
 import type { ApiClient } from '../api/client.ts';
 import type { Ban, Broadcast, BroadcastBanState, BroadcastsPage, CreateBanRequest } from '../api/types.ts';
-import { AuthRedirect } from '../auth/session.ts';
+import { AuthRedirect } from '@gawk/oidc-session';
 import { BanDialog } from '../components/BanDialog.tsx';
 import type { BanRequestDraft } from '../components/BanDialog.tsx';
 import { FlaggedPinSlot } from '../components/FlaggedPin.tsx';

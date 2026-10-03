@@ -140,6 +140,27 @@ one that releases (`feat`/`fix`), or the touched paths bump nothing. The `Ban` C
 (additive-only, docs/42 §4.2) and upgrade ordering (relay chart first,
 docs/self-hosting.md §9).
 
+**`gawk-server/oidcauth/` has three consumers.** The one OIDC verifier (R53,
+docs/55 D2) is compiled into the relay's ops listener, `gawk-admin` and
+`gawk-telemetry`. A semantic change there carries a commit touching
+`gawk-admin/` **and** one touching `gawk-telemetry/` in the same PR, so
+release-please cuts all three; the admin and telemetry CI gates already run
+on any `gawk-server/` change. Inside the relay only `internal/ops/auth.go`
+may import it — `TestOnlyTheOpsAuthPathImportsAnOIDCLibrary` enforces that.
+
+**`common-ts/` holds shared TypeScript, and its consumers are locked to it.**
+`common-ts/<pkg>` is a repo-internal npm package (no build step, never
+published) that an operator SPA depends on as `file:../../common-ts/<pkg>`;
+today that is `@gawk/oidc-session`, used by `gawk-admin/ui` and
+`gawk-telemetry/ui`. Shared Go does not live there — it stays a public
+package in `gawk-server`. Because a commit under `common-ts/` belongs to no
+release-please component, every consumer commits a `common-ts.lock` (the
+package's tree hash) inside its own release path. After editing a package,
+run `go -C tools/commonlock run . update` and commit the lock files; the
+required `common-ts-lock` CI job only checks, and fails red with that
+command while any lock is stale. The squash commit then touches every consumer, so a
+`feat`/`fix` title releases each of them (docs/55 D10).
+
 ## Running the gates before you push
 
 CI runs these on every PR; running them locally first is much faster than

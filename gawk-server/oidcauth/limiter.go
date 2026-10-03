@@ -1,4 +1,4 @@
-package auth
+package oidcauth
 
 import (
 	"sync"
@@ -27,7 +27,7 @@ type bucket struct {
 // house precedent, no new dependency, and small enough to read in one sitting.
 //
 // It differs from that one in two ways, both deliberate: eviction is driven by
-// the owner's existing background goroutine rather than one of its own (Auth
+// the owner's existing background goroutine rather than one of its own (the Verifier
 // already has a ticker), and `now` is injectable so the tests can prove refill
 // and eviction without sleeping.
 type ipLimiter struct {
@@ -51,7 +51,7 @@ func newIPLimiter(rate float64, burst int, now func() time.Time) *ipLimiter {
 }
 
 // Allow spends one token for ip and reports whether it had one. Only callers
-// that are already answering a failed credential call it (auth.go), so a
+// that are already answering a failed credential call it (http.go), so a
 // well-behaved client never touches its budget.
 func (l *ipLimiter) Allow(ip string) bool {
 	l.mu.Lock()
@@ -84,7 +84,7 @@ func (l *ipLimiter) Allow(ip string) bool {
 }
 
 // sweep drops buckets that are back at full capacity and idle. Called from
-// Auth's background goroutine.
+// the Verifier's background goroutine.
 func (l *ipLimiter) sweep() {
 	l.mu.Lock()
 	defer l.mu.Unlock()

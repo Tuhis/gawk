@@ -19,14 +19,21 @@ server at a *real* backend and you get hot reload against live broadcasts:
 # 1. forward the deployed read listener
 kubectl -n production port-forward svc/gawk-telemetry-read 8081:8081 &
 
-# 2. dev server, proxying /live, /v1 and /mcp to it. The proxy injects the
-#    basic-auth header so the browser never prompts and no credential is
-#    typed into a page that is being hot-reloaded.
+# 2. dev server, proxying /live, /v1, /mcp and /auth to it.
 cd ui
 npm ci
-GAWK_TM_AUTH="admin:$(kubectl -n production get secret gawk-fleet \
-  -o jsonpath='{.data.telemetryReadPassword}' | base64 -d)" npm run dev
+npm run dev
 ```
+
+With OIDC on (the reference deployment, docs/55) the page asks the backend
+for `/auth/config` through the proxy and runs the code + PKCE flow against
+the real IdP itself, so nothing is injected and no credential touches the
+dev server. The IdP's `gawk-telemetry` client must list
+`http://localhost:5174/*` as a redirect URI (self-hosting §9.3.1).
+
+Against a backend still in basic-auth mode, let the proxy inject the
+header instead, so the browser never prompts:
+`GAWK_TM_AUTH='user:password' npm run dev`.
 
 Vite binds IPv6 first, so use **`http://localhost:5174`** — `127.0.0.1`
 will be refused.

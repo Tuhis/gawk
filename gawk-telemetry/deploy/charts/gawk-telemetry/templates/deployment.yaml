@@ -12,6 +12,19 @@ spec:
   {{- fail "gawk-telemetry does not scale horizontally: one writer per session file, one in-memory live projection. Keep replicaCount: 1." }}
   {{- end }}
   replicas: 1
+  {{- /* The read surface has exactly one auth mode at a time (docs/55 D1);
+         the binary refuses the same combinations, this refuses them before
+         a CrashLoopBackOff does. */}}
+  {{- if and .Values.read.basicAuth.enabled .Values.read.oidc.issuer }}
+  {{- fail "read.basicAuth.enabled and read.oidc.issuer are both set: the read surface takes exactly one auth mode (docs/55 D1)" }}
+  {{- end }}
+  {{- if .Values.read.oidc.issuer }}
+  {{- range $k := list "clientId" "audience" "rolesClaim" "role" }}
+  {{- if not (get $.Values.read.oidc $k) }}
+  {{- fail (printf "read.oidc.issuer is set but read.oidc.%s is empty: OIDC mode needs issuer, clientId and audience, and a non-empty rolesClaim and role (docs/55 D9)" $k) }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
   # Recreate, not RollingUpdate: two pods must never hold the same PVC and the
   # same session files at once.
   strategy:
@@ -142,6 +155,23 @@ spec:
               value: {{ .Values.read.basicAuth.password | quote }}
               {{- end }}
             {{- end }}
+            {{- with .Values.read.oidc }}
+            {{- if .issuer }}
+            - name: GAWK_TELEMETRY_OIDC_ISSUER
+              value: {{ .issuer | quote }}
+            - name: GAWK_TELEMETRY_OIDC_CLIENT_ID
+              value: {{ .clientId | quote }}
+            - name: GAWK_TELEMETRY_OIDC_AUDIENCE
+              value: {{ .audience | quote }}
+            - name: GAWK_TELEMETRY_OIDC_ROLES_CLAIM
+              value: {{ .rolesClaim | quote }}
+            - name: GAWK_TELEMETRY_OIDC_ROLE
+              value: {{ .role | quote }}
+            {{- end }}
+            {{- end }}
+            {{- /* GAWK_TELEMETRY_DEV_OIDC_PROXY is deliberately never rendered:
+                   it is the docs/41 compose lane's /idp/ proxy, not a
+                   deployment knob (the GAWK_DEV_CERT precedent). */}}
           # Only the PUBLIC listener is probed: it is the one whose failure
           # means clients cannot report. A read-listener outage costs an
           # operator a page, not a fleet's telemetry.
