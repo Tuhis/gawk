@@ -381,6 +381,8 @@ jobs:
       # run.
       GAWK_REQUIRE_PIPEWIRE: "1"
       GAWK_REQUIRE_GST: "1"
+      # And the single-instance tests' private dbus-daemon (R66, docs/68 D8).
+      GAWK_REQUIRE_DBUS: "1"
     steps:
       # `inputs.attach_to` is empty on push and pull_request, so this is the
       # ordinary checkout in every case but a backfill. A backfill lints, tests
@@ -1002,7 +1004,10 @@ jobs:
           XDG_DATA_HOME="$scratch" "$unpacked/install-desktop.sh"
           entry="$scratch/applications/fi.ioio.gawk.broadcast.desktop"
           desktop-file-validate "$entry"
-          want='Exec="'"$base"'/a&b \\"c\\" \\$d \\\\e/gawk-broadcast-linux"'
+          # ` %u` after the quoted path is where a gawk:// link arrives
+          # (R66 docs/68 D11), whatever characters the path holds.
+          want='Exec="'"$base"'/a&b \\"c\\" \\$d \\\\e/gawk-broadcast-linux" %u'
+          grep -qx 'MimeType=x-scheme-handler/gawk;' "$entry"
           grep -qxF -- "$want" "$entry" || {
             echo "::error::Exec= is not the correctly quoted absolute path of the installed binary:"
             echo "want: $want"; echo "got:  $(grep '^Exec=' "$entry")"; exit 1; }
