@@ -119,6 +119,18 @@ impl Platform for Mac {
         crate::place::placement(ui)
     }
 
+    /// A link or a second launch of the bundle (R66, docs/68 D6): out of
+    /// the Dock if minimized, shown, and the app activated — a window only
+    /// ordered front stays behind the app that was active.
+    fn raise_window(&mut self, ui: &MainWindow, _activation: Option<String>) {
+        use slint::ComponentHandle;
+        ui.window().set_minimized(false);
+        let _ = ui.show();
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            objc2_app_kit::NSApplication::sharedApplication(mtm).activate();
+        }
+    }
+
     fn prepare_start(&mut self, _ui: &MainWindow, cfg: &Config) -> Result<Prepared, String> {
         let Some(picked) = self.picked.clone() else {
             return Err("Choose what to share first.".into());

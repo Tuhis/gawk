@@ -6,6 +6,8 @@
 //! the Share card, the menu bar's Settings…, notifications (MB5) — are in.
 
 #[cfg(target_os = "macos")]
+mod link;
+#[cfg(target_os = "macos")]
 mod network;
 #[cfg(target_os = "macos")]
 mod notify;
@@ -23,10 +25,15 @@ fn main() {
     // The commit build.rs stamped, for the version badge (crates/ui/build_rev.rs).
     gawk_ui::version::set_build_rev(option_env!("GAWK_BUILD_REV"));
     notify::init();
+    // R66 (docs/68 D8, D10): links arrive as Apple Events, cold or warm, and
+    // LaunchServices sends a second launch of the bundle to this process —
+    // so there is no endpoint of our own, only the inbox the handler fills.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let inbox = link::init(tx).then_some(rx);
     let args: Vec<String> = std::env::args().collect();
     let launch = gawk_ui::instance::Launch {
         request: gawk_ui::instance::Request::from_args(&args),
-        inbox: None,
+        inbox,
     };
     gawk_ui::shell::run(Box::new(platform::Mac::new()), platform::wire, launch);
 }

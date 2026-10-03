@@ -38,6 +38,9 @@ cp "$bin" "$app/Contents/MacOS/gawk-broadcast-macos"
 sed "s/@VERSION@/$version/g" "$here/Info.plist.in" > "$app/Contents/Info.plist"
 printf 'APPL????' > "$app/Contents/PkgInfo"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
+# R66 (docs/68 D10): the bundle declares the gawk:// scheme.
+scheme=$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw "$app/Contents/Info.plist")
+[ "$scheme" = gawk ] || { echo "error: Info.plist declares URL scheme '$scheme', not gawk" >&2; exit 1; }
 
 # The Dock and Finder icon (CFBundleIconFile "gawk"): a tools/icon
 # derivative, committed and drift-checked like the .ico (docs/53 D2). macOS
