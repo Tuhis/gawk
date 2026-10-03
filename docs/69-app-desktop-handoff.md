@@ -88,6 +88,15 @@ metrics). This is presentation, not capability: `lib/browserSupport.ts`'s
 A wrong guess costs a button that does nothing, and D4's fallback covers
 that.
 
+**iPadOS needs an explicit exclusion.** iPadOS Safari sends a desktop
+`Macintosh` user agent by default, and `detectClientIdentity` maps every
+`Macintosh` UA to `macos`. The offer is therefore shown on `macos` only when
+`navigator.maxTouchPoints <= 1`; an iPad reports more. On an iPad a
+`gawk://broadcast` link isn't harmless, because R65's iOS app registers the
+scheme. The gate is a small `isDesktopForHandoff(ua, maxTouchPoints)` in
+`lib/desktopLink.ts`. It is not a change to `detectClientIdentity`, whose
+metrics labels stay as they are.
+
 The offer is also hidden when `config.desktopHandoff` is `false` (D7) and
 while a broadcast is live: the card is gone by then anyway.
 
@@ -223,6 +232,7 @@ handler) → the note's "Didn't open? Get the app · Continue in the browser"
 | Automatic launch is blocked without user activation | Then the automatic mode degrades to the note with the button; V-1 records each browser |
 | Static rooms behind an attach secret: the desktop asks for it again | Its recent rooms may hold it (docs/68 D4); the browser path is one click away; carrying secrets is out (D3) |
 | Users on an old desktop build without R66 | The "Didn't open?" note; release order (HO3 after R66 ships) |
+| iPadOS Safari reports a `Macintosh` UA, so the offer would show and could open the iOS app | D2's `maxTouchPoints` gate, tested with real UA strings in HO2 |
 | The offer reads as nagging | One secondary line, no modal, no download link until asked (D1, D4) |
 
 ## 9. Chunks and acceptance criteria
@@ -230,8 +240,8 @@ handler) → the note's "Didn't open? Get the app · Continue in the browser"
 | Chunk | Scope | Accepted when |
 |---|---|---|
 | **HO1** | D3's builder, the restated vectors (after R66 LH1), D7's config and chart | Every R66 vector's canonical link is reproduced byte for byte (G5); no grant or secret can be produced, tested with a grant in the stash; the chart renders `desktopHandoff` with and without the value set (G6) |
-| **HO2** | D1, D2, D4, D6, D8: the button, the room's secondary action, the note, the `NATIVE_TIP` copy | Component tests: the offer shows on the three desktop OS identities and on none of the others, nor on viewer and landing pages (G3); the anchor's `href` carries room, nick and a non-default relay (G1); after a click, Start is still enabled and the pending room is intact (G7, D6). An e2e step in `e2e/run.mjs` clicks the button in headless Chrome with no handler and asserts the page and room chip remain. |
-| **HO3** | D5: the remembered choice and automatic launch, on V-1's mechanism | Unit tests: automatic only on `#/broadcast?room=` with `"auto"` set; once per page load; not on reload or back/forward; never on non-desktop OS, with a dropped relay, or with storage unavailable; "Stop doing this" clears it. Merged only after a desktop release containing R66 LH2–LH5. |
+| **HO2** | D1, D2, D4, D6, D8: the button, the room's secondary action, the note, the `NATIVE_TIP` copy | Component tests: the offer shows on the three desktop OS identities and on none of the others, nor on viewer and landing pages (G3); `isDesktopForHandoff` is tested with real UA strings, including iPadOS Safari's `Macintosh` UA with `maxTouchPoints` 5 (hidden) and macOS Safari with 0 (shown); the anchor's `href` carries room, nick and a non-default relay (G1); after a click, Start is still enabled and the pending room is intact (G7, D6). An e2e step in `e2e/run.mjs` clicks the button in headless Chrome with no handler and asserts the page and room chip remain. |
+| **HO3** | D5: the remembered choice and automatic launch, on V-1's mechanism | Unit tests: with `"auto"` set, automatic on exactly two triggers, landing on `#/broadcast?room=` and a room's "Start streaming here" click (whose room travels in the `gawk:room-return` stash, not the URL); a plain `#/broadcast` visit and a `#/broadcast` reached any other way never launch; once per page load; not on reload or back/forward; never on non-desktop OS, with a dropped relay, or with storage unavailable; "Stop doing this" clears it. Merged only after a desktop release containing R66 LH2–LH5. |
 | **HO4** | The owner's pass: Chrome, Firefox and Edge on Windows; Chrome, Firefox and Safari on macOS; Chrome and Firefox on Linux; with and without the app installed; V-1 | G1, G2 and G4 recorded per browser in §12 |
 
 ## 10. V-items (recorded in §12)

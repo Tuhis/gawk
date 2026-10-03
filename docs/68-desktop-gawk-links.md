@@ -46,7 +46,7 @@ with Chrome and Firefox on each, plus Safari on macOS.
 | G2 | With the app **running**, the same click brings the existing window to the front with the same prefill. No second process remains. | each OS (LH6) + IPC tests |
 | G3 | Launching the app a second time with no link raises the running window and exits (OD1) | each OS (LH6) + IPC tests |
 | G4 | A link's `relay=` selects a matching saved server. An unknown server is never used without a click on "Add and switch" (OD2). | shell tests + LH6 |
-| G5 | While a broadcast is live or paused, a link never changes the broadcast, its room or its server without a click | shell tests |
+| G5 | While a broadcast is live or paused, a link never changes the broadcast, its room or its server without a click. A link that switches the server never lets a stored room secret reach the new server. | shell tests |
 | G6 | `gawk://watch/<CODE>` and `gawk://room/<code>` open the matching `https://` page in the default browser. A cold start for one of them leaves no app window behind. | shell tests + LH6 |
 | G7 | A malformed, oversized or hostile link shows a notice and changes nothing; the parser never panics | engine unit + fuzz-style tests |
 | G8 | Windows: registration writes only `HKCU`, refreshes the path after the EXE moves, and never takes over a `gawk` key that another program wrote | unit tests on the decision function + LH6 |
@@ -155,7 +155,7 @@ the source must be chosen first. How a link applies depends on the state:
 
 | State | `room` | `nick` | `relay` |
 |---|---|---|---|
-| **Idle** (incl. the ended screen) | `choose_room` with no grant. It becomes the pending room and goes into recents. A saved attach secret for that code in `recent_rooms` is reused. | Set the `room-nickname` UI property **and** `cfg.nickname`. `read_settings` reads the property at Start, so setting `cfg` alone would be overwritten (§8). | D5 |
+| **Idle** (incl. the ended screen) | `choose_room` with no grant. It becomes the pending room and goes into recents. A saved attach secret for that code in `recent_rooms` is reused **only if the link changes no server** (D5). | Set the `room-nickname` UI property **and** `cfg.nickname`. `read_settings` reads the property at Start, so setting `cfg` alone would be overwritten (§8). | D5 |
 | **Starting / stopping** | Queued and applied when the state settles; the latest link wins | queued | queued |
 | **Live / paused** | Confirm card: "Join room `<code>` now?" [Join] [Not now]. `choose_room` joins immediately while live, so that call happens only on the click. | Applied with the room on [Join]. Without a room, it's the same confirm card. | Notice only: "End the broadcast to switch server". The broadcast is never touched. |
 
@@ -171,11 +171,29 @@ note, as on the web.
   strip (docs/64 D3) shows it because it's now the selected profile.
 - **No match**: a confirm card says "This link uses the server `<host>`.
   Add it and switch to it?" [Add and switch] [Keep `<current>`]. "Add"
-  creates a profile named after the host with no secret, via
-  `add_custom_server`. A secret prompt comes later from the existing flow
-  if the server asks for one. Until the click, the link's room and
+  creates a profile with the link's origin as its URL, named after the
+  host, with no secret. That needs a new `Config::add_server(name, url)`
+  (D12). The existing `add_custom_server` only appends a blank "New
+  server" row. Host-name collisions get a suffix through
+  `profile_name_taken`. A secret prompt comes later from the existing
+  flow if the server asks for one. Until the click, the link's room and
   nickname still apply, against the current server.
 - The probe restarts on a switch, as `on_server_selected` does.
+- **A link that switches the server clears the room's credentials.**
+  Attach secrets and creator tokens are stored by room code alone
+  (`RecentRoom` has no server, and `room_attach_key` matches on the code).
+  Go live puts `room_attach_secret` in `?attach=` for whichever relay is
+  selected. Without this rule, `gawk://broadcast?room=<your static
+  slug>&relay=https://evil.example` followed by "Add and switch" and Go
+  live would hand your attach key to that server. So when a link selects
+  or adds a server other than the current one, the shell clears
+  `room_attach_secret` and `room_creator_token` for the pending room and
+  skips D4's `recent_rooms` reuse. The user is asked for the secret again
+  by the existing flow, and that secret then belongs to the server they
+  chose. This keeps docs/40 D4's rule: a secret stored for one server is
+  never presented to another because of a link. Keying room credentials by
+  `(server origin, code)` is the thorough fix and covers manual server
+  switches too. It is out of scope here (§5).
 
 ### D6 — How a link reaches the UI thread
 
@@ -313,7 +331,7 @@ HKCU\Software\Classes\gawk
 
 | Crate | Gets |
 |---|---|
-| `engine` | `link.rs` (D1, D2), the vectors, `parse_room_input`'s new forms |
+| `engine` | `link.rs` (D1, D2), the vectors, `parse_room_input`'s new forms, `Config::add_server(name, url)` (D5) |
 | `wire` (Rust mirror) | `normalize_broadcast_id` made public |
 | `ui` | `ShellMsg::OpenLink`, `apply_link` (D3–D5), the confirm cards and notices in `main.slint`, the startup parameter, D7's argument scan and relaunch stripping |
 | `ui` (portable half of D8) | `instance.rs`: the message format, the `Instance` trait (`try_handoff`, `listen`), the primary/secondary decision |
@@ -325,7 +343,7 @@ HKCU\Software\Classes\gawk
 
 - A link is untrusted input from any web page. It can do no more than the
   user could by typing into the Room sheet and the nickname field. It
-  never captures, never starts, never carries a secret, and never switches
+  never captures, never starts, never carries a secret, never carries a stored room secret to another server (D5), and never switches
   to an unknown server without a click.
 - A link **does** persist a room choice and a nickname while Idle
   (`choose_room` saves). This matches the web's `#/broadcast?room=`, and
@@ -351,6 +369,7 @@ Nothing registers `gawk-broadcast`, and the Origin labels don't change.
 - A Settings toggle or unregister button for the handler.
 - The SPA's side (R67, docs/69) and the iOS app's handling (R65 IO6, on
   this grammar).
+- Keying room attach secrets and creator tokens by server as well as code (D5). Today a *manual* server switch keeps them too; a link-driven switch clears them.
 - R26 quick-start parameters (`res=`, `fps=`, …) in `gawk://broadcast`.
   R26 isn't built; when it is, the grammar can grow the same parameters
   under docs/31 D6.
@@ -401,7 +420,7 @@ parallel. LH6 waits for a release that contains all of them.
 | Chunk | Scope | Accepted when |
 |---|---|---|
 | **LH1** | `engine::link` (D1, D2), the vectors, `parse_room_input`'s `gawk://` forms, the public broadcast-ID validator | The vectors pass. Every D1 rule has at least one accepting and one rejecting vector (case, alphabet, slug bounds, nick sanitizing, relay normalization, secret dropping, unknown params, the length cap). A table-driven garbage test over truncated and mutated vectors never panics (G7). Pasting either `gawk://` form into the Room sheet chooses the room. |
-| **LH2** | Shell integration: D3–D7, the portable half of D8, the `main.slint` cards and notices | Shell tests on the fake platform cover each row of D4's table, every case in D5, D3's cold and warm viewer links (cold exits without `show()`), the nickname surviving a later Start, G10's relaunch stripping, and the `Instance` decision with a fake endpoint |
+| **LH2** | Shell integration: D3–D7, the portable half of D8, the `main.slint` cards and notices | Shell tests on the fake platform cover each row of D4's table, every case in D5 (including: a link that switches or adds a server clears the pending room's attach secret and creator token, and doesn't reuse `recent_rooms` secrets), D3's cold and warm viewer links (cold exits without `show()`), the nickname surviving a later Start, G10's relaunch stripping, and the `Instance` decision with a fake endpoint |
 | **LH3** | Linux: D11, D8's D-Bus `Instance`, the activation token | `test-deb.sh` passes G9 on both containers. An app-linux test on a private `dbus-daemon --session` runs a primary and a secondary: the secondary's `OpenUrl` reaches the shell inbox and the secondary exits 0. `install-desktop.sh` writes `%u` and survives a path with spaces. |
 | **LH4** | Windows: D9, D8's mutex + pipe `Instance` | The D9 decision function is unit-tested for all four cases (absent, ours with the same path, ours with a moved path, foreign). The pipe message codec is tested on the Linux host. `cargo xwin clippy` and `build` are green. The real pipe and registry are checked in LH6, since CI has no Windows runner (docs/38 D18). |
 | **LH5** | macOS: D10 | `bundle.sh` output's `Info.plist` carries `CFBundleURLTypes` (checked with `plutil -extract`). `macos-check` is green. In CI on `macos-latest`, after `lsregister -f` on the freshly bundled, ad-hoc-signed app, `open 'gawk://broadcast?room=lh5-test'` produces the expected log line. |
