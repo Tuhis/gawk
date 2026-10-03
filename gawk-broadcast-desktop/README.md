@@ -305,7 +305,8 @@ it; chosen while live, it is joined now.
 | `room` | The code (or static slug) of the room the next broadcast joins; blank = no room. A pasted link is reduced to its code. Re-attached on every resume. |
 | `roomAttachSecret` | That room's attach key, from a pasted link's `?rt=a:…` or typed when the room asked for it (DPAPI-wrapped like the publish secret) |
 | `roomCreatorToken` | That room's creator token, from a pasted link's `?rt=c:…` (wrapped the same way) |
-| `recentRooms` | "Your rooms": the rooms this app joined, saved ones first, at most 8 unsaved; each keeps its attach key (wrapped the same way) |
+| `roomServer` | The server `roomAttachSecret` and `roomCreatorToken` were stored for. They are only ever presented to that server ([docs/68](../docs/68-desktop-gawk-links.md) D5a). |
+| `recentRooms` | "Your rooms": the rooms this app joined, saved ones first, at most 8 unsaved; each keeps its attach key (wrapped the same way) and the `server` it was stored for |
 | `nickname` | Your name in the room, and what your tile is called (blank = the relay picks one). Editable while live: the roster and the tile follow. |
 
 A gated static room admits you as a watcher and the window asks for its
@@ -319,6 +320,40 @@ for friends. **Open room view** launches the browser at
 for a room you made or `a:<attach key>` for a gated static room; the SPA
 moves it out of the URL before rendering. Someone else ending the room,
 or removing your stream, shows a card; your broadcast is untouched.
+
+## `gawk://` links
+
+The app opens `gawk://` links (R66, [docs/68](../docs/68-desktop-gawk-links.md)):
+
+```
+gawk://broadcast[?room=<code>][&nick=<nickname>][&relay=<https-origin>]
+gawk://watch/<CODE>[?relay=<https-origin>]
+gawk://room/<code>[?nick=<nickname>][&relay=<https-origin>]
+```
+
+A `broadcast` link fills in the room, the nickname and the server and
+brings the window to the front. It never starts a broadcast: Go live is
+still yours. While you're live, it asks before joining the room, and it
+never changes the server. A `relay=` that matches a saved server selects
+it; an unknown one asks whether to add it. No `relay=` means the default
+server. Links never carry secrets. `watch` and `room` links open the page
+in your browser.
+
+The app is single-instance: launching it again, with or without a link,
+brings the open window to the front.
+
+- **Windows** registers the scheme for your user (`HKCU`) on every launch,
+  and follows the EXE if you move it. It never takes over a `gawk` handler
+  another program registered. Deleting the EXE leaves the key behind, and
+  Windows then says it can't find the program; launch the app from its new
+  place, or delete `HKEY_CURRENT_USER\Software\Classes\gawk`.
+- **macOS** declares the scheme in the app bundle. Running the binary
+  outside the bundle, or `open -n`, starts a second copy.
+- **Linux**: the `.deb` registers the scheme. A tarball registers it
+  through `install-desktop.sh`; running the binary without it registers
+  nothing. Single instance uses the session D-Bus; without one, the app
+  runs on its own. On Wayland the app can't bring its window to the front,
+  so a second launch or a link shows a notification instead.
 
 ## Building
 
