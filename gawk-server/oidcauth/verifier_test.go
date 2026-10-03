@@ -227,3 +227,23 @@ func TestTheAlgorithmAllowlistIsAsymmetricOnly(t *testing.T) {
 		t.Error("AsymmetricSigningAlgs returned the package's own slice")
 	}
 }
+
+// A consumer that holds a response open past the request — telemetry's SSE
+// feed (docs/55 D4) — must end it at the token's `exp`, so Verify carries the
+// expiry the signature check validated.
+func TestVerifyCarriesTheTokenExpiry(t *testing.T) {
+	iss := oidcauthtest.NewIssuer(t, "k1", testKey())
+	v := newVerifier(t, testConfig(iss.URL()))
+	waitFor(t, v.Resolved(), "discovery")
+
+	exp := time.Now().Add(42 * time.Minute).Truncate(time.Second)
+	raw := iss.Mint(fmt.Sprintf(`{"iss": %q, "aud": %q, "sub": "sub-1", "exp": %d}`,
+		iss.URL(), testAudience, exp.Unix()))
+	id, err := v.Verify(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !id.Expiry.Equal(exp) {
+		t.Errorf("Expiry = %v, want the token's exp %v", id.Expiry, exp)
+	}
+}

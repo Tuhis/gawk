@@ -495,8 +495,9 @@ COMPONENTS = {
         path="gawk-telemetry",
         blurb=(
             "The optional diagnostics service, listed as the *deployed* image builds\n"
-            "it: `-tags duckdb`. A default (tag-free) build links no third-party Go\n"
-            "code at all. The bundled dashboard UI is covered by\n"
+            "it: `-tags duckdb`. A default (tag-free) build links only the OIDC\n"
+            "verifier's dependencies (go-oidc, go-jose, x/oauth2). The bundled\n"
+            "dashboard UI is covered by\n"
             "`ui/THIRD-PARTY-NOTICES.md`."
         ),
         sources="`go list -deps -tags duckdb ./...` in `gawk-telemetry/`.",

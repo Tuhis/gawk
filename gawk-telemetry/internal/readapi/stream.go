@@ -21,6 +21,7 @@ package readapi
 // worth an endpoint.
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -60,6 +61,29 @@ func streamFingerprint(snap live.Snapshot) [sha256.Size]byte {
 	return sha256.Sum256(b)
 }
 
+type streamDeadlineKey struct{}
+
+// WithStreamDeadline returns ctx carrying the moment a live stream opened
+// under it must end (docs/55 D4). The OIDC gate sets it to the bearer token's
+// `exp`: authorization is decided once, when the stream opens, so without a
+// cap a stream would outlive the token that authorized it — and with it the
+// revocation horizon (G4). A zero or past deadline ends the stream at once:
+// the cap fails closed. Without one (none/basic mode) the stream is unbounded,
+// as it always was.
+func WithStreamDeadline(ctx context.Context, deadline time.Time) context.Context {
+	return context.WithValue(ctx, streamDeadlineKey{}, deadline)
+}
+
+func streamDeadline(ctx context.Context) (time.Time, bool) {
+	d, ok := ctx.Value(streamDeadlineKey{}).(time.Time)
+	return d, ok
+}
+
+// StreamExpiredFrame is the stream's last frame when its deadline passes. A
+// client reconnects on it with a fresh token; `data` is present (and empty
+// JSON) because the SSE spec does not dispatch an event with no data.
+const StreamExpiredFrame = "event: expired\ndata: {}\n\n"
+
 func (a *API) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -68,6 +92,22 @@ func (a *API) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming is not supported by this server", http.StatusNotImplemented)
 		return
 	}
+	// The deadline is a wall-clock instant (a token's `exp`), so it is timed
+	// on the wall clock rather than the API's Now seam, which only stamps
+	// snapshots.
+	var expired <-chan time.Time
+	deadline, capped := streamDeadline(r.Context())
+	if capped {
+		timer := time.NewTimer(max(time.Until(deadline), 0))
+		defer timer.Stop()
+		expired = timer.C
+	}
+	expire := func() {
+		if _, err := fmt.Fprint(w, StreamExpiredFrame); err == nil {
+			flusher.Flush()
+		}
+	}
+
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-store")
@@ -117,6 +157,10 @@ func (a *API) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
+	if capped && !time.Now().Before(deadline) {
+		expire()
+		return
+	}
 	if !send(true) {
 		return
 	}
@@ -125,6 +169,9 @@ func (a *API) handleLiveStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-expired:
+			expire()
 			return
 		case <-t.C:
 			if !send(false) {

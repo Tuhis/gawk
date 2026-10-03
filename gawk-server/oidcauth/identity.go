@@ -1,6 +1,9 @@
 package oidcauth
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Identity is the authenticated caller, projected from validated JWT claims.
 // Roles are the IdP-managed authorization state (docs/42 D17) — never a
@@ -20,6 +23,11 @@ type Identity struct {
 	// when that claim is missing or malformed: a token that cannot prove a
 	// role does not have it.
 	Roles []string
+	// Expiry is the token's validated `exp`. Authorization is decided per
+	// request, so a consumer that holds one response open beyond the request
+	// that authorized it — telemetry's live stream (docs/55 D4) — must end
+	// that response here, or the stream outlives the revocation horizon.
+	Expiry time.Time
 }
 
 // Actor is what an audit row or an event records for this caller. Email when

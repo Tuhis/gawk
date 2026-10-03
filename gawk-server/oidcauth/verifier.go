@@ -403,7 +403,7 @@ func (v *Verifier) Verify(ctx context.Context, rawJWT string) (Identity, error) 
 	// Email is optional: a client-credentials service identity (R40's
 	// sampler, docs/42 §4.11) has no user behind it, and Identity.Actor()
 	// falls back to the subject so an audit row is never blank.
-	id := Identity{Subject: token.Subject}
+	id := Identity{Subject: token.Subject, Expiry: token.Expiry}
 	if email, ok := claims["email"].(string); ok {
 		id.Email = email
 	}

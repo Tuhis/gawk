@@ -36,6 +36,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-server/oidcauth"
+	"github.com/Tuhis/gawk/gawk-server/oidcroles"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/annotations"
 	"github.com/Tuhis/gawk/gawk-telemetry/internal/dashboard"
@@ -176,6 +178,15 @@ func run() error {
 		"sql_spill_limit_bytes", cfg.sqlSpillLimit,
 		"sql_probe_interval", cfg.sqlProbeInterval,
 		"metrics_addr", cfg.metricsAddr,
+		// The read listener's gate (docs/55 D1/D9). Every knob, so a
+		// deployment's log says which IdP and role it actually enforces.
+		"read_auth", cfg.readAuthMode(),
+		"oidc_issuer", cfg.oidcIssuer,
+		"oidc_client_id", cfg.oidcClientID,
+		"oidc_audience", cfg.oidcAudience,
+		"oidc_roles_claim", cfg.oidcRolesClaim,
+		"oidc_role", cfg.oidcRole,
+		"dev_oidc_proxy", cfg.devOIDCProxy,
 		// Whether the code -> broadcast-key lookup is available. The key itself
 		// is never logged; only that one was supplied.
 		"resolve_enabled", len(cfg.statsKey) > 0,
@@ -215,13 +226,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	readMux := http.NewServeMux()
-	readMux.Handle("/", dash)
-	readMux.Handle("/v1/", api.Handler())
-	readMux.Handle("GET /live", api.Handler())
-	// UD22's SSE endpoint. A separate pattern because "/live" is an exact match
-	// in Go's mux and would not carry the sub-path.
-	readMux.Handle("GET /live/", api.Handler())
+	routes := readRoutes{dashboard: dash, api: api.Handler()}
 	if cfg.mcpEnabled {
 		mcpSrv, err := mcp.New(mcp.Options{
 			API: api, EnableSQL: cfg.enableSQL,
@@ -234,13 +239,41 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		readMux.Handle("/mcp", mcpSrv)
+		routes.mcp = mcpSrv
 	}
 
-	var readHandler http.Handler = readMux
-	if cfg.basicAuthUser != "" {
-		readHandler = basicAuth(readMux, cfg.basicAuthUser, cfg.basicAuthPass)
+	// R53 (docs/55): the OIDC mode. The issuer resolves in the BACKGROUND —
+	// an unreachable IdP must never take this pod (and with it the public
+	// ingest) down, so New refuses only a configuration that could never be
+	// safe. Until discovery resolves, gated routes answer 401
+	// idp_unavailable and /readyz on the read listener says why (D8).
+	var verifier *oidcauth.Verifier
+	if cfg.readAuthMode() == readAuthOIDC {
+		verifier, err = oidcauth.New(ctx, oidcauth.Config{
+			Issuer:     cfg.oidcIssuer,
+			Audience:   cfg.oidcAudience,
+			RolesClaim: cfg.oidcRolesClaim,
+			Role:       cfg.oidcRole,
+			ClientID:   cfg.oidcClientID,
+		}, oidcauth.Options{Logger: log})
+		if err != nil {
+			return fmt.Errorf("oidc: %w", err)
+		}
+		defer verifier.Close()
 	}
+	if cfg.devOIDCProxy != "" {
+		proxy, err := oidcauth.NewDevProxy(cfg.devOIDCProxy)
+		if err != nil {
+			return fmt.Errorf("dev-oidc-proxy: %w", err)
+		}
+		routes.devProxy = proxy
+		// Warn, not Info: this route must never exist outside the docs/41
+		// dev stack, and a deployment that somehow set it should say so on
+		// every startup, loudly.
+		log.Warn("DEV-ONLY OIDC proxy is serving "+oidcauth.DevProxyPath+" — for the docs/41 compose lane, never for a deployment",
+			"target", cfg.devOIDCProxy)
+	}
+	readHandler := newReadHandler(cfg, routes, verifier)
 
 	ingestSrv := &http.Server{Addr: cfg.ingestAddr, Handler: ingestMux, ReadHeaderTimeout: 10 * time.Second}
 	readSrv := &http.Server{Addr: cfg.readAddr, Handler: readHandler, ReadHeaderTimeout: 10 * time.Second}
@@ -517,13 +550,47 @@ type config struct {
 	metricsAddr   string
 	basicAuthUser string
 	basicAuthPass string
-	rateLimit     float64
-	rateBurst     float64
-	sessionRate   float64
-	sessionBurst  float64
-	corsOrigins   []string
-	logFormat     string
-	logLevel      string
+	// The read listener's OIDC mode (R53, docs/55 D1/D9). Issuer, client ID
+	// and audience are all set or all empty; setting them together with the
+	// basic-auth pair refuses to start, so exactly one mode is ever active.
+	oidcIssuer     string
+	oidcClientID   string
+	oidcAudience   string
+	oidcRolesClaim string
+	oidcRole       string
+	// devOIDCProxy is the docs/41 compose lane's /idp/ reverse proxy. Dev
+	// only: deliberately absent from the chart.
+	devOIDCProxy string
+	rateLimit    float64
+	rateBurst    float64
+	sessionRate  float64
+	sessionBurst float64
+	corsOrigins  []string
+	logFormat    string
+	logLevel     string
+}
+
+// The read listener's three auth modes (docs/55 D1). Exactly one is active.
+const (
+	readAuthNone  = "none"
+	readAuthBasic = "basic"
+	readAuthOIDC  = "oidc"
+)
+
+// DefaultOIDCRole is the role every gated read route requires unless
+// -oidc-role says otherwise (docs/55 D7, OD7): named for the capability, and
+// not "operator", which the same realm already gives gawk-admin's client.
+const DefaultOIDCRole = "telemetry-reader"
+
+func (c config) readAuthMode() string {
+	switch {
+	case c.oidcIssuer != "":
+		return readAuthOIDC
+	case c.basicAuthUser != "":
+		return readAuthBasic
+	default:
+		return readAuthNone
+	}
 }
 
 func (c config) resolver() relayscrape.Resolver {
@@ -610,6 +677,18 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		"optional basic-auth user for the read listener (empty = no auth, cluster-internal)")
 	fs.StringVar(&c.basicAuthPass, "read-password", env("GAWK_TELEMETRY_READ_PASSWORD"),
 		"basic-auth password for the read listener")
+	fs.StringVar(&c.oidcIssuer, "oidc-issuer", env("GAWK_TELEMETRY_OIDC_ISSUER"),
+		"OIDC issuer URL gating the read listener (bearer JWT + role); set with -oidc-client-id and -oidc-audience, never with -read-user")
+	fs.StringVar(&c.oidcClientID, "oidc-client-id", env("GAWK_TELEMETRY_OIDC_CLIENT_ID"),
+		"public OIDC client ID the dashboard logs in with (served at /auth/config)")
+	fs.StringVar(&c.oidcAudience, "oidc-audience", env("GAWK_TELEMETRY_OIDC_AUDIENCE"),
+		"the `aud` an access token must carry to reach the read listener")
+	fs.StringVar(&c.oidcRolesClaim, "oidc-roles-claim", or(env("GAWK_TELEMETRY_OIDC_ROLES_CLAIM"), oidcroles.DefaultClaim),
+		"dot-path to the token's roles array; "+oidcroles.Placeholder+" is replaced by -oidc-audience")
+	fs.StringVar(&c.oidcRole, "oidc-role", or(env("GAWK_TELEMETRY_OIDC_ROLE"), DefaultOIDCRole),
+		"role a token must carry to read anything on the read listener")
+	fs.StringVar(&c.devOIDCProxy, "dev-oidc-proxy", env("GAWK_TELEMETRY_DEV_OIDC_PROXY"),
+		"DEV ONLY: reverse-proxy "+oidcauth.DevProxyPath+" to this IdP base URL (the docs/41 compose lane); never set in a deployment")
 	rate := fs.Float64("ingest-rate", orFloat(env("GAWK_TELEMETRY_INGEST_RATE"), ingest.DefaultGlobalRatePerSec),
 		"process-wide ingest requests per second — size for the whole fleet (no client IP is consulted or stored)")
 	burst := fs.Float64("ingest-burst", orFloat(env("GAWK_TELEMETRY_INGEST_BURST"), ingest.DefaultGlobalBurst),
@@ -685,6 +764,9 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 			c.relayStatic = append(c.relayStatic, a)
 		}
 	}
+	if err := c.validateReadAuth(); err != nil {
+		return config{}, err
+	}
 	c.rateLimit, c.rateBurst = *rate, *burst
 	c.sessionRate, c.sessionBurst = *sessionRate, *sessionBurst
 	for _, o := range strings.Split(*corsOrigins, ",") {
@@ -693,6 +775,50 @@ func parseFlags(args []string, env func(string) string) (config, error) {
 		}
 	}
 	return c, nil
+}
+
+// validateReadAuth enforces docs/55 D1/D9: OIDC is all three of issuer,
+// client ID and audience or none of them; it never composes with basic auth
+// (two gates on one listener would be the weaker of the two, whichever a
+// request picked); and in OIDC mode a blank roles claim or role refuses to
+// boot, because either would admit every valid token.
+func (c *config) validateReadAuth() error {
+	c.oidcIssuer = strings.TrimSpace(c.oidcIssuer)
+	c.oidcClientID = strings.TrimSpace(c.oidcClientID)
+	c.oidcAudience = strings.TrimSpace(c.oidcAudience)
+	c.oidcRolesClaim = strings.TrimSpace(c.oidcRolesClaim)
+	c.oidcRole = strings.TrimSpace(c.oidcRole)
+	c.devOIDCProxy = strings.TrimSpace(c.devOIDCProxy)
+
+	anyOIDC := c.oidcIssuer != "" || c.oidcClientID != "" || c.oidcAudience != ""
+	if anyOIDC && (c.basicAuthUser != "" || c.basicAuthPass != "") {
+		return errors.New("read-listener auth: basic auth (-read-user/-read-password) and OIDC " +
+			"(-oidc-issuer/-oidc-client-id/-oidc-audience) are both configured; set exactly one mode")
+	}
+	if anyOIDC {
+		var missing []string
+		for _, k := range []struct{ flag, v string }{
+			{"-oidc-issuer", c.oidcIssuer}, {"-oidc-client-id", c.oidcClientID}, {"-oidc-audience", c.oidcAudience},
+		} {
+			if k.v == "" {
+				missing = append(missing, k.flag)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("read-listener auth: -oidc-issuer, -oidc-client-id and -oidc-audience must be set together; missing %s",
+				strings.Join(missing, ", "))
+		}
+		if _, err := oidcroles.ParsePath(c.oidcRolesClaim, c.oidcAudience); err != nil {
+			return fmt.Errorf("-oidc-roles-claim: %w", err)
+		}
+		if c.oidcRole == "" {
+			return errors.New("-oidc-role must not be empty: with no required role every valid token could read the fleet")
+		}
+	}
+	if c.devOIDCProxy != "" && !anyOIDC {
+		return errors.New("-dev-oidc-proxy needs the OIDC mode (-oidc-issuer/-oidc-client-id/-oidc-audience): it proxies the issuer the dashboard logs in with")
+	}
+	return nil
 }
 
 func newLogger(c config) *slog.Logger {
