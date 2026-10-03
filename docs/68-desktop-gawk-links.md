@@ -571,5 +571,18 @@ None.
   as a second instance. `Request::from_args` now cuts such a link just
   past the parser's 2,048-byte cap, so it always fits one message and the
   primary still says it's too long.
+- **Review of #452: the resume identity gets D5a's binding too.** After a
+  crash, the "resume?" offer leaves the shell Idle. A link could then
+  switch servers, and Resume would present the old broadcast's ID and
+  resume token to the new relay. That relay's operator could then
+  supersede the broadcast on its own server (close 4004). Two layers now
+  prevent it:
+  - `lastBroadcastServer` records the server the identity was minted on,
+    stamped at load for older configs. `Config::resume_identity` presents
+    the identity only to that server, which also covers a manual switch in
+    Settings. A mismatch starts a new broadcast.
+  - A link that arrives while the offer is up follows the Paused rules of
+    D4: it asks before changing the room Resume rejoins, and it never
+    switches the server.
 
 Open: LH6, with V-1 on a real Mac, V-3 and V-4.

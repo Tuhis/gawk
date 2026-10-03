@@ -2690,17 +2690,17 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     save_config(&mut sh);
     refresh_captions(ui, &sh.cfg);
 
-    // The reclaim identity: only on the Resume button, and the persisted
-    // token travels only with the ID it was minted for.
-    let broadcast_id = if resume {
-        sh.cfg.last_broadcast_id.clone()
+    // The reclaim identity: only on the Resume button, the persisted token
+    // only with the ID it was minted for, and both only to the server they
+    // were minted on (review of #452).
+    let (broadcast_id, resume_token) = if resume {
+        let (id, token) = sh.cfg.resume_identity();
+        if id.is_empty() && !sh.cfg.last_broadcast_id.is_empty() {
+            log::info!("the last broadcast was on another server; starting a new one");
+        }
+        (id, token)
     } else {
-        String::new()
-    };
-    let resume_token = if resume && !broadcast_id.is_empty() {
-        sh.cfg.last_resume_token.clone()
-    } else {
-        String::new()
+        (String::new(), String::new())
     };
 
     // The platform decides mode + target BEFORE the session dial, so a
@@ -3079,6 +3079,9 @@ fn apply_broadcast_link(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, link: Broad
         UiState::Starting => {
             shell.borrow_mut().pending_link = Some(link);
         }
+        // The crash's "resume?" offer is a paused broadcast without a
+        // session: its server and room stay put too (review of #452).
+        UiState::Idle if ui.get_crash_resume() => apply_link_live(ui, shell, link),
         UiState::Idle => apply_link_idle(ui, shell, link),
         UiState::Live | UiState::Paused => apply_link_live(ui, shell, link),
     }
@@ -3457,6 +3460,8 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             let mut sh = shell.borrow_mut();
             sh.broadcast_id = broadcast_id.clone();
             sh.cfg.last_broadcast_id = broadcast_id.clone();
+            // A broadcast's server never changes while it runs.
+            sh.cfg.last_broadcast_server = sh.cfg.server_key();
             // A token that beat this announce persists with it, atomically
             // paired with the id it was minted for.
             if let Some(token) = sh.identity.on_announce() {
@@ -5104,6 +5109,46 @@ mod tests {
         let sh = shell.borrow();
         assert!(sh.cfg.selected_profile().is_none());
         assert_eq!(sh.cfg.room, "");
+    }
+
+    // Review of #452: while the crash's "resume?" offer is up, the paused
+    // broadcast's server must not change under it, or Resume would present
+    // its reclaim token to another relay. A link follows the Paused rules.
+    #[test]
+    fn a_link_never_switches_server_under_a_crash_resume_offer() {
+        let ui = window();
+        let (shell, _) = shell_with(Config {
+            was_live: true,
+            last_broadcast_id: "K7XQ2M".into(),
+            last_resume_token: "aa11".into(),
+            last_broadcast_server: S.into(),
+            ..friend_cfg()
+        });
+        ui.set_crash_resume(true);
+        ui.set_paused(true);
+        warm(
+            &ui,
+            &shell,
+            "gawk://broadcast?room=lan-party&relay=https%3A%2F%2Frelay.friend.example",
+        );
+        warm(
+            &ui,
+            &shell,
+            "gawk://broadcast?relay=https%3A%2F%2Fnew.example",
+        );
+        assert_eq!(ui.get_link_card_title(), "");
+        assert!(ui.get_link_notice().contains("switch server"));
+        let sh = shell.borrow();
+        assert!(sh.cfg.selected_profile().is_none(), "still the default");
+        assert_eq!(sh.cfg.servers.len(), 1, "nothing added");
+        assert_eq!(sh.cfg.room, "");
+        assert_eq!(sh.cfg.resume_identity().0, "K7XQ2M");
+        drop(sh);
+
+        // The same server's link asks before changing the room Resume rejoins.
+        warm(&ui, &shell, "gawk://broadcast?room=lan-party");
+        assert_eq!(ui.get_link_card_title(), "Join room lan-party now?");
+        assert_eq!(shell.borrow().cfg.room, "");
     }
 
     // D5: no relay= means the default fleet; a saved server's origin selects

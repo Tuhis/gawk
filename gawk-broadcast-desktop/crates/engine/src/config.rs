@@ -92,6 +92,9 @@ pub struct Config {
     pub last_broadcast_id: String,
     /// Hex; a credential like the secret.
     pub last_resume_token: String,
+    /// The server `lastBroadcastId` and `lastResumeToken` were minted on, as
+    /// [`server_key`]: a resume presents them there only (review of #452).
+    pub last_broadcast_server: String,
     pub last_good_encoder: String,
     pub disable_audio: bool,
     /// "app" or "screen" — the Windows-only capture mode (docs/38 D6).
@@ -244,6 +247,21 @@ impl Config {
     /// The pending room's attach key and creator token, but only when they
     /// were stored for the selected server; otherwise both blank, and the
     /// relay's own prompt asks (docs/68 D5a — the one place they leave).
+    /// The broadcast ID and resume token a Resume reclaims with, but only
+    /// when they were minted on the selected server; otherwise both blank
+    /// (review of #452). A token presented to another relay would let its
+    /// operator supersede the broadcast on its own server (close 4004).
+    pub fn resume_identity(&self) -> (String, String) {
+        let here = self.server_key();
+        if here.is_empty() || self.last_broadcast_server != here {
+            return (String::new(), String::new());
+        }
+        (
+            self.last_broadcast_id.clone(),
+            self.last_resume_token.clone(),
+        )
+    }
+
     pub fn pending_room_credentials(&self) -> (String, String) {
         let here = self.server_key();
         if here.is_empty() || self.room_server != here {
@@ -720,6 +738,11 @@ pub fn migrate(cfg: &mut Config) -> bool {
 fn stamp_room_servers(cfg: &mut Config) -> bool {
     let here = cfg.server_key();
     let mut changed = false;
+    // The resume identity the same way (review of #452).
+    if cfg.last_broadcast_server.is_empty() && !cfg.last_broadcast_id.is_empty() {
+        cfg.last_broadcast_server = here.clone();
+        changed = true;
+    }
     if cfg.room_server.is_empty()
         && (!cfg.room_attach_secret.is_empty() || !cfg.room_creator_token.is_empty())
     {
@@ -971,6 +994,61 @@ mod tests {
             "{raw}"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // Review of #452: the reclaim identity (ID and resume token) goes only
+    // to the server it was minted on. A token presented elsewhere lets that
+    // operator supersede the broadcast on its own server.
+    #[test]
+    fn the_resume_identity_goes_only_to_the_server_it_was_minted_on() {
+        let mut cfg = Config {
+            last_broadcast_id: "K7XQ2M".into(),
+            last_resume_token: "aa11".into(),
+            last_broadcast_server: S.into(),
+            ..friend_cfg()
+        };
+        assert_eq!(
+            cfg.resume_identity(),
+            ("K7XQ2M".to_string(), "aa11".to_string())
+        );
+        cfg.selected_server = "Friend".into();
+        assert_eq!(cfg.resume_identity(), (String::new(), String::new()));
+        cfg.selected_server.clear();
+        cfg.last_broadcast_server.clear();
+        assert_eq!(
+            cfg.resume_identity(),
+            (String::new(), String::new()),
+            "an unbound identity goes nowhere"
+        );
+    }
+
+    #[test]
+    fn a_legacy_resume_identity_is_stamped_with_the_selected_server() {
+        let mut cfg = Config {
+            last_broadcast_id: "K7XQ2M".into(),
+            last_resume_token: "aa11".into(),
+            selected_server: "Friend".into(),
+            ..friend_cfg()
+        };
+        assert!(migrate(&mut cfg));
+        assert_eq!(cfg.last_broadcast_server, "https://relay.friend.example");
+        assert_eq!(cfg.resume_identity().0, "K7XQ2M");
+        assert!(!migrate(&mut cfg));
+        // Nothing to bind, nothing stamped.
+        let mut fresh = Config::default();
+        assert!(!migrate(&mut fresh));
+        assert!(fresh.last_broadcast_server.is_empty());
+    }
+
+    fn friend_cfg() -> Config {
+        Config {
+            servers: vec![ServerProfile {
+                name: "Friend".into(),
+                url: "https://relay.friend.example".into(),
+                publish_secret: String::new(),
+            }],
+            ..Default::default()
+        }
     }
 
     #[test]
