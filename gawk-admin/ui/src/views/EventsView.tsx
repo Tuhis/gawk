@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import type { EventCategory, EventPage, ModerationEvent, WebhookDelivery } from '../api/types.ts';
-import { AuthRedirect } from '../auth/session.ts';
+import { AuthRedirect } from '@gawk/oidc-session';
 import { formatInstant } from '../lib/format.ts';
 import { useLoader } from '../lib/useLoader.ts';
 import ui from '../styles/ui.module.css';

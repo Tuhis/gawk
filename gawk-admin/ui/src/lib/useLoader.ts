@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { AuthRedirect } from '../auth/session.ts';
+import { AuthRedirect } from '@gawk/oidc-session';
 
 export interface Loaded<T> {
   data: T | null;

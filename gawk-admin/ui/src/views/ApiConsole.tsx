@@ -11,7 +11,7 @@ import {
   type Document,
   type Operation,
 } from './apiConsole.ts';
-import { AuthRedirect, type AuthSession } from '../auth/session.ts';
+import { AuthRedirect, type AuthSession } from '@gawk/oidc-session';
 import { useSession } from '../auth/AuthContext.tsx';
 import styles from './ApiConsole.module.css';
 import ui from '../styles/ui.module.css';

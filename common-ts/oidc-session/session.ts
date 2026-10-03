@@ -1,4 +1,9 @@
-// The portal's OIDC public-client session (docs/42 §4.8, AP6).
+// The OIDC public-client session shared by the gawk SPAs (docs/42 §4.8, AP6;
+// docs/55 D3). It was written for gawk-admin's moderation portal and moved
+// here with its behaviour unchanged; "the portal" below is whichever SPA
+// constructs it. The two values that differ between SPAs — the bootstrap path
+// and the `sessionStorage` key prefix — are constructor options
+// (`SessionOptions`), so nothing in this package names a consumer.
 //
 // Hand-rolled authorization-code + PKCE rather than `oidc-client-ts`, and the
 // reasons are properties this file has to guarantee rather than configure:
@@ -24,7 +29,7 @@
 
 import { codeChallengeS256, randomToken } from './pkce.ts';
 
-/** The unauthenticated bootstrap document, `GET /auth/config` (§4.8). */
+/** The unauthenticated bootstrap document, `GET <configPath>` (§4.8). */
 export interface AuthConfig {
   issuer: string;
   clientId: string;
@@ -78,11 +83,32 @@ interface FlowRecord {
 }
 
 /**
- * The one storage key this module ever writes. Exported so the test can assert
+ * The two values that make a session one SPA's rather than another's. Both
+ * are REQUIRED, with no default: a second consumer that silently inherited the
+ * first one's storage key would share its in-flight PKCE record whenever the
+ * two are served from one origin.
+ */
+export interface SessionOptions {
+  /**
+   * Where the unauthenticated bootstrap document is fetched from. Relative, so
+   * that it resolves against the page — gawk-admin passes `'auth/config'`.
+   */
+  configPath: string;
+  /**
+   * The prefix of the one `sessionStorage` key the session writes (see
+   * `flowStorageKey`) — gawk-admin passes `'gawk-admin'`.
+   */
+  storageKeyPrefix: string;
+}
+
+/**
+ * The one storage key a session ever writes. Exported so the test can assert
  * on it by name rather than by grepping — "nothing else is stored" is the
  * property, and naming the exception makes it checkable.
  */
-export const FLOW_STORAGE_KEY = 'gawk-admin.oidc-flow';
+export function flowStorageKey(storageKeyPrefix: string): string {
+  return `${storageKeyPrefix}.oidc-flow`;
+}
 
 /**
  * Scope. Deliberately WITHOUT `offline_access`: §4.8 specifies ordinary
@@ -151,6 +177,8 @@ function renewalDelayMs(lifetimeMs: number): number {
 
 export class AuthSession {
   private readonly deps: SessionDeps;
+  private readonly configPath: string;
+  private readonly flowKey: string;
 
   // The ONLY home of any token. Private, never serialized, gone on reload —
   // which is why a reload re-runs the redirect flow (§4.8: against a live IdP
@@ -180,8 +208,10 @@ export class AuthSession {
   private state: SessionState = { status: 'idle' };
   private readonly listeners = new Set<() => void>();
 
-  constructor(deps: Partial<SessionDeps> = {}) {
+  constructor(options: SessionOptions, deps: Partial<SessionDeps> = {}) {
     this.deps = { ...browserDeps(), ...deps };
+    this.configPath = options.configPath;
+    this.flowKey = flowStorageKey(options.storageKeyPrefix);
   }
 
   // --- observable state (useSyncExternalStore) ------------------------------
@@ -214,7 +244,7 @@ export class AuthSession {
   // --- bootstrap ------------------------------------------------------------
 
   /**
-   * Bring the session up: fetch `/auth/config`, complete a callback if this
+   * Bring the session up: fetch `configPath`, complete a callback if this
    * load is one, otherwise start the redirect flow.
    *
    * Safe to call once per page load. It never throws — every failure lands in
@@ -251,11 +281,11 @@ export class AuthSession {
     // Relative, like every other same-origin request: the page is served by the
     // binary that answers this, so it works on `/`, on a port-forward and under
     // an Ingress sub-path alike.
-    const res = await this.deps.fetch('auth/config', { cache: 'no-store' });
-    if (!res.ok) throw new Error(`GET /auth/config failed: HTTP ${res.status}`);
+    const res = await this.deps.fetch(this.configPath, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`GET /${this.configPath} failed: HTTP ${res.status}`);
     const cfg = (await res.json()) as AuthConfig;
     if (!cfg.issuer || !cfg.clientId) {
-      throw new Error('/auth/config is missing issuer or clientId');
+      throw new Error(`/${this.configPath} is missing issuer or clientId`);
     }
     this.config = cfg;
     return cfg;
@@ -326,7 +356,7 @@ export class AuthSession {
       returnTo: returnTo ?? here.hash,
       redirectUri,
     };
-    this.deps.storage.setItem(FLOW_STORAGE_KEY, JSON.stringify(record));
+    this.deps.storage.setItem(this.flowKey, JSON.stringify(record));
 
     const params = new URLSearchParams({
       response_type: 'code',
@@ -348,7 +378,7 @@ export class AuthSession {
   }
 
   private readFlow(): FlowRecord | null {
-    const raw = this.deps.storage.getItem(FLOW_STORAGE_KEY);
+    const raw = this.deps.storage.getItem(this.flowKey);
     if (!raw) return null;
     try {
       return JSON.parse(raw) as FlowRecord;
@@ -358,7 +388,7 @@ export class AuthSession {
   }
 
   private clearFlow() {
-    this.deps.storage.removeItem(FLOW_STORAGE_KEY);
+    this.deps.storage.removeItem(this.flowKey);
   }
 
   private async completeCallback(url: URL, code: string, state: string): Promise<void> {

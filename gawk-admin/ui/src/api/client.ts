@@ -9,7 +9,7 @@
 // relative path works identically on `/`, on a port-forward and under an
 // Ingress sub-path.
 
-import type { AuthSession } from '../auth/session.ts';
+import type { AuthSession } from '@gawk/oidc-session';
 import type {
   ApiErrorCode,
   Ban,

@@ -20,7 +20,12 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    /* The shared packages under common-ts/ (docs/55 D3) */
+    "paths": {
+      "vitest": ["./node_modules/vitest"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "../../common-ts/oidc-session"]
 }

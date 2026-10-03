@@ -109,6 +109,8 @@ jobs:
       coverage_tool: ${{ steps.filter.outputs.coverage_tool }}
       release_tool: ${{ steps.filter.outputs.release_tool }}
       icon: ${{ steps.filter.outputs.icon }}
+      common_ts: ${{ steps.filter.outputs.common_ts }}
+      commonlock_tool: ${{ steps.filter.outputs.commonlock_tool }}
       docker_any: ${{ steps.filter.outputs.docker_any }}
       docker_matrix: ${{ steps.filter.outputs.docker_matrix }}
     steps:
@@ -174,7 +176,13 @@ jobs:
           # assets/icon is in the broadcast filter because the tarball's
           # share/ tree is assembled from it (R44, docs/53 D4).
           broadcast=$(decide    broadcast    '^(gawk-broadcast|gawk-server|assets/icon)/')
-          telemetry=$(decide    telemetry    '^(gawk-telemetry|gawk-server)/')
+          # R53 (docs/55 D3): both SPAs build the shared session package from
+          # common-ts/ through a `file:` dependency, so a change there is a
+          # change to each consumer: its UI job (`*_ui` below) runs the
+          # package's tests and the bundle assertions, and its image — whose
+          # UI stage copies common-ts/ — is rebuilt, because the docker matrix
+          # below is keyed on this decision and on `admin`.
+          telemetry=$(decide    telemetry    '^(gawk-telemetry|gawk-server|common-ts)/')
           # gawk-app/src/transport/wire.test.ts is the TS wire mirror. Its golden
           # vectors are restated, never imported, so a relay wire change must run
           # it — the same blind spot broadcast-desktop.yml closed for the Rust
@@ -182,13 +190,14 @@ jobs:
           app=$(decide          app          '^(gawk-app/|gawk-server/wire/)')
           # The off-origin assertion lives in internal/dashboard but can only run
           # against a built bundle, which is why it is in the UI job.
-          telemetry_ui=$(decide telemetry_ui '^gawk-telemetry/(ui|internal/dashboard)/')
+          telemetry_ui=$(decide telemetry_ui '^gawk-telemetry/(ui|internal/dashboard)/|^common-ts/')
           # R39 (docs/42 D13): gawk-admin `replace`s gawk-server too — it
           # imports gawk-server/moderation so the relay and the admin plane
           # cannot disagree on normalization, target matching or expiry. Same
           # reasoning already written above for broadcast and telemetry: a
           # relay change IS an admin change.
-          admin=$(decide        admin        '^(gawk-admin|gawk-server)/')
+          # common-ts/ for the reason written at `telemetry`.
+          admin=$(decide        admin        '^(gawk-admin|gawk-server|common-ts)/')
           # Mirrors telemetry_ui: the no-external-assets assertion lives in
           # internal/portal but can only run against a built bundle, so it is
           # in the UI job.
@@ -199,7 +208,9 @@ jobs:
           # event catalogue runs here too, and a schema or catalogue change
           # would otherwise never meet the step that checks it against the
           # standard.
-          admin_ui=$(decide     admin_ui     '^gawk-admin/(ui/|internal/portal/|openapi\.yaml$)|^gawk-server/events/')
+          # common-ts/ because the package's own tests run in this job's vitest
+          # and its code is in the bundle the no-external-assets test reads.
+          admin_ui=$(decide     admin_ui     '^gawk-admin/(ui/|internal/portal/|openapi\.yaml$)|^gawk-server/events/|^common-ts/')
           # `go mod tidy` resolves the import graph, so any .go file can untidy a
           # module — not just a manifest.
           tidy=$(decide         tidy         '(^|/)go\.(mod|sum)$|\.go$')
@@ -220,7 +231,8 @@ jobs:
           # command a new contributor runs first.
           # gawk-admin joined the default lane with the R39 portal (docs/41
           # §4.8), so its changes exercise the stack too.
-          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/|gawk-admin/)')
+          # common-ts/ because the admin image's UI stage builds it (docs/55 D3).
+          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/|gawk-admin/|common-ts/)')
           # Not WHETHER dev-stack runs but HOW it builds its Go images: from
           # the real Dockerfiles (true) or from runner-compiled binaries
           # (false, the fast path; see the job). Only an edit to what those
@@ -251,8 +263,17 @@ jobs:
           # either side, because the failure it catches is "edited the SVG
           # and forgot to regenerate" — or the reverse.
           icon=$(decide         icon         '^(assets/icon/|tools/icon/)')
+          # R53 (docs/55 D10): the common-ts lock files. Wider than the
+          # `^common-ts/` the doc names, because a lock goes stale from either
+          # end: the package moving, a package.json gaining or dropping a
+          # `file:` dependency on it, a lock edited by hand, or the tool that
+          # computes them changing.
+          common_ts=$(decide    common_ts    '^(common-ts|tools/commonlock)/|(^|/)(package\.json|common-ts\.lock)$')
+          commonlock_tool=$(decide commonlock_tool '^tools/commonlock/')
 
           # The docker matrix, filtered to the images whose inputs moved. It is
+          # keyed on the component decisions above, so a common-ts/ change
+          # rebuilds both consumers' images through `admin` and `telemetry`. It is
           # built HERE rather than declared in the `docker` job because a static
           # matrix can only be gated as a whole — `if:` cannot reach one entry.
           # The per-image notes stay with the entries.
@@ -1533,7 +1554,7 @@ jobs:
       - uses: ./.github/actions/go-shared-cache
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-broadcast gawk-telemetry gawk-admin tools/icon; do
+          for mod in gawk-server gawk-broadcast gawk-telemetry gawk-admin tools/icon tools/commonlock; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
@@ -3357,6 +3378,128 @@ jobs:
       - run: go test ./...
       - name: The committed derivatives match the SVG
         run: go run . check
+
+  # R53 (docs/55 D10): the common-ts lock tool's own tests. They build scratch
+  # git repositories, so they need nothing from this tree but the tool — and
+  # unlike `common-ts-lock` they run on main pushes too.
+  commonlock-tool:
+    needs: changes
+    if: needs.changes.outputs.commonlock_tool == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    defaults:
+      run:
+        working-directory: tools/commonlock
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: tools/commonlock/go.mod
+          # Standard library only: there is no go.sum to key a cache on.
+          cache: false
+      - uses: ./.github/actions/go-shared-cache
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+
+  # R53 (docs/55 D10): a change under common-ts/ must reach every consumer's
+  # release. release-please attributes a squash commit to components by the
+  # paths it touched, so each consumer carries <component>/common-ts.lock (a
+  # tree hash per consumed package; tools/commonlock) and this job keeps them
+  # fresh: it bumps stale locks with a bot commit on the PR branch, then checks.
+  # The check is meant to be a REQUIRED status. A path-gated job that is
+  # skipped still reports, as a success, which is what a required check on a
+  # PR that does not touch common-ts needs (the header of this file has why
+  # gating is `needs` + `if:`, never `on: paths:`).
+  #
+  # pull_request only: the bot commit has to land on a branch that will be
+  # squashed, and on main the check would only report a merge that already
+  # happened.
+  #
+  # The push uses COMMON_TS_LOCK_TOKEN (a fine-grained PAT or a GitHub App
+  # installation token, `contents: write` on this repository only), NOT
+  # GITHUB_TOKEN: a push made with GITHUB_TOKEN deliberately starts no
+  # workflow run, which would leave the PR's new head commit with no checks at
+  # all and branch protection unable to merge it. The token's push does start
+  # one, and that run cancels this one through the workflow-level `ci-<ref>`
+  # concurrency group — so the run that remains is the one in which every
+  # consumer job ran against the bumped tree. It finds nothing to bump, so
+  # there is no loop.
+  #
+  # Without the secret — a fork PR (secrets are never passed to one),
+  # Dependabot, or a repository that has not set it — the job is CHECK ONLY:
+  # red, with the exact command in the log, never silently mergeable. It does
+  # not run `update` first in that case, since a check of a locally bumped tree
+  # would pass while the branch stays stale.
+  #
+  # Which is why GITHUB_TOKEN stays `contents: read` here, where docs/55 D10
+  # sketched `contents: write` after `attach-broadcast-release`: nothing in
+  # this job pushes with GITHUB_TOKEN, so write on it would be unused authority
+  # held by a job that runs pull-request code.
+  #
+  # On that last point: the tool comes from the PR's own checkout. The token
+  # is kept out of reach of it as far as a workflow can — no persisted
+  # credentials, the secret only in the environment of the step that runs git
+  # alone, hooks disabled for that commit and push — but the boundary that
+  # matters is that only a same-repository PR can get the token at all, and
+  # its author already has write access to the repository.
+  common-ts-lock:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.common_ts == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    env:
+      # A fork's run has no secrets, so this is already '' there; the repo
+      # comparison says so explicitly rather than relying on it.
+      CAN_PUSH: ${{ secrets.COMMON_TS_LOCK_TOKEN != '' && github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      # The PR HEAD commit, not the merge ref: the lock is committed to the
+      # branch and squashed from there, so the branch's own tree is what it
+      # must match. By SHA rather than branch name so the check reports on the
+      # commit this run is for; if the branch has moved since, the push below
+      # is refused as non-fast-forward, and the newer push's run takes over.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        if: ${{ !vars.RUNNER_LABEL }}
+        with:
+          go-version-file: tools/commonlock/go.mod
+          cache: false
+      - name: Bump the consumer lock files
+        id: bump
+        if: env.CAN_PUSH == 'true'
+        run: |
+          set -euo pipefail
+          go -C tools/commonlock run . update
+          if [ -n "$(git status --porcelain -- '*common-ts.lock')" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      # git only, no repository code: this is the one step holding the token.
+      # The branch name goes through the environment, never into the script
+      # text — a branch can be named `$(anything)`.
+      - name: Commit and push the bump to the PR branch
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          TOKEN: ${{ secrets.COMMON_TS_LOCK_TOKEN }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git add -A -- ':(glob)**/common-ts.lock'
+          git -c core.hooksPath=/dev/null \
+              -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m 'chore(common-ts): bump consumer lock files'
+          git -c core.hooksPath=/dev/null \
+              push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${BRANCH}"
+          echo "Pushed the bump; the run it starts supersedes this one." >> "$GITHUB_STEP_SUMMARY"
+      - name: Every consumer's common-ts.lock matches the tree
+        run: go -C tools/commonlock run . check
 
   # Publishes the badges the READMEs point at.
   #

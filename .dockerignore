@@ -11,6 +11,9 @@
 #     RUN npm ci
 #     COPY <component>/ui/ ./
 #
+# (gawk-admin's also copies common-ts/oidc-session/ the same way, docs/55 D3 —
+# a directory that must stay IN this context; nothing here excludes it.)
+#
 # so a node_modules in the working tree is copied OVER the one `npm ci` just
 # built — with the host's ownership and permission bits. On a machine where
 # those bits do not survive the copy, the build dies at `sh: tsc: Permission

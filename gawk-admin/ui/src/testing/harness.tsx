@@ -6,7 +6,7 @@ import { render } from '@testing-library/react';
 import type { ReactElement } from 'react';
 
 import { AuthProvider } from '../auth/AuthContext.tsx';
-import type { AuthSession, SessionState } from '../auth/session.ts';
+import type { AuthSession, SessionState } from '@gawk/oidc-session';
 
 export interface ApiCall {
   path: string;

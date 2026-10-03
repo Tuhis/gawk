@@ -1,4 +1,4 @@
-// PKCE + nonce primitives for the portal's OIDC public-client flow (docs/42
+// PKCE + nonce primitives for the shared OIDC public-client flow (docs/42
 // §4.8).
 //
 // Everything here is WebCrypto: `crypto.getRandomValues` for the unguessable

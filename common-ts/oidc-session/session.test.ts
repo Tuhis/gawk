@@ -1,258 +1,32 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ApiClient } from '../api/client.ts';
-import { AuthRedirect, AuthSession, FLOW_STORAGE_KEY } from './session.ts';
-import type { SessionDeps } from './session.ts';
 import { codeChallengeS256 } from './pkce.ts';
+import { AuthRedirect, AuthSession, flowStorageKey } from './session.ts';
+import {
+  AUTHORIZE,
+  END_SESSION,
+  FAKE_ONLY,
+  FLOW_STORAGE_KEY,
+  PORTAL,
+  CLIENT_ID,
+  dump,
+  flowRecord,
+  harness,
+  json,
+  login,
+  pinnedToken,
+  settle,
+  until,
+} from './testing.ts';
 
-// AP6's auth criteria, as tests (docs/42 §4.8, §9).
+// AP6's auth criteria, as tests (docs/42 §4.8, §9), for the session every gawk
+// SPA shares (docs/55 D3). The fake IdP and the sync helpers are in
+// `testing.ts`, which each consumer's tests import too.
 //
-// The harness runs a whole redirect flow against a fake IdP, and it models the
-// one thing that makes this flow awkward: **the page reloads in the middle of
-// it**. `login()` therefore builds a session, redirects, and then throws that
-// session away and builds a second one for the callback — exactly what the
-// browser does. Anything the flow needs across that boundary has to be in
-// storage, and everything that must NOT be there is asserted afterwards.
-
-/**
- * Fake exactly the three clocks `AuthSession` uses, and nothing else.
- *
- * Vitest's default `toFake` also replaces `setImmediate`/`clearImmediate`. That
- * matters here because these tests await real `Response.json()` calls *before*
- * any timer is advanced, and Node's body-stream machinery can ride on
- * `setImmediate`. Faking it would leave such a read waiting for a tick that
- * only `advanceTimersByTime` can deliver — a hang that would depend on how the
- * body happened to be chunked, i.e. exactly the kind of load-sensitive
- * flakiness this narrowing removes by construction.
- */
-const FAKE_ONLY: NonNullable<Parameters<typeof vi.useFakeTimers>[0]>['toFake'] = [
-  'setTimeout',
-  'clearTimeout',
-  'Date',
-];
-
-const ISSUER = 'https://idp.example/realms/gawk';
-const AUTHORIZE = `${ISSUER}/protocol/openid-connect/auth`;
-const TOKEN_URL = `${ISSUER}/protocol/openid-connect/token`;
-const END_SESSION = `${ISSUER}/protocol/openid-connect/logout`;
-const PORTAL = 'https://admin.example/';
-const CLIENT_ID = 'gawk-portal';
-
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-function b64url(s: string): string {
-  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-/** An unsigned id_token. Nothing in the browser verifies one (see session.ts). */
-function idToken(nonce: string): string {
-  return `${b64url('{"alg":"none"}')}.${b64url(JSON.stringify({ nonce }))}.`;
-}
-
-interface Recorded {
-  url: string;
-  init: RequestInit;
-}
-
-/**
- * A queued token-endpoint behaviour. It may return a PROMISE, which is what
- * lets a test pin a token request in flight and decide when — and whether —
- * it lands; the logout race below is exactly that shape.
- */
-type Responder = (init: RequestInit) => Response | Promise<Response>;
-
-function harness(apiHandler?: (url: string, init: RequestInit) => Response) {
-  const calls: Recorded[] = [];
-  const redirects: string[] = [];
-  let currentUrl = PORTAL;
-  let issued = 0;
-  let nonce = '';
-  /** Queued token-endpoint behaviours; the default issues a fresh pair. */
-  const tokenPlan: Responder[] = [];
-
-  const defaultToken: Responder = () => {
-    issued++;
-    return json({
-      access_token: `access-${issued}`,
-      refresh_token: `refresh-${issued}`,
-      id_token: idToken(nonce),
-      token_type: 'Bearer',
-      expires_in: 300,
-    });
-  };
-
-  const fetchImpl = vi.fn(
-    async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
-      const url = String(input);
-      calls.push({ url, init });
-      if (url === 'auth/config') {
-        return json({ issuer: ISSUER, clientId: CLIENT_ID, audience: 'gawk-admin-api' });
-      }
-      if (url === `${ISSUER}/.well-known/openid-configuration`) {
-        return json({
-          authorization_endpoint: AUTHORIZE,
-          token_endpoint: TOKEN_URL,
-          end_session_endpoint: END_SESSION,
-        });
-      }
-      if (url === TOKEN_URL) return (tokenPlan.shift() ?? defaultToken)(init);
-      return apiHandler ? apiHandler(url, init) : json({});
-    },
-  );
-
-  const deps: Partial<SessionDeps> = {
-    fetch: fetchImpl as unknown as typeof globalThis.fetch,
-    redirect: (url) => {
-      redirects.push(url);
-    },
-    storage: window.sessionStorage,
-    currentUrl: () => currentUrl,
-    replaceUrl: (url) => {
-      currentUrl = url;
-    },
-  };
-
-  return {
-    calls,
-    redirects,
-    tokenPlan,
-    deps,
-    newSession: () => new AuthSession(deps),
-    setUrl: (url: string) => {
-      currentUrl = url;
-    },
-    setNonce: (n: string) => {
-      nonce = n;
-    },
-    tokenCalls: () => calls.filter((c) => c.url === TOKEN_URL),
-    apiCalls: () => calls.filter((c) => c.url.startsWith('api/v1/')),
-    bodyOf: (c: Recorded) => new URLSearchParams(String(c.init.body ?? '')),
-    bearerOf: (c: Recorded) => new Headers(c.init.headers).get('Authorization'),
-  };
-}
-
-type Harness = ReturnType<typeof harness>;
-
-function flowRecord(): { state: string; verifier: string; nonce: string; returnTo: string } {
-  const raw = window.sessionStorage.getItem(FLOW_STORAGE_KEY);
-  if (!raw) throw new Error('no flow record was stored');
-  return JSON.parse(raw) as ReturnType<typeof flowRecord>;
-}
-
-/** Run a full redirect flow, page reload and all. Returns the signed-in session. */
-async function login(h: Harness): Promise<AuthSession> {
-  const first = h.newSession();
-  await first.start();
-  const record = flowRecord();
-  h.setNonce(record.nonce);
-  h.setUrl(`${PORTAL}?code=auth-code&state=${encodeURIComponent(record.state)}`);
-  // The browser has navigated away and back: a brand-new session object, with
-  // nothing in memory.
-  const second = h.newSession();
-  await second.start();
-  return second;
-}
-
-/**
- * Wait for an un-awaited async chain to reach an observable state, one real
- * event-loop turn at a time.
- *
- * The scheduled renewal is fired from a timer callback as `void
- * this.silentRenew()` — by design, since nothing in a browser awaits a
- * background refresh. So no test can await it either, and
- * `advanceTimersByTimeAsync` is NOT a sufficient sync point: it runs timer
- * callbacks and drains microtasks, but the renewal's tail calls
- * `codeChallengeS256`, whose `crypto.subtle.digest` resolves from Node's
- * libuv threadpool. A threadpool completion needs a real event-loop turn.
- * Under no load it usually lands inside the flush; under a full parallel `npm
- * test` it often does not — which is precisely the load-sensitive,
- * one-test-in-a-full-run flake this replaces.
- *
- * This is waiting for an operation to finish, not retrying a shaky assertion:
- * it yields turns until the state is observable and then the assertions after
- * it are exact, or it fails loudly having never seen it.
- *
- * The turn is driven by `realSetTimeout`, captured at module load — before any
- * test body can install fake timers — so this loop keeps running while the
- * clock the session sees is frozen. A plain `await` would not do: microtasks
- * never yield to the event loop, which is the whole problem.
- */
-const realSetTimeout = globalThis.setTimeout;
-
-async function until(what: string, predicate: () => boolean, turns = 500): Promise<void> {
-  for (let i = 0; i < turns; i++) {
-    if (predicate()) return;
-    await new Promise((resolve) => realSetTimeout(resolve, 0));
-  }
-  throw new Error(`timed out waiting for ${what}`);
-}
-
-/**
- * The other half of `until`: run an un-awaited chain out, so that asserting
- * something did NOT happen means it had every chance to.
- *
- * `until` proves something happens; this backs the opposite claim, which is
- * only worth anything once the chain has actually run. It is used after a
- * precise sync point rather than instead of one — the budget is slack, not the
- * argument.
- */
-async function settle(turns = 50): Promise<void> {
-  for (let i = 0; i < turns; i++) {
-    await new Promise((resolve) => realSetTimeout(resolve, 0));
-  }
-}
-
-/**
- * A token response the test holds open until it chooses to deliver it, so a
- * logout can land strictly inside the renewal's POST.
- *
- * `consumed` is the sync point that makes the "nothing happened" assertions
- * exact rather than merely patient: `bodyUsed` flips the moment
- * `tokenRequest`'s `res.json()` disturbs the stream, so once it is true the
- * session is inside the very continuation that decides whether to adopt these
- * tokens.
- */
-function pinnedToken(): {
-  responder: Responder;
-  deliver: (body: unknown) => void;
-  consumed: () => boolean;
-} {
-  let resolve!: (res: Response) => void;
-  let delivered: Response | null = null;
-  const pending = new Promise<Response>((r) => {
-    resolve = r;
-  });
-  return {
-    responder: () => pending,
-    deliver: (body: unknown) => {
-      delivered = json(body);
-      resolve(delivered);
-    },
-    consumed: () => delivered !== null && delivered.bodyUsed,
-  };
-}
-
-/**
- * Everything currently in a Storage, flattened, for "is anything in here?"
- * checks. Joined on `\u0000` — a byte no key, token or JSON blob can contain —
- * written as an escape rather than as a raw byte, so the file stays text that
- * `git diff` and `grep` will actually show you.
- */
-function dump(store: Storage): string {
-  const parts: string[] = [];
-  for (let i = 0; i < store.length; i++) {
-    const key = store.key(i);
-    if (key === null) continue;
-    parts.push(key, store.getItem(key) ?? '');
-  }
-  return parts.join('\u0000');
-}
+// What needs a consumer's API client — every route carrying the bearer token,
+// 401 versus 403 as the views see them — is tested by that consumer against
+// this harness (gawk-admin: ui/src/auth/session.test.ts).
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -418,47 +192,6 @@ describe('tokens are held in memory only (§4.8, AP6)', () => {
   });
 });
 
-describe('every /api/v1 call carries the bearer token (§4.8)', () => {
-  it('attaches Authorization to every route the client can reach', async () => {
-    const h = harness((url) => {
-      if (url.startsWith('api/v1/bans/')) return new Response(null, { status: 204 });
-      return json({});
-    });
-    const session = await login(h);
-    const api = new ApiClient(session);
-
-    await api.me();
-    await api.broadcasts();
-    await api.kill('ABC123', { reason: 'terms', cooldownSeconds: 600 });
-    await api.bans('active');
-    await api.createBan({
-      target: { type: 'broadcastId', value: 'ABC123' },
-      expiresAt: null,
-      reason: 'terms',
-    });
-    await api.unban('ban-1');
-    await api.events();
-    await api.relays();
-    await api.webhooks();
-    await api.testWebhook('ntfy');
-
-    const apiCalls = h.apiCalls();
-    expect(apiCalls.length).toBe(10);
-    for (const call of apiCalls) {
-      expect(h.bearerOf(call)).toBe('Bearer access-1');
-    }
-  });
-
-  it('never sends the bearer token to the identity provider', async () => {
-    const h = harness();
-    const session = await login(h);
-    await new ApiClient(session).me();
-    for (const call of h.calls.filter((c) => c.url.startsWith(ISSUER))) {
-      expect(h.bearerOf(call)).toBeNull();
-    }
-  });
-});
-
 describe('silent renewal by refresh-token rotation (§4.8, AP6)', () => {
   it('renews before the access token expires, and rotates the refresh token', async () => {
     vi.useFakeTimers({ toFake: FAKE_ONLY });
@@ -500,54 +233,6 @@ describe('silent renewal by refresh-token rotation (§4.8, AP6)', () => {
     expect(h.redirects).toHaveLength(2);
     expect(h.redirects[1].startsWith(AUTHORIZE)).toBe(true);
     expect(session.accessToken()).toBeNull();
-  });
-});
-
-describe('401 and 403 are answered differently (§4.8, AP6)', () => {
-  it('401 refreshes and retries the same request', async () => {
-    const h = harness((url, init) => {
-      if (!url.startsWith('api/v1/')) return json({});
-      const bearer = new Headers(init.headers).get('Authorization');
-      return bearer === 'Bearer access-2'
-        ? json({ email: 'op@example.com', subject: 's', roles: ['operator'] })
-        : new Response(null, { status: 401 });
-    });
-    const session = await login(h);
-    const me = await new ApiClient(session).me();
-
-    expect(me.email).toBe('op@example.com');
-    expect(h.bodyOf(h.tokenCalls()[1]).get('grant_type')).toBe('refresh_token');
-    // Repaired in place: no redirect was needed.
-    expect(h.redirects).toHaveLength(1);
-  });
-
-  it('401 that survives the refresh runs the redirect flow', async () => {
-    const h = harness((url) =>
-      url.startsWith('api/v1/') ? new Response(null, { status: 401 }) : json({}),
-    );
-    const session = await login(h);
-
-    await expect(new ApiClient(session).me()).rejects.toBeInstanceOf(AuthRedirect);
-    expect(h.bodyOf(h.tokenCalls()[1]).get('grant_type')).toBe('refresh_token');
-    expect(h.redirects).toHaveLength(2);
-    expect(h.redirects[1].startsWith(AUTHORIZE)).toBe(true);
-  });
-
-  it('403 renders the missing-role page instead of looping through login', async () => {
-    const h = harness((url) =>
-      url.startsWith('api/v1/')
-        ? json({ error: { code: 'forbidden', message: 'operator role required' } }, 403)
-        : json({}),
-    );
-    const session = await login(h);
-
-    await expect(new ApiClient(session).me()).rejects.toThrow(/operator role required/);
-    expect(session.getState().status).toBe('forbidden');
-    // The token is fine and the identity is fine; signing in again would
-    // produce the same token with the same missing role.
-    expect(h.redirects).toHaveLength(1);
-    expect(h.tokenCalls()).toHaveLength(1);
-    expect(session.accessToken()).toBe('access-1');
   });
 });
 
@@ -661,5 +346,38 @@ describe('logout (§4.8)', () => {
     // `logout` cleared the flow record and nothing wrote a new one, so no
     // authorization request was started behind the operator's back.
     expect(window.sessionStorage.getItem(FLOW_STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe('the consumer-specific values are options (docs/55 D3)', () => {
+  // Nothing in the package may name a consumer: a second SPA that inherited
+  // the first one's bootstrap path or storage key would talk to the wrong
+  // endpoint, or share an in-flight PKCE record with it on a shared origin.
+  const OTHER = { configPath: 'other/auth/config', storageKeyPrefix: 'gawk-other' };
+
+  it('bootstraps from the configured path and stores under the configured key', async () => {
+    const h = harness(undefined, OTHER);
+    await h.newSession().start();
+
+    expect(h.calls.filter((c) => c.url === OTHER.configPath)).toHaveLength(1);
+    expect(h.calls.filter((c) => c.url === 'auth/config')).toHaveLength(0);
+    expect(h.redirects).toHaveLength(1);
+    // The one key, and it is this consumer's.
+    expect(window.sessionStorage.length).toBe(1);
+    expect(window.sessionStorage.getItem(flowStorageKey(OTHER.storageKeyPrefix))).not.toBeNull();
+    expect(window.sessionStorage.getItem(FLOW_STORAGE_KEY)).toBeNull();
+  });
+
+  it('names the configured path when the bootstrap fails', async () => {
+    const session = new AuthSession(OTHER, {
+      fetch: (async () => new Response(null, { status: 503 })) as typeof globalThis.fetch,
+      currentUrl: () => PORTAL,
+      storage: window.sessionStorage,
+    });
+    await session.start();
+    expect(session.getState()).toEqual({
+      status: 'error',
+      message: 'GET /other/auth/config failed: HTTP 503',
+    });
   });
 });
