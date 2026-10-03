@@ -3451,60 +3451,31 @@ jobs:
   # R53 (docs/55 D10): a change under common-ts/ must reach every consumer's
   # release. release-please attributes a squash commit to components by the
   # paths it touched, so each consumer carries <component>/common-ts.lock (a
-  # tree hash per consumed package; tools/commonlock) and this job keeps them
-  # fresh: it bumps stale locks with a bot commit on the PR branch, then checks.
-  # The check is meant to be a REQUIRED status. A path-gated job that is
-  # skipped still reports, as a success, which is what a required check on a
+  # tree hash per consumed package; tools/commonlock) and this job checks that
+  # every one matches the tree. It is a REQUIRED status. A path-gated job that
+  # is skipped still reports, as a success, which is what a required check on a
   # PR that does not touch common-ts needs (the header of this file has why
   # gating is `needs` + `if:`, never `on: paths:`).
   #
-  # pull_request only: the bot commit has to land on a branch that will be
+  # CHECK ONLY, by owner decision (2026-10-03): the job never bumps or pushes.
+  # A stale lock is red with the exact command in the log; the author runs it
+  # and commits the result. A bot bump would need a write-capable token
+  # (GITHUB_TOKEN pushes start no workflow run) in a job that runs the PR's own
+  # tools/commonlock, and common-ts changes too rarely to be worth that.
+  #
+  # pull_request only: the lock is committed to a branch that will be
   # squashed, and on main the check would only report a merge that already
   # happened.
-  #
-  # The push uses COMMON_TS_LOCK_TOKEN (a fine-grained PAT or a GitHub App
-  # installation token, `contents: write` on this repository only), NOT
-  # GITHUB_TOKEN: a push made with GITHUB_TOKEN deliberately starts no
-  # workflow run, which would leave the PR's new head commit with no checks at
-  # all and branch protection unable to merge it. The token's push does start
-  # one, and that run cancels this one through the workflow-level `ci-<ref>`
-  # concurrency group — so the run that remains is the one in which every
-  # consumer job ran against the bumped tree. It finds nothing to bump, so
-  # there is no loop.
-  #
-  # Without the secret — a fork PR (secrets are never passed to one),
-  # Dependabot, or a repository that has not set it — the job is CHECK ONLY:
-  # red, with the exact command in the log, never silently mergeable. It does
-  # not run `update` first in that case, since a check of a locally bumped tree
-  # would pass while the branch stays stale.
-  #
-  # Which is why GITHUB_TOKEN stays `contents: read` here, where docs/55 D10
-  # sketched `contents: write` after `attach-broadcast-release`: nothing in
-  # this job pushes with GITHUB_TOKEN, so write on it would be unused authority
-  # held by a job that runs pull-request code.
-  #
-  # On that last point: the tool comes from the PR's own checkout. The token
-  # is kept out of reach of it as far as a workflow can — no persisted
-  # credentials, the secret only in the environment of the step that runs git
-  # alone, hooks disabled for that commit and push — but the boundary that
-  # matters is that only a same-repository PR can get the token at all, and
-  # its author already has write access to the repository.
   common-ts-lock:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.common_ts == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:
       contents: read
-    env:
-      # A fork's run has no secrets, so this is already '' there; the repo
-      # comparison says so explicitly rather than relying on it.
-      CAN_PUSH: ${{ secrets.COMMON_TS_LOCK_TOKEN != '' && github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       # The PR HEAD commit, not the merge ref: the lock is committed to the
       # branch and squashed from there, so the branch's own tree is what it
-      # must match. By SHA rather than branch name so the check reports on the
-      # commit this run is for; if the branch has moved since, the push below
-      # is refused as non-fast-forward, and the newer push's run takes over.
+      # must match.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -3514,36 +3485,6 @@ jobs:
         with:
           go-version-file: tools/commonlock/go.mod
           cache: false
-      - name: Bump the consumer lock files
-        id: bump
-        if: env.CAN_PUSH == 'true'
-        run: |
-          set -euo pipefail
-          go -C tools/commonlock run . update
-          if [ -n "$(git status --porcelain -- '*common-ts.lock')" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-      # git only, no repository code: this is the one step holding the token.
-      # The branch name goes through the environment, never into the script
-      # text — a branch can be named `$(anything)`.
-      - name: Commit and push the bump to the PR branch
-        if: steps.bump.outputs.changed == 'true'
-        env:
-          TOKEN: ${{ secrets.COMMON_TS_LOCK_TOKEN }}
-          BRANCH: ${{ github.event.pull_request.head.ref }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          git add -A -- ':(glob)**/common-ts.lock'
-          git -c core.hooksPath=/dev/null \
-              -c user.name='github-actions[bot]' \
-              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-              commit -m 'chore(common-ts): bump consumer lock files'
-          git -c core.hooksPath=/dev/null \
-              push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/${BRANCH}"
-          echo "Pushed the bump; the run it starts supersedes this one." >> "$GITHUB_STEP_SUMMARY"
       - name: Every consumer's common-ts.lock matches the tree
         run: go -C tools/commonlock run . check
 

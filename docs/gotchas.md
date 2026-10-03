@@ -1446,9 +1446,9 @@ Add to it when a new gotcha lands in `docs/`.
   ([docs/55](55-telemetry-oidc.md) D8)
 - **A push made with the default `GITHUB_TOKEN` starts no workflow run**, so
   a CI job that commits to a PR branch with it leaves the new head with no
-  checks and branch protection unable to merge. The `common-ts-lock` job
-  pushes with `COMMON_TS_LOCK_TOKEN` and falls back to check-only without
-  it. ([docs/55](55-telemetry-oidc.md) D10)
+  checks and branch protection unable to merge. That is one reason the
+  `common-ts-lock` job is check-only rather than bumping locks itself.
+  ([docs/55](55-telemetry-oidc.md) D10, §11)
 - **oxlint refuses a path argument containing `..`**, so a consumer SPA
   lints `common-ts/` through an absolute path (`$(cd ../../common-ts/… &&
   pwd)` in the lint script). And `go run ./tools/<x>` does not work from the

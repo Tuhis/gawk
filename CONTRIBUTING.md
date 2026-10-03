@@ -157,9 +157,8 @@ package in `gawk-server`. Because a commit under `common-ts/` belongs to no
 release-please component, every consumer commits a `common-ts.lock` (the
 package's tree hash) inside its own release path. After editing a package,
 run `go -C tools/commonlock run . update` and commit the lock files; the
-`common-ts-lock` CI job does it for you on a same-repo PR (a bot commit,
-given the `COMMON_TS_LOCK_TOKEN` secret) and fails red with that command
-when it cannot. The squash commit then touches every consumer, so a
+required `common-ts-lock` CI job only checks, and fails red with that
+command while any lock is stale. The squash commit then touches every consumer, so a
 `feat`/`fix` title releases each of them (docs/55 D10).
 
 ## Running the gates before you push
