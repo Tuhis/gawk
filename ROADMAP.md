@@ -5010,7 +5010,8 @@ MSE workaround.
 
 **Non-goals**: TestFlight / App Store distribution (a follow-up milestone),
 mic audio, camera broadcasting, R19/R21/R30 delivery modes in the viewer,
-porting R12's adaptive playout, any change to the Safari viewer, Android.
+porting R12's presentation machinery (interpolation; the adaptive offset
+estimator is ported, docs/67 D15), any change to the Safari viewer, Android.
 
 **Status**: 💡 proposed 2026-10-03, not started.
 

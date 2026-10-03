@@ -122,8 +122,9 @@ gawk-ios/
 `rust/` path-depends on `gawk-broadcast-desktop/crates/{wire,engine,capture,encode,audio}`.
 `capture` is in the set for its portable and Apple pieces only: `gate.rs`
 (`FpsGate`), `fit.rs` (`fit_within`), `host.rs` (the `mach_absolute_time`
-host clock) and `sck_policy.rs`'s `ENCODER_MAX_IN_FLIGHT`, never
-ScreenCaptureKit itself.
+host clock) and `sck_policy.rs`'s `ENCODER_MAX_IN_FLIGHT`. `sck_policy` is
+already an ungated, portable module (it imports only `crate::gate` and
+std), so using it compiles no ScreenCaptureKit code.
 **There is no fifth wire mirror** (CLAUDE.md: reuse, never mirror): the
 desktop `crates/wire` and its golden vectors are the iOS app's too. Its
 tests run in iOS CI as well, so a `gawk-server/wire/**` change triggers the
@@ -155,18 +156,20 @@ dirty pages do, and IO0 measures them.
 
 ### D4 — Shared desktop crates gain iOS gating, not iOS code paths
 
-- **`cfg(any(target_os = "macos", target_os = "ios"))`** where the code is
-  Apple-generic: `encode/vt.rs` and `vt_policy.rs`; in `capture`, `host.rs`
-  (the host clock; `engine/src/clock.rs` has only the `Clock` trait and an
-  `Instant` clock) and the in-flight constants, which move out of
-  `sck_policy.rs` into an Apple-generic module so iOS doesn't compile
-  ScreenCaptureKit code; and the objc2 dependency lines. `capture/src/lib.rs`
-  gates its modules per OS today, so this is a re-gating, not new code.
-  objc2's framework crates already build for iOS.
+- **`cfg(any(target_os = "macos", target_os = "ios"))` on exactly two
+  modules**, `encode/vt.rs` and `capture/host.rs` (the host clock;
+  `engine/src/clock.rs` has only the `Clock` trait and an `Instant` clock),
+  plus the matching objc2 dependency lines. objc2's framework crates already
+  build for iOS. **`vt_policy` and `sck_policy` need no change**: both are
+  ungated, portable modules that run as host tests everywhere, and the Linux
+  encoder uses `vt_policy` directly (`encode/src/gst.rs`), so gating either
+  would break the Linux build.
 - **A `self-update` cargo feature, default on, that iOS turns off.** It gates
-  `engine::update`, `engine::install`, `ureq`, `minisign-verify`, `flate2`
-  and `tar`. App Store apps must not update themselves, and dropping them
-  shrinks the extension.
+  `engine::update`, `engine::install` and `minisign-verify`. App Store apps
+  must not update themselves. **`ureq` stays**: `engine::telemetry` posts
+  reports through a `ureq::Agent` and is ungated, and D23 needs it.
+  `flate2` and `tar` are already Linux-only target dependencies, so they
+  need nothing.
 - **Nothing else.** No iOS module in the desktop crates. ReplayKit, App Group
   and UIKit code lives in `gawk-ios`.
 
@@ -221,7 +224,7 @@ exactly as the macOS shell is above them (docs/54 §5).
 | `broadcastPaused()` (the system paused capture, e.g. a call) | Stop feeding encoders; keep the session and keepalive. Viewers see the broadcaster away, as with desktop **Pause** (docs/64). |
 | `broadcastResumed()` | Force an IDR (docs/54 D7's on-demand IDR) and continue. |
 | `broadcastFinished()` | Close the session cleanly; clear the live status. Keep the resume token for the grace period so a restart within 5 minutes gets the same code. |
-| Close code **4000** / **4004** or a `SessionClosing` (0x17, R57) naming them | `finishBroadcastWithError(_:)` with a user-facing reason. These are terminal (CLAUDE.md); no reconnect. |
+| Close code **4000**, **4004** or **4006**, or a `SessionClosing` (0x17, R57) naming one | `finishBroadcastWithError(_:)` with the engine's user-facing sentence for that code. All three are terminal for a publisher (`engine::resume::terminal_for_publisher`; 4006 is an operator kill, R39), so no auto-resume. The set comes from the engine, never restated. |
 | 4001–4003, transport loss | The engine's resume loop, unchanged. |
 | Jetsam / crash | Nothing runs. The relay holds the slot through the GC grace; the next start reclaims it with the stored token (G6). |
 
@@ -332,6 +335,7 @@ viewer exists. It implements, against the shared `wire` crate's parsers:
 | `ParityChunk` (0x0E), `RelayCapabilities` (0x0F) | R29 repair of delta chunk loss (D14). |
 | `ViewerCount` (0x0B), `DeliveryAck` (0x0C), `TelemetryHello` (0x0D) | Display, the delivery truth row, the telemetry token. |
 | Room types (0x13–0x16), `SessionClosing` (0x17) | R42 rooms (D21), R57 in-band closes. |
+| Close codes | **Terminal for a viewer: 4000 (broadcast ended) and 4006 (operator kill)**; no reconnect, and the player says why. 4001–4003 reconnect. The set lives in shared code: IO4 adds `terminal_for_viewer` beside the close-code constants in `crates/wire` (with `CLOSE_CODE_TERMINATED_BY_OPERATOR`, if the mirror lacks it), tested against `wire.go`'s doc comments, so the viewer never restates it. |
 | `ReliableCarrier` (0x0A), `StripeState` (0x10) | **Not in v1.** The viewer never requests `delivery=reliable` or stripes, so the relay never sends them (both are opt-in by dial parameter). |
 
 **Delta loss rule**: a delta frame that can't be completed or repaired by
@@ -528,7 +532,8 @@ stops video decode.
 ## 6. What deliberately does not exist
 
 Inherited from docs/38 §7 and docs/54 §7: no software encode; no
-viewer→server keyframe back-channel; no auto-resume through 4000/4004; no
+viewer→server keyframe back-channel; no auto-resume through 4000/4004/4006
+(publisher) or reconnect through 4000/4006 (viewer); no
 second clock; no standalone `DecoderConfig` datagrams; no Opus
 DTX/FEC/bitrate knob. Added here: no media in the containing app (D6); no
 QUIC connection migration (D12); no self-update (D4); no raw broadcast IDs
@@ -552,7 +557,7 @@ grid; tap a tile for focus.
 broadcast resumes on the same code with an IDR (G6); after a jetsam, the
 user restarts from the picker within the grace and gets the same code.
 
-**Errors**: 4000/4004 end the broadcast with the system's alert carrying
+**Errors**: 4000/4004/4006 end the broadcast with the system's alert carrying
 our reason (D7). A full fleet or a refused secret says which, in the app.
 
 ## 8. Risks
