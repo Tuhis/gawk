@@ -239,19 +239,28 @@ fn main() {
     #[cfg(windows)]
     toast::init();
 
-    shell::run(Box::new(Windows::default()), |ui, shell| {
-        let shell = shell.clone();
-        let ui_weak = ui.as_weak();
-        ui.on_refresh_picker(move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                shell
-                    .borrow_mut()
-                    .platform_mut::<Windows>()
-                    .refresh_picker(&ui);
-                // The list's indices moved: select the remembered source
-                // again (docs/60 D5).
-                shell::reselect_source(&ui, &shell);
-            }
-        });
-    });
+    let args: Vec<String> = std::env::args().collect();
+    let launch = gawk_ui::instance::Launch {
+        request: gawk_ui::instance::Request::from_args(&args),
+        inbox: None,
+    };
+    shell::run(
+        Box::new(Windows::default()),
+        |ui, shell| {
+            let shell = shell.clone();
+            let ui_weak = ui.as_weak();
+            ui.on_refresh_picker(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    shell
+                        .borrow_mut()
+                        .platform_mut::<Windows>()
+                        .refresh_picker(&ui);
+                    // The list's indices moved: select the remembered source
+                    // again (docs/60 D5).
+                    shell::reselect_source(&ui, &shell);
+                }
+            });
+        },
+        launch,
+    );
 }

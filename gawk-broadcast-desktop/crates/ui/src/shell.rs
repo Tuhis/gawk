@@ -21,6 +21,7 @@
 //! the UI through one std mpsc channel drained by a UI timer — no shared
 //! state crosses the boundary.
 
+use crate::instance::{self, Incoming, Launch, Request};
 use crate::messages::{StartFailure, can_mint, first_line, message};
 use crate::preview::PreviewFrame;
 use crate::{
@@ -29,6 +30,7 @@ use crate::{
 use gawk_engine::clock::{Clock, MonotonicClock};
 use gawk_engine::config::{self, Config, DEFAULT_SERVER_NAME, ServerProfile};
 use gawk_engine::install::{self, Layout, Plan};
+use gawk_engine::link::{self, DropReason, Dropped, Link};
 use gawk_engine::lossnotice::{LossMonitor, NetworkFacts, Notice};
 use gawk_engine::probe::ProbeResult;
 use gawk_engine::room::RoomSummary;
@@ -212,6 +214,13 @@ pub trait Platform: 'static {
     /// to the user.
     fn placement(&self, _ui: &MainWindow) -> Option<fit::Placement> {
         None
+    }
+    /// Brings the window to the front for a second launch or a link (R66,
+    /// docs/68 D6). `activation` is the Wayland activation token the
+    /// launcher gave the second launch (D8). The default shows the window
+    /// and nothing more.
+    fn raise_window(&mut self, ui: &MainWindow, _activation: Option<String>) {
+        let _ = ui.show();
     }
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -425,6 +434,16 @@ pub struct Shell {
     reclaim_refused: Option<u16>,
     /// Window fit and your size (R64, docs/66 D8–D13).
     fit: fit::FitState,
+    /// Second launches and links, from the single-instance endpoint or the
+    /// macOS Apple Event handler (R66, docs/68 D6).
+    inbox: Option<mpsc::Receiver<Incoming>>,
+    /// A broadcast link that arrived while starting (docs/68 D4).
+    pending_link: Option<BroadcastLink>,
+    /// Until when the first request from the inbox may be this launch's
+    /// own link (macOS, docs/68 D10): a viewer link then is a cold start.
+    cold_until: Option<std::time::Instant>,
+    /// What the link card on screen asks.
+    link_card: Option<LinkCard>,
 }
 
 /// The header probe's state: what was found for which relay, and when to
@@ -576,14 +595,21 @@ fn build_shell(
         build_gen: 0,
         reclaim_refused: None,
         fit,
+        inbox: None,
+        pending_link: None,
+        link_card: None,
+        cold_until: None,
     }
 }
 
 /// Runs the broadcaster window until it closes. `wire_platform` connects
 /// the platform's own callbacks (its picker) once the window exists.
+/// `launch` is what `main` found: this launch's link, and the inbox later
+/// launches arrive on (R66, docs/68 D6).
 pub fn run(
     platform: Box<dyn Platform>,
     wire_platform: impl FnOnce(&MainWindow, &Rc<RefCell<Shell>>),
+    launch: Launch,
 ) {
     let _ = HOOKS.set(platform.hooks());
 
@@ -647,6 +673,14 @@ pub fn run(
         }
     }
 
+    // docs/68 D3: a cold start for a viewer link opens the browser and exits
+    // without showing a window.
+    if let Some(url) = cold_viewer_url(&launch.request, &cfg) {
+        log::info!("a viewer link at launch: opening the browser");
+        open_in_browser(&url);
+        return;
+    }
+
     let shell = Rc::new(RefCell::new(build_shell(
         platform,
         cfg,
@@ -654,6 +688,16 @@ pub fn run(
         log_path,
         install_target,
     )));
+    if let Some(note) = &launch.note {
+        log::warn!("{note}");
+    }
+    {
+        let mut sh = shell.borrow_mut();
+        sh.inbox = launch.inbox;
+        if launch.link_in_inbox {
+            sh.cold_until = Some(std::time::Instant::now() + COLD_LINK_WINDOW);
+        }
+    }
 
     let ui = MainWindow::new().expect("create window");
     ui.set_app_version(format!("v{}", version::display()).into());
@@ -686,6 +730,12 @@ pub fn run(
     wire_callbacks(&ui, &shell);
     wire_platform(&ui, &shell);
     start_update_check(&ui, &mut shell.borrow_mut());
+    // docs/68 D6: the launch's own link, after the settings and the
+    // crash-resume offer are in place. Nothing to raise: the window is
+    // about to show.
+    if let Request::Open(raw) = launch.request {
+        open_link(&ui, &shell, raw, None);
+    }
 
     // One timer drains the message channel and, while broadcasting, ticks
     // stats/thumbnail/hints at 1 Hz. Idle cost: an empty channel poll.
@@ -1769,7 +1819,8 @@ fn install_target() -> Option<InstallTarget> {
     Some(InstallTarget {
         exe,
         layout,
-        args: std::env::args_os().skip(1).collect(),
+        // docs/68 D7, G10: the launch's link was applied once already.
+        args: instance::relaunch_args(&std::env::args_os().skip(1).collect::<Vec<_>>()),
     })
 }
 
@@ -1870,8 +1921,12 @@ fn install_now(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     match install::swap(target.layout, &target.exe, &ready.binary) {
         Ok(()) => {
             log::info!("installed v{} over {}", ready.version, target.exe.display());
+            // docs/68 D7, G11: the new build waits for this one to exit
+            // and takes the instance over, rather than handing off to it.
             match std::process::Command::new(&target.exe)
                 .args(&target.args)
+                .arg(instance::RELAUNCHED_FROM)
+                .arg(std::process::id().to_string())
                 .spawn()
             {
                 Ok(_) => {
@@ -2318,6 +2373,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 sh.cfg.room.clear();
                 sh.cfg.room_attach_secret.clear();
                 sh.cfg.room_creator_token.clear();
+                sh.cfg.room_server.clear();
                 save_config(&mut sh);
                 refresh_ready(&ui, &sh.cfg, false);
             }
@@ -2340,6 +2396,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 sh.cfg.room.clear();
                 sh.cfg.room_attach_secret.clear();
                 sh.cfg.room_creator_token.clear();
+                sh.cfg.room_server.clear();
                 save_config(&mut sh);
                 refresh_ready(&ui, &sh.cfg, sh.pending_create);
                 if let Some(session) = sh.session.clone() {
@@ -2412,8 +2469,12 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 if code.is_empty() {
                     return;
                 }
+                // The key typed is stored for the server it was used on
+                // (docs/68 D5a).
+                let here = sh.cfg.server_key();
                 sh.cfg.room_attach_secret = key.clone();
-                sh.cfg.remember_room(&code, &key, now_unix());
+                sh.cfg.room_server = here.clone();
+                sh.cfg.remember_room(&here, &code, &key, now_unix());
                 save_config(&mut sh);
                 sh.room_grant = attach_grant(&key);
                 begin_room_session(&mut sh, &key);
@@ -2423,6 +2484,32 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 ui.set_room_key_input("".into());
                 ui.set_room_needs_key(false);
                 ui.set_room_status("Joining with the key…".into());
+            }
+        });
+    }
+    {
+        let ui_weak = ui_weak.clone();
+        ui.on_link_notice_dismiss(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_link_notice("".into());
+            }
+        });
+    }
+    {
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_link_card_accepted(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                link_card_accepted(&ui, &shell);
+            }
+        });
+    }
+    {
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_link_card_declined(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                clear_link_card(&ui, &mut shell.borrow_mut());
             }
         });
     }
@@ -2671,6 +2758,7 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     ui.set_paused(false);
     ui.set_room_left("".into());
     sh.left_room = None;
+    ui.set_link_notice("".into());
     sh.foreign_telemetry = false;
     ui.set_server_note("".into());
     sh.paused_since = None;
@@ -2716,20 +2804,7 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     let room_new = sh.pending_create;
     // A create is one-shot: the next broadcast mints no second room.
     sh.pending_create = false;
-    let (room_code, attach, creator) = match &room {
-        Some(RoomInput { code, grant }) => {
-            let attach = match grant {
-                Some(RoomGrant::Attach(k)) => k.clone(),
-                _ => sh.cfg.room_attach_secret.clone(),
-            };
-            let creator = match grant {
-                Some(RoomGrant::Creator(hex)) => hex.clone(),
-                _ => sh.cfg.room_creator_token.clone(),
-            };
-            (code.clone(), attach, creator)
-        }
-        None => (String::new(), String::new(), String::new()),
-    };
+    let (room_code, attach, creator) = start_room(&sh.cfg, room.as_ref());
     sh.room_grant = if !creator.is_empty() {
         Some(RoomGrant::Creator(creator.clone()))
     } else if room_code.is_empty() {
@@ -2854,6 +2929,355 @@ fn pump_messages(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             Err(_) => break,
         }
     }
+    loop {
+        let incoming = shell.borrow().inbox.as_ref().map(|rx| rx.try_recv());
+        match incoming {
+            Some(Ok(inc)) => handle_incoming(ui, shell, inc),
+            _ => break,
+        }
+    }
+    // D4: a link that arrived while starting applies once the start settles.
+    let queued = {
+        let mut sh = shell.borrow_mut();
+        if sh.state == UiState::Starting {
+            None
+        } else {
+            sh.pending_link.take()
+        }
+    };
+    if let Some(link) = queued {
+        apply_broadcast_link(ui, shell, link);
+    }
+}
+
+/// How soon after launch the first link through the inbox counts as the
+/// launch's own (macOS, docs/68 D10): the Apple Event arrives within the
+/// first turns of the event loop.
+const COLD_LINK_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A second launch or a link reached this instance (R66, docs/68 D6).
+fn handle_incoming(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, inc: Incoming) {
+    // macOS: a viewer link that arrives first, right after launch, is the
+    // launch's own; it opens the browser and the app quits (D3).
+    let cold = shell
+        .borrow_mut()
+        .cold_until
+        .take()
+        .is_some_and(|t| std::time::Instant::now() < t);
+    let cold_url = cold
+        .then(|| cold_viewer_url(&inc.request, &shell.borrow().cfg))
+        .flatten();
+    if let Some(url) = cold_url {
+        log::info!("a viewer link at launch: opening the browser and quitting");
+        open_in_browser(&url);
+        let _ = slint::quit_event_loop();
+        return;
+    }
+    match inc.request {
+        Request::Raise => {
+            log::info!("a second launch: raising the window");
+            shell.borrow_mut().platform.raise_window(ui, inc.activation);
+        }
+        Request::Open(link) => open_link(ui, shell, link, Some(inc.activation)),
+    }
+}
+
+/// A broadcast link's parts, as a state applies them (docs/68 D4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BroadcastLink {
+    room: Option<String>,
+    nick: Option<String>,
+    /// The server the link names: its `relay=` origin, `None` for the
+    /// default fleet (D1).
+    relay: Option<String>,
+    dropped: Vec<Dropped>,
+}
+
+/// What the link card asks (docs/68 D4, D5); its answer acts on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LinkCard {
+    /// Live or paused: join this room, and take this nickname, now.
+    JoinLive {
+        room: Option<String>,
+        nick: Option<String>,
+    },
+    /// Idle: a server no profile has. "Add and switch".
+    AddServer { origin: String },
+}
+
+/// A link reached the window (D3): a later launch's, with its activation
+/// token in `raise`, or this launch's own (`raise` is `None`: the window is
+/// about to show anyway). A viewer link goes to the browser without raising
+/// the window; a broadcast link raises it and fills in the form; a rejected
+/// one says why.
+fn open_link(
+    ui: &MainWindow,
+    shell: &Rc<RefCell<Shell>>,
+    raw: Result<String, ()>,
+    raise: Option<Option<String>>,
+) {
+    let raise_window = |activation: Option<Option<String>>| {
+        if let Some(token) = activation {
+            shell.borrow_mut().platform.raise_window(ui, token);
+        }
+    };
+    let parsed = raw
+        .map_err(|()| "the launch named more than one link".to_string())
+        .and_then(|s| link::parse(&s).map_err(|e| e.to_string()));
+    let parsed = match parsed {
+        Ok(p) => p,
+        Err(why) => {
+            log::info!("a link was rejected: {why}");
+            raise_window(raise);
+            ui.set_page(0);
+            ui.set_link_notice(format!("This link couldn't be opened: {why}.").into());
+            return;
+        }
+    };
+    // D13: the kind only, never a broadcast ID.
+    log::info!("a {} link arrived", parsed.link.kind());
+    match parsed.link {
+        Link::Broadcast { room, nick, relay } => {
+            raise_window(raise);
+            ui.set_page(0);
+            apply_broadcast_link(
+                ui,
+                shell,
+                BroadcastLink {
+                    room,
+                    nick,
+                    relay,
+                    dropped: parsed.dropped,
+                },
+            );
+        }
+        viewer @ (Link::Watch { .. } | Link::Room { .. }) => {
+            let app_url = shell.borrow().cfg.resolve_app_url();
+            open_in_browser(&viewer.to_https(&app_url));
+        }
+    }
+}
+
+/// The page a cold start's viewer link opens (docs/68 D3): such a launch
+/// opens the browser and exits without showing its window. `None` for
+/// every other launch.
+fn cold_viewer_url(request: &Request, cfg: &Config) -> Option<String> {
+    let Request::Open(Ok(raw)) = request else {
+        return None;
+    };
+    match link::parse(raw).ok()?.link {
+        Link::Broadcast { .. } => None,
+        viewer => Some(viewer.to_https(&cfg.resolve_app_url())),
+    }
+}
+
+/// D4: a broadcast link fills in the form while idle, waits while a start
+/// settles (the latest wins), and asks first while live or paused.
+fn apply_broadcast_link(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, link: BroadcastLink) {
+    let state = shell.borrow().state;
+    match state {
+        UiState::Starting => {
+            shell.borrow_mut().pending_link = Some(link);
+        }
+        UiState::Idle => apply_link_idle(ui, shell, link),
+        UiState::Live | UiState::Paused => apply_link_live(ui, shell, link),
+    }
+}
+
+fn apply_link_idle(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, link: BroadcastLink) {
+    let mut filled = Vec::new();
+    // D5 first, so the room's stored key is looked up on the link's server.
+    let found = shell.borrow().cfg.server_for_origin(link.relay.as_deref());
+    match found {
+        None => {
+            if shell.borrow().cfg.selected_profile().is_some() {
+                select_server(ui, &mut shell.borrow_mut(), DEFAULT_SERVER_NAME);
+                filled.push("the default server".to_string());
+            }
+        }
+        Some(Ok(name)) => {
+            let selected = shell
+                .borrow()
+                .cfg
+                .selected_profile()
+                .map(|p| p.name.clone());
+            if selected.as_deref() != Some(name.as_str()) {
+                filled.push(format!("server {name}"));
+                select_server(ui, &mut shell.borrow_mut(), &name);
+            }
+        }
+        Some(Err(())) => {
+            // Until the click, the room and nickname apply on the current
+            // server (D5).
+            let origin = link.relay.clone().unwrap_or_default();
+            show_link_card(ui, &mut shell.borrow_mut(), LinkCard::AddServer { origin });
+        }
+    }
+    if let Some(code) = &link.room {
+        choose_room(
+            ui,
+            shell,
+            RoomInput {
+                code: code.clone(),
+                grant: None,
+            },
+        );
+        filled.push(format!("room {code}"));
+    }
+    if let Some(nick) = &link.nick {
+        set_link_nickname(ui, &mut shell.borrow_mut(), nick);
+        filled.push(format!("nickname {nick}"));
+    }
+    ui.set_link_notice(link_notice(&filled, &link.dropped).into());
+}
+
+fn apply_link_live(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, link: BroadcastLink) {
+    let mut sh = shell.borrow_mut();
+    let here = sh.cfg.server_key();
+    let there = link
+        .relay
+        .clone()
+        .or_else(|| config::relay_origin(gawk_engine::defaults::RELAY_URL))
+        .unwrap_or_default();
+    // Never touches the broadcast's server (D4). A room on another server
+    // is not the room of that code here, so nothing joins either.
+    if there != here {
+        let what = match &link.room {
+            Some(code) => format!("This link is for room {code} on {}.", host_of(&there)),
+            None => format!("This link is for {}.", host_of(&there)),
+        };
+        ui.set_link_notice(format!("{what} End the broadcast to switch server.").into());
+        return;
+    }
+    // The room this broadcast is already in needs no join.
+    let current = sh.room.as_ref().map(|s| s.code.clone());
+    let room = link.room.filter(|c| {
+        !current
+            .as_deref()
+            .is_some_and(|cur| cur.eq_ignore_ascii_case(c))
+    });
+    let nick = link.nick.filter(|n| *n != sh.cfg.nickname);
+    ui.set_link_notice(link_notice(&[], &link.dropped).into());
+    if room.is_some() || nick.is_some() {
+        show_link_card(ui, &mut sh, LinkCard::JoinLive { room, nick });
+    }
+}
+
+/// Puts the card up, replacing any earlier one: the latest link wins.
+fn show_link_card(ui: &MainWindow, sh: &mut Shell, card: LinkCard) {
+    let (title, body, accept, decline) = match &card {
+        LinkCard::JoinLive {
+            room: Some(code),
+            nick,
+        } => (
+            format!("Join room {code} now?"),
+            match nick {
+                Some(n) => format!("Your broadcast joins the room now, as {n}."),
+                None => "Your broadcast joins the room now.".to_string(),
+            },
+            "Join".to_string(),
+            "Not now".to_string(),
+        ),
+        LinkCard::JoinLive { room: None, nick } => (
+            format!("Use the nickname {} now?", nick.as_deref().unwrap_or("")),
+            "The link renames your stream.".to_string(),
+            "Use it".to_string(),
+            "Not now".to_string(),
+        ),
+        LinkCard::AddServer { origin } => (
+            format!("This link uses the server {}", host_of(origin)),
+            "Add it and switch to it? It's saved with no publish secret; you're asked for one if it needs it.".to_string(),
+            "Add and switch".to_string(),
+            format!(
+                "Keep {}",
+                sh.cfg
+                    .selected_profile()
+                    .map_or("the default server".to_string(), |p| p.name.clone())
+            ),
+        ),
+    };
+    ui.set_link_card_title(title.into());
+    ui.set_link_card_body(body.into());
+    ui.set_link_card_accept(accept.into());
+    ui.set_link_card_decline(decline.into());
+    sh.link_card = Some(card);
+}
+
+fn clear_link_card(ui: &MainWindow, sh: &mut Shell) -> Option<LinkCard> {
+    ui.set_link_card_title("".into());
+    ui.set_link_card_body("".into());
+    sh.link_card.take()
+}
+
+/// The card's first button.
+fn link_card_accepted(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
+    let card = clear_link_card(ui, &mut shell.borrow_mut());
+    match card {
+        Some(LinkCard::JoinLive { room, nick }) => {
+            if let Some(n) = &nick {
+                let mut sh = shell.borrow_mut();
+                set_link_nickname(ui, &mut sh, n);
+                sh.nick_timer.stop();
+                flush_nickname(&mut sh);
+            }
+            if let Some(code) = room {
+                log::info!("joining the room a link named");
+                choose_room(ui, shell, RoomInput { code, grant: None });
+            }
+        }
+        Some(LinkCard::AddServer { origin }) => {
+            let mut sh = shell.borrow_mut();
+            // Only while idle: a broadcast's server never changes under it.
+            if sh.state != UiState::Idle {
+                return;
+            }
+            let name = sh.cfg.add_server(&host_of(&origin), &origin);
+            log::info!("added a server from a link");
+            select_server(ui, &mut sh, &name);
+        }
+        None => {}
+    }
+}
+
+/// Selects the server `name` names, as the Settings list does.
+fn select_server(ui: &MainWindow, sh: &mut Shell, name: &str) {
+    sh.cfg.selected_server = name.to_owned();
+    save_config(sh);
+    refresh_captions(ui, &sh.cfg);
+    refresh_ready(ui, &sh.cfg, sh.pending_create);
+    restart_probe(ui, sh);
+}
+
+/// D4, §8: the nickname goes into the field as well as the config —
+/// `read_settings` reads the field back at Start.
+fn set_link_nickname(ui: &MainWindow, sh: &mut Shell, nick: &str) {
+    ui.set_room_nickname(nick.into());
+    sh.cfg.nickname = nick.to_owned();
+    save_config(sh);
+}
+
+/// The quiet line after a link (D4): what it filled in, then what it left
+/// out. Empty when it did neither.
+fn link_notice(filled: &[String], dropped: &[Dropped]) -> String {
+    let mut out = String::new();
+    if !filled.is_empty() {
+        out = format!("From the link: {}.", filled.join(", "));
+    }
+    if !dropped.is_empty() {
+        let names: Vec<String> = dropped
+            .iter()
+            .map(|d| match d.why {
+                DropReason::Secret => format!("{} (links never carry secrets)", d.param),
+                DropReason::Unknown => format!("{} (not known here)", d.param),
+                DropReason::Invalid => format!("{} (not valid)", d.param),
+            })
+            .collect();
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(&format!("Left out: {}.", names.join(", ")));
+    }
+    out
 }
 
 fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
@@ -3169,7 +3593,8 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
                 // rooms" (docs/60 D8).
                 sh.room_joined = true;
                 let key = sh.room_key_used.clone();
-                sh.cfg.remember_room(&s.code, &key, now_unix());
+                let here = sh.cfg.server_key();
+                sh.cfg.remember_room(&here, &s.code, &key, now_unix());
                 save_config(&mut sh);
                 refresh_ready(ui, &sh.cfg, sh.pending_create);
             }
@@ -3298,6 +3723,7 @@ fn forget_pending_room(sh: &mut Shell, code: &str) {
         sh.cfg.room.clear();
         sh.cfg.room_attach_secret.clear();
         sh.cfg.room_creator_token.clear();
+        sh.cfg.room_server.clear();
         save_config(sh);
     }
 }
@@ -3406,6 +3832,33 @@ fn choose_room(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, input: RoomInput) {
     ui.set_room_status("Joining the room…".into());
 }
 
+/// The room a start joins and what it presents: (code, attach key, creator
+/// token hex). docs/68 D5a, the choke point: stored credentials go only to
+/// the server they were stored for; otherwise none do, and the relay's own
+/// prompt asks. A grant in a stored room link is the user's, for this
+/// server.
+fn start_room(cfg: &Config, room: Option<&RoomInput>) -> (String, String, String) {
+    let Some(RoomInput { code, grant }) = room else {
+        return (String::new(), String::new(), String::new());
+    };
+    let (stored_attach, stored_creator) = cfg.pending_room_credentials();
+    if stored_attach.is_empty()
+        && stored_creator.is_empty()
+        && (!cfg.room_attach_secret.is_empty() || !cfg.room_creator_token.is_empty())
+    {
+        log::info!("the room's stored credentials belong to another server; not presented");
+    }
+    let attach = match grant {
+        Some(RoomGrant::Attach(k)) => k.clone(),
+        _ => stored_attach,
+    };
+    let creator = match grant {
+        Some(RoomGrant::Creator(hex)) => hex.clone(),
+        _ => stored_creator,
+    };
+    (code.clone(), attach, creator)
+}
+
 /// Records the chosen room as the one the next broadcast joins, and
 /// returns its (attach key, creator token hex).
 ///
@@ -3413,10 +3866,13 @@ fn choose_room(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, input: RoomInput) {
 /// link's grant goes to the wrapped `roomAttachSecret` or
 /// `roomCreatorToken` (review of #381).
 fn store_room_choice(cfg: &mut Config, input: &RoomInput) -> (String, String) {
+    // docs/68 D5a: a key on file is reused only if it was stored for the
+    // selected server, and what is stored now is bound to it.
+    let here = cfg.server_key();
     let attach = match &input.grant {
         Some(RoomGrant::Attach(k)) => k.clone(),
         _ => cfg
-            .room_attach_key(&input.code)
+            .room_attach_key(&here, &input.code)
             .unwrap_or_default()
             .to_owned(),
     };
@@ -3427,6 +3883,7 @@ fn store_room_choice(cfg: &mut Config, input: &RoomInput) -> (String, String) {
     cfg.room = input.code.clone();
     cfg.room_attach_secret = attach.clone();
     cfg.room_creator_token = creator.clone();
+    cfg.room_server = here;
     (attach, creator)
 }
 
@@ -3438,6 +3895,7 @@ fn store_room_create(cfg: &mut Config, live: bool) -> bool {
     cfg.room.clear();
     cfg.room_attach_secret.clear();
     cfg.room_creator_token.clear();
+    cfg.room_server.clear();
     !live
 }
 
@@ -4447,13 +4905,18 @@ fn open_in_browser(url: &str) {
     if url.is_empty() {
         return;
     }
-    #[cfg(windows)]
-    let _ = std::process::Command::new("cmd")
-        .args(["/c", "start", "", url])
+    // A test records the page rather than opening a browser.
+    #[cfg(test)]
+    tests::OPENED.with(|o| o.borrow_mut().push(url.to_owned()));
+    // Not `cmd /c start`: cmd reads `&` in a link's query as a command
+    // separator (docs/68 §12). url.dll hands the URL to the shell verbatim.
+    #[cfg(all(windows, not(test)))]
+    let _ = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url])
         .spawn();
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(test)))]
     let _ = std::process::Command::new("open").arg(url).spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(target_os = "macos"), not(test)))]
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
@@ -4465,6 +4928,452 @@ mod tests {
     use slint::platform::{PointerEventButton, WindowEvent};
     use std::cell::Cell;
     use std::time::Duration;
+
+    /// The default fleet's server key, which room credentials bind to.
+    const S: &str = "https://api.gawk.ioio.fi:4433";
+
+    thread_local! {
+        /// What `open_in_browser` was asked to open, in a test.
+        pub(super) static OPENED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn opened() -> Vec<String> {
+        OPENED.with(|o| o.borrow_mut().drain(..).collect())
+    }
+
+    // --- R66: gawk:// links (docs/68 D3–D7) ---------------------------------
+
+    /// A later launch's link, as the instance endpoint delivers it.
+    fn warm(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, link: &str) {
+        handle_incoming(
+            ui,
+            shell,
+            Incoming {
+                request: Request::Open(Ok(link.into())),
+                activation: Some("tok".into()),
+            },
+        );
+    }
+
+    fn friend_cfg() -> Config {
+        Config {
+            servers: vec![ServerProfile {
+                name: "Friend".into(),
+                url: "https://relay.friend.example".into(),
+                publish_secret: "s".into(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn shell_with(cfg: Config) -> (Rc<RefCell<Shell>>, Rc<RefCell<Vec<String>>>) {
+        let (shell, _, calls) = counting_shell();
+        shell.borrow_mut().cfg = cfg;
+        (shell, calls)
+    }
+
+    // D4, Idle: the room becomes the pending one, the nickname fills the
+    // field and the config, nothing starts, and a notice says what changed.
+    #[test]
+    fn an_idle_broadcast_link_fills_in_the_form_and_raises_the_window() {
+        let ui = window();
+        let (shell, calls) = shell_with(Config::default());
+        ui.set_page(2);
+        warm(
+            &ui,
+            &shell,
+            "gawk://broadcast?room=lan-party&nick=Juho&rt=a%3Ak",
+        );
+        let sh = shell.borrow();
+        assert_eq!(sh.state, UiState::Idle);
+        assert!(sh.session.is_none());
+        assert_eq!(sh.cfg.room, "lan-party");
+        assert_eq!(sh.cfg.room_attach_secret, "", "a link never carries a key");
+        assert_eq!(sh.cfg.nickname, "Juho");
+        assert_eq!(ui.get_room_nickname(), "Juho");
+        assert_eq!(ui.get_room_pending(), "lan-party");
+        assert_eq!(ui.get_page(), 0);
+        assert_eq!(*calls.borrow(), ["raise(tok)"]);
+        let notice = ui.get_link_notice().to_string();
+        assert!(
+            notice.contains("room lan-party") && notice.contains("nickname Juho"),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("rt (links never carry secrets)"),
+            "{notice}"
+        );
+        assert_eq!(ui.get_link_card_title(), "");
+    }
+
+    // §8: read_settings reads the nickname field at Start, so a link that
+    // set only the config would lose it.
+    #[test]
+    fn the_links_nickname_survives_a_later_start() {
+        let ui = window();
+        let (shell, _) = shell_with(Config::default());
+        warm(&ui, &shell, "gawk://broadcast?nick=Juho");
+        start_broadcast(&ui, &shell, false);
+        assert_eq!(shell.borrow().cfg.nickname, "Juho");
+    }
+
+    // D4, Starting: the link waits for the start to settle, and the latest
+    // one wins.
+    #[test]
+    fn a_link_while_starting_waits_and_the_latest_wins() {
+        let ui = window();
+        let (shell, _) = shell_with(Config::default());
+        shell.borrow_mut().state = UiState::Starting;
+        warm(&ui, &shell, "gawk://broadcast?room=first");
+        warm(&ui, &shell, "gawk://broadcast?room=second&nick=Two");
+        pump_messages(&ui, &shell);
+        assert_eq!(shell.borrow().cfg.room, "");
+        shell.borrow_mut().state = UiState::Idle;
+        pump_messages(&ui, &shell);
+        let sh = shell.borrow();
+        assert_eq!(
+            (sh.cfg.room.as_str(), sh.cfg.nickname.as_str()),
+            ("second", "Two")
+        );
+        assert!(sh.pending_link.is_none());
+    }
+
+    // D4, Live/Paused: nothing changes without a click; Join applies the
+    // room and the nickname, Not now leaves everything alone.
+    #[test]
+    fn a_link_while_live_asks_before_joining() {
+        let ui = window();
+        for state in [UiState::Live, UiState::Paused] {
+            let (shell, calls) = shell_with(Config::default());
+            shell.borrow_mut().state = state;
+            warm(&ui, &shell, "gawk://broadcast?room=lan-party&nick=Juho");
+            assert_eq!(shell.borrow().cfg.room, "");
+            assert_eq!(shell.borrow().cfg.nickname, "");
+            assert_eq!(ui.get_link_card_title(), "Join room lan-party now?");
+            assert!(ui.get_link_card_body().contains("as Juho"));
+            assert_eq!(*calls.borrow(), ["raise(tok)"]);
+
+            link_card_accepted(&ui, &shell);
+            let sh = shell.borrow();
+            assert_eq!(
+                (sh.cfg.room.as_str(), sh.cfg.nickname.as_str()),
+                ("lan-party", "Juho")
+            );
+            assert_eq!(ui.get_room_nickname(), "Juho");
+            assert_eq!(ui.get_link_card_title(), "");
+            assert!(sh.link_card.is_none());
+        }
+
+        let (shell, _) = shell_with(Config::default());
+        shell.borrow_mut().state = UiState::Live;
+        warm(&ui, &shell, "gawk://broadcast?room=lan-party");
+        clear_link_card(&ui, &mut shell.borrow_mut());
+        assert_eq!(ui.get_link_card_title(), "");
+        assert_eq!(shell.borrow().cfg.room, "");
+    }
+
+    #[test]
+    fn a_nickname_only_link_while_live_asks_too() {
+        let ui = window();
+        let (shell, _) = shell_with(Config::default());
+        shell.borrow_mut().state = UiState::Live;
+        warm(&ui, &shell, "gawk://broadcast?nick=Juho");
+        assert_eq!(ui.get_link_card_title(), "Use the nickname Juho now?");
+        assert_eq!(shell.borrow().cfg.nickname, "");
+        link_card_accepted(&ui, &shell);
+        assert_eq!(shell.borrow().cfg.nickname, "Juho");
+    }
+
+    // D4: a live broadcast's server never changes; a link for another server
+    // says so and joins nothing.
+    #[test]
+    fn a_link_for_another_server_while_live_only_says_so() {
+        let ui = window();
+        let (shell, _) = shell_with(friend_cfg());
+        shell.borrow_mut().state = UiState::Live;
+        warm(
+            &ui,
+            &shell,
+            "gawk://broadcast?room=lan-party&relay=https%3A%2F%2Frelay.friend.example",
+        );
+        assert_eq!(ui.get_link_card_title(), "");
+        assert!(
+            ui.get_link_notice()
+                .contains("End the broadcast to switch server")
+        );
+        let sh = shell.borrow();
+        assert!(sh.cfg.selected_profile().is_none());
+        assert_eq!(sh.cfg.room, "");
+    }
+
+    // D5: no relay= means the default fleet; a saved server's origin selects
+    // it; an unknown one asks, and the room and nickname apply meanwhile.
+    #[test]
+    fn a_links_server_selects_the_default_a_saved_one_or_asks() {
+        let ui = window();
+        let (shell, _) = shell_with(Config {
+            selected_server: "Friend".into(),
+            ..friend_cfg()
+        });
+        warm(&ui, &shell, "gawk://broadcast?room=abc");
+        assert!(
+            shell.borrow().cfg.selected_profile().is_none(),
+            "default selected"
+        );
+        assert!(ui.get_link_notice().contains("the default server"));
+
+        warm(
+            &ui,
+            &shell,
+            "gawk://broadcast?relay=https%3A%2F%2FRelay.Friend.example%2F",
+        );
+        assert_eq!(shell.borrow().cfg.selected_server, "Friend");
+        assert_eq!(ui.get_link_card_title(), "");
+
+        warm(
+            &ui,
+            &shell,
+            "gawk://broadcast?room=other&nick=N&relay=https%3A%2F%2Fnew.example%3A4433",
+        );
+        assert_eq!(
+            ui.get_link_card_title(),
+            "This link uses the server new.example:4433"
+        );
+        assert_eq!(ui.get_link_card_decline(), "Keep Friend");
+        {
+            let sh = shell.borrow();
+            assert_eq!(
+                sh.cfg.selected_server, "Friend",
+                "nothing switches without a click"
+            );
+            assert_eq!(
+                (sh.cfg.room.as_str(), sh.cfg.nickname.as_str()),
+                ("other", "N")
+            );
+            assert_eq!(sh.cfg.servers.len(), 1);
+        }
+        clear_link_card(&ui, &mut shell.borrow_mut());
+        assert_eq!(shell.borrow().cfg.servers.len(), 1);
+
+        warm(
+            &ui,
+            &shell,
+            "gawk://broadcast?relay=https%3A%2F%2Fnew.example%3A4433",
+        );
+        link_card_accepted(&ui, &shell);
+        let sh = shell.borrow();
+        let added = sh.cfg.selected_profile().expect("switched");
+        assert_eq!(
+            (
+                added.name.as_str(),
+                added.url.as_str(),
+                added.publish_secret.as_str()
+            ),
+            ("new.example:4433", "https://new.example:4433", "")
+        );
+    }
+
+    // D5a: the two-link sequence. A first link adds and switches to a
+    // hostile server; a second names the user's static room there. The key
+    // stored for the room on the default fleet is never presented.
+    #[test]
+    fn a_rooms_key_never_follows_a_link_to_another_server() {
+        let ui = window();
+        let mut cfg = Config::default();
+        cfg.remember_room(S, "lan-party", "k3y", 1);
+        let (shell, _) = shell_with(cfg);
+        let evil = "relay=https%3A%2F%2Fevil.example";
+        warm(&ui, &shell, &format!("gawk://broadcast?{evil}"));
+        link_card_accepted(&ui, &shell);
+        assert_eq!(shell.borrow().cfg.server_key(), "https://evil.example");
+        warm(
+            &ui,
+            &shell,
+            &format!("gawk://broadcast?room=lan-party&{evil}"),
+        );
+        let sh = shell.borrow();
+        let room = parse_room_input(&sh.cfg.room);
+        assert_eq!(
+            start_room(&sh.cfg, room.as_ref()).1,
+            "",
+            "no key to evil.example"
+        );
+        assert_eq!(
+            sh.cfg.room_attach_key(S, "lan-party"),
+            Some("k3y"),
+            "still S's"
+        );
+    }
+
+    // D5a: a manual switch presents nothing either; the matching server does.
+    #[test]
+    fn a_rooms_key_goes_only_to_the_server_it_was_stored_for() {
+        let mut cfg = friend_cfg();
+        cfg.remember_room(S, "lan-party", "k3y", 1);
+        store_room_choice(
+            &mut cfg,
+            &RoomInput {
+                code: "lan-party".into(),
+                grant: None,
+            },
+        );
+        let room = parse_room_input(&cfg.room);
+        assert_eq!(start_room(&cfg, room.as_ref()).1, "k3y");
+        cfg.selected_server = "Friend".into();
+        assert_eq!(
+            start_room(&cfg, room.as_ref()),
+            ("lan-party".into(), "".into(), "".into())
+        );
+        // Chosen again on Friend: the key on file is the default's, not Friend's.
+        let (attach, _) = store_room_choice(
+            &mut cfg,
+            &RoomInput {
+                code: "lan-party".into(),
+                grant: None,
+            },
+        );
+        assert_eq!(attach, "");
+    }
+
+    // D3: a viewer link goes to the browser and leaves the window where it
+    // is; a cold one never shows the window at all.
+    #[test]
+    fn viewer_links_open_the_browser_without_raising_the_window() {
+        let ui = window();
+        let (shell, calls) = shell_with(Config::default());
+        opened();
+        warm(
+            &ui,
+            &shell,
+            "gawk://watch/abc234?relay=https%3A%2F%2Fr.example",
+        );
+        warm(&ui, &shell, "gawk://room/lan-party?nick=Juho");
+        assert_eq!(
+            opened(),
+            [
+                "https://gawk.ioio.fi/#/view/ABC234?relay=https%3A%2F%2Fr.example",
+                "https://gawk.ioio.fi/#/room/lan-party?nick=Juho",
+            ]
+        );
+        assert!(calls.borrow().is_empty(), "no raise: {:?}", calls.borrow());
+        assert_eq!(shell.borrow().cfg.room, "");
+
+        let cfg = Config {
+            app_url: "https://gawk.example.org/".into(),
+            ..Default::default()
+        };
+        let open = |s: &str| Request::Open(Ok(s.into()));
+        assert_eq!(
+            cold_viewer_url(&open("gawk://watch/ABC234"), &cfg).as_deref(),
+            Some("https://gawk.example.org/#/view/ABC234")
+        );
+        assert_eq!(
+            cold_viewer_url(&open("gawk://room/lan-party"), &cfg).as_deref(),
+            Some("https://gawk.example.org/#/room/lan-party")
+        );
+        assert_eq!(
+            cold_viewer_url(&open("gawk://broadcast?room=abc"), &cfg),
+            None
+        );
+        assert_eq!(cold_viewer_url(&open("gawk://watch/nope"), &cfg), None);
+        assert_eq!(cold_viewer_url(&Request::Open(Err(())), &cfg), None);
+        assert_eq!(cold_viewer_url(&Request::Raise, &cfg), None);
+    }
+
+    // D3, G7: a rejected link shows the window with the reason and changes
+    // nothing.
+    #[test]
+    fn a_rejected_link_says_why_and_changes_nothing() {
+        let ui = window();
+        let (shell, calls) = shell_with(Config::default());
+        warm(&ui, &shell, "gawk://settings?room=abc");
+        assert_eq!(
+            ui.get_link_notice(),
+            "This link couldn't be opened: this app doesn't know what it asks for."
+        );
+        handle_incoming(
+            &ui,
+            &shell,
+            Incoming {
+                request: Request::Open(Err(())),
+                activation: None,
+            },
+        );
+        assert!(ui.get_link_notice().contains("more than one link"));
+        assert_eq!(*calls.borrow(), ["raise(tok)", "raise()"]);
+        assert_eq!(shell.borrow().cfg, Config::default());
+    }
+
+    // D3, D10: on macOS the launch's own link comes through the inbox. A
+    // viewer link first thing after launch opens the browser and quits,
+    // without a raise; after that, viewer links are warm.
+    #[test]
+    fn a_viewer_link_first_after_a_macos_launch_is_a_cold_start() {
+        let ui = window();
+        let (shell, calls) = shell_with(Config::default());
+        opened();
+        shell.borrow_mut().cold_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        warm(&ui, &shell, "gawk://watch/ABC234");
+        assert_eq!(opened(), ["https://gawk.ioio.fi/#/view/ABC234"]);
+        assert!(shell.borrow().cold_until.is_none());
+        assert!(calls.borrow().is_empty());
+
+        // A broadcast link first is applied as usual, and ends the window.
+        shell.borrow_mut().cold_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        warm(&ui, &shell, "gawk://broadcast?room=abc");
+        assert_eq!(shell.borrow().cfg.room, "abc");
+        assert!(shell.borrow().cold_until.is_none());
+    }
+
+    // OD1: a second launch with no link raises the window, and only that.
+    #[test]
+    fn a_second_launch_raises_the_window() {
+        let ui = window();
+        let (shell, calls) = shell_with(Config::default());
+        handle_incoming(
+            &ui,
+            &shell,
+            Incoming {
+                request: Request::Raise,
+                activation: None,
+            },
+        );
+        assert_eq!(*calls.borrow(), ["raise()"]);
+        assert_eq!(ui.get_link_notice(), "");
+    }
+
+    // D6: the launch's own link fills in the form without a raise (the
+    // window is about to show).
+    #[test]
+    fn the_launch_link_applies_without_a_raise() {
+        let ui = window();
+        let (shell, calls) = shell_with(Config::default());
+        open_link(&ui, &shell, Ok("gawk://broadcast?room=abc".into()), None);
+        assert_eq!(shell.borrow().cfg.room, "abc");
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_notice_names_what_was_filled_and_left_out() {
+        assert_eq!(link_notice(&[], &[]), "");
+        let d = |p: &str, why| Dropped {
+            param: p.into(),
+            why,
+        };
+        assert_eq!(
+            link_notice(
+                &["room abc".into()],
+                &[d("rt", DropReason::Secret), d("fps", DropReason::Unknown)]
+            ),
+            "From the link: room abc. Left out: rt (links never carry secrets), fps (not known here)."
+        );
+        assert_eq!(
+            link_notice(&[], &[d("relay", DropReason::Invalid)]),
+            "Left out: relay (not valid)."
+        );
+    }
 
     /// A MainWindow on Slint's testing backend (no display), per thread.
     fn window() -> MainWindow {
@@ -4884,6 +5793,11 @@ mod tests {
         fn broadcast_ended(&mut self, _ui: &MainWindow) {
             self.ended.set(self.ended.get() + 1);
         }
+        fn raise_window(&mut self, _ui: &MainWindow, activation: Option<String>) {
+            self.calls
+                .borrow_mut()
+                .push(format!("raise({})", activation.unwrap_or_default()));
+        }
         /// A source is always chosen: a picture whenever one is wanted.
         fn preview(&mut self, _ui: &MainWindow, wanted: bool) -> PreviewFrame {
             self.calls.borrow_mut().push(format!("preview({wanted})"));
@@ -5100,9 +6014,9 @@ mod tests {
     fn your_rooms_lists_saved_ones_first() {
         let mut cfg = Config::default();
         let day = 86_400;
-        cfg.remember_room("older", "", 10 * day);
-        cfg.remember_room("TuhisRoom", "", 11 * day);
-        cfg.remember_room("newest", "", 12 * day);
+        cfg.remember_room(S, "older", "", 10 * day);
+        cfg.remember_room(S, "TuhisRoom", "", 11 * day);
+        cfg.remember_room(S, "newest", "", 12 * day);
         cfg.set_room_saved("TuhisRoom", true);
         let rows = recent_rows(&cfg, 12 * day + 60);
         let codes: Vec<&str> = rows.iter().map(|r| r.code.as_str()).collect();

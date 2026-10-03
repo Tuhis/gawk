@@ -1961,6 +1961,13 @@ export component MainWindow inherits Window {
     in property <string> room-card-title: "";
     in property <string> room-card-body: "";
     in property <string> room-left: "";            // left just now: Rejoin
+    // R66 (docs/68 D4, D5): what a gawk:// link changed or left out, and the
+    // card it asks with before joining a room live or switching server.
+    in property <string> link-notice: "";
+    in property <string> link-card-title: "";
+    in property <string> link-card-body: "";
+    in property <string> link-card-accept: "";
+    in property <string> link-card-decline: "";
     in-out property <bool> show-room-sheet: false;
     in-out property <bool> editing-name: false;
 
@@ -2226,6 +2233,9 @@ export component MainWindow inherits Window {
     callback room-end();
     callback room-key-submit();
     callback room-card-dismiss();
+    callback link-notice-dismiss();
+    callback link-card-accepted();
+    callback link-card-declined();
     callback room-nickname-edited();
     callback room-nickname-accepted();   // Enter or Save: rename now, no debounce
     callback summary-dismiss();
@@ -2376,6 +2386,21 @@ export component MainWindow inherits Window {
                     } else {
                         root.network-notice-help();
                     }
+                }
+            }
+        }
+
+        // docs/68 D4: what a link filled in, and what it left out.
+        if root.page == 0 && root.link-notice != "": HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 8px;
+            Banner {
+                icon: Icons.link;
+                warn: false;
+                body: root.link-notice;
+                dismiss => {
+                    root.link-notice-dismiss();
                 }
             }
         }
@@ -4304,6 +4329,48 @@ export component MainWindow inherits Window {
             text: "Back to my stream";
             clicked => {
                 root.room-card-dismiss();
+            }
+        }
+    }
+
+    // A link asks first: joining a room while live, or a server not saved
+    // yet (docs/68 D4, D5).
+    if root.link-card-title != "": Modal {
+        Rectangle {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background: T.s3;
+            Icon {
+                commands: Icons.link;
+                size: 22px;
+            }
+        }
+        Text {
+            text: root.link-card-title;
+            color: T.text;
+            font-size: 17px;
+            font-weight: 600;
+            wrap: word-wrap;
+        }
+        if root.link-card-body != "": Text {
+            text: root.link-card-body;
+            color: T.muted;
+            font-size: 14px;
+            wrap: word-wrap;
+        }
+        Btn {
+            kind: 0;
+            text: root.link-card-accept;
+            clicked => {
+                root.link-card-accepted();
+            }
+        }
+        Btn {
+            kind: 2;
+            text: root.link-card-decline;
+            clicked => {
+                root.link-card-declined();
             }
         }
     }

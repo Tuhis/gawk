@@ -23,7 +23,12 @@ fn main() {
     // The commit build.rs stamped, for the version badge (crates/ui/build_rev.rs).
     gawk_ui::version::set_build_rev(option_env!("GAWK_BUILD_REV"));
     notify::init();
-    gawk_ui::shell::run(Box::new(platform::Mac::new()), platform::wire);
+    let args: Vec<String> = std::env::args().collect();
+    let launch = gawk_ui::instance::Launch {
+        request: gawk_ui::instance::Request::from_args(&args),
+        inbox: None,
+    };
+    gawk_ui::shell::run(Box::new(platform::Mac::new()), platform::wire, launch);
 }
 
 // The Linux and msvc jobs build the whole workspace (docs/38 D18); this is
