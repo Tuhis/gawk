@@ -20,7 +20,8 @@ later chunk.** Decisions marked *provisional* are confirmed or revised in
   restating new ones.
 - The viewer side is the first viewer outside `gawk-app`. It follows the
   wire contract the SPA reads (docs/03, docs/04, docs/12, docs/20,
-  docs/34) and none of the SPA's playout code (OD7).
+  docs/34). From the SPA's playout it ports only the adaptive offset
+  estimator (docs/17 Decision 6); AVFoundation presents (OD7, D15).
 
 ---
 
@@ -53,7 +54,7 @@ behaviour under thermal load or PiP. As on every native milestone
 | G5 | Rotating the device mid-broadcast: viewers keep playing, at the new aspect, within one GOP (≤ 500 ms of frozen video) | device |
 | G6 | The broadcast survives a relay pod restart and an extension restart within the grace period on the same code (R17 resume) | integration in CI (relay kill) + device |
 | G7 | The native player plays H.264, VP9 and VP8 broadcasts (browser on Chrome, Firefox and the desktop apps as sources) | device + Rust tests on recorded streams |
-| G8 | Native-player glass-to-glass latency is within 100 ms of Safari's on the same H.264 broadcast, measured side by side | device |
+| G8 | Native-player glass-to-glass latency is within 100 ms of Safari's on the same H.264 broadcast, measured side by side **with both on Balanced** (both run the same adaptive estimator) | device |
 | G9 | PiP and background audio: playback continues in PiP over another app, and audio continues with the screen locked, for 10 minutes each | device |
 | G10 | A 5 s network outage while watching recovers to the live edge with no permanent added delay (the drop-to-live rule, D15) | device (airplane mode toggle) + Rust test |
 | G11 | Rooms: an iOS broadcast attaches to a room and shows in the room's web view; the iOS viewer plays a room of three in grid and focus | device |
@@ -69,11 +70,11 @@ behaviour under thermal load or PiP. As on every native milestone
 | OD4 | **SwiftUI over a Rust core**, bridged with UniFFI. |
 | OD5 | **A new top-level module, `gawk-ios`**, with its own release-please component and its own version. |
 | OD6 | **iPhone and iPad, iOS 26 and later.** |
-| OD7 | **Playout uses AVFoundation timing**: timestamped sample buffers presented under an `AVSampleBufferRenderSynchronizer` at a small target delay. R12's adaptive controller is not ported. |
+| OD7 | **Playout uses AVFoundation timing**: timestamped sample buffers presented under an `AVSampleBufferRenderSynchronizer` at a small target delay. R12's presentation machinery (sub-frame pacing, interpolation) is not ported. *Refined in review 2026-10-03*: the target delay is R12's **adaptive** offset, not a constant, because a fixed playout offset is a rejected design (CLAUDE.md; docs/12 Decision 7, docs/17 Decision 10). See D15. |
 | OD8 | **v1 includes** rooms (join and attach), Picture-in-Picture, opt-in telemetry and R37's server picker with per-server secrets. **Mic audio is not in v1.** |
 | OD9 | **Shared Rust is used by path, and the build runs from the repo root**, as `gawk-admin` does with `gawk-server`. A semantic change to a shared desktop crate needs a `gawk-ios`-scoped commit in the same PR. |
 | OD10 | **iOS CI runs from the first chunk** on `macos-latest`: Rust cross-builds and tests, plus an unsigned `xcodebuild` with simulator tests. |
-| OD11 | **The broadcast carries app audio** (ReplayKit `audioApp` → Opus through the shared audio crate). Uplink transport is whatever the shared engine does, R55's carriers included. |
+| OD11 | **The broadcast carries app audio** (ReplayKit `audioApp` → Opus through the shared audio crate). Uplink transport is whatever the shared engine does, so R55's carriers arrive when R55 lands them (D12), with no iOS work. |
 | OD12 | **VP8/VP9 broadcasts play natively through a bundled libvpx**, so every broadcast plays in the app. **IO0 runs first, as a measuring spike.** |
 
 ## 3. Alternatives considered and rejected
@@ -93,7 +94,8 @@ Recorded so they aren't re-derived. Each was put to the owner on
 | **In-app ReplayKit** (`RPScreenRecorder`) | Captures only our own app. Useless for streaming a game. |
 | **HEVC encode** | Firefox viewers can't decode it and the SPA's codec negotiation has no HEVC rung. H.264 is what every viewer plays. |
 | **AVPlayer + LL-HLS** for viewing | Seconds of latency by design. It would need a packager on the relay. |
-| **Porting R12's adaptive playout** | OD7. AVFoundation's synchronizer does pacing and A/V sync, and a fixed target with a drop-to-live rule (D15) covers the live edge. R12 is the reference if field data says otherwise. |
+| **Porting R12's presentation machinery** (sub-frame slot matching, interpolation) | OD7. AVFoundation's synchronizer presents against the display's vsync and owns A/V sync, which is what that machinery does for a canvas. Only the offset estimator, which decides *how far* behind live to play, is ported (D15). |
+| **A fixed playout delay** (the 150 ms of this doc's first draft) | Rejected twice already: docs/12 Decision 7 (the 200 ms sketch) and docs/17 Decision 10, which retired fixed 150 ms because adaptive dominates it at every point of the trade curve. A synchronizer is no new evidence: the latency cost is the same whoever presents. |
 | **Safari fallback or an "unsupported" message for VP8/VP9** | OD12. Every broadcast should play in the app. |
 | **Universal links in v1** | Need Associated Domains, which needs the paid team and an AASA file served by `gawk-app`'s nginx. Both belong with distribution (§5); v1 uses a `gawk://` scheme (D20). |
 
@@ -117,7 +119,11 @@ gawk-ios/
   README.md               # build, run on a device, the IO0 instrument
 ```
 
-`rust/` path-depends on `gawk-broadcast-desktop/crates/{wire,engine,encode,audio}`.
+`rust/` path-depends on `gawk-broadcast-desktop/crates/{wire,engine,capture,encode,audio}`.
+`capture` is in the set for its portable and Apple pieces only: `gate.rs`
+(`FpsGate`), `fit.rs` (`fit_within`), `host.rs` (the `mach_absolute_time`
+host clock) and `sck_policy.rs`'s `ENCODER_MAX_IN_FLIGHT`, never
+ScreenCaptureKit itself.
 **There is no fifth wire mirror** (CLAUDE.md: reuse, never mirror): the
 desktop `crates/wire` and its golden vectors are the iOS app's too. Its
 tests run in iOS CI as well, so a `gawk-server/wire/**` change triggers the
@@ -150,9 +156,13 @@ dirty pages do, and IO0 measures them.
 ### D4 — Shared desktop crates gain iOS gating, not iOS code paths
 
 - **`cfg(any(target_os = "macos", target_os = "ios"))`** where the code is
-  Apple-generic: `encode/vt.rs` and `vt_policy.rs`, the host-clock `Clock`,
-  and the objc2 dependency lines. objc2's framework crates already build for
-  iOS.
+  Apple-generic: `encode/vt.rs` and `vt_policy.rs`; in `capture`, `host.rs`
+  (the host clock; `engine/src/clock.rs` has only the `Clock` trait and an
+  `Instant` clock) and the in-flight constants, which move out of
+  `sck_policy.rs` into an Apple-generic module so iOS doesn't compile
+  ScreenCaptureKit code; and the objc2 dependency lines. `capture/src/lib.rs`
+  gates its modules per OS today, so this is a re-gating, not new code.
+  objc2's framework crates already build for iOS.
 - **A `self-update` cargo feature, default on, that iOS turns off.** It gates
   `engine::update`, `engine::install`, `ureq`, `minisign-verify`, `flate2`
   and `tar`. App Store apps must not update themselves, and dropping them
@@ -193,7 +203,8 @@ RPBroadcastSampleHandler (BroadcastUpload)
                                                              │
                                                              ▼
                                            engine session (send policy, resume, timesync,
-                                           parity, R55 carriers, telemetry) ─▶ wtransport ─▶ relay
+                                           parity, telemetry; R55 carriers
+                                           once WU1/WU2 land) ─▶ wtransport ─▶ relay
   processSampleBuffer(.audioMic) ─▶ ignored (OD8)
 ```
 
@@ -218,11 +229,11 @@ exactly as the macOS shell is above them (docs/54 §5).
 
 - **Size**: ReplayKit delivers native panel pixels (1179 × 2556 on an
   iPhone 15 Pro, more on an iPad Pro). Fit the upright frame into a
-  1920 × 1920 long-edge box with the shared `fit` rule (aspect kept, never
+  1920 × 1920 long-edge box with the shared fit rule (`capture::fit::fit_within`; aspect kept, never
   upscale, even dimensions). A portrait phone streams 886 × 1920; landscape
   1920 × 886.
 - **Frame rate**: ReplayKit sends frames when the screen changes, up to the
-  display rate; ProMotion panels can deliver 120. An `FpsGate` caps at 60.
+  display rate; ProMotion panels can deliver 120. `capture`'s `FpsGate` caps at 60.
   PTS pass through (VFR, docs/54 D7).
 - **Bitrate**: 8 Mbps peak / 75 % mean, below the desktop's 12 because
   cellular uplinks are the common case. A **Cellular** preset (720p30,
@@ -261,7 +272,8 @@ same: synthetic `420v` buffers through a session built like the live one,
 before going live. **No software encode rung** (docs/38 §7): every device on
 the iOS 26 floor has a hardware H.264 encoder, so the refusal path is
 unreachable in practice but kept, with its message pointing at a desktop
-broadcaster. **Backpressure** is docs/54 D10's `MAX_IN_FLIGHT` gate: at the
+broadcaster. **Backpressure** is docs/54 D10's gate, `ENCODER_MAX_IN_FLIGHT`
+(3, in `capture`; `encode/mft.rs`'s `MAX_IN_FLIGHT` is the Windows one): at the
 limit the incoming ReplayKit buffer is dropped and counted (favor dropped
 frames), and its `CVPixelBuffer` is released at once so ReplayKit's pool
 never starves.
@@ -278,7 +290,8 @@ never starves.
   48 kHz stereo, 128 kbps constant, 20 ms frames, DTX/FEC off,
   `RESTRICTED_LOWDELAY`.
 - **One clock** (docs/54 D5): ReplayKit stamps video and audio buffers with
-  host-clock PTS, so the engine's host `Clock` (`mach_absolute_time`, D4)
+  host-clock PTS, so the macOS host `Clock` (`capture/src/host.rs`,
+  `mach_absolute_time`, cfg-widened by D4)
   serves both and A/V skew is zero by construction. V-4 verifies the
   stamps are host time and not a media clock.
 - **Audio never fails a broadcast** (R25 Decision 6): any audio failure
@@ -289,9 +302,13 @@ never starves.
 The engine runs on a **current-thread** tokio runtime on one dedicated
 thread, not the desktop's multi-thread runtime: worker threads' stacks and
 per-thread allocator arenas cost memory the extension doesn't have. Uplink
-transport is whatever the engine negotiates (OD11): datagrams, plus R55's
-per-GOP reliable carriers when the relay advertises `CapUplinkCarriers`, and
-R29 parity when `RelayCapabilities` asks for it. **QUIC connection
+transport is whatever the engine negotiates (OD11): today datagrams, plus
+R29 parity when `RelayCapabilities` asks for it. **R55's per-GOP reliable
+carriers are not built yet**: `CapUplinkCarriers` exists only in docs/57,
+and the relay ingest (WU1) and engine carrier (WU2) are not started. When
+they land the extension inherits them with no iOS change; until then **no
+R65 acceptance criterion assumes them**, and G2/G3 are measured on
+datagrams. **QUIC connection
 migration is disabled.** The relay sits behind a UDP load balancer whose
 kube-proxy conntrack keys on the 5-tuple, so a migrated path can land on
 another pod (docs/22). On a path change (D19) the engine reconnects with its
@@ -325,14 +342,19 @@ over corrupted ones.
 
 ### D14 — Parity repair moves into the shared `wire` crate
 
-The Rust `wire` crate computes R29's RAID-6 P/Q symbols (`parity.rs`) but
-can't **recover** a chunk; recovery exists only in `gawk-app`'s TS. IO4
-adds `recover_parity` to `crates/wire`, with recovery vectors restated from
-the TS tests (the house rule for mirrors: vectors restated, never
-imported). It's a desktop-crate change under OD9, and the desktop apps
-gain nothing from it but a tested function they don't call.
+The canonical Go package recovers chunks (`RecoverChunks`,
+`gawk-server/wire/parity.go`, tested in `parity_test.go` and
+`internal/transport/parity_loss_test.go`), and the SPA's TS does too. The
+Rust mirror computes R29's P/Q symbols but **deliberately doesn't mirror
+recovery** (`crates/wire/src/parity.rs`: "reconstruction is the viewer's
+job"), because until now no Rust code was a viewer. This milestone makes one,
+so IO4 reverses that note: it adds `recover_chunks` to `crates/wire`, with
+the recovery vectors restated **from the canonical Go tests** (the house
+rule for mirrors: vectors restated, never imported) and the module comment
+updated to say why. It's a desktop-crate change under OD9; the desktop apps
+gain a tested function they don't call.
 
-### D15 — Playout: an `AVSampleBufferRenderSynchronizer` at a fixed target
+### D15 — Playout: an `AVSampleBufferRenderSynchronizer` at R12's adaptive offset
 
 - **Video**: H.264 is enqueued **compressed** to an
   `AVSampleBufferDisplayLayer` (via an `AVSampleBufferVideoRenderer`),
@@ -344,11 +366,22 @@ gain nothing from it but a tested function they don't call.
   under the same `AVSampleBufferRenderSynchronizer`, which owns A/V sync.
   With no audio track the synchronizer runs on the host clock alone.
 - **Timebase**: frames are stamped in the broadcaster's capture clock.
-  The synchronizer's time is anchored so the newest received PTS plays
-  **150 ms** after arrival (the target delay). It covers the jitter of
-  one reassembly deadline plus a decode, and is a constant, not a
-  controller (OD7).
-- **Drop to live**: if the newest received PTS runs more than **2 × target**
+  The synchronizer's time is anchored so a frame plays `offset` after its
+  arrival. `offset` is docs/17 Decision 6's estimator, ported to
+  `crates/viewer` with the SPA's constants (`transport/playout.ts`):
+  `clamp(arrivalP95 − arrivalMin + 34, 50, 350)` ms, recomputed every
+  second, **seeded at 150 ms for the first 5 s** while the jitter window
+  fills, slewed up fast (50 ms/s) and down slowly (5 ms/s, after 15 s below).
+  The slew is applied as a synchronizer rate a fraction of a percent off
+  1.0, which is invisible, rather than as a step. On a clean link it
+  settles near 50 ms. A constant is not an option: it is a rejected design
+  (docs/12 Decision 7, docs/17 Decision 10).
+- **Presets**: the SPA's two non-reconnecting playout presets (docs/37):
+  **Balanced** (the default, the estimator above) and **Lowest latency**
+  (`off`: video samples carry `DisplayImmediately` and audio is scheduled
+  at the minimum offset, 50 ms). The two `resilient`-delivery presets wait
+  for R19 delivery in the viewer (§5).
+- **Drop to live**: if the newest received PTS runs more than **2 × `offset`**
   ahead of what's presented (after a stall, a background trip or an
   outage), flush both renderers, wait for the next keyframe and re-anchor.
   This is R5's live-edge rule in its simplest form, and what G10 tests. It
@@ -441,14 +474,24 @@ stops video decode.
 
 ### D24 — CI: `ios.yml` on `macos-latest`
 
-- **Triggers**: `gawk-ios/**`, `gawk-broadcast-desktop/crates/{wire,engine,encode,audio}/**`,
+- **Triggers**: `gawk-ios/**`, `gawk-broadcast-desktop/crates/{wire,engine,capture,encode,audio}/**`,
   `gawk-server/wire/**`. The desktop workflow gains `gawk-ios/rust/**`, so a
   shared-crate change runs both sides.
 - **Rust**: `cargo test` on the macOS host (wire vectors, viewer reassembly,
-  parity recovery, the resampler, the drop-to-live rule); `cargo build` for
-  `aarch64-apple-ios` and `aarch64-apple-ios-sim`; an integration test
-  that runs the viewer core against a real `gawk-server` binary fed by
-  `gawk-pubsim`, including a relay kill (G6).
+  parity recovery, the resampler, the offset estimator against the SPA's
+  `playout.test.ts` cases restated, the drop-to-live rule); `cargo build` for
+  `aarch64-apple-ios` and `aarch64-apple-ios-sim`; and two integration
+  tests against a real `gawk-server` binary, on the desktop engine's
+  `tests/support/relay.rs` harness:
+  - **Publisher (IO2)**: `crates/broadcast` driven on the host with
+    synthetic ReplayKit-shaped buffers (portrait, then a rotation), on the
+    current-thread runtime with `self-update` off, through a rolling relay
+    restart. It must resume on the same code with frameID continuity, the
+    shape of the engine's existing `resume_survives_a_relay_restart`, but
+    through the iOS glue (G6's CI half).
+  - **Viewer (IO4)**: the viewer core subscribed to a broadcast from
+    `gawk-pubsim`, through a relay restart and induced datagram loss
+    (parity repair, the delta-loss rule, re-subscribe).
 - **Xcode**: `xcodegen`, then `xcodebuild build-for-testing` unsigned
   (`CODE_SIGNING_ALLOWED=NO`) and `test` on an iOS 26 simulator: Swift unit
   tests and a Watch-screen smoke test against the same local relay.
@@ -477,7 +520,8 @@ stops video decode.
 - Mic audio and commentary (OD8); camera broadcasting (OD1).
 - R19 reliable delivery, R21 DVR, R30 striping in the viewer (D13). They're
   opt-in by dial parameter and can follow.
-- Porting R12's adaptive playout (OD7).
+- Porting R12's presentation machinery or interpolation (OD7). The offset
+  estimator is ported (D15).
 - Any change to the Safari viewer, R16/R22 included.
 - Android; a native viewer on desktop.
 
@@ -529,9 +573,9 @@ our reason (D7). A full fleet or a refused secret says which, in the app.
 |---|---|---|
 | **IO0** | **Spike (throwaway branch, never merged).** A minimal app and extension linking the engine and `vt.rs` with D4's gating hacked in; broadcast at 1080p60 with app audio to the fleet. Log peak `phys_footprint` every second, thermal state and dropped frames; photograph glass-to-glass. Probe `VTIsHardwareDecodeSupported(kCMVideoCodecType_VP9)` and record the `audioApp` ASBD (V-3) and buffer clocks (V-4). | §9.1's verdict and the V-items are recorded in §12 |
 | **IO1** | Scaffolding: D1–D4, D5's identity and origin, D24's CI, D25's component and conventions | CI is green on a PR that touches only a desktop crate; the desktop job's `cargo test` is unchanged with `self-update` on; the iOS host tests pass with it off; the simulator builds both targets |
-| **IO2** | The broadcast extension: D6–D12, D19 | G1 (without the app UI: settings seeded by hand), G2, G3, G4, G5 on a device; G6's relay-kill integration test green in CI |
+| **IO2** | The broadcast extension: D6–D12, D19 | G1 (without the app UI: settings seeded by hand), G2, G3, G4, G5 on a device; G6 on a device; D24's **publisher** integration test (relay restart through the iOS glue) green in CI |
 | **IO3** | The broadcaster UI: D17, D18, the server picker and secrets (D23), room attach (D21) | The code shows within 2 s of the extension's first frame; a non-default server with a secret works; an attach shows in the room's web view (G11's first half) |
-| **IO4** | The viewer core: D13, D14, D16; Rust tests on recorded H.264, VP9 and VP8 streams; the CI integration test against the relay | Tests green in CI; a `DecoderConfig` change mid-stream resets the decoder with no crash; parity recovery passes the restated vectors; the delta-loss rule is tested |
+| **IO4** | The viewer core: D13, D14, D16; Rust tests on recorded H.264, VP9 and VP8 streams; D24's **viewer** integration test | Tests green in CI, the viewer integration test included; a `DecoderConfig` change mid-stream resets the decoder with no crash; parity recovery passes the restated vectors; the delta-loss rule is tested |
 | **IO5** | The native player: D15, D22 | G7, G8, G9, G10 on a device |
 | **IO6** | Joining and rooms in the viewer: D20, D21 | A `gawk://` link opens the right broadcast; `relay=` shows the strip; G11's second half |
 | **IO7** | Telemetry and metrics: D23's telemetry, D5's `app=ios` in `gawk-server`, the `gawk-ios` kind in `gawk-telemetry` | A test session appears in the telemetry dashboard; relay metrics label it `app="ios"` |
@@ -545,7 +589,7 @@ On the owner's iPhone, broadcasting a 3D game at D8's rung for 30 minutes:
   jetsam, glass-to-glass ≤ 250 ms to a desktop Chrome viewer, thermal state
   never `.critical`. D8 and D12 are confirmed as written.
 - **Conditional**: peak 40–48 MB, or `.critical` once. Drop the cap to 1280
-  on the long edge and the encoder pool to `MAX_IN_FLIGHT = 2`, measure
+  on the long edge and the encoder pool to `ENCODER_MAX_IN_FLIGHT = 2`, measure
   again, and amend D8 before IO2.
 - **Fail**: every other first-run outcome, which includes a peak above
   48 MB, any jetsam, glass-to-glass over 250 ms, or `.critical` more than
