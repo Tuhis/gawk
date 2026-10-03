@@ -84,6 +84,8 @@ feature set exists).
 | R63 | [Source preview](#r63--source-preview) | 🔧 **implemented 2026-10-02** (PV1–PV5; designed 2026-10-01, owner decisions OD1–OD4), the owner's hardware pass (PV6) open — Windows shows the Live thumbnail when sharing a display too, and Ready previews the chosen source at 1 Hz on all three platforms through a capture-only stream (WGC, `SCStream`, `pipewiresrc` on the held grant) that runs only while Ready is in view and stops before every start; on macOS the screen-sharing indicator shows while a pick is held (OD1). Revises docs/38 D12.5 and docs/60 D4 ([docs/65](docs/65-source-preview.md)) |
 | R64 | [Desktop scrolling and window fit](#r64--desktop-scrolling-and-window-fit) | 🔧 **implemented 2026-10-02** (WF1–WF3; designed the same day in a Claude Design pass, owner decisions OD1–OD5), the owner's hardware pass (WF4) open — on Ready, Live and Paused only the body scrolls: the page's buttons sit in a pinned action bar (Go live; Copy link · Copy code · Pause or Resume · End), problems viewers feel now pin as a one-line strip under the header, and the preview or source card shrinks before anything scrolls. The window grows to fit the page within the screen's work area, moves up rather than under the taskbar, shrinks back only on a change of state, never fights a manual resize and remembers your size between launches; Linux clamps at launch only in v1. Revises docs/64 D6, D9 and docs/60 D7, D13 ([docs/66](docs/66-desktop-scrolling-and-window-fit.md)) |
 | R65 | [iOS app: native broadcaster and viewer](#r65--ios-app-native-broadcaster-and-viewer) | 💡 proposed 2026-10-03 (owner decisions OD1–OD16), not started (IO0–IO8) — a new top-level `gawk-ios` module: SwiftUI over a Rust core (UniFFI) that path-depends on the desktop workspace's wire, engine, encode and audio crates; a ReplayKit Broadcast Upload Extension streams the device screen with app audio through VideoToolbox H.264; a native player (VideoToolbox / libvpx → `AVSampleBufferDisplayLayer`) adds fullscreen, PiP and background audio; rooms, server picker and telemetry in v1; iPhone + iPad, iOS 26+; signed for the owner's own devices, TestFlight/App Store a later milestone. no wire change; the relay gains only R59's `app=ios` label and the `gawk://ios` origin. Simulator-first: phase S builds the app, viewer and broadcast pipeline (on a synthetic source) in the Simulator; phase D opens with **IO0, a measuring spike of the extension's ~50 MB memory budget with a pre-registered, exhaustive verdict, which gates device acceptance of the broadcast extension**; iPhone 17 Pro Max + iPad Pro ([docs/67](docs/67-ios-app.md)) |
+| R66 | [`gawk://` links in the desktop broadcaster](#r66--gawk-links-in-the-desktop-broadcaster) | 💡 proposed 2026-10-03 (owner decisions OD1, OD2, OD4), not started (LH1–LH6) — one `gawk://` grammar for every native app (`broadcast`, `watch`, `room`), parsed by a new `engine::link` with golden vectors; Windows self-registers under `HKCU` on every launch, macOS declares `CFBundleURLTypes` and takes the Apple Event, Linux adds `x-scheme-handler/gawk` to the desktop entry and the `.deb`; the app becomes single-instance (named pipe / session D-Bus / LaunchServices) so a link reaches the running window; a link prefills room, nickname and a matching saved server and never starts anything, and viewer links go to the browser ([docs/68](docs/68-desktop-gawk-links.md)) |
+| R67 | [Open a broadcast in the desktop app from `gawk-app`](#r67--open-a-broadcast-in-the-desktop-app-from-gawk-app) | 💡 proposed 2026-10-03 (owner decision OD3), not started (HO1–HO4), after R66 — on Windows, macOS and Linux the broadcaster's start card and a room's "Start streaming here" offer **Open in the desktop app** (a `gawk://broadcast` link with room, nickname and a non-default relay, never a secret); no install detection, the browser flow stays underneath with a "Didn't open?" fallback; an opt-in "always" makes broadcast links from outside launch the app once per page load; operator switch `config.desktopHandoff` ([docs/69](docs/69-app-desktop-handoff.md)) |
 
 ---
 
@@ -5012,6 +5014,59 @@ MSE workaround.
 mic audio, camera broadcasting, R19/R21/R30 delivery modes in the viewer,
 porting R12's presentation machinery (interpolation; the adaptive offset
 estimator is ported, docs/67 D15), any change to the Safari viewer, Android.
+
+**Status**: 💡 proposed 2026-10-03, not started.
+
+---
+
+## R66 — `gawk://` links in the desktop broadcaster
+
+**Goal**: a `gawk://broadcast?room=…` link opens the desktop app, or brings
+the running one to the front, with the room, nickname and server filled in.
+
+**Why**: a room's "Start streaming" link always opens the browser
+broadcaster. Nothing can open the desktop app, which has the better capture
+path, and a second launch starts a second process on the same config file.
+
+**Scope** (chunks LH1–LH6 in [docs/68](docs/68-desktop-gawk-links.md)):
+
+- **LH1** — the grammar and `engine::link` with golden vectors; pasted
+  `gawk://` links in the Room sheet.
+- **LH2** — shell integration: prefill rules per state, server matching,
+  viewer links to the browser, argument handling.
+- **LH3** — Linux: desktop entry, `.deb` checks, D-Bus single instance.
+- **LH4** — Windows: `HKCU` registration, mutex + named pipe.
+- **LH5** — macOS: `CFBundleURLTypes`, the Apple Event handler.
+- **LH6** — the owner's pass on all three OSes.
+
+**Non-goals**: a desktop viewer, universal links / MSIX, the frozen Go
+`gawk-broadcast`, an unregister toggle, R26 parameters in links.
+
+**Status**: 💡 proposed 2026-10-03, not started.
+
+---
+
+## R67 — Open a broadcast in the desktop app from `gawk-app`
+
+**Goal**: where the SPA is about to start a broadcast, offer to do it in the
+desktop app instead, without ever stranding a user who doesn't have it.
+
+**Why**: the SPA can't detect the app, so the handoff has to be an offer
+with the browser flow kept intact underneath. R66 provides the link it
+opens.
+
+**Scope** (chunks HO1–HO4 in [docs/69](docs/69-app-desktop-handoff.md)):
+
+- **HO1** — the link builder on R66's vectors; the `desktopHandoff` config
+  and chart value.
+- **HO2** — the button on the start card and in rooms, the "Didn't open?"
+  note, desktop-OS gating.
+- **HO3** — the remembered "always" choice and automatic launch, after R66
+  ships.
+- **HO4** — the owner's per-browser pass.
+
+**Non-goals**: viewer handoff, install detection, the iOS app from iOS
+Safari (a follow-up after R65), secrets in links.
 
 **Status**: 💡 proposed 2026-10-03, not started.
 
