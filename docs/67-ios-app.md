@@ -2,8 +2,8 @@
 
 **Status**: proposed 2026-10-03. Owner decisions OD1–OD16 (§2) were taken
 the same day in an interview; **OD17 (2026-10-04) moved screen capture from a
-ReplayKit extension to ScreenCaptureKit in the app** (§12). Chunks
-**IO0–IO8** (§9) are not started.
+ReplayKit extension to ScreenCaptureKit in the app** (§12). **IO1 implemented
+2026-10-04**; IO0 and IO2–IO8 (§9) are not started.
 **Work runs Simulator-first (OD13, D26)**: phase S builds and tests
 everything the Simulator can run; phase D starts on devices with **IO0, a
 throwaway spike whose pre-registered verdict (§9.1) gates the device
@@ -760,3 +760,31 @@ dated.
   declared, while the deprecated extension kept working
   (MyNamesEMurray/LensLink#161). IO0 settles which holds for a game
   broadcast.
+- **2026-10-04 — IO1: D5's labels needed one more engine change than D4
+  allowed.** D4 said the shared crates gain iOS gating and nothing else, but
+  `engine::relay::publish_url` hardcoded `app=desktop`, and `CLIENT_OS` fell
+  through to `linux` on any target that wasn't Windows or macOS, so an iOS
+  dial would have said `app=desktop&os=linux`. `Distribution` gained an `app`
+  field (`desktop` for the three desktop distributions, `ios` for
+  `gawk_core::identity::IOS`), `publish_url` reads it, and `CLIENT_OS` gained
+  an `ios` arm. Both are pinned by tests in each workspace.
+- **2026-10-04 — IO1: the shared crates depend on the engine without its
+  default features.** `capture`, `encode` and `audio` took `gawk-engine`
+  with defaults, which would have turned `self-update` back on through
+  feature unification however the iOS workspace asked for it. They now say
+  `default-features = false`; the desktop shells and `ui` keep the default,
+  so the desktop build is unchanged. `ios.yml` fails if the resolved iOS
+  graph contains `self-update` or `minisign-verify`.
+- **2026-10-04 — IO1: build plumbing D2 didn't spell out.**
+  `scripts/build-core.sh` is the Run Script phase: it unsets Xcode's
+  `SDKROOT` (cargo's host build scripts can't link against the iOS SDK),
+  runs cargo from inside `rust/` (rustup picks `rust-toolchain.toml` by
+  directory, and UniFFI's library mode runs `cargo metadata` there), and
+  generates the bindings from the static library it just built. The iOS
+  workspace repeats the desktop workspace's `[patch.crates-io]` for the
+  vendored wtransport, because a patch applies only in the workspace that
+  declares it. The desktop component's release also bumps the shared
+  crates' versions in `gawk-ios/rust/Cargo.lock` (a root-relative
+  release-please extra file), so a desktop release never leaves the iOS lock
+  stale. The core's Swift function is `initializeCore()`, not
+  `initialize()`, which collides with `NSObject.initialize`.

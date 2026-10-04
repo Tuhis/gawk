@@ -1,0 +1,11 @@
+[package]
+name = "gawk-viewer"
+description = "The first viewer outside gawk-app: subscribe, reassembly, parity repair, decode, timing (docs/67 D13–D16)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+gawk-engine.workspace = true
+gawk-wire.workspace = true

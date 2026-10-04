@@ -1,0 +1,19 @@
+[package]
+name = "gawk-core"
+description = "The iOS app's UniFFI surface: one static library linked into the app (docs/67 D3)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+# `staticlib` is what Xcode links into the app (docs/67 D3); `lib` is for
+# the host tests and the bindgen.
+crate-type = ["lib", "staticlib"]
+name = "gawk_core"
+
+[dependencies]
+gawk-broadcast = { path = "../broadcast" }
+gawk-engine.workspace = true
+gawk-viewer = { path = "../viewer" }
+uniffi.workspace = true

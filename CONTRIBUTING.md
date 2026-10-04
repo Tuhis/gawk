@@ -140,6 +140,20 @@ one that releases (`feat`/`fix`), or the touched paths bump nothing. The `Ban` C
 (additive-only, docs/42 §4.2) and upgrade ordering (relay chart first,
 docs/self-hosting.md §9).
 
+**A shared desktop crate change is a `gawk-ios` change too.** The iOS app's
+Rust core (`gawk-ios/rust`, R65) uses `gawk-broadcast-desktop`'s `wire`,
+`engine`, `capture`, `encode` and `audio` crates by path (docs/67 OD9), and
+release-please attributes by path, so a semantic change to one of them
+releases the desktop broadcasters and never the iOS app. Treat it as the
+`gawk-admin` rule above treats the relay's public packages: carry a commit
+**touching `gawk-ios/`** in the same PR (scope `ios`, e.g.
+`feat(ios): …`), with a releasing PR title. CI runs both sides on either
+path: `ios.yml` watches the shared crates and `broadcast-desktop.yml` watches
+`gawk-ios/rust/`. Leave the engine's `self-update` feature out of anything
+the iOS core reaches: the shared crates depend on the engine with
+`default-features = false`, and `ios.yml` fails if the iOS graph turns it on
+(docs/67 D4).
+
 **`gawk-server/oidcauth/` has three consumers.** The one OIDC verifier (R53,
 docs/55 D2) is compiled into the relay's ops listener, `gawk-admin` and
 `gawk-telemetry`. A semantic change there carries a commit touching
@@ -178,6 +192,10 @@ cd gawk-admin             && go vet ./... && go test ./...   # Postgres-backed
 cd gawk-admin/ui          && npm ci && npm run lint && npm test && npm run build
 cd gawk-broadcast-desktop && cargo test --workspace && \
                              cargo xwin clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+cd gawk-ios/rust          && cargo test --workspace && cargo clippy --all-targets -- -D warnings
+cd gawk-ios/app           && xcodegen && xcodebuild -scheme Gawk \
+                             -destination 'platform=iOS Simulator,name=iPhone 17' \
+                             CODE_SIGNING_ALLOWED=NO test     # macOS + Xcode 27 only
 cd tools/icon             && go test ./... && go run . check   # after editing assets/icon/gawk.svg:
                                                                # go run . generate, commit the derivatives
 ```

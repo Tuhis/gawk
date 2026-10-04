@@ -50,6 +50,11 @@
           "type": "toml",
           "path": "Cargo.lock",
           "jsonpath": "$.package[?(@.name.value==\"gawk-audio\" || @.name.value==\"gawk-broadcast-app-linux\" || @.name.value==\"gawk-broadcast-app-macos\" || @.name.value==\"gawk-broadcast-app-windows\" || @.name.value==\"gawk-capture\" || @.name.value==\"gawk-encode\" || @.name.value==\"gawk-engine\" || @.name.value==\"gawk-ui\" || @.name.value==\"gawk-wire\")].version"
+        },
+        {
+          "type": "toml",
+          "path": "/gawk-ios/rust/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value==\"gawk-audio\" || @.name.value==\"gawk-capture\" || @.name.value==\"gawk-encode\" || @.name.value==\"gawk-engine\" || @.name.value==\"gawk-wire\")].version"
         }
       ]
     },
@@ -76,6 +81,26 @@
         {
           "type": "generic",
           "path": "openapi.yaml"
+        }
+      ]
+    },
+    "gawk-ios": {
+      "release-type": "simple",
+      "component": "gawk-ios",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "rust/Cargo.toml"
+        },
+        {
+          "type": "generic",
+          "path": "app/project.yml"
+        },
+        {
+          "type": "toml",
+          "path": "rust/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value==\"gawk-broadcast\" || @.name.value==\"gawk-core\" || @.name.value==\"gawk-viewer\" || @.name.value==\"uniffi-bindgen\")].version"
         }
       ]
     }

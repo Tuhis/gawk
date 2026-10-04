@@ -1,0 +1,181 @@
+# R65 iOS app (docs/67 D24). Two jobs on GitHub-hosted `macos-latest`, the
+# same deliberate exception to docs/38 D18 that broadcast-desktop.yml's macOS
+# jobs are: the iOS SDK and the Simulator exist only on Apple hardware.
+#
+# `rust`  — the core's host tests, the shared desktop crates' tests in the
+#           iOS configuration (`self-update` off, docs/67 D4), a check that the
+#           resolved graph really has it off, and both iOS cross-builds.
+# `xcode` — XcodeGen, then the app built and its Swift tests run in an iOS 27
+#           Simulator, plus an unsigned device build. Phase S needs no team
+#           (OD14); signing belongs to the distribution milestone.
+#
+# Triggers follow the path dependencies (OD9): a change to a shared desktop
+# crate or to the canonical wire runs this workflow as well as the desktop
+# one, which in turn watches gawk-ios/rust/**.
+name: ios
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "gawk-ios/**"
+      - "gawk-broadcast-desktop/crates/wire/**"
+      - "gawk-broadcast-desktop/crates/engine/**"
+      - "gawk-broadcast-desktop/crates/capture/**"
+      - "gawk-broadcast-desktop/crates/encode/**"
+      - "gawk-broadcast-desktop/crates/audio/**"
+      - "gawk-broadcast-desktop/vendor/**"
+      - "gawk-server/wire/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "gawk-ios/**"
+      - "gawk-broadcast-desktop/crates/wire/**"
+      - "gawk-broadcast-desktop/crates/engine/**"
+      - "gawk-broadcast-desktop/crates/capture/**"
+      - "gawk-broadcast-desktop/crates/encode/**"
+      - "gawk-broadcast-desktop/crates/audio/**"
+      - "gawk-broadcast-desktop/vendor/**"
+      - "gawk-server/wire/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The vendored libopus (gawk-audio → opus → audiopus_sys) carries a
+  # CMakeLists older than CMake 4's floor; this is CMake's own escape hatch.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+  # docs/67 D24: a pinned Xcode, never the image default, which can lag a
+  # major version behind the iOS 27 SDK the app builds against (OD6).
+  XCODE_VERSION: "27.0"
+
+jobs:
+  rust:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: gawk-ios/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      # rust-toolchain.toml pins the compiler and both iOS targets; rustup
+      # installs them on first use.
+      - name: Toolchain
+        run: |
+          rustc --version
+          cargo --version
+          rustup target list --installed
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            gawk-ios/rust
+            gawk-broadcast-desktop
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (host)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (iOS)
+        run: cargo clippy --target aarch64-apple-ios -p gawk-core -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # docs/67 D4: App Store apps must not update themselves. Features unify
+      # across the graph, so one dependency line that takes the engine's
+      # default would quietly turn `self-update` back on; this reads the
+      # graph the iOS targets actually resolve.
+      - name: self-update is off on iOS
+        run: |
+          for t in aarch64-apple-ios aarch64-apple-ios-sim; do
+            tree=$(cargo tree -p gawk-core --target "$t" -e features)
+            if grep -E 'self-update|minisign' <<<"$tree"; then
+              echo "::error::gawk-engine's self-update feature is on for $t (docs/67 D4)"
+              exit 1
+            fi
+          done
+
+      # The shared crates' own tests in the configuration the app links
+      # (IO1's acceptance: "the iOS host tests pass with it off"). They are
+      # path dependencies, not members, so they run from their workspace.
+      - name: Test the shared crates with self-update off
+        working-directory: gawk-broadcast-desktop
+        run: cargo test -p gawk-wire -p gawk-engine --no-default-features
+
+      - name: Build (device and simulator)
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "27.0"
+        run: |
+          cargo build -p gawk-core --target aarch64-apple-ios
+          cargo build -p gawk-core --target aarch64-apple-ios-sim
+
+  xcode:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: gawk-ios/app
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: |
+          app="/Applications/Xcode_${XCODE_VERSION}.app"
+          if [ ! -d "$app" ]; then
+            echo "::error::$app is not on this runner image; installed:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$app"
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gawk-ios/rust
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: XcodeGen
+        run: |
+          brew install xcodegen
+          xcodegen --version
+          xcodegen
+
+      # The first iPhone on the pinned iOS 27 runtime; device names vary
+      # between runner images.
+      - name: Pick a simulator
+        run: |
+          udid=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devs = json.load(sys.stdin)["devices"]
+          for rt in sorted(devs, reverse=True):
+              if "iOS-27" not in rt:
+                  continue
+              for d in devs[rt]:
+                  if d["name"].startswith("iPhone"):
+                      print(d["udid"]); sys.exit(0)
+          sys.exit(1)
+          ') || { echo "::error::no iPhone simulator on an iOS 27 runtime"; exit 1; }
+          echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl list devices available | grep "$udid"
+
+      - name: Test (Simulator)
+        run: |
+          xcodebuild -project Gawk.xcodeproj -scheme Gawk \
+            -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO test
+
+      - name: Build (device, unsigned)
+        run: |
+          xcodebuild -project Gawk.xcodeproj -scheme Gawk \
+            -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO build
