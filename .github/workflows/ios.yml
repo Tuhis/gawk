@@ -236,11 +236,37 @@ jobs:
           echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep "$udid"
 
+      # docs/67 D24: the Swift tests that need a relay (the broadcast loop on
+      # D27's test source, the Watch smoke test) run against a local one,
+      # reached from the Simulator on the host's loopback.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+
+      - name: Start a local relay
+        run: |
+          bin="$RUNNER_TEMP/relay"
+          mkdir -p "$bin"
+          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert
+          "$bin/gawk-devcert" -out "$bin/cert"
+          "$bin/gawk-server" -addr 127.0.0.1:4499 -metrics-addr 127.0.0.1:4498 \
+            -cert-file "$bin/cert/cert.pem" -key-file "$bin/cert/key.pem" \
+            -publish-secret smoke > "$RUNNER_TEMP/relay.log" 2>&1 &
+          for i in $(seq 60); do curl -sf http://127.0.0.1:4498/healthz && break; sleep 1; done
+
       - name: Test (Simulator)
+        env:
+          TEST_RUNNER_GAWK_SMOKE_RELAY_URL: https://127.0.0.1:4499
+          TEST_RUNNER_GAWK_SMOKE_SECRET: smoke
         run: |
           xcodebuild -project Gawk.xcodeproj -scheme Gawk \
             -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd" \
             CODE_SIGNING_ALLOWED=NO test
+
+      - name: Relay log
+        if: failure()
+        run: cat "$RUNNER_TEMP/relay.log"
 
       - name: Build (device, unsigned)
         run: |

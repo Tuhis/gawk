@@ -123,6 +123,19 @@ pub enum BroadcastStatus {
     },
 }
 
+/// Where frames went (the live status and diagnostics).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct BroadcastCounters {
+    pub pushed: u64,
+    pub admitted: u64,
+    pub dropped_no_content: u64,
+    pub dropped_over_rate: u64,
+    pub dropped_backpressure: u64,
+    pub encoded: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Implemented in Swift; called on the broadcaster's thread.
 #[uniffi::export(with_foreign)]
 pub trait BroadcastListener: Send + Sync {
@@ -249,6 +262,27 @@ impl Broadcaster {
         match self.live.lock().unwrap().as_ref() {
             Some(l) => l.pipeline.audio_state().into(),
             None => "off".into(),
+        }
+    }
+
+    /// Where frames went so far; zeros before the session is up.
+    pub fn counters(&self) -> BroadcastCounters {
+        let c = self
+            .live
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|l| l.pipeline.counters())
+            .unwrap_or_default();
+        BroadcastCounters {
+            pushed: c.pushed,
+            admitted: c.admitted,
+            dropped_no_content: c.dropped_no_content,
+            dropped_over_rate: c.dropped_over_rate,
+            dropped_backpressure: c.dropped_backpressure,
+            encoded: c.encoded,
+            width: c.width,
+            height: c.height,
         }
     }
 

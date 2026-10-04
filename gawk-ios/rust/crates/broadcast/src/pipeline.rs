@@ -80,6 +80,22 @@ pub struct Pipeline {
     audio: Mutex<Audio>,
     failed: Arc<Mutex<Option<String>>>,
     pub dropped_backpressure: AtomicU64,
+    pushed: AtomicU64,
+    encoded: Arc<AtomicU64>,
+}
+
+/// Where frames went, for the live status and diagnostics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PipelineCounters {
+    pub pushed: u64,
+    pub admitted: u64,
+    pub dropped_no_content: u64,
+    pub dropped_over_rate: u64,
+    pub dropped_backpressure: u64,
+    /// Access units out of the encoder.
+    pub encoded: u64,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl Pipeline {
@@ -143,6 +159,8 @@ impl Pipeline {
             }),
             failed: Arc::default(),
             dropped_backpressure: AtomicU64::new(0),
+            pushed: AtomicU64::new(0),
+            encoded: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -167,6 +185,7 @@ impl Pipeline {
 
     /// One upright frame, with its capture status (`SCFrameStatus` raw).
     pub fn push_video(&self, pixels: &CVPixelBuffer, pts_100ns: Option<i64>, status_raw: i64) {
+        self.pushed.fetch_add(1, Ordering::Relaxed);
         let ts = self.session_us(pts_100ns);
         let status = FrameStatus::from_raw(status_raw);
         let mut v = self.video.lock().unwrap();
@@ -247,6 +266,7 @@ impl Pipeline {
         let (gate, notify, sender) = (self.gate.clone(), self.notify.clone(), self.sender.clone());
         let mut codec_known = first;
         let failed = self.failed.clone();
+        let encoded = self.encoded.clone();
         let encoder = Encoder::new(
             params,
             move |au| {
@@ -257,6 +277,7 @@ impl Pipeline {
                     sender.restart_codec(&codec);
                     codec_known = true;
                 }
+                encoded.fetch_add(1, Ordering::Relaxed);
                 gate.lock().unwrap().offer(AccessUnit {
                     data: au.data,
                     timestamp_us: (au.time_100ns / 10).max(0) as u64,
@@ -366,6 +387,24 @@ impl Pipeline {
     pub fn current_size(&self) -> Option<(u32, u32)> {
         let v = self.video.lock().unwrap();
         v.lineage.as_ref().map(|l| (l.rung.width, l.rung.height))
+    }
+
+    pub fn counters(&self) -> PipelineCounters {
+        let v = self.video.lock().unwrap();
+        let (width, height) = v
+            .lineage
+            .as_ref()
+            .map_or((0, 0), |l| (l.rung.width, l.rung.height));
+        PipelineCounters {
+            pushed: self.pushed.load(Ordering::Relaxed),
+            admitted: v.admission.admitted,
+            dropped_no_content: v.admission.dropped_no_content,
+            dropped_over_rate: v.admission.dropped_over_rate,
+            dropped_backpressure: self.dropped_backpressure.load(Ordering::Relaxed),
+            encoded: self.encoded.load(Ordering::Relaxed),
+            width,
+            height,
+        }
     }
 
     /// The runtime the pump runs on.
