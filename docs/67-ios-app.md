@@ -1,11 +1,14 @@
 # R65 — iOS app: native broadcaster and viewer (docs/67)
 
 **Status**: proposed 2026-10-03. Owner decisions OD1–OD16 (§2) were taken
-the same day in an interview. Chunks **IO0–IO8** (§9) are not started.
+the same day in an interview; **OD17 (2026-10-04) moved screen capture from a
+ReplayKit extension to ScreenCaptureKit in the app** (§12). Chunks
+**IO0–IO8** (§9) are not started.
 **Work runs Simulator-first (OD13, D26)**: phase S builds and tests
 everything the Simulator can run; phase D starts on devices with **IO0, a
 throwaway spike whose pre-registered verdict (§9.1) gates the device
-acceptance of the broadcast extension**. Decisions marked *provisional* are
+acceptance of the broadcast pipeline**: whether iOS keeps the capturing app
+running behind a game. Decisions marked *provisional* are
 confirmed or revised in §12 once IO0 is done. Status lives in [`ROADMAP.md`](../ROADMAP.md).
 
 **Relationship to earlier work**
@@ -15,8 +18,8 @@ confirmed or revised in §12 once IO0 is done. Status lives in [`ROADMAP.md`](..
   ([docs/21](21-ios-video-fullscreen.md), [docs/27](27-ios-mse-fullscreen.md))
   work around the missing Element Fullscreen on iPhone.
 - The broadcast side is the macOS broadcaster's media path
-  ([docs/54](54-macos-native-broadcaster.md)) moved into a ReplayKit
-  extension. It reuses the `wire`, `engine`, `encode` and `audio` crates of
+  ([docs/54](54-macos-native-broadcaster.md)) on iOS 27's ScreenCaptureKit,
+  in the app's own process (OD17). It reuses the `wire`, `engine`, `encode` and `audio` crates of
   [`gawk-broadcast-desktop`](../gawk-broadcast-desktop) **by path**, and
   inherits their invariants (docs/38 D9–D11, docs/54 D5–D10) rather than
   restating new ones.
@@ -31,8 +34,9 @@ confirmed or revised in §12 once IO0 is done. Status lives in [`ROADMAP.md`](..
 
 - **There is no way to broadcast from an iPhone or iPad today.** iOS Safari
   has no `getDisplayMedia`, and every iOS browser is WebKit. Capturing the
-  screen outside your own app exists only as a ReplayKit **Broadcast
-  Upload Extension**, so only a native app can broadcast from iOS.
+  whole screen is native-only: from iOS 27 through **ScreenCaptureKit** in
+  the app itself (OD17), before it through a ReplayKit Broadcast Upload
+  Extension, which the iOS 27 SDK deprecates.
 - **Watching in Safari is second-class.** iPhone fullscreen depends on a
   fullscreen-only MSE surface whose on-device pass is still open (R22 MF5).
   There is no Picture-in-Picture, so you can't watch while playing a game
@@ -43,18 +47,18 @@ confirmed or revised in §12 once IO0 is done. Status lives in [`ROADMAP.md`](..
 ### Milestone acceptance criteria
 
 Pre-registered. "Device" means the owner's iPhone 17 Pro Max or iPad Pro
-on iOS 27 (OD14). CI cannot see ReplayKit, a hardware encoder's
+on iOS 27 (OD14). CI cannot see device screen capture, a hardware encoder's
 behaviour under thermal load or PiP. As on every native milestone
 (docs/19, docs/38, docs/54), the device criteria decide whether R65 works.
 
 | # | Goal | Verified by |
 |---|---|---|
-| G1 | Starting a broadcast from the app's picker button streams the whole device screen with app audio to the default fleet, with no settings touched; a stock web viewer at `gawk.ioio.fi` plays it | device |
-| G2 | A 30-minute broadcast while playing a 3D game: no jetsam of the extension, peak footprint within the IO0 budget, thermal state never `.critical` | device, logged footprint and thermal state |
+| G1 | Starting a broadcast from the Broadcast screen (the system content-sharing picker, display chosen) streams the whole device screen with its audio to the default fleet, with no settings touched; a stock web viewer at `gawk.ioio.fi` plays it | device |
+| G2 | A 30-minute broadcast while playing a 3D game: the app is never suspended or jetsammed behind the game (no capture gap over 2 s), peak footprint recorded, thermal state never `.critical` | device, logged frame gaps, footprint and thermal state |
 | G3 | Glass-to-glass latency of an iOS broadcast to a desktop Chrome viewer is ≤ 250 ms, by R14 V4's photographed-reference method | device |
 | G4 | A/V sync of an iOS broadcast: viewer-reported median `\|avSkewMs\| ≤ 60 ms`, p95 ≤ 120 ms over 60 s (R25's criteria, unchanged) | device, viewer diagnostics |
 | G5 | Rotating the device mid-broadcast: viewers keep playing, at the new aspect, within one GOP (≤ 500 ms of frozen video) | device |
-| G6 | The broadcast survives a relay pod restart and an extension restart within the grace period on the same code (R17 resume) | integration in CI (relay kill) + device |
+| G6 | The broadcast survives a relay pod restart, and an app relaunch within the grace period, on the same code (R17 resume) | integration in CI (relay kill) + device |
 | G7 | The native player plays H.264, VP9 and VP8 broadcasts (browser on Chrome, Firefox and the desktop apps as sources) | device + Rust tests on recorded streams |
 | G8 | Native-player glass-to-glass latency is within 100 ms of Safari's on the same H.264 broadcast, measured side by side **with both on Balanced** (both run the same adaptive estimator) | device |
 | G9 | PiP and background audio: playback continues in PiP over another app, and audio continues with the screen locked, for 10 minutes each | device |
@@ -66,7 +70,7 @@ behaviour under thermal load or PiP. As on every native milestone
 
 | # | Decision |
 |---|---|
-| OD1 | **Broadcast the device screen through ReplayKit** (a Broadcast Upload Extension). Camera streaming is out of scope. |
+| OD1 | **Broadcast the device screen through ReplayKit** (a Broadcast Upload Extension). Camera streaming is out of scope. *Superseded 2026-10-04 by OD17*: the device screen is still what's broadcast, through ScreenCaptureKit. |
 | OD2 | **A native player** (VideoToolbox / libvpx → `AVSampleBufferDisplayLayer`), not a WKWebView around the SPA, and not a broadcast-only app. |
 | OD3 | **Signed for the owner's own devices first.** TestFlight and then the public App Store will follow, in a later milestone (§5). |
 | OD4 | **SwiftUI over a Rust core**, bridged with UniFFI. |
@@ -76,12 +80,13 @@ behaviour under thermal load or PiP. As on every native milestone
 | OD8 | **v1 includes** rooms (join and attach), Picture-in-Picture, opt-in telemetry and R37's server picker with per-server secrets. **Mic audio is not in v1.** |
 | OD9 | **Shared Rust is used by path, and the build runs from the repo root**, as `gawk-admin` does with `gawk-server`. A semantic change to a shared desktop crate needs a `gawk-ios`-scoped commit in the same PR. |
 | OD10 | **iOS CI runs from the first chunk** on `macos-latest`, with Xcode 27 selected explicitly (D24): Rust cross-builds and tests, plus an unsigned `xcodebuild` with simulator tests. |
-| OD11 | **The broadcast carries app audio** (ReplayKit `audioApp` → Opus through the shared audio crate). Uplink transport is whatever the shared engine does, so R55's carriers arrive when R55 lands them (D12), with no iOS work. |
+| OD11 | **The broadcast carries app audio** (ReplayKit `audioApp` → Opus through the shared audio crate; since OD17, ScreenCaptureKit's audio output, V-3). Uplink transport is whatever the shared engine does, so R55's carriers arrive when R55 lands them (D12), with no iOS work. |
 | OD12 | **VP8/VP9 broadcasts play natively through a bundled libvpx**, so every broadcast plays in the app. **IO0 runs first on devices, as a measuring spike.** |
 | OD13 | **Simulator first.** Everything is built and tested in the iOS Simulator before any device work (D26). |
 | OD14 | **Devices**: an iPhone 17 Pro Max and an iPad Pro. **Signing**: the owner's paid Apple Developer Program membership, enrolled when phase D starts; phase S needs no team. |
 | OD15 | **XcodeGen** generates the Xcode project from a checked-in `project.yml` (D2). |
 | OD16 | **Bundle ID `fi.ioio.gawk`, display name "gawk"** (D28). |
+| OD17 | *2026-10-04, with the iOS 27 floor (OD6).* **Capture through ScreenCaptureKit in the app process, not a ReplayKit Broadcast Upload Extension.** The iOS 27 SDK deprecates `RPBroadcastSampleHandler` ("No longer supported") and `RPSampleBufferType` ("Use `SCStreamOutputType` instead"), and brings `SCStream` and `SCContentSharingPicker` to iOS. Taken knowing the risk: one project reports iOS 27 suspending a backgrounded capturing app even with the `screen-capture` background mode, while the deprecated extension kept working. IO0 decides it (§9.1); the extension design is recorded in §3 as the fallback. |
 
 ## 3. Alternatives considered and rejected
 
@@ -93,7 +98,7 @@ Recorded so they aren't re-derived. Each was put to the owner on
 | **WKWebView around the SPA** for viewing | It inherits every Safari limit this milestone exists to remove (no PiP from a canvas, the R16/R22 fullscreen detour). It's also unverified whether WKWebView exposes WebTransport at all, and an app that is a wrapped website is App Review's "minimum functionality" rejection (guideline 4.2). |
 | **Broadcast-only app** (view in Safari) | Leaves PiP and background audio unsolved, which is half the reason to have an app (OD2). |
 | **Pure Swift** | Apple ships no WebTransport client, so we'd hand-roll HTTP/3 + WebTransport framing over Network.framework's QUIC. That makes a **fifth wire mirror** and a second implementation of resume, send policy, parity and telemetry the desktop engine already has. |
-| **Slint for the UI** | Slint's iOS support is young. The extension has no UI anyway, and PiP, the picker button and the share sheet are UIKit/SwiftUI-only. Sharing `main.slint` with the desktop window (docs/54 D11) buys little on a phone. |
+| **Slint for the UI** | Slint's iOS support is young, and PiP, the content-sharing picker and the share sheet are UIKit/SwiftUI-only. Sharing `main.slint` with the desktop window (docs/54 D11) buys little on a phone. |
 | **iOS as a fourth shell in the desktop workspace** | Its release unit and version would be the desktop's, and the "desktop" name would be wrong. OD5 chose a separate module. |
 | **Extract a neutral shared-core workspace first** | The cleanest ownership, but a refactor of the desktop workspace and its CI ahead of any iOS value. Path dependencies (OD9) get the same reuse now. The extraction can follow if a third consumer appears. |
 | **Camera broadcasting** (`AVCaptureSession`) | A different product (IRL streaming). Not a game stream (OD1). |
@@ -103,6 +108,7 @@ Recorded so they aren't re-derived. Each was put to the owner on
 | **Porting R12's presentation machinery** (sub-frame slot matching, interpolation) | OD7. AVFoundation's synchronizer presents against the display's vsync and owns A/V sync, which is what that machinery does for a canvas. Only the offset estimator, which decides *how far* behind live to play, is ported (D15). |
 | **A fixed playout delay** (the 150 ms of this doc's first draft) | Rejected twice already: docs/12 Decision 7 (the 200 ms sketch) and docs/17 Decision 10, which retired fixed 150 ms because adaptive dominates it at every point of the trade curve. A synchronizer is no new evidence: the latency cost is the same whoever presents. |
 | **Safari fallback or an "unsupported" message for VP8/VP9** | OD12. Every broadcast should play in the app. |
+| **A ReplayKit Broadcast Upload Extension** (this doc's design until 2026-10-04) | OD17. Deprecated in the iOS 27 SDK, and it put the whole media path in a separate process under a ~50 MB jetsam limit, behind an App Group, a shared Keychain group and a Darwin-notification status channel. It is **§9.1's fallback**: it still works on iOS 27, so if IO0 shows iOS suspending the capturing app, it comes back as the pre-OD17 D6/D7/D17/D18 (this file's history at commit `896e56d`). |
 | **Universal links in v1** | Need Associated Domains, which needs the paid team and an AASA file served by `gawk-app`'s nginx. Both belong with distribution (§5); v1 uses a `gawk://` scheme (D20). |
 
 ## 4. Decisions
@@ -115,13 +121,13 @@ gawk-ios/
     Cargo.toml            # workspace; path deps into ../../gawk-broadcast-desktop/crates
     crates/
       core/               # the UniFFI surface (D3): one cdylib/staticlib, both targets
-      broadcast/          # ReplayKit → engine glue: sample intake, rotation, rung (D8–D11)
+      broadcast/          # ScreenCaptureKit → engine glue: sample intake, rotation, rung (D8–D11)
       viewer/             # subscribe, reassembly, parity repair, decode, timing (D13–D16)
   app/
     project.yml           # XcodeGen (D2)
-    Gawk/                 # the SwiftUI app: Watch, Broadcast, Rooms, Settings
-    BroadcastUpload/      # the RPBroadcastSampleHandler extension; no UI
-    Shared/               # Swift package: App Group store, Keychain, UniFFI bindings
+    Gawk/                 # the SwiftUI app: Watch, Broadcast, Rooms, Settings, capture
+    GawkTests/            # Swift unit tests, run in the Simulator
+  scripts/build-core.sh   # cargo build + uniffi-bindgen, Xcode's first build phase (D2)
   README.md               # build, run on a device, the IO0 instrument
 ```
 
@@ -140,26 +146,29 @@ iOS job (D24).
 
 XcodeGen reads the checked-in `project.yml`. `*.xcodeproj` is
 git-ignored. A Run Script build phase calls `cargo build` for the active
-SDK and architecture and runs `uniffi-bindgen` into `Shared/`, so Xcode's
-Run builds Rust as well. Chosen by the owner (OD15) over a committed
+SDK and architecture and runs `uniffi-bindgen` against the library it just
+built, so Xcode's Run builds Rust as well and the bindings always describe
+the library being linked. Chosen by the owner (OD15) over a committed
 `.xcodeproj` (with Xcode 16's synchronized folders) and Tuist.
 
 **Rationale**: `project.pbxproj` merge conflicts are the standard failure of
 a hand-maintained Xcode project. A generated one keeps CI and every
 checkout identical.
 
-### D3 — One Rust framework, linked by the app and the extension
+### D3 — One Rust static library, linked into the app
 
-`crates/core` builds one XCFramework (`GawkCore`, device `aarch64-apple-ios`
-plus simulator `aarch64-apple-ios-sim`). It's embedded in the app bundle
-once and linked by both targets. UniFFI's surface is callback-shaped:
-Swift hands the core sample buffers' raw planes, timestamps and orientation,
-and receives status, decoded frames and audio packets through callback
+`crates/core` builds a static library (`libgawk_core.a`, device
+`aarch64-apple-ios` or simulator `aarch64-apple-ios-sim`, whichever Xcode is
+building), linked straight into the app; its generated Swift bindings are
+compiled into the app target. UniFFI's surface is callback-shaped: Swift
+hands the core sample buffers' raw planes, timestamps and orientation, and
+receives status, decoded frames and audio packets through callback
 interfaces. Neither side exposes tokio or objc2 types across the boundary.
 
-**Rationale**: one framework halves the bundle size against a static lib in
-each target. Its clean pages don't count against the extension's footprint;
-dirty pages do, and IO0 measures them.
+**Rationale**: since OD17 there is one process, so there's nothing to share a
+framework with. *Revised 2026-10-04*: the first draft's XCFramework,
+embedded once and linked by the app and the extension, existed for the
+extension.
 
 ### D4 — Shared desktop crates gain iOS gating, not iOS code paths
 
@@ -177,8 +186,8 @@ dirty pages do, and IO0 measures them.
   reports through a `ureq::Agent` and is ungated, and D23 needs it.
   `flate2` and `tar` are already Linux-only target dependencies, so they
   need nothing.
-- **Nothing else.** No iOS module in the desktop crates. ReplayKit, App Group
-  and UIKit code lives in `gawk-ios`.
+- **Nothing else.** No iOS module in the desktop crates. ScreenCaptureKit and
+  UIKit code lives in `gawk-ios`.
 
 Each of these is a desktop-crate change, so OD9's coupling rule applies: the
 PR carries a `gawk-ios`-scoped commit, and the desktop job's `cargo test`
@@ -199,51 +208,60 @@ must be unchanged (G12).
 
 [transport.rs]: ../gawk-broadcast-desktop/crates/engine/src/transport.rs
 
-### D6 — The extension owns the whole broadcast media path
+### D6 — The app owns the broadcast media path, in process
 
 ```
-RPBroadcastSampleHandler (BroadcastUpload)
-  processSampleBuffer(.video)  ─▶ orientation + FpsGate ─▶ VTPixelTransferSession (rotate/scale, D9)
-                                                             │ IOSurface CVPixelBuffer, host PTS
-                                                             ▼
-                                                  VTCompressionSession (encode/vt.rs, D10)
-                                                             │ AVCC → Annex-B, SPS/PPS before IDR
-                                                             ▼
-  processSampleBuffer(.audioApp) ─▶ ASBD-driven shim ─▶ resample 48k ─▶ Framer ─▶ libopus (D11)
-                                                             │
-                                                             ▼
-                                           engine session (send policy, resume, timesync,
-                                           parity, telemetry; R55 carriers
-                                           once WU1/WU2 land) ─▶ wtransport ─▶ relay
-  processSampleBuffer(.audioMic) ─▶ ignored (OD8)
+SCStream (display, from SCContentSharingPicker; D18)
+  output .screen  ─▶ orientation + FpsGate ─▶ VTPixelTransferSession (convert/rotate/scale, D8, D9)
+                                                 │ IOSurface CVPixelBuffer (420v), host PTS
+                                                 ▼
+                                      VTCompressionSession (encode/vt.rs, D10)
+                                                 │ AVCC → Annex-B, SPS/PPS before IDR
+                                                 ▼
+  output .audio   ─▶ ASBD-driven shim ─▶ resample 48k ─▶ Framer ─▶ libopus (D11)
+                                                 │
+                                                 ▼
+                               engine session (send policy, resume, timesync,
+                               parity, telemetry; R55 carriers
+                               once WU1/WU2 land) ─▶ wtransport ─▶ relay
+  output .microphone ─▶ never added (OD8)
 ```
 
-The containing app never touches media. While a game is in front it's
-suspended, so it couldn't. The extension is the whole broadcaster above the
-engine's seams (`VideoSource`, `AudioSource`, `Clock`, `RelaySession`),
-exactly as the macOS shell is above them (docs/54 §5).
+While a game is in front, the app runs in the background under the
+`screen-capture` background mode (D28); without it iOS stops the stream with
+`SCStreamErrorMissingBackgroundMode`. **Whether iOS 27 keeps it running is
+the milestone's main risk** (OD17, §8), and IO0 measures it first. The
+broadcast pipeline is the whole broadcaster above the engine's seams
+(`VideoSource`, `AudioSource`, `Clock`, `RelaySession`), exactly as the macOS
+shell is above them (docs/54 §5), and it runs whether or not any screen is
+showing. The viewer (D13–D16) shares the process but not the pipeline.
 
-### D7 — Extension lifecycle maps onto the engine's states
+### D7 — Capture lifecycle maps onto the engine's states
 
-| ReplayKit | Engine |
+| ScreenCaptureKit | Engine |
 |---|---|
-| `broadcastStarted(withSetupInfo:)` | Read settings from the App Group (D17). With a stored resume token for the selected server, try `/publish/{id}` with it (R17); otherwise mint. Write the code to the App Group. |
-| `broadcastPaused()` (the system paused capture, e.g. a call) | Stop feeding encoders; keep the session and keepalive. Viewers see the broadcaster away, as with desktop **Pause** (docs/64). |
-| `broadcastResumed()` | Force an IDR (docs/54 D7's on-demand IDR) and continue. |
-| `broadcastFinished()` | Close the session cleanly; clear the live status. Keep the resume token for the grace period so a restart within 5 minutes gets the same code. |
-| Close code **4000**, **4004** or **4006**, or a `SessionClosing` (0x17, R57) naming one | `finishBroadcastWithError(_:)` with the engine's user-facing sentence for that code. All three are terminal for a publisher (`engine::resume::terminal_for_publisher`; 4006 is an operator kill, R39), so no auto-resume. The set comes from the engine, never restated. |
+| The picker's observer reports a chosen display (`contentSharingPicker(_:didUpdateWith:for:)`) | Start the `SCStream`. With a stored resume token for the selected server, try `/publish/{id}` with it (R17); otherwise mint. Show the code. |
+| Frames arrive with `SCFrameStatus` `.suspended` (the system paused capture, e.g. a call; V-5) | Stop feeding encoders; keep the session and keepalive. Viewers see the broadcaster away, as with desktop **Pause** (docs/64). |
+| `.complete` frames again after `.suspended` | Force an IDR (docs/54 D7's on-demand IDR) and continue. |
+| The user stops: the app's **Stop**, or the system's indicator (`stream(_:didStopWithError:)` with a user-stopped code) | Close the session cleanly. Keep the resume token for the grace period so a restart within 5 minutes gets the same code. |
+| `didStopWithError` with any other code (`SCStreamErrorMissingBackgroundMode`, `SCStreamErrorSystemStoppedStream`, …) | Close the session and say why in the app; the next start reclaims the code. |
+| Close code **4000**, **4004** or **4006**, or a `SessionClosing` (0x17, R57) naming one | Stop the `SCStream` and show the engine's user-facing sentence for that code. All three are terminal for a publisher (`engine::resume::terminal_for_publisher`; 4006 is an operator kill, R39), so no auto-resume. The set comes from the engine, never restated. |
 | 4001–4003, transport loss | The engine's resume loop, unchanged. |
 | Jetsam / crash | Nothing runs. The relay holds the slot through the GC grace; the next start reclaims it with the stored token (G6). |
 
 ### D8 — Rung: 1080p60, 500 ms GOP, 8 Mbps peak *(provisional)*
 
-- **Size**: ReplayKit delivers native panel pixels (≈ 1320 × 2868 on a
-  Pro Max iPhone, more on an iPad Pro; V-6 records the exact size). Fit the upright frame into a
-  1920 × 1920 long-edge box with the shared fit rule (`capture::fit::fit_within`; aspect kept, never
-  upscale, even dimensions). A portrait phone streams 886 × 1920; landscape
-  1920 × 886.
-- **Frame rate**: ReplayKit sends frames when the screen changes, up to the
-  display rate; ProMotion panels can deliver 120. `capture`'s `FpsGate` caps at 60.
+- **Size**: the panel is ≈ 1320 × 2868 on a Pro Max iPhone, more on an iPad
+  Pro. Fit the upright frame into a 1920 × 1920 long-edge box with the shared
+  fit rule (`capture::fit::fit_within`; aspect kept, never upscale, even
+  dimensions). A portrait phone streams 886 × 1920; landscape 1920 × 886.
+  `SCStreamConfiguration`'s `width`/`height` are requested at the fitted
+  size, but iOS 27 has no `scalesToFit`, `preservesAspectRatio` or
+  `pixelFormat`, so `VTPixelTransferSession` still converts to `420v`, and
+  scales whatever size arrives (V-6 records what iOS delivers).
+- **Frame rate**: frames arrive when the screen changes, up to the display
+  rate; ProMotion panels can deliver 120. iOS 27 has no
+  `minimumFrameInterval`, so `capture`'s `FpsGate` caps at 60.
   PTS pass through (VFR, docs/54 D7).
 - **Bitrate**: 8 Mbps peak / 75 % mean, below the desktop's 12 because
   cellular uplinks are the common case. A **Cellular** preset (720p30,
@@ -256,11 +274,13 @@ exactly as the macOS shell is above them (docs/54 §5).
 
 ### D9 — Rotation is a resolution change
 
-ReplayKit always delivers the buffer in the panel's native orientation, with
-the device orientation in the `RPVideoSampleOrientationKey` attachment.
-The wire has no rotation field and viewers trust the frame in hand
-(CLAUDE.md), so the extension rotates frames upright in
-`VTPixelTransferSession` (with D8's scale, one pass, one pool). On an
+ReplayKit delivered the buffer in the panel's native orientation with the
+device orientation in an attachment; whether ScreenCaptureKit on iOS does
+the same or rotates for us is V-7. Either way the wire has no rotation field
+and viewers trust the frame in hand (CLAUDE.md), so the pipeline makes
+frames upright before encode: in `VTPixelTransferSession` (with D8's
+convert and scale, one pass, one pool) when they arrive in panel
+orientation, or not at all when they arrive upright. On an
 orientation change it recreates the compression session for the new size
 **inside the same publish session**: a new `DecoderConfig` and an IDR, the
 code unchanged and the relay's caches simply replaced by the new keyframe.
@@ -284,39 +304,46 @@ the iOS 27 floor has a hardware H.264 encoder, so the refusal path is
 unreachable in practice but kept, with its message pointing at a desktop
 broadcaster. **Backpressure** is docs/54 D10's gate, `ENCODER_MAX_IN_FLIGHT`
 (3, in `capture`; `encode/mft.rs`'s `MAX_IN_FLIGHT` is the Windows one): at the
-limit the incoming ReplayKit buffer is dropped and counted (favor dropped
-frames), and its `CVPixelBuffer` is released at once so ReplayKit's pool
-never starves.
+limit the incoming capture buffer is dropped and counted (favor dropped
+frames), and its `CVPixelBuffer` is released at once so ScreenCaptureKit's
+pool never starves.
 
 ### D11 — App audio: R25's Opus contract, format read from the buffer
 
+- **Source**: the stream's `.audio` output, with `capturesAudio` on,
+  `sampleRate` 48 000 and `channelCount` 2 requested, and
+  `excludesCurrentProcessAudio` on, so the app's own player never loops into
+  its broadcast. What it carries on iOS (the whole system's audio, or only
+  the foreground app's) is V-3.
 - **Format** is read from every buffer's `AudioStreamBasicDescription`,
-  never assumed. ReplayKit's app audio has been reported as 44.1 kHz and as
-  big-endian 16-bit on some versions (V-3). A shim converts to interleaved
-  `f32`, resamples to 48 kHz (a fixed-ratio polyphase resampler in
-  `crates/broadcast`, allocation-free on the hot path), and feeds the shared
-  `Framer`.
+  never assumed: the requested rate is a request, and ReplayKit's app audio
+  was reported as 44.1 kHz and big-endian 16-bit on some versions. A shim
+  converts to interleaved `f32`, resamples to 48 kHz when it must (a
+  fixed-ratio polyphase resampler in `crates/broadcast`, allocation-free on
+  the hot path), and feeds the shared `Framer`.
 - **The encoder side** is the shared `audio` crate, untouched: libopus
   48 kHz stereo, 128 kbps constant, 20 ms frames, DTX/FEC off,
   `RESTRICTED_LOWDELAY`.
-- **One clock** (docs/54 D5): ReplayKit stamps video and audio buffers with
-  host-clock PTS, so the macOS host `Clock` (`capture/src/host.rs`,
+- **One clock** (docs/54 D5): ScreenCaptureKit stamps video and audio
+  buffers with host-clock PTS on macOS, so the macOS host `Clock` (`capture/src/host.rs`,
   `mach_absolute_time`, cfg-widened by D4)
-  serves both and A/V skew is zero by construction. V-4 verifies the
-  stamps are host time and not a media clock.
+  serves both and A/V skew is zero by construction. V-4 verifies iOS does
+  the same.
 - **Audio never fails a broadcast** (R25 Decision 6): any audio failure
   drops audio, says so in the app's live status and leaves video running.
 
-### D12 — Transport inside the extension: the engine's, one runtime thread *(provisional)*
+### D12 — Transport: the engine's, one runtime thread *(provisional)*
 
 The engine runs on a **current-thread** tokio runtime on one dedicated
-thread, not the desktop's multi-thread runtime: worker threads' stacks and
-per-thread allocator arenas cost memory the extension doesn't have. Uplink
+thread, not the desktop's multi-thread runtime. *Revised 2026-10-04*: this
+was for the extension's ~50 MB limit, which OD17 removed; it stays because a
+backgrounded app is a jetsam candidate too and one thread is all the send
+path needs, and IO0's footprint measurement (V-1) can relax it. Uplink
 transport is whatever the engine negotiates (OD11): today datagrams, plus
 R29 parity when `RelayCapabilities` asks for it. **R55's per-GOP reliable
 carriers are not built yet**: `CapUplinkCarriers` exists only in docs/57,
 and the relay ingest (WU1) and engine carrier (WU2) are not started. When
-they land the extension inherits them with no iOS change; until then **no
+they land the broadcast pipeline inherits them with no iOS change; until then **no
 R65 acceptance criterion assumes them**, and G2/G3 are measured on
 datagrams. **QUIC connection
 migration is disabled.** The relay sits behind a UDP load balancer whose
@@ -324,8 +351,7 @@ kube-proxy conntrack keys on the 5-tuple, so a migrated path can land on
 another pod (docs/22). On a path change (D19) the engine reconnects with its
 resume token instead.
 
-**Provisional on IO0**: if a current-thread runtime still doesn't fit,
-§9.1's fail branch applies.
+**Provisional on IO0** (V-1).
 
 ### D13 — The viewer core: the SPA's wire contract, in Rust
 
@@ -406,38 +432,37 @@ packet's PTS. Apple's AudioToolbox can also decode Opus, but keeping decode
 in Rust means CI tests it on the host, where an Apple-only decoder couldn't
 be tested.
 
-### D17 — App ↔ extension: an App Group and a shared Keychain group
+### D17 — Settings and secrets: one process, no sharing
 
-| What | Where | Written by |
-|---|---|---|
-| Selected server, room to attach, quality preset, telemetry opt-in | App Group `UserDefaults` suite | app |
-| Per-server secrets (R37, docs/40), R17 resume tokens | Keychain access group, `kSecAttrAccessibleAfterFirstUnlock` | app (secrets), extension (tokens) |
-| Live status: code, viewers, state, last error | App Group `UserDefaults`, plus a Darwin notification on change | extension |
+| What | Where |
+|---|---|
+| Selected server, room to attach, quality preset, telemetry opt-in | the app's standard `UserDefaults` |
+| Per-server secrets (R37, docs/40), R17 resume tokens | the app's Keychain, `kSecAttrAccessibleAfterFirstUnlock` (a broadcast resumes behind a locked screen) |
+| Live status: code, viewers, state, last error | in memory, observed by the UI |
 
-The app observes the Darwin notification and re-reads. Nothing passes
-media, and the extension never waits on the app. **App Groups and Keychain
-sharing need a paid team** (OD14). In the Simulator they work without
-one, which is what phase S relies on.
+*Revised 2026-10-04 (OD17)*: the App Group, shared Keychain group and
+Darwin-notification status channel existed to talk to the extension, and
+went with it. None of this needs a paid team.
 
 ### D18 — Starting and stopping a broadcast
 
-The Broadcast screen hosts an `RPSystemBroadcastPickerView` with
-`preferredExtension` set to ours and `showsMicrophoneButton = false` (OD8).
-Tapping it opens the system sheet. **Start Broadcast** runs a three-second
-countdown and the extension starts. The code appears in the app as soon as
-the extension writes it, with **Copy link**, **Copy code** and the share
-sheet. Stopping is the system's red status pill, Control Center, or the
-same picker button. The app can't stop the extension directly: ReplayKit has
-no API for it.
+The Broadcast screen's **Start** presents the system's
+`SCContentSharingPicker` for the display
+(`presentPickerUsingContentStyle(.display)`), with `showsMicrophoneControl`
+and `showsCameraControl` off (OD8, OD1). Choosing the screen starts the
+stream (D7). The code appears as soon as the relay assigns it, with **Copy
+link**, **Copy code** and the share sheet. Stopping is the app's **Stop**
+or the system's capture indicator; unlike ReplayKit, the app can stop its
+own capture.
 
-ReplayKit captures **everything on screen**, notifications included.
+Display capture takes **everything on screen**, notifications included.
 Before the first broadcast the Broadcast screen says so, with a pointer to
 Focus modes. Protected (DRM) content is black in the capture, as the system
 dictates.
 
 ### D19 — Network paths
 
-An `NWPathMonitor` in each process tells the core when the path changes
+An `NWPathMonitor` in the app tells the core when the path changes
 (Wi-Fi ↔ cellular) and whether it's expensive. A path change triggers an
 immediate resume reconnect rather than waiting for idle timeouts (D12). An
 expensive path selects the Cellular preset at broadcast start. It doesn't
@@ -461,7 +486,7 @@ prefilling, as the desktop does (docs/68 D4).
 ### D21 — Rooms
 
 - **Broadcaster**: the room to attach is chosen in the app before Start
-  (saved and recent rooms, as docs/60 has). The extension attaches with the
+  (saved and recent rooms, as docs/60 has). The pipeline attaches with the
   shared `engine::room` code (R42), unchanged.
 - **Viewer**: a room view in **grid** and **focus**, the SPA's two layouts.
   Each participant is one subscribe session and one renderer. At most
@@ -473,8 +498,8 @@ prefilling, as the desktop does (docs/68 D4).
 
 `AVPictureInPictureController` with the
 `ContentSource(sampleBufferDisplayLayer:playbackDelegate:)` source. The
-audio session is `.playback`, with background mode `audio`, so PiP and a
-locked screen keep audio. The playback delegate reports a live stream
+audio session is `.playback`, with background mode `audio` (beside the
+broadcaster's `screen-capture`, D28), so PiP and a locked screen keep audio. The playback delegate reports a live stream
 (`isPlaybackPaused` false, an infinite time range), so the PiP window shows
 no scrubber. Entering the background without PiP keeps audio only and
 stops video decode.
@@ -503,7 +528,7 @@ stops video decode.
   tests against a real `gawk-server` binary, on the desktop engine's
   `tests/support/relay.rs` harness:
   - **Publisher (IO2)**: `crates/broadcast` driven on the host with
-    synthetic ReplayKit-shaped buffers (portrait, then a rotation), on the
+    synthetic capture-shaped buffers (portrait, then a rotation), on the
     current-thread runtime with `self-update` off, through a rolling relay
     restart. It must resume on the same code with frameID continuity, the
     shape of the engine's existing `resume_survives_a_relay_restart`, but
@@ -517,8 +542,8 @@ stops video decode.
 - **Xcode**: `xcodegen`, then `xcodebuild build-for-testing` unsigned
   (`CODE_SIGNING_ALLOWED=NO`) and `test` on an iOS 27 simulator: Swift unit
   tests and a Watch-screen smoke test against the same local relay.
-  ReplayKit doesn't run in the simulator, so the extension is built and
-  linked in CI and only exercised on a device.
+  Whether ScreenCaptureKit captures in the Simulator is V-12; CI drives the
+  broadcast pipeline with D27's source either way.
 - Signing, archives and TestFlight upload belong to §5's milestone.
 
 ### D25 — Versioning and conventions
@@ -530,18 +555,18 @@ stops video decode.
   written next to `gawk-admin`'s.
 - When IO1 lands, CLAUDE.md's repository layout gains a `gawk-ios` entry
   for the facts a reader can't derive: the path dependency, the coupling
-  rule, and that the extension owns the media path.
+  rule, and that the app owns the capture path in process (OD17).
 
 ### D26 — Simulator first: what phase S can prove, and what waits for a device
 
 | Runs in the iOS Simulator | Device only |
 |---|---|
-| The SwiftUI app, every screen and flow | **The Broadcast Upload Extension**: Apple doesn't run ReplayKit broadcast extensions in the Simulator, and `RPSystemBroadcastPickerView` does nothing there |
-| The Rust core (it's an `aarch64-apple-ios-sim` build, the same code) | **The ~50 MB extension memory limit**: Simulator processes are Mac processes and aren't held to device jetsam limits |
+| The SwiftUI app, every screen and flow | **Background execution**: whether iOS keeps the capturing app running behind a game (the `screen-capture` mode, OD17). Simulator apps are Mac processes and aren't held to device suspension or jetsam |
+| The Rust core (it's an `aarch64-apple-ios-sim` build, the same code) | **Memory**: the footprint behind a game and its jetsam headroom (V-1) |
 | The viewer end to end: subscribe, reassembly, parity, libvpx, Opus, `AVSampleBufferDisplayLayer`, the synchronizer, the adaptive offset | **Thermals** and battery |
 | PiP and background audio, functionally | **Hardware encode behaviour**: VideoToolbox in the Simulator runs on the Mac's encoder, so its latency and rate control say nothing about the phone's (V-11) |
-| The broadcast pipeline *below* ReplayKit, fed by D27's synthetic source | ReplayKit's real buffers: orientation attachment, audio format, clocks (V-3, V-4, V-7) |
-| Rooms, links, server picker, telemetry, the App Group and Keychain plumbing | Glass-to-glass latency on the real path |
+| The broadcast pipeline below capture, fed by D27's synthetic source, and real ScreenCaptureKit capture if the Simulator provides it (V-12) | The device's real capture buffers: size, orientation, audio format, clocks (V-3, V-4, V-6, V-7) |
+| Rooms, links, server picker, telemetry, the Keychain plumbing | Glass-to-glass latency on the real path |
 | Network changes (Network Link Conditioner on the Mac) | Cellular, and Wi-Fi ↔ cellular handover |
 
 So phase S proves the code is correct and phase D proves it fits. The
@@ -552,14 +577,12 @@ them.
 ### D27 — A synthetic broadcast source for phase S
 
 The app gains a **debug-only** "Test broadcast" that runs `crates/broadcast`
-**in the app process**, fed by a generated source instead of ReplayKit: a
-moving test pattern with a frame counter and a clock, as `CVPixelBuffer`s
-with the ReplayKit attachments set (portrait, then rotations on a timer),
-plus a tone as `audioApp`-shaped buffers. Same `VideoSource`/`AudioSource`
-seams, same rotation, rung, encode and engine code as the extension.
-It's compiled out of release builds and never reachable by a user.
-The extension target is still built in phase S, so linking and
-App Group code are checked, but it first runs on a device.
+fed by a generated source instead of ScreenCaptureKit: a moving test
+pattern with a frame counter and a clock, as `CVPixelBuffer`s shaped like
+the capture's (portrait, then rotations on a timer), plus a tone as
+audio-output-shaped buffers. Same `VideoSource`/`AudioSource` seams, same
+rotation, rung, encode and engine code as real capture. It's compiled out of
+release builds and never reachable by a user.
 
 ### D28 — Identifiers
 
@@ -569,11 +592,14 @@ app ships, so they're fixed here and nowhere else:
 | What | Value |
 |---|---|
 | App bundle ID | `fi.ioio.gawk` |
-| Broadcast extension | `fi.ioio.gawk.BroadcastUpload` |
-| App Group (D17) | `group.fi.ioio.gawk` |
-| Keychain access group (D17) | `$(AppIdentifierPrefix)fi.ioio.gawk.shared` |
 | URL scheme (D20) | `gawk://` |
 | Display name (`CFBundleDisplayName`) | gawk |
+| Background modes (`UIBackgroundModes`) | `screen-capture` (D6), `audio` (D22) |
+
+*Revised 2026-10-04 (OD17)*: the extension's bundle ID
+(`fi.ioio.gawk.BroadcastUpload`), the App Group and the Keychain access group
+are gone with the extension. Nothing had shipped, so nothing permanent was
+spent.
 
 The App Store listing name is separate and must be unique across the store.
 It's chosen in the distribution milestone (§5), and may differ from the
@@ -600,15 +626,15 @@ Inherited from docs/38 §7 and docs/54 §7: no software encode; no
 viewer→server keyframe back-channel; no auto-resume through 4000/4004/4006
 (publisher) or reconnect through 4000/4006 (viewer); no
 second clock; no standalone `DecoderConfig` datagrams; no Opus
-DTX/FEC/bitrate knob. Added here: no media in the containing app (D6); no
+DTX/FEC/bitrate knob. Added here: no app extension (OD17); no
 QUIC connection migration (D12); no self-update (D4); no raw broadcast IDs
 in logs or telemetry (CLAUDE.md, R9 D3).
 
 ## 7. UX flows
 
 **First broadcast (G1)**: open the app → Broadcast → the notification
-note (D18) → the picker button → Start Broadcast → countdown → the code
-and **Copy link** in the app → switch to the game. Zero settings touched.
+note (D18) → **Start** → the system picker → the screen → the code and
+**Copy link** in the app → switch to the game. Zero settings touched.
 
 **Watch by link**: tap a `gawk://watch/<CODE>` link → the app opens
 straight into the player → rotate for fullscreen → swipe home and PiP
@@ -618,9 +644,9 @@ continues (G9).
 the room on the web see the stream join. In the app, Rooms → a room code →
 grid; tap a tile for focus.
 
-**Resume**: the extension is killed or the relay pod restarts → the
-broadcast resumes on the same code with an IDR (G6); after a jetsam, the
-user restarts from the picker within the grace and gets the same code.
+**Resume**: the relay pod restarts → the broadcast resumes on the same
+code with an IDR (G6); after a jetsam, the user relaunches and starts again
+within the grace and gets the same code.
 
 **Errors**: 4000/4004/4006 end the broadcast with the system's alert carrying
 our reason (D7). A full fleet or a refused secret says which, in the app.
@@ -629,9 +655,10 @@ our reason (D7). A full fleet or a refused secret says which, in the app.
 
 | Risk | Mitigation |
 |---|---|
-| The extension's ~50 MB memory limit (jetsam kills it without warning) with the engine, quinn, VideoToolbox, the rotation pool and Opus | IO0 measures first; D12's current-thread runtime; D8's cap; §9.1's branches |
+| iOS 27 suspends the capturing app behind a game despite the `screen-capture` mode (reported by one project, OD17) | IO0 measures it first; §9.1's Fail branch restores the ReplayKit extension (§3) |
+| Jetsam of the backgrounded app with the engine, quinn, VideoToolbox, the conversion pool and Opus | IO0 records the footprint (V-1); D12's current-thread runtime; D8's cap |
 | Thermal throttling with a game, encode and upload together | IO0/IO8 log `ProcessInfo.thermalState`; step down a rung on `.serious`, announced in the live status |
-| ReplayKit's audio format differs from what's reported | D11 reads the ASBD per buffer; V-3 records what devices deliver |
+| The capture's audio format or content differs from what's requested | D11 reads the ASBD per buffer; V-3 records what devices deliver |
 | libvpx software decode drains the battery on long watches | Only VP8/VP9 sources (Firefox broadcasters, the minority) take it; IO8 records the cost |
 | The viewer core drifts from the SPA's wire behaviour | It's tested on recorded streams and against the real relay in CI (D24), and shares `crates/wire`'s parsers |
 | quic-go / webtransport-go bumps have broken WebKit before (gotchas) | Not exposed: the iOS app speaks the desktop's Rust stack, not WebKit's |
@@ -648,10 +675,10 @@ phase S.
 
 | Chunk | Scope | Accepted when |
 |---|---|---|
-| **IO0** (phase D, first) | **Spike (throwaway branch, never merged).** A minimal app and extension linking the engine and `vt.rs` with D4's gating hacked in; broadcast at 1080p60 with app audio to the fleet. Log peak `phys_footprint` every second, thermal state and dropped frames; photograph glass-to-glass. Probe `VTIsHardwareDecodeSupported(kCMVideoCodecType_VP9)` and record the `audioApp` ASBD (V-3) and buffer clocks (V-4). | §9.1's verdict and the V-items are recorded in §12 |
+| **IO0** (phase D, first) | **Spike (throwaway branch, never merged).** A minimal app linking the engine and `vt.rs` with D4's gating; capture the display through `SCContentSharingPicker` at 1080p60 with audio and broadcast to the fleet with a game in front. Log every capture gap over 2 s, `phys_footprint` every second, thermal state and dropped frames; photograph glass-to-glass. Probe `VTIsHardwareDecodeSupported(kCMVideoCodecType_VP9)` and record the capture's buffer size and format, orientation behaviour, audio ASBD and clocks (V-3–V-7). | §9.1's verdict and the V-items are recorded in §12 |
 | **IO1** | Scaffolding: D1–D4, D5's identity and origin, D24's CI, D25's component and conventions | CI is green on a PR that touches only a desktop crate; the desktop job's `cargo test` is unchanged with `self-update` on; the iOS host tests pass with it off; the simulator builds both targets |
-| **IO2** | The broadcast extension: D6–D12, D19, D27 | **Simulator**: D27's test broadcast plays in a desktop Chrome viewer, rotations included, and survives a relay restart. **Device**: G1 (without the app UI: settings seeded by hand), G2, G3, G4, G5 on a device; G6 on a device; D24's **publisher** integration test (relay restart through the iOS glue) green in CI |
-| **IO3** | The broadcaster UI: D17, D18, the server picker and secrets (D23), room attach (D21) | **Simulator** (through D27's source), then on a device: the code shows within 2 s of the extension's first frame; a non-default server with a secret works; an attach shows in the room's web view (G11's first half) |
+| **IO2** | The broadcast pipeline: D6–D12, D19, D27 | **Simulator**: D27's test broadcast plays in a desktop Chrome viewer, rotations included, and survives a relay restart. **Device**: G1 (without the app UI: settings seeded by hand), G2, G3, G4, G5 on a device; G6 on a device; D24's **publisher** integration test (relay restart through the iOS glue) green in CI |
+| **IO3** | The broadcaster UI: D17, D18, the server picker and secrets (D23), room attach (D21) | **Simulator** (through D27's source), then on a device: the code shows within 2 s of the first captured frame; a non-default server with a secret works; an attach shows in the room's web view (G11's first half) |
 | **IO4** | The viewer core: D13, D14, D16; Rust tests on recorded H.264, VP9 and VP8 streams; D24's **viewer** integration test | Tests green in CI, the viewer integration test included; a `DecoderConfig` change mid-stream resets the decoder with no crash; parity recovery passes the restated vectors; the delta-loss rule is tested |
 | **IO5** | The native player: D15, D22 | **Simulator**: G7 (all three codecs play), G9 (PiP and background audio work), G10 (outage via Network Link Conditioner). **Device**: G7–G10, G8's latency included |
 | **IO6** | Joining and rooms in the viewer: D20, D21 | In the Simulator: a `gawk://` link opens the right broadcast; `relay=` shows the strip; G11's second half |
@@ -660,21 +687,27 @@ phase S.
 
 ### 9.1 IO0 pre-registered verdict
 
+*Revised 2026-10-04 (OD17)*: the first verdict judged the extension's
+~50 MB budget. With capture in the app, the question that decides the design
+is whether iOS keeps the app running behind a game.
+
 On the iPhone 17 Pro Max, broadcasting a 3D game at D8's rung for 30 minutes:
 
-- **Pass**: peak extension footprint ≤ 40 MB (10 MB under the limit), no
-  jetsam, glass-to-glass ≤ 250 ms to a desktop Chrome viewer, thermal state
-  never `.critical`. D8 and D12 are confirmed as written.
-- **Conditional**: peak 40–48 MB, or `.critical` once. Drop the cap to 1280
-  on the long edge and the encoder pool to `ENCODER_MAX_IN_FLIGHT = 2`, measure
-  again, and amend D8 before IO2.
-- **Fail**: every other first-run outcome, which includes a peak above
-  48 MB, any jetsam, glass-to-glass over 250 ms, or `.critical` more than
-  once. A latency or thermal miss alone means: re-measure at 1280 as for
-  Conditional, and record which one missed. A memory fail, or **any** miss
-  on the 1280 re-measure, means stop: redesign the extension's transport (a
-  minimal QUIC client without tokio, or the engine split so only the send
-  path runs in the extension) before IO1.
+- **Pass**: no capture gap over 2 s while the game is in front (the app was
+  never suspended), no jetsam, glass-to-glass ≤ 250 ms to a desktop Chrome
+  viewer, thermal state never `.critical`. D6, D8 and D12 are confirmed as
+  written, and the peak footprint is recorded (V-1).
+- **Conditional**: no suspension and no jetsam, but glass-to-glass over
+  250 ms or `.critical` once. Drop the cap to 1280 on the long edge and the
+  encoder pool to `ENCODER_MAX_IN_FLIGHT = 2`, measure again, and amend D8
+  before IO2's device criteria.
+- **Fail**: every other first-run outcome, which includes any capture gap
+  over 2 s with the game in front, any jetsam, or `.critical` more than
+  once. A suspension or a jetsam means stop: OD17 is reversed and the
+  ReplayKit extension design (§3) is restored before IO2's device
+  criteria, with its own memory verdict (the pre-OD17 §9.1). A thermal miss
+  alone means re-measure at 1280 as for Conditional, and any miss on that
+  re-measure is a Fail.
 
 The three buckets are exhaustive: anything that isn't Pass or Conditional
 is Fail. The Conditional re-measure is judged by Pass's criteria at the
@@ -684,17 +717,18 @@ is Fail. The Conditional re-measure is judged by Pass's criteria at the
 
 | # | Question | Decides |
 |---|---|---|
-| V-1 | Peak extension footprint at 1080p60 and 720p30, multi-thread vs current-thread runtime | D8, D12, §9.1 |
+| V-1 | Peak footprint of the backgrounded app at 1080p60 and 720p30, multi-thread vs current-thread runtime | D8, D12, §9.1 |
 | V-2 | Does VideoToolbox decode VP9 on iOS 27 (and AV1, for the record)? | D15 |
-| V-3 | `audioApp` ASBD: sample rate, endianness, interleaving, across devices | D11 |
-| V-4 | Are ReplayKit video and audio PTS on the host clock? | D11, G4 |
-| V-5 | Does a locked screen stop or pause the broadcast? Is `broadcastPaused` delivered? | D7 |
-| V-6 | Frame rate ReplayKit delivers on a 120 Hz panel in a 60 fps game | D8 |
-| V-7 | Does `RPVideoSampleOrientationKey` track the device or the interface orientation in a landscape-locked game? | D9 |
+| V-3 | The capture's audio: whole system or foreground app only, and its ASBD (rate, endianness, interleaving) against the 48 kHz stereo requested | D11 |
+| V-4 | Are ScreenCaptureKit's video and audio PTS on the host clock on iOS? | D11, G4 |
+| V-5 | Does a locked screen or a call stop the stream, or deliver `.suspended` frames? | D7 |
+| V-6 | Buffer size, pixel format and frame rate the capture delivers on a 120 Hz panel in a 60 fps game, against the `width`/`height` requested | D8 |
+| V-7 | Are frames delivered in panel orientation with an orientation attachment, or already upright? In a landscape-locked game, which orientation? | D9 |
 | V-8 | Footprint and thermal cost of four playing tiles on iPhone vs iPad | D21 |
 | V-9 | Does PiP from `AVSampleBufferDisplayLayer` survive a renderer flush (drop to live)? | D15, D22 |
 | V-10 | Does the relay check `-allowed-origins` on `/subscribe` too? | D5 |
 | V-11 | Does `vt.rs`'s low-latency, hardware-required session open in the Simulator? If not, D27 uses a Simulator-only encoder spec without `RequireHardwareAcceleratedVideoEncoder` (debug builds only) | D27 |
+| V-12 | Does `SCContentSharingPicker` display capture deliver frames in the iOS 27 Simulator? (answerable in phase S) | D24, D26 |
 
 ## 11. Open questions
 
@@ -704,5 +738,25 @@ display name) OD16.
 
 ## 12. Deviations and field findings
 
-None yet. IO0's verdict, the V-items and every deviation from §4 are
-recorded here, dated.
+IO0's verdict, the V-items and every deviation from §4 are recorded here,
+dated.
+
+- **2026-10-04 — the iOS 27 SDK deprecates the ReplayKit broadcast
+  extension (OD17).** IO1's first Xcode 27 build warned that
+  `RPBroadcastSampleHandler` is "No longer supported" and that
+  `RPSampleBufferType` should become `SCStreamOutputType`. The iOS 27 SDK
+  makes `SCStream`, `SCContentSharingPicker` (display style) and
+  `SCStreamConfiguration`'s `width`, `height`, `capturesAudio`,
+  `sampleRate`, `channelCount` and `excludesCurrentProcessAudio` available on
+  iOS, with `SCStreamErrorMissingBackgroundMode` for an app that captures in
+  the background without the mode; `pixelFormat`, `minimumFrameInterval`,
+  `queueDepth` and `scalesToFit` stay macOS-only. The owner chose
+  ScreenCaptureKit in the app (OD17); D3, D6–D11, D17, D18, D26–D28, §8,
+  §9.1 and §10 were revised the same day. Public reports at the time:
+  LiveKit's Swift SDK moved to ScreenCaptureKit on iOS 27
+  (livekit/client-sdk-swift#1135), and another project removed its iOS 27
+  ScreenCaptureKit mirror because the app was suspended in the background
+  even with the `screen-capture` mode and `NSScreenCaptureUsageDescription`
+  declared, while the deprecated extension kept working
+  (MyNamesEMurray/LensLink#161). IO0 settles which holds for a game
+  broadcast.
