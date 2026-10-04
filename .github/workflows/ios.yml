@@ -255,6 +255,17 @@ jobs:
             -publish-secret smoke > "$RUNNER_TEMP/relay.log" 2>&1 &
           for i in $(seq 60); do curl -sf http://127.0.0.1:4498/healthz && break; sleep 1; done
 
+      # The broadcast loop's first QUIC dial sometimes never reaches the
+      # relay on a fresh runner (2026-10-04); the relay logs nothing for a
+      # handshake that never completes, so the loopback UDP is recorded and
+      # shown on failure: long-header (handshake) packets only, so a live
+      # stream's short-header traffic doesn't fill it.
+      - name: Record the relay's QUIC handshakes
+        run: |
+          sudo tcpdump -i lo0 -n -tttt -c 300 'udp port 4499 and udp[8] & 0x80 != 0' \
+            > "$RUNNER_TEMP/udp.txt" 2>&1 &
+          sleep 2
+
       - name: Test (Simulator)
         env:
           TEST_RUNNER_GAWK_SMOKE_RELAY_URL: https://127.0.0.1:4499
@@ -268,7 +279,12 @@ jobs:
 
       - name: Relay log
         if: failure()
-        run: cat "$RUNNER_TEMP/relay.log"
+        run: |
+          cat "$RUNNER_TEMP/relay.log"
+          echo "--- QUIC handshake packets to and from the relay (first 300)"
+          sudo pkill tcpdump || true
+          sleep 1
+          cat "$RUNNER_TEMP/udp.txt"
 
       - name: Build (device, unsigned)
         run: |
