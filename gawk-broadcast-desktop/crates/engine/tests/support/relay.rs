@@ -15,11 +15,24 @@ use tokio::sync::mpsc::UnboundedReceiver;
 pub const SECRET: &str = "it-s3cret";
 
 pub fn server_dir() -> PathBuf {
-    // crates/<crate> → gawk-broadcast-desktop → repo root → gawk-server.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../gawk-server")
+    repo_root().join("gawk-server")
+}
+
+/// The first ancestor of the including crate that holds `gawk-server/`.
+/// Walked rather than counted: the desktop crates sit at one depth and the
+/// iOS viewer (R65, docs/67 D24), which includes this file too, at another.
+pub fn repo_root() -> PathBuf {
+    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .canonicalize()
-        .unwrap()
+        .unwrap();
+    while !dir.join("gawk-server/go.mod").exists() {
+        assert!(
+            dir.pop(),
+            "no gawk-server/ above {}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+    }
+    dir
 }
 
 pub fn build_tool(name: &str, out: &PathBuf) {
@@ -28,6 +41,9 @@ pub fn build_tool(name: &str, out: &PathBuf) {
         .arg(out)
         .arg(format!("./cmd/{name}"))
         .current_dir(server_dir())
+        // An iOS build's environment (R65) must not reach cgo: clang honours
+        // IPHONEOS_DEPLOYMENT_TARGET and would target iOS with the Mac SDK.
+        .env_remove("IPHONEOS_DEPLOYMENT_TARGET")
         .status()
         .expect("go toolchain available");
     assert!(status.success(), "go build ./cmd/{name} failed");

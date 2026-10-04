@@ -13,4 +13,4 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 url = "2"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "sync", "time", "macros", "test-util"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "net", "test-util"] }

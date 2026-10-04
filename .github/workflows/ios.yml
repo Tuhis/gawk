@@ -151,6 +151,28 @@ jobs:
           cargo build -p gawk-core --target aarch64-apple-ios
           cargo build -p gawk-core --target aarch64-apple-ios-sim
 
+      # docs/67 D24: the viewer core against the real relay and gawk-pubsim,
+      # through induced datagram loss and a rolling relay restart. Both Go
+      # binaries are built once here and handed to the test.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: |
+            gawk-server/go.sum
+            gawk-broadcast/go.sum
+
+      - name: Build the relay, devcert and publisher simulator
+        run: |
+          bin="$RUNNER_TEMP/relay-bin"
+          mkdir -p "$bin"
+          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert
+          go -C ../../gawk-broadcast build -o "$bin/" ./cmd/gawk-pubsim
+          echo "GAWK_IT_RELAY_BIN_DIR=$bin" >> "$GITHUB_ENV"
+          echo "GAWK_IT_PUBSIM_BIN=$bin/gawk-pubsim" >> "$GITHUB_ENV"
+
+      - name: Integration — the viewer through loss and a relay restart
+        run: cargo test -p gawk-viewer --test relay_viewer -- --ignored --test-threads=1
+
   xcode:
     runs-on: xcode-27
     defaults:
