@@ -6,3 +6,4 @@
 //! fills it.
 
 pub mod reassembly;
+pub mod reorder;
