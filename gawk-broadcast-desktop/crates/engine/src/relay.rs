@@ -167,7 +167,8 @@ impl std::error::Error for StartError {}
 /// BOTH an ID and a token are present.
 ///
 /// Every dial also names the client for the relay's usage metrics (R59,
-/// docs/61 D1): `app=desktop` and the build target's `os`. New vs resumed the
+/// docs/61 D1): this distribution's `app` (`desktop`, or `ios` for the iOS
+/// app, docs/67 D5) and the build target's `os`. New vs resumed the
 /// relay tells from the path.
 pub fn publish_url(
     relay_url: &str,
@@ -192,7 +193,7 @@ pub fn publish_url(
         if !broadcast_id.is_empty() && !resume_token_hex.is_empty() {
             q.append_pair("resume", resume_token_hex);
         }
-        q.append_pair("app", "desktop");
+        q.append_pair("app", crate::defaults::this().app);
         q.append_pair("os", CLIENT_OS);
     }
     Ok(url.into())
@@ -204,7 +205,9 @@ pub fn publish_url(
 pub const CLIENT_OS: &str = "windows";
 #[cfg(target_os = "macos")]
 pub const CLIENT_OS: &str = "macos";
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "ios")]
+pub const CLIENT_OS: &str = "ios";
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios")))]
 pub const CLIENT_OS: &str = "linux";
 
 #[cfg(test)]
@@ -254,6 +257,8 @@ mod tests {
             "windows"
         } else if cfg!(target_os = "macos") {
             "macos"
+        } else if cfg!(target_os = "ios") {
+            "ios"
         } else {
             "linux"
         };

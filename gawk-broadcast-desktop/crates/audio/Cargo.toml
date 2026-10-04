@@ -7,7 +7,9 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-gawk-engine = { path = "../engine" }
+# No default features: the shells pick `self-update`, and the iOS app
+# (docs/67 D4) must be able to leave it off through this crate.
+gawk-engine = { path = "../engine", default-features = false }
 # Vendored static libopus (docs/38 D8: fits the single-EXE story). Its
 # bundled CMakeLists predates CMake 3.5, so builds need
 # CMAKE_POLICY_VERSION_MINIMUM=3.5 in the environment (set in CI).

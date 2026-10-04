@@ -14,6 +14,7 @@ pub mod clock;
 pub mod config;
 pub mod dispatch;
 pub mod gate;
+#[cfg(feature = "self-update")]
 pub mod install;
 pub mod link;
 pub mod lossnotice;
@@ -28,6 +29,7 @@ pub mod stats;
 pub mod telemetry;
 pub mod timesync;
 pub mod transport;
+#[cfg(feature = "self-update")]
 pub mod update;
 pub mod uplink;
 
@@ -63,6 +65,10 @@ pub mod defaults {
         pub asset: &'static str,
         /// Telemetry `os`.
         pub os: &'static str,
+        /// The `app` label every dial carries for the relay's usage metrics
+        /// (R59, docs/61 D1): `desktop` for the three shells here, `ios` for
+        /// the iOS app, which injects its own identity (docs/67 D5).
+        pub app: &'static str,
     }
 
     pub const WINDOWS: Distribution = Distribution {
@@ -70,6 +76,7 @@ pub mod defaults {
         origin: "gawk-broadcast://windows",
         asset: "gawk-broadcast-windows-x86_64.exe",
         os: "Windows",
+        app: "desktop",
     };
 
     pub const MACOS: Distribution = Distribution {
@@ -77,6 +84,7 @@ pub mod defaults {
         origin: "gawk-broadcast://macos",
         asset: "gawk-broadcast-macos-arm64.zip",
         os: "macOS",
+        app: "desktop",
     };
 
     /// The Linux distribution (R56, docs/58 OD10). Unlike the other two it
@@ -88,6 +96,7 @@ pub mod defaults {
         origin: "gawk-broadcast://linux",
         asset: "gawk-broadcast-linux-x86_64.tar.gz",
         os: "Linux",
+        app: "desktop",
     };
 
     static THIS: std::sync::OnceLock<&'static Distribution> = std::sync::OnceLock::new();
@@ -408,6 +417,7 @@ mod tests {
                 origin: "gawk-broadcast://windows",
                 asset: "gawk-broadcast-windows-x86_64.exe",
                 os: "Windows",
+                app: "desktop",
             }
         );
         assert_eq!(
@@ -417,6 +427,7 @@ mod tests {
                 origin: "gawk-broadcast://macos",
                 asset: "gawk-broadcast-macos-arm64.zip",
                 os: "macOS",
+                app: "desktop",
             }
         );
         assert_eq!(
@@ -426,6 +437,7 @@ mod tests {
                 origin: "gawk-broadcast://linux",
                 asset: "gawk-broadcast-linux-x86_64.tar.gz",
                 os: "Linux",
+                app: "desktop",
             }
         );
     }

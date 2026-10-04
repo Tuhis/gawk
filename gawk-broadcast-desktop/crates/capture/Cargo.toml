@@ -7,7 +7,9 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-gawk-engine = { path = "../engine" }
+# No default features: the shells pick `self-update`, and the iOS app
+# (docs/67 D4) must be able to leave it off through this crate.
+gawk-engine = { path = "../engine", default-features = false }
 # Narrates capture/session setup into the shell's debug.log (docs/38 F-8).
 log = "0.4"
 
@@ -51,6 +53,11 @@ objc2-core-media = "0.3"
 objc2-core-video = "0.3"
 objc2-foundation = "0.3"
 objc2-screen-capture-kit = "0.3"
+
+# iOS (R65, docs/67 D4): only the host clock (`host`) is shared with the
+# iOS app; ScreenCaptureKit stays macOS-only.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-core-media = "0.3"
 
 # Linux (R56, docs/58 D3/D4): the ScreenCast portal through ashpd, and the
 # CLOCK_MONOTONIC read behind the one-clock mapper (`pwclock`). ashpd runs on
