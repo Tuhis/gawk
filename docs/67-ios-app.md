@@ -855,3 +855,23 @@ dated.
     back through the core's own `Viewer` in the Simulator, a rotation
     included, with the tone; the relay restart is the host-side publisher
     integration test (D24), where the code and frame-ID space carry on.
+- **2026-10-04 — IO6/IO7: rooms, links and telemetry, as built.**
+  - **`engine::room::watch_room`**, a fourth desktop-crate addition: the
+    shared room control session run for a viewer. It joins, reports the
+    roster and never attaches, because no publish identity ever arrives.
+    The iOS room view is built on it rather than a second room client.
+  - `gawk://` links go through the shared `engine::link` parser (docs/68),
+    never re-parsed in the app; a dropped parameter is reported by name
+    only.
+  - **V-10: yes**, from the relay's code (#460): one `CheckOrigin` guards
+    every client-facing upgrade, `/subscribe`, `/room/*` and `/echo`
+    included, so the production relay's `allowedOrigins` must list
+    `gawk://ios` before the app first dials it, or watching, broadcasting
+    and even the server picker's probe fail.
+  - **Broadcaster telemetry** drives the engine's `Reporter` exactly as the
+    desktop shell does (off until opted in; the advertised ingest wins; the
+    opt-out wins over both). **Viewer telemetry is not built yet**: the
+    reporter is broadcaster-only (its role and sample type are fixed), so
+    the viewer's reports need it generalised first. IO7's acceptance ("a
+    test session appears in the dashboard") is met by the broadcaster's
+    reports; the viewer's remain open.
