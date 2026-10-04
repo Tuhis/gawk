@@ -38,14 +38,28 @@ final class ScreenCapture: NSObject {
     }
 
     func stop() {
-        let s = stream
-        stream = nil
-        Task { try? await s?.stopCapture() }
+        retireStream()
         SCContentSharingPicker.shared.isActive = false
         SCContentSharingPicker.shared.remove(self)
     }
 
+    /// Stops the running stream, if any, and detaches its output first, so
+    /// a stream we stopped can't report an end of capture or feed the sink.
+    private func retireStream() {
+        output?.onStop = nil
+        output?.isRetired = true
+        let s = stream
+        stream = nil
+        output = nil
+        Task { try? await s?.stopCapture() }
+    }
+
+    /// Captures `filter`. The picker stays active for the whole broadcast,
+    /// so the user can change the shared content mid-capture; iOS has no
+    /// `updateContentFilter`/`updateConfiguration` (macOS-only in the iOS 27
+    /// SDK), so the running stream is replaced, never run beside a new one.
     private func start(filter: SCContentFilter) {
+        retireStream()
         let config = SCStreamConfiguration()
         // D8: the size is the rung's, but iOS has no scalesToFit or
         // pixelFormat, so FrameConverter does the real work (V-6).
@@ -85,6 +99,15 @@ final class ScreenCapture: NSObject {
         let sink: MediaSink
         weak var stream: SCStream?
         var onStop: ((String?) -> Void)?
+        /// Set (on the main actor) when the stream is replaced; samples still
+        /// in flight from it (on the capture queues) are dropped, not
+        /// interleaved with the new stream's.
+        var isRetired: Bool {
+            get { retiredLock.withLock { retired } }
+            set { retiredLock.withLock { retired = newValue } }
+        }
+        private let retiredLock = NSLock()
+        private var retired = false
         private var lastStatus: Int = 0
 
         init(sink: MediaSink) {
@@ -99,6 +122,7 @@ final class ScreenCapture: NSObject {
         }
 
         func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
+            guard !isRetired else { return }
             switch type {
             case .screen:
                 let info = (CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false)
