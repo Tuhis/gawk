@@ -136,6 +136,35 @@ func TestIngestCarriesAnOptionalRoomKey(t *testing.T) {
 	}
 }
 
+// The iOS app (R65, docs/67 D23) reports as `gawk-ios` from both sides: the
+// engine as a broadcaster, the viewer core in the SPA's viewer shape. The
+// client class is free-form data, not an allowlist, so both are accepted and
+// the class reaches the sink verbatim; each role is its own session because
+// the token binds the role.
+func TestIngestAcceptsTheIOSAppInBothRoles(t *testing.T) {
+	h := newHandler(t, &recordingSink{})
+	ids := map[string]bool{}
+	for _, role := range []wire.TelemetryRole{wire.TelemetryRoleBroadcaster, wire.TelemetryRoleViewer} {
+		a, status, err := h.Validate(body(t, map[string]any{
+			"token": mintToken(t, testKey, role),
+			"role":  string(role),
+			"app": map[string]any{
+				"version": "0.1.0", "surface": string(role), "browser": "gawk-ios", "os": "iOS",
+			},
+		}))
+		if err != nil {
+			t.Fatalf("%s: Validate: %v (status %d)", role, err, status)
+		}
+		if a.App.Browser != "gawk-ios" || a.App.OS != "iOS" || a.Role != string(role) {
+			t.Errorf("%s: app = %+v, role %q", role, a.App, a.Role)
+		}
+		ids[a.SessionID] = true
+	}
+	if len(ids) != 2 {
+		t.Errorf("broadcaster and viewer share a session id: %v", ids)
+	}
+}
+
 // The sessionId is the AUTHENTICATED one, taken from the verified token —
 // never from anything the client asserted alongside it.
 func TestIngestSessionIDComesFromTheToken(t *testing.T) {
