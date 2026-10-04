@@ -163,7 +163,20 @@ final class Capture {
     #endif
     #if DEBUG
     @ObservationIgnored private var test: TestBroadcastSource?
+    /// The running test source, for tests.
+    var testSource: TestBroadcastSource? { test }
     #endif
+
+    /// Whether a source is feeding the session.
+    var isCapturing: Bool {
+        #if DEBUG
+        if test != nil { return true }
+        #endif
+        #if canImport(ScreenCaptureKit)
+        if screen != nil { return true }
+        #endif
+        return false
+    }
 
     /// The live session, for path changes (D19).
     @ObservationIgnored private weak var live: BroadcastSession?
@@ -187,6 +200,9 @@ final class Capture {
     }
 
     func start(session: BroadcastSession, settings: AppSettings, room: String, test: Bool) {
+        // A source left from an earlier broadcast must not feed this one, or
+        // end it from its own stop callback.
+        stopSources()
         // D19: an expensive path picks the Cellular rung at start, and
         // never switches mid-broadcast.
         let quality: Quality = path.isExpensive ? .cellular : .standard
@@ -200,6 +216,9 @@ final class Capture {
             insecure: settings.insecure
         )
         live = session
+        // The core can end the broadcast itself (a refusal, an operator, an
+        // error); capture goes with it.
+        session.onEnded = { [weak self] in self?.stopSources() }
         #if DEBUG
         if test {
             let source = TestBroadcastSource(sink: session.media)
@@ -211,9 +230,9 @@ final class Capture {
         #if canImport(ScreenCaptureKit)
         let screen = ScreenCapture(sink: session.media)
         self.screen = screen
-        screen.present { [weak self, weak session] reason in
+        screen.present { [weak self, weak session, weak screen] reason in
             // The capture ended: by the user, the system or an error (D7).
-            guard let self, let session else { return }
+            guard let self, let session, let screen, self.screen === screen else { return }
             session.noteCaptureEnded(reason)
             self.stop(session)
         }
@@ -221,6 +240,13 @@ final class Capture {
     }
 
     func stop(_ session: BroadcastSession) {
+        stopSources()
+        live = nil
+        session.stop()
+    }
+
+    /// Stops capture only; the session is the caller's.
+    private func stopSources() {
         #if DEBUG
         test?.stop()
         test = nil
@@ -229,7 +255,5 @@ final class Capture {
         screen?.stop()
         screen = nil
         #endif
-        live = nil
-        session.stop()
     }
 }
