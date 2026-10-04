@@ -1236,6 +1236,22 @@ Add to it when a new gotcha lands in `docs/`.
   'arm64-apple-ios'"). Set it only where an iOS Rust build runs; the relay
   test harness strips it before building the Go tools.
   ([docs/67](67-ios-app.md) §12)
+- **The iOS 27 Simulator SDK has no ScreenCaptureKit.** The framework is
+  missing from the Simulator SDK, not just inert, so capture code is
+  `canImport`-gated and builds for devices only; the Simulator broadcasts
+  from D27's test source. ([docs/67](67-ios-app.md) V-12, §12)
+- **VideoToolbox's low-latency, hardware-required encoder doesn't open in
+  the Simulator** (`VTCompressionSessionCreate` fails with `-12908`).
+  Simulator builds use a software session instead, and that one needs
+  `MaxFrameDelayCount = 0`: by default it holds frames back, D10's
+  in-flight gate stops feeding it, and the encode starves.
+  ([docs/67](67-ios-app.md) V-11, §12)
+- **VideoToolbox can't scale and rotate in one pass.**
+  `VTPixelTransferSession` scales and converts but can't rotate, and
+  `VTPixelRotationSession` rotates but can't scale, so a frame in panel
+  orientation takes two passes, scaling first. Each pass needs its own
+  output pool: the two sizes evict each other from a shared one.
+  ([docs/67](67-ios-app.md) D9, §12)
 
 **Native Linux broadcaster, in the desktop workspace (R56)**
 
