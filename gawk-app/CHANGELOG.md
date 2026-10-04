@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.51.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.50.0...gawk-app/v0.51.0) (2026-10-04)
+
+
+### Features
+
+* **app:** label the broadcaster's stream with its room nickname ([#447](https://github.com/Tuhis/gawk/issues/447)) ([72fb3a4](https://github.com/Tuhis/gawk/commit/72fb3a4c3b171d132d2de12c7c7c9e3180c97673))
+* **app:** prefill the room nickname from a ?nick= link parameter ([#445](https://github.com/Tuhis/gawk/issues/445)) ([4c5f199](https://github.com/Tuhis/gawk/commit/4c5f199f631a27d33276ac218391dbfcdfc882d3))
+
 ## [0.50.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.49.1...gawk-app/v0.50.0) (2026-10-02)
 
 
