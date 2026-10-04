@@ -95,7 +95,13 @@ private struct ServerRow: View {
             }
             .buttonStyle(.plain)
             if selected {
-                SecureField("Publish secret (if the server needs one)", text: $secret)
+                // A server's API key, not an account password: a SecureField
+                // makes iOS offer to save it to Passwords in a sheet over the
+                // app. Redacted in screenshots and the app switcher instead.
+                TextField("Publish secret (if the server needs one)", text: $secret)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .privacySensitive()
                     .onSubmit { identity.setSecret(secret, relay: url) }
                     .onChange(of: secret) { identity.setSecret(secret, relay: url) }
             }
@@ -124,7 +130,10 @@ private struct AddServerSheet: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
-                SecureField("Publish secret (optional)", text: $secret)
+                TextField("Publish secret (optional)", text: $secret)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .privacySensitive()
             }
             .navigationTitle("Add a server")
             .toolbar {
