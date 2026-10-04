@@ -43,7 +43,7 @@ confirmed or revised in §12 once IO0 is done. Status lives in [`ROADMAP.md`](..
 ### Milestone acceptance criteria
 
 Pre-registered. "Device" means the owner's iPhone 17 Pro Max or iPad Pro
-on iOS 26 (OD14). CI cannot see ReplayKit, a hardware encoder's
+on iOS 27 (OD14). CI cannot see ReplayKit, a hardware encoder's
 behaviour under thermal load or PiP. As on every native milestone
 (docs/19, docs/38, docs/54), the device criteria decide whether R65 works.
 
@@ -71,11 +71,11 @@ behaviour under thermal load or PiP. As on every native milestone
 | OD3 | **Signed for the owner's own devices first.** TestFlight and then the public App Store will follow, in a later milestone (§5). |
 | OD4 | **SwiftUI over a Rust core**, bridged with UniFFI. |
 | OD5 | **A new top-level module, `gawk-ios`**, with its own release-please component and its own version. |
-| OD6 | **iPhone and iPad, iOS 26 and later.** |
+| OD6 | **iPhone and iPad, iOS 27 and later.** *Refined 2026-10-04*: the floor moved from iOS 26 to iOS 27, matching the Xcode 27 / iOS 27 SDK the development machine runs. |
 | OD7 | **Playout uses AVFoundation timing**: timestamped sample buffers presented under an `AVSampleBufferRenderSynchronizer` at a small target delay. R12's presentation machinery (sub-frame pacing, interpolation) is not ported. *Refined in review 2026-10-03*: the target delay is R12's **adaptive** offset, not a constant, because a fixed playout offset is a rejected design (CLAUDE.md; docs/12 Decision 7, docs/17 Decision 10). See D15. |
 | OD8 | **v1 includes** rooms (join and attach), Picture-in-Picture, opt-in telemetry and R37's server picker with per-server secrets. **Mic audio is not in v1.** |
 | OD9 | **Shared Rust is used by path, and the build runs from the repo root**, as `gawk-admin` does with `gawk-server`. A semantic change to a shared desktop crate needs a `gawk-ios`-scoped commit in the same PR. |
-| OD10 | **iOS CI runs from the first chunk** on `macos-latest`: Rust cross-builds and tests, plus an unsigned `xcodebuild` with simulator tests. |
+| OD10 | **iOS CI runs from the first chunk** on `macos-latest`, with Xcode 27 selected explicitly (D24): Rust cross-builds and tests, plus an unsigned `xcodebuild` with simulator tests. |
 | OD11 | **The broadcast carries app audio** (ReplayKit `audioApp` → Opus through the shared audio crate). Uplink transport is whatever the shared engine does, so R55's carriers arrive when R55 lands them (D12), with no iOS work. |
 | OD12 | **VP8/VP9 broadcasts play natively through a bundled libvpx**, so every broadcast plays in the app. **IO0 runs first on devices, as a measuring spike.** |
 | OD13 | **Simulator first.** Everything is built and tested in the iOS Simulator before any device work (D26). |
@@ -280,7 +280,7 @@ keep the last orientation.
 docs/54 D7's invariant table holds on iOS, and the trial-gate shape is the
 same: synthetic `420v` buffers through a session built like the live one,
 before going live. **No software encode rung** (docs/38 §7): every device on
-the iOS 26 floor has a hardware H.264 encoder, so the refusal path is
+the iOS 27 floor has a hardware H.264 encoder, so the refusal path is
 unreachable in practice but kept, with its message pointing at a desktop
 broadcaster. **Backpressure** is docs/54 D10's gate, `ENCODER_MAX_IN_FLIGHT`
 (3, in `capture`; `encode/mft.rs`'s `MAX_IN_FLIGHT` is the Windows one): at the
@@ -371,7 +371,7 @@ gain a tested function they don't call.
   `AVSampleBufferDisplayLayer` (via an `AVSampleBufferVideoRenderer`),
   which decodes in hardware itself. VP8 and VP9 are decoded by libvpx in
   `crates/viewer` to `CVPixelBuffer`s from an IOSurface pool and enqueued
-  decoded. If IO0's probe finds VideoToolbox decodes VP9 on iOS 26, VP9 takes
+  decoded. If IO0's probe finds VideoToolbox decodes VP9 on iOS 27, VP9 takes
   the compressed path and libvpx covers VP8 only.
 - **Audio**: decoded PCM is enqueued to an `AVSampleBufferAudioRenderer`
   under the same `AVSampleBufferRenderSynchronizer`, which owns A/V sync.
@@ -511,8 +511,11 @@ stops video decode.
   - **Viewer (IO4)**: the viewer core subscribed to a broadcast from
     `gawk-pubsim`, through a relay restart and induced datagram loss
     (parity repair, the delta-loss rule, re-subscribe).
+- **Xcode 27, selected explicitly**: the job runs `xcode-select` on a pinned
+  Xcode 27 rather than taking the runner image's default, which can lag a
+  major version behind the iOS 27 SDK the app builds against (OD6).
 - **Xcode**: `xcodegen`, then `xcodebuild build-for-testing` unsigned
-  (`CODE_SIGNING_ALLOWED=NO`) and `test` on an iOS 26 simulator: Swift unit
+  (`CODE_SIGNING_ALLOWED=NO`) and `test` on an iOS 27 simulator: Swift unit
   tests and a Watch-screen smoke test against the same local relay.
   ReplayKit doesn't run in the simulator, so the extension is built and
   linked in CI and only exercised on a device.
@@ -682,7 +685,7 @@ is Fail. The Conditional re-measure is judged by Pass's criteria at the
 | # | Question | Decides |
 |---|---|---|
 | V-1 | Peak extension footprint at 1080p60 and 720p30, multi-thread vs current-thread runtime | D8, D12, §9.1 |
-| V-2 | Does VideoToolbox decode VP9 on iOS 26 (and AV1, for the record)? | D15 |
+| V-2 | Does VideoToolbox decode VP9 on iOS 27 (and AV1, for the record)? | D15 |
 | V-3 | `audioApp` ASBD: sample rate, endianness, interleaving, across devices | D11 |
 | V-4 | Are ReplayKit video and audio PTS on the host clock? | D11, G4 |
 | V-5 | Does a locked screen stop or pause the broadcast? Is `broadcastPaused` delivered? | D7 |
