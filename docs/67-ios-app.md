@@ -2,8 +2,8 @@
 
 **Status**: proposed 2026-10-03. Owner decisions OD1–OD16 (§2) were taken
 the same day in an interview; **OD17 (2026-10-04) moved screen capture from a
-ReplayKit extension to ScreenCaptureKit in the app** (§12). **IO1 implemented
-2026-10-04**; IO0 and IO2–IO8 (§9) are not started.
+ReplayKit extension to ScreenCaptureKit in the app** (§12). **IO1 and IO4
+implemented 2026-10-04**; IO0, IO2, IO3 and IO5–IO8 (§9) are not started.
 **Work runs Simulator-first (OD13, D26)**: phase S builds and tests
 everything the Simulator can run; phase D starts on devices with **IO0, a
 throwaway spike whose pre-registered verdict (§9.1) gates the device
@@ -815,3 +815,15 @@ dated.
   session and its fake-transport tests are written against. The engine's
   relay test harness now finds the repo root by walking up, so the viewer's
   integration test can include it.
+- **2026-10-04 — IO4: libvpx through a pinned pre-release (OD12).** The
+  stable `shiguredo_libvpx` (2026.1.0) runs libvpx's configure without a
+  target, so it can only build for the host. `2026.2.0-canary.2`
+  (2026-10-03) is the first release that builds libvpx v1.17.0 from source
+  for `aarch64-apple-ios` and `aarch64-apple-ios-sim` (a small patch for the
+  arm64 simulator). The owner accepted it pinned exactly (`=`) with the
+  `source-build` feature: the build clones the libvpx tag from GitHub and
+  compiles it, and no prebuilt binary is ever downloaded. It needs git,
+  network access at build time and rustup's `llvm-tools` (symbol
+  prefixing), which `rust/rust-toolchain.toml` now lists. Move to the stable
+  2026.2.0 when it ships. libvpx is BSD-3; its notice belongs to the
+  distribution milestone (§5), since R65 publishes nothing (OD3).
