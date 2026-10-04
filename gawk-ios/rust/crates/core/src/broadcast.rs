@@ -19,6 +19,7 @@ use gawk_broadcast::rotation::Rotation;
 use gawk_broadcast::rung::Quality as RungQuality;
 use gawk_engine::clock::{Clock, MonotonicClock};
 use gawk_engine::session::{EngineEvent, Session, SessionConfig};
+use gawk_engine::telemetry::{Hello, Reporter};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -91,6 +92,11 @@ pub struct BroadcastOptions {
     pub nickname: String,
     /// Skip certificate verification: a local dev relay only.
     pub insecure: bool,
+    /// The user opted in to diagnostics (D23: off until then, as on the
+    /// desktop). Where reports go follows the desktop's rules: the relay's
+    /// advertised ingest, else the default collector on the default fleet
+    /// only.
+    pub telemetry: bool,
 }
 
 /// One audio buffer's `AudioStreamBasicDescription` fields (D11).
@@ -347,6 +353,17 @@ async fn run(
 ) {
     listener.on_status(BroadcastStatus::Connecting);
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::new());
+    // Telemetry (D23): "off" unless the user opted in, then the desktop's
+    // resolution, so the pairing rule and the advertised-URL precedence are
+    // the engine's, not restated here.
+    let relay_raw = options.relay_url.clone();
+    let telemetry_raw = if options.telemetry { "" } else { "off" };
+    let reporter = Reporter::new(env!("CARGO_PKG_VERSION"), clock.clone());
+    reporter.set_url(gawk_engine::config::effective_telemetry_url(
+        &relay_raw,
+        telemetry_raw,
+        None,
+    ));
     let cfg = SessionConfig {
         relay_url: options.relay_url,
         broadcast_id: options.broadcast_id,
@@ -387,10 +404,16 @@ async fn run(
         tokio::select! {
             _ = &mut stop => {
                 session.stop().await;
+                reporter.event("ended", "");
+                reporter.finish();
                 break;
             }
             _ = failure_check.tick() => {
+                reporter.report(session.stats());
+                reporter.tick();
                 if let Some(why) = pipeline.take_failure() {
+                    reporter.event("error", &why);
+                    reporter.finish();
                     listener.on_failure(why.clone());
                     session.stop().await;
                     listener.on_status(BroadcastStatus::Ended { error: Some(why), reclaim_status: None });
@@ -418,9 +441,21 @@ async fn run(
                     }
                     EngineEvent::ViewerCount(n) => listener.on_viewer_count(n),
                     EngineEvent::Resuming { attempt } => {
+                        reporter.event("resuming", "");
                         listener.on_status(BroadcastStatus::Resuming { attempt });
                     }
+                    EngineEvent::TelemetryHello { enabled, report_interval_ms, token, broadcast_key_hex } => {
+                        reporter.begin(&Hello { enabled, report_interval_ms, token, broadcast_key_hex });
+                    }
+                    EngineEvent::TelemetryEndpoint { url } => {
+                        reporter.set_url(gawk_engine::config::effective_telemetry_url(
+                            &relay_raw,
+                            telemetry_raw,
+                            Some(&url),
+                        ));
+                    }
                     EngineEvent::Resumed => {
+                        reporter.event("resumed", "");
                         // Re-prime the relay's invalidated keyframe cache.
                         pipeline.force_idr();
                         if !code.is_empty() {
@@ -432,6 +467,11 @@ async fn run(
                     }
                     EngineEvent::ReclaimRefused { status } => reclaim_status = Some(status),
                     EngineEvent::Ended { error } => {
+                        match &error {
+                            Some(e) => reporter.event("error", e),
+                            None => reporter.event("ended", ""),
+                        }
+                        reporter.finish();
                         listener.on_status(BroadcastStatus::Ended { error, reclaim_status });
                         live.lock().unwrap().take();
                         return;
