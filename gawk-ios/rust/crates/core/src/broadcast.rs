@@ -467,14 +467,20 @@ mod tests {
     fn a_token_after_the_announce_is_paired_with_the_code() {
         let mut id = Identity::default();
         assert_eq!(id.on_announce("AB2CD3"), None);
-        assert_eq!(id.on_token("aa".into()), Some(("AB2CD3".into(), "aa".into())));
+        assert_eq!(
+            id.on_token("aa".into()),
+            Some(("AB2CD3".into(), "aa".into()))
+        );
     }
 
     #[test]
     fn a_token_before_the_announce_is_kept_until_the_code_arrives() {
         let mut id = Identity::default();
         assert_eq!(id.on_token("aa".into()), None);
-        assert_eq!(id.on_announce("AB2CD3"), Some(("AB2CD3".into(), "aa".into())));
+        assert_eq!(
+            id.on_announce("AB2CD3"),
+            Some(("AB2CD3".into(), "aa".into()))
+        );
     }
 
     #[test]
@@ -482,6 +488,9 @@ mod tests {
         let mut id = Identity::default();
         id.on_announce("AB2CD3");
         id.on_token("aa".into());
-        assert_eq!(id.on_token("bb".into()), Some(("AB2CD3".into(), "bb".into())));
+        assert_eq!(
+            id.on_token("bb".into()),
+            Some(("AB2CD3".into(), "bb".into()))
+        );
     }
 }
