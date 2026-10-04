@@ -259,10 +259,12 @@ jobs:
         env:
           TEST_RUNNER_GAWK_SMOKE_RELAY_URL: https://127.0.0.1:4499
           TEST_RUNNER_GAWK_SMOKE_SECRET: smoke
+        # Ad-hoc signed: an unsigned test host has no Keychain, and the
+        # identity tests (D17) need one. Needs no certificate or team.
         run: |
           xcodebuild -project Gawk.xcodeproj -scheme Gawk \
             -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd" \
-            CODE_SIGNING_ALLOWED=NO test
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
 
       - name: Relay log
         if: failure()

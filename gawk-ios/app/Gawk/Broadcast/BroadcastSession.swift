@@ -26,6 +26,8 @@ final class BroadcastSession {
     @ObservationIgnored private var broadcaster: Broadcaster?
     @ObservationIgnored let media = MediaSink()
     @ObservationIgnored private let identity: IdentityStore
+    /// The relay the current broadcast publishes to, whose identity it holds.
+    @ObservationIgnored private var relay: String?
 
     init(identity: IdentityStore) {
         self.identity = identity
@@ -60,6 +62,7 @@ final class BroadcastSession {
         _ = telemetry // reports land with the broadcaster's telemetry (IO7)
         failure = nil
         phase = .connecting
+        relay = relayURL
         let listener = Listener(session: self, relay: relayURL, identity: identity)
         let b = Broadcaster.start(options: options, listener: listener)
         broadcaster = b
@@ -82,7 +85,7 @@ final class BroadcastSession {
         broadcaster?.pathChanged()
     }
 
-    fileprivate func apply(_ status: BroadcastStatus) {
+    func apply(_ status: BroadcastStatus) {
         switch status {
         case .connecting: phase = .connecting
         case .live(let code, let joinLink): phase = .live(code: code, joinLink: joinLink)
@@ -90,6 +93,9 @@ final class BroadcastSession {
         case .ended(let error, let reclaimStatus):
             media.attach(nil)
             broadcaster = nil
+            if let relay, Self.refusesIdentity(reclaimStatus) {
+                identity.forgetIdentity(relay: relay)
+            }
             phase = .ended(reason: Self.reason(error: error, reclaimStatus: reclaimStatus))
         }
     }
@@ -98,11 +104,21 @@ final class BroadcastSession {
     fileprivate func setRoom(_ text: String) { roomText = text }
     fileprivate func setFailure(_ text: String) { failure = text }
 
+    /// A reclaim the relay will never accept: the code expired (404), the
+    /// token was refused (403), the slot is taken (409) or an operator ended
+    /// it (451). Forgetting it lets the next Start mint a new code. 401 is a
+    /// wrong secret and 429 a full server; the identity may still be good.
+    static func refusesIdentity(_ reclaimStatus: UInt16?) -> Bool {
+        [403, 404, 409, 451].contains(reclaimStatus)
+    }
+
     /// The user-facing sentence for an end (docs/40 statuses, R17).
     static func reason(error: String?, reclaimStatus: UInt16?) -> String? {
         switch reclaimStatus {
         case 401: return "The server refused the publish secret."
+        case 403: return "The server wouldn't resume this broadcast; start again for a new code."
         case 404: return "The code expired; start again for a new one."
+        case 409: return "This code is live elsewhere; start again for a new one."
         case 429: return "The server is full right now."
         case 451: return "An operator ended this broadcast."
         default: return error
