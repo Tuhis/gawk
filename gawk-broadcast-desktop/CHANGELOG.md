@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.4.1...gawk-broadcast-desktop/v2.5.0) (2026-10-04)
+
+
+### Features
+
+* **broadcast-desktop:** open gawk:// links in the desktop broadcaster (R66) ([#452](https://github.com/Tuhis/gawk/issues/452)) ([36f5783](https://github.com/Tuhis/gawk/commit/36f5783fd15a98e1fc42eac191968da45837da61))
+
 ## [2.4.1](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.4.0...gawk-broadcast-desktop/v2.4.1) (2026-10-02)
 
 

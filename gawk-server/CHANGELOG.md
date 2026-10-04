@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.30.1...gawk-server/v0.31.0) (2026-10-04)
+
+
+### Features
+
+* **telemetry:** OIDC for the telemetry read surface (R53) ([#453](https://github.com/Tuhis/gawk/issues/453)) ([ac68ad1](https://github.com/Tuhis/gawk/commit/ac68ad12ab4e680c5df325368f3fab564c1affd1))
+
 ## [0.30.1](https://github.com/Tuhis/gawk/compare/gawk-server/v0.30.0...gawk-server/v0.30.1) (2026-10-01)
 
 
