@@ -35,7 +35,7 @@ struct RootView: View {
     var body: some View {
         TabView {
             Tab("Watch", systemImage: "play.rectangle") {
-                PlaceholderView(title: "Watch")
+                WatchView()
             }
             Tab("Broadcast", systemImage: "dot.radiowaves.left.and.right") {
                 BroadcastView()
