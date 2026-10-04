@@ -173,6 +173,12 @@ jobs:
       - name: Integration — the viewer through loss and a relay restart
         run: cargo test -p gawk-viewer --test relay_viewer -- --ignored --test-threads=1
 
+      # docs/67 D24 (IO2): the broadcast pipeline on real VideoToolbox
+      # through a rotation and a relay restart. It needs a hardware H.264
+      # encoder; on a runner VM without one it prints SKIPPED and passes.
+      - name: Integration — the broadcast pipeline through a rotation and a relay restart
+        run: cargo test -p gawk-broadcast --test publish_relay -- --ignored --test-threads=1 --nocapture
+
   xcode:
     runs-on: xcode-27
     defaults:
