@@ -20,9 +20,10 @@ final class BroadcastLoopTests: XCTestCase {
             relayURL: relay, secret: env["GAWK_SMOKE_SECRET"] ?? "", quality: .cellular,
             room: "", nickname: "", telemetry: false, insecure: true
         )
-        // Live, with a code.
+        // Live, with a code. Generous: a CI runner VM took ~15 s for its first
+        // QUIC dial; a local run takes well under one.
         var code = ""
-        for _ in 0..<200 {
+        for _ in 0..<900 {
             if case .live(let c, _) = session.phase { code = c; break }
             if case .ended(let reason) = session.phase {
                 XCTFail("ended before going live: \(reason ?? "-")")
@@ -44,7 +45,7 @@ final class BroadcastLoopTests: XCTestCase {
         )
         defer { viewer.stop() }
         // Long enough for two orientations and the encoder rebuild between.
-        for _ in 0..<200 {
+        for _ in 0..<900 {
             if seen.snapshot().formats >= 2 && seen.snapshot().samples >= 10 { break }
             try await Task.sleep(for: .milliseconds(50))
         }
