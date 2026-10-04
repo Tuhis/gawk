@@ -27,6 +27,7 @@
 //! come from (reset them on [`Reordered::Restart`]), and ticks it so the
 //! waits elapse without new arrivals.
 
+use crate::playout::{Envelope, OFFSET_SLEW_DOWN_MS_PER_S, OFFSET_SLEW_UP_MS_PER_S};
 use crate::reassembly::VideoConfig;
 use gawk_wire::frame_id_ahead;
 
@@ -41,6 +42,20 @@ pub const MAX_DELTA_GAP_GRACE_MS: f64 = 250.0;
 pub const MAX_BUFFERED_FRAMES: usize = 64;
 /// The SPA's `KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS`: one GOP.
 pub const KEYFRAME_WAIT_PLAYOUT_HEADROOM_MS: f64 = 500.0;
+
+/// The adaptive delta-gap grace (`GRACE_ENVELOPE` in `reorder-buffer.ts`):
+/// patience, not delay, so it sits on the arrival jitter the playout offset
+/// reads. A late frame arrives and buys itself patience; a lost one never
+/// arrives and leaves the grace at its floor to freeze fast. A large rise is
+/// stepped (under-patience costs a visible freeze now); a descent never is.
+pub const GRACE_ENVELOPE: Envelope = Envelope {
+    seed_ms: DELTA_GAP_GRACE_MS,
+    min_ms: DELTA_GAP_GRACE_MS,
+    max_ms: MAX_DELTA_GAP_GRACE_MS,
+    slew_up_ms_per_s: OFFSET_SLEW_UP_MS_PER_S,
+    slew_down_ms_per_s: OFFSET_SLEW_DOWN_MS_PER_S,
+    step_up_above_ms: 50.0,
+};
 
 /// The keyframe wait must outlast the playout offset, or every held delta
 /// ages out before its keyframe comes due: keyframe-only playback.

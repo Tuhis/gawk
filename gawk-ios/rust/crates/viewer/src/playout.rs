@@ -95,11 +95,37 @@ impl PlayoutPreset {
     }
 }
 
-/// The adaptive offset controller. `PlayoutController` in `playout.ts`, on
-/// `DEFAULT_PLAYOUT_PROFILE` (whose `stepUpAboveMs` is infinite, so a rise
-/// always slews).
+/// The bounds and rates one controller runs under: `SlewEnvelope` in
+/// `playout.ts`. The warmup, the descent margin and dwell and the headroom
+/// are shared by every envelope, as there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Envelope {
+    pub seed_ms: f64,
+    pub min_ms: f64,
+    pub max_ms: f64,
+    pub slew_up_ms_per_s: f64,
+    pub slew_down_ms_per_s: f64,
+    /// A rise larger than this is taken in one step instead of slewed.
+    pub step_up_above_ms: f64,
+}
+
+/// `DEFAULT_PLAYOUT_PROFILE`: a rise always slews, because a stepped
+/// offset is a visible skip.
+pub const PLAYOUT_ENVELOPE: Envelope = Envelope {
+    seed_ms: PLAYOUT_OFFSET_MS,
+    min_ms: MIN_PLAYOUT_OFFSET_MS,
+    max_ms: MAX_PLAYOUT_OFFSET_MS,
+    slew_up_ms_per_s: OFFSET_SLEW_UP_MS_PER_S,
+    slew_down_ms_per_s: OFFSET_SLEW_DOWN_MS_PER_S,
+    step_up_above_ms: f64::INFINITY,
+};
+
+/// The adaptive offset controller: `PlayoutController` in `playout.ts`. On
+/// [`PLAYOUT_ENVELOPE`] it is the playout offset; the reorder buffer's
+/// delta-gap grace runs one on `GRACE_ENVELOPE`.
 #[derive(Debug, Clone)]
 pub struct PlayoutController {
+    envelope: Envelope,
     current: f64,
     first_jitter_at: Option<f64>,
     last_update_at: Option<f64>,
@@ -114,8 +140,13 @@ impl Default for PlayoutController {
 
 impl PlayoutController {
     pub fn new() -> Self {
+        Self::with_envelope(PLAYOUT_ENVELOPE)
+    }
+
+    pub fn with_envelope(envelope: Envelope) -> Self {
         Self {
-            current: PLAYOUT_OFFSET_MS,
+            envelope,
+            current: envelope.seed_ms,
             first_jitter_at: None,
             last_update_at: None,
             below_since: None,
@@ -138,10 +169,15 @@ impl PlayoutController {
             return;
         }
 
-        let target = (jitter_ms + HEADROOM_MS).clamp(MIN_PLAYOUT_OFFSET_MS, MAX_PLAYOUT_OFFSET_MS);
+        let e = self.envelope;
+        let target = (jitter_ms + HEADROOM_MS).clamp(e.min_ms, e.max_ms);
         if target > self.current {
             self.below_since = None;
-            self.current = target.min(self.current + OFFSET_SLEW_UP_MS_PER_S * dt_ms / 1000.0);
+            self.current = if target - self.current > e.step_up_above_ms {
+                target
+            } else {
+                target.min(self.current + e.slew_up_ms_per_s * dt_ms / 1000.0)
+            };
         } else if target < self.current {
             // Arm a descent only on a clear gap; once armed, keep descending
             // all the way to the target even as the gap narrows below the
@@ -154,8 +190,7 @@ impl PlayoutController {
                 .below_since
                 .is_some_and(|since| now_ms - since >= OFFSET_DOWN_DWELL_MS)
             {
-                self.current =
-                    target.max(self.current - OFFSET_SLEW_DOWN_MS_PER_S * dt_ms / 1000.0);
+                self.current = target.max(self.current - e.slew_down_ms_per_s * dt_ms / 1000.0);
             }
         } else {
             self.below_since = None;
@@ -170,7 +205,7 @@ impl PlayoutController {
     /// Broadcaster restart: a new timestamp timeline and stale jitter.
     /// Re-seeds and re-arms the warmup.
     pub fn reset(&mut self) {
-        *self = Self::new();
+        *self = Self::with_envelope(self.envelope);
     }
 }
 

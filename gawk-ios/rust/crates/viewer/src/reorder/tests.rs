@@ -554,3 +554,67 @@ fn the_keyframe_wait_outlasts_the_playout_offset() {
     assert_eq!(keyframe_wait_ms(350.0), KEYFRAME_WAIT_MS);
     assert_eq!(keyframe_wait_ms(3000.0), 3500.0);
 }
+
+// --- the adaptive grace controller (reorder-grace.test.ts) -----------------
+
+use crate::playout::{HEADROOM_MS, OFFSET_DOWN_DWELL_MS, OFFSET_WARMUP_MS, PlayoutController};
+
+/// Drives the controller the way the stats tick does; returns the clock it
+/// stopped at.
+fn feed_jitter(c: &mut PlayoutController, jitter_ms: f64, from_ms: f64, for_ms: f64) -> f64 {
+    let mut t = from_ms;
+    while t <= from_ms + for_ms {
+        c.update(Some(jitter_ms), t);
+        t += 1000.0;
+    }
+    t
+}
+
+fn warm_to(c: &mut PlayoutController, jitter_ms: f64) -> f64 {
+    feed_jitter(c, jitter_ms, 10_000.0, OFFSET_WARMUP_MS + 10_000.0)
+}
+
+#[test]
+fn grace_is_the_shipped_60ms_before_any_jitter_and_through_the_warmup() {
+    let mut c = PlayoutController::with_envelope(GRACE_ENVELOPE);
+    assert_eq!(c.offset_ms(), DELTA_GAP_GRACE_MS);
+    feed_jitter(&mut c, 200.0, 10_000.0, OFFSET_WARMUP_MS - 1000.0);
+    assert_eq!(c.offset_ms(), DELTA_GAP_GRACE_MS);
+}
+
+#[test]
+fn grace_widens_to_the_measured_jitter_plus_headroom_once_warm() {
+    let mut c = PlayoutController::with_envelope(GRACE_ENVELOPE);
+    warm_to(&mut c, 120.0);
+    assert!((c.offset_ms() - (120.0 + HEADROOM_MS)).abs() < 1e-6);
+}
+
+#[test]
+fn grace_stays_between_its_floor_and_ceiling() {
+    let mut c = PlayoutController::with_envelope(GRACE_ENVELOPE);
+    warm_to(&mut c, 3748.0);
+    assert_eq!(c.offset_ms(), MAX_DELTA_GAP_GRACE_MS);
+    let mut c = PlayoutController::with_envelope(GRACE_ENVELOPE);
+    warm_to(&mut c, 0.0);
+    assert_eq!(c.offset_ms(), DELTA_GAP_GRACE_MS);
+}
+
+#[test]
+fn grace_takes_a_large_rise_in_one_step_and_lowers_only_after_the_dwell() {
+    let mut c = PlayoutController::with_envelope(GRACE_ENVELOPE);
+    let t = warm_to(&mut c, 200.0);
+    let raised = c.offset_ms();
+    assert!((raised - (200.0 + HEADROOM_MS)).abs() < 1e-6);
+    let t = feed_jitter(&mut c, 10.0, t, OFFSET_DOWN_DWELL_MS / 2.0);
+    assert_eq!(c.offset_ms(), raised);
+    feed_jitter(&mut c, 10.0, t, OFFSET_DOWN_DWELL_MS + 5000.0);
+    assert!(c.offset_ms() < raised);
+    assert!(c.offset_ms() > DELTA_GAP_GRACE_MS);
+}
+
+#[test]
+fn grace_seeds_and_floors_at_the_same_value() {
+    assert_eq!(GRACE_ENVELOPE.seed_ms, DELTA_GAP_GRACE_MS);
+    assert_eq!(GRACE_ENVELOPE.min_ms, DELTA_GAP_GRACE_MS);
+    assert_eq!(GRACE_ENVELOPE.max_ms, MAX_DELTA_GAP_GRACE_MS);
+}
