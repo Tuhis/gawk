@@ -80,6 +80,12 @@ final class BroadcastSession {
         broadcaster?.counters()
     }
 
+    /// The capture ended on its own (the system, or an error); the reason
+    /// stays on screen after the broadcast stops (D7).
+    func noteCaptureEnded(_ reason: String?) {
+        if let reason { failure = reason }
+    }
+
     /// D19: the network path changed while live.
     func pathChanged() {
         broadcaster?.pathChanged()
