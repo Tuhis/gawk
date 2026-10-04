@@ -6,6 +6,7 @@ import UIKit
 /// and stats. Landscape with a player up is fullscreen.
 struct WatchView: View {
     @State private var model = WatchModel()
+    @Environment(AppSettings.self) private var settings
     @State private var showStats = false
     @Environment(\.scenePhase) private var scenePhase
 
@@ -22,6 +23,7 @@ struct WatchView: View {
                 NavigationStack {
                     form
                         .navigationTitle("Watch")
+                        .onAppear { syncServer() }
                 }
             }
         }
@@ -112,9 +114,17 @@ struct WatchView: View {
 
     /// The keyboard goes away so the player has the screen.
     private func startWatching() {
+        syncServer()
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         model.watch()
+    }
+
+    /// Watch dials the server picked in Settings, as Broadcast does; the
+    /// debug override field only overrides it.
+    private func syncServer() {
+        model.selectedRelayUrl = settings.relayURL
+        model.selectedInsecure = settings.insecure
     }
 
     private func statusColor(_ status: ViewerStatus) -> Color {

@@ -27,6 +27,11 @@ final class WatchModel {
 
     let defaultRelayUrl = coreInfo().defaultRelayUrl
 
+    /// The server picked in Settings (R37, docs/40) and whether it may use
+    /// a dev certificate; the view keeps these in step with `AppSettings`.
+    var selectedRelayUrl = ""
+    var selectedInsecure = false
+
     var canWatch: Bool { BroadcastCode.isValid(code) }
 
     var relayUrl: String {
@@ -34,12 +39,12 @@ final class WatchModel {
         let override = relayOverride.trimmingCharacters(in: .whitespaces)
         if !override.isEmpty { return override }
         #endif
-        return defaultRelayUrl
+        return selectedRelayUrl.isEmpty ? defaultRelayUrl : selectedRelayUrl
     }
 
     private var isInsecure: Bool {
         #if DEBUG
-        return insecure
+        return insecure || selectedInsecure
         #else
         return false
         #endif

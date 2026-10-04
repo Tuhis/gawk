@@ -6,6 +6,42 @@ import XCTest
 /// Needs `GAWK_UI_RELAY_URL` (and `GAWK_UI_SECRET`); skipped otherwise.
 @MainActor
 final class OwnerFlowUITests: XCTestCase {
+    /// Watch dials the server picked in Settings: no URL typed on the Watch
+    /// screen at all. Needs `GAWK_UI_BROADCAST_ID` too.
+    func testWatchUsesTheServerPickedInSettings() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let relay = env["GAWK_UI_RELAY_URL"], !relay.isEmpty,
+              let code = env["GAWK_UI_BROADCAST_ID"], !code.isEmpty else {
+            throw XCTSkip("GAWK_UI_RELAY_URL and GAWK_UI_BROADCAST_ID are not set")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        app.tabBars.buttons["Settings"].tap()
+        let dev = app.switches["Accept a local relay's dev certificate"]
+        if !dev.waitForExistence(timeout: 3) { app.swipeUp() }
+        if dev.value as? String != "1" { dev.switches.firstMatch.tap() }
+        app.swipeDown()
+        app.buttons["Add a server…"].tap()
+        app.textFields["Name"].tap()
+        app.textFields["Name"].typeText("local")
+        let url = app.textFields.element(boundBy: 1)
+        url.tap()
+        url.typeText(String(relay.dropFirst("https://".count)))
+        app.buttons["Add"].tap()
+        app.staticTexts["local"].firstMatch.tap()
+
+        app.tabBars.buttons["Watch"].tap()
+        let field = app.textFields["watch.code"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText(code)
+        app.buttons["watch.go"].tap()
+        let status = app.staticTexts["watch.status"]
+        expectation(for: NSPredicate(format: "label == %@", "Live"), evaluatedWith: status)
+        waitForExpectations(timeout: 30)
+    }
+
     func testSettingsThenTestBroadcastThenWatch() throws {
         let env = ProcessInfo.processInfo.environment
         guard let relay = env["GAWK_UI_RELAY_URL"], !relay.isEmpty else {
