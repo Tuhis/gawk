@@ -53,9 +53,11 @@ final class WatchModel {
     func watch() {
         guard canWatch else { return }
         stop()
+        let sender = WeakEngine()
         let engine = PlayerEngine { [weak self] event in
-            Task { @MainActor in self?.apply(event) }
+            Task { @MainActor in self?.apply(event, from: sender.engine) }
         }
+        sender.engine = engine
         let pip = PictureInPicture(layer: engine.displayLayer)
         pip.onActiveChange = { [weak self] _ in self?.updateVideoEnabled() }
         self.engine = engine
@@ -88,14 +90,22 @@ final class WatchModel {
         engine?.setVideoEnabled(isForeground || (pip?.isActive ?? false))
     }
 
-    private func apply(_ event: PlayerEvent) {
-        guard engine != nil else { return }
+    /// An event from the current engine; a stopped one still reports its
+    /// `Ended(Stopped)`, and that belongs to no session on screen.
+    func apply(_ event: PlayerEvent, from sender: PlayerEngine?) {
+        guard let engine, sender === engine else { return }
         switch event {
         case .status(let s): status = s
         case .stats(let s): stats = s
         case .unsupportedCodec(let c): unsupportedCodec = c
         }
     }
+}
+
+/// The engine an event came from, held weakly: the engine owns the closure
+/// that reads it.
+private final class WeakEngine: @unchecked Sendable {
+    weak var engine: PlayerEngine?
 }
 
 /// The status line's words. The SPA's copy where it has some

@@ -23,4 +23,26 @@ final class WatchTests: XCTestCase {
                        "Broadcast ended by a moderator.")
         XCTAssertEqual(WatchStatusText.describe(.live), "Live")
     }
+
+    /// Watching a new code stops the old player, whose core still reports
+    /// `Ended(Stopped)` afterwards; that must not land on the new session.
+    @MainActor
+    func testAStoppedPlayersEventsDontReachTheNextSession() throws {
+        let model = WatchModel()
+        model.relayOverride = "https://127.0.0.1:9"
+        model.code = "ABC234"
+        model.watch()
+        let old = try XCTUnwrap(model.engine)
+        model.code = "DEF567"
+        model.watch()
+        model.apply(.status(.ended(reason: .stopped)), from: old)
+        model.apply(.stats(ViewerStats(
+            offsetMs: 0, jitterMs: nil, rttMs: nil, framesCompleted: 1, framesDropped: 0,
+            framesRecoveredByParity: 0, gapResyncs: 0, dropsToLive: 0, viewerCount: nil)), from: old)
+        XCTAssertEqual(model.status, .connecting)
+        XCTAssertNil(model.stats)
+        model.apply(.status(.live), from: model.engine)
+        XCTAssertEqual(model.status, .live)
+        model.stop()
+    }
 }
