@@ -254,7 +254,7 @@ showing. The viewer (D13–D16) shares the process but not the pipeline.
 - **Size**: the panel is ≈ 1320 × 2868 on a Pro Max iPhone, more on an iPad
   Pro. Fit the upright frame into a 1920 × 1920 long-edge box with the shared
   fit rule (`capture::fit::fit_within`; aspect kept, never upscale, even
-  dimensions). A portrait phone streams 886 × 1920; landscape 1920 × 886.
+  dimensions). A portrait phone streams 884 × 1920; landscape 1920 × 884.
   `SCStreamConfiguration`'s `width`/`height` are requested at the fitted
   size, but iOS 27 has no `scalesToFit`, `preservesAspectRatio` or
   `pixelFormat`, so `VTPixelTransferSession` still converts to `420v`, and
