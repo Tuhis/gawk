@@ -1206,6 +1206,30 @@ Add to it when a new gotcha lands in `docs/`.
   conversion to `420v` and the frame-rate cap stay in the pipeline
   (`VTPixelTransferSession`, `FpsGate`), and `SCShareableContent` is
   macOS-only: content comes from the picker. ([docs/67](67-ios-app.md) D8)
+- **Xcode's Run Script phase exports the iOS `SDKROOT`, and cargo inherits
+  it.** Cargo compiles build scripts and proc macros for the Mac, and those
+  links fail against the iOS SDK; `scripts/build-core.sh` unsets it and lets
+  rustc and cc-rs find the iOS SDK by target triple. It also runs cargo from
+  inside `gawk-ios/rust`, because rustup picks `rust-toolchain.toml` by
+  directory and UniFFI's library mode runs `cargo metadata` in the current
+  one. ([docs/67](67-ios-app.md) §12)
+- **A `[patch]` applies only in the workspace that declares it.**
+  `gawk-ios/rust` path-depends on the desktop engine, but the desktop
+  workspace's patched wtransport (the HTTP status of a refused CONNECT,
+  docs/38 D2) doesn't come with it: the iOS workspace repeats the
+  `[patch.crates-io]` lines, or it silently builds the stock crate.
+  ([docs/67](67-ios-app.md) §12)
+- **One dependency line can turn the engine's `self-update` back on.**
+  Features unify across the graph, so the shared crates take `gawk-engine`
+  with `default-features = false` and only the desktop shells ask for the
+  default. A new shared crate that forgets it puts App-Store-forbidden
+  self-update code in the iOS app; `ios.yml` fails on it.
+  ([docs/67](67-ios-app.md) D4, §12)
+- **A UniFFI function named `initialize` collides with
+  `NSObject.initialize`** in any Swift subclass of `NSObject` that calls it
+  ("static member 'initialize' cannot be used on instance"). The core's
+  entry point is `initialize_core` → `initializeCore()`.
+  ([docs/67](67-ios-app.md) §12)
 
 **Native Linux broadcaster, in the desktop workspace (R56)**
 
