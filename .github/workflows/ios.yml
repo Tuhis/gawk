@@ -235,6 +235,11 @@ jobs:
           ') || { echo "::error::no iPhone simulator on an iOS 27 runtime"; exit 1; }
           echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep "$udid"
+          # Booted now, so it settles while the relay builds. Left to
+          # xcodebuild, it boots right before the tests, and the first test
+          # ran in its boot storm: QUIC handshakes answered 14-31 s late and
+          # sessions that went silent (2026-10-04).
+          xcrun simctl boot "$udid" || true
 
       # docs/67 D24: the Swift tests that need a relay (the broadcast loop on
       # D27's test source, the Watch smoke test) run against a local one,
@@ -260,6 +265,12 @@ jobs:
       # handshake that never completes, so the loopback UDP is recorded and
       # shown on failure: long-header (handshake) packets only, so a live
       # stream's short-header traffic doesn't fill it.
+      - name: Wait for the simulator to finish booting
+        run: |
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          # bootstatus returns at "booted"; give the post-boot work a moment.
+          sleep 20
+
       - name: Record the relay's QUIC handshakes
         run: |
           sudo tcpdump -i lo0 -n -tttt -c 300 'udp port 4499 and udp[8] & 0x80 != 0' \
