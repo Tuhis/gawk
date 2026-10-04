@@ -25,7 +25,7 @@ enum PlayerEvent: Sendable {
 ///   actually presenting; A/V sync is the synchronizer's (OD7).
 /// - **Video.** H.264 is enqueued compressed and decoded by the renderer;
 ///   VP8/VP9 arrive decoded as NV12 and go through an IOSurface pool.
-/// - **Drop to live.** Ten times a second the frame on screen is reported to
+/// - **Drop to live.** Every 16 ms the frame on screen is reported to
 ///   the core (`Viewer.presented`), which owns D15's 2 × offset rule and
 ///   answers with a flush.
 /// - **Backpressure.** A video path that stays behind, a renderer holding
@@ -335,11 +335,17 @@ final class PlayerEngine: ViewerListener, @unchecked Sendable {
         viewer?.resync()
     }
 
-    // MARK: The 10 Hz tick (queue)
+    // MARK: The tick (queue)
+
+    /// How often the frame on screen is reported: the SPA's 16 ms reorder
+    /// tick. The core reads the report against 2 × offset, so its staleness
+    /// eats into a margin that is only one offset wide.
+    static let tickInterval: Double = 0.016
 
     private func startTimer() {
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(100), leeway: .milliseconds(10))
+        timer.schedule(
+            deadline: .now(), repeating: Self.tickInterval, leeway: .milliseconds(2))
         timer.setEventHandler { [weak self] in self?.tick() }
         timer.resume()
         self.timer = timer
@@ -348,7 +354,7 @@ final class PlayerEngine: ViewerListener, @unchecked Sendable {
     private func tick() {
         let now = synchronizer.currentTime()
         ticks += 1
-        if ticks % 50 == 0 {
+        if ticks % 300 == 0 {
             // Every 5 s, for `log stream` in the Simulator (phase S evidence).
             log.notice("""
                 player video=\(self.counters.videoEnqueued) audio=\(self.counters.audioEnqueued) \

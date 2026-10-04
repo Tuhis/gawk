@@ -62,6 +62,42 @@ final class PlayoutTests: XCTestCase {
         XCTAssertNil(log.onScreen(at: t(5)))
     }
 
+    /// D15's drop-to-live rule fires when the newest frame received runs
+    /// more than 2 × offset ahead of the one reported on screen. On a clean
+    /// 30 fps stream that gap is the offset plus the frame interval plus how
+    /// stale the report is, so the report cadence must keep it under 2 ×
+    /// offset even near the 50 ms floor, or the player drops to live on a
+    /// healthy stream (seen in the Simulator at a 100 ms cadence and a
+    /// ~100 ms offset).
+    func testTheReportCadenceNeverLooksBehindLiveOnACleanStream() {
+        let offset = 0.060
+        let frame = 1.0 / 30
+        let cadence = PlayerEngine.tickInterval
+        var log = PresentationLog()
+        var reported: UInt64?
+        var worst = 0.0
+        var nextFrame = 0.0
+        var newest: UInt64 = 0
+        var tick = 0.0
+        while tick < 5 {
+            // Frames received up to `tick`, each due `offset` after arrival.
+            while nextFrame <= tick {
+                newest = UInt64(nextFrame * 1_000_000)
+                log.record(pts: t(nextFrame + offset), timestampUs: newest)
+                nextFrame += frame
+            }
+            if let shown = log.onScreen(at: t(tick)) { reported = shown }
+            // The core checks on its own tick, any time before our next
+            // report: the newest frame by then arrived just before it.
+            if let reported, tick > 1 {
+                let atCheck = (((tick + cadence) / frame).rounded(.up) - 1) * frame
+                worst = max(worst, atCheck - Double(reported) / 1_000_000)
+            }
+            tick += cadence
+        }
+        XCTAssertLessThan(worst, 2 * offset, "worst gap \(worst) s at a \(cadence) s cadence")
+    }
+
     // MARK: RendererBackpressure
 
     func testAQueueDeeperThanAnyOffsetResyncs() {
