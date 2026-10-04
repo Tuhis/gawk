@@ -272,9 +272,12 @@ jobs:
           TEST_RUNNER_GAWK_SMOKE_SECRET: smoke
         # Ad-hoc signed: an unsigned test host has no Keychain, and the
         # identity tests (D17) need one. Needs no certificate or team.
+        # Xcode 27 can spend 600 s in `simctl diagnose` after a test run;
+        # diagnostics are not collected.
         run: |
           xcodebuild -project Gawk.xcodeproj -scheme Gawk \
             -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd" \
+            -collect-test-diagnostics never \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
 
       - name: Relay log
