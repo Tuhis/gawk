@@ -111,6 +111,15 @@ struct BroadcastView: View {
         if let roomText = session.roomText {
             Section("Room") { Text(roomText) }
         }
+        #if DEBUG
+        Section("Capture (debug)") {
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                Text(CaptureDiagnostics.shared.summary)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+            }
+        }
+        #endif
     }
 
     private var stopSection: some View {
@@ -203,6 +212,9 @@ final class Capture {
         // A source left from an earlier broadcast must not feed this one, or
         // end it from its own stop callback.
         stopSources()
+        #if DEBUG
+        CaptureDiagnostics.shared.reset()
+        #endif
         // D19: an expensive path picks the Cellular rung at start, and
         // never switches mid-broadcast.
         let quality: Quality = path.isExpensive ? .cellular : .standard

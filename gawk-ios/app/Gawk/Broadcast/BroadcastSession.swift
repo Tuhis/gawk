@@ -188,6 +188,9 @@ final class MediaSink: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let b = broadcaster else { return }
+        #if DEBUG
+        CaptureDiagnostics.shared.noteSource(buffer, status: status)
+        #endif
         let pts100 = Self.ticks(pts)
         let plan = b.plan(
             width: UInt32(CVPixelBufferGetWidth(buffer)),
@@ -200,7 +203,11 @@ final class MediaSink: @unchecked Sendable {
             b.pushVideo(pixelBuffer: pixelBufferHandle(buffer), pts100ns: pts100, status: Int64(status))
             return
         }
-        guard let upright = converter.convert(buffer, plan: plan) else { return }
+        let upright = converter.convert(buffer, plan: plan)
+        #if DEBUG
+        CaptureDiagnostics.shared.noteConverted(upright)
+        #endif
+        guard let upright else { return }
         withExtendedLifetime(upright) {
             b.pushVideo(pixelBuffer: pixelBufferHandle(upright), pts100ns: pts100, status: 0)
         }
