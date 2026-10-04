@@ -53,7 +53,8 @@ final class BroadcastSession {
     /// (R17), so a restart within the grace keeps the code (G6).
     func start(
         relayURL: String, secret: String, quality: Quality, room: String,
-        nickname: String, telemetry: Bool, insecure: Bool
+        nickname: String, telemetry: Bool, insecure: Bool,
+        captureSource: String = "test-source"
     ) {
         guard !isActive else { return }
         let stored = identity.load(relay: relayURL)
@@ -67,7 +68,8 @@ final class BroadcastSession {
             roomAttachSecret: "",
             nickname: nickname,
             insecure: insecure,
-            telemetry: telemetry
+            telemetry: telemetry,
+            captureSource: captureSource
         )
         failure = nil
         phase = .connecting

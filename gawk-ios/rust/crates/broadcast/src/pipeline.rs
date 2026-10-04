@@ -439,6 +439,11 @@ impl Pipeline {
         self.failed.lock().unwrap().get_or_insert(text);
     }
 
+    /// The rung the current encoder runs at, if one is built.
+    pub fn rung(&self) -> Option<Rung> {
+        self.video.lock().unwrap().lineage.as_ref().map(|l| l.rung)
+    }
+
     /// The upright size and codec in force, for the status line.
     pub fn current_size(&self) -> Option<(u32, u32)> {
         let v = self.video.lock().unwrap();

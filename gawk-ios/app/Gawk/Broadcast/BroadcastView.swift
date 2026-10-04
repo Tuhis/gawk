@@ -228,7 +228,8 @@ final class Capture {
             room: room,
             nickname: settings.nickname,
             telemetry: settings.telemetry,
-            insecure: settings.insecure
+            insecure: settings.insecure,
+            captureSource: test ? "test-source" : "screencapturekit"
         )
         live = session
         // The core can end the broadcast itself (a refusal, an operator, an
