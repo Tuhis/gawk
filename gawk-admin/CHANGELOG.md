@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.6.0...gawk-admin/v1.7.0) (2026-10-04)
+
+
+### Features
+
+* **telemetry:** OIDC for the telemetry read surface (R53) ([#453](https://github.com/Tuhis/gawk/issues/453)) ([ac68ad1](https://github.com/Tuhis/gawk/commit/ac68ad12ab4e680c5df325368f3fab564c1affd1))
+
 ## [1.6.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.5.0...gawk-admin/v1.6.0) (2026-09-29)
 
 
