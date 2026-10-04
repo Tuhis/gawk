@@ -15,21 +15,29 @@ final class BroadcastLoopTests: XCTestCase {
         }
         initializeCore()
         let identity = IdentityStore(service: "fi.ioio.gawk.tests.\(UUID().uuidString)")
-        let session = BroadcastSession(identity: identity)
         // Live, with a code. On a fresh CI runner VM the relay has answered
-        // the Simulator's first QUIC handshakes 15-30 s late (2026-10-04, in
-        // the recorded packets; a later dial in the same run took 0.5 s), so
-        // a start that ends before going live is tried again. A stalled dial
-        // ends by itself: QUIC's 30 s idle timeout after the last packet
-        // heard. A local run goes live in well under a second.
+        // the Simulator's first QUIC handshake 14-31 s late and then never
+        // started the session, though the connection stayed up (2026-10-04,
+        // in the recorded packets); a later dial in the same run took 0.1 s.
+        // Once QUIC's keepalive holds a connection open, a dial has no bound
+        // of its own, so each attempt gets a fresh session and 30 s, and one
+        // that hasn't gone live by then is abandoned. A local run goes live
+        // in well under a second.
+        var session = BroadcastSession(identity: identity)
+        var abandoned: [BroadcastSession] = []
         var code = ""
         var attempts: [String] = []
-        attempt: for _ in 0..<3 {
+        attempt: for n in 0..<4 {
+            if n > 0 {
+                session.stop()
+                abandoned.append(session)
+                session = BroadcastSession(identity: identity)
+            }
             session.start(
                 relayURL: relay, secret: env["GAWK_SMOKE_SECRET"] ?? "", quality: .cellular,
                 room: "", nickname: "", telemetry: false, insecure: true
             )
-            for _ in 0..<1800 {
+            for _ in 0..<600 {
                 if case .live(let c, _) = session.phase { code = c; break attempt }
                 if case .ended(let reason) = session.phase {
                     attempts.append(reason ?? "-")
@@ -37,9 +45,9 @@ final class BroadcastLoopTests: XCTestCase {
                 }
                 try await Task.sleep(for: .milliseconds(50))
             }
-            attempts.append("still \(session.phase) after 90 s")
-            break
+            attempts.append("still \(session.phase) after 30 s")
         }
+        withExtendedLifetime(abandoned) {}
         XCTAssertEqual(code.count, 6, "a code; attempts: \(attempts)")
 
         // The test source, turning a quarter every 2 s.
