@@ -875,3 +875,31 @@ dated.
     the viewer's reports need it generalised first. IO7's acceptance ("a
     test session appears in the dashboard") is met by the broadcaster's
     reports; the viewer's remain open.
+- **2026-10-04 — IO5: the native player, as built in the Simulator.**
+  - **G7 (Simulator): all three codecs play.** The Watch smoke test went
+    Live and enqueued video against `gawk-devpub` publishing the H.264, VP8
+    and VP9 fixtures, with screenshots a second apart showing moving frames
+    and fullscreen landscape.
+  - **G9 (Simulator): background audio yes, PiP unverifiable.** Audio kept
+    arriving at ~48 blocks/s for 25 s in the background while video
+    enqueueing stopped. `AVPictureInPictureController.isPictureInPictureSupported()`
+    is **false** in the iOS 27 Simulator, so the PiP path (D22's content
+    source and live playback delegate) is built but first checked on a
+    device.
+  - **G10 (Simulator): recovered.** A 5 s relay freeze (SIGSTOP/SIGCONT)
+    dropped to live twice; the offset then settled back to its 50 ms floor
+    and held there, so the outage added no permanent delay.
+  - **iOS 27's renderer API**: `addRenderer`, `enqueue`, `flush`, `status`
+    and `isReadyForMoreMediaData` are deprecated in Swift, so the player uses
+    the receiver API (`sampleBufferReceiver(adding:)`, `enqueueImmediately`,
+    enqueue results and rendering events). Without "not ready", the
+    backpressure resync (D15) fires on sustained lateness at enqueue (>0.25 s
+    for 0.5 s), a backlog over 48 frames, or a decode failure, at most once a
+    second.
+  - **What's on screen is reported every 16 ms.** At 10 Hz the report lagged
+    up to ~100 ms, which at a settled ~100 ms offset crossed D15's 2 × offset
+    and dropped a healthy stream to live over and over; a test pins it.
+  - **Background stops enqueueing, not decoding (D22).** VP8/VP9 still decode
+    in Rust while backgrounded without PiP; stopping decode needs a core
+    switch. The broadcast-ID alphabet is restated in Swift (`BroadcastCode`)
+    until the core exports its check.
