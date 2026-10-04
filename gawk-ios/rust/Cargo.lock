@@ -930,7 +930,18 @@ dependencies = [
  "gawk-broadcast",
  "gawk-engine",
  "gawk-viewer",
+ "gawk-wire",
+ "tokio",
  "uniffi",
+]
+
+[[package]]
+name = "gawk-devpub"
+version = "0.0.0"
+dependencies = [
+ "gawk-encode",
+ "gawk-engine",
+ "tokio",
 ]
 
 [[package]]

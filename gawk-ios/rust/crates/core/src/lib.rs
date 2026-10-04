@@ -9,6 +9,7 @@
 uniffi::setup_scaffolding!();
 
 pub mod identity;
+pub mod viewer;
 
 /// What the core reports about itself to Swift: the build and the defaults
 /// it resolves to (docs/67 D5, D23).
