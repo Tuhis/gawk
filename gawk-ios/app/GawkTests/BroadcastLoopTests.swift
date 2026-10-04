@@ -16,22 +16,31 @@ final class BroadcastLoopTests: XCTestCase {
         initializeCore()
         let identity = IdentityStore(service: "fi.ioio.gawk.tests.\(UUID().uuidString)")
         let session = BroadcastSession(identity: identity)
-        session.start(
-            relayURL: relay, secret: env["GAWK_SMOKE_SECRET"] ?? "", quality: .cellular,
-            room: "", nickname: "", telemetry: false, insecure: true
-        )
-        // Live, with a code. Generous: a CI runner VM took ~15 s for its first
-        // QUIC dial; a local run takes well under one.
+        // Live, with a code. On a fresh CI runner VM the relay has answered
+        // the Simulator's first QUIC handshakes 15-30 s late (2026-10-04, in
+        // the recorded packets; a later dial in the same run took 0.5 s), so
+        // a start that ends before going live is tried again. A stalled dial
+        // ends by itself: QUIC's 30 s idle timeout after the last packet
+        // heard. A local run goes live in well under a second.
         var code = ""
-        for _ in 0..<900 {
-            if case .live(let c, _) = session.phase { code = c; break }
-            if case .ended(let reason) = session.phase {
-                XCTFail("ended before going live: \(reason ?? "-")")
-                return
+        var attempts: [String] = []
+        attempt: for _ in 0..<3 {
+            session.start(
+                relayURL: relay, secret: env["GAWK_SMOKE_SECRET"] ?? "", quality: .cellular,
+                room: "", nickname: "", telemetry: false, insecure: true
+            )
+            for _ in 0..<1800 {
+                if case .live(let c, _) = session.phase { code = c; break attempt }
+                if case .ended(let reason) = session.phase {
+                    attempts.append(reason ?? "-")
+                    continue attempt
+                }
+                try await Task.sleep(for: .milliseconds(50))
             }
-            try await Task.sleep(for: .milliseconds(50))
+            attempts.append("still \(session.phase) after 90 s")
+            break
         }
-        XCTAssertEqual(code.count, 6, "a code: \(session.phase)")
+        XCTAssertEqual(code.count, 6, "a code; attempts: \(attempts)")
 
         // The test source, turning a quarter every 2 s.
         let source = TestBroadcastSource(sink: session.media, rotateEvery: 2)
