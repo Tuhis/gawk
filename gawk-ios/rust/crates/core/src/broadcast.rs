@@ -154,6 +154,30 @@ struct Live {
     pipeline: Arc<Pipeline>,
 }
 
+/// Pairs the broadcast code with its resume token for `on_identity`. The
+/// relay sends Announce and the token on separate uni streams, in either
+/// order, so whichever arrives second completes the pair.
+#[derive(Default)]
+struct Identity {
+    code: String,
+    pending_token: Option<String>,
+}
+
+impl Identity {
+    fn on_announce(&mut self, code: &str) -> Option<(String, String)> {
+        self.code = code.to_owned();
+        self.pending_token.take().map(|t| (self.code.clone(), t))
+    }
+
+    fn on_token(&mut self, token_hex: String) -> Option<(String, String)> {
+        if self.code.is_empty() {
+            self.pending_token = Some(token_hex);
+            return None;
+        }
+        Some((self.code.clone(), token_hex))
+    }
+}
+
 /// One broadcast. [`Broadcaster::stop`] ends it cleanly.
 #[derive(uniffi::Object)]
 pub struct Broadcaster {
@@ -356,6 +380,7 @@ async fn run(
         pipeline: pipeline.clone(),
     });
     let mut code = String::new();
+    let mut identity = Identity::default();
     let mut reclaim_status = None;
     let mut failure_check = tokio::time::interval(std::time::Duration::from_millis(250));
     loop {
@@ -378,13 +403,18 @@ async fn run(
                 match event {
                     EngineEvent::Announce { broadcast_id } => {
                         code = broadcast_id.clone();
+                        if let Some((c, t)) = identity.on_announce(&broadcast_id) {
+                            listener.on_identity(c, t);
+                        }
                         listener.on_status(BroadcastStatus::Live {
                             join_link: gawk_engine::join_link(gawk_engine::defaults::APP_URL, &broadcast_id),
                             code: broadcast_id,
                         });
                     }
                     EngineEvent::ResumeToken { token_hex } => {
-                        listener.on_identity(code.clone(), token_hex);
+                        if let Some((c, t)) = identity.on_token(token_hex) {
+                            listener.on_identity(c, t);
+                        }
                     }
                     EngineEvent::ViewerCount(n) => listener.on_viewer_count(n),
                     EngineEvent::Resuming { attempt } => {
@@ -427,4 +457,31 @@ async fn run(
 #[uniffi::export]
 pub fn host_time_100ns() -> i64 {
     gawk_capture::host::now_100ns()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Identity;
+
+    #[test]
+    fn a_token_after_the_announce_is_paired_with_the_code() {
+        let mut id = Identity::default();
+        assert_eq!(id.on_announce("AB2CD3"), None);
+        assert_eq!(id.on_token("aa".into()), Some(("AB2CD3".into(), "aa".into())));
+    }
+
+    #[test]
+    fn a_token_before_the_announce_is_kept_until_the_code_arrives() {
+        let mut id = Identity::default();
+        assert_eq!(id.on_token("aa".into()), None);
+        assert_eq!(id.on_announce("AB2CD3"), Some(("AB2CD3".into(), "aa".into())));
+    }
+
+    #[test]
+    fn a_resumed_session_s_new_token_replaces_the_stored_one() {
+        let mut id = Identity::default();
+        id.on_announce("AB2CD3");
+        id.on_token("aa".into());
+        assert_eq!(id.on_token("bb".into()), Some(("AB2CD3".into(), "bb".into())));
+    }
 }
