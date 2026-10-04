@@ -76,7 +76,14 @@ async fn connect(
     let builder = if insecure {
         builder.with_no_cert_validation()
     } else {
-        builder.with_native_certs()
+        #[cfg(target_os = "ios")]
+        {
+            builder.with_custom_tls(ios_tls().map_err(|e| connect_err(0, e))?)
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            builder.with_native_certs()
+        }
     };
     let config = builder.keep_alive_interval(Some(KEEP_ALIVE_PERIOD)).build();
 
@@ -98,6 +105,26 @@ async fn connect(
         )),
         Err(e) => Err(connect_err(0, e.to_string())),
     }
+}
+
+/// wtransport's default client TLS (TLS 1.3, the WebTransport ALPN) with
+/// iOS's own trust: Security.framework through `rustls-platform-verifier`.
+/// `with_native_certs` can't serve iOS: `rustls-native-certs` has no iOS
+/// backend and reads the Unix certificate directories an iPhone doesn't
+/// have, so every certificate failed with `UnknownIssuer` (R65, docs/67
+/// §12). The desktops keep `with_native_certs`.
+#[cfg(target_os = "ios")]
+fn ios_tls() -> Result<wtransport::tls::rustls::ClientConfig, String> {
+    use std::sync::Arc;
+    use wtransport::tls::rustls;
+
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = rustls_platform_verifier::Verifier::new(provider)
+        .map_err(|e| format!("could not set up certificate verification: {e}"))?;
+    Ok(wtransport::tls::client::build_default_tls_config(
+        Arc::new(rustls::RootCertStore::empty()),
+        Some(Arc::new(verifier)),
+    ))
 }
 
 /// A live room control session (R42): the connection plus its ONE
