@@ -131,13 +131,23 @@ private struct AddServerSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
-                        settings.addServer(name: name, url: url)
-                        identity.setSecret(secret, relay: url.trimmingCharacters(in: .whitespaces))
+                        saveServer(settings: settings, identity: identity, name: name, url: url, secret: secret)
                         dismiss()
                     }
                     .disabled(!url.hasPrefix("https://") || url.count <= 8)
                 }
             }
         }
+    }
+}
+
+/// Adds a server, or renames one already saved under the same URL, with the
+/// secret typed in the sheet. A blank secret keeps the saved one: a rename
+/// must not delete it (the row's own field is where a secret is cleared).
+@MainActor
+func saveServer(settings: AppSettings, identity: IdentityStore, name: String, url: String, secret: String) {
+    settings.addServer(name: name, url: url)
+    if !secret.isEmpty {
+        identity.setSecret(secret, relay: url.trimmingCharacters(in: .whitespaces))
     }
 }
