@@ -903,3 +903,13 @@ dated.
     in Rust while backgrounded without PiP; stopping decode needs a core
     switch. The broadcast-ID alphabet is restated in Swift (`BroadcastCode`)
     until the core exports its check.
+- **First device run (2026-10-05): every certificate failed with
+  `UnknownIssuer`.** The engine's `with_native_certs` loads roots through
+  `rustls-native-certs`, which has no iOS backend: it reads the Unix
+  certificate directories, which an iPhone (and the Simulator) doesn't have,
+  so it trusts nothing. Phase S never saw it because every Simulator relay
+  ran with `insecure`. On iOS the engine now verifies through
+  Security.framework (`rustls-platform-verifier`, `transport.rs`
+  `ios_tls`); the desktops keep `with_native_certs`. `TlsTrustTests` dials
+  the default fleet and fails on any certificate error (opt-in: it needs the
+  internet).
