@@ -206,3 +206,76 @@ async fn the_ios_pipeline_rotates_and_resumes_on_the_same_code() {
     assert!(pipeline.take_failure().is_none());
     session.stop().await;
 }
+
+/// iOS invalidates a hardware encoder session when the app goes to the
+/// background (`kVTInvalidSessionErr`, -12903; the owner's first device run,
+/// 2026-10-05). That must not end the broadcast: the pipeline builds a new
+/// encoder and frames reach the viewer again on the same code.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "builds and runs the Go relay"]
+async fn an_invalidated_encoder_session_is_rebuilt_not_fatal() {
+    if !hardware_encoder() {
+        return;
+    }
+    let relay = Relay::start(&["-publish-secret", SECRET]);
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::new());
+    let cfg = SessionConfig {
+        relay_url: relay.url.clone(),
+        publish_secret: SECRET.into(),
+        origin: "gawk://ios".into(),
+        insecure: true,
+        ..SessionConfig::default()
+    };
+    let (session, mut events) = Session::start(cfg, clock.clone()).await.unwrap();
+    let id = loop {
+        if let Some(EngineEvent::Announce { broadcast_id }) = events.recv().await {
+            break broadcast_id;
+        }
+    };
+    let pipeline = Arc::new(Pipeline::new(
+        session.sender(),
+        tokio::runtime::Handle::current(),
+        clock.clone(),
+        Quality::Cellular,
+    ));
+    let sink = Arc::new(Sink::default());
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(run(
+        ViewerConfig {
+            relay_url: relay.url.clone(),
+            broadcast_id: id.clone(),
+            preset: PlayoutPreset::LowestLatency,
+        },
+        Arc::new(WtSubscribeDialer {
+            origin: "gawk://ios".into(),
+            insecure: true,
+        }),
+        sink.clone(),
+        ViewerClock::new(),
+        rx,
+    ));
+
+    push_frames(&pipeline, 360, 640, 45).await;
+    wait_for("frames at the viewer", Duration::from_secs(10), || {
+        sink.0.lock().unwrap().ids.len() >= 10
+    })
+    .await;
+    let seen_before = sink.0.lock().unwrap().ids.len();
+
+    pipeline.invalidate_encoder_for_test();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while sink.0.lock().unwrap().ids.len() < seen_before + 15 {
+        assert!(
+            pipeline.take_failure().is_none(),
+            "the invalidated session ended the broadcast"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "no frames after the session was rebuilt"
+        );
+        push_frames(&pipeline, 360, 640, 10).await;
+    }
+    assert!(pipeline.take_failure().is_none());
+    assert_eq!(session.broadcast_id(), id, "the same code");
+    session.stop().await;
+}
