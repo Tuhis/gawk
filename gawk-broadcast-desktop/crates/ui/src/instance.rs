@@ -438,7 +438,14 @@ mod tests {
     #[test]
     fn a_relaunch_waits_for_the_old_process_instead_of_handing_off() {
         let (mut ep, log) = fake(&[], vec![Ok(false), Ok(false), Ok(true)]);
-        assert_eq!(run(&mut ep, true), Startup::Primary);
+        // A loaded CI runner: each pause takes far longer than asked. This
+        // case is about waiting, not the deadline, so the deadline is the
+        // production one; a 50 ms one flaked on CI once two slow pauses
+        // outlasted it and the relaunch fell through to an unscripted send.
+        let startup = startup_with(&mut ep, &Request::Raise, true, RELAUNCH_WAIT, || {
+            std::thread::sleep(Duration::from_millis(60))
+        });
+        assert_eq!(startup, Startup::Primary);
         assert_eq!(*log.borrow(), ["claim", "claim", "claim"]);
     }
 
