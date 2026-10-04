@@ -938,6 +938,7 @@ dependencies = [
  "gawk-viewer",
  "gawk-wire",
  "objc2-core-video",
+ "thiserror",
  "tokio",
  "uniffi",
 ]

@@ -17,6 +17,7 @@ gawk-broadcast = { path = "../broadcast" }
 gawk-engine.workspace = true
 gawk-viewer = { path = "../viewer" }
 gawk-wire.workspace = true
+thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 uniffi.workspace = true
 gawk-capture.workspace = true
