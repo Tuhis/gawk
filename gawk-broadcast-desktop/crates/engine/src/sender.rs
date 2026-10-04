@@ -19,7 +19,7 @@ use crate::relay::{KeyframeOutcome, PathCounters, RelaySession, SendDatagramErro
 use crate::stats::Stats;
 use gawk_wire as wire;
 use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
 /// A batch of encoded datagrams ready to send.
@@ -56,6 +56,12 @@ struct KfSlot {
     pending: Option<Vec<u8>>,
     /// Set by `wait()` to stop new writes being spawned behind it.
     closed: bool,
+    /// `closed`, for writers still waiting on their stream to open: an
+    /// open has no cancel signal (that comes with the stream), and one that
+    /// waits on QUIC credit — the peer's stream limit, or connection flow
+    /// control on a saturated uplink — would otherwise hold `wait()`, and
+    /// with it `Session::stop`, for as long as the connection lives.
+    closing: watch::Sender<bool>,
     handles: Vec<JoinHandle<()>>,
 }
 
@@ -158,6 +164,7 @@ impl Sender {
                 write_started_us: 0,
                 pending: None,
                 closed: false,
+                closing: watch::Sender::new(false),
                 handles: Vec::new(),
             })),
             audio_check,
@@ -399,9 +406,16 @@ impl Sender {
             let kf_slot = kf_slot.clone();
             async move {
                 let mut next = Some(first_msg);
+                let mut closing = kf_slot.lock().unwrap().closing.subscribe();
                 while let Some(msg) = next.take() {
                     let session = relay.lock().unwrap().clone();
-                    let stream = match session.open_keyframe_stream().await {
+                    let opened = tokio::select! {
+                        opened = session.open_keyframe_stream() => opened,
+                        _ = closing.wait_for(|closed| *closed) => {
+                            Err("teardown before the stream opened".to_owned())
+                        }
+                    };
+                    let stream = match opened {
                         Ok(s) => s,
                         Err(_) => {
                             state.lock().unwrap().st.keyframe_streams_failed += 1;
@@ -740,11 +754,13 @@ impl Sender {
     /// write onto a session it is about to close. The cancel is not
     /// optional: once `closed` is set nothing can ever supersede a write
     /// stalled on QUIC flow control, and awaiting it uncancelled would hang
-    /// `stop()` for as long as the uplink stays saturated.
+    /// `stop()` for as long as the uplink stays saturated. The same goes for
+    /// a writer whose stream has not opened yet: it is abandoned (`closing`).
     pub async fn wait(&self) {
         let (cancel, had_pending, handles) = {
             let mut kf = self.kf.lock().unwrap();
             kf.closed = true;
+            kf.closing.send_replace(true);
             kf.generation += 1;
             (
                 kf.cancel.take(),
