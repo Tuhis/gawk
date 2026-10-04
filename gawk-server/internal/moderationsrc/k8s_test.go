@@ -305,13 +305,14 @@ func TestInformerUpdateLiftsTheSupersededTarget(t *testing.T) {
 	// cover both.
 	fw.Modify(banObject(t, "ban-ip-deadbeef1234",
 		moderation.Target{Type: moderation.TargetIP, Value: "198.51.100.0/24"}, "abuse", nil))
-	waitSet(t, "the edited CIDR ban", func() bool {
-		_, ok := set.BannedIP(netip.MustParseAddr("198.51.100.9"), time.Now())
-		return ok
+	// The update applies the new target and then lifts the old one, so wait
+	// for both: checking the old one as soon as the new one shows races the
+	// informer goroutine. A lift that never happens still times out.
+	waitSet(t, "the edited CIDR ban to replace the superseded one", func() bool {
+		_, okNew := set.BannedIP(netip.MustParseAddr("198.51.100.9"), time.Now())
+		_, okOld := set.BannedIP(netip.MustParseAddr("203.0.113.7"), time.Now())
+		return okNew && !okOld
 	})
-	if _, ok := set.BannedIP(netip.MustParseAddr("203.0.113.7"), time.Now()); ok {
-		t.Error("the superseded CIDR is still enforced — publishers in the old range stay 451'd until the next resync")
-	}
 	if got := set.ActiveCounts(time.Now()); got["ip"] != 1 {
 		t.Errorf("ActiveCounts = %v, want exactly the edited ban", got)
 	}
@@ -326,13 +327,11 @@ func TestInformerUpdateLiftsTheSupersededTarget(t *testing.T) {
 	})
 	fw.Modify(banObject(t, "ban-id-abc23z",
 		moderation.Target{Type: moderation.TargetBroadcastID, Value: "ZZZ23Z"}, "fraud", nil))
-	waitSet(t, "the edited ID ban", func() bool {
-		_, ok := set.BannedID("ZZZ23Z", time.Now())
-		return ok
+	waitSet(t, "the edited ID ban to replace the superseded one", func() bool {
+		_, okNew := set.BannedID("ZZZ23Z", time.Now())
+		_, okOld := set.BannedID("ABC23Z", time.Now())
+		return okNew && !okOld
 	})
-	if _, ok := set.BannedID("ABC23Z", time.Now()); ok {
-		t.Error("the superseded broadcast ID is still banned after the edit")
-	}
 
 	// An edit whose NEW target is unreadable lifts nothing: the direction of
 	// safety is the same one upsert already takes — a ban nobody can parse

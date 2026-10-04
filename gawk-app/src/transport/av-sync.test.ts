@@ -42,7 +42,9 @@ describe('av-sync playhead mapping', () => {
 
     // A frame stamped 1.050 s presented right now: video is 50 ms ahead.
     expect(observeVideoPresented(1_050_000, 0)).toBeCloseTo(50, 3);
-    expect(getAvSkewMs()).toBeCloseTo(50, 3);
+    // Read it on the same synthetic clock: the real performance.now() is the
+    // worker's uptime, past the staleness bound on a slow CI runner.
+    expect(getAvSkewMs(0)).toBeCloseTo(50, 3);
 
     // A frame stamped 0.980 s: video is 20 ms behind.
     expect(observeVideoPresented(980_000, 0)).toBeCloseTo(-20, 3);
