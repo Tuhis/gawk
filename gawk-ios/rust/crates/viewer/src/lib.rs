@@ -7,6 +7,9 @@
 //! [`playout`] decide how far behind live to present them.
 
 pub mod jitter;
+pub mod pipeline;
 pub mod playout;
 pub mod reassembly;
+pub mod reconnect;
 pub mod reorder;
+pub mod timesync;

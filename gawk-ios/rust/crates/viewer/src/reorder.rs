@@ -172,6 +172,12 @@ impl ReorderBuffer {
         Self::default()
     }
 
+    /// Frozen until a keyframe: before the first frame, after a gap or a
+    /// requested resync.
+    pub fn waiting_for_keyframe(&self) -> bool {
+        self.waiting_for_keyframe
+    }
+
     pub fn stats(&self) -> ReorderStats {
         ReorderStats {
             buffered: self.buffer.len() as u64,
