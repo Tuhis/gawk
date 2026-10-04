@@ -93,7 +93,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`64`](64-desktop-ux-pass-2.md) | R62 — Desktop UX pass 2: a probed server status and a non-default server strip, Pause / End and a quick restart on the same code, one Live layout alone or in a room, no setting in two places |
 | [`65`](65-source-preview.md) | R63 — Source preview: the Live thumbnail for display shares on Windows, and a 1 Hz capture-only preview of the chosen source on Ready on all three platforms |
 | [`66`](66-desktop-scrolling-and-window-fit.md) | R64 — Desktop scrolling and window fit: only the body scrolls, the page's buttons in a pinned action bar, problems pinned under the header, a window that grows to fit within the screen and remembers your size |
-| [`67`](67-ios-app.md) | R65 — iOS app: a ReplayKit screen broadcaster and a native player (fullscreen, PiP, background audio) in a new `gawk-ios` module, SwiftUI over the desktop workspace's Rust crates |
+| [`67`](67-ios-app.md) | R65 — iOS app: a ScreenCaptureKit screen broadcaster (iOS 27) and a native player (fullscreen, PiP, background audio) in a new `gawk-ios` module, SwiftUI over the desktop workspace's Rust crates |
 | [`68`](68-desktop-gawk-links.md) | R66 — `gawk://` links in the desktop broadcaster: one grammar for every native app, per-OS handler registration, a single-instance app, prefill that never starts a broadcast |
 | [`69`](69-app-desktop-handoff.md) | R67 — Open a broadcast in the desktop app from `gawk-app`: an offer on the start card and in rooms, no install detection, a remembered "always" |
 
