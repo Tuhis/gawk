@@ -79,7 +79,7 @@ behaviour under thermal load or PiP. As on every native milestone
 | OD7 | **Playout uses AVFoundation timing**: timestamped sample buffers presented under an `AVSampleBufferRenderSynchronizer` at a small target delay. R12's presentation machinery (sub-frame pacing, interpolation) is not ported. *Refined in review 2026-10-03*: the target delay is R12's **adaptive** offset, not a constant, because a fixed playout offset is a rejected design (CLAUDE.md; docs/12 Decision 7, docs/17 Decision 10). See D15. |
 | OD8 | **v1 includes** rooms (join and attach), Picture-in-Picture, opt-in telemetry and R37's server picker with per-server secrets. **Mic audio is not in v1.** |
 | OD9 | **Shared Rust is used by path, and the build runs from the repo root**, as `gawk-admin` does with `gawk-server`. A semantic change to a shared desktop crate needs a `gawk-ios`-scoped commit in the same PR. |
-| OD10 | **iOS CI runs from the first chunk** on `macos-latest`, with Xcode 27 selected explicitly (D24): Rust cross-builds and tests, plus an unsigned `xcodebuild` with simulator tests. |
+| OD10 | **iOS CI runs from the first chunk** on GitHub-hosted macOS (since IO1, the `xcode-27` image; D24), with Xcode 27 selected explicitly: Rust cross-builds and tests, plus an unsigned `xcodebuild` with simulator tests. |
 | OD11 | **The broadcast carries app audio** (ReplayKit `audioApp` → Opus through the shared audio crate; since OD17, ScreenCaptureKit's audio output, V-3). Uplink transport is whatever the shared engine does, so R55's carriers arrive when R55 lands them (D12), with no iOS work. |
 | OD12 | **VP8/VP9 broadcasts play natively through a bundled libvpx**, so every broadcast plays in the app. **IO0 runs first on devices, as a measuring spike.** |
 | OD13 | **Simulator first.** Everything is built and tested in the iOS Simulator before any device work (D26). |
@@ -516,7 +516,7 @@ stops video decode.
   target).
 - **Terms**: the desktop apps' TC5 posture, a link in Settings.
 
-### D24 — CI: `ios.yml` on `macos-latest`
+### D24 — CI: `ios.yml` on GitHub's `xcode-27` image
 
 - **Triggers**: `gawk-ios/**`, `gawk-broadcast-desktop/crates/{wire,engine,capture,encode,audio}/**`,
   `gawk-server/wire/**`. The desktop workflow gains `gawk-ios/rust/**`, so a
@@ -536,9 +536,11 @@ stops video decode.
   - **Viewer (IO4)**: the viewer core subscribed to a broadcast from
     `gawk-pubsim`, through a relay restart and induced datagram loss
     (parity repair, the delta-loss rule, re-subscribe).
-- **Xcode 27, selected explicitly**: the job runs `xcode-select` on a pinned
-  Xcode 27 rather than taking the runner image's default, which can lag a
-  major version behind the iOS 27 SDK the app builds against (OD6).
+- **Xcode 27, selected explicitly**: the jobs run on the `xcode-27` runner
+  label (GitHub's images are one per major Xcode, and `macos-latest` had
+  Xcode 26 only in October 2026) and `xcode-select` the Xcode whose
+  `xcodebuild -version` is the pinned one, never a path: the image ships
+  Xcode 27.0 at a release-candidate path.
 - **Xcode**: `xcodegen`, then `xcodebuild build-for-testing` unsigned
   (`CODE_SIGNING_ALLOWED=NO`) and `test` on an iOS 27 simulator: Swift unit
   tests and a Watch-screen smoke test against the same local relay.

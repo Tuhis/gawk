@@ -1,6 +1,12 @@
-# R65 iOS app (docs/67 D24). Two jobs on GitHub-hosted `macos-latest`, the
+# R65 iOS app (docs/67 D24). Two jobs on GitHub-hosted macOS runners, the
 # same deliberate exception to docs/38 D18 that broadcast-desktop.yml's macOS
 # jobs are: the iOS SDK and the Simulator exist only on Apple hardware.
+#
+# Both run on the `xcode-27` image, not `macos-latest`: GitHub's images are
+# one per major Xcode, and `macos-latest` carried Xcode 26 only when this
+# landed (2026-10-04). The image's Xcode 27.0 sits at a release-candidate
+# path, so `Select Xcode` pins by the version `xcodebuild` reports, not by
+# the app's file name.
 #
 # `rust`  — the core's host tests, the shared desktop crates' tests in the
 #           iOS configuration (`self-update` off, docs/67 D4), a check that the
@@ -57,12 +63,38 @@ env:
 
 jobs:
   rust:
-    runs-on: macos-latest
+    runs-on: xcode-27
     defaults:
       run:
         working-directory: gawk-ios/rust
     steps:
       - uses: actions/checkout@v7
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: |
+          for app in /Applications/Xcode*.app; do
+            [ -L "$app" ] && continue
+            v=$(DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version 2>/dev/null | awk 'NR==1 {print $2}')
+            if [ "$v" = "$XCODE_VERSION" ]; then
+              sudo xcode-select -s "$app"
+              xcodebuild -version
+              xcrun simctl list runtimes
+              exit 0
+            fi
+          done
+          echo "::error::no Xcode $XCODE_VERSION on this runner image; installed:"
+          ls -d /Applications/Xcode*.app
+          exit 1
+
+      # The image is Xcode-first; rustup and CMake (for the vendored libopus)
+      # are installed only when it lacks them.
+      - name: Rust and CMake
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          command -v cmake >/dev/null || brew install cmake
 
       # rust-toolchain.toml pins the compiler and both iOS targets; rustup
       # installs them on first use.
@@ -120,7 +152,7 @@ jobs:
           cargo build -p gawk-core --target aarch64-apple-ios-sim
 
   xcode:
-    runs-on: macos-latest
+    runs-on: xcode-27
     defaults:
       run:
         working-directory: gawk-ios/app
@@ -129,15 +161,29 @@ jobs:
 
       - name: Select Xcode ${{ env.XCODE_VERSION }}
         run: |
-          app="/Applications/Xcode_${XCODE_VERSION}.app"
-          if [ ! -d "$app" ]; then
-            echo "::error::$app is not on this runner image; installed:"
-            ls -d /Applications/Xcode*.app
-            exit 1
+          for app in /Applications/Xcode*.app; do
+            [ -L "$app" ] && continue
+            v=$(DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version 2>/dev/null | awk 'NR==1 {print $2}')
+            if [ "$v" = "$XCODE_VERSION" ]; then
+              sudo xcode-select -s "$app"
+              xcodebuild -version
+              xcrun simctl list runtimes
+              exit 0
+            fi
+          done
+          echo "::error::no Xcode $XCODE_VERSION on this runner image; installed:"
+          ls -d /Applications/Xcode*.app
+          exit 1
+
+      # The image is Xcode-first; rustup and CMake (for the vendored libopus)
+      # are installed only when it lacks them.
+      - name: Rust and CMake
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           fi
-          sudo xcode-select -s "$app"
-          xcodebuild -version
-          xcrun simctl list runtimes
+          command -v cmake >/dev/null || brew install cmake
 
       - uses: Swatinem/rust-cache@v2
         with:
