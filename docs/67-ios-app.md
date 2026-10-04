@@ -913,3 +913,40 @@ dated.
   `ios_tls`); the desktops keep `with_native_certs`. `TlsTrustTests` dials
   the default fleet and fails on any certificate error (opt-in: it needs the
   internet).
+- **First device runs, continued (2026-10-05, iPhone 17 Pro Max, iOS
+  27.0.1, to the production fleet).**
+  - **V-6, in part:** display capture arrives as `420f` at the panel's
+    native 1320×2868, every frame `SCFrameStatus.complete`, at about the
+    display rate (23,382 frames in ~6.5 min). `FrameConverter` turns it into
+    `420v` at the rung (884×1920 portrait, 1920×884 landscape).
+  - **The system sharing sheet stays up after the picker.** After "share
+    the whole screen", iOS keeps its Screen Sharing sheet (the app, a timer,
+    a spinner, Stop Sharing) until the user closes it, and the capture is
+    black while it is showing. The SDK has no call to complete or dismiss
+    it. Its Stop Sharing ends the broadcast through the stream's stop.
+  - **iOS takes the hardware encoder away when the app goes to the
+    background.** `VTCompressionSessionEncodeFrame` failed with
+    `kVTInvalidSessionErr` (-12903), and the pipeline ended the broadcast.
+    It now drops that lineage and builds a new encoder on the next frame,
+    on the same publish session (an IDR, a new SPS through
+    `restart_codec`). If iOS refuses one in the background, it retries
+    once a second and the broadcast stays up meanwhile.
+    `publish_relay`'s `an_invalidated_encoder_session_is_rebuilt_not_fatal`
+    reproduces the error on the Mac. After the fix, a 412 s run held
+    ~60 fps with no error event (5.5 Mbit/s mean, 0.01 % uplink loss,
+    ~8 ms RTT). Whether a new encoder builds while a game is in front is
+    still IO0's to measure: telemetry now counts rebuilds as
+    `captureRestarts`, so the 30-minute run can tell.
+  - **Stop didn't stop.** The UI waited for the core's `Ended`, and the
+    engine's `Sender::wait()` could wait forever on a keyframe stream
+    still opening (QUIC credit on a busy uplink; real screens make big
+    keyframes, the test source tiny ones). The writer is now abandoned at
+    teardown, Stop shows "Stopping…" at once, and the screen ends after
+    5 s with a reason if the core never confirms. Picker and stream
+    callbacks go through `CaptureEvents`, which ignores anything after our
+    own stop.
+  - **Broadcaster telemetry** sent the engine's counters alone, every
+    250 ms. `captureFps` read 0, the rung, encoder and capture path were
+    missing, and the windowed fps read 0 for a quiet quarter-second. The
+    core now merges the pipeline's view, as the desktop shell's
+    `merged_stats` does, once a second.
