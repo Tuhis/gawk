@@ -1,7 +1,9 @@
 # The desktop workspace's compiler (gawk-broadcast-desktop/rust-toolchain.toml):
 # both build the same shared crates, so they must agree. The two iOS targets
 # are what Xcode's build phase and CI cross-compile to (docs/67 D3).
+# `llvm-tools` is the viewer's: shiguredo_libvpx's source build prefixes
+# every libvpx symbol with the host's llvm-nm and llvm-objcopy (OD12).
 [toolchain]
 channel = "1.97.1"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "llvm-tools"]
 targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim"]

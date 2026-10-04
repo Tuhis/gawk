@@ -28,6 +28,12 @@ scripts/build-core.sh builds the core and its Swift bindings for one platform
 - CMake, for the vendored libopus (`brew install cmake`). Builds set
   `CMAKE_POLICY_VERSION_MINIMUM=3.5` for its old CMakeLists;
   `build-core.sh` does that for you.
+- git and network access to github.com on the first build: the viewer's
+  libvpx is cloned from upstream and compiled from source (docs/67 OD12),
+  using rustup's `llvm-tools`, which `rust-toolchain.toml` installs. Don't
+  set `IPHONEOS_DEPLOYMENT_TARGET` for a host build (`cargo test`): clang
+  reads it and builds the host libvpx for iOS, and the cached library then
+  fails to link until `cargo clean -p shiguredo_libvpx`.
 
 ## Build and run
 

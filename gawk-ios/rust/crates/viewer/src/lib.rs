@@ -6,6 +6,7 @@
 //! deltas meet in decode order in [`reorder`], and [`jitter`] and
 //! [`playout`] decide how far behind live to present them.
 
+pub mod decode;
 pub mod jitter;
 pub mod pipeline;
 pub mod playout;

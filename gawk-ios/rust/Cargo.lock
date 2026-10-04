@@ -331,6 +331,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -967,8 +969,11 @@ dependencies = [
 name = "gawk-viewer"
 version = "0.0.0"
 dependencies = [
+ "gawk-encode",
  "gawk-engine",
  "gawk-wire",
+ "opus",
+ "shiguredo_libvpx",
  "tokio",
  "url",
 ]
@@ -1965,6 +1970,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2352,6 +2367,22 @@ dependencies = [
  "cpufeatures",
  "digest",
 ]
+
+[[package]]
+name = "shiguredo_libvpx"
+version = "2026.2.0-canary.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "363f76e4a9d069c8b64e0b0d2bf3956bcfcd004929b88d8eceb04c92e319475e"
+dependencies = [
+ "bindgen",
+ "shiguredo_toml",
+]
+
+[[package]]
+name = "shiguredo_toml"
+version = "2026.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b475c218cf15d056ed3e48c9e98693135b261b79530881e63b162650b236fdec"
 
 [[package]]
 name = "shlex"
