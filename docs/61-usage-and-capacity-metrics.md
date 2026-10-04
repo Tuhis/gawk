@@ -83,7 +83,7 @@ The publish and subscribe dials gain three optional parameters:
 
 | Param | Values | Sent by |
 |---|---|---|
-| `app` | `web`, `desktop` | web app; desktop broadcaster |
+| `app` | `web`, `desktop`, `ios` | web app; desktop broadcaster; iOS app (R65, docs/67 D5) |
 | `os` | `windows`, `macos`, `linux`, `android`, `ios`, `chromeos` | both |
 | `browser` | `chromium`, `firefox`, `safari` | web app only |
 

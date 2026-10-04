@@ -13,6 +13,8 @@ func TestClientLabelsNormalize(t *testing.T) {
 	}{
 		{"app=web&os=windows&browser=chromium", Info{"web", "windows", "chromium"}},
 		{"app=desktop&os=macos", Info{"desktop", "macos", Unknown}},
+		// The native iOS app (R65, docs/67 D5).
+		{"app=ios&os=ios", Info{"ios", "ios", Unknown}},
 		{"", Info{Unknown, Unknown, Unknown}},
 		{"app=&os=&browser=", Info{Unknown, Unknown, Unknown}},
 		// Outside the vocabulary, including case variants and anything a

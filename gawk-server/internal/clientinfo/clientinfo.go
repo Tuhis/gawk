@@ -18,7 +18,7 @@ const (
 )
 
 var (
-	apps     = map[string]bool{"web": true, "desktop": true}
+	apps     = map[string]bool{"web": true, "desktop": true, "ios": true}
 	oses     = map[string]bool{"windows": true, "macos": true, "linux": true, "android": true, "ios": true, "chromeos": true}
 	browsers = map[string]bool{"chromium": true, "firefox": true, "safari": true}
 )
