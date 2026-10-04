@@ -39,7 +39,7 @@ final class OwnerFlowUITests: XCTestCase {
         app.buttons["watch.go"].tap()
         let status = app.staticTexts["watch.status"]
         expectation(for: NSPredicate(format: "label == %@", "Live"), evaluatedWith: status)
-        waitForExpectations(timeout: 30)
+        waitForExpectations(timeout: 15)
     }
 
     func testSettingsThenTestBroadcastThenWatch() throws {

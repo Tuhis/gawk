@@ -31,8 +31,8 @@ final class WatchSmokeTests: XCTestCase {
         engine.start(ViewerOptions(relayUrl: relay, broadcastId: id, preset: .balanced, insecure: true))
         defer { engine.stop() }
 
-        let deadline = Date().addingTimeInterval(20)
-        wait(for: [live], timeout: 20)
+        let deadline = Date().addingTimeInterval(15)
+        wait(for: [live], timeout: 10)
         var counters = engine.snapshot()
         while counters.videoEnqueued < 30, Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))

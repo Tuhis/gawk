@@ -47,7 +47,7 @@ final class WatchUITests: XCTestCase {
         let status = app.staticTexts["watch.status"]
         let live = NSPredicate(format: "label == %@", "Live")
         expectation(for: live, evaluatedWith: status)
-        waitForExpectations(timeout: 20)
+        waitForExpectations(timeout: 15)
 
         // Let the playout settle, then two frames a second apart.
         sleep(3)
