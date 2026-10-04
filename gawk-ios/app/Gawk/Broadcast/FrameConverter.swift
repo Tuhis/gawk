@@ -10,15 +10,21 @@ import VideoToolbox
 /// converts but cannot rotate and `VTPixelRotationSession` rotates but does
 /// not scale: an upright capture takes one pass, a rotated one two, scaling
 /// first so the rotation works on the smaller frame. Output buffers are
-/// IOSurface-backed and pooled per size, so a size change rebuilds the pool.
+/// IOSurface-backed and pooled per stage, so a quarter turn's two sizes
+/// never evict each other and only a stage's own size change rebuilds it.
 final class FrameConverter {
     private var transfer: VTPixelTransferSession?
     private var rotation: VTPixelRotationSession?
-    private var pools: [PoolKey: CVPixelBufferPool] = [:]
+    private var scalePool = Pool()
+    private var rotatePool = Pool()
+    /// Pools built so far; a steady stream builds none after its first frame.
+    private(set) var poolsCreated = 0
 
-    private struct PoolKey: Hashable {
-        let width: Int
-        let height: Int
+    /// One stage's output pool and the size it was built for.
+    private struct Pool {
+        var width = 0
+        var height = 0
+        var pool: CVPixelBufferPool?
     }
 
     deinit {
@@ -46,7 +52,7 @@ final class FrameConverter {
             else { return nil }
             transfer = session
         }
-        guard let transfer, let out = buffer(width: width, height: height) else { return nil }
+        guard let transfer, let out = buffer(&scalePool, width: width, height: height) else { return nil }
         guard VTPixelTransferSessionTransferImage(transfer, from: source, to: out) == noErr else {
             return nil
         }
@@ -62,7 +68,7 @@ final class FrameConverter {
             else { return nil }
             rotation = session
         }
-        guard let rotation, let out = buffer(width: width, height: height) else { return nil }
+        guard let rotation, let out = buffer(&rotatePool, width: width, height: height) else { return nil }
         let angle: CFString
         switch r {
         case .r90: angle = kVTRotation_CW90
@@ -77,12 +83,10 @@ final class FrameConverter {
         return out
     }
 
-    private func buffer(width: Int, height: Int) -> CVPixelBuffer? {
-        let key = PoolKey(width: width, height: height)
-        if pools[key] == nil {
-            // One live size at a time: a rotation or rung change retires the
+    private func buffer(_ stage: inout Pool, width: Int, height: Int) -> CVPixelBuffer? {
+        if stage.pool == nil || stage.width != width || stage.height != height {
+            // One live size per stage: a rotation or rung change retires the
             // old pool's buffers as they come back.
-            pools.removeAll()
             let attrs: [String: Any] = [
                 kCVPixelBufferPixelFormatTypeKey as String:
                     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
@@ -92,9 +96,10 @@ final class FrameConverter {
             ]
             var pool: CVPixelBufferPool?
             CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool)
-            pools[key] = pool
+            stage = Pool(width: width, height: height, pool: pool)
+            poolsCreated += 1
         }
-        guard let pool = pools[key] else { return nil }
+        guard let pool = stage.pool else { return nil }
         var out: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)
         return out
