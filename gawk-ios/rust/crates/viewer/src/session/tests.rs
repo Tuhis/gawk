@@ -247,3 +247,21 @@ async fn stop_ends_a_live_viewer() {
     let states = sink.states.lock().unwrap();
     assert_eq!(states[..2], [ViewerState::Connecting, ViewerState::Live]);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_404_while_reconnecting_is_a_restarted_relay_not_an_unknown_broadcast() {
+    // After a relay restart the broadcast is unknown until its publisher
+    // reclaims it: the viewer must keep climbing the ladder, not give up.
+    let dialer = FakeDialer::new(vec![
+        closes_with(Some(gawk_wire::CLOSE_CODE_SERVER_DRAINING), 100),
+        Err(404),
+        Err(404),
+        closes_with(Some(gawk_wire::CLOSE_CODE_BROADCAST_ENDED), 100),
+    ]);
+    let (reason, _sink, _tx) = run_with(dialer.clone()).await;
+    assert_eq!(
+        reason,
+        EndReason::Closed(gawk_wire::CLOSE_CODE_BROADCAST_ENDED)
+    );
+    assert_eq!(dialer.dials.lock().unwrap().len(), 4);
+}

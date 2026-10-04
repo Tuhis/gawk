@@ -78,6 +78,8 @@ pub enum ViewerEvent {
         broadcast_key: Vec<u8>,
     },
     TelemetryEndpoint(String),
+    /// The session's diagnostics, every 500 ms.
+    Stats(PipelineStats),
 }
 
 /// Why a watchdog gave up on a session that never said it ended. Every one

@@ -18,6 +18,8 @@ use tokio::sync::mpsc;
 
 /// The SPA's `REORDER_TICK_MS`: about one frame at 60 fps.
 pub const TICK_MS: u64 = 16;
+/// The SPA's stats cadence.
+pub const STATS_INTERVAL_MS: f64 = 500.0;
 
 /// Builds the subscribe URL (`viewer.ts`): the per-attempt session-group
 /// `owner` token, the R59 labels (docs/61 D1; `app` from the injected
@@ -182,6 +184,10 @@ pub async fn run(
     let mut attempt: u32 = 0;
     let mut close_code: Option<u32> = None;
     let mut rejoin = false;
+    // A 404 means "no such broadcast" only before any session connected:
+    // after a relay restart the broadcast is unknown until its publisher
+    // reclaims it, and a reconnecting viewer must ride that out.
+    let mut ever_connected = false;
     sink.state(ViewerState::Connecting);
     loop {
         if attempt > 0 {
@@ -215,7 +221,9 @@ pub async fn run(
         rejoin = true;
         let session = match dialer.dial(&url).await {
             Ok(s) => s,
-            Err(e) if e.status == 404 => return end(&*sink, EndReason::NotFound),
+            Err(e) if e.status == 404 && !ever_connected => {
+                return end(&*sink, EndReason::NotFound);
+            }
             Err(_) => {
                 // Unlike the web, a native client can read a refusal's status;
                 // a full fleet (429) or a network error is worth the ladder.
@@ -224,6 +232,7 @@ pub async fn run(
                 continue;
             }
         };
+        ever_connected = true;
         sink.state(ViewerState::Live);
         let mut pipeline = Pipeline::new(preset);
         let outcome = run_session(
@@ -306,6 +315,7 @@ async fn run_session(
     let closed = session.closed();
     tokio::pin!(closed);
     let mut out = Vec::new();
+    let mut last_stats_ms = f64::NEG_INFINITY;
     loop {
         tokio::select! {
             close = &mut closed => {
@@ -331,6 +341,10 @@ async fn run_session(
                     let _ = session.send_datagram(&ping);
                 }
                 pipeline.tick(now, &mut out);
+                if now - last_stats_ms >= STATS_INTERVAL_MS {
+                    last_stats_ms = now;
+                    out.push(ViewerEvent::Stats(pipeline.stats(now)));
+                }
             }
             cmd = commands.recv() => match cmd {
                 None | Some(Command::Stop) => {
