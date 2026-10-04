@@ -59,6 +59,9 @@ pub enum WireError {
     BadTelemetryEndpoint,
     /// A frame shape parity cannot cover (k, n, or width out of range).
     ParityUnsupported,
+    /// More data erasures than the surviving parity symbols can repair. An
+    /// expected outcome on a lossy link, to be counted, not a fault.
+    ParityUnrecoverable,
     /// A room record whose length prefix is below 2 or exceeds
     /// MaxRoomRecordSize — framing corruption; abandon the stream.
     BadRoomRecord,
@@ -137,6 +140,7 @@ impl fmt::Display for WireError {
             Self::BadRelayIdentity => write!(f, "wire: invalid relay identity"),
             Self::BadTelemetryEndpoint => write!(f, "wire: invalid telemetry endpoint"),
             Self::ParityUnsupported => write!(f, "wire: parity unsupported for this frame"),
+            Self::ParityUnrecoverable => write!(f, "wire: too many erasures to recover"),
             Self::BadRoomRecord => write!(f, "wire: invalid room record"),
             Self::BadRoomHello => write!(f, "wire: invalid room hello"),
             Self::BadRoomState => write!(f, "wire: invalid room state"),
