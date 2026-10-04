@@ -7,5 +7,7 @@
 //! that drives VideoToolbox is Apple-only, as `encode/vt.rs` is.
 
 pub mod audio;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub mod pipeline;
 pub mod rotation;
 pub mod rung;

@@ -898,6 +898,11 @@ dependencies = [
  "gawk-capture",
  "gawk-encode",
  "gawk-engine",
+ "gawk-viewer",
+ "gawk-wire",
+ "log",
+ "objc2-core-video",
+ "tokio",
 ]
 
 [[package]]
