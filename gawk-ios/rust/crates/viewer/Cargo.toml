@@ -9,3 +9,8 @@ license.workspace = true
 [dependencies]
 gawk-engine.workspace = true
 gawk-wire.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "test-util"] }

@@ -42,6 +42,22 @@ pub async fn dial(url: &str, origin: &str, insecure: bool) -> Result<WtSession, 
     })
 }
 
+/// Dials a subscribe route (`/subscribe/{id}`) for the iOS viewer (R65,
+/// docs/67 D13). The engine never subscribes itself; the session is the same
+/// [`RelaySession`] seam a publisher gets (datagrams both ways, server uni
+/// streams, the close code), and refusals surface exactly as for [`dial`].
+pub async fn dial_subscribe(
+    url: &str,
+    origin: &str,
+    insecure: bool,
+) -> Result<WtSession, StartError> {
+    let (endpoint, conn) = connect(url, origin, insecure, "subscribe").await?;
+    Ok(WtSession {
+        _endpoint: endpoint,
+        conn,
+    })
+}
+
 /// The shared CONNECT: one endpoint per session (the endpoint drives the
 /// connection's I/O and must outlive it), the Origin header, the keepalive.
 async fn connect(

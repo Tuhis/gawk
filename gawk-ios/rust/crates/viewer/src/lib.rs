@@ -12,4 +12,5 @@ pub mod playout;
 pub mod reassembly;
 pub mod reconnect;
 pub mod reorder;
+pub mod session;
 pub mod timesync;

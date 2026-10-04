@@ -969,6 +969,8 @@ version = "0.0.0"
 dependencies = [
  "gawk-engine",
  "gawk-wire",
+ "tokio",
+ "url",
 ]
 
 [[package]]
