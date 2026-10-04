@@ -57,9 +57,9 @@ final class BroadcastSession {
             roomCode: room,
             roomAttachSecret: "",
             nickname: nickname,
-            insecure: insecure
+            insecure: insecure,
+            telemetry: telemetry
         )
-        _ = telemetry // reports land with the broadcaster's telemetry (IO7)
         failure = nil
         phase = .connecting
         relay = relayURL
