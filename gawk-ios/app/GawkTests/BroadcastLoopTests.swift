@@ -20,9 +20,10 @@ final class BroadcastLoopTests: XCTestCase {
         // started the session, though the connection stayed up (2026-10-04,
         // in the recorded packets); a later dial in the same run took 0.1 s.
         // Once QUIC's keepalive holds a connection open, a dial has no bound
-        // of its own, so each attempt gets a fresh session and 30 s, and one
-        // that hasn't gone live by then is abandoned. A local run goes live
-        // in well under a second.
+        // of its own, so each attempt gets a fresh session and 10 s, and one
+        // that hasn't gone live by then is abandoned: a run that is going to
+        // fail fails within 40 s. A local run goes live in well under a
+        // second.
         var session = BroadcastSession(identity: identity)
         var abandoned: [BroadcastSession] = []
         var code = ""
@@ -37,7 +38,7 @@ final class BroadcastLoopTests: XCTestCase {
                 relayURL: relay, secret: env["GAWK_SMOKE_SECRET"] ?? "", quality: .cellular,
                 room: "", nickname: "", telemetry: false, insecure: true
             )
-            for _ in 0..<600 {
+            for _ in 0..<200 {
                 if case .live(let c, _) = session.phase { code = c; break attempt }
                 if case .ended(let reason) = session.phase {
                     attempts.append(reason ?? "-")
@@ -45,10 +46,14 @@ final class BroadcastLoopTests: XCTestCase {
                 }
                 try await Task.sleep(for: .milliseconds(50))
             }
-            attempts.append("still \(session.phase) after 30 s")
+            attempts.append("still \(session.phase) after 10 s")
         }
         withExtendedLifetime(abandoned) {}
-        XCTAssertEqual(code.count, 6, "a code; attempts: \(attempts)")
+        guard code.count == 6 else {
+            session.stop()
+            XCTFail("never went live; attempts: \(attempts)")
+            return
+        }
 
         // The test source, turning a quarter every 2 s.
         let source = TestBroadcastSource(sink: session.media, rotateEvery: 2)
@@ -61,8 +66,9 @@ final class BroadcastLoopTests: XCTestCase {
             listener: seen
         )
         defer { viewer.stop() }
-        // Long enough for two orientations and the encoder rebuild between.
-        for _ in 0..<900 {
+        // Long enough for two orientations and the encoder rebuild between;
+        // a passing CI run gets there in under 10 s.
+        for _ in 0..<400 {
             if seen.snapshot().formats >= 2 && seen.snapshot().samples >= 10 { break }
             try await Task.sleep(for: .milliseconds(50))
         }
