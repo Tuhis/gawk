@@ -4,3 +4,5 @@
 //!
 //! IO1 lays the crate down so the workspace and both iOS targets build; IO4
 //! fills it.
+
+pub mod reassembly;

@@ -183,8 +183,8 @@ mod tests {
     #[test]
     fn only_4000_and_4006_end_a_viewer() {
         for code in 4000..=4007 {
-            let want = code == CLOSE_CODE_BROADCAST_ENDED
-                || code == CLOSE_CODE_TERMINATED_BY_OPERATOR;
+            let want =
+                code == CLOSE_CODE_BROADCAST_ENDED || code == CLOSE_CODE_TERMINATED_BY_OPERATOR;
             assert_eq!(terminal_for_viewer(code), want, "code {code}");
         }
         // No code (an abrupt drop) and transport-level zero reconnect.
