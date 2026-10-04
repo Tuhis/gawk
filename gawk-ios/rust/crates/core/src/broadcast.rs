@@ -18,10 +18,12 @@ use gawk_broadcast::pipeline::Pipeline;
 use gawk_broadcast::rotation::Rotation;
 use gawk_broadcast::rung::Quality as RungQuality;
 use gawk_engine::clock::{Clock, MonotonicClock};
+use gawk_engine::relay::StartError;
 use gawk_engine::session::{EngineEvent, Session, SessionConfig};
 use gawk_engine::telemetry::{Hello, Reporter};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum Quality {
@@ -210,7 +212,7 @@ impl Broadcaster {
                     .enable_all()
                     .build()
                     .expect("a tokio runtime");
-                rt.block_on(run(options, listener, live, stop_rx));
+                rt.block_on(run(options, listener, live, stop_rx, Session::start));
             })
             .expect("spawn the broadcast thread");
         this
@@ -345,12 +347,20 @@ impl Drop for Broadcaster {
     }
 }
 
-async fn run(
+/// What brings the publish session up: [`Session::start`] in the app, a
+/// scripted relay in the tests.
+type Started = Result<(Arc<Session>, mpsc::UnboundedReceiver<EngineEvent>), StartError>;
+
+async fn run<C, F>(
     options: BroadcastOptions,
     listener: Arc<dyn BroadcastListener>,
     live: Arc<Mutex<Option<Live>>>,
     mut stop: oneshot::Receiver<()>,
-) {
+    connect: C,
+) where
+    C: FnOnce(SessionConfig, Arc<dyn Clock>) -> F,
+    F: Future<Output = Started>,
+{
     listener.on_status(BroadcastStatus::Connecting);
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::new());
     // Telemetry (D23): "off" unless the user opted in, then the desktop's
@@ -376,7 +386,16 @@ async fn run(
         nickname: options.nickname,
         ..SessionConfig::default()
     };
-    let (session, mut events) = match Session::start(cfg, clock.clone()).await {
+    // A stop while the dial is still out (a slow relay, a lost handshake:
+    // QUIC gives the dial no bound of its own) ends the broadcast now.
+    let started = tokio::select! {
+        started = connect(cfg, clock.clone()) => started,
+        _ = &mut stop => {
+            listener.on_status(BroadcastStatus::Ended { error: None, reclaim_status: None });
+            return;
+        }
+    };
+    let (session, mut events) = match started {
         Ok(s) => s,
         Err(e) => {
             listener.on_status(BroadcastStatus::Ended {
@@ -532,5 +551,132 @@ mod tests {
             id.on_token("bb".into()),
             Some(("AB2CD3".into(), "bb".into()))
         );
+    }
+}
+
+/// "Stop broadcasting" must end the broadcast whatever the relay is doing:
+/// the UI leaves its live screen only on `Ended`.
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+    use gawk_engine::media::AccessUnit;
+    use gawk_engine::relay::{
+        BoxFuture, KeyframeWriter, RelaySession, SendDatagramError, ServerStream, SessionClose,
+    };
+    use std::time::Duration;
+
+    /// A relay that accepts the session and datagrams but never grants a
+    /// keyframe stream: an open that waits on QUIC credit (stream count or
+    /// connection flow control on a saturated uplink) for as long as the
+    /// connection lives.
+    struct StalledOpenRelay;
+
+    impl RelaySession for StalledOpenRelay {
+        fn send_datagram(&self, _: &[u8]) -> Result<(), SendDatagramError> {
+            Ok(())
+        }
+        fn open_keyframe_stream(&self) -> BoxFuture<'_, Result<Box<dyn KeyframeWriter>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn receive_datagram(&self) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn closed(&self) -> BoxFuture<'_, SessionClose> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    struct Statuses(mpsc::UnboundedSender<BroadcastStatus>);
+
+    impl BroadcastListener for Statuses {
+        fn on_status(&self, status: BroadcastStatus) {
+            let _ = self.0.send(status);
+        }
+        fn on_identity(&self, _: String, _: String) {}
+        fn on_viewer_count(&self, _: u32) {}
+        fn on_room(&self, _: String) {}
+        fn on_failure(&self, _: String) {}
+    }
+
+    fn options() -> BroadcastOptions {
+        BroadcastOptions {
+            relay_url: "https://127.0.0.1:9".into(),
+            publish_secret: String::new(),
+            broadcast_id: String::new(),
+            resume_token_hex: String::new(),
+            quality: Quality::Standard,
+            room_code: String::new(),
+            room_attach_secret: String::new(),
+            nickname: String::new(),
+            insecure: true,
+            telemetry: false,
+        }
+    }
+
+    /// Whether `Ended` arrives. Time is paused, so a run that can make no
+    /// more progress fails at once rather than after the 30 s.
+    async fn ended(rx: &mut mpsc::UnboundedReceiver<BroadcastStatus>) -> bool {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while let Some(s) = rx.recv().await {
+                if matches!(s, BroadcastStatus::Ended { .. }) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_ends_the_broadcast_while_a_keyframe_stream_cannot_open() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let (session_tx, session_rx) = oneshot::channel();
+        tokio::spawn(run(
+            options(),
+            Arc::new(Statuses(tx)),
+            Arc::default(),
+            stop_rx,
+            move |cfg, clock| async move {
+                let (s, ev) = Session::start_with_session(cfg, Arc::new(StalledOpenRelay), clock);
+                let _ = session_tx.send(s.clone());
+                Ok((s, ev))
+            },
+        ));
+        let session = session_rx.await.unwrap();
+        // A keyframe whose stream never opens: what a big IDR can meet on
+        // a saturated uplink.
+        session
+            .sender()
+            .send_video(AccessUnit {
+                data: vec![0; 64],
+                timestamp_us: 1,
+                keyframe: true,
+            })
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let _ = stop_tx.send(());
+        assert!(ended(&mut rx).await, "Stop never ended the broadcast");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_while_connecting_ends_the_broadcast() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (stop_tx, stop_rx) = oneshot::channel();
+        tokio::spawn(run(
+            options(),
+            Arc::new(Statuses(tx)),
+            Arc::default(),
+            stop_rx,
+            |_, _| std::future::pending::<Started>(),
+        ));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = stop_tx.send(());
+        assert!(ended(&mut rx).await, "Stop while connecting never ended it");
     }
 }

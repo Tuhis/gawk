@@ -20,6 +20,9 @@ struct BroadcastView: View {
                     setup
                 case .connecting:
                     Section { ProgressView("Connecting…") }
+                    stopSection
+                case .stopping:
+                    Section { ProgressView("Stopping…") }
                 case .resuming(let attempt):
                     Section { ProgressView("Reconnecting (attempt \(attempt))…") }
                     stopSection
@@ -251,10 +254,12 @@ final class Capture {
         #endif
     }
 
+    /// The Stop button, and capture ending on its own. The session goes
+    /// first: the broadcast must end even if tearing capture down misbehaves.
     func stop(_ session: BroadcastSession) {
-        stopSources()
         live = nil
         session.stop()
+        stopSources()
     }
 
     /// Stops capture only; the session is the caller's.
