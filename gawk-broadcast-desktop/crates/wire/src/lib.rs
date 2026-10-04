@@ -136,6 +136,26 @@ pub const CLOSE_CODE_TERMINATED_BY_OPERATOR: u32 = 4006;
 /// watching them directly). Never sent on a publish or subscribe session.
 pub const CLOSE_CODE_ROOM_ENDED: u32 = 4007;
 
+/// Whether a close code ends a *viewer* for good (R65, docs/67 D13): the
+/// broadcast was garbage-collected (4000) or the operator killed it (4006).
+/// Everything else a subscribe session can see reconnects. The SPA's
+/// `reconnect.ts` holds the same pair; the iOS viewer reads it from here so
+/// it never restates the set. 4004 is a publisher's code and never reaches a
+/// viewer.
+pub fn terminal_for_viewer(code: u32) -> bool {
+    matches!(
+        code,
+        CLOSE_CODE_BROADCAST_ENDED | CLOSE_CODE_TERMINATED_BY_OPERATOR
+    )
+}
+
+/// Serial-number order for frame IDs and audio sequence numbers, which wrap
+/// at 2^32 (RFC 1982 shape, the SPA's `frameIdAhead`): `a` is ahead of `b`
+/// when it is a different ID less than half the space forward.
+pub fn frame_id_ahead(a: u32, b: u32) -> bool {
+    a != b && a.wrapping_sub(b) < 0x8000_0000
+}
+
 /// The broadcast ID alphabet (gawk-server/internal/broadcastid): 31 symbols,
 /// no `0 O 1 I L`. IDs are 6 chars; announce parsing validates against this.
 pub const BROADCAST_ID_ALPHABET: &str = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
@@ -159,6 +179,31 @@ pub fn peek_type(dgram: &[u8]) -> Result<(u8, u8), WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_4000_and_4006_end_a_viewer() {
+        for code in 4000..=4007 {
+            let want = code == CLOSE_CODE_BROADCAST_ENDED
+                || code == CLOSE_CODE_TERMINATED_BY_OPERATOR;
+            assert_eq!(terminal_for_viewer(code), want, "code {code}");
+        }
+        // No code (an abrupt drop) and transport-level zero reconnect.
+        assert!(!terminal_for_viewer(0));
+    }
+
+    #[test]
+    fn frame_ids_order_serially_across_the_wrap() {
+        assert!(frame_id_ahead(1, 0));
+        assert!(!frame_id_ahead(0, 1));
+        assert!(!frame_id_ahead(7, 7), "an ID is not ahead of itself");
+        // Across the wrap: 0 follows u32::MAX.
+        assert!(frame_id_ahead(0, u32::MAX));
+        assert!(frame_id_ahead(5, u32::MAX - 5));
+        assert!(!frame_id_ahead(u32::MAX, 0));
+        // The half-space boundary: exactly 2^31 forward is not "ahead".
+        assert!(frame_id_ahead(0x7fff_ffff, 0));
+        assert!(!frame_id_ahead(0x8000_0000, 0));
+    }
 
     #[test]
     fn peek_type_reads_prefix_without_validating() {
