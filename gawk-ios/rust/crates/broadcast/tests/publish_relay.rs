@@ -81,9 +81,35 @@ async fn wait_for(what: &str, within: Duration, mut cond: impl FnMut() -> bool) 
     }
 }
 
+/// Whether this Mac has the hardware encoder `vt.rs` requires. GitHub's
+/// macOS runners are VMs and may not; then the test says so and skips,
+/// unless `GAWK_REQUIRE_HW_ENCODER=1` makes that a failure.
+fn hardware_encoder() -> bool {
+    let mut runner = vt::VtTrialRunner {
+        params: vt::EncoderParams {
+            width: 360,
+            height: 640,
+            fps: 30,
+            peak_bitrate_bps: 3_000_000,
+        },
+    };
+    let ok = gawk_encode::cascade::choose(&vt::candidates(), None, &mut runner).is_ok();
+    if !ok {
+        assert!(
+            std::env::var("GAWK_REQUIRE_HW_ENCODER").as_deref() != Ok("1"),
+            "no hardware H.264 encoder on this Mac"
+        );
+        eprintln!("SKIPPED: no hardware H.264 encoder on this Mac (a VM?)");
+    }
+    ok
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "builds and runs the Go relay"]
 async fn the_ios_pipeline_rotates_and_resumes_on_the_same_code() {
+    if !hardware_encoder() {
+        return;
+    }
     let relay = Relay::start(&["-publish-secret", SECRET]);
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::new());
     let cfg = SessionConfig {

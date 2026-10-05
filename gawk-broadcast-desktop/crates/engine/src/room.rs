@@ -493,6 +493,33 @@ pub(crate) async fn run_room(mut ctx: RoomCtx) {
     }
 }
 
+/// A room session for a viewer that never broadcasts (R65, the iOS room
+/// view, docs/67 D21): it joins `cfg.code`, reports the roster as
+/// [`EngineEvent::RoomState`] (and the other room events) on `events`,
+/// reconnects like a broadcaster's room session, and never attaches,
+/// because no publish identity ever arrives. Runs until `stop` turns true,
+/// the room ends, or a reconnect gives up.
+pub async fn watch_room(
+    cfg: RoomConfig,
+    dialer: Arc<dyn RoomDialer>,
+    events: mpsc::UnboundedSender<EngineEvent>,
+    stop: watch::Receiver<bool>,
+) {
+    // Held for the whole session: a closed identity or request channel
+    // reads as "stopped".
+    let (_identity_tx, identity) = watch::channel(None);
+    let (_requests_tx, requests) = mpsc::unbounded_channel();
+    run_room(RoomCtx {
+        cfg,
+        dialer,
+        identity,
+        events,
+        stop,
+        requests,
+    })
+    .await;
+}
+
 /// Waits for the publish identity (announce + token). `None` = stopped.
 async fn wait_identity(ctx: &mut RoomCtx) -> Option<Identity> {
     loop {
@@ -1246,6 +1273,52 @@ mod tests {
             live,
             viewer_count: 0,
         }
+    }
+
+    /// R65 (docs/67 D21): a viewer's room session joins, reports the
+    /// roster, and never attaches, however long it runs.
+    #[tokio::test]
+    async fn watch_room_reports_the_roster_and_never_attaches() {
+        let (conn, mut relay) = scripted();
+        let dialer = Arc::new(FakeDialer {
+            conns: Mutex::new(VecDeque::from([Ok(conn)])),
+            urls: Mutex::new(Vec::new()),
+        });
+        let (events_tx, mut events) = mpsc::unbounded_channel();
+        let (stop, stop_rx) = watch::channel(false);
+        let cfg = RoomConfig {
+            relay_url: "https://relay.example:4433".into(),
+            code: "lan-party".into(),
+            ..RoomConfig::default()
+        };
+        let task = tokio::spawn(watch_room(cfg, dialer.clone(), events_tx, stop_rx));
+
+        let hello = relay.next().await;
+        assert!(wire::parse_room_hello(&hello).is_ok());
+        assert_eq!(
+            dialer.urls.lock().unwrap()[0],
+            "https://relay.example:4433/room/lan-party"
+        );
+        relay.send_state(&snapshot(1, vec![ours(true)]));
+        match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+            Ok(Some(EngineEvent::RoomState(s))) => {
+                assert_eq!(s.attachments.len(), 1);
+                assert_eq!(s.attachments[0].broadcast_id, "K7XQ2M");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Nothing more is written: no identity, so no attach.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), relay.from_client.recv())
+                .await
+                .is_err(),
+            "a viewer's room session wrote a command"
+        );
+        stop.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("stops")
+            .unwrap();
     }
 
     #[tokio::test]
