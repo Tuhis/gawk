@@ -281,6 +281,25 @@ jobs:
             -publish-secret smoke > "$RUNNER_TEMP/relay.log" 2>&1 &
           for i in $(seq 60); do curl -sf http://127.0.0.1:4498/healthz && break; sleep 1; done
 
+      # Every Rust step runs before the Simulator boots, as Go does above.
+      # With them after the boot, a warm-cache run (2026-10-05) spent 2.5 min
+      # installing the pinned toolchain (17 s in `rust`) and 3.5 min updating
+      # the crates.io index, for 30 s of compiling.
+      - name: Rust toolchain and crates
+        working-directory: gawk-ios/rust
+        run: |
+          rustup toolchain install
+          cargo fetch --locked
+
+      # The core the app links, built here so the app's own build phase (the
+      # same script) finds it fresh.
+      - name: Build the Rust core (simulator)
+        run: ../scripts/build-core.sh iphonesimulator
+
+      - name: Build gawk-devpub
+        working-directory: gawk-ios/rust
+        run: cargo build -p gawk-devpub
+
       # The first iPhone on the pinned iOS 27 runtime; device names vary
       # between runner images.
       - name: Pick a simulator
@@ -298,23 +317,17 @@ jobs:
           ') || { echo "::error::no iPhone simulator on an iOS 27 runtime"; exit 1; }
           echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep "$udid"
-          # Booted now, so it settles while the Rust builds below run. Left
-          # to xcodebuild, it boots right before the tests, and the first
-          # test ran in its boot storm: QUIC handshakes answered 14-31 s late
-          # and sessions that went silent (2026-10-04).
+          # Booted explicitly and waited for below. Left to xcodebuild, it
+          # boots right before the tests, and the first test ran in its boot
+          # storm: QUIC handshakes answered 14-31 s late and sessions that
+          # went silent (2026-10-04).
           xcrun simctl boot "$udid" || true
-
-      # The core the app links, built here, while the Simulator boots, so the
-      # app's own build phase (the same script) finds it fresh.
-      - name: Build the Rust core (simulator)
-        run: ../scripts/build-core.sh iphonesimulator
 
       # The Watch smoke test (D24) watches a broadcast: gawk-devpub loops the
       # recorded H.264 fixture to the local relay and prints its code.
       - name: Publish the H.264 fixture
         working-directory: gawk-ios/rust
         run: |
-          cargo build -q -p gawk-devpub
           ./target/debug/gawk-devpub --codec h264 --url https://127.0.0.1:4499 \
             --insecure --secret smoke > "$RUNNER_TEMP/devpub.out" 2> "$RUNNER_TEMP/devpub.log" &
           for i in $(seq 60); do grep -q GAWK_DEVPUB_ID "$RUNNER_TEMP/devpub.out" && break; sleep 1; done
