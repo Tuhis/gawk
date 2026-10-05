@@ -3,5 +3,11 @@
 //! the app's own process (OD17). The debug-only test broadcast (D27) feeds it
 //! a generated source instead.
 //!
-//! IO1 lays the crate down so the workspace, the shared-crate gating (D4) and
-//! both iOS targets build; IO2 fills it.
+//! The policy modules are portable and tested on any host; the pipeline
+//! that drives VideoToolbox is Apple-only, as `encode/vt.rs` is.
+
+pub mod audio;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub mod pipeline;
+pub mod rotation;
+pub mod rung;

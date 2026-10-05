@@ -254,7 +254,7 @@ showing. The viewer (D13–D16) shares the process but not the pipeline.
 - **Size**: the panel is ≈ 1320 × 2868 on a Pro Max iPhone, more on an iPad
   Pro. Fit the upright frame into a 1920 × 1920 long-edge box with the shared
   fit rule (`capture::fit::fit_within`; aspect kept, never upscale, even
-  dimensions). A portrait phone streams 886 × 1920; landscape 1920 × 886.
+  dimensions). A portrait phone streams 884 × 1920; landscape 1920 × 884.
   `SCStreamConfiguration`'s `width`/`height` are requested at the fitted
   size, but iOS 27 has no `scalesToFit`, `preservesAspectRatio` or
   `pixelFormat`, so `VTPixelTransferSession` still converts to `420v`, and
@@ -827,3 +827,31 @@ dated.
   prefixing), which `rust/rust-toolchain.toml` now lists. Move to the stable
   2026.2.0 when it ships. libvpx is BSD-3; its notice belongs to the
   distribution milestone (§5), since R65 publishes nothing (OD3).
+- **2026-10-04 — IO2: what the iOS 27 SDK and the Simulator answered.**
+  - **V-12: no.** The iOS 27 *Simulator* SDK has no ScreenCaptureKit at all
+    (only the device SDK does), so capture compiles for devices only and
+    phase S broadcasts from D27's test source.
+  - **V-11: no.** `vt.rs`'s low-latency, hardware-required session fails in
+    the Simulator (`VTCompressionSessionCreate -12908`). As D27 planned,
+    iOS Simulator builds (and only those, `target_abi = "sim"`) take a
+    software session; it also needs `MaxFrameDelayCount = 0`, or it holds
+    its first frames and D10's in-flight gate (3) starves it for good. It
+    is slow (about a dozen AUs in 10 s of a 1320 × 2868 source), which D26
+    already says means nothing.
+  - **V-7, from the SDK**: iOS 27 attaches `SCStreamFrameInfoVideoOrientation`
+    (a `CGImagePropertyOrientation`) to every frame, so frames come in panel
+    orientation with an attachment, as ReplayKit's did; the device pass
+    still decides which orientation a landscape-locked game reports.
+  - **V-4, by construction**: `SCStream` exposes its `synchronizationClock`,
+    so capture converts each PTS onto the host clock with
+    `CMSyncConvertTime` instead of assuming they are host time.
+  - **D9's "one pass" is two when rotating.** `VTPixelTransferSession`
+    scales and converts but cannot rotate, and `VTPixelRotationSession`
+    rotates but does not scale, so a rotated frame is scaled first (the
+    smaller frame is what gets turned) and rotated second; an upright one
+    is still one pass.
+  - Phase S evidence: the `BroadcastLoopTests` XCTest broadcasts D27's
+    source through the real `Broadcaster` to a local relay and plays it
+    back through the core's own `Viewer` in the Simulator, a rotation
+    included, with the tone; the relay restart is the host-side publisher
+    integration test (D24), where the code and frame-ID space carry on.

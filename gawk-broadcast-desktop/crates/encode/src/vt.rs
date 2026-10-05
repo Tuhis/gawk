@@ -26,6 +26,8 @@ use objc2_core_video::{
     CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
     kCVPixelBufferIOSurfacePropertiesKey, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
+// The low-latency, hardware-required spec everywhere but the iOS Simulator
+// (docs/67 V-11), which only has a software encoder.
 use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty,
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
@@ -33,7 +35,11 @@ use objc2_video_toolbox::{
     kVTCompressionPropertyKey_MaxKeyFrameInterval,
     kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, kVTCompressionPropertyKey_ProfileLevel,
     kVTCompressionPropertyKey_RealTime, kVTEncodeFrameOptionKey_ForceKeyFrame,
-    kVTProfileLevel_H264_High_AutoLevel, kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
+    kVTProfileLevel_H264_High_AutoLevel,
+};
+#[cfg(not(all(target_os = "ios", target_abi = "sim")))]
+use objc2_video_toolbox::{
+    kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
 };
 use std::ffi::{c_int, c_void};
@@ -233,6 +239,7 @@ unsafe fn create_session(
     // SAFETY (whole body): framework constants, and CF objects alive for
     // each call; the refcon outlives the session (see `Encoder`).
     unsafe {
+        #[cfg(not(all(target_os = "ios", target_abi = "sim")))]
         let spec = CFDictionary::<CFString, CFType>::from_slices(
             &[
                 kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
@@ -240,6 +247,13 @@ unsafe fn create_session(
             ],
             &[cf_bool(true), cf_bool(true)],
         );
+        // The iOS Simulator has no hardware encoder and refuses the
+        // low-latency, hardware-required session (-12908; docs/67 V-11), so
+        // its builds take whatever H.264 encoder there is. Simulator only:
+        // its encode behaviour says nothing about a device's (D26), and no
+        // shipped binary is a Simulator one.
+        #[cfg(all(target_os = "ios", target_abi = "sim"))]
+        let spec = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
         let mut out: *mut VTCompressionSession = std::ptr::null_mut();
         let status = VTCompressionSession::create(
             None,
@@ -261,6 +275,14 @@ unsafe fn create_session(
         let session = CFRetained::from_raw(session);
 
         let set = |key: &CFString, value: &CFType| VTSessionSetProperty(&session, key, Some(value));
+        // The low-latency hardware session is one-in-one-out by construction;
+        // the Simulator's software encoder holds frames back unless told not
+        // to, and D10's in-flight gate (3) would then starve it for good.
+        #[cfg(all(target_os = "ios", target_abi = "sim"))]
+        set(
+            objc2_video_toolbox::kVTCompressionPropertyKey_MaxFrameDelayCount,
+            CFNumber::new_i32(0).as_ref(),
+        );
         let (avg, peak_bytes, window) = vt_policy::rate_limits(p.peak_bitrate_bps);
         let gop = vt_policy::gop_frames(p.fps);
         // Required: a session that refuses any of these is not the one D7

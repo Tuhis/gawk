@@ -235,12 +235,70 @@ jobs:
           ') || { echo "::error::no iPhone simulator on an iOS 27 runtime"; exit 1; }
           echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep "$udid"
+          # Booted now, so it settles while the relay builds. Left to
+          # xcodebuild, it boots right before the tests, and the first test
+          # ran in its boot storm: QUIC handshakes answered 14-31 s late and
+          # sessions that went silent (2026-10-04).
+          xcrun simctl boot "$udid" || true
+
+      # docs/67 D24: the Swift tests that need a relay (the broadcast loop on
+      # D27's test source, the Watch smoke test) run against a local one,
+      # reached from the Simulator on the host's loopback.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+
+      - name: Start a local relay
+        run: |
+          bin="$RUNNER_TEMP/relay"
+          mkdir -p "$bin"
+          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert
+          "$bin/gawk-devcert" -out "$bin/cert"
+          "$bin/gawk-server" -addr 127.0.0.1:4499 -metrics-addr 127.0.0.1:4498 \
+            -cert-file "$bin/cert/cert.pem" -key-file "$bin/cert/key.pem" \
+            -publish-secret smoke > "$RUNNER_TEMP/relay.log" 2>&1 &
+          for i in $(seq 60); do curl -sf http://127.0.0.1:4498/healthz && break; sleep 1; done
+
+      # The broadcast loop's first QUIC dial sometimes never reaches the
+      # relay on a fresh runner (2026-10-04); the relay logs nothing for a
+      # handshake that never completes, so the loopback UDP is recorded and
+      # shown on failure: long-header (handshake) packets only, so a live
+      # stream's short-header traffic doesn't fill it.
+      - name: Wait for the simulator to finish booting
+        run: |
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          # bootstatus returns at "booted"; give the post-boot work a moment.
+          sleep 20
+
+      - name: Record the relay's QUIC handshakes
+        run: |
+          sudo tcpdump -i lo0 -n -tttt -c 300 'udp port 4499 and udp[8] & 0x80 != 0' \
+            > "$RUNNER_TEMP/udp.txt" 2>&1 &
+          sleep 2
 
       - name: Test (Simulator)
+        env:
+          TEST_RUNNER_GAWK_SMOKE_RELAY_URL: https://127.0.0.1:4499
+          TEST_RUNNER_GAWK_SMOKE_SECRET: smoke
+        # Ad-hoc signed: an unsigned test host has no Keychain, and the
+        # identity tests (D17) need one. Needs no certificate or team.
+        # Xcode 27 can spend 600 s in `simctl diagnose` after a test run;
+        # diagnostics are not collected.
         run: |
           xcodebuild -project Gawk.xcodeproj -scheme Gawk \
             -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd" \
-            CODE_SIGNING_ALLOWED=NO test
+            -collect-test-diagnostics never \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
+
+      - name: Relay log
+        if: failure()
+        run: |
+          cat "$RUNNER_TEMP/relay.log"
+          echo "--- QUIC handshake packets to and from the relay (first 300)"
+          sudo pkill tcpdump || true
+          sleep 1
+          cat "$RUNNER_TEMP/udp.txt"
 
       - name: Build (device, unsigned)
         run: |

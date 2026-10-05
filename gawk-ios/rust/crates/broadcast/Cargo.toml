@@ -11,3 +11,15 @@ gawk-audio.workspace = true
 gawk-capture.workspace = true
 gawk-encode.workspace = true
 gawk-engine.workspace = true
+log = "0.4"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+
+# The pipeline drives VideoToolbox through `encode/vt.rs`, so it is
+# Apple-only (docs/67 D10); the policy modules test on any host.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2-core-video = "0.3"
+
+[dev-dependencies]
+gawk-viewer = { path = "../viewer" }
+gawk-wire.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "net"] }
