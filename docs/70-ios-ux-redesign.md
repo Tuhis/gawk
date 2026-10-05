@@ -375,6 +375,26 @@ Built against the canvas and this document in the iPhone 17 and iPad Pro
   isn't live, so a link test never saw D21's question. The tests open links
   with `XCUIDevice.shared.system.open(_:)`, which reaches the running app.
 
+### 10.2 Review of #475, 2026-10-06
+
+- **Room credentials go only to their relay.** A `RoomChoice` held the
+  attach key and creator token read when the room was chosen. A server
+  switch before Go live (a link's "Add and switch", or Settings) would
+  then have sent them to the new relay. The choice now holds the code only,
+  and the start or the live join reads the credentials for its own relay
+  (`BroadcastSession.roomOptions`). A link that names an unsaved server
+  fills its room in after that question is answered.
+- **A quality asked for while connecting is applied.** The core dropped a
+  `set_quality` until the code and token arrived, while Swift showed it
+  as chosen. The core now keeps the latest and applies it once both are
+  known.
+- **A tap on a room's video shows the controls** (owner). A tap that swaps
+  or focuses a stream does that and shows them. A tap on a stream already
+  playing or in focus shows or hides them, as on a single stream.
+- **CI's room fixtures retry a lost mint and publish before the
+  Simulator boots.** The first run lost a mint's answer in the boot
+  storm. The underlying relay behaviour is in `BUGS.md`.
+
 **Not done here**: IX10, the owner's device pass. It covers ScreenCaptureKit
 broadcasting, the Live Activity on a real Lock Screen and Dynamic Island,
 PiP when going home, and the iPad Pro.

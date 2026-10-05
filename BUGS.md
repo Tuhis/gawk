@@ -875,6 +875,24 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   need their own calibration: parity recovers some chunk loss, so a chunk
   ratio is not interchangeable with a frame ratio.
 
+## A room mint whose answer is lost can never be retried
+
+- **Found**: 2026-10-06, in CI for #475 (R68's room fixtures). On a loaded
+  runner, `gawk-devpub --room-new` minted a room, and the relay logged
+  "room minted". The client's room session was then cancelled before it
+  read `RoomCreated`. The reconnect minted again and the relay answered
+  409 ("broadcast attached elsewhere"). The engine reported "this broadcast
+  is already in another room" and gave up.
+- **Impact**: any "Create a new room" (desktop, iOS) on a flaky link
+  can leave the broadcast attached to a room whose code it never learns.
+  Every retry is refused until that room ends or the broadcast is
+  restarted. The R68 fixtures work around it by starting a fresh broadcast
+  (`gawk-ios/scripts/room-fixtures.sh`).
+- **Fix would start**: test-first in `gawk-server`'s room registry. A mint
+  from a broadcast already attached to a dynamic room it minted could
+  answer with that room (code and creator grant) instead of 409, so a
+  retry is idempotent. The engine's `run_room` then needs nothing new.
+
 ## Desktop broadcaster counts audio twice in its upload rate and summary
 
 - **Found**: 2026-10-06, building R68's upload row for the iOS core
