@@ -94,7 +94,7 @@ final class AccessibilityUITests: XCTestCase {
     func testThePlayers() throws {
         let vars = try UIEnv.require("GAWK_UI_RELAY_URL", "GAWK_UI_BROADCAST_ID", "GAWK_UI_ROOM_CODE")
         let app = launchApp(extra: ["-gawkControlIdle", "120"])
-        openLink("gawk://watch/\(vars[1])", in: app)
+        openLink(UIEnv.link("gawk://watch/\(vars[1])"), in: app)
         XCTAssertTrue(app.descendants(matching: .any)["player.live"].waitForExistence(timeout: 20))
         revealControls(app)
         audit(app, "Player", overVideo: true)
@@ -105,7 +105,7 @@ final class AccessibilityUITests: XCTestCase {
         app.swipeDown()
         app.buttons["player.close"].tap()
 
-        openLink("gawk://room/\(vars[2])", in: app)
+        openLink(UIEnv.link("gawk://room/\(vars[2])"), in: app)
         XCTAssertTrue(app.buttons["room.people"].waitForExistence(timeout: 20))
         audit(app, "Room player", overVideo: true)
         app.buttons["room.people"].tap()

@@ -4,7 +4,8 @@ import XCTest
 /// `TEST_RUNNER_` prefix (docs/67 D26, docs/70 §8). A test that needs one
 /// that isn't set skips.
 ///
-/// - `GAWK_UI_RELAY_URL`, `GAWK_UI_SECRET`: a local dev relay (insecure).
+/// - `GAWK_UI_RELAY_URL`, `GAWK_UI_SECRET`: a local dev relay (insecure),
+///   selected in Settings and named by every link (`link(_:)`).
 /// - `GAWK_UI_BROADCAST_ID`: a broadcast on it (`gawk-devpub`).
 /// - `GAWK_UI_ROOM_CODE`: a room on it with `gawk-devpub` streams attached.
 /// - `GAWK_UI_OUT`: a directory for screenshots (optional).
@@ -21,6 +22,16 @@ enum UIEnv {
             throw XCTSkip("\(names.joined(separator: ", ")) not set")
         }
         return values
+    }
+
+    /// `link` on the local relay. A link with no `relay=` is the default
+    /// fleet (docs/68 D1), so every watch and room link a test opens names
+    /// its server.
+    static func link(_ link: String) -> String {
+        guard let relay = value("GAWK_UI_RELAY_URL"),
+              let encoded = relay.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+        else { return link }
+        return link + (link.contains("?") ? "&" : "?") + "relay=\(encoded)"
     }
 }
 

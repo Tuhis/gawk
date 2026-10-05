@@ -391,6 +391,12 @@ Built against the canvas and this document in the iPhone 17 and iPad Pro
 - **A tap on a room's video shows the controls** (owner). A tap that swaps
   or focuses a stream does that and shows them. A tap on a stream already
   playing or in focus shows or hides them, as on a single stream.
+- **A watch or room link without `relay=` opens on the default fleet.**
+  The router turned "no `relay=`" into "no relay", which the players read
+  as the server picked in Settings, against docs/68 D1. A link's screen
+  now carries its server, the default fleet included, and only a
+  non-default one shows the K11 chip. "The selected server" is left to
+  typed codes and Your rooms. The UI tests' links name the local relay.
 - **CI's room fixtures retry a lost mint and publish before the
   Simulator boots.** The first run lost a mint's answer in the boot
   storm. The underlying relay behaviour is in `BUGS.md`.

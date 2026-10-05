@@ -35,7 +35,7 @@ final class IPadUITests: XCTestCase {
     func testTheRoomGridUsesThreeColumnsInPortrait() throws {
         let code = try UIEnv.require("GAWK_UI_RELAY_URL", "GAWK_UI_ROOM_CODE")[1]
         let app = launchApp(extra: ["-gawkControlIdle", "60"])
-        openLink("gawk://room/\(code)", in: app)
+        openLink(UIEnv.link("gawk://room/\(code)"), in: app)
         let tiles = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'room.tile.'"))
         let five = expectation(for: NSPredicate(format: "count == 5"), evaluatedWith: tiles)
         wait(for: [five], timeout: 20)

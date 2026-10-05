@@ -16,7 +16,7 @@ final class RoomPlayerUITests: XCTestCase {
     }
 
     private func open(_ code: String, streams: Int) {
-        openLink("gawk://room/\(code)", in: app)
+        openLink(UIEnv.link("gawk://room/\(code)"), in: app)
         let count = app.descendants(matching: .any)["room.streaming"]
         expectation(for: NSPredicate(format: "label == %@", "\(streams) streaming"), evaluatedWith: count)
         waitForExpectations(timeout: 20)
@@ -117,7 +117,7 @@ final class RoomPlayerUITests: XCTestCase {
     /// D19: an away stream shows its card.
     func testAnAwayStreamShowsItsCard() throws {
         let away = try UIEnv.require("GAWK_UI_AWAY_ROOM")[0]
-        openLink("gawk://room/\(away)", in: app)
+        openLink(UIEnv.link("gawk://room/\(away)"), in: app)
         XCTAssertTrue(
             app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Mika, away'")).firstMatch
                 .waitForExistence(timeout: 20))

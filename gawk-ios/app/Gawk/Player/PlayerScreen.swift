@@ -5,7 +5,8 @@ import SwiftUI
 /// over the tabs, black, aspect-fit, in either orientation.
 struct PlayerScreen: View {
     let code: String
-    /// A link's non-default server (K11), or `nil` for Settings' choice.
+    /// A link's server, the default fleet when it named none, or `nil` for
+    /// Settings' choice (`AppRouter.Screen`).
     let linkRelay: String?
     @Environment(AppSettings.self) private var settings
     @Environment(AppRouter.self) private var router
@@ -110,8 +111,8 @@ struct PlayerScreen: View {
                 .accessibilityIdentifier("player.pip")
             }
         } below: {
-            if let linkRelay {
-                ServerChip(url: linkRelay)
+            if let chip = AppRouter.chip(for: linkRelay) {
+                ServerChip(url: chip)
             }
         } bottomLeading: {
             EmptyView()

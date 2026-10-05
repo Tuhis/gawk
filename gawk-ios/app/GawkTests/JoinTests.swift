@@ -107,10 +107,12 @@ final class JoinTests: XCTestCase {
 
     // MARK: Links (K8) and the live guard (D21)
 
+    private let fleet = coreInfo().defaultRelayUrl
+
     func testLinksOpenTheRightScreen() {
         let router = AppRouter()
         router.open(url: URL(string: "gawk://watch/K7XQ2M")!)
-        XCTAssertEqual(router.screen, .player(code: "K7XQ2M", relay: nil))
+        XCTAssertEqual(router.screen, .player(code: "K7XQ2M", relay: fleet))
         router.screen = nil
         router.open(url: URL(string: "gawk://room/lan-party?nick=Ann&relay=https%3A%2F%2Frelay.example%3A4433")!)
         XCTAssertEqual(router.screen, .room(code: "lan-party", relay: "https://relay.example:4433", nick: "Ann"))
@@ -121,11 +123,18 @@ final class JoinTests: XCTestCase {
         XCTAssertEqual(router.broadcastPrefill, .init(room: "lan-party", nick: "Sam", relay: nil))
     }
 
-    func testTheDefaultFleetIsNoRelayAtAll() {
+    /// A link names its server completely: no `relay=` is the default
+    /// fleet, never the server picked in Settings (docs/68 D1).
+    func testALinkWithoutARelayIsTheDefaultFleet() {
         let router = AppRouter()
-        let fleet = coreInfo().defaultRelayUrl.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
-        router.open(url: URL(string: "gawk://watch/K7XQ2M?relay=\(fleet)")!)
-        XCTAssertEqual(router.screen, .player(code: "K7XQ2M", relay: nil))
+        let encoded = fleet.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        router.open(url: URL(string: "gawk://watch/K7XQ2M?relay=\(encoded)")!)
+        XCTAssertEqual(router.screen, .player(code: "K7XQ2M", relay: fleet))
+        router.screen = nil
+        router.open(url: URL(string: "gawk://room/lan-party")!)
+        XCTAssertEqual(router.screen, .room(code: "lan-party", relay: fleet, nick: nil))
+        XCTAssertNil(AppRouter.chip(for: fleet), "K11: no chip for the default fleet")
+        XCTAssertEqual(AppRouter.chip(for: "https://relay.example:4433"), "https://relay.example:4433")
     }
 
     func testADroppedParameterIsNamedNotShown() {
@@ -142,9 +151,9 @@ final class JoinTests: XCTestCase {
         router.isBroadcasting = true
         router.open(url: URL(string: "gawk://watch/K7XQ2M")!)
         XCTAssertNil(router.screen)
-        XCTAssertEqual(router.confirmWhileLive, .screen(.player(code: "K7XQ2M", relay: nil)))
+        XCTAssertEqual(router.confirmWhileLive, .screen(.player(code: "K7XQ2M", relay: fleet)))
         router.confirm()
-        XCTAssertEqual(router.screen, .player(code: "K7XQ2M", relay: nil))
+        XCTAssertEqual(router.screen, .player(code: "K7XQ2M", relay: fleet))
 
         router.screen = nil
         router.join(code: "K7XQ2M", relay: "https://127.0.0.1:9", insecure: true)

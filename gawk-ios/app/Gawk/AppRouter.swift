@@ -12,10 +12,11 @@ final class AppRouter {
         case settings
     }
 
-    /// A player over the tabs. `relay` is a link's non-default server,
-    /// dialed for this screen only and shown as its server chip (D4, K11);
-    /// `nil` dials the server picked in Settings. `nick` is a room link's
-    /// nickname for this visit.
+    /// A player over the tabs. `relay` is a link's server, dialed for this
+    /// screen only: its `relay=`, or the default fleet when it has none
+    /// (docs/68 D1). A non-default one shows as the server chip (K11).
+    /// `nil` dials the server picked in Settings, for a typed code or one of
+    /// Your rooms. `nick` is a room link's nickname for this visit.
     enum Screen: Identifiable, Equatable {
         case player(code: String, relay: String?)
         case room(code: String, relay: String?, nick: String?)
@@ -116,8 +117,9 @@ final class AppRouter {
     }
 
     /// A `gawk://` link (K8): `watch` opens the player, `room` the room
-    /// player, `broadcast` fills Broadcast in and starts nothing. A relay
-    /// that is the default fleet is no relay at all.
+    /// player, `broadcast` fills Broadcast in and starts nothing. A link
+    /// names its server completely: no `relay=` is the default fleet, never
+    /// the server picked in Settings (docs/68 D1).
     func open(url: URL) {
         let parsed: ParsedLink
         do {
@@ -130,13 +132,13 @@ final class AppRouter {
         switch parsed.link {
         case .watch(let id, let relay):
             tab = .watch
-            open(.player(code: id, relay: Self.nonDefault(relay)))
+            open(.player(code: id, relay: Self.server(relay)))
         case .room(let code, let nick, let relay):
             tab = .watch
-            open(.room(code: code, relay: Self.nonDefault(relay), nick: nick))
+            open(.room(code: code, relay: Self.server(relay), nick: nick))
         case .broadcast(let room, let nick, let relay):
             tab = .broadcast
-            broadcastPrefill = BroadcastPrefill(room: room, nick: nick, relay: Self.nonDefault(relay))
+            broadcastPrefill = BroadcastPrefill(room: room, nick: nick, relay: Self.chip(for: relay))
         }
     }
 
@@ -146,7 +148,14 @@ final class AppRouter {
         return "Left out of the link: \(dropped.joined(separator: ", "))."
     }
 
-    private static func nonDefault(_ relay: String?) -> String? {
+    /// A watch or room link's server: its `relay=`, or the default fleet.
+    private static func server(_ relay: String?) -> String {
+        chip(for: relay) ?? coreInfo().defaultRelayUrl
+    }
+
+    /// The server chip a screen's relay shows (K11): none for the default
+    /// fleet, which is also no `relay=` at all on a broadcast link.
+    static func chip(for relay: String?) -> String? {
         guard let relay, !isDefaultRelay(url: relay) else { return nil }
         return relay
     }

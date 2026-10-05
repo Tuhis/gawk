@@ -77,14 +77,14 @@ final class JoinUITests: XCTestCase {
     func testAWatchLinkOpensThePlayer() throws {
         let code = try UIEnv.require("GAWK_UI_RELAY_URL", "GAWK_UI_BROADCAST_ID")[1]
         let app = launchApp()
-        openLink("gawk://watch/\(code)", in: app)
+        openLink(UIEnv.link("gawk://watch/\(code)"), in: app)
         XCTAssertTrue(app.descendants(matching: .any)["player.live"].waitForExistence(timeout: 20))
     }
 
     func testARoomLinkOpensTheRoomPlayer() throws {
         let code = try UIEnv.require("GAWK_UI_RELAY_URL", "GAWK_UI_ROOM_CODE")[1]
         let app = launchApp()
-        openLink("gawk://room/\(code)", in: app)
+        openLink(UIEnv.link("gawk://room/\(code)"), in: app)
         XCTAssertTrue(app.descendants(matching: .any)["room.streaming"].waitForExistence(timeout: 20))
     }
 

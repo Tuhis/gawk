@@ -175,7 +175,7 @@ struct RoomPlayerScreen: View {
                     .accessibilityIdentifier("room.people")
             }
         } below: {
-            if let linkRelay { ServerChip(url: linkRelay) }
+            if let chip = AppRouter.chip(for: linkRelay) { ServerChip(url: chip) }
         } bottomLeading: {
             if model.room != nil {
                 LayoutToggle(layout: Binding(get: { model.layout }, set: { model.layout = $0; controls.touch() }))

@@ -20,7 +20,7 @@ final class PlayerUITests: XCTestCase {
 
     /// Opens the stream and shows its controls.
     private func watch(_ link: String? = nil, reveal: Bool = true) {
-        openLink(link ?? "gawk://watch/\(code)", in: app)
+        openLink(link ?? UIEnv.link("gawk://watch/\(code)"), in: app)
         XCTAssertTrue(app.descendants(matching: .any)["player.live"].waitForExistence(timeout: 20), "live")
         if reveal { revealControls(app) }
     }
@@ -105,11 +105,10 @@ final class PlayerUITests: XCTestCase {
         XCTAssertTrue(app.buttons["watch.join"].isHittable, "back on Watch")
     }
 
-    /// K11: a link's non-default relay shows as a chip under the top row.
-    func testALinksServerShowsAsAChip() throws {
-        let relay = try UIEnv.require("GAWK_UI_RELAY_URL")[0]
-        let encoded = relay.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? relay
-        watch("gawk://watch/\(code)?relay=\(encoded)")
+    /// K11: a link's non-default relay (the local one) shows as a chip
+    /// under the top row.
+    func testALinksServerShowsAsAChip() {
+        watch()
         XCTAssertTrue(app.descendants(matching: .any)["player.serverChip"].exists)
         shot("player-server-chip", app)
     }
