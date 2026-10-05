@@ -24,7 +24,8 @@
 # one, which in turn watches gawk-ios/rust/**. assets/icon/** is here
 # because the app builds the icon catalogs tools/icon writes there
 # (docs/70 K13), and global.css and main.slint because Theme.swift copies
-# their tokens (K10's drift check).
+# their tokens (K10's drift check). release-please-config.json is watched
+# for the lock-bump guard (uniffi-bindgen/tests/release_config.rs).
 name: ios
 
 on:
@@ -42,6 +43,7 @@ on:
       - "assets/icon/**"
       - "gawk-app/src/styles/global.css"
       - "gawk-broadcast-desktop/crates/ui/main.slint"
+      - "release-please-config.json"
       - ".github/workflows/ios.yml"
   pull_request:
     paths:
@@ -56,6 +58,7 @@ on:
       - "assets/icon/**"
       - "gawk-app/src/styles/global.css"
       - "gawk-broadcast-desktop/crates/ui/main.slint"
+      - "release-please-config.json"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
 

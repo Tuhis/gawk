@@ -2943,6 +2943,7 @@ dependencies = [
 name = "uniffi-bindgen"
 version = "0.0.0"
 dependencies = [
+ "serde_json",
  "uniffi",
 ]
 
