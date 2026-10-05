@@ -1,0 +1,12 @@
+[package]
+name = "gawk-devpub"
+description = "Host-only dev tool: loops the viewer's recorded H.264/VP8/VP9 fixtures to a relay (docs/67 IO5)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+gawk-encode.workspace = true
+gawk-engine.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }

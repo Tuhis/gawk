@@ -11,6 +11,7 @@ members = [
     "crates/broadcast",
     "crates/viewer",
     "crates/uniffi-bindgen",
+    "crates/devpub",
 ]
 
 [workspace.package]

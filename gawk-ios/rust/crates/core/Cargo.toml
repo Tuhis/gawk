@@ -16,4 +16,6 @@ name = "gawk_core"
 gawk-broadcast = { path = "../broadcast" }
 gawk-engine.workspace = true
 gawk-viewer = { path = "../viewer" }
+gawk-wire.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 uniffi.workspace = true
