@@ -2,9 +2,9 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 2800,
+      "covered": 2808,
       "label": "admin",
-      "pct": 78.8,
+      "pct": 79.0,
       "total": 3554,
       "unit": "statements"
     },
@@ -26,7 +26,7 @@
     },
     "gawk-broadcast": {
       "component": "gawk-broadcast",
-      "covered": 3530,
+      "covered": 3531,
       "label": "broadcast-linux",
       "pct": 66.3,
       "total": 5322,
@@ -42,7 +42,7 @@
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 7331,
+      "covered": 7333,
       "label": "relay",
       "pct": 83.3,
       "total": 8800,
