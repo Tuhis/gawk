@@ -1338,12 +1338,11 @@ async function desktopHandoffCheck({ relayUrl, certHash }) {
     const page = await context.newPage();
     wirePageLogs(page, 'console-desktop-handoff');
     const dialog = page.getByRole('dialog', { name: 'Opening the desktop app' });
-    const roomChip = page.getByTestId('pending-room');
-    const assertStillHere = async (what) => {
-      if (!new URL(page.url()).hash.startsWith('#/broadcast')) {
-        fail(`desktop handoff (${what}): the page navigated away to ${page.url()}`);
+    const assertStillHere = async (p, what) => {
+      if (!new URL(p.url()).hash.startsWith('#/broadcast')) {
+        fail(`desktop handoff (${what}): the page navigated away to ${p.url()}`);
       }
-      if (!(await roomChip.textContent()).includes('vip-e2e-handoff')) {
+      if (!(await p.getByTestId('pending-room').textContent()).includes('vip-e2e-handoff')) {
         fail(`desktop handoff (${what}): the pending room chip is gone`);
       }
     };
@@ -1356,7 +1355,7 @@ async function desktopHandoffCheck({ relayUrl, certHash }) {
     await offer.click();
     await dialog.waitFor({ state: 'visible', timeout: 5000 });
     await sleep(1000);
-    await assertStillHere('offer click');
+    await assertStillHere(page, 'offer click');
     // Once a launch is attempted, headless Chrome stops delivering trusted
     // input to the tab — its external-protocol prompt is up and nothing can
     // answer it (verified 2026-10-06: a real click lands only when the
@@ -1369,11 +1368,16 @@ async function desktopHandoffCheck({ relayUrl, certHash }) {
     }
 
     // D9: the link asks for the app; the hidden iframe launches on load.
-    await page.goto(`${APP_URL}/#/broadcast?room=vip-e2e-handoff&desktop=1`);
-    await dialog.waitFor({ state: 'visible', timeout: 5000 });
+    // A fresh tab, as a link opens one: on the page above, a hash-only
+    // navigation would keep the screen mounted, and the screen reads the
+    // link once, on mount.
+    const linkPage = await context.newPage();
+    wirePageLogs(linkPage, 'console-desktop-handoff-link');
+    await linkPage.goto(`${APP_URL}/#/broadcast?room=vip-e2e-handoff&desktop=1`);
+    await linkPage.getByRole('dialog', { name: 'Opening the desktop app' }).waitFor({ state: 'visible', timeout: 5000 });
     await sleep(1000);
-    await assertStillHere('?desktop=1');
-    if (page.url().includes('desktop=')) fail('desktop handoff: ?desktop= was not stripped from the URL');
+    await assertStillHere(linkPage, '?desktop=1');
+    if (linkPage.url().includes('desktop=')) fail('desktop handoff: ?desktop= was not stripped from the URL');
     log('desktop handoff: the page stays put with no gawk:// handler (offer click and ?desktop=1)');
   } finally {
     await browser.close();
