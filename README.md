@@ -307,7 +307,7 @@ actually linked into that artifact:
 [admin UI](gawk-admin/ui/THIRD-PARTY-NOTICES.md).
 Regenerate with `python3 tools/licenses/gen-notices.py`; CI gates every
 dependency against a permissive allowlist. The one non-standard entry: the
-desktop broadcasters' GUI (Windows and macOS, one shared Slint UI) uses
+desktop broadcasters' GUI (Windows, macOS and Linux, one shared Slint UI) uses
 **Slint** under its Royalty-free Desktop License v2.0, whose attribution
 requirement this badge satisfies:
 
