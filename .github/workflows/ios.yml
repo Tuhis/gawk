@@ -10,10 +10,12 @@
 #
 # `rust`  — the core's host tests, the shared desktop crates' tests in the
 #           iOS configuration (`self-update` off, docs/67 D4), a check that the
-#           resolved graph really has it off, and both iOS cross-builds.
+#           resolved graph really has it off, both iOS cross-builds, and the
+#           app's unsigned device build on top of the device one. Phase S
+#           needs no team (OD14); signing belongs to the distribution
+#           milestone.
 # `xcode` — XcodeGen, then the app built and its Swift tests run in an iOS 27
-#           Simulator, plus an unsigned device build. Phase S needs no team
-#           (OD14); signing belongs to the distribution milestone.
+#           Simulator.
 #
 # Triggers follow the path dependencies (OD9): a change to a shared desktop
 # crate or to the canonical wire runs this workflow as well as the desktop
@@ -60,6 +62,10 @@ env:
   # docs/67 D24: a pinned Xcode, never the image default, which can lag a
   # major version behind the iOS 27 SDK the app builds against (OD6).
   XCODE_VERSION: "27.0"
+  # No debuginfo in CI builds (the test profile inherits dev): it makes
+  # every compile and link slower and the cached target/ larger, and the
+  # repository's Actions cache sits at its 10 GB eviction limit.
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   rust:
@@ -104,8 +110,12 @@ jobs:
           cargo --version
           rustup target list --installed
 
+      # rust-cache reads `rustc -vV` from the repository root, which is the
+      # image's default compiler, not the pinned one; the toolchain file's
+      # hash in the prefix makes a compiler bump (and only that) a new key.
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: v0-rust-${{ hashFiles('gawk-ios/rust/rust-toolchain.toml') }}
           workspaces: |
             gawk-ios/rust
             gawk-broadcast-desktop
@@ -151,6 +161,23 @@ jobs:
           cargo build -p gawk-core --target aarch64-apple-ios
           cargo build -p gawk-core --target aarch64-apple-ios-sim
 
+      # The app's device build lives here, not in `xcode`: its build phase
+      # (build-core.sh) wants the same dev-profile aarch64-apple-ios core the
+      # step above just built, so it links instead of compiling it again.
+      - name: XcodeGen
+        working-directory: gawk-ios/app
+        run: |
+          brew install xcodegen
+          xcodegen --version
+          xcodegen
+
+      - name: Build the app (device, unsigned)
+        working-directory: gawk-ios/app
+        run: |
+          xcodebuild -project Gawk.xcodeproj -scheme Gawk \
+            -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO build
+
       # docs/67 D24: the viewer core against the real relay and gawk-pubsim,
       # through induced datagram loss and a rolling relay restart. Both Go
       # binaries are built once here and handed to the test.
@@ -170,14 +197,17 @@ jobs:
           echo "GAWK_IT_RELAY_BIN_DIR=$bin" >> "$GITHUB_ENV"
           echo "GAWK_IT_PUBSIM_BIN=$bin/gawk-pubsim" >> "$GITHUB_ENV"
 
+      # `--workspace` with `--test`, not `-p`: features resolve per selected
+      # package, so `-p gawk-viewer` resolved a narrower graph than `Test`
+      # did and rebuilt all of it (3m 38s, for an 11 s test).
       - name: Integration — the viewer through loss and a relay restart
-        run: cargo test -p gawk-viewer --test relay_viewer -- --ignored --test-threads=1
+        run: cargo test --workspace --test relay_viewer -- --ignored --test-threads=1
 
       # docs/67 D24 (IO2): the broadcast pipeline on real VideoToolbox
       # through a rotation and a relay restart. It needs a hardware H.264
       # encoder; on a runner VM without one it prints SKIPPED and passes.
       - name: Integration — the broadcast pipeline through a rotation and a relay restart
-        run: cargo test -p gawk-broadcast --test publish_relay -- --ignored --test-threads=1 --nocapture
+        run: cargo test --workspace --test publish_relay -- --ignored --test-threads=1 --nocapture
 
   xcode:
     runs-on: xcode-27
@@ -215,6 +245,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: v0-rust-${{ hashFiles('gawk-ios/rust/rust-toolchain.toml') }}
           workspaces: gawk-ios/rust
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -223,6 +254,32 @@ jobs:
           brew install xcodegen
           xcodegen --version
           xcodegen
+
+      # docs/67 D24: the Swift tests that need a relay (the broadcast loop on
+      # D27's test source, the Watch smoke test) run against a local one,
+      # reached from the Simulator on the host's loopback.
+      #
+      # Go is set up and the relay built before the Simulator boots: during
+      # its boot storm this disk-bound step took 400-455 s, against 17-29 s
+      # for the same step in `rust` (2026-10-04/05). The cache key matches
+      # `rust`'s, so both jobs share one entry.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: |
+            gawk-server/go.sum
+            gawk-broadcast/go.sum
+
+      - name: Start a local relay
+        run: |
+          bin="$RUNNER_TEMP/relay"
+          mkdir -p "$bin"
+          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert
+          "$bin/gawk-devcert" -out "$bin/cert"
+          "$bin/gawk-server" -addr 127.0.0.1:4499 -metrics-addr 127.0.0.1:4498 \
+            -cert-file "$bin/cert/cert.pem" -key-file "$bin/cert/key.pem" \
+            -publish-secret smoke > "$RUNNER_TEMP/relay.log" 2>&1 &
+          for i in $(seq 60); do curl -sf http://127.0.0.1:4498/healthz && break; sleep 1; done
 
       # The first iPhone on the pinned iOS 27 runtime; device names vary
       # between runner images.
@@ -241,30 +298,16 @@ jobs:
           ') || { echo "::error::no iPhone simulator on an iOS 27 runtime"; exit 1; }
           echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep "$udid"
-          # Booted now, so it settles while the relay builds. Left to
-          # xcodebuild, it boots right before the tests, and the first test
-          # ran in its boot storm: QUIC handshakes answered 14-31 s late and
-          # sessions that went silent (2026-10-04).
+          # Booted now, so it settles while the Rust builds below run. Left
+          # to xcodebuild, it boots right before the tests, and the first
+          # test ran in its boot storm: QUIC handshakes answered 14-31 s late
+          # and sessions that went silent (2026-10-04).
           xcrun simctl boot "$udid" || true
 
-      # docs/67 D24: the Swift tests that need a relay (the broadcast loop on
-      # D27's test source, the Watch smoke test) run against a local one,
-      # reached from the Simulator on the host's loopback.
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: gawk-server/go.mod
-          cache-dependency-path: gawk-server/go.sum
-
-      - name: Start a local relay
-        run: |
-          bin="$RUNNER_TEMP/relay"
-          mkdir -p "$bin"
-          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert
-          "$bin/gawk-devcert" -out "$bin/cert"
-          "$bin/gawk-server" -addr 127.0.0.1:4499 -metrics-addr 127.0.0.1:4498 \
-            -cert-file "$bin/cert/cert.pem" -key-file "$bin/cert/key.pem" \
-            -publish-secret smoke > "$RUNNER_TEMP/relay.log" 2>&1 &
-          for i in $(seq 60); do curl -sf http://127.0.0.1:4498/healthz && break; sleep 1; done
+      # The core the app links, built here, while the Simulator boots, so the
+      # app's own build phase (the same script) finds it fresh.
+      - name: Build the Rust core (simulator)
+        run: ../scripts/build-core.sh iphonesimulator
 
       # The Watch smoke test (D24) watches a broadcast: gawk-devpub loops the
       # recorded H.264 fixture to the local relay and prints its code.
@@ -319,9 +362,3 @@ jobs:
           sudo pkill tcpdump || true
           sleep 1
           cat "$RUNNER_TEMP/udp.txt"
-
-      - name: Build (device, unsigned)
-        run: |
-          xcodebuild -project Gawk.xcodeproj -scheme Gawk \
-            -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/dd" \
-            CODE_SIGNING_ALLOWED=NO build
