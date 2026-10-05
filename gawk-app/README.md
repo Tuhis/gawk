@@ -21,6 +21,9 @@ Production surfaces:
 - `#/broadcast` — capture the screen, encode, publish chunked datagrams
 - `#/view/<id>` — subscribe to a broadcast ID, reassemble datagrams,
   decode, paint to canvas
+- `#/room/<code>` — room viewer: several broadcasts at once with a roster
+- `#/join/<code>` — typed join code, either a room or a broadcast; probes
+  and hops to `#/room/<code>` or `#/view/<id>`
 - `#/terms` — usage terms
 
 Frozen, undecorated diagnostics live under `#/debug/*` (not shared
