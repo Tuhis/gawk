@@ -52,6 +52,13 @@ export interface GawkRuntimeConfig {
   // ?relay= with a quiet note.
   allowCustomRelays?: boolean;
 
+  // Whether the broadcast pages offer the desktop app (R67, docs/69 D7):
+  // "Open in the desktop app", the room's "…or in the desktop app", the
+  // remembered "always" and `?desktop=1` links. Default true; false hides
+  // all of it, for a deployment whose users shouldn't be pointed at the
+  // official desktop builds.
+  desktopHandoff?: boolean;
+
   // Hex SHA-256 of a local stack's self-signed relay certificate (rendered by
   // dev/config-gen.sh), so #/view/{id} works in a fresh profile. Read only in a
   // dev environment and deliberately not a chart value: a production
@@ -107,6 +114,12 @@ export function getMaxDecoderQueueSize(): number {
 // whose operator configured nothing.
 export function allowCustomRelays(): boolean {
   const v = getRuntimeConfig().allowCustomRelays;
+  return v === undefined ? true : v;
+}
+
+// A missing key offers the desktop app, like allowCustomRelays.
+export function desktopHandoffEnabled(): boolean {
+  const v = getRuntimeConfig().desktopHandoff;
   return v === undefined ? true : v;
 }
 

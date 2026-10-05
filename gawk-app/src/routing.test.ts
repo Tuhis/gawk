@@ -11,20 +11,20 @@ describe('parseRoute', () => {
   });
 
   it('maps #/broadcast to the production broadcaster', () => {
-    expect(parseRoute('#/broadcast')).toEqual({ view: 'broadcaster', room: null, nick: null, ...noQuery });
+    expect(parseRoute('#/broadcast')).toEqual({ view: 'broadcaster', room: null, nick: null, desktop: false, ...noQuery });
   });
 
   it('carries a ?room= code on #/broadcast as typed, and ignores a malformed one', () => {
     expect(parseRoute('#/broadcast?room=vip-k3q7xzmw2p')).toEqual({
       view: 'broadcaster',
       room: 'vip-k3q7xzmw2p',
-      nick: null,
+      nick: null, desktop: false,
       ...noQuery,
     });
     expect(parseRoute('#/broadcast?room=AB2CD3&relay=https://relay.example.com')).toEqual({
       view: 'broadcaster',
       room: 'AB2CD3',
-      nick: null,
+      nick: null, desktop: false,
       relay: 'https://relay.example.com',
       droppedParams: [],
     });
@@ -32,7 +32,7 @@ describe('parseRoute', () => {
       expect(parseRoute(`#/broadcast?room=${encodeURIComponent(bad)}`)).toEqual({
         view: 'broadcaster',
         room: null,
-      nick: null,
+      nick: null, desktop: false,
         ...noQuery,
       });
     }
@@ -98,7 +98,7 @@ describe('parseRoute ?relay=', () => {
     expect(parseRoute('#/broadcast?relay=https://relay.example.com:4433')).toEqual({
       view: 'broadcaster',
       room: null,
-      nick: null,
+      nick: null, desktop: false,
       relay: 'https://relay.example.com:4433',
       droppedParams: [],
     });
@@ -120,11 +120,26 @@ describe('parseRoute ?relay=', () => {
     }
   });
 
+  it('reads ?desktop=1 on the broadcast route only, and only the value 1 (R67 D9)', () => {
+    expect(parseRoute('#/broadcast?room=vip-qy346he235&desktop=1')).toEqual({
+      view: 'broadcaster',
+      room: 'vip-qy346he235',
+      nick: null,
+      desktop: true,
+      ...noQuery,
+    });
+    expect(parseRoute('#/broadcast?desktop=1')).toMatchObject({ view: 'broadcaster', desktop: true });
+    for (const other of ['0', 'true', 'yes', '', '11']) {
+      expect(parseRoute(`#/broadcast?desktop=${other}`)).toMatchObject({ view: 'broadcaster', desktop: false });
+    }
+    expect(parseRoute('#/room/AB2CD3?desktop=1')).not.toHaveProperty('desktop');
+  });
+
   it('ignores unknown parameters silently (left for the R26 grammar)', () => {
     expect(parseRoute('#/broadcast?start=1&res=720')).toEqual({
       view: 'broadcaster',
       room: null,
-      nick: null,
+      nick: null, desktop: false,
       ...noQuery,
     });
   });
@@ -177,10 +192,10 @@ describe('parseRoute rooms (R42)', () => {
     expect(parseRoute('#/broadcast?room=AB2CD3&nick=%20Big%20%20%20Tuhis%20')).toEqual({
       view: 'broadcaster',
       room: 'AB2CD3',
-      nick: 'Big Tuhis',
+      nick: 'Big Tuhis', desktop: false,
       ...noQuery,
     });
-    expect(parseRoute('#/broadcast?nick=solo')).toEqual({ view: 'broadcaster', room: null, nick: 'solo', ...noQuery });
+    expect(parseRoute('#/broadcast?nick=solo')).toEqual({ view: 'broadcaster', room: null, nick: 'solo', desktop: false, ...noQuery });
     // Bounded to the wire limit (bytes, whole characters).
     const long = parseRoute(`#/room/AB2CD3?nick=${encodeURIComponent('ä'.repeat(40))}`);
     expect(long.view === 'room' && long.nick !== null).toBe(true);

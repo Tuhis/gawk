@@ -419,6 +419,86 @@
   justify-content: center;
 }
 
+/* ── Desktop handoff (R67, docs/69) ── */
+
+/* The offer under Start: a quiet secondary line, never a second CTA (G7). */
+.handoffOffer {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 44px;
+  padding: 0 0.75rem;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+  border-radius: var(--r-md);
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.handoffOffer:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.handoffCheck {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: left;
+  gap: 0.6rem;
+  min-height: 40px;
+  margin-top: 0.25rem;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.handoffCheck input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* The handoff modals carry two actions with long labels: a little wider than
+   the other modals, labels kept whole, and the pair wrapping as buttons
+   (never mid-label) on a phone. The download and "Open again" are anchors
+   styled as buttons, so the global link underline is taken off. */
+.handoffModal {
+  width: min(92vw, 440px);
+}
+
+.handoffActions {
+  flex-wrap: wrap;
+}
+
+.handoffActions > a,
+.handoffActions > button {
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+/* The automatic mode's line and its off switch, set apart from the
+   fallback above and the actions below. */
+.handoffAuto {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.25rem 0 0.4rem;
+  padding: 0.75rem 0 0.65rem;
+  border-top: 1px solid var(--glass-border);
+  border-bottom: 1px solid var(--glass-border);
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.handoffAuto .linkBtn {
+  min-height: 32px;
+  font-size: var(--fs-sm);
+}
+
 /* ── Capture & audio guidance ── */
 
 /* Reactive live notes, under the top bar. Quiet glass pills, dismissible;

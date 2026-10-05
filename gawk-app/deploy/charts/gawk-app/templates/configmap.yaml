@@ -20,6 +20,7 @@ data:
       "termsUrl": {{ .Values.config.termsUrl | default "" | toJson }},
       "telemetryUrl": {{ .Values.config.telemetryUrl | default "" | toJson }},
       "allowCustomRelays": {{ if hasKey .Values.config "allowCustomRelays" }}{{ .Values.config.allowCustomRelays }}{{ else }}true{{ end }},
+      "desktopHandoff": {{ if hasKey .Values.config "desktopHandoff" }}{{ .Values.config.desktopHandoff }}{{ else }}true{{ end }},
       "serverDirectoryUrl": {{ .Values.config.serverDirectoryUrl | default "" | toJson }}
     };
   # R23 (docs/29): optional full-body terms override, mounted over

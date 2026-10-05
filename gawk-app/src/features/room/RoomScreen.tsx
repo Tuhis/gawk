@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react';
 import styles from './room.module.css';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
@@ -25,7 +25,15 @@ import { useAutoHide } from '../../lib/useAutoHide';
 import { useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
-import { buildRoomLink, relayQuerySuffix } from '../../lib/shareLink';
+import { buildRoomLink, nonDefaultRelayOrigin, relayQuerySuffix } from '../../lib/shareLink';
+import {
+  buildDesktopBroadcastLink,
+  claimAutomaticHandoff,
+  desktopHandoffOffered,
+  launchDesktopLink,
+  loadHandoffAuto,
+} from '../../lib/desktopLink';
+import { useTransportStore } from '../../state/transportStore';
 import { HOME } from '../../routing';
 import {
   ROOM_CLIENT_WEB_BROADCASTER,
@@ -501,10 +509,56 @@ export function RoomView({
 
   // The hop carries the nickname this participant already answered (a guest
   // stays a guest), so the broadcaster page never asks again.
-  const startStreaming = useCallback(() => {
-    if (code !== '') stashRoomReturn({ code, nickname: guest ? null : nickname });
+  //
+  // R67 (docs/69 D1, D5): on a desktop OS the room also offers the desktop
+  // app. "…or in the desktop app" launches it from its click; with "always"
+  // set, "Start streaming here" does too, once per room in this tab. Either
+  // way the hop then goes on to the broadcaster as before, which shows the
+  // matching modal over the card and never launches a second time — so the
+  // browser path is still one click away. Never automatic with a dropped or
+  // refused `relay=` link.
+  const [handoffOffered] = useState(desktopHandoffOffered);
+  const desktopHref = () =>
+    buildDesktopBroadcastLink({
+      room: code,
+      nick: guest || nickname === null ? null : sanitizeNickname(nickname) || null,
+      relay: nonDefaultRelayOrigin(),
+    });
+  const hopToBroadcaster = (handoff?: 'opening' | 'auto') => {
+    if (code !== '') {
+      const nick = guest ? null : nickname;
+      stashRoomReturn(
+        handoff === undefined
+          ? { code, nickname: nick, source: 'room' }
+          : { code, nickname: nick, source: 'room', handoff },
+      );
+    }
     onStartStreaming?.();
-  }, [code, nickname, guest, onStartStreaming]);
+  };
+  const startStreaming = () => {
+    if (
+      handoffOffered &&
+      code !== '' &&
+      useTransportStore.getState().relayLinkNote === null &&
+      loadHandoffAuto() &&
+      claimAutomaticHandoff(code)
+    ) {
+      launchDesktopLink(desktopHref());
+      hopToBroadcaster('auto');
+      return;
+    }
+    hopToBroadcaster();
+  };
+  // The click launches through the hidden iframe rather than the anchor's own
+  // navigation, because the page navigates to the broadcaster right after;
+  // the anchor keeps its href for copying.
+  const startInDesktop = (e: MouseEvent) => {
+    e.preventDefault();
+    launchDesktopLink(desktopHref());
+    hopToBroadcaster('opening');
+  };
+  const desktopAction =
+    handoffOffered && code !== '' ? { href: desktopHref(), onClick: startInDesktop } : null;
 
   const creator = isRoomCreator(snapshot);
   const dynamic = isDynamicRoom(snapshot);
@@ -760,7 +814,16 @@ export function RoomView({
         card(
           EMPTY_ROOM_CARD.title,
           EMPTY_ROOM_CARD.body,
-          canStartStreaming ? <Button onClick={startStreaming}>Start streaming here</Button> : undefined,
+          canStartStreaming ? (
+            <>
+              <Button onClick={startStreaming}>Start streaming here</Button>
+              {desktopAction && (
+                <a href={desktopAction.href} className={styles.handoffLink} onClick={desktopAction.onClick}>
+                  <ScreenIcon /> …or in the desktop app
+                </a>
+              )}
+            </>
+          ) : undefined,
         )}
       {/* The gated-out state, in place of the empty-room card — "nobody
           is streaming" would be the wrong story when it is our own stream
@@ -973,6 +1036,7 @@ export function RoomView({
             onConfirmingEndChange={setConfirmingEnd}
             ownBroadcastId={own?.broadcastId ?? null}
             onStartStreaming={canStartStreaming ? startStreaming : null}
+            desktopAction={canStartStreaming ? desktopAction : null}
           />
         </div>
       )}

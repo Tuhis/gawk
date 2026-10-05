@@ -15,6 +15,7 @@ import { applyRouteRelay } from './features/servers/relayOverride';
 import { applyRouteGrant } from './features/room/grantHandoff';
 import { applyRouteRoom } from './features/room/roomReturn';
 import { applyRouteNick } from './features/room/linkNickname';
+import { applyRouteDesktop } from './lib/desktopLink';
 import { RoomScreen } from './features/room/RoomScreen';
 import { JoinResolver } from './features/room/JoinResolver';
 
@@ -25,14 +26,15 @@ import { JoinResolver } from './features/room/JoinResolver';
 // screens dial on mount and must never reach the wrong relay first, the grant
 // must be stashed (and stripped from the URL, so it never survives into a
 // copied link) before the room screen needs it, and the broadcaster reads its
-// pending room once, on mount. A `?nick=` prefill rides the route into the
-// screen as a prop and leaves the URL the same way.
+// pending room once, on mount. A `?nick=` prefill and a `?desktop=1` request
+// ride the route into the screen as props and leave the URL the same way.
 function resolveRoute(hash: string): Route {
   const route = parseRoute(hash);
   applyRouteRelay(route);
   applyRouteGrant(route);
   applyRouteRoom(route);
   applyRouteNick(route);
+  applyRouteDesktop(route);
   return route;
 }
 
@@ -51,7 +53,7 @@ function renderRoute(route: Route): ReactElement | null {
     case 'landing':
       return <LandingPage />;
     case 'broadcaster':
-      return <BroadcasterScreen linkNickname={route.nick} />;
+      return <BroadcasterScreen linkNickname={route.nick} linkDesktop={route.desktop} />;
     case 'viewer':
       return <ViewerScreen key={route.broadcastId} broadcastId={route.broadcastId} />;
     case 'room':
