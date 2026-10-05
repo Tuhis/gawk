@@ -9,8 +9,9 @@ everything the Simulator can run; phase D starts on devices with **IO0, a
 throwaway spike whose pre-registered verdict (§9.1) gates the device
 acceptance of the broadcast pipeline**: whether iOS keeps the capturing app
 running behind a game. Decisions marked *provisional* are
-confirmed or revised in §12 once IO0 is done. D1, D18, D20–D23 and §6 were
-revised 2026-10-05 by R68's UX redesign ([docs/70](70-ios-ux-redesign.md)).
+confirmed or revised in §12 once IO0 is done. D1, D18, D20, D21, D23 and
+§6 were revised 2026-10-05 by R68's UX redesign
+([docs/70](70-ios-ux-redesign.md)).
 Status lives in [`ROADMAP.md`](../ROADMAP.md).
 
 **Relationship to earlier work**
@@ -521,9 +522,6 @@ broadcast.)*
   the others' decode (the sessions stay up). *Provisional on IO8 thermals.*
 
 ### D22 — PiP and background audio
-
-*(Revised 2026-10-05 by R68, [docs/70](70-ios-ux-redesign.md) D8: PiP also
-starts on its own when you leave the app with the player up.)*
 
 `AVPictureInPictureController` with the
 `ContentSource(sampleBufferDisplayLayer:playbackDelegate:)` source. The
