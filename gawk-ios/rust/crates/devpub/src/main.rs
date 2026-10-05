@@ -9,10 +9,16 @@
 //! A room fixture (docs/70 K14): `--room-new` mints a room from the
 //! broadcast, `--room <code>` joins one and attaches to it, and `--nick
 //! <name>` names the participant and its tile. `GAWK_DEVPUB_ROOM=<code>` is
-//! printed once the room is known (minted, or attached):
+//! printed once the room is known (minted, or attached), and a minted
+//! room's creator token as `GAWK_DEVPUB_CREATOR=<hex>`, for a test to join
+//! it as its creator through a `?rt=c:<hex>` link:
 //!
 //!   cargo run -p gawk-devpub -- --insecure --room-new --nick Ann
 //!   cargo run -p gawk-devpub -- --insecure --room QX7P2K --nick Ben
+//!
+//! `--quit-after <seconds>` exits without ending the broadcast, as a
+//! broadcaster that drops off does: viewers and rooms see it away until the
+//! relay's grace ends (docs/70 D19's away tile).
 //!
 //! The fixtures are `crates/viewer/tests/fixtures/` (their README says how
 //! they were made): 320×240, 30 frames, keyframes at 0 and 15.
@@ -81,6 +87,8 @@ struct Args {
     room_new: bool,
     /// The room nickname and tile label; empty lets the relay assign one.
     nick: String,
+    /// Exit after this many seconds without a clean stop.
+    quit_after: Option<u64>,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -92,6 +100,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
         room: String::new(),
         room_new: false,
         nick: String::new(),
+        quit_after: None,
     };
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
@@ -104,6 +113,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "--room" => parsed.room = value("--room <code>")?,
             "--room-new" => parsed.room_new = true,
             "--nick" => parsed.nick = value("--nick <name>")?,
+            "--quit-after" => {
+                let v = value("--quit-after <seconds>")?;
+                parsed.quit_after = Some(
+                    v.parse()
+                        .map_err(|_| format!("--quit-after {v}: not a number of seconds"))?,
+                );
+            }
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -123,6 +139,7 @@ async fn main() {
         room,
         room_new,
         nick,
+        quit_after,
     } = parse_args(std::env::args().skip(1)).unwrap_or_else(|e| panic!("{e}"));
     let (codec_string, units, keyframes): (String, Vec<Vec<u8>>, Vec<bool>) = match codec.as_str() {
         "h264" => {
@@ -170,9 +187,13 @@ async fn main() {
                 }
                 // The room's code once it is known: minted, or joined with
                 // this broadcast attached.
-                EngineEvent::RoomCreated { code, .. } if !room_said => {
+                EngineEvent::RoomCreated {
+                    code,
+                    creator_token_hex,
+                } if !room_said => {
                     room_said = true;
                     println!("GAWK_DEVPUB_ROOM={code}");
+                    println!("GAWK_DEVPUB_CREATOR={creator_token_hex}");
                 }
                 EngineEvent::RoomAttached if !room_said && !room.is_empty() => {
                     room_said = true;
@@ -192,6 +213,13 @@ async fn main() {
     );
     let sender = session.sender();
     sender.set_codec(&codec_string);
+    if let Some(secs) = quit_after {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+            eprintln!("quitting after {secs} s without ending the broadcast");
+            std::process::exit(0);
+        });
+    }
     let mut tick = tokio::time::interval(Duration::from_micros(1_000_000 / FPS));
     let start = tokio::time::Instant::now();
     for i in (0..units.len()).cycle() {
@@ -247,8 +275,11 @@ mod tests {
                 room: "QX7P2K".into(),
                 room_new: false,
                 nick: "Ben".into(),
+                quit_after: None,
             }
         );
+        assert_eq!(parse(&["--quit-after", "20"]).unwrap().quit_after, Some(20));
+        assert!(parse(&["--quit-after", "soon"]).is_err());
         assert!(parse(&["--room-new", "--nick", "Ann"]).unwrap().room_new);
 
         assert!(parse(&["--room"]).is_err(), "a flag without its value");
