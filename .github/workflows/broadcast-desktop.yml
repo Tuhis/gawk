@@ -178,6 +178,10 @@ on:
     paths:
       - "gawk-broadcast-desktop/**"
       - "gawk-server/wire/**"
+      # R65 (docs/67 D24): the iOS core path-depends on the shared crates,
+      # so an iOS-side change runs the desktop gates too (and ios.yml runs
+      # on a shared-crate change).
+      - "gawk-ios/rust/**"
       # R44 (docs/53 D7/D8): the EXE links assets/icon/gawk.res and the
       # build job verifies the resource landed with tools/icon.
       - "assets/icon/**"
@@ -201,6 +205,10 @@ on:
     paths:
       - "gawk-broadcast-desktop/**"
       - "gawk-server/wire/**"
+      # R65 (docs/67 D24): the iOS core path-depends on the shared crates,
+      # so an iOS-side change runs the desktop gates too (and ios.yml runs
+      # on a shared-crate change).
+      - "gawk-ios/rust/**"
       # R44 (docs/53 D7/D8): the EXE links assets/icon/gawk.res and the
       # build job verifies the resource landed with tools/icon.
       - "assets/icon/**"

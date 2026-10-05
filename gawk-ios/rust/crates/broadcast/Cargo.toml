@@ -1,0 +1,13 @@
+[package]
+name = "gawk-broadcast"
+description = "ScreenCaptureKit sample intake → the shared engine: rotation, rung, encode, audio (docs/67 D6–D12)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+gawk-audio.workspace = true
+gawk-capture.workspace = true
+gawk-encode.workspace = true
+gawk-engine.workspace = true

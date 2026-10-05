@@ -18,7 +18,7 @@ pub mod vt_policy;
 #[cfg(target_os = "linux")]
 pub mod gst;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod vt;
 
 #[cfg(windows)]

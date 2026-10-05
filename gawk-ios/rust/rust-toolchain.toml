@@ -1,0 +1,7 @@
+# The desktop workspace's compiler (gawk-broadcast-desktop/rust-toolchain.toml):
+# both build the same shared crates, so they must agree. The two iOS targets
+# are what Xcode's build phase and CI cross-compile to (docs/67 D3).
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim"]

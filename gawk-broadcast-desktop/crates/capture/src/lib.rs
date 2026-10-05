@@ -16,7 +16,7 @@ pub mod gate;
 pub mod picker;
 pub mod sck_policy;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod host;
 #[cfg(target_os = "macos")]
 pub mod sck;

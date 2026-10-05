@@ -1,0 +1,45 @@
+# The iOS app's Rust core (R65, docs/67 D1). A workspace of its own, with its
+# own release unit (`gawk-ios`, OD5), that reuses the desktop workspace's
+# wire, engine, capture, encode and audio crates by path (OD9) rather than
+# copying them: there is no fifth wire mirror. A semantic change to one of
+# those crates is a `gawk-ios` change too, and its PR carries a commit
+# touching gawk-ios/ (CONTRIBUTING.md).
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/broadcast",
+    "crates/viewer",
+    "crates/uniffi-bindgen",
+]
+
+[workspace.package]
+version = "0.0.0" # x-release-please-version
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# `default-features = false`: the engine's `self-update` feature must stay
+# off on iOS (docs/67 D4). Features unify across the graph, so a single
+# dependency line taking the default turns it back on for everyone; the
+# shared crates below depend on the engine without it for the same reason,
+# and CI asserts the resolved graph (`ios.yml`).
+gawk-wire = { path = "../../gawk-broadcast-desktop/crates/wire" }
+gawk-engine = { path = "../../gawk-broadcast-desktop/crates/engine", default-features = false }
+gawk-capture = { path = "../../gawk-broadcast-desktop/crates/capture" }
+gawk-encode = { path = "../../gawk-broadcast-desktop/crates/encode" }
+gawk-audio = { path = "../../gawk-broadcast-desktop/crates/audio" }
+uniffi = "0.32"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+# A `[patch]` applies only inside the workspace that declares it, so the
+# desktop workspace's patched wtransport (vendor/wtransport/GAWK-PATCH.md:
+# the HTTP status of a rejected CONNECT, docs/38 D2) is named again here, or
+# the engine would silently build against the stock crate.
+[patch.crates-io]
+wtransport = { path = "../../gawk-broadcast-desktop/vendor/wtransport" }
+wtransport-proto = { path = "../../gawk-broadcast-desktop/vendor/wtransport-proto" }
