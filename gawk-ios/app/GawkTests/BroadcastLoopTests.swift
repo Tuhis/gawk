@@ -19,39 +19,24 @@ final class BroadcastLoopTests: XCTestCase {
         // the Simulator's first QUIC handshake 14-31 s late and then never
         // started the session, though the connection stayed up (2026-10-04,
         // in the recorded packets); a later dial in the same run took 0.1 s.
-        // Once QUIC's keepalive holds a connection open, a dial has no bound
-        // of its own, so each attempt gets a fresh session and 10 s, and one
-        // that hasn't gone live by then is abandoned: a run that is going to
-        // fail fails within 40 s. A local run goes live in well under a
-        // second.
-        var session = BroadcastSession(identity: identity)
-        var abandoned: [BroadcastSession] = []
+        // The engine abandons a dial attempt still unanswered after 5 s and
+        // starts over on a fresh endpoint, for 30 s in all, so one session
+        // either goes live or ends within that. A local run goes live in
+        // well under a second.
+        let session = BroadcastSession(identity: identity)
+        session.start(
+            relayURL: relay, secret: env["GAWK_SMOKE_SECRET"] ?? "", quality: .cellular,
+            room: "", nickname: "", telemetry: false, insecure: true
+        )
         var code = ""
-        var attempts: [String] = []
-        attempt: for n in 0..<4 {
-            if n > 0 {
-                session.stop()
-                abandoned.append(session)
-                session = BroadcastSession(identity: identity)
-            }
-            session.start(
-                relayURL: relay, secret: env["GAWK_SMOKE_SECRET"] ?? "", quality: .cellular,
-                room: "", nickname: "", telemetry: false, insecure: true
-            )
-            for _ in 0..<200 {
-                if case .live(let c, _) = session.phase { code = c; break attempt }
-                if case .ended(let reason) = session.phase {
-                    attempts.append(reason ?? "-")
-                    continue attempt
-                }
-                try await Task.sleep(for: .milliseconds(50))
-            }
-            attempts.append("still \(session.phase) after 10 s")
+        for _ in 0..<700 {
+            if case .live(let c, _) = session.phase { code = c; break }
+            if case .ended = session.phase { break }
+            try await Task.sleep(for: .milliseconds(50))
         }
-        withExtendedLifetime(abandoned) {}
         guard code.count == 6 else {
             session.stop()
-            XCTFail("never went live; attempts: \(attempts)")
+            XCTFail("never went live: \(session.phase), \(session.failure ?? "no failure")")
             return
         }
 
