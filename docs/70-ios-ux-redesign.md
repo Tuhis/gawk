@@ -259,7 +259,7 @@ Built in this milestone (OD10), each in a chunk of §8:
 Capture, encode, audio, transport, the viewer core's playout, the wire and
 the relay. No wire change, and no relay change. The Safari viewer and the
 desktop apps are unchanged. Every `AppSettings` key keeps its meaning.
-`recentRooms` is rewritten to records at launch (K2), and an old value
+`recentRooms` is rewritten to records at launch (K12), and an old value
 loads as unsaved recent rooms. The R65 acceptance criteria (docs/67 G1–G12)
 still hold. G11's second half (the iOS viewer plays a room in grid and
 focus) is met by IX6 on this design.
