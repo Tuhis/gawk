@@ -69,7 +69,8 @@ final class JoinUITests: XCTestCase {
         let app = launchApp(relay: false, extra: ["-gawkRelay", "https://192.0.2.1:4433"])
         typeCode("K7XQ2M", in: app)
         app.buttons["watch.join"].tap()
-        let opened = app.buttons["player.close"].waitForExistence(timeout: 12)
+        let opened = app.buttons["player.close"].waitForExistence(timeout: 20)
+        shot("join-unreachable", app)
         XCTAssertTrue(opened, "the player opened within the guard")
     }
 

@@ -332,6 +332,13 @@ jobs:
         working-directory: gawk-ios/rust
         run: cargo build -p gawk-devpub
 
+      # docs/70 IX5, IX6: the rooms the UI tests watch and join, as
+      # GAWK_UI_* variables (scripts/room-fixtures.sh says which is which).
+      # Before the Simulator boots: in its boot storm a mint's answer was
+      # lost and the fixture never got its room (2026-10-06).
+      - name: Publish the room fixtures
+        run: ../scripts/room-fixtures.sh https://127.0.0.1:4499 smoke "$RUNNER_TEMP/rooms" >> "$GITHUB_ENV"
+
       # The first iPhone on the pinned iOS 27 runtime; device names vary
       # between runner images.
       - name: Pick a simulator
@@ -366,11 +373,6 @@ jobs:
           id=$(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP/devpub.out" | head -1)
           [ -n "$id" ] || { cat "$RUNNER_TEMP/devpub.log"; exit 1; }
           echo "SMOKE_ID=$id" >> "$GITHUB_ENV"
-
-      # docs/70 IX5, IX6: the rooms the UI tests watch and join, as
-      # GAWK_UI_* variables (scripts/room-fixtures.sh says which is which).
-      - name: Publish the room fixtures
-        run: ../scripts/room-fixtures.sh https://127.0.0.1:4499 smoke "$RUNNER_TEMP/rooms" >> "$GITHUB_ENV"
 
       # The broadcast loop's first QUIC dial sometimes never reaches the
       # relay on a fresh runner (2026-10-04); the relay logs nothing for a
