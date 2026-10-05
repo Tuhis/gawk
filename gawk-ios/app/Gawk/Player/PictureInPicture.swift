@@ -31,6 +31,12 @@ final class PictureInPicture: NSObject {
 
     var isSupported: Bool { controller != nil }
 
+    /// docs/70 D8: PiP starts on its own when the app leaves with the
+    /// player up.
+    var startsAutomaticallyFromInline: Bool {
+        controller?.canStartPictureInPictureAutomaticallyFromInline ?? false
+    }
+
     func start() { controller?.startPictureInPicture() }
     func stop() { controller?.stopPictureInPicture() }
 

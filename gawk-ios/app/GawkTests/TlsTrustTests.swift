@@ -18,7 +18,7 @@ final class TlsTrustTests: XCTestCase {
         let session = BroadcastSession(identity: identity)
         session.start(
             relayURL: coreInfo().defaultRelayUrl, secret: "", quality: .cellular,
-            room: "", nickname: "", telemetry: false, insecure: false
+            nickname: "", telemetry: false, insecure: false
         )
         defer { session.stop() }
         for _ in 0..<300 {

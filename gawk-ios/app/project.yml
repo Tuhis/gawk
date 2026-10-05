@@ -65,6 +65,9 @@ targets:
           - CFBundleURLName: fi.ioio.gawk
             CFBundleURLSchemes:
               - gawk
+        # The broadcast's Live Activity (docs/70 D15), drawn by the
+        # GawkLiveActivity extension.
+        NSSupportsLiveActivities: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -78,6 +81,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: fi.ioio.gawk
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # The Live Activity's intents run here, not in the extension that
+        # compiles them too (LiveActivityIntents.swift).
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) GAWK_APP
         # build-core.sh writes into the source tree (Build/, Generated/).
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         # The core's C module (gawk_coreFFI) and static library (D3).
@@ -92,6 +98,36 @@ targets:
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
       - sdk: VideoToolbox.framework
+      - target: GawkLiveActivity
+        embed: true
+
+  # The Live Activity (docs/70 D15, K9, revising docs/67 §6): a widget
+  # extension that draws the state the app sends it. It holds no media, needs
+  # no App Group or shared Keychain, and links no gawk Rust code.
+  GawkLiveActivity:
+    type: app-extension
+    platform: iOS
+    sources:
+      - GawkLiveActivity
+      - Gawk/LiveActivity/GawkActivityAttributes.swift
+      - Gawk/LiveActivity/LiveActivityIntents.swift
+      - Gawk/Design/Theme.swift
+      - ../../assets/icon/ios/Mark.xcassets
+    info:
+      path: GawkLiveActivity/Info.plist
+      properties:
+        CFBundleDisplayName: gawk
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: fi.ioio.gawk.LiveActivity
+        SKIP_INSTALL: YES
+    dependencies:
+      - sdk: SwiftUI.framework
+      - sdk: WidgetKit.framework
 
   GawkTests:
     type: bundle.unit-test
