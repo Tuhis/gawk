@@ -2,8 +2,8 @@
 
 **Status**: proposed 2026-10-03. Owner decisions OD1–OD16 (§2) were taken
 the same day in an interview; **OD17 (2026-10-04) moved screen capture from a
-ReplayKit extension to ScreenCaptureKit in the app** (§12). **IO1 implemented
-2026-10-04**; IO0 and IO2–IO8 (§9) are not started.
+ReplayKit extension to ScreenCaptureKit in the app** (§12). **IO1 and IO4
+implemented 2026-10-04**; IO0, IO2, IO3 and IO5–IO8 (§9) are not started.
 **Work runs Simulator-first (OD13, D26)**: phase S builds and tests
 everything the Simulator can run; phase D starts on devices with **IO0, a
 throwaway spike whose pre-registered verdict (§9.1) gates the device
@@ -407,10 +407,11 @@ gain a tested function they don't call.
   arrival. `offset` is docs/17 Decision 6's estimator, ported to
   `crates/viewer` with the SPA's constants (`transport/playout.ts`):
   `clamp(arrivalP95 − arrivalMin + 34, 50, 350)` ms, recomputed every
-  second, **seeded at 150 ms for the first 5 s** while the jitter window
+  500 ms (the SPA's stats tick), **seeded at 150 ms for the first 5 s** while the jitter window
   fills, slewed up fast (50 ms/s) and down slowly (5 ms/s, after 15 s below).
-  The slew is applied as a synchronizer rate a fraction of a percent off
-  1.0, which is invisible, rather than as a step. On a clean link it
+  The slew moves each sample's presentation time gradually
+  (`ts + baseline + offset`), never as a step: the "rate a fraction off
+  1.0" this paragraph first described, carried in the timestamps (§12). On a clean link it
   settles near 50 ms. A constant is not an option: it is a rejected design
   (docs/12 Decision 7, docs/17 Decision 10).
 - **Presets**: the SPA's two non-reconnecting playout presets (docs/37):
@@ -421,8 +422,10 @@ gain a tested function they don't call.
 - **Drop to live**: if the newest received PTS runs more than **2 × `offset`**
   ahead of what's presented (after a stall, a background trip or an
   outage), flush both renderers, wait for the next keyframe and re-anchor.
-  This is R5's live-edge rule in its simplest form, and what G10 tests. It
-  never slows playback to catch up; it jumps.
+  This is a native rule: the web has no PTS-distance check and jumps on
+  decoder backpressure instead, which the native player also does (a deep
+  renderer queue requests the same resync). G10 tests it. It never slows
+  playback to catch up; it jumps.
 
 ### D16 — Audio decode: libopus in Rust
 
@@ -790,3 +793,37 @@ dated.
   release-please extra file), so a desktop release never leaves the iOS lock
   stale. The core's Swift function is `initializeCore()`, not
   `initialize()`, which collides with `NSObject.initialize`.
+- **2026-10-04 — IO4: where the native viewer does and doesn't follow the
+  SPA.** `crates/viewer` ports `reassembler.ts`, `reorder-buffer.ts`
+  (with its grace controller), `playout.ts`, `live-edge.ts`,
+  `time-sync.ts` and `reconnect.ts` with their tests restated case for
+  case. Deliberate differences: the delta-loss rule is D13's (never step
+  over a hole), where the web's default allows one skipped delta per GOP;
+  the recovered-frame ledger and arrival accounting are not ported (their
+  only consumer is R30's stripe detector); the estimator runs on the web's
+  500 ms tick, not every second as D15 first said; D15's drop-to-live check
+  is new rather than a port (see D15). The session reads close codes the
+  web can't: a 404 before any session connected ends the viewer, while a
+  404 after one (a restarted relay that doesn't know the broadcast until
+  its publisher reclaims it) is part of the reconnect ladder; an in-band
+  SessionClosing (R57) names the code a bare close lacks.
+- **2026-10-04 — IO4: `engine::transport::dial_subscribe`.** A second
+  desktop-crate change beyond D4: the engine never subscribed, so its
+  wtransport `connect` (Origin header, keepalive, the vendored refusal
+  status) had no subscribe entry point. It's a five-line sibling of
+  `dial_room` returning the same `RelaySession` seam, which the viewer's
+  session and its fake-transport tests are written against. The engine's
+  relay test harness now finds the repo root by walking up, so the viewer's
+  integration test can include it.
+- **2026-10-04 — IO4: libvpx through a pinned pre-release (OD12).** The
+  stable `shiguredo_libvpx` (2026.1.0) runs libvpx's configure without a
+  target, so it can only build for the host. `2026.2.0-canary.2`
+  (2026-10-03) is the first release that builds libvpx v1.17.0 from source
+  for `aarch64-apple-ios` and `aarch64-apple-ios-sim` (a small patch for the
+  arm64 simulator). The owner accepted it pinned exactly (`=`) with the
+  `source-build` feature: the build clones the libvpx tag from GitHub and
+  compiles it, and no prebuilt binary is ever downloaded. It needs git,
+  network access at build time and rustup's `llvm-tools` (symbol
+  prefixing), which `rust/rust-toolchain.toml` now lists. Move to the stable
+  2026.2.0 when it ships. libvpx is BSD-3; its notice belongs to the
+  distribution milestone (§5), since R65 publishes nothing (OD3).

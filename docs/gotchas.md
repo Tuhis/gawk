@@ -1230,6 +1230,12 @@ Add to it when a new gotcha lands in `docs/`.
   ("static member 'initialize' cannot be used on instance"). The core's
   entry point is `initialize_core` → `initializeCore()`.
   ([docs/67](67-ios-app.md) §12)
+- **`IPHONEOS_DEPLOYMENT_TARGET` in the environment breaks `go build`.**
+  clang honours it, so cgo (`runtime/cgo`) compiles for iOS against the Mac
+  SDK and fails ("using sysroot for 'macOS' but targeting
+  'arm64-apple-ios'"). Set it only where an iOS Rust build runs; the relay
+  test harness strips it before building the Go tools.
+  ([docs/67](67-ios-app.md) §12)
 
 **Native Linux broadcaster, in the desktop workspace (R56)**
 

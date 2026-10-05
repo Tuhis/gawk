@@ -9,3 +9,24 @@ license.workspace = true
 [dependencies]
 gawk-engine.workspace = true
 gawk-wire.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+url = "2"
+# The Annex-B NAL splitter the desktop broadcasters' H.264 path already
+# trusts (`gawk_encode::h264`), reused by the passthrough helpers (D15).
+# Light: `log` everywhere, plus the objc2 VideoToolbox bindings on Apple
+# targets, which the broadcast crate links into the same library anyway.
+gawk-encode.workspace = true
+# Opus decode (D16): the crate and version gawk-audio encodes with, so the
+# app carries one vendored static libopus. Its bundled CMakeLists predates
+# CMake 3.5, so builds need CMAKE_POLICY_VERSION_MINIMUM=3.5.
+opus = "0.3"
+# VP8/VP9 decode (OD12, D15). `source-build` compiles libvpx from the
+# upstream webmproject tag the crate pins, never the prebuilt archive the
+# default downloads at build time. Pinned exactly: 2026.2.0-canary.2 is the
+# first release whose source build cross-compiles for the iOS device and
+# simulator (2026.1.0 configures libvpx for the host). The build needs git,
+# network access to github.com and rustup's llvm-tools (rust-toolchain.toml).
+shiguredo_libvpx = { version = "=2026.2.0-canary.2", features = ["source-build"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "net", "test-util"] }
