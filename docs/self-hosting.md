@@ -399,6 +399,14 @@ They all send their own `Origin` header rather than an `https://` one, so they
 have to be in the relay's `allowedOrigins` — see the table in
 [§4.2](#42-relay-values).
 
+**Handing a browser broadcast to the desktop app (R67,
+[docs/69](69-app-desktop-handoff.md)).** On Windows, macOS and Linux the
+app's broadcast page offers **Open in the desktop app**, and a room offers
+"…or in the desktop app", both as a `gawk://broadcast` link carrying the
+room, the nickname and your relay. A link to `#/broadcast?room=<code>&desktop=1`
+tries the app as soon as it opens. These point users at the official desktop
+builds; set the app chart's `config.desktopHandoff: false` to hide all of it.
+
 ## 8. Operating it
 
 **Upgrades** are `helm upgrade` with a newer chart version. The Deployment

@@ -20,8 +20,10 @@ export type Route =
   // `room` is a room to join once the stream is live (`?room=<code>`, a link
   // from outside the app, such as a chat bot's room card). App.tsx moves it
   // into the room-return stash before the first render. Null when absent or
-  // malformed. `nick` is a `?nick=` prefill, as on a room link.
-  | ({ view: 'broadcaster'; room: string | null; nick: string | null } & RouteQuery)
+  // malformed. `nick` is a `?nick=` prefill, as on a room link. `desktop` is
+  // `?desktop=1`: the link asks to open the desktop app (R67, docs/69 D9);
+  // App.tsx strips it before the first render.
+  | ({ view: 'broadcaster'; room: string | null; nick: string | null; desktop: boolean } & RouteQuery)
   | ({ view: 'viewer'; broadcastId: string } & RouteQuery)
   // A room link. The code is kept as typed (a static slug displays as
   // configured; the relay normalizes it). `grant` is the one-shot `?rt=`
@@ -104,6 +106,17 @@ function parseNickParam(query: string): string | null {
   }
 }
 
+// `?desktop=1` on the broadcast route. Exactly "1": anything else is an
+// unknown value and ignored, like any unusable parameter.
+function parseDesktopParam(query: string): boolean {
+  if (query === '') return false;
+  try {
+    return new URLSearchParams(query).get('desktop') === '1';
+  } catch {
+    return false;
+  }
+}
+
 // Strip a one-shot parameter from a hash, keeping the path and the other
 // parameters.
 export function hashWithoutParam(hash: string, name: string): string {
@@ -130,7 +143,13 @@ export function parseRoute(hash: string): Route {
 
   if (path === '') return { view: 'landing' };
   if (path === 'broadcast') {
-    return { view: 'broadcaster', room: parseRoomParam(query), nick: parseNickParam(query), ...parseQuery(query) };
+    return {
+      view: 'broadcaster',
+      room: parseRoomParam(query),
+      nick: parseNickParam(query),
+      desktop: parseDesktopParam(query),
+      ...parseQuery(query),
+    };
   }
   if (path === 'terms') return { view: 'terms' };
 

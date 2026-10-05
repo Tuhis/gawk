@@ -50,7 +50,7 @@ export const AUDIO_TIP: Record<AudioGuidance, TipCopy> = {
       'Audio isn’t supported in this browser — you’ll stream video only. Use a ' +
       'Chromium-based browser (Chrome, Edge) to include sound, or the ',
     link: 'native broadcaster',
-    after: ' for Linux or Windows.',
+    after: ' for Windows, macOS or Linux.',
   },
 };
 
@@ -60,7 +60,7 @@ export const NATIVE_TIP: TipCopy = {
   before: 'To stream just one game’s audio, use the ',
   link: 'native broadcaster',
   after:
-    ' for Linux or Windows — it captures a single application’s sound and ' +
+    ' for Windows, macOS or Linux — it captures a single application’s sound and ' +
     'encodes in hardware.',
 };
 

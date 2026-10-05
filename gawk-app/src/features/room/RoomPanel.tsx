@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useState, type MouseEvent } from 'react';
 import styles from './room.module.css';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
-import { CloseIcon, EditIcon, EyeIcon, OpenIcon } from '../../ui/Icons';
+import { CloseIcon, EditIcon, EyeIcon, OpenIcon, ScreenIcon } from '../../ui/Icons';
 import {
   ROOM_CAP_CHAT,
   ROOM_CLIENT_NATIVE,
@@ -33,6 +33,9 @@ interface Props {
   ownBroadcastId: string | null;
   // A participant without a broadcast may start one.
   onStartStreaming: (() => void) | null;
+  // …or start it in the desktop app (R67, docs/69 D1): the `gawk://` link
+  // and the click that launches it and hops to the broadcaster.
+  desktopAction: { href: string; onClick: (e: MouseEvent) => void } | null;
 }
 
 function kindLabel(kind: number, flags: number): string {
@@ -59,6 +62,7 @@ export function RoomPanel({
   onConfirmingEndChange,
   ownBroadcastId,
   onStartStreaming,
+  desktopAction,
 }: Props) {
   const creator = isRoomCreator(snapshot);
   const dynamic = isDynamicRoom(snapshot);
@@ -204,6 +208,11 @@ export function RoomPanel({
           <Button variant="secondary" onClick={onStartStreaming}>
             Start streaming here
           </Button>
+        )}
+        {onStartStreaming && desktopAction && (
+          <a href={desktopAction.href} className={styles.handoffLink} onClick={desktopAction.onClick}>
+            <ScreenIcon /> …or in the desktop app
+          </a>
         )}
         {creator && dynamic && (
           <div className={styles.endBlock}>

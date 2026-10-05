@@ -90,6 +90,12 @@ vi.mock('../../transport/viewer-session', () => ({
   ViewerSession: FakeViewerSession,
   RECONNECT_MAX_ATTEMPTS: 10,
 }));
+// R67: the desktop handoff's launch is a spy (docs/69; HO4 checks the real one).
+const { launches } = vi.hoisted(() => ({ launches: [] as string[] }));
+vi.mock('../../lib/desktopLink', async (importActual) => ({
+  ...(await importActual<typeof import('../../lib/desktopLink')>()),
+  launchDesktopLink: (href: string) => launches.push(href),
+}));
 
 import { LEAVE_DETACH_TIMEOUT_MS, RoomScreen, RoomView } from './RoomScreen';
 import { useRoomStore } from '../../state/roomStore';
@@ -434,7 +440,7 @@ describe('RoomScreen people-and-chat panel', () => {
     await joinAs('tuhis', { attachments: [] });
     expect(screen.getByText('Nobody is streaming yet')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
-    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: 'tuhis' });
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: 'tuhis', source: 'room' });
     expect(window.location.hash).toBe('#/broadcast');
   });
 
@@ -455,7 +461,7 @@ describe('RoomScreen people-and-chat panel', () => {
     await waitFor(() => expect(roomSessions).toHaveLength(1));
     act(() => roomSessions[0].cbs.onState(state({ attachments: [] })));
     fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
-    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: null });
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: null, source: 'room' });
   });
 
   it('a guest who later picks a nickname hands it over on "start streaming here"', async () => {
@@ -468,7 +474,7 @@ describe('RoomScreen people-and-chat panel', () => {
     fireEvent.change(screen.getByLabelText('New nickname'), { target: { value: 'named' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     fireEvent.click(screen.getAllByRole('button', { name: 'Start streaming here' })[0]);
-    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: 'named' });
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({ code: 'AB2CD3', nickname: 'named', source: 'room' });
   });
 
   it('a nickname changed while the first join is connecting reaches the relay', async () => {
@@ -1005,5 +1011,76 @@ describe('a gated static room that refused the attach grant (D8)', () => {
     expect(screen.getByText('Nobody is streaming yet')).toBeTruthy();
     expect(screen.queryByText('Your stream isn’t in this room')).toBeNull();
     expect(screen.queryByTestId('attach-gated-pill')).toBeNull();
+  });
+});
+
+describe('the desktop handoff from a room (R67, docs/69 D1, D5)', () => {
+  const WINDOWS_UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+  const desktopLinks = () => screen.queryAllByRole('link', { name: /or in the desktop app/ });
+
+  beforeEach(() => {
+    launches.length = 0;
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(WINDOWS_UA);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('offers "…or in the desktop app" beside "Start streaming here", in the card and the panel', async () => {
+    await joinAs('Juho K', { attachments: [] });
+    fireEvent.click(screen.getByRole('button', { name: /people/i }));
+    const links = desktopLinks();
+    expect(links.length).toBe(2);
+    for (const link of links) expect(link.getAttribute('href')).toBe('gawk://broadcast?room=AB2CD3&nick=Juho%20K');
+  });
+
+  it('launches from the click, then hops to the broadcaster, which shows the Opening modal', async () => {
+    await joinAs('tuhis', { attachments: [] });
+    fireEvent.click(desktopLinks()[0]);
+    expect(launches).toEqual(['gawk://broadcast?room=AB2CD3&nick=tuhis']);
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toEqual({
+      code: 'AB2CD3',
+      nickname: 'tuhis',
+      source: 'room',
+      handoff: 'opening',
+    });
+    expect(window.location.hash).toBe('#/broadcast');
+  });
+
+  it('with "always" set, "Start streaming here" launches once per room in this tab', async () => {
+    localStorage.setItem('gawk:desktop-handoff', 'auto');
+    await joinAs('tuhis', { attachments: [] });
+    fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
+    expect(launches).toEqual(['gawk://broadcast?room=AB2CD3&nick=tuhis']);
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).toMatchObject({ handoff: 'auto' });
+
+    // The second time in this tab it is the plain hop.
+    fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
+    expect(launches).toHaveLength(1);
+    expect(JSON.parse(sessionStorage.getItem('gawk:room-return') ?? 'null')).not.toHaveProperty('handoff');
+  });
+
+  it('nothing of it without "always", on a phone, or with the switch off', async () => {
+    await joinAs('tuhis', { attachments: [] });
+    fireEvent.click(screen.getByRole('button', { name: 'Start streaming here' }));
+    expect(launches).toEqual([]);
+    cleanup();
+
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(
+      'Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36',
+    );
+    roomSessions.length = 0;
+    await joinAs('tuhis', { attachments: [] });
+    expect(desktopLinks()).toEqual([]);
+    cleanup();
+
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(WINDOWS_UA);
+    window.__GAWK_CONFIG__ = { desktopHandoff: false };
+    try {
+      roomSessions.length = 0;
+      await joinAs('tuhis', { attachments: [] });
+      expect(desktopLinks()).toEqual([]);
+    } finally {
+      window.__GAWK_CONFIG__ = {};
+    }
   });
 });

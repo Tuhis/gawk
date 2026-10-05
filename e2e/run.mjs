@@ -1325,6 +1325,65 @@ async function startBrowserBroadcast({ relayUrl, certHash, attempt }) {
   }
 }
 
+// R67 (docs/69 HO2, D9): the desktop handoff in a browser with NO gawk://
+// handler registered — the case of everyone without the app. Clicking the
+// offer and opening a `?desktop=1` link must both leave the SPA in place with
+// its pending room, behind the Opening modal; Continue in the browser must
+// hand back a working Start. Whether a browser WITH the app launches it is
+// the owner's per-browser pass (HO4), not something headless can show.
+async function desktopHandoffCheck({ relayUrl, certHash }) {
+  const browser = await launchBrowser();
+  try {
+    const context = await newAppContext(browser, { relayUrl, certHash });
+    const page = await context.newPage();
+    wirePageLogs(page, 'console-desktop-handoff');
+    const dialog = page.getByRole('dialog', { name: 'Opening the desktop app' });
+    const assertStillHere = async (p, what) => {
+      if (!new URL(p.url()).hash.startsWith('#/broadcast')) {
+        fail(`desktop handoff (${what}): the page navigated away to ${p.url()}`);
+      }
+      if (!(await p.getByTestId('pending-room').textContent()).includes('vip-e2e-handoff')) {
+        fail(`desktop handoff (${what}): the pending room chip is gone`);
+      }
+    };
+
+    // The offer's click: the anchor's own navigation to an unhandled scheme.
+    await page.goto(`${APP_URL}/#/broadcast?room=vip-e2e-handoff`);
+    const offer = page.getByRole('link', { name: 'Open in the desktop app' });
+    const href = await offer.getAttribute('href');
+    if (href !== 'gawk://broadcast?room=vip-e2e-handoff') fail(`desktop handoff: the offer links to ${href}`);
+    await offer.click();
+    await dialog.waitFor({ state: 'visible', timeout: 5000 });
+    await sleep(1000);
+    await assertStillHere(page, 'offer click');
+    // Once a launch is attempted, headless Chrome stops delivering trusted
+    // input to the tab — its external-protocol prompt is up and nothing can
+    // answer it (verified 2026-10-06: a real click lands only when the
+    // launch was suppressed). A person answers the prompt first; here the
+    // button is clicked through the DOM.
+    await page.getByRole('button', { name: 'Continue in the browser' }).evaluate((el) => el.click());
+    await dialog.waitFor({ state: 'hidden', timeout: 5000 });
+    if (!(await page.getByRole('button', { name: 'Start a stream' }).isEnabled())) {
+      fail('desktop handoff: Start is not enabled after Continue in the browser');
+    }
+
+    // D9: the link asks for the app; the hidden iframe launches on load.
+    // A fresh tab, as a link opens one: on the page above, a hash-only
+    // navigation would keep the screen mounted, and the screen reads the
+    // link once, on mount.
+    const linkPage = await context.newPage();
+    wirePageLogs(linkPage, 'console-desktop-handoff-link');
+    await linkPage.goto(`${APP_URL}/#/broadcast?room=vip-e2e-handoff&desktop=1`);
+    await linkPage.getByRole('dialog', { name: 'Opening the desktop app' }).waitFor({ state: 'visible', timeout: 5000 });
+    await sleep(1000);
+    await assertStillHere(linkPage, '?desktop=1');
+    if (linkPage.url().includes('desktop=')) fail('desktop handoff: ?desktop= was not stripped from the URL');
+    log('desktop handoff: the page stays put with no gawk:// handler (offer click and ?desktop=1)');
+  } finally {
+    await browser.close();
+  }
+}
+
 async function broadcasterScenario({ relayUrl, certHash, attempt }) {
   const { browser, page, id } = await startBrowserBroadcast({ relayUrl, certHash, attempt });
   try {
@@ -2011,6 +2070,8 @@ async function main() {
     log('PASS');
     return;
   }
+
+  await desktopHandoffCheck({ relayUrl, certHash });
 
   // Z5: the browser publishes. Same one-retry policy as the viewer scenario
   // (fresh browser, never the relay); a retry mints a fresh broadcast ID and

@@ -118,6 +118,14 @@ config:
   # deployment relay (picker hidden, ?relay= ignored with a quiet note).
   allowCustomRelays: true
 
+  # R67 (docs/69 D7): whether the broadcast pages offer the desktop app —
+  # "Open in the desktop app" under Start, a room's "…or in the desktop
+  # app", the remembered "always" and #/broadcast?desktop=1 links, all of
+  # which open a gawk:// link. Shown only on Windows, macOS and Linux.
+  # Default TRUE; set false when this deployment's users shouldn't be
+  # pointed at the official desktop builds.
+  desktopHandoff: true
+
   # R37 (docs/40 D9): optional URL of a server-directory JSON (schema v1) the
   # picker offers. Fetched when the picker opens, never at boot. Host it
   # same-origin (the terms.html ConfigMap pattern) or with CORS for this

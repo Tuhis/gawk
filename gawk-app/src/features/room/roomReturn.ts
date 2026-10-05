@@ -22,6 +22,16 @@ export interface RoomReturn {
   // guests; the broadcaster's session gets its own guest name). Undefined
   // when nobody has been asked yet: a `?room=` link.
   nickname: string | null | undefined;
+  // Where the hop came from (R67, docs/69 D5): 'link' for a `?room=` link
+  // from outside the app, 'room' for the room view's own buttons. Only a
+  // 'link' hop may launch the desktop app automatically. A stash without it
+  // (an older tab) reads as 'room'.
+  source: 'link' | 'room';
+  // Set when the room view already launched the desktop app on the way
+  // here: 'opening' after "…or in the desktop app", 'auto' after an
+  // automatic launch from "Start streaming here". The broadcaster shows the
+  // matching modal and never launches a second time.
+  handoff?: 'opening' | 'auto';
 }
 
 export function stashRoomReturn(ret: RoomReturn): void {
@@ -40,12 +50,15 @@ export function takeRoomReturn(): RoomReturn | null {
     if (v === null || v === '') return null;
     const parsed = JSON.parse(v) as Partial<RoomReturn>;
     if (typeof parsed.code !== 'string' || parsed.code === '') return null;
+    const source = parsed.source === 'link' ? 'link' : 'room';
+    const handoff = parsed.handoff === 'opening' || parsed.handoff === 'auto' ? parsed.handoff : undefined;
     // JSON drops an undefined nickname, so an absent key means "not asked".
-    if (!('nickname' in parsed)) return { code: parsed.code, nickname: undefined };
-    return {
-      code: parsed.code,
-      nickname: typeof parsed.nickname === 'string' && parsed.nickname !== '' ? parsed.nickname : null,
-    };
+    const nickname = !('nickname' in parsed)
+      ? undefined
+      : typeof parsed.nickname === 'string' && parsed.nickname !== ''
+        ? parsed.nickname
+        : null;
+    return handoff === undefined ? { code: parsed.code, nickname, source } : { code: parsed.code, nickname, source, handoff };
   } catch {
     return null;
   }
@@ -56,7 +69,7 @@ export function takeRoomReturn(): RoomReturn | null {
 // parameter leaves the URL so a reload does not join again.
 export function applyRouteRoom(route: Route): void {
   if (route.view !== 'broadcaster' || route.room === null) return;
-  stashRoomReturn({ code: route.room, nickname: undefined });
+  stashRoomReturn({ code: route.room, nickname: undefined, source: 'link' });
   if (typeof window === 'undefined') return;
   const cleaned = hashWithoutParam(window.location.hash, 'room');
   if (cleaned === window.location.hash) return;

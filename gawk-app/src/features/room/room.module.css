@@ -521,6 +521,28 @@
   justify-content: center;
 }
 
+/* R67 (docs/69 D1): "…or in the desktop app", a quiet line beside or
+   under "Start streaming here", never a second button. */
+.handoffLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 44px;
+  padding: 0 0.75rem;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--muted);
+  text-decoration: none;
+  border-radius: var(--r-md);
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.handoffLink:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .spinner {
   width: 34px;
   height: 34px;

@@ -15,6 +15,7 @@ import {
   LeaveIcon,
   PeopleIcon,
   PlayIcon,
+  ScreenIcon,
   StatsIcon,
   StopIcon,
 } from '../../ui/Icons';
@@ -35,7 +36,16 @@ import { acceptCurrentTerms, hasAcceptedCurrentTerms } from '../terms/acceptance
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
 import type { TelemetryHelloMessage } from '../../transport/wire';
-import { buildViewLink } from '../../lib/shareLink';
+import { buildViewLink, nonDefaultRelayOrigin } from '../../lib/shareLink';
+import {
+  buildDesktopBroadcastLink,
+  claimAutomaticHandoff,
+  desktopHandoffOffered,
+  launchDesktopLink,
+  loadHandoffAuto,
+  saveHandoffAuto,
+} from '../../lib/desktopLink';
+import { DesktopHandoffModal, type HandoffModalKind } from './DesktopHandoffModal';
 import { relayHost } from '../../lib/relayUrl';
 import { STATS_HOTKEY } from '../../lib/hotkeys';
 import { useHotkey } from '../../lib/useHotkey';
@@ -48,7 +58,7 @@ import type { RoomTarget } from '../../transport/room-session';
 import { parseGrant, readGrant, type RoomGrant } from '../room/grantHandoff';
 import { takeRoomReturn } from '../room/roomReturn';
 import { BACKGROUND_STOP_NOTE, BackgroundWatchdog } from './backgroundWatchdog';
-import { loadNickname } from '../room/roomPrefs';
+import { loadNickname, sanitizeNickname } from '../room/roomPrefs';
 import { parseRoomLink } from '../../lib/roomCode';
 import { MAX_ROOM_LABEL_LEN } from '../../transport/wire';
 // Capture and audio guidance is gated on the real audio capability (never UA
@@ -123,7 +133,12 @@ function TipLine({ copy }: { copy: TipCopy }) {
 // and encoder feedback shows as quiet badges. A restart reclaims the previous
 // broadcast ID and falls back to minting a new one.
 // `linkNickname`: a `#/broadcast?nick=` link's name (linkNickname.ts).
-export function BroadcasterScreen({ linkNickname = null }: { linkNickname?: string | null } = {}) {
+// `linkDesktop`: a `#/broadcast?desktop=1` link asking for the desktop app
+// (R67, docs/69 D9).
+export function BroadcasterScreen({
+  linkNickname = null,
+  linkDesktop = false,
+}: { linkNickname?: string | null; linkDesktop?: boolean } = {}) {
   const pipelineRef = useRef<BroadcastSessionLike | null>(null);
   const unmountedRef = useRef(false);
   // The display grant of the latest start. The screen owns it (handleStart
@@ -205,6 +220,28 @@ export function BroadcasterScreen({ linkNickname = null }: { linkNickname?: stri
   // still the name in the field, the room view asks before using it.
   const [linkNick] = useState(linkNickname);
   const [roomLabel, setRoomLabel] = useState(() => roomReturn?.nickname ?? linkNick ?? loadNickname() ?? '');
+
+  // R67 (docs/69): the desktop app as the other way to broadcast this. The
+  // offer sits under Start on desktop OSes; a launch opens a modal over the
+  // card and never touches the browser path underneath (G7, D6).
+  const [handoffOffered] = useState(desktopHandoffOffered);
+  const [handoffAuto, setHandoffAuto] = useState(loadHandoffAuto);
+  // What the mount does (D5, D9), decided once and without side effects:
+  // the room view may already have launched the app on the way here; a
+  // `?desktop=1` link asks for it; a `?room=` link from outside launches it
+  // when "always" is set. Never with a dropped or refused `relay=` — the
+  // user should see that note in the browser.
+  const [handoffStart] = useState<{ modal: HandoffModalKind | null; launch: 'link' | 'auto' | null }>(() => {
+    const none = { modal: null, launch: null };
+    if (!handoffOffered) return none;
+    if (roomReturn?.handoff === 'opening') return { modal: 'opening', launch: null };
+    if (roomReturn?.handoff === 'auto') return { modal: 'opened', launch: null };
+    if (useTransportStore.getState().relayLinkNote !== null) return none;
+    if (linkDesktop) return { modal: 'opening', launch: 'link' };
+    if (roomReturn?.source === 'link' && loadHandoffAuto()) return { modal: null, launch: 'auto' };
+    return none;
+  });
+  const [handoffModal, setHandoffModal] = useState<HandoffModalKind | null>(handoffStart.modal);
   // The resume token is a ref (nothing renders it); this mirrors "the token
   // has arrived" for the pending-room effect below.
   const [resumeReady, setResumeReady] = useState(false);
@@ -250,6 +287,36 @@ export function BroadcasterScreen({ linkNickname = null }: { linkNickname?: stri
 
   const [showServerPicker, setShowServerPicker] = useState(false);
   const resolvedServerUrl = useTransportStore((s) => s.serverUrl);
+
+  // The `gawk://broadcast` link for what this card would start: the pending
+  // room, the name in the field, and the relay when it isn't the default
+  // (docs/69 D3). Rebuilt on every render, so it follows the room chip, the
+  // name and the server picker (resolvedServerUrl above subscribes to it).
+  const handoffHref = buildDesktopBroadcastLink({
+    room: pendingRoom?.kind === 'join' ? pendingRoom.code : null,
+    nick: sanitizeNickname(roomLabel) || null,
+    relay: nonDefaultRelayOrigin(),
+  });
+  // The mount's launch, once. The ref keeps StrictMode's second effect run
+  // from launching again; the per-room claim keeps a second link for the
+  // same room in this tab from doing so (D5).
+  const handoffLaunchedRef = useRef(false);
+  useEffect(() => {
+    if (handoffLaunchedRef.current || handoffStart.launch === null) return;
+    handoffLaunchedRef.current = true;
+    if (handoffStart.launch === 'link') {
+      launchDesktopLink(handoffHref);
+      return;
+    }
+    if (roomReturn && claimAutomaticHandoff(roomReturn.code)) {
+      launchDesktopLink(handoffHref);
+      setHandoffModal('opened');
+    }
+  }, [handoffStart, roomReturn, handoffHref]);
+  const setAutoHandoff = useCallback((on: boolean) => {
+    saveHandoffAuto(on);
+    setHandoffAuto(on);
+  }, []);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -1114,6 +1181,13 @@ export function BroadcasterScreen({ linkNickname = null }: { linkNickname?: stri
               <Button className={styles.startBtn} onClick={beginStart}>
                 <PlayIcon /> Start a stream
               </Button>
+              {/* The anchor's own navigation is the launch: it carries the
+                  click's activation (docs/69 D4). */}
+              {handoffOffered && (
+                <a href={handoffHref} className={styles.handoffOffer} onClick={() => setHandoffModal('opening')}>
+                  <ScreenIcon /> Open in the desktop app
+                </a>
+              )}
               {/* Collapsed by default; toggling it touches nothing on the
                   start path. */}
               <div className={styles.tips}>
@@ -1165,6 +1239,16 @@ export function BroadcasterScreen({ linkNickname = null }: { linkNickname?: stri
       </div>
       {settingsPanel}
       {roomPanel}
+
+      {handoffModal && (
+        <DesktopHandoffModal
+          kind={handoffModal}
+          href={handoffHref}
+          auto={handoffAuto}
+          onAutoChange={setAutoHandoff}
+          onClose={() => setHandoffModal(null)}
+        />
+      )}
 
       {termsPrompt && (
         <>

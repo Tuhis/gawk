@@ -13,6 +13,7 @@ const seen = vi.hoisted(() => ({
   hashAtRender: [] as string[],
   grantAtRender: [] as (string | null)[],
   nickAtRender: [] as (string | null | undefined)[],
+  broadcast: [] as Array<{ hash: string; linkDesktop: boolean | undefined }>,
 }));
 
 vi.mock('./features/room/RoomScreen', () => ({
@@ -26,6 +27,12 @@ vi.mock('./features/room/RoomScreen', () => ({
 vi.mock('./features/room/JoinResolver', () => ({
   JoinResolver: ({ code }: { code: string }) => <div data-testid="join">{code}</div>,
 }));
+vi.mock('./features/broadcaster/BroadcasterScreen', () => ({
+  BroadcasterScreen: ({ linkDesktop }: { linkDesktop?: boolean }) => {
+    seen.broadcast.push({ hash: window.location.hash, linkDesktop });
+    return <div data-testid="broadcaster" />;
+  },
+}));
 vi.mock('./features/landing/LandingPage', () => ({ LandingPage: () => <div data-testid="landing" /> }));
 
 import App from './App';
@@ -38,6 +45,7 @@ beforeEach(() => {
   seen.hashAtRender.length = 0;
   seen.grantAtRender.length = 0;
   seen.nickAtRender.length = 0;
+  seen.broadcast.length = 0;
   window.history.replaceState(null, '', '/');
 });
 afterEach(() => {
@@ -61,6 +69,13 @@ describe('App room routes (R42)', () => {
     render(<App />);
     expect(seen.nickAtRender[0]).toBe('mumble name');
     expect(seen.hashAtRender[0]).toBe('#/room/AB2CD3?relay=https%3A%2F%2Frelay.example.com%3A4433');
+  });
+
+  it('hands ?desktop=1 to the broadcaster and strips it before the first render (R67 D9)', () => {
+    window.history.replaceState(null, '', '/#/broadcast?room=vip-qy346he235&desktop=1');
+    render(<App />);
+    expect(seen.broadcast[0]).toEqual({ hash: '#/broadcast', linkDesktop: true });
+    expect(window.location.href).not.toContain('desktop=');
   });
 
   it('renders the join resolver for a typed code', () => {

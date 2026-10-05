@@ -1,9 +1,10 @@
-import type { ButtonHTMLAttributes } from 'react';
+import type { ComponentPropsWithRef } from 'react';
 import styles from './Button.module.css';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 
-interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
+// With a ref: React 19 passes it through `rest` like any other prop.
+interface Props extends ComponentPropsWithRef<'button'> {
   variant?: ButtonVariant;
 }
 
