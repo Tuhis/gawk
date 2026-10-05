@@ -42,7 +42,7 @@ service:
   annotations: {}
 
 # R9 observability (docs/13): a plain-TCP ops endpoint serving /metrics
-# (Prometheus), /healthz and /statusz. Exposed ONLY through a ClusterIP
+# (Prometheus), /healthz, /readyz and /statusz. Exposed ONLY through a ClusterIP
 # Service — never through the public LoadBalancer above. The ServiceMonitor
 # needs the prometheus-operator CRDs (e.g. kube-prometheus-stack); its
 # labels must match your Prometheus's serviceMonitorSelector (for
