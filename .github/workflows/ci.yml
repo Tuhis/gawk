@@ -1699,6 +1699,17 @@ jobs:
       - run: helm lint gawk-telemetry/deploy/charts/gawk-telemetry --set telemetryKey=00
       - run: helm template gawk-server/deploy/charts/gawk-server > /dev/null
       - run: helm template gawk-app/deploy/charts/gawk-app > /dev/null
+      # R67 (docs/69 D7, G6): the desktop handoff switch reaches config.js,
+      # on by default and off when set — `false` must not vanish into the
+      # `default` filter the way a plain `| default true` would make it.
+      - name: app chart renders desktopHandoff
+        run: |
+          chart=gawk-app/deploy/charts/gawk-app
+          helm template "$chart" | grep -q '"desktopHandoff": true,'
+          helm template "$chart" --set config.desktopHandoff=false | grep -q '"desktopHandoff": false,'
+          if helm template "$chart" --set config.desktopHandoff=false | grep -q '"desktopHandoff": true'; then
+            echo "::error::config.desktopHandoff=false still renders true"; exit 1
+          fi
       - run: helm template gawk-telemetry/deploy/charts/gawk-telemetry --set telemetryKey=00 > /dev/null
       # The monitoring templates are opt-in, so the default render above never
       # reaches them.
