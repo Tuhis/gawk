@@ -1,7 +1,8 @@
 # R67 — Open a broadcast in the desktop app from `gawk-app` (docs/69)
 
 **Status**: proposed 2026-10-03. Owner decision OD3 (docs/68 §2) was taken
-the same day. Chunks **HO1–HO4** (§9) are not started. **Depends on R66**
+the same day; the owner's UX review and D9 on 2026-10-06. **HO1–HO3**
+(§9) are implemented; HO4, the owner's per-browser pass, is open. **Depends on R66**
 ([docs/68](68-desktop-gawk-links.md)): HO1 restates R66 LH1's vectors, and
 HO3's automatic mode waits until a desktop release with LH2–LH5 is out.
 Status lives in [`ROADMAP.md`](../ROADMAP.md).
@@ -41,11 +42,12 @@ remembers what the user chose.
 | # | Goal | Verified by |
 |---|---|---|
 | G1 | On Windows, macOS and Linux, the broadcaster's pre-start card and the room's "Start streaming here" offer **Open in the desktop app**. The link carries the room, nickname and non-default relay, and never a grant or secret. | unit tests + HO4 |
-| G2 | Clicking it with the app installed opens the app prefilled (R66 G1/G2). Without the app, the page stays put with its state intact, and a **Didn't open?** note offers the download and **Continue in the browser**. | HO4, per browser (V-1) |
+| G2 | Clicking it with the app installed opens the app prefilled (R66 G1/G2). Without the app, the page stays put with its state intact, and the **Opening** modal offers the download and **Continue in the browser**. | HO4, per browser (V-1) |
 | G3 | The offer never appears on Android, iOS or ChromeOS, on viewer pages or on the landing page | unit tests |
-| G4 | After the user picks **Always use the desktop app**, a broadcast-intent link opens the app on its own, at most once per room in a tab (D5). The page still shows the fallback and a one-click **Stop opening the app**. | unit tests + HO4 |
+| G4 | After the user ticks **Always open broadcast links in the desktop app**, a broadcast-intent link opens the app on its own, at most once per room in a tab (D5). The page shows the **Opened** modal, with the fallback and a one-click **Stop doing this**. | unit tests + HO4 |
 | G5 | `gawk-app` builds links that are byte-identical to R66's canonical `to_gawk` for every vector | unit test on the restated vectors |
 | G6 | An operator can turn the offer off with `config.desktopHandoff: false`, plumbed through the chart | chart template test + unit test |
+| G8 | A `#/broadcast?…&desktop=1` link tries the app once on load and shows the **Opening** modal, on the same devices and under the same conditions as the offer; the parameter leaves the URL before the first render (D9) | unit tests + HO4 |
 | G7 | The browser broadcast flow is unchanged when the offer is ignored: no extra prompt, and Start is the primary action | existing BroadcasterScreen tests stay green + new ones |
 
 ## 2. Owner decisions
@@ -71,7 +73,7 @@ remembers what the user chose.
 | Surface | What changes |
 |---|---|
 | `BroadcasterScreen` pre-start card ("Start a stream") | A secondary action under the primary **Start a stream**: "Open in the desktop app". Start stays the primary button (G7). |
-| `RoomScreen` / `RoomPanel` "Start streaming here" | A secondary "…or in the desktop app" beside it |
+| `RoomScreen` / `RoomPanel` "Start streaming here" | A secondary "…or in the desktop app" beside it. Its click launches the app (the click is the activation), stashes the room like "Start streaming here" does with `handoff: 'opening'`, and goes to `#/broadcast`, which opens the **Opening** modal over the card without launching again. **Continue in the browser** then leaves the user exactly where "Start streaming here" would have. |
 | The "Sharing tips" `NATIVE_TIP` | Copy updated to "Windows, macOS or Linux" (macOS shipped in R52); its download link is unchanged |
 
 Nothing changes on the landing page, viewer screens or `#/join` (G3).
@@ -129,27 +131,37 @@ returns R66's canonical `gawk://broadcast?…`.
 ### D4 — Launching, and what the page shows afterwards
 
 - **The action is a real `<a href="gawk://broadcast?…">`**, so the launch
-  carries user activation and right-click → copy works. The mechanism for
-  the automatic mode (D5) is decided by V-1. The candidates are
-  `location.href`, a synthetic anchor click, and a hidden iframe. Whichever
-  is chosen must leave the SPA page and its state intact in every browser
-  V-1 covers. A browser where none does gets no automatic mode.
-- After a click, the card shows a note in place. It does not navigate, and
-  it does not hide the Start button.
-  - "Opening the desktop app… Didn't open? [Get the app] · [Continue in the
-    browser]". [Get the app] is `SITE_DOWNLOAD_URL`. [Continue in the
-    browser] closes the note.
-  - Below it: "☐ Always open broadcast links in the desktop app" (D5).
-- The page never tries to find out whether the launch worked. The note
-  stays until it's dismissed or the user starts in the browser.
+  carries user activation and right-click → copy works. The click keeps
+  the anchor's own navigation, the path every "open in app" link takes.
+- **The automatic launches (D5, D9) use a hidden iframe** whose `src` is
+  the link, removed a few seconds later. With no click behind it, a
+  top-level navigation (`location.href`) to a scheme with no handler can
+  replace the page with an error page in some browsers; an iframe's
+  failure stays inside the iframe. Chosen 2026-10-06 ahead of V-1 (§12);
+  HO4 records whether it holds in every browser it covers.
+- After a click, the page opens the **Opening** modal over the card. It
+  is styled like the page's other modals (the terms and publish-secret
+  prompts: scrim, centred glass panel, title, muted body, a secondary and a
+  primary action). The card underneath is untouched: Start stays enabled
+  and the pending room stays (G7, D6). Owner decision 2026-10-06, replacing
+  the inline note first drafted here (§12). The modal holds, in order:
+  - the title "Opening the desktop app…";
+  - "Didn't open? Get the app, or continue in the browser.";
+  - "☐ Always open broadcast links in the desktop app" (D5);
+  - **Get the app** (secondary, `SITE_DOWNLOAD_URL` in a new tab) and
+    **Continue in the browser** (primary, closes the modal). The scrim and
+    Escape close it too.
+- The page never tries to find out whether the launch worked. The modal
+  stays until it's dismissed.
 
 ### D5 — The remembered choice (OD3)
 
-- **Storage**: `gawk.desktopHandoff` = `"auto"` in localStorage, through
+- **Storage**: `gawk:desktop-handoff` = `"auto"` in localStorage (the
+  `gawk:` prefix every other stored preference uses), through
   `lib/storage.ts`'s guarded `readStored`/`writeStored`. If storage is
   unavailable, there is no automatic mode and the button still works.
-  Absent means offer only. There is no stored "never": dismissing the note
-  is enough.
+  Absent means offer only. There is no stored "never": dismissing the
+  modal is enough.
 - **Where the trigger is detected.** `applyRouteRoom` runs in App.tsx's
   route resolution before `BroadcasterScreen` mounts. It moves `?room=`
   into the `gawk:room-return` stash and strips it from the hash. By the
@@ -169,16 +181,23 @@ returns R66's canonical `gawk://broadcast?…`.
   - **"Start streaming here" in a room**: the click handler in
     `RoomScreen` launches the app itself, since the click provides
     activation. It then stashes `source: 'room'` and navigates to
-    `#/broadcast` as before. The screen sees `'room'`, doesn't launch a
-    second time, and shows D4's note.
+    `#/broadcast` as before. The stash also says the app was already
+    launched (`handoff: 'auto'`), so the screen doesn't launch a second
+    time; it shows the **Opened** modal.
 - **At most once per room in this tab.** A sessionStorage flag
   `gawk:handoff-done:<code lower-cased>` is set when either trigger fires,
   and both check it first. A reload has no stash (`takeRoomReturn` reads
   and clears), so it never relaunches. Following the same room's link
-  again in the same tab doesn't relaunch either; the note's button still
-  does.
-- The note shows "Opened the desktop app automatically · [Stop doing
-  this]". The last action clears the key.
+  again in the same tab doesn't relaunch either; the offer and the
+  modal's **Open again** still do.
+- An automatic launch opens the **Opened** modal (owner decision
+  2026-10-06, replacing the inline note): the title "Opened the desktop
+  app"; "Didn't open? Get the app, or continue in the browser." with
+  **Get the app** as an inline link; between two dividers, the quiet line
+  "Broadcast links open in the desktop app automatically." with
+  **Stop doing this** under it, which clears the key and closes the modal;
+  then **Open again** (secondary, the same `gawk://` anchor as the offer)
+  and **Continue in the browser** (primary, closes the modal).
 - **Never automatic**: when D2 hides the offer, when `relay=` was dropped as
   invalid or not allowed (the user should see that note in the browser),
   or while the terms or secret modal is open.
@@ -205,9 +224,43 @@ builds can turn it off.
 |---|---|
 | Card secondary action | Open in the desktop app |
 | Room, beside "Start streaming here" | …or in the desktop app |
-| Note after a click | Opening the desktop app… Didn't open? **Get the app** · **Continue in the browser** |
-| Checkbox | Always open broadcast links in the desktop app |
-| Automatic note | Opened the desktop app automatically · **Stop doing this** |
+| Opening modal: title | Opening the desktop app… |
+| Opening modal: body | Didn't open? Get the app, or continue in the browser. |
+| Opening modal: checkbox | Always open broadcast links in the desktop app |
+| Opening modal: actions | **Get the app** · **Continue in the browser** |
+| Opened modal: title | Opened the desktop app |
+| Opened modal: body | Didn't open? **Get the app**, or continue in the browser. |
+| Opened modal: automatic line | Broadcast links open in the desktop app automatically. **Stop doing this** |
+| Opened modal: actions | **Open again** · **Continue in the browser** |
+
+### D9 — `?desktop=1`: a link that asks for the app (owner addition, 2026-10-06)
+
+A page outside the app that already knows its user broadcasts from the
+desktop app (a chat bot's card, a pinned link) can say so:
+`#/broadcast?room=<code>&desktop=1`.
+
+- **Parsing**: `parseRoute` reads `desktop` on the broadcast route only;
+  exactly `1` turns it on and any other value is ignored. Like `?nick=`, it
+  rides the route into the screen as a prop (`linkDesktop`) and
+  `applyRouteDesktop` strips it from the hash before the first render, so
+  a reload or a copied link doesn't launch again.
+- **What it does**: on mount, the screen launches the app once through D4's
+  mechanism and opens the **Opening** modal, the same screen as a click on
+  the offer, including the "always" checkbox. It works without a room
+  (a bare `gawk://broadcast`).
+- **It is not the remembered choice.** It stores nothing and doesn't use
+  the once-per-room flag: it is one explicit request in one link. When
+  `"auto"` is also stored, the parameter wins and the Opening modal shows,
+  so the checkbox reflects the stored choice.
+- **Never**: the same conditions as D5's "never automatic". When D2 hides
+  the offer, `config.desktopHandoff` is off, or `relay=` was dropped, the
+  parameter is ignored and the page is the ordinary broadcast page.
+- **Launch without activation**: like D5's automatic launch, this runs on
+  mount with no click behind it. Chromium takes it when a click on the link
+  opened the page in a new tab, and refuses it after a same-tab link, a
+  typed URL or a reload (§12). A browser that refuses still shows the
+  modal; **Continue in the browser** closes it and the offer stays on the
+  card.
 
 ## 5. Non-goals
 
@@ -231,25 +284,30 @@ screen before the user asks for the app.
 **First time**: the Mumble bot's "Start streaming" → `#/broadcast?room=X`
 → the card shows Start (primary) and "Open in the desktop app" → click →
 the browser's "Open gawk broadcast?" prompt → the app opens, prefilled →
-the note in the tab offers "Always open…" → tick it.
+the tab shows the **Opening** modal, which offers "Always open…" → tick
+it, then **Continue in the browser** (or just leave the tab).
 
 **After "always"**: the next bot link → the tab opens, the app launches by
 itself (the browser may still prompt the first time, unless "always
-allow" was ticked there) → the tab shows "Opened the desktop app
-automatically · Stop doing this", with Start still on the card.
+allow" was ticked there) → the tab shows the **Opened** modal, with
+**Stop doing this**, **Open again** and **Continue in the browser**; Start
+is still on the card underneath.
+
+**A `desktop=1` link** (D9): the tab opens, the app launches by itself
+once, and the tab shows the **Opening** modal, as after a click.
 
 **No app**: click → nothing visible happens (or the browser says it has no
-handler) → the note's "Didn't open? Get the app · Continue in the browser"
-→ Start works as before.
+handler) → the modal's "Didn't open? Get the app, or continue in the
+browser" → **Continue in the browser** → Start works as before.
 
 ## 8. Risks
 
 | Risk | Mitigation |
 |---|---|
 | A browser navigates away to an error page for an unhandled scheme | V-1 is checked before HO3 picks the auto mechanism; the button is a plain anchor in every browser, which V-1 also covers |
-| Automatic launch is blocked without user activation | Then the automatic mode degrades to the note with the button; V-1 records each browser |
+| Automatic launch is blocked without user activation | Then the automatic mode degrades to the modal, whose **Open again** (or the offer) is a click; V-1 records each browser |
 | Static rooms behind an attach secret: the desktop asks for it again | Its recent rooms may hold it (docs/68 D4); the browser path is one click away; carrying secrets is out (D3) |
-| Users on an old desktop build without R66 | The "Didn't open?" note; release order (HO3 after R66 ships) |
+| Users on an old desktop build without R66 | The modal's "Didn't open?"; release order (HO3 after R66 ships) |
 | iPadOS Safari reports a `Macintosh` UA, so the offer would show and could open the iOS app | D2's `maxTouchPoints` gate, tested with real UA strings in HO2 |
 | The offer reads as nagging | One secondary line, no modal, no download link until asked (D1, D4) |
 
@@ -258,8 +316,8 @@ handler) → the note's "Didn't open? Get the app · Continue in the browser"
 | Chunk | Scope | Accepted when |
 |---|---|---|
 | **HO1** | D3's builder, the restated vectors (after R66 LH1), D7's config and chart | Every R66 vector's canonical link is reproduced byte for byte (G5); no grant or secret can be produced, tested with a grant in the stash; the chart renders `desktopHandoff` with and without the value set (G6) |
-| **HO2** | D1, D2, D4, D6, D8: the button, the room's secondary action, the note, the `NATIVE_TIP` copy | Component tests: the offer shows on the three desktop OS identities and on none of the others, nor on viewer and landing pages (G3); `isDesktopForHandoff` is tested with real UA strings, including iPadOS Safari's `Macintosh` UA with `maxTouchPoints` 5 (hidden) and macOS Safari with 0 (shown); the anchor's `href` carries room, nick and a non-default relay (G1); after a click, Start is still enabled and the pending room is intact (G7, D6). An e2e step in `e2e/run.mjs` clicks the button in headless Chrome with no handler and asserts the page and room chip remain. |
-| **HO3** | D5: the remembered choice and automatic launch, on V-1's mechanism | Unit tests, against D5's detection point: with `"auto"` set, `applyRouteRoom` stashes `source: 'link'` and the screen launches once on mount; a room's "Start streaming here" click launches from the handler and the screen, seeing `source: 'room'`, doesn't launch again; a plain `#/broadcast`, a stash without `source`, and a second trigger for a room already in `gawk:handoff-done:<code>` never launch; not on reload; never on non-desktop OS, with a dropped relay, or with storage unavailable; "Stop doing this" clears it. Merged only after a desktop release containing R66 LH2–LH5. |
+| **HO2** | D1, D2, D4, D6, D8: the offer, the room's secondary action, the Opening modal, the `NATIVE_TIP` copy | Component tests: the offer shows on the three desktop OS identities and on none of the others, nor on viewer and landing pages (G3); `isDesktopForHandoff` is tested with real UA strings, including iPadOS Safari's `Macintosh` UA with `maxTouchPoints` 5 (hidden) and macOS Safari with 0 (shown); the anchor's `href` carries room, nick and a non-default relay (G1); after a click, the Opening modal is open, and once it is closed Start is still enabled and the pending room is intact (G7, D6); the room's secondary action launches, stashes `handoff: 'opening'` and the broadcaster opens the modal without a second launch. An e2e step in `e2e/run.mjs` clicks the button in headless Chrome with no handler and asserts the page and room chip remain. |
+| **HO3** | D5 and D9: the remembered choice, automatic launch and `?desktop=1`, on D4's mechanism | Unit tests, against D5's detection point: with `"auto"` set, `applyRouteRoom` stashes `source: 'link'` and the screen launches once on mount; a room's "Start streaming here" click launches from the handler and the screen, seeing `source: 'room'`, doesn't launch again; a plain `#/broadcast`, a stash without `source`, and a second trigger for a room already in `gawk:handoff-done:<code>` never launch; not on reload; never on non-desktop OS, with a dropped relay, or with storage unavailable; "Stop doing this" clears it. D9: `parseRoute` reads `desktop=1` and nothing else; `applyRouteDesktop` strips it; the screen launches once and opens the Opening modal; never on non-desktop OS, with the config off or a dropped relay; nothing is stored. Merged only after a desktop release containing R66 LH2–LH5 (gawk-broadcast-desktop v2.5.0, 2026-10-04). |
 | **HO4** | The owner's pass: Chrome, Firefox and Edge on Windows; Chrome, Firefox and Safari on macOS; Chrome and Firefox on Linux; with and without the app installed; V-1 | G1, G2 and G4 recorded per browser in §12 |
 
 ## 10. V-items (recorded in §12)
@@ -275,4 +333,39 @@ None.
 
 ## 12. Deviations and field findings
 
-None yet.
+- **2026-10-06, the owner's UX review** (a design canvas of the four
+  screens): the after-click note became the **Opening** modal and the
+  automatic note the **Opened** modal, both in the style of the page's
+  existing modals (D4, D5). The copy in D8 changed with them: "Opened the
+  desktop app" drops "automatically" from the title and moves it to its
+  own line beside **Stop doing this**, and **Open again** was added so a
+  launch that didn't happen can be retried from the modal.
+- **2026-10-06, `?desktop=1`** (D9, G8): an owner addition to the spec.
+- **2026-10-06, launch mechanism chosen ahead of V-1**: a hidden iframe
+  for the launches with no click behind them, the anchor's own navigation
+  for clicks (D4). The room's "…or in the desktop app" also uses the
+  iframe from inside its click, because the page moves to `#/broadcast`
+  right after. V-1 remains HO4's job; if a browser fails it, that
+  browser's launch path changes here.
+- **2026-10-06, V-1 partly measured headless, no handler registered**
+  (Chromium 151 and Firefox from Playwright, on Linux). Signal: a launch
+  Chromium takes puts up its external-protocol prompt, which holds every
+  trusted click on the page from then on; a control page without a launch
+  keeps taking clicks.
+  - **No handler, any mechanism, both engines: the page stays.** Chromium
+    keeps it silently; Firefox logs "Prevented navigation to 'gawk://…'
+    due to an unknown protocol" for `location.href`, an anchor `click()`
+    and an iframe alike.
+  - **Chromium, a launch on load with no click of its own**: taken when
+    the page was opened **in a new tab by a click on a link** (a chat
+    bot's card), through the iframe and `location.href` alike; **not**
+    taken after a same-tab link, a typed URL or a reload — the iframe then
+    logs "Not allowed to launch 'gawk://…' because a user gesture is
+    required", `location.href` does nothing. So D5's automatic mode and
+    D9's `?desktop=1` work for the case they exist for, a link that opens
+    a new tab; otherwise the modal shows and nothing opens, and its
+    fallback covers that.
+  - **Chromium, inside a click**: an anchor's navigation, `location.href`
+    and `location.href` followed in the same task by the hash change to
+    `#/broadcast` are all taken — the hop doesn't cancel the launch.
+  - Still open for HO4: real handlers, Safari, Edge and Windows/macOS.
