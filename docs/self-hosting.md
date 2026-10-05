@@ -161,6 +161,7 @@ config:
     - gawk-broadcast://windows     # the Windows native broadcaster
     - gawk-broadcast://macos       # the macOS native broadcaster
     - gawk-broadcast://native      # the older Go Linux app, and gawk-pubsim
+    - gawk://ios                   # the iOS app, to watch as well as broadcast
 
   # Capacity. Defaults are conservative; raise them against your uplink.
   maxSubscribers: 15               # per broadcast
@@ -183,6 +184,7 @@ Three kinds of client, and only the first two go in the list:
 | `gawk-broadcast` (the older Go Linux app) and `gawk-pubsim` | `gawk-broadcast://native` | **Keep it** while anyone still runs the Go app; the dev stack's simulated publishers send it too |
 | `gawk-broadcast-windows` | `gawk-broadcast://windows` | **Add it** if anyone will broadcast from Windows |
 | `gawk-broadcast-macos` | `gawk-broadcast://macos` | **Add it** if anyone will broadcast from a Mac |
+| `gawk-ios` | `gawk://ios` | **Add it** if anyone will watch or broadcast from an iPhone or iPad: the check covers `/subscribe` and `/echo` too |
 | Relay pods, in cluster mode | `gawk-server://native-internal-edge` | **Do not add it.** Built in |
 
 The native broadcasters do not send an `https://` origin — they are not
