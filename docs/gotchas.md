@@ -1236,6 +1236,21 @@ Add to it when a new gotcha lands in `docs/`.
   'arm64-apple-ios'"). Set it only where an iOS Rust build runs; the relay
   test harness strips it before building the Go tools.
   ([docs/67](67-ios-app.md) §12)
+- **iOS invalidates a hardware encoder when the app goes to the
+  background.** The next `VTCompressionSessionEncodeFrame` returns
+  `kVTInvalidSessionErr` (-12903). It means "build a new session", not
+  "the encoder is broken": the pipeline rebuilds instead of ending the
+  broadcast. ([docs/67](67-ios-app.md) §12)
+- **iOS's Screen Sharing sheet stays up after the picker, and the capture
+  is black while it shows.** No API completes or dismisses it; the user
+  closes it. Its Stop Sharing arrives as the stream's stop.
+  ([docs/67](67-ios-app.md) §12)
+- **`rustls-native-certs` trusts nothing on iOS.** It has no iOS backend
+  and falls back to the Unix certificate directories, so a client built
+  with wtransport's `with_native_certs` fails every certificate with
+  `UnknownIssuer`, on devices and in the Simulator alike. iOS verifies
+  through `rustls-platform-verifier` (Security.framework). A dev relay
+  with `insecure` hides it. ([docs/67](67-ios-app.md) §12)
 - **The iOS 27 Simulator SDK has no ScreenCaptureKit.** The framework is
   missing from the Simulator SDK, not just inert, so capture code is
   `canImport`-gated and builds for devices only; the Simulator broadcasts

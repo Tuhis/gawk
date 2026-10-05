@@ -266,6 +266,19 @@ jobs:
             -publish-secret smoke > "$RUNNER_TEMP/relay.log" 2>&1 &
           for i in $(seq 60); do curl -sf http://127.0.0.1:4498/healthz && break; sleep 1; done
 
+      # The Watch smoke test (D24) watches a broadcast: gawk-devpub loops the
+      # recorded H.264 fixture to the local relay and prints its code.
+      - name: Publish the H.264 fixture
+        working-directory: gawk-ios/rust
+        run: |
+          cargo build -q -p gawk-devpub
+          ./target/debug/gawk-devpub --codec h264 --url https://127.0.0.1:4499 \
+            --insecure --secret smoke > "$RUNNER_TEMP/devpub.out" 2> "$RUNNER_TEMP/devpub.log" &
+          for i in $(seq 60); do grep -q GAWK_DEVPUB_ID "$RUNNER_TEMP/devpub.out" && break; sleep 1; done
+          id=$(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP/devpub.out" | head -1)
+          [ -n "$id" ] || { cat "$RUNNER_TEMP/devpub.log"; exit 1; }
+          echo "SMOKE_ID=$id" >> "$GITHUB_ENV"
+
       # The broadcast loop's first QUIC dial sometimes never reaches the
       # relay on a fresh runner (2026-10-04); the relay logs nothing for a
       # handshake that never completes, so the loopback UDP is recorded and
@@ -292,6 +305,7 @@ jobs:
         # Xcode 27 can spend 600 s in `simctl diagnose` after a test run;
         # diagnostics are not collected.
         run: |
+          TEST_RUNNER_GAWK_SMOKE_BROADCAST_ID="$SMOKE_ID" \
           xcodebuild -project Gawk.xcodeproj -scheme Gawk \
             -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd" \
             -collect-test-diagnostics never \

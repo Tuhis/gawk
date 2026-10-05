@@ -17,6 +17,8 @@ final class ScreenCapture: NSObject {
     private let audioQueue = DispatchQueue(label: "gawk.capture.audio")
     private var onStop: ((String?) -> Void)?
     private var output: Output?
+    /// What each callback may still do (`CaptureEvents`).
+    private var events = CaptureEvents()
 
     init(sink: MediaSink) {
         self.sink = sink
@@ -37,10 +39,30 @@ final class ScreenCapture: NSObject {
         picker.present(using: .display)
     }
 
+    /// Our stop. Callbacks already on their way to the main actor find
+    /// `events` stopped and do nothing: no restarted stream, no second end.
     func stop() {
+        events.stop()
+        onStop = nil
         retireStream()
         SCContentSharingPicker.shared.isActive = false
         SCContentSharingPicker.shared.remove(self)
+    }
+
+    /// Every ScreenCaptureKit report, on the main actor.
+    private func handle(_ event: CaptureEvents.Event, filter: SCContentFilter? = nil) {
+        switch events.handle(event) {
+        case .ignore:
+            break
+        case .startStream:
+            if let filter { start(filter: filter) }
+        case .end(let reason):
+            // The system's stop (its sharing UI, Control Center) or a
+            // failure: capture is over, and the broadcast with it.
+            let report = onStop
+            stop()
+            report?(reason)
+        }
     }
 
     /// Stops the running stream, if any, and detaches its output first, so
@@ -73,14 +95,18 @@ final class ScreenCapture: NSObject {
         let output = Output(sink: sink)
         let stream = SCStream(filter: filter, configuration: config, delegate: output)
         output.stream = stream
-        output.onStop = { [weak self] reason in
-            Task { @MainActor in self?.onStop?(reason) }
+        output.onStop = { [weak self, weak stream] reason in
+            Task { @MainActor in
+                // A replaced stream's end is not the capture's.
+                guard let self, let stream, self.stream === stream else { return }
+                self.handle(.streamStopped(reason))
+            }
         }
         do {
             try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: videoQueue)
             try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: audioQueue)
         } catch {
-            onStop?(error.localizedDescription)
+            handle(.startFailed(error.localizedDescription))
             return
         }
         self.stream = stream
@@ -89,7 +115,10 @@ final class ScreenCapture: NSObject {
             do {
                 try await stream.startCapture()
             } catch {
-                self.onStop?(error.localizedDescription)
+                // Only this stream's failure counts: one retired meanwhile
+                // (a re-pick, or our stop) failing to start is no news.
+                guard self.stream === stream else { return }
+                self.handle(.startFailed(error.localizedDescription))
             }
         }
     }
@@ -158,7 +187,7 @@ final class ScreenCapture: NSObject {
 
 extension ScreenCapture: SCContentSharingPickerObserver {
     nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {
-        Task { @MainActor in self.onStop?(nil) }
+        Task { @MainActor in self.handle(.pickerCancelled) }
     }
 
     nonisolated func contentSharingPicker(
@@ -166,11 +195,11 @@ extension ScreenCapture: SCContentSharingPickerObserver {
     ) {
         // The filter is handed over once and only read on the main actor.
         nonisolated(unsafe) let filter = filter
-        Task { @MainActor in self.start(filter: filter) }
+        Task { @MainActor in self.handle(.picked, filter: filter) }
     }
 
     nonisolated func contentSharingPickerStartDidFailWithError(_ error: any Error) {
-        Task { @MainActor in self.onStop?(error.localizedDescription) }
+        Task { @MainActor in self.handle(.pickerFailed(error.localizedDescription)) }
     }
 }
 #endif

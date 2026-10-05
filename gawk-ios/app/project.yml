@@ -102,6 +102,21 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: fi.ioio.gawk.Tests
         SWIFT_INCLUDE_PATHS: $(PROJECT_DIR)/Build/ffi
 
+  # The Watch screen driven through its UI against a local relay (docs/67
+  # D26); skipped unless a relay and a code are passed in.
+  GawkUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - GawkUITests
+    dependencies:
+      - target: Gawk
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: fi.ioio.gawk.UITests
+        TEST_TARGET_NAME: Gawk
+
 schemes:
   Gawk:
     build:
@@ -110,3 +125,4 @@ schemes:
     test:
       targets:
         - GawkTests
+        - GawkUITests

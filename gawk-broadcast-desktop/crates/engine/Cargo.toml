@@ -32,6 +32,12 @@ wtransport = { version = "0.7.1", features = ["dangerous-configuration", "quinn"
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 
+# R65 (docs/67 §12): iOS checks relay certificates through Security.framework;
+# rustls-native-certs has no iOS backend. iOS only, so no desktop build or
+# its notices change.
+[target.'cfg(target_os = "ios")'.dependencies]
+rustls-platform-verifier = "0.7"
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "test-util"] }

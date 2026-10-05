@@ -80,6 +80,11 @@ struct FakeRelay {
     /// Keyframe writer modes, popped per open; when exhausted, Instant.
     kf_modes: Mutex<VecDeque<KfMode>>,
     kf_log: Arc<Mutex<Vec<KfEvent>>>,
+    /// Opens never complete: the stream waits on QUIC credit (the peer's
+    /// stream limit, or connection flow control on a saturated uplink).
+    stall_opens: std::sync::atomic::AtomicBool,
+    /// Opens started, stalled or not.
+    opens: std::sync::atomic::AtomicUsize,
 }
 
 impl FakeRelay {
@@ -113,6 +118,11 @@ impl RelaySession for FakeRelay {
     }
 
     fn open_keyframe_stream(&self) -> BoxFuture<'_, Result<Box<dyn KeyframeWriter>, String>> {
+        use std::sync::atomic::Ordering;
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        if self.stall_opens.load(Ordering::SeqCst) {
+            return Box::pin(std::future::pending());
+        }
         let mode = self
             .kf_modes
             .lock()
@@ -398,6 +408,23 @@ async fn wait_cancels_a_stalled_keyframe_write_instead_of_hanging() {
             .kf_events()
             .contains(&KfEvent::Cancelled(KEYFRAME_SUPERSEDED_CODE))
     );
+}
+
+#[tokio::test]
+async fn wait_does_not_hang_on_a_keyframe_stream_that_never_opens() {
+    use std::sync::atomic::Ordering;
+    let (relay, _clock, sender) = setup();
+    relay.stall_opens.store(true, Ordering::SeqCst);
+    sender.send_video(keyframe(100, 1)).await;
+    settle(|| relay.opens.load(Ordering::SeqCst) == 1).await;
+
+    // The writer is stuck before it has a stream, so there is no write to
+    // cancel; teardown must abandon the open instead of awaiting it. The
+    // iOS app's Stop button hung here (its UI waits for the engine's end).
+    tokio::time::timeout(Duration::from_secs(5), sender.wait())
+        .await
+        .expect("wait() must abandon a keyframe stream that never opens, not hang");
+    assert_eq!(sender.stats().keyframe_streams_failed, 1);
 }
 
 #[tokio::test]

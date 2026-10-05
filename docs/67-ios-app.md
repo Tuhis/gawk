@@ -875,3 +875,78 @@ dated.
     the viewer's reports need it generalised first. IO7's acceptance ("a
     test session appears in the dashboard") is met by the broadcaster's
     reports; the viewer's remain open.
+- **2026-10-04 — IO5: the native player, as built in the Simulator.**
+  - **G7 (Simulator): all three codecs play.** The Watch smoke test went
+    Live and enqueued video against `gawk-devpub` publishing the H.264, VP8
+    and VP9 fixtures, with screenshots a second apart showing moving frames
+    and fullscreen landscape.
+  - **G9 (Simulator): background audio yes, PiP unverifiable.** Audio kept
+    arriving at ~48 blocks/s for 25 s in the background while video
+    enqueueing stopped. `AVPictureInPictureController.isPictureInPictureSupported()`
+    is **false** in the iOS 27 Simulator, so the PiP path (D22's content
+    source and live playback delegate) is built but first checked on a
+    device.
+  - **G10 (Simulator): recovered.** A 5 s relay freeze (SIGSTOP/SIGCONT)
+    dropped to live twice; the offset then settled back to its 50 ms floor
+    and held there, so the outage added no permanent delay.
+  - **iOS 27's renderer API**: `addRenderer`, `enqueue`, `flush`, `status`
+    and `isReadyForMoreMediaData` are deprecated in Swift, so the player uses
+    the receiver API (`sampleBufferReceiver(adding:)`, `enqueueImmediately`,
+    enqueue results and rendering events). Without "not ready", the
+    backpressure resync (D15) fires on sustained lateness at enqueue (>0.25 s
+    for 0.5 s), a backlog over 48 frames, or a decode failure, at most once a
+    second.
+  - **What's on screen is reported every 16 ms.** At 10 Hz the report lagged
+    up to ~100 ms, which at a settled ~100 ms offset crossed D15's 2 × offset
+    and dropped a healthy stream to live over and over; a test pins it.
+  - **Background stops enqueueing, not decoding (D22).** VP8/VP9 still decode
+    in Rust while backgrounded without PiP; stopping decode needs a core
+    switch. The broadcast-ID alphabet is restated in Swift (`BroadcastCode`)
+    until the core exports its check.
+- **First device run (2026-10-05): every certificate failed with
+  `UnknownIssuer`.** The engine's `with_native_certs` loads roots through
+  `rustls-native-certs`, which has no iOS backend: it reads the Unix
+  certificate directories, which an iPhone (and the Simulator) doesn't have,
+  so it trusts nothing. Phase S never saw it because every Simulator relay
+  ran with `insecure`. On iOS the engine now verifies through
+  Security.framework (`rustls-platform-verifier`, `transport.rs`
+  `ios_tls`); the desktops keep `with_native_certs`. `TlsTrustTests` dials
+  the default fleet and fails on any certificate error (opt-in: it needs the
+  internet).
+- **First device runs, continued (2026-10-05, iPhone 17 Pro Max, iOS
+  27.0.1, to the production fleet).**
+  - **V-6, in part:** display capture arrives as `420f` at the panel's
+    native 1320×2868, every frame `SCFrameStatus.complete`, at about the
+    display rate (23,382 frames in ~6.5 min). `FrameConverter` turns it into
+    `420v` at the rung (884×1920 portrait, 1920×884 landscape).
+  - **The system sharing sheet stays up after the picker.** After "share
+    the whole screen", iOS keeps its Screen Sharing sheet (the app, a timer,
+    a spinner, Stop Sharing) until the user closes it, and the capture is
+    black while it is showing. The SDK has no call to complete or dismiss
+    it. Its Stop Sharing ends the broadcast through the stream's stop.
+  - **iOS takes the hardware encoder away when the app goes to the
+    background.** `VTCompressionSessionEncodeFrame` failed with
+    `kVTInvalidSessionErr` (-12903), and the pipeline ended the broadcast.
+    It now drops that lineage and builds a new encoder on the next frame,
+    on the same publish session (an IDR, a new SPS through
+    `restart_codec`). If iOS refuses one in the background, it retries
+    once a second and the broadcast stays up meanwhile.
+    `publish_relay`'s `an_invalidated_encoder_session_is_rebuilt_not_fatal`
+    reproduces the error on the Mac. After the fix, a 412 s run held
+    ~60 fps with no error event (5.5 Mbit/s mean, 0.01 % uplink loss,
+    ~8 ms RTT). Whether a new encoder builds while a game is in front is
+    still IO0's to measure: telemetry now counts rebuilds as
+    `captureRestarts`, so the 30-minute run can tell.
+  - **Stop didn't stop.** The UI waited for the core's `Ended`, and the
+    engine's `Sender::wait()` could wait forever on a keyframe stream
+    still opening (QUIC credit on a busy uplink; real screens make big
+    keyframes, the test source tiny ones). The writer is now abandoned at
+    teardown, Stop shows "Stopping…" at once, and the screen ends after
+    5 s with a reason if the core never confirms. Picker and stream
+    callbacks go through `CaptureEvents`, which ignores anything after our
+    own stop.
+  - **Broadcaster telemetry** sent the engine's counters alone, every
+    250 ms. `captureFps` read 0, the rung, encoder and capture path were
+    missing, and the windowed fps read 0 for a quiet quarter-second. The
+    core now merges the pipeline's view, as the desktop shell's
+    `merged_stats` does, once a second.

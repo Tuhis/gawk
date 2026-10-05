@@ -45,6 +45,9 @@ struct Lineage {
     rung: Rung,
 }
 
+/// How long a lost encoder waits before the next rebuild attempt.
+const ENCODER_RETRY_US: u64 = 1_000_000;
+
 struct Video {
     admission: Admission,
     rotation: RotationDebounce,
@@ -55,6 +58,9 @@ struct Video {
     /// Lineages built so far: the first keeps the trial's codec string,
     /// later ones re-derive theirs (D9).
     lineages: u64,
+    /// After the system took the encoder away (`vt::INVALID_SESSION`, iOS
+    /// backgrounding), a new one is tried no sooner than this session time.
+    rebuild_retry_at_us: Option<u64>,
 }
 
 struct Audio {
@@ -80,6 +86,10 @@ pub struct Pipeline {
     audio: Mutex<Audio>,
     failed: Arc<Mutex<Option<String>>>,
     pub dropped_backpressure: AtomicU64,
+    /// Frames dropped while no encoder could be built (iOS backgrounding).
+    dropped_no_encoder: AtomicU64,
+    /// Encoders the system took away and the pipeline replaced.
+    encoder_restarts: AtomicU64,
     pushed: AtomicU64,
     encoded: Arc<AtomicU64>,
 }
@@ -92,6 +102,8 @@ pub struct PipelineCounters {
     pub dropped_no_content: u64,
     pub dropped_over_rate: u64,
     pub dropped_backpressure: u64,
+    pub dropped_no_encoder: u64,
+    pub encoder_restarts: u64,
     /// Access units out of the encoder.
     pub encoded: u64,
     pub width: u32,
@@ -144,6 +156,7 @@ impl Pipeline {
                 last_status: None,
                 trial_codec: None,
                 lineages: 0,
+                rebuild_retry_at_us: None,
             }),
             audio: Mutex::new(Audio {
                 state: if lane.is_some() {
@@ -159,6 +172,8 @@ impl Pipeline {
             }),
             failed: Arc::default(),
             dropped_backpressure: AtomicU64::new(0),
+            dropped_no_encoder: AtomicU64::new(0),
+            encoder_restarts: AtomicU64::new(0),
             pushed: AtomicU64::new(0),
             encoded: Arc::new(AtomicU64::new(0)),
         }
@@ -205,9 +220,27 @@ impl Pipeline {
             .lineage
             .as_ref()
             .is_none_or(|l| (l.rung.width, l.rung.height) != (w, h));
-        if rebuild && let Err(e) = self.rebuild(&mut v, w, h) {
-            self.fail(format!("encoder start: {e}"));
-            return;
+        if rebuild {
+            // A lost encoder is retried once a second, not on every frame:
+            // in the background iOS may refuse new sessions until the app
+            // is back in front.
+            if v.rebuild_retry_at_us.is_some_and(|at| ts < at) {
+                self.dropped_no_encoder.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            let had_encoder = v.lineages > 0;
+            if let Err(e) = self.rebuild(&mut v, w, h) {
+                if !had_encoder {
+                    self.fail(format!("encoder start: {e}"));
+                } else {
+                    // The broadcast stays up (keepalive, audio); video
+                    // returns with the next encoder that builds.
+                    v.rebuild_retry_at_us = Some(ts + ENCODER_RETRY_US);
+                    self.dropped_no_encoder.fetch_add(1, Ordering::Relaxed);
+                }
+                return;
+            }
+            v.rebuild_retry_at_us = None;
         }
         let Some(lineage) = &v.lineage else { return };
         let encoder = lineage.encoder.clone();
@@ -224,6 +257,20 @@ impl Pipeline {
         }
         let frame_100ns = 10_000_000 / i64::from(fps.max(1));
         if let Err(e) = encoder.encode(pixels, ts as i64 * 10, frame_100ns) {
+            if encoder.session_invalidated() {
+                // iOS took the hardware encoder away (the app went to the
+                // background): drop this lineage, and the next frame builds
+                // a new one on the same publish session, opening on an IDR.
+                let mut v = self.video.lock().unwrap();
+                if v.lineage
+                    .as_ref()
+                    .is_some_and(|l| Arc::ptr_eq(&l.encoder, &encoder))
+                {
+                    v.lineage = None;
+                    self.encoder_restarts.fetch_add(1, Ordering::Relaxed);
+                }
+                return;
+            }
             self.fail(format!("video pipeline error: {e}"));
         }
     }
@@ -369,6 +416,15 @@ impl Pipeline {
         }
     }
 
+    /// Invalidates the current encoder's session as iOS does on backgrounding,
+    /// so tests can drive the recovery. Not for production use.
+    #[doc(hidden)]
+    pub fn invalidate_encoder_for_test(&self) {
+        if let Some(l) = &self.video.lock().unwrap().lineage {
+            l.encoder.invalidate_for_test();
+        }
+    }
+
     /// "off" | "unavailable" | "active" | "error", for the live status.
     pub fn audio_state(&self) -> &'static str {
         self.audio.lock().unwrap().state
@@ -381,6 +437,11 @@ impl Pipeline {
 
     fn fail(&self, text: String) {
         self.failed.lock().unwrap().get_or_insert(text);
+    }
+
+    /// The rung the current encoder runs at, if one is built.
+    pub fn rung(&self) -> Option<Rung> {
+        self.video.lock().unwrap().lineage.as_ref().map(|l| l.rung)
     }
 
     /// The upright size and codec in force, for the status line.
@@ -401,6 +462,8 @@ impl Pipeline {
             dropped_no_content: v.admission.dropped_no_content,
             dropped_over_rate: v.admission.dropped_over_rate,
             dropped_backpressure: self.dropped_backpressure.load(Ordering::Relaxed),
+            dropped_no_encoder: self.dropped_no_encoder.load(Ordering::Relaxed),
+            encoder_restarts: self.encoder_restarts.load(Ordering::Relaxed),
             encoded: self.encoded.load(Ordering::Relaxed),
             width,
             height,

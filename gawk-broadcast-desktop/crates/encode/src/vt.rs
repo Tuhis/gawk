@@ -101,8 +101,15 @@ pub struct Encoder {
     ctx: *const Ctx,
     cadence: Mutex<KeyframeCadence>,
     force: AtomicBool,
+    invalidated: AtomicBool,
     finished: bool,
 }
+
+/// `kVTInvalidSessionErr`: the system invalidated the session, as iOS does
+/// to a hardware encoder when the app moves to the background (R65,
+/// docs/67 §12). The session is gone, but the encoder is not broken; a new
+/// session may work at once or once the app is back in front.
+pub const INVALID_SESSION: i32 = -12903;
 
 // SAFETY: VTCompressionSession is thread-safe for EncodeFrame from one
 // thread at a time (the capture queue, serial) while outputs arrive on
@@ -133,6 +140,7 @@ impl Encoder {
                 ctx,
                 cadence: Mutex::new(KeyframeCadence::new(params.fps)),
                 force: AtomicBool::new(false),
+                invalidated: AtomicBool::new(false),
                 finished: false,
             }),
             Err(e) => {
@@ -186,9 +194,27 @@ impl Encoder {
         };
         if status != 0 {
             self.ctx().in_flight.fetch_sub(1, Ordering::AcqRel);
+            if status == INVALID_SESSION {
+                self.invalidated.store(true, Ordering::Release);
+            }
             return Err(format!("VTCompressionSessionEncodeFrame failed ({status})"));
         }
         Ok(())
+    }
+
+    /// Whether an encode found the session invalidated by the system
+    /// ([`INVALID_SESSION`]): the caller can build a new encoder.
+    pub fn session_invalidated(&self) -> bool {
+        self.invalidated.load(Ordering::Acquire)
+    }
+
+    /// Invalidates the session as the system would, so tests can drive the
+    /// recovery. Not for production use.
+    #[doc(hidden)]
+    pub fn invalidate_for_test(&self) {
+        // SAFETY: invalidating a live session; `finish` invalidates again,
+        // which VideoToolbox tolerates, before it frees `ctx`.
+        unsafe { self.session.invalidate() };
     }
 
     /// Emits every pending frame, then invalidates the session.

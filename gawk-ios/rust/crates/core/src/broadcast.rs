@@ -14,14 +14,17 @@
 //! for an R17 reclaim within the grace.
 
 use gawk_broadcast::audio::Asbd;
-use gawk_broadcast::pipeline::Pipeline;
+use gawk_broadcast::pipeline::{Pipeline, PipelineCounters};
 use gawk_broadcast::rotation::Rotation;
-use gawk_broadcast::rung::Quality as RungQuality;
+use gawk_broadcast::rung::{Quality as RungQuality, Rung};
 use gawk_engine::clock::{Clock, MonotonicClock};
+use gawk_engine::relay::StartError;
 use gawk_engine::session::{EngineEvent, Session, SessionConfig};
+use gawk_engine::stats::Stats;
 use gawk_engine::telemetry::{Hello, Reporter};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum Quality {
@@ -97,6 +100,9 @@ pub struct BroadcastOptions {
     /// advertised ingest, else the default collector on the default fleet
     /// only.
     pub telemetry: bool,
+    /// How frames are captured, for telemetry's `capturePath`:
+    /// "screencapturekit" or "test-source" (D27).
+    pub capture_source: String,
 }
 
 /// One audio buffer's `AudioStreamBasicDescription` fields (D11).
@@ -210,7 +216,7 @@ impl Broadcaster {
                     .enable_all()
                     .build()
                     .expect("a tokio runtime");
-                rt.block_on(run(options, listener, live, stop_rx));
+                rt.block_on(run(options, listener, live, stop_rx, Session::start));
             })
             .expect("spawn the broadcast thread");
         this
@@ -345,12 +351,20 @@ impl Drop for Broadcaster {
     }
 }
 
-async fn run(
+/// What brings the publish session up: [`Session::start`] in the app, a
+/// scripted relay in the tests.
+type Started = Result<(Arc<Session>, mpsc::UnboundedReceiver<EngineEvent>), StartError>;
+
+async fn run<C, F>(
     options: BroadcastOptions,
     listener: Arc<dyn BroadcastListener>,
     live: Arc<Mutex<Option<Live>>>,
     mut stop: oneshot::Receiver<()>,
-) {
+    connect: C,
+) where
+    C: FnOnce(SessionConfig, Arc<dyn Clock>) -> F,
+    F: Future<Output = Started>,
+{
     listener.on_status(BroadcastStatus::Connecting);
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::new());
     // Telemetry (D23): "off" unless the user opted in, then the desktop's
@@ -376,7 +390,16 @@ async fn run(
         nickname: options.nickname,
         ..SessionConfig::default()
     };
-    let (session, mut events) = match Session::start(cfg, clock.clone()).await {
+    // A stop while the dial is still out (a slow relay, a lost handshake:
+    // QUIC gives the dial no bound of its own) ends the broadcast now.
+    let started = tokio::select! {
+        started = connect(cfg, clock.clone()) => started,
+        _ = &mut stop => {
+            listener.on_status(BroadcastStatus::Ended { error: None, reclaim_status: None });
+            return;
+        }
+    };
+    let (session, mut events) = match started {
         Ok(s) => s,
         Err(e) => {
             listener.on_status(BroadcastStatus::Ended {
@@ -400,6 +423,11 @@ async fn run(
     let mut identity = Identity::default();
     let mut reclaim_status = None;
     let mut failure_check = tokio::time::interval(std::time::Duration::from_millis(250));
+    // The engine's encoder and sent fps are windowed between `stats()`
+    // calls, so the sample is taken once a second, as the desktop shells
+    // do: at 250 ms a quiet quarter-second read as 0 fps.
+    let mut report_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    let mut capture_rate = CaptureRate::default();
     loop {
         tokio::select! {
             _ = &mut stop => {
@@ -408,9 +436,19 @@ async fn run(
                 reporter.finish();
                 break;
             }
-            _ = failure_check.tick() => {
-                reporter.report(session.stats());
+            _ = report_tick.tick() => {
+                let counters = pipeline.counters();
+                reporter.report(merged_stats(
+                    session.stats(),
+                    &counters,
+                    pipeline.rung(),
+                    capture_rate.sample(counters.pushed),
+                    &options.capture_source,
+                    pipeline.audio_state(),
+                ));
                 reporter.tick();
+            }
+            _ = failure_check.tick() => {
                 if let Some(why) = pipeline.take_failure() {
                     reporter.event("error", &why);
                     reporter.finish();
@@ -499,6 +537,107 @@ pub fn host_time_100ns() -> i64 {
     gawk_capture::host::now_100ns()
 }
 
+/// What the iOS pipeline knows that the engine's counters can't, merged
+/// into the telemetry sample as the desktop shell's `merged_stats` does:
+/// the rung, the encoder, the capture path and rate, audio, and encoders
+/// rebuilt mid-session.
+fn merged_stats(
+    mut st: Stats,
+    counters: &PipelineCounters,
+    rung: Option<Rung>,
+    capture_fps: Option<f64>,
+    capture_source: &str,
+    audio_state: &str,
+) -> Stats {
+    if let Some(r) = rung {
+        st.encoder = "VideoToolbox H.264".into();
+        st.width = r.width;
+        st.height = r.height;
+        st.fps = r.fps;
+        st.bitrate_bps = r.peak_bitrate_bps;
+    }
+    if let Some(f) = capture_fps {
+        st.capture_fps_available = true;
+        st.capture_fps = f;
+    }
+    st.capture_path = capture_source.to_owned();
+    st.audio_state = audio_state.to_owned();
+    st.capture_restarts = counters.encoder_restarts;
+    st
+}
+
+/// Frames the capture pushed per second, windowed between reports.
+#[derive(Default)]
+struct CaptureRate {
+    last: Option<(std::time::Instant, u64)>,
+}
+
+impl CaptureRate {
+    fn sample(&mut self, pushed: u64) -> Option<f64> {
+        let now = std::time::Instant::now();
+        let rate = self.last.and_then(|(t, n)| {
+            let dt = now.duration_since(t).as_secs_f64();
+            (dt > 0.0).then(|| pushed.saturating_sub(n) as f64 / dt)
+        });
+        self.last = Some((now, pushed));
+        rate
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    #[test]
+    fn the_sample_carries_what_only_the_pipeline_knows() {
+        let counters = PipelineCounters {
+            encoder_restarts: 2,
+            ..Default::default()
+        };
+        let rung = Rung {
+            width: 884,
+            height: 1920,
+            fps: 60,
+            peak_bitrate_bps: 8_000_000,
+        };
+        let st = merged_stats(
+            Stats::default(),
+            &counters,
+            Some(rung),
+            Some(59.5),
+            "screencapturekit",
+            "active",
+        );
+        assert_eq!(st.encoder, "VideoToolbox H.264");
+        assert_eq!(
+            (st.width, st.height, st.fps, st.bitrate_bps),
+            (884, 1920, 60, 8_000_000)
+        );
+        assert!(st.capture_fps_available);
+        assert_eq!(st.capture_fps, 59.5);
+        assert_eq!(st.capture_path, "screencapturekit");
+        assert_eq!(st.audio_state, "active");
+        // A rebuilt encoder is a freeze a viewer saw, as a desktop capture
+        // rebuild is (Stats::capture_restarts).
+        assert_eq!(st.capture_restarts, 2);
+    }
+
+    #[test]
+    fn before_the_first_frame_nothing_is_invented() {
+        let st = merged_stats(
+            Stats::default(),
+            &PipelineCounters::default(),
+            None,
+            None,
+            "",
+            "off",
+        );
+        assert_eq!((st.width, st.height), (0, 0));
+        assert!(!st.capture_fps_available);
+        assert_eq!(st.audio_state, "off");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Identity;
@@ -532,5 +671,133 @@ mod tests {
             id.on_token("bb".into()),
             Some(("AB2CD3".into(), "bb".into()))
         );
+    }
+}
+
+/// "Stop broadcasting" must end the broadcast whatever the relay is doing:
+/// the UI leaves its live screen only on `Ended`.
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+    use gawk_engine::media::AccessUnit;
+    use gawk_engine::relay::{
+        BoxFuture, KeyframeWriter, RelaySession, SendDatagramError, ServerStream, SessionClose,
+    };
+    use std::time::Duration;
+
+    /// A relay that accepts the session and datagrams but never grants a
+    /// keyframe stream: an open that waits on QUIC credit (stream count or
+    /// connection flow control on a saturated uplink) for as long as the
+    /// connection lives.
+    struct StalledOpenRelay;
+
+    impl RelaySession for StalledOpenRelay {
+        fn send_datagram(&self, _: &[u8]) -> Result<(), SendDatagramError> {
+            Ok(())
+        }
+        fn open_keyframe_stream(&self) -> BoxFuture<'_, Result<Box<dyn KeyframeWriter>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn receive_datagram(&self) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn closed(&self) -> BoxFuture<'_, SessionClose> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    struct Statuses(mpsc::UnboundedSender<BroadcastStatus>);
+
+    impl BroadcastListener for Statuses {
+        fn on_status(&self, status: BroadcastStatus) {
+            let _ = self.0.send(status);
+        }
+        fn on_identity(&self, _: String, _: String) {}
+        fn on_viewer_count(&self, _: u32) {}
+        fn on_room(&self, _: String) {}
+        fn on_failure(&self, _: String) {}
+    }
+
+    fn options() -> BroadcastOptions {
+        BroadcastOptions {
+            relay_url: "https://127.0.0.1:9".into(),
+            publish_secret: String::new(),
+            broadcast_id: String::new(),
+            resume_token_hex: String::new(),
+            quality: Quality::Standard,
+            room_code: String::new(),
+            room_attach_secret: String::new(),
+            nickname: String::new(),
+            insecure: true,
+            telemetry: false,
+            capture_source: String::new(),
+        }
+    }
+
+    /// Whether `Ended` arrives. Time is paused, so a run that can make no
+    /// more progress fails at once rather than after the 30 s.
+    async fn ended(rx: &mut mpsc::UnboundedReceiver<BroadcastStatus>) -> bool {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while let Some(s) = rx.recv().await {
+                if matches!(s, BroadcastStatus::Ended { .. }) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_ends_the_broadcast_while_a_keyframe_stream_cannot_open() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let (session_tx, session_rx) = oneshot::channel();
+        tokio::spawn(run(
+            options(),
+            Arc::new(Statuses(tx)),
+            Arc::default(),
+            stop_rx,
+            move |cfg, clock| async move {
+                let (s, ev) = Session::start_with_session(cfg, Arc::new(StalledOpenRelay), clock);
+                let _ = session_tx.send(s.clone());
+                Ok((s, ev))
+            },
+        ));
+        let session = session_rx.await.unwrap();
+        // A keyframe whose stream never opens: what a big IDR can meet on
+        // a saturated uplink.
+        session
+            .sender()
+            .send_video(AccessUnit {
+                data: vec![0; 64],
+                timestamp_us: 1,
+                keyframe: true,
+            })
+            .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let _ = stop_tx.send(());
+        assert!(ended(&mut rx).await, "Stop never ended the broadcast");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stop_while_connecting_ends_the_broadcast() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (stop_tx, stop_rx) = oneshot::channel();
+        tokio::spawn(run(
+            options(),
+            Arc::new(Statuses(tx)),
+            Arc::default(),
+            stop_rx,
+            |_, _| std::future::pending::<Started>(),
+        ));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = stop_tx.send(());
+        assert!(ended(&mut rx).await, "Stop while connecting never ended it");
     }
 }

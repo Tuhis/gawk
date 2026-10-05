@@ -8,6 +8,8 @@ enum BroadcastPhase: Equatable {
     case connecting
     case live(code: String, joinLink: String)
     case resuming(attempt: UInt32)
+    /// Stop was asked for; the core is winding the session down.
+    case stopping
     case ended(reason: String?)
 }
 
@@ -30,6 +32,11 @@ final class BroadcastSession {
     @ObservationIgnored private let identity: IdentityStore
     /// The relay the current broadcast publishes to, whose identity it holds.
     @ObservationIgnored private var relay: String?
+    /// Which broadcast is current: a stopped one's late reports are dropped.
+    @ObservationIgnored private var generation = 0
+    /// How long a stop waits for the core to confirm before the screen
+    /// gives up on it and says so.
+    @ObservationIgnored var stopGrace: Duration = .seconds(5)
 
     init(identity: IdentityStore) {
         self.identity = identity
@@ -46,7 +53,8 @@ final class BroadcastSession {
     /// (R17), so a restart within the grace keeps the code (G6).
     func start(
         relayURL: String, secret: String, quality: Quality, room: String,
-        nickname: String, telemetry: Bool, insecure: Bool
+        nickname: String, telemetry: Bool, insecure: Bool,
+        captureSource: String = "test-source"
     ) {
         guard !isActive else { return }
         let stored = identity.load(relay: relayURL)
@@ -60,21 +68,39 @@ final class BroadcastSession {
             roomAttachSecret: "",
             nickname: nickname,
             insecure: insecure,
-            telemetry: telemetry
+            telemetry: telemetry,
+            captureSource: captureSource
         )
         failure = nil
         phase = .connecting
         relay = relayURL
-        let listener = Listener(session: self, relay: relayURL, identity: identity)
+        generation += 1
+        let listener = Listener(
+            session: self, generation: generation, relay: relayURL, identity: identity
+        )
         let b = Broadcaster.start(options: options, listener: listener)
         broadcaster = b
         media.attach(b)
     }
 
+    /// Ends the broadcast. The screen leaves the live state at once
+    /// (`.stopping`); `.ended` follows when the core has closed the session,
+    /// or after `stopGrace` with a reason if it never confirms.
     func stop() {
         media.attach(nil)
         broadcaster?.stop()
         broadcaster = nil
+        switch phase {
+        case .idle, .ended, .stopping: return
+        default: break
+        }
+        phase = .stopping
+        let stopped = generation
+        Task { [weak self, stopGrace] in
+            try? await Task.sleep(for: stopGrace)
+            guard let self, self.generation == stopped, self.phase == .stopping else { return }
+            self.finish(reason: "The app stopped broadcasting, but the server didn't confirm it.")
+        }
     }
 
     /// Where frames went so far (the live status and diagnostics).
@@ -95,18 +121,31 @@ final class BroadcastSession {
 
     func apply(_ status: BroadcastStatus) {
         switch status {
-        case .connecting: phase = .connecting
-        case .live(let code, let joinLink): phase = .live(code: code, joinLink: joinLink)
-        case .resuming(let attempt): phase = .resuming(attempt: attempt)
         case .ended(let error, let reclaimStatus):
-            media.attach(nil)
-            broadcaster = nil
-            onEnded?()
             if let relay, Self.refusesIdentity(reclaimStatus) {
                 identity.forgetIdentity(relay: relay)
             }
-            phase = .ended(reason: Self.reason(error: error, reclaimStatus: reclaimStatus))
+            finish(reason: Self.reason(error: error, reclaimStatus: reclaimStatus))
+        // A stopping broadcast only ends: a report the core sent before it
+        // saw the stop must not bring the live screen back.
+        case _ where phase == .stopping: break
+        case .connecting: phase = .connecting
+        case .live(let code, let joinLink): phase = .live(code: code, joinLink: joinLink)
+        case .resuming(let attempt): phase = .resuming(attempt: attempt)
         }
+    }
+
+    /// A report from the core's listener: only the current broadcast's count.
+    fileprivate func apply(_ status: BroadcastStatus, generation: Int) {
+        guard generation == self.generation else { return }
+        apply(status)
+    }
+
+    private func finish(reason: String?) {
+        media.attach(nil)
+        broadcaster = nil
+        onEnded?()
+        phase = .ended(reason: reason)
     }
 
     fileprivate func setViewers(_ n: UInt32) { viewerCount = n }
@@ -137,17 +176,20 @@ final class BroadcastSession {
     /// The core's callbacks, hopping to the main actor.
     private final class Listener: BroadcastListener, @unchecked Sendable {
         private weak var session: BroadcastSession?
+        private let generation: Int
         private let relay: String
         private let identity: IdentityStore
 
-        @MainActor init(session: BroadcastSession, relay: String, identity: IdentityStore) {
+        @MainActor init(session: BroadcastSession, generation: Int, relay: String, identity: IdentityStore) {
             self.session = session
+            self.generation = generation
             self.relay = relay
             self.identity = identity
         }
 
         func onStatus(status: BroadcastStatus) {
-            Task { @MainActor [weak session] in session?.apply(status) }
+            let generation = generation
+            Task { @MainActor [weak session] in session?.apply(status, generation: generation) }
         }
 
         func onIdentity(code: String, resumeTokenHex: String) {
@@ -155,15 +197,27 @@ final class BroadcastSession {
         }
 
         func onViewerCount(count: UInt32) {
-            Task { @MainActor [weak session] in session?.setViewers(count) }
+            let generation = generation
+            Task { @MainActor [weak session] in
+                guard let session, session.generation == generation else { return }
+                session.setViewers(count)
+            }
         }
 
         func onRoom(text: String) {
-            Task { @MainActor [weak session] in session?.setRoom(text) }
+            let generation = generation
+            Task { @MainActor [weak session] in
+                guard let session, session.generation == generation else { return }
+                session.setRoom(text)
+            }
         }
 
         func onFailure(text: String) {
-            Task { @MainActor [weak session] in session?.setFailure(text) }
+            let generation = generation
+            Task { @MainActor [weak session] in
+                guard let session, session.generation == generation else { return }
+                session.setFailure(text)
+            }
         }
     }
 }
@@ -188,6 +242,9 @@ final class MediaSink: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let b = broadcaster else { return }
+        #if DEBUG
+        CaptureDiagnostics.shared.noteSource(buffer, status: status)
+        #endif
         let pts100 = Self.ticks(pts)
         let plan = b.plan(
             width: UInt32(CVPixelBufferGetWidth(buffer)),
@@ -200,7 +257,11 @@ final class MediaSink: @unchecked Sendable {
             b.pushVideo(pixelBuffer: pixelBufferHandle(buffer), pts100ns: pts100, status: Int64(status))
             return
         }
-        guard let upright = converter.convert(buffer, plan: plan) else { return }
+        let upright = converter.convert(buffer, plan: plan)
+        #if DEBUG
+        CaptureDiagnostics.shared.noteConverted(upright)
+        #endif
+        guard let upright else { return }
         withExtendedLifetime(upright) {
             b.pushVideo(pixelBuffer: pixelBufferHandle(upright), pts100ns: pts100, status: 0)
         }

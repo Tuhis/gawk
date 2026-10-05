@@ -20,6 +20,9 @@ struct BroadcastView: View {
                     setup
                 case .connecting:
                     Section { ProgressView("Connecting…") }
+                    stopSection
+                case .stopping:
+                    Section { ProgressView("Stopping…") }
                 case .resuming(let attempt):
                     Section { ProgressView("Reconnecting (attempt \(attempt))…") }
                     stopSection
@@ -111,6 +114,15 @@ struct BroadcastView: View {
         if let roomText = session.roomText {
             Section("Room") { Text(roomText) }
         }
+        #if DEBUG
+        Section("Capture (debug)") {
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                Text(CaptureDiagnostics.shared.summary)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+            }
+        }
+        #endif
     }
 
     private var stopSection: some View {
@@ -203,6 +215,9 @@ final class Capture {
         // A source left from an earlier broadcast must not feed this one, or
         // end it from its own stop callback.
         stopSources()
+        #if DEBUG
+        CaptureDiagnostics.shared.reset()
+        #endif
         // D19: an expensive path picks the Cellular rung at start, and
         // never switches mid-broadcast.
         let quality: Quality = path.isExpensive ? .cellular : .standard
@@ -213,7 +228,8 @@ final class Capture {
             room: room,
             nickname: settings.nickname,
             telemetry: settings.telemetry,
-            insecure: settings.insecure
+            insecure: settings.insecure,
+            captureSource: test ? "test-source" : "screencapturekit"
         )
         live = session
         // The core can end the broadcast itself (a refusal, an operator, an
@@ -239,10 +255,12 @@ final class Capture {
         #endif
     }
 
+    /// The Stop button, and capture ending on its own. The session goes
+    /// first: the broadcast must end even if tearing capture down misbehaves.
     func stop(_ session: BroadcastSession) {
-        stopSources()
         live = nil
         session.stop()
+        stopSources()
     }
 
     /// Stops capture only; the session is the caller's.
