@@ -25,6 +25,8 @@ final class BroadcastSession {
     /// The core object; capture threads read it through `media`.
     @ObservationIgnored private var broadcaster: Broadcaster?
     @ObservationIgnored let media = MediaSink()
+    /// Called when the broadcast ends, whoever ended it: capture stops.
+    @ObservationIgnored var onEnded: (() -> Void)?
     @ObservationIgnored private let identity: IdentityStore
     /// The relay the current broadcast publishes to, whose identity it holds.
     @ObservationIgnored private var relay: String?
@@ -80,6 +82,12 @@ final class BroadcastSession {
         broadcaster?.counters()
     }
 
+    /// The capture ended on its own (the system, or an error); the reason
+    /// stays on screen after the broadcast stops (D7).
+    func noteCaptureEnded(_ reason: String?) {
+        if let reason { failure = reason }
+    }
+
     /// D19: the network path changed while live.
     func pathChanged() {
         broadcaster?.pathChanged()
@@ -93,6 +101,7 @@ final class BroadcastSession {
         case .ended(let error, let reclaimStatus):
             media.attach(nil)
             broadcaster = nil
+            onEnded?()
             if let relay, Self.refusesIdentity(reclaimStatus) {
                 identity.forgetIdentity(relay: relay)
             }

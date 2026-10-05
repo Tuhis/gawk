@@ -541,7 +541,10 @@ fn is_valid_ingest_url(s: &str) -> bool {
     }
 }
 
-fn is_default_relay(raw: &str) -> bool {
+/// Whether `raw` (blank meaning the default) is the compiled-in default
+/// fleet, compared normalized. Public for the iOS app's server strip
+/// (R65, docs/67 D20), so it never restates the comparison.
+pub fn is_default_relay(raw: &str) -> bool {
     normalize_relay_url(&resolve_relay_url(raw)) == normalize_relay_url(defaults::RELAY_URL)
 }
 

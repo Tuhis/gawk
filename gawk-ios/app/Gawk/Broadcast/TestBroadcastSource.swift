@@ -57,6 +57,8 @@ final class TestBroadcastSource: @unchecked Sendable {
         timer = t
     }
 
+    var isRunning: Bool { timer != nil }
+
     func stop() {
         timer?.cancel()
         timer = nil

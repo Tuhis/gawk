@@ -12,6 +12,7 @@ uniffi::setup_scaffolding!();
 pub mod broadcast;
 pub mod identity;
 pub mod rooms;
+pub mod servers;
 pub mod viewer;
 
 /// What the core reports about itself to Swift: the build and the defaults
