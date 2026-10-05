@@ -1,8 +1,10 @@
 # R68 — iOS app UX redesign (docs/70)
 
 **Status**: designed 2026-10-05 in a Claude Design pass. The owner's
-decisions OD1–OD12 (§2) came from canvas comments and chat the same day. Chunks
-**IX1–IX10** (§8) not started. Status lives in [`ROADMAP.md`](../ROADMAP.md).
+decisions OD1–OD12 (§2) came from canvas comments and chat the same day.
+Chunks **IX1–IX9** (§8) implemented 2026-10-06, with their deviations in
+§10; **IX10**, the owner's device pass, is open. Status lives in
+[`ROADMAP.md`](../ROADMAP.md).
 
 **Relationship to earlier work**: a redesign of the screens R65 built
 ([docs/67](67-ios-app.md)): IO3's Broadcast and Settings screens and IO5's
@@ -306,3 +308,73 @@ was confirmed as OD11.
 ## 10. Deviations and field findings
 
 Recorded here, dated, as chunks land.
+
+### 10.1 IX1–IX9, 2026-10-06
+
+Built against the canvas and this document in the iPhone 17 and iPad Pro
+11-inch Simulators. Where the build departs from §3–§5, this is why.
+
+**Design deviations**
+
+| # | Spec | Built | Why |
+|---|---|---|---|
+| 1 | LIVE and RECONNECTING chips: glass tinted `live` / `warn`, white text | `liveSoft` / `warnSoft` tinted glass, `liveText` / `warnText` text, and a red dot on LIVE | White on `live` is 3.4:1 and on `warn` about 2:1, under D27's 4.5:1. The soft and text tokens exist for exactly this. |
+| 2 | Glass cards and glass capsule buttons over flat surfaces | The glass keeps its rim, with a solid ground under the content: `s1` under the join card and `s3` under capsule buttons | The accessibility audit fails `muted` and `text` on bare glass over the glow and sheets, and it passed once the ground was solid. Controls over video stay pure glass. |
+| 3 | Leave (D17): ghost | Ghost, as specified, and "Use a new code next time" (D14) is a ghost button too | It was drawn on glass at first and failed contrast. |
+| 4 | Glass buttons | Plain `.glassEffect`, never `.interactive()` | Interactive glass takes the touch itself, and a `Button` around it never fires. The buttons supply their own press feedback. |
+| 5 | Grouped list: radius 22 | The system's inset grouped list and its radius | Your rooms' swipe actions need `List`. The rows, icon tiles, hairlines and headers follow §3.3. |
+| 6 | Stats drawer: tiles under the video (D7) | While Stats is out in portrait, the video moves up out of the drawer's way, and the bottom controls step aside | A centred video sat partly under a 270 pt drawer. |
+| 7 | Room player: a paused tile shows a play badge | Grid only. In Focus a strip tile has no badge, and its label says "Tap to focus" | In Focus a tap focuses a tile rather than playing it. |
+| 8 | People: the relay's order | Your own row first, then the relay's order | Edit is on your row and has to be in reach, and the list is lazy. |
+| 9 | Add to a room: one-line field | The field wraps up to four lines. Return still joins | At AX5 a one-line field cut the placeholder off. |
+| 10 | Typed code while live (D21) | Asked before the resolver dials. Join drops the keyboard at once | Otherwise iOS restores the keyboard when the alert is dismissed. |
+
+**Core and fixtures** (K1–K4, K14)
+
+- `set_quality` restarts only once the code and the resume token are both
+  known, since a republish before that would end the broadcast. "Nothing is
+  narrated" (D12) covers the restart's first reclaim attempt, which is the
+  desktop's rule (`reclaim_quiet && attempt == 1`). A second attempt means
+  the link really is down, so it shows RECONNECTING.
+- When the room's creator removes this broadcast, the core leaves the room
+  (docs/60 D10), and no later room state brings the card back.
+- `upload_bps` is `bytes_sent + parity_bytes_sent` over the last second.
+  `bytes_sent` already includes keyframe streams and audio. The desktop
+  shell adds `audio_bytes_sent` to it again, which is now in `BUGS.md`.
+- The engine gained `watch_room_with_requests`, so a watcher can rename
+  itself. It also fixes a rename made between a room session's hello and its
+  first snapshot, which the relay never saw. Written test-first.
+- `gawk-devpub` gained `--room`, `--room-new` and `--nick` (K14), and also
+  `--quit-after` for the away tile and a `GAWK_DEVPUB_CREATOR=` line for
+  the creator-room test. `scripts/room-fixtures.sh` publishes the four
+  rooms the UI tests use. `scripts/static-rooms.json` is the gated
+  `lan-party` room.
+
+**Tests**
+
+- The UI tests run against a local relay with `-rooms`, raised caps and a
+  60 min grace (`ios.yml`). The defaults of 5 broadcasts, 4 per room and a
+  5 min grace refuse a run's worth of test broadcasts and lose the away tile.
+- They drive the app through debug-only launch arguments: `-gawkReset`,
+  `-gawkRelay`, `-gawkSecret`, `-gawkNickname`, and `-gawkControlIdle`,
+  which lengthens the 3 s idle for tests that work the controls. The test
+  of the idle rule itself runs at 3 s.
+- The accessibility audit (D27) runs everything but the two text-size
+  checks at the default size. Those two run at AX5 on the lists and sheets,
+  where the auditor measures real sizes instead of guessing. At the default
+  size it flagged list headers that its own resize had scrolled away. Contrast
+  is not judged over video, where every control is glass on arbitrary
+  content, nor on inactive controls (WCAG 1.4.3 exempts them), nor on rows
+  under the tab bar or a pinned button until they're scrolled up.
+- The Simulator's software H.264 encoder has stalled for good on its first
+  session in a process (`encoded: 0`, every frame dropped as backpressure).
+  The quality-while-live Simulator test turns its source, so encoders are
+  rebuilt, as the rotation test always has. The core's VideoToolbox test,
+  `crates/core/tests/publish_relay.rs`, makes the change on a real encoder.
+- `XCUIApplication.open(_:)` can start a fresh copy of the app, which
+  isn't live, so a link test never saw D21's question. The tests open links
+  with `XCUIDevice.shared.system.open(_:)`, which reaches the running app.
+
+**Not done here**: IX10, the owner's device pass. It covers ScreenCaptureKit
+broadcasting, the Live Activity on a real Lock Screen and Dynamic Island,
+PiP when going home, and the iPad Pro.
