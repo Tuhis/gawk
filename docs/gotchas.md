@@ -1189,6 +1189,24 @@ Add to it when a new gotcha lands in `docs/`.
   this; the network notice reads the QUIC counter.
   ([docs/57](57-wifi-uplink.md) OD7)
 
+**iOS app (R65)**
+
+- **The iOS 27 SDK deprecates the ReplayKit broadcast extension.**
+  `RPBroadcastSampleHandler` is "No longer supported" and `RPSampleBufferType`
+  points at `SCStreamOutputType`: iOS 27 brings `SCStream` and
+  `SCContentSharingPicker` to iPhone and iPad, and an app captures the whole
+  display itself, in the background under the `screen-capture` mode
+  (without it the stream stops with `SCStreamErrorMissingBackgroundMode`).
+  Whether iOS really keeps it running behind a game was disputed in public
+  reports at the time, which is what IO0 measures.
+  ([docs/67](67-ios-app.md) OD17, §12)
+- **ScreenCaptureKit on iOS is not macOS's.** iOS 27's
+  `SCStreamConfiguration` has `width`, `height` and the audio keys, but no
+  `pixelFormat`, `minimumFrameInterval`, `queueDepth` or `scalesToFit`, so
+  conversion to `420v` and the frame-rate cap stay in the pipeline
+  (`VTPixelTransferSession`, `FpsGate`), and `SCShareableContent` is
+  macOS-only: content comes from the picker. ([docs/67](67-ios-app.md) D8)
+
 **Native Linux broadcaster, in the desktop workspace (R56)**
 
 - **On Wayland the window's own icon is dropped; the installed desktop
