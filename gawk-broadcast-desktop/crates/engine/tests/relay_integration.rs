@@ -11,6 +11,8 @@
 
 #[path = "support/relay.rs"]
 mod relay;
+#[path = "support/udp_gate.rs"]
+mod udp_gate;
 
 use gawk_engine::clock::MonotonicClock;
 use gawk_engine::relay::StartPhase;
@@ -520,4 +522,83 @@ async fn the_probe_reaches_the_real_relay_and_reads_its_name() {
         probe(&nobody, gawk_engine::defaults::origin(), true).await,
         ProbeResult::Failed
     );
+}
+
+fn relay_addr(relay: &Relay) -> std::net::SocketAddr {
+    relay.url.trim_start_matches("https://").parse().unwrap()
+}
+
+// R65 IO5's CI flake: on a freshly booted Simulator the dial's first
+// packets can be lost. When it is the relay's answers that are lost, one
+// QUIC connection never recovers — the relay stops retransmitting its
+// handshake and forgets the connection, the client keeps probing it until
+// its 30 s idle timeout, and the broadcaster sits in "connecting" for
+// 40-60 s. A dial must give up on such an attempt and start over on a
+// fresh endpoint (a new port and connection ID), which the relay answers
+// at once.
+#[tokio::test]
+#[ignore = "builds and runs the real gawk-server (cargo test -- --ignored)"]
+async fn a_dial_whose_first_answers_are_lost_recovers_on_a_fresh_endpoint() {
+    let relay = Relay::start(&["-publish-secret", SECRET]);
+    let gate = udp_gate::UdpGate::start(
+        relay_addr(&relay),
+        udp_gate::Lose::Down,
+        Duration::from_secs(5),
+    );
+    let url = gawk_engine::relay::publish_url(&gate.url(), "", SECRET, "").unwrap();
+    let started = std::time::Instant::now();
+    let dialed = tokio::time::timeout(
+        Duration::from_secs(15),
+        gawk_engine::transport::dial(&url, gawk_engine::defaults::origin(), true),
+    )
+    .await;
+    let took = started.elapsed();
+    assert!(
+        matches!(dialed, Ok(Ok(_))),
+        "the dial should recover within 15 s: {:?} after {took:?}",
+        dialed.map(|r| r.err())
+    );
+    assert!(gate.clients() >= 2, "it recovered on a fresh endpoint");
+}
+
+// The same when the relay never hears the first packets: a fresh attempt
+// lands soon after the path opens instead of riding one connection's
+// exponential Initial backoff (sends at 0, 1, 3, 7, 15 s) to its next
+// retransmission.
+#[tokio::test]
+#[ignore = "builds and runs the real gawk-server (cargo test -- --ignored)"]
+async fn a_dial_whose_first_packets_are_lost_lands_soon_after_the_path_opens() {
+    let relay = Relay::start(&["-publish-secret", SECRET]);
+    let gate = udp_gate::UdpGate::start(
+        relay_addr(&relay),
+        udp_gate::Lose::Up,
+        Duration::from_secs(8),
+    );
+    let url = gawk_engine::relay::publish_url(&gate.url(), "", SECRET, "").unwrap();
+    let started = std::time::Instant::now();
+    gawk_engine::transport::dial(&url, gawk_engine::defaults::origin(), true)
+        .await
+        .unwrap();
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(12),
+        "landed {took:?} in; one connection's backoff takes 15 s"
+    );
+}
+
+// A refused CONNECT is an answer, not a lost dial: its status surfaces from
+// the one attempt, never retried (a retry could only be refused again, and
+// the StartError status is what the shells act on).
+#[tokio::test]
+#[ignore = "builds and runs the real gawk-server (cargo test -- --ignored)"]
+async fn a_refused_connect_is_not_retried() {
+    let relay = Relay::start(&["-publish-secret", SECRET]);
+    let gate = udp_gate::UdpGate::start(relay_addr(&relay), udp_gate::Lose::Up, Duration::ZERO);
+    let url = gawk_engine::relay::publish_url(&gate.url(), "", "wrong", "").unwrap();
+    let err = gawk_engine::transport::dial(&url, gawk_engine::defaults::origin(), true)
+        .await
+        .err()
+        .expect("a wrong secret is refused");
+    assert_eq!((err.phase, err.status), (StartPhase::Connect, 401), "{err}");
+    assert_eq!(gate.clients(), 1, "one attempt, one endpoint");
 }

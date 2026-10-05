@@ -22,6 +22,22 @@ use wtransport::{ClientConfig, Endpoint, VarInt};
 /// mirrors the Go dialer's 10 s).
 pub const KEEP_ALIVE_PERIOD: Duration = Duration::from_secs(10);
 
+/// How long one dial attempt may go unanswered before the dial abandons it
+/// and starts over on a fresh endpoint. One QUIC connection whose first
+/// packets were lost recovers slowly or never: its Initials back off
+/// exponentially (sent at 0, 1, 3, 7, 15 s), and when it is the relay's
+/// answers that are lost the relay gives up on the handshake and forgets
+/// the connection while the client keeps probing it — 40-60 s in
+/// "connecting" (R65 IO5's CI flake). A fresh endpoint is a new port and
+/// connection ID, which the relay answers at once. A healthy dial takes a
+/// couple of round trips, so this only ever cuts short a stuck one.
+pub const DIAL_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a dial keeps starting over before it reports no answer (status
+/// 0): quinn's default idle timeout, which is what bounded a single attempt
+/// before attempts were cut short.
+pub const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// A live publisher session. Owns the endpoint too: the endpoint drives the
 /// connection's I/O and must outlive it.
 pub struct WtSession {
@@ -58,20 +74,52 @@ pub async fn dial_subscribe(
     })
 }
 
-/// The shared CONNECT: one endpoint per session (the endpoint drives the
-/// connection's I/O and must outlive it), the Origin header, the keepalive.
+fn connect_err(status: u16, message: String) -> StartError {
+    StartError {
+        phase: StartPhase::Connect,
+        status,
+        message,
+    }
+}
+
+/// The shared CONNECT: attempts of at most [`DIAL_ATTEMPT_TIMEOUT`], each
+/// on a fresh endpoint, until one is answered or [`DIAL_TIMEOUT`] passes.
+/// Only an unanswered attempt is retried: a refused CONNECT (its status)
+/// and every other error return from the attempt that met them.
 async fn connect(
     url: &str,
     origin: &str,
     insecure: bool,
     what: &str,
 ) -> Result<(Endpoint<Client>, wtransport::Connection), StartError> {
-    let connect_err = |status: u16, message: String| StartError {
-        phase: StartPhase::Connect,
-        status,
-        message,
-    };
+    let deadline = tokio::time::Instant::now() + DIAL_TIMEOUT;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Err(connect_err(
+                0,
+                format!(
+                    "connection timed out: no answer from the relay in {} s",
+                    DIAL_TIMEOUT.as_secs()
+                ),
+            ));
+        }
+        let attempt = connect_once(url, origin, insecure, what);
+        if let Ok(done) = tokio::time::timeout(left.min(DIAL_ATTEMPT_TIMEOUT), attempt).await {
+            return done;
+        }
+        // Timed out: the attempt's endpoint dropped with it; start over.
+    }
+}
 
+/// One attempt: its own endpoint (the endpoint drives the connection's I/O
+/// and must outlive it), the Origin header, the keepalive.
+async fn connect_once(
+    url: &str,
+    origin: &str,
+    insecure: bool,
+    what: &str,
+) -> Result<(Endpoint<Client>, wtransport::Connection), StartError> {
     let builder = ClientConfig::builder().with_bind_default();
     let builder = if insecure {
         builder.with_no_cert_validation()
