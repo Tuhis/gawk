@@ -29,3 +29,8 @@ objc2-core-video = "0.3"
 [dev-dependencies]
 # Paused time for the stop tests.
 tokio = { version = "1", features = ["test-util"] }
+
+# The quality-change integration test makes synthetic frames and checks for
+# a hardware encoder (`tests/publish_relay.rs`).
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dev-dependencies]
+gawk-encode.workspace = true

@@ -85,6 +85,10 @@ pub struct Pipeline {
     video: Mutex<Video>,
     audio: Mutex<Audio>,
     failed: Arc<Mutex<Option<String>>>,
+    /// Set by [`Pipeline::close`]: nothing this pipeline makes reaches the
+    /// sender any more. A lock, not a flag, so an encoder output already
+    /// past the check finishes before `close` returns.
+    retired: Arc<Mutex<bool>>,
     pub dropped_backpressure: AtomicU64,
     /// Frames dropped while no encoder could be built (iOS backgrounding).
     dropped_no_encoder: AtomicU64,
@@ -171,6 +175,7 @@ impl Pipeline {
                 bytes: Vec::new(),
             }),
             failed: Arc::default(),
+            retired: Arc::default(),
             dropped_backpressure: AtomicU64::new(0),
             dropped_no_encoder: AtomicU64::new(0),
             encoder_restarts: AtomicU64::new(0),
@@ -200,10 +205,15 @@ impl Pipeline {
 
     /// One upright frame, with its capture status (`SCFrameStatus` raw).
     pub fn push_video(&self, pixels: &CVPixelBuffer, pts_100ns: Option<i64>, status_raw: i64) {
-        self.pushed.fetch_add(1, Ordering::Relaxed);
         let ts = self.session_us(pts_100ns);
         let status = FrameStatus::from_raw(status_raw);
         let mut v = self.video.lock().unwrap();
+        // Read under the video lock: a rebuild, which names the codec on
+        // the shared sender, finishes before `close` returns or never runs.
+        if *self.retired.lock().unwrap() {
+            return;
+        }
+        self.pushed.fetch_add(1, Ordering::Relaxed);
         // D7: frames resuming after a suspension (a call) re-prime with an
         // IDR; the session and keepalive carried on meanwhile.
         let resumed = status == FrameStatus::Complete
@@ -314,9 +324,16 @@ impl Pipeline {
         let mut codec_known = first;
         let failed = self.failed.clone();
         let encoded = self.encoded.clone();
+        let retired = self.retired.clone();
         let encoder = Encoder::new(
             params,
             move |au| {
+                // Held through the sender calls: a retired pipeline's late
+                // output must not rename the successor's codec.
+                let closed = retired.lock().unwrap();
+                if *closed {
+                    return;
+                }
                 if !codec_known
                     && au.keyframe
                     && let Some(codec) = gawk_encode::h264::parse_codec_string(&au.data)
@@ -406,6 +423,22 @@ impl Pipeline {
             log::warn!("audio: {why}; broadcast continues without audio");
             a.state = "error";
         }
+    }
+
+    /// Retires this pipeline for a successor on the same sender (a quality
+    /// change while live, docs/70 D12): when it returns, nothing pushed
+    /// here reaches the sender, the encoder and the audio lane are gone,
+    /// and the pump is stopped. Call it before the sender's `new_lineage`,
+    /// so the successor's codec and audio format are the ones it keeps.
+    pub fn close(&self) {
+        *self.retired.lock().unwrap() = true;
+        self.video.lock().unwrap().lineage = None;
+        {
+            let mut a = self.audio.lock().unwrap();
+            a.lane = None;
+            a.state = "off";
+        }
+        self.send_task.abort();
     }
 
     /// The engine resumed on a fresh session: re-prime the relay's

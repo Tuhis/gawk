@@ -12,16 +12,23 @@
 //! Identity is Swift's to keep (D17): the code and resume token arrive on
 //! the listener to store in the Keychain, and go back in on the next start
 //! for an R17 reclaim within the grace.
+//!
+//! While live, the quality can change on the same code (docs/70 D12), the
+//! room is the engine's room session with its controls (D16–D18), and the
+//! counters carry the Upload row's rate and warning (D11).
 
+use crate::rooms::{RoomView, room_view};
 use gawk_broadcast::audio::Asbd;
 use gawk_broadcast::pipeline::{Pipeline, PipelineCounters};
 use gawk_broadcast::rotation::Rotation;
 use gawk_broadcast::rung::{Quality as RungQuality, Rung};
 use gawk_engine::clock::{Clock, MonotonicClock};
 use gawk_engine::relay::StartError;
+use gawk_engine::room::RoomSummary;
 use gawk_engine::session::{EngineEvent, Session, SessionConfig};
 use gawk_engine::stats::Stats;
 use gawk_engine::telemetry::{Hello, Reporter};
+use gawk_engine::uplink::UplinkMonitor;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
@@ -103,6 +110,13 @@ pub struct BroadcastOptions {
     /// How frames are captured, for telemetry's `capturePath`:
     /// "screencapturekit" or "test-source" (D27).
     pub capture_source: String,
+    /// Mint a new room once the broadcast has its code (docs/70 D16's
+    /// "Create a new room"); `room_code` is then ignored.
+    pub room_new: bool,
+    /// Rejoin `room_code` as its creator with this token (hex), from a
+    /// room link's `?rt=` grant or an earlier mint (docs/60 D8). Empty for
+    /// none.
+    pub room_creator_token_hex: String,
 }
 
 /// One audio buffer's `AudioStreamBasicDescription` fields (D11).
@@ -135,7 +149,9 @@ pub enum BroadcastStatus {
     },
 }
 
-/// Where frames went (the live status and diagnostics).
+/// Where frames went (the live status and diagnostics), and the Upload
+/// row (docs/70 D11). The frame counts cover the whole broadcast, across
+/// quality changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct BroadcastCounters {
     pub pushed: u64,
@@ -146,6 +162,49 @@ pub struct BroadcastCounters {
     pub encoded: u64,
     pub width: u32,
     pub height: u32,
+    /// The rung's frame rate; 0 before an encoder.
+    pub fps: u32,
+    /// The rung's bitrate cap; 0 before an encoder.
+    pub peak_bitrate_bps: u32,
+    /// False until two once-a-second samples exist.
+    pub upload_available: bool,
+    /// Media bits per second handed to the relay connection over the last
+    /// second: video datagrams with their parity, keyframe streams and
+    /// audio, headers included. QUIC's own overhead, the time-sync pings
+    /// and the audio config datagrams aren't counted.
+    pub upload_bps: u64,
+    /// The engine's uplink watchdog (`UplinkMonitor`): the upload isn't
+    /// keeping up. Raised after 5 bad seconds, cleared after 15 good ones.
+    pub uplink_warning: bool,
+}
+
+/// What happened to the broadcast's room (docs/70 D16–D18). The room's
+/// picture itself arrives on [`BroadcastListener::on_room_state`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum BroadcastRoomEvent {
+    /// A room was minted for this broadcast: its code, and the creator
+    /// token (hex) that rejoins it as its creator and that its link's
+    /// `?rt=` carries.
+    Created {
+        code: String,
+        creator_token_hex: String,
+    },
+    /// The room lists this broadcast.
+    Attached,
+    /// The room no longer lists it. After [`Broadcaster::room_leave`] this
+    /// is the leave completing. `by_creator`: the room's creator removed
+    /// it, and the broadcaster has left the room (docs/60 D10), so no more
+    /// room states or events come until the next `room_join` or
+    /// `room_create`. Any other detach leaves the broadcaster in the room
+    /// without its stream.
+    Detached { reason: String, by_creator: bool },
+    /// The room session is over: the room ended, the join was refused, or
+    /// a reconnect gave up. The broadcast carries on.
+    Ended { reason: String },
+    /// The relay refused a room command.
+    Rejected { reason: String, message: String },
+    /// The room session is being redialed (attempt counter).
+    Reconnecting { attempt: u32 },
 }
 
 /// Implemented in Swift; called on the broadcaster's thread.
@@ -155,8 +214,11 @@ pub trait BroadcastListener: Send + Sync {
     /// Persist for a reclaim within the grace (D17: Keychain).
     fn on_identity(&self, code: String, resume_token_hex: String);
     fn on_viewer_count(&self, count: u32);
-    /// The room attach, in words for the live status (D21).
-    fn on_room(&self, text: String);
+    /// The room's picture, on every change. `attached`: this broadcast is
+    /// among its tiles. `needs_key`: a gated static room admitted it only
+    /// as a watcher, so its key is asked for (docs/70 D16).
+    fn on_room_state(&self, room: RoomView, attached: bool, needs_key: bool);
+    fn on_room_event(&self, event: BroadcastRoomEvent);
     /// The pipeline's first video failure; the broadcast ends.
     fn on_failure(&self, text: String);
 }
@@ -164,6 +226,37 @@ pub trait BroadcastListener: Send + Sync {
 struct Live {
     session: Arc<Session>,
     pipeline: Arc<Pipeline>,
+    quality: Quality,
+    /// What the pipelines replaced by quality changes counted, so the
+    /// counters never go backwards.
+    retired: PipelineCounters,
+    upload: Upload,
+    /// The room's creator removed this broadcast and the broadcaster left
+    /// (docs/60 D10): what that room session still says is not forwarded.
+    /// The next `room_join` or `room_create` clears it.
+    room_left: bool,
+}
+
+impl Live {
+    fn counters(&self) -> PipelineCounters {
+        fold(&self.retired, &self.pipeline.counters())
+    }
+}
+
+/// The Upload row's last reading, written once a second by the run loop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Upload {
+    /// `None` until two samples exist. A quality change keeps the last
+    /// reading until the new media has a window of its own (D12: nothing
+    /// is narrated).
+    bps: Option<u64>,
+    warning: bool,
+}
+
+/// What Swift's thread asks of the run loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Command {
+    SetQuality(Quality),
 }
 
 /// Pairs the broadcast code with its resume token for `on_identity`. The
@@ -195,6 +288,52 @@ impl Identity {
 pub struct Broadcaster {
     live: Arc<Mutex<Option<Live>>>,
     stop: Mutex<Option<oneshot::Sender<()>>>,
+    commands: mpsc::UnboundedSender<Command>,
+}
+
+/// The run loop's ends of a [`Broadcaster`]'s state and channels.
+struct Wiring {
+    live: Arc<Mutex<Option<Live>>>,
+    commands: mpsc::UnboundedReceiver<Command>,
+    stop: oneshot::Receiver<()>,
+}
+
+impl Broadcaster {
+    fn wired() -> (Arc<Self>, Wiring) {
+        let live: Arc<Mutex<Option<Live>>> = Arc::default();
+        let (stop_tx, stop) = oneshot::channel();
+        let (commands_tx, commands) = mpsc::unbounded_channel();
+        let this = Arc::new(Self {
+            live: live.clone(),
+            stop: Mutex::new(Some(stop_tx)),
+            commands: commands_tx,
+        });
+        (
+            this,
+            Wiring {
+                live,
+                commands,
+                stop,
+            },
+        )
+    }
+
+    /// The publish session, once it is up.
+    fn session(&self) -> Option<Arc<Session>> {
+        self.live
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|l| l.session.clone())
+    }
+
+    /// The publish session, for a room session Swift is starting.
+    fn session_for_a_new_room(&self) -> Option<Arc<Session>> {
+        let mut live = self.live.lock().unwrap();
+        let l = live.as_mut()?;
+        l.room_left = false;
+        Some(l.session.clone())
+    }
 }
 
 #[uniffi::export]
@@ -203,12 +342,7 @@ impl Broadcaster {
     /// [`BroadcastStatus::Live`] (pushes before then are dropped).
     #[uniffi::constructor]
     pub fn start(options: BroadcastOptions, listener: Arc<dyn BroadcastListener>) -> Arc<Self> {
-        let live: Arc<Mutex<Option<Live>>> = Arc::default();
-        let (stop_tx, stop_rx) = oneshot::channel();
-        let this = Arc::new(Self {
-            live: live.clone(),
-            stop: Mutex::new(Some(stop_tx)),
-        });
+        let (this, wiring) = Self::wired();
         std::thread::Builder::new()
             .name("gawk-broadcast".into())
             .spawn(move || {
@@ -216,7 +350,7 @@ impl Broadcaster {
                     .enable_all()
                     .build()
                     .expect("a tokio runtime");
-                rt.block_on(run(options, listener, live, stop_rx, Session::start));
+                rt.block_on(run(options, listener, wiring, Session::start));
             })
             .expect("spawn the broadcast thread");
         this
@@ -301,32 +435,20 @@ impl Broadcaster {
         }
     }
 
-    /// Where frames went so far; zeros before the session is up.
+    /// Where frames went so far, and the Upload row; zeros before the
+    /// session is up.
     pub fn counters(&self) -> BroadcastCounters {
-        let c = self
-            .live
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|l| l.pipeline.counters())
-            .unwrap_or_default();
-        BroadcastCounters {
-            pushed: c.pushed,
-            admitted: c.admitted,
-            dropped_no_content: c.dropped_no_content,
-            dropped_over_rate: c.dropped_over_rate,
-            dropped_backpressure: c.dropped_backpressure,
-            encoded: c.encoded,
-            width: c.width,
-            height: c.height,
+        match self.live.lock().unwrap().as_ref() {
+            Some(l) => broadcast_counters(l.counters(), l.pipeline.rung(), l.upload),
+            None => broadcast_counters(PipelineCounters::default(), None, Upload::default()),
         }
     }
 
     /// The network path changed (D19): reconnect with the resume token now
     /// instead of waiting out idle timeouts. QUIC migration is off (D12).
     pub fn path_changed(&self) {
-        if let Some(l) = self.live.lock().unwrap().as_ref() {
-            l.session.republish();
+        if let Some(session) = self.session() {
+            session.republish();
         }
     }
 
@@ -334,6 +456,69 @@ impl Broadcaster {
     pub fn force_idr(&self) {
         if let Some(l) = self.live.lock().unwrap().as_ref() {
             l.pipeline.force_idr();
+        }
+    }
+
+    /// Changes the quality while live (docs/70 D12): the desktop's quick
+    /// restart (docs/64 D8). A new pipeline at `quality` replaces the live
+    /// one, and the publish leg is re-established on the same code with
+    /// the same resume token. Viewers see a short freeze; the status stays
+    /// `Live`, because the restart's own reclaim is not narrated. A no-op
+    /// when the quality is unchanged, or before the broadcast has its code
+    /// and token (the next start takes `BroadcastOptions::quality`).
+    pub fn set_quality(&self, quality: Quality) {
+        if self.live.lock().unwrap().is_some() {
+            let _ = self.commands.send(Command::SetQuality(quality));
+        }
+    }
+
+    /// Joins a room (a code or a static slug), replacing any current one;
+    /// the broadcast attaches once it has its code. `attach_secret` is a
+    /// gated static room's key and `creator_token_hex` rejoins as its
+    /// creator; either may be empty. A no-op before the session is up.
+    pub fn room_join(&self, code: String, attach_secret: String, creator_token_hex: String) {
+        if let Some(session) = self.session_for_a_new_room() {
+            session.room_join(&code, &attach_secret, &creator_token_hex);
+        }
+    }
+
+    /// Mints a new room from this broadcast (docs/70 D16), replacing any
+    /// current one: [`BroadcastRoomEvent::Created`] follows.
+    pub fn room_create(&self) {
+        if let Some(session) = self.session_for_a_new_room() {
+            session.room_create();
+        }
+    }
+
+    /// Detaches this broadcast and leaves the room (docs/70 D17's Leave):
+    /// [`BroadcastRoomEvent::Detached`] follows, and no more room states.
+    pub fn room_leave(&self) {
+        if let Some(session) = self.session() {
+            session.room_detach();
+        }
+    }
+
+    /// Removes another stream from the room (creator only, docs/70 D18).
+    /// The broadcast stays in the room.
+    pub fn room_remove(&self, broadcast_id: String) {
+        if let Some(session) = self.session() {
+            session.room_remove(&broadcast_id);
+        }
+    }
+
+    /// Ends the room for everyone (creator only, docs/70 D18):
+    /// [`BroadcastRoomEvent::Ended`] follows. The broadcast carries on.
+    pub fn room_end(&self) {
+        if let Some(session) = self.session() {
+            session.room_end();
+        }
+    }
+
+    /// Renames you in the room, and the tile your stream shows; a room
+    /// joined later uses the new name too.
+    pub fn room_set_nickname(&self, nickname: String) {
+        if let Some(session) = self.session() {
+            session.room_set_nickname(&nickname);
         }
     }
 
@@ -358,13 +543,17 @@ type Started = Result<(Arc<Session>, mpsc::UnboundedReceiver<EngineEvent>), Star
 async fn run<C, F>(
     options: BroadcastOptions,
     listener: Arc<dyn BroadcastListener>,
-    live: Arc<Mutex<Option<Live>>>,
-    mut stop: oneshot::Receiver<()>,
+    wiring: Wiring,
     connect: C,
 ) where
     C: FnOnce(SessionConfig, Arc<dyn Clock>) -> F,
     F: Future<Output = Started>,
 {
+    let Wiring {
+        live,
+        mut commands,
+        mut stop,
+    } = wiring;
     listener.on_status(BroadcastStatus::Connecting);
     let clock: Arc<dyn Clock> = Arc::new(MonotonicClock::new());
     // Telemetry (D23): "off" unless the user opted in, then the desktop's
@@ -378,16 +567,33 @@ async fn run<C, F>(
         telemetry_raw,
         None,
     ));
+    // `SessionConfig` has no creator token: a creator's rejoin is joined
+    // once the session is up instead of from the config.
+    let creator_rejoin = (!options.room_new
+        && !options.room_code.is_empty()
+        && !options.room_creator_token_hex.is_empty())
+    .then(|| {
+        (
+            options.room_code.clone(),
+            options.room_attach_secret.clone(),
+            options.room_creator_token_hex.clone(),
+        )
+    });
     let cfg = SessionConfig {
-        relay_url: options.relay_url,
-        broadcast_id: options.broadcast_id,
-        resume_token_hex: options.resume_token_hex,
-        publish_secret: options.publish_secret,
+        relay_url: options.relay_url.clone(),
+        broadcast_id: options.broadcast_id.clone(),
+        resume_token_hex: options.resume_token_hex.clone(),
+        publish_secret: options.publish_secret.clone(),
         origin: gawk_engine::defaults::origin().to_owned(),
         insecure: options.insecure,
-        room_code: options.room_code,
-        room_attach_secret: options.room_attach_secret,
-        nickname: options.nickname,
+        room_code: if creator_rejoin.is_some() {
+            String::new()
+        } else {
+            options.room_code.clone()
+        },
+        room_new: options.room_new,
+        room_attach_secret: options.room_attach_secret.clone(),
+        nickname: options.nickname.clone(),
         ..SessionConfig::default()
     };
     // A stop while the dial is still out (a slow relay, a lost handshake:
@@ -409,18 +615,26 @@ async fn run<C, F>(
             return;
         }
     };
-    let pipeline = Arc::new(Pipeline::new(
-        session.sender(),
-        tokio::runtime::Handle::current(),
-        clock,
-        options.quality.into(),
-    ));
+    if let Some((code, key, token)) = &creator_rejoin {
+        session.room_join(code, key, token);
+    }
     *live.lock().unwrap() = Some(Live {
         session: session.clone(),
-        pipeline: pipeline.clone(),
+        pipeline: Arc::new(Pipeline::new(
+            session.sender(),
+            tokio::runtime::Handle::current(),
+            clock.clone(),
+            options.quality.into(),
+        )),
+        quality: options.quality,
+        retired: PipelineCounters::default(),
+        upload: Upload::default(),
+        room_left: false,
     });
     let mut code = String::new();
     let mut identity = Identity::default();
+    // The code and token are both known: a reclaim can be built.
+    let mut identified = false;
     let mut reclaim_status = None;
     let mut failure_check = tokio::time::interval(std::time::Duration::from_millis(250));
     // The engine's encoder and sent fps are windowed between `stats()`
@@ -428,6 +642,11 @@ async fn run<C, F>(
     // do: at 250 ms a quiet quarter-second read as 0 fps.
     let mut report_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut capture_rate = CaptureRate::default();
+    let mut upload_rate = UploadRate::default();
+    let mut uplink = UplinkMonitor::new();
+    // A quality restart's reclaim is in flight (docs/70 D12): its first
+    // attempt is not narrated, and the watchdogs wait for its media.
+    let mut restarting = false;
     loop {
         tokio::select! {
             _ = &mut stop => {
@@ -436,10 +655,30 @@ async fn run<C, F>(
                 reporter.finish();
                 break;
             }
+            Some(command) = commands.recv() => {
+                let Command::SetQuality(quality) = command;
+                if identified && restart(&live, &clock, quality) {
+                    reporter.event("restart", "");
+                    restarting = true;
+                    // The watchdogs start over with the new media, as the
+                    // desktop's do.
+                    uplink = UplinkMonitor::new();
+                    upload_rate = UploadRate::default();
+                }
+            }
             _ = report_tick.tick() => {
-                let counters = pipeline.counters();
+                let Some((pipeline, counters)) = current(&live) else { continue };
+                let st = session.stats();
+                if !restarting {
+                    let warning = uplink.observe(&st);
+                    let bps = upload_rate.sample(media_bytes(&st), tokio::time::Instant::now());
+                    if let Some(l) = live.lock().unwrap().as_mut() {
+                        l.upload.warning = warning;
+                        l.upload.bps = bps.or(l.upload.bps);
+                    }
+                }
                 reporter.report(merged_stats(
-                    session.stats(),
+                    st,
                     &counters,
                     pipeline.rung(),
                     capture_rate.sample(counters.pushed),
@@ -449,6 +688,7 @@ async fn run<C, F>(
                 reporter.tick();
             }
             _ = failure_check.tick() => {
+                let Some((pipeline, _)) = current(&live) else { continue };
                 if let Some(why) = pipeline.take_failure() {
                     reporter.event("error", &why);
                     reporter.finish();
@@ -461,10 +701,26 @@ async fn run<C, F>(
             }
             event = events.recv() => {
                 let Some(event) = event else { break };
+                if let Some(room_event) = room_event(&event) {
+                    if room_left(&live) {
+                        continue;
+                    }
+                    // docs/60 D10: a broadcaster isn't left in a room its
+                    // stream is no longer part of.
+                    if matches!(room_event, BroadcastRoomEvent::Detached { by_creator: true, .. }) {
+                        session.room_leave();
+                        if let Some(l) = live.lock().unwrap().as_mut() {
+                            l.room_left = true;
+                        }
+                    }
+                    listener.on_room_event(room_event);
+                    continue;
+                }
                 match event {
                     EngineEvent::Announce { broadcast_id } => {
                         code = broadcast_id.clone();
                         if let Some((c, t)) = identity.on_announce(&broadcast_id) {
+                            identified = true;
                             listener.on_identity(c, t);
                         }
                         listener.on_status(BroadcastStatus::Live {
@@ -474,13 +730,19 @@ async fn run<C, F>(
                     }
                     EngineEvent::ResumeToken { token_hex } => {
                         if let Some((c, t)) = identity.on_token(token_hex) {
+                            identified = true;
                             listener.on_identity(c, t);
                         }
                     }
                     EngineEvent::ViewerCount(n) => listener.on_viewer_count(n),
                     EngineEvent::Resuming { attempt } => {
                         reporter.event("resuming", "");
-                        listener.on_status(BroadcastStatus::Resuming { attempt });
+                        // docs/64 OD4: the restart's own reclaim is not
+                        // narrated; a second attempt means it is really
+                        // reconnecting, and says so.
+                        if !(restarting && attempt == 1) {
+                            listener.on_status(BroadcastStatus::Resuming { attempt });
+                        }
                     }
                     EngineEvent::TelemetryHello { enabled, report_interval_ms, token, broadcast_key_hex } => {
                         reporter.begin(&Hello { enabled, report_interval_ms, token, broadcast_key_hex });
@@ -494,8 +756,11 @@ async fn run<C, F>(
                     }
                     EngineEvent::Resumed => {
                         reporter.event("resumed", "");
+                        restarting = false;
                         // Re-prime the relay's invalidated keyframe cache.
-                        pipeline.force_idr();
+                        if let Some((pipeline, _)) = current(&live) {
+                            pipeline.force_idr();
+                        }
                         if !code.is_empty() {
                             listener.on_status(BroadcastStatus::Live {
                                 join_link: gawk_engine::join_link(gawk_engine::defaults::APP_URL, &code),
@@ -514,10 +779,12 @@ async fn run<C, F>(
                         live.lock().unwrap().take();
                         return;
                     }
-                    EngineEvent::RoomAttached => listener.on_room("Attached to the room".into()),
-                    EngineEvent::RoomDetached { reason, .. } => listener.on_room(format!("Detached: {reason}")),
-                    EngineEvent::RoomEnded { reason } => listener.on_room(format!("Room ended: {reason}")),
-                    EngineEvent::RoomRejected { message, .. } => listener.on_room(format!("Room refused: {message}")),
+                    EngineEvent::RoomState(_) if room_left(&live) => {}
+                    EngineEvent::RoomState(s) => {
+                        let attached = !code.is_empty() && s.has(&code);
+                        let needs_key = room_needs_key(&s, attached);
+                        listener.on_room_state(room_view(s), attached, needs_key);
+                    }
                     _ => {}
                 }
             }
@@ -528,6 +795,130 @@ async fn run<C, F>(
         reclaim_status,
     });
     live.lock().unwrap().take();
+}
+
+fn room_left(live: &Mutex<Option<Live>>) -> bool {
+    live.lock().unwrap().as_ref().is_some_and(|l| l.room_left)
+}
+
+/// The live pipeline and the broadcast's counters so far.
+fn current(live: &Mutex<Option<Live>>) -> Option<(Arc<Pipeline>, PipelineCounters)> {
+    let live = live.lock().unwrap();
+    let l = live.as_ref()?;
+    Some((l.pipeline.clone(), l.counters()))
+}
+
+/// docs/70 D12's quality change, the desktop's quick restart (`shell.rs`
+/// `republish`, docs/64 D8): a new pipeline at `quality` replaces the live
+/// one, then a fresh publish leg under the same identity. `false` when
+/// there is nothing to change.
+fn restart(live: &Mutex<Option<Live>>, clock: &Arc<dyn Clock>, quality: Quality) -> bool {
+    let mut guard = live.lock().unwrap();
+    let Some(l) = guard.as_mut() else {
+        return false;
+    };
+    if l.quality == quality {
+        return false;
+    }
+    // In this order: the old pipeline stops feeding the sender, the sender
+    // forgets its codec and audio format, and only then is the new pipeline
+    // there for Swift to push to, so the format it names is the one kept.
+    l.pipeline.close();
+    l.retired = fold(&l.retired, &l.pipeline.counters());
+    let sender = l.session.sender();
+    sender.new_lineage();
+    l.pipeline = Arc::new(Pipeline::new(
+        sender,
+        tokio::runtime::Handle::current(),
+        clock.clone(),
+        quality.into(),
+    ));
+    l.quality = quality;
+    l.upload.warning = false;
+    let session = l.session.clone();
+    drop(guard);
+    session.republish();
+    true
+}
+
+/// `base` plus what `current` counted; the size is `current`'s.
+fn fold(base: &PipelineCounters, current: &PipelineCounters) -> PipelineCounters {
+    PipelineCounters {
+        pushed: base.pushed + current.pushed,
+        admitted: base.admitted + current.admitted,
+        dropped_no_content: base.dropped_no_content + current.dropped_no_content,
+        dropped_over_rate: base.dropped_over_rate + current.dropped_over_rate,
+        dropped_backpressure: base.dropped_backpressure + current.dropped_backpressure,
+        dropped_no_encoder: base.dropped_no_encoder + current.dropped_no_encoder,
+        encoder_restarts: base.encoder_restarts + current.encoder_restarts,
+        encoded: base.encoded + current.encoded,
+        width: current.width,
+        height: current.height,
+    }
+}
+
+fn broadcast_counters(
+    c: PipelineCounters,
+    rung: Option<Rung>,
+    upload: Upload,
+) -> BroadcastCounters {
+    BroadcastCounters {
+        pushed: c.pushed,
+        admitted: c.admitted,
+        dropped_no_content: c.dropped_no_content,
+        dropped_over_rate: c.dropped_over_rate,
+        dropped_backpressure: c.dropped_backpressure,
+        encoded: c.encoded,
+        width: c.width,
+        height: c.height,
+        fps: rung.map_or(0, |r| r.fps),
+        peak_bitrate_bps: rung.map_or(0, |r| r.peak_bitrate_bps),
+        upload_available: upload.bps.is_some(),
+        upload_bps: upload.bps.unwrap_or(0),
+        uplink_warning: upload.warning,
+    }
+}
+
+/// The media bytes the Upload row counts. The sender adds keyframe-stream
+/// and audio bytes to `bytes_sent` as well as to their own counters, so
+/// they are not added again; parity is the one kind it keeps apart.
+fn media_bytes(st: &Stats) -> u64 {
+    st.bytes_sent + st.parity_bytes_sent
+}
+
+/// The room events Swift hears as [`BroadcastRoomEvent`]s.
+fn room_event(e: &EngineEvent) -> Option<BroadcastRoomEvent> {
+    Some(match e {
+        EngineEvent::RoomCreated {
+            code,
+            creator_token_hex,
+        } => BroadcastRoomEvent::Created {
+            code: code.clone(),
+            creator_token_hex: creator_token_hex.clone(),
+        },
+        EngineEvent::RoomAttached => BroadcastRoomEvent::Attached,
+        EngineEvent::RoomDetached { reason, by_creator } => BroadcastRoomEvent::Detached {
+            reason: reason.clone(),
+            by_creator: *by_creator,
+        },
+        EngineEvent::RoomEnded { reason } => BroadcastRoomEvent::Ended {
+            reason: reason.clone(),
+        },
+        EngineEvent::RoomRejected { reason, message } => BroadcastRoomEvent::Rejected {
+            reason: reason.clone(),
+            message: message.clone(),
+        },
+        EngineEvent::RoomReconnecting { attempt } => {
+            BroadcastRoomEvent::Reconnecting { attempt: *attempt }
+        }
+        _ => return None,
+    })
+}
+
+/// A gated static room admitted the broadcaster as a watcher only: the app
+/// asks for its key (docs/60 D8). The desktop's rule (`shell.rs`).
+fn room_needs_key(s: &RoomSummary, attached: bool) -> bool {
+    !s.attach_ok && !s.dynamic && !attached
 }
 
 /// The host clock the capture's PTS are on, in 100 ns, for the test source
@@ -584,6 +975,23 @@ impl CaptureRate {
     }
 }
 
+/// The upload rate in bits per second, windowed between reports.
+#[derive(Default)]
+struct UploadRate {
+    last: Option<(tokio::time::Instant, u64)>,
+}
+
+impl UploadRate {
+    fn sample(&mut self, bytes: u64, now: tokio::time::Instant) -> Option<u64> {
+        let rate = self.last.and_then(|(t, n)| {
+            let dt = now.duration_since(t).as_secs_f64();
+            (dt > 0.0).then(|| (bytes.saturating_sub(n) as f64 * 8.0 / dt).round() as u64)
+        });
+        self.last = Some((now, bytes));
+        rate
+    }
+}
+
 #[cfg(test)]
 mod stats_tests {
     use super::*;
@@ -635,6 +1043,182 @@ mod stats_tests {
         assert_eq!((st.width, st.height), (0, 0));
         assert!(!st.capture_fps_available);
         assert_eq!(st.audio_state, "off");
+    }
+
+    /// docs/70 D11's Quality and Upload rows: the rung's rate and cap, and
+    /// the upload reading, beside the frame counts.
+    #[test]
+    fn the_counters_carry_the_rung_and_the_upload_reading() {
+        let c = PipelineCounters {
+            pushed: 10,
+            encoded: 9,
+            width: 588,
+            height: 1280,
+            ..Default::default()
+        };
+        let rung = Rung {
+            width: 588,
+            height: 1280,
+            fps: 30,
+            peak_bitrate_bps: 3_000_000,
+        };
+        let got = broadcast_counters(
+            c,
+            Some(rung),
+            Upload {
+                bps: Some(2_400_000),
+                warning: true,
+            },
+        );
+        assert_eq!((got.pushed, got.encoded), (10, 9));
+        assert_eq!((got.width, got.height), (588, 1280));
+        assert_eq!((got.fps, got.peak_bitrate_bps), (30, 3_000_000));
+        assert!(got.upload_available && got.uplink_warning);
+        assert_eq!(got.upload_bps, 2_400_000);
+
+        let before = broadcast_counters(PipelineCounters::default(), None, Upload::default());
+        assert_eq!((before.fps, before.peak_bitrate_bps), (0, 0));
+        assert!(!before.upload_available);
+    }
+
+    /// CODE-REVIEW: counters survive their owner. A quality change retires
+    /// a pipeline; what it counted stays in the totals.
+    #[test]
+    fn a_retired_pipeline_s_counts_stay_in_the_totals() {
+        let retired = PipelineCounters {
+            pushed: 100,
+            admitted: 90,
+            dropped_no_content: 5,
+            dropped_over_rate: 3,
+            dropped_backpressure: 2,
+            dropped_no_encoder: 1,
+            encoder_restarts: 1,
+            encoded: 88,
+            width: 884,
+            height: 1920,
+        };
+        let now = PipelineCounters {
+            pushed: 10,
+            admitted: 9,
+            encoded: 8,
+            width: 588,
+            height: 1280,
+            ..Default::default()
+        };
+        let t = fold(&retired, &now);
+        assert_eq!((t.pushed, t.admitted, t.encoded), (110, 99, 96));
+        assert_eq!(
+            (
+                t.dropped_no_content,
+                t.dropped_over_rate,
+                t.dropped_backpressure,
+                t.dropped_no_encoder,
+                t.encoder_restarts
+            ),
+            (5, 3, 2, 1, 1)
+        );
+        assert_eq!((t.width, t.height), (588, 1280), "the size in force");
+    }
+
+    #[test]
+    fn the_upload_rate_needs_two_samples_and_counts_bits_per_second() {
+        let mut r = UploadRate::default();
+        let t0 = tokio::time::Instant::now();
+        assert_eq!(r.sample(1_000, t0), None);
+        let t1 = t0 + std::time::Duration::from_secs(1);
+        assert_eq!(r.sample(301_000, t1), Some(2_400_000));
+        // A longer window is divided by its length.
+        let t2 = t1 + std::time::Duration::from_secs(2);
+        assert_eq!(r.sample(601_000, t2), Some(1_200_000));
+    }
+
+    /// `bytes_sent` already holds the keyframe-stream and audio bytes, so
+    /// adding `audio_bytes_sent` again would count audio twice.
+    #[test]
+    fn media_bytes_count_audio_once_and_parity_too() {
+        let st = Stats {
+            bytes_sent: 10_000,
+            keyframe_bytes_sent: 6_000,
+            audio_bytes_sent: 1_000,
+            parity_bytes_sent: 500,
+            ..Default::default()
+        };
+        assert_eq!(media_bytes(&st), 10_500);
+    }
+
+    #[test]
+    fn a_gated_static_room_asks_for_its_key_until_attached() {
+        let s = RoomSummary {
+            attach_ok: false,
+            dynamic: false,
+            ..Default::default()
+        };
+        assert!(room_needs_key(&s, false));
+        assert!(!room_needs_key(&s, true), "attached: nothing to ask");
+        let dynamic = RoomSummary {
+            dynamic: true,
+            ..s.clone()
+        };
+        assert!(!room_needs_key(&dynamic, false), "minted rooms have no key");
+        let open = RoomSummary {
+            attach_ok: true,
+            ..s
+        };
+        assert!(!room_needs_key(&open, false));
+    }
+
+    #[test]
+    fn room_events_reach_swift_and_nothing_else_does() {
+        let cases = [
+            (
+                EngineEvent::RoomCreated {
+                    code: "QX7P2K".into(),
+                    creator_token_hex: "5a".into(),
+                },
+                BroadcastRoomEvent::Created {
+                    code: "QX7P2K".into(),
+                    creator_token_hex: "5a".into(),
+                },
+            ),
+            (EngineEvent::RoomAttached, BroadcastRoomEvent::Attached),
+            (
+                EngineEvent::RoomDetached {
+                    reason: "r".into(),
+                    by_creator: true,
+                },
+                BroadcastRoomEvent::Detached {
+                    reason: "r".into(),
+                    by_creator: true,
+                },
+            ),
+            (
+                EngineEvent::RoomEnded { reason: "e".into() },
+                BroadcastRoomEvent::Ended { reason: "e".into() },
+            ),
+            (
+                EngineEvent::RoomRejected {
+                    reason: "r".into(),
+                    message: "m".into(),
+                },
+                BroadcastRoomEvent::Rejected {
+                    reason: "r".into(),
+                    message: "m".into(),
+                },
+            ),
+            (
+                EngineEvent::RoomReconnecting { attempt: 2 },
+                BroadcastRoomEvent::Reconnecting { attempt: 2 },
+            ),
+        ];
+        for (engine, want) in cases {
+            assert_eq!(room_event(&engine), Some(want));
+        }
+        assert_eq!(room_event(&EngineEvent::Resumed), None);
+        assert_eq!(
+            room_event(&EngineEvent::RoomState(RoomSummary::default())),
+            None,
+            "the picture has its own callback"
+        );
     }
 }
 
@@ -717,11 +1301,12 @@ mod stop_tests {
         }
         fn on_identity(&self, _: String, _: String) {}
         fn on_viewer_count(&self, _: u32) {}
-        fn on_room(&self, _: String) {}
+        fn on_room_state(&self, _: RoomView, _: bool, _: bool) {}
+        fn on_room_event(&self, _: BroadcastRoomEvent) {}
         fn on_failure(&self, _: String) {}
     }
 
-    fn options() -> BroadcastOptions {
+    pub(super) fn options() -> BroadcastOptions {
         BroadcastOptions {
             relay_url: "https://127.0.0.1:9".into(),
             publish_secret: String::new(),
@@ -734,6 +1319,8 @@ mod stop_tests {
             insecure: true,
             telemetry: false,
             capture_source: String::new(),
+            room_new: false,
+            room_creator_token_hex: String::new(),
         }
     }
 
@@ -755,13 +1342,12 @@ mod stop_tests {
     #[tokio::test(start_paused = true)]
     async fn stop_ends_the_broadcast_while_a_keyframe_stream_cannot_open() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (stop_tx, stop_rx) = oneshot::channel();
+        let (b, wiring) = Broadcaster::wired();
         let (session_tx, session_rx) = oneshot::channel();
         tokio::spawn(run(
             options(),
             Arc::new(Statuses(tx)),
-            Arc::default(),
-            stop_rx,
+            wiring,
             move |cfg, clock| async move {
                 let (s, ev) = Session::start_with_session(cfg, Arc::new(StalledOpenRelay), clock);
                 let _ = session_tx.send(s.clone());
@@ -781,23 +1367,655 @@ mod stop_tests {
             .await;
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let _ = stop_tx.send(());
+        b.stop();
         assert!(ended(&mut rx).await, "Stop never ended the broadcast");
     }
 
     #[tokio::test(start_paused = true)]
     async fn stop_while_connecting_ends_the_broadcast() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (stop_tx, stop_rx) = oneshot::channel();
-        tokio::spawn(run(
-            options(),
-            Arc::new(Statuses(tx)),
-            Arc::default(),
-            stop_rx,
-            |_, _| std::future::pending::<Started>(),
-        ));
+        let (b, wiring) = Broadcaster::wired();
+        tokio::spawn(run(options(), Arc::new(Statuses(tx)), wiring, |_, _| {
+            std::future::pending::<Started>()
+        }));
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let _ = stop_tx.send(());
+        // Nothing is up: the quality is the next start's.
+        b.set_quality(Quality::Cellular);
+        b.stop();
         assert!(ended(&mut rx).await, "Stop while connecting never ended it");
+    }
+}
+
+/// The live broadcast against a scripted relay (the engine's seams): the
+/// quality restart (docs/70 D12), the Upload row (D11), and the room
+/// (D16–D18).
+#[cfg(test)]
+mod live_tests {
+    use super::stop_tests::options;
+    use super::*;
+    use gawk_engine::media::AccessUnit;
+    use gawk_engine::relay::{
+        BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, PublishDialer, RelaySession,
+        SendDatagramError, ServerStream, SessionClose, StartPhase,
+    };
+    use gawk_engine::room::{RoomConn, RoomDialer};
+    use gawk_wire as wire;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use tokio::sync::watch;
+
+    const CODE: &str = "ABC234";
+    const TOKEN: &str = "00112233445566778899aabbccddeeff";
+
+    struct InstantWriter;
+
+    impl KeyframeWriter for InstantWriter {
+        fn write(
+            self: Box<Self>,
+            _: Vec<u8>,
+            _: CancelSignal,
+        ) -> BoxFuture<'static, KeyframeOutcome> {
+            Box::pin(async { KeyframeOutcome::Sent })
+        }
+        fn abort(self: Box<Self>, _: u32) {}
+    }
+
+    struct Message(Option<Vec<u8>>);
+
+    impl ServerStream for Message {
+        fn read_to_end(&mut self, _: usize) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+            let msg = self.0.take().unwrap_or_default();
+            Box::pin(async move { Ok(msg) })
+        }
+    }
+
+    /// One publish leg: announces the code and token, then serves until it
+    /// is closed or killed.
+    struct Leg {
+        streams: Mutex<VecDeque<Vec<u8>>>,
+        closed: AtomicBool,
+        fail_datagrams: AtomicBool,
+        death: watch::Sender<Option<SessionClose>>,
+    }
+
+    impl Leg {
+        fn announcing() -> Arc<Self> {
+            let mut announce = Vec::new();
+            wire::append_broadcast_announce(&mut announce, CODE).unwrap();
+            let mut token = Vec::new();
+            let raw = gawk_engine::room::hex_decode(TOKEN).unwrap();
+            wire::append_resume_token(&mut token, &raw).unwrap();
+            Arc::new(Self {
+                streams: Mutex::new(VecDeque::from([announce, token])),
+                closed: AtomicBool::new(false),
+                fail_datagrams: AtomicBool::new(false),
+                death: watch::channel(None).0,
+            })
+        }
+
+        fn kill(&self, cause: SessionClose) {
+            self.death.send_replace(Some(cause));
+        }
+    }
+
+    impl RelaySession for Leg {
+        fn send_datagram(&self, _: &[u8]) -> Result<(), SendDatagramError> {
+            if self.fail_datagrams.load(Ordering::SeqCst) {
+                return Err(SendDatagramError::Failed("saturated".into()));
+            }
+            Ok(())
+        }
+        fn open_keyframe_stream(&self) -> BoxFuture<'_, Result<Box<dyn KeyframeWriter>, String>> {
+            Box::pin(async { Ok(Box::new(InstantWriter) as Box<dyn KeyframeWriter>) })
+        }
+        fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
+            Box::pin(async move {
+                let next = self.streams.lock().unwrap().pop_front();
+                match next {
+                    Some(msg) => Ok(Box::new(Message(Some(msg))) as Box<dyn ServerStream>),
+                    None => std::future::pending().await,
+                }
+            })
+        }
+        fn receive_datagram(&self) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn closed(&self) -> BoxFuture<'_, SessionClose> {
+            let mut death = self.death.subscribe();
+            Box::pin(async move {
+                loop {
+                    if let Some(cause) = death.borrow_and_update().clone() {
+                        return cause;
+                    }
+                    if death.changed().await.is_err() {
+                        return std::future::pending().await;
+                    }
+                }
+            })
+        }
+        fn close(&self) {
+            self.closed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// The reclaim dialer: records every URL and hands out the scripted legs.
+    #[derive(Default)]
+    struct Reclaims {
+        urls: Mutex<Vec<String>>,
+        legs: Mutex<VecDeque<Arc<Leg>>>,
+    }
+
+    impl PublishDialer for Reclaims {
+        fn dial(&self, url: &str) -> BoxFuture<'_, Result<Arc<dyn RelaySession>, StartError>> {
+            self.urls.lock().unwrap().push(url.to_owned());
+            let leg = self.legs.lock().unwrap().pop_front();
+            Box::pin(async move {
+                leg.map(|l| l as Arc<dyn RelaySession>).ok_or(StartError {
+                    phase: StartPhase::Connect,
+                    status: 0,
+                    message: "no scripted leg".into(),
+                })
+            })
+        }
+    }
+
+    // --- the room's end of the control stream -----------------------------
+
+    struct RoomPipe {
+        inbox: tokio::sync::Mutex<(mpsc::UnboundedReceiver<Vec<u8>>, Vec<u8>)>,
+        outbox: mpsc::UnboundedSender<Vec<u8>>,
+    }
+
+    impl RoomConn for RoomPipe {
+        fn write(&self, record: &[u8]) -> BoxFuture<'_, Result<(), String>> {
+            let r = self
+                .outbox
+                .send(record.to_vec())
+                .map_err(|_| "closed".to_string());
+            Box::pin(async move { r })
+        }
+        fn read(&self, n: usize) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+            Box::pin(async move {
+                let mut g = self.inbox.lock().await;
+                while g.1.len() < n {
+                    match g.0.recv().await {
+                        Some(chunk) => g.1.extend_from_slice(&chunk),
+                        None => return Err("closed".into()),
+                    }
+                }
+                Ok(g.1.drain(..n).collect())
+            })
+        }
+        fn closed(&self) -> BoxFuture<'_, SessionClose> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// The relay's end of one room control session.
+    struct RoomRelay {
+        to_client: mpsc::UnboundedSender<Vec<u8>>,
+        from_client: mpsc::UnboundedReceiver<Vec<u8>>,
+    }
+
+    impl RoomRelay {
+        fn send(&self, msg: &[u8]) {
+            let mut rec = Vec::new();
+            wire::append_room_record(&mut rec, msg).unwrap();
+            self.to_client.send(rec).unwrap();
+        }
+        fn send_state(&self, s: &wire::RoomState<'_>) {
+            let mut msg = Vec::new();
+            wire::append_room_state(&mut msg, s).unwrap();
+            self.send(&msg);
+        }
+        fn send_event(&self, e: &wire::RoomEvent<'_>) {
+            let mut msg = Vec::new();
+            wire::append_room_event(&mut msg, e).unwrap();
+            self.send(&msg);
+        }
+        /// The next record the client wrote, header stripped.
+        async fn next(&mut self) -> Vec<u8> {
+            let rec = tokio::time::timeout(Duration::from_secs(5), self.from_client.recv())
+                .await
+                .expect("a client record")
+                .expect("the stream is open");
+            rec[wire::ROOM_RECORD_HEADER_SIZE..].to_vec()
+        }
+    }
+
+    #[derive(Default)]
+    struct Rooms {
+        urls: Mutex<Vec<String>>,
+        conns: Mutex<VecDeque<Arc<dyn RoomConn>>>,
+    }
+
+    impl Rooms {
+        fn with_one() -> (Arc<Self>, RoomRelay) {
+            let (to_client, inbox) = mpsc::unbounded_channel();
+            let (outbox, from_client) = mpsc::unbounded_channel();
+            let conn: Arc<dyn RoomConn> = Arc::new(RoomPipe {
+                inbox: tokio::sync::Mutex::new((inbox, Vec::new())),
+                outbox,
+            });
+            let rooms = Arc::new(Self::default());
+            rooms.conns.lock().unwrap().push_back(conn);
+            (
+                rooms,
+                RoomRelay {
+                    to_client,
+                    from_client,
+                },
+            )
+        }
+    }
+
+    impl RoomDialer for Rooms {
+        fn dial(&self, url: &str) -> BoxFuture<'_, Result<Arc<dyn RoomConn>, StartError>> {
+            self.urls.lock().unwrap().push(url.to_owned());
+            let conn = self.conns.lock().unwrap().pop_front();
+            Box::pin(async move {
+                conn.ok_or(StartError {
+                    phase: StartPhase::Connect,
+                    status: 0,
+                    message: "no scripted room".into(),
+                })
+            })
+        }
+    }
+
+    // --- the listener and the harness -------------------------------------
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Heard {
+        Status(BroadcastStatus),
+        Identity(String, String),
+        RoomState(RoomView, bool, bool),
+        RoomEvent(BroadcastRoomEvent),
+    }
+
+    struct Ears(mpsc::UnboundedSender<Heard>);
+
+    impl BroadcastListener for Ears {
+        fn on_status(&self, status: BroadcastStatus) {
+            let _ = self.0.send(Heard::Status(status));
+        }
+        fn on_identity(&self, code: String, token: String) {
+            let _ = self.0.send(Heard::Identity(code, token));
+        }
+        fn on_viewer_count(&self, _: u32) {}
+        fn on_room_state(&self, room: RoomView, attached: bool, needs_key: bool) {
+            let _ = self.0.send(Heard::RoomState(room, attached, needs_key));
+        }
+        fn on_room_event(&self, event: BroadcastRoomEvent) {
+            let _ = self.0.send(Heard::RoomEvent(event));
+        }
+        fn on_failure(&self, _: String) {}
+    }
+
+    struct Harness {
+        b: Arc<Broadcaster>,
+        heard: mpsc::UnboundedReceiver<Heard>,
+    }
+
+    impl Harness {
+        fn start(
+            options: BroadcastOptions,
+            first: Arc<Leg>,
+            reclaims: Arc<Reclaims>,
+            rooms: Arc<Rooms>,
+        ) -> Self {
+            let (tx, heard) = mpsc::unbounded_channel();
+            let (b, wiring) = Broadcaster::wired();
+            tokio::spawn(run(
+                options,
+                Arc::new(Ears(tx)),
+                wiring,
+                move |cfg, clock| async move {
+                    Ok(Session::start_with_seams(
+                        cfg, first, clock, rooms, reclaims,
+                    ))
+                },
+            ));
+            Self { b, heard }
+        }
+
+        /// Everything heard until `want` matches, `want`'s match last.
+        async fn until(&mut self, want: impl Fn(&Heard) -> bool) -> Vec<Heard> {
+            let mut seen = Vec::new();
+            loop {
+                let h = tokio::time::timeout(Duration::from_secs(30), self.heard.recv())
+                    .await
+                    .expect("heard in time")
+                    .expect("the listener is open");
+                let done = want(&h);
+                seen.push(h);
+                if done {
+                    return seen;
+                }
+            }
+        }
+
+        /// Live, with the code and token stored.
+        async fn live(&mut self) {
+            self.until(|h| matches!(h, Heard::Identity(..))).await;
+        }
+
+        fn session(&self) -> Arc<Session> {
+            self.b.session().expect("the session is up")
+        }
+
+        fn pipeline(&self) -> Arc<Pipeline> {
+            self.b
+                .live
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .pipeline
+                .clone()
+        }
+
+        async fn stop(mut self) {
+            self.b.stop();
+            self.until(|h| matches!(h, Heard::Status(BroadcastStatus::Ended { .. })))
+                .await;
+        }
+    }
+
+    fn statuses(heard: &[Heard]) -> Vec<BroadcastStatus> {
+        heard
+            .iter()
+            .filter_map(|h| match h {
+                Heard::Status(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // --- K3: quality while live (docs/70 D12) ------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn a_quality_change_republishes_on_the_same_code_without_narration() {
+        let first = Leg::announcing();
+        let second = Leg::announcing();
+        let reclaims = Arc::new(Reclaims::default());
+        reclaims.legs.lock().unwrap().push_back(second.clone());
+        let mut h = Harness::start(
+            options(),
+            first.clone(),
+            reclaims.clone(),
+            Arc::new(Rooms::default()),
+        );
+        h.live().await;
+        let before = h.pipeline();
+
+        // The quality in force changes nothing; another one restarts.
+        h.b.set_quality(Quality::Standard);
+        h.b.set_quality(Quality::Cellular);
+        let heard = h
+            .until(|h| matches!(h, Heard::Status(BroadcastStatus::Live { .. })))
+            .await;
+        assert_eq!(
+            statuses(&heard),
+            [BroadcastStatus::Live {
+                code: CODE.into(),
+                join_link: format!("https://gawk.ioio.fi/#/view/{CODE}"),
+            }],
+            "the badge stays LIVE: no Resuming, the same code"
+        );
+        let urls = reclaims.urls.lock().unwrap().clone();
+        assert_eq!(urls.len(), 1, "one restart: {urls:?}");
+        assert!(
+            urls[0].contains(&format!("/publish/{CODE}?"))
+                && urls[0].contains(&format!("resume={TOKEN}")),
+            "the same code, reclaimed with its token: {}",
+            urls[0]
+        );
+        assert!(
+            first.closed.load(Ordering::SeqCst),
+            "the old leg closes cleanly"
+        );
+        assert!(!Arc::ptr_eq(&before, &h.pipeline()), "a new pipeline");
+        assert_eq!(
+            h.b.live.lock().unwrap().as_ref().unwrap().quality,
+            Quality::Cellular
+        );
+        assert_eq!(h.session().broadcast_id(), CODE);
+
+        // A real loss afterwards is narrated as before.
+        second.kill(SessionClose::Abrupt("idle".into()));
+        let heard = h
+            .until(|h| matches!(h, Heard::Status(BroadcastStatus::Resuming { .. })))
+            .await;
+        assert_eq!(
+            statuses(&heard).last(),
+            Some(&BroadcastStatus::Resuming { attempt: 1 })
+        );
+        h.stop().await;
+    }
+
+    // --- K4: the Upload row (docs/70 D11) ----------------------------------
+
+    /// One 3000-byte delta every 100 ms for `secs` seconds.
+    async fn send_media(session: &Session, secs: u64) {
+        for i in 0..secs * 10 {
+            session
+                .sender()
+                .send_video(AccessUnit {
+                    data: vec![0; 3000],
+                    timestamp_us: i * 100_000,
+                    keyframe: false,
+                })
+                .await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_upload_row_reads_the_send_rate_and_the_uplink_warning() {
+        let first = Leg::announcing();
+        let reclaims = Arc::new(Reclaims::default());
+        reclaims.legs.lock().unwrap().push_back(Leg::announcing());
+        let mut h = Harness::start(
+            options(),
+            first.clone(),
+            reclaims,
+            Arc::new(Rooms::default()),
+        );
+        h.live().await;
+        assert!(!h.b.counters().upload_available, "one sample is no rate");
+
+        send_media(&h.session(), 3).await;
+        let c = h.b.counters();
+        assert!(c.upload_available);
+        // 10 frames of 3000 bytes a second, plus the datagram headers.
+        assert!(
+            (200_000..=300_000).contains(&c.upload_bps),
+            "{} bps",
+            c.upload_bps
+        );
+        assert!(!c.uplink_warning);
+
+        // Every send failing: frames drop at send, and after the streak the
+        // engine's watchdog warns.
+        first.fail_datagrams.store(true, Ordering::SeqCst);
+        send_media(&h.session(), 7).await;
+        assert!(h.b.counters().uplink_warning, "the upload can't keep up");
+
+        // A quality change starts the watchdog over, and keeps the rate
+        // shown until the new media has its own.
+        h.b.set_quality(Quality::Cellular);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let c = h.b.counters();
+        assert!(!c.uplink_warning, "the warning starts over");
+        assert!(c.upload_available, "the last rate stays");
+        h.stop().await;
+    }
+
+    // --- K2: the broadcaster's room (docs/70 D16–D18) ----------------------
+
+    fn ours() -> wire::RoomAttachment<'static> {
+        wire::RoomAttachment {
+            broadcast_id: CODE.into(),
+            label: "Sam",
+            live: true,
+            viewer_count: 2,
+        }
+    }
+
+    fn sam() -> wire::RoomParticipant<'static> {
+        wire::RoomParticipant {
+            id: 7,
+            kind: wire::ROOM_CLIENT_NATIVE,
+            flags: wire::ROOM_PARTICIPANT_FLAG_STREAMING,
+            nickname: "Sam",
+            identity: "",
+        }
+    }
+
+    /// A `?rt=` creator grant rejoins the room as its creator (docs/60 D8):
+    /// joined after the session is up, since the config has no token. The
+    /// room's picture reaches Swift with this broadcast's attachment, and
+    /// the creator removing it takes the broadcaster out of the room.
+    #[tokio::test(start_paused = true)]
+    async fn a_creator_grant_rejoins_and_the_room_reaches_the_listener() {
+        let token = "5a".repeat(16);
+        let (rooms, mut relay) = Rooms::with_one();
+        let mut h = Harness::start(
+            BroadcastOptions {
+                room_code: "lan-party".into(),
+                room_creator_token_hex: token.clone(),
+                nickname: "Sam".into(),
+                ..options()
+            },
+            Leg::announcing(),
+            Arc::new(Reclaims::default()),
+            rooms.clone(),
+        );
+        h.live().await;
+        let hello = relay.next().await;
+        assert_eq!(wire::parse_room_hello(&hello).unwrap().nickname, "Sam");
+        assert_eq!(
+            *rooms.urls.lock().unwrap(),
+            [format!(
+                "https://127.0.0.1:9/room/lan-party?creator={token}"
+            )]
+        );
+
+        relay.send_state(&wire::RoomState {
+            flags: wire::ROOM_STATE_FLAG_CREATOR | wire::ROOM_STATE_FLAG_ATTACH_OK,
+            seq: 1,
+            your_id: 7,
+            code: "lan-party",
+            display_name: "LAN party",
+            participants: vec![sam()],
+            attachments: vec![ours()],
+            ..wire::RoomState::default()
+        });
+        let heard = h.until(|h| matches!(h, Heard::RoomState(..))).await;
+        let Some(Heard::RoomState(room, attached, needs_key)) = heard.last() else {
+            unreachable!()
+        };
+        assert!(*attached && !*needs_key);
+        assert!(room.creator && !room.dynamic);
+        assert_eq!((room.code.as_str(), room.your_id), ("lan-party", 7));
+        assert_eq!(room.people[0].nickname, "Sam");
+        assert!(room.people[0].streaming);
+        assert_eq!(room.tiles[0].broadcast_id, CODE);
+
+        relay.send_event(&wire::RoomEvent {
+            seq: 2,
+            kind: wire::ROOM_EVENT_ATTACHMENT_REMOVED,
+            attachment: wire::RoomAttachment {
+                broadcast_id: CODE.into(),
+                ..wire::RoomAttachment::default()
+            },
+            reason: wire::ROOM_DETACH_REASON_CREATOR,
+            ..wire::RoomEvent::default()
+        });
+        h.until(|h| {
+            matches!(
+                h,
+                Heard::RoomEvent(BroadcastRoomEvent::Detached {
+                    by_creator: true,
+                    ..
+                })
+            )
+        })
+        .await;
+        // Out of the room: what the relay says next reaches no one.
+        relay.send_event(&wire::RoomEvent {
+            seq: 3,
+            kind: wire::ROOM_EVENT_PARTICIPANT_JOINED,
+            participant: wire::RoomParticipant {
+                id: 9,
+                nickname: "Mika",
+                ..wire::RoomParticipant::default()
+            },
+            ..wire::RoomEvent::default()
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while let Ok(heard) = h.heard.try_recv() {
+            assert!(
+                !matches!(heard, Heard::RoomState(..)),
+                "a room state after leaving: {heard:?}"
+            );
+        }
+        // Joining again is heard again (this relay has no second room).
+        h.b.room_join("lan-party".into(), String::new(), String::new());
+        h.until(|h| matches!(h, Heard::RoomEvent(BroadcastRoomEvent::Ended { .. })))
+            .await;
+        assert_eq!(rooms.urls.lock().unwrap().len(), 2);
+        h.stop().await;
+    }
+
+    /// docs/70 D16's "Create a new room": minted once the broadcast has its
+    /// code, and the code and creator token reach Swift.
+    #[tokio::test(start_paused = true)]
+    async fn a_new_room_is_minted_and_its_grant_reaches_the_listener() {
+        let (rooms, relay) = Rooms::with_one();
+        let mut h = Harness::start(
+            BroadcastOptions {
+                room_new: true,
+                room_code: "ignored".into(),
+                nickname: "Sam".into(),
+                ..options()
+            },
+            Leg::announcing(),
+            Arc::new(Reclaims::default()),
+            rooms.clone(),
+        );
+        h.live().await;
+        let creator_token = [0x5a; wire::ROOM_CREATOR_TOKEN_SIZE];
+        relay.send_state(&wire::RoomState {
+            flags: wire::ROOM_STATE_FLAG_DYNAMIC
+                | wire::ROOM_STATE_FLAG_CREATOR
+                | wire::ROOM_STATE_FLAG_ATTACH_OK,
+            seq: 1,
+            your_id: 1,
+            code: "QX7P2K",
+            creator_token: &creator_token,
+            attachments: vec![ours()],
+            ..wire::RoomState::default()
+        });
+        let heard = h.until(|h| matches!(h, Heard::RoomState(..))).await;
+        assert!(
+            heard.contains(&Heard::RoomEvent(BroadcastRoomEvent::Created {
+                code: "QX7P2K".into(),
+                creator_token_hex: "5a".repeat(16),
+            }))
+        );
+        assert!(matches!(
+            heard.last(),
+            Some(Heard::RoomState(room, true, false)) if room.creator && room.dynamic
+        ));
+        assert_eq!(
+            *rooms.urls.lock().unwrap(),
+            [format!(
+                "https://127.0.0.1:9/room/new?broadcast={CODE}&resume={TOKEN}&label=Sam"
+            )]
+        );
+        h.stop().await;
     }
 }
