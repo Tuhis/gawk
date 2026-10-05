@@ -86,6 +86,7 @@ feature set exists).
 | R65 | [iOS app: native broadcaster and viewer](#r65--ios-app-native-broadcaster-and-viewer) | 🔧 proposed 2026-10-03 (owner decisions OD1–OD16; OD17 2026-10-04 moved capture to ScreenCaptureKit), **IO1 (scaffolding) and IO4 (the Rust viewer core) implemented 2026-10-04**; IO0, IO2, IO3 and IO5–IO8 not started — a new top-level `gawk-ios` module: SwiftUI over a Rust core (UniFFI) that path-depends on the desktop workspace's wire, engine, encode and audio crates; iOS 27's ScreenCaptureKit captures the device screen and its audio in the app itself (the ReplayKit extension is deprecated in the iOS 27 SDK) and streams it through VideoToolbox H.264; a native player (VideoToolbox / libvpx → `AVSampleBufferDisplayLayer`) adds fullscreen, PiP and background audio; rooms, server picker and telemetry in v1; iPhone + iPad, iOS 27+; signed for the owner's own devices, TestFlight/App Store a later milestone. no wire change; the relay gains only R59's `app=ios` label and the `gawk://ios` origin. Simulator-first: phase S builds the app, viewer and broadcast pipeline (on a synthetic source) in the Simulator; phase D opens with **IO0, a measuring spike of whether iOS keeps the capturing app running behind a game, with a pre-registered, exhaustive verdict whose Fail branch restores the ReplayKit extension**; iPhone 17 Pro Max + iPad Pro ([docs/67](docs/67-ios-app.md)) |
 | R66 | [`gawk://` links in the desktop broadcaster](#r66--gawk-links-in-the-desktop-broadcaster) | 🔧 **implemented 2026-10-03** (LH1–LH5 in one PR; proposed the same day, owner decisions OD1, OD2, OD4), the owner's pass on each OS (LH6) open — one `gawk://` grammar for every native app (`broadcast`, `watch`, `room`), parsed by a new `engine::link` with golden vectors; Windows self-registers under `HKCU` on every launch, macOS declares `CFBundleURLTypes` and takes the Apple Event, Linux adds `x-scheme-handler/gawk` to the desktop entry and the `.deb`; the app becomes single-instance (named pipe / session D-Bus / LaunchServices) so a link reaches the running window; a link prefills room, nickname and a matching saved server and never starts anything, and viewer links go to the browser ([docs/68](docs/68-desktop-gawk-links.md)) |
 | R67 | [Open a broadcast in the desktop app from `gawk-app`](#r67--open-a-broadcast-in-the-desktop-app-from-gawk-app) | 💡 proposed 2026-10-03 (owner decision OD3), not started (HO1–HO4), after R66 — on Windows, macOS and Linux the broadcaster's start card and a room's "Start streaming here" offer **Open in the desktop app** (a `gawk://broadcast` link with room, nickname and a non-default relay, never a secret); no install detection, the browser flow stays underneath with a "Didn't open?" fallback; an opt-in "always" makes broadcast links from outside launch the app once per room in a tab; operator switch `config.desktopHandoff` ([docs/69](docs/69-app-desktop-handoff.md)) |
+| R68 | [iOS app UX redesign](#r68--ios-app-ux-redesign) | 💡 designed 2026-10-05 in a Claude Design pass (owner decisions OD1–OD12 from canvas comments and chat), not started (IX1–IX10), after R65's phase S — the R65 screens rebuilt on the web app's dark tokens and the desktop's primitives in iOS 26+ Liquid Glass: three tabs (Watch, Broadcast, Settings; rooms join from the one code box, as on the web); a player that is only the video until a tap shows glass controls (LIVE chip, a code pill that copies the link as the room's does, PiP, a settings menu, a two-height stats drawer); Broadcast as one button then one code, with quality changeable while live on the same code; the room player as the web room screen with Grid / Focus and a People sheet; a Live Activity in the Dynamic Island; iPad layouts. Whatever the design needs that the app or core lacks (room roster, creator controls, upload rate, link handling) is built here. no wire or relay change ([docs/70](docs/70-ios-ux-redesign.md)) |
 
 ---
 
@@ -5074,6 +5075,52 @@ opens.
 Safari (a follow-up after R65), secrets in links.
 
 **Status**: 💡 proposed 2026-10-03, not started.
+
+---
+
+## R68 — iOS app UX redesign
+
+**Goal**: an iOS app that looks like gawk and works like an iOS app: the
+web app's dark tokens and primitives on iOS 26+ structure, a player that
+is only the video until you tap it, one button and then one code to go
+live, and the web room screen in Liquid Glass.
+
+**Why**: the R65 screens are stock SwiftUI forms. They follow the system's
+light mode, put the player inside a form row, bury the code on Live, leave
+Rooms as a placeholder tab and don't open `gawk://` links. The owner: "the
+UX is terrible."
+
+**Design**: drawn in Claude Design on 2026-10-05 and revised to the
+owner's canvas comments the same day. The canvas is
+<https://claude.ai/artifact/7ErQDw4oYaBFxKE192r8b5> (private: ask the
+maintainer); [docs/70](docs/70-ios-ux-redesign.md) wins where they differ.
+
+**Scope** (chunks IX1–IX10 in [docs/70](docs/70-ios-ux-redesign.md)):
+
+- **IX1** — the design foundation: `Theme.swift` on `global.css`'s tokens
+  with a CI drift check, dark only, the shared primitives.
+- **IX2** — three tabs (Watch, Broadcast, Settings), the Watch join card,
+  the web's join resolver for broadcast and room codes, `gawk://` handling.
+- **IX3** — the player: video only, controls on tap, the code pill,
+  the settings menu, the two-height stats drawer, automatic PiP.
+- **IX4** — Broadcast: Ready, Live, Reconnecting and the summary after
+  End; quality changes while live on the same code; the upload rate.
+- **IX5** — rooms for the broadcaster: the room sheet, the room card,
+  creator controls, no room player while live.
+- **IX6** — the room player: the web room's chrome, Grid / Focus, the
+  four-at-once cap, the People sheet and nickname edit.
+- **IX7** — Settings, Edit server, the non-default strip, the unreachable
+  banner, the refused-start alert.
+- **IX8** — a Live Activity on the Lock Screen and in the Dynamic Island
+  (a widget extension; revises docs/67 §6).
+- **IX9** — iPad layouts and an accessibility audit.
+- **IX10** — the owner's device pass.
+
+**Non-goals**: any change to the wire, the relay, the viewer core's
+playout, capture or encode; the Safari viewer; the desktop apps;
+TestFlight / App Store distribution (R65's follow-up).
+
+**Status**: 💡 designed 2026-10-05 (owner decisions OD1–OD12), not started.
 
 ---
 

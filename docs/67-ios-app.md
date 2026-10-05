@@ -9,7 +9,9 @@ everything the Simulator can run; phase D starts on devices with **IO0, a
 throwaway spike whose pre-registered verdict (§9.1) gates the device
 acceptance of the broadcast pipeline**: whether iOS keeps the capturing app
 running behind a game. Decisions marked *provisional* are
-confirmed or revised in §12 once IO0 is done. Status lives in [`ROADMAP.md`](../ROADMAP.md).
+confirmed or revised in §12 once IO0 is done. D1, D18, D20–D23 and §6 were
+revised 2026-10-05 by R68's UX redesign ([docs/70](70-ios-ux-redesign.md)).
+Status lives in [`ROADMAP.md`](../ROADMAP.md).
 
 **Relationship to earlier work**
 
@@ -114,6 +116,10 @@ Recorded so they aren't re-derived. Each was put to the owner on
 ## 4. Decisions
 
 ### D1 — Layout: `gawk-ios/`, a Rust workspace and an XcodeGen project
+
+*(Revised 2026-10-05 by R68, [docs/70](70-ios-ux-redesign.md) D1: the app
+is three tabs, Watch, Broadcast and Settings. Rooms open from Watch's code
+box, a saved room or a link.)*
 
 ```
 gawk-ios/
@@ -449,6 +455,12 @@ went with it. None of this needs a paid team.
 
 ### D18 — Starting and stopping a broadcast
 
+*(Revised 2026-10-05 by R68, [docs/70](70-ios-ux-redesign.md) D10–D14: the
+first-broadcast notice reads "Your whole screen is broadcast, with its
+sound. Notifications show too, so turn on a Focus to keep them off the
+stream."; Live, Reconnecting and the summary after End are laid out
+there.)*
+
 The Broadcast screen's **Start** presents the system's
 `SCContentSharingPicker` for the display
 (`presentPickerUsingContentStyle(.display)`), with `showsMicrophoneControl`
@@ -473,6 +485,11 @@ switch mid-broadcast, which would be an unannounced quality change.
 
 ### D20 — Joining: code, `gawk://` link, room
 
+*(Revised 2026-10-05 by R68, [docs/70](70-ios-ux-redesign.md) D3–D4: one
+code box takes a broadcast or a room code and resolves it as the web's
+`#/join` does; links open the player or the room player, and a
+`broadcast` link prefills Broadcast.)*
+
 The Watch screen takes a typed code (the SPA's format and validation),
 or a `gawk://watch/<CODE>` or `gawk://room/<name>` link. The query
 parameters `relay=` and `nick=` mean what they mean on the web (docs/40,
@@ -488,6 +505,12 @@ prefilling, as the desktop does (docs/68 D4).
 
 ### D21 — Rooms
 
+*(Revised 2026-10-05 by R68, [docs/70](70-ios-ux-redesign.md) D16–D21: the
+viewer takes the web room screen's layout and the single-stream player's
+controls; grid, focus and the four-tile cap stay. The broadcasting phone
+never shows a room without asking, because its whole screen is
+broadcast.)*
+
 - **Broadcaster**: the room to attach is chosen in the app before Start
   (saved and recent rooms, as docs/60 has). The pipeline attaches with the
   shared `engine::room` code (R42), unchanged.
@@ -499,6 +522,9 @@ prefilling, as the desktop does (docs/68 D4).
 
 ### D22 — PiP and background audio
 
+*(Revised 2026-10-05 by R68, [docs/70](70-ios-ux-redesign.md) D8: PiP also
+starts on its own when you leave the app with the player up.)*
+
 `AVPictureInPictureController` with the
 `ContentSource(sampleBufferDisplayLayer:playbackDelegate:)` source. The
 audio session is `.playback`, with background mode `audio` (beside the
@@ -508,6 +534,10 @@ no scrubber. Entering the background without PiP keeps audio only and
 stops video decode.
 
 ### D23 — Telemetry, server picker, terms
+
+*(Revised 2026-10-05 by R68, [docs/70](70-ios-ux-redesign.md) D22–D23:
+every server has an Edit page that holds its publish secret, in place of
+a field inside the server list.)*
 
 - **Telemetry** (R28, docs/33): off until the user opts in, as on desktop.
   The engine's telemetry for the broadcast; the viewer core reports the
@@ -631,7 +661,10 @@ Inherited from docs/38 §7 and docs/54 §7: no software encode; no
 viewer→server keyframe back-channel; no auto-resume through 4000/4004/4006
 (publisher) or reconnect through 4000/4006 (viewer); no
 second clock; no standalone `DecoderConfig` datagrams; no Opus
-DTX/FEC/bitrate knob. Added here: no app extension (OD17); no
+DTX/FEC/bitrate knob. Added here: no app extension (OD17; *revised
+2026-10-05 by R68, [docs/70](70-ios-ux-redesign.md) D15: a widget extension
+for the Live Activity, which holds no media and shares nothing with the
+app*); no
 QUIC connection migration (D12); no self-update (D4); no raw broadcast IDs
 in logs or telemetry (CLAUDE.md, R9 D3).
 

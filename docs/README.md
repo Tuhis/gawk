@@ -96,6 +96,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`67`](67-ios-app.md) | R65 — iOS app: a ScreenCaptureKit screen broadcaster (iOS 27) and a native player (fullscreen, PiP, background audio) in a new `gawk-ios` module, SwiftUI over the desktop workspace's Rust crates |
 | [`68`](68-desktop-gawk-links.md) | R66 — `gawk://` links in the desktop broadcaster: one grammar for every native app, per-OS handler registration, a single-instance app, prefill that never starts a broadcast |
 | [`69`](69-app-desktop-handoff.md) | R67 — Open a broadcast in the desktop app from `gawk-app`: an offer on the start card and in rooms, no install detection, a remembered "always" |
+| [`70`](70-ios-ux-redesign.md) | R68 — iOS app UX redesign: gawk's dark tokens in Liquid Glass, three tabs with one code box for broadcasts and rooms, a video-only player with controls on tap, the web room screen, a Live Activity, iPad layouts |
 
 ## Audio
 
