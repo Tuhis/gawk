@@ -1,7 +1,7 @@
 # Security Policy
 
 `gawk` is a self-hosted, low-latency game-streaming stack (a Go relay, a web
-app, native Linux and Windows broadcasters, an optional per-session
+app, native Linux, Windows and macOS broadcasters, an optional per-session
 diagnostics service, and an optional moderation portal). It is maintained by a
 single person as a side project,
 on a best-effort basis. This document explains how to report a vulnerability
