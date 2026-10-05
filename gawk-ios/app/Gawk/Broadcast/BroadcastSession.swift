@@ -12,14 +12,16 @@ enum BroadcastPhase: Equatable {
     case ended(reason: String?)
 }
 
-/// The room a broadcast joins (docs/70 D16): a code with what it
-/// presents, or a room minted from this broadcast.
+/// The room a broadcast joins (docs/70 D16): a code, or a room minted from
+/// this broadcast. It holds no credential: a room key or creator token is
+/// read from the Keychain for the relay at the moment it's sent, so it
+/// reaches only the relay it was stored for (docs/68 D5a).
 enum RoomChoice: Equatable {
-    case join(code: String, attachKey: String, creatorToken: String)
+    case join(code: String)
     case create
 
     var code: String? {
-        if case .join(let code, _, _) = self { return code }
+        if case .join(let code) = self { return code }
         return nil
     }
 }
@@ -145,26 +147,21 @@ final class BroadcastSession {
     ) {
         guard !isActive else { return }
         let stored = identity.load(relay: relayURL)
-        var roomCode = "", attachKey = "", creatorToken = "", roomNew = false
-        switch pendingRoom {
-        case .join(let code, let key, let token): (roomCode, attachKey, creatorToken) = (code, key, token)
-        case .create: roomNew = true
-        case nil: break
-        }
+        let joining = roomOptions(pendingRoom, relay: relayURL)
         let options = BroadcastOptions(
             relayUrl: relayURL,
             publishSecret: secret,
             broadcastId: stored?.code ?? "",
             resumeTokenHex: stored?.token ?? "",
             quality: quality,
-            roomCode: roomCode,
-            roomAttachSecret: attachKey,
+            roomCode: joining.code,
+            roomAttachSecret: joining.attachKey,
             nickname: nickname,
             insecure: insecure,
             telemetry: telemetry,
             captureSource: captureSource,
-            roomNew: roomNew,
-            roomCreatorTokenHex: creatorToken
+            roomNew: joining.new,
+            roomCreatorTokenHex: joining.creatorToken
         )
         failure = nil
         refusal = nil
@@ -192,6 +189,27 @@ final class BroadcastSession {
         startSampling()
     }
 
+    /// What a start or a join presents to `relay` for `choice`: the
+    /// credentials stored for that relay and that room, never another's.
+    struct RoomOptions: Equatable {
+        var code = ""
+        var attachKey = ""
+        var creatorToken = ""
+        var new = false
+    }
+
+    func roomOptions(_ choice: RoomChoice?, relay: String) -> RoomOptions {
+        switch choice {
+        case .join(let code):
+            RoomOptions(
+                code: code,
+                attachKey: identity.roomCredential(.attachKey, relay: relay, code: code),
+                creatorToken: identity.roomCredential(.creatorToken, relay: relay, code: code))
+        case .create: RoomOptions(new: true)
+        case nil: RoomOptions()
+        }
+    }
+
     /// Ends the broadcast. The screen leaves the live state at once
     /// (`.stopping`); `.ended` follows when the core has closed the session,
     /// or after `stopGrace` with a reason if it never confirms.
@@ -213,8 +231,9 @@ final class BroadcastSession {
     }
 
     /// D12: a new rung while live, on the same code (`Session::republish`
-    /// in the core); viewers see a short freeze. Before going live it's
-    /// just the rung the start uses.
+    /// in the core); viewers see a short freeze. Asked for while still
+    /// connecting, the core keeps it and applies it once the code and
+    /// token arrive, so what the menu shows is what's sent.
     func setQuality(_ q: Quality) {
         guard q != quality else { return }
         quality = q
@@ -260,13 +279,14 @@ final class BroadcastSession {
         pendingRoom = choice
         roomCard = nil
         roomStatus = nil
-        guard isActive, let broadcaster else { return }
+        guard isActive, let broadcaster, let relay else { return }
         roomLeaving = false
         room = nil
         roomAttached = false
         switch choice {
-        case .join(let code, let key, let token):
-            broadcaster.roomJoin(code: code, attachSecret: key, creatorTokenHex: token)
+        case .join:
+            let o = roomOptions(choice, relay: relay)
+            broadcaster.roomJoin(code: o.code, attachSecret: o.attachKey, creatorTokenHex: o.creatorToken)
         case .create:
             broadcaster.roomCreate()
         }
@@ -274,9 +294,9 @@ final class BroadcastSession {
 
     /// The gated room's key (D16): rejoin presenting it.
     func joinWithKey(_ key: String) {
-        guard case .join(let code, _, let token) = pendingRoom else { return }
-        if let relay { identity.setRoomCredential(key, .attachKey, relay: relay, code: code) }
-        chooseRoom(.join(code: code, attachKey: key, creatorToken: token))
+        guard case .join(let code) = pendingRoom, let relay else { return }
+        identity.setRoomCredential(key, .attachKey, relay: relay, code: code)
+        chooseRoom(.join(code: code))
         roomStatus = "Joining with the key…"
     }
 
@@ -403,7 +423,7 @@ final class BroadcastSession {
         case .created(let code, let token):
             // The creator grant keeps this room ours across restarts.
             if let relay { identity.setRoomCredential(token, .creatorToken, relay: relay, code: code) }
-            pendingRoom = .join(code: code, attachKey: "", creatorToken: token)
+            pendingRoom = .join(code: code)
         case .attached:
             roomAttached = true
             roomNeedsKey = false

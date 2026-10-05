@@ -125,10 +125,7 @@ struct RoomPickerSheet: View {
         case .attach(let key): identity.setRoomCredential(key, .attachKey, relay: relay, code: code)
         case nil: break
         }
-        session.chooseRoom(.join(
-            code: code,
-            attachKey: identity.roomCredential(.attachKey, relay: relay, code: code),
-            creatorToken: identity.roomCredential(.creatorToken, relay: relay, code: code)))
+        session.chooseRoom(.join(code: code))
         settings.noteRoom(code, server: relay)
         dismiss()
     }

@@ -464,12 +464,11 @@ impl Broadcaster {
     /// one, and the publish leg is re-established on the same code with
     /// the same resume token. Viewers see a short freeze; the status stays
     /// `Live`, because the restart's own reclaim is not narrated. A no-op
-    /// when the quality is unchanged, or before the broadcast has its code
-    /// and token (the next start takes `BroadcastOptions::quality`).
+    /// when the quality is unchanged. Asked for before the broadcast has its
+    /// code and token, the latest one is kept and applied once it does: a
+    /// republish needs both to reclaim the code.
     pub fn set_quality(&self, quality: Quality) {
-        if self.live.lock().unwrap().is_some() {
-            let _ = self.commands.send(Command::SetQuality(quality));
-        }
+        let _ = self.commands.send(Command::SetQuality(quality));
     }
 
     /// Joins a room (a code or a static slug), replacing any current one;
@@ -647,6 +646,9 @@ async fn run<C, F>(
     // A quality restart's reclaim is in flight (docs/70 D12): its first
     // attempt is not narrated, and the watchdogs wait for its media.
     let mut restarting = false;
+    // The latest quality asked for, applied once the code and token are
+    // both known (a republish reclaims with them).
+    let mut wanted_quality: Option<Quality> = None;
     loop {
         tokio::select! {
             _ = &mut stop => {
@@ -657,14 +659,7 @@ async fn run<C, F>(
             }
             Some(command) = commands.recv() => {
                 let Command::SetQuality(quality) = command;
-                if identified && restart(&live, &clock, quality) {
-                    reporter.event("restart", "");
-                    restarting = true;
-                    // The watchdogs start over with the new media, as the
-                    // desktop's do.
-                    uplink = UplinkMonitor::new();
-                    upload_rate = UploadRate::default();
-                }
+                wanted_quality = Some(quality);
             }
             _ = report_tick.tick() => {
                 let Some((pipeline, counters)) = current(&live) else { continue };
@@ -788,6 +783,18 @@ async fn run<C, F>(
                     _ => {}
                 }
             }
+        }
+        // A quality asked for, now or before the code and token arrived.
+        if identified
+            && let Some(quality) = wanted_quality.take()
+            && restart(&live, &clock, quality)
+        {
+            reporter.event("restart", "");
+            restarting = true;
+            // The watchdogs start over with the new media, as the desktop's
+            // do.
+            uplink = UplinkMonitor::new();
+            upload_rate = UploadRate::default();
         }
     }
     listener.on_status(BroadcastStatus::Ended {
@@ -1791,6 +1798,39 @@ mod live_tests {
         assert_eq!(
             statuses(&heard).last(),
             Some(&BroadcastStatus::Resuming { attempt: 1 })
+        );
+        h.stop().await;
+    }
+
+    /// A quality asked for before the code and token are known (Swift's
+    /// Connecting, review of #475) is kept and applied once they are, not
+    /// dropped while Swift shows it as chosen.
+    #[tokio::test(start_paused = true)]
+    async fn a_quality_change_before_the_code_applies_once_it_arrives() {
+        let first = Leg::announcing();
+        let reclaims = Arc::new(Reclaims::default());
+        reclaims.legs.lock().unwrap().push_back(Leg::announcing());
+        let mut h = Harness::start(
+            options(),
+            first.clone(),
+            reclaims.clone(),
+            Arc::new(Rooms::default()),
+        );
+        // Before the dial has even returned.
+        h.b.set_quality(Quality::Cellular);
+        h.live().await;
+        for _ in 0..100 {
+            if !reclaims.urls.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let urls = reclaims.urls.lock().unwrap().clone();
+        assert_eq!(urls.len(), 1, "one restart, once identified: {urls:?}");
+        assert!(urls[0].contains(&format!("resume={TOKEN}")), "{}", urls[0]);
+        assert_eq!(
+            h.b.live.lock().unwrap().as_ref().unwrap().quality,
+            Quality::Cellular
         );
         h.stop().await;
     }

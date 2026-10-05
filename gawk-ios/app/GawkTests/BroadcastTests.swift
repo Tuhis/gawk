@@ -108,7 +108,8 @@ final class BroadcastTests: XCTestCase {
         let (s, identity) = started()
         s.chooseRoom(.create)
         s.applyRoom(.created(code: "K7XQ2M", creatorTokenHex: "ab"))
-        XCTAssertEqual(s.pendingRoom, .join(code: "K7XQ2M", attachKey: "", creatorToken: "ab"))
+        XCTAssertEqual(s.pendingRoom, .join(code: "K7XQ2M"))
+        XCTAssertEqual(s.roomOptions(s.pendingRoom, relay: relay).creatorToken, "ab", "rejoins as its creator")
         XCTAssertEqual(identity.roomCredential(.creatorToken, relay: relay, code: "K7XQ2M"), "ab")
         XCTAssertEqual(identity.roomCredential(.creatorToken, relay: "https://elsewhere:4433", code: "K7XQ2M"), "")
         s.stop()
@@ -117,7 +118,7 @@ final class BroadcastTests: XCTestCase {
     /// docs/60 D10: removed by the creator is a card, and out of the room.
     func testRemovedByTheCreatorIsACard() {
         let (s, _) = started()
-        s.chooseRoom(.join(code: "LANPTY", attachKey: "", creatorToken: ""))
+        s.chooseRoom(.join(code: "LANPTY"))
         s.applyRoom(.detached(reason: "removed", byCreator: true))
         XCTAssertEqual(s.roomCard?.title, "Your stream was removed from LANPTY")
         XCTAssertNil(s.pendingRoom)
@@ -129,18 +130,34 @@ final class BroadcastTests: XCTestCase {
     /// never let us in is a status line.
     func testRoomEnds() {
         let (s, _) = started()
-        s.chooseRoom(.join(code: "LANPTY", attachKey: "", creatorToken: ""))
+        s.chooseRoom(.join(code: "LANPTY"))
         s.applyRoom(.ended(reason: "the room couldn't be found"))
         XCTAssertEqual(s.roomStatus, "Couldn't join the room: the room couldn't be found.")
         XCTAssertNil(s.roomCard)
 
-        s.chooseRoom(.join(code: "LANPTY", attachKey: "", creatorToken: ""))
+        s.chooseRoom(.join(code: "LANPTY"))
         s.leaveRoom()
         s.applyRoom(.detached(reason: "left", byCreator: false))
         s.applyRoom(.ended(reason: "left"))
         XCTAssertNil(s.roomCard)
         XCTAssertNil(s.pendingRoom, "Leave returns to Not in a room")
         s.stop()
+    }
+
+    /// docs/68 D5a, review of #475: a room key or creator token is
+    /// presented only to the relay it was stored for, whatever server is
+    /// selected by the time the broadcast starts.
+    func testARoomCredentialGoesOnlyToItsRelay() {
+        let (s, identity) = session()
+        let home = "https://home.example:4433"
+        let other = "https://other.example:4433"
+        identity.setRoomCredential("k3y", .attachKey, relay: home, code: "lan-party")
+        defer { identity.setRoomCredential("", .attachKey, relay: home, code: "lan-party") }
+        // Chosen while `home` was selected; the server changes before Go live.
+        s.chooseRoom(.join(code: "lan-party"))
+        XCTAssertEqual(s.roomOptions(s.pendingRoom, relay: home).attachKey, "k3y")
+        XCTAssertEqual(s.roomOptions(s.pendingRoom, relay: other).attachKey, "", "never sent to another relay")
+        XCTAssertEqual(s.roomOptions(s.pendingRoom, relay: other).code, "lan-party", "the room itself still joins")
     }
 
     func testTheEndedCardSaysTheStreamCarriesOn() {

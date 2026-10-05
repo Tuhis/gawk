@@ -51,7 +51,7 @@ struct BroadcastView: View {
         }
         .alert(linkPrompt?.title ?? "", isPresented: linkPromptShown, presenting: linkPrompt) { prompt in
             Button(prompt.accept) { apply(prompt) }
-            Button("Not now", role: .cancel) {}
+            Button("Not now", role: .cancel) { decline(prompt) }
         } message: { prompt in
             Text(prompt.body)
         }
@@ -164,12 +164,14 @@ struct BroadcastView: View {
     /// What a link asks that needs a click: a server not yet saved, or a
     /// room or nickname while live (docs/68 G4, G5).
     private enum LinkPrompt: Equatable {
-        case addServer(String)
+        /// A server not saved yet; the link's room and nickname wait for
+        /// the answer, so they're filled in on the server in use.
+        case addServer(String, then: AppRouter.BroadcastPrefill)
         case joinLive(room: String?, nick: String?)
 
         var title: String {
             switch self {
-            case .addServer(let url): "This link uses the server \(hostOf(url))"
+            case .addServer(let url, _): "This link uses the server \(hostOf(url))"
             case .joinLive(let room?, _): "Add your stream to \(room) now?"
             case .joinLive(nil, let nick): "Use the nickname \(nick ?? "") now?"
             }
@@ -201,23 +203,29 @@ struct BroadcastView: View {
             return
         }
         if let relay = prefill.relay {
-            if settings.servers.contains(where: { $0.url == relay }) {
-                settings.selectedURL = relay
-            } else {
-                linkPrompt = .addServer(relay)
+            guard settings.servers.contains(where: { $0.url == relay }) else {
+                linkPrompt = .addServer(relay, then: prefill)
+                return
             }
+            settings.selectedURL = relay
         } else {
             settings.selectedURL = ""
         }
+        fill(prefill)
+    }
+
+    /// The link's nickname and room, once the server is settled.
+    private func fill(_ prefill: AppRouter.BroadcastPrefill) {
         if let nick = prefill.nick { settings.nickname = nick }
         if let room = prefill.room { choose(room: room) }
     }
 
     private func apply(_ prompt: LinkPrompt) {
         switch prompt {
-        case .addServer(let url):
+        case .addServer(let url, let prefill):
             settings.addServer(name: hostOf(url), url: url)
             settings.selectedURL = url
+            fill(prefill)
         case .joinLive(let room, let nick):
             if let nick {
                 settings.nickname = nick
@@ -227,12 +235,15 @@ struct BroadcastView: View {
         }
     }
 
+    /// "Not now": an unknown server is kept out, and the rest of the link
+    /// still fills in on the server in use (docs/68 OD2).
+    private func decline(_ prompt: LinkPrompt) {
+        if case .addServer(_, let prefill) = prompt { fill(prefill) }
+    }
+
     private func choose(room: String) {
-        let relay = settings.relayURL
-        let key = capture.identity.roomCredential(.attachKey, relay: relay, code: room)
-        let token = capture.identity.roomCredential(.creatorToken, relay: relay, code: room)
-        session.chooseRoom(.join(code: room, attachKey: key, creatorToken: token))
-        settings.noteRoom(room, server: relay)
+        session.chooseRoom(.join(code: room))
+        settings.noteRoom(room, server: settings.relayURL)
     }
 }
 
