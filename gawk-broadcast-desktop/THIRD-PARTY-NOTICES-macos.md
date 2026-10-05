@@ -171,7 +171,7 @@ script for what counts as a dependency here and why.
 | `keyboard-types` | 0.7.0 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pyfisch |
 | `kurbo` | 0.13.1 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Raph Levien |
 | `lazy_static` | 1.5.0 | `MIT OR Apache-2.0` | Copyright (c) 2010 The Rust Project Developers |
-| `libc` | 0.2.189 | `MIT OR Apache-2.0` | Copyright (c) The Rust Project Developers |
+| `libc` | 0.2.190 | `MIT OR Apache-2.0` | Copyright (c) The Rust Project Developers |
 | `libloading` | 0.8.9 | `ISC` | Copyright © 2015, Simonas Kazlauskas |
 | `libm` | 0.2.16 | `MIT` | Copyright (c) 2018 Jorge Aparicio<br>Copyright © 2005-2020 Rich Felker, et al<br>Copyright © 1993,2004 Sun Microsystems or<br>Copyright © 2003-2011 David Schultz or<br>Copyright © 2003-2009 Steven G. Kargl or<br>Copyright © 2003-2009 Bruce D. Evans or<br>Copyright © 2008 Stephen L. Moshier or<br>Copyright © 2017-2018 Arm Limited |
 | `linebender_resource_handle` | 0.1.1 | `Apache-2.0 OR MIT` | Copyright 2024 the Raw Resource Handle Authors |
