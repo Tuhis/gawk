@@ -82,19 +82,23 @@ final class RoomPlayerModel {
     }
 
     /// A tap on a tile: Focus focuses it; Grid swaps a paused one in for the
-    /// one that has played longest (D19).
-    func tap(_ id: String) {
+    /// one that has played longest (D19). False when that changes nothing
+    /// (the focused stream, a playing tile): the tap was on the video.
+    @discardableResult
+    func tap(_ id: String) -> Bool {
         switch layout {
         case .focus:
+            guard focused?.broadcastId != id else { return false }
             focusedId = id
         case .grid:
-            guard !playing.contains(id) else { return }
+            guard !playing.contains(id) else { return false }
             if playing.count >= Self.maxPlaying {
                 pauseEngine(playing.removeFirst())
             }
             playing.append(id)
             play(id)
         }
+        return true
     }
 
     /// People's Edit (D20): the room hears the new name.

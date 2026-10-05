@@ -62,6 +62,20 @@ final class RoomPlayerUITests: XCTestCase {
         XCTAssertEqual(after.count, 4)
     }
 
+    /// A tap on the video brings the controls back, as a tap on the black
+    /// around it does (the owner, review of #475).
+    func testATapOnTheVideoShowsTheControls() throws {
+        app.terminate()
+        app = launchApp(extra: ["-gawkControlIdle", "4", "-gawkNickname", "Tester"])
+        open(try UIEnv.require("GAWK_UI_ROOM_CODE")[0], streams: 5)
+        let close = app.buttons["room.close"]
+        XCTAssertTrue(wait(for: close, hittable: false, timeout: 10), "hidden after the idle time")
+        let playing = try XCTUnwrap(tiles.allElementsBoundByIndex.first { $0.label.hasSuffix(", playing") })
+        playing.tap()
+        XCTAssertTrue(wait(for: close, timeout: 2), "a tap on the video shows them")
+        shot("room-tap-video", app)
+    }
+
     /// D19: Focus shows the strip under the focused stream.
     func testFocusShowsTheStrip() throws {
         open(try UIEnv.require("GAWK_UI_ROOM_CODE")[0], streams: 5)

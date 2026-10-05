@@ -104,7 +104,7 @@ struct RoomPlayerScreen: View {
             VStack(spacing: 8) {
                 LazyVGrid(columns: cols, spacing: 2) {
                     ForEach(tiles, id: \.broadcastId) { tile in
-                        RoomTileView(tile: tile, model: model)
+                        RoomTileView(tile: tile, model: model, controls: controls)
                             .aspectRatio(16 / 9, contentMode: .fit)
                     }
                 }
@@ -129,7 +129,7 @@ struct RoomPlayerScreen: View {
         VStack(spacing: 2) {
             Spacer(minLength: 0)
             if let tile = model.focused {
-                RoomTileView(tile: tile, model: model, large: true)
+                RoomTileView(tile: tile, model: model, controls: controls, large: true)
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -139,7 +139,7 @@ struct RoomPlayerScreen: View {
                 ScrollView(.horizontal) {
                     HStack(spacing: 2) {
                         ForEach(others, id: \.broadcastId) { tile in
-                            RoomTileView(tile: tile, model: model)
+                            RoomTileView(tile: tile, model: model, controls: controls)
                                 .aspectRatio(16 / 9, contentMode: .fit)
                                 .frame(height: landscape ? 72 : 96)
                         }
@@ -229,6 +229,7 @@ struct LayoutToggle: View {
 struct RoomTileView: View {
     let tile: RoomTile
     let model: RoomPlayerModel
+    let controls: ControlsVisibility
     var large = false
 
     /// The tile's label, or its code when the broadcaster gave no name.
@@ -269,7 +270,16 @@ struct RoomTileView: View {
         }
         .clipped()
         .contentShape(.rect)
-        .onTapGesture { model.tap(tile.broadcastId) }
+        // A tap that swaps or focuses a stream shows the controls with it;
+        // one on a stream already playing or in focus is a tap on the
+        // video, and shows or hides them as on a single stream.
+        .onTapGesture {
+            if model.tap(tile.broadcastId) {
+                controls.show()
+            } else {
+                controls.toggle()
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText(playing: playing))
         .accessibilityAddTraits(.isButton)

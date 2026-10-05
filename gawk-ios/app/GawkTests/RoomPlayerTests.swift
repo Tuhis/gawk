@@ -21,6 +21,27 @@ final class RoomPlayerTests: XCTestCase {
         XCTAssertEqual(S.columns(count: 5, landscape: true, wide: true), 4, "iPad landscape")
     }
 
+    /// A tap on a tile says whether it changed what plays: one that does
+    /// nothing (a playing tile in Grid, the focused stream in Focus) is a
+    /// tap on the video, which shows or hides the controls instead (the
+    /// owner, review of #475).
+    func testATapOnATileSaysWhetherItChangedAnything() {
+        let ids = ["AAAAA2", "BBBBB2", "CCCCC2", "DDDDD2", "EEEEE2"]
+        let model = RoomPlayerModel(code: "ROOM22", relayUrl: "https://127.0.0.1:9", insecure: true, nickname: "t")
+        model.apply(RoomView(
+            code: "ROOM22", displayName: "", participants: 5,
+            tiles: ids.map { RoomTile(broadcastId: $0, label: $0, live: true, viewerCount: 0) },
+            people: [], yourId: 0, creator: false, dynamic: true, attachOk: true))
+        defer { model.stop() }
+        let playing = model.playing
+        let paused = ids.first { !playing.contains($0) }!
+        XCTAssertFalse(model.tap(playing[1]), "a playing tile: nothing to swap")
+        XCTAssertTrue(model.tap(paused), "a paused tile swaps in")
+        model.focus(ids[2])
+        XCTAssertFalse(model.tap(ids[2]), "the focused stream: nothing to change")
+        XCTAssertTrue(model.tap(ids[3]), "another stream takes the focus")
+    }
+
     /// At most four play in Grid; a tap on a paused one swaps out the one
     /// that has played longest; Focus decodes only the focused stream.
     func testFourPlayAndFocusDecodesOnlyTheFocusedStream() async throws {
