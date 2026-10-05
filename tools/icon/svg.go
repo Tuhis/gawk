@@ -46,7 +46,13 @@ type Point struct{ X, Y float64 }
 type Shape struct {
 	Fill RGBA
 	Ops  []Op
+	// Rect is the box a <rect> covers after its transform, nil for a
+	// <path>. FullBleed redraws the tile from it without the corner radius.
+	Rect *Box
 }
+
+// Box is an axis-aligned rectangle in viewBox units.
+type Box struct{ MinX, MinY, MaxX, MaxY float64 }
 
 // RGBA is a straight-alpha colour.
 type RGBA struct{ R, G, B, A uint8 }
@@ -267,6 +273,16 @@ func parseRect(n xmlNode, m affine) (Shape, error) {
 		return Shape{}, fmt.Errorf("svg: <rect rx=%g ry=%g>: only ry == rx is supported", rx, ry)
 	}
 	rx = math.Min(rx, math.Min(w, h)/2)
+	// translate and scale keep a rectangle axis-aligned, so its two
+	// opposite corners are the whole box.
+	p0, p1 := m.apply(Point{x, y}), m.apply(Point{x + w, y + h})
+	box := &Box{math.Min(p0.X, p1.X), math.Min(p0.Y, p1.Y), math.Max(p0.X, p1.X), math.Max(p0.Y, p1.Y)}
+	return Shape{Fill: fill, Ops: rectOps(m, x, y, w, h, rx), Rect: box}, nil
+}
+
+// rectOps outlines a rectangle whose corner radius rx is at most half its
+// shorter side, transformed by m.
+func rectOps(m affine, x, y, w, h, rx float64) []Op {
 	pb := pathBuilder{m: m}
 	if rx == 0 {
 		pb.moveTo(Point{x, y})
@@ -274,7 +290,7 @@ func parseRect(n xmlNode, m affine) (Shape, error) {
 		pb.lineTo(Point{x + w, y + h})
 		pb.lineTo(Point{x, y + h})
 		pb.close()
-		return Shape{Fill: fill, Ops: pb.ops}, nil
+		return pb.ops
 	}
 	k := kappa * rx
 	pb.moveTo(Point{x + rx, y})
@@ -287,7 +303,7 @@ func parseRect(n xmlNode, m affine) (Shape, error) {
 	pb.lineTo(Point{x, y + rx})
 	pb.cubeTo(Point{x, y + rx - k}, Point{x + rx - k, y}, Point{x + rx, y})
 	pb.close()
-	return Shape{Fill: fill, Ops: pb.ops}, nil
+	return pb.ops
 }
 
 // pathBuilder accumulates ops, applying the transform to every point it is

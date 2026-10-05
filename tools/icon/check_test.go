@@ -37,6 +37,26 @@ func copyIconDir(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
+	files, err := iosJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, f := range files {
+		paths = append(paths, f.Path)
+	}
+	for _, s := range iosSets {
+		paths = append(paths, s.pngPath())
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(filepath.Join(src, p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeFile(filepath.Join(dst, p), data); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return dst
 }
 
@@ -56,8 +76,10 @@ func TestGenerateThenCheckIsClean(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.RemoveAll(filepath.Join(dir, pngDir)); err != nil {
-		t.Fatal(err)
+	for _, d := range []string{pngDir, iosDir} {
+		if err := os.RemoveAll(filepath.Join(dir, d)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := Generate(dir); err != nil {
 		t.Fatal(err)

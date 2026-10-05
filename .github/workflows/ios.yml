@@ -19,7 +19,9 @@
 #
 # Triggers follow the path dependencies (OD9): a change to a shared desktop
 # crate or to the canonical wire runs this workflow as well as the desktop
-# one, which in turn watches gawk-ios/rust/**.
+# one, which in turn watches gawk-ios/rust/**. assets/icon/** is here
+# because the app builds the icon catalogs tools/icon writes there
+# (docs/70 K13).
 name: ios
 
 on:
@@ -34,6 +36,7 @@ on:
       - "gawk-broadcast-desktop/crates/audio/**"
       - "gawk-broadcast-desktop/vendor/**"
       - "gawk-server/wire/**"
+      - "assets/icon/**"
       - ".github/workflows/ios.yml"
   pull_request:
     paths:
@@ -45,6 +48,7 @@ on:
       - "gawk-broadcast-desktop/crates/audio/**"
       - "gawk-broadcast-desktop/vendor/**"
       - "gawk-server/wire/**"
+      - "assets/icon/**"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
 
