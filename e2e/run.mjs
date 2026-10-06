@@ -1332,20 +1332,20 @@ async function startBrowserBroadcast({ relayUrl, certHash, attempt }) {
 // hand back a working Start. Whether a browser WITH the app launches it is
 // the owner's per-browser pass (HO4), not something headless can show.
 async function desktopHandoffCheck({ relayUrl, certHash }) {
-  const browser = await launchBrowser();
+  const assertStillHere = async (p, what) => {
+    if (!new URL(p.url()).hash.startsWith('#/broadcast')) {
+      fail(`desktop handoff (${what}): the page navigated away to ${p.url()}`);
+    }
+    if (!(await p.getByTestId('pending-room').textContent()).includes('vip-e2e-handoff')) {
+      fail(`desktop handoff (${what}): the pending room chip is gone`);
+    }
+  };
+  let browser = await launchBrowser();
   try {
     const context = await newAppContext(browser, { relayUrl, certHash });
     const page = await context.newPage();
     wirePageLogs(page, 'console-desktop-handoff');
     const dialog = page.getByRole('dialog', { name: 'Opening the desktop app' });
-    const assertStillHere = async (p, what) => {
-      if (!new URL(p.url()).hash.startsWith('#/broadcast')) {
-        fail(`desktop handoff (${what}): the page navigated away to ${p.url()}`);
-      }
-      if (!(await p.getByTestId('pending-room').textContent()).includes('vip-e2e-handoff')) {
-        fail(`desktop handoff (${what}): the pending room chip is gone`);
-      }
-    };
 
     // The offer's click: the anchor's own navigation to an unhandled scheme.
     await page.goto(`${APP_URL}/#/broadcast?room=vip-e2e-handoff`);
@@ -1370,8 +1370,14 @@ async function desktopHandoffCheck({ relayUrl, certHash }) {
     // D9: the link asks for the app; the hidden iframe launches on load.
     // A fresh tab, as a link opens one: on the page above, a hash-only
     // navigation would keep the screen mounted, and the screen reads the
-    // link once, on mount.
-    const linkPage = await context.newPage();
+    // link once, on mount. In a fresh browser, too: the offer click's launch
+    // left an external-protocol prompt up that nothing answers, and with it
+    // in the same browser this tab's dialog — rendered, launch logged —
+    // intermittently never passed the visibility wait (PR #467's CI).
+    await browser.close();
+    browser = await launchBrowser();
+    const linkContext = await newAppContext(browser, { relayUrl, certHash });
+    const linkPage = await linkContext.newPage();
     wirePageLogs(linkPage, 'console-desktop-handoff-link');
     await linkPage.goto(`${APP_URL}/#/broadcast?room=vip-e2e-handoff&desktop=1`);
     await linkPage.getByRole('dialog', { name: 'Opening the desktop app' }).waitFor({ state: 'visible', timeout: 5000 });
