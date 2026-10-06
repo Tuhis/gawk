@@ -382,7 +382,7 @@ jobs:
       # GAWK_UI_* variables (scripts/room-fixtures.sh says which is which).
       # After the boot: publishers that ran through it had dozens of keyframe
       # streams refused, and a room stream later delivered only its cached
-      # keyframe (2026-10-06). A mint whose answer is lost is retried.
+      # keyframe (2026-10-06).
       - name: Publish the room fixtures
         run: ../scripts/room-fixtures.sh https://127.0.0.1:4499 smoke "$RUNNER_TEMP/rooms" >> "$GITHUB_ENV"
 

@@ -397,14 +397,19 @@ Built against the canvas and this document in the iPhone 17 and iPad Pro
   now carries its server, the default fleet included, and only a
   non-default one shows the K11 chip. "The selected server" is left to
   typed codes and Your rooms. The UI tests' links name the local relay.
-- **CI's room fixtures retry a lost mint and publish after the Simulator
-  has booted.** The first run lost a mint's answer in the boot storm; the
-  underlying relay behaviour is in `BUGS.md`. Publishing before the boot
-  instead had dozens of the room publishers' keyframe streams refused,
-  and a room stream later delivered only its cached keyframe. A step now
-  checks that every fixture is streaming before the tests
-  (`scripts/fixtures-streaming.sh`), and a failed run uploads its
+- **CI's room fixtures publish after the Simulator has booted.**
+  Publishing before the boot had dozens of the room publishers' keyframe
+  streams refused, and a room stream later delivered only its cached
+  keyframe. A step now checks that every fixture is streaming before the
+  tests (`scripts/fixtures-streaming.sh`), and a failed run uploads its
   screenshots and result bundles.
+- **A repeated room mint gets the minter's room back** (relay, `docs/44`
+  §11.1). On a loaded runner the native dial gave up on an attempt the
+  relay had already answered (5 s, R65 IO5) and sent `/room/new` again.
+  The relay refused that with 409, so the fixtures lost rooms and "Create
+  a new room" left the app outside its own room. The relay now answers the
+  repeat with the same room and creator token, so the fixtures no longer
+  replace a stuck publisher with a fresh broadcast.
 - **Three UI tests raced a slower runner.** Paste waits for `PasteButton`'s
   asynchronous payload. The AX5 test scrolls the Room row up in short,
   fling-free drags until it clears the bottom chrome. The audits skip
@@ -416,8 +421,7 @@ Built against the canvas and this document in the iPhone 17 and iPad Pro
   sometimes shows only its first frame or two. The core completes the
   frames but its playout drops them (gap resync, drop to live), while a
   host-side probe of the same broadcast sees every frame. Which test hits
-  it varies between runs, and main runs fewer playback tests. "Create a
-  new room" also hit the lost-mint bug in `BUGS.md`.
+  it varies between runs, and main runs fewer playback tests.
 
 **Not done here**: IX10, the owner's device pass. It covers ScreenCaptureKit
 broadcasting, the Live Activity on a real Lock Screen and Dynamic Island,
