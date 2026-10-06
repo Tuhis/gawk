@@ -145,15 +145,23 @@ extension XCTestCase {
     /// Taps an open menu's item once it can take the tap. While the menu is
     /// still appearing, its items have no frame yet ({inf, inf}); a tap then
     /// lands nowhere and the menu stays open, and `isHittable` fails the test
-    /// outright (CI, 2026-10-06), hence `canTakeTap`.
+    /// outright (CI, 2026-10-06), hence `canTakeTap`. Even a menu that has
+    /// settled can drop a tap on a slow runner: the item was hittable, the
+    /// tap was sent, and the menu stayed open (CI's recording, 2026-10-06).
+    /// A chosen item closes the menu, so the tap is repeated until it does.
     @MainActor
     func tapMenuItem(_ label: String, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let items = app.buttons.matching(NSPredicate(format: "label == %@", label))
+        func open() -> XCUIElement? { items.allElementsBoundByIndex.first(where: \.canTakeTap) }
         let deadline = Date().addingTimeInterval(UIWait.step)
         repeat {
-            if let item = items.allElementsBoundByIndex.first(where: \.canTakeTap) {
+            if let item = open() {
                 item.tap()
-                return
+                let settle = Date().addingTimeInterval(3)
+                while Date() < settle, open() != nil {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+                }
+                if open() == nil { return }
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         } while Date() < deadline

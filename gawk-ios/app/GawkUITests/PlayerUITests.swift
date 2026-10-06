@@ -29,7 +29,10 @@ final class PlayerUITests: XCTestCase {
 
     /// D5: the controls hide 3 s after the last touch, and a tap shows them.
     /// XCUITest's own latency only lengthens what it measures, so the hide
-    /// is timed from the tap: at least 2.5 s (not at once), at most 6.
+    /// is timed from the tap for the lower bound: at least 2.5 s (not at
+    /// once). The upper bound is timed from when the controls were seen,
+    /// which is after the app's timer started, so a slow runner's delay in
+    /// seeing them doesn't count against it: hidden at most 6 s later.
     func testTheControlsHideAfterThreeSecondsAndATapShowsThem() {
         watch(reveal: false)
         XCTAssertTrue(wait(for: close, hittable: false, timeout: UIWait.step), "hidden after the idle time")
@@ -37,10 +40,12 @@ final class PlayerUITests: XCTestCase {
         let tapped = Date()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(wait(for: close, timeout: UIWait.step), "a tap shows them")
+        let seen = Date()
         shot("player-controls", app)
         XCTAssertTrue(wait(for: close, hittable: false, timeout: UIWait.step), "and they hide again")
-        let shown = Date().timeIntervalSince(tapped)
-        XCTAssertGreaterThanOrEqual(shown, 2.5, "they stayed for the idle time")
+        let hidden = Date()
+        XCTAssertGreaterThanOrEqual(hidden.timeIntervalSince(tapped), 2.5, "they stayed for the idle time")
+        XCTAssertLessThanOrEqual(hidden.timeIntervalSince(seen), 6, "they hid after the idle time")
     }
 
     /// D5a, OD4: a tap on the pill shows the check, and the code stays in
