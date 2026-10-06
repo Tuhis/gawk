@@ -106,7 +106,7 @@ final class AccessibilityUITests: XCTestCase {
         revealControls(app)
         audit(app, "Player", overVideo: true)
         app.buttons["player.settings"].tap()
-        app.buttons["Stats"].tap()
+        tapMenuItem("Stats", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["stats.drawer"].waitForExistence(timeout: 5))
         audit(app, "Stats", videoInView: true)
         app.swipeDown()

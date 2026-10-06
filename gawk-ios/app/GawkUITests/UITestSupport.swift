@@ -84,6 +84,23 @@ extension XCTestCase {
         if open.waitForExistence(timeout: 1) { open.tap() }
     }
 
+    /// Taps an open menu's item once it can take the tap. While the menu is
+    /// still appearing, its items have no frame yet ({inf, inf}); a tap then
+    /// lands nowhere and the menu stays open (CI, 2026-10-06).
+    @MainActor
+    func tapMenuItem(_ label: String, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+        let items = app.buttons.matching(NSPredicate(format: "label == %@", label))
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            if let item = items.allElementsBoundByIndex.first(where: \.isHittable) {
+                item.tap()
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        } while Date() < deadline
+        XCTFail("no \"\(label)\" menu item took a tap", file: file, line: line)
+    }
+
     /// Shows a player's controls if they've hidden (docs/70 D5: they go
     /// 3 s after the last touch), with a tap on the video.
     @MainActor

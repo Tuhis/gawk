@@ -66,7 +66,7 @@ final class PlayerUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Stats"].exists)
         XCTAssertFalse(app.buttons["Copy link"].exists, "Copy link is the pill's")
         shot("player-menu", app)
-        app.buttons["Lowest latency"].tap()
+        tapMenuItem("Lowest latency", in: app)
         revealControls(app)
         app.buttons["player.settings"].tap()
         XCTAssertTrue(app.buttons["Lowest latency"].waitForExistence(timeout: 3))
@@ -78,7 +78,7 @@ final class PlayerUITests: XCTestCase {
     func testStatsOpensSmallAndPullsToFull() {
         watch()
         app.buttons["player.settings"].tap()
-        app.buttons["Stats"].tap()
+        tapMenuItem("Stats", in: app)
         XCTAssertTrue(app.staticTexts["Playout delay"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Frames"].exists, "small: the tiles only")
         shot("player-stats-small", app)
