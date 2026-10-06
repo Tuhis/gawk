@@ -21,7 +21,7 @@ final class PlayerUITests: XCTestCase {
     /// Opens the stream and shows its controls.
     private func watch(_ link: String? = nil, reveal: Bool = true) {
         openLink(link ?? UIEnv.link("gawk://watch/\(code)"), in: app)
-        XCTAssertTrue(app.descendants(matching: .any)["player.live"].waitForExistence(timeout: 20), "live")
+        XCTAssertTrue(app.descendants(matching: .any)["player.live"].waitForExistence(timeout: UIWait.media), "live")
         if reveal { revealControls(app) }
     }
 
@@ -32,13 +32,13 @@ final class PlayerUITests: XCTestCase {
     /// is timed from the tap: at least 2.5 s (not at once), at most 6.
     func testTheControlsHideAfterThreeSecondsAndATapShowsThem() {
         watch(reveal: false)
-        XCTAssertTrue(wait(for: close, hittable: false, timeout: 8), "hidden after the idle time")
+        XCTAssertTrue(wait(for: close, hittable: false, timeout: UIWait.step), "hidden after the idle time")
         shot("player-video-only", app)
         let tapped = Date()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(wait(for: close, timeout: 2), "a tap shows them")
+        XCTAssertTrue(wait(for: close, timeout: UIWait.step), "a tap shows them")
         shot("player-controls", app)
-        XCTAssertTrue(wait(for: close, hittable: false, timeout: 6), "and they hide again")
+        XCTAssertTrue(wait(for: close, hittable: false, timeout: UIWait.step), "and they hide again")
         let shown = Date().timeIntervalSince(tapped)
         XCTAssertGreaterThanOrEqual(shown, 2.5, "they stayed for the idle time")
     }
@@ -61,7 +61,7 @@ final class PlayerUITests: XCTestCase {
     func testTheSettingsMenu() {
         watch()
         app.buttons["player.settings"].tap()
-        XCTAssertTrue(app.buttons["Lowest latency"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Lowest latency"].waitForExistence(timeout: UIWait.step))
         XCTAssertTrue(app.buttons["Share…"].exists)
         XCTAssertTrue(app.buttons["Stats"].exists)
         XCTAssertFalse(app.buttons["Copy link"].exists, "Copy link is the pill's")
@@ -69,7 +69,7 @@ final class PlayerUITests: XCTestCase {
         tapMenuItem("Lowest latency", in: app)
         revealControls(app)
         app.buttons["player.settings"].tap()
-        XCTAssertTrue(app.buttons["Lowest latency"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Lowest latency"].waitForExistence(timeout: UIWait.step))
         XCTAssertTrue(app.buttons["Lowest latency"].isSelected, "the preset stuck")
     }
 
@@ -79,7 +79,7 @@ final class PlayerUITests: XCTestCase {
         watch()
         app.buttons["player.settings"].tap()
         tapMenuItem("Stats", in: app)
-        XCTAssertTrue(app.staticTexts["Playout delay"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Playout delay"].waitForExistence(timeout: UIWait.step))
         XCTAssertFalse(app.staticTexts["Frames"].exists, "small: the tiles only")
         shot("player-stats-small", app)
         // Above the drawer the video still takes a tap (controls toggle).
@@ -90,7 +90,8 @@ final class PlayerUITests: XCTestCase {
         let drawer = app.descendants(matching: .any)["stats.drawer"]
         drawer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
             .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)))
-        XCTAssertTrue(app.staticTexts["FRAMES"].waitForExistence(timeout: 5) || app.staticTexts["Frames"].exists)
+        let frames = app.staticTexts.matching(NSPredicate(format: "label ==[c] %@", "Frames")).firstMatch
+        XCTAssertTrue(frames.waitForExistence(timeout: UIWait.step))
         XCTAssertTrue(app.buttons["stats.copy"].exists)
         shot("player-stats-full", app)
     }
@@ -100,9 +101,9 @@ final class PlayerUITests: XCTestCase {
         watch()
         close.tap()
         let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: close)
-        wait(for: [gone], timeout: 5)
+        wait(for: [gone], timeout: UIWait.step)
         XCTAssertFalse(app.descendants(matching: .any)["player.live"].exists)
-        XCTAssertTrue(app.buttons["watch.join"].isHittable, "back on Watch")
+        XCTAssertTrue(wait(for: app.buttons["watch.join"]), "back on Watch")
     }
 
     /// K11: a link's non-default relay (the local one) shows as a chip

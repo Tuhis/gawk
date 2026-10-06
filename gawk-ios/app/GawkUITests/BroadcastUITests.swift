@@ -18,10 +18,10 @@ final class BroadcastUITests: XCTestCase {
     /// Goes live and returns the code.
     private func goLive() -> String {
         let go = app.buttons["broadcast.goLive"]
-        XCTAssertTrue(go.waitForExistence(timeout: 10))
+        XCTAssertTrue(go.waitForExistence(timeout: UIWait.step))
         go.tap()
         let codeBoxes = app.buttons["broadcast.code"]
-        XCTAssertTrue(codeBoxes.waitForExistence(timeout: 40), "live, with a code")
+        XCTAssertTrue(codeBoxes.waitForExistence(timeout: UIWait.media), "live, with a code")
         let label = codeBoxes.label
         let code = label.replacingOccurrences(of: "Code ", with: "").replacingOccurrences(of: ", copy", with: "")
         XCTAssertEqual(code.count, 6, label)
@@ -36,7 +36,7 @@ final class BroadcastUITests: XCTestCase {
     /// B1 → B2: the first-run notice, Go live, the code; a tap on the boxes
     /// copies the code (the copied state shows).
     func testGoLiveShowsTheCodeAndATapCopiesIt() {
-        XCTAssertTrue(app.buttons["broadcast.gotIt"].waitForExistence(timeout: 10), "first run: the notice")
+        XCTAssertTrue(app.buttons["broadcast.gotIt"].waitForExistence(timeout: UIWait.step), "first run: the notice")
         shot("broadcast-ready", app)
         _ = goLive()
         XCTAssertTrue(app.descendants(matching: .any)["broadcast.live"].exists)
@@ -54,7 +54,7 @@ final class BroadcastUITests: XCTestCase {
         let upload = app.descendants(matching: .any)["broadcast.upload"]
         let rate = NSPredicate(format: "label CONTAINS 'bps'")
         expectation(for: rate, evaluatedWith: upload)
-        waitForExpectations(timeout: 20)
+        waitForExpectations(timeout: UIWait.media)
         end()
     }
 
@@ -63,7 +63,7 @@ final class BroadcastUITests: XCTestCase {
         let code = goLive()
         app.buttons["broadcast.quality"].tap()
         let standard = app.buttons["Standard"]
-        XCTAssertTrue(standard.waitForExistence(timeout: 5))
+        XCTAssertTrue(standard.waitForExistence(timeout: UIWait.step))
         standard.tap()
         sleep(4)
         XCTAssertEqual(app.buttons["broadcast.code"].label, "Code \(code), copy", "the same code")

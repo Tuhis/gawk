@@ -35,6 +35,65 @@ enum UIEnv {
     }
 }
 
+/// How long one UI step may take to show. CI's macOS runners are slow and
+/// share their few cores with the relay, the fixture publishers and the
+/// Simulator, so what takes half a second on a desk can take several seconds
+/// there. A wait ends as soon as its condition holds, so a long bound costs a
+/// passing run nothing; a short one only buys flakes.
+enum UIWait {
+    static let step: TimeInterval = 15
+    /// A step through the relay: going live, joining, a stream starting to
+    /// play. It dials, waits for a keyframe and decodes, so on a loaded
+    /// runner it takes far longer than a UI step.
+    static let media: TimeInterval = 60
+}
+
+extension XCUIElement {
+    /// Whether this element can take a tap now. While it is still appearing
+    /// (a menu opening, a sheet sliding up) it has no frame yet, and asking
+    /// `isHittable` then fails the test from inside XCTest ("Activation point
+    /// invalid") instead of answering false (CI, 2026-10-06). The frame is
+    /// checked first, so that state reads as "not yet".
+    @MainActor
+    var canTakeTap: Bool {
+        guard exists else { return false }
+        let f = frame
+        guard !f.isNull, !f.isInfinite, f.minX.isFinite, f.minY.isFinite, f.width > 0, f.height > 0 else {
+            return false
+        }
+        return isHittable
+    }
+
+    /// Whether this field holds the keyboard.
+    @MainActor
+    var hasKeyboardFocus: Bool {
+        (value(forKey: "hasKeyboardFocus") as? Bool) ?? false
+    }
+
+    /// Taps this field until it holds the keyboard. A tap that lands while
+    /// its sheet or alert is still animating in does nothing, and typing
+    /// then fails with "Neither element nor any descendant has keyboard
+    /// focus" (CI, 2026-10-06). A field that already has focus isn't tapped
+    /// again, so the caret stays where typing left it.
+    @MainActor
+    func focus(timeout: TimeInterval = UIWait.step, file: StaticString = #filePath, line: UInt = #line) {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if hasKeyboardFocus { return }
+            if canTakeTap { tap() }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        } while Date() < deadline
+        XCTFail("\(self) never took the keyboard", file: file, line: line)
+    }
+
+    /// Types `text` into this field once it holds the keyboard.
+    @MainActor
+    func enter(_ text: String, file: StaticString = #filePath, line: UInt = #line) {
+        focus(file: file, line: line)
+        typeText(text)
+    }
+}
+
 extension XCTestCase {
     /// The app from a clean start (`-gawkReset`), on the local relay when
     /// one is set.
@@ -68,9 +127,8 @@ extension XCTestCase {
     @MainActor
     func typeCode(_ code: String, in app: XCUIApplication) {
         let field = app.textFields["watch.code"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10), "the code box")
-        field.tap()
-        field.typeText(code)
+        XCTAssertTrue(field.waitForExistence(timeout: UIWait.step), "the code box")
+        field.enter(code)
     }
 
     /// Opens a `gawk://` link the way another app would, accepting iOS's
@@ -86,13 +144,14 @@ extension XCTestCase {
 
     /// Taps an open menu's item once it can take the tap. While the menu is
     /// still appearing, its items have no frame yet ({inf, inf}); a tap then
-    /// lands nowhere and the menu stays open (CI, 2026-10-06).
+    /// lands nowhere and the menu stays open, and `isHittable` fails the test
+    /// outright (CI, 2026-10-06), hence `canTakeTap`.
     @MainActor
     func tapMenuItem(_ label: String, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let items = app.buttons.matching(NSPredicate(format: "label == %@", label))
-        let deadline = Date().addingTimeInterval(5)
+        let deadline = Date().addingTimeInterval(UIWait.step)
         repeat {
-            if let item = items.allElementsBoundByIndex.first(where: \.isHittable) {
+            if let item = items.allElementsBoundByIndex.first(where: \.canTakeTap) {
                 item.tap()
                 return
             }
@@ -108,19 +167,24 @@ extension XCTestCase {
         let control = app.buttons[probe]
         // A tap that lands while they fade out can hide them again, so it
         // takes a second try at most.
-        for _ in 0..<3 where control.exists && !control.isHittable {
+        for _ in 0..<3 where control.exists && !control.canTakeTap {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45)).tap()
             if wait(for: control, timeout: 1.5) { break }
         }
-        XCTAssertTrue(wait(for: control, timeout: 3), "the controls show")
+        XCTAssertTrue(wait(for: control, timeout: UIWait.step), "the controls show")
     }
 
-    /// Waits for `element` to exist and be hittable, or not.
+    /// Waits for `element` to exist and take a tap, or not. Polled through
+    /// `canTakeTap`: a predicate on `hittable` fails the test while the
+    /// element has no frame yet.
     @MainActor
     @discardableResult
-    func wait(for element: XCUIElement, hittable: Bool = true, timeout: TimeInterval = 15) -> Bool {
-        let predicate = NSPredicate(format: hittable ? "exists == true AND hittable == true" : "hittable == false")
-        let e = expectation(for: predicate, evaluatedWith: element)
-        return XCTWaiter().wait(for: [e], timeout: timeout) == .completed
+    func wait(for element: XCUIElement, hittable: Bool = true, timeout: TimeInterval = UIWait.step) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if element.canTakeTap == hittable { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        } while Date() < deadline
+        return false
     }
 }
