@@ -105,7 +105,7 @@ final class RoomPlayerUITests: XCTestCase {
         // An alert's field keeps no SwiftUI identifier.
         let field = app.alerts.textFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: UIWait.step), "the nickname alert")
-        field.clearAndType("Kuusi")
+        clearAndType("Kuusi", into: field)
         app.alerts.buttons["Save"].tap()
         XCTAssertTrue(yours("Kuusi").waitForExistence(timeout: UIWait.step), "the roster renamed you")
         app.buttons["Close"].firstMatch.tap()
@@ -125,12 +125,12 @@ final class RoomPlayerUITests: XCTestCase {
     }
 }
 
-extension XCUIElement {
+extension XCTestCase {
     /// Replaces a field's text.
     @MainActor
-    func clearAndType(_ text: String) {
-        focus()
-        let current = (value as? String) ?? ""
-        typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count) + text)
+    func clearAndType(_ text: String, into field: XCUIElement) {
+        focus(field)
+        let current = (field.value as? String) ?? ""
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count) + text)
     }
 }

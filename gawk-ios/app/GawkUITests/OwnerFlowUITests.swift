@@ -18,18 +18,18 @@ final class OwnerFlowUITests: XCTestCase {
         // Settings: the dev certificate on, then add the local relay.
         app.tabBars.buttons["Settings"].tap()
         let dev = app.switches["Accept a local relay's dev certificate"]
-        for _ in 0..<3 where !dev.canTakeTap { app.swipeUp() }
+        for _ in 0..<3 where !canTap(dev) { app.swipeUp() }
         if dev.value as? String != "1" { dev.switches.firstMatch.tap() }
         alive("dev certificate toggle")
-        for _ in 0..<3 where !app.buttons["settings.addServer"].canTakeTap { app.swipeDown() }
+        for _ in 0..<3 where !canTap(app.buttons["settings.addServer"]) { app.swipeDown() }
         app.buttons["settings.addServer"].tap()
         let name = app.textFields["server.name"]
         XCTAssertTrue(name.waitForExistence(timeout: UIWait.step))
-        name.enter("local")
+        enter("local", into: name)
         let url = app.textFields["server.url"]
-        url.enter(String(relay.dropFirst("https://".count)))
+        enter(String(relay.dropFirst("https://".count)), into: url)
         let secret = app.textFields["server.secret"]
-        secret.enter(UIEnv.value("GAWK_UI_SECRET") ?? "")
+        enter(UIEnv.value("GAWK_UI_SECRET") ?? "", into: secret)
         app.buttons["server.save"].tap()
         alive("adding the server")
         let local = app.buttons["server.row.local"]

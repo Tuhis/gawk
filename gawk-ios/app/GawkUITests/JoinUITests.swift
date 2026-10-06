@@ -20,12 +20,12 @@ final class JoinUITests: XCTestCase {
         typeCode("k7xo2", in: app)
         XCTAssertEqual(app.textFields["watch.code"].value as? String, "K7X2")
         XCTAssertFalse(join.isEnabled, "four characters")
-        app.textFields["watch.code"].enter("mq")
+        enter("mq", into: app.textFields["watch.code"])
         XCTAssertEqual(app.textFields["watch.code"].value as? String, "K7X2MQ")
         XCTAssertTrue(join.isEnabled, "six characters")
         shot("join-six", app)
 
-        app.textFields["watch.code"].enter(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6))
+        enter(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6), into: app.textFields["watch.code"])
         UIPasteboard.general.string = " ab-cd 23 "
         app.buttons["watch.paste"].tap()
         // PasteButton gets its payload from the system asynchronously.

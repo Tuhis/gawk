@@ -39,7 +39,7 @@ final class TypingUITests: XCTestCase {
     func testTypingACodeIntoTheBoxes() {
         let code = app.textFields["watch.code"]
         XCTAssertTrue(code.waitForExistence(timeout: UIWait.step))
-        code.focus()
+        focus(code)
         typeSlowly("ty94b", into: code)
         backspace(2, in: code)
         typeSlowly("4bp-x7", into: code)
@@ -58,13 +58,13 @@ final class TypingUITests: XCTestCase {
         add.tap()
         let name = app.textFields["server.name"]
         XCTAssertTrue(name.waitForExistence(timeout: UIWait.step))
-        name.focus()
+        focus(name)
         typeSlowly("local", into: name)
         let url = app.textFields["server.url"]
-        url.focus()
+        focus(url)
         typeSlowly("127.0.0.1:4499", into: url)
         let secret = app.textFields["server.secret"]
-        secret.focus()
+        focus(secret)
         typeSlowly("smoke", into: secret)
         XCTAssertEqual(app.state, .runningForeground)
     }
@@ -76,7 +76,7 @@ final class TypingUITests: XCTestCase {
         add.tap()
         let room = app.textFields["room.input"]
         XCTAssertTrue(room.waitForExistence(timeout: UIWait.step))
-        room.focus()
+        focus(room)
         typeSlowly("lan-party", into: room)
         backspace(3, in: room)
         XCTAssertEqual(app.state, .runningForeground)

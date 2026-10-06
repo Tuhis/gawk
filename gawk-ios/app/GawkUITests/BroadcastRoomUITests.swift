@@ -26,7 +26,7 @@ final class BroadcastRoomUITests: XCTestCase {
     private func joinRoom(_ input: String) {
         openRoomSheet()
         let field = app.textFields["room.input"]
-        field.enter(input + "\n")
+        enter(input + "\n", into: field)
     }
 
     private func goLive() {
@@ -73,7 +73,7 @@ final class BroadcastRoomUITests: XCTestCase {
         let alert = app.alerts["This room needs a key to add your stream"]
         XCTAssertTrue(alert.waitForExistence(timeout: UIWait.media))
         shot("broadcast-room-key", app)
-        alert.textFields.firstMatch.enter("k3y")
+        enter("k3y", into: alert.textFields.firstMatch)
         alert.buttons["Join"].tap()
         XCTAssertTrue(roomCard.waitForExistence(timeout: UIWait.media), "joined with the key")
         XCTAssertTrue(roomCard.label.contains("LAN party"), roomCard.label)

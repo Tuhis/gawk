@@ -61,10 +61,10 @@ final class AccessibilityUITests: XCTestCase {
     private func chromeTop(_ app: XCUIApplication) -> CGFloat {
         var top = app.windows.firstMatch.frame.maxY - 34
         let bar = app.tabBars.firstMatch
-        if bar.canTakeTap { top = min(top, bar.frame.minY) }
+        if canTap(bar) { top = min(top, bar.frame.minY) }
         for id in ["broadcast.goLive", "broadcast.end"] {
             let pinned = app.buttons[id]
-            if pinned.canTakeTap { top = min(top, pinned.frame.minY - 18) }
+            if canTap(pinned) { top = min(top, pinned.frame.minY - 18) }
         }
         return top
     }
@@ -155,7 +155,7 @@ final class AccessibilityUITests: XCTestCase {
         // when the tap lands, and then the tap only stops it.
         let room = app.buttons["broadcast.room"]
         let window = app.windows.firstMatch
-        for _ in 0..<12 where !(room.canTakeTap && room.frame.maxY <= chromeTop(app)) {
+        for _ in 0..<12 where !(canTap(room) && room.frame.maxY <= chromeTop(app)) {
             window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).press(
                 forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)),
                 withVelocity: .slow, thenHoldForDuration: 0.3)
