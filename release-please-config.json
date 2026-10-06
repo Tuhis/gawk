@@ -100,7 +100,7 @@
         {
           "type": "toml",
           "path": "rust/Cargo.lock",
-          "jsonpath": "$.package[?(@.name.value==\"gawk-broadcast\" || @.name.value==\"gawk-core\" || @.name.value==\"gawk-viewer\" || @.name.value==\"uniffi-bindgen\")].version"
+          "jsonpath": "$.package[?(@.name.value==\"gawk-broadcast\" || @.name.value==\"gawk-core\" || @.name.value==\"gawk-devpub\" || @.name.value==\"gawk-viewer\" || @.name.value==\"uniffi-bindgen\")].version"
         }
       ]
     }
