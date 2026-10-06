@@ -136,6 +136,9 @@ pub struct Config {
     /// The last source shared (Windows, docs/60 D5): `display:<label>` or
     /// `window:<title>`. Blank = none yet.
     pub last_source: String,
+    /// The Windows picker's tab last looked at, which it opens on:
+    /// `display`, or blank for Apps and games.
+    pub picker_view: String,
     /// Linux (R56, docs/58 D10): the four keys the Go app's file carries.
     /// Read and written on every OS, so a shared file round-trips; only the
     /// Linux shell acts on them. `encoder` pins one cascade element
