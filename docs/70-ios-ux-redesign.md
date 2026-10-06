@@ -417,6 +417,11 @@ Built against the canvas and this document in the iPhone 17 and iPad Pro
   it (`testsrc2` draws a clock and frame number). A player-menu item is
   tapped only once it can take the tap: while the menu is still
   appearing, its items have no frame, and the tap lands nowhere.
+- **The iPad pass runs on its own Simulator.** The iPhone Simulator stayed
+  booted while the iPad one booted, and the 7 GB runner ran out of memory:
+  every process stalled for minutes, and the room fixtures' publishers
+  timed out. The iPhone Simulator is now shut down first, and the iPad
+  gets the same post-boot settle.
 - **Still flaky on CI, not fixed here.** On the 3-core runner, a viewer
   sometimes shows only its first frame or two. The core completes the
   frames but its playout drops them (gap resync, drop to live), while a

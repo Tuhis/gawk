@@ -464,8 +464,14 @@ jobs:
                       print(d["udid"]); sys.exit(0)
           sys.exit(1)
           ') || { echo "::error::no iPad simulator on an iOS 27 runtime"; exit 1; }
+          # The iPhone Simulator goes first. With both booted, the runner ran
+          # out of memory in the iPad's first boot (wired 2 GB to 5.8 GB, load
+          # 640); every process stalled for minutes and four room fixtures'
+          # publishers timed out (2026-10-06, top.txt).
+          xcrun simctl shutdown "$SIM_UDID" || true
           xcrun simctl boot "$ipad" || true
           xcrun simctl bootstatus "$ipad" -b
+          sleep 20
           TEST_RUNNER_GAWK_UI_ROOM_CODE="$GAWK_UI_ROOM_CODE" \
           xcodebuild -project Gawk.xcodeproj -scheme Gawk \
             -destination "id=$ipad" -derivedDataPath "$RUNNER_TEMP/dd" \
