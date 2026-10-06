@@ -392,6 +392,15 @@ jobs:
             > "$RUNNER_TEMP/udp.txt" 2>&1 &
           sleep 2
 
+      # What the runner's CPU goes to during the tests, uploaded with a failed
+      # run's results: on a starved runner the Simulator's video froze and a
+      # menu ignored taps for 20 s (2026-10-06).
+      - name: Sample the runner's CPU
+        run: |
+          mkdir -p "$RUNNER_TEMP/results"
+          nohup top -l 0 -s 10 -o cpu -n 15 -stats pid,command,cpu,mem,state \
+            > "$RUNNER_TEMP/results/top.txt" 2>&1 &
+
       # Every fixture still delivers video (Mika's is away by design).
       - name: The fixtures are streaming
         run: |
