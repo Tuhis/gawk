@@ -28,6 +28,10 @@ final class JoinUITests: XCTestCase {
         app.textFields["watch.code"].typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6))
         UIPasteboard.general.string = " ab-cd 23 "
         app.buttons["watch.paste"].tap()
+        // PasteButton gets its payload from the system asynchronously.
+        let pasted = expectation(
+            for: NSPredicate(format: "value == %@", "ABCD23"), evaluatedWith: app.textFields["watch.code"])
+        wait(for: [pasted], timeout: 5)
         XCTAssertEqual(app.textFields["watch.code"].value as? String, "ABCD23")
         XCTAssertTrue(join.isEnabled)
     }

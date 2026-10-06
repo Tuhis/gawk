@@ -20,20 +20,27 @@ final class AccessibilityUITests: XCTestCase {
     /// where every control is glass on whatever the stream shows (`overVideo`),
     /// on inactive controls (WCAG 1.4.3 exempts them), and on rows the tab
     /// bar or a pinned button covers until they're scrolled up.
+    ///
+    /// Where the stream is in view (`overVideo`, or a sheet below it:
+    /// `videoInView`), text the auditor reads off the picture with no element
+    /// behind it is the stream's: the test video (ffmpeg's `testsrc2`) draws
+    /// its own clock and frame number.
     private func audit(
-        _ app: XCUIApplication, _ screen: String, overVideo: Bool = false,
+        _ app: XCUIApplication, _ screen: String, overVideo: Bool = false, videoInView: Bool = false,
         file: StaticString = #filePath, line: UInt = #line
     ) {
         let floor = chromeTop(app)
+        let video = overVideo || videoInView
         do {
             try app.performAccessibilityAudit(for: .all.subtracting([.dynamicType, .textClipped])) { issue in
+                if video, issue.auditType == .elementDetection, issue.element == nil { return true }
                 if issue.auditType == .contrast {
                     if overVideo { return true }
                     guard let element = issue.element else { return false }
                     if !element.isEnabled { return true }
                     if element.frame.maxY > floor { return true }
                 }
-                print("AUDIT \(screen): \(issue.compactDescription) | \(issue.detailedDescription) | \(issue.element?.label ?? "-") \(issue.element?.frame ?? .zero)")
+                print("AUDIT \(screen) [\(issue.auditType.rawValue)]: \(issue.compactDescription) | \(issue.detailedDescription) | \(issue.element?.label ?? "-") \(issue.element?.frame ?? .zero)")
                 return false
             }
         } catch {
@@ -101,7 +108,7 @@ final class AccessibilityUITests: XCTestCase {
         app.buttons["player.settings"].tap()
         app.buttons["Stats"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["stats.drawer"].waitForExistence(timeout: 5))
-        audit(app, "Stats")
+        audit(app, "Stats", videoInView: true)
         app.swipeDown()
         app.buttons["player.close"].tap()
 
@@ -110,7 +117,7 @@ final class AccessibilityUITests: XCTestCase {
         audit(app, "Room player", overVideo: true)
         app.buttons["room.people"].tap()
         XCTAssertTrue(app.buttons["people.edit"].waitForExistence(timeout: 10))
-        audit(app, "People")
+        audit(app, "People", videoInView: true)
     }
 
     /// AX5: the lists grow and no label is cut off.
@@ -134,9 +141,18 @@ final class AccessibilityUITests: XCTestCase {
         app.tabBars.buttons["Broadcast"].tap()
         check("Broadcast")
         shot("ax5-broadcast", app)
-        // At AX5 the Room row is below the fold.
-        for _ in 0..<4 where !app.buttons["broadcast.room"].isHittable { app.swipeUp() }
-        app.buttons["broadcast.room"].tap()
+        // At AX5 the Room row is below the fold. It's brought up in short
+        // drags that leave the list still, until it clears the tab bar and
+        // the pinned Go live: a swipe's fling can still be moving the list
+        // when the tap lands, and then the tap only stops it.
+        let room = app.buttons["broadcast.room"]
+        let window = app.windows.firstMatch
+        for _ in 0..<12 where !(room.isHittable && room.frame.maxY <= chromeTop(app)) {
+            window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).press(
+                forDuration: 0.05, thenDragTo: window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4)),
+                withVelocity: .slow, thenHoldForDuration: 0.3)
+        }
+        room.tap()
         XCTAssertTrue(app.textFields["room.input"].waitForExistence(timeout: 5))
         check("Add to a room")
         shot("ax5-room-sheet", app)
