@@ -164,19 +164,21 @@ extension XCTestCase {
     /// settled can drop a tap on a slow runner: the item was hittable, the
     /// tap was sent, and the menu stayed open (CI's recording, 2026-10-06).
     /// A chosen item closes the menu, so the tap is repeated until it does.
+    /// "Closed" is the item gone from the hierarchy, never "can't take a
+    /// tap": a menu stalled open on a slow runner can answer that too, and
+    /// the next tap elsewhere then dismisses it unchosen (CI, 2026-10-06).
     @MainActor
     func tapMenuItem(_ label: String, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
         let items = app.buttons.matching(NSPredicate(format: "label == %@", label))
-        func open() -> XCUIElement? { items.allElementsBoundByIndex.first(where: { canTap($0) }) }
         let deadline = Date().addingTimeInterval(UIWait.step)
         repeat {
-            if let item = open() {
+            if let item = items.allElementsBoundByIndex.first(where: { canTap($0) }) {
                 item.tap()
                 let settle = Date().addingTimeInterval(3)
-                while Date() < settle, open() != nil {
+                while Date() < settle, items.firstMatch.exists {
                     RunLoop.current.run(until: Date().addingTimeInterval(0.2))
                 }
-                if open() == nil { return }
+                if !items.firstMatch.exists { return }
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         } while Date() < deadline

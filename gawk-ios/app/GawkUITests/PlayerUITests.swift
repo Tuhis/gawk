@@ -74,8 +74,8 @@ final class PlayerUITests: XCTestCase {
         tapMenuItem("Lowest latency", in: app)
         revealControls(app)
         app.buttons["player.settings"].tap()
-        XCTAssertTrue(app.buttons["Lowest latency"].waitForExistence(timeout: UIWait.step))
-        XCTAssertTrue(app.buttons["Lowest latency"].isSelected, "the preset stuck")
+        let chosen = expectation(for: NSPredicate(format: "selected == true"), evaluatedWith: app.buttons["Lowest latency"])
+        XCTAssertEqual(XCTWaiter().wait(for: [chosen], timeout: UIWait.step), .completed, "the preset stuck")
     }
 
     /// D7: Stats opens small with the video still taking touches, and pulls
