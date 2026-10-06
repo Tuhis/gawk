@@ -27,16 +27,19 @@ final class AccessibilityUITests: XCTestCase {
     /// its own clock and frame number. A room's tiles left in view above a
     /// sheet are video too, so their name chips are judged as over video:
     /// their contrast is whatever the stream draws behind them, and a tile
-    /// still waiting for its first frame (a loaded runner) fails it.
+    /// still waiting for its first frame (a loaded runner) fails it. A tile
+    /// (one element) is matched by its identifier. Its chip is a node the
+    /// auditor finds with no identifier, so it's matched by place, inside
+    /// the part of a tile above the sheet: a tile can run under the sheet's
+    /// top edge, and the sheet's own header must not borrow its exemption
+    /// (review of #480).
     private func audit(
         _ app: XCUIApplication, _ screen: String, overVideo: Bool = false, videoInView: Bool = false,
         file: StaticString = #filePath, line: UInt = #line
     ) {
         let floor = chromeTop(app)
         let video = overVideo || videoInView
-        let tiles = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH 'room.tile.'"))
-            .allElementsBoundByIndex.map(\.frame)
+        let tilesAboveSheet = videoInView ? self.tilesAboveSheet(app) : []
         do {
             try app.performAccessibilityAudit(for: .all.subtracting([.dynamicType, .textClipped])) { issue in
                 if video, issue.auditType == .elementDetection, issue.element == nil { return true }
@@ -45,8 +48,8 @@ final class AccessibilityUITests: XCTestCase {
                     guard let element = issue.element else { return false }
                     if !element.isEnabled { return true }
                     if element.frame.maxY > floor { return true }
-                    let center = CGPoint(x: element.frame.midX, y: element.frame.midY)
-                    if tiles.contains(where: { $0.contains(center) }) { return true }
+                    if videoInView, element.identifier.hasPrefix("room.tile.") { return true }
+                    if tilesAboveSheet.contains(where: { $0.contains(element.frame) }) { return true }
                 }
                 print("AUDIT \(screen) [\(issue.auditType.rawValue)]: \(issue.compactDescription) | \(issue.detailedDescription) | \(issue.element?.label ?? "-") \(issue.element?.frame ?? .zero)")
                 return false
@@ -54,6 +57,25 @@ final class AccessibilityUITests: XCTestCase {
         } catch {
             XCTFail("\(screen): \(error)", file: file, line: line)
         }
+    }
+
+    /// The room tiles' frames, each cut off at the open sheet's top: the
+    /// lowest navigation bar, as the sheet's sits below any behind it.
+    /// With no bar found, nothing is left, so a miss only makes the audit
+    /// stricter.
+    private func tilesAboveSheet(_ app: XCUIApplication) -> [CGRect] {
+        let sheetTop = app.navigationBars.allElementsBoundByIndex.map(\.frame.minY).max() ?? 0
+        return app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'room.tile.'"))
+            .allElementsBoundByIndex
+            .compactMap { tile in
+                // Edges compared, not a height: a CGRect with a negative
+                // height normalizes to the strip below the sheet's top.
+                let f = tile.frame
+                let bottom = min(f.maxY, sheetTop)
+                guard bottom > f.minY else { return nil }
+                return CGRect(x: f.minX, y: f.minY, width: f.width, height: bottom - f.minY)
+            }
     }
 
     /// Where the bottom chrome starts: the tab bar, a pinned button with
