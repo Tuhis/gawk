@@ -887,7 +887,11 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   can leave the broadcast attached to a room whose code it never learns.
   Every retry is refused until that room ends or the broadcast is
   restarted. The R68 fixtures work around it by starting a fresh broadcast
-  (`gawk-ios/scripts/room-fixtures.sh`).
+  (`gawk-ios/scripts/room-fixtures.sh`). The iOS app hits it too: on CI,
+  `AccessibilityUITests.testLiveAndTheRoomSheet` went live with "Create a
+  new room", the relay minted the room, and the room session was cancelled
+  before its control stream opened. The retry got the same 409, and the
+  room card never appeared.
 - **Fix would start**: test-first in `gawk-server`'s room registry. A mint
   from a broadcast already attached to a dynamic room it minted could
   answer with that room (code and creator grant) instead of 409, so a

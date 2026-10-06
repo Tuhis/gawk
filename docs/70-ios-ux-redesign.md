@@ -409,7 +409,15 @@ Built against the canvas and this document in the iPhone 17 and iPad Pro
   asynchronous payload. The AX5 test scrolls the Room row up in short,
   fling-free drags until it clears the bottom chrome. The audits skip
   text that the auditor reads off the test video with no element behind
-  it (`testsrc2` draws a clock and frame number).
+  it (`testsrc2` draws a clock and frame number). A player-menu item is
+  tapped only once it can take the tap: while the menu is still
+  appearing, its items have no frame, and the tap lands nowhere.
+- **Still flaky on CI, not fixed here.** On the 3-core runner, a viewer
+  sometimes shows only its first frame or two. The core completes the
+  frames but its playout drops them (gap resync, drop to live), while a
+  host-side probe of the same broadcast sees every frame. Which test hits
+  it varies between runs, and main runs fewer playback tests. "Create a
+  new room" also hit the lost-mint bug in `BUGS.md`.
 
 **Not done here**: IX10, the owner's device pass. It covers ScreenCaptureKit
 broadcasting, the Live Activity on a real Lock Screen and Dynamic Island,
