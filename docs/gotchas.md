@@ -1862,6 +1862,15 @@ Add to it when a new gotcha lands in `docs/`.
   the next room event failed a write against its dead stream. Whichever
   copy ends first must close the other side.
   ([docs/44](44-rooms.md) §11.1)
+- **The native dial can send a CONNECT twice.** The engine gives a dial
+  attempt 5 s and then starts over on a fresh endpoint
+  (`DIAL_ATTEMPT_TIMEOUT`, R65 IO5), and an attempt can time out after the
+  relay has already acted on it. A pre-upgrade side effect therefore runs
+  twice: on a loaded CI runner, `/room/new` minted a room and the second
+  attempt's mint was refused 409 because the broadcast was already
+  attached. A CONNECT route whose side effect would refuse a repeat must
+  answer that repeat instead, as the mint now does with the minter's room.
+  ([docs/44](44-rooms.md) §11.1)
 
 **CI / deployment**
 
