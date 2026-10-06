@@ -38,8 +38,8 @@ final class TypingUITests: XCTestCase {
     /// docs/70 D3: the six boxes over the sanitizing field.
     func testTypingACodeIntoTheBoxes() {
         let code = app.textFields["watch.code"]
-        XCTAssertTrue(code.waitForExistence(timeout: 5))
-        code.tap()
+        XCTAssertTrue(code.waitForExistence(timeout: UIWait.step))
+        focus(code)
         typeSlowly("ty94b", into: code)
         backspace(2, in: code)
         typeSlowly("4bp-x7", into: code)
@@ -54,17 +54,17 @@ final class TypingUITests: XCTestCase {
     func testTypingANewServerInSettings() {
         app.tabBars.buttons["Settings"].tap()
         let add = app.buttons["settings.addServer"]
-        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        XCTAssertTrue(add.waitForExistence(timeout: UIWait.step))
         add.tap()
         let name = app.textFields["server.name"]
-        XCTAssertTrue(name.waitForExistence(timeout: 5))
-        name.tap()
+        XCTAssertTrue(name.waitForExistence(timeout: UIWait.step))
+        focus(name)
         typeSlowly("local", into: name)
         let url = app.textFields["server.url"]
-        url.tap()
+        focus(url)
         typeSlowly("127.0.0.1:4499", into: url)
         let secret = app.textFields["server.secret"]
-        secret.tap()
+        focus(secret)
         typeSlowly("smoke", into: secret)
         XCTAssertEqual(app.state, .runningForeground)
     }
@@ -72,11 +72,11 @@ final class TypingUITests: XCTestCase {
     func testTypingARoomInTheRoomSheet() {
         app.tabBars.buttons["Broadcast"].tap()
         let add = app.buttons["broadcast.room"]
-        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        XCTAssertTrue(add.waitForExistence(timeout: UIWait.step))
         add.tap()
         let room = app.textFields["room.input"]
-        XCTAssertTrue(room.waitForExistence(timeout: 5))
-        room.tap()
+        XCTAssertTrue(room.waitForExistence(timeout: UIWait.step))
+        focus(room)
         typeSlowly("lan-party", into: room)
         backspace(3, in: room)
         XCTAssertEqual(app.state, .runningForeground)

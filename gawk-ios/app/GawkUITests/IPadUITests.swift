@@ -38,7 +38,7 @@ final class IPadUITests: XCTestCase {
         openLink(UIEnv.link("gawk://room/\(code)"), in: app)
         let tiles = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'room.tile.'"))
         let five = expectation(for: NSPredicate(format: "count == 5"), evaluatedWith: tiles)
-        wait(for: [five], timeout: 20)
+        wait(for: [five], timeout: UIWait.media)
         XCTAssertEqual(Set(tiles.allElementsBoundByIndex.map { $0.frame.minX.rounded() }).count, 3, "three columns")
         shot("ipad-room", app)
     }

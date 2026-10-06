@@ -18,23 +18,22 @@ final class BroadcastRoomUITests: XCTestCase {
 
     private func openRoomSheet() {
         let add = app.buttons["broadcast.room"]
-        XCTAssertTrue(add.waitForExistence(timeout: 10))
+        XCTAssertTrue(add.waitForExistence(timeout: UIWait.step))
         add.tap()
-        XCTAssertTrue(app.textFields["room.input"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["room.input"].waitForExistence(timeout: UIWait.step))
     }
 
     private func joinRoom(_ input: String) {
         openRoomSheet()
         let field = app.textFields["room.input"]
-        field.tap()
-        field.typeText(input + "\n")
+        enter(input + "\n", into: field)
     }
 
     private func goLive() {
         let go = app.buttons["broadcast.goLive"]
-        XCTAssertTrue(go.waitForExistence(timeout: 10))
+        XCTAssertTrue(go.waitForExistence(timeout: UIWait.step))
         go.tap()
-        XCTAssertTrue(app.buttons["broadcast.code"].waitForExistence(timeout: 40), "live")
+        XCTAssertTrue(app.buttons["broadcast.code"].waitForExistence(timeout: UIWait.media), "live")
     }
 
     private var roomCard: XCUIElement { app.buttons["broadcast.manageRoom"] }
@@ -48,10 +47,10 @@ final class BroadcastRoomUITests: XCTestCase {
     func testCreateANewRoom() {
         openRoomSheet()
         app.buttons["room.create"].tap()
-        XCTAssertTrue(app.staticTexts["A new room"].waitForExistence(timeout: 5), "pending")
+        XCTAssertTrue(app.staticTexts["A new room"].waitForExistence(timeout: UIWait.step), "pending")
         XCTAssertTrue(app.staticTexts["Joins when you go live"].exists)
         goLive()
-        XCTAssertTrue(roomCard.waitForExistence(timeout: 20), "the room card")
+        XCTAssertTrue(roomCard.waitForExistence(timeout: UIWait.media), "the room card")
         XCTAssertTrue(roomCard.label.contains("1 streaming"), roomCard.label)
         shot("broadcast-room-card", app)
         end()
@@ -61,9 +60,9 @@ final class BroadcastRoomUITests: XCTestCase {
     func testACodeJoinsOnGoLive() throws {
         let room = try UIEnv.require("GAWK_UI_AWAY_ROOM")[0]
         joinRoom(room)
-        XCTAssertTrue(app.staticTexts[room].waitForExistence(timeout: 5), "pending")
+        XCTAssertTrue(app.staticTexts[room].waitForExistence(timeout: UIWait.step), "pending")
         goLive()
-        XCTAssertTrue(roomCard.waitForExistence(timeout: 20))
+        XCTAssertTrue(roomCard.waitForExistence(timeout: UIWait.media))
         end()
     }
 
@@ -72,11 +71,11 @@ final class BroadcastRoomUITests: XCTestCase {
         joinRoom("lan-party")
         goLive()
         let alert = app.alerts["This room needs a key to add your stream"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 20))
+        XCTAssertTrue(alert.waitForExistence(timeout: UIWait.media))
         shot("broadcast-room-key", app)
-        alert.textFields.firstMatch.typeText("k3y")
+        enter("k3y", into: alert.textFields.firstMatch)
         alert.buttons["Join"].tap()
-        XCTAssertTrue(roomCard.waitForExistence(timeout: 20), "joined with the key")
+        XCTAssertTrue(roomCard.waitForExistence(timeout: UIWait.media), "joined with the key")
         XCTAssertTrue(roomCard.label.contains("LAN party"), roomCard.label)
         end()
     }
@@ -86,7 +85,7 @@ final class BroadcastRoomUITests: XCTestCase {
     func testALinksGrantJoins() {
         joinRoom("https://gawk.ioio.fi/#/room/lan-party?rt=a%3Ak3y")
         goLive()
-        XCTAssertTrue(roomCard.waitForExistence(timeout: 20))
+        XCTAssertTrue(roomCard.waitForExistence(timeout: UIWait.media))
         XCTAssertFalse(app.alerts["This room needs a key to add your stream"].exists)
         end()
     }
@@ -97,13 +96,13 @@ final class BroadcastRoomUITests: XCTestCase {
         let vars = try UIEnv.require("GAWK_UI_CREATOR_ROOM", "GAWK_UI_CREATOR_TOKEN")
         joinRoom("https://gawk.ioio.fi/#/room/\(vars[0])?rt=c%3A\(vars[1])")
         goLive()
-        XCTAssertTrue(roomCard.waitForExistence(timeout: 20))
+        XCTAssertTrue(roomCard.waitForExistence(timeout: UIWait.media))
         roomCard.tap()
-        XCTAssertTrue(app.staticTexts["Room \(vars[0]) · You made this room"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Room \(vars[0]) · You made this room"].waitForExistence(timeout: UIWait.step))
         XCTAssertFalse(app.buttons["Watch the room"].exists, "no room player while live")
         shot("broadcast-room-sheet", app)
         let remove = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'room.remove.'")).firstMatch
-        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        XCTAssertTrue(remove.waitForExistence(timeout: UIWait.step))
         let removed = remove.identifier
         remove.tap()
         let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons[removed])
@@ -118,7 +117,7 @@ final class BroadcastRoomUITests: XCTestCase {
         openRoomSheet()
         app.buttons["room.create"].tap()
         goLive()
-        XCTAssertTrue(roomCard.waitForExistence(timeout: 20))
+        XCTAssertTrue(roomCard.waitForExistence(timeout: UIWait.media))
         roomCard.tap()
         app.buttons["room.end"].tap()
         XCTAssertTrue(app.buttons["broadcast.room"].waitForExistence(timeout: 15), "not in a room")
@@ -131,9 +130,9 @@ final class BroadcastRoomUITests: XCTestCase {
         openRoomSheet()
         app.buttons["room.create"].tap()
         goLive()
-        XCTAssertTrue(roomCard.waitForExistence(timeout: 20))
+        XCTAssertTrue(roomCard.waitForExistence(timeout: UIWait.media))
         app.buttons["broadcast.leaveRoom"].tap()
-        XCTAssertTrue(app.buttons["broadcast.room"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["broadcast.room"].waitForExistence(timeout: UIWait.step))
         end()
     }
 
@@ -144,11 +143,11 @@ final class BroadcastRoomUITests: XCTestCase {
         typeCode("K7XQ2M", in: app)
         app.buttons["watch.join"].tap()
         let ask = app.alerts["You're live"]
-        XCTAssertTrue(ask.waitForExistence(timeout: 5))
+        XCTAssertTrue(ask.waitForExistence(timeout: UIWait.step))
         shot("broadcast-live-guard", app)
         ask.buttons["Cancel"].tap()
         openLink("gawk://room/lan-party", in: app)
-        let asked = app.alerts["You're live"].waitForExistence(timeout: 5)
+        let asked = app.alerts["You're live"].waitForExistence(timeout: UIWait.step)
         shot("broadcast-live-guard-link", app)
         XCTAssertTrue(asked, "a link asks too")
         app.alerts["You're live"].buttons["Cancel"].tap()

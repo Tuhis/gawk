@@ -19,7 +19,7 @@ final class RoomPlayerUITests: XCTestCase {
         openLink(UIEnv.link("gawk://room/\(code)"), in: app)
         let count = app.descendants(matching: .any)["room.streaming"]
         expectation(for: NSPredicate(format: "label == %@", "\(streams) streaming"), evaluatedWith: count)
-        waitForExpectations(timeout: 20)
+        waitForExpectations(timeout: UIWait.media)
     }
 
     /// The first element whose label starts with `prefix` (rows combine
@@ -69,10 +69,10 @@ final class RoomPlayerUITests: XCTestCase {
         app = launchApp(extra: ["-gawkControlIdle", "4", "-gawkNickname", "Tester"])
         open(try UIEnv.require("GAWK_UI_ROOM_CODE")[0], streams: 5)
         let close = app.buttons["room.close"]
-        XCTAssertTrue(wait(for: close, hittable: false, timeout: 10), "hidden after the idle time")
+        XCTAssertTrue(wait(for: close, hittable: false, timeout: UIWait.step), "hidden after the idle time")
         let playing = try XCTUnwrap(tiles.allElementsBoundByIndex.first { $0.label.hasSuffix(", playing") })
         playing.tap()
-        XCTAssertTrue(wait(for: close, timeout: 2), "a tap on the video shows them")
+        XCTAssertTrue(wait(for: close, timeout: UIWait.step), "a tap on the video shows them")
         shot("room-tap-video", app)
     }
 
@@ -80,7 +80,7 @@ final class RoomPlayerUITests: XCTestCase {
     func testFocusShowsTheStrip() throws {
         open(try UIEnv.require("GAWK_UI_ROOM_CODE")[0], streams: 5)
         app.buttons["room.layout.focus"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["room.strip"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["room.strip"].waitForExistence(timeout: UIWait.step))
         XCTAssertEqual(playing().count, 1, "only the focused stream plays")
         shot("room-focus", app)
     }
@@ -92,11 +92,11 @@ final class RoomPlayerUITests: XCTestCase {
         app.buttons["room.people"].tap()
         // All the way out: the list is lazy, and rows below the fold
         // don't exist yet.
-        XCTAssertTrue(labelled("P1").waitForExistence(timeout: 10))
+        XCTAssertTrue(labelled("P1").waitForExistence(timeout: UIWait.step))
         labelled("P1").swipeUp()
         // The relay keeps names unique, and an earlier test's "Tester" may
         // still be leaving: yours can come back as "Tester 2".
-        XCTAssertTrue(yours("Tester").waitForExistence(timeout: 10), "your row")
+        XCTAssertTrue(yours("Tester").waitForExistence(timeout: UIWait.step), "your row")
         for n in ["P1", "P2", "P3", "P4", "P5"] {
             XCTAssertTrue(labelled(n).exists, n)
         }
@@ -104,10 +104,10 @@ final class RoomPlayerUITests: XCTestCase {
         app.buttons["people.edit"].tap()
         // An alert's field keeps no SwiftUI identifier.
         let field = app.alerts.textFields.firstMatch
-        XCTAssertTrue(field.waitForExistence(timeout: 5), "the nickname alert")
-        field.clearAndType("Kuusi")
+        XCTAssertTrue(field.waitForExistence(timeout: UIWait.step), "the nickname alert")
+        clearAndType("Kuusi", into: field)
         app.alerts.buttons["Save"].tap()
-        XCTAssertTrue(yours("Kuusi").waitForExistence(timeout: 10), "the roster renamed you")
+        XCTAssertTrue(yours("Kuusi").waitForExistence(timeout: UIWait.step), "the roster renamed you")
         app.buttons["Close"].firstMatch.tap()
         app.buttons["room.close"].tap()
         app.tabBars.buttons["Settings"].tap()
@@ -120,16 +120,17 @@ final class RoomPlayerUITests: XCTestCase {
         openLink(UIEnv.link("gawk://room/\(away)"), in: app)
         XCTAssertTrue(
             app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Mika, away'")).firstMatch
-                .waitForExistence(timeout: 20))
+                .waitForExistence(timeout: UIWait.media))
         shot("room-away", app)
     }
 }
 
-extension XCUIElement {
+extension XCTestCase {
     /// Replaces a field's text.
-    func clearAndType(_ text: String) {
-        tap()
-        let current = (value as? String) ?? ""
-        typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count) + text)
+    @MainActor
+    func clearAndType(_ text: String, into field: XCUIElement) {
+        focus(field)
+        let current = (field.value as? String) ?? ""
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count) + text)
     }
 }

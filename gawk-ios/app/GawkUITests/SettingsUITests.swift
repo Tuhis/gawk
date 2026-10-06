@@ -19,14 +19,14 @@ final class SettingsUITests: XCTestCase {
     func testATapSelectsAServerAndTheStripFollows() throws {
         _ = try UIEnv.require("GAWK_UI_RELAY_URL")
         let app = launchApp()
-        XCTAssertTrue(app.descendants(matching: .any)["server.strip"].waitForExistence(timeout: 10), "local: the strip on Watch")
+        XCTAssertTrue(app.descendants(matching: .any)["server.strip"].waitForExistence(timeout: UIWait.step), "local: the strip on Watch")
         app.tabBars.buttons["Broadcast"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["server.strip"].waitForExistence(timeout: 5), "and on Broadcast")
+        XCTAssertTrue(app.descendants(matching: .any)["server.strip"].waitForExistence(timeout: UIWait.step), "and on Broadcast")
         shot("settings-strip-broadcast", app)
 
         app.tabBars.buttons["Settings"].tap()
         let fleet = app.buttons["server.row.gawk"]
-        XCTAssertTrue(fleet.waitForExistence(timeout: 5))
+        XCTAssertTrue(fleet.waitForExistence(timeout: UIWait.step))
         fleet.tap()
         XCTAssertTrue(isSelected(fleet))
         XCTAssertFalse(isSelected(app.buttons["server.row.local"]))
@@ -42,7 +42,7 @@ final class SettingsUITests: XCTestCase {
         let app = launchApp()
         app.tabBars.buttons["Settings"].tap()
         app.buttons["server.info.gawk"].tap()
-        XCTAssertTrue(app.navigationBars["Edit server"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Edit server"].waitForExistence(timeout: UIWait.step))
         let name = app.descendants(matching: .any)["server.name"]
         XCTAssertTrue(name.label.contains("Locked"), name.label)
         XCTAssertFalse(app.textFields["Name"].exists, "no field to type a name into")
@@ -52,7 +52,7 @@ final class SettingsUITests: XCTestCase {
         app.navigationBars.buttons.firstMatch.tap()
 
         app.buttons["server.info.local"].tap()
-        XCTAssertTrue(app.navigationBars["Edit server"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Edit server"].waitForExistence(timeout: UIWait.step))
         XCTAssertTrue(app.textFields["Name"].exists, "a saved server's name is editable")
         XCTAssertTrue(app.buttons["server.delete"].exists)
         shot("settings-edit-saved", app)
@@ -62,9 +62,9 @@ final class SettingsUITests: XCTestCase {
     /// stays enabled.
     func testAnUnreachableServerShowsTheBannerAndGoLiveStaysEnabled() {
         let app = launchApp(relay: false, extra: ["-gawkRelay", "https://127.0.0.1:1"])
-        XCTAssertTrue(app.descendants(matching: .any)["server.unreachable"].waitForExistence(timeout: 20), "on Watch")
+        XCTAssertTrue(app.descendants(matching: .any)["server.unreachable"].waitForExistence(timeout: UIWait.media), "on Watch")
         app.tabBars.buttons["Broadcast"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["server.unreachable"].waitForExistence(timeout: 20), "on Broadcast")
+        XCTAssertTrue(app.descendants(matching: .any)["server.unreachable"].waitForExistence(timeout: UIWait.media), "on Broadcast")
         XCTAssertTrue(app.buttons["broadcast.goLive"].isEnabled, "the probe can be wrong: Go live stays")
         shot("settings-unreachable", app)
     }
@@ -77,11 +77,11 @@ final class SettingsUITests: XCTestCase {
         app.tabBars.buttons["Broadcast"].tap()
         app.buttons["broadcast.goLive"].tap()
         let alert = app.alerts["Couldn't go live"]
-        XCTAssertTrue(alert.waitForExistence(timeout: 30))
+        XCTAssertTrue(alert.waitForExistence(timeout: UIWait.media))
         XCTAssertTrue(alert.staticTexts["The server refused the publish secret."].exists)
         shot("settings-refused", app)
         alert.buttons["Edit secret"].tap()
-        XCTAssertTrue(app.navigationBars["Edit server"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Edit server"].waitForExistence(timeout: UIWait.step))
         XCTAssertEqual(app.textFields["server.secret"].value as? String, "wrong")
     }
 }

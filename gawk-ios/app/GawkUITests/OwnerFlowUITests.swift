@@ -18,25 +18,22 @@ final class OwnerFlowUITests: XCTestCase {
         // Settings: the dev certificate on, then add the local relay.
         app.tabBars.buttons["Settings"].tap()
         let dev = app.switches["Accept a local relay's dev certificate"]
-        for _ in 0..<3 where !dev.isHittable { app.swipeUp() }
+        for _ in 0..<3 where !canTap(dev) { app.swipeUp() }
         if dev.value as? String != "1" { dev.switches.firstMatch.tap() }
         alive("dev certificate toggle")
-        for _ in 0..<3 where !app.buttons["settings.addServer"].isHittable { app.swipeDown() }
+        for _ in 0..<3 where !canTap(app.buttons["settings.addServer"]) { app.swipeDown() }
         app.buttons["settings.addServer"].tap()
         let name = app.textFields["server.name"]
-        XCTAssertTrue(name.waitForExistence(timeout: 5))
-        name.tap()
-        name.typeText("local")
+        XCTAssertTrue(name.waitForExistence(timeout: UIWait.step))
+        enter("local", into: name)
         let url = app.textFields["server.url"]
-        url.tap()
-        url.typeText(String(relay.dropFirst("https://".count)))
+        enter(String(relay.dropFirst("https://".count)), into: url)
         let secret = app.textFields["server.secret"]
-        secret.tap()
-        secret.typeText(UIEnv.value("GAWK_UI_SECRET") ?? "")
+        enter(UIEnv.value("GAWK_UI_SECRET") ?? "", into: secret)
         app.buttons["server.save"].tap()
         alive("adding the server")
         let local = app.buttons["server.row.local"]
-        XCTAssertTrue(local.waitForExistence(timeout: 5))
+        XCTAssertTrue(local.waitForExistence(timeout: UIWait.step))
         local.tap()
         alive("selecting the server")
         shot("owner-1-settings", app)
@@ -45,7 +42,7 @@ final class OwnerFlowUITests: XCTestCase {
         app.tabBars.buttons["Broadcast"].tap()
         app.buttons["broadcast.goLive"].tap()
         let code = app.buttons["broadcast.code"]
-        XCTAssertTrue(code.waitForExistence(timeout: 40), "the broadcast went live")
+        XCTAssertTrue(code.waitForExistence(timeout: UIWait.media), "the broadcast went live")
         let id = code.label.replacingOccurrences(of: "Code ", with: "").replacingOccurrences(of: ", copy", with: "")
         shot("owner-2-live", app)
         for i in 0..<10 {
@@ -58,9 +55,9 @@ final class OwnerFlowUITests: XCTestCase {
         typeCode(id, in: app)
         app.buttons["watch.join"].tap()
         let ask = app.alerts["You're live"]
-        XCTAssertTrue(ask.waitForExistence(timeout: 5))
+        XCTAssertTrue(ask.waitForExistence(timeout: UIWait.step))
         ask.buttons["Watch anyway"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["player.live"].waitForExistence(timeout: 30), "watching")
+        XCTAssertTrue(app.descendants(matching: .any)["player.live"].waitForExistence(timeout: UIWait.media), "watching")
         shot("owner-3-watching", app)
         alive("watching")
     }

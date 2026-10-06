@@ -24,7 +24,7 @@ final class WatchUITests: XCTestCase {
         typeCode(code.lowercased(), in: app)
         XCTAssertEqual(app.textFields["watch.code"].value as? String, code)
         app.buttons["watch.join"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["player.live"].waitForExistence(timeout: 20), "live")
+        XCTAssertTrue(app.descendants(matching: .any)["player.live"].waitForExistence(timeout: UIWait.media), "live")
 
         // Let the playout settle, then two frames a second apart.
         sleep(3)
