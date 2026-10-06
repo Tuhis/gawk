@@ -95,11 +95,15 @@ func TestParticipantIDsSkipLiveEntriesOnWrap(t *testing.T) {
 // must not carry a room code.
 func TestErrorsCarryNoRoomCode(t *testing.T) {
 	f := newFixture(t, nil)
-	res := f.mint(t, "ABCDEF")
-	_, err := f.reg.Mint(context.Background(), MintRequest{BroadcastID: "ABCDEF", ResumeToken: f.tokens.MintResume("ABCDEF")})
-	if !errors.Is(err, ErrAlreadyAttached) || strings.Contains(strings.ToLower(err.Error()), res.Code) {
-		t.Fatalf("second mint error leaks the room code: %v", err)
+	f.bc.set("GHJKMN", BroadcastState{Live: true})
+	if err := f.reg.UpsertStatic(StaticRoom{Code: "TuhisRoom", Attachments: []rooms.Attachment{{BroadcastID: "GHJKMN"}}}); err != nil {
+		t.Fatal(err)
 	}
+	_, err := f.reg.Mint(context.Background(), MintRequest{BroadcastID: "GHJKMN", ResumeToken: f.tokens.MintResume("GHJKMN")})
+	if !errors.Is(err, ErrAlreadyAttached) || strings.Contains(strings.ToLower(err.Error()), "tuhisroom") {
+		t.Fatalf("attached-elsewhere mint error leaks the room code: %v", err)
+	}
+	res := f.mint(t, "ABCDEF")
 	err = f.reg.UpsertStatic(StaticRoom{Code: res.Code})
 	if err == nil || strings.Contains(strings.ToLower(err.Error()), res.Code) {
 		t.Fatalf("static-over-dynamic error leaks the room code: %v", err)

@@ -1268,6 +1268,41 @@ Add to it when a new gotcha lands in `docs/`.
   output pool: the two sizes evict each other from a shared one.
   ([docs/67](67-ios-app.md) D9, §12)
 
+**iOS app, the redesign (R68)**
+
+- **`.glassEffect(.regular.interactive())` inside a `Button`'s label eats
+  the tap.** The glass takes the touch for its own press effect and the
+  button's action never runs. Use plain glass and let the button style
+  give the press feedback. ([docs/70](70-ios-ux-redesign.md) §10.1)
+- **The accessibility audit fails text on bare Liquid Glass over flat
+  surfaces**, even where the text reads clearly, while the same text on
+  a solid ground passes. Keep the glass as a rim and put a solid token
+  ground under the content. Over video every control stays glass, and
+  contrast isn't audited there. ([docs/70](70-ios-ux-redesign.md) §10.1)
+- **`XCUIApplication.open(_:)` can start a fresh copy of the app** instead
+  of handing the URL to the running one, so a link test sees a new
+  process's state. `XCUIDevice.shared.system.open(_:)` delivers it as
+  another app would. ([docs/70](70-ios-ux-redesign.md) §10.1)
+- **XCUITest can't read the pasteboard the app wrote** ("Operation not
+  authorized"), and **an alert's text field keeps no SwiftUI
+  identifier**. Expose a copied state through the control's accessibility
+  value, and find alert fields as `alerts.textFields.firstMatch`.
+  ([docs/70](70-ios-ux-redesign.md) §10.1)
+- **ActivityKit's `Activity` isn't `Sendable`.** Under Swift 6, `await
+  activity.update(…)` from the main actor is a data-race error. Send the
+  activity's `id` and look it up with `Activity<…>.activities` in a
+  `nonisolated` function. ([docs/70](70-ios-ux-redesign.md) D15)
+- **The relay's defaults refuse a UI-test run.** At most 5 broadcasts,
+  each kept for a 5 min grace, means the sixth Go live in a run gets 429
+  "The server is full". Rooms are also off by default. `ios.yml` starts its
+  relay with `-rooms`, raised caps and a long grace.
+  ([docs/70](70-ios-ux-redesign.md) §10.1)
+- **A crash in a value witness after small edits can be a stale
+  incremental build.** In Xcode 27, `EXC_BAD_ACCESS` in `destroy for
+  Banner` inside a view's body came from code compiled against an older
+  layout. Deleting the app's `Intermediates.noindex/Gawk.build` fixed it.
+  Rule this out before hunting for a memory bug. ([docs/70](70-ios-ux-redesign.md) §10.1)
+
 **Native Linux broadcaster, in the desktop workspace (R56)**
 
 - **On Wayland the window's own icon is dropped; the installed desktop
@@ -1826,6 +1861,15 @@ Add to it when a new gotcha lands in `docs/`.
   stayed on the home's roster (no `ParticipantLeft`, no empty grace) until
   the next room event failed a write against its dead stream. Whichever
   copy ends first must close the other side.
+  ([docs/44](44-rooms.md) §11.1)
+- **The native dial can send a CONNECT twice.** The engine gives a dial
+  attempt 5 s and then starts over on a fresh endpoint
+  (`DIAL_ATTEMPT_TIMEOUT`, R65 IO5), and an attempt can time out after the
+  relay has already acted on it. A pre-upgrade side effect therefore runs
+  twice: on a loaded CI runner, `/room/new` minted a room and the second
+  attempt's mint was refused 409 because the broadcast was already
+  attached. A CONNECT route whose side effect would refuse a repeat must
+  answer that repeat instead, as the mint now does with the minter's room.
   ([docs/44](44-rooms.md) §11.1)
 
 **CI / deployment**

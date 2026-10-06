@@ -875,6 +875,21 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   need their own calibration: parity recovers some chunk loss, so a chunk
   ratio is not interchangeable with a frame ratio.
 
+## Desktop broadcaster counts audio twice in its upload rate and summary
+
+- **Found**: 2026-10-06, building R68's upload row for the iOS core
+  (`docs/70` K4), which reads the same engine counters.
+- **Impact**: the engine's `Sender` adds every audio datagram to both
+  `audio_bytes_sent` and `bytes_sent` (`engine/src/sender.rs`), and the
+  desktop shell sums the two: Live's upload line and the summary card's
+  average upload (`ui/src/shell.rs`, `let bytes = st.bytes_sent +
+  st.audio_bytes_sent` and the `summary_rows` call in the end path). Both
+  read high by the audio stream's own rate. The iOS core reads
+  `bytes_sent + parity_bytes_sent` and is not affected.
+- **Fix would start**: test-first in `ui/src/shell.rs`: stats with known
+  audio and video bytes must give the video-plus-audio rate once; then drop
+  the `+ st.audio_bytes_sent` in both places.
+
 (The "Telemetry SQL console: the `rollups` view rots after boot, and any
 unpruned `sessions` query OOMs" entry was resolved 2026-09-22: views
 re-register on drift, and the engine runs inside a stated memory, thread

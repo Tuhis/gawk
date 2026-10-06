@@ -900,6 +900,21 @@ the manual pass outcome.
   `/subscribe` already reveals whether an ID is live, so answering
   existence before the token leaks nothing, and an expired broadcast's
   still-valid token gets the honest answer.
+- **A repeated mint answers with the minter's own room (2026-10-06,
+  #475).** The native dial starts over on a fresh endpoint when an attempt
+  goes unanswered for 5 s (R65 IO5's `DIAL_ATTEMPT_TIMEOUT`), so on a
+  loaded link `/room/new` can reach the relay twice. The first attempt had
+  minted the room and attached the broadcast, and the second got 409, so
+  the broadcaster was left outside a room whose code it never learned
+  until the room's empty grace ran out. A mint from the broadcast a room
+  was minted from, while that broadcast is still attached there, now
+  answers with that room: the same code and creator token, no second
+  room, no second `room.opened`, no second `gawk_rooms_minted_total`, and
+  a failed upgrade does not end it. The create secret and the resume proof
+  still come first, and the resume token is the minter's own credential,
+  so the creator token goes to nobody new. A broadcast in a room it did
+  not mint is still 409. The minter is not in the CR, so on a pod that
+  adopted the room the repeat is still 409.
 - **A wrong attach secret is refused at join (403), not at the first
   attach.** §4.2 said "when one is required for the requested action"; a
   broadcaster that typed the key wrong must learn it now, and §4.9's
@@ -1092,6 +1107,7 @@ the manual pass outcome.
 | RM1 vectors byte-identical in four mirrors | `wire/room_test.go`, `wire.test.ts` "room control protocol", `wirecheck_test.go` `TestGoldenRoom*`, `crates/wire/tests/golden.rs` `golden_room_*`; close code 4007 in every constant-pin test |
 | RM1 `rooms` importable from `gawk-admin` | `gawk-admin/internal/kube` imports it; the `tidy` job |
 | RM2 mint disjoint from live broadcasts and vice versa | `roomsrv` `TestMintIsDisjointFromLiveBroadcasts`, transport `TestPublishNeverMintsALiveRoomCode` |
+| A repeated mint from the minting broadcast answers with its room; a broadcast in a room it did not mint is still 409 (2026-10-06) | `roomsrv` `TestARepeatedMintAnswersWithTheMintersRoom`, `TestAMintFromABroadcastInAnotherRoomIsRefused`; transport `TestRoomMintRepeatAfterALostSessionLandsInTheRoom` (real sessions), `TestRoomMintRepeatUpgradeFailureKeepsTheRoom`, `TestRoomJoinStatusVocabulary` (the 409) |
 | RM2 wrong token refused | `TestAttachRequiresProofAndGrant`, transport `TestRoomMintJoinAttachAndEnd` (bad proof → `CommandRejected`), `TestRoomJoinStatusVocabulary` (403s) |
 | RM2 grace survives a shorter reconnect | `TestEmptyGraceSurvivesAReconnectShorterThanIt` |
 | Fleet-wide broadcast source: mint on a pod other than the publisher's, away within the refresh interval, removed after the broadcast grace, CR rewritten (review, PR #302) | transport `TestRoomMintOnAnotherPodThanThePublisherFollowsTheLease` (two in-process pods, real coordinators on one fake clientset) and `TestRoomBroadcastsAnswersLocalHubThenOriginLease`; `cluster` `TestLookupServesTheLeaseCache`; `roomsrv` `TestRefreshExpiresUnknownAttachmentsInClusterMode`; `hub` `TestBroadcastStateReportsFleetGlobalViewers` (G, not the local count) |

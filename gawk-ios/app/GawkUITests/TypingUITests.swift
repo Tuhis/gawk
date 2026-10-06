@@ -3,8 +3,8 @@ import XCTest
 /// Types into every text field the way a person does, one key at a time
 /// with corrections, under the Main Thread Checker that Xcode's Run adds
 /// (crashing on a report), and asserts the app survives each step. A crash
-/// the owner hit typing a relay URL into the Watch screen found no test
-/// that typed key by key; these do. No relay needed.
+/// the owner hit typing a relay URL found no test that typed key by key;
+/// these do. No relay needed.
 @MainActor
 final class TypingUITests: XCTestCase {
     private var app: XCUIApplication!
@@ -17,6 +17,7 @@ final class TypingUITests: XCTestCase {
             app.launchEnvironment["DYLD_INSERT_LIBRARIES"] = checker
             app.launchEnvironment["MTC_CRASH_ON_REPORT"] = "1"
         }
+        app.launchArguments = ["-gawkReset"]
         app.launch()
     }
 
@@ -34,48 +35,46 @@ final class TypingUITests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground, "the app died deleting")
     }
 
-    func testTypingARelayOverrideOnTheWatchScreen() {
-        app.tabBars.buttons["Watch"].tap()
-        let relay = app.textFields["watch.relay"]
-        if !relay.waitForExistence(timeout: 5) {
-            app.swipeUp()
-        }
-        XCTAssertTrue(relay.waitForExistence(timeout: 5), "the relay override field")
-        relay.tap()
-        typeSlowly("https://127.0.0.1:4498", into: relay)
-        backspace(1, in: relay)
-        typeSlowly("9", into: relay)
-        XCTAssertEqual(relay.value as? String, "https://127.0.0.1:4499")
-        app.switches["watch.insecure"].switches.firstMatch.tap()
+    /// docs/70 D3: the six boxes over the sanitizing field.
+    func testTypingACodeIntoTheBoxes() {
         let code = app.textFields["watch.code"]
+        XCTAssertTrue(code.waitForExistence(timeout: 5))
         code.tap()
         typeSlowly("ty94b", into: code)
         backspace(2, in: code)
-        typeSlowly("4bp", into: code)
-        XCTAssertEqual(app.state, .runningForeground)
+        typeSlowly("4bp-x7", into: code)
+        XCTAssertEqual(code.value as? String, "TY94BP")
+        XCTAssertTrue(app.buttons["watch.join"].isEnabled)
+        typeSlowly("z", into: code)
+        XCTAssertEqual(code.value as? String, "TY94BP", "six at most")
+        backspace(6, in: code)
+        XCTAssertFalse(app.buttons["watch.join"].isEnabled)
     }
 
     func testTypingANewServerInSettings() {
         app.tabBars.buttons["Settings"].tap()
-        let add = app.buttons["Add a server…"]
+        let add = app.buttons["settings.addServer"]
         XCTAssertTrue(add.waitForExistence(timeout: 5))
         add.tap()
-        let name = app.textFields["Name"]
+        let name = app.textFields["server.name"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.tap()
         typeSlowly("local", into: name)
-        let url = app.textFields.element(boundBy: 1)
+        let url = app.textFields["server.url"]
         url.tap()
         typeSlowly("127.0.0.1:4499", into: url)
-        let secret = app.textFields["Publish secret (optional)"]
+        let secret = app.textFields["server.secret"]
         secret.tap()
         typeSlowly("smoke", into: secret)
         XCTAssertEqual(app.state, .runningForeground)
     }
 
-    func testTypingARoomOnTheBroadcastScreen() {
+    func testTypingARoomInTheRoomSheet() {
         app.tabBars.buttons["Broadcast"].tap()
-        let room = app.textFields["Room code (optional)"]
+        let add = app.buttons["broadcast.room"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        add.tap()
+        let room = app.textFields["room.input"]
         XCTAssertTrue(room.waitForExistence(timeout: 5))
         room.tap()
         typeSlowly("lan-party", into: room)

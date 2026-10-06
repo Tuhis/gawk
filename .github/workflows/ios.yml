@@ -15,11 +15,16 @@
 #           needs no team (OD14); signing belongs to the distribution
 #           milestone.
 # `xcode` — XcodeGen, then the app built and its Swift tests run in an iOS 27
-#           Simulator.
+#           Simulator: the unit tests and docs/70's UI tests against a local
+#           relay with rooms, room fixtures published by gawk-devpub, and an
+#           iPad pass for D26.
 #
 # Triggers follow the path dependencies (OD9): a change to a shared desktop
 # crate or to the canonical wire runs this workflow as well as the desktop
-# one, which in turn watches gawk-ios/rust/**.
+# one, which in turn watches gawk-ios/rust/**. assets/icon/** is here
+# because the app builds the icon catalogs tools/icon writes there
+# (docs/70 K13), and global.css and main.slint because Theme.swift copies
+# their tokens (K10's drift check).
 name: ios
 
 on:
@@ -34,6 +39,9 @@ on:
       - "gawk-broadcast-desktop/crates/audio/**"
       - "gawk-broadcast-desktop/vendor/**"
       - "gawk-server/wire/**"
+      - "assets/icon/**"
+      - "gawk-app/src/styles/global.css"
+      - "gawk-broadcast-desktop/crates/ui/main.slint"
       - ".github/workflows/ios.yml"
   pull_request:
     paths:
@@ -45,6 +53,9 @@ on:
       - "gawk-broadcast-desktop/crates/audio/**"
       - "gawk-broadcast-desktop/vendor/**"
       - "gawk-server/wire/**"
+      - "assets/icon/**"
+      - "gawk-app/src/styles/global.css"
+      - "gawk-broadcast-desktop/crates/ui/main.slint"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
 
@@ -120,6 +131,19 @@ jobs:
             gawk-ios/rust
             gawk-broadcast-desktop
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # docs/70 K10: Theme.swift's colours are copies of gawk-app's and the
+      # desktop's tokens. The second half proves the check can fail: one
+      # changed hex must trip it.
+      - name: The theme matches the web and desktop tokens
+        working-directory: .
+        run: |
+          gawk-ios/scripts/check-theme.sh
+          sed 's/"#0a0b0d"/"#0a0b0e"/' gawk-ios/app/Gawk/Design/Theme.swift > "$RUNNER_TEMP/Theme.swift"
+          if gawk-ios/scripts/check-theme.sh "$RUNNER_TEMP/Theme.swift"; then
+            echo "::error::check-theme.sh passed a Theme.swift with a changed hex"
+            exit 1
+          fi
 
       - name: Format
         run: cargo fmt --all --check
@@ -270,15 +294,23 @@ jobs:
             gawk-server/go.sum
             gawk-broadcast/go.sum
 
+      # Rooms on, with the static gated room the key test joins
+      # (scripts/static-rooms.json), and caps and a grace for a test run
+      # (docs/70 §8): the UI tests go live a few dozen times, a room holds
+      # five fixture streams plus the tests', and the away tile must
+      # outlast the run.
       - name: Start a local relay
         run: |
           bin="$RUNNER_TEMP/relay"
           mkdir -p "$bin"
-          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert
+          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert ./cmd/gawk-loadgen
           "$bin/gawk-devcert" -out "$bin/cert"
           "$bin/gawk-server" -addr 127.0.0.1:4499 -metrics-addr 127.0.0.1:4498 \
             -cert-file "$bin/cert/cert.pem" -key-file "$bin/cert/key.pem" \
-            -publish-secret smoke > "$RUNNER_TEMP/relay.log" 2>&1 &
+            -publish-secret smoke -rooms -rooms-file ../scripts/static-rooms.json \
+            -max-broadcasts 120 -max-room-broadcasts 10 -max-subscribers 40 \
+            -max-total-subscribers 200 -conn-rate-limit 0 -broadcast-grace 60m \
+            > "$RUNNER_TEMP/relay.log" 2>&1 &
           for i in $(seq 60); do curl -sf http://127.0.0.1:4498/healthz && break; sleep 1; done
 
       # Every Rust step runs before the Simulator boots, as Go does above.
@@ -346,32 +378,130 @@ jobs:
           # bootstatus returns at "booted"; give the post-boot work a moment.
           sleep 20
 
+      # docs/70 IX5, IX6: the rooms the UI tests watch and join, as
+      # GAWK_UI_* variables (scripts/room-fixtures.sh says which is which).
+      # After the boot: publishers that ran through it had dozens of keyframe
+      # streams refused, and a room stream later delivered only its cached
+      # keyframe (2026-10-06).
+      - name: Publish the room fixtures
+        run: ../scripts/room-fixtures.sh https://127.0.0.1:4499 smoke "$RUNNER_TEMP/rooms" >> "$GITHUB_ENV"
+
       - name: Record the relay's QUIC handshakes
         run: |
           sudo tcpdump -i lo0 -n -tttt -c 300 'udp port 4499 and udp[8] & 0x80 != 0' \
             > "$RUNNER_TEMP/udp.txt" 2>&1 &
           sleep 2
 
+      # What the runner's CPU goes to during the tests, uploaded with a failed
+      # run's results: on a starved runner the Simulator's video froze and a
+      # menu ignored taps for 20 s (2026-10-06).
+      - name: Sample the runner's CPU
+        run: |
+          mkdir -p "$RUNNER_TEMP/results"
+          nohup top -l 0 -s 10 -o cpu -n 15 -stats pid,command,cpu,mem,state \
+            > "$RUNNER_TEMP/results/top.txt" 2>&1 &
+
+      # Every fixture still delivers video (Mika's is away by design).
+      - name: The fixtures are streaming
+        run: |
+          ../scripts/fixtures-streaming.sh https://127.0.0.1:4499 "$RUNNER_TEMP/relay/gawk-loadgen" \
+            "$SMOKE_ID" $(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP"/rooms/{P1,P2,P3,P4,P5,Keeper,Guest}.out)
+
       - name: Test (Simulator)
         env:
           TEST_RUNNER_GAWK_SMOKE_RELAY_URL: https://127.0.0.1:4499
           TEST_RUNNER_GAWK_SMOKE_SECRET: smoke
+          TEST_RUNNER_GAWK_UI_RELAY_URL: https://127.0.0.1:4499
+          TEST_RUNNER_GAWK_UI_SECRET: smoke
+          TEST_RUNNER_GAWK_UI_OUT: ${{ runner.temp }}/ui
         # Ad-hoc signed: an unsigned test host has no Keychain, and the
         # identity tests (D17) need one. Needs no certificate or team.
         # Xcode 27 can spend 600 s in `simctl diagnose` after a test run;
         # diagnostics are not collected.
         run: |
           TEST_RUNNER_GAWK_SMOKE_BROADCAST_ID="$SMOKE_ID" \
+          TEST_RUNNER_GAWK_SMOKE_ROOM_CODE="$GAWK_UI_ROOM_CODE" \
+          TEST_RUNNER_GAWK_UI_BROADCAST_ID="$SMOKE_ID" \
+          TEST_RUNNER_GAWK_UI_ROOM_CODE="$GAWK_UI_ROOM_CODE" \
+          TEST_RUNNER_GAWK_UI_AWAY_ROOM="$GAWK_UI_AWAY_ROOM" \
+          TEST_RUNNER_GAWK_UI_CREATOR_ROOM="$GAWK_UI_CREATOR_ROOM" \
+          TEST_RUNNER_GAWK_UI_CREATOR_TOKEN="$GAWK_UI_CREATOR_TOKEN" \
           xcodebuild -project Gawk.xcodeproj -scheme Gawk \
             -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd" \
-            -collect-test-diagnostics never \
+            -collect-test-diagnostics never -resultBundlePath "$RUNNER_TEMP/results/iphone.xcresult" \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
+
+      # docs/70 IX8: the Live Activity's extension draws state and nothing
+      # more; it must never carry the core.
+      # A Debug build puts the code in GawkLiveActivity.debug.dylib beside a
+      # stub executable, so every binary in the bundle is read.
+      - name: The Live Activity links no gawk Rust code
+        run: |
+          appex="$RUNNER_TEMP/dd/Build/Products/Debug-iphonesimulator/Gawk.app/PlugIns/GawkLiveActivity.appex"
+          test -f "$appex/GawkLiveActivity"
+          for bin in "$appex"/GawkLiveActivity "$appex"/*.dylib; do
+            if nm "$bin" 2>/dev/null | grep -iE 'uniffi|gawk_core'; then
+              echo "::error::$(basename "$bin") in the Live Activity extension links the Rust core"
+              exit 1
+            fi
+          done
+
+      # docs/70 IX9, D26: the iPad layouts, on the first iPad on the runtime.
+      - name: Test (iPad Simulator)
+        env:
+          TEST_RUNNER_GAWK_UI_RELAY_URL: https://127.0.0.1:4499
+          TEST_RUNNER_GAWK_UI_SECRET: smoke
+          TEST_RUNNER_GAWK_UI_OUT: ${{ runner.temp }}/ui-ipad
+        run: |
+          ipad=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devs = json.load(sys.stdin)["devices"]
+          for rt in sorted(devs, reverse=True):
+              if "iOS-27" not in rt:
+                  continue
+              for d in devs[rt]:
+                  if d["name"].startswith("iPad"):
+                      print(d["udid"]); sys.exit(0)
+          sys.exit(1)
+          ') || { echo "::error::no iPad simulator on an iOS 27 runtime"; exit 1; }
+          # The iPhone Simulator goes first. With both booted, the runner ran
+          # out of memory in the iPad's first boot (wired 2 GB to 5.8 GB, load
+          # 640); every process stalled for minutes and four room fixtures'
+          # publishers timed out (2026-10-06, top.txt).
+          xcrun simctl shutdown "$SIM_UDID" || true
+          xcrun simctl boot "$ipad" || true
+          xcrun simctl bootstatus "$ipad" -b
+          sleep 20
+          TEST_RUNNER_GAWK_UI_ROOM_CODE="$GAWK_UI_ROOM_CODE" \
+          xcodebuild -project Gawk.xcodeproj -scheme Gawk \
+            -destination "id=$ipad" -derivedDataPath "$RUNNER_TEMP/dd" \
+            -collect-test-diagnostics never -resultBundlePath "$RUNNER_TEMP/results/ipad.xcresult" \
+            -only-testing:GawkUITests/IPadUITests \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
 
       - name: Relay log
         if: failure()
         run: |
           cat "$RUNNER_TEMP/relay.log"
+          echo "--- room fixtures"
+          tail -n 20 "$RUNNER_TEMP"/rooms/*.log || true
+          echo "--- the fixtures after the tests"
+          ../scripts/fixtures-streaming.sh https://127.0.0.1:4499 "$RUNNER_TEMP/relay/gawk-loadgen" \
+            "$SMOKE_ID" $(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP"/rooms/{P1,P2,P3,P4,P5,Keeper,Guest}.out) || true
           echo "--- QUIC handshake packets to and from the relay (first 300)"
           sudo pkill tcpdump || true
           sleep 1
           cat "$RUNNER_TEMP/udp.txt"
+
+      # The screenshots and result bundles of a failed run: a CI-only UI
+      # failure is otherwise a log line with nothing to look at.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: ios-test-results
+          path: |
+            ${{ runner.temp }}/ui
+            ${{ runner.temp }}/ui-ipad
+            ${{ runner.temp }}/results
+          retention-days: 7
+          if-no-files-found: ignore

@@ -23,7 +23,7 @@ final class StopBroadcastTests: XCTestCase {
         let capture = Capture(identity: identity)
         let session = BroadcastSession(identity: identity)
 
-        capture.start(session: session, settings: settings, room: "", test: true)
+        capture.start(session: session, settings: settings)
         var live = false
         for _ in 0..<300 {
             if case .live = session.phase { live = true; break }
@@ -41,10 +41,10 @@ final class StopBroadcastTests: XCTestCase {
         // Frames through the encoder, so a stop meets a running pipeline
         // (the Simulator's software encoder takes a while to start).
         for _ in 0..<300 {
-            if (session.counters()?.encoded ?? 0) >= 1 { break }
+            if (session.currentCounters()?.encoded ?? 0) >= 1 { break }
             try await Task.sleep(for: .milliseconds(50))
         }
-        XCTAssertGreaterThanOrEqual(session.counters()?.encoded ?? 0, 1, "the pipeline never encoded")
+        XCTAssertGreaterThanOrEqual(session.currentCounters()?.encoded ?? 0, 1, "the pipeline never encoded")
         let source = try XCTUnwrap(capture.testSource)
 
         // The button.

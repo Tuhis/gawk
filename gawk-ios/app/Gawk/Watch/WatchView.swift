@@ -1,238 +1,162 @@
-import AVFoundation
 import SwiftUI
 import UIKit
 
-/// The Watch screen (docs/67 D15, D20, D22): a code, the player, its status
-/// and stats. Landscape with a player up is fullscreen.
+/// The Watch tab (docs/70 A1, D3): the web landing's join card, then the
+/// rooms you go back to. A code is joined as the web's `#/join` does (D4).
 struct WatchView: View {
-    @State private var model = WatchModel()
     @Environment(AppSettings.self) private var settings
-    @State private var showStats = false
-    @Environment(\.scenePhase) private var scenePhase
-
-    var body: some View {
-        GeometryReader { geo in
-            let landscape = geo.size.width > geo.size.height
-            if let engine = model.engine, landscape {
-                PlayerView(layer: engine.displayLayer)
-                    .ignoresSafeArea()
-                    .background(.black)
-                    .statusBarHidden()
-                    .toolbar(.hidden, for: .tabBar)
-            } else {
-                NavigationStack {
-                    form
-                        .navigationTitle("Watch")
-                        .onAppear { syncServer() }
-                }
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            // .inactive is a transition (the app switcher, a PiP start);
-            // only .background means nobody sees the inline player.
-            if phase == .background {
-                model.setForeground(false)
-            } else if phase == .active {
-                model.setForeground(true)
-            }
-        }
-        .sheet(isPresented: $showStats) {
-            StatsSheet(stats: model.stats, counters: model.engine?.snapshot())
-                .presentationDetents([.medium])
-        }
-    }
-
-    private var form: some View {
-        Form {
-            if let engine = model.engine {
-                Section {
-                    PlayerView(layer: engine.displayLayer)
-                        .aspectRatio(16 / 9, contentMode: .fit)
-                        .background(.black)
-                        .listRowInsets(EdgeInsets())
-                    if let status = model.status {
-                        Text(WatchStatusText.describe(status))
-                            .font(.subheadline)
-                            .foregroundStyle(statusColor(status))
-                            .accessibilityIdentifier("watch.status")
-                    }
-                    if let codec = model.unsupportedCodec {
-                        Text("This player can't play this stream's video format (\(codec)).")
-                            .font(.subheadline)
-                            .foregroundStyle(.red)
-                    }
-                } header: {
-                    Text(model.watchingCode ?? "")
-                } footer: {
-                    HStack {
-                        Button("Stats") { showStats = true }
-                        Spacer()
-                        if model.pip?.isSupported == true {
-                            Button("Picture in Picture") { model.pip?.start() }
-                        }
-                        Spacer()
-                        Button("Stop", role: .destructive) { model.stop() }
-                    }
-                    .buttonStyle(.borderless)
-                    .padding(.top, 4)
-                }
-            }
-
-            Section {
-                CodeField(text: $model.code) { startWatching() }
-                Button("Watch") { startWatching() }
-                    .disabled(!model.canWatch)
-                    .accessibilityIdentifier("watch.go")
-            } header: {
-                Text("Broadcast code")
-            } footer: {
-                Text("The six-character code the streamer shares.")
-            }
-
-            Section("Playback") {
-                Picker("Latency", selection: $model.preset) {
-                    Text("Balanced").tag(Preset.balanced)
-                    Text("Lowest latency").tag(Preset.lowestLatency)
-                }
-                .pickerStyle(.segmented)
-            }
-
-            Section("Server") {
-                LabeledContent("Relay", value: model.relayUrl)
-                #if DEBUG
-                TextField("Relay override (debug)", text: $model.relayOverride)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .accessibilityIdentifier("watch.relay")
-                Toggle("Insecure (dev certs)", isOn: $model.insecure)
-                    .accessibilityIdentifier("watch.insecure")
-                #endif
-            }
-        }
-    }
-
-    /// The keyboard goes away so the player has the screen.
-    private func startWatching() {
-        syncServer()
-        UIApplication.shared.sendAction(
-            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        model.watch()
-    }
-
-    /// Watch dials the server picked in Settings, as Broadcast does; the
-    /// debug override field only overrides it.
-    private func syncServer() {
-        model.selectedRelayUrl = settings.relayURL
-        model.selectedInsecure = settings.insecure
-    }
-
-    private func statusColor(_ status: ViewerStatus) -> Color {
-        switch status {
-        case .live: .green
-        case .ended: .red
-        default: .secondary
-        }
-    }
-}
-
-/// The display layer, hosted in a view that keeps it sized (D15).
-struct PlayerView: UIViewRepresentable {
-    let layer: AVSampleBufferDisplayLayer
-
-    func makeUIView(context: Context) -> LayerHostView {
-        let view = LayerHostView()
-        view.backgroundColor = .black
-        view.host(layer)
-        return view
-    }
-
-    func updateUIView(_ view: LayerHostView, context: Context) {
-        view.host(layer)
-    }
-
-    /// The landscape and portrait layouts each have a PlayerView, and one
-    /// layer can only have one superlayer. Whichever view is in a window
-    /// holds it, and a view leaving its window lets go only if it still
-    /// holds it, so a stale view torn down after a rotation can't take the
-    /// layer back from the one on screen.
-    final class LayerHostView: UIView {
-        private var wanted: CALayer?
-
-        func host(_ layer: CALayer) {
-            guard wanted !== layer else { return }
-            wanted = layer
-            attach()
-        }
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            if window == nil {
-                if let wanted, wanted.superlayer === layer { wanted.removeFromSuperlayer() }
-            } else {
-                attach()
-            }
-        }
-
-        private func attach() {
-            guard window != nil, let wanted, wanted.superlayer !== layer else { return }
-            layer.addSublayer(wanted)
-            setNeedsLayout()
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            guard let wanted, wanted.superlayer === layer else { return }
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            wanted.frame = bounds
-            CATransaction.commit()
-        }
-    }
-}
-
-/// The stats sheet: the core's numbers (G3, G8) and the renderer's.
-struct StatsSheet: View {
-    let stats: ViewerStats?
-    let counters: PlayerEngine.Counters?
+    @Environment(AppRouter.self) private var router
+    @State private var code = ""
+    @State private var codeFocused = false
 
     var body: some View {
         NavigationStack {
             List {
-                if let s = stats {
-                    Section("Playout") {
-                        row("Offset", ms(s.offsetMs))
-                        row("Jitter", s.jitterMs.map(ms) ?? "—")
-                        row("Round trip", s.rttMs.map(ms) ?? "—")
-                        row("Viewers", s.viewerCount.map(String.init) ?? "—")
+                Section {
+                    VStack(spacing: 16) {
+                        if let notice = router.linkNotice {
+                            Banner(kind: .info, systemImage: "link", title: notice) {
+                                Button("Dismiss") { router.linkNotice = nil }
+                                    .buttonStyle(.gawkTintedCompact)
+                            }
+                            .accessibilityIdentifier("link.notice")
+                        }
+                        ServerNotices()
+                        joinCard
                     }
-                    Section("Frames") {
-                        row("Completed", "\(s.framesCompleted)")
-                        row("Dropped", "\(s.framesDropped)")
-                        row("Recovered by parity", "\(s.framesRecoveredByParity)")
-                        row("Gap resyncs", "\(s.gapResyncs)")
-                        row("Drops to live", "\(s.dropsToLive)")
-                    }
-                } else {
-                    Text("No stats yet.")
+                    .readableWidth()
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
                 }
-                if let c = counters {
-                    Section("Renderer") {
-                        row("Video samples", "\(c.videoEnqueued)")
-                        row("Audio blocks", "\(c.audioEnqueued)")
-                        row("Video dropped", "\(c.videoDropped)")
-                        row("Renderer resyncs", "\(c.rendererResyncs)")
-                    }
-                }
+                rooms
             }
-            .navigationTitle("Stats")
-            .navigationBarTitleDisplayMode(.inline)
+            .gawkList(background: false)
+            .background(alignment: .top) {
+                ZStack(alignment: .top) {
+                    Theme.bg
+                    Glow()
+                }
+                .ignoresSafeArea()
+            }
+            .navigationTitle("Watch")
+            .scrollDismissesKeyboard(.interactively)
         }
     }
 
-    private func row(_ label: String, _ value: String) -> some View {
-        LabeledContent(label, value: value)
+    private var joinCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Join a stream")
+                    .font(.title2.bold())
+                    .foregroundStyle(Theme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Type the code you were sent. Room codes work here too.")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            CodeBoxesInput(code: $code, isFocused: $codeFocused) { join() }
+                .frame(maxWidth: .infinity)
+            HStack(spacing: 12) {
+                PasteButton(payloadType: String.self) { strings in
+                    guard let first = strings.first else { return }
+                    code = BroadcastCode.sanitize(first)
+                }
+                .buttonBorderShape(.capsule)
+                .labelStyle(.titleAndIcon)
+                .tint(Theme.s3)
+                .accessibilityIdentifier("watch.paste")
+                Button {
+                    join()
+                } label: {
+                    if router.resolving != nil {
+                        HStack(spacing: 8) {
+                            ProgressView().tint(Theme.bg)
+                            Text("Looking up…")
+                        }
+                    } else {
+                        Text("Join")
+                    }
+                }
+                .buttonStyle(.gawkPrimary)
+                .disabled(!BroadcastCode.isValid(code) || router.resolving != nil)
+                .accessibilityIdentifier("watch.join")
+            }
+        }
+        .padding(20)
+        // Tinted toward s1: the glow behind mustn't lift the glass so far
+        // that muted text on it drops under 4.5:1 (D27).
+        // Glass with a solid s1 ground under the text: on bare glass over
+        // the glow, muted text fell under 4.5:1 (D27, docs/70 §10).
+        .background(Theme.s1.opacity(0.92), in: .rect(cornerRadius: 28, style: .continuous))
+        .glassEffect(.regular, in: .rect(cornerRadius: 28, style: .continuous))
     }
 
-    private func ms(_ v: Double) -> String { String(format: "%.0f ms", v) }
+    @ViewBuilder private var rooms: some View {
+        let list = settings.yourRooms
+        if !list.isEmpty {
+            Section {
+                ForEach(list) { record in
+                    Button {
+                        router.open(.room(code: record.code, relay: nil, nick: nil))
+                    } label: {
+                        ListRow(
+                            systemImage: record.saved ? "star.fill" : "square.grid.2x2",
+                            title: record.title,
+                            subtitle: record.name.isEmpty ? nil : record.code
+                        ) {
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(Theme.faint)
+                        }
+                    }
+                    .accessibilityLabel(record.saved ? "\(record.title), saved" : record.title)
+                    .swipeActions(edge: .leading) {
+                        Button(record.saved ? "Unsave" : "Save", systemImage: record.saved ? "star.slash" : "star") {
+                            settings.setSaved(record, !record.saved)
+                        }
+                        .tint(Theme.accent)
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button("Remove", systemImage: "trash", role: .destructive) {
+                            settings.removeRoom(record)
+                        }
+                    }
+                    .gawkRow()
+                }
+            } header: {
+                SectionHeader("Your rooms")
+            } footer: {
+                SectionFooter("A gawk link opens here and starts playing.")
+            }
+        } else {
+            Section {
+            } footer: {
+                SectionFooter("A gawk link opens here and starts playing.")
+            }
+        }
+    }
+
+    /// The keyboard goes away so the player has the screen. At once, not on
+    /// the next update: an alert presented meanwhile (D21) would bring it
+    /// back when dismissed.
+    private func join() {
+        guard BroadcastCode.isValid(code) else { return }
+        codeFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        router.join(code: code, relay: settings.relayURL, insecure: settings.insecure)
+    }
+}
+
+/// The web landing's blurred accent glow, behind the join card.
+private struct Glow: View {
+    var body: some View {
+        Ellipse()
+            .fill(Theme.accent.opacity(0.18))
+            .frame(width: 340, height: 220)
+            .blur(radius: 80)
+            .offset(y: 60)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
 }

@@ -10,11 +10,15 @@ It is SwiftUI over a Rust core. The core reuses the desktop broadcasters'
 app speaks the same wire code and resume logic as the desktop apps.
 
 ```
-rust/                 Rust workspace: core (the UniFFI surface), broadcast, viewer
-app/project.yml       XcodeGen spec; the Xcode project is generated from it
-app/Gawk/             the SwiftUI app
-app/GawkTests/        Swift unit tests, run in the Simulator
-scripts/build-core.sh builds the core and its Swift bindings for one platform
+rust/                    Rust workspace: core (the UniFFI surface), broadcast, viewer, devpub
+app/project.yml          XcodeGen spec; the Xcode project is generated from it
+app/Gawk/                the SwiftUI app; Design/ holds the tokens and primitives (docs/70)
+app/GawkLiveActivity/    the Live Activity's widget extension (docs/70 D15)
+app/GawkTests/           Swift unit tests, run in the Simulator
+app/GawkUITests/         UI tests, against a local relay
+scripts/build-core.sh    builds the core and its Swift bindings for one platform
+scripts/check-theme.sh   Theme.swift's colours against gawk-app's and the desktop's tokens
+scripts/room-fixtures.sh the rooms the UI tests watch and join
 ```
 
 ## Requirements
@@ -74,5 +78,21 @@ them, with the engine's `self-update` feature off:
 ```sh
 cd gawk-broadcast-desktop && cargo test -p gawk-wire -p gawk-engine --no-default-features
 ```
+
+The tests that need a relay skip without one. To run them all, start a dev
+relay with rooms, a broadcast and the room fixtures, then pass their
+variables with xcodebuild's `TEST_RUNNER_` prefix, as `ios.yml` does:
+
+```sh
+gawk-server -addr 127.0.0.1:4499 -cert-file cert.pem -key-file key.pem \
+  -publish-secret smoke -rooms -rooms-file gawk-ios/scripts/static-rooms.json \
+  -max-broadcasts 120 -max-room-broadcasts 10 -broadcast-grace 60m
+gawk-ios/rust/target/debug/gawk-devpub --url https://127.0.0.1:4499 --insecure --secret smoke
+gawk-ios/scripts/room-fixtures.sh https://127.0.0.1:4499 smoke /tmp/rooms
+```
+
+The variables are `GAWK_SMOKE_RELAY_URL`, `GAWK_SMOKE_SECRET` and
+`GAWK_SMOKE_ROOM_CODE` for the unit tests, and the `GAWK_UI_*` ones that
+`GawkUITests/UITestSupport.swift` lists for the UI tests.
 
 CI is [`ios.yml`](../.github/workflows/ios.yml).

@@ -14,7 +14,7 @@ final class CaptureTests: XCTestCase {
 
     func testTheCoreEndingTheBroadcastStopsCapture() {
         let (capture, session, settings) = make()
-        capture.start(session: session, settings: settings, room: "", test: true)
+        capture.start(session: session, settings: settings)
         XCTAssertTrue(capture.isCapturing)
         session.apply(.ended(error: "refused", reclaimStatus: 401))
         XCTAssertFalse(capture.isCapturing, "the source outlived the broadcast")
@@ -23,10 +23,10 @@ final class CaptureTests: XCTestCase {
 
     func testStartingAgainStopsTheOldSource() throws {
         let (capture, session, settings) = make()
-        capture.start(session: session, settings: settings, room: "", test: true)
+        capture.start(session: session, settings: settings)
         let first = try XCTUnwrap(capture.testSource)
         session.apply(.ended(error: nil, reclaimStatus: nil))
-        capture.start(session: session, settings: settings, room: "", test: true)
+        capture.start(session: session, settings: settings)
         XCTAssertFalse(first.isRunning, "the old source still runs")
         XCTAssertTrue(capture.isCapturing)
         capture.stop(session)

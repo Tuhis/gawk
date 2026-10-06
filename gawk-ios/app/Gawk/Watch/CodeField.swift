@@ -1,9 +1,10 @@
 import SwiftUI
 import UIKit
 
-/// The broadcast-code field (docs/67 D20): every edit is normalized by
-/// ``BroadcastCode/sanitize(_:)`` before it reaches the screen, as the SPA's
-/// segmented input does.
+/// The text field under the six code boxes (docs/67 D20, docs/70 D3): every
+/// edit is normalized by ``BroadcastCode/sanitize(_:)`` before it reaches
+/// the screen, as the SPA's segmented input does. Its text and caret are
+/// clear; ``CodeBoxesInput`` draws the boxes over it.
 ///
 /// A UIKit field because SwiftUI's can't do this reliably: rewriting its
 /// text from a binding or `onChange` races fast typing (keystrokes landing
@@ -12,20 +13,26 @@ import UIKit
 /// all. The delegate decides each edit before it's applied.
 struct CodeField: UIViewRepresentable {
     @Binding var text: String
+    @Binding var isFocused: Bool
+    var identifier = "watch.code"
     var onSubmit: () -> Void
 
     func makeUIView(context: Context) -> UITextField {
         let field = UITextField()
         field.delegate = context.coordinator
-        field.placeholder = "Code"
-        field.font = .monospacedSystemFont(
-            ofSize: UIFont.preferredFont(forTextStyle: .title2).pointSize, weight: .regular)
-        field.adjustsFontForContentSizeCategory = true
+        field.textColor = .clear
+        field.tintColor = .clear
+        field.backgroundColor = .clear
         field.autocapitalizationType = .allCharacters
         field.autocorrectionType = .no
         field.spellCheckingType = .no
-        field.returnKeyType = .go
-        field.accessibilityIdentifier = "watch.code"
+        field.smartInsertDeleteType = .no
+        field.keyboardType = .asciiCapable
+        field.returnKeyType = .join
+        field.accessibilityIdentifier = identifier
+        field.accessibilityLabel = "Code"
+        field.addTarget(context.coordinator, action: #selector(Coordinator.focusChanged(_:)), for: .editingDidBegin)
+        field.addTarget(context.coordinator, action: #selector(Coordinator.focusChanged(_:)), for: .editingDidEnd)
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         return field
     }
@@ -33,6 +40,11 @@ struct CodeField: UIViewRepresentable {
     func updateUIView(_ field: UITextField, context: Context) {
         context.coordinator.parent = self
         if field.text != text { field.text = text }
+        // Only a request to drop the keyboard is pushed down: the field
+        // itself reports focus, so pushing `true` back would fight a tap.
+        if !isFocused, field.isFirstResponder {
+            DispatchQueue.main.async { field.resignFirstResponder() }
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -55,9 +67,23 @@ struct CodeField: UIViewRepresentable {
             return false
         }
 
+        /// The caret lives at the end: the boxes fill left to right, and an
+        /// edit in the middle of text nobody can see would be a surprise.
+        func textFieldDidChangeSelection(_ field: UITextField) {
+            let end = field.endOfDocument
+            if field.selectedTextRange?.start != end || field.selectedTextRange?.isEmpty == false {
+                field.selectedTextRange = field.textRange(from: end, to: end)
+            }
+        }
+
         func textFieldShouldReturn(_ field: UITextField) -> Bool {
             parent.onSubmit()
             return true
+        }
+
+        @objc func focusChanged(_ field: UITextField) {
+            let focused = field.isFirstResponder
+            if parent.isFocused != focused { parent.isFocused = focused }
         }
     }
 }

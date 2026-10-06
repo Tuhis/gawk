@@ -226,12 +226,11 @@ func TestRoomMintStatusVocabulary(t *testing.T) {
 			t.Errorf("room/not_found = %v, want 1", got)
 		}
 	})
-	t.Run("broadcast already in a room is 409 conflict", func(t *testing.T) {
+	t.Run("broadcast already in another room is 409 conflict", func(t *testing.T) {
 		srv, sm, r, reg := newRoomOutcomeServer(t, config.Config{}, true, nil)
 		id, tok := liveBroadcast(t, srv, r)
-		raw, _ := hex.DecodeString(tok)
-		if _, err := reg.Mint(context.Background(), roomsrv.MintRequest{BroadcastID: id, ResumeToken: raw}); err != nil {
-			t.Fatalf("first mint: %v", err)
+		if err := reg.UpsertStatic(roomsrv.StaticRoom{Code: "TuhisRoom", Attachments: []rooms.Attachment{{BroadcastID: id}}}); err != nil {
+			t.Fatal(err)
 		}
 		w := httptest.NewRecorder()
 		srv.handleRoomNew(w, roomNewReq("broadcast="+id+"&resume="+tok))
@@ -350,6 +349,35 @@ func TestRoomMintUpgradeFailureEndsTheRoom(t *testing.T) {
 	raw, _ := hex.DecodeString(tok)
 	if _, err := reg.Mint(context.Background(), roomsrv.MintRequest{BroadcastID: id, ResumeToken: raw}); err != nil {
 		t.Fatalf("re-mint after the failed upgrade: %v", err)
+	}
+}
+
+// A repeated mint (BUGS.md "A room mint whose answer is lost can never be
+// retried") answers with the room the broadcast minted earlier. That room
+// was not made by this request, so a failed upgrade leaves it standing
+// (others may be in it, and the next repeat gets it again) and it is not
+// counted as a second mint.
+func TestRoomMintRepeatUpgradeFailureKeepsTheRoom(t *testing.T) {
+	srv, sm, r, reg := newRoomOutcomeServer(t, config.Config{}, true, nil)
+	id, tok := liveBroadcast(t, srv, r)
+	raw, _ := hex.DecodeString(tok)
+	first, err := reg.Mint(context.Background(), roomsrv.MintRequest{BroadcastID: id, ResumeToken: raw})
+	if err != nil {
+		t.Fatalf("first mint: %v", err)
+	}
+	w := httptest.NewRecorder()
+	srv.handleRoomNew(w, roomNewReq("broadcast="+id+"&resume="+tok))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (the repeat cleared every gate)", w.Code)
+	}
+	if got := sm.ConnectionCount("room", metrics.OutcomeUpgradeFailed); got != 1 {
+		t.Errorf("room/upgrade_failed = %v, want 1", got)
+	}
+	if info, ok := reg.Lookup(first.Code); !ok || info.Attachments != 1 {
+		t.Fatalf("the minted room after a repeat's failed upgrade = %+v, %v; want it standing", info, ok)
+	}
+	if got := sm.RoomsMintedCount(); got != 0 {
+		t.Errorf("rooms minted = %v, want 0 (the repeat made no room)", got)
 	}
 }
 
