@@ -994,6 +994,7 @@ fn seed_settings(ui: &MainWindow, cfg: &Config) {
     // the selected server's fields into the default's slot.
     seed_edit_fields(ui, cfg, DEFAULT_SERVER_NAME);
     ui.set_room_nickname(cfg.nickname.clone().into());
+    ui.set_picker_view(picker_view_tab(&cfg.picker_view));
     ui.set_set_app_url(cfg.app_url.clone().into());
     ui.set_set_telemetry(cfg.telemetry_url.clone().into());
     ui.set_set_update_check(!cfg.disable_update_check);
@@ -1484,6 +1485,16 @@ fn source_key(tab: i32, name: &str) -> String {
     }
 }
 
+/// The picker tab to open on, from the saved `pickerView`: Apps and games
+/// unless the user last looked at Whole display.
+fn picker_view_tab(saved: &str) -> i32 {
+    if saved == "display" { 1 } else { 0 }
+}
+
+fn picker_view_key(tab: i32) -> &'static str {
+    if tab == 1 { "display" } else { "" }
+}
+
 /// Which source to select, as (tab, index): the remembered one when it is
 /// still listed, else the first display. `None` when nothing is listed.
 fn default_source(windows: &[String], monitors: &[String], last: &str) -> Option<(i32, usize)> {
@@ -1532,8 +1543,8 @@ fn apply_default_source(ui: &MainWindow, cfg: &Config) {
             ui.set_selected_monitor(-1);
         }
     }
-    // The picker page shows the choice too (a refresh happens with it open).
-    ui.set_draft_tab(ui.get_picker_tab());
+    // The picker page shows the choice too (a refresh happens with it open);
+    // the tab it is on stays.
     ui.set_draft_window(ui.get_selected_window());
     ui.set_draft_monitor(ui.get_selected_monitor());
 }
@@ -2573,8 +2584,17 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         });
     }
     {
-        // The Windows picker's Share this / Switch: remembered, and while
-        // live, switched to at once (docs/64 D12).
+        // The Windows picker's tab, opened on next time — across launches.
+        let shell = shell.clone();
+        ui.on_picker_view_changed(move |tab| {
+            let mut sh = shell.borrow_mut();
+            sh.cfg.picker_view = picker_view_key(tab).into();
+            save_config(&mut sh);
+        });
+    }
+    {
+        // The Windows picker's row click (or Share this / Switch):
+        // remembered, and while live, switched to at once (docs/64 D12).
         let shell = shell.clone();
         let ui_weak = ui_weak.clone();
         ui.on_source_picked(move || {
@@ -5459,6 +5479,106 @@ mod tests {
         assert_eq!(
             current_source_key(&ui).as_deref(),
             Some("window:Counter-Strike 2")
+        );
+    }
+
+    fn picker_fixture() -> MainWindow {
+        let ui = window();
+        ui.set_windows(ModelRc::new(VecModel::from(vec![
+            window_row("Discord"),
+            window_row("Counter-Strike 2"),
+        ])));
+        ui.set_monitors(ModelRc::new(VecModel::from(vec![MonitorRow {
+            hmonitor: 1,
+            label: "Display 1".into(),
+        }])));
+        ui
+    }
+
+    // The picker opens on Apps and games until the user has looked at a
+    // tab, even when the preselected source is a display.
+    #[test]
+    fn the_picker_opens_on_apps_by_default() {
+        let ui = picker_fixture();
+        seed_settings(&ui, &Config::default());
+        apply_default_source(&ui, &Config::default());
+        assert_eq!(ui.get_picker_tab(), 1, "the fallback source is a display");
+
+        ui.invoke_open_picker();
+
+        assert_eq!(ui.get_page(), 1);
+        assert_eq!(ui.get_draft_tab(), 0);
+    }
+
+    // It then opens on the tab last looked at, saved across launches.
+    #[test]
+    fn the_picker_reopens_on_the_tab_last_looked_at() {
+        let ui = picker_fixture();
+        let (shell, _) = shell_with(Config::default());
+        wire_callbacks(&ui, &shell);
+        ui.invoke_open_picker();
+        ui.invoke_view_picker_tab(1);
+        ui.set_page(0);
+
+        ui.invoke_open_picker();
+        assert_eq!(ui.get_draft_tab(), 1);
+        assert_eq!(shell.borrow().cfg.picker_view, "display");
+
+        ui.invoke_view_picker_tab(0);
+        assert_eq!(shell.borrow().cfg.picker_view, "");
+
+        // A later launch reads it back (a second window: the backend is
+        // per thread).
+        let next = MainWindow::new().unwrap();
+        let cfg = Config {
+            picker_view: "display".into(),
+            ..Default::default()
+        };
+        seed_settings(&next, &cfg);
+        next.invoke_open_picker();
+        assert_eq!(next.get_draft_tab(), 1);
+    }
+
+    // A refresh with the picker open keeps the tab being looked at.
+    #[test]
+    fn a_picker_refresh_keeps_the_tab_in_view() {
+        let ui = picker_fixture();
+        seed_settings(&ui, &Config::default());
+        apply_default_source(&ui, &Config::default());
+        ui.invoke_open_picker();
+        assert_eq!(ui.get_draft_tab(), 0);
+
+        apply_default_source(&ui, &Config::default());
+
+        assert_eq!(ui.get_draft_tab(), 0);
+    }
+
+    // A row click chooses it at once; no second press of Share this.
+    #[test]
+    fn clicking_a_picker_row_chooses_it() {
+        let ui = picker_fixture();
+        let (shell, _) = shell_with(Config::default());
+        wire_callbacks(&ui, &shell);
+        apply_default_source(&ui, &Config::default());
+        ui.invoke_open_picker();
+
+        ui.invoke_pick_window(1);
+
+        assert_eq!(ui.get_page(), 0);
+        assert_eq!(
+            current_source_key(&ui).as_deref(),
+            Some("window:Counter-Strike 2")
+        );
+        assert_eq!(shell.borrow().cfg.last_source, "window:Counter-Strike 2");
+
+        ui.invoke_open_picker();
+        ui.invoke_view_picker_tab(1);
+        ui.invoke_pick_monitor(0);
+
+        assert_eq!(ui.get_page(), 0);
+        assert_eq!(
+            current_source_key(&ui).as_deref(),
+            Some("display:Display 1")
         );
     }
 

@@ -2015,13 +2015,17 @@ export component MainWindow inherits Window {
     in property <[WindowRow]> windows: [];
     in property <[MonitorRow]> monitors: [];
     // The chosen source: what a start captures (docs/64 D14). Only the
-    // picker's Share this / Switch commits to these.
+    // picker's row click or Share this / Switch commits to these.
     in-out property <int> picker-tab: 0;
     in-out property <int> selected-window: -1;
     in-out property <int> selected-monitor: -1;
     // The picker page's draft: the tab being looked at and the row clicked.
     // Back and Cancel drop it.
     in-out property <int> draft-tab: 0;
+    // The tab the picker opens on: the one last looked at, Apps and games
+    // until then. The shell seeds it from the settings and saves it on
+    // `picker-view-changed`.
+    in-out property <int> picker-view: 0;
     in-out property <int> draft-window: -1;
     in-out property <int> draft-monitor: -1;
 
@@ -2168,10 +2172,10 @@ export component MainWindow inherits Window {
         room-left: root.room-left,
     };
 
-    // The picker page, opened from Ready's card or Live's Sharing row: the
-    // draft starts from the chosen source.
+    // The picker page, opened from Ready's card or Live's Sharing row: on
+    // the tab last looked at, the draft starting from the chosen source.
     public function open-picker() {
-        root.draft-tab = root.picker-tab;
+        root.draft-tab = root.picker-view;
         root.draft-window = root.selected-window;
         root.draft-monitor = root.selected-monitor;
         root.page = 1;
@@ -2181,6 +2185,31 @@ export component MainWindow inherits Window {
     // changes what is chosen (docs/64 D14).
     public function view-picker-tab(tab: int) {
         root.draft-tab = tab;
+        if (root.picker-view != tab) {
+            root.picker-view = tab;
+            root.picker-view-changed(tab);
+        }
+    }
+
+    // A row click chooses it at once: the draft is committed as Share this
+    // / Switch would. Re-clicking what is already shared only closes the
+    // page, so a live broadcast does not restart for nothing.
+    public function pick-window(i: int) {
+        root.draft-window = i;
+        if (root.picker-tab == 0 && root.selected-window == i) {
+            root.page = 0;
+        } else {
+            root.commit-picker();
+        }
+    }
+
+    public function pick-monitor(i: int) {
+        root.draft-monitor = i;
+        if (root.picker-tab == 1 && root.selected-monitor == i) {
+            root.page = 0;
+        } else {
+            root.commit-picker();
+        }
     }
 
     // Share this / Switch: the draft becomes the chosen source.
@@ -2201,6 +2230,7 @@ export component MainWindow inherits Window {
     }
 
     callback refresh-picker();
+    callback picker-view-changed(int);
     callback choose-content();
     callback source-picked();
     callback start-broadcast();
@@ -3221,10 +3251,10 @@ export component MainWindow inherits Window {
                             accessible-label: w.title;
                             accessible-checked: root.draft-window == i;
                             accessible-action-default => {
-                                root.draft-window = i;
+                                root.pick-window(i);
                             }
                             clicked => {
-                                root.draft-window = i;
+                                root.pick-window(i);
                             }
                             Rectangle {
                                 width: 18px;
@@ -3278,10 +3308,10 @@ export component MainWindow inherits Window {
                             accessible-label: m.label;
                             accessible-checked: root.draft-monitor == i;
                             accessible-action-default => {
-                                root.draft-monitor = i;
+                                root.pick-monitor(i);
                             }
                             clicked => {
-                                root.draft-monitor = i;
+                                root.pick-monitor(i);
                             }
                             Rectangle {
                                 width: 18px;
