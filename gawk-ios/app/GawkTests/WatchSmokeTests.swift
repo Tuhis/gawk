@@ -31,8 +31,11 @@ final class WatchSmokeTests: XCTestCase {
         engine.start(ViewerOptions(relayUrl: relay, broadcastId: id, preset: .balanced, insecure: true))
         defer { engine.stop() }
 
-        let deadline = Date().addingTimeInterval(15)
-        wait(for: [live], timeout: 10)
+        // Bounds, not budgets: each wait ends once its condition holds, and
+        // CI's loaded runner reached only 20 samples in 15 s (2026-10-06).
+        let bound: TimeInterval = 60
+        let deadline = Date().addingTimeInterval(bound)
+        wait(for: [live], timeout: bound)
         var counters = engine.snapshot()
         while counters.videoEnqueued < 30, Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
@@ -40,7 +43,7 @@ final class WatchSmokeTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(
             counters.videoEnqueued, 30,
-            "video samples enqueued within 20 s; statuses \(statuses.all), counters \(counters)")
+            "video samples enqueued within \(Int(bound)) s; statuses \(statuses.all), counters \(counters)")
         print("GAWK_SMOKE counters=\(counters) statuses=\(statuses.all)")
     }
 }

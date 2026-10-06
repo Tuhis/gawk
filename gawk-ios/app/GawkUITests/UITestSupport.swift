@@ -100,6 +100,10 @@ extension XCTestCase {
             if canTap(field) { field.tap() }
             RunLoop.current.run(until: Date().addingTimeInterval(0.5))
         } while Date() < deadline
+        // A tap can itself take the whole budget on a loaded runner (15 s
+        // waiting for the app to idle while the keyboard came up, CI
+        // 2026-10-06), so its outcome is read once more before failing.
+        if field.hasKeyboardFocus { return }
         XCTFail("\(field) never took the keyboard", file: file, line: line)
     }
 
