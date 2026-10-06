@@ -397,9 +397,19 @@ Built against the canvas and this document in the iPhone 17 and iPad Pro
   now carries its server, the default fleet included, and only a
   non-default one shows the K11 chip. "The selected server" is left to
   typed codes and Your rooms. The UI tests' links name the local relay.
-- **CI's room fixtures retry a lost mint and publish before the
-  Simulator boots.** The first run lost a mint's answer in the boot
-  storm. The underlying relay behaviour is in `BUGS.md`.
+- **CI's room fixtures retry a lost mint and publish after the Simulator
+  has booted.** The first run lost a mint's answer in the boot storm; the
+  underlying relay behaviour is in `BUGS.md`. Publishing before the boot
+  instead had dozens of the room publishers' keyframe streams refused,
+  and a room stream later delivered only its cached keyframe. A step now
+  checks that every fixture is streaming before the tests
+  (`scripts/fixtures-streaming.sh`), and a failed run uploads its
+  screenshots and result bundles.
+- **Three UI tests raced a slower runner.** Paste waits for `PasteButton`'s
+  asynchronous payload. The AX5 test scrolls the Room row up in short,
+  fling-free drags until it clears the bottom chrome. The audits skip
+  text that the auditor reads off the test video with no element behind
+  it (`testsrc2` draws a clock and frame number).
 
 **Not done here**: IX10, the owner's device pass. It covers ScreenCaptureKit
 broadcasting, the Live Activity on a real Lock Screen and Dynamic Island,

@@ -303,7 +303,7 @@ jobs:
         run: |
           bin="$RUNNER_TEMP/relay"
           mkdir -p "$bin"
-          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert
+          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert ./cmd/gawk-loadgen
           "$bin/gawk-devcert" -out "$bin/cert"
           "$bin/gawk-server" -addr 127.0.0.1:4499 -metrics-addr 127.0.0.1:4498 \
             -cert-file "$bin/cert/cert.pem" -key-file "$bin/cert/key.pem" \
@@ -331,13 +331,6 @@ jobs:
       - name: Build gawk-devpub
         working-directory: gawk-ios/rust
         run: cargo build -p gawk-devpub
-
-      # docs/70 IX5, IX6: the rooms the UI tests watch and join, as
-      # GAWK_UI_* variables (scripts/room-fixtures.sh says which is which).
-      # Before the Simulator boots: in its boot storm a mint's answer was
-      # lost and the fixture never got its room (2026-10-06).
-      - name: Publish the room fixtures
-        run: ../scripts/room-fixtures.sh https://127.0.0.1:4499 smoke "$RUNNER_TEMP/rooms" >> "$GITHUB_ENV"
 
       # The first iPhone on the pinned iOS 27 runtime; device names vary
       # between runner images.
@@ -385,11 +378,25 @@ jobs:
           # bootstatus returns at "booted"; give the post-boot work a moment.
           sleep 20
 
+      # docs/70 IX5, IX6: the rooms the UI tests watch and join, as
+      # GAWK_UI_* variables (scripts/room-fixtures.sh says which is which).
+      # After the boot: publishers that ran through it had dozens of keyframe
+      # streams refused, and a room stream later delivered only its cached
+      # keyframe (2026-10-06). A mint whose answer is lost is retried.
+      - name: Publish the room fixtures
+        run: ../scripts/room-fixtures.sh https://127.0.0.1:4499 smoke "$RUNNER_TEMP/rooms" >> "$GITHUB_ENV"
+
       - name: Record the relay's QUIC handshakes
         run: |
           sudo tcpdump -i lo0 -n -tttt -c 300 'udp port 4499 and udp[8] & 0x80 != 0' \
             > "$RUNNER_TEMP/udp.txt" 2>&1 &
           sleep 2
+
+      # Every fixture still delivers video (Mika's is away by design).
+      - name: The fixtures are streaming
+        run: |
+          ../scripts/fixtures-streaming.sh https://127.0.0.1:4499 "$RUNNER_TEMP/relay/gawk-loadgen" \
+            "$SMOKE_ID" $(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP"/rooms/{P1,P2,P3,P4,P5,Keeper,Guest}.out)
 
       - name: Test (Simulator)
         env:
@@ -397,6 +404,7 @@ jobs:
           TEST_RUNNER_GAWK_SMOKE_SECRET: smoke
           TEST_RUNNER_GAWK_UI_RELAY_URL: https://127.0.0.1:4499
           TEST_RUNNER_GAWK_UI_SECRET: smoke
+          TEST_RUNNER_GAWK_UI_OUT: ${{ runner.temp }}/ui
         # Ad-hoc signed: an unsigned test host has no Keychain, and the
         # identity tests (D17) need one. Needs no certificate or team.
         # Xcode 27 can spend 600 s in `simctl diagnose` after a test run;
@@ -411,7 +419,7 @@ jobs:
           TEST_RUNNER_GAWK_UI_CREATOR_TOKEN="$GAWK_UI_CREATOR_TOKEN" \
           xcodebuild -project Gawk.xcodeproj -scheme Gawk \
             -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd" \
-            -collect-test-diagnostics never \
+            -collect-test-diagnostics never -resultBundlePath "$RUNNER_TEMP/results/iphone.xcresult" \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
 
       # docs/70 IX8: the Live Activity's extension draws state and nothing
@@ -434,6 +442,7 @@ jobs:
         env:
           TEST_RUNNER_GAWK_UI_RELAY_URL: https://127.0.0.1:4499
           TEST_RUNNER_GAWK_UI_SECRET: smoke
+          TEST_RUNNER_GAWK_UI_OUT: ${{ runner.temp }}/ui-ipad
         run: |
           ipad=$(xcrun simctl list devices available -j | python3 -c '
           import json, sys
@@ -451,7 +460,7 @@ jobs:
           TEST_RUNNER_GAWK_UI_ROOM_CODE="$GAWK_UI_ROOM_CODE" \
           xcodebuild -project Gawk.xcodeproj -scheme Gawk \
             -destination "id=$ipad" -derivedDataPath "$RUNNER_TEMP/dd" \
-            -collect-test-diagnostics never \
+            -collect-test-diagnostics never -resultBundlePath "$RUNNER_TEMP/results/ipad.xcresult" \
             -only-testing:GawkUITests/IPadUITests \
             CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
 
@@ -461,7 +470,23 @@ jobs:
           cat "$RUNNER_TEMP/relay.log"
           echo "--- room fixtures"
           tail -n 20 "$RUNNER_TEMP"/rooms/*.log || true
+          echo "--- the fixtures after the tests"
+          ../scripts/fixtures-streaming.sh https://127.0.0.1:4499 "$RUNNER_TEMP/relay/gawk-loadgen" \
+            "$SMOKE_ID" $(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP"/rooms/{P1,P2,P3,P4,P5,Keeper,Guest}.out) || true
           echo "--- QUIC handshake packets to and from the relay (first 300)"
           sudo pkill tcpdump || true
           sleep 1
           cat "$RUNNER_TEMP/udp.txt"
+
+      # The screenshots and result bundles of a failed run: a CI-only UI
+      # failure is otherwise a log line with nothing to look at.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: ios-test-results
+          path: |
+            ${{ runner.temp }}/ui
+            ${{ runner.temp }}/ui-ipad
+            ${{ runner.temp }}/results
+          retention-days: 7
+          if-no-files-found: ignore
