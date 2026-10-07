@@ -198,7 +198,7 @@ script for what counts as a dependency here and why.
 | `num-integer` | 0.1.46 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `num-traits` | 0.2.19 | `MIT OR Apache-2.0` | Copyright (c) 2014 The Rust Project Developers |
 | `objc-sys` | 0.3.5 | `MIT` | — |
-| `objc2` | 0.6.4 | `MIT` | — |
+| `objc2` | 0.6.5 | `MIT` | — |
 | `objc2` | 0.5.2 | `MIT` | — |
 | `objc2-app-kit` | 0.3.2 | `Zlib OR Apache-2.0 OR MIT` | — |
 | `objc2-app-kit` | 0.2.2 | `MIT` | — |
