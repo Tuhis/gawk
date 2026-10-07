@@ -21,7 +21,7 @@ struct RoomPlayerScreen: View {
             ZStack {
                 Color.black.ignoresSafeArea()
                 if let model {
-                    content(model, size: geo.size, landscape: landscape)
+                    content(model, landscape: landscape)
                     chrome(model, landscape: landscape)
                     if let reason = model.endedReason {
                         PlayerCard(
@@ -89,39 +89,50 @@ struct RoomPlayerScreen: View {
         return wide ? base + 1 : base
     }
 
-    @ViewBuilder private func content(_ model: RoomPlayerModel, size: CGSize, landscape: Bool) -> some View {
+    /// The largest 16:9 tile that lets `count` tiles in `columns` fit
+    /// `space` whole. The grid never scrolls: when the rows are too tall
+    /// for the screen the tiles shrink, and the black around them is the
+    /// letterbox.
+    static func tileSize(count: Int, columns: Int, in space: CGSize, spacing: CGFloat = 2) -> CGSize {
+        let cols = max(columns, 1)
+        let rows = max((count + cols - 1) / cols, 1)
+        let byWidth = (space.width - CGFloat(cols - 1) * spacing) / CGFloat(cols)
+        let byHeight = (space.height - CGFloat(rows - 1) * spacing) / CGFloat(rows) * 16 / 9
+        let width = max(min(byWidth, byHeight), 0)
+        return CGSize(width: width, height: width * 9 / 16)
+    }
+
+    @ViewBuilder private func content(_ model: RoomPlayerModel, landscape: Bool) -> some View {
         switch model.layout {
-        case .grid: grid(model, size: size, landscape: landscape)
+        case .grid: grid(model, landscape: landscape)
         case .focus: focus(model, landscape: landscape)
         }
     }
 
-    private func grid(_ model: RoomPlayerModel, size: CGSize, landscape: Bool) -> some View {
+    private func grid(_ model: RoomPlayerModel, landscape: Bool) -> some View {
         let tiles = model.tiles
         let n = Self.columns(count: tiles.count, landscape: landscape, wide: sizeClass == .regular)
-        let cols = Array(repeating: GridItem(.flexible(), spacing: 2), count: n)
-        return ScrollView {
-            VStack(spacing: 8) {
-                LazyVGrid(columns: cols, spacing: 2) {
-                    ForEach(tiles, id: \.broadcastId) { tile in
-                        RoomTileView(tile: tile, model: model, controls: controls)
-                            .aspectRatio(16 / 9, contentMode: .fit)
-                    }
-                }
-                if tiles.count > RoomPlayerModel.maxPlaying {
-                    Text("Four play at once. Tap a paused stream to play it instead.")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.muted)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                        .accessibilityIdentifier("room.hint")
+        return VStack(spacing: 8) {
+            RoomGridLayout(columns: n, spacing: 2) {
+                ForEach(tiles, id: \.broadcastId) { tile in
+                    RoomTileView(tile: tile, model: model, controls: controls)
                 }
             }
-            .frame(minHeight: size.height)
+            if tiles.count > RoomPlayerModel.maxPlaying {
+                Text("Four play at once. Tap a paused stream to play it instead.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("room.hint")
+            }
         }
-        .scrollIndicators(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(edges: landscape ? .all : [])
+        .contentShape(.rect)
         .onTapGesture { controls.toggle() }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("room.grid")
     }
 
@@ -186,6 +197,42 @@ struct RoomPlayerScreen: View {
                 shareURL: roomLink(code: model.room?.code ?? code, grant: nil))
             FullScreenButton(isLandscape: landscape)
         }
+    }
+}
+
+/// The room grid (D19): rows of 16:9 tiles, sized by
+/// `RoomPlayerScreen.tileSize` to fit the space it's offered and centred in
+/// it, so it never needs to scroll. A short last row keeps to the left, as
+/// a grid's does.
+struct RoomGridLayout: Layout {
+    let columns: Int
+    let spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let space = proposal.replacingUnspecifiedDimensions(by: CGSize(width: 393, height: 852))
+        return gridSize(count: subviews.count, in: space)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let tile = RoomPlayerScreen.tileSize(count: subviews.count, columns: columns, in: bounds.size, spacing: spacing)
+        let grid = gridSize(count: subviews.count, in: bounds.size)
+        let origin = CGPoint(x: bounds.midX - grid.width / 2, y: bounds.midY - grid.height / 2)
+        let cols = max(columns, 1)
+        for (i, subview) in subviews.enumerated() {
+            let x = origin.x + CGFloat(i % cols) * (tile.width + spacing)
+            let y = origin.y + CGFloat(i / cols) * (tile.height + spacing)
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(tile))
+        }
+    }
+
+    private func gridSize(count: Int, in space: CGSize) -> CGSize {
+        guard count > 0 else { return .zero }
+        let tile = RoomPlayerScreen.tileSize(count: count, columns: columns, in: space, spacing: spacing)
+        let cols = min(max(columns, 1), count)
+        let rows = (count + max(columns, 1) - 1) / max(columns, 1)
+        return CGSize(
+            width: CGFloat(cols) * tile.width + CGFloat(cols - 1) * spacing,
+            height: CGFloat(rows) * tile.height + CGFloat(rows - 1) * spacing)
     }
 }
 

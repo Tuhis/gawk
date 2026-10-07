@@ -62,6 +62,36 @@ final class RoomPlayerUITests: XCTestCase {
         XCTAssertEqual(after.count, 4)
     }
 
+    /// The grid never scrolls: every tile lies inside the window in both
+    /// orientations, and the tiles keep 16:9 (the black around them is the
+    /// letterbox).
+    func testTheGridFitsTheScreen() throws {
+        open(try UIEnv.require("GAWK_UI_ROOM_CODE")[0], streams: 5)
+        for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
+            XCUIDevice.shared.orientation = orientation
+            // The window's frame turns with the device, so it's read with
+            // the tiles, not before the rotation lands.
+            var seen = ""
+            let fits = NSPredicate { _, _ in
+                let window = self.app.windows.firstMatch.frame
+                let frames = self.tiles.allElementsBoundByIndex.map(\.frame)
+                seen = "window \(window), tiles \(frames)"
+                return frames.count == 5 && frames.allSatisfy { window.insetBy(dx: -1, dy: -1).contains($0) }
+            }
+            let fitted = expectation(for: fits, evaluatedWith: nil)
+            if XCTWaiter.wait(for: [fitted], timeout: UIWait.step) != .completed {
+                shot("room-grid-overflow-\(orientation.rawValue)", app)
+                XCTFail("\(orientation.rawValue): \(seen)")
+            }
+            for frame in tiles.allElementsBoundByIndex.map(\.frame) {
+                XCTAssertEqual(frame.width / frame.height, 16 / 9, accuracy: 0.02, "\(orientation.rawValue): \(frame)")
+            }
+            XCTAssertFalse(app.scrollViews["room.grid"].exists, "the grid doesn't scroll")
+            shot("room-grid-fits-\(orientation.rawValue)", app)
+        }
+        XCUIDevice.shared.orientation = .portrait
+    }
+
     /// A tap on the video brings the controls back, as a tap on the black
     /// around it does (the owner, review of #475).
     func testATapOnTheVideoShowsTheControls() throws {
