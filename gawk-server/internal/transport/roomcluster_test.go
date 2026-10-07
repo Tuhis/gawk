@@ -97,7 +97,9 @@ func newRoomFleet(t *testing.T, objs ...runtime.Object) *roomFleet {
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{rooms.GroupVersionResource: rooms.ListKind}, objs...)
 	installRoomCAS(client)
-	f := &roomFleet{client: client, cs: fake.NewClientset(), cert: cert, pool: pool,
+	cs := fake.NewClientset()
+	installLeaseCAS(cs)
+	f := &roomFleet{client: client, cs: cs, cert: cert, pool: pool,
 		clientTLS:      &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{"h3"}},
 		leaseWatches:   make(chan struct{}, 16),
 		broadcastGrace: 5 * time.Minute}
@@ -144,6 +146,82 @@ func installRoomCAS(client *dynamicfake.FakeDynamicClient) {
 		n, _ := strconv.Atoi(curVersion)
 		obj.SetResourceVersion(strconv.Itoa(n + 1))
 		return false, nil, nil
+	})
+}
+
+// The fleet's broadcast leases reject a stale write, as the API server
+// does. Without it the origin's renew loop (a Get, then an Update every
+// 50 ms) could write back a copy read just before SetStalled's stamp and
+// silently wipe it, and a remote room never saw the stall
+// (TestRoomOnAnotherPodShowsASilentPublisherAway, flaky on CI).
+func TestRoomFleetLeasesRejectAStaleWrite(t *testing.T) {
+	ctx := context.Background()
+	f := newRoomFleet(t)
+	leases := f.cs.CoordinationV1().Leases("gawk")
+	if _, err := leases.Create(ctx, &coordv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "l"}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	stamper, err := leases.Get(ctx, "l", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewer, err := leases.Get(ctx, "l", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamper.Annotations = map[string]string{"stamp": "1"}
+	if _, err := leases.Update(ctx, stamper, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("the first write: %v", err)
+	}
+	if _, err := leases.Update(ctx, renewer, metav1.UpdateOptions{}); !apierrors.IsConflict(err) {
+		t.Fatalf("a write from a stale read: err = %v, want a Conflict", err)
+	}
+	got, err := leases.Get(ctx, "l", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Annotations["stamp"] != "1" {
+		t.Fatalf("the stamp was overwritten: annotations = %v", got.Annotations)
+	}
+}
+
+// installLeaseCAS is installRoomCAS for the broadcast leases. The origin
+// renews its lease with a Get and an Update every 50 ms, and SetStalled
+// stamps the same object: without resourceVersion checks a renew that read
+// the lease just before the stamp writes it back and wipes the stamp. The
+// API server answers that renew with a Conflict (the renew loop logs it
+// and renews on its next tick), and the stamp stays.
+func installLeaseCAS(cs *fake.Clientset) {
+	var mu sync.Mutex
+	gvr := coordv1.SchemeGroupVersion.WithResource("leases")
+	gr := gvr.GroupResource()
+	cs.PrependReactor("create", "leases", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		action.(k8stesting.CreateAction).GetObject().(*coordv1.Lease).ResourceVersion = "1"
+		return false, nil, nil
+	})
+	cs.PrependReactor("update", "leases", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		lease := action.(k8stesting.UpdateAction).GetObject().(*coordv1.Lease)
+		cur, err := cs.Tracker().Get(gvr, action.GetNamespace(), lease.Name)
+		if err != nil {
+			return true, nil, apierrors.NewNotFound(gr, lease.Name)
+		}
+		curVersion := cur.(*coordv1.Lease).ResourceVersion
+		if lease.ResourceVersion != curVersion {
+			return true, nil, apierrors.NewConflict(gr, lease.Name, errors.New("resourceVersion mismatch"))
+		}
+		// The write happens here, under the lock: checked and stored as
+		// one step, as two renews racing the same version can't both win.
+		updated := lease.DeepCopy()
+		n, _ := strconv.Atoi(curVersion)
+		updated.ResourceVersion = strconv.Itoa(n + 1)
+		if err := cs.Tracker().Update(gvr, updated, action.GetNamespace()); err != nil {
+			return true, nil, err
+		}
+		return true, updated, nil
 	})
 }
 
