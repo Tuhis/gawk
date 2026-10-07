@@ -505,10 +505,27 @@ pub async fn watch_room(
     events: mpsc::UnboundedSender<EngineEvent>,
     stop: watch::Receiver<bool>,
 ) {
-    // Held for the whole session: a closed identity or request channel
-    // reads as "stopped".
-    let (_identity_tx, identity) = watch::channel(None);
+    // Held for the whole session: a closed request channel reads as
+    // "stopped".
     let (_requests_tx, requests) = mpsc::unbounded_channel();
+    watch_room_with_requests(cfg, dialer, events, stop, requests).await;
+}
+
+/// [`watch_room`] taking the shell's requests (R68, docs/70 D20): a viewer
+/// renames itself with [`RoomRequest::SetNickname`], which needs no
+/// publish identity. The caller keeps the requests' sender for the whole
+/// session, because a closed request channel reads as "stopped". A viewer
+/// owns no attachment, so the other requests do nothing useful here.
+pub async fn watch_room_with_requests(
+    cfg: RoomConfig,
+    dialer: Arc<dyn RoomDialer>,
+    events: mpsc::UnboundedSender<EngineEvent>,
+    stop: watch::Receiver<bool>,
+    requests: mpsc::UnboundedReceiver<RoomRequest>,
+) {
+    // Held for the whole session: a closed identity channel reads as
+    // "stopped".
+    let (_identity_tx, identity) = watch::channel(None);
     run_room(RoomCtx {
         cfg,
         dialer,
@@ -553,6 +570,9 @@ struct Local {
     ours_listed: bool,
     leaving: bool,
     ending_reason: Option<u8>,
+    /// The name this connection's hello carried. A rename served before
+    /// the first snapshot is owed to the relay once joined.
+    hello_nickname: String,
 }
 
 async fn serve_room(ctx: &mut RoomCtx, conn: Arc<dyn RoomConn>) -> Serve {
@@ -589,6 +609,7 @@ async fn serve_room(ctx: &mut RoomCtx, conn: Arc<dyn RoomConn>) -> Serve {
         ours_listed: false,
         leaving: false,
         ending_reason: None,
+        hello_nickname: ctx.cfg.nickname.clone(),
     };
     let leave_timer = tokio::time::sleep(Duration::from_secs(3600));
     tokio::pin!(leave_timer);
@@ -762,20 +783,26 @@ async fn set_nickname(
 ) -> Result<(), ()> {
     ctx.cfg.nickname = nickname;
     if !local.joined {
+        // Sent on the join (handle_record), and by every later hello.
         return Ok(());
     }
+    write_set_nickname(ctx, conn).await?;
+    if local.ours_listed {
+        local.attached_gen = None;
+        maybe_attach(ctx, conn, local).await?;
+    }
+    Ok(())
+}
+
+/// Writes SetNickname with the configured name. `Err` = the write failed.
+async fn write_set_nickname(ctx: &RoomCtx, conn: &dyn RoomConn) -> Result<(), ()> {
     let rec = command_record(&wire::RoomCommand {
         kind: wire::ROOM_COMMAND_SET_NICKNAME,
         nickname: truncate_utf8(&ctx.cfg.nickname, wire::MAX_ROOM_NICKNAME_LEN),
         ..wire::RoomCommand::default()
     })
     .map_err(|_| ())?;
-    conn.write(&rec).await.map_err(|_| ())?;
-    if local.ours_listed {
-        local.attached_gen = None;
-        maybe_attach(ctx, conn, local).await?;
-    }
-    Ok(())
+    conn.write(&rec).await.map_err(|_| ())
 }
 
 /// Dispatches one record. `Ok(Some(_))` ends the connection's serve loop;
@@ -806,7 +833,13 @@ async fn handle_record(
             ctx.cfg.code = s.code.to_owned();
             local.summary = RoomSummary::from_state(&s);
             local.last_seq = Some(s.seq);
+            let joining = !local.joined;
             local.joined = true;
+            if joining && ctx.cfg.nickname != local.hello_nickname {
+                // Renamed between the hello and this snapshot: the hello
+                // said the old name.
+                write_set_nickname(ctx, conn).await?;
+            }
             let id = ctx.identity.borrow().clone();
             local.ours_listed = id
                 .as_ref()
@@ -1319,6 +1352,114 @@ mod tests {
             .await
             .expect("stops")
             .unwrap();
+    }
+
+    /// A viewer's room session with its request channel, as the iOS
+    /// `RoomWatcher` runs it.
+    struct Watcher {
+        relay: RelayEnd,
+        events: UnboundedReceiver<EngineEvent>,
+        requests: UnboundedSender<RoomRequest>,
+        stop: watch::Sender<bool>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    fn watcher() -> Watcher {
+        let (conn, relay) = scripted();
+        let dialer = Arc::new(FakeDialer {
+            conns: Mutex::new(VecDeque::from([Ok(conn)])),
+            urls: Mutex::new(Vec::new()),
+        });
+        let (events_tx, events) = mpsc::unbounded_channel();
+        let (stop, stop_rx) = watch::channel(false);
+        let (requests, requests_rx) = mpsc::unbounded_channel();
+        let cfg = RoomConfig {
+            relay_url: "https://relay.example:4433".into(),
+            code: "lan-party".into(),
+            nickname: "Sam".into(),
+            ..RoomConfig::default()
+        };
+        let task = tokio::spawn(watch_room_with_requests(
+            cfg,
+            dialer,
+            events_tx,
+            stop_rx,
+            requests_rx,
+        ));
+        Watcher {
+            relay,
+            events,
+            requests,
+            stop,
+            task,
+        }
+    }
+
+    impl Watcher {
+        /// The next room picture.
+        async fn state(&mut self) -> RoomSummary {
+            match tokio::time::timeout(Duration::from_secs(5), self.events.recv()).await {
+                Ok(Some(EngineEvent::RoomState(s))) => s,
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    /// R68 (docs/70 D20): a viewer renames itself in the room. SetNickname
+    /// needs no publish identity, and a viewer never attaches, so the
+    /// rename is the only command on the wire.
+    #[tokio::test]
+    async fn a_watcher_renames_itself_without_an_identity() {
+        let mut w = watcher();
+        let hello = w.relay.next().await;
+        assert_eq!(wire::parse_room_hello(&hello).unwrap().nickname, "Sam");
+        w.relay.send_state(&snapshot(1, vec![ours(true)]));
+        assert_eq!(w.state().await.your_id, 7);
+
+        w.requests
+            .send(RoomRequest::SetNickname("Kuusi".into()))
+            .unwrap();
+        let c = w.relay.next_command().await;
+        assert_eq!(c.kind, wire::ROOM_COMMAND_SET_NICKNAME);
+        assert_eq!(c.nickname, "Kuusi");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), w.relay.from_client.recv())
+                .await
+                .is_err(),
+            "a viewer's rename is a rename only, never an attach"
+        );
+        w.stop.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), w.task)
+            .await
+            .expect("stops")
+            .unwrap();
+    }
+
+    /// A rename between the hello and the first snapshot (a room
+    /// reconnect's window, where queued requests are served first) was kept
+    /// for the next hello only, so the relay kept the old name on this
+    /// connection. The join now sends it.
+    #[tokio::test]
+    async fn a_rename_before_the_snapshot_is_sent_once_joined() {
+        let mut w = watcher();
+        let hello = w.relay.next().await;
+        assert_eq!(wire::parse_room_hello(&hello).unwrap().nickname, "Sam");
+        w.requests
+            .send(RoomRequest::SetNickname("Kuusi".into()))
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), w.relay.from_client.recv())
+                .await
+                .is_err(),
+            "nothing is sent before the room is joined"
+        );
+
+        w.relay.send_state(&snapshot(1, vec![]));
+        let c = w.relay.next_command().await;
+        assert_eq!(c.kind, wire::ROOM_COMMAND_SET_NICKNAME);
+        assert_eq!(c.nickname, "Kuusi");
+        w.stop.send(true).unwrap();
+        let _ = w.task.await;
     }
 
     #[tokio::test]

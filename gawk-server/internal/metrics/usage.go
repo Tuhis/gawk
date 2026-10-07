@@ -157,6 +157,14 @@ func (m *ServerMetrics) BroadcastsStartedCount(kind, app, os, browser string) fl
 	return counterValue(m.usage.broadcastsStarted.WithLabelValues(kind, app, os, browser))
 }
 
+// RoomsMintedCount reads back the rooms-minted counter (test support).
+func (m *ServerMetrics) RoomsMintedCount() float64 {
+	if m == nil {
+		return 0
+	}
+	return counterValue(m.usage.roomsMinted)
+}
+
 // ViewerJoinsCount reads back a joins counter (test support).
 func (m *ServerMetrics) ViewerJoinsCount(kind, delivery, app, os, browser string) float64 {
 	if m == nil {

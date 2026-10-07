@@ -26,7 +26,7 @@ final class BroadcastLoopTests: XCTestCase {
         let session = BroadcastSession(identity: identity)
         session.start(
             relayURL: relay, secret: env["GAWK_SMOKE_SECRET"] ?? "", quality: .cellular,
-            room: "", nickname: "", telemetry: false, insecure: true
+            nickname: "", telemetry: false, insecure: true
         )
         var code = ""
         for _ in 0..<700 {
@@ -58,7 +58,7 @@ final class BroadcastLoopTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
         }
         let s = seen.snapshot()
-        let counters = session.counters().map { "\($0)" } ?? "none"
+        let counters = session.currentCounters().map { "\($0)" } ?? "none"
         XCTAssertNil(session.failure, "the pipeline failed")
         // The Simulator encodes in software, slowly (docs/67 §12): the bar is
         // that the path works, not its rate, which D26 leaves to devices.
@@ -68,6 +68,89 @@ final class BroadcastLoopTests: XCTestCase {
         if case .live(let again, _) = session.phase {
             XCTAssertEqual(again, code, "a rotation kept the code")
         }
+    }
+
+    /// docs/70 D12, IX4: Quality changed while live restarts the publish
+    /// leg on the same code and token, says nothing about it, and a viewer
+    /// picks up the new rung's stream.
+    func testQualityChangesWhileLiveOnTheSameCode() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let relay = env["GAWK_SMOKE_RELAY_URL"], !relay.isEmpty else {
+            throw XCTSkip("GAWK_SMOKE_RELAY_URL not set")
+        }
+        initializeCore()
+        let identity = IdentityStore(service: "fi.ioio.gawk.tests.\(UUID().uuidString)")
+        let session = BroadcastSession(identity: identity)
+        session.start(
+            relayURL: relay, secret: env["GAWK_SMOKE_SECRET"] ?? "", quality: .cellular,
+            nickname: "", telemetry: false, insecure: true
+        )
+        var code = ""
+        for _ in 0..<700 {
+            if case .live(let c, _) = session.phase { code = c; break }
+            if case .ended = session.phase { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        guard code.count == 6 else {
+            session.stop()
+            XCTFail("never went live: \(session.phase)")
+            return
+        }
+        // Turning, as in the test above: the Simulator's software encoder
+        // has stalled for good on its first session (2026-10-05), and a
+        // turn builds a new one. Devices take the real encoder; the core's
+        // `publish_relay` test runs this change on VideoToolbox.
+        let source = TestBroadcastSource(sink: session.media, rotateEvery: 2)
+        source.start()
+        defer { source.stop(); session.stop() }
+        // The token arrives beside the code; the restart waits for both.
+        var token = ""
+        for _ in 0..<100 {
+            if let id = identity.load(relay: relay) { token = id.token; break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertFalse(token.isEmpty, "the identity was stored")
+
+        let seen = Seen()
+        let viewer = Viewer.start(
+            options: ViewerOptions(relayUrl: relay, broadcastId: code, preset: .lowestLatency, insecure: true),
+            listener: seen
+        )
+        defer { viewer.stop() }
+        // The Simulator's software encoder can take a while to come up the
+        // first time in a process.
+        for _ in 0..<800 {
+            if seen.snapshot().samples >= 10 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let before = seen.snapshot()
+        let counters = session.currentCounters().map { "\($0)" } ?? "none"
+        XCTAssertGreaterThanOrEqual(before.samples, 10, "playing before the change; pipeline: \(counters)")
+
+        var phases: [BroadcastPhase] = []
+        session.setQuality(.standard)
+        for _ in 0..<800 {
+            phases.append(session.phase)
+            let now = seen.snapshot()
+            if now.formats > before.formats && now.samples >= before.samples + 10 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let after = seen.snapshot()
+        XCTAssertGreaterThan(after.formats, before.formats, "the viewer re-primed on the new config")
+        XCTAssertGreaterThanOrEqual(after.samples, before.samples + 10, "and kept playing")
+        XCTAssertFalse(phases.contains { $0.isResuming }, "no narration: \(phases)")
+        XCTAssertEqual(session.phase, .live(code: code, joinLink: watchLink(broadcastId: code)), "the same code")
+        XCTAssertEqual(identity.load(relay: relay)?.code, code)
+        XCTAssertEqual(identity.load(relay: relay)?.token, token, "the same token")
+        XCTAssertEqual(session.quality, .standard)
+        // The new rung is what's encoded: Standard's frame rate and cap.
+        var rung: (UInt32, UInt32) = (0, 0)
+        for _ in 0..<200 {
+            if let c = session.currentCounters(), c.fps == 60 { rung = (c.fps, c.peakBitrateBps); break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(rung.0, 60)
+        XCTAssertEqual(rung.1, 8_000_000)
     }
 }
 

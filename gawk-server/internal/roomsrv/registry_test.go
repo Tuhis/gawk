@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Tuhis/gawk/gawk-server/events"
 	"github.com/Tuhis/gawk/gawk-server/rooms"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -276,8 +277,10 @@ func TestMintGates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
-	if _, err := f.reg.Mint(ctx, MintRequest{BroadcastID: "ABCDEF", ResumeToken: tok, CreateSecret: "s3cret"}); !errors.Is(err, ErrAlreadyAttached) {
-		t.Errorf("second room for the same broadcast: %v", err)
+	// The same broadcast minting again gets its room back, and that takes
+	// no second slot: the limit below still counts one room.
+	if again, err := f.reg.Mint(ctx, MintRequest{BroadcastID: "ABCDEF", ResumeToken: tok, CreateSecret: "s3cret"}); err != nil || again.Code != res.Code {
+		t.Errorf("the same broadcast minting again: %+v, %v; want its room", again, err)
 	}
 	f.bc.set("GHJKMN", BroadcastState{Live: true})
 	if _, err := f.reg.Mint(ctx, MintRequest{BroadcastID: "GHJKMN", ResumeToken: f.tokens.MintResume("GHJKMN"), CreateSecret: "s3cret"}); !errors.Is(err, ErrMaxRooms) {
@@ -286,6 +289,69 @@ func TestMintGates(t *testing.T) {
 	f.reg.EndRoom(res.Code, wire.RoomEndReasonCreator)
 	if _, err := f.reg.Mint(ctx, MintRequest{BroadcastID: "GHJKMN", ResumeToken: f.tokens.MintResume("GHJKMN"), CreateSecret: "s3cret"}); err != nil {
 		t.Errorf("mint after the first room ended: %v", err)
+	}
+}
+
+// BUGS.md "A room mint whose answer is lost can never be retried" (CI for
+// #475): the relay minted a room, the minter's session died before it read
+// the code, and every retry was 409 until the room ended. A mint from the
+// broadcast a room was minted with, while it is still attached there, is
+// that room again: the same code and creator token, no second room and no
+// second room.opened. The proofs still come first.
+func TestARepeatedMintAnswersWithTheMintersRoom(t *testing.T) {
+	f, bus := busFixture(t)
+	ctx := context.Background()
+	first := f.mint(t, "ABCDEF")
+	if first.Repeated {
+		t.Error("a first mint reads as a repeat")
+	}
+	again, err := f.reg.Mint(ctx, MintRequest{BroadcastID: "abcdef", ResumeToken: f.tokens.MintResume("ABCDEF"), Label: "pc"})
+	if err != nil {
+		t.Fatalf("repeated mint: %v", err)
+	}
+	if again.Code != first.Code || again.Display != first.Display || !bytes.Equal(again.CreatorToken, first.CreatorToken) || !again.Repeated {
+		t.Fatalf("repeated mint = %+v, want the first room %+v again", again, first)
+	}
+	if rows := f.reg.Stats(); len(rows) != 1 {
+		t.Errorf("rooms after the repeat = %d, want 1", len(rows))
+	}
+	if n := len(bus.only(events.TypeRoomOpened)); n != 1 {
+		t.Errorf("room.opened published %d times, want 1", n)
+	}
+	_, c := f.join(t, again.Code, "tuhis", Grants{Creator: true, AttachOK: true}, again.CreatorToken)
+	st := c.nextState(t)
+	if !bytes.Equal(st.CreatorToken, first.CreatorToken) || st.Flags&wire.RoomStateFlagCreator == 0 {
+		t.Errorf("the repeat's first snapshot = %+v, want the creator grant and token", st)
+	}
+	if len(st.Attachments) != 1 || st.Attachments[0].BroadcastID != "ABCDEF" {
+		t.Errorf("attachments = %+v, want the one broadcast", st.Attachments)
+	}
+	if _, err := f.reg.Mint(ctx, MintRequest{BroadcastID: "ABCDEF", ResumeToken: f.tokens.MintResume("GHJKMN")}); !errors.Is(err, ErrForbidden) {
+		t.Errorf("a repeat without the broadcast's proof: %v, want forbidden", err)
+	}
+}
+
+// The repeat is the minter's alone. A broadcast attached to a room it did
+// not mint (a static room, or another broadcast's dynamic room) is still
+// refused a room of its own (D1), and gets nobody's creator token.
+func TestAMintFromABroadcastInAnotherRoomIsRefused(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+	f.bc.set("ABCDEF", BroadcastState{Live: true})
+	if err := f.reg.UpsertStatic(StaticRoom{Code: "TuhisRoom", Attachments: []rooms.Attachment{{BroadcastID: "ABCDEF"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := f.reg.Mint(ctx, MintRequest{BroadcastID: "ABCDEF", ResumeToken: f.tokens.MintResume("ABCDEF")}); !errors.Is(err, ErrAlreadyAttached) {
+		t.Errorf("mint from a static room's stream: %+v, %v; want attached elsewhere", res, err)
+	}
+	theirs := f.mint(t, "GHJKMN")
+	p, c := f.join(t, theirs.Code, "guest", Grants{AttachOK: true}, nil)
+	c.nextState(t)
+	f.bc.set("PQRSTU", BroadcastState{Live: true})
+	p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: "PQRSTU", ResumeToken: f.tokens.MintResume("PQRSTU")})
+	c.nextEvent(t, wire.RoomEventAttachmentAdded)
+	if res, err := f.reg.Mint(ctx, MintRequest{BroadcastID: "PQRSTU", ResumeToken: f.tokens.MintResume("PQRSTU")}); !errors.Is(err, ErrAlreadyAttached) {
+		t.Errorf("mint from a guest's stream: %+v, %v; want attached elsewhere", res, err)
 	}
 }
 

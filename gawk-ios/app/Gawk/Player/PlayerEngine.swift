@@ -129,6 +129,21 @@ final class PlayerEngine: ViewerListener, @unchecked Sendable {
         }
     }
 
+    /// Stops watching but keeps the frame on screen: a paused room tile
+    /// holds its last frame (docs/70 D19). `start` plays again on the same
+    /// layer.
+    func pause() {
+        queue.async { [self] in
+            viewer?.stop()
+            viewer = nil
+            timer?.cancel()
+            timer = nil
+            synchronizer.setRate(0, time: synchronizer.currentTime())
+            // A plain flush drops what's queued, not the image displayed.
+            flushRenderers()
+        }
+    }
+
     func setPreset(_ preset: Preset) {
         queue.async { [self] in
             self.preset = preset

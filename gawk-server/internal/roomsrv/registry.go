@@ -201,6 +201,10 @@ type room struct {
 	maxBroadcasts int
 	creatorFP     string
 	createdAt     time.Time
+	// minter is the broadcast a dynamic room was minted from, so a repeat
+	// of that mint can be answered with this room (Mint). Not in the CR: an
+	// adopted room has none, and a repeat there is refused as before.
+	minter string
 
 	seq          uint32
 	nextPID      uint16
@@ -524,6 +528,9 @@ type MintResult struct {
 	Code         string // normalized
 	Display      string
 	CreatorToken []byte
+	// Repeated: the room is one this broadcast minted earlier and is still
+	// attached to, answered again because the first answer never arrived.
+	Repeated bool
 }
 
 // Mint creates a dynamic room with the requesting broadcast attached
@@ -534,6 +541,13 @@ type MintResult struct {
 // (ErrMaxRooms). The room starts
 // its empty grace immediately so a mint whose session never arrives is
 // reclaimed; the join that follows the upgrade clears it.
+//
+// A mint from the broadcast a room was minted from, while it is still
+// attached there, answers with that room again (Repeated): a minter whose
+// session died before it read the code can only retry the mint, and a 409
+// would leave it outside its own room until the room ended. The proof has
+// already passed, and a broadcast's resume token is the minter's own
+// credential, so handing back the creator token grants nothing new.
 func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error) {
 	if r.opts.CreateSecret != "" && subtle.ConstantTimeCompare([]byte(req.CreateSecret), []byte(r.opts.CreateSecret)) != 1 {
 		return MintResult{}, fmt.Errorf("%w: create secret", ErrForbidden)
@@ -574,8 +588,14 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 			continue
 		}
 		if other, taken := r.attached[id]; taken {
+			if own := r.rooms[other]; own != nil && own.minter == id {
+				res := MintResult{Code: own.code, Display: own.display, CreatorToken: tokens.MintCreator(own.code), Repeated: true}
+				r.mu.Unlock()
+				r.log.Info("room mint repeated", "room_key", r.opts.Obfuscate(own.code), "broadcast_key", r.opts.Obfuscate(id))
+				return res, nil
+			}
 			r.mu.Unlock()
-			_ = other // the other room's code stays out of the error text (D16)
+			// The other room's code stays out of the error text (D16).
 			return MintResult{}, fmt.Errorf("%w: broadcast is in another room", ErrAlreadyAttached)
 		}
 		if r.dynamicCountLocked() >= r.opts.MaxRooms {
@@ -586,7 +606,7 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 		token := tokens.MintCreator(norm)
 		rm := &room{
 			code: norm, display: raw, kind: rooms.KindDynamic,
-			creatorFP: rooms.Fingerprint(token), createdAt: now,
+			creatorFP: rooms.Fingerprint(token), createdAt: now, minter: id,
 			nextPID: 1, participants: make(map[uint16]*Participant),
 		}
 		if r.opts.Reserve != nil {

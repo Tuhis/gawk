@@ -139,8 +139,9 @@ func (s *Server) roomRejectBanned(w http.ResponseWriter, r *http.Request, route 
 // broadcast (the live broadcast to attach), resume (its resume token, hex),
 // label (tile label), create (the -room-create-secret), name (nickname
 // fallback). Every gate answers pre-upgrade: 403 wrong create secret or
-// resume token, 404 unknown broadcast, 409 broadcast already in a room, 429
-// -max-rooms, 503 store unavailable.
+// resume token, 404 unknown broadcast, 409 broadcast already in a room it
+// did not mint, 429 -max-rooms, 503 store unavailable. A broadcast still in
+// the room it minted gets that room again (roomsrv.Registry.Mint).
 func (s *Server) handleRoomNew(w http.ResponseWriter, r *http.Request) {
 	const route = "room"
 	if s.rejectedDraining(w, route) {
@@ -178,12 +179,19 @@ func (s *Server) handleRoomNew(w http.ResponseWriter, r *http.Request) {
 	}
 	// The room exists from here whether or not the upgrade below succeeds
 	// (its creator reconnects with the token), so this is where it counts.
-	s.metrics.RoomMinted()
+	// A repeat answers with a room an earlier mint made and counted.
+	if !res.Repeated {
+		s.metrics.RoomMinted()
+	}
 	sess, err := s.wt.Upgrade(w, r)
 	if err != nil {
-		// The room exists with nobody in it; end it now rather than letting
-		// the broadcast sit reserved for the empty grace.
-		reg.EndRoom(res.Code, wire.RoomEndReasonEmpty)
+		// A fresh room exists with nobody in it; end it now rather than
+		// letting the broadcast sit reserved for the empty grace. A repeated
+		// one was not made here and may have people in it; the next repeat
+		// gets it back anyway.
+		if !res.Repeated {
+			reg.EndRoom(res.Code, wire.RoomEndReasonEmpty)
+		}
 		s.metrics.Connection(route, metrics.OutcomeUpgradeFailed)
 		s.log.Warn("room mint upgrade failed", "err", err)
 		w.WriteHeader(http.StatusForbidden) // no implicit 200 (finding 12)

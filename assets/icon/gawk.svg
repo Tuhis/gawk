@@ -1,10 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   The gawk application icon (R44, docs/53): the web app's lightning bolt on a
-  rounded purple tile. This file is the single source of truth. png/, gawk.ico
-  and gawk.res are generated from it by `go run ./tools/icon generate` and
-  drift-checked in CI by `go run ./tools/icon check`. Edit this, regenerate,
-  commit all of it.
+  rounded purple tile. This file is the single source of truth. png/,
+  gawk.ico, gawk.res, gawk.icns and the iOS asset catalogs under ios/ are
+  generated from it by `go run ./tools/icon generate` and drift-checked in CI
+  by `go run ./tools/icon check`. Edit this, regenerate, commit all of it.
+
+  The <rect> is the tile, and it stays the first shape and covers the whole
+  viewBox: the iOS variant redraws it without rx, because iOS masks the
+  corners itself and rejects an icon with transparency (R68 K13, docs/70).
 
   The bolt path is the first <path> of gawk-app/public/favicon.svg, verbatim
   (48x46 units), translated and scaled to sit centred on the 256-unit tile.

@@ -1,13 +1,16 @@
 // Command icon generates and checks the gawk application icon (R44, docs/53).
 //
-//	go run ./tools/icon generate            # re-render assets/icon/{png,gawk.ico,gawk.res,gawk.icns}
+//	go run ./tools/icon generate            # re-render assets/icon/{png,gawk.ico,gawk.res,gawk.icns,ios}
 //	go run ./tools/icon check               # fail if the committed files drift from gawk.svg
 //	go run ./tools/icon verify-exe FILE.exe # fail unless FILE.exe carries an icon resource
 //
-// The source is assets/icon/gawk.svg; the outputs are committed so that
-// neither broadcaster's build needs an SVG rasteriser. The check compares
-// decoded pixels, not bytes, so a compress/flate change between Go releases
-// is not "drift" while any real change to the shape is.
+// The source is assets/icon/gawk.svg; the outputs are committed so that no
+// app's build needs an SVG rasteriser: the PNG set, .ico and .res for the
+// Linux and Windows broadcasters, the .icns for the macOS one, and the iOS
+// app's asset catalogs under ios/ (ios.go). The check compares decoded
+// pixels, not bytes, so a compress/flate change between Go releases is not
+// "drift" while any real change to the shape is; the catalogs'
+// Contents.json files are text and are compared byte for byte.
 package main
 
 import (
@@ -101,14 +104,20 @@ func pngPath(dir string, size int) string {
 	return filepath.Join(dir, pngDir, fmt.Sprintf("gawk-%d.png", size))
 }
 
-// renderSource renders every size any derivative needs: Sizes, plus the
-// .icns-only 512 and 1024. Pick the Sizes subset for the PNGs, .ico and .res.
-func renderSource(dir string) (map[int]*image.NRGBA, error) {
+// loadSource parses the SVG in dir.
+func loadSource(dir string) (*Document, error) {
 	data, err := os.ReadFile(filepath.Join(dir, svgName))
 	if err != nil {
 		return nil, err
 	}
-	doc, err := ParseSVG(data)
+	return ParseSVG(data)
+}
+
+// renderSource renders every size any derivative needs: Sizes, plus the
+// .icns-only 512 and 1024. Pick the Sizes subset for the PNGs, .ico and .res.
+// The iOS variant is a different document and renders separately (renderIOS).
+func renderSource(dir string) (map[int]*image.NRGBA, error) {
+	doc, err := loadSource(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +181,10 @@ func Generate(dir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, icnsName), icns, 0o644)
+	if err := os.WriteFile(filepath.Join(dir, icnsName), icns, 0o644); err != nil {
+		return err
+	}
+	return generateIOS(dir)
 }
 
 // Check re-renders the SVG and compares the committed derivatives against it,
@@ -258,7 +270,7 @@ func Check(dir string) error {
 			return fmt.Errorf("%s: %s (%d px): %w", icnsName, e.Type, e.Size, err)
 		}
 	}
-	return nil
+	return checkIOS(dir)
 }
 
 // compare reports the first pixel whose channels differ by more than the

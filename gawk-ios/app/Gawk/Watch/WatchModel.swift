@@ -1,57 +1,35 @@
 import Foundation
 import Observation
 
-/// The Watch screen's state (docs/67 D15, D20, D22): one player at a time.
+/// One player's state (docs/67 D15, D22; docs/70 D5): the stream it plays,
+/// where from, and what the core says about it.
 @MainActor
 @Observable
 final class WatchModel {
-    var code = ""
+    let code: String
+    /// The relay dialed: the server picked in Settings, or a link's.
+    let relayUrl: String
+    let insecure: Bool
+
     var preset: Preset = .balanced {
         didSet { engine?.setPreset(preset) }
     }
-    #if DEBUG
-    /// A local relay for the Simulator (phase S, D26). Empty means the
-    /// compiled-in default.
-    var relayOverride = ""
-    /// Skip certificate verification, for a dev relay's self-signed cert.
-    var insecure = false
-    #endif
 
     private(set) var engine: PlayerEngine?
     private(set) var pip: PictureInPicture?
-    private(set) var watchingCode: String?
     private(set) var status: ViewerStatus?
     private(set) var stats: ViewerStats?
     private(set) var unsupportedCodec: String?
     private var isForeground = true
 
-    let defaultRelayUrl = coreInfo().defaultRelayUrl
-
-    /// The server picked in Settings (R37, docs/40) and whether it may use
-    /// a dev certificate; the view keeps these in step with `AppSettings`.
-    var selectedRelayUrl = ""
-    var selectedInsecure = false
-
-    var canWatch: Bool { BroadcastCode.isValid(code) }
-
-    var relayUrl: String {
-        #if DEBUG
-        let override = relayOverride.trimmingCharacters(in: .whitespaces)
-        if !override.isEmpty { return override }
-        #endif
-        return selectedRelayUrl.isEmpty ? defaultRelayUrl : selectedRelayUrl
+    init(code: String, relayUrl: String, insecure: Bool) {
+        self.code = code
+        self.relayUrl = relayUrl
+        self.insecure = insecure
     }
 
-    private var isInsecure: Bool {
-        #if DEBUG
-        return insecure || selectedInsecure
-        #else
-        return false
-        #endif
-    }
-
+    /// Starts (or restarts, for Try again) the player.
     func watch() {
-        guard canWatch else { return }
         stop()
         let sender = WeakEngine()
         let engine = PlayerEngine { [weak self] event in
@@ -62,18 +40,16 @@ final class WatchModel {
         pip.onActiveChange = { [weak self] _ in self?.updateVideoEnabled() }
         self.engine = engine
         self.pip = pip
-        watchingCode = code
         status = .connecting
-        engine.start(ViewerOptions(
-            relayUrl: relayUrl, broadcastId: code, preset: preset, insecure: isInsecure))
+        engine.start(ViewerOptions(relayUrl: relayUrl, broadcastId: code, preset: preset, insecure: insecure))
     }
 
+    /// Leaves: the player and its session stop (the player's X).
     func stop() {
         pip?.stop()
         engine?.stop()
         engine = nil
         pip = nil
-        watchingCode = nil
         status = nil
         stats = nil
         unsupportedCodec = nil
@@ -100,6 +76,9 @@ final class WatchModel {
         case .unsupportedCodec(let c): unsupportedCodec = c
         }
     }
+
+    /// Live and playing: the controls may hide (docs/70 D5).
+    var isLive: Bool { status == .live && unsupportedCodec == nil }
 }
 
 /// The engine an event came from, held weakly: the engine owns the closure
@@ -108,28 +87,52 @@ private final class WeakEngine: @unchecked Sendable {
     weak var engine: PlayerEngine?
 }
 
-/// The status line's words. The SPA's copy where it has some
+/// The player's words. The web viewer's copy where it has some
 /// (`useViewerConnection.ts`, `ViewerScreen.tsx`).
 enum WatchStatusText {
-    static func describe(_ status: ViewerStatus) -> String {
-        switch status {
-        case .connecting:
-            return "Connecting…"
-        case .live:
-            return "Live"
-        case .reconnecting(let attempt, _, let draining):
-            // A 4002 drain is a planned relay rollout with an instant retry.
-            return draining
-                ? "Stream server is updating — reconnecting…"
-                : "Reconnecting — attempt \(attempt)…"
-        case .ended(let reason):
-            switch reason {
-            case .broadcastEnded: return "Broadcast ended. The stream is over."
-            case .terminatedByOperator: return "Broadcast ended by a moderator."
-            case .notFound: return "Streamer offline. No one is streaming at this code right now."
-            case .gaveUp: return "Lost the stream. The streamer may have gone offline."
-            case .stopped: return "Stopped."
-            }
+    /// The amber chip's words while reconnecting (docs/70 D5): a 4002 drain
+    /// is a planned relay rollout with an instant retry.
+    static func reconnecting(draining: Bool) -> String {
+        draining ? "Stream server is updating" : "RECONNECTING"
+    }
+
+    static func connecting(_ code: String) -> String {
+        "Connecting to \(code)…"
+    }
+
+    /// The card over black for a terminal state (docs/70 D9): a title, a
+    /// body, and whether Try again is offered.
+    struct Card: Equatable {
+        let systemImage: String
+        let title: String
+        let body: String
+        let canRetry: Bool
+    }
+
+    static func card(_ reason: ViewerEnd, code: String) -> Card? {
+        switch reason {
+        case .notFound:
+            Card(
+                systemImage: "antenna.radiowaves.left.and.right.slash", title: "Streamer offline",
+                body: "No one is streaming at code \(code) right now.", canRetry: true)
+        case .broadcastEnded:
+            Card(systemImage: "stop.circle", title: "Broadcast ended", body: "The stream is over.", canRetry: true)
+        case .terminatedByOperator:
+            Card(
+                systemImage: "hand.raised", title: "Broadcast ended",
+                body: "Broadcast ended by a moderator.", canRetry: false)
+        case .gaveUp:
+            Card(
+                systemImage: "wifi.exclamationmark", title: "Lost the stream",
+                body: "The streamer may have gone offline.", canRetry: true)
+        case .stopped:
+            nil
         }
+    }
+
+    static func unsupported(_ codec: String) -> Card {
+        Card(
+            systemImage: "film", title: "Can't play this stream",
+            body: "This player can't play this stream's video format (\(codec)).", canRetry: false)
     }
 }

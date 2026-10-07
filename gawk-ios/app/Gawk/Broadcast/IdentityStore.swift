@@ -46,6 +46,32 @@ final class IdentityStore: @unchecked Sendable {
         }
     }
 
+    /// A room credential (docs/70 K12): a static room's attach key or the
+    /// creator token of a room this app made, bound to the relay it was
+    /// stored for and never presented to another (docs/68 D5a).
+    enum RoomCredential: String {
+        case attachKey = "roomKey"
+        case creatorToken = "roomCreator"
+    }
+
+    func roomCredential(_ kind: RoomCredential, relay: String, code: String) -> String {
+        read(account: Self.roomAccount(kind, relay: relay, code: code))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+    }
+
+    func setRoomCredential(_ value: String, _ kind: RoomCredential, relay: String, code: String) {
+        let account = Self.roomAccount(kind, relay: relay, code: code)
+        if value.isEmpty {
+            delete(account: account)
+        } else {
+            write(account: account, data: Data(value.utf8))
+        }
+    }
+
+    private static func roomAccount(_ kind: RoomCredential, relay: String, code: String) -> String {
+        "\(kind.rawValue):\(relay) \(code.lowercased())"
+    }
+
     private func query(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
@@ -77,4 +103,15 @@ final class IdentityStore: @unchecked Sendable {
     private func delete(account: String) {
         SecItemDelete(query(account: account) as CFDictionary)
     }
+
+    #if DEBUG
+    /// Every item this store holds, for `-gawkReset`'s clean start.
+    func removeAll() {
+        let all: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+        ]
+        SecItemDelete(all as CFDictionary)
+    }
+    #endif
 }

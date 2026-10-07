@@ -5,6 +5,21 @@
 //!   cargo run -p gawk-devpub -- --codec vp9 --url https://127.0.0.1:4433 --insecure
 //!
 //! Prints `GAWK_DEVPUB_ID=<ID>` once the relay announces the broadcast.
+//!
+//! A room fixture (docs/70 K14): `--room-new` mints a room from the
+//! broadcast, `--room <code>` joins one and attaches to it, and `--nick
+//! <name>` names the participant and its tile. `GAWK_DEVPUB_ROOM=<code>` is
+//! printed once the room is known (minted, or attached), and a minted
+//! room's creator token as `GAWK_DEVPUB_CREATOR=<hex>`, for a test to join
+//! it as its creator through a `?rt=c:<hex>` link:
+//!
+//!   cargo run -p gawk-devpub -- --insecure --room-new --nick Ann
+//!   cargo run -p gawk-devpub -- --insecure --room QX7P2K --nick Ben
+//!
+//! `--quit-after <seconds>` exits without ending the broadcast, as a
+//! broadcaster that drops off does: viewers and rooms see it away until the
+//! relay's grace ends (docs/70 D19's away tile).
+//!
 //! The fixtures are `crates/viewer/tests/fixtures/` (their README says how
 //! they were made): 320×240, 30 frames, keyframes at 0 and 15.
 
@@ -59,24 +74,73 @@ fn vpx_keyframe(codec: &str, frame: &[u8]) -> bool {
     }
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    let mut args = std::env::args().skip(1);
-    let (mut codec, mut url, mut secret, mut insecure) = (
-        "h264".to_owned(),
-        "https://127.0.0.1:4433".to_owned(),
-        String::new(),
-        false,
-    );
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "--codec" => codec = args.next().expect("--codec vp8|vp9|h264"),
-            "--url" => url = args.next().expect("--url <relay>"),
-            "--secret" => secret = args.next().expect("--secret <publish secret>"),
-            "--insecure" => insecure = true,
-            other => panic!("unknown argument {other}"),
+/// The command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Args {
+    codec: String,
+    url: String,
+    secret: String,
+    insecure: bool,
+    /// A room to join and attach to (docs/70 K14), empty for none.
+    room: String,
+    /// Mint a new room from this broadcast.
+    room_new: bool,
+    /// The room nickname and tile label; empty lets the relay assign one.
+    nick: String,
+    /// Exit after this many seconds without a clean stop.
+    quit_after: Option<u64>,
+}
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
+    let mut parsed = Args {
+        codec: "h264".into(),
+        url: "https://127.0.0.1:4433".into(),
+        secret: String::new(),
+        insecure: false,
+        room: String::new(),
+        room_new: false,
+        nick: String::new(),
+        quit_after: None,
+    };
+    let mut args = args.into_iter();
+    while let Some(flag) = args.next() {
+        let mut value = |usage: &str| args.next().ok_or_else(|| format!("usage: {usage}"));
+        match flag.as_str() {
+            "--codec" => parsed.codec = value("--codec vp8|vp9|h264")?,
+            "--url" => parsed.url = value("--url <relay>")?,
+            "--secret" => parsed.secret = value("--secret <publish secret>")?,
+            "--insecure" => parsed.insecure = true,
+            "--room" => parsed.room = value("--room <code>")?,
+            "--room-new" => parsed.room_new = true,
+            "--nick" => parsed.nick = value("--nick <name>")?,
+            "--quit-after" => {
+                let v = value("--quit-after <seconds>")?;
+                parsed.quit_after = Some(
+                    v.parse()
+                        .map_err(|_| format!("--quit-after {v}: not a number of seconds"))?,
+                );
+            }
+            other => return Err(format!("unknown argument {other}")),
         }
     }
+    if parsed.room_new && !parsed.room.is_empty() {
+        return Err("--room and --room-new: join a room or mint one, not both".into());
+    }
+    Ok(parsed)
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let Args {
+        codec,
+        url,
+        secret,
+        insecure,
+        room,
+        room_new,
+        nick,
+        quit_after,
+    } = parse_args(std::env::args().skip(1)).unwrap_or_else(|e| panic!("{e}"));
     let (codec_string, units, keyframes): (String, Vec<Vec<u8>>, Vec<bool>) = match codec.as_str() {
         "h264" => {
             let units =
@@ -106,15 +170,40 @@ async fn main() {
         publish_secret: secret,
         origin: gawk_engine::defaults::origin().to_owned(),
         insecure,
+        room_code: room.clone(),
+        room_new,
+        nickname: nick,
         ..SessionConfig::default()
     };
     let (session, mut events) = Session::start(cfg, Arc::new(MonotonicClock::new()))
         .await
         .unwrap_or_else(|e| panic!("could not publish to {url}: {e}"));
     tokio::spawn(async move {
+        let mut room_said = false;
         while let Some(e) = events.recv().await {
-            if let EngineEvent::Announce { broadcast_id } = e {
-                println!("GAWK_DEVPUB_ID={broadcast_id}");
+            match e {
+                EngineEvent::Announce { broadcast_id } => {
+                    println!("GAWK_DEVPUB_ID={broadcast_id}");
+                }
+                // The room's code once it is known: minted, or joined with
+                // this broadcast attached.
+                EngineEvent::RoomCreated {
+                    code,
+                    creator_token_hex,
+                } if !room_said => {
+                    room_said = true;
+                    println!("GAWK_DEVPUB_ROOM={code}");
+                    println!("GAWK_DEVPUB_CREATOR={creator_token_hex}");
+                }
+                EngineEvent::RoomAttached if !room_said && !room.is_empty() => {
+                    room_said = true;
+                    println!("GAWK_DEVPUB_ROOM={room}");
+                }
+                EngineEvent::RoomEnded { reason } => eprintln!("room: {reason}"),
+                EngineEvent::RoomRejected { reason, message } => {
+                    eprintln!("room refused a command: {reason} ({message})");
+                }
+                _ => {}
             }
         }
     });
@@ -124,6 +213,13 @@ async fn main() {
     );
     let sender = session.sender();
     sender.set_codec(&codec_string);
+    if let Some(secs) = quit_after {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(secs)).await;
+            eprintln!("quitting after {secs} s without ending the broadcast");
+            std::process::exit(0);
+        });
+    }
     let mut tick = tokio::time::interval(Duration::from_micros(1_000_000 / FPS));
     let start = tokio::time::Instant::now();
     for i in (0..units.len()).cycle() {
@@ -141,6 +237,59 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(args: &[&str]) -> Result<Args, String> {
+        parse_args(args.iter().map(|a| a.to_string()))
+    }
+
+    #[test]
+    fn the_command_line_takes_the_room_fixture_flags() {
+        let plain = parse(&[]).unwrap();
+        assert_eq!(
+            (plain.codec.as_str(), plain.url.as_str()),
+            ("h264", "https://127.0.0.1:4433")
+        );
+        assert!(plain.room.is_empty() && !plain.room_new && plain.nick.is_empty());
+
+        let a = parse(&[
+            "--codec",
+            "vp9",
+            "--url",
+            "https://relay:4433",
+            "--secret",
+            "s3",
+            "--insecure",
+            "--room",
+            "QX7P2K",
+            "--nick",
+            "Ben",
+        ])
+        .unwrap();
+        assert_eq!(
+            a,
+            Args {
+                codec: "vp9".into(),
+                url: "https://relay:4433".into(),
+                secret: "s3".into(),
+                insecure: true,
+                room: "QX7P2K".into(),
+                room_new: false,
+                nick: "Ben".into(),
+                quit_after: None,
+            }
+        );
+        assert_eq!(parse(&["--quit-after", "20"]).unwrap().quit_after, Some(20));
+        assert!(parse(&["--quit-after", "soon"]).is_err());
+        assert!(parse(&["--room-new", "--nick", "Ann"]).unwrap().room_new);
+
+        assert!(parse(&["--room"]).is_err(), "a flag without its value");
+        assert!(parse(&["--nick"]).is_err());
+        assert!(parse(&["--frobnicate"]).is_err());
+        assert!(
+            parse(&["--room", "QX7P2K", "--room-new"]).is_err(),
+            "join or mint, not both"
+        );
+    }
 
     #[test]
     fn splits_every_fixture_into_30_frames_with_keyframes_at_0_and_15() {

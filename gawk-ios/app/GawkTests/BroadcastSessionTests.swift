@@ -14,7 +14,7 @@ final class BroadcastSessionTests: XCTestCase {
         XCTAssertNotNil(identity.load(relay: relay), "the Keychain works: sign the test host")
         let session = BroadcastSession(identity: identity)
         session.start(
-            relayURL: relay, secret: "", quality: .standard, room: "",
+            relayURL: relay, secret: "", quality: .standard,
             nickname: "", telemetry: false, insecure: true
         )
         session.apply(.ended(error: nil, reclaimStatus: status))
@@ -76,7 +76,7 @@ final class BroadcastSessionTests: XCTestCase {
         initializeCore()
         let s = session()
         s.start(
-            relayURL: relay, secret: "", quality: .standard, room: "",
+            relayURL: relay, secret: "", quality: .standard,
             nickname: "", telemetry: false, insecure: true
         )
         XCTAssertEqual(s.phase, .connecting)

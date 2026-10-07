@@ -944,6 +944,7 @@ version = "0.0.0"
 dependencies = [
  "gawk-broadcast",
  "gawk-capture",
+ "gawk-encode",
  "gawk-engine",
  "gawk-viewer",
  "gawk-wire",
@@ -2942,6 +2943,7 @@ dependencies = [
 name = "uniffi-bindgen"
 version = "0.0.0"
 dependencies = [
+ "serde_json",
  "uniffi",
 ]
 

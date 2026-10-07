@@ -372,12 +372,41 @@ func TestRoomJoinStatusVocabulary(t *testing.T) {
 	if st := bc.nextState(t); st.Flags&wire.RoomStateFlagAttachOK == 0 {
 		t.Fatalf("attach secret not honoured: %+v", st)
 	}
-	// A second room for the same broadcast is a 409 (D1).
-	bc.sess.CloseWithError(0, "")
-	waitFor(t, 5*time.Second, func() bool { info, _ := reg.Lookup("tuhisroom"); return info.Participants == 0 }, "broadcaster to leave")
-	first := openControl(t, ctx, base+"/room/new?broadcast="+id+"&resume="+tokenHex+"&create=invite", clientTLS, "a")
-	first.nextState(t)
+	// A broadcast in a room it did not mint gets no room of its own: 409 (D1).
+	token, _ := hex.DecodeString(tokenHex)
+	bc.command(t, wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: id, ResumeToken: token})
+	bc.nextEvent(t, wire.RoomEventAttachmentAdded)
 	expect(base+"/room/new?broadcast="+id+"&resume="+tokenHex+"&create=invite", http.StatusConflict)
+}
+
+// BUGS.md "A room mint whose answer is lost can never be retried", end to
+// end: the relay mints a room, the minter's session dies before it opens
+// its control stream, and the minter's retry (the same mint again) lands in
+// that room as its creator instead of on a 409.
+func TestRoomMintRepeatAfterALostSessionLandsInTheRoom(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	port, clientTLS, _, _, reg := startRoomServer(t, ctx, nil)
+	pub, id, tokenHex := dialPublisherHandshake(t, ctx, port, clientTLS)
+	defer pub.CloseWithError(0, "")
+	mint := fmt.Sprintf("https://127.0.0.1:%d/room/new?broadcast=%s&resume=%s", port, id, tokenHex)
+
+	lost := dial(t, ctx, mint, clientTLS)
+	lost.CloseWithError(0, "")
+	if rows := reg.Stats(); len(rows) != 1 {
+		t.Fatalf("rooms after the first mint = %d, want 1", len(rows))
+	}
+	again := openControl(t, ctx, mint, clientTLS, "tuhis")
+	st := again.nextState(t)
+	if st.Flags&wire.RoomStateFlagCreator == 0 || len(st.CreatorToken) != wire.RoomCreatorTokenSize {
+		t.Fatalf("the repeat's state = %+v, want the creator grant and token", st)
+	}
+	if len(st.Attachments) != 1 || st.Attachments[0].BroadcastID != id {
+		t.Fatalf("attachments = %+v, want the minting broadcast", st.Attachments)
+	}
+	if rows := reg.Stats(); len(rows) != 1 || !reg.Has(st.Code) {
+		t.Fatalf("rooms after the repeat = %d (has %s: %v), want the first one", len(rows), st.Code, reg.Has(st.Code))
+	}
 }
 
 func TestRoomSessionWithoutHelloIsClosed(t *testing.T) {
