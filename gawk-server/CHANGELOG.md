@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.32.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.31.0...gawk-server/v0.32.0) (2026-10-07)
+
+
+### Features
+
+* **ios:** R68 — the iOS app UX redesign (IX1–IX9) ([#475](https://github.com/Tuhis/gawk/issues/475)) ([a34495b](https://github.com/Tuhis/gawk/commit/a34495be592438b22929ee12a10c91d807940f81))
+* **server:** app=ios in the client-identity vocabulary (R65 IO7) ([#460](https://github.com/Tuhis/gawk/issues/460)) ([66cc985](https://github.com/Tuhis/gawk/commit/66cc98588f53875a45f0ca82b9fdbfc7edbc8f0c))
+
 ## [0.31.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.30.1...gawk-server/v0.31.0) (2026-10-04)
 
 

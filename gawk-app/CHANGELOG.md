@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.52.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.51.0...gawk-app/v0.52.0) (2026-10-07)
+
+
+### Features
+
+* **app:** open a broadcast in the desktop app (R67) ([#474](https://github.com/Tuhis/gawk/issues/474)) ([fd6d700](https://github.com/Tuhis/gawk/commit/fd6d700f1cd156fab1909459f062b525b350e79f))
+
 ## [0.51.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.50.0...gawk-app/v0.51.0) (2026-10-04)
 
 

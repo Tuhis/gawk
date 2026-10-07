@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.11.0...gawk-telemetry/v1.12.0) (2026-10-07)
+
+
+### Features
+
+* **server:** app=ios in the client-identity vocabulary (R65 IO7) ([#460](https://github.com/Tuhis/gawk/issues/460)) ([66cc985](https://github.com/Tuhis/gawk/commit/66cc98588f53875a45f0ca82b9fdbfc7edbc8f0c))
+
 ## [1.11.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.10.1...gawk-telemetry/v1.11.0) (2026-10-04)
 
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.6.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.5.0...gawk-broadcast-desktop/v2.6.0) (2026-10-07)
+
+
+### Features
+
+* **broadcast-desktop:** open the source picker on apps, remember its tab, pick on click ([#481](https://github.com/Tuhis/gawk/issues/481)) ([d6f81c1](https://github.com/Tuhis/gawk/commit/d6f81c13f5f3763277b78069cd9294070486f1aa))
+* **ios:** R65 IO1 — gawk-ios scaffolding ([#458](https://github.com/Tuhis/gawk/issues/458)) ([3497d96](https://github.com/Tuhis/gawk/commit/3497d969093a63efd38d103ee27f12ddeb306d3c))
+* **ios:** R65 IO2 — the broadcast pipeline, capture and the test source ([#463](https://github.com/Tuhis/gawk/issues/463)) ([2cb5bc7](https://github.com/Tuhis/gawk/commit/2cb5bc771f693c82c189b228f747ff3623b89f83))
+* **ios:** R65 IO3 — the Broadcast and Settings screens ([#465](https://github.com/Tuhis/gawk/issues/465)) ([0550b2e](https://github.com/Tuhis/gawk/commit/0550b2ec610ec215c40c37eace2694da95d90efb))
+* **ios:** R65 IO4 — the Rust viewer core ([#459](https://github.com/Tuhis/gawk/issues/459)) ([ffcd455](https://github.com/Tuhis/gawk/commit/ffcd455d58615ead92e82a6ec9ffad2a983ec670))
+* **ios:** R65 IO5 — the native player and the Watch screen ([#466](https://github.com/Tuhis/gawk/issues/466)) ([c1fc034](https://github.com/Tuhis/gawk/commit/c1fc0340d901c9b3fd9d17bdf425920b631170c1))
+* **ios:** R65 IO6/IO7 — rooms, links and broadcaster telemetry in the core ([#464](https://github.com/Tuhis/gawk/issues/464)) ([0892a55](https://github.com/Tuhis/gawk/commit/0892a559ea7cb71cce0f0d41abefd1065c56780a))
+* **ios:** R68 — the iOS app UX redesign (IX1–IX9) ([#475](https://github.com/Tuhis/gawk/issues/475)) ([a34495b](https://github.com/Tuhis/gawk/commit/a34495be592438b22929ee12a10c91d807940f81))
+
+
+### Bug Fixes
+
+* **broadcast-desktop:** restart a stuck relay dial on a fresh endpoint ([#470](https://github.com/Tuhis/gawk/issues/470)) ([1139ba8](https://github.com/Tuhis/gawk/commit/1139ba87b10cd87a342a48996b8d3f50f9ca3c31))
+* **broadcast-desktop:** stop the relaunch-wait test flaking on a loaded runner ([#461](https://github.com/Tuhis/gawk/issues/461)) ([eabc365](https://github.com/Tuhis/gawk/commit/eabc365916f4918e2ce6ebbcd4be6e0e3c08bf02))
+
 ## [2.5.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.4.1...gawk-broadcast-desktop/v2.5.0) (2026-10-04)
 
 
