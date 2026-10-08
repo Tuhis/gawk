@@ -23,21 +23,14 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// Cluster-mode rooms (R42, docs/44 §4.5, RM3): home pod, proxying,
-// adoption, drain release.
-//
-// A public CONNECT /room/{code} that lands on a pod not holding the room
-// is either PROXIED — an internal WebTransport session to the holder's
-// CONNECT /internal/room/{code} with the cluster PSK and the lease
-// generation, the client's one bidirectional stream piped to one upstream
-// stream both ways, hello and all — or ADOPTED, when the lease is absent,
-// released or stale: force-take with generation CAS, rebuild from the CR,
-// serve locally. The holder sees one control stream per participant either
-// way, so the registry has one code path (docs/44 D6).
-//
-// Nothing here is reachable without -rooms AND -cluster-mode: the internal
-// route is registered with the room routes, and 404s until SetRoomCluster
-// installs the store.
+// Cluster-mode rooms (docs/44 §4.5). A public CONNECT /room/{code} on a pod
+// not holding the room is either proxied — an internal session to the
+// holder's /internal/room/{code} (cluster PSK + lease generation), the
+// client's one bidirectional stream piped both ways — or, when the lease is
+// absent, released or stale, adopted: force-take with generation CAS,
+// rebuild from the CR, serve locally. Either way the holder sees one control
+// stream per participant, so the registry has one code path. Reachable only
+// with -rooms and -cluster-mode.
 
 // RoomCluster is the transport's slice of *roomcluster.Store.
 type RoomCluster interface {
@@ -77,10 +70,8 @@ func (u *roomProxyUpstream) close(code uint32, reason string) {
 // receiving pod can answer the participant with the same status.
 type roomProxyDialer func(ctx context.Context, addr, path string) (status int, up *roomProxyUpstream, err error)
 
-// newRoomProxyDialer is newEdgeDialer's twin for room control: TLS against
-// the fleet's public cert hostname (the lease addr is a raw pod IP — no
-// per-pod certs, no InsecureSkipVerify), the in-cluster QUIC timers, the
-// PSK appended here, the internal Origin announced.
+// newRoomProxyDialer is newEdgeDialer's twin for room control (same TLS,
+// timers, PSK and internal Origin).
 func newRoomProxyDialer(serverName, psk string, rootCAs *x509.CertPool) roomProxyDialer {
 	return func(ctx context.Context, addr, path string) (int, *roomProxyUpstream, error) {
 		d := &webtransport.Transport{
@@ -105,7 +96,7 @@ func newRoomProxyDialer(serverName, psk string, rootCAs *x509.CertPool) roomProx
 	}
 }
 
-// SetRoomCluster installs the room store (R42 RM3). Call after SetCluster
+// SetRoomCluster installs the room store. Call after SetCluster
 // (the drain hook chains onto the lease release) and before Run.
 func (s *Server) SetRoomCluster(rc RoomCluster, podName string) {
 	s.roomCluster.Store(&roomClusterWiring{
@@ -126,11 +117,10 @@ func (s *Server) SetRoomCluster(rc RoomCluster, podName string) {
 
 func (s *Server) roomClusterWiring() *roomClusterWiring { return s.roomCluster.Load() }
 
-// roomHomedElsewhere is handleRoom's cluster gate. It reports true when it
-// has answered the request itself (proxied, or rejected with a status);
-// false means "serve locally" — this pod holds the room, just adopted it,
-// or no CR exists and the local registry decides (a file-sourced static
-// room, or a 404 from CheckJoin).
+// roomHomedElsewhere is handleRoom's cluster gate. True means it answered
+// the request itself (proxied or rejected); false means serve locally — this
+// pod holds or just adopted the room, or no CR exists and the local registry
+// decides.
 func (s *Server) roomHomedElsewhere(w http.ResponseWriter, r *http.Request, code string) bool {
 	rc := s.roomClusterWiring()
 	if rc == nil {
@@ -151,7 +141,7 @@ func (s *Server) roomHomedElsewhere(w http.ResponseWriter, r *http.Request, code
 		s.proxyRoom(w, r, rc, norm, home)
 		return true
 	}
-	// Absent, released or stale lease: adopt (docs/44 §4.5 "Adoption").
+	// Absent, released or stale lease: adopt.
 	switch err := rc.store.Adopt(r.Context(), norm); {
 	case err == nil:
 		s.metrics.Connection("room-adopt", metrics.OutcomeAccepted)
@@ -201,17 +191,14 @@ func (s *Server) proxyRoom(w http.ResponseWriter, r *http.Request, rc *roomClust
 	cancel()
 	if err != nil {
 		if status != 0 {
-			// The home answered pre-upgrade (404/403/429/409...): the
-			// participant gets the same status, as if it had dialed the
-			// home itself.
+			// The home answered pre-upgrade: pass its status through.
 			s.metrics.Connection(route, metrics.OutcomeUnauthorized)
 			log.Info("room proxy: home rejected pre-upgrade", "status", status)
 			w.WriteHeader(status)
 			return
 		}
-		// A dead upstream. The lease is still live by the cache's clock,
-		// so this is not yet adoptable; the client's reconnect lands
-		// after staleness and adopts (docs/44 §6).
+		// Dead upstream, but the lease is still live by the cache's clock,
+		// so not adoptable yet; the client's reconnect adopts after staleness.
 		s.metrics.Connection(route, metrics.OutcomeError)
 		log.Warn("room proxy: home unreachable", "err", err)
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -249,18 +236,14 @@ func (s *Server) proxyRoom(w http.ResponseWriter, r *http.Request, rc *roomClust
 	}
 	log.Info("room proxy session started", "generation", home.Generation)
 
-	// Pipe both ways. Whichever side ends first decides the other's fate:
-	// the participant leaving closes the upstream cleanly; the upstream
-	// ending closes the participant with the home's own close code when it
-	// sent one (RoomEnded 4007 must reach the client — that is what makes
-	// it terminal) and with the non-terminal draining code otherwise, so
-	// the client reconnects and lands on whichever pod adopts or re-proxies.
-	//
-	// Both copies run in goroutines and are raced: the home→participant
-	// copy blocks on the upstream read, and a quiet room sends nothing that
-	// would fail against a dead participant stream — so waiting on it alone
-	// left a departed participant on the home's roster (and its dynamic room
-	// never emptied) until the next room event.
+	// Pipe both ways; whichever side ends first decides the other's fate.
+	// The participant leaving closes the upstream cleanly. The upstream
+	// ending closes the participant with the home's own code when it sent
+	// one (RoomEnded 4007 must reach the client to be terminal), else with
+	// the non-terminal draining code so it reconnects wherever the room
+	// lands. The copies are raced: a quiet room sends nothing that would
+	// fail against a dead participant, so waiting on home→participant
+	// alone would leave a departed participant on the roster.
 	fromClient := make(chan error, 1)
 	go func() {
 		_, err := io.Copy(upstream, client)
@@ -299,15 +282,11 @@ func (s *Server) proxyRoom(w http.ResponseWriter, r *http.Request, rc *roomClust
 	}
 }
 
-// handleInternalRoom is the home's side of proxying: CONNECT
-// /internal/room/{code}?psk=&gen=&... Gates, in order: 404 without cluster
-// wiring, 401 bad PSK, 404 not the home, 409 stale generation — the
-// vocabulary of handleInternalSubscribe — then the ordinary join gate
-// (CheckJoin, with the forwarded creator/attach params) and the same
-// serveRoomSession every local participant gets.
-//
-// No per-IP rate limiting and no ban check: the peer is a fleet pod that
-// already applied both to the participant (docs/22 Decision 13).
+// handleInternalRoom is the home's side of proxying. Gates, in order: 404
+// without cluster wiring, 401 bad PSK, 404 not the home, 409 stale
+// generation, then the ordinary join gate (CheckJoin with the forwarded
+// params) and serveRoomSession. No rate limit or ban check: the proxying pod
+// already applied both.
 func (s *Server) handleInternalRoom(w http.ResponseWriter, r *http.Request) {
 	const route = "internal-room"
 	if s.rejectedDraining(w, route) {
@@ -366,14 +345,11 @@ func (s *Server) handleInternalRoom(w http.ResponseWriter, r *http.Request) {
 	s.serveRoomSession(r, sess, reg, norm, grants, nil)
 }
 
-// HandleRoomLeaseLost is the store's OnLeaseLost dispatch (docs/44 §4.5
-// "Fencing"): this pod's copy of the room is stale. Its control sessions
-// are closed with the NON-terminal draining code — they reconnect and land
-// wherever the load balancer sends them, which adopts or proxies — and the
-// local copy is dropped so a later adoption rebuilds from the CR rather
-// than from stale attachments. The 4007 EndRoom would otherwise send
-// reaches nobody: every session is already closed, and the first close
-// code on a QUIC session is the one the peer sees.
+// HandleRoomLeaseLost is the store's OnLeaseLost dispatch: this pod's copy of
+// the room is stale. Its sessions are closed with the non-terminal draining
+// code so they reconnect wherever the room now lives, and the local copy is
+// dropped so a later adoption rebuilds from the CR. EndRoom's 4007 reaches
+// nobody: the first close code on a QUIC session is the one the peer sees.
 func (s *Server) HandleRoomLeaseLost(code string) {
 	norm, err := rooms.NormalizeCode(code)
 	if err != nil {
@@ -390,10 +366,9 @@ func (s *Server) HandleRoomLeaseLost(code string) {
 		_ = sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeServerDraining), "room re-homed")
 	}
 	if reg := s.roomRegistry(); reg != nil {
-		// Say on the bus that the room is MOVING before tearing it down here:
-		// one participant_left{reason: home_moved} each, and no room.closed
-		// from the EndRoom below (docs/51 D9). Without this a consumer sees a
-		// live room end and its people vanish, which is not what happened.
+		// Announce the move first — participant_left{reason: home_moved}
+		// each, and no room.closed from EndRoom — or bus consumers would see a
+		// live room end and its people vanish.
 		reg.ReleaseHome(norm)
 		reg.EndRoom(norm, wire.RoomEndReasonOperator)
 	}
@@ -457,10 +432,9 @@ func (s *Server) trackProxied(code, kind string) func() {
 	}
 }
 
-// RoomStats is the /statusz + metrics rooms source with the proxy rows
-// merged in (docs/44 §4.10): the registry's "home" rows plus one "proxy"
-// row per room this pod forwards, keyed by the same HMAC. Nil with -rooms
-// off, so the section is omitted. Implements ops.RoomStatsSource and
+// RoomStats is the /statusz + metrics rooms source: the registry's "home"
+// rows plus one "proxy" row per room this pod forwards, keyed by the same
+// HMAC. Nil with -rooms off. Implements ops.RoomStatsSource and
 // metrics.RoomStatsSource.
 func (s *Server) RoomStats() map[string]roomsrv.RoomStats {
 	reg := s.roomRegistry()
