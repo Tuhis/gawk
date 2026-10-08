@@ -222,6 +222,50 @@ func TestForceTakeBeatsLiveHolderAndLoserNotices(t *testing.T) {
 	}
 }
 
+// A same-pod takeover (zombie publisher superseded by a token-bearing reclaim
+// on this pod) re-Claims with force: the generation bumps and startRenew
+// cancels the old renew loop without waiting for it. If that loop's in-flight
+// Get reads the post-update lease, it sees holder == this pod at a newer
+// generation — that is not a loss, and firing OnLeaseLost there sent 4003 to
+// every downstream edge and self-demoted a healthy origin (SRV-8). The renew
+// is driven by hand so the race is deterministic.
+func TestSupersededRenewLoopDoesNotReportLeaseLost(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	var lost atomic.Int32
+	a := newTestCoordinator(t, cs, "pod-a", clock, func(o *Options) {
+		o.RenewInterval = time.Hour // no background renews; renewOnce is driven directly
+		o.OnLeaseLost = func(string, Origin) { lost.Add(1) }
+	})
+	ctx := context.Background()
+
+	if _, err := a.Claim(ctx, "K7XQ2M", false); err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	a.mu.Lock()
+	old := a.held["K7XQ2M"]
+	a.mu.Unlock()
+
+	gen, err := a.Claim(ctx, "K7XQ2M", true)
+	if err != nil {
+		t.Fatalf("same-pod force reclaim: %v", err)
+	}
+	if gen != 2 {
+		t.Fatalf("reclaim generation = %d, want 2", gen)
+	}
+
+	// The superseded loop's renew, landing after the reclaim's Update.
+	if err := a.renewOnce(ctx, "K7XQ2M", old); !errors.Is(err, errLost) {
+		t.Errorf("superseded renewOnce err = %v, want errLost (the old loop must stop)", err)
+	}
+	if n := lost.Load(); n != 0 {
+		t.Errorf("OnLeaseLost fired %d time(s) from a superseded renew loop; want 0", n)
+	}
+	if !a.Held("K7XQ2M", 2) {
+		t.Error("superseded renew loop dropped the current held lease")
+	}
+}
+
 // A CAS conflict (another claimant updated between Get and Update) is
 // retried with a fresh Get instead of failing or blind-writing.
 func TestClaimRetriesThroughCASConflict(t *testing.T) {
