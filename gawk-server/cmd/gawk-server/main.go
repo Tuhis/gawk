@@ -344,10 +344,6 @@ func run() error {
 	return nil
 }
 
-// logStartup emits the one line an operator reads to confirm what this pod is
-// actually running. Extracted from run so it can be asserted in a test:
-// docs/42 §9 AP2 requires the moderation source to be stated here, and the
-// R2 lesson is that a knob nobody can see is a knob nobody notices is inert.
 // wiredServer is the slice of *transport.Server that startup wiring touches.
 // It is an interface for one reason: so the ORDER below can be asserted in a
 // test. The window it guards opens and closes during process startup, which
@@ -429,65 +425,15 @@ func wireSubsystems(
 	return nil
 }
 
+// logStartup emits the one line an operator reads to confirm what this pod is
+// actually running — the R2 lesson is that a knob nobody can see is a knob
+// nobody notices is inert. It logs the same redacted view GET
+// /internal/admin/config serves (docs/42 §4.5) rather than a second,
+// hand-kept list: Sanitized is the one place that enumerates every field,
+// and its completeness and sentinel tests are what keep a new knob visible
+// here and every secret out of it.
 func logStartup(log *slog.Logger, cfg config.Config, version string) {
-	log.Info("starting",
-		"version", version,
-		"addr", cfg.Addr,
-		"dev_cert", cfg.DevCert,
-		"max_subscribers", cfg.MaxSubscribers,
-		"max_broadcasts", cfg.MaxBroadcasts,
-		"max_total_subscribers", cfg.MaxTotalSubscribers,
-		"publish_secret_set", cfg.PublishSecret != "",
-		"conn_rate_limit", cfg.ConnRateLimit,
-		"conn_burst_limit", cfg.ConnBurstLimit,
-		"max_bandwidth_bytes", cfg.MaxBandwidthBytes,
-		"max_keyframe_bytes", cfg.MaxKeyframeBytes,
-		"keyframe_write_timeout", cfg.KeyframeWriteTimeout,
-		"dvr_window", cfg.DVRWindow,
-		"dvr_max_bytes", cfg.DVRMaxBytes,
-		"dvr_max_catchup", cfg.DVRMaxCatchup,
-		"dvr_audio", cfg.DVRAudio,
-		"live_edge_audio_on_reliable_stream", cfg.LiveEdgeAudioOnReliableStream,
-		"parity_default", cfg.ParityDefault,
-		"striped_delivery", cfg.StripedDelivery,
-		"max_idle_timeout", cfg.MaxIdleTimeout,
-		"keepalive_period", cfg.KeepAlivePeriod,
-		"broadcast_grace", cfg.BroadcastGrace,
-		"publisher_stall_timeout", cfg.PublisherStallTimeout,
-		"publisher_stall_ends", cfg.PublisherStallEnds,
-		"metrics_addr", cfg.MetricsAddr,
-		"stateless_reset_key_set", len(cfg.StatelessResetKey) > 0,
-		"resume_token_key_mode", resumeTokenKeyMode(cfg),
-		// R28: the key's presence is the feature switch, so logging whether it
-		// is set is how an operator confirms a fleet is collecting at all —
-		// the key itself is never logged.
-		"telemetry_enabled", len(cfg.TelemetryKey) > 0,
-		"telemetry_report_interval", cfg.TelemetryReportInterval,
-		"telemetry_advertise_url", cfg.TelemetryAdvertiseURL,
-		"server_name", cfg.ServerName,
-		"cluster_mode", cfg.ClusterMode,
-		// R39 (docs/42 §4.3): the operator's confirmation surface for which
-		// ban source this pod is actually enforcing from, and which
-		// credentials open the admin API. The token itself is never logged —
-		// only whether one is set, which is what decides 404 vs. 401.
-		"moderation_source", cfg.ModerationSource,
-		"admin_api_token_set", cfg.AdminAPIToken != "",
-		"admin_oidc_issuer", cfg.AdminOIDCIssuer,
-		"admin_oidc_audience", cfg.AdminOIDCAudience,
-		"admin_oidc_roles_claim", cfg.AdminOIDCRolesClaim,
-		"admin_oidc_role", cfg.AdminOIDCRole,
-		"admin_api_enabled", cfg.AdminAPIToken != "" || cfg.AdminOIDCIssuer != "",
-		// R42 (docs/44 §4.10): the same confirmation surface for rooms. The
-		// create secret itself is never logged, only whether one gates
-		// minting.
-		"rooms", cfg.Rooms,
-		"room_empty_grace", cfg.RoomEmptyGrace,
-		"max_rooms", cfg.MaxRooms,
-		"max_room_broadcasts", cfg.MaxRoomBroadcasts,
-		"max_room_participants", cfg.MaxRoomParticipants,
-		"room_create_secret_set", cfg.RoomCreateSecret != "",
-		"rooms_file", cfg.RoomsFile,
-	)
+	log.Info("starting", "version", version, "config", cfg.Sanitized())
 }
 
 // roomOptions maps the parsed config onto roomsrv.Options — the R42 twin of
@@ -717,16 +663,6 @@ func buildRoomStore(cfg config.Config, reg *roomsrv.Registry, obfuscate func(str
 	}
 	return store, podName, nil
 }
-
-// resumeTokenKeyMode names where the resume-token key comes from (R17 W2) —
-// logged so a fleet misconfiguration (per-process keys on multiple pods,
-// which silently breaks cross-pod resume) is visible at startup.
-//
-// One definition, in config, since R39: GET /internal/admin/config reports
-// the same mode (docs/42 §4.5 — "the resume key also says which mode,
-// echoing the startup log"), and two copies of a three-way switch is exactly
-// the drift CODE-REVIEW.md's shared-constants rule exists to stop.
-func resumeTokenKeyMode(cfg config.Config) string { return cfg.ResumeTokenKeyMode() }
 
 // certSource returns the per-handshake certificate callback: an ephemeral
 // in-memory dev cert (hashes logged for the browser side), a *persisted* dev

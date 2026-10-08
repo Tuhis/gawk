@@ -1506,13 +1506,13 @@ entries still describe code `gawk-pubsim` runs (now
   broadcasters** — a token key derived from the broadcaster-distributed
   publish secret is computable by every broadcaster, so it only stops
   non-secret-holders. Set the independent server-side key (it wins over the
-  secret derivation; `resume_token_key_mode=explicit-key` in the startup
+  secret derivation; `config.resumeTokenKey` = `<set:explicit-key>` in the startup
   log confirms). ([docs/22](22-relay-scale-out.md))
 - **Fleet-shared Secrets are load-bearing**: without a shared resume-token
   key (or publish secret), re-homing 403s on every pod except the minting
   one; without a shared `statsKey`, one broadcast has N metric identities;
   without the shared `StatelessResetKey`, abrupt pod deaths cost the ~30 s
-  idle timeout instead of ~1 RTT. Check `resume_token_key_mode` in the
+  idle timeout instead of ~1 RTT. Check `config.resumeTokenKey` in the
   startup log. ([docs/22](22-relay-scale-out.md))
 - **Drain is close-first-while-Ready, never "unready then linger"** —
   kube-proxy flushes UDP conntrack on endpoint removal, so an

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -92,100 +93,61 @@ func TestRoomOptionsCarryAllKnobs(t *testing.T) {
 	}
 }
 
-// docs/44 §4.10: the startup line states the room knobs, and never the
-// create secret itself.
-func TestStartupLogStatesTheRoomKnobs(t *testing.T) {
+// The startup line is the operator's confirmation surface for every knob
+// (the R2 lesson; docs/42 §9 AP2 for the ban source, docs/44 §4.10 for
+// rooms): it carries exactly the redacted view GET /internal/admin/config
+// serves, under both handlers, and never a secret. Which fields that view
+// covers, and that each secret is redacted, is proven in internal/config.
+func TestStartupLogCarriesTheSanitizedConfig(t *testing.T) {
+	cfg := config.Config{
+		ModerationSource: "file:/etc/gawk/bans.json",
+		Rooms:            true,
+		MaxRooms:         12,
+		AdminOIDCIssuer:  "https://idp.example/realms/gawk",
+		PublishSecret:    "sentinel-publish",
+		AdminAPIToken:    "sentinel-admin",
+		RoomCreateSecret: "sentinel-room",
+		InternalPSK:      "sentinel-psk",
+		ResumeTokenKey:   []byte("sentinel-resume"),
+		TelemetryKey:     []byte("sentinel-telemetry"),
+	}
+
 	var buf bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&buf, nil))
-	logStartup(log, config.Config{Rooms: true, MaxRooms: 12, RoomCreateSecret: "hunter2", RoomsFile: "/r.json"}, "v")
-	out := buf.String()
-	for _, want := range []string{"rooms=true", "max_rooms=12", "room_create_secret_set=true", "rooms_file=/r.json"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("startup log lacks %q:\n%s", want, out)
-		}
+	logStartup(slog.New(slog.NewJSONHandler(&buf, nil)), cfg, "v1.2.3")
+	var line struct {
+		Msg     string          `json:"msg"`
+		Version string          `json:"version"`
+		Config  json.RawMessage `json:"config"`
 	}
-	if strings.Contains(out, "hunter2") {
-		t.Errorf("startup log leaks the room create secret:\n%s", out)
+	if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
+		t.Fatalf("startup line is not one JSON object: %v\n%s", err, buf.String())
 	}
-}
-
-// R39 AP2 (docs/42 §9): the startup log must state which ban source this pod
-// is enforcing from — the operator's only confirmation surface for a knob
-// that otherwise shows up nowhere.
-func TestStartupLogStatesTheModerationSource(t *testing.T) {
-	for _, source := range []string{"off", "k8s", "file:/etc/gawk/bans.json"} {
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		logStartup(log, config.Config{ModerationSource: source}, "test")
-		if got := buf.String(); !strings.Contains(got, "moderation_source="+source) {
-			t.Errorf("startup log for source %q does not state it:\n%s", source, got)
-		}
+	var got, want map[string]any
+	if err := json.Unmarshal(line.Config, &got); err != nil {
+		t.Fatalf("config is not an object: %v\n%s", err, buf.String())
 	}
-}
+	wantJSON, _ := json.Marshal(cfg.Sanitized())
+	_ = json.Unmarshal(wantJSON, &want)
+	if line.Msg != "starting" || line.Version != "v1.2.3" || !reflect.DeepEqual(got, want) {
+		t.Errorf("startup line = %s\nwant msg=starting version=v1.2.3 config=%s", buf.String(), wantJSON)
+	}
 
-// R39 AP3 (docs/42 §4.3 table, §9): none of the admin-API knobs is a
-// hub.Options field, so registryOptions never sees them — which makes the
-// startup log the ONLY place an operator can confirm what this pod will do
-// with /internal/admin/*. The R2 lesson, one knob-shape over: a knob nobody
-// can see is a knob nobody notices is inert.
-func TestStartupLogStatesTheAdminAPIConfiguration(t *testing.T) {
-	var buf bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	logStartup(log, config.Config{
-		AdminAPIToken:       "s3cr3t-token",
-		AdminOIDCIssuer:     "https://idp.example/realms/gawk",
-		AdminOIDCAudience:   "gawk-admin",
-		AdminOIDCRolesClaim: config.DefaultAdminOIDCRolesClaim,
-		AdminOIDCRole:       config.DefaultAdminOIDCRole,
-	}, "test")
-	out := buf.String()
-
+	var text bytes.Buffer
+	logStartup(slog.New(slog.NewTextHandler(&text, nil)), cfg, "v1.2.3")
 	for _, want := range []string{
-		"admin_api_token_set=true",
-		"admin_oidc_issuer=https://idp.example/realms/gawk",
-		"admin_oidc_audience=gawk-admin",
-		"admin_oidc_role=operator",
-		"admin_api_enabled=true",
+		"config.moderationSource=file:/etc/gawk/bans.json",
+		"config.maxRooms=12",
+		"config.adminApiToken=<set>",
+		"config.resumeTokenKey=<set:explicit-key>",
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("startup log is missing %q:\n%s", want, out)
+		if !strings.Contains(text.String(), want) {
+			t.Errorf("text startup line lacks %q:\n%s", want, text.String())
 		}
 	}
-	// THE TOKEN ITSELF IS NEVER LOGGED — only whether one is set, which is
-	// what decides 404 vs. 401.
-	if strings.Contains(out, "s3cr3t-token") {
-		t.Fatalf("the admin API token leaked into the startup log:\n%s", out)
-	}
 
-	// With no credential the log says so, so "why is /internal/admin 404ing?"
-	// is answerable from the pod's own first line.
-	buf.Reset()
-	logStartup(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		config.Config{}, "test")
-	if got := buf.String(); !strings.Contains(got, "admin_api_enabled=false") {
-		t.Errorf("startup log does not state that the admin API is disabled:\n%s", got)
-	}
-}
-
-// The redacted config view and the startup log must agree about the
-// resume-token key mode — docs/42 §4.5 says the sanitized value "echoes the
-// startup log", and one definition is what makes that true rather than
-// aspirational.
-func TestResumeTokenKeyModeMatchesTheSanitizedConfig(t *testing.T) {
-	for _, cfg := range []config.Config{
-		{ResumeTokenKey: make([]byte, 32)},
-		{PublishSecret: "hunter2"},
-		{},
-	} {
-		var buf bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		logStartup(log, cfg, "test")
-		mode := resumeTokenKeyMode(cfg)
-		if !strings.Contains(buf.String(), "resume_token_key_mode="+mode) {
-			t.Errorf("startup log does not carry mode %q:\n%s", mode, buf.String())
-		}
-		if got := cfg.Sanitized().ResumeTokenKey; !strings.Contains(got, mode) {
-			t.Errorf("sanitized resumeTokenKey %q does not carry the logged mode %q", got, mode)
+	for _, out := range []string{buf.String(), text.String()} {
+		if strings.Contains(out, "sentinel") {
+			t.Errorf("startup line leaks a secret:\n%s", out)
 		}
 	}
 }
