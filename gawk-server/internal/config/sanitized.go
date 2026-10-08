@@ -13,6 +13,8 @@ package config
 import (
 	"log/slog"
 	"net"
+	"reflect"
+	"strings"
 	"time"
 )
 
@@ -202,9 +204,26 @@ func (c Config) Sanitized() SanitizedConfig {
 	}
 }
 
+// LogValue renders the view as an slog group keyed by the JSON names, so the
+// startup line reads config.maxSubscribers=… under the text handler exactly
+// as it nests under the JSON one (the text handler would otherwise print a
+// Go struct literal). Reflection is safe here, unlike in Sanitized: every
+// secret has already been replaced by its placeholder.
+func (s SanitizedConfig) LogValue() slog.Value {
+	rv := reflect.ValueOf(s)
+	rt := rv.Type()
+	attrs := make([]slog.Attr, 0, rt.NumField())
+	for i := range rt.NumField() {
+		name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+		attrs = append(attrs, slog.Any(name, rv.Field(i).Interface()))
+	}
+	return slog.GroupValue(attrs...)
+}
+
 // resumeTokenKeyRedaction renders presence AND mode: "<set:explicit-key>",
-// "<set:derived-from-publish-secret>" or "<unset:per-process-random>", using
-// the same mode words the startup log prints.
+// "<set:derived-from-publish-secret>" or "<unset:per-process-random>". The
+// mode is the one an operator checks for a fleet misconfiguration, so it is
+// spelled out rather than collapsed into "<set>".
 func resumeTokenKeyRedaction(c Config) string {
 	mode := c.ResumeTokenKeyMode()
 	if mode == "per-process-random" {
@@ -213,10 +232,10 @@ func resumeTokenKeyRedaction(c Config) string {
 	return "<" + secretSetPrefix + ":" + mode + ">"
 }
 
-// ResumeTokenKeyMode names where the resume-token key comes from — logged at
-// startup and reported by Sanitized, so a fleet misconfiguration (per-process
-// keys on multiple pods, which silently breaks cross-pod resume) is visible in
-// both places from ONE definition.
+// ResumeTokenKeyMode names where the resume-token key comes from. Sanitized
+// reports it, so it shows in both the startup log and GET
+// /internal/admin/config, where a fleet misconfiguration (per-process keys on
+// multiple pods, which silently breaks cross-pod resume) is visible.
 //
 // Order mirrors newResumeTokens: the explicit key wins over the publish-secret
 // derivation, because a secret-derived key is computable by every broadcaster

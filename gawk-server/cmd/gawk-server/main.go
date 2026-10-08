@@ -389,58 +389,13 @@ func wireSubsystems(
 
 // logStartup emits the one line an operator reads to confirm what this pod is
 // actually running; a knob nobody can see is a knob nobody notices is inert.
-// Secrets are logged only as set/unset. Separate from run so a test can assert
-// it.
+// It logs the same redacted view GET /internal/admin/config serves (docs/42
+// §4.5) rather than a second, hand-kept list: Sanitized is the one place that
+// enumerates every field, and its completeness and sentinel tests keep a new
+// knob visible here and every secret out of it. Separate from run so a test
+// can assert it.
 func logStartup(log *slog.Logger, cfg config.Config, version string) {
-	log.Info("starting",
-		"version", version,
-		"addr", cfg.Addr,
-		"dev_cert", cfg.DevCert,
-		"max_subscribers", cfg.MaxSubscribers,
-		"max_broadcasts", cfg.MaxBroadcasts,
-		"max_total_subscribers", cfg.MaxTotalSubscribers,
-		"publish_secret_set", cfg.PublishSecret != "",
-		"conn_rate_limit", cfg.ConnRateLimit,
-		"conn_burst_limit", cfg.ConnBurstLimit,
-		"max_bandwidth_bytes", cfg.MaxBandwidthBytes,
-		"max_keyframe_bytes", cfg.MaxKeyframeBytes,
-		"keyframe_write_timeout", cfg.KeyframeWriteTimeout,
-		"dvr_window", cfg.DVRWindow,
-		"dvr_max_bytes", cfg.DVRMaxBytes,
-		"dvr_max_catchup", cfg.DVRMaxCatchup,
-		"dvr_audio", cfg.DVRAudio,
-		"live_edge_audio_on_reliable_stream", cfg.LiveEdgeAudioOnReliableStream,
-		"parity_default", cfg.ParityDefault,
-		"striped_delivery", cfg.StripedDelivery,
-		"max_idle_timeout", cfg.MaxIdleTimeout,
-		"keepalive_period", cfg.KeepAlivePeriod,
-		"broadcast_grace", cfg.BroadcastGrace,
-		"publisher_stall_timeout", cfg.PublisherStallTimeout,
-		"publisher_stall_ends", cfg.PublisherStallEnds,
-		"metrics_addr", cfg.MetricsAddr,
-		"stateless_reset_key_set", len(cfg.StatelessResetKey) > 0,
-		"resume_token_key_mode", resumeTokenKeyMode(cfg),
-		"telemetry_enabled", len(cfg.TelemetryKey) > 0,
-		"telemetry_report_interval", cfg.TelemetryReportInterval,
-		"telemetry_advertise_url", cfg.TelemetryAdvertiseURL,
-		"server_name", cfg.ServerName,
-		"cluster_mode", cfg.ClusterMode,
-		// Whether an admin credential is set decides 404 vs. 401.
-		"moderation_source", cfg.ModerationSource,
-		"admin_api_token_set", cfg.AdminAPIToken != "",
-		"admin_oidc_issuer", cfg.AdminOIDCIssuer,
-		"admin_oidc_audience", cfg.AdminOIDCAudience,
-		"admin_oidc_roles_claim", cfg.AdminOIDCRolesClaim,
-		"admin_oidc_role", cfg.AdminOIDCRole,
-		"admin_api_enabled", cfg.AdminAPIToken != "" || cfg.AdminOIDCIssuer != "",
-		"rooms", cfg.Rooms,
-		"room_empty_grace", cfg.RoomEmptyGrace,
-		"max_rooms", cfg.MaxRooms,
-		"max_room_broadcasts", cfg.MaxRoomBroadcasts,
-		"max_room_participants", cfg.MaxRoomParticipants,
-		"room_create_secret_set", cfg.RoomCreateSecret != "",
-		"rooms_file", cfg.RoomsFile,
-	)
+	log.Info("starting", "version", version, "config", cfg.Sanitized())
 }
 
 // roomOptions maps the parsed config onto roomsrv.Options — registryOptions'
@@ -665,10 +620,6 @@ func buildRoomStore(cfg config.Config, reg *roomsrv.Registry, obfuscate func(str
 	}
 	return store, podName, nil
 }
-
-// resumeTokenKeyMode delegates to config.Config.ResumeTokenKeyMode, the one
-// definition shared with GET /internal/admin/config.
-func resumeTokenKeyMode(cfg config.Config) string { return cfg.ResumeTokenKeyMode() }
 
 // certSource returns the per-handshake certificate callback: an ephemeral
 // in-memory dev cert (hashes logged for the browser side), a *persisted* dev
