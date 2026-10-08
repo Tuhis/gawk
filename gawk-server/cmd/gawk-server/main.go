@@ -38,7 +38,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/rooms"
 )
 
-// Stamped at build time via -ldflags "-X main.version=..." (see
+// version is stamped at build time via -ldflags "-X main.version=..." (see
 // deploy/Dockerfile); "dev" for plain go build/run.
 var version = "dev"
 
@@ -54,8 +54,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// R37: the build version rides config so the transport's RelayIdentity
-	// (wire 0x11) can carry it without importing main.
 	cfg.ReleaseVersion = version
 
 	var handler slog.Handler
@@ -78,29 +76,25 @@ func run() error {
 		return err
 	}
 
-	// Cluster mode (R17 W3, docs/22): the hub's lifecycle hooks and the
-	// coordinator reference each other, so the hooks close over this pointer,
-	// which is assigned right after the registry exists. Both hook paths are
-	// nil-safe until then (no publisher can connect before Run anyway).
+	// Late-bound subsystems. The hub's hooks are built before these exist and
+	// close over the variables; every hook path is nil-safe until assignment
+	// (no publisher can connect before Run anyway).
+	//
+	// coord: the cluster coordinator and the hub reference each other.
 	var coord *cluster.Coordinator
-	// R42 rooms (docs/44): the registry is assigned right after the hub
-	// exists and closed over by the hub hooks below, exactly like coord.
+	// roomReg: assigned right after the hub exists.
 	var roomReg *roomsrv.Registry
-	// RM3: the cluster room store (Room CRs + home leases), assigned by the
-	// wiring step in cluster mode and nil otherwise. The registry's cluster
-	// seams and the hub's mirror check close over it, nil-safe like coord.
+	// roomStore: the cluster room store (Room CRs + home leases), assigned by
+	// the wiring step in cluster mode and nil otherwise.
 	var roomStore *roomcluster.Store
-	// R50: the bus publisher is constructed below, after the metrics registry
-	// that the hub registry needs. The hooks close over the variable — the
-	// same late-binding the cluster hooks use — and a nil publisher's Publish
-	// is a no-op, so the window before it exists is safe rather than guarded.
+	// bus: built after the metrics registry; a nil publisher's Publish is a
+	// no-op.
 	var bus *eventbus.Publisher
 	busHook := func(ev eventbus.Event) { bus.Publish(ev) }
 	hubOpts := registryOptions(cfg)
 	hubOpts.OnEvent = busHook
-	// R59 (docs/61 D5): an origin broadcast's lifetime lands in the usage
-	// histograms. Late-bound like the bus: the metrics are built after the
-	// registry, and a nil *ServerMetrics records nothing.
+	// sm: an origin broadcast's lifetime lands in the usage histograms; a nil
+	// *ServerMetrics records nothing.
 	var sm *metrics.ServerMetrics
 	hubOpts.OnOriginEnded = func(e hub.BroadcastEnd) { sm.BroadcastEnded(e) }
 	if cfg.ClusterMode {
@@ -124,9 +118,9 @@ func run() error {
 				log.Warn("lease delete failed", "broadcast_id", id, "err", err)
 			}
 		}
-		// The stall state travels the same way (docs/44 §4.9): the origin
-		// stamps its Lease at the onset and clears it on recovery, so a room
-		// homed on another pod reads the tile away from Lookup.
+		// The origin stamps its Lease at stall onset and clears it on
+		// recovery, so a room homed on another pod reads the tile away from
+		// Lookup.
 		hubOpts.OnPublisherStalled = func(id string, stalled bool) {
 			if coord == nil {
 				return
@@ -140,8 +134,8 @@ func run() error {
 	}
 	if cfg.Rooms {
 		// Rooms need both lifecycle hooks in single-pod mode too (an
-		// attachment flips to "away" and is removed on expiry — docs/44
-		// §4.4), so they chain onto whatever cluster mode installed.
+		// attachment flips to "away" and is removed on expiry), so they chain
+		// onto whatever cluster mode installed.
 		hubOpts.OnPublisherClosed = chainHook(hubOpts.OnPublisherClosed, func(id string) {
 			if roomReg != nil {
 				roomReg.PublisherClosed(id)
@@ -154,7 +148,7 @@ func run() error {
 		})
 		// The mirror check consults the local registry AND, in cluster mode,
 		// the Room CR cache: a room homed on another pod still reserves its
-		// code fleet-wide (docs/44 §4.2).
+		// code fleet-wide.
 		hubOpts.IDReserved = func(id string) bool {
 			return (roomReg != nil && roomReg.Has(id)) || (roomStore != nil && roomStore.Known(id))
 		}
@@ -162,31 +156,22 @@ func run() error {
 
 	r := hub.NewRegistry(log, hubOpts)
 
-	// Prometheus wiring (R9, docs/13): runtime collectors + build info, the
-	// hub registry collector, and the transport connection counters — all
-	// served by the TCP ops endpoint alongside /healthz and /statusz.
+	// Prometheus wiring (docs/13), served by the TCP ops endpoint.
 	promReg := metrics.NewBaseRegistry(version)
 	promReg.MustRegister(metrics.NewRegistryCollector(r))
 	sm = metrics.NewServerMetrics(promReg)
 	promReg.MustRegister(metrics.NewLimitsCollector(limits(cfg)))
 
-	// R39 moderation (docs/42 §4.3). The set is always constructed and always
-	// scraped — with -moderation-source=off nothing feeds it, every publish
-	// check is a cheap miss, and gawk_moderation_bans_active reads zero,
-	// which is how an operator tells "no bans" from "no moderation".
+	// The ban set is always constructed and always scraped — with
+	// -moderation-source=off nothing feeds it and gawk_moderation_bans_active
+	// reads zero, which is how an operator tells "no bans" from "no
+	// moderation".
 	bans := moderation.NewSet()
 	promReg.MustRegister(metrics.NewModerationCollector(bans))
 
-	// R50 event bus (docs/51). Constructed before anything can produce an
-	// event and closed last; with -eventbus-url unset New returns a nil
-	// publisher and every hook is a no-op.
-	//
-	// The counters are registered only when the bus IS configured, which is
-	// what makes "off is byte-identical" true of /metrics and not just of
-	// /statusz (EB1's acceptance criteria say both). A deployment without a
-	// bus exports no gawk_eventbus_* series at all — an empty counter would
-	// claim a subsystem that is not there, and "is it configured?" is already
-	// answered by the config view and by /relays' bus section.
+	// Event bus (docs/51): constructed before anything can produce an event
+	// and closed last; with -eventbus-url unset New returns a nil publisher
+	// and every hook is a no-op.
 	busMetrics := eventBusMetrics(cfg, promReg)
 	bus, err = eventbus.New(eventbus.Options{
 		URL:            cfg.EventBusURL,
@@ -215,24 +200,20 @@ func run() error {
 		ro := roomOptions(cfg)
 		// The registry's view of a broadcast is the transport's: the local
 		// hub first and, in cluster mode, the origin lease through the
-		// coordinator SetCluster installs below (docs/44 §4.5, PR #302
-		// review) — read late-bound, so the registry can exist before it.
+		// coordinator SetCluster installs below — read late-bound, so the
+		// registry can exist before it.
 		ro.Broadcasts = srv.RoomBroadcasts()
 		ro.Obfuscate = r.ObfuscateID
 		ro.OnEvent = busHook
 		ro.PodName = os.Getenv("POD_NAME")
 		ro.Log = log
 		if cfg.ClusterMode {
-			// The store is built later (buildRooms below) and read through
-			// the closure, as the hub's lease hooks read coord.
 			wireRoomClusterSeams(&ro, func() *roomcluster.Store { return roomStore })
 		}
 		roomReg = roomsrv.NewRegistry(ro)
 	}
-	// Publishing `coord` — the variable the hub's lease hooks above close
-	// over — is part of the cluster wiring, so it happens here rather than at
-	// the call site: wireSubsystems only guarantees the ORDER, and both
-	// halves have to be inside the ordered step for that to mean anything.
+	// Publishing `coord` happens inside the ordered wiring step, not at the
+	// call site: wireSubsystems only guarantees the ORDER of what it calls.
 	buildCoord := func() (transport.ClusterCoordinator, string, error) {
 		c, podName, cerr := buildCoordinator(cfg, srv.HandleLeaseDeleted, srv.HandleLeaseLost, log)
 		if cerr != nil {
@@ -242,10 +223,7 @@ func run() error {
 		go coord.Run(runCtx)
 		return c, podName, nil
 	}
-	// RM3: the room store is built from the same in-cluster client shape
-	// as the coordinator and published here for the same reason coord is.
-	// Its informer is the LAST thing wireSubsystems starts (its first
-	// events reach the registry and the transport within milliseconds).
+	// The room store is published here for the same reason coord is.
 	var buildRooms func() (transport.RoomCluster, string, func(), error)
 	if cfg.ClusterMode && cfg.Rooms {
 		buildRooms = func() (transport.RoomCluster, string, func(), error) {
@@ -261,11 +239,8 @@ func run() error {
 		return err
 	}
 	// Installed after the cluster wiring (SetRooms hands the registry the
-	// transport's token key), before Run — the same rule as SetModeration.
-	// The stats source is read AFTER the install (installRooms pins the
-	// order): it is nil until the registry is on the transport, and reading
-	// it first silently dropped the /statusz section and every room series
-	// from a rooms-enabled relay while the unit suite stayed green.
+	// transport's token key), before Run. installRooms pins the stats-source
+	// read after the install (docs/gotchas.md).
 	roomStats := installRooms(srv, roomReg)
 	if roomStats != nil {
 		promReg.MustRegister(metrics.NewRoomCollector(roomStats))
@@ -273,18 +248,15 @@ func run() error {
 	if roomReg != nil {
 		// The refresh poll turns "no lease" into an expiry in cluster mode
 		// (UnknownIsExpired), so it must not run against a lease cache that
-		// has not synced yet — an empty cache is not "no leases". Until
-		// then the source answers unknown (mint 404s for the informer's
-		// first second on a fresh pod), which is honest but must not remove
-		// an adopted room's attachments.
+		// has not synced yet — an empty cache is not "no leases", and would
+		// remove an adopted room's attachments.
 		go func() {
 			if coord != nil && !coord.WaitLeaseSync(runCtx) {
 				return
 			}
 			roomReg.RunRefresh(runCtx)
 		}()
-		// The static-room file source starts last, like the ban source,
-		// for the same reason.
+		// The static-room file source starts last, like the ban source.
 		if cfg.RoomsFile != "" {
 			if err := roomsrc.StartFile(runCtx, cfg.RoomsFile, roomsrc.Options{Registry: roomReg, Log: log}); err != nil {
 				return err
@@ -292,16 +264,15 @@ func run() error {
 		}
 	}
 
-	// The R18 viewer-count pump (docs/23 Decision 4): one registry-wide
-	// goroutine, started explicitly here — never inside NewRegistry — so
-	// tests drive PumpViewerCounts ticks directly.
+	// The viewer-count pump: one registry-wide goroutine, started explicitly
+	// here — never inside NewRegistry — so tests drive PumpViewerCounts ticks
+	// directly.
 	go r.RunViewerCountPump(runCtx)
 
-	// R39 AP3 (docs/42 §4.5): the credential-gated admin API on the ops
-	// listener. NewAdminAuth never blocks and never fails on an unreachable
-	// IdP — discovery is retried in the background — so the relay starts
-	// whether or not the identity provider is up. With neither credential
-	// configured, Handler registers no admin route at all (404).
+	// The credential-gated admin API on the ops listener (docs/42 §4.5).
+	// NewAdminAuth never blocks or fails on an unreachable IdP — discovery is
+	// retried in the background — so the relay starts whether or not the IdP
+	// is up. With neither credential configured, no admin route exists (404).
 	adminAuth := ops.NewAdminAuth(runCtx, ops.AdminAuthOptions{
 		Token:      cfg.AdminAPIToken,
 		Issuer:     cfg.AdminOIDCIssuer,
@@ -344,14 +315,9 @@ func run() error {
 	return nil
 }
 
-// logStartup emits the one line an operator reads to confirm what this pod is
-// actually running. Extracted from run so it can be asserted in a test:
-// docs/42 §9 AP2 requires the moderation source to be stated here, and the
-// R2 lesson is that a knob nobody can see is a knob nobody notices is inert.
 // wiredServer is the slice of *transport.Server that startup wiring touches.
-// It is an interface for one reason: so the ORDER below can be asserted in a
-// test. The window it guards opens and closes during process startup, which
-// nothing else in the suite can observe.
+// It is an interface so the wiring ORDER can be asserted in a test; nothing
+// else in the suite can observe the startup window it guards.
 type wiredServer interface {
 	SetModeration(*moderation.Set)
 	SetCluster(transport.ClusterCoordinator, string)
@@ -362,27 +328,20 @@ type wiredServer interface {
 // wireSubsystems installs the optional subsystems on srv in the one order
 // that is safe, and returns once the ban source is running.
 //
-// moderationsrc.Start goes LAST, and that is the entire point of this
-// function existing (PR #280 review). It launches the Ban informer, and a
-// pod cold-starting in a namespace that already holds Ban CRs gets its first
-// Add events within milliseconds. Those reach srv.HandleBanAdded ->
-// terminate(), which reads this pod's edge manager and — through the hub's
-// OnBroadcastExpired hook — the cluster coordinator. Starting the source
-// before SetCluster made that a data race on plain field writes, and left a
-// real hole behind it: a kill actuated in the window tears the broadcast down
-// locally but never deletes its origin Lease, so every other pod in the fleet
-// keeps routing viewers to an origin that is already dead.
+// moderationsrc.Start goes LAST. A pod cold-starting in a namespace that
+// already holds Ban CRs gets Add events within milliseconds; they reach
+// srv.HandleBanAdded -> terminate(), which reads the edge manager and, via
+// OnBroadcastExpired, the coordinator. Started before SetCluster, that is a
+// data race, and a kill in the window tears the broadcast down locally but
+// never deletes its origin Lease — the rest of the fleet keeps routing
+// viewers to a dead origin.
 //
-// buildCoord is the seam: it builds AND publishes the coordinator (see run),
-// so "cluster wiring is complete" is one step rather than two.
-//
-// buildRooms (R42 RM3) is the same seam for the cluster room store: nil
-// unless -cluster-mode AND -rooms. It returns the store, the pod name, and
-// a start function for its informer, which runs AFTER the ban source for
-// the reason the ban source runs after SetCluster: the informer's first
-// events call into the transport (adoption, lease loss) and the registry,
-// and SetRoomCluster chains the drain hook onto SetCluster's, so both must
-// be installed before anything can fire.
+// buildCoord builds AND publishes the coordinator (see run), so "cluster
+// wiring is complete" is one step. buildRooms is the same seam for the
+// cluster room store (nil unless -cluster-mode AND -rooms); its informer
+// starts after the ban source for the same reason: its first events call
+// into the transport and registry, and SetRoomCluster chains the drain hook
+// onto SetCluster's, so both must be installed before anything can fire.
 func wireSubsystems(
 	ctx context.Context,
 	cfg config.Config,
@@ -416,9 +375,8 @@ func wireSubsystems(
 		Source: cfg.ModerationSource,
 		Set:    bans,
 		Log:    log,
-		// R39 AP3 (docs/42 §4.3): the actuation half. Wired for EVERY source
-		// and independently of -cluster-mode — a single-pod relay kills just
-		// as well as a fleet, and each pod acts on its own event.
+		// Wired for EVERY source and independently of -cluster-mode: each
+		// pod acts on its own event.
 		OnBanAdded: srv.HandleBanAdded,
 	}); err != nil {
 		return err
@@ -429,6 +387,10 @@ func wireSubsystems(
 	return nil
 }
 
+// logStartup emits the one line an operator reads to confirm what this pod is
+// actually running; a knob nobody can see is a knob nobody notices is inert.
+// Secrets are logged only as set/unset. Separate from run so a test can assert
+// it.
 func logStartup(log *slog.Logger, cfg config.Config, version string) {
 	log.Info("starting",
 		"version", version,
@@ -458,18 +420,12 @@ func logStartup(log *slog.Logger, cfg config.Config, version string) {
 		"metrics_addr", cfg.MetricsAddr,
 		"stateless_reset_key_set", len(cfg.StatelessResetKey) > 0,
 		"resume_token_key_mode", resumeTokenKeyMode(cfg),
-		// R28: the key's presence is the feature switch, so logging whether it
-		// is set is how an operator confirms a fleet is collecting at all —
-		// the key itself is never logged.
 		"telemetry_enabled", len(cfg.TelemetryKey) > 0,
 		"telemetry_report_interval", cfg.TelemetryReportInterval,
 		"telemetry_advertise_url", cfg.TelemetryAdvertiseURL,
 		"server_name", cfg.ServerName,
 		"cluster_mode", cfg.ClusterMode,
-		// R39 (docs/42 §4.3): the operator's confirmation surface for which
-		// ban source this pod is actually enforcing from, and which
-		// credentials open the admin API. The token itself is never logged —
-		// only whether one is set, which is what decides 404 vs. 401.
+		// Whether an admin credential is set decides 404 vs. 401.
 		"moderation_source", cfg.ModerationSource,
 		"admin_api_token_set", cfg.AdminAPIToken != "",
 		"admin_oidc_issuer", cfg.AdminOIDCIssuer,
@@ -477,9 +433,6 @@ func logStartup(log *slog.Logger, cfg config.Config, version string) {
 		"admin_oidc_roles_claim", cfg.AdminOIDCRolesClaim,
 		"admin_oidc_role", cfg.AdminOIDCRole,
 		"admin_api_enabled", cfg.AdminAPIToken != "" || cfg.AdminOIDCIssuer != "",
-		// R42 (docs/44 §4.10): the same confirmation surface for rooms. The
-		// create secret itself is never logged, only whether one gates
-		// minting.
 		"rooms", cfg.Rooms,
 		"room_empty_grace", cfg.RoomEmptyGrace,
 		"max_rooms", cfg.MaxRooms,
@@ -490,10 +443,9 @@ func logStartup(log *slog.Logger, cfg config.Config, version string) {
 	)
 }
 
-// roomOptions maps the parsed config onto roomsrv.Options — the R42 twin of
-// registryOptions, under the same rule: every -room-* knob crosses here, and
-// TestRoomOptionsCarryAllKnobs asserts it. Wiring-only fields (Broadcasts,
-// Obfuscate, Log, cluster seams) are set by run.
+// roomOptions maps the parsed config onto roomsrv.Options — registryOptions'
+// twin, under the same rule: every -room-* knob crosses here
+// (TestRoomOptionsCarryAllKnobs). Wiring-only fields are set by run.
 func roomOptions(cfg config.Config) roomsrv.Options {
 	return roomsrv.Options{
 		EmptyGrace:      cfg.RoomEmptyGrace,
@@ -504,19 +456,18 @@ func roomOptions(cfg config.Config) roomsrv.Options {
 	}
 }
 
-// wireRoomClusterSeams installs the registry's cluster seams (docs/44 §4.3,
-// §4.5) on top of a store that may not exist yet: the CR create is the code
-// reservation (and Unreserve gives it back on the local re-check race),
-// the attach secret is read from the room's Secret per join, and the
-// status writes follow the room's life. Before the store exists the gates
-// fail closed and the notifications are no-ops. One function so a test can
-// prove every seam is wired (CODE-REVIEW.md: the R2 F1 blind spot).
+// wireRoomClusterSeams installs the registry's cluster seams (docs/44 §4.5)
+// on top of a store that may not exist yet: the CR create is the code
+// reservation (Unreserve gives it back on the local re-check race), the
+// attach secret is read from the room's Secret per join, and the status
+// writes follow the room's life. Before the store exists the gates fail
+// closed and the notifications are no-ops. One function so a test can prove
+// every seam is wired.
 //
-// It also flips the registry's refresh into its cluster shape: with the
-// broadcast source fleet-wide (transport.Server.RoomBroadcasts), "unknown"
-// means no hub here and no origin lease anywhere — the broadcast is gone,
-// and the poll removes the attachment, because the hub's expiry hook fires
-// on the origin pod, not on the room's home (docs/44 §4.5, §11.1).
+// It also sets UnknownIsExpired: with the broadcast source fleet-wide,
+// "unknown" means no hub here and no origin lease anywhere, and the poll must
+// remove the attachment because the hub's expiry hook fires on the origin
+// pod, not on the room's home.
 func wireRoomClusterSeams(ro *roomsrv.Options, store func() *roomcluster.Store) {
 	ro.UnknownIsExpired = true
 	ro.Reserve = func(ctx context.Context, room *rooms.Room) error {
@@ -566,14 +517,8 @@ func chainHook(a, b func(string)) func(string) {
 	}
 }
 
-// installRooms puts the room registry on the transport and returns the
-// rooms stats source for /statusz and the metrics collector — the
-// transport's "proxy" rows merged over the registry's "home" rows (docs/44
-// §4.10). Nil with -rooms off, so neither the /statusz section nor the room
-// series exist. One function rather than two calls in run because the
-// ORDER is the contract: the source does not exist before the install.
-// limits is the configured caps as gawk_limit series (R59, docs/61 D7). The
-// names follow the flags; 0 = unlimited, as there.
+// limits is the configured caps as gawk_limit series (docs/61). The names
+// follow the flags; 0 = unlimited, as there.
 func limits(cfg config.Config) metrics.Limits {
 	return metrics.Limits{
 		"max_broadcasts":        float64(cfg.MaxBroadcasts),
@@ -589,6 +534,11 @@ func limits(cfg config.Config) metrics.Limits {
 	}
 }
 
+// installRooms puts the room registry on the transport and returns the rooms
+// stats source for /statusz and the metrics collector (the transport's
+// "proxy" rows merged over the registry's "home" rows). Nil with -rooms off.
+// One function because the ORDER is the contract: the source is nil until
+// the registry is installed.
 func installRooms(srv roomsServer, reg *roomsrv.Registry) metrics.RoomStatsSource {
 	if reg == nil {
 		return nil
@@ -603,9 +553,10 @@ type roomsServer interface {
 	RoomStatsSource() metrics.RoomStatsSource
 }
 
-// registryOptions maps the parsed config onto hub.Options. Every limit knob
-// in config.Config must cross here — a knob that parses but isn't mapped is
-// silently inert in production while wired-by-hand tests stay green.
+// registryOptions maps the parsed config onto hub.Options. Every knob must be
+// plumbed through here (flag + GAWK_* env + Helm value) — a knob that parses
+// but isn't mapped is silently inert in production while wired-by-hand tests
+// stay green.
 func registryOptions(cfg config.Config) hub.Options {
 	return hub.Options{
 		MaxSubscribers:                cfg.MaxSubscribers,
@@ -621,24 +572,22 @@ func registryOptions(cfg config.Config) hub.Options {
 		DVRMaxCatchup:                 cfg.DVRMaxCatchup,
 		DVRAudio:                      cfg.DVRAudio,
 		LiveEdgeAudioOnReliableStream: cfg.LiveEdgeAudioOnReliableStream,
-		// R29: plumbed here, not only into the test helper — the R2
-		// post-implementation review's finding, and docs/34's FP4 acceptance
-		// criterion asserts this production path specifically.
+		// Also the ceiling on any subscriber's parity level.
 		ParityDefault: cfg.ParityDefault,
-		// R30: same rule (docs/35 ST3). The transport reads cfg directly for
-		// the dial gate and capability bit; this mirror keeps the hub's
-		// options honest and the carry-all-limits test complete.
+		// The transport reads cfg directly for the dial gate and capability
+		// bit; this mirror keeps the hub's options honest and the
+		// carry-all-limits test complete.
 		StripedDelivery: cfg.StripedDelivery,
 		StatsKey:        cfg.StatsKey,
 	}
 }
 
 // buildCoordinator constructs the cluster coordinator from the in-cluster
-// Kubernetes config and the downward-API pod identity (R17 W3). Only called
-// when -cluster-mode is on: single-pod deployments never touch the k8s API.
+// Kubernetes config and the downward-API pod identity. Only called when
+// -cluster-mode is on: single-pod deployments never touch the k8s API.
 // onLeaseDeleted is the cluster-wide "broadcast ended" dispatch (edge stop +
-// local hub expiry); onLeaseLost is the W5 demote path (stale publisher
-// close, 4003 to edges, self-demote to edge).
+// local hub expiry); onLeaseLost is the demote path (stale publisher close,
+// 4003 to edges, self-demote to edge).
 func buildCoordinator(cfg config.Config, onLeaseDeleted func(string), onLeaseLost func(string, cluster.Origin), log *slog.Logger) (*cluster.Coordinator, string, error) {
 	restCfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -675,12 +624,11 @@ func buildCoordinator(cfg config.Config, onLeaseDeleted func(string), onLeaseLos
 	return coord, podName, nil
 }
 
-// buildRoomStore constructs the cluster room store (R42 RM3, docs/44 §4.5)
-// from the in-cluster config and the downward-API pod identity, exactly as
-// buildCoordinator does for the origin registry. Only called with both
+// buildRoomStore constructs the cluster room store (docs/44 §4.5) the way
+// buildCoordinator builds the coordinator. Only called with both
 // -cluster-mode and -rooms on: a single-pod relay with rooms never touches
-// the k8s API (docs/44 §4.3, "non-cluster mode"). The Room CRD and the
-// `rooms`/`rooms/status`/`secrets` RBAC ride the chart's rooms.enabled.
+// the k8s API. The Room CRD and the `rooms`/`rooms/status`/`secrets` RBAC ride
+// the chart's rooms.enabled.
 func buildRoomStore(cfg config.Config, reg *roomsrv.Registry, obfuscate func(string) string, onLeaseLost func(string), log *slog.Logger) (*roomcluster.Store, string, error) {
 	restCfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -718,14 +666,8 @@ func buildRoomStore(cfg config.Config, reg *roomsrv.Registry, obfuscate func(str
 	return store, podName, nil
 }
 
-// resumeTokenKeyMode names where the resume-token key comes from (R17 W2) —
-// logged so a fleet misconfiguration (per-process keys on multiple pods,
-// which silently breaks cross-pod resume) is visible at startup.
-//
-// One definition, in config, since R39: GET /internal/admin/config reports
-// the same mode (docs/42 §4.5 — "the resume key also says which mode,
-// echoing the startup log"), and two copies of a three-way switch is exactly
-// the drift CODE-REVIEW.md's shared-constants rule exists to stop.
+// resumeTokenKeyMode delegates to config.Config.ResumeTokenKeyMode, the one
+// definition shared with GET /internal/admin/config.
 func resumeTokenKeyMode(cfg config.Config) string { return cfg.ResumeTokenKeyMode() }
 
 // certSource returns the per-handshake certificate callback: an ephemeral
@@ -734,10 +676,10 @@ func resumeTokenKeyMode(cfg config.Config) string { return cfg.ResumeTokenKeyMod
 // pair for production. The full truth table is docs/41 §4.2.1.
 func certSource(cfg config.Config, log *slog.Logger) (func(*tls.ClientHelloInfo) (*tls.Certificate, error), error) {
 	switch {
-	// R38 (docs/41 D3): -dev-cert AND -cert-file means "generate into these
-	// paths if absent, otherwise load them". Persisting the pair is what stops
-	// every restart invalidating the hash a browser was given, and it moves
-	// local dev onto the file-backed path production actually uses.
+	// -dev-cert AND -cert-file means "generate into these paths if absent,
+	// otherwise load them". Persisting the pair stops every restart
+	// invalidating the hash a browser was given, and puts local dev on the
+	// file-backed path production uses.
 	case cfg.DevCert && cfg.CertFile != "":
 		if cfg.KeyFile == "" {
 			return nil, fmt.Errorf("-dev-cert with -cert-file also needs -key-file")
@@ -787,16 +729,12 @@ func certSource(cfg config.Config, log *slog.Logger) (func(*tls.ClientHelloInfo)
 		if err != nil {
 			return nil, err
 		}
-		// R38: the file-backed arm used to log nothing identifying, which left
-		// a developer running against a persisted dev cert with no way to
-		// obtain its hash — the ephemeral arm's log was the only source.
+		// Logged so a developer on a persisted dev cert can obtain its hash.
 		if cert, err := r.GetCertificate(nil); err == nil && cert != nil && cert.Leaf != nil {
 			// This arm is both the dev stack's ACME lane and every real
-			// deployment, so the remedy has to name both. It used to name only
-			// `./dev/certs.sh renew` — a command that does not exist inside the
-			// image and means nothing for a mounted Secret, which is exactly
-			// the operator this log line reaches when cert-manager has stopped
-			// renewing.
+			// deployment, so the remedy has to name both: ./dev/certs.sh does
+			// not exist inside the image and means nothing for a mounted
+			// Secret.
 			logCertIdentity(log, cert.Leaf, "loaded certificate",
 				"locally: ./dev/certs.sh renew — in a deployment the CA/cert-manager renews the mounted Secret (docs/self-hosting.md)",
 				"cert_file", cfg.CertFile)
@@ -828,10 +766,8 @@ func logCertIdentity(log *slog.Logger, leaf *x509.Certificate, msg, remedy strin
 	}, extra...)
 	log.Info(msg, args...)
 
-	// Already dead is not "expires soon". A negative `remaining` in a WARN was
-	// the only signal a stack whose certificate had run out ever produced, and
-	// it reads like a rounding artefact rather than the reason the browser is
-	// refusing to connect.
+	// Already dead is not "expires soon": a negative `remaining` in a WARN
+	// reads like a rounding artefact, not the reason browsers refuse.
 	remaining := time.Until(leaf.NotAfter)
 	switch {
 	case remaining <= 0:
@@ -849,7 +785,7 @@ func logCertIdentity(log *slog.Logger, leaf *x509.Certificate, msg, remedy strin
 	}
 }
 
-// podIdentity names this process in every event's source and id (docs/51 D3).
+// podIdentity names this process in every event's source and id (docs/51).
 // POD_NAME in a cluster; the hostname otherwise, so a single-node deployment's
 // events are still attributable and its ids still unique per producer.
 func podIdentity() string {
@@ -862,13 +798,9 @@ func podIdentity() string {
 	return "gawk-server"
 }
 
-// eventBusMetrics registers the R50 bus counters, and only when there is a bus.
-//
-// This is what makes "off is byte-identical" true of /metrics and not only of
-// /statusz (docs/51 EB1's acceptance criteria name both). A deployment without
-// a bus exports no gawk_eventbus_* series at all: an always-zero counter would
-// claim a subsystem that is not there, and "is it configured?" is already
-// answered by the config view and by gawk-admin's /relays bus section.
+// eventBusMetrics registers the bus counters, and only when there is a bus: a
+// deployment without one exports no gawk_eventbus_* series, since an
+// always-zero counter would claim a subsystem that is not there.
 func eventBusMetrics(cfg config.Config, reg prometheus.Registerer) *metrics.EventBusMetrics {
 	if cfg.EventBusURL == "" {
 		return nil
