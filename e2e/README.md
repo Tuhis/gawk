@@ -18,7 +18,7 @@ This directory is top-level because the harness spans multiple components;
 # once: binaries + built app
 mkdir -p e2e/bin
 (cd gawk-server && go build -o ../e2e/bin/gawk-server ./cmd/gawk-server)
-(cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
+(cd gawk-server && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
 (cd gawk-telemetry && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-telemetry ./cmd/gawk-telemetry)  # --telemetry only
 (cd gawk-app && npm ci && npm run build)
 (cd e2e && npm ci)
@@ -161,7 +161,7 @@ their room control session for the process lifetime), so the pass asserts
 "unchanged by Hide videos, minus one on Leave" rather than a literal 1.
 
 Skips cleanly (prints `SKIP` and passes) when `gawk-pubsim -h` lists no
-`-room-new` — rebuild it from `gawk-broadcast` first. Artifacts:
+`-room-new` — rebuild it from `gawk-server/` first. Artifacts:
 `room-grid.png`, `room-focus.png`, `room-hidden.png`, `console-rooms.log`,
 `pubsim-room-{a,b}.log`.
 

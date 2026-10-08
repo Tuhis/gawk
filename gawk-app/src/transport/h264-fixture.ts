@@ -1,6 +1,6 @@
 // Committed H.264 test fixture for the fMP4 muxer: the first 18 access units
 // (frames 0-17, GOP 15, keyframes at 0 and 15) of the same 320x240 @ 30 fps
-// stream committed as gawk-broadcast/internal/fixture/sample.ts, demuxed to
+// stream committed as gawk-server/internal/pubsim/fixture/sample.ts, demuxed to
 // Annex-B (ffmpeg -c copy -f h264; AU boundaries from ffprobe -show_packets).
 // Each AU carries in-band SPS/PPS before its IDR -- the native-broadcaster wire
 // shape (empty DecoderConfig extradata). Test-and-harness data only; never

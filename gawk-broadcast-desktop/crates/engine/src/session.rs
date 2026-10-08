@@ -1,5 +1,5 @@
 //! Session orchestration: the port of the Go engine's `Start`/`startLive`/
-//! `supervise` (gawk-broadcast/internal/engine/engine.go + resume.go).
+//! `supervise` (gawk-server/internal/pubsim/engine/engine.go + resume.go).
 //! Callbacks become an event channel — same information, Rust-shaped.
 
 use crate::clock::Clock;

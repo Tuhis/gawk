@@ -30,8 +30,8 @@ func TestStripeStateRoundTrip(t *testing.T) {
 	}
 }
 
-// TestStripeStateGoldenVectors pins the exact bytes. The TS mirror and
-// gawk-broadcast's wirecheck assert the same hex.
+// TestStripeStateGoldenVectors pins the exact bytes. The TS and Rust mirrors
+// assert the same hex.
 func TestStripeStateGoldenVectors(t *testing.T) {
 	for name, tc := range map[string]struct {
 		s    StripeState

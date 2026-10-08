@@ -822,8 +822,7 @@ describe('DeliveryAck (R21)', () => {
 });
 
 // The telemetry hello. Golden vectors are byte-identical to gawk-server/wire's
-// and gawk-broadcast's wirecheck — this is one of the mirrors that keeps them
-// so.
+// — this is one of the mirrors that keeps them so.
 describe('TelemetryHello (R28)', () => {
   const GOLDEN_HEX =
     '010d0107d000012345000102030405060708090a0ba1a2a3a4a5a6a7a81a2b3c4d5e6f';
@@ -915,7 +914,7 @@ describe('TelemetryHello (R28)', () => {
 });
 
 // The stripe suppression signal. Golden vectors are
-// byte-identical to gawk-server/wire's and gawk-broadcast's wirecheck.
+// byte-identical to gawk-server/wire's.
 describe('StripeState (R30)', () => {
   const GOLDEN_STRIPED_HEX = '0110010300';
   const GOLDEN_UNSTRIPED_HEX = '0110000000';

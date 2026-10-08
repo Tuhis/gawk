@@ -17,7 +17,7 @@ package schema
 //
 // Source of truth for the names: gawk-app/src/transport/viewer.ts
 // (ViewerStats), gawk-app/src/transport/broadcaster.ts (BroadcastStats), and
-// gawk-broadcast/internal/engine/stats.go (engine.Stats, which marshals with
+// gawk-server/internal/pubsim/engine/stats.go (engine.Stats, which marshals with
 // Go's default capitalized names — hence both spellings below for the fields
 // the native broadcaster also reports).
 

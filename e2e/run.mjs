@@ -1959,7 +1959,7 @@ async function main() {
   // R42: the rooms pass needs a pubsim that can mint. An older binary is a
   // clean skip, not a failure — the contract is built beside this harness.
   if (ROOMS_CHECK && !pubsimSupportsRooms()) {
-    log('SKIP: gawk-pubsim -h lists no -room-new; rebuild it from gawk-broadcast to run the rooms pass');
+    log('SKIP: gawk-pubsim -h lists no -room-new; rebuild it from gawk-server to run the rooms pass');
     log('PASS');
     return;
   }

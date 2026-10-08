@@ -3,10 +3,11 @@
 **Status**: designed 2026-09-24; owner decisions OD1–OD15 taken the same
 day. **LX1–LX6 built 2026-09-29**; LX0's spike was skipped by owner decision
 the same day, with its hardware questions moved into the LX7 pass (§11,
-F-1). LX7 (the on-hardware pass), LX8 (the Go deprecation release, after
-the first desktop release that carries the tarball) and LX9 (removal, after
-LX7) are open. **The Go app (`gawk-broadcast/`) is frozen to fixes only from
-2026-09-24** (OD6, D15). The ROADMAP entry
+F-1). **2026-10-08, owner decisions:** LX7 is accepted on the owner's AMD +
+Wayland machine, judged enough without the NVIDIA half; LX8 is dropped (no
+deprecation release; the last Go release stays `gawk-broadcast/v1.15.3`).
+**LX9 removed the Go app the same day** (D15). The Go app had been frozen to
+fixes only from 2026-09-24 (OD6). The ROADMAP entry
 ([R56](../ROADMAP.md#r56--linux-in-the-desktop-workspace-and-retiring-the-go-broadcaster))
 carries the summary; this doc restates the decisions so it reads on its own.
 
@@ -88,7 +89,7 @@ docs/19 and docs/38 warn.
 | OD8 | Verification floor | **NVIDIA (the gaming PC) and one AMD or Intel machine**, both gating, both in a **KDE Plasma Wayland** session. GNOME, X11 and wlroots sessions are best-effort: recorded when tried, never gating. |
 | OD9 | Architecture | **x86_64 only.** |
 | OD10 | Identity | **A new per-platform identity**, matching Windows and macOS: distribution `gawk-broadcast-linux`, origin `gawk-broadcast://linux`, asset `gawk-broadcast-linux-x86_64.tar.gz`, manifest `releases/gawk-broadcast-linux/latest.json`, telemetry `browser`/diagnostics `kind` `gawk-broadcast-linux`. |
-| OD11 | `gawk-pubsim` | **Keep a shrunk Go module as test tooling** (`engine`, `fixture`, `mpegts`, `opus`, `pubsim`, `wirecheck`). Its release-please component and Linux release stop. Porting pubsim to Rust is a separate, later milestone. |
+| OD11 | `gawk-pubsim` | **Keep a shrunk Go module as test tooling** (`engine`, `fixture`, `mpegts`, `opus`, `pubsim`, `wirecheck`). Its release-please component and Linux release stop. Porting pubsim to Rust is a separate, later milestone. **Reversed 2026-10-08 by owner decision**: pubsim moved into `gawk-server` (`cmd/gawk-pubsim`, `internal/pubsim/{engine,fixture,mpegts,opus}`) and the `gawk-broadcast` module was deleted, `wirecheck` with it (see LX9). |
 | OD12 | Linux-only knobs kept | **All four**: the encoder pin (`encoder`), the audio-device pin (`audioDevice`), the H.264 dump tap (`GAWK_DUMP_H264`), and the mid-session capture rebuild. |
 | OD13 | Thumbnail | **Yes**: the 1 Hz "what viewers see" thumbnail from the live frames, as on Windows and macOS. Reverses docs/19 D16. It is dropped on any capture path where it would break zero-copy (D4, V-3). |
 | OD14 | Distro floor | **Ubuntu 24.04-class**: built in an `ubuntu:24.04` container (glibc 2.39, GStreamer 1.24, PipeWire 1.0). Covers Ubuntu 24.04+, Debian 13, Fedora 40+ and Arch. The Go card's "glibc 2.34" was never the real floor, because GStreamer ≥ 1.24 already excluded Ubuntu 22.04 and Debian 12. |
@@ -929,6 +930,9 @@ Prefix **LX** (Linux; the first free two-letter prefix that reads right).
 
 ### LX7 — The on-hardware acceptance pass
 
+**Accepted 2026-10-08** by the owner on their AMD + Wayland machine, which
+they judged enough; the NVIDIA half was not run.
+
 | Acceptance criterion | Verified by |
 |---|---|
 | G1–G3, G7 (photographed reference, same rig as the Go baseline), G8, G9, G10 (fleet rollout), G11's manual half, G13, on **both** the NVIDIA and the AMD/Intel machine, KDE Plasma Wayland | manual |
@@ -937,12 +941,39 @@ Prefix **LX** (Linux; the first free two-letter prefix that reads right).
 
 ### LX8 — The Go deprecation release
 
+**Dropped 2026-10-08** by owner decision: no deprecation release was cut,
+the frozen `releases/gawk-broadcast/latest.json` stays at v1.15.3, and LX9
+followed directly.
+
 | Acceptance criterion | Verified by |
 |---|---|
 | The Go GUI shows the persistent "replaced" line linking the site's download section; the Go CLI logs at start that it is no longer developed, names the GUI replacement, and says headless use stays on this release until a CLI exists (OD5) | unit (Go) + manual |
 | Released as the final `gawk-broadcast` minor; `releases/gawk-broadcast/latest.json` written one last time | the release |
 
 ### LX9 — Removing the Go app
+
+**Done 2026-10-08.** `go list -deps ./cmd/gawk-pubsim ./internal/wirecheck/...`
+(and `-test`) re-derived the keep list as D15 predicted:
+`internal/{engine, fixture, mpegts, opus, pubsim, wirecheck}` and
+`cmd/gawk-pubsim`. Everything else went, along with `desktop/`, `scripts/`,
+`docs/`, `INSTALL.md` and the module's third-party notices; `go mod tidy`
+dropped Gio, godbus and go-text. A `deadcode` pass then removed the GUI-only
+engine API that pubsim never calls (live room join/leave/rename,
+`ParseResolution`). The `broadcast` CI job keeps its name (a required check)
+but is now vet + test + coverage + a pubsim build with no apt packages;
+`attach-broadcast-release` and `ci.yml`'s backfill input are gone; the
+coverage floor was re-measured (82.4 %, floor 81).
+
+The same day the owner reversed OD11, and the same PR finished the job:
+pubsim moved into `gawk-server` beside `gawk-loadgen` and `gawk-roomsim`
+(`cmd/gawk-pubsim`; `internal/pubsim` with `engine`, `fixture`, `mpegts`
+and `opus` under it) and the `gawk-broadcast` module was deleted, with its
+`go.mod`, its `broadcast` CI job (taken out of the `main` ruleset's required
+checks), its coverage key and its tidy entry. `internal/wirecheck` went with
+it: inside one module it re-asserted vectors `gawk-server/wire`'s own tests
+already pin (all 19 checked), so the wire format now has three copies —
+`wire.go`, `wire.ts` and `crates/wire`. `dev/Dockerfile.pubsim` builds from
+`gawk-server/` alone.
 
 | Acceptance criterion | Verified by |
 |---|---|

@@ -160,7 +160,7 @@ config:
     - gawk-broadcast://linux       # the Linux native broadcaster
     - gawk-broadcast://windows     # the Windows native broadcaster
     - gawk-broadcast://macos       # the macOS native broadcaster
-    - gawk-broadcast://native      # the older Go Linux app, and gawk-pubsim
+    - gawk-broadcast://native      # gawk-pubsim (and the removed Go Linux app)
     - gawk://ios                   # the iOS app, to watch as well as broadcast
 
   # Capacity. Defaults are conservative; raise them against your uplink.
@@ -181,7 +181,7 @@ Three kinds of client, and only the first two go in the list:
 |---|---|---|
 | The web app | `https://` + the app's Ingress host | **Add it.** Must match `ingress.host` exactly |
 | `gawk-broadcast-linux` | `gawk-broadcast://linux` | **Add it** if anyone will broadcast from Linux |
-| `gawk-broadcast` (the older Go Linux app) and `gawk-pubsim` | `gawk-broadcast://native` | **Keep it** while anyone still runs the Go app; the dev stack's simulated publishers send it too |
+| `gawk-pubsim`, the simulated publisher | `gawk-broadcast://native` | **Add it** if you drive this relay with pubsim (the dev stack does). The removed Go Linux app, last released as `gawk-broadcast/v1.15.3`, sent it too |
 | `gawk-broadcast-windows` | `gawk-broadcast://windows` | **Add it** if anyone will broadcast from Windows |
 | `gawk-broadcast-macos` | `gawk-broadcast://macos` | **Add it** if anyone will broadcast from a Mac |
 | `gawk-ios` | `gawk://ios` | **Add it** if anyone will watch or broadcast from an iPhone or iPad: the check covers `/subscribe` and `/echo` too |
@@ -381,19 +381,14 @@ hardware encoding.
 **From Linux, use the native broadcaster.** Browser hardware encode does not
 exist on Linux — WebCodecs ships HW encode on Windows/macOS/Android only —
 so a Linux broadcaster in a browser is software-encoding and will feel it.
-[`gawk-broadcast`](../gawk-broadcast/README.md) exists for this: portal
-capture plus a hardware GStreamer pipeline.
+`gawk-broadcast-linux` ([`gawk-broadcast-desktop`](../gawk-broadcast-desktop/README.md))
+exists for this: portal capture plus a hardware GStreamer pipeline.
 
 The native broadcasters default to the reference deployment, so point them
-at yours:
-
-```sh
-gawk-broadcast -url https://relay.example.com:4433 -secret <publish-secret>
-```
-
-or set the relay URL in the GUI's settings. Set the telemetry URL to `off`
-unless you are running your own telemetry service — the pairing rule already
-means a non-default relay reports nowhere, but being explicit costs nothing.
+at yours: set the relay URL (and the publish secret) in the app's
+settings. Set the telemetry URL to `off` unless you are running your own
+telemetry service — the pairing rule already means a non-default relay
+reports nowhere, but being explicit costs nothing.
 
 They all send their own `Origin` header rather than an `https://` one, so they
 have to be in the relay's `allowedOrigins` — see the table in
@@ -1269,7 +1264,7 @@ That renders the `Room` CRD (kept on uninstall, like `Ban`), the room
 knobs, and — in cluster mode — a Role that lets the pods write `Room` CRs
 and read the Secrets static rooms reference. Dynamic rooms need nothing
 else: a broadcaster mints one from the broadcaster page (or
-`gawk-broadcast -room-new`), viewers type the six-character code into the
+the native broadcasters' Room row), viewers type the six-character code into the
 same join box a broadcast code goes in. `-room-create-secret` (chart
 `rooms.createSecret`/`createSecretRef`) makes minting invite-only; static
 rooms are unaffected by it.
@@ -1293,8 +1288,8 @@ EOF
 It is reachable at `https://<app>/#/room/TuhisRoom` on both pods the
 moment it exists; the first participant's pod becomes its home. Anyone
 with the link may watch; attaching a broadcast needs the attach secret
-(`gawk-broadcast -room TuhisRoom -room-attach-secret …`, or the key field
-in the broadcaster page's Room panel). Deleting the CR ends the room
+(the key field in the broadcaster page's Room panel, or in the native
+broadcasters'). Deleting the CR ends the room
 everywhere with close code 4007. With `gawk-admin` installed and its
 `rooms.enabled=true`, the portal's Rooms page does all of this — create,
 rotate the attach secret (shown once), end a dynamic room — but read

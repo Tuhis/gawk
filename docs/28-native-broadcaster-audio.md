@@ -1,5 +1,12 @@
 # R25 — Native broadcaster audio (gawk-broadcast)
 
+> **Removed 2026-10-08.** The Go app this doc designed was removed in R56
+> LX9 ([docs/58](58-linux-desktop-broadcaster.md) D15); Linux ships from
+> `gawk-broadcast-desktop` (`gawk-broadcast-linux`). Paths below that name
+> `gawk-broadcast/cmd/…` or its GUI, capture, portal and helper packages no
+> longer exist. What remains is `gawk-pubsim` with the engine, `mpegts`,
+> `opus` and fixture packages it runs on. Kept for its decisions and findings.
+
 **Status**: designed 2026-07-23; **NA1 done 2026-07-27**; **NA2–NA7 implemented
 2026-07-27**, automated gates green in both Go modules (`gofmt` / `go vet` /
 `go test` on Linux, where the Linux-only child-process tests actually run) and

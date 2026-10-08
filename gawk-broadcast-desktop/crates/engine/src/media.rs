@@ -1,6 +1,6 @@
 //! Media types crossing the source→engine seam, and the audio-lane
 //! constants inherited verbatim from R25 (docs/38 D8; Go:
-//! gawk-broadcast/internal/engine/audio.go). The bitrate is a constant, not
+//! gawk-server/internal/pubsim/engine/audio.go). The bitrate is a constant, not
 //! a setting.
 
 /// One encoded video access unit.

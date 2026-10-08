@@ -1233,9 +1233,9 @@ jobs:
             echo "::error::want exactly one .deb in the artifact, found: ${debs[*]}"; exit 1; }
           bash gawk-broadcast-desktop/tools/linux/test-deb.sh "${debs[0]}"
 
-  # The Windows half of the release-assets story; the Linux one is
-  # attach-broadcast-release in ci.yml, and the reasoning for both lives in
-  # .github/actions/attach-release-assets. No rebuild — the artifact `build`
+  # Puts every desktop shell's binaries on the release page (ci.yml's
+  # attach-broadcast-release did the Go Linux app's until R56 LX9 removed
+  # it); the reasoning lives in .github/actions/attach-release-assets. No rebuild — the artifact `build`
   # just produced is already the --release EXE, and on a release-PR merge
   # this run and release-please.yml's are the same commit.
   #

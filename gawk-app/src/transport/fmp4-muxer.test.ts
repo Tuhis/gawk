@@ -1,6 +1,6 @@
 // The fMP4 muxer's automated proof, golden-vector style (the wire-test
 // culture). The committed fixture is the same 320x240 @ 30 fps
-// H.264 stream gawk-broadcast embeds (h264-fixture.ts documents provenance):
+// H.264 stream gawk-pubsim embeds (h264-fixture.ts documents provenance):
 // Annex-B access units with in-band SPS/PPS at every IDR — the native
 // broadcaster's wire shape. The AVCC (browser broadcaster) shape is derived
 // from it in this file, which doubles as an independent check that both input

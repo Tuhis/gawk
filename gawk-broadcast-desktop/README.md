@@ -426,7 +426,7 @@ Quirks that will bite you:
 ### The wire crate is a mirror, not an implementation
 
 `gawk-server/wire/wire.go` is the source of truth; `gawk-app`'s `wire.ts`
-and `gawk-broadcast/internal/wirecheck` are the other mirrors. The golden
+is the other mirror. The golden
 vectors in `crates/wire/tests/golden.rs` are deliberately **restated as
 literal hex**, never imported or generated — a shared fixture could be
 edited once and stay green everywhere, defeating the purpose. Every wire

@@ -1700,7 +1700,7 @@ func TestTelemetryTokenValidUntilExpiry(t *testing.T) {
 // --- R37 RelayIdentity (0x11) + TelemetryEndpoint (0x12) (docs/40 SP4) ---
 
 // Golden vectors, computed by hand from the wire format spec. Restated
-// byte-identically in all three mirrors (wire.ts, wirecheck, crates/wire).
+// byte-identically in both mirrors (wire.ts, crates/wire).
 const (
 	// RelayIdentity: ServerVersion="1.42.0", Name="gawk home".
 	//

@@ -112,13 +112,12 @@ misses them will be sent back:
 it. Every rule in `CODE-REVIEW.md` exists because its absence cost a real bug;
 this one most of all.
 
-**The wire format has four mirrors.** `gawk-server/wire/wire.go` is the source
-of truth. `gawk-app`'s `wire.ts`, `gawk-broadcast/internal/wirecheck` and
-`gawk-broadcast-desktop/crates/wire` each restate it, with golden vectors kept
-**byte-identical** across all four — deliberately restated, never imported or
-generated, because a shared fixture could be edited once and stay green
-everywhere. A new wire type or close code lands in all four in one PR, or it
-does not land.
+**The wire format has three copies.** `gawk-server/wire/wire.go` is the source
+of truth. `gawk-app`'s `wire.ts` and `gawk-broadcast-desktop/crates/wire` each
+restate it, with golden vectors kept **byte-identical** across all three —
+deliberately restated, never imported or generated, because a shared fixture
+could be edited once and stay green everywhere. A new wire type or close code
+lands in all three in one PR, or it does not land.
 
 **A relay↔admin contract change is a `gawk-admin` change — at release time,
 not only at test time.** `gawk-admin` compiles the relay's public packages in
@@ -182,7 +181,6 @@ waiting for a red check.
 
 ```sh
 cd gawk-server            && go vet ./... && CGO_ENABLED=1 go test -race ./...
-cd gawk-broadcast         && go vet ./... && CGO_ENABLED=1 go test -race ./...
 cd gawk-telemetry         && go vet ./... && go test ./...   # plus -tags duckdb
 cd gawk-app               && npm ci && npm run lint && npm test && npm run build
 cd gawk-telemetry/ui      && npm ci && npm run lint && npm test && npm run build

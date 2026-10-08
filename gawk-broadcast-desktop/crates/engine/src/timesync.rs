@@ -1,5 +1,5 @@
 //! The TimeSync client and ClockMapping cadence, ported from
-//! gawk-broadcast/internal/engine/timesync.go (itself the mirror of
+//! gawk-server/internal/pubsim/engine/timesync.go (itself the mirror of
 //! gawk-app's time-sync.ts). NTP-style: rtt = t1−t0, offset = server −
 //! (t0 + rtt/2); the lowest-RTT sample in a rolling window wins, because the
 //! fastest exchange is the most symmetric one.

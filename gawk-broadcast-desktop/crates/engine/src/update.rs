@@ -567,7 +567,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::sync::mpsc;
 
-    /// The docs/46 D5 example, restated (the `wirecheck` convention: the
+    /// The docs/46 D5 example, restated (the wire mirrors' convention: the
     /// consumer pins its own copy of the contract, so a writer change is loud
     /// here) — the live Windows manifest of v2.0.0, trimmed to two assets.
     fn manifest(component: &str, version: &str, asset: &str) -> String {

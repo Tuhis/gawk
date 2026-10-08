@@ -5,6 +5,11 @@ DownLoads; two-letter prefix per the R21+ convention). Site + CI, plus two
 footer links in the SPA's landing page (DL5, §6): no relay, wire or
 broadcaster code moves.
 
+**2026-10-08 (R56 LX9)**: ci.yml's `attach-broadcast-release` job, and
+with it the `gawk-broadcast` manifest step, was removed with the Go Linux
+app ([docs/58](58-linux-desktop-broadcaster.md) D15). The frozen
+`releases/gawk-broadcast/latest.json` stays published at v1.15.3.
+
 **2026-09-23 (R52 MB0/MB7)**: "component" in a manifest means the
 **distribution** — what a user downloads — not the release-please
 component. The Windows and macOS apps are two distributions of one

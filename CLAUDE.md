@@ -104,22 +104,13 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
 
 - `gawk-app` — frontend SPA.
 - `gawk-server` — the Go relay. Its `wire` package is **public** (not
-  `internal/`) specifically so `gawk-broadcast` and `gawk-telemetry` can import
-  it (R14 Decision 1). Reuse it; **never mirror it**.
-- `gawk-broadcast` — native Linux broadcaster: a **separate** Go module (GUI +
-  CLI over a shared `internal/engine`). Not a container/chart/deploy
-  component — a binary you run on your own PC. Since R35 it ships a **third
-  binary**, `gawk-pw-helper`: cgo against `libpipewire-0.3`, spawned per
-  broadcast to capture one application's audio. It is a control plane — no
-  media passes through it — and its crash-safety comes from owning nothing:
-  every object it creates is a proxy on its own connection with no
-  `object.linger`, so the daemon reaps them however it dies. Don't give it
-  media, and don't make it linger (`docs/39`). **Frozen to `fix` commits
-  since 2026-09-24** (R56, `docs/58`): Linux now ships from
-  `gawk-broadcast-desktop` as a third shell, and this app is removed once
-  that passes its hardware pass (LX7), leaving only `gawk-pubsim` as Go test
-  tooling. Build no new features here — the one exception is LX8's single
-  `feat(broadcast)` deprecation release (`docs/58` D15).
+  `internal/`) specifically so other modules (`gawk-telemetry`) can import
+  it (R14 Decision 1). Reuse it; **never mirror it**. It also holds
+  `gawk-pubsim` (`cmd/gawk-pubsim` + `internal/pubsim`), the simulated
+  publisher the dev stack, `e2e`, `e2e-cluster` and the iOS viewer tests
+  drive: the slice of the removed Go Linux broadcaster's engine it runs on
+  moved here in R56 LX9 (`docs/58` D15). It still dials with Origin
+  `gawk-broadcast://native`, so keep that origin in allow-lists.
 - `gawk-broadcast-desktop` — native Windows broadcaster (R34), from R52 the
   macOS one and from R56 the Linux one (`crates/app-linux`,
   `gawk-broadcast-linux`, `docs/58`): a **Rust Cargo workspace**, not a Go
@@ -134,8 +125,8 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   control connection **in-process** (`docs/58` OD3/OD4), and everything
   that compiles Linux code in CI runs in an `ubuntu:24.04` container
   (`docs/58` D12); its zbus must never get the `tokio` feature
-  (`docs/gotchas.md`). Its `crates/wire` is the **fourth
-  wire mirror** (vectors restated, never imported); its Windows CI jobs **run
+  (`docs/gotchas.md`). Its `crates/wire` is the **third
+  wire copy** (vectors restated, never imported); its Windows CI jobs **run
   on the self-hosted Linux runners, cross-compiled to msvc with cargo-xwin** —
   see `docs/38` D18 before touching it, especially the clang-cl/libopus
   wrapper — while its `macos` job is the one deliberate exception, on
@@ -275,9 +266,10 @@ Re-deriving them costs a cycle and has happened before.
 - **Chunk prefixes: every single letter A–Z is claimed.** New milestones use
   two-letter prefixes (e.g. `DV1`, `MF1`, `TM1`, `CG1`, `UX1`).
 - New wire types and close codes are allocated in `gawk-server/wire/wire.go`
-  and must be mirrored in the TS (`wire.ts`), `gawk-broadcast`
-  (`internal/wirecheck`) and `gawk-broadcast-desktop` (`crates/wire`) checks,
-  with golden vectors kept byte-identical across all mirrors. The Windows
+  and must be mirrored in the TS (`wire.ts`) and `gawk-broadcast-desktop`
+  (`crates/wire`) checks, with golden vectors kept byte-identical across all
+  three copies (the Go `wirecheck` mirror went with the Go broadcaster in R56
+  LX9). The Windows
   CI job triggers on `gawk-server/wire/**` too, so the Rust mirror's gates run
   in the same PR as the wire change (this was not true before 2026-07-31).
 - **Commit messages *and* PR titles must be Conventional Commits.** PRs land by
@@ -313,7 +305,7 @@ Re-deriving them costs a cycle and has happened before.
   Self-hosting and third-party relays are first-class, not tolerated: R37's
   server picker, `?relay=` links and per-server secrets (`docs/40`) are the
   supported path to them, and the default is what makes the short join link
-  and the zero-flag `gawk-broadcast` work.
+  and the zero-flag native broadcasters work.
 - **CI is publish-only; deploys are automated cluster-side.** Whenever a new
   version is released it is deployed to the homelab automatically. CI never
   touches the cluster — no cluster credentials in GitHub. Manual

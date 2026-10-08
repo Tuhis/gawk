@@ -5,7 +5,7 @@ real VP8, VP9 and H.264 bitstreams (docs/67 §9, IO4). Committed bytes rather
 than generated at test time, because the bytes differ between encoder
 versions and CI shouldn't need an encoder. The Opus fixture isn't here: the
 test reads the Go publisher simulator's
-(`gawk-broadcast/internal/fixture/sample-audio.opus`) where it lives.
+(`gawk-server/internal/pubsim/fixture/sample-audio.opus`) where it lives.
 
 | File | Codec | Size | Frames | Keyframes |
 |---|---|---|---|---|

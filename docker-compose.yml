@@ -404,8 +404,8 @@ services:
   pubsim:
     profiles: ["sim"]
     build:
-      context: .
-      dockerfile: dev/Dockerfile.pubsim
+      context: ./gawk-server
+      dockerfile: ../dev/Dockerfile.pubsim
     # -insecure is correct here and ONLY here (docs/41 §5): an in-container Go
     # client dialing a self-signed relay over the compose network, where there
     # is no hash to pin and nothing outside this host to be fooled by it. It
@@ -428,8 +428,8 @@ services:
   pubsim-a:
     profiles: ["rooms"]
     build:
-      context: .
-      dockerfile: dev/Dockerfile.pubsim
+      context: ./gawk-server
+      dockerfile: ../dev/Dockerfile.pubsim
     command: ["-url", "https://relay:4433", "-insecure", "-fps", "30", "-room", "devroom", "-label", "POV A", "-nick", "alice"]
     depends_on:
       relay:
@@ -439,8 +439,8 @@ services:
   pubsim-b:
     profiles: ["rooms"]
     build:
-      context: .
-      dockerfile: dev/Dockerfile.pubsim
+      context: ./gawk-server
+      dockerfile: ../dev/Dockerfile.pubsim
     command: ["-url", "https://relay:4433", "-insecure", "-fps", "30", "-room", "devroom", "-label", "POV B", "-nick", "bob"]
     depends_on:
       relay:

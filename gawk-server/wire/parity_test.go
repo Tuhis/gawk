@@ -249,8 +249,8 @@ func TestParityChunkRoundTrip(t *testing.T) {
 	}
 }
 
-// TestParityChunkGoldenVector pins the exact bytes. The TS and gawk-broadcast
-// mirrors assert the same hex.
+// TestParityChunkGoldenVector pins the exact bytes. The TS and Rust mirrors
+// assert the same hex.
 func TestParityChunkGoldenVector(t *testing.T) {
 	h := ParityChunkHeader{FrameID: 0x01020304, ParityIndex: 1, ChunkCount: 9, FrameBytes: 8640}
 	dgram, err := AppendParityChunk(nil, h, []byte{0xde, 0xad, 0xbe, 0xef})

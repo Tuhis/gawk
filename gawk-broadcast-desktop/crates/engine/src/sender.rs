@@ -1,4 +1,4 @@
-//! The send policy, ported row for row from gawk-broadcast/internal/engine/
+//! The send policy, ported row for row from gawk-server/internal/pubsim/engine/
 //! send.go (docs/38 D5). Friends broadcast over home uplinks, where
 //! saturation is a normal condition, so every failure has a stated answer:
 //!

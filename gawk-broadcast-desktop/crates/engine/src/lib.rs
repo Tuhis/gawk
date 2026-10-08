@@ -1,5 +1,5 @@
 //! Session lifecycle, send policy, resume supervisor, timesync, stats and
-//! telemetry batching — the port of `gawk-broadcast/internal/engine`'s
+//! telemetry batching — the port of `gawk-server/internal/pubsim/engine`'s
 //! semantics (docs/38 D5): same idea, same names, third language. Anything
 //! the relay or viewer can observe behaves identically to the Go engine.
 //!

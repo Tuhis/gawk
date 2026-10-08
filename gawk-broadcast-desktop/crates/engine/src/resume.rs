@@ -1,4 +1,4 @@
-//! The auto-resume policy, ported from gawk-broadcast/internal/engine/
+//! The auto-resume policy, ported from gawk-server/internal/pubsim/engine/
 //! resume.go — transport-only reconnect: capture, the encoder and the
 //! frameId space all survive, because the expensive parts of a broadcast
 //! have nothing to do with which QUIC connection the bytes left on. The Go

@@ -1,5 +1,12 @@
 # R35 — Single-app sharing (window + app audio) in the native Linux broadcaster
 
+> **Removed 2026-10-08.** The Go app this doc designed was removed in R56
+> LX9 ([docs/58](58-linux-desktop-broadcaster.md) D15); Linux ships from
+> `gawk-broadcast-desktop` (`gawk-broadcast-linux`). Paths below that name
+> `gawk-broadcast/cmd/…` or its GUI, capture, portal and helper packages no
+> longer exist. What remains is `gawk-pubsim` with the engine, `mpegts`,
+> `opus` and fixture packages it runs on. Kept for its decisions and findings.
+
 **Status**: designed 2026-08-01 (owner decisions AD1–AD4 taken the same day,
 listed in §2). **Implemented 2026-08-01** — chunks AS1–AS6 landed; AS7 (the
 on-hardware register, §6) is the outstanding half and is what decides the

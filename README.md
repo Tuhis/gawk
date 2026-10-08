@@ -7,7 +7,6 @@
 
 [![Relay](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-server*&label=relay)](https://github.com/Tuhis/gawk/releases)
 [![App](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-app*&label=app)](https://github.com/Tuhis/gawk/releases)
-[![Linux broadcaster](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-broadcast%2Fv*&label=broadcast-linux)](https://github.com/Tuhis/gawk/releases)
 [![Desktop broadcaster](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-broadcast-desktop*&label=broadcast-desktop)](https://github.com/Tuhis/gawk/releases)
 [![Telemetry](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-telemetry*&label=telemetry)](https://github.com/Tuhis/gawk/releases)
 [![Admin](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-admin*&label=admin)](https://github.com/Tuhis/gawk/releases)
@@ -244,7 +243,6 @@ mode, verification, and upgrades.
 | [`gawk-server/`](gawk-server/) | The Go relay — WebTransport endpoint, pub/sub hub, cluster-mode federation. Image + Helm chart. |
 | [`gawk-app/`](gawk-app/) | React SPA — landing/join, broadcaster, viewer. Image + Helm chart. |
 | [`gawk-broadcast-desktop/`](gawk-broadcast-desktop/) | Native **Windows**, **macOS** and **Linux** broadcasters (Rust) — Windows.Graphics.Capture + Media Foundation as a single static EXE; ScreenCaptureKit + VideoToolbox as a notarized `.app`; the XDG portal + GStreamer + PipeWire as a tarball. |
-| [`gawk-broadcast/`](gawk-broadcast/) | The older native **Linux** broadcaster (Go), GUI + CLI, which `gawk-broadcast-linux` replaces; also home to `gawk-pubsim`, the simulated publisher the dev stack uses. |
 | [`gawk-telemetry/`](gawk-telemetry/) | Optional per-session diagnostics — ingest, history, dashboard, MCP. Off by default. Image + Helm chart. |
 | [`gawk-admin/`](gawk-admin/) | Optional moderation portal — fleet-wide kill, durable ID/IP bans, OIDC-gated operator SPA, signed webhooks. Off by default. Image + Helm chart. |
 | [`e2e/`](e2e/) | Browser E2E harness — headless Chrome decoding real relayed frames, plus a kind cluster tier. |
@@ -300,7 +298,6 @@ actually linked into that artifact:
 [Linux broadcaster](gawk-broadcast-desktop/THIRD-PARTY-NOTICES-linux.md) ·
 [Windows broadcaster](gawk-broadcast-desktop/THIRD-PARTY-NOTICES.md) ·
 [macOS broadcaster](gawk-broadcast-desktop/THIRD-PARTY-NOTICES-macos.md) ·
-[older Go Linux broadcaster](gawk-broadcast/THIRD-PARTY-NOTICES.md) ·
 [telemetry](gawk-telemetry/THIRD-PARTY-NOTICES.md) ·
 [telemetry UI](gawk-telemetry/ui/THIRD-PARTY-NOTICES.md) ·
 [admin](gawk-admin/THIRD-PARTY-NOTICES.md) ·

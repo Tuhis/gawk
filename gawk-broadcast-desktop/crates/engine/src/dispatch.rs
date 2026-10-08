@@ -1,5 +1,5 @@
 //! Server-initiated uni-stream dispatch, mirroring the Go engine's reader
-//! (gawk-broadcast/internal/engine/engine.go): streams are read bounded and
+//! (gawk-server/internal/pubsim/engine/engine.go): streams are read bounded and
 //! dispatched **by wire type, never by arrival order** — webtransport stacks
 //! accept incoming streams in nondeterministic order, and the resume token
 //! beat the announce in about half of real dials (docs/22 finding 9).
