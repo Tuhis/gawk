@@ -34,10 +34,10 @@
     },
     "gawk-server": {
       "component": "gawk-server",
-      "covered": 7333,
+      "covered": 8722,
       "label": "relay",
       "pct": 83.2,
-      "total": 8809,
+      "total": 10489,
       "unit": "statements"
     },
     "gawk-telemetry": {
