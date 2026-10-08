@@ -623,6 +623,8 @@ type TotalStats struct {
 	StripeSuppressedDatagrams uint64 `json:"stripeSuppressedDatagrams,omitempty"`
 	StripeTransitions         uint64 `json:"stripeTransitions,omitempty"`
 	StripeLegsReaped          uint64 `json:"stripeLegsReaped,omitempty"`
+	// R21 DVR — see the Stats field comment. Omitted when zero.
+	DVRResyncs uint64 `json:"dvrResyncs,omitempty"`
 }
 
 // RegistryStats is the full response structure of GET /statusz.
@@ -663,6 +665,7 @@ type Registry struct {
 	totalCarrierRecordsDropped     uint64
 	totalCarrierQueueOverflow      uint64
 	totalEgressCarrierBytes        uint64
+	totalDVRResyncs                uint64
 	// docs/35 §12 finding 3: the expiry fold predated R29 and R30, so a
 	// lingered-out edge hub took its parity and stripe counters with it —
 	// a fleet total (and Prometheus counter) that went BACKWARDS.
@@ -810,6 +813,9 @@ type broadcastHub struct {
 	carrierRecords        uint64
 	carrierRecordsDropped uint64
 	carrierQueueOverflow  uint64
+	// R21: closed DVR subscribers' resyncs, folded like the above so the
+	// per-broadcast counter never goes backwards when a resynced viewer leaves.
+	dvrResyncs uint64
 	// R29: symbols actually forwarded, and symbols dropped because the
 	// subscriber's k was lower. Together they make the fleet cost of the
 	// default level measurable rather than modelled (docs/34 §7.2).
@@ -1863,7 +1869,7 @@ func (r *Registry) Stats() RegistryStats {
 		egressCar := b.egressCarrierBytes
 		reliableSubs := 0
 		dvrSubs := 0
-		var dvrResyncs uint64
+		dvrResyncs := b.dvrResyncs // closed subscribers' fold
 		details := make([]SubscriberStats, 0, len(b.subs))
 		edgeSessions := 0
 		stripeLegs, stripedPrimaries := 0, 0
@@ -1938,6 +1944,7 @@ func (r *Registry) Stats() RegistryStats {
 		totals.CarrierRecords += carRecords
 		totals.CarrierRecordsDropped += carDropped
 		totals.CarrierQueueOverflow += carOverflow
+		totals.DVRResyncs += dvrResyncs
 		totals.EgressCarrierBytes += egressCar
 		totals.ParityDatagramsForwarded += b.parityDatagramsForwarded
 		totals.EgressParityBytes += egressParity
@@ -2053,6 +2060,7 @@ func (r *Registry) Stats() RegistryStats {
 	totals.CarrierRecords += r.totalCarrierRecords
 	totals.CarrierRecordsDropped += r.totalCarrierRecordsDropped
 	totals.CarrierQueueOverflow += r.totalCarrierQueueOverflow
+	totals.DVRResyncs += r.totalDVRResyncs
 	totals.EgressCarrierBytes += r.totalEgressCarrierBytes
 	totals.ParityDatagramsForwarded += r.totalParityDatagramsForwarded
 	totals.ParitySuppressed += r.totalParitySuppressed
@@ -2216,6 +2224,7 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 	r.totalCarrierRecords += b.carrierRecords
 	r.totalCarrierRecordsDropped += b.carrierRecordsDropped
 	r.totalCarrierQueueOverflow += b.carrierQueueOverflow
+	r.totalDVRResyncs += b.dvrResyncs
 	r.totalEgressCarrierBytes += b.egressCarrierBytes
 	r.totalParityDatagramsForwarded += b.parityDatagramsForwarded
 	r.totalParitySuppressed += b.paritySuppressed
@@ -3877,6 +3886,7 @@ func (s *Subscriber) Close() {
 		b.carrierRecordsDropped += s.carrierRecordsDropped.Load()
 		b.carrierQueueOverflow += s.carrierQueueOverflow.Load()
 		b.egressCarrierBytes += s.egressCarrierBytes.Load()
+		b.dvrResyncs += s.dvrResyncs.Load()
 	} else {
 		r.totalDatagramsDropped += s.dropped.Load()
 		r.totalKeyframeStreamsSent += s.keyframesSent.Load()
@@ -3890,6 +3900,7 @@ func (s *Subscriber) Close() {
 		r.totalCarrierRecordsDropped += s.carrierRecordsDropped.Load()
 		r.totalCarrierQueueOverflow += s.carrierQueueOverflow.Load()
 		r.totalEgressCarrierBytes += s.egressCarrierBytes.Load()
+		r.totalDVRResyncs += s.dvrResyncs.Load()
 		r.totalStripeTransitions += s.stripeTransitions.Load()
 	}
 }
