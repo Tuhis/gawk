@@ -283,13 +283,3 @@ func statsLoop(ctx context.Context, sess *engine.Session, every time.Duration) {
 		}
 	}
 }
-
-// audioLine summarises the audio lane, or says it is off — never an absent
-// field a reader could mistake for zero (docs/19 Decision 20).
-func audioLine(s engine.Stats) string {
-	if s.AudioState != engine.AudioActive {
-		return "audio " + string(s.AudioState)
-	}
-	return fmt.Sprintf("audio %d pkt (%d cfg, %d dropped)",
-		s.AudioPacketsSent, s.AudioConfigsSent, s.AudioPacketsDropped)
-}

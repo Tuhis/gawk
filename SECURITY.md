@@ -68,14 +68,13 @@ maintainer make the call.
 ## Supported versions
 
 This is a solo project, so security fixes land on the **latest release of each
-component only**. The six components version independently
+component only**. The components version independently
 ([SemVer](https://semver.org/); see `.release-please-manifest.json`):
 
 | Component                 | Supported            |
 |----------------------------|----------------------|
 | `gawk-server`              | Latest release only  |
 | `gawk-app`                 | Latest release only  |
-| `gawk-broadcast`           | Latest release only  |
 | `gawk-broadcast-desktop`   | Latest release only  |
 | `gawk-telemetry`           | Latest release only  |
 | `gawk-admin`               | Latest release only  |

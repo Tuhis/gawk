@@ -5,8 +5,7 @@
 # anything. The fixture is embedded in the binary, so the runtime image needs
 # nothing beside it.
 #
-# It imports the engine and wire only (no Gio, no cgo, no GStreamer), so it
-# builds anywhere the relay does.
+# It is pure Go (no cgo), so it builds anywhere the relay does.
 #
 # The build context is the REPO ROOT, not gawk-broadcast/: that module reaches
 # gawk-server/wire through a local `replace ../gawk-server`, so the relay
@@ -16,8 +15,9 @@
 #   docker build -f dev/Dockerfile.pubsim -t gawk-pubsim:dev .
 #
 # It lives under dev/ rather than gawk-broadcast/deploy/ deliberately:
-# gawk-broadcast is a binary you run on your own PC, not a deployed component,
-# and it should not grow a deploy/ directory for a dev convenience.
+# gawk-broadcast is test tooling (the Go broadcaster it used to hold was
+# removed in R56 LX9), not a deployed component, and it should not grow a
+# deploy/ directory for a dev convenience.
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src

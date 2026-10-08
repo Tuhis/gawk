@@ -478,19 +478,6 @@ COMPONENTS = {
         sources="`package-lock.json` entries without `dev: true`.",
         collect=lambda: collect_npm("gawk-app"),
     ),
-    "broadcast": dict(
-        path="gawk-broadcast",
-        blurb=(
-            "The native Linux broadcaster (`gawk-broadcast`, `gawk-broadcast-gui`,\n"
-            "`gawk-pw-helper`). GStreamer is deliberately absent from this list: the\n"
-            "broadcaster runs `gst-launch-1.0` as a separate process installed by the\n"
-            "user's distribution, so no GStreamer code is linked or redistributed\n"
-            "here. `gawk-pw-helper` does dynamically link `libpipewire-0.3` (MIT),\n"
-            "which the user likewise supplies."
-        ),
-        sources="`go list -deps ./...` in `gawk-broadcast/`.",
-        collect=lambda: collect_go("gawk-broadcast"),
-    ),
     "telemetry": dict(
         path="gawk-telemetry",
         blurb=(

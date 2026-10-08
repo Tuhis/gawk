@@ -39,21 +39,8 @@ on:
   pull_request:
   push:
     branches: [main]
-  # The recovery path, mirroring broadcast-desktop.yml. A re-run is not one:
-  # it replays the workflow file as of the commit it re-runs, so a release
-  # whose assets were lost to a bug IN this file cannot be repaired by
-  # re-running it — the bug re-runs too. Dispatching runs the file as of the
-  # ref you dispatch from, a fixed one, against the source you name.
+  # The on-demand escape hatch, for the cluster tier above all (e2e-cluster).
   workflow_dispatch:
-    inputs:
-      attach_to:
-        description: >-
-          Backfill. Ref or SHA of an already-released commit whose release
-          assets were missed. The broadcaster is built FROM that commit and
-          attached to its release. Leave empty for an ordinary on-demand run,
-          which builds the current ref and attaches nothing.
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -137,9 +124,8 @@ jobs:
           all=false
           changed="$RUNNER_TEMP/changed.txt"
           # No usable base — a first push on a branch, a force-push, or a
-          # workflow_dispatch (including a backfill, which must build the
-          # broadcaster whatever today's diff says). We cannot prove nothing
-          # moved, so nothing is skipped.
+          # workflow_dispatch. We cannot prove nothing moved, so nothing is
+          # skipped.
           if [ -z "$base" ] \
             || [ "$base" = "0000000000000000000000000000000000000000" ] \
             || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
@@ -169,13 +155,12 @@ jobs:
           }
 
           echo "Decisions:" >&2
-          # gawk-broadcast and gawk-telemetry both `replace` gawk-server with the
-          # local tree, and gawk-broadcast's relay_integration_test builds the
-          # real relay binary — so a relay change is a change to both of them.
+          # gawk-broadcast (gawk-pubsim's module) and gawk-telemetry both
+          # `replace` gawk-server with the local tree, and gawk-broadcast's
+          # relay_integration_test builds the real relay binary — so a relay
+          # change is a change to both of them.
           server=$(decide       server       '^gawk-server/')
-          # assets/icon is in the broadcast filter because the tarball's
-          # share/ tree is assembled from it (R44, docs/53 D4).
-          broadcast=$(decide    broadcast    '^(gawk-broadcast|gawk-server|assets/icon)/')
+          broadcast=$(decide    broadcast    '^(gawk-broadcast|gawk-server)/')
           # R53 (docs/55 D3): both SPAs build the shared session package from
           # common-ts/ through a `file:` dependency, so a change there is a
           # change to each consumer: its UI job (`*_ui` below) runs the
@@ -469,127 +454,29 @@ jobs:
           component: gawk-server
           label: relay
 
-  # The native Linux broadcaster (R14, docs/19). Separate from the `server`
-  # job on purpose (Decision 1): the GUI shell imports Gio, so this job — and
-  # only this job — pays for the cgo/Wayland/X11/EGL/Vulkan headers. The
-  # relay's job must stay header-free.
+  # gawk-pubsim, the simulated publisher the dev stack and both E2E tiers drive,
+  # with the slice of the old Go broadcaster's engine it runs on (R56 LX9,
+  # docs/58 D15). The Go app itself was removed on 2026-10-08; what is left is
+  # test tooling, pure Go, so this job needs no apt packages. The job keeps the
+  # name `broadcast` because that is a required status check in the `main`
+  # ruleset.
   broadcast:
     needs: changes
     if: needs.changes.outputs.broadcast == 'true'
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     timeout-minutes: 30
-    # Resolved rather than echoed back: `attach_to` may be a tag or a branch,
-    # and the release gate compares commit SHAs. This is also the single fact
-    # that ties the artifact, the gate and the thing actually compiled
-    # together — they all derive from one `git rev-parse` of the tree that was
-    # checked out.
-    outputs:
-      sha: ${{ steps.source.outputs.sha }}
     defaults:
       run:
         working-directory: gawk-broadcast
-    env:
-      # Explicit, not inherited: Gio's window backend is cgo, so with
-      # CGO_ENABLED=0 the GUI package fails to build with a confusing
-      # "build constraints exclude all Go files in gioui.org/internal/vk"
-      # rather than anything about cgo.
-      CGO_ENABLED: "1"
     steps:
-      # `inputs.attach_to` is empty on push and pull_request, so this is the
-      # ordinary checkout in every case but a backfill — `github.sha` is what
-      # actions/checkout resolves to by itself on both events. A backfill
-      # tests AND builds the commit it is attaching to, rather than trusting
-      # that today's tree still matches what was released.
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.attach_to || github.sha }}
-      - name: Resolve the commit being built
-        id: source
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # Hosted runners only (a fork's own run); see the server job.
       - uses: actions/setup-go@v7
         if: ${{ !vars.RUNNER_LABEL }}
         with:
           go-version-file: gawk-broadcast/go.mod
           cache-dependency-path: gawk-broadcast/go.sum
       - uses: ./.github/actions/go-shared-cache
-      # Gio's build dependencies (docs/19 Decision 14) — the honest price of
-      # a native Wayland GUI. Keep in sync with gawk-broadcast/README.md.
-      #
-      # The apt invocation is deliberately defensive, because the plain one is
-      # not survivable here (run 29937257710 — every broadcast job failed for
-      # over an hour):
-      #  * the ioio-k8s runner pods have no IPv6 route, so apt burns a connect
-      #    timeout on all six AAAA records of every archive host before it ever
-      #    tries an A record → ForceIPv4.
-      #  * port 80 to the Canonical archives goes dark periodically while 443
-      #    stays healthy (in that run the HTTPS repos — dl.google.com, the
-      #    git-core PPA — fetched in milliseconds while archive/security
-      #    .ubuntu.com timed out on every address; reproduced off-cluster from
-      #    a second network) → the .ubuntu.com sources are rewritten to HTTPS.
-      #    Safe on any Ubuntu image: apt has built-in HTTPS support and the
-      #    runner images ship ca-certificates (those HTTPS repos prove it).
-      #  * `apt-get update` exits 0 when index downloads fail, so the outage
-      #    surfaced two commands later as a baffling "E: Unable to locate
-      #    package libwayland-dev" → Error-Mode=any + retries. A pocket that
-      #    stays unreachable is only a warning: a stale index still installs,
-      #    and the install below is the real gate.
-      #
-      # Patience is budgeted, not maximised: when a host is unreachable, more
-      # of it only converts a 30 s step into a 30 min one. Measured against the
-      # live degraded archives — 3 apt-level retries at a 20 s timeout (9
-      # attempts per index file, once the outer retry loop multiplies in) ran
-      # past 20 minutes without finishing, where 1 at 15 s installed all eleven
-      # packages in 2m25s. Note these are *inactivity* timeouts, so they don't
-      # cut off a slow-but-progressing transfer — a good thing: on the run that
-      # verified this the indexes came down in 13 s at 2.4 MB/s and then the
-      # .debs crawled in at 9.5 kB/s, 7m07s for 4 MB.
-      #
-      # timeout-minutes is a hang backstop, not a performance budget — that
-      # 7m07s is why it isn't tighter. Neither the job nor the workflow sets
-      # one, so without it a wedged apt holds a self-hosted runner for the
-      # 6-hour default.
-      # Two groups, and the second is not optional either: libpipewire-0.3-dev
-      # builds gawk-pw-helper (R35), and the pipewire/wireplumber/gstreamer
-      # runtime is what internal/pwtest starts a private headless daemon from.
-      # Unlike the portal/GPU half of this module, the app-audio control plane
-      # is genuinely CI-verifiable (docs/39 D7) — but only on a runner that has
-      # a sound server to talk to. Without them those tests skip, silently
-      # turning the milestone's integration coverage off.
-      - name: Install Gio and PipeWire build dependencies
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          # deb822 (.sources) on noble, one-line (.list) on older images.
-          sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
-            -exec sed -i 's|http://\([a-z0-9.-]*\)\.ubuntu\.com|https://\1.ubuntu.com|g' {} +
-          sudo tee /etc/apt/apt.conf.d/99-gawk-ci >/dev/null <<'EOF'
-          Acquire::ForceIPv4 "true";
-          Acquire::Retries "1";
-          Acquire::http::Timeout "15";
-          Acquire::https::Timeout "15";
-          EOF
-          retry() {
-            for attempt in 1 2 3; do
-              [ "$attempt" = 1 ] || sleep $(((attempt - 1) * 15))
-              "$@" && return 0
-              echo "::warning::attempt ${attempt}/3 failed: $*"
-            done
-            return 1
-          }
-          retry sudo apt-get -o APT::Update::Error-Mode=any update ||
-            echo "::warning::apt-get update never completed cleanly — installing against whatever indexes we have"
-          retry sudo apt-get install -y --no-install-recommends \
-            gcc pkg-config libwayland-dev libx11-dev libx11-xcb-dev \
-            libxkbcommon-x11-dev libgles2-mesa-dev libegl1-mesa-dev \
-            libffi-dev libxcursor-dev libvulkan-dev \
-            libpipewire-0.3-dev \
-            pipewire pipewire-bin wireplumber dbus \
-            gstreamer1.0-tools gstreamer1.0-pipewire gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good \
-            desktop-file-utils || {
-              echo "::error::Build dependencies could not be installed — the Ubuntu archives look unreachable from this runner, not a change in this PR"
-              exit 1
-            }
       # See the server job — the relay integration tests here run QUIC over
       # loopback too.
       - name: Ensure UDP buffer limits for quic-go
@@ -601,392 +488,20 @@ jobs:
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test -race ./...
-      # Coverage in a second, race-free run — see the server job for why the
-      # two cannot share one invocation. The GUI shell is compiled into the
-      # profile but barely executed by it (Gio needs a display), so this
-      # component's floor is set against a number that includes code CI
-      # structurally cannot reach (docs/43 §6).
+        env:
+          CGO_ENABLED: "1"
+      # Coverage in a second, race-free run — see server-coverage for why the
+      # two cannot share one invocation.
       - run: go test -covermode=set -coverprofile=coverage.out ./...
-      # docs/39 D7's claim, asked of the run rather than assumed: unlike the
-      # portal/GPU half of this module, R35's audio control plane IS verifiable
-      # on a runner — but only if the runner can actually host a PipeWire
-      # daemon and a session manager. internal/pwtest skips (rather than fails)
-      # when it cannot, which is right for a developer's machine and wrong here:
-      # a silent skip turns "the tee, churn and the kill -9 matrix are covered"
-      # into a claim nothing checks.
-      - name: The app-audio integration tests actually ran
-        run: |
-          set -o pipefail
-          out=$(go test -count=1 -v ./cmd/gawk-pw-helper/ 2>&1) || { echo "$out"; exit 1; }
-          # `^ *--- SKIP`, not `^--- SKIP`: go test indents subtest results, and
-          # the kill matrix (AG5) acquires its daemon *inside* t.Run — so a
-          # top-level-only pattern would let exactly this step's most important
-          # coverage skip in silence. Same reason the PASS count is counted
-          # with the leading-space form.
-          # Here-string, not `echo "$out" | grep -q`: with pipefail set above,
-          # grep -q's early exit can SIGPIPE the producer and turn the whole
-          # pipeline non-zero, which in an `if` reads as "no SKIP found" — this
-          # guard silently not firing is precisely the outcome it exists to
-          # prevent. Same bug as the release-tarball check below, opposite and
-          # worse direction. The `grep -B1 -A4` and `grep -cE` below read their
-          # input to the end, so they are not exposed to it.
-          if grep -qE '^ *--- SKIP' <<<"$out"; then
-            echo "$out" | grep -B1 -A4 -E '^ *--- SKIP'
-            echo "::error::the PipeWire integration tests skipped — this runner has no usable sound server, so R35's audio coverage did not run. See docs/39 F6."
-            exit 1
-          fi
-          echo "$out" | grep -cE '^ *--- PASS' | xargs echo "app-audio integration tests passed:"
       - uses: ./.github/actions/coverage
         with:
           format: go
           report: gawk-broadcast/coverage.out
           component: gawk-broadcast
-          label: broadcast-linux
-      # `go test` links the GUI package only as a test binary (its idle-redraw
-      # guard, docs/19 finding 12). Building the shells is what proves the real
-      # Gio window compiles and links — this job is the only place that
-      # happens automatically.
-      #
-      # The binaries are also uploaded as an artifact: R14's claims (hardware
-      # encode, the portal, game fps) are unverifiable in CI by construction —
-      # no GPU, no portal, no desktop — so a build someone can run on real
-      # hardware is how this gets tested at all, and it must be available
-      # before merge, not after.
-      - name: Build binaries
-        run: |
-          mkdir -p dist
-          # -trimpath keeps build paths out of the binary handed to someone else.
-          go build -trimpath -o dist/ ./cmd/...
-      # R44 (docs/53 D4): the launcher entry and the hicolor icon set ride in
-      # the tarball as share/, next to install-desktop.sh. Assembled by the
-      # one script that owns the layout, from the committed icon derivatives
-      # (the `icon` job is what keeps those honest against the SVG).
-      - name: Assemble the desktop entry and icons
-        run: desktop/assemble-share.sh ../assets/icon dist
-      # Asked of the script, not assumed of it: run the install against a
-      # scratch XDG_DATA_HOME, check the entry validates (desktop-file-utils)
-      # and points at the binary by absolute path, then check the uninstall
-      # takes exactly its own files back out. This is the only place the
-      # script runs before a user does.
-      - name: The desktop entry installs, validates and uninstalls
-        run: |
-          set -euo pipefail
-          scratch=$(mktemp -d)
-          # Installed from a copy of dist/ under a directory name carrying
-          # every character the Exec= quoting has to survive — a space, `&`
-          # (sed's "the match"), `"`, `$` and a backslash. The runner's own
-          # $PWD is clean, which is how the first version's sed-based rewrite
-          # passed this step while mangling any real path with one of these
-          # in it (PR #328 review). In its own temp dir, not under $scratch,
-          # so the leftover check below can stay a plain find (a backslash
-          # in the name would defeat a -path glob).
-          base=$(mktemp -d)
-          unpacked="$base/a&b \"c\" \$d \\e"
-          mkdir -p "$unpacked"
-          cp -R dist/. "$unpacked/"
-          # A `%` in the path is unlaunchable through GLib whatever the
-          # spelling (it resolves the binary from the unexpanded argument),
-          # so the script must refuse it rather than install a dead entry.
-          dead="$base/100%"
-          mkdir -p "$dead"
-          cp -R dist/. "$dead/"
-          if XDG_DATA_HOME="$scratch" "$dead/install-desktop.sh" 2>/dev/null; then
-            echo "::error::install-desktop.sh accepted a path containing '%', which no launcher can start"; exit 1
-          fi
-          test ! -e "$scratch/applications/fi.ioio.gawk.broadcast.desktop"
-          XDG_DATA_HOME="$scratch" "$unpacked/install-desktop.sh"
-          entry="$scratch/applications/fi.ioio.gawk.broadcast.desktop"
-          desktop-file-validate "$entry"
-          # The expected line, spelled out by hand rather than derived with
-          # the script's own escaping: `"`, `$` and `\` each behind TWO
-          # backslashes (key-file unescape, then Exec quoting — the spec's
-          # "four backslashes for a literal backslash"), `&` and the space
-          # untouched. desktop-file-validate above is the independent judge
-          # of the same line.
-          want='Exec="'"$base"'/a&b \\"c\\" \\$d \\\\e/gawk-broadcast-gui"'
-          grep -qxF -- "$want" "$entry" || {
-            echo "::error::Exec= is not the correctly quoted absolute path of the installed binary:"
-            echo "want: $want"; echo "got:  $(grep '^Exec=' "$entry")"; exit 1; }
-          for size in 16x16 24x24 32x32 48x48 64x64 128x128 256x256; do
-            test -f "$scratch/icons/hicolor/$size/apps/fi.ioio.gawk.broadcast.png" || {
-              echo "::error::$size icon did not install"; exit 1; }
-          done
-          test -f "$scratch/icons/hicolor/scalable/apps/fi.ioio.gawk.broadcast.svg"
-          XDG_DATA_HOME="$scratch" "$unpacked/install-desktop.sh" --uninstall
-          # The refresh tools write their own caches (gtk-update-icon-cache:
-          # icon-theme.cache, update-desktop-database: mimeinfo.cache); those
-          # are the desktop's, not the script's, and are the only files allowed.
-          left=$(find "$scratch" -type f ! -name icon-theme.cache ! -name mimeinfo.cache)
-          if [ -n "$left" ]; then echo "::error::uninstall left files behind:"; echo "$left"; exit 1; fi
-      # Recorded, not guessed: INSTALL.md's library list has to match what the
-      # binary actually links, and the glibc floor decides whether it starts at
-      # all on the tester's distro.
-      - name: Record build provenance and runtime dependencies
-        run: |
-          # The floor is the newest glibc symbol version the binary actually
-          # references — NOT the builder's glibc, which is only an upper bound
-          # and overstates the requirement badly (2.39 vs. the real 2.34,
-          # i.e. "rebuild on Ubuntu 22.04" vs. "just run it").
-          glibc_floor() {
-            objdump -T "$1" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
-          }
-          {
-            echo "gawk-broadcast — prebuilt test binaries"
-            echo
-            # Asked of the binary, not composed here: the version string's
-            # format lives in internal/version and must not be mirrored in
-            # YAML. This is also the end-to-end proof that the release-please
-            # constant and the -buildvcs commit both reached the artifact —
-            # the badge in the GUI window is the same string.
-            echo "version: $(dist/gawk-broadcast -version)"
-            # The resolved source commit, not github.sha: on a backfill those
-            # differ, and this line is the provenance of the bytes in the
-            # tarball — it has to name the commit that was compiled.
-            echo "commit:  ${{ steps.source.outputs.sha }}"
-            echo "branch:  ${{ github.ref_name }}"
-            echo "built:   $(date -u +%FT%TZ)"
-            echo "runner:  $(. /etc/os-release && echo "$PRETTY_NAME") ($(uname -m))"
-            echo "go:      $(go version)"
-            # sed, not head: head closes the pipe early and ldd reports the
-            # SIGPIPE as an error into the file we're generating.
-            echo "builder glibc: $(ldd --version | sed -n 1p)"
-            echo
-            echo "Minimum glibc to RUN these (check yours with 'ldd --version'):"
-            echo "  gawk-broadcast-gui: $(glibc_floor dist/gawk-broadcast-gui)"
-            echo "  gawk-broadcast:     $(glibc_floor dist/gawk-broadcast)"
-            echo "  gawk-pw-helper:     $(glibc_floor dist/gawk-pw-helper)"
-            echo
-            echo "Below that they won't start. Above it, a missing shared library"
-            echo "is the likelier failure — see INSTALL.md, and check with:"
-            echo "  ldd ./gawk-broadcast-gui | grep 'not found'"
-            echo
-            echo "=== gawk-broadcast-gui links against ==="
-            ldd dist/gawk-broadcast-gui
-            echo
-            echo "=== gawk-broadcast (CLI) links against ==="
-            ldd dist/gawk-broadcast
-            echo
-            # R35 AG10: the helper's whole packaging claim is "stock distro
-            # libraries only". Recorded from the binary rather than asserted in
-            # prose, and checked below.
-            echo "=== gawk-pw-helper links against ==="
-            ldd dist/gawk-pw-helper
-          } | tee dist/BUILD-INFO.txt
-      # AG10, asked of the binary: the helper must link only libraries a stock
-      # distro already has — libpipewire and the C runtime. Anything else would
-      # be a dependency INSTALL.md does not name, discovered by a tester rather
-      # than by CI.
-      - name: The PipeWire helper links only stock libraries
-        run: |
-          unexpected=$(ldd dist/gawk-pw-helper |
-            grep -oE '=> /[^ ]+' | sed 's|=> ||' |
-            grep -vE '/(libpipewire-0\.3|libspa-.*|libc|libm|libpthread|libdl|librt|libatomic|ld-linux[^ ]*)\.so' || true)
-          if [ -n "$unexpected" ]; then
-            echo "::error::gawk-pw-helper links unexpected libraries:"
-            echo "$unexpected"
-            exit 1
-          fi
-          ldd dist/gawk-pw-helper | grep -q 'libpipewire-0.3' || {
-            echo "::error::gawk-pw-helper does not link libpipewire — the app-audio path cannot work"
-            exit 1
-          }
-      # The R2 question — "does it actually reach production?" — asked of the
-      # version badge. The constant alone would pass a unit test while the
-      # shipped binary showed a bare release: -buildvcs is what adds the
-      # commit, and it goes silent (not red) if the checkout is not a usable
-      # git repo. That silence is what this catches.
-      - name: The binary reports its build version
-        run: |
-          v=$(dist/gawk-broadcast -version)
-          echo "$v"
-          case "$v" in
-            *"+g"*) ;;
-            *) echo "::error::'$v' carries no +g<commit> suffix — go build stamped no VCS info. Check that the checkout left a usable .git and that -buildvcs was not disabled."; exit 1 ;;
-          esac
-      - name: Include install instructions and license notices with the binaries
-        # THIRD-PARTY-NOTICES.md is what discharges the MIT/BSD/ISC
-        # attribution obligations for the *distributed* binaries — it has to
-        # travel in the tarball, not just sit in the repo. LICENSE comes from
-        # the repo root (this job's working-directory is gawk-broadcast).
-        run: cp INSTALL.md THIRD-PARTY-NOTICES.md ../LICENSE dist/
-      - uses: actions/upload-artifact@v7
-        with:
-          # Keyed by the commit actually built, which is github.sha on every
-          # event but a backfill — where it is the commit being attached to,
-          # and where naming it github.sha would leave the attach job below
-          # looking for an artifact under a name nothing uploaded.
-          name: gawk-broadcast-linux-amd64-${{ steps.source.outputs.sha }}
-          # Repo-relative, not job-relative: `defaults.run.working-directory`
-          # applies to `run:` steps only, never to an action's inputs.
-          path: gawk-broadcast/dist/
-          retention-days: 1
-          if-no-files-found: error
-
-  # Puts the binaries on the release page, so getting one is not "find the
-  # right CI run, know the sha, hope it is inside the 30-day retention".
-  #
-  # It re-uses the artifact the job above just built rather than building
-  # again: on a release-PR merge this push and release-please.yml's run are the
-  # same commit, so these binaries ARE the release's binaries. See
-  # .github/actions/attach-release-assets for the gate — this job runs on every
-  # main push and attaches on almost none of them. The Windows half is the
-  # matching job in broadcast-desktop.yml; keep the two in step.
-  #
-  # This job used to note that it carried no `attach_to` backfill, "because the
-  # gap it recovers from has never bitten here". It has now: the packaging step
-  # below verified the tarball with `tar -tzf | grep -q` under pipefail, which
-  # made it fail on a correct tarball (see the step for the mechanism), and
-  # gawk-broadcast-v1.11.0 published with no assets as a result. Re-running the
-  # failed job could not repair it — a re-run replays the buggy step — and the
-  # gate correctly refuses every later commit, since the tag really does point
-  # somewhere else. So the two halves are in step again, and for the same
-  # reason: the recovery path is not optional once the build half can fail.
-  #
-  # A dispatch WITHOUT attach_to deliberately skips this: an on-demand run is
-  # for looking at a binary, not for touching a release.
-  #
-  # Path filtering does not need to reach this job, and must not: `needs:
-  # broadcast` already carries it. A release commit that bumps gawk-broadcast
-  # necessarily edits gawk-broadcast/CHANGELOG.md and internal/version/
-  # version.go, so `broadcast` runs and there is an artifact; a release that
-  # does not bump it skips both jobs, which is what the tag-SHA gate would have
-  # concluded anyway. A backfill dispatch has no usable base, so `changes` runs
-  # everything — the one case where getting this wrong would be unrecoverable.
-  #
-  # Never on pull_request. The upload needs `contents: write`, and a job
-  # holding that token must not run code from a pull request's own checkout
-  # (this job `uses:` an action from the tree it checks out). workflow_dispatch
-  # does not reopen that — dispatching requires write access to the repository,
-  # and the action still comes from the dispatched ref rather than from
-  # `attach_to`. Packaging is still exercised on every main push, which is what
-  # stops it rotting between releases.
-  attach-broadcast-release:
-    needs: broadcast
-    if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.attach_to != '')
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
-    permissions:
-      contents: write
-    steps:
-      # Deliberately NOT `ref: attach_to`, unlike the build job. This is the
-      # job that runs the composite action below, and a backfill exists
-      # precisely because something at the target commit was broken — checking
-      # it out would run the old, broken tooling to repair the damage the old,
-      # broken tooling did. v1.11.0 is the live example: the packaging step at
-      # that commit is the one that cannot succeed. The tooling comes from the
-      # dispatched ref; only the source being built comes from the target.
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: gawk-broadcast-linux-amd64-${{ needs.broadcast.outputs.sha }}
-          path: staging
-
-      # ...with one exception: the manifest has to be the TARGET's, because the
-      # gate resolves the tag from it and the version being backfilled is the
-      # one that commit released, not the one main happens to be on now.
-      # Sparse, because this is the only file wanted from that tree.
-      - name: Read the manifest as of the commit being attached to
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.broadcast.outputs.sha }}
-          path: released
-          sparse-checkout: .release-please-manifest.json
-          sparse-checkout-cone-mode: false
-      - name: Swap in that manifest, and show which one the gate will read
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          set -euo pipefail
-          cp released/.release-please-manifest.json .release-please-manifest.json
-          echo "manifest as of ${{ needs.broadcast.outputs.sha }}:"
-          cat .release-please-manifest.json
-      - name: Package the release assets
-        run: |
-          set -euo pipefail
-          # NOT `assets`: the repository root already has an `assets/`
-          # directory (the icon source set, R44/docs/53), and a staging
-          # directory that collides with a checked-out one is how
-          # gawk-broadcast v1.15.0 published with no binaries — `sha256sum
-          # ./*` hit `assets/icon`, a directory, and the step died before the
-          # upload. Keep this name outside anything the checkout can create.
-          mkdir -p release-assets
-          # Belt and braces: the artifact round-trip is a zip, and whether the
-          # executable bit survives it is a property of the upload/download
-          # action pair rather than something this job should depend on. A
-          # tarball of non-executable binaries is a uniquely annoying thing to
-          # hand someone.
-          chmod +x staging/gawk-broadcast staging/gawk-broadcast-gui staging/gawk-pw-helper
-          # gawk-pubsim is in the artifact but is a test fixture publisher, not
-          # something a user of the broadcaster wants.
-          #
-          # gawk-pw-helper IS wanted: the app spawns it for per-application
-          # audio (R35) and looks for it next to itself, so a tarball without
-          # it ships a feature that silently degrades to system audio on every
-          # machine that downloads it.
-          # install-desktop.sh and share/ are the launcher entry + icon set
-          # (R44, docs/53 D4); the script must keep its executable bit for the
-          # same reason the binaries must.
-          chmod +x staging/install-desktop.sh
-          tar -czf release-assets/gawk-broadcast-linux-amd64.tar.gz \
-            -C staging gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt \
-            THIRD-PARTY-NOTICES.md LICENSE install-desktop.sh share
-          # Asked of the tarball, not assumed of the command above: the R2
-          # question ("does it actually reach production?") applied to the one
-          # file whose absence is invisible until a user tries the feature.
-          #
-          # Listed ONCE into a variable, and matched with a here-string rather
-          # than a pipe. `tar -tzf … | grep -q` under `set -o pipefail` is a
-          # trap, and it is what published gawk-broadcast-v1.11.0 with no
-          # assets: grep -q exits on its first match, tar is still
-          # decompressing 26 MB of binaries, its next write gets EPIPE, and
-          # pipefail hands the pipeline tar's failure — so the `||` branch
-          # fires and reports the file that was *found* as missing. The check
-          # was therefore guaranteed to fail on the very first name it looked
-          # for. No pipeline, no SIGPIPE, and one decompression instead of five.
-          listing=$(tar -tzf release-assets/gawk-broadcast-linux-amd64.tar.gz)
-          for want in gawk-broadcast gawk-broadcast-gui gawk-pw-helper INSTALL.md BUILD-INFO.txt \
-                      THIRD-PARTY-NOTICES.md LICENSE install-desktop.sh \
-                      share/applications/fi.ioio.gawk.broadcast.desktop \
-                      share/icons/hicolor/scalable/apps/fi.ioio.gawk.broadcast.svg \
-                      share/icons/hicolor/256x256/apps/fi.ioio.gawk.broadcast.png; do
-            grep -qxF -- "$want" <<<"$listing" || {
-              echo "::error::$want is missing from the release tarball"
-              exit 1
-            }
-          done
-          # The binaries are unsigned by design, so a checksum is the only
-          # integrity check a downloader gets. Written outside the asset
-          # directory and moved in, because whether a shell's `*` sees a file the same
-          # command is redirecting into is not something to rely on.
-          (cd release-assets && sha256sum ./* > ../SHA256SUMS)
-          mv SHA256SUMS release-assets/
-          ls -l release-assets
-      # Asset names carry no version: the release page already states it, the
-      # tarball's BUILD-INFO.txt repeats it, and a stable name is what makes
-      # `gh release download -p 'gawk-broadcast-linux-amd64.tar.gz'` work
-      # against any release including the latest.
-      - uses: ./.github/actions/attach-release-assets
-        id: attach
-        with:
-          component: gawk-broadcast
-          dir: release-assets
-          # The commit the tag must point at. Identical to github.sha on a
-          # push; on a backfill it is the released commit this run rebuilt,
-          # which is the only thing that re-aims the gate without weakening it.
-          sha: ${{ needs.broadcast.outputs.sha }}
-      # R46 (docs/46): the "newest gawk-broadcast" pointer the project site's
-      # Download section reads. Only after a real attach — a manifest for a
-      # release with no binary on it would be a download button to a 404.
-      - uses: ./.github/actions/publish-release-manifest
-        if: steps.attach.outputs.attached == 'true'
-        with:
-          component: gawk-broadcast
-          dir: release-assets
-          primary: gawk-broadcast-linux-amd64.tar.gz
-          tag: ${{ steps.attach.outputs.tag }}
-          published-at: ${{ steps.attach.outputs.published_at }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          label: pubsim
+      # The binary the dev stack, e2e and e2e-cluster build, built the way
+      # they build it.
+      - run: CGO_ENABLED=0 go build -o /dev/null ./cmd/gawk-pubsim
 
   app:
     needs: changes
@@ -2565,9 +2080,7 @@ jobs:
             https://127.0.0.1:6445/apis/gawk.ioio.fi/v1alpha1/namespaces/gawk/bans >/dev/null
 
           # One kill through the pipe.
-          # CGO_ENABLED=0, exactly as the e2e job builds pubsim: the module's
-          # OTHER binaries link libpipewire, and the runner has no such dev
-          # headers — pubsim itself is pure Go.
+          # CGO_ENABLED=0, exactly as the e2e job builds pubsim: it is pure Go.
           (cd gawk-broadcast && CGO_ENABLED=0 go run ./cmd/gawk-pubsim -url https://127.0.0.1:4433 -insecure -duration 180s \
             > ../dev-pubsim.out 2>&1 &)
           for i in $(seq 60); do grep -q GAWK_PUBSIM_ID dev-pubsim.out 2>/dev/null && break; sleep 1; done
@@ -2746,8 +2259,7 @@ jobs:
         run: |
           mkdir -p e2e/bin
           (cd gawk-server && go build -o ../e2e/bin/gawk-server ./cmd/gawk-server)
-          # gawk-pubsim imports engine+wire only — no Gio, so unlike the
-          # broadcast job this needs no cgo or apt headers (docs/25 D3).
+          # gawk-pubsim is pure Go: no cgo or apt headers (docs/25 D3).
           (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
           (cd gawk-telemetry && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-telemetry ./cmd/gawk-telemetry)
       - uses: actions/setup-node@v7
@@ -2844,14 +2356,9 @@ jobs:
   # release-please refreshes that PR after every main merge, so it still
   # re-checks each merged change) plus workflow_dispatch for cluster work.
   # This is the automated successor to docs/22's two-pod smoke.
-  # A backfill dispatch is excluded: it exists to rebuild one commit's
-  # broadcaster binaries and staple them to an existing release, and spinning a
-  # kind cluster for that is fifteen minutes of the disk-backed pool spent on a
-  # question nobody asked. An ordinary dispatch (no attach_to) still runs it —
-  # that is the cluster escape hatch, unchanged.
   e2e-cluster:
     if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.attach_to == '') ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--'))
     # Disk-backed runner pool: kind needs Docker's data-root on a real
     # filesystem (its inner containerd can't stack overlayfs on the tmpfs the

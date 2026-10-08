@@ -23,7 +23,7 @@ body:
         - Relay (gawk-server)
         - Web app (gawk-app) — broadcaster side
         - Web app (gawk-app) — viewer side
-        - Linux broadcaster (gawk-broadcast)
+        - Linux broadcaster (gawk-broadcast-linux)
         - Windows broadcaster (gawk-broadcast.exe)
         - Telemetry (gawk-telemetry)
         - Docs, charts, or CI

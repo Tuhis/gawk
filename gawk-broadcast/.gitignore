@@ -1,6 +1,3 @@
-# go build ./cmd/... drops the binaries here; they are CI artifacts, never
-# repo content.
-/gawk-broadcast
-/gawk-broadcast-gui
-/gawk-pw-helper
+# go build ./cmd/... drops the binary here; it is a CI artifact, never repo
+# content.
 /gawk-pubsim

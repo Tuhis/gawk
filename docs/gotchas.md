@@ -960,6 +960,13 @@ Add to it when a new gotcha lands in `docs/`.
 
 **Native Linux broadcaster (R14)**
 
+*The Go app these entries were learned on (`gawk-broadcast/`) was removed on
+2026-10-08 (R56 LX9, [docs/58](58-linux-desktop-broadcaster.md) D15); Linux
+now ships from `gawk-broadcast-desktop`. Entries naming its code or files are
+historical. They stay because the Rust Linux shell rebuilt the same layer
+(docs/58's lessons ledger marks which ones apply there), and the `mpegts`
+entries still describe code `gawk-pubsim` runs.*
+
 - **The browser cannot hardware-encode on Linux — don't go flag-hunting.**
   WebCodecs `VideoEncoder` HW encode ships on Windows/macOS/Android only
   (Linux gets HW *decode*), Chromium's own VA-API doc disclaims Linux, and
@@ -1067,13 +1074,6 @@ Add to it when a new gotcha lands in `docs/`.
   counted (`captureRestarts`), since the viewer's only symptom is a freeze
   ending on the next keyframe.
   ([docs/39](39-linux-app-sharing.md) D2)
-- **`gawk-broadcast` is its own Go module and its CI job needs cgo + Gio
-  headers** (`libwayland-dev`, `libvulkan-dev`, …) and `CGO_ENABLED=1` —
-  with cgo off, the GUI fails as "build constraints exclude all Go files in
-  `gioui.org/internal/vk`", which says nothing about cgo. The engine and CLI
-  need no headers: `go test ./internal/...` works bare. The relay's CI job
-  must stay header-free (Decision 1).
-  ([docs/19](19-linux-native-broadcaster.md))
 - **`mpegts.AU.Data` aliases the demuxer's buffer — clone before it outlives
   the callback.** A frame handed to the channel un-cloned is rewritten by
   the AUs demuxed behind it: in the field this meant clean debug dumps (both

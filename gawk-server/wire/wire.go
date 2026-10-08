@@ -1,9 +1,8 @@
 // Package wire implements the frozen datagram wire format shared by the
 // relay server, the broadcasters, and the viewers.
 //
-// This package is deliberately public (R14 Decision 1, docs/19): the native
-// Linux broadcaster lives in its own top-level module (gawk-broadcast/) and
-// imports it, because a second hand-written implementation of the format is
+// This package is deliberately public (R14 Decision 1, docs/19): other
+// top-level modules (gawk-broadcast/'s gawk-pubsim, gawk-telemetry) import it, because a second hand-written implementation of the format is
 // exactly what the golden vectors below exist to prevent. Go's internal/ rule
 // forbids that import from another module, so wire sits outside internal/.
 // It may still import internal/broadcastid — the rule restricts importers by
@@ -12,7 +11,7 @@
 // This file is the allocation map and source of truth. Three hand-written
 // mirrors restate its golden vectors byte-identically and must be updated
 // with every wire change: the TS frontend (gawk-app/src/transport/wire.ts),
-// the Go broadcaster's checks (gawk-broadcast/internal/wirecheck), and the
+// the Go checks beside gawk-pubsim (gawk-broadcast/internal/wirecheck), and the
 // Rust Windows broadcaster (gawk-broadcast-desktop/crates/wire, R34 —
 // docs/38 D4; note its CI job is path-filtered, so the mirror's gates only
 // run once its own commit lands).

@@ -7,6 +7,13 @@ relay, either engine pipeline or the browser app. The on-desktop half of the
 acceptance (a real taskbar, a real Explorer listing) is a manual pass at the
 end of §4, exactly as R14 and R34 verify anything a runner cannot see.
 
+**2026-10-08 (R56 LX9)**: the Go Linux app was removed
+([docs/58](58-linux-desktop-broadcaster.md) D15). Its parts here
+(`cmd/gawk-broadcast-gui`, `gawk-broadcast/desktop/`, ci.yml's
+`attach-broadcast-release`) are superseded; the Rust Linux shell's tarball
+and `.deb` carry the same desktop entry and icons from
+`gawk-broadcast-desktop/tools/linux/`.
+
 ## 1. Purpose
 
 Neither desktop broadcaster has an application icon. The Gio window is

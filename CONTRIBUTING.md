@@ -113,8 +113,8 @@ it. Every rule in `CODE-REVIEW.md` exists because its absence cost a real bug;
 this one most of all.
 
 **The wire format has four mirrors.** `gawk-server/wire/wire.go` is the source
-of truth. `gawk-app`'s `wire.ts`, `gawk-broadcast/internal/wirecheck` and
-`gawk-broadcast-desktop/crates/wire` each restate it, with golden vectors kept
+of truth. `gawk-app`'s `wire.ts`, `gawk-broadcast/internal/wirecheck` (beside
+`gawk-pubsim`) and `gawk-broadcast-desktop/crates/wire` each restate it, with golden vectors kept
 **byte-identical** across all four — deliberately restated, never imported or
 generated, because a shared fixture could be edited once and stay green
 everywhere. A new wire type or close code lands in all four in one PR, or it

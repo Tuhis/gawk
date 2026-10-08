@@ -161,7 +161,7 @@ their room control session for the process lifetime), so the pass asserts
 "unchanged by Hide videos, minus one on Leave" rather than a literal 1.
 
 Skips cleanly (prints `SKIP` and passes) when `gawk-pubsim -h` lists no
-`-room-new` — rebuild it from `gawk-broadcast` first. Artifacts:
+`-room-new` — rebuild it from `gawk-broadcast/` first. Artifacts:
 `room-grid.png`, `room-focus.png`, `room-hidden.png`, `console-rooms.log`,
 `pubsim-room-{a,b}.log`.
 

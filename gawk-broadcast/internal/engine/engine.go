@@ -1,8 +1,8 @@
-// Package engine is the native Linux broadcaster's engine (R14, docs/19): it
-// captures the screen through the XDG ScreenCast portal, encodes it in
-// hardware via a GStreamer child, and publishes the result to the relay using
-// the same publisher protocol the browser broadcaster speaks — byte for byte,
-// via the shared gawk-server/wire package.
+// Package engine publishes encoded media to the relay using the same
+// publisher protocol the browser broadcaster speaks — byte for byte, via the
+// shared gawk-server/wire package. It was the Go Linux broadcaster's engine
+// (R14, docs/19); since that app's removal (R56 LX9, docs/58 D15) its one
+// consumer is gawk-pubsim, which feeds it a committed fixture.
 //
 // The surface deliberately mirrors the TypeScript BroadcastSessionLike
 // (start/stop) and BroadcastCallbacks (onBroadcastId/onStats/onError/onEnded)
@@ -10,11 +10,8 @@
 // language: a second broadcaster only stays survivable if the two remain
 // legible to each other.
 //
-// It is a package rather than a main package because the GUI requirement
-// determines the shape — a main full of flags and globals would have to be
-// dismantled to grow a window. Both shells (cmd/gawk-broadcast,
-// cmd/gawk-broadcast-gui) are thin consumers of what follows. Accordingly:
-// no package globals, no os.Exit, no direct stdio anywhere in this package.
+// No package globals, no os.Exit, no direct stdio anywhere in this package:
+// the shells that consume it own all of that.
 package engine
 
 import (

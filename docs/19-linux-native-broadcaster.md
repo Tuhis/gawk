@@ -1,5 +1,12 @@
 # R14 — Native Linux broadcaster (`gawk-broadcast`)
 
+> **Removed 2026-10-08.** The Go app this doc designed was removed in R56
+> LX9 ([docs/58](58-linux-desktop-broadcaster.md) D15); Linux ships from
+> `gawk-broadcast-desktop` (`gawk-broadcast-linux`). Paths below that name
+> `gawk-broadcast/cmd/…` or its GUI, capture, portal and helper packages no
+> longer exist. What remains is `gawk-pubsim` with the engine, `mpegts`,
+> `opus` and fixture packages it runs on. Kept for its decisions and findings.
+
 **Status**: design revised 2026-07-15 (post-review). **V0–V7 implemented
 2026-07-15**; automated gates green (both Go modules), **manual verification
 on the Linux gaming PC done 2026-07-19** — see [Verification plan](#verification-plan-manual).

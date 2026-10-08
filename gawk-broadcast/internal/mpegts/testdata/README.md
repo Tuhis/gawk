@@ -1,7 +1,8 @@
 # `opus-h264-na1.ts` — NA4's ground truth
 
 263 KB / 1400 TS packets cut from a real `mpegtsmux` capture, produced by the
-R25 NA1 spike (`gawk-broadcast/scripts/na1-audio-spike.sh`) on Debian 13
+R25 NA1 spike (`gawk-broadcast/scripts/na1-audio-spike.sh`, removed with the
+Go app in R56 LX9) on Debian 13
 (trixie), GStreamer 1.26.2, `vah264enc`, 2026-07-27. The full 12 MB capture is
 not committed; this is the first 1400 packets of it, which is where PAT, PMT and
 the first PES of each stream live.

@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -51,12 +50,6 @@ const roomCloseCodeEnded = wire.CloseCodeRoomEnded
 // roomWriteTimeout bounds one control record write; past it the relay is
 // treated as gone and the read loop's error path takes over.
 const roomWriteTimeout = 5 * time.Second
-
-// roomDetachAckTimeout bounds how long LeaveRoom waits for the relay to
-// confirm a Detach before closing the session. The command travels on the
-// control stream and the session close on the CONNECT stream; closing
-// immediately would race them.
-const roomDetachAckTimeout = 2 * time.Second
 
 // DefaultNickname is the roster name a native broadcaster joins with when
 // the profile sets none.
@@ -293,12 +286,7 @@ type roomClient struct {
 
 	// wake is poked whenever the attach credentials may have completed, so a
 	// mint waiting on them does not poll.
-	wake chan struct{}
-	// detached is closed when the relay confirms our Detach (LeaveRoom waits
-	// on it before closing the session).
-	detached     chan struct{}
-	detachedOnce sync.Once
-
+	wake         chan struct{}
 	mu           sync.Mutex
 	mode         roomMode
 	code         string // the configured code (join) or the minted display code
@@ -315,14 +303,6 @@ type roomClient struct {
 	lastSeq     uint32
 	endReason   uint8
 	wmu         sync.Mutex
-
-	// rmu guards the rename coalescer (SetNickname): renaming while its
-	// goroutine runs, renameDirty when a newer name arrived meanwhile. Its
-	// own lock, so SetNickname can poke it under s.mu (rc.mu is taken
-	// before s.mu elsewhere, never after).
-	rmu         sync.Mutex
-	renaming    bool
-	renameDirty bool
 }
 
 func (s *Session) newRoomClient(parent context.Context, mode roomMode, code, attachSecret, createSecret string) *roomClient {
@@ -334,7 +314,6 @@ func (s *Session) newRoomClient(parent context.Context, mode roomMode, code, att
 		cancel:       cancel,
 		done:         make(chan struct{}),
 		wake:         make(chan struct{}, 1),
-		detached:     make(chan struct{}),
 		mode:         mode,
 		code:         code,
 		attachSecret: attachSecret,
@@ -353,8 +332,7 @@ func (s *Session) startConfiguredRoom(ctx context.Context) {
 	}
 }
 
-// startRoom replaces the current room client (if any) with a new one.
-// Under s.mu: a stopped session must not spawn goroutines, and the room
+// startRoom starts the session's room client. Under s.mu: a stopped session must not spawn goroutines, and the room
 // goroutine joins s.wg so Stop waits for it — the Add is safe because a live
 // session always has its supervisor in the group.
 func (s *Session) startRoom(ctx context.Context, mode roomMode, code, attachSecret, createSecret string) error {
@@ -363,114 +341,15 @@ func (s *Session) startRoom(ctx context.Context, mode roomMode, code, attachSecr
 		s.mu.Unlock()
 		return errors.New("engine: session is not live")
 	}
-	old := s.room
 	rc := s.newRoomClient(ctx, mode, code, attachSecret, createSecret)
 	s.room = rc
 	s.wg.Add(1)
 	s.mu.Unlock()
-	if old != nil {
-		old.stop()
-	}
 	go func() {
 		defer s.wg.Done()
 		rc.run()
 	}()
 	return nil
-}
-
-// JoinRoom attaches the live broadcast to a room by code or slug. A room the
-// session is already in is left first (a broadcast belongs to at most one
-// room, D1). attachSecret is a static room's key; empty for dynamic rooms.
-func (s *Session) JoinRoom(code, attachSecret string) error {
-	if code == "" {
-		return errors.New("engine: empty room code")
-	}
-	s.LeaveRoom()
-	s.mu.Lock()
-	ctx := s.roomCtx
-	s.mu.Unlock()
-	if ctx == nil {
-		return errors.New("engine: session is not live")
-	}
-	return s.startRoom(ctx, roomModeJoin, code, attachSecret, "")
-}
-
-// NewRoom mints a dynamic room from the live broadcast (once its ID and
-// resume token are known) and joins it as creator. The code and creator
-// token arrive through OnRoomCreated. The tile is labelled with the
-// nickname, as everywhere else.
-func (s *Session) NewRoom(createSecret string) error {
-	s.LeaveRoom()
-	s.mu.Lock()
-	ctx := s.roomCtx
-	s.mu.Unlock()
-	if ctx == nil {
-		return errors.New("engine: session is not live")
-	}
-	return s.startRoom(ctx, roomModeNew, "", "", createSecret)
-}
-
-// SetNickname changes the one name this broadcaster carries in a room — the
-// roster nickname and the tile label alike, the web broadcaster page's rule
-// (docs/44 §4.9). It applies to every later hello, reconnect and mint, and
-// to the room the session is in right now: a SetNickname command renames
-// the participant, and if our broadcast is attached an idempotent re-attach
-// follows so the tile is relabelled (the relay refreshes the label on a
-// re-attach). Blank falls back to DefaultNickname.
-//
-// The wire work happens off the caller: a control-stream write blocks until
-// the relay reads it, and the shells call this from their UI loops.
-// Consecutive renames coalesce — the goroutine re-reads the name before
-// every send, so the relay always ends on the latest one.
-func (s *Session) SetNickname(nick string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cfg.Nickname = strings.TrimSpace(nick)
-	rc := s.room
-	if rc == nil || s.stopped || s.cancel == nil {
-		return
-	}
-	rc.rmu.Lock()
-	rc.renameDirty = true
-	start := !rc.renaming
-	rc.renaming = true
-	rc.rmu.Unlock()
-	if start {
-		s.wg.Add(1) // a live session always has its supervisor in the group
-		go func() {
-			defer s.wg.Done()
-			rc.renameLoop()
-		}()
-	}
-}
-
-// LeaveRoom detaches the broadcast from its room (when attached) and closes
-// the room session. Idempotent; a no-op when not in a room. The broadcast
-// itself keeps publishing.
-func (s *Session) LeaveRoom() {
-	s.mu.Lock()
-	rc := s.room
-	s.room = nil
-	s.mu.Unlock()
-	if rc == nil {
-		return
-	}
-	rc.detach()
-	rc.stop()
-}
-
-// InRoom reports whether a room session is currently held (joined or
-// reconnecting), and its code when known.
-func (s *Session) InRoom() (code string, ok bool) {
-	s.mu.Lock()
-	rc := s.room
-	s.mu.Unlock()
-	if rc == nil {
-		return "", false
-	}
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	return rc.code, true
 }
 
 // roomCredentialsChanged is the attach latch's input: called whenever the
@@ -527,49 +406,6 @@ func (rc *roomClient) reattach() {
 	rc.gen++
 	rc.mu.Unlock()
 	rc.maybeAttach()
-}
-
-// renameLoop sends the current nickname on the live connection (if any)
-// and, when our broadcast is attached on it, re-attaches so the tile label
-// follows — once per SetNickname burst, until no newer name is pending.
-// Nothing is sent before the snapshot: the hello of the next connection
-// carries the name anyway, and an Attach needs the full proof. Bumping the
-// generation only when attachedGen == gen keeps the latch's "once per
-// generation" rule intact.
-func (rc *roomClient) renameLoop() {
-	for {
-		rc.rmu.Lock()
-		if !rc.renameDirty {
-			rc.renaming = false
-			rc.rmu.Unlock()
-			return
-		}
-		rc.renameDirty = false
-		rc.rmu.Unlock()
-
-		rc.mu.Lock()
-		connected := rc.stream != nil && rc.haveState
-		attached := connected && rc.attachedGen == rc.gen
-		if attached {
-			rc.gen++
-		}
-		rc.mu.Unlock()
-		if !connected || rc.ctx.Err() != nil {
-			continue
-		}
-		msg, err := wire.AppendRoomCommand(nil, wire.RoomCommand{Kind: wire.RoomCommandSetNickname, Nickname: rc.s.nickname()})
-		if err != nil {
-			rc.s.cb.roomError(&RoomError{Op: "join", Err: fmt.Errorf("bad nickname command: %w", err)})
-			continue
-		}
-		if err := rc.send(msg); err != nil {
-			rc.log.Debug("room rename not sent", "err", err)
-			continue
-		}
-		if attached {
-			rc.maybeAttach()
-		}
-	}
 }
 
 // stop ends the client: cancels its context (which unblocks the read loop
@@ -873,10 +709,6 @@ func (rc *roomClient) onEvent(ev wire.RoomEvent, unknown bool) {
 		rerr := &RoomRejectError{Command: ev.Command, Reason: ev.Reason, Detail: ev.Message}
 		rc.log.Warn("room command rejected", "command", ev.Command, "reason", ev.Reason, "detail", ev.Message)
 		rc.s.cb.roomError(rerr)
-	case wire.RoomEventAttachmentRemoved:
-		if id, _ := rc.s.credentials(); id != "" && ev.Attachment.BroadcastID == id {
-			rc.detachedOnce.Do(func() { close(rc.detached) })
-		}
 	}
 	rc.s.cb.roomEvent(ev)
 }
@@ -919,32 +751,6 @@ func (rc *roomClient) maybeAttach() {
 		rc.mu.Lock()
 		rc.attachedGen = 0 // let the next generation try again
 		rc.mu.Unlock()
-	}
-}
-
-// detach sends a Detach for the broadcast and waits (briefly) for the relay
-// to confirm it, so the session close that follows cannot overtake it.
-func (rc *roomClient) detach() {
-	id, _ := rc.s.credentials()
-	rc.mu.Lock()
-	attached := rc.attachedGen != 0 && rc.stream != nil
-	rc.mu.Unlock()
-	if id == "" || !attached {
-		return
-	}
-	msg, err := wire.AppendRoomCommand(nil, wire.RoomCommand{Kind: wire.RoomCommandDetach, BroadcastID: id})
-	if err != nil {
-		return
-	}
-	if err := rc.send(msg); err != nil {
-		rc.log.Debug("room detach not sent", "err", err)
-		return
-	}
-	select {
-	case <-rc.detached:
-	case <-rc.ctx.Done():
-	case <-time.After(roomDetachAckTimeout):
-		rc.log.Warn("room detach not confirmed in time")
 	}
 }
 

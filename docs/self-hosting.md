@@ -160,7 +160,7 @@ config:
     - gawk-broadcast://linux       # the Linux native broadcaster
     - gawk-broadcast://windows     # the Windows native broadcaster
     - gawk-broadcast://macos       # the macOS native broadcaster
-    - gawk-broadcast://native      # the older Go Linux app, and gawk-pubsim
+    - gawk-broadcast://native      # gawk-pubsim (and the removed Go Linux app)
     - gawk://ios                   # the iOS app, to watch as well as broadcast
 
   # Capacity. Defaults are conservative; raise them against your uplink.
@@ -181,7 +181,7 @@ Three kinds of client, and only the first two go in the list:
 |---|---|---|
 | The web app | `https://` + the app's Ingress host | **Add it.** Must match `ingress.host` exactly |
 | `gawk-broadcast-linux` | `gawk-broadcast://linux` | **Add it** if anyone will broadcast from Linux |
-| `gawk-broadcast` (the older Go Linux app) and `gawk-pubsim` | `gawk-broadcast://native` | **Keep it** while anyone still runs the Go app; the dev stack's simulated publishers send it too |
+| `gawk-pubsim`, the simulated publisher | `gawk-broadcast://native` | **Add it** if you drive this relay with pubsim (the dev stack does). The removed Go Linux app, last released as `gawk-broadcast/v1.15.3`, sent it too |
 | `gawk-broadcast-windows` | `gawk-broadcast://windows` | **Add it** if anyone will broadcast from Windows |
 | `gawk-broadcast-macos` | `gawk-broadcast://macos` | **Add it** if anyone will broadcast from a Mac |
 | `gawk-ios` | `gawk://ios` | **Add it** if anyone will watch or broadcast from an iPhone or iPad: the check covers `/subscribe` and `/echo` too |

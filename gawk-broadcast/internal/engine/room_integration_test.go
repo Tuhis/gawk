@@ -117,8 +117,7 @@ func (p *roomProbe) waitEvent(t *testing.T, what string, want func(wire.RoomEven
 // The RM6 acceptance criterion against the real relay: a native broadcaster
 // mints a room from its broadcast, and its attachment — labelled with the
 // nickname, the one name a broadcaster carries — is what a second
-// participant's RoomState lists. Then the engine's own detach
-// and re-join, and finally the broadcaster stopping: the attachment stays,
+// participant's RoomState lists. Then the broadcaster stopping: the attachment stays,
 // flagged away (live=false), for the grace — never removed by a stop.
 func TestRoomMintAttachDetachAgainstRealRelay(t *testing.T) {
 	relayURL, _ := startRelay(t, "-rooms")
@@ -187,23 +186,6 @@ func TestRoomMintAttachDetachAgainstRealRelay(t *testing.T) {
 		})
 	}
 
-	// The engine detaches: the attachment goes, reason publisher.
-	sess.LeaveRoom()
-	ev := probe.waitEvent(t, "AttachmentRemoved", func(ev wire.RoomEvent) bool {
-		return ev.Kind == wire.RoomEventAttachmentRemoved && ev.Attachment.BroadcastID == id
-	})
-	if ev.Reason != wire.RoomDetachReasonPublisher {
-		t.Errorf("detach reason = %d, want publisher (%d)", ev.Reason, wire.RoomDetachReasonPublisher)
-	}
-
-	// …and joins again by code through the live API: attached anew.
-	if err := sess.JoinRoom(code, ""); err != nil {
-		t.Fatal(err)
-	}
-	probe.waitEvent(t, "AttachmentAdded after re-join", func(ev wire.RoomEvent) bool {
-		return ev.Kind == wire.RoomEventAttachmentAdded && ev.Attachment.BroadcastID == id && ev.Attachment.Live
-	})
-
 	// The broadcaster stops: away, not gone (docs/44 §4.4 — the attachment
 	// outlives the participant until the broadcast grace expires).
 	sess.Stop()
@@ -254,10 +236,18 @@ func TestRoomStaticAttachSecretAgainstRealRelay(t *testing.T) {
 		t.Fatal("a wrong attach secret produced no OnRoomError")
 	}
 
-	// The right secret, through the live API: the probe sees the attachment.
-	if err := sess.JoinRoom("TuhisRoom", "k"); err != nil {
-		t.Fatal(err)
+	// The right secret, on a fresh session: the probe sees the attachment.
+	sess.Stop()
+	sess = engine.New(
+		engine.Config{RelayURL: relayURL, Insecure: true, Media: engine.DefaultMediaConfig(),
+			Room: "TuhisRoom", RoomAttachSecret: "k", Nickname: "Desk"},
+		engine.Callbacks{OnRoomError: func(err error) { roomErrs <- err }},
+		engine.Options{MediaFactory: newFixtureSource(t, engine.NewClock()).factory()},
+	)
+	if err := sess.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
+	defer sess.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	probe := joinRoomProbe(t, ctx, relayURL, "tuhisroom", "")
