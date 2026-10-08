@@ -73,18 +73,25 @@ func (l *ipRateLimiter) cleanupLoop() {
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ticker.C:
-			l.mu.Lock()
-			now := time.Now()
-			for ip, tb := range l.ips {
-				// If bucket is full and idle for > 10 minutes, clean it up
-				if tb.tokens >= float64(l.burst) && now.Sub(tb.last) > 10*time.Minute {
-					delete(l.ips, ip)
-				}
-			}
-			l.mu.Unlock()
+		case now := <-ticker.C:
+			l.sweep(now)
 		case <-l.closed:
 			return
+		}
+	}
+}
+
+// sweep evicts buckets that are full and have been idle for > 10 minutes.
+// Fullness is judged on the refilled value: tokens is only written by Allow,
+// which always leaves it below burst, so the stored count alone never
+// qualifies and the map would grow by one entry per client IP forever.
+func (l *ipRateLimiter) sweep(now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for ip, tb := range l.ips {
+		idle := now.Sub(tb.last)
+		if idle > 10*time.Minute && tb.tokens+idle.Seconds()*l.rate >= float64(l.burst) {
+			delete(l.ips, ip)
 		}
 	}
 }
