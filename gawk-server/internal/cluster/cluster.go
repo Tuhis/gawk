@@ -358,9 +358,10 @@ func (c *Coordinator) renewOnce(ctx context.Context, broadcastID string, h *held
 	origin := parseOrigin(lease)
 	if origin.Holder != c.opts.PodName || origin.Generation != h.generation {
 		// Force-taken from under us (the watch usually reports it first, but
-		// the renew loop must never fight the new holder).
-		c.forgetHeld(broadcastID, h)
-		if c.opts.OnLeaseLost != nil {
+		// the renew loop must never fight the new holder). A loop superseded
+		// by this pod's own re-Claim (same-pod takeover: holder is still us,
+		// at a newer generation) just stops — that is no loss (SRV-8).
+		if c.forgetHeld(broadcastID, h) && origin.Holder != c.opts.PodName && c.opts.OnLeaseLost != nil {
 			c.opts.OnLeaseLost(broadcastID, origin)
 		}
 		return errLost
@@ -374,13 +375,19 @@ func (c *Coordinator) renewOnce(ctx context.Context, broadcastID string, h *held
 	return nil
 }
 
-func (c *Coordinator) forgetHeld(broadcastID string, h *heldLease) {
+// forgetHeld drops h from the held set and cancels its loop. It reports
+// whether h was still the current held lease — false means a newer Claim
+// already superseded it.
+func (c *Coordinator) forgetHeld(broadcastID string, h *heldLease) bool {
 	c.mu.Lock()
-	if cur, ok := c.held[broadcastID]; ok && cur == h {
+	cur, ok := c.held[broadcastID]
+	current := ok && cur == h
+	if current {
 		delete(c.held, broadcastID)
 	}
 	c.mu.Unlock()
 	h.cancel()
+	return current
 }
 
 // stopRenew halts the renew loop for a broadcast (if any) and returns its
