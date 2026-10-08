@@ -656,3 +656,59 @@ func TestDVRSubscriberGetsKeyframesOnlyFromItsCursor(t *testing.T) {
 			"sending a second, contradictory timeline alongside the cursor's", got, gops)
 	}
 }
+
+// SRV-3: dvr_resyncs_total is a Prometheus counter, so a resynced viewer
+// leaving must not lower it — the closing subscriber's resyncs fold into the
+// hub, and the hub's into the registry when the broadcast ends, the same
+// path every other per-subscriber counter takes (CODE-REVIEW: counters
+// survive their owner). It is the mode's only frame-loss signal.
+func TestDVRResyncsSurviveSubscriberAndBroadcastEnd(t *testing.T) {
+	r := NewRegistry(discardLog, Options{
+		DVR: DVROptions{Window: 30 * time.Second, MaxBytes: 512},
+	})
+	id, p, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	f := &fakeSender{}
+	block := make(chan struct{})
+	f.setCarBlock(block)
+	sub, err := r.SubscribeDVR(id, f, 3000)
+	if err != nil {
+		t.Fatalf("SubscribeDVR: %v", err)
+	}
+	for g := range 12 {
+		ingestKeyframe(t, p, keyframeMsg(t, uint32(g*100), "vp8", "KEY"))
+		for i := range 8 {
+			p.HandleDatagram(chunkDgram(t, false, uint32(g*100+i+1), 0, 1, fmt.Sprintf("g%02d-d%d", g, i)))
+		}
+	}
+	close(block)
+	waitFor(t, 10*time.Second, func() bool { return sub.DVRResyncs() > 0 },
+		"the subscriber to fall off the tail")
+
+	key := r.ObfuscateID(id)
+	before := r.Stats()
+	if before.Broadcasts[key].DVRResyncs == 0 {
+		t.Fatal("per-broadcast dvrResyncs = 0 with a resynced live subscriber")
+	}
+	if before.Totals.DVRResyncs == 0 {
+		t.Fatal("totals dvrResyncs = 0 with a resynced live subscriber")
+	}
+
+	sub.Close()
+	afterClose := r.Stats()
+	if got, want := afterClose.Broadcasts[key].DVRResyncs, before.Broadcasts[key].DVRResyncs; got < want {
+		t.Errorf("per-broadcast dvrResyncs went backwards on subscriber close: %d -> %d", want, got)
+	}
+	if got, want := afterClose.Totals.DVRResyncs, before.Totals.DVRResyncs; got < want {
+		t.Errorf("totals dvrResyncs went backwards on subscriber close: %d -> %d", want, got)
+	}
+
+	if !r.TerminateBroadcast(id, uint32(wire.CloseCodeBroadcastEnded), "test") {
+		t.Fatal("TerminateBroadcast: broadcast not found")
+	}
+	if got, want := r.Stats().Totals.DVRResyncs, before.Totals.DVRResyncs; got < want {
+		t.Errorf("totals dvrResyncs went backwards on broadcast end: %d -> %d", want, got)
+	}
+}

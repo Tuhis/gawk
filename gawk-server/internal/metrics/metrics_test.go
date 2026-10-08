@@ -569,3 +569,17 @@ func TestSharedStatsKeyFleetIdentity(t *testing.T) {
 		t.Error("per-process stats keys unexpectedly collide")
 	}
 }
+
+// SRV-3: Describe announces gawk_relay_dvr_resyncs_total, so Collect must emit
+// it — the relay-lifetime view of DVR mode's only frame-loss signal, which
+// (unlike the per-broadcast series) survives the broadcast ending.
+func TestRelayDVRResyncsTotalIsEmitted(t *testing.T) {
+	r := hub.NewRegistry(discardLog, hub.Options{})
+	collector := NewRegistryCollector(r)
+	if n := testutil.CollectAndCount(collector, "gawk_relay_dvr_resyncs_total"); n != 1 {
+		t.Fatalf("gawk_relay_dvr_resyncs_total series = %d, want 1", n)
+	}
+	if _, err := testutil.CollectAndLint(collector); err != nil {
+		t.Errorf("CollectAndLint: %v", err)
+	}
+}

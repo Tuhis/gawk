@@ -362,6 +362,7 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.carrierStreams.relay, t.CarrierStreams)
 	counter(c.carrierRecords.relay, t.CarrierRecords)
 	counter(c.carrierDropped.relay, t.CarrierRecordsDropped)
+	counter(c.dvrResyncs.relay, t.DVRResyncs)
 	counter(c.parityDatagrams.relay, t.ParityDatagramsForwarded)
 	counter(c.paritySuppressed.relay, t.ParitySuppressed)
 	counter(c.egressParity.relay, t.EgressParityBytes)
