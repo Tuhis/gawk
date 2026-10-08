@@ -349,3 +349,44 @@ func TestRoundCompletenessDistinguishesEmptyFromAbsent(t *testing.T) {
 		t.Errorf("a round with a dead pod claimed to be complete: %+v", r)
 	}
 }
+
+// The live projection reads a pod's broadcast record arriving twice in one
+// round as two scrapes at the same instant, so the second rotates its
+// previous counters onto the first and every windowed delta reads zero. The
+// round handed to ObserveRelay must therefore carry each pod's observations
+// exactly once.
+func TestRoundCarriesEachObservationOnce(t *testing.T) {
+	origin := podServing(t, originStatusz)
+	edge := podServing(t, edgeStatusz)
+	sink := newFakeSink()
+	s, err := New(Options{
+		Resolve: StaticResolver([]string{addrOf(origin), addrOf(edge)}),
+		Sink:    sink,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ScrapeOnce(t.Context())
+
+	if len(sink.rounds) != 1 {
+		t.Fatalf("rounds = %d, want 1", len(sink.rounds))
+	}
+	// Two broadcast records (one per pod) plus three real viewers.
+	obs := sink.rounds[0].Observations
+	if len(obs) != 5 {
+		t.Errorf("round carries %d observations, want 5 (one per record)", len(obs))
+	}
+	seen := map[string]int{}
+	for _, o := range obs {
+		seen[o.Pod+"/"+o.Kind+"/"+o.SessionID]++
+	}
+	for k, n := range seen {
+		if n != 1 {
+			t.Errorf("observation %s appears %d times in one round, want 1", k, n)
+		}
+	}
+	// The round and the store must describe the same records.
+	if stored := len(sink.records(t)); stored != len(obs) {
+		t.Errorf("round carries %d observations but %d were stored", len(obs), stored)
+	}
+}

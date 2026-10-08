@@ -256,9 +256,9 @@ us, not in the main window (D7 principle 1).
 - A playbook row: leg-A loss with `uplinkMode=datagram` says "the carrier
   uplink would recover this — is the relay advertising it, or is the
   broadcaster set to Legacy (`uplinkModeRequested`)?".
-- **Prerequisite**: the live view's windowed relay facts read zero today
-  (BUGS.md, "Telemetry live view: every windowed relay fact reads zero"), so
-  a live leg-A row cannot fire until that is fixed. WU0 fixes it first.
+- **Prerequisite**: the live view's windowed relay facts read zero until
+  the `relayscrape.ScrapeOnce` double-append was fixed (2026-10-08, ahead of
+  WU0), so a live leg-A row could not fire before then.
 
 ### D6 — Not a back-channel, and not docs/15 D6
 
@@ -499,7 +499,7 @@ wait for it — correct, since they are undecodable without it — and F-12's
 
 | Acceptance criterion | Verified by |
 |---|---|
-| The BUGS.md double-append in `relayscrape.ScrapeOnce` is fixed test-first; the live view shows non-zero `framesRelayed` and a `framesRelayedPerSec` | unit (red first) + live dashboard |
+| ~~The BUGS.md double-append in `relayscrape.ScrapeOnce` is fixed test-first; the live view shows non-zero `framesRelayed` and a `framesRelayedPerSec`~~ done 2026-10-08, test-first (`TestRoundCarriesEachObservationOnce`, `TestScrapedRoundsYieldWindowedRelayFacts`); the live-dashboard check rides with the rest of WU0 | unit (red first) + live dashboard |
 | Leg-A loss is reported in **frames**, counting partly received ones: the relay's ingress window gains `IngressFramesDamaged` (frames seen with ≥ 1 chunk missing at `finalize`), and telemetry derives `ingressFrameLossRatio = (IngressFramesLost + IngressFramesDamaged) / frames expected` (the window's frameID span). `IngressChunksLost` stays a chunk count, reported as `ingressChunkLossRatio` over chunks expected — one unit per ratio, never summed. The leg-A playbook row reads the frame ratio | unit (red first: a window with one fully lost and one partly received frame reports 2 damaged frames, not 1 + missing-chunk count) |
 | The baseline is recorded in §8: 10 min each, the reference Mac, datagram mode, AWDL on / AWDL off / Ethernet — leg-A frames and chunks lost, viewer resyncs, `capToRenderMs` p50/p95 | manual, recorded |
 

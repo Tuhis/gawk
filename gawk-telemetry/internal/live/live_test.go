@@ -2,6 +2,11 @@ package live
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -854,6 +859,63 @@ func TestFleetSubscriberTotalSumsRealViewersAcrossPods(t *testing.T) {
 	}
 	if bv.Role != "origin" || bv.Pod != "pod-a" {
 		t.Errorf("card reports role %q on pod %q; the origin is the broadcast's home", bv.Role, bv.Pod)
+	}
+}
+
+// projectionSink feeds a real Scraper's rounds into a Projection, so the live
+// path is exercised the way the service wires it rather than from rounds a
+// test built by hand.
+type projectionSink struct{ p *Projection }
+
+func (projectionSink) StoreRelay(string, string, [][]byte) error { return nil }
+func (s projectionSink) ObserveRelay(r relayscrape.Round)        { s.p.ObserveRelay(r) }
+
+// Two scrape rounds over an origin whose counters advance between them must
+// give the card a window: a non-zero framesRelayed and a rate. A round that
+// carries a pod's broadcast record twice rotates its previous counters onto
+// themselves, and every windowed relay fact reads zero.
+func TestScrapedRoundsYieldWindowedRelayFacts(t *testing.T) {
+	var gen atomic.Uint64
+	gen.Store(1)
+	pod := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		g := gen.Load()
+		fmt.Fprintf(w, `{"totals":{},"broadcasts":{"1a2b3c4d5e6f":{
+		  "publisherActive":true,"role":"origin","subscribers":1,
+		  "framesRelayed":%d,"ingressFramesLost":%d,
+		  "subscriberDetails":[{"key":"aa","sessionId":"111111111111111111111111","dropped":%d}]}}}`,
+			300*g, 3*g, 2*g)
+	}))
+	t.Cleanup(pod.Close)
+
+	p, c := newProj()
+	s, err := relayscrape.New(relayscrape.Options{
+		Resolve: relayscrape.StaticResolver([]string{strings.TrimPrefix(pod.URL, "http://")}),
+		Sink:    projectionSink{p},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ScrapeOnce(t.Context())
+	c.add(5 * time.Second)
+	gen.Store(2)
+	s.ScrapeOnce(t.Context())
+
+	snap := p.Snapshot()
+	if len(snap.Live) != 1 {
+		t.Fatalf("live broadcasts = %d, want 1", len(snap.Live))
+	}
+	m := snap.Live[0].Metrics
+	if got := m["framesRelayed"]; got != 300 {
+		t.Errorf("framesRelayed = %v, want this window's 300", got)
+	}
+	if got, ok := m["framesRelayedPerSec"]; !ok || got != 60 {
+		t.Errorf("framesRelayedPerSec = %v (present %v), want 300 frames / 5 s = 60", got, ok)
+	}
+	if got := m["ingressFramesLost"]; got != 3 {
+		t.Errorf("ingressFramesLost = %v, want this window's 3", got)
+	}
+	if findSession(snap, "111111111111111111111111") == nil {
+		t.Error("the scraped viewer is missing from the card")
 	}
 }
 

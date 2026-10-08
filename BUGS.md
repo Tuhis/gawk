@@ -706,41 +706,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   by design, so either they stay poisoned with this entry as the explanation,
   or a one-off rewrite drops the outliers.
 
-## Telemetry live view: every windowed relay fact reads zero — leg-A loss can never fire live
-
-- **Found**: 2026-09-23, troubleshooting stutter on the first macOS
-  broadcaster session (broadcast `5b39bb21764d`, docs/54). The history
-  diagnosis (`/v1/broadcasts/{key}/diagnose`) reported leg-A ingress loss of
-  3.7 %; the live view of the same broadcast at the same time reported
-  `ingressLossRatio: 0` with `framesRelayed: 0` and no `framesRelayedPerSec`,
-  while ~56 fps were demonstrably flowing to a viewer.
-- **Cause (read in code, not yet test-reproduced)**: in
-  `gawk-telemetry/internal/relayscrape/scrape.go` `Scraper.ScrapeOnce`, each pod's
-  observations are appended to `all` **twice** — once right after
-  `answered++` ("Counted BEFORE the emptiness check") and again after
-  `StoreRelay`. Present since R28 (#151). `live.Projection.ObserveRelay` then
-  sees the same pod's broadcast record twice in one round: the second copy
-  rotates `prev = cur` at the same `now`, so every `deltaOf(cur, prev)` is 0
-  and `origin.at.Sub(origin.prevAt)` is 0 (hence no rate). The store path is
-  unaffected — `StoreRelay` is given `obs`, not `all` — which is why history
-  and the diagnose endpoints are right.
-- **Impact**: every windowed relay fact on `/live` is zero —
-  `framesRelayed`, `framesRelayedPerSec`, `ingressFramesLost`,
-  `ingressLossRatio`, `datagramsDropped`, `bandwidthDroppedDatagrams`,
-  `keyframeStreamsIn`, `subscribersDropping` (per-subscriber deltas take the
-  same double-rotation). So the live playbook rows that need them —
-  leg-A broadcaster uplink, relay egress saturation, "publisher attached
-  but nothing relayed" (row 10) — can never fire on a live card; the operator
-  only learns after the fact, from history. The live row that did fire in
-  that session did so on client-side evidence.
-- **Fix would start**: test-first in `relayscrape`: a fake two-pod fleet
-  round whose `Round.Observations` must contain each observation exactly
-  once, then a `live` test that two scrape rounds with advancing counters
-  produce a non-zero `framesRelayed` and a `framesRelayedPerSec`. The fix is
-  deleting the second append. Consider a defensive guard in `ObserveRelay`
-  too (skip a pod already seen in this round) so a future double-feed fails
-  loudly rather than zeroing every delta.
-
 ## Telemetry counts R30 stripe legs as viewers — `viewer-count-gap` fires on every striped viewer
 
 - **Found**: 2026-09-23, same session as the entry above. Every recent

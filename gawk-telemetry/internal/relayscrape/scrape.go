@@ -267,23 +267,18 @@ func (s *Scraper) ScrapeOnce(ctx context.Context) {
 			if err := s.opts.Sink.StoreRelay(date, podName(addr), lines); err != nil {
 				s.log.Warn("relay scrape: store failed", "addr", addr, "err", err)
 			}
-			mu.Lock()
-			all = append(all, obs...)
-			mu.Unlock()
 		}(addr)
 	}
 	wg.Wait()
 
 	s.noteSeen(all, now)
-	if s.opts.Sink != nil {
-		s.opts.Sink.ObserveRelay(Round{
-			AtMs:         now.UnixMilli(),
-			Observations: all,
-			Complete:     answered == len(addrs),
-			Pods:         len(addrs),
-			PodsAnswered: answered,
-		})
-	}
+	s.opts.Sink.ObserveRelay(Round{
+		AtMs:         now.UnixMilli(),
+		Observations: all,
+		Complete:     answered == len(addrs),
+		Pods:         len(addrs),
+		PodsAnswered: answered,
+	})
 }
 
 func (s *Scraper) scrapePod(ctx context.Context, addr string, now time.Time) ([]Observation, error) {
