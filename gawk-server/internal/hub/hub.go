@@ -516,7 +516,7 @@ type TotalStats struct {
 	StripeSuppressedDatagrams uint64 `json:"stripeSuppressedDatagrams,omitempty"`
 	StripeTransitions         uint64 `json:"stripeTransitions,omitempty"`
 	StripeLegsReaped          uint64 `json:"stripeLegsReaped,omitempty"`
-	// R21 DVR — see the Stats field comment. Omitted when zero.
+	// DVR — see the Stats field comment. Omitted when zero.
 	DVRResyncs uint64 `json:"dvrResyncs,omitempty"`
 }
 
