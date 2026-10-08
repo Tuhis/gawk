@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/fixture"
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/opus"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/fixture"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/opus"
 )
 
 // testdata/opus-h264-na1.ts is real mpegtsmux output from the R25 NA1 spike —

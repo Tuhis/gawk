@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/mpegts"
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/opus"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/mpegts"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/opus"
 )
 
 func main() {

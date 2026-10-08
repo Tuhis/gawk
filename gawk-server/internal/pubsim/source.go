@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/mpegts"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/mpegts"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 

@@ -255,7 +255,7 @@ func assertCloseCode(t *totals, want uint32, viewers int, elapsed time.Duration)
 //
 // Only valid once the session has ended, and that precondition is what makes
 // it sound rather than a hack — it is the same idiom gawk-broadcast's engine
-// uses (gawk-broadcast/internal/engine/resume.go): webtransport-go discards
+// uses (gawk-server/internal/pubsim/engine/resume.go): webtransport-go discards
 // the cause when it cancels the session's context, but it keeps the close
 // error, and a closed Session hands it back from OpenUniStream *before*
 // touching the connection. On a dead session this therefore opens nothing.

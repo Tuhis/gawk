@@ -9,8 +9,8 @@ import (
 
 // Golden vectors for the room control protocol (R42, docs/44 §4.6),
 // computed by hand from the layout comment in room.go. Restated
-// byte-identically in the TS mirror (gawk-app/src/transport/wire.test.ts),
-// the Go broadcaster's wirecheck and the Rust crate (docs/44 RM1). Do not
+// byte-identically in the TS mirror (gawk-app/src/transport/wire.test.ts)
+// and the Rust crate (docs/44 RM1). Do not
 // regenerate them from code; if they change, the wire format changed.
 const (
 	// RoomHello: protocol 1, clientKind 1 (web-broadcaster), wantCaps 0,

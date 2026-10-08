@@ -80,7 +80,6 @@ jobs:
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     outputs:
       server: ${{ steps.filter.outputs.server }}
-      broadcast: ${{ steps.filter.outputs.broadcast }}
       app: ${{ steps.filter.outputs.app }}
       telemetry: ${{ steps.filter.outputs.telemetry }}
       telemetry_ui: ${{ steps.filter.outputs.telemetry_ui }}
@@ -155,12 +154,9 @@ jobs:
           }
 
           echo "Decisions:" >&2
-          # gawk-broadcast (gawk-pubsim's module) and gawk-telemetry both
-          # `replace` gawk-server with the local tree, and gawk-broadcast's
-          # relay_integration_test builds the real relay binary — so a relay
-          # change is a change to both of them.
+          # gawk-telemetry `replace`s gawk-server with the local tree, so a
+          # relay change is a change to it too.
           server=$(decide       server       '^gawk-server/')
-          broadcast=$(decide    broadcast    '^(gawk-broadcast|gawk-server)/')
           # R53 (docs/55 D3): both SPAs build the shared session package from
           # common-ts/ through a `file:` dependency, so a change there is a
           # change to each consumer: its UI job (`*_ui` below) runs the
@@ -179,7 +175,7 @@ jobs:
           # R39 (docs/42 D13): gawk-admin `replace`s gawk-server too — it
           # imports gawk-server/moderation so the relay and the admin plane
           # cannot disagree on normalization, target matching or expiry. Same
-          # reasoning already written above for broadcast and telemetry: a
+          # reasoning already written above for telemetry: a
           # relay change IS an admin change.
           # common-ts/ for the reason written at `telemetry`.
           admin=$(decide        admin        '^(gawk-admin|gawk-server|common-ts)/')
@@ -209,7 +205,7 @@ jobs:
           # E2E is the only job that spans modules, and it is what keeps path
           # filtering honest: two PRs that each skip the other's tests still meet
           # here, on the merged tree.
-          e2e=$(decide          e2e          '^(gawk-server|gawk-app|gawk-broadcast|gawk-telemetry|e2e)/')
+          e2e=$(decide          e2e          '^(gawk-server|gawk-app|gawk-telemetry|e2e)/')
           # R38 (docs/41): the compose stack is assembled from the relay's
           # certificate path, the frontend's runtime config, both images and
           # the dev/ scripts — so a change to any of them can break the one
@@ -340,7 +336,7 @@ jobs:
     # A bound, not a budget: the p90 is ~10 min. The shared Go cache sits on
     # CephFS, whose kernel client on these nodes can hang a reader outright
     # (CVE-2026-80527, go-shared-cache). Without this, a hang holds a runner
-    # slot for GitHub's 6-hour default. The same bound applies to `broadcast`,
+    # slot for GitHub's 6-hour default. The same bound applies to
     # `telemetry` and `admin`.
     timeout-minutes: 30
     defaults:
@@ -454,55 +450,6 @@ jobs:
           component: gawk-server
           label: relay
 
-  # gawk-pubsim, the simulated publisher the dev stack and both E2E tiers drive,
-  # with the slice of the old Go broadcaster's engine it runs on (R56 LX9,
-  # docs/58 D15). The Go app itself was removed on 2026-10-08; what is left is
-  # test tooling, pure Go, so this job needs no apt packages. The job keeps the
-  # name `broadcast` because that is a required status check in the `main`
-  # ruleset.
-  broadcast:
-    needs: changes
-    if: needs.changes.outputs.broadcast == 'true'
-    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: gawk-broadcast
-    steps:
-      - uses: actions/checkout@v7
-      # Hosted runners only (a fork's own run); see the server job.
-      - uses: actions/setup-go@v7
-        if: ${{ !vars.RUNNER_LABEL }}
-        with:
-          go-version-file: gawk-broadcast/go.mod
-          cache-dependency-path: gawk-broadcast/go.sum
-      - uses: ./.github/actions/go-shared-cache
-      # See the server job — the relay integration tests here run QUIC over
-      # loopback too.
-      - name: Ensure UDP buffer limits for quic-go
-        run: |
-          need=7340032
-          if [ "$(sysctl -n net.core.rmem_max)" -lt "$need" ] || [ "$(sysctl -n net.core.wmem_max)" -lt "$need" ]; then
-            sudo sysctl -w net.core.rmem_max="$need" net.core.wmem_max="$need"
-          fi
-      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-      - run: go vet ./...
-      - run: go test -race ./...
-        env:
-          CGO_ENABLED: "1"
-      # Coverage in a second, race-free run — see server-coverage for why the
-      # two cannot share one invocation.
-      - run: go test -covermode=set -coverprofile=coverage.out ./...
-      - uses: ./.github/actions/coverage
-        with:
-          format: go
-          report: gawk-broadcast/coverage.out
-          component: gawk-broadcast
-          label: pubsim
-      # The binary the dev stack, e2e and e2e-cluster build, built the way
-      # they build it.
-      - run: CGO_ENABLED=0 go build -o /dev/null ./cmd/gawk-pubsim
-
   app:
     needs: changes
     if: needs.changes.outputs.app == 'true'
@@ -532,18 +479,19 @@ jobs:
       - run: npm run build
 
   # Multi-module tidy gate. A dependency bump that lands in one module can
-  # leave a module that requires it via a local `replace` (gawk-broadcast →
+  # leave a module that requires it via a local `replace` (gawk-telemetry →
   # gawk-server) with a stale pruned module graph, which Go 1.25's
   # `go vet`/`go build` then refuse — the failure that broke PR #75
-  # (client_golang bumped in gawk-server left gawk-broadcast's go.mod untidy).
+  # (client_golang bumped in gawk-server left the then gawk-broadcast module's
+  # go.mod untidy).
   # Renovate's `gomodTidy` tidies the module it edits, and grouping shared deps
   # (renovate.json5) makes cross-module bumps touch both go.mod files at once —
   # but the transitive local-replace case only surfaces here, so every module
   # must be `go mod tidy`-clean, checked independently of any build. `go mod
   # tidy` resolves the module graph without compiling cgo, so this stays
   # header-free and fast.
-  # R28 (docs/33): the optional telemetry service. Its own job for the same
-  # reason gawk-broadcast has one — it is a separate module.
+  # R28 (docs/33): the optional telemetry service. Its own job because it is
+  # a separate module.
   #
   # This job builds it the way a FRESH CLONE does: no build tag, no cgo query
   # engine (R31 §8 Q1). That configuration is the one a contributor gets, and
@@ -653,8 +601,7 @@ jobs:
         run: go test ./internal/dashboard/ -run 'TestNoExternalAssetReferences|TestServesTheEmbeddedPage'
 
   # R39 (docs/42): the moderation service. Its own job for the same reason
-  # gawk-broadcast and gawk-telemetry have theirs — it is a separate Go module,
-  # the fourth one.
+  # gawk-telemetry has one — it is a separate Go module.
   #
   # THE SERVICE CONTAINER IS THE POINT. The store, migration, kube-reconciler
   # and API tests all take a real Postgres through `internal/store/storetest`,
@@ -1069,7 +1016,7 @@ jobs:
       - uses: ./.github/actions/go-shared-cache
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-broadcast gawk-telemetry gawk-admin tools/icon tools/commonlock; do
+          for mod in gawk-server gawk-telemetry gawk-admin tools/icon tools/commonlock; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
@@ -1915,7 +1862,6 @@ jobs:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: |
             gawk-server/go.sum
-            gawk-broadcast/go.sum
       - uses: ./.github/actions/go-shared-cache
       # See the server job — the probe below is QUIC over loopback.
       - name: Ensure UDP buffer limits for quic-go
@@ -2081,7 +2027,7 @@ jobs:
 
           # One kill through the pipe.
           # CGO_ENABLED=0, exactly as the e2e job builds pubsim: it is pure Go.
-          (cd gawk-broadcast && CGO_ENABLED=0 go run ./cmd/gawk-pubsim -url https://127.0.0.1:4433 -insecure -duration 180s \
+          (cd gawk-server && CGO_ENABLED=0 go run ./cmd/gawk-pubsim -url https://127.0.0.1:4433 -insecure -duration 180s \
             > ../dev-pubsim.out 2>&1 &)
           for i in $(seq 60); do grep -q GAWK_PUBSIM_ID dev-pubsim.out 2>/dev/null && break; sleep 1; done
           BID=$(grep -m1 -o 'GAWK_PUBSIM_ID=[A-Z0-9]*' dev-pubsim.out | cut -d= -f2)
@@ -2244,7 +2190,6 @@ jobs:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: |
             gawk-server/go.sum
-            gawk-broadcast/go.sum
             gawk-telemetry/go.sum
       - uses: ./.github/actions/go-shared-cache
       # See the server job — the relay↔pubsim↔browser leg is QUIC over
@@ -2260,7 +2205,7 @@ jobs:
           mkdir -p e2e/bin
           (cd gawk-server && go build -o ../e2e/bin/gawk-server ./cmd/gawk-server)
           # gawk-pubsim is pure Go: no cgo or apt headers (docs/25 D3).
-          (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
+          (cd gawk-server && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
           (cd gawk-telemetry && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-telemetry ./cmd/gawk-telemetry)
       - uses: actions/setup-node@v7
         with:
@@ -2388,7 +2333,6 @@ jobs:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: |
             gawk-server/go.sum
-            gawk-broadcast/go.sum
             gawk-telemetry/go.sum
       - uses: ./.github/actions/go-shared-cache
       # See the server job. net.core sysctls are host-global (not namespaced),
@@ -2403,7 +2347,7 @@ jobs:
         run: |
           mkdir -p e2e/bin e2e/out
           (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-devcert ./cmd/gawk-loadgen ./cmd/gawk-roomsim)
-          (cd gawk-broadcast && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
+          (cd gawk-server && CGO_ENABLED=0 go build -o ../e2e/bin/gawk-pubsim ./cmd/gawk-pubsim)
       # Host networking and the in-cluster registry mirror — see the action.
       - uses: ./.github/actions/setup-buildx
       # No layer cache — importing one measured slower than building. The `docker`
@@ -3020,7 +2964,7 @@ jobs:
   # download tolerates finding nothing, and the writer treats an empty record
   # set as "nothing moved".
   coverage-badges:
-    needs: [server-coverage, broadcast, app, telemetry, telemetry-ui, admin-coverage, admin-ui]
+    needs: [server-coverage, app, telemetry, telemetry-ui, admin-coverage, admin-ui]
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
     permissions:

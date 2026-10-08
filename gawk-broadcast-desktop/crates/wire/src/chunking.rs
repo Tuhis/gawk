@@ -1,5 +1,5 @@
 //! Delta-frame chunking, mirroring the Go engine's send policy budget
-//! (gawk-broadcast/internal/engine/send.go): start at the wire maximum and
+//! (gawk-server/internal/pubsim/engine/send.go): start at the wire maximum and
 //! only ever shrink, once, in response to a real too-large error — "never
 //! assume 1200 is reachable".
 

@@ -104,17 +104,13 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
 
 - `gawk-app` — frontend SPA.
 - `gawk-server` — the Go relay. Its `wire` package is **public** (not
-  `internal/`) specifically so other modules (`gawk-broadcast`'s pubsim,
-  `gawk-telemetry`) can import it (R14 Decision 1). Reuse it; **never mirror
-  it**.
-- `gawk-broadcast` — **Go test tooling, not a product**: `gawk-pubsim`, the
-  simulated publisher the dev stack, `e2e`, `e2e-cluster` and the iOS
-  viewer tests drive, plus the engine slice it runs on and
-  `internal/wirecheck` (a wire mirror). A separate Go module with no
-  release-please component. It used to be the native Linux broadcaster;
-  that Go app was **removed on 2026-10-08** (R56 LX9, `docs/58` D15) and
-  Linux ships from `gawk-broadcast-desktop`. pubsim still dials with
-  Origin `gawk-broadcast://native`, so keep that origin in allow-lists.
+  `internal/`) specifically so other modules (`gawk-telemetry`) can import
+  it (R14 Decision 1). Reuse it; **never mirror it**. It also holds
+  `gawk-pubsim` (`cmd/gawk-pubsim` + `internal/pubsim`), the simulated
+  publisher the dev stack, `e2e`, `e2e-cluster` and the iOS viewer tests
+  drive: the slice of the removed Go Linux broadcaster's engine it runs on
+  moved here in R56 LX9 (`docs/58` D15). It still dials with Origin
+  `gawk-broadcast://native`, so keep that origin in allow-lists.
 - `gawk-broadcast-desktop` — native Windows broadcaster (R34), from R52 the
   macOS one and from R56 the Linux one (`crates/app-linux`,
   `gawk-broadcast-linux`, `docs/58`): a **Rust Cargo workspace**, not a Go
@@ -129,8 +125,8 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   control connection **in-process** (`docs/58` OD3/OD4), and everything
   that compiles Linux code in CI runs in an `ubuntu:24.04` container
   (`docs/58` D12); its zbus must never get the `tokio` feature
-  (`docs/gotchas.md`). Its `crates/wire` is the **fourth
-  wire mirror** (vectors restated, never imported); its Windows CI jobs **run
+  (`docs/gotchas.md`). Its `crates/wire` is the **third
+  wire copy** (vectors restated, never imported); its Windows CI jobs **run
   on the self-hosted Linux runners, cross-compiled to msvc with cargo-xwin** —
   see `docs/38` D18 before touching it, especially the clang-cl/libopus
   wrapper — while its `macos` job is the one deliberate exception, on
@@ -270,9 +266,10 @@ Re-deriving them costs a cycle and has happened before.
 - **Chunk prefixes: every single letter A–Z is claimed.** New milestones use
   two-letter prefixes (e.g. `DV1`, `MF1`, `TM1`, `CG1`, `UX1`).
 - New wire types and close codes are allocated in `gawk-server/wire/wire.go`
-  and must be mirrored in the TS (`wire.ts`), `gawk-broadcast`
-  (`internal/wirecheck`) and `gawk-broadcast-desktop` (`crates/wire`) checks,
-  with golden vectors kept byte-identical across all mirrors. The Windows
+  and must be mirrored in the TS (`wire.ts`) and `gawk-broadcast-desktop`
+  (`crates/wire`) checks, with golden vectors kept byte-identical across all
+  three copies (the Go `wirecheck` mirror went with the Go broadcaster in R56
+  LX9). The Windows
   CI job triggers on `gawk-server/wire/**` too, so the Rust mirror's gates run
   in the same PR as the wire change (this was not true before 2026-07-31).
 - **Commit messages *and* PR titles must be Conventional Commits.** PRs land by

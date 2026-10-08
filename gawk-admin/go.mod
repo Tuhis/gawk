@@ -5,8 +5,7 @@ go 1.26.0
 // The moderation package (Ban CRD types, Normalize, CRName, Set) is public in
 // gawk-server for exactly this reason: relay and admin plane must agree
 // byte-for-byte on normalization, target matching and expiry semantics
-// (docs/42 D13). Same local-replace shape gawk-broadcast and gawk-telemetry
-// already use.
+// (docs/42 D13). Same local-replace shape gawk-telemetry already uses.
 replace github.com/Tuhis/gawk/gawk-server => ../gawk-server
 
 require (

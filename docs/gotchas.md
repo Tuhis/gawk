@@ -965,7 +965,8 @@ Add to it when a new gotcha lands in `docs/`.
 now ships from `gawk-broadcast-desktop`. Entries naming its code or files are
 historical. They stay because the Rust Linux shell rebuilt the same layer
 (docs/58's lessons ledger marks which ones apply there), and the `mpegts`
-entries still describe code `gawk-pubsim` runs.*
+entries still describe code `gawk-pubsim` runs (now
+`gawk-server/internal/pubsim/mpegts`).*
 
 - **The browser cannot hardware-encode on Linux — don't go flag-hunting.**
   WebCodecs `VideoEncoder` HW encode ships on Windows/macOS/Android only
@@ -1014,7 +1015,7 @@ entries still describe code `gawk-pubsim` runs.*
   so an 11-bit field carrying it is one zero bit followed by ten ones, and the
   first byte is `0x7F`. A demuxer that syncs on `0xFF` finds nothing, ever.
   Measured on real muxer output, and pinned by the committed fixture in
-  `gawk-broadcast/internal/mpegts/testdata/`. Also: GStreamer writes one Opus
+  `gawk-server/internal/pubsim/mpegts/testdata/`. Also: GStreamer writes one Opus
   access unit per PES, ffmpeg batches five — the format permits both, so parse
   a loop. ([docs/28](28-native-broadcaster-audio.md))
 - **A muxer's audio cadence follows the *declared* caps framerate, not actual

@@ -9,7 +9,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/webtransport-go"
 
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/opus"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/opus"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 

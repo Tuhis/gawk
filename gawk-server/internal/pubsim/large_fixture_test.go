@@ -4,7 +4,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/fixture"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/fixture"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 

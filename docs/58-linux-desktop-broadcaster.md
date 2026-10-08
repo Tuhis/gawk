@@ -89,7 +89,7 @@ docs/19 and docs/38 warn.
 | OD8 | Verification floor | **NVIDIA (the gaming PC) and one AMD or Intel machine**, both gating, both in a **KDE Plasma Wayland** session. GNOME, X11 and wlroots sessions are best-effort: recorded when tried, never gating. |
 | OD9 | Architecture | **x86_64 only.** |
 | OD10 | Identity | **A new per-platform identity**, matching Windows and macOS: distribution `gawk-broadcast-linux`, origin `gawk-broadcast://linux`, asset `gawk-broadcast-linux-x86_64.tar.gz`, manifest `releases/gawk-broadcast-linux/latest.json`, telemetry `browser`/diagnostics `kind` `gawk-broadcast-linux`. |
-| OD11 | `gawk-pubsim` | **Keep a shrunk Go module as test tooling** (`engine`, `fixture`, `mpegts`, `opus`, `pubsim`, `wirecheck`). Its release-please component and Linux release stop. Porting pubsim to Rust is a separate, later milestone. |
+| OD11 | `gawk-pubsim` | **Keep a shrunk Go module as test tooling** (`engine`, `fixture`, `mpegts`, `opus`, `pubsim`, `wirecheck`). Its release-please component and Linux release stop. Porting pubsim to Rust is a separate, later milestone. **Reversed 2026-10-08 by owner decision**: pubsim moved into `gawk-server` (`cmd/gawk-pubsim`, `internal/pubsim/{engine,fixture,mpegts,opus}`) and the `gawk-broadcast` module was deleted, `wirecheck` with it (see LX9). |
 | OD12 | Linux-only knobs kept | **All four**: the encoder pin (`encoder`), the audio-device pin (`audioDevice`), the H.264 dump tap (`GAWK_DUMP_H264`), and the mid-session capture rebuild. |
 | OD13 | Thumbnail | **Yes**: the 1 Hz "what viewers see" thumbnail from the live frames, as on Windows and macOS. Reverses docs/19 D16. It is dropped on any capture path where it would break zero-copy (D4, V-3). |
 | OD14 | Distro floor | **Ubuntu 24.04-class**: built in an `ubuntu:24.04` container (glibc 2.39, GStreamer 1.24, PipeWire 1.0). Covers Ubuntu 24.04+, Debian 13, Fedora 40+ and Arch. The Go card's "glibc 2.34" was never the real floor, because GStreamer ≥ 1.24 already excluded Ubuntu 22.04 and Debian 12. |
@@ -962,8 +962,18 @@ engine API that pubsim never calls (live room join/leave/rename,
 `ParseResolution`). The `broadcast` CI job keeps its name (a required check)
 but is now vet + test + coverage + a pubsim build with no apt packages;
 `attach-broadcast-release` and `ci.yml`'s backfill input are gone; the
-coverage floor was re-measured (82.4 %, floor 81). OD11 stands: the module
-stays, so `internal/wirecheck` is still the fourth wire mirror.
+coverage floor was re-measured (82.4 %, floor 81).
+
+The same day the owner reversed OD11, and the same PR finished the job:
+pubsim moved into `gawk-server` beside `gawk-loadgen` and `gawk-roomsim`
+(`cmd/gawk-pubsim`; `internal/pubsim` with `engine`, `fixture`, `mpegts`
+and `opus` under it) and the `gawk-broadcast` module was deleted, with its
+`go.mod`, its `broadcast` CI job (taken out of the `main` ruleset's required
+checks), its coverage key and its tidy entry. `internal/wirecheck` went with
+it: inside one module it re-asserted vectors `gawk-server/wire`'s own tests
+already pin (all 19 checked), so the wire format now has three copies —
+`wire.go`, `wire.ts` and `crates/wire`. `dev/Dockerfile.pubsim` builds from
+`gawk-server/` alone.
 
 | Acceptance criterion | Verified by |
 |---|---|

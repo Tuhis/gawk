@@ -213,14 +213,12 @@ jobs:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: |
             gawk-server/go.sum
-            gawk-broadcast/go.sum
 
       - name: Build the relay, devcert and publisher simulator
         run: |
           bin="$RUNNER_TEMP/relay-bin"
           mkdir -p "$bin"
-          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert
-          go -C ../../gawk-broadcast build -o "$bin/" ./cmd/gawk-pubsim
+          go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert ./cmd/gawk-pubsim
           echo "GAWK_IT_RELAY_BIN_DIR=$bin" >> "$GITHUB_ENV"
           echo "GAWK_IT_PUBSIM_BIN=$bin/gawk-pubsim" >> "$GITHUB_ENV"
 
@@ -295,7 +293,6 @@ jobs:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: |
             gawk-server/go.sum
-            gawk-broadcast/go.sum
 
       # Rooms on, with the static gated room the key test joins
       # (scripts/static-rooms.json), and caps and a grace for a test run

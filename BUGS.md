@@ -584,7 +584,7 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   element needs 10 s of history at all — the fullscreen player only ever seeks
   forward, toward live.
 
-## Lint advisories in `gawk-broadcast/internal/mpegts` (not runtime defects)
+## Lint advisories in `gawk-server/internal/pubsim/mpegts` (not runtime defects)
 
 - **Found**: 2026-07-24, from the editor linter while touching `mpegts.go`'s
   package comment during the docs-freshness pass. Pre-existing, not introduced

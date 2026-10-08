@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/fixture"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/fixture"
 )
 
 // The fixture is a real H.264 MPEG-TS stream, not hand-rolled bytes:

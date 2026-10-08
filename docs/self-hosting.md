@@ -381,19 +381,14 @@ hardware encoding.
 **From Linux, use the native broadcaster.** Browser hardware encode does not
 exist on Linux — WebCodecs ships HW encode on Windows/macOS/Android only —
 so a Linux broadcaster in a browser is software-encoding and will feel it.
-[`gawk-broadcast`](../gawk-broadcast/README.md) exists for this: portal
-capture plus a hardware GStreamer pipeline.
+`gawk-broadcast-linux` ([`gawk-broadcast-desktop`](../gawk-broadcast-desktop/README.md))
+exists for this: portal capture plus a hardware GStreamer pipeline.
 
 The native broadcasters default to the reference deployment, so point them
-at yours:
-
-```sh
-gawk-broadcast -url https://relay.example.com:4433 -secret <publish-secret>
-```
-
-or set the relay URL in the GUI's settings. Set the telemetry URL to `off`
-unless you are running your own telemetry service — the pairing rule already
-means a non-default relay reports nowhere, but being explicit costs nothing.
+at yours: set the relay URL (and the publish secret) in the app's
+settings. Set the telemetry URL to `off` unless you are running your own
+telemetry service — the pairing rule already means a non-default relay
+reports nowhere, but being explicit costs nothing.
 
 They all send their own `Origin` header rather than an `https://` one, so they
 have to be in the relay's `allowedOrigins` — see the table in
@@ -1269,7 +1264,7 @@ That renders the `Room` CRD (kept on uninstall, like `Ban`), the room
 knobs, and — in cluster mode — a Role that lets the pods write `Room` CRs
 and read the Secrets static rooms reference. Dynamic rooms need nothing
 else: a broadcaster mints one from the broadcaster page (or
-`gawk-broadcast -room-new`), viewers type the six-character code into the
+the native broadcasters' Room row), viewers type the six-character code into the
 same join box a broadcast code goes in. `-room-create-secret` (chart
 `rooms.createSecret`/`createSecretRef`) makes minting invite-only; static
 rooms are unaffected by it.
@@ -1293,8 +1288,8 @@ EOF
 It is reachable at `https://<app>/#/room/TuhisRoom` on both pods the
 moment it exists; the first participant's pod becomes its home. Anyone
 with the link may watch; attaching a broadcast needs the attach secret
-(`gawk-broadcast -room TuhisRoom -room-attach-secret …`, or the key field
-in the broadcaster page's Room panel). Deleting the CR ends the room
+(the key field in the broadcaster page's Room panel, or in the native
+broadcasters'). Deleting the CR ends the room
 everywhere with close code 4007. With `gawk-admin` installed and its
 `rooms.enabled=true`, the portal's Rooms page does all of this — create,
 rotate the attach secret (shown once), end a dynamic room — but read

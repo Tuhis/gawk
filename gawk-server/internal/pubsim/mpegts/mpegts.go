@@ -21,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/opus"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/opus"
 )
 
 const (

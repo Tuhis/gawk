@@ -1,7 +1,7 @@
 //! The relay seam (docs/38 §5): a narrow trait, not an abstraction for its
 //! own sake — the send policy is defined by what happens when sends FAIL,
 //! and only a seam lets tests script those failures. Mirrors the Go engine's
-//! `RelaySession` interface (gawk-broadcast/internal/engine/relay.go).
+//! `RelaySession` interface (gawk-server/internal/pubsim/engine/relay.go).
 
 use std::future::Future;
 use std::pin::Pin;
@@ -159,7 +159,7 @@ impl std::fmt::Display for StartError {
 impl std::error::Error for StartError {}
 
 /// Builds the publish URL the way both Linux shells do
-/// (gawk-broadcast/internal/engine/relay.go `PublishURL`): `/publish` to
+/// (gawk-server/internal/pubsim/engine/relay.go `PublishURL`): `/publish` to
 /// mint, `/publish/{id}` to reclaim; the secret and the hex-encoded resume
 /// token ride as query parameters because the relay only reads query params
 /// (the browser WebTransport API cannot set headers, and the two

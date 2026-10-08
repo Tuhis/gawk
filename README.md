@@ -243,7 +243,6 @@ mode, verification, and upgrades.
 | [`gawk-server/`](gawk-server/) | The Go relay — WebTransport endpoint, pub/sub hub, cluster-mode federation. Image + Helm chart. |
 | [`gawk-app/`](gawk-app/) | React SPA — landing/join, broadcaster, viewer. Image + Helm chart. |
 | [`gawk-broadcast-desktop/`](gawk-broadcast-desktop/) | Native **Windows**, **macOS** and **Linux** broadcasters (Rust) — Windows.Graphics.Capture + Media Foundation as a single static EXE; ScreenCaptureKit + VideoToolbox as a notarized `.app`; the XDG portal + GStreamer + PipeWire as a tarball. |
-| [`gawk-broadcast/`](gawk-broadcast/) | `gawk-pubsim`, the simulated publisher the dev stack and the E2E tests use (Go test tooling, not released). |
 | [`gawk-telemetry/`](gawk-telemetry/) | Optional per-session diagnostics — ingest, history, dashboard, MCP. Off by default. Image + Helm chart. |
 | [`gawk-admin/`](gawk-admin/) | Optional moderation portal — fleet-wide kill, durable ID/IP bans, OIDC-gated operator SPA, signed webhooks. Off by default. Image + Helm chart. |
 | [`e2e/`](e2e/) | Browser E2E harness — headless Chrome decoding real relayed frames, plus a kind cluster tier. |

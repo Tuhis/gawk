@@ -1,5 +1,5 @@
 //! Annex-B H.264 bitstream inspection, ported from
-//! gawk-broadcast/internal/engine/sps.go. Pure and portable: this is the
+//! gawk-server/internal/pubsim/engine/sps.go. Pure and portable: this is the
 //! half of the encode crate that runs (and tests) on any host.
 //!
 //! The codec string is parsed from the bitstream, never assumed (docs/19

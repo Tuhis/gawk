@@ -1,3 +1,0 @@
-# go build ./cmd/... drops the binary here; it is a CI artifact, never repo
-# content.
-/gawk-pubsim

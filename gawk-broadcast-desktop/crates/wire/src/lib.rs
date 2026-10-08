@@ -1,8 +1,8 @@
 //! The gawk wire format — fourth mirror (docs/38 D4).
 //!
 //! The source of truth is `gawk-server/wire/wire.go` (plus `parity.go`,
-//! `stripe.go` and `room.go`); the other mirrors are the TypeScript `wire.ts` and the Go
-//! broadcaster's `internal/wirecheck`. This crate is a hand-written
+//! `stripe.go` and `room.go`); the other mirror is the TypeScript `wire.ts`.
+//! This crate is a hand-written
 //! reimplementation with the golden vectors deliberately RESTATED in its
 //! tests, never shared or imported: an exported fixture the sides shared
 //! could be edited once and stay green everywhere, defeating the purpose.

@@ -19,7 +19,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 

@@ -253,7 +253,6 @@ class TestFloorsFileItself(unittest.TestCase):
                 "gawk-admin",
                 "gawk-admin-ui",
                 "gawk-app",
-                "gawk-broadcast",
                 "gawk-broadcast-desktop",
                 "gawk-server",
                 "gawk-telemetry",

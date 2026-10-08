@@ -1,8 +1,8 @@
 //! The golden vectors from gawk-server/wire/wire_test.go (plus parity_test.go
 //! and stripe_test.go), restated here rather than imported or generated: an
 //! exported fixture the mirrors shared could be edited once and stay green
-//! everywhere, which would defeat the purpose. These are the bytes the relay,
-//! wire.ts, and gawk-broadcast/internal/wirecheck already agree on.
+//! everywhere, which would defeat the purpose. These are the bytes the relay
+//! and wire.ts already agree on.
 //!
 //! Do not regenerate them from code; if they change, the wire format changed.
 

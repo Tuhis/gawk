@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/fixture"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/fixture"
 )
 
 const (

@@ -11,6 +11,11 @@ profiles, CI smoke, docs). Phase A is the whole product claim for a
 contributor with nothing but Docker installed; B unlocks second devices; C
 stops the stack rotting.
 
+**2026-10-08 (R56 LX9)**: `gawk-pubsim` moved to `gawk-server/cmd/gawk-pubsim`
+(engine under `gawk-server/internal/pubsim`) when the `gawk-broadcast`
+module was deleted; `dev/Dockerfile.pubsim` now builds with context
+`./gawk-server`. The tables below keep the paths as built.
+
 **Lane B (mkcert) was withdrawn on 2026-08-17**, after implementation, when its
 premise was measured to be false: no browser will open a WebTransport session
 against a certificate from a locally-installed CA. The evidence and the

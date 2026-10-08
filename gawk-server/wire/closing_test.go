@@ -9,7 +9,7 @@ import (
 // --- R57 SessionClosing (0x17) (docs/59 CN1) ---
 
 // Golden vector, computed by hand from the layout in closing.go. Restated
-// byte-identically in all three mirrors (wire.ts, wirecheck, crates/wire).
+// byte-identically in both mirrors (wire.ts, crates/wire).
 //
 //	01           version
 //	17           type = SessionClosing
@@ -79,6 +79,6 @@ func TestSessionClosingRejects(t *testing.T) {
 
 func TestSessionClosingTypeIsPinned(t *testing.T) {
 	if TypeSessionClosing != 0x17 || SessionClosingSize != 6 {
-		t.Fatalf("TypeSessionClosing = 0x%02x, size %d; the four mirrors pin 0x17 and 6", TypeSessionClosing, SessionClosingSize)
+		t.Fatalf("TypeSessionClosing = 0x%02x, size %d; the mirrors pin 0x17 and 6", TypeSessionClosing, SessionClosingSize)
 	}
 }

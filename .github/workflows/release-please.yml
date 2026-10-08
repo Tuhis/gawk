@@ -16,8 +16,7 @@
 # from a build of their own: this push and the CI runs for the same commit are
 # concurrent, so broadcast-desktop.yml's attach-release uploads the artifacts
 # that run already built. (The Go gawk-broadcast was a component here until
-# its removal on 2026-10-08, R56 LX9; gawk-pubsim in that directory is test
-# tooling and is not released.) Rebuilding
+# its removal on 2026-10-08, R56 LX9.) Rebuilding
 # them in a job here would be minutes of duplicate work for a byte-identical
 # result. See .github/actions/attach-release-assets.
 #

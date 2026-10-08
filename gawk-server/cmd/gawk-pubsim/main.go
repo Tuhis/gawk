@@ -48,9 +48,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/engine"
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/fixture"
-	"github.com/Tuhis/gawk/gawk-broadcast/internal/pubsim"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/engine"
+	"github.com/Tuhis/gawk/gawk-server/internal/pubsim/fixture"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 

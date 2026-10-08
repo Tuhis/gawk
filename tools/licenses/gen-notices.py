@@ -700,7 +700,6 @@ def check() -> int:
 
     for module, tags in (
         ("gawk-server", ""),
-        ("gawk-broadcast", ""),
         ("gawk-telemetry", "duckdb"),
         ("gawk-admin", ""),
     ):
