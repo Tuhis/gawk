@@ -1,27 +1,22 @@
 package hub
 
-// Ingress-loss tracking (R9 M3, docs/13). The relay historically counted only
-// what *arrived* from the publisher, so broadcaster→relay loss was invisible —
-// indistinguishable from "the broadcaster never sent it". This window closes
-// that gap: it watches the frameID sequence across both ingest paths (delta
-// datagram chunks and keyframe streams) and counts a frame as lost only when
-// it ages out of the window without ever being seen. Waiting for age-out (an
-// RTP-receiver-style discipline) is what makes the counter robust to QUIC
-// datagram reordering — a naive "gap on arrival" count would tally every
-// reorder as a loss and then have to take it back.
+// Ingress-loss tracking (docs/13): broadcaster→relay loss. The window watches
+// the frameID sequence across both ingest paths (delta datagram chunks and
+// keyframe streams) and counts a frame as lost only when it ages out of the
+// window unseen. Waiting for age-out is what makes the counter robust to QUIC
+// datagram reordering; a "gap on arrival" count would tally every reorder as
+// a loss.
 //
-// Per-frame chunk tracking (distinct chunkIndexes seen vs the header's
-// chunkCount) additionally measures partial frame loss: frames that arrived
-// but incomplete, which a viewer would drop as unreassemblable.
+// Per-frame chunk tracking also measures partial frame loss: frames a viewer
+// would drop as unreassemblable.
 //
-// All methods are called with the registry lock held (from the Publisher
-// relay paths); the window has no locking of its own.
+// All methods are called with the registry lock held; the window has no
+// locking of its own.
 
 // ingressWindowFrames is how many consecutive frameIDs the window tracks
 // before an unseen ID is declared lost. 1024 frames ≈ 17–34 s at 30–60 fps —
 // far beyond any reordering horizon; a frame arriving later than that would
-// be useless for playback anyway. Mirrors the spirit of the client
-// reassembler's bounded in-flight window.
+// be useless for playback anyway.
 const ingressWindowFrames = 1024
 
 // maxIngressChunkWords bounds the per-frame chunk bitmap allocation
@@ -40,8 +35,8 @@ type ingressFrame struct {
 
 // ingressWindow is a ring of the last ingressWindowFrames frameIDs, keyed by
 // frameID % size. It reports losses as *deltas* from each observe call so the
-// cumulative counters can live on the broadcastHub (surviving window resets
-// on publisher restart, per the "counters survive their owner" rule).
+// cumulative counters can live on the broadcastHub and survive window resets
+// on publisher restart.
 type ingressWindow struct {
 	slots   [ingressWindowFrames]ingressFrame
 	started bool
@@ -81,9 +76,8 @@ func (w *ingressWindow) observeChunk(frameID uint32, chunkIndex, chunkCount int)
 	case d > 0:
 		if d >= ingressWindowFrames {
 			// A jump beyond the whole window: finalize everything tracked and
-			// restart at the new position. IDs between the window edge and the
-			// jump target were never tracked; counting that unbounded span as
-			// lost from a single (possibly corrupt) header would be noise.
+			// restart. Counting the untracked span as lost from a single
+			// (possibly corrupt) header would be noise.
 			framesLost, chunksLost = w.finalizeAll()
 			w.maxSeen = frameID
 			slot := &w.slots[frameID%ingressWindowFrames]

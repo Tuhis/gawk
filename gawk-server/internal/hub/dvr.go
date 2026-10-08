@@ -1,30 +1,26 @@
 package hub
 
-// R21 DV1 (docs/26): the per-broadcast DVR ring.
+// The per-broadcast DVR ring (docs/26).
 //
-// Resilient mode trades latency for smoothness, but until R21 the relay only
-// held the viewer's *undelivered* bytes and destroyed them the moment a write
-// stalled (docs/24 finding 17). A viewer's playout buffer is made of delay,
-// not of pre-fetched data, so during a stall it needs exactly the frames
-// captured during that stall — the ones that were being thrown away. This ring
-// keeps them.
+// A viewer's playout buffer is made of delay, not of pre-fetched data, so
+// during a stall it needs exactly the frames captured during that stall. This
+// ring keeps them, so a stalled write costs delay rather than data.
 //
 // Shape, and why:
 //
 //   - ONE ring per broadcast, N cursors. The bytes are identical for every
-//     subscriber, so copying them per subscriber would multiply memory by the
-//     audience for no reason (docs/26 Decision 1).
+//     subscriber; copying them per subscriber would multiply memory by the
+//     audience.
 //   - Entries are whole GOPs, not loose datagrams. A cursor must be able to
-//     *start*, and the only decodable start is a keyframe (Decision 2). It
-//     also lines up with the carrier's existing per-GOP rotation, so replaying
-//     a GOP is byte-identical on the wire to serving it live.
-//   - Bounded by duration AND bytes, whichever binds first (Decision 10). The
-//     duration expresses the product intent; the byte cap is what keeps a
-//     50 Mbps broadcaster from taking the pod down.
+//     *start*, and the only decodable start is a keyframe. It also lines up
+//     with the carrier's per-GOP rotation, so replaying a GOP is
+//     byte-identical on the wire to serving it live.
+//   - Bounded by duration AND bytes, whichever binds first. The byte cap is
+//     what keeps a 50 Mbps broadcaster from taking the pod down.
 //
-// Concurrency: one appender (the publisher's fan-out, already under
-// registry.mu) and N readers (the drains). Guarded by its own RWMutex rather
-// than registry.mu so a drain reading history never contends with fan-out.
+// Concurrency: one appender (the fan-out, under registry.mu) and N readers
+// (the drains). Its own RWMutex, not registry.mu, so a drain reading history
+// never contends with fan-out.
 
 import (
 	"strconv"
@@ -53,15 +49,14 @@ type dvrGop struct {
 	keyframe []byte
 	records  [][]byte
 	bytes    int
-	// complete is set when the next keyframe arrives — i.e. no more records
-	// will ever be appended to this GOP. A reader at the end of an incomplete
-	// GOP must wait rather than skip.
+	// complete is set when the next keyframe arrives: no more records will
+	// ever be appended to this GOP.
 	complete bool
 }
 
 // DVRCursor is one subscriber's position. Values are immutable; every advance
 // returns a new cursor, which keeps the drain's bookkeeping free of aliasing
-// bugs and makes the whole thing safe to read under an RLock.
+// bugs.
 type DVRCursor struct {
 	gopSeq int64
 	// recordIdx is the index of the NEXT record to send. -1 means "the
@@ -102,22 +97,22 @@ type DVRRing struct {
 	wake chan struct{}
 }
 
+// NewDVRRing returns an empty ring bounded by opts.
 func NewDVRRing(opts DVROptions) *DVRRing {
 	return &DVRRing{opts: opts, wake: make(chan struct{})}
 }
 
-// Wait returns a channel closed by the next append. A drain that has consumed
-// everything currently in its GOP selects on this rather than polling — take
-// the channel BEFORE the final read, or an append landing in between is missed
-// and the drain sleeps on data that already arrived.
+// Wait returns a channel closed by the next append. Take it BEFORE the final
+// read, or an append landing in between is missed and the drain sleeps on
+// data that already arrived.
 func (r *DVRRing) Wait() <-chan struct{} {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.wake
 }
 
-// wakeLocked releases everyone waiting and arms the next wait. Called on every
-// append, under the write lock.
+// wakeLocked releases everyone waiting and arms the next wait. Caller holds
+// the write lock.
 func (r *DVRRing) wakeLocked() {
 	close(r.wake)
 	r.wake = make(chan struct{})
@@ -125,8 +120,7 @@ func (r *DVRRing) wakeLocked() {
 
 // AppendKeyframe starts a new GOP, completing the previous one. msg is the
 // full StreamFrame message bytes, exactly as they would go on a keyframe
-// stream — copied, because the ring outlives the caller's buffer by seconds
-// (see TestDVRRingOwnsItsBytes).
+// stream — copied, because the ring outlives the caller's buffer by seconds.
 func (r *DVRRing) AppendKeyframe(msg []byte, at time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -172,8 +166,7 @@ func (r *DVRRing) NewCursor() DVRCursor {
 	return r.newestCursorLocked()
 }
 
-// ResyncCursor is NewCursor under its failure name: what a subscriber that
-// fell off the tail is given (docs/26 Decision 4).
+// ResyncCursor is NewCursor for a subscriber that fell off the tail.
 func (r *DVRRing) ResyncCursor() DVRCursor { return r.NewCursor() }
 
 func (r *DVRRing) newestCursorLocked() DVRCursor {
@@ -197,8 +190,7 @@ func (r *DVRRing) Keyframe(c DVRCursor) ([]byte, bool) {
 }
 
 // Record returns the record at the cursor. ok is false at the end of the GOP's
-// currently-known records — which for an incomplete GOP means "not yet", and
-// for a complete one means "advance to the next GOP".
+// currently-known records; see GopComplete.
 func (r *DVRRing) Record(c DVRCursor) ([]byte, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -232,8 +224,7 @@ func (r *DVRRing) NextGop(c DVRCursor) (DVRCursor, bool) {
 	return c, false
 }
 
-// FellOffTail reports that the cursor's GOP has been evicted — the one frame
-// loss this mode has (docs/26 Decision 4).
+// FellOffTail reports that the cursor's GOP has been evicted.
 func (r *DVRRing) FellOffTail(c DVRCursor) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -244,7 +235,7 @@ func (r *DVRRing) FellOffTail(c DVRCursor) bool {
 }
 
 // LagMs is how far behind the newest GOP this cursor sits, in ms. The staleness
-// bound (docs/26 Decision 7) compares it against the viewer's declared buffer.
+// bound compares it against the viewer's declared buffer.
 func (r *DVRRing) LagMs(c DVRCursor, now time.Time) int64 {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -267,7 +258,8 @@ func (r *DVRRing) OldestGopSeq() int64 {
 }
 
 // GopAt is the arrival time of the cursor's GOP — the reference the audio
-// cursor is held to (docs/26 Decision 8b). Zero when the GOP is gone.
+// cursor is held to. Falls back to the newest GOP when the cursor's is gone;
+// zero when the ring is empty.
 func (r *DVRRing) GopAt(c DVRCursor) time.Time {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -288,10 +280,8 @@ func (r *DVRRing) Bytes() int {
 }
 
 // LiveRateBps estimates the broadcast's current bitrate from what the ring
-// itself holds — bytes over the span they cover. No extra bookkeeping: the
-// ring already is a time-bounded sample of the stream. Returns 0 when the span
-// is too short to estimate, which the pacer treats as "do not throttle": a low
-// guess on a fresh broadcast would stall every viewer on it.
+// itself holds — bytes over the span they cover. Returns 0 when the span is
+// too short to estimate, which the pacer treats as "do not throttle".
 func (r *DVRRing) LiveRateBps() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -349,7 +339,7 @@ func (r *DVRRing) dropOldestLocked() {
 	r.gops = r.gops[1:]
 }
 
-// --- DV2: the cursor drain -------------------------------------------------
+// --- the cursor drain ------------------------------------------------------
 
 // dvrRetryFloor keeps the drain from spinning on failures that return
 // instantly (egress cap, refused stream open). A parked write already costs a
@@ -361,16 +351,11 @@ const dvrRetryFloor = 20 * time.Millisecond
 // the catch-up ceiling would throttle on noise.
 const dvrMinRateSpan = 500 * time.Millisecond
 
-// drainDVR is the R21 replacement for drainReliable on a DVR subscriber. It
-// reads the broadcast's ring at this subscriber's own cursor instead of a
-// per-subscriber queue, so a stalled write costs delay rather than data: the
-// ring keeps growing behind it, and when the link returns the drain simply
-// resumes where it was.
-//
-// Each GOP is served exactly as the live path serves one — keyframe on its own
-// stream, then length-prefixed records on a carrier — so a replayed GOP is
-// byte-identical on the wire to a live one and the viewer needs no concept of
-// replay (docs/26 Decision 2).
+// drainDVR replaces drainReliable on a DVR subscriber: it reads the ring at
+// this subscriber's own cursor instead of a per-subscriber queue. Each GOP is
+// served exactly as the live path serves one — keyframe on its own stream,
+// then length-prefixed records on a carrier — so the viewer needs no concept
+// of replay.
 func (s *Subscriber) drainDVR() {
 	defer s.retireCarrier()
 	var scratch []byte
@@ -379,18 +364,15 @@ func (s *Subscriber) drainDVR() {
 		if s.closed.Load() {
 			return
 		}
-		// Health in this mode is progress, not position (docs/26 Decision 9).
-		// A cursor legitimately sits seconds behind live — that is what the
-		// viewer paid latency for — so the only honest question is whether it
-		// is still moving. Checked here rather than in the shared keyframe /
-		// carrier eviction streaks, which key on lag and would evict exactly
-		// the viewers this mode exists for.
+		// Health in this mode is progress, not position: a cursor legitimately
+		// sits seconds behind live, so the only honest question is whether it
+		// is still moving. The shared keyframe/carrier eviction streaks key on
+		// lag and would evict exactly the viewers this mode exists for.
 		if s.dvrStalled() {
 			s.evictOnce()
 			return
 		}
-		// Take the wake channel BEFORE reading, so an append landing between
-		// the read and the wait is not missed.
+		// Take the wake channel BEFORE reading; see DVRRing.Wait.
 		wake := s.dvr.Wait()
 
 		if s.dvrFellBehind() {
@@ -399,11 +381,10 @@ func (s *Subscriber) drainDVR() {
 		}
 		if s.dvrCursor.NeedsKeyframe() {
 			if !s.dvrSendKeyframe() {
-				// Two reasons to be here, and only one is a failure to reach
-				// the peer: the ring has no keyframe for this cursor yet (a
+				// Either the ring has no keyframe for this cursor yet (a
 				// joiner on an away broadcast sits here for as long as the
 				// broadcaster is gone), or the catch-up ceiling is throttling
-				// us. The first is idleness.
+				// us. Only the first is idleness.
 				_, available := s.dvr.Keyframe(s.dvrCursor)
 				select {
 				case <-wake:
@@ -422,19 +403,10 @@ func (s *Subscriber) drainDVR() {
 			if s.dvrWriteRecord(rec, &scratch) {
 				continue
 			}
-			// The write did not land — a parked carrier, a failed open, or the
-			// egress cap. Do NOT skip the GOP: waiting is the entire point of
-			// the ring, the record is still in it, and the two checks at the
-			// top of this loop (fell off the tail, lag past the viewer's
-			// buffer) are what bound the wait. Skipping here reintroduces
-			// exactly the loss R21 exists to remove — and did, until the
-			// control subscriber in TestDVRSubscriberLosesNothingAcrossAStall
-			// caught it. writeCarrier already cancelled the dead stream, so
-			// the next attempt opens a fresh one.
-			//
-			// Pacing: a parked write costs a full carrierWriteTimeout, so the
-			// loop is self-limiting there. The cheap failures (over cap, open
-			// refused) return instantly, hence the short floor.
+			// The write did not land. Do NOT skip the GOP: waiting is the
+			// point of the ring, and the checks at the top of this loop bound
+			// the wait. writeCarrier already cancelled the dead stream, so the
+			// next attempt opens a fresh one.
 			select {
 			case <-wake:
 			case <-s.dvrStop:
@@ -443,9 +415,7 @@ func (s *Subscriber) drainDVR() {
 			}
 			continue
 		}
-		// Out of records: either this GOP is still growing (wait) or it is
-		// complete and the next one is ready (advance). Conflating the two
-		// either skips live records or wedges at a GOP boundary.
+		// Out of records: wait on a growing GOP, advance past a complete one.
 		if s.dvr.GopComplete(s.dvrCursor) {
 			if next, advanced := s.dvr.NextGop(s.dvrCursor); advanced {
 				s.retireCarrier()
@@ -454,9 +424,8 @@ func (s *Subscriber) drainDVR() {
 				continue
 			}
 		}
-		// Caught up: the cursor is at the live edge and there is nothing left to
-		// write. Idleness is not unreachability — see dvrNoteIdle. Noted after
-		// the wait, not before: the wait itself is the idle time, and an away
+		// Caught up at the live edge. Idle is noted after the wait, not
+		// before: the wait itself is the idle time, and an away
 		// broadcaster's can be minutes.
 		select {
 		case <-wake:
@@ -468,11 +437,10 @@ func (s *Subscriber) drainDVR() {
 }
 
 // drainControlSideband delivers a DVR subscriber's non-video datagrams —
-// ClockMapping, the R18 ViewerCount keepalive, DecoderConfig — over the
+// ClockMapping, the ViewerCount keepalive, DecoderConfig — over the
 // unreliable path, immediately. They must never queue behind the video cursor:
-// the keepalive in particular is what a viewer's dead-session watchdog reads as
-// proof its session is alive (BUGS.md), and a DVR cursor is *designed* to sit
-// seconds behind.
+// the keepalive is what a viewer's dead-session watchdog reads as proof its
+// session is alive, and a DVR cursor is *designed* to sit seconds behind.
 func (s *Subscriber) drainControlSideband() {
 	for dgram := range s.queue {
 		s.sendSidebandDatagram(dgram)
@@ -481,8 +449,7 @@ func (s *Subscriber) drainControlSideband() {
 
 // dvrFellBehind reports the two ways a cursor stops being worth serving: the
 // ring evicted its GOP, or it has fallen further behind than the viewer's
-// declared buffer, so everything it would replay is already past due there
-// (docs/26 Decisions 4 and 7).
+// declared buffer, so everything it would replay is already past due there.
 func (s *Subscriber) dvrFellBehind() bool {
 	if s.dvr.FellOffTail(s.dvrCursor) {
 		return true
@@ -493,7 +460,7 @@ func (s *Subscriber) dvrFellBehind() bool {
 }
 
 // dvrResync jumps the cursor to the newest keyframe — the mode's only frame
-// loss, and the one signal operators should watch (docs/26 Decision 4).
+// loss, and the one signal operators should watch.
 func (s *Subscriber) dvrResync() {
 	s.retireCarrier()
 	s.dvrCursor = s.dvr.ResyncCursor()
@@ -501,10 +468,9 @@ func (s *Subscriber) dvrResync() {
 	s.dvrNoteCursor()
 }
 
-// dvrNoteCursor publishes the cursor's observable position. dvrCursor itself
-// is owned by the video drain goroutine and must never be read from another —
-// the audio drain needs the GOP's arrival time to pace against, so it is
-// published here as an atomic rather than shared (caught by -race).
+// dvrNoteCursor publishes the cursor's observable position as atomics.
+// dvrCursor itself is owned by the video drain goroutine and must never be
+// read from another (the audio drain paces against the published time).
 func (s *Subscriber) dvrNoteCursor() {
 	s.dvrGopSeq.Store(s.dvrCursor.GopSeq())
 	s.dvrCursorAtMs.Store(s.dvr.GopAt(s.dvrCursor).UnixMilli())
@@ -534,12 +500,10 @@ func (s *Subscriber) dvrSendKeyframe() bool {
 	}
 	st, err := s.sender.OpenKeyframeStream()
 	if err != nil {
-		// Same streak as the live path (hub.go sendKeyframe): a peer that
-		// refuses KeyframeOpenFailEvictThreshold consecutive keyframe streams
-		// has exhausted its stream credit and is a zombie, whatever mode it
-		// subscribed in. drainDVR opens its own streams, so without this the
-		// DVR mode counted the failures and never acted on them — and one open
-		// per GOP is the same cadence the threshold was sized against.
+		// Same streak as the live path (sendKeyframe): a peer that refuses
+		// KeyframeOpenFailEvictThreshold consecutive keyframe streams has
+		// exhausted its stream credit and is a zombie, whatever its mode.
+		// drainDVR opens its own streams, so it must feed the streak itself.
 		s.noteKeyframeOpenFailed()
 		s.kfDroppedOpenFailed.Add(1)
 		s.dvrCursor = s.dvrCursor.AtFirstRecord()
@@ -579,11 +543,8 @@ func (s *Subscriber) dvrWriteRecord(rec []byte, scratch *[]byte) bool {
 	if needsOpen {
 		n += wire.CarrierPrologueSize
 	}
-	// Catch-up ceiling (docs/26 Decision 6): a recovering subscriber must
-	// outrun live or it never closes its backlog, but not without bound —
-	// every viewer on the pod shares one egress budget, and they usually
-	// recover together. Checked before the global cap so a throttled record is
-	// a retry rather than a charged drop.
+	// Catch-up ceiling (see dvrPacer). Checked before the global cap so a
+	// throttled record is a retry rather than a charged drop.
 	if !s.dvrPace.allow(n, s.dvr.LiveRateBps()) {
 		return false
 	}
@@ -621,16 +582,12 @@ func (s *Subscriber) dvrNoteProgress() {
 	s.dvrProgressAt.Store(time.Now().UnixMilli())
 }
 
-// dvrNoteIdle records that the drain had nothing to send. It keeps the stall
-// timer measuring what it is named for: a drain sitting at the live edge writes
-// nothing for the same reason a healthy connection does, and dvrStalled cannot
-// tell "wrote nothing because there was nothing" from "wrote nothing because
-// the peer is gone". Without this the check is only ever re-evaluated when an
-// append wakes the parked drain — so an away broadcaster's *return* is what
-// trips it, and every Deep-buffer viewer is evicted at the moment its broadcast
-// resumes (TestDVRSubscriberSurvivesAnAwayBroadcaster). Deliberately not called
-// on the retry-after-failure path: a write that could not land is exactly the
-// unreachability this timer exists to catch.
+// dvrNoteIdle records that the drain had nothing to send, so dvrStalled
+// measures unreachability rather than idleness. Without it the stall check,
+// re-evaluated only when an append wakes the parked drain, would fire on an
+// away broadcaster's return and evict every Deep-buffer viewer the moment the
+// broadcast resumes. Deliberately not called on the retry-after-failure path:
+// a write that could not land is exactly what the timer exists to catch.
 func (s *Subscriber) dvrNoteIdle() {
 	s.dvrProgressAt.Store(time.Now().UnixMilli())
 }
@@ -648,22 +605,21 @@ func (s *Subscriber) evictOnce() {
 	}
 }
 
-// DVRResyncs is how many times this subscriber fell off the ring's tail — the
-// mode's only frame loss (docs/26 Decision 4).
+// DVRResyncs is how many times this subscriber fell off the ring's tail.
 func (s *Subscriber) DVRResyncs() uint64 { return s.dvrResyncs.Load() }
 
 // DVRLagMs is how far behind the live edge this subscriber's cursor sits.
 func (s *Subscriber) DVRLagMs() int64 { return s.dvrLagMs.Load() }
 
-// --- DV3: negotiation ------------------------------------------------------
+// --- negotiation -----------------------------------------------------------
 
 // NegotiateDelivery turns the subscribe query into a delivery mode and an
-// accepted buffer (docs/26 Decision 7). raw is the `buffer` parameter exactly
-// as it arrived; window is the relay's configured ring depth.
+// accepted buffer. raw is the `buffer` parameter exactly as it arrived;
+// window is the relay's configured ring depth.
 //
-// The governing rule is that a query parameter must never reject a session: it
-// is a hint from a client that may be older, newer, or simply wrong. Every
-// unusable value degrades to a working subscriber instead.
+// A query parameter must never reject a session: it is a hint from a client
+// that may be older, newer, or simply wrong, so every unusable value degrades
+// to a working subscriber.
 func NegotiateDelivery(reliable bool, raw string, window time.Duration) (wire.DeliveryMode, int) {
 	if !reliable {
 		// `buffer` without `delivery=reliable` is meaningless, and must not
@@ -672,9 +628,8 @@ func NegotiateDelivery(reliable bool, raw string, window time.Duration) (wire.De
 	}
 	ms, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || ms <= 0 {
-		// Absent, malformed, negative, zero, or wider than an int: this viewer
-		// gets R19 carrier delivery, which is what it would have got from any
-		// relay predating R21.
+		// Absent, malformed, negative, zero, or wider than an int: plain
+		// carrier delivery.
 		return wire.DeliveryReliable, 0
 	}
 	if ms < MinDVRBufferMs {
@@ -683,10 +638,9 @@ func NegotiateDelivery(reliable bool, raw string, window time.Duration) (wire.De
 		return wire.DeliveryReliable, 0
 	}
 	if window <= 0 {
-		// The hub defaults a zero window to DefaultDVRWindow when it builds the
-		// ring (see newHub), so leaving it raw here made the two disagree: the
-		// broadcast got a 3 s ring while the negotiation clamped the grant to
-		// 0 ms below. Default in the same place, from the same constant.
+		// Must match newHub, which defaults a zero window to DefaultDVRWindow
+		// when it builds the ring; otherwise the grant clamps to 0 ms while the
+		// broadcast holds a full ring.
 		window = DefaultDVRWindow
 	}
 	if max := int(window / time.Millisecond); ms > max {
@@ -694,10 +648,8 @@ func NegotiateDelivery(reliable bool, raw string, window time.Duration) (wire.De
 	}
 	if ms < MinDVRBufferMs {
 		// The clamp can land below the floor when the operator's window is
-		// itself tiny. Granting DVR with a sub-minimum — or zero — buffer is
-		// incoherent: the viewer is told it is ring-backed and deepens its
-		// playout to a depth the relay never holds. Downgrade honestly, which
-		// is what a below-floor *request* already gets above.
+		// itself tiny. Granting DVR with a sub-minimum buffer is incoherent:
+		// the viewer deepens its playout to a depth the relay never holds.
 		return wire.DeliveryReliable, 0
 	}
 	return wire.DeliveryDVR, ms
