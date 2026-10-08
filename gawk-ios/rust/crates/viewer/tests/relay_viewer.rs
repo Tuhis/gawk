@@ -48,7 +48,7 @@ fn pubsim_bin() -> PathBuf {
         .args(["build", "-o"])
         .arg(&out)
         .arg("./cmd/gawk-pubsim")
-        .current_dir(repo_root().join("gawk-broadcast"))
+        .current_dir(repo_root().join("gawk-server"))
         // As in the relay harness: an iOS deployment target must not reach cgo.
         .env_remove("IPHONEOS_DEPLOYMENT_TARGET")
         .status()

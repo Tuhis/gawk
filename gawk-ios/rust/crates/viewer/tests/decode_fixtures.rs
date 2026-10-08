@@ -178,7 +178,7 @@ fn the_decoded_frame_reports_its_own_size() {
 
 // --- Opus --------------------------------------------------------------------
 
-/// The Go fixture's framing (gawk-broadcast/internal/fixture/audio.go): a
+/// The Go fixture's framing (gawk-server/internal/pubsim/fixture/audio.go): a
 /// big-endian u16 length before each packet.
 fn split_audio(b: &[u8]) -> Vec<&[u8]> {
     let mut out = Vec::new();
@@ -203,7 +203,7 @@ fn zero_crossings(samples: &[f32], channel: usize) -> usize {
 
 #[test]
 fn opus_fixture_decodes_to_48k_stereo_in_its_two_tones() {
-    let path = repo_root().join("gawk-broadcast/internal/fixture/sample-audio.opus");
+    let path = repo_root().join("gawk-server/internal/pubsim/fixture/sample-audio.opus");
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let packets = split_audio(&bytes);
     assert_eq!(packets.len(), 101, "~2 s of 20 ms packets");
