@@ -364,7 +364,7 @@ only on the PSK-gated internal route — see [§4.2](#42-relay-values).
 derived from the publish secret — which every broadcaster holds, so any
 broadcaster could compute another's token and take over their broadcast ID.
 The independent key is what prevents that. Confirm
-`resume_token_key_mode=explicit-key` in the startup log.
+`config.resumeTokenKey` = `<set:explicit-key>` in the startup log.
 
 **MetalLB in L2 mode funnels all traffic through one announcing node**, so
 replicas buy fan-out CPU and redundancy but not NIC bandwidth. With BGP mode
@@ -1333,7 +1333,7 @@ view uses) behind a 2-second cache.
 | Broadcaster is asked for a secret it does not have, or is refused | `requirePublishSecret` and the relay's `publishSecret` disagree |
 | `helm upgrade` refuses with a replicas error | `replicas > 1` without `config.clusterMode: true` |
 | Reconnect storms fail with rate-limit errors after a rollout | `config.trustedCidrs` missing in cluster mode |
-| Relay logs `resume_token_key_mode=derived` | `resumeTokenKeyRef` not set — see [§6](#6-single-node-vs-cluster-mode) |
+| Relay logs `config.resumeTokenKey` = `<set:derived-from-publish-secret>` | `resumeTokenKeyRef` not set — see [§6](#6-single-node-vs-cluster-mode) |
 | Portal answers 401 `idp_unavailable` on every request | The identity provider is unreachable and discovery has not resolved yet — see [§9.3](#93-the-identity-provider). `/readyz` says so too |
 | Portal pods never go Ready | Postgres unreachable, or the schema is older than the binary's minimum — check the migration hook Job's logs |
 | `gawk-admin` renders no Ingress and `helm` refuses the upgrade | `ingress.enabled` without all three of `oidc.issuer` / `oidc.clientId` / `oidc.audience` |

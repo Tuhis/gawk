@@ -14,6 +14,8 @@ package config
 import (
 	"log/slog"
 	"net"
+	"reflect"
+	"strings"
 	"time"
 )
 
@@ -208,10 +210,26 @@ func (c Config) Sanitized() SanitizedConfig {
 	}
 }
 
+// LogValue renders the view as an slog group keyed by the JSON names, so the
+// startup line reads config.maxSubscribers=… under the text handler exactly
+// as it nests under the JSON one (the text handler would otherwise print a
+// Go struct literal). Reflecting HERE is safe where it is not in Sanitized:
+// every secret has already been replaced by its placeholder.
+func (s SanitizedConfig) LogValue() slog.Value {
+	rv := reflect.ValueOf(s)
+	rt := rv.Type()
+	attrs := make([]slog.Attr, 0, rt.NumField())
+	for i := range rt.NumField() {
+		name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+		attrs = append(attrs, slog.Any(name, rv.Field(i).Interface()))
+	}
+	return slog.GroupValue(attrs...)
+}
+
 // resumeTokenKeyRedaction renders presence AND mode: "<set:explicit-key>",
 // "<set:derived-from-publish-secret>" or "<unset:per-process-random>". The
-// mode string is byte-identical to the one logStartup prints, which is the
-// point — an operator comparing the two is comparing the same words.
+// mode is the one an operator checks for a fleet misconfiguration, so it is
+// spelled out rather than collapsed into "<set>".
 func resumeTokenKeyRedaction(c Config) string {
 	mode := c.ResumeTokenKeyMode()
 	if mode == "per-process-random" {
@@ -221,9 +239,9 @@ func resumeTokenKeyRedaction(c Config) string {
 }
 
 // ResumeTokenKeyMode names where the resume-token key comes from (R17 W2) —
-// logged at startup and reported by Sanitized, so a fleet misconfiguration
-// (per-process keys on multiple pods, which silently breaks cross-pod resume)
-// is visible in both places from ONE definition.
+// reported by Sanitized, and so in both the startup log and GET
+// /internal/admin/config, so a fleet misconfiguration (per-process keys on
+// multiple pods, which silently breaks cross-pod resume) is visible there.
 //
 // Order mirrors newResumeTokens: the explicit key wins over the
 // publish-secret derivation (PR #47 security review — a secret-derived key is

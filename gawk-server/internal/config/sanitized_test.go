@@ -160,8 +160,7 @@ func TestSanitizedReportsUnsetSecrets(t *testing.T) {
 	}
 }
 
-// The resume key reports its MODE, echoing the startup log verbatim — the
-// three-way answer an operator actually needs (docs/42 §4.5).
+// The resume key reports its MODE — the three-way answer an operator actually needs (docs/42 §4.5).
 func TestSanitizedResumeTokenKeyNamesItsMode(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -176,8 +175,8 @@ func TestSanitizedResumeTokenKeyNamesItsMode(t *testing.T) {
 			if got := tc.cfg.Sanitized().ResumeTokenKey; got != tc.want {
 				t.Errorf("resumeTokenKey = %q, want %q", got, tc.want)
 			}
-			// The bare mode is what logStartup prints; the two must stay one
-			// string, not two that drift.
+			// The redaction and ResumeTokenKeyMode must stay one string, not
+			// two that drift.
 			if !strings.Contains(tc.want, tc.cfg.ResumeTokenKeyMode()) {
 				t.Errorf("redaction %q does not carry the logged mode %q",
 					tc.want, tc.cfg.ResumeTokenKeyMode())
