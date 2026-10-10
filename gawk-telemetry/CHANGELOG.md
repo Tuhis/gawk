@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.12.0...gawk-telemetry/v1.12.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **telemetry:** carry each relay observation once per scrape round ([#488](https://github.com/Tuhis/gawk/issues/488)) ([73e3c39](https://github.com/Tuhis/gawk/commit/73e3c395e488c077135161f93ebca9734b2f6848))
+
 ## [1.12.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.11.0...gawk-telemetry/v1.12.0) (2026-10-07)
 
 

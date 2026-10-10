@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.32.1](https://github.com/Tuhis/gawk/compare/gawk-server/v0.32.0...gawk-server/v0.32.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **server:** a superseded renew loop no longer reports the lease lost ([#491](https://github.com/Tuhis/gawk/issues/491)) ([950cc31](https://github.com/Tuhis/gawk/commit/950cc310aa4eae74479809f54a1aa003f9908919))
+* **server:** dvr_resyncs_total no longer goes backwards and is emitted relay-wide ([#489](https://github.com/Tuhis/gawk/issues/489)) ([f768360](https://github.com/Tuhis/gawk/commit/f768360cd79f5971399b366b9610a5111e1160c1))
+* **server:** the per-IP rate limiter evicts idle buckets ([#487](https://github.com/Tuhis/gawk/issues/487)) ([0bd02ac](https://github.com/Tuhis/gawk/commit/0bd02ac57449a66811e813af82b23fcd491973ec))
+
 ## [0.32.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.31.0...gawk-server/v0.32.0) (2026-10-07)
 
 
