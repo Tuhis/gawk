@@ -1,17 +1,11 @@
 package transport
 
-// R39 AP3 kill actuation (docs/42 §4.3, §4.1 step 3).
-//
-// AP2 put the ban SET on the publish path — the gate that keeps a banned
-// broadcaster OUT. This is the other half: the ban EVENT, which throws out
-// whoever is already in. Both halves matter, and only together do they hold:
-// without the gate a killed broadcaster auto-resumes within seconds; without
-// the kill a ban only takes effect at the next reconnect.
-//
-// Every pod runs this on its OWN informer event, independently of
-// -cluster-mode. Enforcement is not a federation feature: a single-pod relay
-// must kill just as well, and in a fleet each pod acting on the CR is what
-// makes the kill simultaneous rather than a cascade through the Lease.
+// Moderation kill actuation (docs/42 §4.3). The ban set on the publish path
+// keeps a banned broadcaster out; the ban event throws out whoever is already
+// in. Both are needed: without the gate a killed broadcaster auto-resumes in
+// seconds; without the kill a ban waits for the next reconnect. Every pod
+// acts on its own informer event, independent of -cluster-mode, so the kill
+// is simultaneous fleet-wide rather than a cascade through the Lease.
 
 import (
 	"net/netip"
@@ -21,22 +15,15 @@ import (
 )
 
 // terminationReason is the close reason every kill carries. Deliberately not
-// the ban's own reason: reasons are operator-private context (docs/42 §5) and
-// a close reason travels to the client.
+// the ban's own reason: reasons are operator-private context and a close
+// reason travels to the client.
 const terminationReason = "terminated by operator"
 
-// HandleBanAdded actuates one ban against this pod's live state.
-//
-// Wired to the ban set's change callback, so it runs for every source — the
-// k8s informer's add/update AND a file-source reload — and for every record
-// the source (re-)applies. It must therefore be IDEMPOTENT: a resync that
-// re-delivers a ban already actuated finds no hub and no publisher, and does
-// nothing.
-//
-// A record whose ExpiresAt has already passed kills nothing. Expiry is
-// evaluated here against the same clock the publish path uses, so a ban CR
-// that outlived its cooldown (janitor down, docs/42 §6) is inert on both
-// paths alike rather than inert on one and lethal on the other.
+// HandleBanAdded actuates one ban against this pod's live state. It runs from
+// the ban set's change callback for every source and every (re-)applied
+// record, so it must be idempotent: a resync finds no hub and no publisher.
+// An already-expired record kills nothing — evaluated on the same clock as
+// the publish path, so a ban CR that outlived its cooldown is inert on both.
 func (s *Server) HandleBanAdded(rec moderation.Record) {
 	if !rec.Active(s.clock()) {
 		s.log.Debug("moderation ban not actuated: already expired",
@@ -64,14 +51,10 @@ func (s *Server) HandleBanAdded(rec moderation.Record) {
 	}
 }
 
-// publishersIn lists the broadcast IDs whose LIVE publisher's recorded source
-// address falls inside the prefix. Snapshotted under the lock and acted on
-// outside it: terminate closes sessions, which must never happen while
-// holding sessMu.
-//
-// Only live publishers are walked. A broadcast in grace has no address to
-// match — its ban is enforced by the 451 on the reclaim, which is the same
-// answer the mint path gives (docs/42 §4.3).
+// publishersIn lists the broadcast IDs whose live publisher's source address
+// falls inside the prefix. Snapshotted under sessMu and acted on outside it:
+// terminate closes sessions, which must never happen holding sessMu. A
+// broadcast in grace has no address; its reclaim gets the 451.
 func (s *Server) publishersIn(prefix netip.Prefix) []string {
 	s.sessMu.Lock()
 	defer s.sessMu.Unlock()
@@ -84,16 +67,11 @@ func (s *Server) publishersIn(prefix netip.Prefix) []string {
 	return ids
 }
 
-// terminate kills one broadcast on this pod: publisher session first, then
-// the hub and every subscriber, all with 4006.
-//
-// Order matters. Closing the publisher first stops new media arriving while
-// the hub is being torn down; TerminateBroadcast then closes viewers, edge
-// sessions and stripe legs, purges the caches and the DVR ring, folds the
-// counters, and (origin, cluster mode) fires OnBroadcastExpired so the Lease
-// is deleted fleet-wide. The later lease-deletion informer event finds no hub
-// and no-ops — both paths are idempotent, so the race has no wrong order
-// (docs/42 §6).
+// terminate kills one broadcast on this pod with 4006: publisher first, so no
+// new media arrives during teardown, then TerminateBroadcast (viewers, edge
+// sessions, stripe legs, caches, DVR ring, counters, and on a cluster origin
+// the fleet-wide Lease deletion). The later lease-deletion event finds no hub
+// and no-ops; both paths are idempotent, so the race has no wrong order.
 func (s *Server) terminate(broadcastID, why string) {
 	// An edge pod's "publisher" is its own upstream pull: stop it first, or
 	// the re-attach loop would rebuild the hub we are about to delete. Cheap
@@ -107,8 +85,8 @@ func (s *Server) terminate(broadcastID, why string) {
 	delete(s.publishers, broadcastID)
 	s.sessMu.Unlock()
 	if pub != nil {
-		// With the in-band notice first (R57): a browser never reads the
-		// 4006 itself, and would otherwise retry into the ban.
+		// With the in-band notice: a browser never reads the 4006 itself,
+		// and would otherwise retry into the ban.
 		closeWithNoticeAsync(pub.sess, wire.CloseCodeTerminatedByOperator, terminationReason)
 	}
 
@@ -119,13 +97,9 @@ func (s *Server) terminate(broadcastID, why string) {
 		return
 	}
 	s.metrics.Termination()
-	// The raw ID stays out of this line: it is a join capability (docs/42 §5,
-	// D8), a kill cooldown expires, and a graced broadcast outlives its
-	// publisher — so a "terminated" ID is not a spent one, and this is the
-	// line most likely to be shipped to an aggregator. broadcast_key is the
-	// same per-process HMAC /statusz and the metrics labels carry, so an
-	// operator can still join the three together; the ID itself is one Debug
-	// level away for whoever needs to act on it.
+	// The raw ID stays out of this Warn line, the one most likely shipped to
+	// an aggregator: it is a join capability, and a "terminated" ID is not
+	// spent (cooldowns expire; graced broadcasts outlive their publisher).
 	s.log.Warn("broadcast terminated by operator",
 		"broadcast_key", s.broadcastKey(broadcastID), "reason", why,
 		"publisher_closed", pub != nil, "hub_removed", removed)

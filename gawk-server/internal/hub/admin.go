@@ -1,13 +1,10 @@
 package hub
 
-// The R39 admin view of the registry (docs/42 §4.5, D8).
+// The admin view of the registry (docs/42 §4.5).
 //
 // This is the ONE snapshot that carries RAW broadcast IDs. It is served only
 // from GET /internal/admin/broadcasts on the ops listener, which is
-// ClusterIP-only AND credential-gated — strictly more protected than
-// /statusz, which stays HMAC-only and byte-identical to what it has always
-// been. Stats() is deliberately untouched: two callers, two shapes, no shared
-// mutation, so nothing here can leak an ID into the public surface.
+// ClusterIP-only AND credential-gated; /statusz stays HMAC-only.
 
 import (
 	"sort"
@@ -17,9 +14,8 @@ import (
 )
 
 // AdminBroadcast is one row of GET /internal/admin/broadcasts. An alias, not a
-// copy: the struct lives in the public `adminapi` package so gawk-admin's
-// relayscan parses the exact type this file fills in ("reuse it; never mirror
-// it").
+// copy: the struct lives in the public `adminapi` package so gawk-admin parses
+// the exact type this file fills in.
 type AdminBroadcast = adminapi.Broadcast
 
 // AdminStats snapshots every broadcast this pod hosts, sorted by raw ID so
@@ -27,8 +23,7 @@ type AdminBroadcast = adminapi.Broadcast
 // see content changes, not map-iteration noise).
 //
 // A separate walk from Stats() on purpose: Stats() is the public /statusz
-// shape and must not grow a raw-ID field that some future handler forgets to
-// strip.
+// shape and must never grow a raw-ID field a handler could forget to strip.
 func (r *Registry) AdminStats() []AdminBroadcast {
 	r.mu.Lock()
 	defer r.mu.Unlock()
