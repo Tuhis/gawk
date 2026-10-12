@@ -219,8 +219,12 @@ channels:
       participants reconnect and the bus reports a
       `participant_left` (`reason: home_moved`) and `participant_joined`
       (`rejoin: true`) pair; both halves are dropped unless the webhook also
-      lists `room.participant_rejoined`. `webhook.test` is what the portal's
-      *Send test* button sends and travels nowhere else.
+      lists `room.participant_rejoined`. `content_flag.observed` (R40) is
+      opt-in the same way: it is calibration data from a content sampler in
+      observe mode, so a webhook receives it only when its `events` list
+      names it, and a pager that never asked is never woken by one.
+      `webhook.test` is what the portal's *Send test* button sends and
+      travels nowhere else.
 
       Headers on every delivery:
 
@@ -246,12 +250,20 @@ channels:
         $ref: '#/components/messages/banRemoved'
       contentFlagRaised:
         $ref: '#/components/messages/contentFlagRaised'
+      contentFlagReminded:
+        $ref: '#/components/messages/contentFlagReminded'
+      contentFlagResolved:
+        $ref: '#/components/messages/contentFlagResolved'
+      contentFlagObserved:
+        $ref: '#/components/messages/contentFlagObserved'
       roomCreated:
         $ref: '#/components/messages/roomCreated'
       roomEnded:
         $ref: '#/components/messages/roomEnded'
       roomSecretRotated:
         $ref: '#/components/messages/roomSecretRotated'
+      roomScreeningChanged:
+        $ref: '#/components/messages/roomScreeningChanged'
       roomAttached:
         $ref: '#/components/messages/roomAttached'
       roomDetached:
@@ -302,9 +314,13 @@ operations:
       - $ref: '#/channels/webhook/messages/banExpired'
       - $ref: '#/channels/webhook/messages/banRemoved'
       - $ref: '#/channels/webhook/messages/contentFlagRaised'
+      - $ref: '#/channels/webhook/messages/contentFlagReminded'
+      - $ref: '#/channels/webhook/messages/contentFlagResolved'
+      - $ref: '#/channels/webhook/messages/contentFlagObserved'
       - $ref: '#/channels/webhook/messages/roomCreated'
       - $ref: '#/channels/webhook/messages/roomEnded'
       - $ref: '#/channels/webhook/messages/roomSecretRotated'
+      - $ref: '#/channels/webhook/messages/roomScreeningChanged'
       - $ref: '#/channels/webhook/messages/roomAttached'
       - $ref: '#/channels/webhook/messages/roomDetached'
       - $ref: '#/channels/webhook/messages/roomParticipantJoined'
@@ -433,7 +449,7 @@ components:
     contentFlagRaised:
       name: fi.ioio.gawk.content_flag.raised
       title: Content flag raised
-      summary: Reserved for R40; not produced yet.
+      summary: A content sampler flagged a live broadcast; join it and judge. Produced since R40.
       x-gawk-since: R51
       x-gawk-status: stable
       payload:
@@ -445,6 +461,51 @@ components:
                 const: fi.ioio.gawk.content_flag.raised
               data:
                 $ref: './schema/fi.ioio.gawk.content_flag.raised.json'
+    contentFlagReminded:
+      name: fi.ioio.gawk.content_flag.reminded
+      title: Content flag reminded
+      summary: A content flag is still unacknowledged; sent every repage interval until someone acts.
+      x-gawk-since: R40
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.content_flag.reminded
+              data:
+                $ref: './schema/fi.ioio.gawk.content_flag.reminded.json'
+    contentFlagResolved:
+      name: fi.ioio.gawk.content_flag.resolved
+      title: Content flag resolved
+      summary: A content flag ended — cleared, dismissed, killed, killed automatically, or its broadcast ended.
+      x-gawk-since: R40
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.content_flag.resolved
+              data:
+                $ref: './schema/fi.ioio.gawk.content_flag.resolved.json'
+    contentFlagObserved:
+      name: fi.ioio.gawk.content_flag.observed
+      title: Content flag observed
+      summary: A sampler in observe mode would have flagged a broadcast. Delivered only to a webhook that lists it.
+      x-gawk-since: R40
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.content_flag.observed
+              data:
+                $ref: './schema/fi.ioio.gawk.content_flag.observed.json'
     roomCreated:
       name: fi.ioio.gawk.room.created
       title: Room created
@@ -490,6 +551,21 @@ components:
                 const: fi.ioio.gawk.room.secret_rotated
               data:
                 $ref: './schema/fi.ioio.gawk.room.secret_rotated.json'
+    roomScreeningChanged:
+      name: fi.ioio.gawk.room.screening_changed
+      title: Room screening changed
+      summary: An operator exempted a static room from content screening, or put it back.
+      x-gawk-since: R40
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.room.screening_changed
+              data:
+                $ref: './schema/fi.ioio.gawk.room.screening_changed.json'
 
     # ---- bus (relay-published, from R50) -----------------------------------
     broadcastStarted:

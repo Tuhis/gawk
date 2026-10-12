@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.content_flag.reminded.json",
+  "title": "Content flag reminded",
+  "description": "A content flag is still open: nobody has acknowledged it, and its signal is live or unknown (R40, docs/71 D9). Sent every repage interval until someone acknowledges or resolves the flag. The `data` of a `fi.ioio.gawk.content_flag.reminded` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "common.json#/$defs/actor"
+    },
+    "broadcastKey": {
+      "$ref": "common.json#/$defs/broadcastKey"
+    },
+    "broadcastId": {
+      "$ref": "common.json#/$defs/broadcastId",
+      "x-gawk-sensitive": true
+    },
+    "flagId": {
+      "$ref": "common.json#/$defs/contentFlagId"
+    },
+    "raisedAt": {
+      "$ref": "common.json#/$defs/timestamp"
+    },
+    "reminder": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Which reminder this is for the flag, 1 for the first."
+    },
+    "signal": {
+      "$ref": "common.json#/$defs/contentFlagSignal"
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "actor",
+    "reminder",
+    "signal"
+  ]
+}

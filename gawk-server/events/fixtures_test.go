@@ -30,6 +30,9 @@ const (
 	fixtureAdminID      = "6c1f1a40-2f7e-5a3b-9a1d-0b7d2c1e4f55"
 	fixturePortalB      = "https://admin.example.com/#/broadcasts?key=" + fixtureBroadcastKey
 	fixturePortalR      = "https://admin.example.com/#/rooms?key=" + fixtureRoomKey
+	// fixtureSampler is a sampler's client-credentials identity (docs/71
+	// D18), as Keycloak names a service account.
+	fixtureSampler = "service-account-gawk-sampler"
 )
 
 var fixtureTime = time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
@@ -78,10 +81,40 @@ func fixtures() map[string]Event {
 			},
 		}),
 		TypeContentFlagRaised: admin(TypeContentFlagRaised, fixtureBroadcastID, ContentFlagRaisedData{
-			Actor: "juho@example.com", BroadcastKey: fixtureBroadcastKey, BroadcastID: fixtureBroadcastID,
-			Reason: "reported by a viewer",
+			Actor: fixtureSampler, BroadcastKey: fixtureBroadcastKey, BroadcastID: fixtureBroadcastID,
+			Reason: "sustained explicit signal", FlagID: 42, SamplerID: "gawk-sampler-1",
+			Window: &ContentFlagWindow{Start: "2026-09-17T11:59:35Z", End: "2026-09-17T12:00:00Z", Samples: 6, FlaggedSamples: 4},
+			Scores: &ContentFlagScores{Max: 0.97, Mean: 0.81},
+			Labels: []string{"FEMALE_GENITALIA_EXPOSED"},
 			Delivery: Delivery{
-				Summary:   "a content flag was raised on broadcast ABC234 by juho@example.com",
+				Summary:   "content flag raised on broadcast ABC234: 4 of 6 samples flagged, peak score 0.97 — join and judge it",
+				PortalURL: fixturePortalB,
+			},
+		}),
+		TypeContentFlagObserved: admin(TypeContentFlagObserved, fixtureBroadcastID, ContentFlagRaisedData{
+			Actor: fixtureSampler, BroadcastKey: fixtureBroadcastKey, BroadcastID: fixtureBroadcastID,
+			Reason: "sustained explicit signal", FlagID: 43, SamplerID: "gawk-sampler-0",
+			Window: &ContentFlagWindow{Start: "2026-09-17T11:59:35Z", End: "2026-09-17T12:00:00Z", Samples: 6, FlaggedSamples: 5},
+			Scores: &ContentFlagScores{Max: 0.91, Mean: 0.77},
+			Labels: []string{"ANUS_EXPOSED", "MALE_GENITALIA_EXPOSED"},
+			Delivery: Delivery{
+				Summary:   "observe mode would have flagged broadcast ABC234: 5 of 6 samples, peak score 0.91",
+				PortalURL: fixturePortalB,
+			},
+		}),
+		TypeContentFlagReminded: admin(TypeContentFlagReminded, fixtureBroadcastID, ContentFlagRemindedData{
+			Actor: "system", BroadcastKey: fixtureBroadcastKey, BroadcastID: fixtureBroadcastID,
+			FlagID: 42, RaisedAt: "2026-09-17T11:40:00Z", Reminder: 2, Signal: ContentFlagSignalUnknown,
+			Delivery: Delivery{
+				Summary:   "content flag on broadcast ABC234 is still unacknowledged after 20 minutes (reminder 2; the sampler has gone quiet)",
+				PortalURL: fixturePortalB,
+			},
+		}),
+		TypeContentFlagResolved: admin(TypeContentFlagResolved, fixtureBroadcastID, ContentFlagResolvedData{
+			Actor: "system:content-flag", BroadcastKey: fixtureBroadcastKey, BroadcastID: fixtureBroadcastID,
+			FlagID: 42, Resolution: ContentFlagResolutionAutoKilled, Reason: "deadline",
+			Delivery: Delivery{
+				Summary:   "content flag on broadcast ABC234 resolved: killed automatically (deadline)",
 				PortalURL: fixturePortalB,
 			},
 		}),
@@ -103,6 +136,14 @@ func fixtures() map[string]Event {
 			Actor: "juho@example.com", RoomKey: fixtureRoomKey, RoomCode: fixtureStaticCode, DisplayCode: fixtureStaticDisp, Kind: RoomKindStatic,
 			Delivery: Delivery{
 				Summary:   "the attach secret of static room TuhisRoom was rotated by juho@example.com",
+				PortalURL: fixturePortalR,
+			},
+		}),
+		TypeRoomScreeningChanged: admin(TypeRoomScreeningChanged, fixtureStaticCode, RoomScreeningChangedData{
+			Actor: "juho@example.com", RoomKey: fixtureRoomKey, RoomCode: fixtureStaticCode, DisplayCode: fixtureStaticDisp, Kind: RoomKindStatic,
+			Screening: RoomScreeningExempt,
+			Delivery: Delivery{
+				Summary:   "static room TuhisRoom was exempted from content screening by juho@example.com",
 				PortalURL: fixturePortalR,
 			},
 		}),

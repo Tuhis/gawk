@@ -236,3 +236,59 @@ func TestDeepCopyDoesNotAlias(t *testing.T) {
 		t.Error("nil RoomList DeepCopy is not nil")
 	}
 }
+
+// docs/71 D11: only a static room with an attach secret may be exempt from
+// screening — an open or dynamic room could be joined by anyone, so exempting
+// it would hand an abuser an unscreened lane.
+func TestValidateScreening(t *testing.T) {
+	secret := &SecretKeyRef{Name: "room-x", Key: "attachSecret"}
+	for _, tc := range []struct {
+		name string
+		spec RoomSpec
+		ok   bool
+	}{
+		{"screened static", RoomSpec{Kind: KindStatic}, true},
+		{"screened dynamic", RoomSpec{Kind: KindDynamic}, true},
+		{"exempt static with a secret", RoomSpec{Kind: KindStatic, AttachSecretRef: secret, Screening: ScreeningExempt}, true},
+		{"exempt static without a secret", RoomSpec{Kind: KindStatic, Screening: ScreeningExempt}, false},
+		{"exempt static with a half secret", RoomSpec{Kind: KindStatic, AttachSecretRef: &SecretKeyRef{Name: "x"}, Screening: ScreeningExempt}, false},
+		{"exempt dynamic", RoomSpec{Kind: KindDynamic, AttachSecretRef: secret, Screening: ScreeningExempt}, false},
+		{"unknown value", RoomSpec{Kind: KindStatic, AttachSecretRef: secret, Screening: "off"}, false},
+	} {
+		err := ValidateScreening(tc.spec)
+		if tc.ok != (err == nil) {
+			t.Errorf("%s: ValidateScreening = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+		if !tc.ok && tc.spec.Screening == ScreeningExempt && !errors.Is(err, ErrScreeningNotAllowed) {
+			t.Errorf("%s: %v, want ErrScreeningNotAllowed", tc.name, err)
+		}
+		room := &Room{Spec: tc.spec}
+		wantExempt := tc.ok && tc.spec.Screening == ScreeningExempt
+		if got := room.ScreeningExempt(); got != wantExempt {
+			t.Errorf("%s: ScreeningExempt() = %v, want %v (an invalid exemption fails closed)", tc.name, got, wantExempt)
+		}
+	}
+	var nilRoom *Room
+	if nilRoom.ScreeningExempt() {
+		t.Error("a nil room is exempt")
+	}
+}
+
+// The field round-trips under the CRD's property name and is omitted when
+// empty, so a pre-R40 room's spec marshals byte-identically.
+func TestScreeningFieldRoundTrips(t *testing.T) {
+	var r Room
+	if err := json.Unmarshal([]byte(`{"spec":{"kind":"static","attachSecretRef":{"name":"s","key":"k"},"screening":"exempt"}}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Spec.Screening != ScreeningExempt || !r.ScreeningExempt() {
+		t.Fatalf("spec = %+v", r.Spec)
+	}
+	out, err := json.Marshal(RoomSpec{Kind: KindStatic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "screening") {
+		t.Fatalf("an unscreened spec marshals the field: %s", out)
+	}
+}

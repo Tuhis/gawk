@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.content_flag.resolved.json",
+  "title": "Content flag resolved",
+  "description": "A content flag ended (R40, docs/71 D9): the signal cleared, an operator dismissed it or killed the broadcast, an automatic kill fired, or the publisher session ended. The `data` of a `fi.ioio.gawk.content_flag.resolved` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "common.json#/$defs/actor"
+    },
+    "broadcastKey": {
+      "$ref": "common.json#/$defs/broadcastKey"
+    },
+    "broadcastId": {
+      "$ref": "common.json#/$defs/broadcastId",
+      "x-gawk-sensitive": true
+    },
+    "flagId": {
+      "$ref": "common.json#/$defs/contentFlagId"
+    },
+    "resolution": {
+      "$ref": "common.json#/$defs/contentFlagResolution"
+    },
+    "reason": {
+      "$ref": "common.json#/$defs/reason",
+      "description": "Qualifies the resolution: `deadline` or `policy` for an automatic kill."
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "actor",
+    "resolution"
+  ]
+}

@@ -108,6 +108,15 @@ spec:
                           type: string
                         channelPrefix:
                           type: string
+                screening:
+                  type: string
+                  enum: [exempt]
+                  description: >-
+                    R40 (docs/71 D11): `exempt` keeps the room's broadcasts
+                    out of automatic content screening. Honoured only on a
+                    static room with an attachSecretRef; any other room is
+                    screened whatever this says. Set from gawk-admin, which
+                    audits the change.
             status:
               type: object
               description: Written only by the home pod.

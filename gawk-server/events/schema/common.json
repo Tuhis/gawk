@@ -95,6 +95,87 @@
       "type": "integer",
       "minimum": 0
     },
+    "contentFlagId": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The portal's identifier of one content flag (R40). The raised, reminded and resolved events of one flag carry the same number."
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "A detector confidence, 0 to 1."
+    },
+    "contentFlagWindow": {
+      "type": "object",
+      "description": "The sampler's window when the flag was raised: its first and last sample and how many of its samples scored at or above the threshold.",
+      "properties": {
+        "start": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "end": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "samples": {
+          "$ref": "#/$defs/count"
+        },
+        "flaggedSamples": {
+          "$ref": "#/$defs/count"
+        }
+      },
+      "required": [
+        "samples",
+        "flaggedSamples"
+      ]
+    },
+    "contentFlagScores": {
+      "type": "object",
+      "description": "The window's highest and mean sample score.",
+      "properties": {
+        "max": {
+          "$ref": "#/$defs/score"
+        },
+        "mean": {
+          "$ref": "#/$defs/score"
+        }
+      },
+      "required": [
+        "max",
+        "mean"
+      ]
+    },
+    "detectorLabel": {
+      "type": "string",
+      "pattern": "^[A-Z0-9_]{1,64}$",
+      "description": "A content detector's label, e.g. `FEMALE_GENITALIA_EXPOSED`."
+    },
+    "contentFlagResolution": {
+      "type": "string",
+      "enum": [
+        "cleared",
+        "dismissed",
+        "killed",
+        "auto_killed",
+        "ended"
+      ],
+      "description": "How a content flag ended: the signal cleared, an operator dismissed it, an operator killed the broadcast, an automatic kill, or the publisher session ended."
+    },
+    "contentFlagSignal": {
+      "type": "string",
+      "enum": [
+        "live",
+        "unknown"
+      ],
+      "description": "Whether the sampler is still reporting the flag's window tripped (`live`), or has gone quiet for longer than the portal's stale-after (`unknown`). A quiet sampler is not evidence of a clean broadcast."
+    },
+    "roomScreening": {
+      "type": "string",
+      "enum": [
+        "exempt",
+        "screened"
+      ],
+      "description": "Whether a room's broadcasts are exempt from content screening or screened like every other broadcast."
+    },
     "timestamp": {
       "type": "string",
       "format": "date-time",

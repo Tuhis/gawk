@@ -81,10 +81,24 @@ const (
 	TypeBanCreated        = TypePrefix + "ban.created"
 	TypeBanExpired        = TypePrefix + "ban.expired"
 	TypeBanRemoved        = TypePrefix + "ban.removed"
-	TypeContentFlagRaised = TypePrefix + "content_flag.raised" // reserved for R40, never produced yet
-	TypeRoomCreated       = TypePrefix + "room.created"
-	TypeRoomEnded         = TypePrefix + "room.ended"
-	TypeRoomSecretRotated = TypePrefix + "room.secret_rotated"
+	TypeContentFlagRaised = TypePrefix + "content_flag.raised"
+	// R40 (docs/71 D16): a flag nobody has acknowledged is re-paged, and
+	// every flag ends in exactly one resolution. Both are moderation rows,
+	// so a webhook with no filter receives them as it receives `raised`.
+	TypeContentFlagReminded  = TypePrefix + "content_flag.reminded"
+	TypeContentFlagResolved  = TypePrefix + "content_flag.resolved"
+	TypeRoomCreated          = TypePrefix + "room.created"
+	TypeRoomEnded            = TypePrefix + "room.ended"
+	TypeRoomSecretRotated    = TypePrefix + "room.secret_rotated"
+	TypeRoomScreeningChanged = TypePrefix + "room.screening_changed"
+
+	// TypeContentFlagObserved is R40's calibration signal (docs/71 D16,
+	// D19): what a sampler in `observe` mode would have flagged. It is
+	// portal-originated like the moderation types but deliberately NOT a
+	// moderation row — ModerationType does not know it — because it pages
+	// nobody unless a webhook names it in its filter: a fresh install in
+	// observe mode must not ring the pager it already has.
+	TypeContentFlagObserved = TypePrefix + "content_flag.observed"
 
 	// Bus events: relay-published from the fan-out points docs/51 D3 names
 	// (R50 wires the producers; the types and schemas are fixed here first).
@@ -127,9 +141,13 @@ func Types() []string {
 		TypeBanExpired,
 		TypeBanRemoved,
 		TypeContentFlagRaised,
+		TypeContentFlagReminded,
+		TypeContentFlagResolved,
+		TypeContentFlagObserved,
 		TypeRoomCreated,
 		TypeRoomEnded,
 		TypeRoomSecretRotated,
+		TypeRoomScreeningChanged,
 
 		TypeBroadcastStarted,
 		TypeBroadcastPublisherAway,
@@ -167,14 +185,17 @@ func IsType(t string) bool {
 // here because this module cannot import that one; gawk-admin's own D7 test
 // holds store.AllEventTypes() equal to this table's keys.
 var moderationTypes = map[string]string{
-	"broadcast.killed":    TypeBroadcastKilled,
-	"ban.created":         TypeBanCreated,
-	"ban.expired":         TypeBanExpired,
-	"ban.removed":         TypeBanRemoved,
-	"content_flag.raised": TypeContentFlagRaised,
-	"room.created":        TypeRoomCreated,
-	"room.ended":          TypeRoomEnded,
-	"room.secret_rotated": TypeRoomSecretRotated,
+	"broadcast.killed":       TypeBroadcastKilled,
+	"ban.created":            TypeBanCreated,
+	"ban.expired":            TypeBanExpired,
+	"ban.removed":            TypeBanRemoved,
+	"content_flag.raised":    TypeContentFlagRaised,
+	"content_flag.reminded":  TypeContentFlagReminded,
+	"content_flag.resolved":  TypeContentFlagResolved,
+	"room.created":           TypeRoomCreated,
+	"room.ended":             TypeRoomEnded,
+	"room.secret_rotated":    TypeRoomSecretRotated,
+	"room.screening_changed": TypeRoomScreeningChanged,
 }
 
 // ModerationType maps a moderation_events row type to its CloudEvents type.

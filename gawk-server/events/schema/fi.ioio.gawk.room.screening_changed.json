@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.room.screening_changed.json",
+  "title": "Room screening changed",
+  "description": "An operator exempted a static room from content screening, or put it back under screening (R40, docs/71 D11). The `data` of a `fi.ioio.gawk.room.screening_changed` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "common.json#/$defs/actor"
+    },
+    "roomKey": {
+      "$ref": "common.json#/$defs/roomKey"
+    },
+    "roomCode": {
+      "$ref": "common.json#/$defs/roomCode",
+      "x-gawk-sensitive": true
+    },
+    "displayCode": {
+      "$ref": "common.json#/$defs/displayCode",
+      "x-gawk-sensitive": true
+    },
+    "kind": {
+      "$ref": "common.json#/$defs/roomKind"
+    },
+    "screening": {
+      "$ref": "common.json#/$defs/roomScreening",
+      "description": "The room's screening after the change."
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "actor",
+    "screening"
+  ]
+}
