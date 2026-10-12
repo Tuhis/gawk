@@ -1899,6 +1899,9 @@ export component MainWindow inherits Window {
     in property <string> server-name: "";
     in property <string> server-host: "";
     in property <string> server-note: "";
+    // R40 (docs/71 D13): the server says it screens streams — from the
+    // pre-live probe or the publish session. One line, never a gate.
+    in property <bool> screening-notice: false;
 
     // ----- paused (docs/64 D9, D11) -----
     in property <bool> paused: false;
@@ -2417,6 +2420,22 @@ export component MainWindow inherits Window {
                         root.network-notice-help();
                     }
                 }
+            }
+        }
+
+        // R40 (docs/71 D13): the server's own disclosure, ready and live
+        // alike. Not dismissible — it describes the server, not a choice —
+        // and quiet, because it is a fact, not a problem.
+        if root.page == 0 && root.screening-notice: HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 8px;
+            Text {
+                text: "This server automatically screens streams for explicit content.";
+                color: T.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+                accessible-role: text;
             }
         }
 

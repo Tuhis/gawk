@@ -41,7 +41,14 @@ pub enum ProbeResult {
     /// operator's display name from RelayIdentity, sanitized, when the relay
     /// sent a non-empty one in time. The name is the operator's claim: the
     /// window shows it beside the host, never in place of it (docs/40 F6).
-    Ok { rtt_ms: u32, name: Option<String> },
+    /// `screens` is the identity's screening notice (R40, docs/71 D13): the
+    /// relay automatically screens streams, which the window says before the
+    /// broadcaster goes live. False when the identity was absent or late.
+    Ok {
+        rtt_ms: u32,
+        name: Option<String>,
+        screens: bool,
+    },
     /// Nothing usable came back.
     Failed,
 }
@@ -80,15 +87,17 @@ pub async fn probe(relay_url: &str, origin: &str, insecure: bool) -> ProbeResult
 /// tests script.
 pub async fn probe_session(relay: Arc<dyn RelaySession>) -> ProbeResult {
     let ready = Instant::now();
-    let (rtts, name) = tokio::join!(
+    let (rtts, identity) = tokio::join!(
         measure(relay.clone()),
         read_identity(relay.clone(), ready + PROBE_IDENTITY_DEADLINE)
     );
     relay.close();
+    let (name, screens) = identity.unwrap_or_default();
     match median(rtts) {
         Some(rtt) => ProbeResult::Ok {
             rtt_ms: u32::try_from(rtt.as_millis()).unwrap_or(u32::MAX),
             name,
+            screens,
         },
         None => ProbeResult::Failed,
     }
@@ -142,15 +151,18 @@ fn sample_index(d: &[u8]) -> Option<usize> {
     }
 }
 
-/// Reads the RelayIdentity, until `deadline`. A relay that predates it, or
-/// one that sends it late, is still a reachable relay: this only ever costs
-/// the name.
-async fn read_identity(relay: Arc<dyn RelaySession>, deadline: Instant) -> Option<String> {
+/// Reads the RelayIdentity, until `deadline`: the sanitized name and the
+/// screening notice. A relay that predates it, or one that sends it late, is
+/// still a reachable relay: this only ever costs the name and the notice.
+async fn read_identity(
+    relay: Arc<dyn RelaySession>,
+    deadline: Instant,
+) -> Option<(Option<String>, bool)> {
     let read = async {
         let mut stream = relay.accept_uni().await.ok()?;
         let msg = stream.read_to_end(IDENTITY_READ_LIMIT).await.ok()?;
         let id = wire::parse_relay_identity(&msg).ok()?;
-        sanitize_name(id.name)
+        Some((sanitize_name(id.name), id.screens()))
     };
     tokio::time::timeout_at(deadline, read).await.ok().flatten()
 }

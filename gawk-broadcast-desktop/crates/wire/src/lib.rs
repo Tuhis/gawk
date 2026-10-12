@@ -104,6 +104,10 @@ pub const DELIVERY_ACK_SIZE: usize = 5;
 pub const MAX_RELAY_IDENTITY_VERSION_LEN: usize = 32;
 /// RelayIdentity (0x11, R37): a display name is one label, not a paragraph.
 pub const MAX_RELAY_IDENTITY_NAME_LEN: usize = 64;
+/// RelayIdentity notices bit 0 (R40, docs/71 §9.3): this relay automatically
+/// screens streams for explicit content. The other bits are reserved and
+/// ignored — notices is an appended field, not the strict flags byte.
+pub const RELAY_NOTICE_SCREENING: u8 = 0x01;
 /// TelemetryEndpoint (0x12, R37): real ingest URLs are well under this.
 pub const MAX_TELEMETRY_ENDPOINT_URL_LEN: usize = 512;
 

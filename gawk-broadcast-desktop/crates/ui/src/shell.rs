@@ -426,6 +426,10 @@ pub struct Shell {
     /// The selected relay advertised the telemetry endpoint this broadcast
     /// reports to: its operator gets the diagnostics (docs/40 D16).
     foreign_telemetry: bool,
+    /// This broadcast's publish session said its relay screens streams
+    /// (R40, docs/71 D13). With the probe's word, what the screening line
+    /// shows ([`screening_notice`]).
+    session_screens: bool,
     /// Which media build is current: bumped by every restart and resume,
     /// and by every start and end, so a build finishing for a broadcast
     /// that moved on is recognised and dropped (review of #423).
@@ -592,6 +596,7 @@ fn build_shell(
         left_room: None,
         edit_server: DEFAULT_SERVER_NAME.to_string(),
         foreign_telemetry: false,
+        session_screens: false,
         build_gen: 0,
         reclaim_refused: None,
         fit,
@@ -2781,6 +2786,9 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     ui.set_link_notice("".into());
     sh.foreign_telemetry = false;
     ui.set_server_note("".into());
+    // A new broadcast's session says it again, or not.
+    sh.session_screens = false;
+    render_screening(ui, &sh);
     sh.paused_since = None;
     sh.paused_total = std::time::Duration::ZERO;
     sh.restarting = false;
@@ -3553,6 +3561,14 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             );
             sh.reporter.set_url(effective);
         }
+        EngineEvent::RelayNotices { screening } => {
+            let mut sh = shell.borrow_mut();
+            if screening != sh.session_screens {
+                log::info!("the relay says it screens streams: {screening}");
+            }
+            sh.session_screens = screening;
+            render_screening(ui, &sh);
+        }
         EngineEvent::Resuming { attempt } => {
             log::info!("resuming (attempt {attempt})");
             let sh = shell.borrow();
@@ -4011,6 +4027,8 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     sh.last_sent = None;
     sh.left_room = None;
     sh.foreign_telemetry = false;
+    sh.session_screens = false;
+    render_screening(ui, &sh);
     sh.quality_timer.stop();
     // A build still running for this broadcast finishes for nobody.
     sh.build_gen += 1;
@@ -4399,6 +4417,19 @@ fn render_probe(ui: &MainWindow, sh: &Shell) {
     ui.set_probe_rtt(rtt.into());
     ui.set_probe_host(host_of(&sh.cfg.resolve_relay_url()).into());
     seed_server_list(ui, &sh.cfg, &probe_note(&sh.probe));
+    render_screening(ui, sh);
+}
+
+/// Whether the main page shows the screening line (R40, docs/71 D13): the
+/// selected relay's probe said it screens — before going live — or this
+/// broadcast's publish session did. A notice, never a gate: nothing waits
+/// on it and nothing is refused for it.
+fn screening_notice(probe: &ProbeState, session_screens: bool) -> bool {
+    session_screens || matches!(probe.result, Some(ProbeResult::Ok { screens: true, .. }))
+}
+
+fn render_screening(ui: &MainWindow, sh: &Shell) {
+    ui.set_screening_notice(screening_notice(&sh.probe, sh.session_screens));
 }
 
 /// The relay the Edit server page's Test connection dials: the edited
@@ -4430,8 +4461,11 @@ fn test_result_text(r: &ProbeResult) -> (i32, String) {
         ProbeResult::Ok {
             rtt_ms,
             name: Some(n),
+            ..
         } => (2, format!("Reachable · {rtt_ms} ms · calls itself “{n}”")),
-        ProbeResult::Ok { rtt_ms, name: None } => (2, format!("Reachable · {rtt_ms} ms")),
+        ProbeResult::Ok {
+            rtt_ms, name: None, ..
+        } => (2, format!("Reachable · {rtt_ms} ms")),
         ProbeResult::Failed => (
             3,
             "Can't reach this server. Check the address, and that UDP to its port isn't blocked."
@@ -5851,8 +5885,32 @@ mod tests {
         probe.result = Some(ProbeResult::Ok {
             rtt_ms: 24,
             name: None,
+            screens: false,
         });
         assert_eq!(probe_note(&probe), "24 ms");
+    }
+
+    // R40 (docs/71 D13): the screening line shows from the pre-live probe
+    // or from the publish session, and from nothing else.
+    #[test]
+    fn the_screening_line_follows_the_probe_and_the_session() {
+        let mut probe = ProbeState::default();
+        assert!(!screening_notice(&probe, false), "nothing known");
+        assert!(screening_notice(&probe, true), "the session said so");
+        probe.result = Some(ProbeResult::Ok {
+            rtt_ms: 24,
+            name: None,
+            screens: true,
+        });
+        assert!(screening_notice(&probe, false), "the probe said so");
+        probe.result = Some(ProbeResult::Ok {
+            rtt_ms: 24,
+            name: None,
+            screens: false,
+        });
+        assert!(!screening_notice(&probe, false));
+        probe.result = Some(ProbeResult::Failed);
+        assert!(!screening_notice(&probe, false));
     }
 
     // docs/64 D1: the probe runs at once when nothing is known, again
@@ -5891,14 +5949,16 @@ mod tests {
         assert_eq!(
             test_result_text(&ProbeResult::Ok {
                 rtt_ms: 41,
-                name: Some("Homelab relay".into())
+                name: Some("Homelab relay".into()),
+                screens: false,
             }),
             (2, "Reachable · 41 ms · calls itself “Homelab relay”".into())
         );
         assert_eq!(
             test_result_text(&ProbeResult::Ok {
                 rtt_ms: 41,
-                name: None
+                name: None,
+                screens: true,
             }),
             (2, "Reachable · 41 ms".into())
         );

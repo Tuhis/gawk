@@ -369,3 +369,28 @@ fn copy_code_is_an_icon_only_where_the_labelled_bar_wont_fit() {
         }
     }
 }
+
+// R40 (docs/71 D13): the screening line shows on Ready and on air when the
+// server says so, and costs neither page its bar at the smallest window.
+#[test]
+fn the_screening_line_shows_ready_and_live() {
+    const LINE: &str = "This server automatically screens streams for explicit content.";
+    let shown = |ui: &MainWindow| !find(ui, LINE, AccessibleRole::Text).is_empty();
+
+    let ui = window(440.0, 600.0);
+    ready_after_end(&ui);
+    assert!(!shown(&ui), "no line until the server says so");
+    ui.set_screening_notice(true);
+    settle();
+    assert!(shown(&ui));
+    assert_in_reach(&ui, "Go live");
+
+    let ui = window(440.0, 600.0);
+    on_air(&ui, true);
+    ui.set_screening_notice(true);
+    settle();
+    assert_eq!(find(&ui, LINE, AccessibleRole::Text).len(), 1, "one line");
+    for label in LIVE_BAR {
+        assert_in_reach(&ui, label);
+    }
+}

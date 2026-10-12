@@ -347,3 +347,103 @@ async fn a_second_pause_is_a_no_op() {
     );
     session.stop().await;
 }
+
+// --- R40 (docs/71 D13, CF1): a screening relay's RelayIdentity --------------
+
+/// One server uni stream, read to its end.
+struct OneStream(Option<Vec<u8>>);
+
+impl ServerStream for OneStream {
+    fn read_to_end(&mut self, _limit: usize) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+        let msg = self.0.take().unwrap_or_default();
+        Box::pin(async move { Ok(msg) })
+    }
+}
+
+/// A publish leg whose relay opens one server stream carrying `msg` at
+/// session start — what a relay with -screening-notice does — and then just
+/// serves.
+#[derive(Default)]
+struct NoticeLeg {
+    stream: Mutex<Option<Vec<u8>>>,
+    datagrams: Mutex<Vec<Vec<u8>>>,
+}
+
+impl RelaySession for NoticeLeg {
+    fn send_datagram(&self, dgram: &[u8]) -> Result<(), SendDatagramError> {
+        self.datagrams.lock().unwrap().push(dgram.to_vec());
+        Ok(())
+    }
+    fn open_keyframe_stream(&self) -> BoxFuture<'_, Result<Box<dyn KeyframeWriter>, String>> {
+        Box::pin(async { Ok(Box::new(InstantWriter) as Box<dyn KeyframeWriter>) })
+    }
+    fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
+        match self.stream.lock().unwrap().take() {
+            Some(msg) => {
+                Box::pin(async move { Ok(Box::new(OneStream(Some(msg))) as Box<dyn ServerStream>) })
+            }
+            None => Box::pin(std::future::pending()),
+        }
+    }
+    fn receive_datagram(&self) -> BoxFuture<'_, Result<Vec<u8>, String>> {
+        Box::pin(std::future::pending())
+    }
+    fn closed(&self) -> BoxFuture<'_, SessionClose> {
+        Box::pin(std::future::pending())
+    }
+}
+
+// CF1: the stream a screening relay adds to every publish session must not
+// disturb a broadcaster. This test was run first against the released
+// dispatch (2.6.0), which classifies 0x11 as Unknown and drops it, with the
+// RelayNotices assertion absent: publishing carried on. This build reads the
+// notice and still carries on.
+#[tokio::test(start_paused = true)]
+async fn a_relay_identity_stream_does_not_disturb_publishing() {
+    let mut msg = Vec::new();
+    gawk_wire::append_relay_identity(
+        &mut msg,
+        &gawk_wire::RelayIdentity {
+            server_version: "1.42.0",
+            name: "gawk home",
+            notices: gawk_wire::RELAY_NOTICE_SCREENING,
+        },
+    )
+    .unwrap();
+    let leg = Arc::new(NoticeLeg {
+        stream: Mutex::new(Some(msg)),
+        ..NoticeLeg::default()
+    });
+    let (session, mut rx) =
+        Session::start_with_session(config(), leg.clone(), Arc::new(MonotonicClock::new()));
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let mut notices = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        assert!(
+            !matches!(ev, EngineEvent::Ended { .. }),
+            "the session ended: {ev:?}"
+        );
+        if let EngineEvent::RelayNotices { screening } = ev {
+            notices.push(screening);
+        }
+    }
+    assert_eq!(
+        notices,
+        vec![true],
+        "one notice, read off the publish session"
+    );
+    session
+        .sender()
+        .send_datagram_best_effort(b"still publishing");
+    assert!(
+        leg.datagrams
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|d| d == b"still publishing")
+    );
+
+    session.stop().await;
+    expect(&mut rx, EngineEvent::Ended { error: None }).await;
+}

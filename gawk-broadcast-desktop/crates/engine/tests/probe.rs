@@ -94,12 +94,17 @@ impl RelaySession for EchoRelay {
 }
 
 fn identity(name: &str) -> Vec<u8> {
+    identity_with(name, 0)
+}
+
+fn identity_with(name: &str, notices: u8) -> Vec<u8> {
     let mut msg = Vec::new();
     wire::append_relay_identity(
         &mut msg,
         &wire::RelayIdentity {
             server_version: "1.42.0",
             name,
+            notices,
         },
     )
     .unwrap();
@@ -121,7 +126,8 @@ async fn the_rtt_is_the_median_and_the_name_is_the_relays() {
         got,
         ProbeResult::Ok {
             rtt_ms: 30,
-            name: Some("Homelab relay".into())
+            name: Some("Homelab relay".into()),
+            screens: false,
         }
     );
     assert_eq!(relay.sends.load(Ordering::SeqCst), PROBE_SAMPLES);
@@ -138,7 +144,8 @@ async fn lost_echoes_are_left_out_of_the_median() {
         probe_session(relay).await,
         ProbeResult::Ok {
             rtt_ms: 40,
-            name: None
+            name: None,
+            screens: false,
         }
     );
 }
@@ -153,7 +160,8 @@ async fn an_identity_after_the_deadline_costs_only_the_name() {
         probe_session(relay).await,
         ProbeResult::Ok {
             rtt_ms: 5,
-            name: None
+            name: None,
+            screens: false,
         }
     );
 }
@@ -168,7 +176,46 @@ async fn an_empty_name_is_no_name() {
         probe_session(relay).await,
         ProbeResult::Ok {
             rtt_ms: 5,
-            name: None
+            name: None,
+            screens: false,
+        }
+    );
+}
+
+// R40 (docs/71 D13): the pre-live probe carries the relay's screening
+// notice, so the window can say it before the broadcaster goes live — and a
+// late identity costs the notice along with the name.
+#[tokio::test(start_paused = true)]
+async fn the_probe_carries_the_screening_notice() {
+    let relay = EchoRelay::new(
+        vec![ms(5); PROBE_SAMPLES],
+        Some((
+            Duration::from_millis(1),
+            identity_with("Homelab", wire::RELAY_NOTICE_SCREENING),
+        )),
+    );
+    assert_eq!(
+        probe_session(relay).await,
+        ProbeResult::Ok {
+            rtt_ms: 5,
+            name: Some("Homelab".into()),
+            screens: true,
+        }
+    );
+
+    let late = EchoRelay::new(
+        vec![ms(5); PROBE_SAMPLES],
+        Some((
+            Duration::from_millis(1600),
+            identity_with("Homelab", wire::RELAY_NOTICE_SCREENING),
+        )),
+    );
+    assert_eq!(
+        probe_session(late).await,
+        ProbeResult::Ok {
+            rtt_ms: 5,
+            name: None,
+            screens: false,
         }
     );
 }

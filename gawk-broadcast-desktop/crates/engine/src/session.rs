@@ -74,6 +74,11 @@ pub enum EngineEvent {
     /// can arrive before OR after the hello; the shell must tolerate both
     /// orders.
     TelemetryEndpoint { url: String },
+    /// The relay's notices off the publish session (R40, docs/71 D13): sent
+    /// only by a relay that has one, at the start of every publish leg it
+    /// serves. `screening` is true when it automatically screens streams —
+    /// the shell shows one line; it never gates anything.
+    RelayNotices { screening: bool },
     /// A reclaim attempt is running (attempt counter for the status line).
     /// A reclaim the shell asked for ([`Session::republish`]) reports its
     /// attempts too; the shell decides what a deliberate one shows.
@@ -775,6 +780,11 @@ fn handle_server_message(
         }
         Ok(ServerMessage::TelemetryEndpoint(url)) => {
             let _ = events.send(EngineEvent::TelemetryEndpoint { url });
+        }
+        Ok(ServerMessage::RelayNotices(notices)) => {
+            let _ = events.send(EngineEvent::RelayNotices {
+                screening: notices & wire::RELAY_NOTICE_SCREENING != 0,
+            });
         }
         // Unknown types and malformed messages: ignored — a newer relay
         // must not break this client, and strict parsing already dropped

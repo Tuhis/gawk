@@ -664,7 +664,8 @@ pub fn parse_stream_frame_header(buf: &[u8]) -> Result<StreamFrameHeader, WireEr
 /// The parsed contents of a RelayIdentity message (R37, docs/40 §4.4),
 /// borrowing the input. Layout after the common prefix: uint8 flags (all
 /// reserved, must be 0), uint8 versionLen + that many printable-ASCII bytes,
-/// uint8 nameLen + that many UTF-8 bytes, then reserved extension bytes.
+/// uint8 nameLen + that many UTF-8 bytes, then the appended uint8 notices
+/// when present (R40, docs/71 §9.3), then reserved extension bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelayIdentity<'a> {
     /// The relay's release version string, e.g. "1.42.0".
@@ -673,6 +674,18 @@ pub struct RelayIdentity<'a> {
     /// Attacker-influenced trust UI: renderers sanitize and never show it in
     /// place of the host (docs/40 §4.4 F6).
     pub name: &'a str,
+    /// The appended notices byte; 0 when the relay sent none. Written only
+    /// when non-zero, so a notice-less identity stays byte-identical to the
+    /// pre-R40 shape. Bit [`crate::RELAY_NOTICE_SCREENING`] is the screening
+    /// notice; unknown bits are ignored.
+    pub notices: u8,
+}
+
+impl RelayIdentity<'_> {
+    /// Whether the relay says it screens streams (docs/71 D13).
+    pub fn screens(&self) -> bool {
+        self.notices & crate::RELAY_NOTICE_SCREENING != 0
+    }
 }
 
 /// Appends a RelayIdentity message (relay-originated; this producer only
@@ -702,15 +715,20 @@ pub fn append_relay_identity(dst: &mut Vec<u8>, id: &RelayIdentity<'_>) -> Resul
     dst.extend_from_slice(id.server_version.as_bytes());
     dst.push(id.name.len() as u8);
     dst.extend_from_slice(id.name.as_bytes());
+    if id.notices != 0 {
+        dst.push(id.notices);
+    }
     Ok(())
 }
 
 /// Parses a RelayIdentity message. Deliberate deviation from house parser
 /// strictness (docs/40 §4.4, restated so it survives review): trailing bytes
-/// beyond the name are IGNORED — they are the message's reserved extension
-/// space, the mechanism managed mode will append fields through. The flags
-/// byte stays strict (reserved-must-be-zero): flags gate *interpretation* of
-/// what a parser already reads, so an unknown flag genuinely is unparseable.
+/// beyond the name are the message's extension space, the mechanism appended
+/// fields arrive through. The first of them is the notices byte (R40,
+/// docs/71 §9.3), read with no check on its bits; the rest are IGNORED. The
+/// flags byte stays strict (reserved-must-be-zero): flags gate
+/// *interpretation* of what a parser already reads, so an unknown flag
+/// genuinely is unparseable.
 pub fn parse_relay_identity(msg: &[u8]) -> Result<RelayIdentity<'_>, WireError> {
     if msg.len() < 5 {
         return Err(WireError::ShortDatagram {
@@ -746,10 +764,13 @@ pub fn parse_relay_identity(msg: &[u8]) -> Result<RelayIdentity<'_>, WireError> 
     }
     let name = std::str::from_utf8(&msg[name_start..name_start + name_len])
         .map_err(|_| WireError::BadRelayIdentity)?;
-    // Bytes past the name are the reserved extension space — ignored.
+    // The first byte past the name is the notices byte (absent = 0); every
+    // byte after it is the reserved extension space — ignored.
+    let notices = msg.get(name_start + name_len).copied().unwrap_or(0);
     Ok(RelayIdentity {
         server_version,
         name,
+        notices,
     })
 }
 
@@ -1196,6 +1217,7 @@ mod tests {
             &RelayIdentity {
                 server_version: version,
                 name,
+                notices: 0,
             },
         )
         .unwrap();
@@ -1286,6 +1308,7 @@ mod tests {
                     &RelayIdentity {
                         server_version: bad,
                         name: "",
+                        notices: 0,
                     }
                 ),
                 Err(WireError::BadRelayIdentity),
@@ -1298,6 +1321,7 @@ mod tests {
                 &RelayIdentity {
                     server_version: "1",
                     name: &"n".repeat(MAX_RELAY_IDENTITY_NAME_LEN + 1),
+                    notices: 0,
                 }
             ),
             Err(WireError::BadRelayIdentity)

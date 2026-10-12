@@ -43,6 +43,8 @@ const GOLDEN_STRIPE_STATE_UNSTRIPED: &str = "0110000000";
 const GOLDEN_RELAY_IDENTITY: &str = "01110006312e34322e30096761776b20686f6d65";
 // An unset operator name is nameLen 0, not an absent field.
 const GOLDEN_RELAY_IDENTITY_NO_NAME: &str = "01110006312e34322e3000";
+// R40 (docs/71 §9.3): the same identity with the screening notice appended.
+const GOLDEN_RELAY_IDENTITY_SCREENING: &str = "01110006312e34322e30096761776b20686f6d6501";
 // URL "https://gawk.example.com/api/telemetry/v1/ingest" (48 bytes, u16 BE).
 const GOLDEN_TELEMETRY_ENDPOINT: &str = "011200003068747470733a2f2f6761776b2e6578616d706c652e636f6d2f6170692f74656c656d657472792f76312f696e67657374";
 
@@ -552,6 +554,7 @@ fn golden_relay_identity() {
         &RelayIdentity {
             server_version: "1.42.0",
             name: "gawk home",
+            notices: 0,
         },
     )
     .unwrap();
@@ -559,6 +562,8 @@ fn golden_relay_identity() {
     let id = parse_relay_identity(&got).unwrap();
     assert_eq!(id.server_version, "1.42.0");
     assert_eq!(id.name, "gawk home");
+    assert_eq!(id.notices, 0);
+    assert!(!id.screens());
 
     let mut no_name = Vec::new();
     append_relay_identity(
@@ -566,6 +571,7 @@ fn golden_relay_identity() {
         &RelayIdentity {
             server_version: "1.42.0",
             name: "",
+            notices: 0,
         },
     )
     .unwrap();
@@ -573,11 +579,35 @@ fn golden_relay_identity() {
     let id = parse_relay_identity(&no_name).unwrap();
     assert_eq!(id.server_version, "1.42.0");
     assert!(id.name.is_empty());
+    assert_eq!(id.notices, 0);
+}
+
+// R40 (docs/71 §9.3): the notices byte is appended only when non-zero, so
+// the vector above is also the notice-off shape; this one carries the bit.
+#[test]
+fn golden_relay_identity_screening() {
+    let mut got = Vec::new();
+    append_relay_identity(
+        &mut got,
+        &RelayIdentity {
+            server_version: "1.42.0",
+            name: "gawk home",
+            notices: RELAY_NOTICE_SCREENING,
+        },
+    )
+    .unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_RELAY_IDENTITY_SCREENING);
+    let id = parse_relay_identity(&got).unwrap();
+    assert_eq!(id.server_version, "1.42.0");
+    assert_eq!(id.name, "gawk home");
+    assert_eq!(id.notices, RELAY_NOTICE_SCREENING);
+    assert!(id.screens());
 }
 
 // The deliberate deviation from house strictness (docs/40 §4.4): trailing
-// bytes are this message's reserved extension space — managed mode appends
-// fields through it without a wire break — so parsers ignore them.
+// bytes are this message's extension space — appended fields arrive through
+// it without a wire break. Since R40 the first is the notices byte (any bits,
+// unknown ones ignored); everything after it is still ignored.
 #[test]
 fn relay_identity_tolerates_trailing_extension_bytes() {
     let mut msg = from_hex(GOLDEN_RELAY_IDENTITY);
@@ -585,6 +615,14 @@ fn relay_identity_tolerates_trailing_extension_bytes() {
     let id = parse_relay_identity(&msg).unwrap();
     assert_eq!(id.server_version, "1.42.0");
     assert_eq!(id.name, "gawk home");
+    assert_eq!(id.notices, 0xa1);
+    assert!(id.screens());
+
+    let mut other_bits = from_hex(GOLDEN_RELAY_IDENTITY);
+    other_bits.push(0xa2);
+    let id = parse_relay_identity(&other_bits).unwrap();
+    assert_eq!(id.notices, 0xa2);
+    assert!(!id.screens(), "only bit 0 is the screening notice");
 }
 
 #[test]
