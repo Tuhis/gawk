@@ -1,15 +1,12 @@
 package hub
 
-// R21 DV3 (docs/26 Decision 6): the per-subscriber catch-up ceiling.
+// The per-subscriber DVR catch-up ceiling (docs/26).
 //
 // A DVR subscriber recovering from a stall must send faster than live or it
-// never closes its backlog — covering a stall S with buffer B needs
-// B/(B−S) times the stream bitrate. But the egress budget is one process-wide
-// bucket shared with every other viewer on the pod, and the network events
-// that stall one viewer usually stall them all, so without a ceiling a
-// recovering herd takes the whole pipe at exactly the moment everyone needs
-// it. The ceiling is expressed as a multiple of the broadcast's OWN live rate
-// rather than as an absolute, because that is the only number that means the
+// never closes its backlog, but the egress budget is one process-wide bucket
+// and the network events that stall one viewer usually stall them all: without
+// a ceiling a recovering herd takes the whole pipe at once. The ceiling is a
+// multiple of the broadcast's OWN live rate, the only number that means the
 // same thing for a 500 kbps phone capture and a 50 Mbps desktop one.
 
 import (
@@ -36,21 +33,18 @@ func newDVRPacer(multiple float64, now func() time.Time) *dvrPacer {
 }
 
 // burst is how much the bucket may bank while idle: a quarter second at the
-// ceiling. Enough that a single large keyframe is never chopped into a stutter
-// by the pacer itself, small enough that banking a whole stall's worth of
-// credit — which would defeat the ceiling on the one occasion it matters —
-// is impossible.
+// ceiling. Enough that one large keyframe is never chopped into a stutter,
+// small enough that banking a whole stall's worth of credit (defeating the
+// ceiling exactly when it matters) is impossible.
 func (p *dvrPacer) burst(liveBps int) float64 {
 	return p.multiple * float64(liveBps) * 0.25
 }
 
-// allow reports whether n bytes may go out now. A false return means the
-// caller should wait and retry; the drain's existing retry path does that.
+// allow reports whether n bytes may go out now; false means wait and retry.
 //
-// Two deliberate non-throttles: a non-positive multiple disables the ceiling
-// entirely, and an unknown live rate (too little history to estimate) passes
-// everything. Guessing low on a fresh broadcast would stall every viewer on
-// it, which is a far worse failure than briefly missing a ceiling.
+// A non-positive multiple disables the ceiling, and an unknown live rate (too
+// little history) passes everything: guessing low on a fresh broadcast would
+// stall every viewer on it, far worse than briefly missing a ceiling.
 func (p *dvrPacer) allow(n int, liveBps int) bool {
 	if p.multiple <= 0 || liveBps <= 0 {
 		return true

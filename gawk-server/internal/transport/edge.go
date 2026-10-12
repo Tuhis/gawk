@@ -1,17 +1,13 @@
-// Edge pull (R17 W4, docs/22 Decisions 9/10/12): when a viewer lands on a
-// pod that is not a broadcast's origin, the pod subscribes upstream — dialing
-// the origin's POD IP from the Lease (never the Service VIP: guard 1 against
-// loops) over the same WebTransport wire protocol — and re-ingests everything
-// into a local EDGE hub through the ordinary Publisher surface: datagrams
-// verbatim, keyframe streams byte-identical, so store-and-forward + supersede
-// compose per hop. Local viewers attach to that hub exactly as they would on
-// the origin.
+// Edge pull (docs/22): when a viewer lands on a pod that is not a
+// broadcast's origin, the pod subscribes upstream — dialing the origin's pod
+// IP from the Lease, never the Service VIP (which could loop back) — and
+// re-ingests everything into a local edge hub through the ordinary Publisher
+// surface, datagrams and keyframe streams verbatim, so store-and-forward and
+// supersede compose per hop.
 //
-// The one thing that is NOT forwarded verbatim is the ClockMapping (Decision
-// 12): each pod keeps its own monotonic clock, so the edge runs a Go port of
-// the client TimeSync estimator over its upstream session and rewrites the
-// mapping's offset from origin-clock terms into edge-clock terms before it
-// reaches local viewers.
+// Only the ClockMapping is rewritten: each pod has its own monotonic clock, so
+// the edge runs a TimeSync estimator against the origin and translates the
+// mapping's offset into edge-clock terms.
 package transport
 
 import (
@@ -36,25 +32,20 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// internalEdgeOrigin is the Origin header announced on pod-to-pod
-// /internal/subscribe dials, so the fleet's own traffic is legible in
-// origin logs. CheckOrigin honors it only on the PSK-gated /internal/*
-// routes — it buys nothing on client-facing paths, and browsers cannot
-// send it at all (a page's Origin header is browser-controlled). Keep the
-// string stable across versions: during a rolling update, old pods dial
-// new pods with it.
+// internalEdgeOrigin is the Origin header on pod-to-pod /internal/subscribe
+// dials. CheckOrigin honors it only on the PSK-gated /internal/* routes
+// (browsers can't send it anyway). Keep it stable across versions: during a
+// rolling update, old pods dial new pods with it.
 const internalEdgeOrigin = "gawk-server://native-internal-edge"
 
-// Internal-session QUIC timing (docs/22 Decision 10): in-cluster keepalives
-// are cheap, and a dead origin must be detected fast even without the lease
-// watch. Constants, not knobs.
+// Internal-session QUIC timing: in-cluster keepalives are cheap, and a dead
+// origin must be detected fast even without the lease watch.
 const (
 	edgeIdleTimeout   = 4 * time.Second
 	edgeKeepAlive     = 1 * time.Second
 	edgePingInterval  = 2 * time.Second
 	edgeLingerDefault = 15 * time.Second
-	// Re-attach backoff: base with full jitter, capped — the herd is bounded
-	// by pod count (single digits), jitter just de-synchronizes it (W5).
+	// Re-attach backoff: full jitter, capped (the herd is bounded by pod count).
 	edgeRetryBase = 250 * time.Millisecond
 	edgeRetryCap  = 2 * time.Second
 	// How long EnsureEdge waits for the first upstream attach before the
@@ -112,14 +103,11 @@ func (e *timeSyncEstimator) best() (offsetUs int64, rttUs uint64, ok bool) {
 	return b.offsetUs, b.rttUs, true
 }
 
-// rewriteClockMapping translates a ClockMapping from origin-clock terms into
-// edge-clock terms (docs/22 Decision 12). Derivation of the sign: the
-// incoming mapping says originUs = tsUs + X; the estimator says
-// originUs ≈ edgeUs + est; so edgeUs = tsUs + (X − est) — the offsets
-// compose broadcaster↔origin + origin↔edge = broadcaster↔edge. ok is false
-// (mapping must be withheld, never served wrong by an arbitrary inter-pod
-// epoch difference) until the estimator has a sample or when the datagram is
-// malformed.
+// rewriteClockMapping translates a ClockMapping from origin-clock into
+// edge-clock terms: the mapping says originUs = tsUs + X and the estimator
+// originUs ≈ edgeUs + est, so edgeUs = tsUs + (X − est). ok is false — the
+// mapping must be withheld, never served wrong by an arbitrary inter-pod
+// epoch difference — until the estimator has a sample, or when malformed.
 func rewriteClockMapping(dgram []byte, est *timeSyncEstimator) ([]byte, bool) {
 	x, err := wire.ParseClockMapping(dgram)
 	if err != nil {
@@ -139,11 +127,10 @@ type edgeUpstream interface {
 	SendDatagram(payload []byte) error
 	AcceptUniStream(ctx context.Context) (io.Reader, error)
 	Close() error
-	// CloseError reports why the session ended once it has — the origin's
-	// *webtransport.SessionError when it closed the session with a code —
-	// and nil while it is still open. The read loops can't be trusted to
-	// return it: the first one to fail cancels the other, and a datagram
-	// read can fail with a bare EOF.
+	// CloseError reports why the session ended (the origin's
+	// *webtransport.SessionError when it closed with a code), nil while
+	// open. The read loops can't be trusted to return it: the first to fail
+	// cancels the other, and a datagram read can fail with a bare EOF.
 	CloseError() error
 }
 
@@ -159,7 +146,7 @@ type originResolver interface {
 // EdgeManager owns this pod's edge pulls: at most one upstream session per
 // broadcast, demand-created when a viewer asks for a hub we don't have,
 // lingering ~15 s past the last local viewer, and torn down when the lease
-// disappears (the Lease is the liveness truth — no grace, Decision 10).
+// disappears (the Lease is the liveness truth — no grace).
 type EdgeManager struct {
 	registry *hub.Registry
 	resolver originResolver
@@ -167,11 +154,9 @@ type EdgeManager struct {
 	podName  string
 	linger   time.Duration
 	log      *slog.Logger
-	// terminated is told about each broadcast this pod's edge pull
-	// terminated on its origin's 4006 (the pod's kill counter, set by
-	// SetCluster). A kill that arrives this way never passes through
-	// Server.terminate, which counts the ones a Ban event actuates. Nil in
-	// the unit harness.
+	// terminated counts kills this pod's edge pull received as its origin's
+	// 4006 (they never pass through Server.terminate). Set by SetCluster;
+	// nil in the unit harness.
 	terminated func()
 
 	baseCtx    context.Context
@@ -205,7 +190,7 @@ func (m *EdgeManager) Stop() {
 // local hub exists, blocking (bounded) until the first upstream attach. A
 // hub.ErrNotFound return maps to the viewer's 404: no lease, an origin in
 // flux (empty holder mid-re-home), or a stale lease naming this very pod
-// (guard 3: never dial ourselves).
+// (never dial ourselves).
 func (m *EdgeManager) EnsureEdge(ctx context.Context, broadcastID string) error {
 	origin, err := m.resolver.Resolve(ctx, broadcastID)
 	if err != nil {
@@ -230,17 +215,13 @@ func (m *EdgeManager) EnsureEdge(ctx context.Context, broadcastID string) error 
 	return es.awaitAttached(ctx)
 }
 
-// OnLeaseDeleted tears down the broadcast's edge pull (if any) so its local
-// viewers get the terminal 4000 from the registry's EndBroadcast — which the
-// caller (main's OnLeaseDeleted dispatch) invokes right after this.
+// OnLeaseDeleted tears down the broadcast's edge pull (if any); the caller
+// (main's dispatch) then ends local viewers with EndBroadcast's 4000.
 func (m *EdgeManager) OnLeaseDeleted(broadcastID string) {
-	// An attached pull is about to hear why (R57, docs/59 D2): the origin
-	// closes its edge sessions with the terminal code BEFORE it deletes the
-	// Lease, so that close is already in flight. Stopping the pull at once
-	// would race it — the informer event can reach this pod first — and the
-	// caller would then end this pod's viewers with a reconstructed 4000 for
-	// what was a 4006. Give the pull a bounded chance to end the hub with the
-	// origin's own code; past the bound, stop it as before.
+	// The origin closes edge sessions with the terminal code before it
+	// deletes the Lease, but the informer event can arrive first; stopping
+	// the pull at once would end local viewers with a reconstructed 4000
+	// for a 4006. Give the pull a bounded chance to end with the origin's code.
 	m.mu.Lock()
 	es := m.edges[broadcastID]
 	m.mu.Unlock()
@@ -255,15 +236,13 @@ func (m *EdgeManager) OnLeaseDeleted(broadcastID string) {
 	m.StopEdge(broadcastID)
 }
 
-// edgeEndWait bounds OnLeaseDeleted's wait for an attached pull to end on
-// its origin's close. Normally that close is already here; the bound only
-// matters when the upstream is gone without one (a dead origin whose stale
-// Lease was reaped), and it holds up the lease informer, so it stays short.
+// edgeEndWait bounds OnLeaseDeleted's wait. It only elapses when the upstream
+// is gone without a close (a dead origin's stale Lease was reaped), and it
+// holds up the lease informer, so it stays short.
 const edgeEndWait = 500 * time.Millisecond
 
 // StopEdge synchronously stops the broadcast's edge pull, if any (lease
-// deletion, or the W5 come-home: the real broadcaster claiming this pod
-// needs the hub's publisher slot our upstream pull is holding).
+// deletion, or the real broadcaster claiming the hub's publisher slot).
 func (m *EdgeManager) StopEdge(broadcastID string) {
 	m.mu.Lock()
 	es := m.edges[broadcastID]
@@ -358,7 +337,7 @@ func (es *edgeSession) run() {
 			break
 		}
 		if err == nil && origin.Holder == es.m.podName {
-			// We became the origin (W5 promote) — this pull is obsolete.
+			// We became the origin — this pull is obsolete.
 			es.signalAttached(nil)
 			break
 		}
@@ -384,9 +363,8 @@ func (es *edgeSession) run() {
 		if err != nil {
 			up.Close()
 			if errors.Is(err, hub.ErrPublisherActive) {
-				// The hub's slot is briefly held (a demote racing the old
-				// publisher's teardown, W5): back off and retry — the slot
-				// frees as soon as that session's handler returns.
+				// The slot is briefly held (a demote racing the old publisher's
+				// teardown); it frees once that handler returns.
 				es.m.log.Info("edge hub slot busy; retrying", "broadcast_id", es.id)
 				if !es.backoff(attempt) {
 					break
@@ -402,34 +380,26 @@ func (es *edgeSession) run() {
 
 		lingered, upErr := es.pump(up, pub)
 
-		// Upstream ended (origin drain/crash/4003) or we lingered out. The
-		// prime caches die with the session — a viewer joining before the
-		// re-attach must wait for the fresh join-prime, never be served
-		// origin A's keyframe against origin B's deltas (Decision 10).
+		// Upstream ended or we lingered out. The prime caches die with the
+		// session: a viewer joining before the re-attach must never get origin
+		// A's keyframe against origin B's deltas.
 		pub.Close()
 		es.m.registry.InvalidatePrimes(es.id)
 		up.Close()
 		if lingered {
-			// Linger-out: take the derived hub with us — atomically, and
-			// only if it is still viewer-less (post-review fix, PR #47).
-			// Left in the ordinary grace, the hub would keep satisfying
-			// CheckSubscribe, so a viewer joining that window would attach
-			// with no pull behind it and end at a wrong terminal 4000. A
-			// viewer that raced the linger window keeps the hub — re-attach
-			// for it instead.
+			// Linger-out: expire the hub atomically, only if still viewer-less.
+			// Left in grace it would keep satisfying CheckSubscribe, and a viewer
+			// joining then would attach with no pull behind it and end at a wrong
+			// 4000. A viewer that raced the linger keeps it — re-attach instead.
 			if !es.m.registry.ExpireEdgeIfViewerless(es.id) && es.ctx.Err() == nil {
 				attempt = 0
 				continue
 			}
 			break
 		}
-		// The origin ended the broadcast and said why (R57, docs/59 D2): pass
-		// ITS reason on to this pod's viewers, not one reconstructed from
-		// this pod's state when the Lease goes. That reconstruction was
-		// wrong for kills — an IP ban names no broadcast ID here (only the
-		// origin knows the broadcaster's address), and an ID ban may not
-		// have reached this pod's informer yet — so edge viewers were told
-		// 4000 for a moderator's 4006.
+		// The origin ended the broadcast and said why: pass its code on.
+		// Local state can't tell a kill (an IP ban names no ID here; an ID
+		// ban may not have reached this pod yet) and would say 4000 for 4006.
 		if code, ok := upstreamTerminalCode(upErr); ok && es.upstreamEndIsFinal(code, origin) {
 			if code == wire.CloseCodeTerminatedByOperator {
 				// Counted only if this removed the hub: a Ban event that got
@@ -453,19 +423,16 @@ func (es *edgeSession) run() {
 	}
 
 	if leaseGone {
-		// Lease deletion = cluster-wide "broadcast ended": close any local
-		// viewers with the terminal 4000 (EndBroadcast skips live hubs, and
-		// ours is publisher-less now).
+		// Lease deletion means "broadcast ended": close local viewers with
+		// 4000 (EndBroadcast skips live hubs; ours is publisher-less now).
 		es.m.registry.EndBroadcast(es.id)
 	}
 }
 
 // upstreamEndIsFinal decides whether the origin's terminal close ends this
-// pod's copy too. 4006 always does: the ID is banned fleet-wide. 4000 does
-// unless the broadcast has since moved — a Lease at another holder or a
-// newer generation than the one this pull attached at means a re-home, and
-// the pull re-attaches to the new origin instead (docs/22's "never a wrong
-// terminal 4000 while the broadcast is still live at the origin").
+// pod's copy too. 4006 always does (banned fleet-wide). 4000 does unless the
+// Lease now names another holder or a newer generation — a re-home, so the
+// pull re-attaches instead of ending a broadcast that is still live.
 func (es *edgeSession) upstreamEndIsFinal(code uint32, attached cluster.Origin) bool {
 	if code == wire.CloseCodeTerminatedByOperator {
 		return true
@@ -480,9 +447,8 @@ func (es *edgeSession) upstreamEndIsFinal(code uint32, attached cluster.Origin) 
 	return now.Holder == attached.Holder && now.Generation == attached.Generation
 }
 
-// edgeBackoffDuration: base·2^attempt with full jitter, capped — the W5
-// herd de-synchronizer (bounded by pod count, so jitter is all it needs).
-// Pure, for the unit test; backoff() below does the sleeping.
+// edgeBackoffDuration is base·2^attempt with full jitter, capped. Pure, for
+// the unit test; backoff() does the sleeping.
 func edgeBackoffDuration(attempt int) time.Duration {
 	d := edgeRetryBase << min(attempt, 3)
 	if d > edgeRetryCap {
@@ -491,7 +457,7 @@ func edgeBackoffDuration(attempt int) time.Duration {
 	return time.Duration(rand.Int64N(int64(d))) + edgeRetryBase/2
 }
 
-// backoff sleeps one jittered retry delay; false = ctx done.
+// backoff sleeps one jittered retry delay; false means ctx is done.
 func (es *edgeSession) backoff(attempt int) bool {
 	t := time.NewTimer(edgeBackoffDuration(attempt))
 	defer t.Stop()
@@ -510,11 +476,9 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool,
 	ctx, cancel := context.WithCancel(es.ctx)
 	defer cancel()
 
-	// How the upstream session ended, as the read loops saw it. Both loops
-	// end together on a close and report it differently — the one that
-	// carries the origin's code is a *webtransport.SessionError, the other
-	// can be a bare EOF — so a session error wins whichever loop got there
-	// first. Our own cancels (linger, StopEdge) are context errors.
+	// How the upstream ended: both loops end together on a close, but only
+	// one sees the *webtransport.SessionError (the other may get a bare
+	// EOF), so a session error wins. Our own cancels are context errors.
 	var endMu sync.Mutex
 	recordEnd := func(err error) {
 		endMu.Lock()
@@ -526,10 +490,9 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool,
 	}
 
 	est := &timeSyncEstimator{}
-	// The origin's cached ClockMapping is join-primed at attach — usually
-	// before the first TimeSync pong. Hold the newest un-rewritten mapping
-	// and emit it as soon as the estimator can translate it, instead of
-	// losing it until the broadcaster's next re-send.
+	// The origin's cached ClockMapping is join-primed at attach, usually
+	// before the first TimeSync pong: hold the newest one and emit it once
+	// the estimator can translate it.
 	var pendingMu sync.Mutex
 	var pendingMapping []byte
 
@@ -607,9 +570,7 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool,
 		}
 	}()
 
-	// TimeSync pings (2 s cadence, mirror of the TS client) + linger check +
-	// the R18 viewer-count report up (docs/23 Decision 5a — piggybacked on
-	// the linger ticker: no new goroutine, no new cadence).
+	// TimeSync pings (2 s, as the TS client) + linger check + viewer-count report.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -631,13 +592,11 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool,
 			case <-ping.C:
 				_ = up.SendDatagram(wire.AppendTimeSync(nil, relayNowUs(), 0))
 			case <-lingerTick.C:
-				// Two different counts on purpose (R30, docs/35 §5.8): the
-				// linger signal counts every external session — an edge
-				// serving only stripe legs is still serving media — while the
-				// R18 report counts watching humans, which excludes legs.
+				// Two counts on purpose: linger counts every external session (an
+				// edge serving only stripe legs still serves media); the upstream
+				// report counts watching humans, excluding legs.
 				n := es.m.registry.ExternalSubscribers(es.id)
-				// Report our local count upstream, change-driven with the
-				// pump's keepalive — a lost report datagram heals on re-send.
+				// Change-driven plus keepalive, so a lost report heals on re-send.
 				// The count is bounded by the subscriber caps, far below uint32.
 				count := uint32(es.m.registry.ViewerSubscribers(es.id))
 				if !reported || count != lastReport || time.Since(lastReportAt) >= hub.ViewerCountKeepalive {
@@ -679,11 +638,9 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool,
 	return false, upstreamErr
 }
 
-// upstreamTerminalCode reports the origin's close code when it ended the
-// upstream session with one that means the broadcast is over — the codes a
-// downstream pod must pass on to its own viewers rather than re-attach
-// through (removeBroadcast closes internal edge sessions with them "so
-// downstream pods tear down too").
+// upstreamTerminalCode reports the origin's close code when it means the
+// broadcast is over — codes a downstream pod passes on to its viewers rather
+// than re-attach through.
 func upstreamTerminalCode(err error) (uint32, bool) {
 	var se *webtransport.SessionError
 	if !errors.As(err, &se) || !se.Remote {
@@ -750,8 +707,8 @@ func (u *webtransportUpstream) Close() error {
 }
 
 // newEdgeDialer builds the production dialer: TLS against the public cert
-// hostname (the lease addr is a raw pod IP — Decision 9: no per-pod certs,
-// no InsecureSkipVerify), tight in-cluster QUIC timers, PSK appended here.
+// hostname (the lease addr is a raw pod IP — no per-pod certs, no
+// InsecureSkipVerify), tight in-cluster QUIC timers, PSK appended here.
 func newEdgeDialer(serverName, psk string, rootCAs *x509.CertPool, log *slog.Logger) edgeDialer {
 	return func(ctx context.Context, addr, path string) (edgeUpstream, error) {
 		d := &webtransport.Transport{
@@ -767,17 +724,14 @@ func newEdgeDialer(serverName, psk string, rootCAs *x509.CertPool, log *slog.Log
 		// into) the query string; the origin's Query().Get decodes it back.
 		target := "https://" + addr + path + "&psk=" + url.QueryEscape(psk)
 
-		// The Origin header names this dial for what it is. CheckOrigin
-		// accepts internalEdgeOrigin on /internal/* routes only, so no
-		// -allowed-origins entry is needed and the origin check (with its
-		// rejection logging) stays live on the internal route for anything
-		// else that knocks (docs/22 finding 12).
+		// CheckOrigin accepts internalEdgeOrigin on /internal/* only, so no
+		// -allowed-origins entry is needed and the origin check stays live on
+		// the internal route for anything else.
 		rsp, sess, err := d.Dial(ctx, target, http.Header{"Origin": []string{internalEdgeOrigin}})
 		if err != nil {
 			_ = d.Close()
-			// The dialer is Go: HTTP statuses ARE readable here (unlike the
-			// browser) — surface them for the ops story (404 not-origin /
-			// 409 stale-generation / 401 bad PSK / 426 version skew).
+			// Unlike a browser, Go can read the HTTP status: surface it (404
+			// not-origin / 409 stale generation / 401 bad PSK / 426 version skew).
 			if rsp != nil {
 				return nil, fmt.Errorf("internal subscribe to %s: status %d: %w", addr, rsp.StatusCode, err)
 			}

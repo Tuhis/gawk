@@ -20,22 +20,19 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// Telemetry reporting-cadence bounds (R28, docs/33). The floor is the client
-// stats tick — reporting faster only resends the same numbers; the ceiling is
-// what a uint16 of milliseconds can carry, and past it a session's shape is
-// lost between samples anyway.
+// Telemetry reporting-cadence bounds (docs/33). The floor is the client stats
+// tick — reporting faster only resends the same numbers; the ceiling is what a
+// uint16 of milliseconds can carry, and past it a session's shape is lost
+// between samples anyway.
 const (
 	MinTelemetryReportInterval = 500 * time.Millisecond
 	MaxTelemetryReportInterval = 60 * time.Second
 )
 
-// Admin-API authorization defaults (R39, docs/42 §4.5). The roles-claim
-// default is Keycloak's client-roles path, with "{audience}" substituted by
-// the configured audience at use time — the same role model the portal uses
-// (docs/42 §4.8), so one IdP role grants both. The string itself lives in
-// oidcroles, which is also what parses it: gawk-admin carries the same
-// default, and a default that could drift between them is half of the bug
-// this package exists to prevent.
+// Admin-API authorization defaults (docs/42 §4.5). The roles-claim default is
+// Keycloak's client-roles path, "{audience}" substituted at use time — the
+// portal's role model, so one IdP role grants both. The string lives in
+// oidcroles so it cannot drift from gawk-admin's copy.
 const (
 	DefaultAdminOIDCRolesClaim = oidcroles.DefaultClaim
 	DefaultAdminOIDCRole       = "operator"
@@ -60,21 +57,19 @@ type Config struct {
 	ConnBurstLimit      int
 	MaxBandwidthBytes   int64
 
-	// MaxKeyframeBytes caps a single keyframe stream (R8); a publisher stream
+	// MaxKeyframeBytes caps a single keyframe stream; a publisher stream
 	// exceeding it is reset and not cached.
 	MaxKeyframeBytes int
 	// KeyframeWriteTimeout bounds a keyframe write to one subscriber before the
 	// stream is cancelled and the subscriber recovers at the next keyframe.
 	KeyframeWriteTimeout time.Duration
 
-	// Rooms enables the R42 room routes and registry (docs/44 D17). Off —
-	// the default — registers no /room/ route and constructs no registry, so
-	// every existing deployment is byte-identical until an operator turns it
-	// on.
+	// Rooms enables the room routes and registry (docs/44). Off — the
+	// default — registers no /room/ route and constructs no registry.
 	Rooms bool
 	// RoomEmptyGrace is how long a dynamic room survives with no participant
-	// before it ends (docs/44 D7). Must exceed a client reconnect interval,
-	// or a pod drain would end every room it hosted.
+	// before it ends. Must exceed a client reconnect interval, or a pod drain
+	// would end every room it hosted.
 	RoomEmptyGrace time.Duration
 	// MaxRooms caps live dynamic rooms (per pod; fleet-wide in cluster mode,
 	// enforced at CR create).
@@ -85,28 +80,23 @@ type Config struct {
 	// MaxRoomParticipants caps control sessions per room.
 	MaxRoomParticipants int
 	// RoomCreateSecret, when set, is required to mint a dynamic room — the
-	// hosted "paid / invited" gate (docs/44 D17). It rations creation, it is
-	// not identity, exactly like PublishSecret.
+	// hosted "paid / invited" gate. It rations creation, it is not identity,
+	// exactly like PublishSecret.
 	RoomCreateSecret string
 
-	// EventBus* configure the R50 event bus (docs/51 D6). Operator-provided
-	// NATS, default off: an empty URL means no client, no goroutine and no
-	// event — byte-identical to a relay predating R50.
-	//
-	// EventBusURL is the server, e.g. tls://nats.gawk.svc:4222.
+	// EventBusURL is the NATS server of the event bus (docs/51), e.g.
+	// tls://nats.gawk.svc:4222. Empty (the default) means no client, no
+	// goroutine and no event.
 	EventBusURL string
 	// EventBusCredsFile is an NKey/JWT .creds file. The relay's NATS user
 	// needs publish permission on <prefix>.> and nothing else.
 	EventBusCredsFile string
-	// EventBusTLSCert / EventBusTLSKey are a client certificate: the other way
-	// a NATS deployment identifies a workload. With `verify_and_map` the
-	// certificate's subject DN IS the NATS username, so there is no secret to
-	// distribute and rotation changes nothing. cert-manager writes both files,
-	// and the CA below, into one Secret.
+	// EventBusTLSCert / EventBusTLSKey are a client certificate. With
+	// `verify_and_map` the certificate's subject DN IS the NATS username, so
+	// there is no secret to distribute and rotation changes nothing.
 	EventBusTLSCert string
 	EventBusTLSKey  string
-	// EventBusCAFile verifies the SERVER. A bus on a private CA — the sane way
-	// to run an internal one — needs it; empty uses the platform trust store.
+	// EventBusCAFile verifies the SERVER; empty uses the platform trust store.
 	EventBusCAFile string
 	// EventBusSubjectPrefix is the first subject token (default "gawk"), so
 	// two fleets can share one NATS account without sharing a stream.
@@ -114,95 +104,83 @@ type Config struct {
 	// EventBusViewerInterval coalesces the viewer-count and attachment deltas
 	// to at most one per key per interval.
 	EventBusViewerInterval time.Duration
-	// EventBusInsecure skips NATS TLS verification: the docs/41 compose lane
+	// EventBusInsecure skips NATS TLS verification: the local compose lane
 	// only. Deliberately NOT a chart value, and it warns at every start.
 	EventBusInsecure bool
 	// RoomsFile points at a JSON array of static room definitions
-	// (rooms.FileRoom) for deployments without a Kubernetes API (docs/44
-	// §4.3). Reloaded on change and SIGHUP like -moderation-source=file.
+	// (rooms.FileRoom) for deployments without a Kubernetes API. Reloaded on
+	// change and SIGHUP like -moderation-source=file.
 	RoomsFile string
 
 	// MetricsAddr is the TCP listen address of the plain-HTTP ops endpoint
-	// (/metrics, /healthz, /readyz, /statusz). Empty disables it. This is
-	// separate from Addr because the WebTransport server is HTTP/3-over-UDP
-	// only — Prometheus (and curl) need a TCP listener. Never expose this
-	// port publicly.
+	// (/metrics, /healthz, /readyz, /statusz). Empty disables it. Separate
+	// from Addr because the WebTransport server is HTTP/3-over-UDP only —
+	// Prometheus (and curl) need TCP. Never expose this port publicly.
 	MetricsAddr string
 
-	// ClusterMode enables the R17 federation layer (docs/22 Decision 1):
-	// per-broadcast origin Leases in Kubernetes, edge pulls, drain lease
-	// release. Off (the default) constructs no Kubernetes client at all —
-	// single-pod behavior is byte-identical to pre-R17. Requires POD_NAME,
-	// POD_IP and POD_NAMESPACE in the environment (downward API), plus
-	// InternalPSK and InternalServerName below.
+	// ClusterMode enables federation (docs/22): per-broadcast origin Leases
+	// in Kubernetes, edge pulls, drain lease release. Off (the default)
+	// constructs no Kubernetes client at all. Requires POD_NAME, POD_IP and
+	// POD_NAMESPACE (downward API), plus InternalPSK and InternalServerName.
 	ClusterMode bool
 
-	// InternalPSK gates the pod-to-pod /internal/subscribe route (R17 W4,
-	// docs/22 Decision 9). The route rides the same public UDP port as
-	// viewers (there is only one listener), so the PSK is what keeps
-	// non-fleet clients out. Required when ClusterMode is on.
+	// InternalPSK gates the pod-to-pod /internal/subscribe route. The route
+	// rides the same public UDP port as viewers (there is only one
+	// listener), so the PSK is what keeps non-fleet clients out. Required
+	// when ClusterMode is on.
 	InternalPSK string
 
 	// InternalServerName is the TLS server name edge pods verify when
-	// dialing an origin's pod IP (docs/22 Decision 9): the public cert
-	// hostname — no per-pod certs, no InsecureSkipVerify. Required when
-	// ClusterMode is on.
+	// dialing an origin's pod IP: the public cert hostname — no per-pod
+	// certs, no InsecureSkipVerify. Required when ClusterMode is on.
 	InternalServerName string
 
-	// TrustedCIDRs bypass the per-IP connection rate limiter (R17 W5,
-	// docs/22 Decision 13): under MetalLB L2 + externalTrafficPolicy:
-	// Cluster, cross-node traffic is SNAT'd to node IPs — at a rollout an
-	// entire pod's audience reconnects within ~1 s through a handful of
-	// those, and the 3/s bucket would fail fresh joiners fatally. List the
-	// node/pod CIDRs here; per-IP limiting is honestly best-effort under
-	// etp=Cluster (real client IPs return with BGP/ECMP — deferred).
+	// TrustedCIDRs bypass the per-IP connection rate limiter: under MetalLB
+	// L2 + externalTrafficPolicy: Cluster, cross-node traffic is SNAT'd to
+	// node IPs — at a rollout an entire pod's audience reconnects within
+	// ~1 s through a handful of those, and the 3/s bucket would fail fresh
+	// joiners fatally. List the node/pod CIDRs here; per-IP limiting is only
+	// best-effort under etp=Cluster.
 	TrustedCIDRs []*net.IPNet
 
-	// StatsKey keys the /statusz + metrics broadcast-ID obfuscation (R17 W6,
-	// docs/22 Decision 14): 32 bytes from 64 hex chars, shared fleet-wide so
-	// one broadcast keeps one obfuscated identity across pods. Empty =
-	// per-process random (the pre-R17 single-pod behavior).
+	// StatsKey keys the /statusz + metrics broadcast-ID obfuscation: 32 bytes
+	// from 64 hex chars, shared fleet-wide so one broadcast keeps one
+	// obfuscated identity across pods. Empty = per-process random.
 	StatsKey []byte
 
-	// ResumeTokenKey keys the resume-token HMAC (R17 W2, docs/22 Decision 7).
-	// When set it WINS over the publish-secret derivation (PR #47 security
-	// review): the publish secret is distributed to every broadcaster, so a
-	// key derived from it is computable by every broadcaster — only this
-	// independent, server-side key makes the resume token a real
-	// per-broadcast ownership proof between secret-holders. Rotating it
-	// revokes all tokens. 32 bytes from 64 hex chars, shared across all
-	// relay pods. Empty: HKDF from the publish secret when one is set, else
-	// a per-process random key (dev parity with process-lifetime reclaim).
+	// ResumeTokenKey keys the resume-token HMAC (docs/22 Decision 7): 32
+	// bytes from 64 hex chars, shared across relay pods. When set it WINS
+	// over the publish-secret derivation: a key derived from the publish
+	// secret is computable by every broadcaster, so only this server-side key
+	// makes the token a real per-broadcast ownership proof. Rotating it
+	// revokes all tokens. Empty: HKDF from the publish secret when one is
+	// set, else a per-process random key.
 	ResumeTokenKey []byte
 
-	// TelemetryKey keys the R28 telemetry session token (docs/33 D2/§4.2):
-	// 32 bytes from 64 hex chars, shared by every relay pod AND the
-	// gawk-telemetry service, which verifies tokens statelessly with it.
-	// Its presence IS the feature switch — with no key the relay cannot mint
-	// a token, so it sends no TelemetryHello and every client collects
-	// nothing, which is byte-identical to a relay predating R28. Never
-	// logged. Rotating it revokes every outstanding token.
+	// TelemetryKey keys the telemetry session token (docs/33 §4.2): 32 bytes
+	// from 64 hex chars, shared by every relay pod AND the gawk-telemetry
+	// service, which verifies tokens statelessly with it. Its presence IS the
+	// feature switch — with no key the relay sends no TelemetryHello and
+	// every client collects nothing. Never logged. Rotating it revokes every
+	// outstanding token.
 	TelemetryKey []byte
 
 	// TelemetryReportInterval is the sampling cadence the relay asks clients
 	// to use, carried in the hello so a fleet can turn the volume down
-	// without shipping a new frontend. Clamped to something a uint16 of
-	// milliseconds can carry and a client can honour.
+	// without shipping a new frontend. Bounded by MinTelemetryReportInterval
+	// and MaxTelemetryReportInterval.
 	TelemetryReportInterval time.Duration
 
 	// TelemetryAdvertiseURL is the fleet's telemetry ingest URL a
-	// TelemetryEndpoint (wire 0x12) advertises to clients (R37, docs/40
-	// §4.10 D14): it names infrastructure the relay does NOT itself serve —
-	// ingest rides the operator's frontend Ingress — so it can only be
-	// configured, never derived. Validated at parse (an invalid URL fails
-	// startup, not a silent no-send); empty means nothing is advertised.
-	// Only meaningful while telemetry is enabled (the key is present).
+	// TelemetryEndpoint (wire 0x12) advertises to clients (docs/40 §4.10).
+	// Ingest rides the operator's frontend Ingress, not the relay, so it can
+	// only be configured, never derived. An invalid URL fails startup; empty
+	// advertises nothing. Only meaningful while TelemetryKey is set.
 	TelemetryAdvertiseURL string
 
 	// ServerName is the operator display name a RelayIdentity (wire 0x11)
-	// carries on /echo sessions (R37, docs/40 §4.4) so server pickers can
-	// label this relay. Validated at parse against the wire limits (UTF-8,
-	// ≤ wire.MaxRelayIdentityNameLen bytes); empty means unset.
+	// carries on /echo sessions so server pickers can label this relay.
+	// Validated at parse against the wire limits; empty means unset.
 	ServerName string
 
 	// ReleaseVersion is the build version stamped by main (-ldflags), not a
@@ -210,26 +188,22 @@ type Config struct {
 	// without importing main.
 	ReleaseVersion string
 
-	// StatelessResetKey is the 32-byte QUIC stateless reset key (R17 W1,
-	// docs/22 Decision 3), decoded from 64 hex chars. Shared across every
-	// relay pod, it lets ANY pod answer packets for a connection it doesn't
-	// know with a stateless reset the client accepts — turning an abrupt pod
-	// death (or a kube-proxy conntrack re-DNAT) into ~1 RTT of detection
-	// instead of the ~30 s idle timeout. Empty disables (today's behavior).
-	// Never logged.
+	// StatelessResetKey is the 32-byte QUIC stateless reset key (64 hex
+	// chars), shared across every relay pod so ANY pod can answer a packet
+	// for an unknown connection with a reset the client accepts — an abrupt
+	// pod death (or a conntrack re-DNAT) is detected in ~1 RTT instead of the
+	// ~30 s idle timeout. Empty disables. Never logged.
 	StatelessResetKey []byte
 
-	// Suppresses the INFO "session started"/"session ended" logs for /echo
-	// sessions from loopback (the k8s exec probe hitting 127.0.0.1, which
-	// otherwise logs on every startup/liveness/readiness probe forever).
-	// Off by default so plain binary/local-dev runs log everything as
-	// usual; the Helm chart turns it on.
+	// QuietProbeLogs suppresses the INFO session start/end logs for loopback
+	// /echo sessions (the k8s exec probe, which would otherwise log on every
+	// probe forever). Off by default; the Helm chart turns it on.
 	QuietProbeLogs bool
 
-	// R21 DVR ring (docs/26). DVRWindow is how much history a broadcast
-	// retains for resilient subscribers and is also the ceiling a viewer's
-	// requested buffer is clamped to; DVRMaxBytes is the bound that actually
-	// protects the pod, since 3 s of a 50 Mbps broadcaster is 18 MB.
+	// DVR ring (docs/26). DVRWindow is how much history a broadcast retains
+	// for resilient subscribers and is also the ceiling a viewer's requested
+	// buffer is clamped to; DVRMaxBytes is the bound that actually protects
+	// the pod, since 3 s of a 50 Mbps broadcaster is 18 MB.
 	DVRWindow   time.Duration
 	DVRMaxBytes int
 	// DVRMaxCatchup caps a recovering DVR subscriber's send rate as a multiple
@@ -237,7 +211,7 @@ type Config struct {
 	DVRMaxCatchup float64
 	// DVRAudio puts audio in the ring too. On by default: a video-only DVR
 	// fixes the picture and leaves the sound full of holes, which is the half
-	// users notice. Off restores docs/20 field finding 5's behaviour exactly.
+	// users notice. Off leaves audio live-edge.
 	DVRAudio bool
 	// LiveEdgeAudioOnReliableStream extends the audio carrier to plain live-edge viewers.
 	// Off by default: reliable and DVR viewers buffer enough that a retransmit
@@ -245,84 +219,69 @@ type Config struct {
 	// its RTT. Measure before flipping it fleet-wide.
 	LiveEdgeAudioOnReliableStream bool
 
-	// ParityDefault is the fleet's R29 forward-parity level (docs/34 §5.3):
-	// how many parity symbols producers emit per delta frame, and the ceiling
-	// on what any subscriber can be served. Default 2 — the owner's
-	// quality-first call: a viewer gets full protection without finding a
-	// menu, at ~22% egress, and the menu offers only opt-DOWN because a
-	// viewer cannot conjure symbols the producer never emitted.
-	//
-	// 0 disables the feature fleet-wide from one value: no capability is
-	// advertised, so producers emit nothing and the wire is byte-identical
-	// to a relay predating R29.
+	// ParityDefault is the fleet's forward-parity level (docs/34 §5.3): how
+	// many parity symbols producers emit per delta frame, and the ceiling on
+	// what any subscriber can be served. Default 2 — quality-first: a viewer
+	// gets full protection without finding a menu, at ~22% egress, and the
+	// menu offers only opt-DOWN because a viewer cannot conjure symbols the
+	// producer never emitted. 0 disables the feature fleet-wide: no
+	// capability is advertised, so producers emit nothing.
 	ParityDefault int
 
-	// StripedDelivery enables R30 stripe legs (docs/35): ?stripe=N&leg=j
+	// StripedDelivery enables stripe legs (docs/35): ?stripe=N&leg=j
 	// subscribe sessions and the StripeState suppression signal. On by
-	// default — the relay cost is zero until a viewer actually engages
-	// (only viewers whose path measures the burst threshold do, plus manual
-	// opt-ins). Off: the capability bit is never advertised (so a
-	// well-behaved viewer never dials a leg), leg dials get 400, StripeState
-	// is ignored, and the relay is byte-identical to pre-R30. The stripe
-	// width cap and burst target are constants, not knobs (docs/35 §11).
+	// default — the relay cost is zero until a viewer actually engages.
+	// Off: the capability bit is never advertised (so a well-behaved viewer
+	// never dials a leg), leg dials get 400 and StripeState is ignored. The
+	// stripe width cap and burst target are constants, not knobs.
 	StripedDelivery bool
 
-	// ModerationSource selects the R39 ban source (docs/42 §4.3), kept
-	// verbatim so the startup log states exactly what the operator asked
-	// for. One of:
+	// ModerationSource selects the ban source (docs/42 §4.3), validated by
+	// moderationsrc.Parse and kept verbatim for the startup log. One of:
 	//
 	//	off            (default) nothing is constructed; the ban set stays
-	//	               empty and every publish-path check is a cheap miss —
-	//	               byte-identical to a relay predating R39.
+	//	               empty and every publish-path check is a cheap miss.
 	//	k8s            informer on Ban CRs in POD_NAMESPACE. Independent of
 	//	               ClusterMode: enforcement is not a federation feature.
 	//	file:<path>    JSON array of moderation.Records, reloaded on change
-	//	               and on SIGHUP — the dev/compose lane (docs/42 §4.14).
-	//
-	// Parsed (and rejected) at startup by internal/moderationsrc.Parse, the
-	// same parser the source itself uses.
+	//	               and on SIGHUP — the dev/compose lane.
 	ModerationSource string
 
-	// AdminAPIToken is the static bearer credential for the R39 relay admin
-	// API on the ops listener (docs/42 §4.5) — the machine path gawk-admin
-	// uses. Deliberately NOT InternalPSK (docs/42 §5): different trust domain
-	// (admin service vs. peer pods), independent rotation, and the PSK travels
-	// in URLs on the media path where this token travels in a header.
-	// Compared in constant time. Never logged.
+	// AdminAPIToken is the static bearer credential for the relay admin API
+	// on the ops listener (docs/42 §4.5) — the machine path gawk-admin uses.
+	// Deliberately NOT InternalPSK: different trust domain (admin service vs.
+	// peer pods), independent rotation, and the PSK travels in URLs on the
+	// media path where this token travels in a header. Compared in constant
+	// time. Never logged.
 	AdminAPIToken string
 
 	// AdminOIDCIssuer / AdminOIDCAudience are the alternative credential for
 	// the same routes: an OIDC JWT with this issuer and audience, verified
-	// offline against a background-refreshed JWKS. Both set or both empty —
-	// a half-configured pair is rejected at parse, because "issuer set,
-	// audience empty" would otherwise mean "accept any audience", which is
-	// the failure mode nobody notices.
-	//
-	// When BOTH this and AdminAPIToken are empty the admin routes are not
-	// registered at all: the surface stays dark (404), not merely locked.
+	// offline against a background-refreshed JWKS. Both set or both empty
+	// (enforced in ParseFlags). When both this and AdminAPIToken are empty
+	// the admin routes are not registered at all (404, not merely locked).
 	AdminOIDCIssuer   string
 	AdminOIDCAudience string
 
-	// AdminOIDCRolesClaim is the dot-path to the token's roles array.
-	// Defaults to the Keycloak client-roles path
-	// "resource_access.{audience}.roles"; "{audience}" is substituted with
-	// AdminOIDCAudience. AdminOIDCRole is the role a token must carry
-	// (default "operator"). Neither may be empty while OIDC is configured —
-	// blanking either would turn authorization off silently.
+	// AdminOIDCRolesClaim is the dot-path to the token's roles array
+	// ("{audience}" is substituted with AdminOIDCAudience); AdminOIDCRole is
+	// the role a token must carry. Neither may be empty while OIDC is
+	// configured (enforced in ParseFlags).
 	AdminOIDCRolesClaim string
 	AdminOIDCRole       string
 
-	// The effective QUIC idle timeout is the minimum of both endpoints'
-	// advertised values (browsers advertise ~30s), so raising this alone
-	// does not keep idle viewers alive — KeepAlivePeriod is the mechanism.
+	// MaxIdleTimeout: the effective QUIC idle timeout is the minimum of both
+	// endpoints' advertised values (browsers advertise ~30s), so raising this
+	// alone does not keep idle viewers alive — KeepAlivePeriod is the
+	// mechanism.
 	MaxIdleTimeout  time.Duration // QUIC idle timeout for all sessions
 	KeepAlivePeriod time.Duration // server-sent QUIC PING interval; 0 disables
 	BroadcastGrace  time.Duration // broadcast GC grace period after publisher disconnects
 	// PublisherStallTimeout: a connected publisher from which no datagram
 	// at all arrives for this long (TimeSync and ClockMapping count — a
 	// paused game keeps pinging, a frozen page does not) is reported
-	// stalled (not live). 0 disables (docs/06 revision 2026-09-06). Must be
-	// >= ~90s to ride out Chrome's once-a-minute hidden-tab throttling.
+	// stalled (not live). 0 disables (docs/06). Must be >= ~90s to ride out
+	// Chrome's once-a-minute hidden-tab throttling.
 	PublisherStallTimeout time.Duration
 	// PublisherStallEnds: stalled for BroadcastGrace, the broadcast is ended
 	// with the terminal 4000 and its slot freed. Default off — the relay
@@ -333,11 +292,10 @@ type Config struct {
 // ParseFlags parses args (without the program name) into a Config.
 // getenv supplies environment lookups, injectable for tests.
 func ParseFlags(args []string, getenv func(string) string) (Config, error) {
-	// envBool reads a boolean env var that defaults to TRUE. The plain
-	// `env(...) == "true"` idiom the default-false flags use cannot express
-	// that: an unset variable and an explicit "false" both read as empty
-	// there, so a default-true flag written that way could never be turned
-	// off. Uses the injected getenv like env does, so tests can drive it.
+	// envBool reads a boolean env var with a default. The plain
+	// `env(...) == "true"` idiom cannot express a default-true flag: unset and
+	// an explicit "false" both read as empty there, so it could never be
+	// turned off.
 	envBool := func(key string, def bool) bool {
 		switch strings.ToLower(strings.TrimSpace(getenv(key))) {
 		case "true", "1", "yes":
@@ -397,8 +355,6 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"maximum bytes for a single reliable keyframe stream (default 8 MiB)")
 	keyframeWriteTimeout := fs.String("keyframe-write-timeout", env("GAWK_KEYFRAME_WRITE_TIMEOUT", "1s"),
 		"how long a keyframe write to one subscriber may block before the stream is cancelled")
-	// "off" (not just "") disables, because an empty env var reads as unset
-	// and would silently fall back to the default instead of disabling.
 	dvrWindow := fs.String("dvr-window", env("GAWK_DVR_WINDOW", "3s"),
 		"R21 DVR ring depth per broadcast: how long a stall a resilient viewer can ride out")
 	dvrMaxBytes := fs.String("dvr-max-bytes", env("GAWK_DVR_MAX_BYTES", "25165824"),
@@ -485,21 +441,13 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 
-	// THE ADMIN-API KNOBS ARE TRIMMED ONCE, HERE, so every later reader —
-	// the validation below and the Config literal at the end — sees the same
-	// string. They did not: the all-or-nothing pair check ran on the raw flag
-	// values while the literal stored trimmed ones, so a stray space or
-	// newline out of a templated Secret (GAWK_ADMIN_OIDC_ISSUER=" ") looked
-	// set to the check and arrived empty in the Config. The result was not the
-	// refusal the check exists to produce but silence: no verifier, no static
-	// token, Configured() false, and /internal/admin/* never registered at
-	// all — a mystery 404 (docs/42 §4.5).
-	//
-	// The token is trimmed for the same reason it is compared trimmed:
-	// AdminAuth.authorize trims the PRESENTED credential before the
-	// constant-time compare, so a configured token carrying whitespace could
-	// never be matched by anybody. It would register the routes and then
-	// refuse every caller, which is the same silent failure wearing a 401.
+	// The admin-API knobs are trimmed ONCE, here, so the validation below and
+	// the Config literal see the same string. If they disagree, a stray
+	// whitespace value from a templated Secret passes the pair check and then
+	// arrives empty: the admin routes silently never register (a mystery 404).
+	// The token is trimmed because AdminAuth.authorize trims the PRESENTED
+	// credential; an untrimmed configured token would match nobody (a silent
+	// 401 for every caller).
 	for _, p := range []*string{
 		adminAPIToken, adminOIDCIssuer, adminOIDCAudience, adminOIDCRolesClaim, adminOIDCRole,
 	} {
@@ -592,6 +540,8 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		// mistake, never a policy.
 		return Config{}, fmt.Errorf("invalid dvr-max-catchup %q: want >= 1 (or negative to disable)", *dvrMaxCatchup)
 	}
+	// "off" (not "") disables: an empty env var reads as unset and would fall
+	// back to the default instead of disabling.
 	mAddr := strings.TrimSpace(*metricsAddr)
 	if strings.EqualFold(mAddr, "off") {
 		mAddr = ""
@@ -623,37 +573,30 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("invalid telemetry-report-interval %q: %w", *telemetryReportInterval, err)
 	}
-	// The hello carries the interval as a uint16 of milliseconds, and a client
-	// that reports faster than the stats tick just resends the same numbers.
 	if telemetryInterval < MinTelemetryReportInterval || telemetryInterval > MaxTelemetryReportInterval {
 		return Config{}, fmt.Errorf("invalid telemetry-report-interval %q: want %v-%v",
 			*telemetryReportInterval, MinTelemetryReportInterval, MaxTelemetryReportInterval)
 	}
 
 	if *telemetryAdvertiseURL != "" {
-		// The wire package owns the one URL rule (absolute https, bounded);
-		// failing startup here is SP11's fail-fast acceptance criterion.
+		// The wire package owns the one URL rule (absolute https, bounded).
 		if _, err := wire.AppendTelemetryEndpoint(nil, *telemetryAdvertiseURL); err != nil {
 			return Config{}, fmt.Errorf("invalid telemetry-advertise-url %q: %w", *telemetryAdvertiseURL, err)
 		}
 	}
-	// R39 (docs/42 §4.3): validated with the very parser the source uses, so
-	// a value that starts the process is a value the source can honour.
 	if _, _, err := moderationsrc.Parse(*moderationSource); err != nil {
 		return Config{}, err
 	}
-	// R39 AP3 (docs/42 §4.5): the OIDC pair is all-or-nothing. An issuer with
-	// no audience would verify signatures and then accept a token minted for
-	// ANY client of that IdP; an audience with no issuer is inert. Both are
-	// silent failures, so neither starts.
+	// The OIDC pair is all-or-nothing. An issuer with no audience would
+	// accept a token minted for ANY client of that IdP; an audience with no
+	// issuer is inert. Both are silent failures, so neither starts.
 	if (*adminOIDCIssuer == "") != (*adminOIDCAudience == "") {
 		return Config{}, fmt.Errorf("admin-oidc-issuer and admin-oidc-audience must be set together")
 	}
 	if *adminOIDCIssuer != "" {
 		// Blanking either of these would leave signature+issuer+audience
 		// checked and AUTHORIZATION off — every token holder an operator.
-		// Whitespace counts as blank: these are already trimmed above, so a
-		// value that survives here is one oidcroles can actually address.
+		// Whitespace counts as blank (trimmed above).
 		if *adminOIDCRolesClaim == "" {
 			return Config{}, fmt.Errorf("admin-oidc-roles-claim must not be empty when admin OIDC is configured")
 		}
@@ -730,8 +673,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		ServerName:            *serverName,
 		ModerationSource:      strings.TrimSpace(*moderationSource),
 
-		// Trimmed once, right after fs.Parse — never again here, or the
-		// validation above and this literal could disagree a second time.
+		// Already trimmed right after fs.Parse; never re-trim here.
 		AdminAPIToken:       *adminAPIToken,
 		AdminOIDCIssuer:     *adminOIDCIssuer,
 		AdminOIDCAudience:   *adminOIDCAudience,

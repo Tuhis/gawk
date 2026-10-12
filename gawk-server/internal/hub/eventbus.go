@@ -7,15 +7,13 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/eventbus"
 )
 
-// The R50 broadcast lifecycle hooks (docs/51 D4). One publisher per fact: the
-// ORIGIN pod publishes a broadcast's start and end, because an edge pod holds
-// derived state and would otherwise report the same broadcast once per pod.
-// The single exception is broadcast.viewers, which both roles publish — an
-// edge knows its own viewersLocal and the origin does not.
+// Broadcast lifecycle hooks (docs/51). One publisher per fact: the ORIGIN pod
+// publishes a broadcast's start and end, since an edge would report the same
+// broadcast once per pod. The exception is broadcast.viewers, which both roles
+// publish: an edge knows its own viewersLocal and the origin does not.
 //
 // Called with the registry lock held at most call sites. That is safe only
-// because the publisher's Publish is a non-blocking channel send; nothing here
-// may grow a blocking call.
+// because Publish is a non-blocking channel send; nothing here may block.
 
 // emitEvent publishes one bus event about a broadcast. Nil-safe: no hook, no
 // work.
@@ -26,7 +24,7 @@ func (r *Registry) emitEvent(typ, id string, data any) {
 	r.opts.OnEvent(eventbus.Event{
 		Type: typ,
 		// Both forms: the HMAC'd key routes on the bus, the raw ID is the
-		// event's subject (docs/52 D9).
+		// event's subject.
 		Key:     r.ObfuscateID(id),
 		Subject: id,
 		Time:    time.Now(),
@@ -52,15 +50,13 @@ func (r *Registry) busStarted(id string) {
 //
 //	gc       — it ended on its own: the grace expired with no publisher, or
 //	           the publisher went silent past it
-//	killed   — an OPERATOR ended it (R39 close code 4006)
+//	killed   — an OPERATOR ended it (close code 4006)
 //	replaced — a token-bearing reclaim superseded the session
 //
-// The three are distinct because a consumer acts differently on each: a
-// replacement is a broadcaster reconnecting, a kill is enforcement somebody
-// should see, a gc is the ordinary end of a stream. That is why the automatic
-// stall timeout is a gc even though it removes the hub the same forceful way
-// an operator does — the code it closes with is the difference, and the only
-// one that reads as enforcement is the operator's.
+// A consumer acts differently on each: a replacement is a broadcaster
+// reconnecting, a kill is enforcement somebody should see, a gc is the
+// ordinary end of a stream. So the automatic stall timeout is a gc even though
+// it removes the hub as forcefully as an operator kill.
 func (r *Registry) busEnded(id, reason string) {
 	if r.opts.OnEvent == nil {
 		return
@@ -72,8 +68,7 @@ func (r *Registry) busEnded(id, reason string) {
 	})
 }
 
-// busStalled publishes the away/back transition. The registry's stall sweep
-// already computes it once per transition; this is the same fact for the bus.
+// busStalled publishes the away/back transition, once per transition.
 func (r *Registry) busStalled(id string, stalled bool) {
 	if r.opts.OnEvent == nil {
 		return
@@ -92,11 +87,10 @@ func (r *Registry) busStalled(id string, stalled bool) {
 // most one per broadcast per interval and only on change, so this may be
 // called on every pump tick.
 //
-// An edge pod reports what it can know — its own local count — and says
-// role: edge, which is how a consumer tells the fleet-wide number (origin,
-// with viewersGlobal) from a per-pod one. An edge's viewersGlobal is its local
-// count rather than a number it made up: the schema requires the property, and
-// zero would read as "nobody is watching".
+// An edge pod reports only its local count with role: edge, which is how a
+// consumer tells the fleet-wide number (origin) from a per-pod one. An edge's
+// viewersGlobal is its local count: the schema requires the property, and zero
+// would read as "nobody is watching".
 func (r *Registry) busViewers(id string, local, global int, edge bool) {
 	if r.opts.OnEvent == nil {
 		return

@@ -1,15 +1,14 @@
 package config
 
 // The redacted effective-config view served by GET /internal/admin/config
-// (R39 AP3, docs/42 §4.5, D10). Read-only by construction: there is no write
-// path of any kind — GitOps stays the only mutation channel.
+// (docs/42 §4.5). Read-only by construction: GitOps stays the only mutation
+// channel.
 //
 // EVERY FIELD IS ENUMERATED BY HAND, deliberately. A reflective "redact any
 // field whose name contains 'secret' or 'key'" walk is one rename away from
-// publishing a secret, and it silently mis-classifies both directions
-// (KeyFile is a path, StatsKey is a key). The cost of the explicit list is
-// that a new Config field must be added here too — which is exactly what the
-// completeness test in sanitized_test.go enforces.
+// publishing a secret, and mis-classifies both directions (KeyFile is a path,
+// StatsKey is a key). A new Config field must be added here too; the
+// completeness test in sanitized_test.go enforces it.
 
 import (
 	"log/slog"
@@ -17,10 +16,8 @@ import (
 	"time"
 )
 
-// Redaction placeholders. The resume key additionally names its MODE, because
-// "set" is not the interesting question for it — "which of the three key
-// sources is this pod actually using" is, and a fleet with per-process keys
-// silently breaks cross-pod resume (docs/22 Decision 7).
+// Redaction placeholders. The resume key additionally names its MODE (see
+// ResumeTokenKeyMode).
 const (
 	secretSetPrefix   = "set"
 	secretUnsetPrefix = "unset"
@@ -73,17 +70,17 @@ type SanitizedConfig struct {
 	ParityDefault                 int     `json:"parityDefault"`
 	StripedDelivery               bool    `json:"stripedDelivery"`
 
-	// Federation (R17).
+	// Federation.
 	ClusterMode        bool     `json:"clusterMode"`
 	InternalServerName string   `json:"internalServerName"`
 	TrustedCIDRs       []string `json:"trustedCidrs"`
 
-	// Telemetry (R28/R37). The key's PRESENCE is the feature switch, so the
-	// redacted form still answers "is this fleet collecting at all?".
+	// Telemetry. The key's PRESENCE is the feature switch, so the redacted
+	// form still answers "is this fleet collecting at all?".
 	TelemetryReportInterval string `json:"telemetryReportInterval"`
 	TelemetryAdvertiseURL   string `json:"telemetryAdvertiseUrl"`
 
-	// Rooms (R42, docs/44 §4.10).
+	// Rooms.
 	Rooms               bool   `json:"rooms"`
 	RoomEmptyGrace      string `json:"roomEmptyGrace"`
 	MaxRooms            int    `json:"maxRooms"`
@@ -91,21 +88,19 @@ type SanitizedConfig struct {
 	MaxRoomParticipants int    `json:"maxRoomParticipants"`
 	RoomsFile           string `json:"roomsFile"`
 
-	// Event bus (R50). The creds FILE PATH is not a secret and prints as
-	// itself; whether it is set is the question an operator debugging a silent
-	// bus is asking.
+	// Event bus.
 	EventBusURL            string `json:"eventBusUrl"`
 	EventBusSubjectPrefix  string `json:"eventBusSubjectPrefix"`
 	EventBusViewerInterval string `json:"eventBusViewerInterval"`
 	EventBusInsecure       bool   `json:"eventBusInsecure"`
-	// The client identity and the CA: paths, not material. Rendered as
-	// themselves — knowing WHICH file a pod was told to use is the point when
-	// a fleet disagrees about who it authenticates as.
+	// The client identity and the CA: paths, not material, rendered as
+	// themselves — WHICH file a pod uses is the point when a fleet disagrees
+	// about who it authenticates as.
 	EventBusTLSCert string `json:"eventBusTlsCert"`
 	EventBusTLSKey  string `json:"eventBusTlsKey"`
 	EventBusCAFile  string `json:"eventBusCaFile"`
 
-	// Moderation (R39).
+	// Moderation.
 	ModerationSource    string `json:"moderationSource"`
 	AdminOIDCIssuer     string `json:"adminOidcIssuer"`
 	AdminOIDCAudience   string `json:"adminOidcAudience"`
@@ -113,8 +108,8 @@ type SanitizedConfig struct {
 	AdminOIDCRole       string `json:"adminOidcRole"`
 
 	// Secret-bearing fields. Every one of these renders as a placeholder and
-	// NEVER as its value — the acceptance gate for this whole type
-	// (docs/42 §4.5) is the sentinel test that proves it.
+	// NEVER as its value; a sentinel test proves it. EventBusCredsFile is a
+	// path, but shown only as set/unset.
 	PublishSecret     string `json:"publishSecret"`
 	InternalPSK       string `json:"internalPsk"`
 	StatsKey          string `json:"statsKey"`
@@ -123,8 +118,7 @@ type SanitizedConfig struct {
 	AdminAPIToken     string `json:"adminApiToken"`
 	RoomCreateSecret  string `json:"roomCreateSecret"`
 	EventBusCredsFile string `json:"eventBusCredsFile"`
-	// ResumeTokenKey names the mode as well as the presence — see the
-	// placeholder comment above and ResumeTokenKeyMode.
+	// ResumeTokenKey names the mode as well as the presence.
 	ResumeTokenKey string `json:"resumeTokenKey"`
 }
 
@@ -209,9 +203,8 @@ func (c Config) Sanitized() SanitizedConfig {
 }
 
 // resumeTokenKeyRedaction renders presence AND mode: "<set:explicit-key>",
-// "<set:derived-from-publish-secret>" or "<unset:per-process-random>". The
-// mode string is byte-identical to the one logStartup prints, which is the
-// point — an operator comparing the two is comparing the same words.
+// "<set:derived-from-publish-secret>" or "<unset:per-process-random>", using
+// the same mode words the startup log prints.
 func resumeTokenKeyRedaction(c Config) string {
 	mode := c.ResumeTokenKeyMode()
 	if mode == "per-process-random" {
@@ -220,15 +213,14 @@ func resumeTokenKeyRedaction(c Config) string {
 	return "<" + secretSetPrefix + ":" + mode + ">"
 }
 
-// ResumeTokenKeyMode names where the resume-token key comes from (R17 W2) —
-// logged at startup and reported by Sanitized, so a fleet misconfiguration
-// (per-process keys on multiple pods, which silently breaks cross-pod resume)
-// is visible in both places from ONE definition.
+// ResumeTokenKeyMode names where the resume-token key comes from — logged at
+// startup and reported by Sanitized, so a fleet misconfiguration (per-process
+// keys on multiple pods, which silently breaks cross-pod resume) is visible in
+// both places from ONE definition.
 //
-// Order mirrors newResumeTokens: the explicit key wins over the
-// publish-secret derivation (PR #47 security review — a secret-derived key is
-// computable by every broadcaster holding the secret; "explicit-key" is the
-// mode that actually closes the graced-ID hijack between broadcasters).
+// Order mirrors newResumeTokens: the explicit key wins over the publish-secret
+// derivation, because a secret-derived key is computable by every broadcaster
+// holding the secret (see Config.ResumeTokenKey).
 func (c Config) ResumeTokenKeyMode() string {
 	switch {
 	case len(c.ResumeTokenKey) > 0:
@@ -262,6 +254,6 @@ func cidrStrings(nets []*net.IPNet) []string {
 	return out
 }
 
-// Compile-time proof that LogLevel is an slog.Level (its String method is
-// what Sanitized renders); a type change here would otherwise print a number.
+// Compile-time check that LogLevel is an slog.Level, whose String method
+// Sanitized renders.
 var _ slog.Level = Config{}.LogLevel

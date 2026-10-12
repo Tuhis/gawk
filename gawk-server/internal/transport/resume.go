@@ -1,19 +1,16 @@
-// Resume tokens (R17 W2, docs/22 Decision 7): the second gate on
-// /publish/{id}. A token is a truncated HMAC over the normalized broadcast
-// ID, keyed by a fleet-shared key every relay pod holds — so any pod can
-// mint and verify with no shared storage, which is what lets a broadcaster
-// claim its ID on a pod that has never seen it (the pod then *creates* the
-// hub instead of 404ing, making broadcasts survive relay restarts).
+// Resume tokens (docs/22): the second gate on /publish/{id}. A token is a
+// truncated HMAC over the normalized broadcast ID, keyed by a fleet-shared
+// key every relay pod holds — so any pod can mint and verify with no shared
+// storage, which lets a broadcaster claim its ID on a pod that has never seen
+// it (the pod creates the hub instead of 404ing, so broadcasts survive relay
+// restarts).
 //
-// Hijack scope, stated honestly (revised in the PR #47 security review):
-// with an explicit -resume-token-key — which never leaves the server side —
-// knowing a broadcast ID plus the global publish secret no longer suffices
-// to take over someone else's broadcast; that closes the pre-W2 graced-ID
-// hijack for real. With only a publish secret, the token key is DERIVED
-// from it, so every secret-holder can compute every ID's token offline —
-// that mode still stops everyone who lacks the secret, but gates nothing
-// between broadcasters. Fleet deployments should set the explicit key
-// (docs/05 runbook).
+// Hijack scope: with an explicit -resume-token-key, which never leaves the
+// server side, knowing a broadcast ID plus the publish secret does not
+// suffice to take over someone else's broadcast. With only a publish secret
+// the key is derived from it, so every secret-holder can compute every ID's
+// token offline — that stops everyone lacking the secret but gates nothing
+// between broadcasters. Fleet deployments should set the explicit key.
 //
 // Tokens are never logged.
 package transport
@@ -35,25 +32,20 @@ import (
 const resumeTokenBytes = 16
 
 // resumeKeyInfo is the HKDF info string binding the secret-derived key to
-// this use (docs/22: "gawk-resume-v1"). In secret-derived mode, rotating the
+// this use. In secret-derived mode, rotating the
 // publish secret rotates the key, revoking every outstanding token.
 const resumeKeyInfo = "gawk-resume-v1"
 
+// resumeTokens mints and verifies resume and room creator tokens.
 type resumeTokens struct {
 	key []byte
 }
 
-// newResumeTokens derives the token key. Precedence (docs/22 Decision 7 as
-// revised by the PR #47 security review): an explicitly-provisioned
-// ResumeTokenKey WINS — the publish secret is distributed to every
-// broadcaster, so a key derived from it is computable by every broadcaster
-// and tokens would gate nothing between secret-holders, while the chart key
-// stays server-side and makes the token a real per-broadcast ownership
-// proof (rotating it revokes all tokens). Without one, HKDF from the
-// publish secret keeps zero-config deployments working (protects against
-// everyone who lacks the secret; rotating the secret revokes). Dev
-// fallback: a fresh per-process random key — exactly the pre-R17
-// process-lifetime reclaim semantics.
+// newResumeTokens derives the token key. Precedence: an explicit
+// ResumeTokenKey wins — it stays server-side, making the token a real
+// per-broadcast ownership proof (see the package comment). Otherwise HKDF
+// from the publish secret keeps zero-config deployments working. Otherwise a
+// fresh per-process random key: reclaim works only for the process lifetime.
 func newResumeTokens(cfg config.Config) *resumeTokens {
 	if len(cfg.ResumeTokenKey) > 0 {
 		return &resumeTokens{key: cfg.ResumeTokenKey}
@@ -92,11 +84,10 @@ func (rt *resumeTokens) verify(normalizedID, tokenHex string) bool {
 }
 
 // roomCreatorDomain is the domain-separation prefix of a room creator token
-// (R42, docs/44 D8): room codes come from the SAME alphabet and length as
-// broadcast IDs, so without it a broadcast's resume token would be the
-// creator token of an identically named room and vice versa. The broadcast
-// mint above stays byte-identical — every outstanding resume token keeps
-// verifying — and only the room construction is prefixed.
+// (docs/44): room codes come from the same alphabet and length as broadcast
+// IDs, so without it a broadcast's resume token would be the creator token of
+// an identically named room and vice versa. Only the room construction is
+// prefixed, so outstanding resume tokens keep verifying.
 const roomCreatorDomain = "gawk-room-creator-v1"
 
 // MintCreator returns the creator token for a normalized room code
@@ -116,7 +107,7 @@ func (rt *resumeTokens) VerifyCreator(code string, token []byte) bool {
 }
 
 // VerifyResume reports whether token is the raw resume token for a
-// broadcast ID — the room attach proof (docs/44 D9; roomsrv.Tokens). The ID
+// broadcast ID — the room attach proof (roomsrv.Tokens). The ID
 // is normalized here because the token is minted over the normalized form.
 func (rt *resumeTokens) VerifyResume(broadcastID string, token []byte) bool {
 	normID, err := broadcastid.Normalize(broadcastID)

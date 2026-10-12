@@ -6,11 +6,14 @@ import (
 	"time"
 )
 
+// tokenBucket is one source IP's bucket in an ipRateLimiter.
 type tokenBucket struct {
 	tokens float64
 	last   time.Time
 }
 
+// ipRateLimiter is a per-source-IP token bucket; mu guards ips. Idle full
+// buckets are swept every five minutes until Close.
 type ipRateLimiter struct {
 	mu     sync.Mutex
 	ips    map[string]*tokenBucket
@@ -30,6 +33,8 @@ func newIPRateLimiter(rate float64, burst int) *ipRateLimiter {
 	return l
 }
 
+// Allow takes one token from remoteAddr's host bucket, reporting whether one
+// was available.
 func (l *ipRateLimiter) Allow(remoteAddr string) bool {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
@@ -49,7 +54,6 @@ func (l *ipRateLimiter) Allow(remoteAddr string) bool {
 		l.ips[host] = tb
 	}
 
-	// Refill tokens
 	elapsed := now.Sub(tb.last).Seconds()
 	tb.last = now
 	tb.tokens += elapsed * l.rate
@@ -64,6 +68,7 @@ func (l *ipRateLimiter) Allow(remoteAddr string) bool {
 	return false
 }
 
+// Close stops the cleanup loop.
 func (l *ipRateLimiter) Close() {
 	close(l.closed)
 }

@@ -19,17 +19,12 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// Room control sessions (R42, docs/44 §4.2, §4.6, RM2).
-//
-// CONNECT /room/new mints a dynamic room from a live broadcast; CONNECT
-// /room/{code} joins one. Both upgrade to a WebTransport session on which the
-// client opens ONE bidirectional stream and sends a RoomHello; the relay
-// answers a RoomState and then streams RoomEvent deltas while reading
-// RoomCommands. Media never touches this session — a participant's tiles
-// are ordinary /subscribe sessions.
-//
-// The routes are registered only with -rooms on (New), so a relay without
-// rooms is byte-identical to pre-R42 (docs/44 D17): nothing here is reachable.
+// Room control sessions (docs/44 §4.2). CONNECT /room/new mints a dynamic
+// room from a live broadcast; CONNECT /room/{code} joins one. The client
+// opens one bidirectional stream and sends a RoomHello; the relay answers a
+// RoomState, then streams RoomEvent deltas while reading RoomCommands. Media
+// never touches this session (tiles are ordinary /subscribe sessions). The
+// routes exist only with -rooms on.
 
 const (
 	// roomHelloTimeout bounds how long a joined session may take to open its
@@ -43,10 +38,8 @@ const (
 	roomCloseBadRequest = 400
 )
 
-// SetRooms installs the room registry (R42). Called once at startup from
-// main, before Run; a nil registry — or never calling this — is the -rooms
-// off shape, in which the room routes are not registered at all. Stored
-// atomically for the same reason SetModeration is.
+// SetRooms installs the room registry. Call once from main, before Run; nil
+// (or never calling it) is -rooms off. Stored atomically, like SetModeration.
 func (s *Server) SetRooms(reg *roomsrv.Registry) {
 	if reg != nil {
 		reg.SetTokens(s.resume)
@@ -56,25 +49,19 @@ func (s *Server) SetRooms(reg *roomsrv.Registry) {
 
 func (s *Server) roomRegistry() *roomsrv.Registry { return s.rooms.Load() }
 
-// RoomBroadcasts is the registry's view of a broadcast (docs/44 D1: an
-// attachment is a broadcast ID the relay is asked about), answered
-// fleet-wide (PR #302 review). The local hub answers first — it knows
-// live/away and the R18 global viewer count G. Otherwise, in cluster mode,
-// the origin lease as the coordinator's informer last saw it: held and
-// renewing is known+live, in grace (the origin stamped it, or its renewals
-// went stale) is known+away, no lease is unknown. Without cluster wiring
-// the answer stops at the local hub, byte-identical to single-pod R42.
+// RoomBroadcasts is the registry's view of a broadcast, answered fleet-wide.
+// The local hub answers first (it knows live/away and the global viewer
+// count G). Otherwise, in cluster mode, the origin lease as the informer last
+// saw it: held and renewing is known+live, in grace is known+away, no lease
+// is unknown.
 //
-// The origin's stall stamp (docs/06 revision 2026-09-06, docs/44 §4.9) is
-// read from the lease on both paths: an attachment answered from the lease
-// alone, and one answered by a local EDGE hub — its "publisher" is this
-// pod's pull from the origin and never stalls locally (hub.stalledLocked),
-// so the lease is the only place the origin's stall can reach it. The
-// origin pod's own hub is authoritative for its broadcasts: it flips at
-// read time, while the stamp lags the 1 Hz sweep and an API round-trip.
+// The origin's stall stamp (docs/44 §4.9) comes from the lease both for a
+// lease-only answer and for a local edge hub, whose "publisher" is this pod's
+// pull and never stalls locally. The origin pod's own hub is authoritative:
+// it flips at read time, while the stamp lags the 1 Hz sweep.
 //
-// The source reads the coordinator through the server's late-bound wiring,
-// so main can build the registry before SetCluster runs.
+// The coordinator is read through the late-bound wiring, so main can build
+// the registry before SetCluster.
 func (s *Server) RoomBroadcasts() roomsrv.BroadcastSource { return roomBroadcasts{s} }
 
 type roomBroadcasts struct{ s *Server }
@@ -97,11 +84,9 @@ func (b roomBroadcasts) BroadcastState(id string) (roomsrv.BroadcastState, bool)
 	if !ok {
 		return roomsrv.BroadcastState{}, false
 	}
-	// Viewers is 0 here on purpose: G is computed on the origin pod and
-	// reaches this pod only through an edge session, which exists only
-	// while someone here is watching — and then the local hub answered
-	// above. The viewer count is the one number that stays pod-local for
-	// an unwatched-here attachment (docs/44 §11.1).
+	// Viewers is 0 on purpose: G reaches this pod only through an edge
+	// session, which exists only while someone here watches — and then
+	// the local hub answered above.
 	return roomsrv.BroadcastState{Live: origin.Holder != "" && !inGrace && !stalled}, true
 }
 
@@ -112,9 +97,8 @@ func (s *Server) isOrigin(origin cluster.Origin) bool {
 	return em != nil && origin.Holder == em.podName
 }
 
-// roomStatsSource lets the H3 /statusz route (built in New, before SetRooms
-// runs) read the registry installed later. A nil registry yields nil, which
-// omits the rooms section.
+// roomStatsSource lets the H3 /statusz route (built in New, before SetRooms)
+// read the registry installed later; nil omits the rooms section.
 type roomStatsSource struct{ s *Server }
 
 func (r roomStatsSource) Stats() map[string]roomsrv.RoomStats { return r.s.RoomStats() }
@@ -177,24 +161,22 @@ func (s *Server) handleRoomNew(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		return
 	}
-	// The room exists from here whether or not the upgrade below succeeds
-	// (its creator reconnects with the token), so this is where it counts.
-	// A repeat answers with a room an earlier mint made and counted.
+	// The room exists from here whether or not the upgrade succeeds (the
+	// creator reconnects with the token), so count it here — unless it is
+	// a repeat an earlier mint already counted.
 	if !res.Repeated {
 		s.metrics.RoomMinted()
 	}
 	sess, err := s.wt.Upgrade(w, r)
 	if err != nil {
-		// A fresh room exists with nobody in it; end it now rather than
-		// letting the broadcast sit reserved for the empty grace. A repeated
-		// one was not made here and may have people in it; the next repeat
-		// gets it back anyway.
+		// End a fresh, empty room now rather than reserve the broadcast for
+		// the empty grace. A repeat may have people in it; leave it.
 		if !res.Repeated {
 			reg.EndRoom(res.Code, wire.RoomEndReasonEmpty)
 		}
 		s.metrics.Connection(route, metrics.OutcomeUpgradeFailed)
 		s.log.Warn("room mint upgrade failed", "err", err)
-		w.WriteHeader(http.StatusForbidden) // no implicit 200 (finding 12)
+		w.WriteHeader(http.StatusForbidden) // never an implicit 200
 		return
 	}
 	s.serveRoomSession(r, sess, reg, res.Code, roomsrv.Grants{Creator: true, AttachOK: true}, res.CreatorToken)
@@ -239,16 +221,14 @@ func (s *Server) handleRoom(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	// Normalize before anything hashes it: the room_key in every log line
-	// must be the key /statusz, RoomState and the CR's status.key publish,
-	// and those hash the normalized code. A code that does not normalize
-	// stays as typed and 404s in CheckJoin.
+	// Normalize before hashing: room_key in logs must match the key
+	// /statusz, RoomState and the CR's status.key publish. A code that
+	// does not normalize stays as typed and 404s in CheckJoin.
 	if norm, err := rooms.NormalizeCode(code); err == nil {
 		code = norm
 	}
-	// Cluster mode (RM3, docs/44 §4.5): a room homed on another pod is
-	// proxied there; a room with no live home is adopted first. Either way
-	// the join gate below runs on the home.
+	// Cluster mode (docs/44 §4.5): proxy to a room's live home, or adopt
+	// it first; either way the join gate runs on the home.
 	if s.roomHomedElsewhere(w, r, code) {
 		return
 	}
@@ -273,7 +253,7 @@ func (s *Server) handleRoom(w http.ResponseWriter, r *http.Request) {
 }
 
 // roomJoinStatus maps CheckJoin's sentinels onto the join route's status
-// vocabulary (docs/44 §4.2); shared by the public and the internal route.
+// vocabulary; shared by the public and the internal route.
 func roomJoinStatus(err error) (int, string) {
 	switch {
 	case errors.Is(err, roomsrv.ErrNotFound):
@@ -283,8 +263,8 @@ func roomJoinStatus(err error) (int, string) {
 	case errors.Is(err, roomsrv.ErrFull):
 		return http.StatusTooManyRequests, metrics.OutcomeLimitRejected
 	case errors.Is(err, roomsrv.ErrUnavailable):
-		// The static room's Secret could not be read (docs/44 §6: fail
-		// closed, like mint and attach when the API server is away).
+		// The static room's Secret could not be read: fail closed, like
+		// mint and attach when the API server is away.
 		return http.StatusServiceUnavailable, metrics.OutcomeError
 	}
 	return http.StatusInternalServerError, metrics.OutcomeError

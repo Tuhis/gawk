@@ -8,14 +8,13 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// R57 (docs/59): the in-band close notice.
+// The in-band close notice (docs/59).
 //
-// A webtransport-go close code never reaches Chrome — the library's close
-// packet carries STOP_SENDING on the CONNECT stream ahead of the close
-// capsule, and Chrome fails the session on it ("Connection lost.", no code;
-// quic-go/webtransport-go#242, closed upstream as a Chromium bug). So before
-// the relay closes a browser-facing session with a code that changes what
-// the client does next, it states the code on its own uni stream
+// A webtransport-go close code never reaches Chrome: the close packet carries
+// STOP_SENDING on the CONNECT stream ahead of the close capsule, and Chrome
+// fails the session on it with no code (quic-go/webtransport-go#242). So
+// before closing a browser-facing session with a code that changes what the
+// client does next, the relay states the code on its own uni stream
 // (wire.SessionClosing) and closes closeNoticeSettle later.
 //
 // Only external publish/subscribe sessions get it: the edge client reads
@@ -24,8 +23,8 @@ import (
 
 // closeNoticeSettle is how long the close waits after the notice: the
 // session close cancels every stream and discards what the peer has not yet
-// read, so a notice and a close that share a packet lose the notice (the
-// room registry's closeSettle, docs/gotchas.md).
+// read, so a notice and a close that share a packet lose the notice
+// (docs/gotchas.md).
 const closeNoticeSettle = 250 * time.Millisecond
 
 // closeNoticeWriteTimeout bounds the notice write. Six bytes on a fresh
@@ -90,7 +89,7 @@ func closeWithNotice(sess drainSession, code uint32, reason string) {
 // closeNoticeSettle later on a timer. For callers that must not stall — the
 // hub closing every viewer of a broadcast, a moderation kill — where the
 // session's own handler keeps it alive until then, and the hub has already
-// detached it (a deposed publisher's late frames drop, docs/06).
+// detached it (a deposed publisher's late frames drop).
 func closeWithNoticeAsync(sess drainSession, code uint32, reason string) {
 	if !sendCloseNotice(sess, code) {
 		_ = sess.CloseWithError(webtransport.SessionErrorCode(code), reason)
