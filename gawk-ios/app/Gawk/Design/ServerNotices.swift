@@ -78,6 +78,32 @@ struct ServerNotices: View {
     }
 }
 
+/// The server's screening notice (R40, docs/71 D13): one line on the
+/// Broadcast screen, Ready and Live, when the selected server's probe said
+/// it automatically screens streams — or this broadcast's publish session
+/// did. A disclosure, never a gate: nothing waits on it.
+struct ScreeningNotice: View {
+    @Environment(AppSettings.self) private var settings
+    @Environment(ServerProbes.self) private var probes
+    @Environment(BroadcastSession.self) private var session
+
+    /// The same sentence the web and desktop broadcasters show.
+    static let text = "This server automatically screens streams for explicit content."
+
+    /// Shown when either source says so.
+    static func shown(probed: Bool, session: Bool) -> Bool { probed || session }
+
+    var body: some View {
+        if Self.shown(probed: probes.screens(settings.relayURL), session: session.screeningNotice) {
+            Label(Self.text, systemImage: "info.circle")
+                .font(.footnote)
+                .foregroundStyle(Theme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("broadcast.screening")
+        }
+    }
+}
+
 #Preview("Server strip") {
     ServerStrip(name: "Home relay", url: "https://relay.example.net:4433") {}
         .padding()

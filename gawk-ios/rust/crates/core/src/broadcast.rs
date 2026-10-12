@@ -221,6 +221,11 @@ pub trait BroadcastListener: Send + Sync {
     fn on_room_event(&self, event: BroadcastRoomEvent);
     /// The pipeline's first video failure; the broadcast ends.
     fn on_failure(&self, text: String);
+    /// The relay's notices off the publish session (R40, docs/71 D13):
+    /// `screening` is true when it automatically screens streams for
+    /// explicit content. Sent at the start of each publish leg by a relay
+    /// that has a notice; one line on the screen, never a gate.
+    fn on_relay_notices(&self, screening: bool);
 }
 
 struct Live {
@@ -730,6 +735,7 @@ async fn run<C, F>(
                         }
                     }
                     EngineEvent::ViewerCount(n) => listener.on_viewer_count(n),
+                    EngineEvent::RelayNotices { screening } => listener.on_relay_notices(screening),
                     EngineEvent::Resuming { attempt } => {
                         reporter.event("resuming", "");
                         // docs/64 OD4: the restart's own reclaim is not
@@ -1311,6 +1317,7 @@ mod stop_tests {
         fn on_room_state(&self, _: RoomView, _: bool, _: bool) {}
         fn on_room_event(&self, _: BroadcastRoomEvent) {}
         fn on_failure(&self, _: String) {}
+        fn on_relay_notices(&self, _: bool) {}
     }
 
     pub(super) fn options() -> BroadcastOptions {
@@ -1639,6 +1646,7 @@ mod live_tests {
         Identity(String, String),
         RoomState(RoomView, bool, bool),
         RoomEvent(BroadcastRoomEvent),
+        Notices(bool),
     }
 
     struct Ears(mpsc::UnboundedSender<Heard>);
@@ -1658,6 +1666,9 @@ mod live_tests {
             let _ = self.0.send(Heard::RoomEvent(event));
         }
         fn on_failure(&self, _: String) {}
+        fn on_relay_notices(&self, screening: bool) {
+            let _ = self.0.send(Heard::Notices(screening));
+        }
     }
 
     struct Harness {
@@ -1738,6 +1749,41 @@ mod live_tests {
                 _ => None,
             })
             .collect()
+    }
+
+    // --- R40 (docs/71 D13): the relay's screening notice -------------------
+
+    // A relay with -screening-notice sends its identity on the publish
+    // session: Swift hears the notice, and the broadcast carries on.
+    #[tokio::test(start_paused = true)]
+    async fn a_screening_relays_notice_reaches_the_listener() {
+        let first = Leg::announcing();
+        let mut identity = Vec::new();
+        wire::append_relay_identity(
+            &mut identity,
+            &wire::RelayIdentity {
+                server_version: "1.42.0",
+                name: "",
+                notices: wire::RELAY_NOTICE_SCREENING,
+            },
+        )
+        .unwrap();
+        first.streams.lock().unwrap().push_back(identity);
+        let mut h = Harness::start(
+            options(),
+            first,
+            Arc::new(Reclaims::default()),
+            Arc::new(Rooms::default()),
+        );
+        let heard = h.until(|h| matches!(h, Heard::Notices(_))).await;
+        assert_eq!(heard.last(), Some(&Heard::Notices(true)));
+        assert!(
+            !statuses(&heard)
+                .iter()
+                .any(|s| matches!(s, BroadcastStatus::Ended { .. })),
+            "the notice ends nothing: {heard:?}"
+        );
+        h.stop().await;
     }
 
     // --- K3: quality while live (docs/70 D12) ------------------------------

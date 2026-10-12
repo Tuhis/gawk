@@ -5,9 +5,16 @@ use gawk_engine::probe::{self, ProbeResult};
 
 /// What probing a server found. `name` is the operator's claim from
 /// RelayIdentity: shown beside the host, never in place of it (docs/40 F6).
+/// `screens`: the relay says it automatically screens streams for explicit
+/// content (R40, docs/71 D13) — the Broadcast screen says so before going
+/// live.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum ServerProbe {
-    Reachable { rtt_ms: u32, name: Option<String> },
+    Reachable {
+        rtt_ms: u32,
+        name: Option<String>,
+        screens: bool,
+    },
     Unreachable,
 }
 
@@ -23,7 +30,15 @@ pub fn probe_server(relay_url: String, insecure: bool) -> ServerProbe {
     };
     let origin = gawk_engine::defaults::origin().to_owned();
     match rt.block_on(probe::probe(&relay_url, &origin, insecure)) {
-        ProbeResult::Ok { rtt_ms, name } => ServerProbe::Reachable { rtt_ms, name },
+        ProbeResult::Ok {
+            rtt_ms,
+            name,
+            screens,
+        } => ServerProbe::Reachable {
+            rtt_ms,
+            name,
+            screens,
+        },
         ProbeResult::Failed => ServerProbe::Unreachable,
     }
 }

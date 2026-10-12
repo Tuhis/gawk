@@ -48,6 +48,7 @@ impl BroadcastListener for Heard {
     fn on_failure(&self, text: String) {
         panic!("the pipeline failed: {text}");
     }
+    fn on_relay_notices(&self, _: bool) {}
 }
 
 /// What the watching viewer saw: frame IDs in order, and each H.264 format

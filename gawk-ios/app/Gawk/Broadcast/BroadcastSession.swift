@@ -88,6 +88,10 @@ final class BroadcastSession {
     private(set) var lastCode: String?
     /// A start refused before it went live (D25), with its HTTP status.
     private(set) var refusal: (reason: String, status: UInt16?)?
+    /// This broadcast's publish session said its relay screens streams for
+    /// explicit content (R40, docs/71 D13). With the server probe's word,
+    /// what the Broadcast screen's line shows; never a gate.
+    private(set) var screeningNotice = false
 
     // MARK: Room (D16–D18, K2)
 
@@ -173,6 +177,8 @@ final class BroadcastSession {
         roomNeedsKey = false
         roomLeaving = false
         viewerCount = 0
+        // A new broadcast's session says it again, or not.
+        screeningNotice = false
         liveSince = nil
         counters = nil
         tracker = SummaryTracker()
@@ -407,6 +413,10 @@ final class BroadcastSession {
         activity?.update(reconnecting: phase.isResuming, viewers: n)
     }
 
+    func setScreening(_ screening: Bool) {
+        screeningNotice = screening
+    }
+
     func applyRoom(_ view: RoomView, attached: Bool, needsKey: Bool) {
         guard !roomLeaving else { return }
         // Your rooms hears of a room once per join, not on every change.
@@ -553,6 +563,10 @@ final class BroadcastSession {
 
         func onFailure(text: String) {
             current { $0.setFailure(text) }
+        }
+
+        func onRelayNotices(screening: Bool) {
+            current { $0.setScreening(screening) }
         }
     }
 }

@@ -41,6 +41,22 @@ final class BroadcastSessionTests: XCTestCase {
         BroadcastSession(identity: IdentityStore(service: "fi.ioio.gawk.tests.\(UUID().uuidString)"))
     }
 
+    /// R40 (docs/71 D13): the relay's screening notice belongs to the
+    /// broadcast whose session said it; the next start forgets it until its
+    /// own session says it again.
+    func testANewBroadcastForgetsTheScreeningNotice() {
+        let s = session()
+        s.setScreening(true)
+        XCTAssertTrue(s.screeningNotice)
+        s.start(
+            relayURL: relay, secret: "", quality: .standard,
+            nickname: "", telemetry: false, insecure: true
+        )
+        XCTAssertFalse(s.screeningNotice)
+        s.apply(.ended(error: nil, reclaimStatus: nil))
+        s.stop()
+    }
+
     func testStopAnswersAtOnceAndALateLiveDoesNotUndoIt() {
         let s = session()
         s.apply(.live(code: "AB2CD3", joinLink: "https://gawk.ioio.fi/#/AB2CD3"))

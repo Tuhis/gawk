@@ -23,6 +23,7 @@ struct LiveView: View {
                             .accessibilityIdentifier("broadcast.reconnecting")
                     }
                     status
+                    ScreeningNotice()
                     code
                 }
                 .readableWidth()
