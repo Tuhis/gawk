@@ -1,6 +1,8 @@
 # R40 — Automatic content flagging (docs/71)
 
-**Status**: designed 2026-10-12 (owner decisions OD1–OD14), not started.
+**Status**: designed 2026-10-12 (owner decisions OD1–OD14); **CF0–CF8
+implemented 2026-10-13** (§8.1 records CF0, §9 the implementation
+contract); CF9, the calibration run on the reference deployment, is open.
 Chunks **CF0–CF9** (`CF` = Content Flagging, reserved for R40 in the
 roadmap). Touches the relay (one ops route, one knob, one appended wire
 field), `gawk-admin` (the reserved content-flag contract made real, a flag
@@ -61,7 +63,7 @@ a human (D12) and keeps re-paging until someone acknowledges it (D9).
 | D2 | **The sampler never discovers broadcasts itself; `gawk-admin` serves it a target list**: `GET /api/v1/screening/targets` (role `flagger`, filtered to the polling pod's shard — D22), one entry per live *origin* broadcast **whose publisher is active** (`publisherActive` in the relay's admin rows) with its raw ID, HMAC key, the ops address of the pod holding it, and `muted`/`exempt` booleans. Exempt broadcasts are listed (so the sampler's metrics see them) but marked skip. A broadcast in its away grace period is not listed: its cached keyframe is a frozen frame no one is broadcasting, and re-scoring it would re-raise a flag the session's end just resolved. When a broadcast leaves its shard's list the sampler drops its window and `recent` and POSTs nothing more for it; as a backstop, `gawk-admin` answers a tripped POST for a broadcast whose publisher is not active with `202 ended` and raises nothing. (Added 2026-10-13 in PR review.) | `gawk-admin` already scrapes every relay pod (`internal/relayscan`) and is the one place that knows rooms, exemptions and mutes. A sampler holding the relay admin token to scan pods itself would hold publisher IPs it never needs. One list also means one answer to "is this broadcast screened?". |
 | D3 | **Shared types live in a new public package, `gawk-server/screening`**: the target-list response, the `gawk.content-flag.v1` request body (docs/42 §4.11 plus the additive `mode`, `state` and `recent` fields of D9, D14 and D19, noted in docs/42 §4.11 too), the sample-batch and replay types, the keyframe route path and headers. `gawk-admin` and `gawk-sampler` both import it; a semantic change needs commits scoped to both in the same PR. | The repo rule: shared Go is a public package in `gawk-server`, never mirrored (`wire`, `events`, `adminapi`, `oidcauth` precedent). |
 | D4 | **The sampler is Go; decode runs in an `ffmpeg` subprocess per sample, inference in-process through ONNX Runtime** (`onnxruntime_go`, the shared library in the image). The sampler converts the frame to a bitstream ffmpeg can read from a pipe — AVCC → Annex-B with SPS/PPS from the `avcC` extradata, Annex-B as is, VP8/VP9 wrapped in IVF — and reads back one RGB frame scaled to the model's input. Each subprocess runs with a wall-clock timeout, `RLIMIT_AS`, and **`RLIMIT_CORE` = 0**. | Crash isolation was the open design question: a malformed bitstream must kill at most one sample, never the sampler. A cgo libavcodec would put a decoder CVE into the sampler's address space. A fork per sample every 5 s × 100 broadcasts is 20 forks/s, which is cheap. ONNX Runtime sees only a fixed-shape float tensor the sampler built, so in-process is safe. A core dump would write a frame to disk, which the evidence rule (D8) forbids. |
-| D5 | **The image ships a minimal ffmpeg** built in a Dockerfile stage with `--disable-everything` and only the `h264`, `vp8` and `vp9` decoders, the `h264`/`ivf` demuxers, the `pipe` protocol, the `rawvideo` encoder and muxer, and the `scale`, `format`, `buffer` and `buffersink` filters (`swscale` alone does not enable the CLI's `scale` filter) — everything the D4 pipe from bitstream to one scaled RGB frame needs, and nothing else. **Model weights are not in the image**: the chart fetches them in an init container from a pinned URL and verifies a pinned SHA-256 into an `emptyDir`, or mounts an operator-provided volume. | Smallest decoder CVE surface for the three codecs any broadcaster sends (web: H.264/VP9/VP8; desktop and iOS: H.264 Annex-B; nobody sends AV1 or HEVC). Keeping weights out of the GHCR image means gawk never redistributes them, whatever NudeNet's weights licence turns out to be (CF0 verifies it); the SHA pin keeps a swapped file from loading. |
+| D5 | **The image ships a minimal ffmpeg** built in a Dockerfile stage with `--disable-everything` and only the `h264`, `vp8` and `vp9` decoders, the `h264`/`ivf` demuxers, the `pipe` protocol, the `rawvideo` encoder and muxer, and the `scale`, `format`, `buffer` and `buffersink` filters (`swscale` alone does not enable the CLI's `scale` filter) — everything the D4 pipe from bitstream to one scaled RGB frame needs, and nothing else. (Completed 2026-10-13 during the build: the pipe also needs `pad` (§9.5), the `h264`, `vp8` and `vp9` parsers and the `vp9_superframe_split` bitstream filter, and the ffmpeg CLI links `transpose`, `trim` and `vflip` itself; `gawk-sampler/deploy/build-ffmpeg.sh` is the list.) **Model weights are not in the image**: the chart fetches them in an init container from a pinned URL and verifies a pinned SHA-256 into an `emptyDir`, or mounts an operator-provided volume. (The pinned URL is GitHub's API asset route, fetched with `Accept: application/octet-stream`: NudeNet's release-download URLs redirect anonymous clients to a sign-in page, as of 2026-10-13.) | Smallest decoder CVE surface for the three codecs any broadcaster sends (web: H.264/VP9/VP8; desktop and iOS: H.264 Annex-B; nobody sends AV1 or HEVC). Keeping weights out of the GHCR image means gawk never redistributes them, whatever NudeNet's weights licence turns out to be (CF0 verifies it); the SHA pin keeps a swapped file from loading. |
 | D6 | **Scheduling**: one sample per screened broadcast every `-interval` (5 s, OD10), spread across the interval rather than in bursts, through a worker pool of `-workers`. When the pool cannot keep up, each broadcast's effective interval stretches evenly, `gawk_sampler_interval_effective_seconds` rises, and a chart-provided `PrometheusRule` fires above 2× the target. Every listed broadcast stays in the rotation. | A sampler that silently skips some broadcasts under load is the "silent backlog" the DSA posture forbids; stretching keeps coverage complete and makes the shortfall visible. |
 | D7 | **Scoring**: a sample's score is the maximum confidence among the **flagged labels** — default `FEMALE_GENITALIA_EXPOSED,MALE_GENITALIA_EXPOSED,ANUS_EXPOSED` (OD3; `-labels`). A broadcast's window is its last `-window` samples (default 6 ≈ 30 s); it **trips** when at least `-window-hits` samples (default 4) score ≥ `-threshold`, and **clears** only when the whole window is below it. Defaults for `-threshold`, `-window` and `-window-hits` are placeholders (a conservative `0.8` / `6` / `4`) until CF9's calibration replaces them in this table and in §5. A new publisher session resets the window. | Never decide on a single frame: games produce skin-toned false positives constantly. Hysteresis keeps a flickering score from raising and clearing flags every few seconds. The label set is configurable because "explicit only" is a policy, not a constant. |
 | D8 | **Evidence is metadata only.** Frames exist only in the sampler's memory between fetch and score; they are never written to disk, logged, sent in a flag, or exposed on a debug endpoint. The flag carries scores, the window, the labels that fired and their counts. | If the flag is right, keeping the material is itself the legal hazard. The operator inspects by joining live (OD4). |
@@ -69,7 +71,7 @@ a human (D12) and keeps re-paging until someone acknowledges it (D9).
 | D10 | **Dismiss mutes the broadcast for `-content-flag-mute` (30 m, OD11)**: POSTs during the mute return `202 muted` and change nothing; the target list marks it `muted`. When the mute expires, a still-tripped window raises a **new** flag. Auto-kill and deadline kill never act on a muted broadcast. | OD11. A fixed time still catches a broadcaster who switches content after the operator has looked. `202` lets the sampler count mutes in its metrics without treating them as errors. |
 | D11 | **Exemption is a field on the `Room` CR, `spec.screening: exempt`**, set from the portal (operator only, audited as `room.screening_changed`). Only a **static room with an attach secret** can be exempt; the portal refuses others. A broadcast is exempt while attached to an exempt room. Broadcasts outside any room are always screened. | OD7. The `Room` CR is the room's only durable record (docs/62 rejected a Postgres side-list for the same reason). An open or dynamic room could be joined by anyone, so exempting it would hand an abuser an unscreened lane; the attach secret is what makes "my friends' room" a trust boundary. |
 | D12 | **No flagging without a pager.** The target list carries `flagRoute: false` when no enabled webhook would deliver `content_flag.raised` (config-sourced or UI-created, honouring R49's per-webhook `events` filter), and `POST /api/v1/content-flags` then answers `503 no_flag_route`. A sampler in `flag` mode samples nothing while `flagRoute` is false, logs once per minute, and exports `gawk_sampler_paused{reason="no_flag_route"} 1`; the portal shows a banner. `observe` mode (D19) is unaffected — it raises nothing. | The DSA point in §1: detecting without anyone to tell is worse than not detecting. Pausing at the source is the only place this can't be bypassed by a misconfigured webhook list. |
-| D13 | **Disclosure (OD9)**: the relay gains `-screening-notice` (bool, default false; chart `screening.notice`), advertised as an **appended field of `RelayIdentity`** (docs/40 §4.4 — trailing bytes are that message's extension mechanism; the flags byte stays strict). **When the knob is on, the relay also sends that `RelayIdentity` on every publish session**, on its own server-opened uni stream at session start (the `TelemetryEndpoint` shape); with the knob off, publish sessions stay byte-identical. All three broadcaster surfaces — `gawk-app`, the desktop engine, `gawk-ios` — read it there and show one line on the broadcast screen: "This server automatically screens streams for explicit content." The desktop and iOS apps, which already probe the resolved relay before going live (R62's header probe, iOS `ServerNotices`), also show it from the probe. The default `gawk-app/public/terms.html` gains a screening paragraph; operators with custom terms write their own. (Revised 2026-10-13 in PR review: the first draft relied on the `/echo` probe alone, but `gawk-app` probes only inside the server picker — docs/40 SP6, "no probe traffic without user action" — so a web broadcaster on the default relay would never have seen the notice.) | `RelayIdentity` was built as the managed-mode extension point, so no new wire type. The publish session is the one channel every broadcaster opens, and it opens exactly when the notice matters; amending SP6 to probe on mount was the alternative, but it would weaken a no-unrequested-traffic rule for a notice the publish session can carry for free. An old client that receives the stream drops it: `gawk-app` logs an unexpected uni-stream type and continues (`transport/broadcaster.ts`), and CF1 asserts the same for the Rust engine. A separate knob (rather than "a sampler exists") because the relay cannot see the sampler, and an operator who screens must be able to say so — the chart docs pair the two. The line is a notice, never a gate (docs/29 D8). |
+| D13 | **Disclosure (OD9)**: the relay gains `-screening-notice` (bool, default false; chart `screening.notice`), advertised as an **appended field of `RelayIdentity`** (docs/40 §4.4 — trailing bytes are that message's extension mechanism; the flags byte stays strict). **When the knob is on, the relay also sends that `RelayIdentity` on every publish session**, on its own server-opened uni stream at session start (the `TelemetryEndpoint` shape); with the knob off, publish sessions stay byte-identical. All three broadcaster surfaces — `gawk-app`, the desktop engine, `gawk-ios` — read it there and show one line on the broadcast screen: "This server automatically screens streams for explicit content." The desktop and iOS apps, which already probe the resolved relay before going live (R62's header probe, iOS `ServerNotices`), also show it from the probe. The default terms (`gawk-app/src/features/terms/BundledTerms.tsx` §6; `public/terms.html` is only the operator-override slot) gain a screening paragraph, and the bundled terms version moves so broadcasters are asked to accept them again; operators with custom terms write their own. (Path corrected 2026-10-13 during the build.) (Revised 2026-10-13 in PR review: the first draft relied on the `/echo` probe alone, but `gawk-app` probes only inside the server picker — docs/40 SP6, "no probe traffic without user action" — so a web broadcaster on the default relay would never have seen the notice.) | `RelayIdentity` was built as the managed-mode extension point, so no new wire type. The publish session is the one channel every broadcaster opens, and it opens exactly when the notice matters; amending SP6 to probe on mount was the alternative, but it would weaken a no-unrequested-traffic rule for a notice the publish session can carry for free. An old client that receives the stream drops it: `gawk-app` logs an unexpected uni-stream type and continues (`transport/broadcaster.ts`), and CF1 asserts the same for the Rust engine. A separate knob (rather than "a sampler exists") because the relay cannot see the sampler, and an operator who screens must be able to say so — the chart docs pair the two. The line is a notice, never a gate (docs/29 D8). |
 | D14 | **Auto-kill tier (OD1), default off**: `gawk-admin -content-flag-auto-kill` (`off` or a policy `score>=0.9,hits>=10/12`). Every tripped POST carries **`recent`**: the publisher session's last `-report-samples` (default 12, a sampler knob) per-sample scores, oldest first, each the max over the flagged labels — including scores below the floor. `gawk-admin` evaluates the policy over `recent` alone, on each tripped POST, never by the sampler: it needs at least the policy's sample count (`10/12` needs 12) and otherwise does not kill. `recent` starts empty on a new publisher session and on a sampler restart (the window is in memory), so a restart can only delay a kill, never cause one. The policy's score may be any value in 0–1; the floor does not apply, because `recent` is not filtered by it. The body caps `recent` at 64 entries, and `gawk-admin` refuses to start if the policy names more samples than that. On a match it kills through R39's kill path with a cooldown ban of `-kill-cooldown`, actor `system:content-flag`, and resolves the flag `auto_killed` — the page still goes out. (Data source added 2026-10-13 in PR review.) | The sampler holds `flagger`, which grants *flag-only* rights (docs/42 D17): it must never be able to kill. Putting every automated action in `gawk-admin` keeps one actuator and one audit trail. A kill needs exact per-sample history: the window summary cannot express "10 of the last 12 at ≥ 0.9", and the D20 sample tables err toward *more* trips by design, which is acceptable for calibration and wrong for a kill, and arrive in batches unsynchronised with flag POSTs. Carrying the scores in the POST makes the decision self-contained and its input auditable in the flag row. |
 | D15 | **Deadline kill (OD2), default off**: `gawk-admin -content-flag-deadline` (`off` or a duration, e.g. `30m`). An `open` (unacknowledged), unmuted flag whose signal is **live** (D9) at the deadline is killed exactly as in D14 and resolved `auto_killed` with `reason: "deadline"`. A signal that is unknown at the deadline is not killed; the flag keeps re-paging. | OD2: re-paging is the default; the kill is a switch for an operator who would rather lose a stream than leave one up overnight. A cleared flag is already resolved, and an unknown signal is not evidence enough to kill on. |
 | D16 | **Events**: `gawk-server/events` gains four types, and `ContentFlagRaisedData` gains the additive fields the §4.11 body already carries (`samplerId`, `window`, `scores`, `labels`) plus `flagId`. **Moderation rows** — in `store.AllEventTypes()`, held equal to `events.ModerationRowTypes()`, delivered to every unfiltered webhook like `raised`: `content_flag.reminded`, `content_flag.resolved` (with `resolution`), and `room.screening_changed` (D11's audit, the `room.secret_rotated` shape). **Opt-in**: `content_flag.observed` (reusing the raised data type) is *not* a moderation row — it is calibration data, stored with category `screening` and pruned by D17 — so it is in `WebhookEventTypes()` and `FeedEventTypes()` but not `AllEventTypes()`, and a webhook receives it **only if its R49 `events` filter names it**, the class R49 created for room activity. Schemas, golden vectors, AsyncAPI, the webhook channel and the OpenAPI `EventType` enum all follow. No event ever carries a publisher IP (R39 prohibition). (Revised 2026-10-13 in PR review: the first draft left `room.screening_changed` unregistered and made `observed` reach every unfiltered webhook, so a fresh install in `observe` mode would page its existing pager.) | The reserved `content_flag.raised` today has only `actor`, `broadcastKey`, `broadcastId` and `reason` — not enough to page usefully. Additive fields keep existing consumers valid. OD14's "low priority" needs a mechanism: opt-in delivery is it, and it keeps D19's promise that nothing pages before the operator switches to `flag`. |
@@ -158,7 +160,7 @@ the self-hosting guide says so.
 | `gawk-admin` SPA | Broadcasts view, Rooms view | Flagged broadcasts pinned on top with score, window, age, state and Acknowledge / Dismiss / Watch / Kill; the D12 banner; the room exemption toggle |
 | `gawk-sampler` | — | New module, image, chart, release-please component, CI lane |
 | Broadcaster surfaces | `RelayIdentity` parsed only from `/echo` probes; publish sessions dispatch server uni streams by type | Read `RelayIdentity` on the publish session too, and show the disclosure line (D13) in `gawk-app`, the desktop engine/UI, and `gawk-ios` (a `gawk-ios`-scoped commit in the same PR) |
-| `gawk-app` terms | `public/terms.html` | Screening paragraph |
+| `gawk-app` terms | `src/features/terms/BundledTerms.tsx` (the bundled default; `public/terms.html` is the operator override) | Screening paragraph in §6; `BUNDLED_TERMS_VERSION` moves |
 
 ## 5. `gawk-sampler` knobs
 
@@ -171,6 +173,7 @@ start-up log (the R2 rule).
 | `-admin-url` | *(required)* | `gawk-admin` base URL (in-cluster Service). |
 | `-oidc-issuer` / `-oidc-client-id` | *(required)* | Client-credentials identity (D18); secret from `GAWK_SAMPLER_OIDC_CLIENT_SECRET`. |
 | `-screening-token` | *(required)* | Bearer for the relay keyframe route (D1). |
+| `-oidc-scope` | *(empty)* | Optional `scope` on the client-credentials request. The secret is sent in the form body (`client_secret_post`). |
 | `-model` | `/models/nudenet.onnx` | Model path (D5). |
 | `-model-input` | `320` until CF9 | Square input size (320 or 640). |
 | `-labels` | `FEMALE_GENITALIA_EXPOSED,MALE_GENITALIA_EXPOSED,ANUS_EXPOSED` | Flagged labels (D7). |
@@ -178,12 +181,16 @@ start-up log (the R2 rule).
 | `-interval` | `5s` | Target per-broadcast sample interval (D6). |
 | `-workers` | `GOMAXPROCS` | Concurrent decode+infer slots. |
 | `-decode-timeout` | `2s` | Per-sample ffmpeg wall clock (D4). |
+| `-decode-memory-limit` | `1073741824` | Per-sample ffmpeg `RLIMIT_AS`, in bytes (D4). |
+| `-ffmpeg` | `ffmpeg` | The decoder binary (D5); the image sets its own. |
+| `-onnxruntime-lib` | `/usr/lib/libonnxruntime.so` | The ONNX Runtime shared library (D4). |
 | `-targets-refresh` | `5s` | How often the target list is re-read. |
 | `-sampler-id` | `$POD_NAME` | `samplerId` in flags. |
 | `-shard-index` | the ordinal of `$POD_NAME` (`gawk-sampler-1` ⇒ 1) | This pod's share (D22). A pod name without an ordinal and no explicit value ⇒ refuse to start. |
-| `-shard-count` | chart `replicas` (default `2`) | How many shares there are (D22). `-shard-index` ≥ `-shard-count` ⇒ refuse to start. |
+| `-shard-count` | chart `replicas` (default `2`); `1` outside the chart | How many shares there are (D22). `-shard-index` ≥ `-shard-count` ⇒ refuse to start. |
 | `-report-samples` | `12` | How many recent per-sample scores each tripped POST carries for the auto-kill tier (D14); 1–64. |
 | `-sample-floor` | `0.3` | A sample below it in every flagged label is not stored (D20). |
+| `-log-level` / `-log-format` | `info` / `text` | Logging. Logs name a broadcast by its key, never its raw ID. |
 | `-metrics-addr` | `:9090` | Prometheus — operational metrics only (latency, effective interval, decode failures, POST errors); `off` disables it. Never routed. |
 
 `gawk-admin` gains `-content-flag-repage` (`10m`), `-content-flag-mute`
@@ -281,7 +288,10 @@ body. It is an opaque identity, never a capability.
 registered on the ops listener only when `-screening-token` is non-empty.
 `Authorization: Bearer <token>`, compared in constant time; any other
 credential — the admin token, an admin JWT — is `401`, and the screening
-token is `401` on `/internal/admin/*`. Answers:
+token is `401` on `/internal/admin/*`. The relay refuses to start when
+`-screening-token` equals `-admin-api-token`: one string in both places
+would hand the sampler the publisher IPs D1's separate token exists to keep
+from it. Answers:
 
 | Case | Status |
 |---|---|
@@ -349,6 +359,21 @@ the portal's two banners (D12, D22) read. `GET /api/v1/broadcasts` rows gain
 `contentFlag`: the broadcast's unresolved `flag`-mode flag, if any, which the
 broadcasts view pins to the top (the R39 `FlaggedPinSlot` seam).
 
+As built (2026-10-13), beyond the table: `GET /api/v1/me` reports
+`features.screening`, which is what the SPA gates its screening views on;
+the flag view carries `links.watch` (built from `-app-base-url`, like a
+broadcast row's), omits its optional fields rather than sending `null`, and
+always sends `labels` as an array; a `409` from acknowledge or dismiss
+carries code `content_flag_state`; the room `PATCH` is registered under
+`screening` and answers `404` with rooms off; in `flag` mode the `503
+no_flag_route` and the `202 muted` apply to a cleared POST as well as a
+tripped one; `room.screening_changed` carries `screening: exempt|screened`;
+and the sampler's free-text `summary` stays in the portal — it is never
+delivered as a page's `reason`. The D2 `ended` backstop **fails open**: a
+POST is answered from the relay scan, and on a scan error or a partial
+scan the session is treated as live, while the leader resolves `ended`
+only from a complete scan — so a flaky pod never ends a real flag.
+
 Every state the lifecycle needs is in Postgres, because `gawk-admin` runs
 several replicas behind one Service: `content_flags` (one row per flag, both
 modes, with `recent` and the last POST's body stored for audit),
@@ -372,13 +397,27 @@ score is a candidate when that score is ≥ 0.2; a class-agnostic NMS at
 IoU 0.45 with a 0.25 score floor keeps the boxes. A label's sample score is
 its highest kept box, 0 when it has none.
 
+Three build-time choices sit on top of that:
+
+- ffmpeg runs with `-xerror`, so a concealed (corrupt) frame is a decode
+  failure — not counted, not windowed (D20) — rather than a smeared
+  picture that gets scored.
+- The service clips boxes to the whole square input, because ffmpeg does not
+  report where the picture ends inside the padding; NudeNet clips to the
+  picture. That can change an NMS decision only between overlapping boxes
+  at the picture's edge. `score` and the reference test clip to the picture.
+- `-sample-floor` above `-threshold` is refused at start-up: replay (D21)
+  could never test the threshold the sampler is running.
+
 ### 9.6 Test model and fixtures
 
 CI and the dev stack never load NudeNet. `gawk-sampler/testdata/models/`
 holds a generated ONNX model per input size (320 and 640), with NudeNet's
 input and output shapes (`[1,3,S,S]` → `[1,22,A]`), whose only output is
-`FEMALE_GENITALIA_EXPOSED` at anchor 0 scoring the frame's mean magenta-ness,
-`R·B·(1−G)`. A solid magenta frame scores 1 and the default pubsim fixture
+`FEMALE_GENITALIA_EXPOSED` at anchor 0 scoring the frame's magenta share,
+`Σ R·B·(1−G) / Σ max(R,G,B)` — a ratio rather than a mean, because the
+black letterbox would dilute a mean: a 16:9 magenta frame would score 0.56
+and never trip at 0.8. A solid magenta frame scores 1 and the default pubsim fixture
 scores far below any threshold the sampler accepts as a default. Its generator script is committed beside it. `gawk-pubsim`
 gains `-fixture magenta`: a committed solid-magenta H.264 clip with the
 default fixture's GOP. The post-processing reference vectors (CF5) are the

@@ -173,6 +173,24 @@ Module roles and the facts `ls` can't tell you. Layout itself: read the tree.
   D8; don't "restore" the webhook projection that stripped them.
   Its migrations are forward-only and **a merged migration file is
   immutable**; CI enforces both (`docs/42` §4.15).
+- `gawk-sampler` — automatic content screening (R40, `docs/71`); the
+  **fifth** top-level Go module and fifth deployable, **default off
+  everywhere**, and when installed it starts in `observe` mode, which pages
+  no one. It reads each live broadcast's cached keyframe from the relay's
+  `/internal/screening/…` route (its own `-screening-token`, never the admin
+  token), decodes it in an **ffmpeg subprocess** per sample (a minimal LGPL
+  build, never linked: a decoder crash kills one sample, not the sampler)
+  and scores it in-process with ONNX Runtime; flags go to `gawk-admin`,
+  which is the only actuator. Its shared types are the public
+  `gawk-server/screening` package — a semantic change there needs commits
+  touching `gawk-admin/` **and** `gawk-sampler/` in the same PR. Three
+  prohibitions travel with it: **no frame bytes are ever written to disk,
+  logged, posted or exposed** (D8); the sampler holds only the `flagger`
+  role and the screening token — **it never kills and never reads
+  publisher IPs** (D2, D14); and **no NudeNet code or weights enter the
+  repository or an image** — both are AGPL-3.0, so pre/post-processing is
+  reimplemented and the weights are fetched at deploy time (`docs/71` §8.1).
+  CI and the dev stack run a generated test model instead.
 - `common-ts/` — shared **TypeScript only** (R53): repo-internal npm packages
   with no build step, consumed by the operator SPAs via `file:` (today
   `oidc-session`, the hand-rolled OIDC flow of `gawk-admin` and

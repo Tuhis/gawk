@@ -495,6 +495,28 @@ stack in 90 days.
 | `telemetry` | `telemetry` | `build: {context: ., dockerfile: gawk-telemetry/deploy/Dockerfile}` (**repo root context**). `-session-idle 2m` (must exceed the client's 10 s flush; see `e2e/README.md`). Ingest published on `127.0.0.1` only; the read/dashboard listener is **not** published at all — reach it with `docker compose exec`. *(Since R53 the read listener is published on `127.0.0.1:8091`, OIDC-gated against `fakeidp-telemetry` — §4.8.)* Requires `GAWK_TELEMETRY_KEY` on both relay and service. |
 | `app-dev` | `app-dev` | `image: node:26-alpine`, working dir a bind mount of `./gawk-app`, command `npm run dev -- --host 0.0.0.0 --port 5173`, published on `${BIND_ADDR}:5173:5173`, with an anonymous volume over `/app/node_modules` so the container's install is not shadowed by the host's. When this profile is on, `app` does not start. |
 
+**R40's screening lane is an override file, not a profile** (added
+2026-10-13, docs/71 §9.7): `docker compose -f docker-compose.yml -f
+dev/compose.screening.yml up -d --build --wait`, or that pair in
+`COMPOSE_FILE`. A profile can only add services, and this lane must also
+change two default ones — the relay opens the keyframe route and advertises
+the screening notice, and `gawk-admin` serves the screening routes with a
+pager configured, without which there is no flagging at all (docs/71 D12).
+It adds `sampler-0` and `sampler-1` (the chart's StatefulSet names, so the
+shard index comes from `POD_NAME` as it does there) on the generated test
+model that flags magenta, three `gawk-pubsim -fixture magenta` broadcasters
+(45 s magenta, 45 s grey, looped), and `webhook-sink`
+(`dev/webhook-sink.py`), which prints each delivery as one JSON line. The
+samplers join `gawk-admin`'s network namespace, because the issuer they
+discover their token endpoint from is the portal's own origin
+(`localhost:8088/idp`, §4.8's one-URL trick), which only resolves to the
+portal from inside it; their metrics are published from there on loopback
+(`127.0.0.1:9190`, `:9191`). `e2e/screening-assert.sh` walks the whole flag
+path against it, and the `dev-stack` CI job runs both on every change that
+can break the stack. The sampler always builds from its own Dockerfile —
+it is cgo with ffmpeg and ONNX Runtime beside it, so CI's prebuilt fast path
+has nothing to offer it.
+
 **The compose stack is not a replacement for the editor loop, and the docs
 say so.** Relay work stays `go run ./cmd/gawk-server` on the host — now
 pointed at the same persisted certificate:
@@ -863,6 +885,7 @@ names what is still a manual pass.
 | §4.4 | `lego … --dns manual` | plus `--dns.resolvers` | lego finds the zone to write into by walking up the name with SOA queries, and **Docker's embedded resolver does not answer them**: it walks to the TLD and fails before printing a challenge at all. Defaults to `1.1.1.1:53,8.8.8.8:53`, overridable with `LEGO_DNS_RESOLVERS`. |
 | §4.2.1 | expiry remedy named as `docker compose down -v` | `./dev/certs.sh renew` | With a bind-mounted `certs/`, `down -v` does not remove the pair. One command now covers all three lanes. |
 | §4.0 | — | adds `dev/certs_test.sh`, `dev/stack_test.sh`, `certs/.gitkeep` | LD4 and LD6 require assertions ("asserted by reading the compose file", "each §4.6 row has a test"); these are where they live. |
+| §4.5 (2026-10-13, R40) | optional pieces are profiles (D11) | the screening lane is an override file, `dev/compose.screening.yml` | It must change the relay's and the portal's environment as well as add four services, and a profile can only add services. `dev/stack_test.sh` asserts it merges, adds exactly its four services, publishes on loopback only and builds this checkout. |
 | §4.5 (2026-09-05, R42) | three profiles | a fourth, `rooms`; rooms on in the default lane; `dev/rooms/rooms.json` | Rooms were not in the stack at all when R42 first landed, so testing them locally meant a hand-written compose override and two `docker compose run` publishers whose room code had to be copied out of a log. The static `devroom` gives a link that is the same every time; the profile table above has the rest. |
 
 ### 10.3 What was verified, and how

@@ -161,6 +161,15 @@ release-please cuts all three; the admin and telemetry CI gates already run
 on any `gawk-server/` change. Inside the relay only `internal/ops/auth.go`
 may import it — `TestOnlyTheOpsAuthPathImportsAnOIDCLibrary` enforces that.
 
+**`gawk-server/screening/` has two consumers besides the relay.** R40's
+contract (docs/71 D3) — the keyframe route's headers, the target list, the
+content-flag body, the sample batch, the window rule and `Shard` — is
+compiled into `gawk-admin` and `gawk-sampler`. A semantic change there
+carries a commit touching `gawk-admin/` **and** one touching
+`gawk-sampler/` in the same PR, for the release reason above. `Shard` is
+pinned by golden values on purpose: changing it moves every live broadcast
+to a different sampler on the next rollout and resets its window.
+
 **`common-ts/` holds shared TypeScript, and its consumers are locked to it.**
 `common-ts/<pkg>` is a repo-internal npm package (no build step, never
 published) that an operator SPA depends on as `file:../../common-ts/<pkg>`;

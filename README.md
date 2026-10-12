@@ -10,6 +10,7 @@
 [![Desktop broadcaster](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-broadcast-desktop*&label=broadcast-desktop)](https://github.com/Tuhis/gawk/releases)
 [![Telemetry](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-telemetry*&label=telemetry)](https://github.com/Tuhis/gawk/releases)
 [![Admin](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-admin*&label=admin)](https://github.com/Tuhis/gawk/releases)
+[![Sampler](https://img.shields.io/github/v/release/Tuhis/gawk?filter=gawk-sampler*&label=sampler)](https://github.com/Tuhis/gawk/releases)
 
 Self-hosted, low-latency live game streaming for the browser. A broadcaster
 shares their screen; viewers join with a 6-character code and watch at
@@ -197,6 +198,12 @@ There are five optional compose profiles:
 | `app-dev` | Vite with HMR over a bind mount |
 | `bus` | NATS with JetStream, so the relay's event bus and the portal's activity feed work end to end: `EVENTBUS_URL=nats://nats:4222 docker compose --profile bus up` |
 
+The content-screening sampler has a lane of its own, an override file
+rather than a profile: `docker compose -f docker-compose.yml -f
+dev/compose.screening.yml up` brings up two samplers on a test model that
+flags magenta, magenta synthetic broadcasts and a stand-in pager
+([docs/41](docs/41-local-dev-stack.md) §4.5).
+
 Rooms are on in the stack (they are off by default in a real deployment);
 `devroom` is a static room defined in `dev/rooms/rooms.json`, and any live
 broadcast can mint a dynamic one from its Room panel.
@@ -245,6 +252,7 @@ mode, verification, and upgrades.
 | [`gawk-broadcast-desktop/`](gawk-broadcast-desktop/) | Native **Windows**, **macOS** and **Linux** broadcasters (Rust) — Windows.Graphics.Capture + Media Foundation as a single static EXE; ScreenCaptureKit + VideoToolbox as a notarized `.app`; the XDG portal + GStreamer + PipeWire as a tarball. |
 | [`gawk-telemetry/`](gawk-telemetry/) | Optional per-session diagnostics — ingest, history, dashboard, MCP. Off by default. Image + Helm chart. |
 | [`gawk-admin/`](gawk-admin/) | Optional moderation portal — fleet-wide kill, durable ID/IP bans, OIDC-gated operator SPA, signed webhooks. Off by default. Image + Helm chart. |
+| [`gawk-sampler/`](gawk-sampler/) | Optional content screening — scores each live broadcast's keyframe for explicit content and raises content flags in the portal for a person to judge. Off by default; ships observing, not paging. Image + Helm chart. |
 | [`e2e/`](e2e/) | Browser E2E harness — headless Chrome decoding real relayed frames, plus a kind cluster tier. |
 | [`docs/`](docs/README.md) | Numbered design docs, one per milestone — decisions, rejected alternatives, acceptance criteria. |
 | [`tools/`](tools/) | Repo tooling (third-party license notice generation). |
@@ -301,7 +309,8 @@ actually linked into that artifact:
 [telemetry](gawk-telemetry/THIRD-PARTY-NOTICES.md) ·
 [telemetry UI](gawk-telemetry/ui/THIRD-PARTY-NOTICES.md) ·
 [admin](gawk-admin/THIRD-PARTY-NOTICES.md) ·
-[admin UI](gawk-admin/ui/THIRD-PARTY-NOTICES.md).
+[admin UI](gawk-admin/ui/THIRD-PARTY-NOTICES.md) ·
+[sampler](gawk-sampler/THIRD-PARTY-NOTICES.md).
 Regenerate with `python3 tools/licenses/gen-notices.py`; CI gates every
 dependency against a permissive allowlist. The one non-standard entry: the
 desktop broadcasters' GUI (Windows, macOS and Linux, one shared Slint UI) uses

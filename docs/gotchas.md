@@ -1898,6 +1898,54 @@ entries still describe code `gawk-pubsim` runs (now
   answer that repeat instead, as the mint now does with the minter's room.
   ([docs/44](44-rooms.md) §11.1)
 
+**Content screening (R40)**
+
+- **The relay's `publisherSessionId` is empty whenever telemetry is off** —
+  it is the R28 telemetry handle, not a session identity. Anything that
+  must notice "a new publisher session" (the sampler's window reset,
+  gawk-admin's sample numbering and its `ended` resolution) keys on the
+  **publisher epoch** the hub mints on every claim instead.
+  ([docs/71](71-content-flagging.md) §9.1)
+- **NudeNet's GitHub release downloads redirect anonymous clients to a
+  sign-in page** (seen 2026-10-13; other repositories' release assets still
+  download). The chart pins the weights by the **API asset route**
+  (`api.github.com/repos/…/releases/assets/<id>`), which serves the bytes
+  only with `Accept: application/octet-stream` and JSON metadata otherwise —
+  a downloader that forgets the header gets a few hundred bytes of JSON and
+  a SHA mismatch, not an error that says why. ([docs/71](71-content-flagging.md) D5)
+- **Both NudeNet exports take any input size**, so the 640m weights load
+  and run at `-model-input 320` without complaint — only fixed-shape models
+  can be checked at load. Pair `model.url`/`model.sha256` with
+  `model.inputSize` yourself. ([docs/71](71-content-flagging.md) §9.5)
+- **ffmpeg decodes a truncated keyframe into a smeared picture and exits
+  0.** Error concealment fills in what is missing; without `-xerror` the
+  sampler would score that picture as a real frame. With it, a concealed
+  frame is a decode failure — neither counted nor windowed (D20).
+  ([docs/71](71-content-flagging.md) §9.5)
+- **A whole-frame average is diluted by the letterbox.** The model input is
+  the frame scaled to fit a square and padded with black, so a 16:9 frame
+  fills 56% of it; the test model scores its magenta share as a ratio over
+  the lit pixels, or a solid magenta 16:9 frame would score 0.56 and never
+  trip. ([docs/71](71-content-flagging.md) §9.6)
+- **`content_flag.observed` never reaches an unfiltered webhook.** It is
+  opt-in: a webhook receives it only when its R49 `events` filter names it,
+  so turning on `observe` mode cannot page an existing pager — and a webhook
+  meant to show observed flags must name the type explicitly.
+  ([docs/71](71-content-flagging.md) D16)
+- **A sampler pod on an unreachable node is never replaced by itself.** A
+  StatefulSet will not run two pods of one name, and the old one stays
+  Terminating until its kubelet confirms; a plain `kubectl delete pod`
+  changes nothing. Force-delete it (`--grace-period=0 --force`) or apply the
+  `node.kubernetes.io/out-of-service` taint; until then its share of the
+  fleet is unscreened, which `GawkSamplerShardsMissing` makes loud.
+  ([docs/71](71-content-flagging.md) D22, [self-hosting §13.4](self-hosting.md#134-two-alerts-and-what-to-do-about-them))
+- **In the compose stack, the OIDC issuer only resolves from inside
+  gawk-admin.** It is the portal's own origin (`localhost:8088/idp`), and a
+  client-credentials client discovers its token endpoint from the issuer, so
+  the screening lane's samplers join gawk-admin's network namespace — any
+  other container that needs a token from the dev IdP has to do the same.
+  ([docs/41](41-local-dev-stack.md) §4.5)
+
 **CI / deployment**
 
 - **`-race` and a coverage profile in one `go test` run compound
