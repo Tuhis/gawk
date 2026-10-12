@@ -221,4 +221,178 @@ pod's window state, which refills in 30 s; the sample count lives in
 
 ## 8. Licence check and calibration
 
-*Licence findings filled in by CF0; the calibration run by CF9.*
+### 8.1 Licence check (CF0, 2026-10-13)
+
+| What | Licence | Source |
+|---|---|---|
+| NudeNet code (`notAI-tech/NudeNet`, default branch `v3`) | **AGPL-3.0** — `LICENSE` and `LICENSE.md` both carry the AGPL-3.0 text since 2023-11-06; GitHub's licence detection agrees. `setup.py` still declares MIT, a stale classifier the licence files override. | `LICENSE`, `LICENSE.md`, the commit history of both, `setup.py` |
+| Detector weights (`320n.onnx`, `640m.onnx`, release `v3.4-weights`, 2024-06-30) | **No separate licence.** The release notes are empty and the README says nothing about the weights, so they are published under the repository's AGPL-3.0. They are fine-tuned from Ultralytics YOLOv8n/v8m, which is itself AGPL-3.0. | the release, the README's model table |
+
+**Verdict: the gate passes; OD5 stands.** AGPL-3.0 restricts conveying and
+modifying, not running: a deployment that downloads the unmodified weights
+and runs them is a use the licence grants. D5's shape is exactly what keeps
+gawk on the right side of that line — the chart fetches the file at deploy
+time from NudeNet's own release (pinned URL and SHA-256), so gawk never
+conveys it, and nothing gawk distributes is a modified version of it.
+
+Two consequences shape the build:
+
+- **No NudeNet code enters the repository.** The repository's licence policy
+  (CONTRIBUTING.md) admits no copyleft code, so the sampler's pre- and
+  post-processing are reimplemented from the YOLOv8 output format, not
+  ported from NudeNet's Python (§9.5). The label vocabulary is restated as
+  data, which interoperability needs.
+- **No weights enter the repository or an image.** CI and the dev stack
+  run a generated test model (§9.6). The post-processing reference vectors
+  are numbers derived from running the model, never the model.
+
+The minimal ffmpeg in the image is LGPL-2.1-or-later (built without
+`--enable-gpl` and `--enable-nonfree`) and runs as a separate executable,
+never linked into the sampler. The image carries its licence text and the
+exact source URL and configure line it was built from.
+
+### 8.2 Calibration (CF9)
+
+*Filled in by the CF9 run on the reference deployment.*
+
+## 9. Implementation contract (2026-10-13)
+
+Decisions the build took that the sections above leave open. Each is a
+contract between at least two modules; the code cites these numbers.
+
+### 9.1 Publisher epoch
+
+The design keys windows (D7), sample numbering (D20), `recent` (D14) and the
+`ended` resolution (D9) on the **publisher session**, but the relay's only
+session handle, `publisherSessionId`, is the R28 telemetry handle and is empty
+whenever telemetry is off. The relay therefore mints a **publisher epoch**:
+16 lower-case hex characters from `crypto/rand`, minted on every
+publisher-slot claim (new session, reclaim, takeover) in
+`claimPublisherLocked`, present whatever telemetry is set to, and kept for the
+hub's life after the publisher leaves. It is carried as
+`adminapi.Broadcast.PublisherEpoch` (`publisherEpoch`) on
+`/internal/admin/broadcasts`, as the `X-Gawk-Publisher-Epoch` header on the
+keyframe route, and as `publisherEpoch` in every `gawk-server/screening`
+body. It is an opaque identity, never a capability.
+
+### 9.2 Keyframe route
+
+`GET /internal/screening/broadcasts/{id}/keyframe` (`screening.KeyframeRoutePattern`),
+registered on the ops listener only when `-screening-token` is non-empty.
+`Authorization: Bearer <token>`, compared in constant time; any other
+credential — the admin token, an admin JWT — is `401`, and the screening
+token is `401` on `/internal/admin/*`. Answers:
+
+| Case | Status |
+|---|---|
+| No hub, no cached keyframe, **or no active publisher** | `404` |
+| `If-None-Match` equals the current ETag | `304`, ETag and epoch headers, no body |
+| Otherwise | `200`, `Content-Type: application/vnd.gawk.stream-frame`, the StreamFrame verbatim, `ETag: "<epoch>-<frameID>"`, `X-Gawk-Codec`, `X-Gawk-Publisher-Epoch`, `Cache-Control: no-store` |
+
+The "no active publisher" `404` goes one step past D1's wording: a broadcast
+in its away grace still caches the frame its broadcaster last sent, and D2
+already decided that frame must not be scored. The target list leaves those
+broadcasts out; the route gives the same answer to a sampler acting on a
+list up to one refresh old.
+
+### 9.3 Wire: the notices byte
+
+`RelayIdentity` gains `Notices` (one byte), appended after the name and
+written **only when non-zero**, so every existing vector and every relay with
+`-screening-notice` off stays byte-identical. Bit 0
+(`RelayNoticeScreening`, `0x01`) is the screening notice; the other bits are
+reserved and **ignored by parsers** — this is an appended field, the message's
+extension mechanism, not the strict flags byte. A parser reads the first byte
+after the name, when present, as `Notices`, and still ignores anything after
+it. Golden vector, byte-identical in Go, `wire.ts` and `crates/wire`:
+
+    RelayIdentity{ServerVersion: "1.42.0", Name: "gawk home", Notices: 0x01}
+    01110006312e34322e30096761776b20686f6d6501
+
+The existing "tolerates trailing bytes" vectors (`…a1b2c3`) now parse with
+`Notices = 0xa1` — still a successful parse, which is what those tests
+protect; they assert the new field too.
+
+On publish sessions the relay sends this `RelayIdentity` (same version and
+name as `/echo`) on its own server-opened uni stream at session start, only
+when `-screening-notice` is on, from its own goroutine like the `/echo` send.
+Subscribe and `/internal/subscribe` sessions never receive it. `/echo`
+carries the bit too, so the desktop and iOS pre-live probes see it.
+
+### 9.4 `gawk-admin` surface
+
+Routes (all under `x-gawk-requires: screening`, registered only with
+`gawk-admin -screening`, chart `screening.enabled`; off, they fall to the
+catch-all `404` exactly as R39's reserved route did):
+
+| Route | Role | Answers |
+|---|---|---|
+| `POST /api/v1/content-flags` | `flagger` | `201 raised`, `200 updated` / `resolved`, `202 muted` / `ended` / `ignored` (`screening.FlagResponse`); `400`; `503 no_flag_route` (flag mode only) |
+| `GET /api/v1/screening/targets?shard=&of=` | `flagger` | `screening.TargetsResponse`; `400` on a missing or out-of-range pair |
+| `POST /api/v1/screening/samples` | `flagger` | `200 {"stored": n}` |
+| `POST /api/v1/screening/replay` | `operator` | `screening.ReplayResponse`; `400` for a threshold under the floor |
+| `GET /api/v1/content-flags` | `operator` | `{"contentFlags": [ContentFlag…], "screening": Status}` — query `state=unresolved\|resolved\|all` (default `unresolved`), `mode=flag\|observe\|all` (default `flag`), `limit` |
+| `POST /api/v1/content-flags/{id}/acknowledge` | `operator` | the flag; `409` unless `open` |
+| `POST /api/v1/content-flags/{id}/dismiss` | `operator` | the flag, resolved `dismissed`, the broadcast muted for `-content-flag-mute`; `409` when already resolved |
+| `PATCH /api/v1/rooms/{name}` body `{"screening": "exempt"\|""}` | `operator` | the room; `400 screening_not_allowed` unless static with an attach secret; also needs `-rooms` |
+
+A `ContentFlag` (portal view) carries `id`, `mode`, `state`
+(`open`/`acknowledged`/`resolved`), `resolution`
+(`cleared`/`dismissed`/`killed`/`auto_killed`/`ended`), `resolutionReason`
+(`stale`, `deadline`, `policy`), `broadcastId`, `broadcastKey`,
+`publisherEpoch`, `samplerId`, `raisedAt`, `updatedAt`, `lastPostAt`,
+`acknowledgedAt`/`acknowledgedBy`, `resolvedAt`/`resolvedBy`, `signal`
+(`live`/`unknown`/`cleared`), `window`, `scores`, `labels`, `labelCounts`,
+`peakScore`, `reminders` (count) and `mutedUntil`. `Status` carries
+`flagRoute`, `expectedShards`, `missingShards` (indices) and `lastPollAt`, which
+the portal's two banners (D12, D22) read. `GET /api/v1/broadcasts` rows gain
+`contentFlag`: the broadcast's unresolved `flag`-mode flag, if any, which the
+broadcasts view pins to the top (the R39 `FlaggedPinSlot` seam).
+
+Every state the lifecycle needs is in Postgres, because `gawk-admin` runs
+several replicas behind one Service: `content_flags` (one row per flag, both
+modes, with `recent` and the last POST's body stored for audit),
+`screening_mutes` (broadcast ID → until), `screening_sessions`,
+`screening_samples`, and `screening_shard_polls` (one row per shard index:
+`of`, sampler ID, last poll time), which every replica reads to compute
+`missingShards` and `gawk_admin_screening_shards_missing`. The reminder,
+deadline, stale and session-end jobs run on the leader's tick, like ban
+expiry.
+
+### 9.5 Model input and score
+
+The sampler reproduces NudeNet's own pre- and post-processing, reimplemented
+in Go from the YOLOv8 output format — **no NudeNet code is vendored or
+ported** (§8.1). Pre-processing: the frame is scaled to fit the model's
+square input with its aspect ratio kept, padded with black on the right and
+bottom, RGB, scaled to 0–1, NCHW — NudeNet pads to a square before resizing,
+which is the same image. That takes ffmpeg's `pad` filter, so D5's filter
+list gains `pad`. Post-processing: per anchor, the class with the highest
+score is a candidate when that score is ≥ 0.2; a class-agnostic NMS at
+IoU 0.45 with a 0.25 score floor keeps the boxes. A label's sample score is
+its highest kept box, 0 when it has none.
+
+### 9.6 Test model and fixtures
+
+CI and the dev stack never load NudeNet. `gawk-sampler/testdata/models/`
+holds a generated ONNX model per input size (320 and 640), with NudeNet's
+input and output shapes (`[1,3,S,S]` → `[1,22,A]`), whose only output is
+`FEMALE_GENITALIA_EXPOSED` at anchor 0 scoring the frame's mean magenta-ness,
+`R·B·(1−G)`. A solid magenta frame scores 1 and the default pubsim fixture
+scores far below any threshold the sampler accepts as a default. Its generator script is committed beside it. `gawk-pubsim`
+gains `-fixture magenta`: a committed solid-magenta H.264 clip with the
+default fixture's GOP. The post-processing reference vectors (CF5) are the
+real 320n model's raw outputs on public-domain photographs (sources listed
+beside them), committed as the candidate rows only, with NudeNet's detections
+for each; the photographs themselves are not committed.
+
+### 9.7 Dev stack
+
+The compose stack gains a `screening` profile (docs/41): two samplers
+(`gawk-sampler-0`, `gawk-sampler-1`, the StatefulSet's shape) on the test
+model, a `gawk-pubsim` publishing `-fixture magenta`, and a webhook receiver
+that records deliveries. `gawk-admin` runs with `-screening` there and the fake
+IdP's client-credentials grant serves a `flagger` client beside the rooms bot.
+The relay runs with a dev screening token and the notice on. CI's `dev-stack`
+job runs the profile and asserts the flag path end to end, so the lane cannot
+rot unnoticed.
