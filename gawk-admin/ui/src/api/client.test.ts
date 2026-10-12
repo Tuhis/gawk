@@ -174,6 +174,50 @@ describe('the events cursor', () => {
   });
 });
 
+// R40 (docs/71 §9.4).
+describe('content flags and screening', () => {
+  it('asks for unresolved flag-mode flags by default and keeps the status', async () => {
+    const status = { flagRoute: false, expectedShards: 2, missingShards: [1], lastPollAt: null };
+    const { api, session } = client(() => json({ contentFlags: [{ id: 1 }], screening: status }));
+    await expect(api.contentFlags()).resolves.toEqual({ contentFlags: [{ id: 1 }], screening: status });
+    expect(session.calls[0].path).toBe('api/v1/content-flags?state=unresolved&mode=flag&limit=50');
+  });
+
+  it('reads a response without a status as healthy and quiet, not as an alarm', async () => {
+    const { api } = client(() => json({}));
+    await expect(api.contentFlags('all', 'observe', 10)).resolves.toEqual({
+      contentFlags: [],
+      screening: { flagRoute: true, expectedShards: 0, missingShards: [], lastPollAt: null },
+    });
+  });
+
+  it('acknowledges and dismisses by flag id', async () => {
+    const { api, session } = client(() => json({ id: 7 }));
+    await api.acknowledgeContentFlag(7);
+    await api.dismissContentFlag(7);
+    expect(session.calls.map((c) => [c.init.method, c.path])).toEqual([
+      ['POST', 'api/v1/content-flags/7/acknowledge'],
+      ['POST', 'api/v1/content-flags/7/dismiss'],
+    ]);
+  });
+
+  it('replays through POST /screening/replay', async () => {
+    const { api, session } = client(() => json({ wouldTrips: 0 }));
+    const req = { threshold: 0.8, window: 6, windowHits: 4, from: 'a', to: 'b' };
+    await api.replay(req);
+    expect(session.calls[0].path).toBe('api/v1/screening/replay');
+    expect(JSON.parse(String(session.calls[0].init.body))).toEqual(req);
+  });
+
+  it('PATCHes a room’s screening field and nothing else', async () => {
+    const { api, session } = client(() => json({ name: 'tuhisroom' }));
+    await api.setRoomScreening('TuhisRoom', 'exempt');
+    expect(session.calls[0].path).toBe('api/v1/rooms/TuhisRoom');
+    expect(session.calls[0].init.method).toBe('PATCH');
+    expect(JSON.parse(String(session.calls[0].init.body))).toEqual({ screening: 'exempt' });
+  });
+});
+
 describe('the refusal envelope', () => {
   it('surfaces the API’s own code and message', async () => {
     const { api } = client(() =>

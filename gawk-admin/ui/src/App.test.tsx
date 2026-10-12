@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { App } from './App.tsx';
@@ -160,6 +160,24 @@ describe('the shell', () => {
     await screen.findByRole('heading', { name: 'Broadcasts' });
     fireEvent.click(await screen.findByRole('link', { name: 'Rooms' }));
     expect(await screen.findByRole('heading', { name: 'Rooms' })).toBeTruthy();
+  });
+
+  // Calibration (R40) follows `features.screening` the same way, and with it
+  // on the fleet view starts reading content flags.
+  it('offers Calibration and reads flags only when the probe reports screening', async () => {
+    const off = mount(OPERATOR);
+    await screen.findByRole('heading', { name: 'Broadcasts' });
+    expect(screen.queryByRole('link', { name: 'Calibration' })).toBeNull();
+    expect(off.calls.some((c) => c.path.startsWith('api/v1/content-flags'))).toBe(false);
+    cleanup();
+
+    const on = mount({ ...OPERATOR, features: { screening: true } });
+    await screen.findByRole('heading', { name: 'Broadcasts' });
+    await waitFor(() => {
+      expect(on.calls.some((c) => c.path.startsWith('api/v1/content-flags'))).toBe(true);
+    });
+    fireEvent.click(await screen.findByRole('link', { name: 'Calibration' }));
+    expect(await screen.findByRole('heading', { name: 'Calibration' })).toBeTruthy();
   });
 
   it('follows a nav link', async () => {

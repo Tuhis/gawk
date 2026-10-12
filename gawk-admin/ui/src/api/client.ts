@@ -16,6 +16,9 @@ import type {
   BanCursor,
   BanPage,
   BroadcastsPage,
+  ContentFlag,
+  ContentFlagMode,
+  ContentFlagPage,
   CreateBanRequest,
   CreateWebhookRequest,
   EventPage,
@@ -23,7 +26,10 @@ import type {
   KillResponse,
   Me,
   Relay,
+  ReplayRequest,
+  ReplayResponse,
   Room,
+  RoomScreening,
   RoomWithSecret,
   CreateRoomRequest,
   Webhook,
@@ -247,6 +253,59 @@ export class ApiClient {
   /** The dynamic-only alias of delete (409 room_not_dynamic on a static room). */
   async endRoom(name: string): Promise<void> {
     await this.request(`rooms/${encodeURIComponent(name)}/end`, { method: 'POST' });
+  }
+
+  /**
+   * Exempt a static, secret-gated room from screening, or screen it again
+   * (R40, docs/71 D11). Anything else is `400 screening_not_allowed`.
+   */
+  setRoomScreening(name: string, screening: RoomScreening): Promise<Room> {
+    return this.json<Room>(`rooms/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ screening }),
+    });
+  }
+
+  // R40 content flags (docs/71 §9.4). Every route 404s when the deployment has
+  // screening off; the shell consults `me.features.screening` first.
+
+  /**
+   * Content flags plus the screening plane's health. A response missing the
+   * status (an older binary) reads as healthy and quiet rather than as an
+   * alarm nobody can act on.
+   */
+  async contentFlags(
+    state: 'unresolved' | 'resolved' | 'all' = 'unresolved',
+    mode: ContentFlagMode | 'all' = 'flag',
+    limit = 50,
+  ): Promise<ContentFlagPage> {
+    const qs = new URLSearchParams({ state, mode, limit: String(limit) });
+    const page = await this.json<Partial<ContentFlagPage>>(`content-flags?${qs.toString()}`);
+    return {
+      contentFlags: page.contentFlags ?? [],
+      screening: {
+        flagRoute: page.screening?.flagRoute ?? true,
+        expectedShards: page.screening?.expectedShards ?? 0,
+        missingShards: page.screening?.missingShards ?? [],
+        lastPollAt: page.screening?.lastPollAt ?? null,
+      },
+    };
+  }
+
+  /** "I'm looking": stops reminders and deadlines, resolves nothing (D9). `409` unless open. */
+  acknowledgeContentFlag(id: number): Promise<ContentFlag> {
+    return this.post<ContentFlag>(`content-flags/${id}/acknowledge`, {});
+  }
+
+  /** Resolve as `dismissed` and mute the broadcast for `-content-flag-mute` (D10). */
+  dismissContentFlag(id: number): Promise<ContentFlag> {
+    return this.post<ContentFlag>(`content-flags/${id}/dismiss`, {});
+  }
+
+  /** "What would this setting have done?" over the stored samples (D21). */
+  replay(req: ReplayRequest): Promise<ReplayResponse> {
+    return this.post<ReplayResponse>('screening/replay', req);
   }
 }
 

@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import { ApiError } from '../api/client.ts';
-import type { Room, RoomParticipant, RoomWithSecret } from '../api/types.ts';
+import type { Room, RoomParticipant, RoomScreening, RoomWithSecret } from '../api/types.ts';
 import { AuthRedirect } from '@gawk/oidc-session';
 import { Dialog } from '../components/Dialog.tsx';
 import { formatInstant } from '../lib/format.ts';
@@ -25,8 +25,20 @@ import ui from '../styles/ui.module.css';
  * The attach secret is shown EXACTLY ONCE, in the reveal panel after a create
  * or a rotation. The API has no route that returns it again; an operator who
  * loses it rotates.
+ *
+ * With R40's screening on, a static room with an attach secret can be exempted
+ * from content screening (docs/71 D11): the secret is the trust boundary that
+ * makes "my friends' room" a closed lane. Open and dynamic rooms are never
+ * offered the toggle, and the server refuses them anyway.
  */
-export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
+export function RoomsView({
+  initialFilter = '',
+  screening = false,
+}: {
+  initialFilter?: string;
+  /** R40: show the screening column and the exemption toggle. */
+  screening?: boolean;
+}) {
   const api = useApi();
   const load = useCallback(() => api.rooms(), [api]);
   const { data, error, loading, reload } = useLoader<Room[]>(load);
@@ -43,6 +55,7 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
   const [reveal, setReveal] = useState<RoomWithSecret | null>(null);
   const [rotating, setRotating] = useState<Room | null>(null);
   const [ending, setEnding] = useState<Room | null>(null);
+  const [exempting, setExempting] = useState<{ room: Room; to: RoomScreening } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -73,6 +86,25 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
       reload();
     } catch (err) {
       if (err instanceof AuthRedirect) return;
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setScreening(room: Room, to: RoomScreening) {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.setRoomScreening(room.name, to);
+      setExempting(null);
+      reload();
+    } catch (err) {
+      if (err instanceof AuthRedirect) return;
+      if (err instanceof ApiError && err.code === 'screening_not_allowed') {
+        setActionError('Only a static room with an attach secret can be exempt from screening.');
+        return;
+      }
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -129,7 +161,7 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
       ) : error ? (
         <p className={ui.error}>{error}</p>
       ) : null}
-      {actionError && !rotating && !ending && !creating ? (
+      {actionError && !rotating && !ending && !creating && !exempting ? (
         <p className={ui.error} role="alert">
           {actionError}
         </p>
@@ -150,6 +182,7 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
                 <th>Home</th>
                 <th>Key</th>
                 <th>Gate</th>
+                {screening ? <th>Screening</th> : null}
                 <th>Created</th>
                 <th>Actions</th>
               </tr>
@@ -223,6 +256,18 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
                         <span className={ui.badge}>open</span>
                       )}
                     </td>
+                    {screening ? (
+                      <td>
+                        <ScreeningCell
+                          room={r}
+                          busy={busy}
+                          onChange={(to) => {
+                            setActionError(null);
+                            setExempting({ room: r, to });
+                          }}
+                        />
+                      </td>
+                    ) : null}
                     <td className={ui.nowrap}>{r.createdAt ? formatInstant(r.createdAt) : ''}</td>
                     <td>
                       <div className={ui.actions}>
@@ -259,7 +304,7 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
                   </tr>
                   {expanded === r.name ? (
                     <tr className={ui.recessed}>
-                      <td colSpan={10}>
+                      <td colSpan={screening ? 11 : 10}>
                         <RoomDetail name={r.name} />
                       </td>
                     </tr>
@@ -320,6 +365,42 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
         </Dialog>
       ) : null}
 
+      {exempting ? (
+        <Dialog
+          title={
+            exempting.to === 'exempt'
+              ? `Exempt ${exempting.room.code} from screening`
+              : `Screen ${exempting.room.code} again`
+          }
+          busy={busy}
+          onCancel={() => setExempting(null)}
+        >
+          <p className={ui.sub}>
+            {exempting.to === 'exempt'
+              ? 'The sampler stops screening every broadcast while it is attached to this room. Whoever holds the attach secret can then stream unscreened — rotate it if it leaks. The change is recorded as room.screening_changed.'
+              : 'Broadcasts attached to this room are screened again from the sampler’s next target refresh. The change is recorded as room.screening_changed.'}
+          </p>
+          {actionError ? (
+            <p className={ui.error} role="alert">
+              {actionError}
+            </p>
+          ) : null}
+          <div className={ui.actions}>
+            <button
+              type="button"
+              className={ui.primary}
+              disabled={busy}
+              onClick={() => void setScreening(exempting.room, exempting.to)}
+            >
+              {exempting.to === 'exempt' ? 'Exempt' : 'Screen again'}
+            </button>
+            <button type="button" disabled={busy} onClick={() => setExempting(null)}>
+              Cancel
+            </button>
+          </div>
+        </Dialog>
+      ) : null}
+
       {ending ? (
         <Dialog
           title={ending.kind === 'dynamic' ? `End room ${ending.code}` : `Delete room ${ending.code}`}
@@ -347,6 +428,54 @@ export function RoomsView({ initialFilter = '' }: { initialFilter?: string }) {
         </Dialog>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * A room's screening state and, where it is allowed, the toggle. Only a static
+ * room with an attach secret may be exempt (docs/71 D11); every other room is
+ * screened and says why it cannot be otherwise.
+ */
+function ScreeningCell({
+  room,
+  busy,
+  onChange,
+}: {
+  room: Room;
+  busy: boolean;
+  onChange: (to: RoomScreening) => void;
+}) {
+  const exempt = room.screening === 'exempt';
+  const eligible = room.kind === 'static' && room.hasAttachSecret;
+  if (exempt) {
+    return (
+      <div className={ui.actions}>
+        <span className={ui.badgeWarn} title="The sampler skips broadcasts attached to this room">
+          exempt
+        </span>
+        <button type="button" disabled={busy} onClick={() => onChange('')}>
+          Screen again
+        </button>
+      </div>
+    );
+  }
+  if (!eligible) {
+    return (
+      <span
+        className={ui.dim}
+        title="Only a static room with an attach secret can be exempt: an open or dynamic room would be an unscreened lane for anyone with the link"
+      >
+        screened
+      </span>
+    );
+  }
+  return (
+    <div className={ui.actions}>
+      <span className={ui.dim}>screened</span>
+      <button type="button" disabled={busy} onClick={() => onChange('exempt')}>
+        Exempt…
+      </button>
+    </div>
   );
 }
 
