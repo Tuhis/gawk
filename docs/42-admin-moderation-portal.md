@@ -751,6 +751,13 @@ Frozen contract, named **content flags** throughout (D11):
   "summary": "sustained NSFW signal on ABC123-key" }
 ```
 
+- **R40 additions** (2026-10-13, [docs/71](71-content-flagging.md) D9,
+  D14, D19): three additive body fields. `mode` (`observe` | `flag`) is
+  **required** — absent or unknown is `400`, because it decides between
+  paging and silence. `state` (`tripped` | `cleared`) lets the sampler
+  resolve a flag explicitly. `recent` carries the session's last per-sample
+  scores (≤ 64) for the auto-kill tier. The schema name stays
+  `gawk.content-flag.v1`; nothing produced the body before R40.
 - **Effect** (R40 implements): insert a `content_flags` row, emit
   `content_flag.raised` (webhook fires — this *is* the operator page), pin
   the broadcast row in the portal. Flag events carry scores and metadata
