@@ -2,9 +2,9 @@
   "components": {
     "gawk-admin": {
       "component": "gawk-admin",
-      "covered": 2798,
+      "covered": 2799,
       "label": "admin",
-      "pct": 78.7,
+      "pct": 78.8,
       "total": 3554,
       "unit": "statements"
     },
