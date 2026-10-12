@@ -34,7 +34,7 @@ your laptop in about five minutes with a self-signed certificate.
 | `gawk-admin` *(optional)* | The moderation portal: fleet-wide kill, durable ID/IP bans, signed webhooks. **Off by default; skip it on a first install.** | ClusterIP by default; an OIDC-gated Ingress is a deliberate opt-in ([§9](#9-gawk-admin--the-moderation-portal-r39)) |
 
 The native broadcasters (`gawk-broadcast-linux`, `gawk-broadcast-windows` and
-`gawk-broadcast-macos`, and the older Go Linux app `gawk-broadcast`) are
+`gawk-broadcast-macos`) are
 **not** deployed — they are binaries a
 broadcaster downloads and runs against your relay. Nothing here installs
 them.
