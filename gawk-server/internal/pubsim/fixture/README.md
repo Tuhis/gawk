@@ -67,6 +67,45 @@ ffmpeg -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=2" \
   -f mpegts sample-large.ts
 ```
 
+## `sample-magenta.ts` — the R40 screening fixture (docs/71 §9.6, CF8)
+
+Same container and encoder invariants as `sample.ts` (the table above holds
+verbatim: 320x240, GOP 15, no B-frames, SPS+PPS before every IDR), but
+**1 s of solid magenta (`#FF00FF`) followed by 1 s of solid mid-grey
+(`#808080`)** — 60 frames, keyframes at 0, 15, 30 and 45, each half starting
+on one. ~21 KB.
+
+Published by `gawk-pubsim -fixture magenta`, which does not loop the 2 s clip
+as it is: `pubsim.PhasedLoop` repeats the magenta half to **1350 frames
+(45 s at the default 30 fps)** and then the grey half to 1350 frames, and that
+90 s sequence is what loops. The CI and dev-stack screening model scores
+magenta as a flagged label and grey far below any threshold, so a single
+publisher session trips the sampler's window in the first phase and clears it
+in the second — the one-session trip-and-clear docs/71 CF8 asserts. The dev
+stack and the screening assertions rely on those phase lengths
+(`pubsim.MagentaPhaseFrames`); change them together.
+
+The long phases are built in Go rather than committed because MPEG-TS costs
+~350 bytes a frame however little the picture holds: a committed 90 s clip
+measured 931 KB, almost all of it container padding. Repeating whole halves
+keeps every repetition a closed set of GOPs, so a decoder that starts at any
+keyframe — which is all R40's sampler ever decodes — sees a valid stream.
+
+Regenerated with (any ffmpeg with libx264; a BtbN `n8.1` static build was used):
+
+```sh
+ffmpeg -f lavfi -i "color=c=0xFF00FF:size=320x240:rate=30:duration=1" \
+  -f lavfi -i "color=c=0x808080:size=320x240:rate=30:duration=1" \
+  -filter_complex "[0:v][1:v]concat=n=2:v=1:a=0,format=yuv420p[v]" -map "[v]" \
+  -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline \
+  -bf 0 -g 15 -keyint_min 15 -sc_threshold 0 \
+  -x264-params "repeat-headers=1:annexb=1" \
+  -f mpegts sample-magenta.ts
+```
+
+`TestMagentaFixtureShape` and `TestPhasedLoopBuildsTwoLongPhases` pin the
+shape the loop depends on.
+
 ## `sample-audio.opus` — the Opus fixture (R25, docs/28 Decision 12)
 
 `sample-audio.opus` is 101 Opus packets — 48 kHz stereo, 20 ms each (~2 s),
