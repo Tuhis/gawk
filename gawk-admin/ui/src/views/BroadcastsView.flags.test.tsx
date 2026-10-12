@@ -173,8 +173,12 @@ describe('the actions', () => {
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Acknowledge' }));
     expect(await screen.findByText(/Acknowledged flag #12 on ABC123/)).toBeTruthy();
-    const broadcastsReads = session.calls.filter((c) => c.path === 'api/v1/broadcasts').length;
-    expect(broadcastsReads).toBeGreaterThanOrEqual(2);
+    // Awaited, not read once: the re-read is the loader's effect after the
+    // notice renders, so on a slow runner the notice can be on screen a tick
+    // before the second fetch is issued.
+    await waitFor(() =>
+      expect(session.calls.filter((c) => c.path === 'api/v1/broadcasts').length).toBeGreaterThanOrEqual(2),
+    );
   });
 
   // Someone else (or the lifecycle) got there first: say so, do not retry.
