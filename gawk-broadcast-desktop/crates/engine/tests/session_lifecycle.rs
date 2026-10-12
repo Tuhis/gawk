@@ -377,13 +377,19 @@ impl RelaySession for NoticeLeg {
     fn open_keyframe_stream(&self) -> BoxFuture<'_, Result<Box<dyn KeyframeWriter>, String>> {
         Box::pin(async { Ok(Box::new(InstantWriter) as Box<dyn KeyframeWriter>) })
     }
+    // Taken when the future is POLLED, not when it is built: the session's
+    // select! loop builds a fresh accept_uni() future every turn and drops it
+    // whenever another branch wins (the first ping tick does, at once), so an
+    // eager take loses the stream on whichever turn select! happens not to
+    // poll it — a real QUIC accept is cancel-safe, and the fake must be too.
     fn accept_uni(&self) -> BoxFuture<'_, Result<Box<dyn ServerStream>, String>> {
-        match self.stream.lock().unwrap().take() {
-            Some(msg) => {
-                Box::pin(async move { Ok(Box::new(OneStream(Some(msg))) as Box<dyn ServerStream>) })
+        Box::pin(async move {
+            let msg = self.stream.lock().unwrap().take();
+            match msg {
+                Some(msg) => Ok(Box::new(OneStream(Some(msg))) as Box<dyn ServerStream>),
+                None => std::future::pending().await,
             }
-            None => Box::pin(std::future::pending()),
-        }
+        })
     }
     fn receive_datagram(&self) -> BoxFuture<'_, Result<Vec<u8>, String>> {
         Box::pin(std::future::pending())
