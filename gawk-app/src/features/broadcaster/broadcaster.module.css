@@ -114,6 +114,18 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The relay's screening notice (docs/71 D13): quiet like the watching
+   figure, and allowed to wrap — it is a sentence, and the topbar's left
+   group already wraps on a narrow screen. */
+.noticeBadge {
+  color: var(--muted);
+  border-color: var(--glass-border);
+  background: rgba(0, 0, 0, 0.35);
+  white-space: normal;
+  max-width: min(92vw, 420px);
+  line-height: 1.35;
+}
+
 .sending {
   font-size: var(--fs-xs);
   color: var(--muted);

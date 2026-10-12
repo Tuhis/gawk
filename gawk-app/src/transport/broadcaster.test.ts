@@ -39,8 +39,10 @@ import { EncoderSupportProber } from '../media/probe';
 import { DEFAULT_CAPTURE_CONFIG } from '../media/types';
 import { CLOCK_MAPPING_INTERVAL_MS } from './time-sync';
 import {
+  RELAY_NOTICE_SCREENING,
   TYPE_CLOCK_MAPPING,
   TYPE_TIME_SYNC,
+  encodeRelayIdentity,
   encodeTimeSync,
   encodeViewerCount,
   parseClockMapping,
@@ -338,6 +340,35 @@ describe('BroadcastPipeline announce handling', () => {
     ]);
     expect(outcome).toBe('started');
     expect(startCapture).toHaveBeenCalled();
+    await pipeline.stop();
+  });
+});
+
+// R40 (docs/71 D13): a relay with -screening-notice sends its RelayIdentity
+// on the publish session, and the pipeline hands it out without letting it
+// gate or disturb the broadcast.
+describe('BroadcastPipeline relay identity (R40)', () => {
+  it('delivers the screening notice from the publish session', async () => {
+    const identity = encodeRelayIdentity({
+      serverVersion: '1.42.0',
+      name: 'gawk home',
+      notices: RELAY_NOTICE_SCREENING,
+    });
+    const fake = makeFakeWT([identity.subarray(0, 5), identity.subarray(5)]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    const cbs = { ...makeCallbacks(), onRelayIdentity: vi.fn<NonNullable<BroadcastCallbacks['onRelayIdentity']>>() };
+    const pipeline = makePipeline(cbs);
+    await pipeline.start();
+    await vi.waitFor(() =>
+      expect(cbs.onRelayIdentity).toHaveBeenCalledWith({
+        serverVersion: '1.42.0',
+        name: 'gawk home',
+        notices: RELAY_NOTICE_SCREENING,
+      }),
+    );
+    expect(cbs.onError).not.toHaveBeenCalled();
+    expect(cbs.onEnded).not.toHaveBeenCalled();
     await pipeline.stop();
   });
 });

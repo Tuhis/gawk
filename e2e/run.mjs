@@ -49,6 +49,13 @@
 //                             out of the room (the relay keeps attachments
 //                             across a session end) with the broadcast still
 //                             live.
+//   node run.mjs --screening-notice
+//                             R40 CF7 (docs/71 D13) — the relay runs with
+//                             -screening-notice and the Z5 browser broadcaster
+//                             must show the screening line once LIVE, learnt
+//                             from its publish session alone (no server
+//                             picker, no probe). The --browser-broadcast pass
+//                             is the control: no flag, no line.
 //   node run.mjs --muxer-check
 //                             R22 MF1 (docs/27 Decision 10) — the production
 //                             fMP4 muxer's output must PLAY in a real Chrome
@@ -100,6 +107,13 @@ const ROOMS_CHECK = process.argv.includes('--rooms');
 // relay needs a -rooms-file source, and the publisher has to be the BROWSER
 // (the state only exists for a participant that brought a stream of its own).
 const ROOMS_GATED_CHECK = process.argv.includes('--rooms-gated');
+// R40 (docs/71 D13, CF7): the screening notice. Its own mode — the relay
+// needs -screening-notice, and every other pass is the control: the
+// --browser-broadcast pass asserts the line is ABSENT on a relay without it.
+const SCREENING_NOTICE_CHECK = process.argv.includes('--screening-notice');
+// The line, restated from gawk-app/src/features/broadcaster/screeningNotice.ts:
+// the harness asserts what a broadcaster reads, not what the code imports.
+const SCREENING_NOTICE_TEXT = 'This server automatically screens streams for explicit content.';
 // The gated room the pass writes into that file. The code follows the
 // broadcast-ID alphabet like every room code; the secret is a fixture, not a
 // credential — it never leaves this harness's temp file.
@@ -1430,11 +1444,38 @@ async function broadcasterScenario({ relayUrl, certHash, attempt }) {
     await sleep(SAMPLE_GAP_MS);
     const diag2 = await captureDiagnostics(page, `broadcast-diagnostics-${attempt}-2`);
     assertBroadcastFlow(diag1, diag2);
+    // R40 control (docs/71 D13): this relay runs without -screening-notice,
+    // so its publish session carries no identity and the broadcaster must
+    // show no screening line. Checked after the funnel's ~10 s, long past the
+    // session-start stream a screening relay would have sent.
+    if ((await page.getByTestId('screening-notice').count()) !== 0) {
+      fail('the broadcaster shows the screening notice on a relay without -screening-notice');
+    }
 
     return { browser, id };
   } catch (err) {
     await browser.close();
     throw err;
+  }
+}
+
+// R40 (docs/71 D13, CF7): a relay started with -screening-notice says so on
+// the publish session, and the web broadcaster — on its configured relay,
+// with the server picker never opened, so no /echo probe ever ran — shows
+// the one line. LIVE is reached first: the notice must never gate the start.
+async function screeningNoticePass({ relayUrl, certHash }) {
+  const { browser, page, id } = await startBrowserBroadcast({ relayUrl, certHash, attempt: 'screening' });
+  try {
+    const notice = page.getByTestId('screening-notice');
+    await notice.waitFor({ state: 'visible', timeout: 10_000 });
+    const text = ((await notice.textContent()) ?? '').trim();
+    if (text !== SCREENING_NOTICE_TEXT) fail(`screening notice reads "${text}", want "${SCREENING_NOTICE_TEXT}"`);
+    if ((await page.getByText(SCREENING_NOTICE_TEXT).count()) !== 1) {
+      fail('the screening notice is shown more than once');
+    }
+    log(`screening notice shown on ${id}, from the publish session alone`);
+  } finally {
+    await browser.close();
   }
 }
 
@@ -1984,6 +2025,9 @@ async function main() {
     if (TELEMETRY_CHECK) relayArgs.push('-telemetry-key', TELEMETRY_KEY);
     // R42: the room routes exist only with the flag on (docs/44 D17).
     if (ROOMS_CHECK || ROOMS_GATED_CHECK) relayArgs.push('-rooms');
+    // R40: the screening notice is off unless asked for; every other pass is
+    // its control.
+    if (SCREENING_NOTICE_CHECK) relayArgs.push('-screening-notice');
     // R42 D8: the static room, from the file source — the shape an operator
     // writes where there is no Kubernetes API, and the only way to get a
     // gated room without a cluster.
@@ -2039,7 +2083,7 @@ async function main() {
       log(`telemetry service up: ingest :${TM_INGEST_PORT}, read :${TM_READ_PORT}`);
     }
 
-    if (!BROWSER_BROADCAST && !ROOMS_CHECK && !ROOMS_GATED_CHECK) {
+    if (!BROWSER_BROADCAST && !ROOMS_CHECK && !ROOMS_GATED_CHECK && !SCREENING_NOTICE_CHECK) {
       const pubsim = launch('pubsim', PUBSIM_BIN, [
         '-url', relayUrl,
         '-insecure',
@@ -2073,6 +2117,13 @@ async function main() {
   // it needs the preview server too.
   if (ROOMS_GATED_CHECK) {
     await roomsGatedPass({ relayUrl, certHash, opsUrl });
+    log('PASS');
+    return;
+  }
+
+  // R40: the browser is the publisher, so it needs the preview server too.
+  if (SCREENING_NOTICE_CHECK) {
+    await screeningNoticePass({ relayUrl, certHash });
     log('PASS');
     return;
   }

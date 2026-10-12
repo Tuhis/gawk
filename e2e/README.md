@@ -196,6 +196,20 @@ HTTP status, so 403 and 404 are indistinguishable in the browser.
 Artifacts: `rooms-gated-card.png`, `rooms-gated-wrong-secret.png`,
 `rooms-gated-attached.png`, `console-broadcaster-gated.log`.
 
+## Screening notice (R40)
+
+```sh
+cd e2e && node run.mjs --screening-notice
+```
+
+The relay starts with `-screening-notice`, and the Z5 tab-capture broadcaster
+goes LIVE on it. The relay says so in a `RelayIdentity` on the publish
+session itself (`docs/71` D13), so the line "This server automatically
+screens streams for explicit content." must appear on the LIVE topbar, once,
+with the server picker never opened — no `/echo` probe runs in this pass. The
+`--browser-broadcast` pass is the control: its relay has no flag, and it
+asserts the line is absent. Artifact: `console-broadcaster-screening.log`.
+
 ## fMP4 muxer playback check (R22)
 
 ```sh

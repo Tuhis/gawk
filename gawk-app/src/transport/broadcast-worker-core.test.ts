@@ -211,6 +211,8 @@ describe('BroadcastWorkerCore event mapping', () => {
     const info = { codec: 'avc1.42E02A' } as EncoderConfigured;
     cbs.onEncoderConfigured(info);
     cbs.onBroadcastId?.('K7XQ2M');
+    const identity = { serverVersion: '1.42.0', name: '', notices: 1 };
+    cbs.onRelayIdentity?.(identity);
     const stats = { encodedFrames: 7 } as BroadcastStats;
     cbs.onStats(stats);
     cbs.onError(new Error('mid-stream failure'));
@@ -219,6 +221,7 @@ describe('BroadcastWorkerCore event mapping', () => {
     expect(events).toContainEqual({ type: 'capturePath', path: 'mstp-worker' });
     expect(events).toContainEqual({ type: 'encoderConfigured', info });
     expect(events).toContainEqual({ type: 'broadcastId', id: 'K7XQ2M' });
+    expect(events).toContainEqual({ type: 'relayIdentity', identity });
     expect(events).toContainEqual({ type: 'stats', stats });
     expect(events).toContainEqual({ type: 'error', message: 'mid-stream failure' });
     expect(events).toContainEqual({ type: 'ended' });

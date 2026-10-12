@@ -65,8 +65,10 @@ vi.mock('./workerBroadcastSession', () => ({
 import { BroadcasterScreen } from './BroadcasterScreen';
 import { BroadcastStartError, type BroadcastStats } from '../../transport/broadcaster';
 import { acceptCurrentTerms } from '../terms/acceptance';
-import { useTransportStore } from '../../state/transportStore';
+import { resolvedUrlIsDefault, useTransportStore } from '../../state/transportStore';
 import { BUNDLED_TERMS_VERSION, SITE_DOWNLOAD_URL } from '../../config';
+import { RELAY_NOTICE_SCREENING } from '../../transport/wire';
+import { SCREENING_NOTICE } from './screeningNotice';
 import {
   AUDIO_NOTE,
   AUDIO_SETTINGS,
@@ -190,6 +192,68 @@ describe('BroadcasterScreen start failure after capture', () => {
 
     await waitFor(() => expect(screen.getByText('Couldn’t start')).toBeTruthy());
     expect(screen.queryByText('LIVE')).toBeNull();
+  });
+});
+
+// R40 (docs/71 D13, CF7): the line shows when — and only when — the publish
+// session carried the screening bit, on the default relay, with no server
+// picker ever opened.
+describe('BroadcasterScreen screening notice (R40)', () => {
+  it('shows the line when the publish session says the relay screens', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onSourceStream(fakeStream);
+      cbs.onRelayIdentity?.({ serverVersion: '1.42.0', name: '', notices: RELAY_NOTICE_SCREENING });
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.getByTestId('screening-notice').textContent).toBe(SCREENING_NOTICE);
+    expect(screen.getAllByText(SCREENING_NOTICE)).toHaveLength(1);
+    // The default relay, reached without the picker: no probe told us.
+    expect(resolvedUrlIsDefault()).toBe(true);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('shows nothing when the relay sends no identity', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onSourceStream(fakeStream);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.queryByTestId('screening-notice')).toBeNull();
+  });
+
+  it('shows nothing when the identity carries no screening bit', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onSourceStream(fakeStream);
+      // Bit 0 clear; an unknown bit means nothing to this build.
+      cbs.onRelayIdentity?.({ serverVersion: '1.42.0', name: '', notices: 0x02 });
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.queryByTestId('screening-notice')).toBeNull();
+  });
+
+  it('forgets the notice when the next broadcast starts', async () => {
+    scripts.push(async (cbs) => {
+      cbs.onBroadcastId?.('AB2CD3');
+      cbs.onSourceStream(fakeStream);
+      cbs.onRelayIdentity?.({ serverVersion: '1.42.0', name: '', notices: RELAY_NOTICE_SCREENING });
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+    await waitFor(() => expect(screen.getByTestId('screening-notice')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /stop broadcast/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /start a stream/i })).toBeTruthy());
+    scripts.push(async (cbs) => {
+      cbs.onSourceStream(fakeStream);
+    });
+    startBroadcast();
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.queryByTestId('screening-notice')).toBeNull();
   });
 });
 

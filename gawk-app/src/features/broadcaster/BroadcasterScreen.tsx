@@ -35,7 +35,8 @@ import { ServerPickerPanel } from '../servers/ServerPickerPanel';
 import { acceptCurrentTerms, hasAcceptedCurrentTerms } from '../terms/acceptance';
 import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
-import type { TelemetryHelloMessage } from '../../transport/wire';
+import { relayScreens, type RelayIdentityMessage, type TelemetryHelloMessage } from '../../transport/wire';
+import { SCREENING_NOTICE } from './screeningNotice';
 import { buildViewLink, nonDefaultRelayOrigin } from '../../lib/shareLink';
 import {
   buildDesktopBroadcastLink,
@@ -165,6 +166,10 @@ export function BroadcasterScreen({
   // explains the stop on the card the broadcaster comes back to.
   const watchdogRef = useRef(new BackgroundWatchdog());
   const [backgroundStopNote, setBackgroundStopNote] = useState<string | null>(null);
+  // Whether this broadcast's publish session said its relay screens streams
+  // (docs/71 D13). Only the session can say so: the web app runs no probe
+  // without user action (docs/40 SP6).
+  const [screeningNotice, setScreeningNotice] = useState(false);
   const [resumeAttempt, setResumeAttempt] = useState<number | null>(null);
   // The relay-minted resume token, kept next to the broadcast ID (a ref, not
   // state — nothing renders it) so a manual restart can reclaim.
@@ -350,6 +355,8 @@ export function BroadcasterScreen({
     diagRef.current = new DiagnosticsBuffer<BroadcastStats>();
     watchdogRef.current.reset();
     setBackgroundStopNote(null);
+    // A new broadcast may be on another relay: its own session re-says it.
+    setScreeningNotice(false);
 
     const makeCallbacks = (afterFailedReclaim: boolean) => ({
       onSourceStream: (s: MediaStream) => {
@@ -438,6 +445,11 @@ export function BroadcasterScreen({
         if (!resolvedUrlIsDefault()) {
           useTransportStore.getState().setForeignTelemetryActive(true);
         }
+      },
+      // The relay sends its identity on the publish session only when it has
+      // a notice; the line is a disclosure, never a gate (docs/71 D13).
+      onRelayIdentity: (identity: RelayIdentityMessage) => {
+        setScreeningNotice(relayScreens(identity));
       },
     });
 
@@ -960,6 +972,13 @@ export function BroadcasterScreen({
         {stats?.viewerCount != null && (
           <span className={`${styles.badge} ${styles.watchingBadge}`}>
             <EyeIcon /> {fmtWatching(stats.viewerCount)}
+          </span>
+        )}
+        {/* In the topbar so the plain stage and the room's stage both carry
+            it; not dismissable — it describes the server, not a choice. */}
+        {screeningNotice && (
+          <span className={`${styles.badge} ${styles.noticeBadge}`} role="note" data-testid="screening-notice">
+            {SCREENING_NOTICE}
           </span>
         )}
         {room && (

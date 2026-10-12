@@ -49,6 +49,7 @@ function makeCallbacks() {
     onError: vi.fn<BroadcastCallbacks['onError']>(),
     onEnded: vi.fn<BroadcastCallbacks['onEnded']>(),
     onBroadcastId: vi.fn<NonNullable<BroadcastCallbacks['onBroadcastId']>>(),
+    onRelayIdentity: vi.fn<NonNullable<BroadcastCallbacks['onRelayIdentity']>>(),
   };
 }
 
@@ -258,6 +259,16 @@ describe('WorkerBroadcastSession failure + end mapping', () => {
     expect(cbs.onBroadcastId).toHaveBeenCalledWith('K7XQ2M');
     expect(cbs.onStats).toHaveBeenCalledWith(stats);
     expect(cbs.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'mid-stream failure' }));
+  });
+
+  // Safari's broadcaster runs in the worker; the screening notice must reach
+  // its UI too (docs/71 D13).
+  it('forwards the relay identity to the callbacks', () => {
+    const { session, worker, cbs } = makeSession();
+    void session.start().catch(() => {});
+    const identity = { serverVersion: '1.42.0', name: 'gawk home', notices: 1 };
+    worker.emit({ type: 'relayIdentity', identity });
+    expect(cbs.onRelayIdentity).toHaveBeenCalledWith(identity);
   });
 
   it('ended stops the preview tracks, fires onEnded, terminates the worker', async () => {
