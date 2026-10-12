@@ -270,6 +270,23 @@ type Config struct {
 	AdminOIDCRolesClaim string
 	AdminOIDCRole       string
 
+	// ScreeningToken is the bearer credential for R40's keyframe route on the
+	// ops listener, GET /internal/screening/broadcasts/{id}/keyframe (docs/71
+	// D1) — held by gawk-sampler. Deliberately NOT the admin token: the admin
+	// token also reads publisher IPs, which the sampler never needs (least
+	// privilege), so the two must differ (enforced in ParseFlags). Empty
+	// leaves the route unregistered (404). Compared in constant time. Never
+	// logged.
+	ScreeningToken string
+
+	// ScreeningNotice advertises "this server screens streams for explicit
+	// content" to every broadcaster (docs/71 D13): the RelayIdentity notices
+	// bit, on /echo and — only while this is on — on its own uni stream on
+	// every publish session. A separate knob rather than "a token is set",
+	// because the relay cannot see whether a sampler actually runs; the chart
+	// docs pair the two. A notice, never a gate.
+	ScreeningNotice bool
+
 	// MaxIdleTimeout: the effective QUIC idle timeout is the minimum of both
 	// endpoints' advertised values (browsers advertise ~30s), so raising this
 	// alone does not keep idle viewers alive — KeepAlivePeriod is the
@@ -436,6 +453,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"dot-path to the roles array inside an admin JWT; {audience} is substituted into each segment")
 	adminOIDCRole := fs.String("admin-oidc-role", env("GAWK_ADMIN_OIDC_ROLE", DefaultAdminOIDCRole),
 		"role an admin JWT must carry in the roles claim")
+	screeningToken := fs.String("screening-token", env("GAWK_SCREENING_TOKEN", ""),
+		"static bearer token for the R40 keyframe route on the ops listener (/internal/screening/*), held by gawk-sampler; must differ from -admin-api-token; empty leaves the route unregistered (404)")
+	screeningNotice := fs.Bool("screening-notice", envBool("GAWK_SCREENING_NOTICE", false),
+		"tell every broadcaster this server automatically screens streams for explicit content (R40 RelayIdentity notice on /echo and publish sessions)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -448,10 +469,18 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	// The token is trimmed because AdminAuth.authorize trims the PRESENTED
 	// credential; an untrimmed configured token would match nobody (a silent
 	// 401 for every caller).
+	// The screening token is trimmed for the same reason as the admin one: the
+	// route trims the presented credential.
 	for _, p := range []*string{
 		adminAPIToken, adminOIDCIssuer, adminOIDCAudience, adminOIDCRolesClaim, adminOIDCRole,
+		screeningToken,
 	} {
 		*p = strings.TrimSpace(*p)
+	}
+	// One token for both routes would hand the sampler publisher IPs and the
+	// portal a frame tap — the least-privilege split docs/71 D1 exists for.
+	if *screeningToken != "" && *screeningToken == *adminAPIToken {
+		return Config{}, fmt.Errorf("screening-token must differ from admin-api-token")
 	}
 
 	level, err := parseLogLevel(*logLevel)
@@ -679,6 +708,9 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		AdminOIDCAudience:   *adminOIDCAudience,
 		AdminOIDCRolesClaim: *adminOIDCRolesClaim,
 		AdminOIDCRole:       *adminOIDCRole,
+
+		ScreeningToken:  *screeningToken,
+		ScreeningNotice: *screeningNotice,
 
 		Rooms:               *roomsFlag,
 		RoomEmptyGrace:      roomGrace,

@@ -57,6 +57,8 @@ deployment must not be able to turn TLS verification off by setting one
 | `-admin-oidc-audience` | `GAWK_ADMIN_OIDC_AUDIENCE` | (empty; must be set together with `-admin-oidc-issuer`) |
 | `-admin-oidc-roles-claim` | `GAWK_ADMIN_OIDC_ROLES_CLAIM` | `resource_access.{audience}.roles` (`{audience}` substituted; may not be blank once OIDC is configured) |
 | `-admin-oidc-role` | `GAWK_ADMIN_OIDC_ROLE` | `operator` (may not be blank once OIDC is configured) |
+| `-screening-token` | `GAWK_SCREENING_TOKEN` | (empty; `/internal/screening/*` is never registered — 404. Must differ from `-admin-api-token`) |
+| `-screening-notice` | `GAWK_SCREENING_NOTICE` | `false` (tell every broadcaster this server screens streams for explicit content) |
 | `-eventbus-url` | `GAWK_EVENTBUS_URL` | (empty = the R50 event bus is off entirely) |
 | `-eventbus-creds-file` | `GAWK_EVENTBUS_CREDS_FILE` | (empty; path to a NATS `.creds` file) |
 | `-eventbus-tls-cert` / `-eventbus-tls-key` | `GAWK_EVENTBUS_TLS_CERT` / `_KEY` | (empty; a client certificate — with `verify_and_map` its subject DN is the NATS user) |
@@ -197,6 +199,31 @@ ops listener is never routed publicly and the routes are credential-gated.
 `moderation.adminApi.token` / `.tokenRef` and `moderation.adminApi.oidc.*`,
 and the chart refuses to render any of them with `metrics.enabled: false` —
 that would switch off the very listener they ride.
+
+**`-screening-token`** gates R40's keyframe route,
+`GET /internal/screening/broadcasts/{id}/keyframe`, on the same ops listener
+([docs/71](../../docs/71-content-flagging.md) D1, §9.2): the one read
+`gawk-sampler` makes of the relay. It returns the broadcast's cached keyframe
+— the StreamFrame bytes verbatim — with `X-Gawk-Codec`,
+`X-Gawk-Publisher-Epoch` and an `ETag` of publisher session and frame ID; a
+matching `If-None-Match` is a 304, so an unchanged frame costs nothing. 404
+means there is nothing to score now: no such broadcast, no keyframe yet, or a
+publisher in its away grace (a frozen frame is never scored). Like the admin
+routes, the surface stays dark — 404, not 401 — until the token is set. It is
+**its own credential**: the admin token and admin JWTs are refused here, the
+screening token is refused on `/internal/admin/*`, and the relay refuses to
+start when the two tokens are equal, because the admin surface reads
+publisher IPs and the sampler must never be able to. Chart-side:
+`screening.token` / `.tokenSecretRef`, also refused with
+`metrics.enabled: false`.
+
+**`-screening-notice`** advertises the screening to every broadcaster
+(docs/71 D13): the `RelayIdentity` notices bit on `/echo`, and — only while
+it is on — one `RelayIdentity` stream on every publish session, which the
+web, desktop and iOS broadcasters show as one line on the broadcast screen.
+Off, publish sessions are byte-identical to a relay without the feature. It
+is a separate switch from the token because the relay cannot see whether a
+sampler actually runs; turn both on together. Chart-side: `screening.notice`.
 
 **The cluster flags** (`-cluster-mode` and the shared keys/PSK) enable the
 multi-pod federation — per-broadcast Kubernetes origin Leases, pod-to-pod

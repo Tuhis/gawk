@@ -962,6 +962,12 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	// Where this session's telemetry should go — composes with the hello,
 	// never sent on /internal/subscribe.
 	s.sendTelemetryEndpoint(sess, log)
+	// R40's screening notice (docs/71 D13): the broadcaster is told on the
+	// session it always opens. Off its own goroutine like the /echo send —
+	// the datagram loop below must not wait on a client's uni credit.
+	if s.cfg.ScreeningNotice {
+		go s.sendRelayIdentity(sess, log)
+	}
 
 	log.Info("publisher session started")
 

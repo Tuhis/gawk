@@ -49,7 +49,7 @@ func adminHandler(t *testing.T, cfg config.Config, auth *AdminAuth,
 		PublisherRemote: remote,
 		Auth:            auth,
 		Log:             discardLog,
-	})
+	}, nil)
 	return h, r
 }
 
@@ -84,7 +84,7 @@ func TestAdminRoutesAreDarkWithoutACredential(t *testing.T) {
 			var h http.Handler
 			if tc.auth == nil && tc.admin == nil {
 				r := hub.NewRegistry(discardLog, hub.Options{})
-				h = Handler(r, nil, metrics.NewBaseRegistry("v"), discardLog, nil, nil)
+				h = Handler(r, nil, metrics.NewBaseRegistry("v"), discardLog, nil, nil, nil)
 			} else {
 				h, _ = adminHandler(t, config.Config{}, tc.auth, nil)
 			}
@@ -223,11 +223,11 @@ func TestStatuszStaysByteIdenticalOnBothListeners(t *testing.T) {
 		Auth: staticAuth(t, adminToken), Log: discardLog,
 		// R49: a relay serving the rooms route too (docs/50 RA1).
 		Rooms: func() []adminapi.Room { return []adminapi.Room{{Code: "tuhisroom", Key: "k"}} },
-	})
+	}, nil)
 	// ...the same listener with it disabled...
 	promReg2 := metrics.NewBaseRegistry("test-version")
 	promReg2.MustRegister(metrics.NewRegistryCollector(r))
-	withoutAdmin := Handler(r, nil, promReg2, discardLog, nil, nil)
+	withoutAdmin := Handler(r, nil, promReg2, discardLog, nil, nil, nil)
 	// ...and the H3 route, which is the bare shared handler.
 	h3 := StatuszHandler(r, nil, discardLog)
 
@@ -289,7 +289,7 @@ func TestAdminRoomsRoute(t *testing.T) {
 					Participants: []adminapi.RoomParticipant{{ID: 1, Nickname: "tuhis", ClientKind: "native", Streaming: true}},
 				}}
 			},
-		})
+		}, nil)
 		w := get(h, "/internal/admin/rooms", adminToken)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", w.Code)

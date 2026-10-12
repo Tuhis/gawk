@@ -63,7 +63,10 @@ func StatuszHandler(r *hub.Registry, rooms RoomStatsSource, log *slog.Logger) ht
 // so those paths 404 exactly as they did before R39. Everything else on this
 // mux is unauthenticated and unchanged: /statusz in particular stays
 // HMAC-only and byte-identical.
-func Handler(r *hub.Registry, rooms RoomStatsSource, g prometheus.Gatherer, log *slog.Logger, ready func() bool, admin *AdminOptions) http.Handler {
+//
+// screening adds R40's keyframe route under its own token (docs/71 D1).
+// Nil — or an empty token — registers nothing: the path 404s.
+func Handler(r *hub.Registry, rooms RoomStatsSource, g prometheus.Gatherer, log *slog.Logger, ready func() bool, admin *AdminOptions, screening *ScreeningOptions) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok"))
@@ -82,6 +85,10 @@ func Handler(r *hub.Registry, rooms RoomStatsSource, g prometheus.Gatherer, log 
 			"routes", "/internal/admin/broadcasts,/internal/admin/config,/internal/admin/rooms",
 			"static_token", admin.Auth.token != nil,
 			"oidc_issuer", admin.Config.AdminOIDCIssuer)
+	}
+	if registerScreening(mux, screening) {
+		log.Info("relay screening keyframe route enabled on the ops listener",
+			"route", "/internal/screening/broadcasts/{id}/keyframe")
 	}
 	return mux
 }

@@ -106,16 +106,25 @@ func (s *Server) sendTelemetryEndpoint(sess *webtransport.Session, log *slog.Log
 
 // sendRelayIdentity answers a probe's identity half (docs/40 §4.4): one
 // RelayIdentity on a uni stream at /echo session start. Runs in its own
-// goroutine so an echo client that grants no uni credit or never reads can't
-// wedge the echo loop. Media routes never call this.
+// goroutine so a client that grants no uni credit or never reads can't wedge
+// the session's loop. Since R40 (docs/71 D13) a publish session gets one too
+// — only with -screening-notice on, so with it off publish sessions stay
+// byte-identical — because the publish session is the one channel every
+// broadcaster opens, at exactly the moment the notice matters. Subscribe and
+// /internal/subscribe never call this.
 func (s *Server) sendRelayIdentity(sess *webtransport.Session, log *slog.Logger) {
 	version := s.cfg.ReleaseVersion
 	if version == "" {
 		version = "dev"
 	}
+	var notices uint8
+	if s.cfg.ScreeningNotice {
+		notices |= wire.RelayNoticeScreening
+	}
 	msg, err := wire.AppendRelayIdentity(nil, wire.RelayIdentity{
 		ServerVersion: version,
 		Name:          s.cfg.ServerName,
+		Notices:       notices,
 	})
 	if err != nil {
 		// Config parsing validated the name; a bad build-stamped version is

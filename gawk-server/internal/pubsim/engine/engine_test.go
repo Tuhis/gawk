@@ -470,6 +470,44 @@ func TestUnknownServerMessageTypeIsTolerated(t *testing.T) {
 	}
 }
 
+// R40 (docs/71 D13): a relay with -screening-notice on sends a RelayIdentity
+// on every publish session. gawk-pubsim — what the dev stack, e2e and the
+// screening tier drive — has no notice to show; it must take the stream in
+// its stride and keep publishing, whatever order the streams land in.
+func TestPublishSessionRelayIdentityIsToleratedAndMediaFlows(t *testing.T) {
+	sess := newFakeSession()
+	media := newFakeMedia()
+	notice, err := wire.AppendRelayIdentity(nil, wire.RelayIdentity{
+		ServerVersion: "1.42.0", Name: "screened", Notices: wire.RelayNoticeScreening,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.incoming <- announceStream(notice)
+	announce, err := wire.AppendBroadcastAnnounce(nil, "K7M2QP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.incoming <- announceStream(announce)
+
+	gotID := make(chan string, 1)
+	s := New(Config{RelayURL: "https://relay.example"},
+		Callbacks{OnBroadcastID: func(id string) { gotID <- id }},
+		testOpts(sess, media, &FakeClock{}))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	select {
+	case <-gotID:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a publish-session RelayIdentity broke server-message dispatch")
+	}
+	media.frames <- AccessUnit{Data: []byte{0, 0, 0, 1, 0x41, 0xaa}, TimestampUs: 1}
+	waitFor(t, func() bool { return len(sess.sentDatagrams()) > 0 }, "media sent after the notice")
+}
+
 // The captured token is surfaced (hex, the relay's query-param encoding) so
 // the app can persist it beside the broadcast ID — an R17 relay refuses every
 // /publish/{id} claim without it.

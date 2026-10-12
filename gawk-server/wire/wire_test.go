@@ -1717,6 +1717,13 @@ const (
 	// -server-name still identifies the release.
 	goldenRelayIdentityNoNameHex = "01110006312e34322e3000"
 
+	// RelayIdentity carrying the R40 screening notice (docs/71 §9.3): the
+	// "gawk home" vector plus one appended notices byte.
+	//
+	//   01 11 00 06 "1.42.0" 09 "gawk home"   as goldenRelayIdentityHex
+	//   01                                    notices = RelayNoticeScreening
+	goldenRelayIdentityScreeningHex = "01110006312e34322e30096761776b20686f6d6501"
+
 	// TelemetryEndpoint: the reference deployment's ingest URL shape (R37,
 	// docs/40 §4.10).
 	//
@@ -1753,10 +1760,57 @@ func TestGoldenRelayIdentity(t *testing.T) {
 	if !bytes.Equal(gotNoName, wantNoName) {
 		t.Fatalf("no-name golden mismatch:\n got %x\nwant %x", gotNoName, wantNoName)
 	}
+	// The pre-R40 vectors carry no notices byte and parse with none.
+	if id.Notices != 0 {
+		t.Fatalf("old-shape identity parsed Notices = %#x, want 0", id.Notices)
+	}
 }
 
-// The extension-point contract (docs/40 §4.4/§4.9): trailing bytes parse as
-// if absent — appended fields must not break R37-era readers.
+// R40 (docs/71 §9.3): the screening notice is one appended byte, written
+// only when non-zero — so Notices: 0 is byte-identical to the R37 vector.
+func TestGoldenRelayIdentityScreeningNotice(t *testing.T) {
+	want := mustHex(t, goldenRelayIdentityScreeningHex)
+	got, err := AppendRelayIdentity(nil, RelayIdentity{ServerVersion: "1.42.0", Name: "gawk home", Notices: RelayNoticeScreening})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("golden mismatch:\n got %x\nwant %x", got, want)
+	}
+	id, err := ParseRelayIdentity(want)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if id.ServerVersion != "1.42.0" || id.Name != "gawk home" || id.Notices != RelayNoticeScreening {
+		t.Fatalf("round-trip mismatch: %+v", id)
+	}
+
+	zero, err := AppendRelayIdentity(nil, RelayIdentity{ServerVersion: "1.42.0", Name: "gawk home", Notices: 0})
+	if err != nil {
+		t.Fatalf("append zero notices: %v", err)
+	}
+	if !bytes.Equal(zero, mustHex(t, goldenRelayIdentityHex)) {
+		t.Fatalf("Notices: 0 is not byte-identical to the R37 vector: %x", zero)
+	}
+}
+
+// Notices is an appended field, not the strict flags byte: bits no reader
+// knows are carried through and must not fail the parse.
+func TestRelayIdentityUnknownNoticeBitsParse(t *testing.T) {
+	msg := append(mustHex(t, goldenRelayIdentityHex), 0xfe)
+	id, err := ParseRelayIdentity(msg)
+	if err != nil {
+		t.Fatalf("parse with unknown notice bits: %v", err)
+	}
+	if id.Notices != 0xfe || id.Notices&RelayNoticeScreening != 0 {
+		t.Fatalf("Notices = %#x, want 0xfe without the screening bit", id.Notices)
+	}
+}
+
+// The extension-point contract (docs/40 §4.4/§4.9): trailing bytes never
+// fail a parse — appended fields must not break R37-era readers. Since R40
+// the first of them is the notices byte; everything after it is still
+// ignored.
 func TestRelayIdentityToleratesTrailingBytes(t *testing.T) {
 	msg := append(mustHex(t, goldenRelayIdentityHex), 0xa1, 0xb2, 0xc3)
 	id, err := ParseRelayIdentity(msg)
@@ -1765,6 +1819,9 @@ func TestRelayIdentityToleratesTrailingBytes(t *testing.T) {
 	}
 	if id.ServerVersion != "1.42.0" || id.Name != "gawk home" {
 		t.Fatalf("trailing bytes changed the parse: %+v", id)
+	}
+	if id.Notices != 0xa1 {
+		t.Fatalf("Notices = %#x, want the first trailing byte 0xa1", id.Notices)
 	}
 }
 

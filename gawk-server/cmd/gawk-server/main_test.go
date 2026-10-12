@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -21,6 +23,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
+	"github.com/Tuhis/gawk/gawk-server/internal/ops"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomcluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/transport"
@@ -90,6 +93,33 @@ func TestRoomOptionsCarryAllKnobs(t *testing.T) {
 	}
 	if got := roomOptions(cfg); !reflect.DeepEqual(got, want) {
 		t.Errorf("roomOptions(cfg) = %+v, want %+v", got, want)
+	}
+}
+
+// R40 (docs/71 D1): -screening-token reaches the ops route in production —
+// the R2 rule for the one new knob that is not a transport read — and what
+// main builds really registers it: with the token set, a wrong credential is
+// refused (401, the route exists); with it empty, the path is a 404.
+func TestScreeningOptionsCarryTheToken(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	r := hub.NewRegistry(log, hub.Options{})
+	opts := screeningOptions(config.Config{ScreeningToken: "scr"}, r, log)
+	if opts.Token != "scr" || opts.Registry != r {
+		t.Fatalf("screeningOptions = %+v, want the token and the registry", opts)
+	}
+	status := func(cfg config.Config) int {
+		h := ops.Handler(r, nil, metrics.NewBaseRegistry("v"), log, nil, nil, screeningOptions(cfg, r, log))
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/internal/screening/broadcasts/ZZZZZZ/keyframe", nil)
+		req.Header.Set("Authorization", "Bearer wrong")
+		h.ServeHTTP(w, req)
+		return w.Code
+	}
+	if got := status(config.Config{ScreeningToken: "scr"}); got != http.StatusUnauthorized {
+		t.Errorf("route with a token configured = %d, want 401", got)
+	}
+	if got := status(config.Config{}); got != http.StatusNotFound {
+		t.Errorf("route with no token = %d, want 404 (unregistered)", got)
 	}
 }
 
