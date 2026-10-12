@@ -240,7 +240,7 @@ delta for `replicas: 2+`:
    explicit key wins over the publish-secret derivation and is what keeps
    one broadcaster from computing another's resume token (a secret-derived
    key is computable by every secret-holder; PR #47 security review).
-   Confirm `resume_token_key_mode=explicit-key` in the startup log.
+   Confirm `config.resumeTokenKey` = `<set:explicit-key>` in the startup log.
    `config.internalServerName` defaults to `certificate.dnsNames[0]`.
    The chart refuses `replicas > 1` without `clusterMode`.
 
