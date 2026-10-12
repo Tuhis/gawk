@@ -253,6 +253,11 @@ Add to it when a new gotcha lands in `docs/`.
   "server didn't enable WebTransport".
 - Go *clients* need `EnableStreamResetPartialDelivery: true` in their
   `quic.Config`. ([docs/02](02-webtransport-hello.md))
+- **`Upgrade` writes no status when it fails.** Without an explicit
+  `w.WriteHeader(...)` after a failed `s.wt.Upgrade`, the client sees an
+  implicit 200 and believes it connected. Every upgrade-failure path in
+  `internal/transport` writes its own status; a new route must too.
+  ([docs/22](22-relay-scale-out.md) finding 12)
 - **Chrome never reads a close code this relay sends.** `CloseWithError`
   sends STOP_SENDING on the CONNECT stream in the same packet as the close
   capsule, and *ahead* of it. Chrome fails the session on that frame, so
@@ -919,6 +924,18 @@ Add to it when a new gotcha lands in `docs/`.
   effective timeout is the min of both endpoints' advertised values and
   browsers advertise ~30s. The server-side keepalive (`-keepalive-period`)
   is the mechanism. ([docs/05](05-resilience-deploy.md))
+- **Any repeated relay datagram is a keepalive, so keep re-announce bursts
+  tight.** Datagrams are ack-eliciting: the `DeliveryAck` (0x0C) re-announce
+  covers only the startup race (4 × 150 ms), and repeats spread over seconds
+  would hold an idle connection past `-max-idle-timeout` on their own.
+  `TestIdleSubscriberTimesOutWithoutKeepalive` guards it.
+  ([docs/26](26-relay-dvr-buffer.md))
+- **The viewer-count pump must keep emitting while the publisher is away.**
+  Viewers stay attached through the grace period, and `ViewerCount` is then
+  the only app-layer traffic they get; skip away publishers in
+  `PumpViewerCounts` and a client can no longer tell "my session died
+  silently" from "the broadcaster stepped away".
+  ([docs/23](23-live-viewer-count.md))
 - **A connected publisher is not necessarily a sending one.** A broadcaster
   tab in the background keeps its QUIC session alive (keepalives are
   answered by the browser's network process, not by the page's JavaScript)
@@ -1713,6 +1730,14 @@ entries still describe code `gawk-pubsim` runs (now
   35627508457), whose own claim subtest races the two paths; holding the
   first session open makes the bad path deterministic.
   ([docs/42](42-admin-moderation-portal.md) D6)
+- **`moderationsrc.Start` must run after `SetCluster`.** A pod cold-starting
+  in a namespace that already holds Ban CRs gets Add events within
+  milliseconds, and the kill path reads the edge manager and the cluster
+  coordinator. Started earlier, that is a data race, and a kill in the
+  window tears the broadcast down locally but never deletes its origin
+  Lease, so the rest of the fleet keeps routing viewers to a dead origin.
+  `wireSubsystems` in `cmd/gawk-server/main.go` fixes the order, and a test
+  asserts it. ([docs/42](42-admin-moderation-portal.md))
 
 **Rooms (R42)**
 
