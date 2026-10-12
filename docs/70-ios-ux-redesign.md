@@ -3,7 +3,7 @@
 **Status**: designed 2026-10-05 in a Claude Design pass. The owner's
 decisions OD1–OD12 (§2) came from canvas comments and chat the same day.
 Chunks **IX1–IX9** (§8) implemented 2026-10-06, with their deviations in
-§10; **IX10**, the owner's device pass, is open. Status lives in
+§10; **IX10**, the owner's device pass, passed 2026-10-12. Status lives in
 [`ROADMAP.md`](../ROADMAP.md).
 
 **Relationship to earlier work**: a redesign of the screens R65 built
@@ -431,3 +431,7 @@ Built against the canvas and this document in the iPhone 17 and iPad Pro
 **Not done here**: IX10, the owner's device pass. It covers ScreenCaptureKit
 broadcasting, the Live Activity on a real Lock Screen and Dynamic Island,
 PiP when going home, and the iPad Pro.
+
+- **2026-10-12 — IX10: the owner's device pass passed**, together with
+  docs/67's IO0 and IO8: about an hour of iPhone gameplay broadcast from the
+  app.

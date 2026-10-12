@@ -2,8 +2,9 @@
 
 **Status**: proposed 2026-10-03. Owner decisions OD1–OD16 (§2) were taken
 the same day in an interview; **OD17 (2026-10-04) moved screen capture from a
-ReplayKit extension to ScreenCaptureKit in the app** (§12). **IO1 and IO4
-implemented 2026-10-04**; IO0, IO2, IO3 and IO5–IO8 (§9) are not started.
+ReplayKit extension to ScreenCaptureKit in the app** (§12). **IO1–IO7
+implemented 2026-10-04**; IO0 and IO8 passed on device 2026-10-12 (§12), so
+the milestone is done.
 **Work runs Simulator-first (OD13, D26)**: phase S builds and tests
 everything the Simulator can run; phase D starts on devices with **IO0, a
 throwaway spike whose pre-registered verdict (§9.1) gates the device
@@ -981,3 +982,11 @@ dated.
     missing, and the windowed fps read 0 for a quiet quarter-second. The
     core now merges the pipeline's view, as the desktop shell's
     `merged_stats` does, once a second.
+- **2026-10-12 — IO0 and IO8: the owner's device pass.** The owner
+  broadcast iPhone gameplay from the app for about an hour, successfully.
+  iOS kept the capturing app running behind the game, so §9.1's central
+  question is answered: OD17 stands, ScreenCaptureKit in the app is the
+  capture path, and the ReplayKit extension (§3) stays the unused fallback.
+  The pass was run as the owner's real use rather than §9.1's instrumented
+  spike; the numeric V-items (V-1 footprint, glass-to-glass, thermal state)
+  were not recorded, and D8 and D12 stand as written.
