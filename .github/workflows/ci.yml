@@ -85,6 +85,7 @@ jobs:
       telemetry_ui: ${{ steps.filter.outputs.telemetry_ui }}
       admin: ${{ steps.filter.outputs.admin }}
       admin_ui: ${{ steps.filter.outputs.admin_ui }}
+      sampler: ${{ steps.filter.outputs.sampler }}
       tidy: ${{ steps.filter.outputs.tidy }}
       licenses: ${{ steps.filter.outputs.licenses }}
       notices: ${{ steps.filter.outputs.notices }}
@@ -192,6 +193,11 @@ jobs:
           # common-ts/ because the package's own tests run in this job's vitest
           # and its code is in the bundle the no-external-assets test reads.
           admin_ui=$(decide     admin_ui     '^gawk-admin/(ui/|internal/portal/|openapi\.yaml$)|^gawk-server/events/|^common-ts/')
+          # R40 (docs/71 OD6): gawk-sampler `replace`s gawk-server as well — it
+          # compiles gawk-server/screening, the contract it shares with the
+          # relay's keyframe route and gawk-admin (D3) — so a relay change is a
+          # sampler change, the reasoning already written at `telemetry`.
+          sampler=$(decide      sampler      '^(gawk-sampler|gawk-server)/')
           # `go mod tidy` resolves the import graph, so any .go file can untidy a
           # module — not just a manifest.
           tidy=$(decide         tidy         '(^|/)go\.(mod|sum)$|\.go$')
@@ -213,7 +219,10 @@ jobs:
           # gawk-admin joined the default lane with the R39 portal (docs/41
           # §4.8), so its changes exercise the stack too.
           # common-ts/ because the admin image's UI stage builds it (docs/55 D3).
-          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/|gawk-admin/|common-ts/)')
+          # gawk-sampler/ and e2e/screening-assert.sh because R40's screening
+          # lane (docs/71 §9.7) runs in this job: the samplers build from
+          # their own Dockerfile and the script drives the lane.
+          dev_stack=$(decide    dev_stack    '^(docker-compose\.yml|\.env\.example|dev/|gawk-server/|gawk-app/|gawk-admin/|gawk-sampler/|common-ts/|e2e/screening-assert\.sh$)')
           # Not WHETHER dev-stack runs but HOW it builds its Go images: from
           # the real Dockerfiles (true) or from runner-compiled binaries
           # (false, the fast path; see the job). Only an edit to what those
@@ -985,6 +994,157 @@ jobs:
           # can go once no released tag still carries the old form.
           go test -count=1 ./internal/store/... -skip '^TestMigrateParallelRunsAreSerialized$'
 
+  # R40 (docs/71 CF5, CF6): the content-screening sampler, tested AS IT SHIPS.
+  #
+  # Half of its suite is native — bitstream conversion through a real ffmpeg,
+  # the decode timeout and the subprocess limits, inference through a real
+  # ONNX Runtime — and skips on a machine without them. A job that let it skip
+  # would be green while proving nothing about the parts most likely to break.
+  # So the suite runs INSIDE the image's own build (`--target test`), against
+  # the same ffmpeg and library the runtime stage copies, with
+  # GAWK_SAMPLER_REQUIRE_NATIVE turning any skip into a failure. No Go toolchain
+  # on the runner is involved, and none of the native pieces have to exist on
+  # it.
+  #
+  # Then the runtime image is built on the SAME builder — its ffmpeg, ONNX
+  # Runtime and Go stages are the test target's, so they are reused, not
+  # rebuilt — and RUN, because building an image is not evidence that it starts
+  # (the R31 lesson the `docker` job carries). That is also why this image is
+  # not a `docker` matrix entry: there it would compile ffmpeg a second time.
+  sampler:
+    needs: changes
+    if: needs.changes.outputs.sampler == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # A bound, not a budget: the ffmpeg compile is the long pole.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
+      - name: the suite, against the real ffmpeg and ONNX Runtime
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: gawk-sampler/deploy/Dockerfile
+          target: test
+          push: false
+      # The decode and inference tests again, on the runtime's distroless base
+      # with the runtime's exact files: the shipped ffmpeg turns the H.264, VP8
+      # and VP9 fixtures into one RGB frame of the model's input size through
+      # the code that builds the D4 command line, and the shipped ONNX Runtime
+      # loads and scores both test models. The test stage cannot prove this —
+      # it runs on the Go builder's full Debian, where a library distroless
+      # lacks would still be found. The Dockerfile's stage comment has more.
+      - name: the native tests on the runtime's base and files
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: gawk-sampler/deploy/Dockerfile
+          target: runtime-check
+          push: false
+      - name: the runtime image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: gawk-sampler/deploy/Dockerfile
+          push: false
+          load: true
+          tags: gawk-sampler:ci
+
+      # D5: the smallest decoder surface the three broadcaster codecs allow.
+      # A configure change that let one more decoder in would build, pass every
+      # test and widen the attack surface silently — so the list is asserted
+      # exactly, on the binary the image actually carries.
+      - name: the image's ffmpeg decodes exactly h264, vp8 and vp9
+        run: |
+          set -euo pipefail
+          list=$(docker run --rm --entrypoint /usr/bin/ffmpeg gawk-sampler:ci -hide_banner -decoders)
+          echo "$list"
+          got=$(sed -n '/^ *------/,$p' <<<"$list" | sed 1d | awk '{print $2}' | sort | xargs)
+          [ "$got" = "h264 vp8 vp9" ] || {
+            echo "::error::the image's ffmpeg decodes [$got], not exactly [h264 vp8 vp9]"; exit 1; }
+          # LGPL only: the build line must not carry --enable-gpl or
+          # --enable-nonfree, and the licence travels with the binary (§8.1).
+          ver=$(docker run --rm --entrypoint /usr/bin/ffmpeg gawk-sampler:ci -hide_banner -version)
+          if grep -qE -- '--enable-(gpl|nonfree)' <<<"$ver"; then
+            echo "::error::the image's ffmpeg is not an LGPL build"; echo "$ver"; exit 1
+          fi
+          docker create --name ci-sampler-files gawk-sampler:ci >/dev/null
+          for f in /licenses/ffmpeg/COPYING.LGPLv2.1 /licenses/ffmpeg/BUILD-INFO \
+                   /licenses/onnxruntime/LICENSE /licenses/onnxruntime/ThirdPartyNotices.txt \
+                   /THIRD-PARTY-NOTICES.md /LICENSE; do
+            docker cp "ci-sampler-files:$f" - >/dev/null || {
+              echo "::error::the image does not carry $f"; exit 1; }
+          done
+
+      # The chart's init container (D5): the pinned URL and SHA in values.yaml
+      # must actually match the file GitHub serves — the helm job proves the
+      # chart renders that pair, this proves the pair is right — and a
+      # mismatch must fail rather than leave a file behind.
+      - name: fetch-model refuses a mismatched SHA-256 and accepts the chart's pin
+        run: |
+          set -euo pipefail
+          values=gawk-sampler/deploy/charts/gawk-sampler/values.yaml
+          url=$(grep -E '^  url: ' "$values" | head -1 | sed 's/^  url: //')
+          sha=$(grep -E '^  sha256: ' "$values" | head -1 | sed 's/^  sha256: //')
+          # One hex digit changed: a mismatch nothing could mistake for the pin.
+          if [ "${sha:0:1}" = 0 ]; then bad="1${sha:1}"; else bad="0${sha:1}"; fi
+          if out=$(docker run --rm gawk-sampler:ci fetch-model -url "$url" -sha256 "$bad" -out /tmp/m.onnx 2>&1); then
+            echo "$out"
+            echo "::error::fetch-model accepted a file whose SHA-256 is not the pin"; exit 1
+          fi
+          echo "$out"
+          docker run --rm gawk-sampler:ci fetch-model -url "$url" -sha256 "$sha" -out /tmp/m.onnx
+
+      # Ready means the process found ffmpeg and itself (the decode helper),
+      # loaded ONNX Runtime and the model, and built the engine — everything
+      # local. It does not wait for gawk-admin or the IdP, which is what lets a
+      # bare `docker run` with unroutable endpoints answer here; the flag path
+      # end to end is the compose tier's (docs/71 CF8).
+      #
+      # The model goes in with `docker cp`, not a bind mount: on these runners
+      # the daemon is dind, and its view of the runner's paths is not this
+      # step's to assume.
+      - name: the sampler starts on a test model and reports ready
+        run: |
+          set -euo pipefail
+          docker create --name ci-sampler --network host \
+            -e POD_NAME=gawk-sampler-0 \
+            -e GAWK_SAMPLER_OIDC_CLIENT_SECRET=ci \
+            gawk-sampler:ci run \
+              -admin-url http://127.0.0.1:9 -oidc-issuer http://127.0.0.1:9 -oidc-client-id ci \
+              -screening-token ci -model /models/test-320.onnx -model-input 320 \
+              -shard-count 2 -metrics-addr 127.0.0.1:19090 >/dev/null
+          docker cp gawk-sampler/testdata/models ci-sampler:/models
+          docker start ci-sampler >/dev/null
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:19090/readyz; then ok=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Status}}' ci-sampler)" != "running" ]; then
+              echo "::error::the sampler exited before it was ready"
+              docker logs ci-sampler 2>&1 | tail -30
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "${ok:-0}" != "1" ]; then
+            echo "::error::the sampler never reported ready"
+            docker logs ci-sampler 2>&1 | tail -30
+            exit 1
+          fi
+          # The interval alert's denominator, and the mode it started in: the
+          # chart defaults to observe, and so must a bare start (D19).
+          m=$(curl -fsS http://127.0.0.1:19090/metrics)
+          grep -qE '^gawk_sampler_interval_target_seconds 5$' <<<"$m" || {
+            echo "::error::/metrics does not report the 5 s target interval"; exit 1; }
+          grep -q 'gawk_sampler_build_info{.*mode="observe"' <<<"$m" || {
+            echo "::error::a bare start is not in observe mode"; exit 1; }
+          docker logs ci-sampler 2>&1 | tail -5
+          echo "gawk-sampler:ci loaded the test model and reported ready"
+
+      - name: clean up
+        if: always()
+        run: docker rm -f ci-sampler ci-sampler-files >/dev/null 2>&1 || true
+
   tidy:
     needs: changes
     if: needs.changes.outputs.tidy == 'true'
@@ -1016,7 +1176,7 @@ jobs:
       - uses: ./.github/actions/go-shared-cache
       - name: go mod tidy leaves every module unchanged
         run: |
-          for mod in gawk-server gawk-telemetry gawk-admin tools/icon tools/commonlock; do
+          for mod in gawk-server gawk-telemetry gawk-admin gawk-sampler tools/icon tools/commonlock; do
             (cd "$mod" && go mod tidy)
           done
           if ! git diff --exit-code; then
@@ -1825,6 +1985,252 @@ jobs:
           helm template "$chart" --set moderation.enabled=true --set moderation.adminApi.token=t > /dev/null
           echo "guard fires for all three credential shapes and only with metrics off"
 
+      # R40 (docs/71 D1, D13): the screening knobs reach the relay's env — a
+      # literal token, a secretKeyRef, the notice — a default render carries
+      # none of them, and a token without the ops listener refuses to render.
+      - name: relay chart screening knobs
+        run: |
+          set -euo pipefail
+          chart=gawk-server/deploy/charts/gawk-server
+          if helm template "$chart" | grep -q 'GAWK_SCREENING_'; then
+            echo "::error::a default render carries screening env"; exit 1; fi
+          out=$(helm template "$chart" --set screening.token=t --set screening.notice=true)
+          grep -A1 'name: GAWK_SCREENING_TOKEN' <<<"$out" | grep -q 'value: "t"'
+          grep -A1 'name: GAWK_SCREENING_NOTICE' <<<"$out" | grep -q 'value: "true"'
+          out=$(helm template "$chart" --set screening.tokenSecretRef.name=s --set screening.tokenSecretRef.key=k)
+          grep -A4 'name: GAWK_SCREENING_TOKEN' <<<"$out" | grep -q 'name: "s"'
+          grep -A4 'name: GAWK_SCREENING_TOKEN' <<<"$out" | grep -q 'key: "k"'
+          if helm template "$chart" --set screening.token=t --set metrics.enabled=false >/dev/null 2>&1; then
+            echo "::error::a screening token rendered with the ops listener off"; exit 1; fi
+
+      # R40 (docs/71 D1, D11, D14, D15): the portal's screening knobs render,
+      # screening is off by default, both automatic kills are `off` by default
+      # (OD1, OD2), a policy survives Helm's comma-splitting, and an emptied
+      # flagger role renders `off` — an empty env var would read as unset and
+      # bring the default role back. The Room CRD carries the exemption enum.
+      - name: admin chart screening knobs and the Room CRD's screening field
+        run: |
+          set -euo pipefail
+          chart=gawk-admin/deploy/charts/gawk-admin
+          out=$(helm template "$chart" $ADMIN_PG)
+          grep -A1 'GAWK_ADMIN_SCREENING$' <<<"$out" | grep -q '"false"' || {
+            echo "::error::screening is not off by default"; exit 1; }
+          for env in CONTENT_FLAG_REPAGE CONTENT_FLAG_MUTE CONTENT_FLAG_STALE_AFTER SCREENING_SAMPLE_RETENTION; do
+            grep -q "GAWK_ADMIN_$env\$" <<<"$out" || { echo "::error::GAWK_ADMIN_$env is not rendered"; exit 1; }
+          done
+          for env in CONTENT_FLAG_AUTO_KILL CONTENT_FLAG_DEADLINE; do
+            grep -A1 "GAWK_ADMIN_$env\$" <<<"$out" | grep -q '"off"' || {
+              echo "::error::GAWK_ADMIN_$env is not off by default (docs/71 OD1, OD2)"; exit 1; }
+          done
+          on=$(helm template "$chart" $ADMIN_PG --set screening.enabled=true \
+            --set-string 'screening.contentFlag.autoKill=score>=0.9\,hits>=10/12' \
+            --set screening.contentFlag.deadline=30m --set oidc.flaggerRole=)
+          grep -A1 'GAWK_ADMIN_SCREENING$' <<<"$on" | grep -q '"true"'
+          grep -A1 'GAWK_ADMIN_CONTENT_FLAG_AUTO_KILL$' <<<"$on" | grep -q '"score>=0.9,hits>=10/12"'
+          grep -A1 'GAWK_ADMIN_CONTENT_FLAG_DEADLINE$' <<<"$on" | grep -q '"30m"'
+          grep -A1 'GAWK_ADMIN_FLAGGER_ROLE$' <<<"$on" | grep -q '"off"'
+          helm template gawk-server/deploy/charts/gawk-server --set rooms.enabled=true | grep -q 'enum: \[exempt\]'
+
+      # ---- R40 (docs/71 CF6) ----------------------------------------------
+      #
+      # The sampler chart's acceptance criteria, executable — shell checks for
+      # the reason the R39 block gives (a golden render would churn on every
+      # release-please bump). The image half (the init container REFUSING a
+      # mismatched SHA, ffmpeg's decoders, readiness) needs the image, so it is
+      # in the `sampler` job.
+      - run: helm lint gawk-sampler/deploy/charts/gawk-sampler
+      - name: sampler chart — two sharded pods, the share count from replicas, PDB and spread (D22)
+        run: |
+          set -euo pipefail
+          chart=gawk-sampler/deploy/charts/gawk-sampler
+          out=$(helm template gawk-sampler "$chart")
+          grep -qE '^kind: StatefulSet$' <<<"$out"
+          grep -qE '^  replicas: 2$' <<<"$out"
+          grep -qE '^  podManagementPolicy: Parallel$' <<<"$out"
+          # The share count IS the replica count, both by default and when
+          # overridden — a pod that thinks there are 2 shares beside 3 pods
+          # would screen a share twice and leave one dark.
+          grep -A1 'name: GAWK_SAMPLER_SHARD_COUNT$' <<<"$out" | grep -q 'value: "2"'
+          five=$(helm template gawk-sampler "$chart" --set replicas=5)
+          grep -qE '^  replicas: 5$' <<<"$five"
+          grep -A1 'name: GAWK_SAMPLER_SHARD_COUNT$' <<<"$five" | grep -q 'value: "5"'
+          # The share INDEX comes from the pod's own name (gawk-sampler-<i>).
+          grep -A3 'name: POD_NAME$' <<<"$out" | grep -q 'fieldPath: metadata.name'
+          # One share at a time on a drain; preferred spread across nodes.
+          grep -q 'kind: PodDisruptionBudget' <<<"$out"
+          grep -qE '^  maxUnavailable: 1$' <<<"$out"
+          grep -q 'preferredDuringSchedulingIgnoredDuringExecution' <<<"$out"
+          grep -q 'topologyKey: kubernetes.io/hostname' <<<"$out"
+          hard=$(helm template gawk-sampler "$chart" --set podAntiAffinity=hard)
+          grep -q 'requiredDuringSchedulingIgnoredDuringExecution' <<<"$hard"
+          if helm template gawk-sampler "$chart" --set podAntiAffinity=none | grep -q 'podAntiAffinity'; then
+            echo "::error::podAntiAffinity=none still renders an anti-affinity"; exit 1
+          fi
+          # The sampler never talks to the Kubernetes API, so it holds no token.
+          grep -q 'automountServiceAccountToken: false' <<<"$out"
+          # Observe is the default (D19), and nothing but observe|flag renders.
+          grep -A1 'name: GAWK_SAMPLER_MODE$' <<<"$out" | grep -q 'value: "observe"'
+          if helm template gawk-sampler "$chart" --set config.mode=page >/dev/null 2>&1; then
+            echo "::error::config.mode=page rendered"; exit 1
+          fi
+          # Opt-in objects stay off by default.
+          for kind in ServiceMonitor PrometheusRule NetworkPolicy; do
+            if grep -q "kind: $kind" <<<"$out"; then
+              echo "::error::the default render carries a $kind"; exit 1
+            fi
+          done
+
+      - name: sampler chart — the model is fetched by THIS image and pinned by SHA-256 (D5)
+        run: |
+          set -euo pipefail
+          chart=gawk-sampler/deploy/charts/gawk-sampler
+          appver=$(grep -E '^appVersion:' "$chart/Chart.yaml" | sed 's/.*"\(.*\)".*/\1/')
+          sts=$(helm template gawk-sampler "$chart" --show-only templates/statefulset.yaml)
+          init=$(sed -n '/initContainers:/,/^      containers:/p' <<<"$sts")
+          grep -q 'name: fetch-model' <<<"$init"
+          # The pinned URL and SHA from values.yaml, verbatim, and the file the
+          # sampler loads. The `sampler` job runs fetch-model against this very
+          # pair, so a wrong pin is red there.
+          url=$(grep -E '^  url: ' "$chart/values.yaml" | head -1 | sed 's/^  url: //')
+          sha=$(grep -E '^  sha256: ' "$chart/values.yaml" | head -1 | sed 's/^  sha256: //')
+          grep -qF "\"$url\"" <<<"$init"
+          grep -qF "\"$sha\"" <<<"$init"
+          grep -qF '"/models/nudenet.onnx"' <<<"$init"
+          grep -A1 'name: GAWK_SAMPLER_MODEL$' <<<"$sts" | grep -q 'value: "/models/nudenet.onnx"'
+          # The downloader is this release's image, the same one the sampler runs.
+          imgs=$(grep -E '^ +image: ' <<<"$sts" | sort -u)
+          [ "$(wc -l <<<"$imgs")" = 1 ] || { echo "::error::init and main containers disagree on the image:"; echo "$imgs"; exit 1; }
+          grep -q "ghcr.io/tuhis/gawk-sampler:${appver}" <<<"$imgs"
+          # No pin, no render: the SHA is what keeps a swapped file from loading.
+          if helm template gawk-sampler "$chart" --set model.sha256= >/dev/null 2>&1; then
+            echo "::error::the chart rendered a model download with no SHA-256 pin"; exit 1
+          fi
+          if helm template gawk-sampler "$chart" --set model.sha256=abc >/dev/null 2>&1; then
+            echo "::error::the chart rendered a malformed SHA-256 pin"; exit 1
+          fi
+          # An operator-provided volume replaces the download entirely.
+          vol=$(helm template gawk-sampler "$chart" --set model.sha256= \
+                  --set-json 'model.volume={"persistentVolumeClaim":{"claimName":"nudenet-weights"}}' \
+                  --show-only templates/statefulset.yaml)
+          if grep -q 'fetch-model' <<<"$vol"; then echo "::error::model.volume still renders the download"; exit 1; fi
+          grep -q 'claimName: nudenet-weights' <<<"$vol"
+          if grep -q 'emptyDir' <<<"$vol"; then echo "::error::model.volume still renders the emptyDir"; exit 1; fi
+
+      - name: sampler chart — every knob reaches its GAWK_SAMPLER_* env var as written
+        run: |
+          set -euo pipefail
+          chart=gawk-sampler/deploy/charts/gawk-sampler
+          # A values FILE, not --set: Helm reads a file's numbers as float64, the
+          # path that turned R50's eventbus.maxBytes into scientific notation.
+          cat > /tmp/sampler-knobs.yaml <<'YAML'
+          adminUrl: http://gawk-admin.gawk.svc:8090
+          oidc:
+            issuer: https://id.example.com/realms/gawk
+            clientId: gawk-sampler
+            clientSecret: literal-client-secret
+            scope: gawk-admin-audience
+          relay:
+            screeningToken: literal-screening-token
+          model:
+            inputSize: 640
+            file: other.onnx
+          config:
+            mode: flag
+            labels: ANUS_EXPOSED
+            threshold: 0.91
+            window: 12
+            windowHits: 10
+            interval: 10s
+            workers: 3
+            decodeTimeout: 3s
+            decodeMemoryLimit: 1073741824
+            targetsRefresh: 7s
+            reportSamples: 24
+            sampleFloor: 0.25
+            logLevel: debug
+            logFormat: json
+          YAML
+          out=$(helm template gawk-sampler "$chart" -f /tmp/sampler-knobs.yaml --show-only templates/statefulset.yaml)
+          want() { # want <ENV> <rendered value, quotes included>
+            grep -A1 "name: $1\$" <<<"$out" | grep -qF "value: $2" || {
+              echo "::error::$1 did not render as $2"; grep -A1 "name: $1\$" <<<"$out"; exit 1; }
+          }
+          want GAWK_SAMPLER_ADMIN_URL '"http://gawk-admin.gawk.svc:8090"'
+          want GAWK_SAMPLER_OIDC_ISSUER '"https://id.example.com/realms/gawk"'
+          want GAWK_SAMPLER_OIDC_CLIENT_ID '"gawk-sampler"'
+          want GAWK_SAMPLER_OIDC_SCOPE '"gawk-admin-audience"'
+          want GAWK_SAMPLER_OIDC_CLIENT_SECRET '"literal-client-secret"'
+          want GAWK_SAMPLER_SCREENING_TOKEN '"literal-screening-token"'
+          want GAWK_SAMPLER_MODEL '"/models/other.onnx"'
+          want GAWK_SAMPLER_MODEL_INPUT '"640"'
+          want GAWK_SAMPLER_MODE '"flag"'
+          want GAWK_SAMPLER_LABELS '"ANUS_EXPOSED"'
+          want GAWK_SAMPLER_THRESHOLD '"0.91"'
+          want GAWK_SAMPLER_WINDOW '"12"'
+          want GAWK_SAMPLER_WINDOW_HITS '"10"'
+          want GAWK_SAMPLER_INTERVAL '"10s"'
+          want GAWK_SAMPLER_WORKERS '"3"'
+          want GAWK_SAMPLER_DECODE_TIMEOUT '"3s"'
+          want GAWK_SAMPLER_DECODE_MEMORY_LIMIT '"1073741824"'
+          want GAWK_SAMPLER_TARGETS_REFRESH '"7s"'
+          want GAWK_SAMPLER_REPORT_SAMPLES '"24"'
+          want GAWK_SAMPLER_SAMPLE_FLOOR '"0.25"'
+          want GAWK_SAMPLER_METRICS_ADDR '":9090"'
+          want GAWK_SAMPLER_LOG_LEVEL '"debug"'
+          want GAWK_SAMPLER_LOG_FORMAT '"json"'
+          if bad=$(grep -nE 'value: "[0-9.]+e\+[0-9]+"' <<<"$out"); then
+            echo "::error::a knob rendered in scientific notation: $bad"; exit 1
+          fi
+          # The unset-by-default knobs render nothing, so the binary's own
+          # defaults apply (GOMAXPROCS; its RLIMIT_AS default; no scope).
+          def=$(helm template gawk-sampler "$chart" --show-only templates/statefulset.yaml)
+          for env in GAWK_SAMPLER_WORKERS GAWK_SAMPLER_DECODE_MEMORY_LIMIT GAWK_SAMPLER_OIDC_SCOPE; do
+            if grep -q "name: $env\$" <<<"$def"; then echo "::error::$env renders by default"; exit 1; fi
+          done
+
+      - name: sampler chart — both credentials render via the literal and the Ref form
+        run: |
+          set -euo pipefail
+          chart=gawk-sampler/deploy/charts/gawk-sampler
+          ref=$(helm template gawk-sampler "$chart" \
+                  --set oidc.clientSecret=leaked --set oidc.clientSecretRef.name=s-oidc --set oidc.clientSecretRef.key=cs \
+                  --set relay.screeningToken=leaked --set relay.screeningTokenRef.name=s-relay --set relay.screeningTokenRef.key=tok \
+                  --show-only templates/statefulset.yaml)
+          grep -A4 'name: GAWK_SAMPLER_OIDC_CLIENT_SECRET$' <<<"$ref" | grep -q 'name: "s-oidc"'
+          grep -A4 'name: GAWK_SAMPLER_OIDC_CLIENT_SECRET$' <<<"$ref" | grep -q 'key: "cs"'
+          grep -A4 'name: GAWK_SAMPLER_SCREENING_TOKEN$' <<<"$ref" | grep -q 'name: "s-relay"'
+          grep -A4 'name: GAWK_SAMPLER_SCREENING_TOKEN$' <<<"$ref" | grep -q 'key: "tok"'
+          if grep -q 'leaked' <<<"$ref"; then echo "::error::the Ref form leaked a literal"; exit 1; fi
+
+      - name: sampler chart — the interval and missing-shard alerts, and the egress policy
+        run: |
+          set -euo pipefail
+          chart=gawk-sampler/deploy/charts/gawk-sampler
+          rule=$(helm template gawk-sampler "$chart" --namespace gawk --set metrics.prometheusRule.enabled=true \
+                   --show-only templates/prometheusrule.yaml)
+          # D6: above 2× the target — the pod's OWN target gauge, so the
+          # threshold follows whatever -interval the pod parsed.
+          stretched=$(sed -n '/alert: GawkSamplerIntervalStretched/,/for:/p' <<<"$rule" | tr -s ' \n' ' ')
+          grep -qF 'max by (pod) (gawk_sampler_interval_effective_seconds) > 2 * max by (pod) (gawk_sampler_interval_target_seconds)' <<<"$stretched" || {
+            echo "::error::the interval alert does not compare the effective interval with 2× the target"; echo "$stretched"; exit 1; }
+          helm template gawk-sampler "$chart" --set metrics.prometheusRule.enabled=true \
+              --set metrics.prometheusRule.intervalFactor=3 --show-only templates/prometheusrule.yaml \
+            | tr -s ' \n' ' ' | grep -qF '> 3 * max by (pod) (gawk_sampler_interval_target_seconds)'
+          # D22: the missing-shard alert holds for 2 minutes, and its runbook
+          # names exactly the two recovery steps that work on an unreachable
+          # node — never a plain delete.
+          shard=$(sed -n '/alert: GawkSamplerShardsMissing/,$p' <<<"$rule")
+          grep -qF 'expr: max(gawk_admin_screening_shards_missing) > 0' <<<"$shard"
+          grep -qE '^ +for: 2m$' <<<"$shard"
+          grep -qF 'kubectl -n gawk delete pod gawk-sampler-<n> --grace-period=0 --force' <<<"$shard"
+          grep -qF 'node.kubernetes.io/out-of-service' <<<"$shard"
+          helm template gawk-sampler "$chart" --set metrics.serviceMonitor.enabled=true | grep -q 'kind: ServiceMonitor'
+          np=$(helm template gawk-sampler "$chart" --set networkPolicy.enabled=true --show-only templates/networkpolicy.yaml)
+          grep -qF 'policyTypes: [Egress]' <<<"$np"
+          for port in 2112 8090 53 443; do grep -qE "port: $port$" <<<"$np"; done
+          grep -A2 'podSelector:' <<<"$np" | grep -q 'app.kubernetes.io/name: gawk-server'
+          grep -A2 'podSelector:' <<<"$np" | grep -q 'app.kubernetes.io/name: gawk-admin'
+
   # R38 (docs/41 LD7): the local development stack, smoke-tested. `docker
   # compose up` is the first thing a new contributor runs, so it is the one
   # command that must never be broken on main — and it is assembled from parts
@@ -1846,7 +2252,10 @@ jobs:
     # runner spec (clusters/baremetal/actions-runners/gawk.yaml), not moving
     # this job to the disk pool.
     runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
-    timeout-minutes: 15
+    # 30, up from 15, for R40's screening lane: the sampler image's cold
+    # build (a minimal ffmpeg, cgo) and the assert script's ~6 minutes of
+    # waiting for the magenta fixture's phases to turn.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       # Host networking and the in-cluster registry mirror — see the action.
@@ -2158,6 +2567,24 @@ jobs:
             exit 1
           }
 
+      # R40 (docs/71 CF8, §9.7): the screening lane, end to end, LAST because
+      # it recreates the relay and the portal with the lane's environment.
+      # Two real samplers (the real cgo image: ffmpeg and ONNX Runtime have no
+      # fast path) on the generated test model screen three magenta pubsim
+      # broadcasts; e2e/screening-assert.sh then walks shards, a page, a
+      # dismissal's mute, a clear and a second episode, a missing shard, and
+      # observe mode with a replay. Running it here, on every change that can
+      # break the stack, is what keeps the lane a developer reaches for from
+      # rotting between milestones. COMPOSE_FILE goes to GITHUB_ENV so the
+      # failure logs and the tear-down below include the lane's services.
+      - name: The screening lane pages, mutes, clears, shards and calibrates
+        run: |
+          set -euo pipefail
+          export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}:dev/compose.screening.yml"
+          echo "COMPOSE_FILE=$COMPOSE_FILE" >> "$GITHUB_ENV"
+          docker compose up -d --build --wait
+          ./e2e/screening-assert.sh
+
       - name: Logs, if anything above failed
         if: failure()
         run: docker compose logs --no-color | tail -100
@@ -2281,6 +2708,14 @@ jobs:
         working-directory: e2e
         env:
           GAWK_E2E_OUT_DIR: out-rooms-gated
+      # R40 CF7 (docs/71 D13): a relay with -screening-notice says so on the
+      # publish session, and the web broadcaster shows the one line with no
+      # server picker or probe involved. --browser-broadcast is the control.
+      - name: Run the screening-notice E2E (R40)
+        run: node run.mjs --screening-notice
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-screening-notice
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -2292,6 +2727,7 @@ jobs:
             e2e/out-muxer-check/
             e2e/out-rooms/
             e2e/out-rooms-gated/
+            e2e/out-screening-notice/
           retention-days: 7
 
   # R20 tier 2 (docs/25 Decision 7): cluster-mode E2E — the real chart with
@@ -2646,6 +3082,11 @@ jobs:
   # three images because one module moved is most of what this change exists to
   # stop. `docker_any` covers the case where none of them moved: an `include`
   # with no entries is a workflow error, not an empty job.
+  #
+  # gawk-sampler is deliberately NOT an entry: its image is built, run and
+  # smoke-tested in the `sampler` job, on the same builder that already ran its
+  # test stage, so the slowest layer in it (the ffmpeg compile) is built once
+  # per run rather than once per job.
   docker:
     needs: changes
     if: needs.changes.outputs.docker_any == 'true'
