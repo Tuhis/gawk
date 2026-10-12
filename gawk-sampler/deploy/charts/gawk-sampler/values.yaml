@@ -1,0 +1,256 @@
+# gawk-sampler (R40, docs/71) — automatic content screening.
+#
+# Every few seconds it fetches each live broadcast's cached keyframe from the
+# relay, decodes it in an ffmpeg subprocess, scores it with NudeNet's detector
+# and, when an explicit-nudity signal persists, posts a content flag to
+# gawk-admin — which is the only component that pages, pins or kills.
+#
+# Install it together with:
+#   * the relay chart's  screening.token  (the -screening-token the keyframe
+#     route requires; the SAME value goes in relay.screeningToken below) and,
+#     if you screen, its  screening.notice  so broadcasters are told
+#     (docs/71 D13 — the relay cannot see this chart, so it cannot say so on
+#     its own)
+#   * gawk-admin with  screening.enabled  and a webhook that delivers
+#     content_flag.raised: with no pager configured the sampler pauses in
+#     flag mode (D12)
+#   * an OIDC client-credentials identity holding ONLY the `flagger` role
+#     (D18; recipe in docs/self-hosting.md). The sampler can never kill.
+#
+# It starts in OBSERVE mode, which pages no one: it scores every broadcast and
+# stores what it WOULD have flagged in gawk-admin, so a new install sees its own
+# false-trip rate before anything pages (D19). Switch config.mode to `flag`
+# after calibrating (docs/71 CF9).
+#
+# The required values render empty by default so a `helm template` works; the
+# pods CrashLoopBackOff with a named flag until they are set — the gawk-admin
+# chart's convention.
+
+image:
+  repository: ghcr.io/tuhis/gawk-sampler
+  # Empty = the chart's appVersion, which release-please keeps in lockstep with
+  # the published image tag. The fetch-model init container uses the same tag.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The published images are public; see the gawk-server chart's values.
+imagePullSecrets: []
+
+# How many sampler pods, each screening a FIXED share of the broadcasts
+# (docs/71 D22): pod gawk-sampler-<i> takes share i of `replicas`, by the
+# broadcast key. Two by default, so one pod restart or rollout never leaves
+# every broadcast unscreened.
+#
+# Changing it is a deliberate operator act, never an autoscaler's: a resize
+# reshuffles most broadcasts between pods and resets their windows, and while
+# old and new pods overlap some broadcasts are sampled twice or not at all.
+replicas: 2
+
+# A node drain takes at most one share at a time (maxUnavailable 1), so the
+# drain itself never darkens two shares at once.
+podDisruptionBudget:
+  enabled: true
+
+# Spread the pods across nodes, so one node loss costs at most one share
+# (D22). soft (default) = preferred — never blocks scheduling on a small
+# cluster; hard = required — leaves a pod Pending when nodes < replicas;
+# none = no anti-affinity. The gawk-server chart's vocabulary.
+podAntiAffinity: soft
+
+# The screening identity and endpoints. All required.
+#
+# adminUrl is gawk-admin's in-cluster Service, e.g.
+#   http://gawk-admin.gawk.svc.cluster.local:8090
+adminUrl: ""
+
+# OIDC client-credentials (D18). The client must carry the `flagger` role and
+# nothing else: flagger is flag-only by contract (docs/42 §4.11), and the
+# sampler holding more would be the one place an automated component could
+# kill on its own.
+oidc:
+  # e.g. "https://id.example.com/realms/gawk"
+  issuer: ""
+  clientId: ""
+  # A scope to request with the grant; empty requests none. Keycloak puts the
+  # audience gawk-admin checks in the token through a client scope, so this
+  # is where a recipe that maps it optionally names one.
+  scope: ""
+  # The client secret, in the house literal/Ref dual form — Ref wins. Use the
+  # Ref form outside a lab: a literal here is a credential in every values
+  # diff.
+  #   kubectl -n gawk create secret generic gawk-sampler-oidc \
+  #     --from-literal=clientSecret="..."
+  clientSecret: ""
+  clientSecretRef: {}
+  #   name: gawk-sampler-oidc
+  #   key: clientSecret
+
+relay:
+  # The bearer for the relay's keyframe route, GET
+  # /internal/screening/broadcasts/{id}/keyframe (D1). MUST equal the relay
+  # chart's screening.token. It is its own credential, deliberately NOT the
+  # admin API token: that one also reads publisher IPs, which the sampler
+  # never needs.
+  screeningToken: ""
+  screeningTokenRef: {}
+  #   name: gawk-relay-screening
+  #   key: token
+
+# The detector (docs/71 OD5, D5). The weights are fetched at deploy time and
+# never shipped in the image: gawk does not redistribute them (§8.1 — they are
+# AGPL-3.0, like NudeNet's code). The init container runs the image's own
+# `fetch-model`, which refuses a file whose SHA-256 is not the pinned one, so a
+# swapped or truncated download never loads.
+model:
+  # NudeNet v3.4-weights `320n.onnx` (12,150,158 bytes), by its API asset
+  # route. NOT the release page's browser_download_url: GitHub answers that
+  # one with a login redirect for anonymous clients, which an init container
+  # would follow straight into an HTML page.
+  url: https://api.github.com/repos/notAI-tech/NudeNet/releases/assets/176831997
+  sha256: c15d8273adad2d0a92f014cc69ab2d6c311a06777a55545f2c4eb46f51911f0f
+  # The model's square input, which must match the file: 320 for 320n, 640
+  # for 640m. CF9's calibration decides between them (docs/71 §5).
+  inputSize: 320
+  # For 640m (103,538,690 bytes; roughly ten times the inference cost — raise
+  # resources with it):
+  #   url: https://api.github.com/repos/notAI-tech/NudeNet/releases/assets/176832019
+  #   sha256: 04fe3d77980780c1f8297dc6d7f942fd5b3abe6942a188f742a85241e4f634eb
+  #   inputSize: 640
+  # The file name inside /models.
+  file: nudenet.onnx
+  # An operator-provided volume holding the model, instead of the download:
+  # any Pod volume source, mounted read-only at /models. When set, no init
+  # container renders and url/sha256 are not used.
+  #   volume:
+  #     persistentVolumeClaim:
+  #       claimName: nudenet-weights
+  volume: {}
+  # The download's emptyDir.
+  emptyDirSizeLimit: 256Mi
+
+# The sampler's knobs (docs/71 §5). Each renders as its GAWK_SAMPLER_* env var.
+config:
+  # observe | flag (D19). observe scores and stores but pages no one.
+  mode: observe
+  # Flagged labels (D7, OD3): explicit nudity only, comma-separated.
+  labels: FEMALE_GENITALIA_EXPOSED,MALE_GENITALIA_EXPOSED,ANUS_EXPOSED
+  # Hysteresis (D7): trips when windowHits of the last `window` samples score
+  # >= threshold, clears when all of them are below it. Placeholders until
+  # CF9's calibration.
+  threshold: 0.8
+  window: 6
+  windowHits: 4
+  # Target per-broadcast sample interval (D6). Overload stretches it evenly
+  # and raises gawk_sampler_interval_effective_seconds — never silently skips
+  # a broadcast.
+  interval: 5s
+  # Concurrent decode+infer slots. Empty = the binary's default, GOMAXPROCS,
+  # which follows the container's CPU limit.
+  workers: ""
+  # Per-sample ffmpeg wall clock (D4).
+  decodeTimeout: 2s
+  # Per-sample ffmpeg address-space limit (RLIMIT_AS), in BYTES, at least
+  # 64 MiB. Empty = the binary's default (1 GiB).
+  decodeMemoryLimit: ""
+  # How often the target list is re-read from gawk-admin.
+  targetsRefresh: 5s
+  # Per-sample scores each tripped POST carries for gawk-admin's auto-kill
+  # tier (D14), 1-64.
+  reportSamples: 12
+  # Samples where no flagged label reaches this are not stored (D20).
+  # Must not exceed threshold: replay refuses a threshold under the floor
+  # (D21), and the binary refuses to start with the running one there.
+  sampleFloor: 0.3
+  logLevel: info
+  # text | json
+  logFormat: text
+
+# The sampler's one HTTP listener: /metrics, /healthz, /readyz. Always on —
+# the probes use it — and ClusterIP-only (a headless Service, the
+# StatefulSet's governing one). It carries operational numbers only: latency,
+# the effective interval, decode failures, POST errors. Never a frame, never a
+# broadcast ID.
+metrics:
+  port: 9090
+  # Needs the prometheus-operator CRDs. With kube-prometheus-stack, set the
+  # labels to match its serviceMonitorSelector.
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+  # Two alerts (needs the prometheus-operator CRDs):
+  #   * GawkSamplerIntervalStretched — a pod's effective interval above
+  #     intervalFactor × its target interval for intervalFor (D6): the pool
+  #     cannot keep up, so raise resources or replicas.
+  #   * GawkSamplerShardsMissing — gawk-admin has heard no targets poll from
+  #     some shard for 30 s, for 2 minutes (D22): that share of the broadcasts
+  #     is unscreened. It reads gawk-admin's gawk_admin_screening_shards_missing,
+  #     so gawk-admin's own metrics must be scraped too (its chart's
+  #     metrics.serviceMonitor).
+  prometheusRule:
+    enabled: false
+    labels: {}
+    severity: warning
+    intervalFactor: 2
+    intervalFor: 10m
+    shardsMissingSeverity: critical
+
+# An optional egress allowlist: the relay pods' ops port (the keyframe route),
+# gawk-admin, DNS, and HTTPS for the IdP and the model download. Ingress is
+# left alone (Prometheus scrapes the metrics port).
+networkPolicy:
+  enabled: false
+  relay:
+    podSelector:
+      app.kubernetes.io/name: gawk-server
+    # Empty = this release's namespace.
+    namespaceSelector: {}
+    port: 2112
+  admin:
+    podSelector:
+      app.kubernetes.io/name: gawk-admin
+    namespaceSelector: {}
+    port: 8090
+  dns:
+    podSelector:
+      k8s-app: kube-dns
+    namespaceSelector:
+      kubernetes.io/metadata.name: kube-system
+  # TCP 443 peers for the IdP's token endpoint and, unless model.volume is
+  # set, the model download (api.github.com, then the signed asset URL it
+  # redirects to). Neither has a stable in-cluster selector, so the default is
+  # any address; narrow it to your IdP and the download's CIDRs.
+  httpsEgress:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+  # Further egress rules, verbatim — e.g. an in-cluster IdP on another port.
+  extraEgress: []
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 256Mi
+  # The CPU limit bounds GOMAXPROCS, and so the default worker count; each
+  # worker holds one ffmpeg subprocess and one inference at a time.
+  limits:
+    cpu: "2"
+    memory: 1Gi
+
+fetchModelResources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+
+probes:
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 3
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 3
+
+nodeSelector: {}
+tolerations: []

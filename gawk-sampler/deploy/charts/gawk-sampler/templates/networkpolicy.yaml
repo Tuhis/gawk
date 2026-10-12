@@ -1,0 +1,67 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+# Egress only: what the sampler may reach. It needs exactly four things — the
+# relay pods' ops port (the keyframe route, docs/71 D1), gawk-admin (targets,
+# samples, flags), DNS, and HTTPS for the IdP's token endpoint and the model
+# download. Ingress is left open so Prometheus can scrape the metrics port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gawk-sampler.fullname" . }}
+  labels:
+    {{- include "gawk-sampler.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gawk-sampler.selectorLabels" . | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.relay.podSelector | nindent 14 }}
+          {{- with $np.relay.namespaceSelector }}
+          namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.relay.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.admin.podSelector | nindent 14 }}
+          {{- with $np.admin.namespaceSelector }}
+          namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.admin.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $np.dns.podSelector | nindent 14 }}
+          {{- with $np.dns.namespaceSelector }}
+          namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+          {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- with $np.httpsEgress }}
+    - to:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
