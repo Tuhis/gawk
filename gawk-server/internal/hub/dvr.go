@@ -56,7 +56,7 @@ type dvrGop struct {
 
 // DVRCursor is one subscriber's position. Values are immutable; every advance
 // returns a new cursor, which keeps the drain's bookkeeping free of aliasing
-// bugs.
+// bugs and makes the whole thing safe to read under an RLock.
 type DVRCursor struct {
 	gopSeq int64
 	// recordIdx is the index of the NEXT record to send. -1 means "the
