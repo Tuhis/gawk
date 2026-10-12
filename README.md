@@ -102,8 +102,8 @@ A few design points:
   dropped frame, never stalled playback. Keyframes ride reliable streams.
 - **The relay is a byte forwarder** that caches the latest decoder config
   and keyframe, so late joiners get a picture immediately.
-- **One frozen wire format, four implementations** — Go (the source of
-  truth), TypeScript, and the two native broadcasters — kept byte-compatible
+- **One frozen wire format, three implementations** — Go (the source of
+  truth), TypeScript, and the Rust desktop workspace — kept byte-compatible
   by shared golden test vectors.
 - **Codec is negotiated, not fixed** — H.264 hardware realtime is the happy
   path, with VP9/VP8 fallbacks.
