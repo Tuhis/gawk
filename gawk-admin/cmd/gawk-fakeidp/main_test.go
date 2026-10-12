@@ -131,6 +131,37 @@ func TestServiceRolesFlag(t *testing.T) {
 	}
 }
 
+// R40 (docs/71 D18, §9.7): the content sampler is a second confidential
+// client whose tokens carry flagger and nothing else — not the bot's roles —
+// so the dev stack's samplers authenticate as a deployment's do. Each client's
+// secret is its own.
+func TestFlaggerClientGrant(t *testing.T) {
+	i, err := newIDP(idpConfig{
+		Issuer: "http://localhost:8088/idp", ClientID: "gawk-admin-spa", Audience: "gawk-admin",
+		Role: "operator", ServiceClientID: "bot", ServiceClientSecret: "s3cret", ServiceRoles: []string{"rooms-reader"},
+		FlaggerClientID: "gawk-sampler", FlaggerClientSecret: "samp", FlaggerRoles: []string{"flagger"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := postForm(t, i, "/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {"gawk-sampler"}, "client_secret": {"samp"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	claims := claimsOf(t, resp["access_token"].(string))
+	roles := claims["resource_access"].(map[string]any)["gawk-admin"].(map[string]any)["roles"].([]any)
+	if claims["sub"] != "service-account-gawk-sampler" || len(roles) != 1 || roles[0] != "flagger" {
+		t.Errorf("claims = %v, want the sampler's service account with exactly flagger", claims)
+	}
+	for _, creds := range [][2]string{{"gawk-sampler", "s3cret"}, {"bot", "samp"}} {
+		if rec := postForm(t, i, "/token", url.Values{"grant_type": {"client_credentials"}, "client_id": {creds[0]}, "client_secret": {creds[1]}}); rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s with the other client's secret = %d, want 401", creds[0], rec.Code)
+		}
+	}
+}
+
 // The whole flow the portal SPA drives, in the order it drives it: discovery,
 // authorize (auto-approved, code + state echoed to the redirect URI), the
 // PKCE code exchange, the id_token nonce, and refresh with rotation.

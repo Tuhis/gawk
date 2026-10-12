@@ -121,7 +121,11 @@ oidc:
   # The role every R39 route requires. Grant it in the IdP, where access is
   # managed and audited; there is deliberately no allowlist here (D17).
   operatorRole: operator
-  # Reserved for R40's flag-only service identity. No R39 route consults it.
+  # R40 (docs/71 D18): the flag-only role of the content sampler's
+  # client-credentials identity. It reaches exactly POST /api/v1/content-flags,
+  # GET /api/v1/screening/targets and POST /api/v1/screening/samples — it can
+  # raise a flag, never kill. Empty grants it nowhere. Used only with
+  # screening.enabled. Recipe: docs/self-hosting.md.
   flaggerRole: flagger
   # R49 (docs/50 D1): the read-only role for a bot's client-credentials
   # service identity. It reaches exactly GET /api/v1/rooms,
@@ -178,6 +182,46 @@ links:
 # templates/rbac.yaml.
 rooms:
   enabled: false
+
+# Automatic content flagging (R40, docs/71). The portal half: the routes the
+# gawk-sampler chart's samplers call (role oidc.flaggerRole), the operator's
+# flag list, acknowledge/dismiss and the calibration replay, and the leader's
+# sweep that re-pages unacknowledged flags. DEFAULT OFF: with it off every
+# screening route answers 404, as R39's reserved POST /content-flags did.
+#
+# No pager, no flagging (docs/71 D12): while no enabled webhook would deliver
+# content_flag.raised, a sampler in flag mode samples nothing and the portal
+# shows a banner. content_flag.observed (observe mode) reaches only a webhook
+# whose events filter names it.
+#
+# The missing-shard alert reads gawk_admin_screening_shards_missing from this
+# chart's metrics Service; the gawk-sampler chart's PrometheusRule carries it.
+screening:
+  enabled: false
+  contentFlag:
+    # How often an unacknowledged flag re-pages — while its signal is live AND
+    # while it is unknown: a silent sampler is not evidence of a clean
+    # broadcast (D9).
+    repage: 10m
+    # How long dismissing a flag mutes re-flagging of its broadcast (D10).
+    mute: 30m
+    # How long after the sampler's last report a flag's signal turns from
+    # live to unknown (D9). Long on purpose, so a sampler that is merely
+    # behind (D6) never reads as gone.
+    staleAfter: 2m
+    # The auto-kill tier (D14, OD1): "off", or a policy such as
+    # "score>=0.9,hits>=10/12" over the flag's recent per-sample scores. Kills
+    # with a config.killCooldown ban as system:content-flag; the page still
+    # goes out.
+    autoKill: "off"
+    # The deadline kill (D15, OD2): "off", or how long an UNACKNOWLEDGED flag
+    # with a live signal may stay open before its broadcast is killed.
+    deadline: "off"
+  # How long calibration data — the stored samples, observed flags and their
+  # events — is kept (D17). Flag-mode flags are the moderation audit trail and
+  # are never pruned. The samples table's size is exported as
+  # gawk_admin_screening_samples_bytes; watch it on a small database volume.
+  sampleRetention: 30d
 
 config:
   # A plain "kill" is an ID ban with this cooldown (docs/42 D5): the

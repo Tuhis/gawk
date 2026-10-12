@@ -75,8 +75,9 @@ spec:
               value: {{ .Values.oidc.rolesClaim | quote }}
             - name: GAWK_ADMIN_OPERATOR_ROLE
               value: {{ .Values.oidc.operatorRole | quote }}
+            # R40 (docs/71 D18): the same "off" rule as the room roles below.
             - name: GAWK_ADMIN_FLAGGER_ROLE
-              value: {{ .Values.oidc.flaggerRole | quote }}
+              value: {{ .Values.oidc.flaggerRole | default "off" | quote }}
             # R49 (docs/50 D1): empty grants the role nowhere. An empty env var
             # would read as unset (the default role), so it is rendered "off".
             - name: GAWK_ADMIN_ROOMS_READER_ROLE
@@ -121,6 +122,23 @@ spec:
             # its ServiceAccount cannot act on.
             - name: GAWK_ADMIN_ROOMS
               value: {{ .Values.rooms.enabled | quote }}
+            # R40 content flagging (docs/71 §9.4). The knobs render whether or
+            # not screening is on, so a bad value fails the rollout that
+            # introduced it rather than the day screening is switched on.
+            - name: GAWK_ADMIN_SCREENING
+              value: {{ .Values.screening.enabled | quote }}
+            - name: GAWK_ADMIN_CONTENT_FLAG_REPAGE
+              value: {{ .Values.screening.contentFlag.repage | quote }}
+            - name: GAWK_ADMIN_CONTENT_FLAG_MUTE
+              value: {{ .Values.screening.contentFlag.mute | quote }}
+            - name: GAWK_ADMIN_CONTENT_FLAG_STALE_AFTER
+              value: {{ .Values.screening.contentFlag.staleAfter | quote }}
+            - name: GAWK_ADMIN_CONTENT_FLAG_AUTO_KILL
+              value: {{ .Values.screening.contentFlag.autoKill | default "off" | quote }}
+            - name: GAWK_ADMIN_CONTENT_FLAG_DEADLINE
+              value: {{ .Values.screening.contentFlag.deadline | default "off" | quote }}
+            - name: GAWK_ADMIN_SCREENING_SAMPLE_RETENTION
+              value: {{ .Values.screening.sampleRetention | quote }}
             {{- with .Values.notifications.webhooks }}
             # Chart-defined webhooks (docs/42 D9). This knob carries names,
             # URLs and the NAME of each signing key's environment variable —

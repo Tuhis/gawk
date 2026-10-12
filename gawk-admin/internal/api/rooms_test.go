@@ -109,6 +109,27 @@ func (f *fakeRooms) DeleteExisting(_ context.Context, name string, check func(ku
 	return obj, nil
 }
 
+func (f *fakeRooms) SetScreening(_ context.Context, name, value string, check func(kube.RoomObject) error) (kube.RoomObject, kube.RoomObject, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return kube.RoomObject{}, kube.RoomObject{}, f.err
+	}
+	obj, ok := f.rooms[name]
+	if !ok {
+		return kube.RoomObject{}, kube.RoomObject{}, kube.ErrRoomNotFound
+	}
+	if check != nil {
+		if err := check(obj); err != nil {
+			return obj, kube.RoomObject{}, err
+		}
+	}
+	after := obj
+	after.Room.Spec.Screening = value
+	f.rooms[name] = after
+	return obj, after, nil
+}
+
 func dynamicRoomObject(name, key, holder string, attachments int) kube.RoomObject {
 	obj := kube.RoomObject{Name: name}
 	obj.Room.Name = name

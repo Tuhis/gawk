@@ -218,6 +218,37 @@ Two consequences worth knowing before turning it on:
 Setup, including the two scoped NATS users:
 [`docs/self-hosting.md`](../docs/self-hosting.md) §12.
 
+## Content flagging (R40)
+
+Optional, off by default. With `-screening` (chart `screening.enabled`) the
+portal is the half of [`docs/71`](../docs/71-content-flagging.md) that pages
+and acts; `gawk-sampler` is the half that looks. The sampler holds only the
+`flagger` role (`-flagger-role`), which reaches exactly three routes — post a
+content flag, read its shard's target list, store samples — and never a kill.
+Every kill, the operator's and the two automatic ones, goes through the R39
+kill path here.
+
+- **No pager, no flagging.** While no enabled webhook would deliver
+  `content_flag.raised`, a `flag`-mode post answers `503 no_flag_route`, the
+  samplers pause, and the portal shows a banner. `content_flag.observed`
+  (observe mode) reaches only a webhook whose `events` list names it.
+- **A flag keeps paging.** An open flag re-pages every `-content-flag-repage`
+  while its signal is live *or* unknown (no report for
+  `-content-flag-stale-after`): a silent sampler is not a clean broadcast.
+  Acknowledge stops the re-pages; dismiss resolves the flag and mutes the
+  broadcast for `-content-flag-mute`.
+- **Automatic kills are built and off.** `-content-flag-auto-kill`
+  (`score>=0.9,hits>=10/12`) and `-content-flag-deadline` (`30m`) both default
+  to `off`; when they fire, the actor is `system:content-flag`.
+- **Calibration data is pruned, the audit trail is not.** Samples, observed
+  flags and their events go after `-screening-sample-retention` (`30d`) on the
+  leader's hourly tick; `flag`-mode flags stay. The samples table's size is
+  `gawk_admin_screening_samples_bytes`, and sampler shards that stopped polling
+  are `gawk_admin_screening_shards_missing`.
+
+The Keycloak `flagger` client and the sampler chart:
+[`docs/self-hosting.md`](../docs/self-hosting.md).
+
 ## Deploy
 
 Chart in `deploy/charts/gawk-admin`, image `ghcr.io/tuhis/gawk-admin`, chart at

@@ -127,7 +127,9 @@ func TestIfNoneMatchAnswers304(t *testing.T) {
 // document and minting a token with `operator` on such a deployment would get
 // a 403 with nothing to explain it.
 func TestTheServedRolesAreThisDeploymentsClaimValues(t *testing.T) {
-	d := newDoc(t, openapi.Options{Roles: map[string]string{"operator": "gawk-mod"}})
+	// R40's sampler-only routes carry the flagger role and nothing else, so
+	// it is renamed too: every protected operation must come out renamed.
+	d := newDoc(t, openapi.Options{Roles: map[string]string{"operator": "gawk-mod", "flagger": "gawk-sampler"}})
 
 	var doc struct {
 		Paths map[string]map[string]struct {
@@ -144,7 +146,7 @@ func TestTheServedRolesAreThisDeploymentsClaimValues(t *testing.T) {
 			switch {
 			case len(op.Roles) == 0:
 				unauthenticated++
-			case op.Roles[0] == "gawk-mod":
+			case op.Roles[0] == "gawk-mod" || op.Roles[0] == "gawk-sampler":
 				substituted++
 			default:
 				t.Fatalf("%s %s still says %v; a token carrying that is refused here",

@@ -72,6 +72,15 @@ const (
 	CodeUnavailable     = "unavailable"
 	CodeInvalidTarget   = "invalid_target"
 	CodeNotActive       = "ban_not_active"
+
+	// R40 (docs/71 §9.4). no_flag_route is the 503 of D12: no enabled
+	// webhook would deliver a page, so flag mode refuses to flag.
+	// screening_not_allowed is a room that may not be exempt (D11).
+	// content_flag_state is an acknowledge or dismiss the flag's state
+	// refuses — not open, already resolved, or an observed flag.
+	CodeNoFlagRoute         = "no_flag_route"
+	CodeScreeningNotAllowed = "screening_not_allowed"
+	CodeContentFlagState    = "content_flag_state"
 )
 
 // Projector writes one ban row's Ban CR. Implemented by *kube.Reconciler.
@@ -241,6 +250,7 @@ func New(opts Options) (*API, error) {
 			RoleOperator:     opts.Config.OperatorRole,
 			RoleRoomsReader:  opts.Config.RoomsReaderRole,
 			RoleRoomsManager: opts.Config.RoomsManagerRole,
+			RoleFlagger:      opts.Config.FlaggerRole,
 		},
 	}
 	contract, err := openapi.New(docOpts)
@@ -293,12 +303,20 @@ const RoleRoomsReader = "rooms-reader"
 // caller that holds this role without the operator's.
 const RoleRoomsManager = "rooms-manager"
 
+// RoleFlagger is the symbolic flag-only role of R40's sampler (docs/71 D18,
+// docs/42 §4.11), resolved to Config.FlaggerRole. It reaches exactly the
+// three flagger routes and nothing else — never a kill, never a read of the
+// fleet's publisher IPs.
+const RoleFlagger = "flagger"
+
 // Features a route may require. A route whose Requires names a feature that is
 // off is NOT registered, so the catch-all answers its path with the documented
 // 404 envelope.
 const (
 	// RequiresRooms gates the R42 room routes on -rooms (Options.Rooms).
 	RequiresRooms = "rooms"
+	// RequiresScreening gates R40's routes on -screening (docs/71 §9.4).
+	RequiresScreening = "screening"
 )
 
 // Route describes one /api/v1 operation, and it is the DECLARED form of what
@@ -399,6 +417,30 @@ var routeTable = []routeEntry{
 		func(a *API) http.HandlerFunc { return a.handleEndRoom }},
 	{Route{Method: "DELETE", Pattern: "/api/v1/rooms/{name}", Roles: []string{RoleOperator, RoleRoomsManager}, Requires: RequiresRooms},
 		func(a *API) http.HandlerFunc { return a.handleDeleteRoom }},
+
+	// R40 content flagging (docs/71 §9.4), only with -screening. The three
+	// flagger routes are the sampler's whole surface: flag-only rights
+	// (docs/42 D17), with nothing that kills and nothing that reads a
+	// publisher IP.
+	{Route{Method: "POST", Pattern: "/api/v1/content-flags", Roles: []string{RoleFlagger}, Requires: RequiresScreening},
+		func(a *API) http.HandlerFunc { return a.handlePostContentFlag }},
+	{Route{Method: "GET", Pattern: "/api/v1/screening/targets", Roles: []string{RoleFlagger}, Requires: RequiresScreening},
+		func(a *API) http.HandlerFunc { return a.handleScreeningTargets }},
+	{Route{Method: "POST", Pattern: "/api/v1/screening/samples", Roles: []string{RoleFlagger}, Requires: RequiresScreening},
+		func(a *API) http.HandlerFunc { return a.handleScreeningSamples }},
+	{Route{Method: "POST", Pattern: "/api/v1/screening/replay", Roles: []string{RoleOperator}, Requires: RequiresScreening},
+		func(a *API) http.HandlerFunc { return a.handleScreeningReplay }},
+	{Route{Method: "GET", Pattern: "/api/v1/content-flags", Roles: []string{RoleOperator}, Requires: RequiresScreening},
+		func(a *API) http.HandlerFunc { return a.handleListContentFlags }},
+	{Route{Method: "POST", Pattern: "/api/v1/content-flags/{id}/acknowledge", Roles: []string{RoleOperator}, Requires: RequiresScreening},
+		func(a *API) http.HandlerFunc { return a.handleAcknowledgeContentFlag }},
+	{Route{Method: "POST", Pattern: "/api/v1/content-flags/{id}/dismiss", Roles: []string{RoleOperator}, Requires: RequiresScreening},
+		func(a *API) http.HandlerFunc { return a.handleDismissContentFlag }},
+	// A room's screening is an R40 property of an R42 object: the route needs
+	// screening to exist and rooms to have anything to act on, and answers
+	// 404 for every room when rooms are off (docs/71 D11).
+	{Route{Method: "PATCH", Pattern: "/api/v1/rooms/{name}", Roles: []string{RoleOperator}, Requires: RequiresScreening},
+		func(a *API) http.HandlerFunc { return a.handlePatchRoom }},
 }
 
 // RouteTable is the declared /api/v1 surface, for the tests that hold the
@@ -421,6 +463,8 @@ func (a *API) enabled(requires string) bool {
 		return true
 	case RequiresRooms:
 		return a.opts.Rooms != nil
+	case RequiresScreening:
+		return a.opts.Config.Screening
 	default:
 		// An unknown feature name is a programming error in the table, and
 		// refusing to serve the route is the safe half of it.
@@ -446,10 +490,10 @@ func (a *API) Routes() http.Handler {
 	}
 
 	// The catch-all keeps unknown /api/v1 paths answering the documented error
-	// envelope instead of net/http's plain text — and it is how
-	// POST /api/v1/content-flags returns 404 in R39. That route is R40's
-	// (docs/42 §4.11, D11): the path is frozen and deliberately NOT registered
-	// here, so nothing can squat it in the meantime.
+	// envelope instead of net/http's plain text — and it is how every R40
+	// route, POST /api/v1/content-flags included, still returns 404 on a
+	// deployment with -screening off, exactly as R39 reserved it (docs/42
+	// §4.11, D11).
 	//
 	// It is unauthenticated on purpose: "this path does not exist" is not a
 	// secret, and requiring a token to learn it would only make the reserved
@@ -501,6 +545,8 @@ func (a *API) resolveRoles(symbolic []string) []string {
 			actual = a.opts.Config.RoomsReaderRole
 		case RoleRoomsManager:
 			actual = a.opts.Config.RoomsManagerRole
+		case RoleFlagger:
+			actual = a.opts.Config.FlaggerRole
 		default:
 			// An unknown symbolic name is a table bug. Passing it through
 			// verbatim fails closed: no IdP issues a claim named after it by

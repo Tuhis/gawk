@@ -35,6 +35,10 @@ type Rooms interface {
 	// DeleteExisting deletes the room when check (nil: always) admits the
 	// object as read, bound to that object (docs/62 D4).
 	DeleteExisting(ctx context.Context, name string, check func(kube.RoomObject) error) (kube.RoomObject, error)
+	// SetScreening sets spec.screening ("" or rooms.ScreeningExempt, docs/71
+	// D11) when check admits the object as read, bound to that object, and
+	// returns the room before and after.
+	SetScreening(ctx context.Context, name, value string, check func(kube.RoomObject) error) (before, after kube.RoomObject, err error)
 }
 
 // Room error codes, in the {"error":{"code","message"}} envelope.
@@ -105,6 +109,10 @@ type roomJSON struct {
 	// Managed is true for a room the portal created; a `kubectl apply`'d one
 	// is shown, deletable by an explicit request, but marked as not ours.
 	Managed bool `json:"managed"`
+	// Screening is the CR's spec.screening (R40, docs/71 D11): "exempt", or
+	// absent for a screened room. It reports what the CR says; a value the
+	// room's shape does not allow is screened anyway.
+	Screening string `json:"screening,omitempty"`
 }
 
 type roomLinksJSON struct {
@@ -174,6 +182,7 @@ func renderRoom(obj kube.RoomObject) roomJSON {
 		Key:             r.Status.Key,
 		HasAttachSecret: r.Spec.AttachSecretRef != nil,
 		Managed:         obj.Managed,
+		Screening:       r.Spec.Screening,
 	}
 	if r.Status.Lease != nil {
 		out.HomeHolder = r.Status.Lease.Holder

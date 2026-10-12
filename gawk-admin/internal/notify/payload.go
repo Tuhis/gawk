@@ -114,7 +114,13 @@ func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 	if ev.Category == store.CategoryActivity {
 		return buildBusEvent(ev, externalURL)
 	}
+	// A moderation row maps through the contract's table; R40's screening
+	// row (content_flag.observed) by its prefix. Both are built here, from
+	// named fields — neither is a bus event carried verbatim.
 	typ, ok := events.ModerationType(ev.Type)
+	if !ok && ev.Type == store.EventContentFlagObserved {
+		typ, ok = store.CloudEventsType(ev.Type)
+	}
 	if !ok {
 		// A row type the contract does not know is a bug in whichever
 		// producer wrote it — never something to invent a type for.
@@ -161,6 +167,16 @@ func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 			data = events.RoomEndedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, DisplayCode: displayCode, Kind: kind, Reason: reason}
 		case events.TypeRoomSecretRotated:
 			data = events.RoomSecretRotatedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode, DisplayCode: displayCode, Kind: kind}
+		case events.TypeRoomScreeningChanged:
+			// Through the accessor: the value is one of two words or the
+			// event is not delivered with a guess. An unreadable value reads
+			// as screened, the safe half — it claims no exemption.
+			screening := ev.RoomScreening()
+			if screening == "" {
+				screening = events.RoomScreeningScreened
+			}
+			data = events.RoomScreeningChangedData{Actor: ev.Actor, RoomKey: roomKey, RoomCode: roomCode,
+				DisplayCode: displayCode, Kind: kind, Screening: screening}
 		default:
 			return events.Event{}, fmt.Errorf("notify: no data shape for %s", typ)
 		}
@@ -176,8 +192,35 @@ func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 			data = events.BanExpiredData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID, Reason: reason, Enforcement: enforcement}
 		case events.TypeBanRemoved:
 			data = events.BanRemovedData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID, Reason: reason, Enforcement: enforcement}
-		case events.TypeContentFlagRaised:
-			data = events.ContentFlagRaisedData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID, Reason: reason}
+		case events.TypeContentFlagRaised, events.TypeContentFlagObserved:
+			// Scores and metadata only (docs/71 D8), each read through the
+			// store's closed accessor rather than copied from the jsonb.
+			f := ev.ContentFlag()
+			data = events.ContentFlagRaisedData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID,
+				Reason: reason, FlagID: f.FlagID, SamplerID: f.SamplerID, Window: f.Window, Scores: f.Scores, Labels: f.Labels}
+		case events.TypeContentFlagReminded:
+			f := ev.ContentFlag()
+			signal := f.Signal
+			if signal == "" {
+				// The re-page is only ever sent for a live or unknown signal;
+				// unknown is the one that cannot overstate.
+				signal = events.ContentFlagSignalUnknown
+			}
+			reminder := f.Reminder
+			if reminder < 1 {
+				reminder = 1
+			}
+			data = events.ContentFlagRemindedData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID,
+				FlagID: f.FlagID, RaisedAt: f.RaisedAt, Reminder: reminder, Signal: signal}
+		case events.TypeContentFlagResolved:
+			f := ev.ContentFlag()
+			if f.Resolution == "" {
+				// A resolution is required by the schema and has no safe
+				// default: refuse rather than guess what happened.
+				return events.Event{}, fmt.Errorf("notify: content_flag.resolved row %d carries no resolution", ev.ID)
+			}
+			data = events.ContentFlagResolvedData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID,
+				FlagID: f.FlagID, Resolution: f.Resolution, Reason: f.Reason}
 		default:
 			return events.Event{}, fmt.Errorf("notify: no data shape for %s", typ)
 		}

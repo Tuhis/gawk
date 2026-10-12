@@ -127,8 +127,11 @@ type Pod struct {
 
 // Placement is one pod's view of a broadcast in the aggregate.
 type Placement struct {
-	Pod          string
-	Role         string
+	Pod  string
+	Role string
+	// Addr is the pod's scrape address (host:port of its ops listener) —
+	// where R40's sampler reads the broadcast's keyframe (docs/71 D2).
+	Addr         string
 	ViewersLocal int
 }
 
@@ -138,9 +141,17 @@ type Aggregate struct {
 	Key               string
 	PublisherActive   bool
 	PublisherRemoteIP string
-	StartedAt         time.Time
-	ViewersGlobal     uint32
-	Pods              []Placement
+	// PublisherEpoch is the origin's handle for the current publisher
+	// session (docs/71 §9.1); empty from a relay that predates R40.
+	PublisherEpoch string
+	// OriginPod and OriginAddr name the pod that reported the broadcast as
+	// its origin, empty when no origin answered this scan. R40 screens
+	// origins only (docs/71 D2).
+	OriginPod     string
+	OriginAddr    string
+	StartedAt     time.Time
+	ViewersGlobal uint32
+	Pods          []Placement
 }
 
 // RoomAggregate is one live room with the pod that is home for it.
@@ -469,13 +480,15 @@ func aggregate(pods []Pod) []Aggregate {
 				agg.Key = b.Key
 				agg.PublisherActive = b.PublisherActive
 				agg.PublisherRemoteIP = b.PublisherRemoteIP
+				agg.PublisherEpoch = b.PublisherEpoch
 				agg.StartedAt = b.StartedAt
 				agg.ViewersGlobal = b.ViewersGlobal
 			}
 			if isOrigin {
 				origin[b.ID] = true
+				agg.OriginPod, agg.OriginAddr = p.Name, p.Addr
 			}
-			agg.Pods = append(agg.Pods, Placement{Pod: p.Name, Role: b.Role, ViewersLocal: b.ViewersLocal})
+			agg.Pods = append(agg.Pods, Placement{Pod: p.Name, Role: b.Role, Addr: p.Addr, ViewersLocal: b.ViewersLocal})
 		}
 	}
 	out := make([]Aggregate, 0, len(byID))

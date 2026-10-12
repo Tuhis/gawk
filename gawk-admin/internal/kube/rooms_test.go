@@ -3,6 +3,7 @@ package kube_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -423,6 +424,61 @@ func TestRoomClientDeleteExistingIsBoundToTheCheckedObjectsUID(t *testing.T) {
 	}
 	if got == nil || got.UID == nil || *got.UID != "uid-checked" {
 		t.Fatalf("delete preconditions = %+v, want the checked object's UID", got)
+	}
+}
+
+// R40 (docs/71 D11): SetScreening writes spec.screening when the check admits
+// the room as read, removes the key to screen it again, and leaves the room
+// untouched when the check refuses.
+func TestRoomClientSetScreening(t *testing.T) {
+	c, _ := newFakeRoomClient(t, kubectlRoom("crew", &rooms.SecretKeyRef{Name: "s", Key: "k"}))
+	ctx := context.Background()
+	before, after, err := c.SetScreening(ctx, "crew", rooms.ScreeningExempt, func(obj kube.RoomObject) error {
+		spec := obj.Room.Spec
+		spec.Screening = rooms.ScreeningExempt
+		return rooms.ValidateScreening(spec)
+	})
+	if err != nil {
+		t.Fatalf("SetScreening: %v", err)
+	}
+	if before.Room.Spec.Screening != "" || after.Room.Spec.Screening != rooms.ScreeningExempt || !after.Room.ScreeningExempt() {
+		t.Fatalf("before %q, after %q", before.Room.Spec.Screening, after.Room.Spec.Screening)
+	}
+	if got, _ := c.Get(ctx, "crew"); got.Room.Spec.Screening != rooms.ScreeningExempt || got.Room.Spec.AttachSecretRef == nil {
+		t.Fatalf("stored spec = %+v: the patch must set screening and keep the rest", got.Room.Spec)
+	}
+	if _, after, err = c.SetScreening(ctx, "crew", "", nil); err != nil || after.Room.Spec.Screening != "" {
+		t.Fatalf("un-exempt: %q, %v", after.Room.Spec.Screening, err)
+	}
+
+	refuse := errors.New("refused")
+	if _, _, err := c.SetScreening(ctx, "crew", rooms.ScreeningExempt, func(kube.RoomObject) error { return refuse }); !errors.Is(err, refuse) {
+		t.Fatalf("a refusing check: %v", err)
+	}
+	if got, _ := c.Get(ctx, "crew"); got.Room.Spec.Screening != "" {
+		t.Fatal("a refused SetScreening wrote the room")
+	}
+	if _, _, err := c.SetScreening(ctx, "nosuchroom", "", nil); !errors.Is(err, kube.ErrRoomNotFound) {
+		t.Fatalf("a missing room: %v", err)
+	}
+}
+
+// The patch is bound to the object the check saw: it carries that UID, which
+// the API server holds as a precondition.
+func TestRoomClientSetScreeningIsBoundToTheCheckedObjectsUID(t *testing.T) {
+	room := kubectlRoom("crew", &rooms.SecretKeyRef{Name: "s", Key: "k"})
+	room.UID = types.UID("uid-checked")
+	c, _, dc := newFakeRoomClientWithDynamic(t, room)
+	var patch string
+	dc.PrependReactor("patch", "rooms", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		patch = string(action.(k8stesting.PatchActionImpl).GetPatch())
+		return false, nil, nil
+	})
+	if _, _, err := c.SetScreening(context.Background(), "crew", rooms.ScreeningExempt, nil); err != nil {
+		t.Fatalf("SetScreening: %v", err)
+	}
+	if !strings.Contains(patch, `"uid":"uid-checked"`) || !strings.Contains(patch, `"screening":"exempt"`) {
+		t.Fatalf("patch = %s, want the checked UID and the value", patch)
 	}
 }
 

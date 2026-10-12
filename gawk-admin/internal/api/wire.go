@@ -149,6 +149,10 @@ type broadcastJSON struct {
 	// BanState is null when it could not be determined — Postgres unreachable
 	// — so the UI shows "unknown" rather than a confident "not banned".
 	BanState *banStateJSON `json:"banState"`
+	// ContentFlag is the broadcast's unresolved flag-mode content flag (R40,
+	// docs/71 §9.4), which the portal pins to the top of the view. Absent
+	// when there is none, and always absent with screening off.
+	ContentFlag *contentFlagJSON `json:"contentFlag,omitempty"`
 }
 
 type deliveryJSON struct {
@@ -381,6 +385,9 @@ type meDefaultsJSON struct {
 
 type meFeaturesJSON struct {
 	Rooms bool `json:"rooms"`
+	// Screening is R40's content flagging (docs/71 §9.4), default-off like
+	// rooms: with it off every screening route answers 404.
+	Screening bool `json:"screening"`
 }
 
 // broadcastsPageJSON carries the coverage counters beside the rows so partial
