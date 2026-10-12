@@ -168,6 +168,45 @@ else
     fail "-insecure appears $insecure_hits times outside comments for $pubsim_services pubsim services"
 fi
 
+# R40's screening lane (docs/71 §9.7) is an override file, not a profile: it
+# must change the relay's and the portal's environment, which a profile
+# cannot. Asserted here: it merges with the base file, it adds the lane's
+# services and nothing else, what it publishes stays on loopback (D14 — the
+# samplers' metrics ride the portal's namespace), it builds this checkout
+# (D15), and its one -insecure is the pubsim's.
+SCREENING=dev/compose.screening.yml
+sc_cfg=$(dc -f "$COMPOSE" -f "$SCREENING" config --format json 2>/dev/null || true)
+if [ -n "$sc_cfg" ]; then
+    ok "the screening override merges with the base file"
+else
+    fail "docker compose -f $COMPOSE -f $SCREENING config does not parse"
+fi
+base_services=$(dc config --services 2>/dev/null)
+sc_extra=$(dc -f "$COMPOSE" -f "$SCREENING" config --services 2>/dev/null \
+    | grep -vxF "$base_services" | sort | tr '\n' ' ')
+if [ "$sc_extra" = "pubsim-magenta sampler-0 sampler-1 webhook-sink " ]; then
+    ok "the screening lane adds exactly its four services"
+else
+    fail "the screening lane adds: $sc_extra(want: pubsim-magenta sampler-0 sampler-1 webhook-sink)"
+fi
+sc_ports=$(printf '%s' "$sc_cfg" | jq -r '.services.admin.ports[] | select(.target == 9190 or .target == 9191) | .host_ip // "*"' 2>/dev/null | sort -u)
+if [ "$sc_ports" = "127.0.0.1" ]; then
+    ok "the samplers' metrics are published on loopback only"
+else
+    fail "the samplers' metrics are published on: ${sc_ports:-nothing}"
+fi
+if grep -v '^[[:space:]]*#' "$SCREENING" | grep -q 'ghcr.io/tuhis'; then
+    fail "the screening lane pulls a released image (D15)"
+else
+    ok "the screening lane builds this checkout (D15)"
+fi
+if [ "$(grep -v '^[[:space:]]*#' "$SCREENING" | grep -c -- '-insecure' || true)" -le 1 ] \
+    && printf '%s' "$sc_cfg" | jq -e '.services["pubsim-magenta"].command | index("-insecure")' >/dev/null 2>&1; then
+    ok "the screening lane's only -insecure is its pubsim's"
+else
+    fail "-insecure appears in the screening lane outside its pubsim"
+fi
+
 # app-dev replaces the built frontend rather than running beside it; compose
 # cannot express "this profile switches that service off", so the invocation
 # has to be written down where the profile is defined.

@@ -210,6 +210,25 @@ with the server picker never opened — no `/echo` probe runs in this pass. The
 `--browser-broadcast` pass is the control: its relay has no flag, and it
 asserts the line is absent. Artifact: `console-broadcaster-screening.log`.
 
+## Content flagging, end to end (R40)
+
+```sh
+docker compose -f docker-compose.yml -f dev/compose.screening.yml up -d --build --wait
+./e2e/screening-assert.sh
+```
+
+Not a `run.mjs` pass: it runs against the compose stack's screening lane
+(`dev/compose.screening.yml`, `docs/71` §9.7) — two samplers on the
+generated test model, three magenta `gawk-pubsim` broadcasts and a webhook
+receiver. The script checks, in order: the two shards split the fleet and
+each sampler pod screens its own share; a sustained magenta signal pages; a
+dismissal mutes; the grey phase clears a flag and the next magenta phase
+pages again; a stopped sampler is reported as a missing shard and found
+again; and in `observe` mode only the opt-in channel hears anything while
+the stored samples replay to would-trips. About six minutes, most of it the
+fixture's 45 s phases. The `dev-stack` CI job runs it on every change that
+can break the stack.
+
 ## fMP4 muxer playback check (R22)
 
 ```sh
