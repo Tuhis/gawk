@@ -197,8 +197,18 @@ func (s *Store) postContentFlag(ctx context.Context, p FlagPost, config []Config
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	existing, found, err := lockUnresolvedFlag(ctx, tx, b.BroadcastID, b.Mode)
+	if err != nil {
+		return FlagPostResult{}, err
+	}
+
 	// A dismissal mutes re-flagging of the broadcast (D10). Observe mode
 	// ignores mutes: it pages no one, and its data is what calibration needs.
+	// Read AFTER the lock above: a dismissal holds that row lock until it
+	// commits, and at READ COMMITTED this statement's snapshot is taken once
+	// the wait is over, so it sees the mute a concurrent dismissal wrote.
+	// Read before it, the mute was missing, the dismissed flag was gone, and
+	// the POST raised — and paged — a new flag.
 	if b.Mode == screening.ModeFlag {
 		var until time.Time
 		err := tx.QueryRow(ctx, `SELECT muted_until FROM screening_mutes WHERE broadcast_id = $1 AND muted_until > $2`,
@@ -209,11 +219,6 @@ func (s *Store) postContentFlag(ctx context.Context, p FlagPost, config []Config
 		case !errors.Is(err, pgx.ErrNoRows):
 			return FlagPostResult{}, err
 		}
-	}
-
-	existing, found, err := lockUnresolvedFlag(ctx, tx, b.BroadcastID, b.Mode)
-	if err != nil {
-		return FlagPostResult{}, err
 	}
 
 	var res FlagPostResult
