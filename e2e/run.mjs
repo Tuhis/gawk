@@ -1480,6 +1480,7 @@ async function screeningNoticePass({ relayUrl, certHash }) {
       fail('the screening notice is shown more than once');
     }
     log(`screening notice shown on ${id}, from the publish session alone`);
+    writeFileSync(join(OUT, 'broadcast-screening-notice.png'), await page.screenshot());
   } finally {
     await browser.close();
   }
