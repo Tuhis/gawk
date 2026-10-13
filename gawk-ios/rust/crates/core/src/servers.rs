@@ -6,8 +6,8 @@ use gawk_engine::probe::{self, ProbeResult};
 /// What probing a server found. `name` is the operator's claim from
 /// RelayIdentity: shown beside the host, never in place of it (docs/40 F6).
 /// `screens`: the relay says it automatically screens streams for explicit
-/// content (R40, docs/71 D13) — the Broadcast screen says so before going
-/// live.
+/// content (R40, docs/71 D13) — Settings marks the server "Content
+/// screening" (§9.8).
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum ServerProbe {
     Reachable {

@@ -42,8 +42,9 @@ pub enum ProbeResult {
     /// sent a non-empty one in time. The name is the operator's claim: the
     /// window shows it beside the host, never in place of it (docs/40 F6).
     /// `screens` is the identity's screening notice (R40, docs/71 D13): the
-    /// relay automatically screens streams, which the window says before the
-    /// broadcaster goes live. False when the identity was absent or late.
+    /// relay automatically screens streams, which the window marks on the
+    /// server's row in Settings (§9.8). False when the identity was absent or
+    /// late.
     Ok {
         rtt_ms: u32,
         name: Option<String>,
