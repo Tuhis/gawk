@@ -1320,7 +1320,9 @@ entries still describe code `gawk-pubsim` runs (now
   400-500, up to 230 processes runnable. Anything with a deadline started
   in that window can miss it: a QUIC dial, a tap, a decode count. Build
   first, boot, then wait for the load (`gawk-ios/scripts/settle.sh`); and
-  never boot a second Simulator on the same runner.
+  never boot a second Simulator on the same runner. Installing an app
+  starts another round (widgets, App Shortcuts, Spotlight), so install and
+  open it before the wait, not in the test step.
   ([docs/70](70-ios-ux-redesign.md) §10.4)
 - **The Simulator's `apsd` spins on a CI runner**, and its log traffic keeps
   both `diagnosticd`s busy too: 1-1.5 of three cores, idle or not.

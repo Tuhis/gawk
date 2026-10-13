@@ -458,6 +458,12 @@ couldn't outlast it:
   into that. Everything is now built first (`build-for-testing`, with the
   Simulator shut down), and `scripts/settle.sh` holds the relay, the
   fixtures and the tests until the 1-minute load stays under 40.
+- **Installing the app starts a second round.** SpringBoard re-renders its
+  home-screen widgets, and App Shortcuts and Spotlight index the new app:
+  when the test step installed it, the load went from 25 to 288 within
+  three minutes of a settled runner, and a menu tap waited 60 s for the app
+  to go idle. The job installs the app and the test runner, and opens the
+  app once, before the settle wait.
 - **The Simulator's push daemon spins.** With the log traffic it makes,
   it and both `diagnosticd`s (the Simulator's and the host's) held 1-1.5
   of the three cores whether or not a test ran.
