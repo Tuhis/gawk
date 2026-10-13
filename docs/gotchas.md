@@ -1958,6 +1958,16 @@ entries still describe code `gawk-pubsim` runs (now
 
 **CI / deployment**
 
+- **A loss-injection test that sends faster than real time measures the
+  runner, not the code.** R29's parity loss test paced 120 frames at 2 ms
+  (500 fps, 5,500 datagrams/s per subscriber). On a CPU-throttled runner pod
+  — here beside R40's ffmpeg builds — a stalled goroutine overflowed the QUIC
+  endpoints' own datagram queues: the subscribers lost ~250 datagrams to the
+  link's ~70 dropped packets, in bursts k=2 cannot repair, and the 4x
+  criterion failed on a parity path that worked. It now sends at the
+  frames' own 60 fps and logs where the loss happened (link, endpoints,
+  relay). Reproduce locally with the test and a few busy loops `taskset` to
+  two cores; plain busy loops across all cores do not. ([docs/34](34-live-edge-forward-parity.md))
 - **`-race` and a coverage profile in one `go test` run compound
   catastrophically.** The detector shadows every access, including the coverage
   counter writes, so a compute-heavy package pays both: `gawk-server/wire` went
