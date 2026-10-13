@@ -1968,6 +1968,15 @@ entries still describe code `gawk-pubsim` runs (now
   frames' own 60 fps and logs where the loss happened (link, endpoints,
   relay). Reproduce locally with the test and a few busy loops `taskset` to
   two cores; plain busy loops across all cores do not. ([docs/34](34-live-edge-forward-parity.md))
+- **An e2e wait that starts at a fresh page's load event has to cover the
+  app's cold boot.** `page.goto` returns at `load`, before the bundle has
+  run and React has rendered; a click's own auto-wait (30 s) absorbs that,
+  a bare `waitFor` does not. The `?desktop=1` handoff check gave its
+  mount-time dialog 5 s: ~0.25 s on an idle box, 7-8 s under a 25% CPU
+  quota (`systemd-run --user --scope -p CPUQuota=25%` reproduces it;
+  `taskset` pinning does not), so it failed throttled CI runs that a rerun
+  passed. Give a first wait the boot budget the rest of `e2e/run.mjs`
+  uses (15 s or more). ([docs/69](69-app-desktop-handoff.md))
 - **`-race` and a coverage profile in one `go test` run compound
   catastrophically.** The detector shadows every access, including the coverage
   counter writes, so a compute-heavy package pays both: `gawk-server/wire` went

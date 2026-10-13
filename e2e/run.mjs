@@ -1394,7 +1394,13 @@ async function desktopHandoffCheck({ relayUrl, certHash }) {
     const linkPage = await linkContext.newPage();
     wirePageLogs(linkPage, 'console-desktop-handoff-link');
     await linkPage.goto(`${APP_URL}/#/broadcast?room=vip-e2e-handoff&desktop=1`);
-    await linkPage.getByRole('dialog', { name: 'Opening the desktop app' }).waitFor({ state: 'visible', timeout: 5000 });
+    // The dialog is the mount's first render, so this wait starts at the
+    // load event and covers the whole cold boot of a fresh browser — the
+    // offer's 5 s above starts after a click whose own auto-wait already
+    // absorbed it. Boot-sized like every other first wait in this file:
+    // under a 25% CPU quota the dialog shows at 7-8 s, and 5 s failed CI
+    // runs that the next attempt passed.
+    await linkPage.getByRole('dialog', { name: 'Opening the desktop app' }).waitFor({ state: 'visible', timeout: 15_000 });
     await sleep(1000);
     await assertStillHere(linkPage, '?desktop=1');
     if (linkPage.url().includes('desktop=')) fail('desktop handoff: ?desktop= was not stripped from the URL');
