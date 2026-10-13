@@ -370,27 +370,58 @@ fn copy_code_is_an_icon_only_where_the_labelled_bar_wont_fit() {
     }
 }
 
-// R40 (docs/71 D13): the screening line shows on Ready and on air when the
-// server says so, and costs neither page its bar at the smallest window.
+// R40 (docs/71 D13): a server's content screening is a mark on its row in
+// Settings — the selected server's, the one probed — and nothing on the
+// broadcast page, Ready or on air.
 #[test]
-fn the_screening_line_shows_ready_and_live() {
+fn the_screening_mark_is_on_the_selected_servers_row_only() {
+    const MARK: &str = "Content screening";
     const LINE: &str = "This server automatically screens streams for explicit content.";
-    let shown = |ui: &MainWindow| !find(ui, LINE, AccessibleRole::Text).is_empty();
+    let servers = |ui: &MainWindow| {
+        ui.set_server_labels(strings(&["Official server", "Home relay"]));
+        ui.set_server_urls(strings(&[
+            "https://api.gawk.ioio.fi:4433",
+            "https://relay.home.example:4433 · 24 ms",
+        ]));
+        ui.set_set_server(1);
+        ui.set_server_screens(true);
+    };
+    let marks = |ui: &MainWindow| find(ui, MARK, AccessibleRole::Text);
+    let lines = |ui: &MainWindow| ElementHandle::find_by_accessible_label(ui, LINE).count();
 
     let ui = window(440.0, 600.0);
+    servers(&ui);
     ready_after_end(&ui);
-    assert!(!shown(&ui), "no line until the server says so");
-    ui.set_screening_notice(true);
-    settle();
-    assert!(shown(&ui));
-    assert_in_reach(&ui, "Go live");
+    assert!(marks(&ui).is_empty() && lines(&ui) == 0, "nothing on Ready");
+    on_air(&ui, true);
+    assert!(marks(&ui).is_empty() && lines(&ui) == 0, "nothing on air");
 
     let ui = window(440.0, 600.0);
-    on_air(&ui, true);
-    ui.set_screening_notice(true);
+    servers(&ui);
+    ui.set_server_screens(false);
+    ui.set_page(2);
     settle();
-    assert_eq!(find(&ui, LINE, AccessibleRole::Text).len(), 1, "one line");
-    for label in LIVE_BAR {
-        assert_in_reach(&ui, label);
-    }
+    assert!(marks(&ui).is_empty(), "no mark until the server says so");
+    ui.set_server_screens(true);
+    settle();
+    let marks = marks(&ui);
+    assert_eq!(marks.len(), 1, "one mark: the selected server's");
+    let y = |e: &ElementHandle| e.absolute_position().y;
+    let home = find(&ui, "Home relay", AccessibleRole::Button);
+    let add = find(&ui, "Add a server", AccessibleRole::Button);
+    assert!(
+        y(&home[0]) < y(&marks[0]) && y(&marks[0]) < y(&add[0]),
+        "the mark is on Home relay's row"
+    );
+    assert_eq!(
+        home[0].accessible_description().as_deref(),
+        Some("Content screening: this server automatically screens streams for explicit content.")
+    );
+    let official = find(&ui, "Official server", AccessibleRole::Button);
+    assert!(
+        official[0]
+            .accessible_description()
+            .unwrap_or_default()
+            .is_empty()
+    );
 }

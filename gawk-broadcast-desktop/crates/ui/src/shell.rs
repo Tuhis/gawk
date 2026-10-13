@@ -427,8 +427,8 @@ pub struct Shell {
     /// reports to: its operator gets the diagnostics (docs/40 D16).
     foreign_telemetry: bool,
     /// This broadcast's publish session said its relay screens streams
-    /// (R40, docs/71 D13). With the probe's word, what the screening line
-    /// shows ([`screening_notice`]).
+    /// (R40, docs/71 D13). With the probe's word, whether the selected
+    /// server's row is marked ([`server_screens`]).
     session_screens: bool,
     /// Which media build is current: bumped by every restart and resume,
     /// and by every start and end, so a build finishing for a broadcast
@@ -4420,16 +4420,17 @@ fn render_probe(ui: &MainWindow, sh: &Shell) {
     render_screening(ui, sh);
 }
 
-/// Whether the main page shows the screening line (R40, docs/71 D13): the
-/// selected relay's probe said it screens — before going live — or this
-/// broadcast's publish session did. A notice, never a gate: nothing waits
-/// on it and nothing is refused for it.
-fn screening_notice(probe: &ProbeState, session_screens: bool) -> bool {
+/// Whether the selected server's row in Settings is marked "Content
+/// screening" (R40, docs/71 D13): its probe said it screens, or this
+/// broadcast's publish session did. Only ever a mark that it does: nothing
+/// says a server doesn't. Never a gate either: nothing waits on it and
+/// nothing is refused for it.
+fn server_screens(probe: &ProbeState, session_screens: bool) -> bool {
     session_screens || matches!(probe.result, Some(ProbeResult::Ok { screens: true, .. }))
 }
 
 fn render_screening(ui: &MainWindow, sh: &Shell) {
-    ui.set_screening_notice(screening_notice(&sh.probe, sh.session_screens));
+    ui.set_server_screens(server_screens(&sh.probe, sh.session_screens));
 }
 
 /// The relay the Edit server page's Test connection dials: the edited
@@ -5890,27 +5891,27 @@ mod tests {
         assert_eq!(probe_note(&probe), "24 ms");
     }
 
-    // R40 (docs/71 D13): the screening line shows from the pre-live probe
-    // or from the publish session, and from nothing else.
+    // R40 (docs/71 D13): the selected server is marked as screening from
+    // its probe or from the publish session, and from nothing else.
     #[test]
-    fn the_screening_line_follows_the_probe_and_the_session() {
+    fn the_screening_mark_follows_the_probe_and_the_session() {
         let mut probe = ProbeState::default();
-        assert!(!screening_notice(&probe, false), "nothing known");
-        assert!(screening_notice(&probe, true), "the session said so");
+        assert!(!server_screens(&probe, false), "nothing known");
+        assert!(server_screens(&probe, true), "the session said so");
         probe.result = Some(ProbeResult::Ok {
             rtt_ms: 24,
             name: None,
             screens: true,
         });
-        assert!(screening_notice(&probe, false), "the probe said so");
+        assert!(server_screens(&probe, false), "the probe said so");
         probe.result = Some(ProbeResult::Ok {
             rtt_ms: 24,
             name: None,
             screens: false,
         });
-        assert!(!screening_notice(&probe, false));
+        assert!(!server_screens(&probe, false));
         probe.result = Some(ProbeResult::Failed);
-        assert!(!screening_notice(&probe, false));
+        assert!(!server_screens(&probe, false));
     }
 
     // docs/64 D1: the probe runs at once when nothing is known, again
