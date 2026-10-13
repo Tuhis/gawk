@@ -3,8 +3,8 @@
 **Status**: proposed 2026-10-03. Owner decisions OD1–OD16 (§2) were taken
 the same day in an interview; **OD17 (2026-10-04) moved screen capture from a
 ReplayKit extension to ScreenCaptureKit in the app** (§12). **IO1–IO7
-implemented 2026-10-04**; IO0 and IO8 passed on device 2026-10-12 (§12), so
-the milestone is done.
+implemented 2026-10-04**; IO0's suspension question was answered on device and IO8 closed by the
+owner on 2026-10-12, with the unrecorded items listed in §12.
 **Work runs Simulator-first (OD13, D26)**: phase S builds and tests
 everything the Simulator can run; phase D starts on devices with **IO0, a
 throwaway spike whose pre-registered verdict (§9.1) gates the device
@@ -983,10 +983,17 @@ dated.
     core now merges the pipeline's view, as the desktop shell's
     `merged_stats` does, once a second.
 - **2026-10-12 — IO0 and IO8: the owner's device pass.** The owner
-  broadcast iPhone gameplay from the app for about an hour, successfully.
-  iOS kept the capturing app running behind the game, so §9.1's central
-  question is answered: OD17 stands, ScreenCaptureKit in the app is the
-  capture path, and the ReplayKit extension (§3) stays the unused fallback.
-  The pass was run as the owner's real use rather than §9.1's instrumented
-  spike; the numeric V-items (V-1 footprint, glass-to-glass, thermal state)
-  were not recorded, and D8 and D12 stand as written.
+  broadcast iPhone gameplay from the app for about an hour, successfully,
+  and declared device testing done.
+  - **IO0's main question is answered.** iOS kept the capturing app running
+    behind the game, so OD17 stands: ScreenCaptureKit in the app is the
+    capture path, and the ReplayKit extension (§3) stays the unused
+    fallback. The run was the owner's real use, not §9.1's instrumented
+    spike, so §9.1's bucket isn't assigned: glass-to-glass, thermal state
+    and the peak footprint (V-1) were not recorded. **D8 and D12 stay
+    provisional** until V-1 and IO8's thermals are measured; the other
+    V-items are open too.
+  - **IO8 is accepted by the owner's waiver**, not by its acceptance row.
+    What is recorded is the one iPhone broadcast. The iPad Pro, viewer use,
+    VP9/VP8 sources, battery and thermal notes, D21's tile cap and
+    per-goal results for G1–G12 were not recorded here.
