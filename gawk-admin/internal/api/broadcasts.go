@@ -206,7 +206,14 @@ func (a *API) killBroadcast(ctx context.Context, normID, reason, actor string, c
 	if err != nil {
 		return killOutcome{}, err
 	}
+	return a.enforceKill(ctx, normID, reason, actor, cooldown, created), nil
+}
 
+// enforceKill is everything a kill does once its ban row exists: the Ban CR
+// that makes the relays enforce it, and broadcast.killed. Shared by the
+// operator's kill and the automatic one, whose ban is written inside its
+// claim on the flag (Store.AutoKillContentFlag).
+func (a *API) enforceKill(ctx context.Context, normID, reason, actor string, cooldown time.Duration, created store.Ban) killOutcome {
 	// The HMAC'd key, if the broadcast is live — what the portal link is
 	// keyed by. The sentence names the raw ID, as the delivery does (docs/52
 	// D9).
@@ -221,10 +228,10 @@ func (a *API) killBroadcast(ctx context.Context, normID, reason, actor string, c
 		BroadcastKey: key,
 		BroadcastID:  normID,
 		Payload: killPayload(reason,
-			store.SummarizeWithEnforcement(store.EventBroadcastKilled, target.Type, normID, actor, enforcement),
+			store.SummarizeWithEnforcement(store.EventBroadcastKilled, created.Target.Type, normID, actor, enforcement),
 			int(cooldown.Seconds()), created.ID.String(), enforcement),
 	})
-	return killOutcome{ban: created, key: key, projErr: projErr}, nil
+	return killOutcome{ban: created, key: key, projErr: projErr}
 }
 
 // broadcastKey resolves a raw ID to its HMAC'd key through relayscan. Empty

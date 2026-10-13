@@ -561,6 +561,76 @@ func (s *Store) ResolveContentFlag(ctx context.Context, f ContentFlag, resolutio
 	return out, ok, nil
 }
 
+// AutoKillContentFlag is the claim D14's and D15's automatic kill makes on a
+// flag-mode flag, in one transaction: it locks the flag and, only while the
+// flag is still unresolved — still open, when requireOpen, as the deadline
+// needs (acknowledging stops it, D9) — and its broadcast is not muted (D10),
+// bans the broadcast and resolves the flag auto_killed, with its event. An
+// acknowledgement, a dismissal or any resolution that commits first wins:
+// ok is false and nothing is banned (PR #500 review: the sweep killed on the
+// flag list it read at the start of its tick). A ban that cannot be written
+// rolls the claim back, so the flag stays open and keeps paging.
+//
+// An active ban already covering the broadcast stands — an operator's, or a
+// racing replica's — and the flag still resolves, since the broadcast is gone
+// either way; banned is then nil.
+func (s *Store) AutoKillContentFlag(ctx context.Context, id int64, requireOpen bool, ban Ban, reason string, now time.Time, config []ConfigWebhook) (resolved ContentFlag, banned *Ban, ok bool, err error) {
+	now = now.UTC()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ContentFlag{}, nil, false, fmt.Errorf("store: auto-kill content flag: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	f, err := scanFlag(tx.QueryRow(ctx, `SELECT `+flagColumns+` FROM content_flags WHERE id = $1 FOR UPDATE`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ContentFlag{}, nil, false, nil
+	}
+	if err != nil {
+		return ContentFlag{}, nil, false, fmt.Errorf("store: auto-kill content flag: %w", err)
+	}
+	if f.Mode != screening.ModeFlag || !f.Unresolved() || (requireOpen && f.State != FlagStateOpen) {
+		return f, nil, false, nil
+	}
+	var muted bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM screening_mutes WHERE broadcast_id = $1 AND muted_until > $2)`,
+		f.BroadcastID, now).Scan(&muted); err != nil {
+		return ContentFlag{}, nil, false, fmt.Errorf("store: auto-kill content flag: %w", err)
+	}
+	if muted {
+		return f, nil, false, nil
+	}
+
+	// The ban in a savepoint: a duplicate active ban is an answer, not an
+	// error, and must not abort the claim around it.
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return ContentFlag{}, nil, false, fmt.Errorf("store: auto-kill content flag: %w", err)
+	}
+	created, err := s.insertBan(ctx, sp, ban)
+	switch {
+	case errors.Is(err, ErrDuplicateActive):
+		if err := sp.Rollback(ctx); err != nil {
+			return ContentFlag{}, nil, false, fmt.Errorf("store: auto-kill content flag: %w", err)
+		}
+	case err != nil:
+		return ContentFlag{}, nil, false, err
+	default:
+		if err := sp.Commit(ctx); err != nil {
+			return ContentFlag{}, nil, false, fmt.Errorf("store: auto-kill content flag: %w", err)
+		}
+		banned = &created
+	}
+
+	resolved, ok, err = s.resolveFlagTx(ctx, tx, f, events.ContentFlagResolutionAutoKilled, reason, ActorContentFlag, now, config)
+	if err != nil || !ok {
+		return ContentFlag{}, nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ContentFlag{}, nil, false, fmt.Errorf("store: auto-kill content flag: %w", err)
+	}
+	return resolved, banned, true, nil
+}
+
 // ResolveFlagsForKill resolves the broadcast's unresolved flag-mode flag as
 // killed — an operator's kill through R39 (D9). Observed flags are left to the
 // session-end sweep: the kill ends the session, and `ended` is their answer.

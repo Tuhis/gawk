@@ -11,6 +11,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-admin/internal/store/storetest"
 	"github.com/Tuhis/gawk/gawk-server/events"
+	"github.com/Tuhis/gawk/gawk-server/moderation"
 	"github.com/Tuhis/gawk/gawk-server/screening"
 )
 
@@ -310,6 +311,132 @@ func TestResolveFlagsForKill(t *testing.T) {
 	if after := len(eventsOfType(t, s, store.EventContentFlagResolved)); after != before {
 		t.Fatalf("resolving an observed flag wrote %d resolved event(s)", after-before)
 	}
+}
+
+// D14, D15 (PR #500 review): an automatic kill is one claim on the flag as it
+// is when the kill runs. It bans and resolves auto_killed only a flag-mode
+// flag that is still unresolved — still open, for the deadline — on an
+// unmuted broadcast; an active ban already there stands; and a ban that
+// cannot be written leaves the flag as it was.
+func TestAutoKillContentFlagClaimsTheFlag(t *testing.T) {
+	ban := func(id string) store.Ban {
+		expires := t0.Add(time.Hour)
+		return store.Ban{
+			Target: moderation.Target{Type: moderation.TargetBroadcastID, Value: id}, Reason: "automatic content-flag kill (deadline)",
+			CreatedAt: t0, CreatedBy: store.ActorContentFlag, ExpiresAt: &expires, SourceBroadcastID: id,
+		}
+	}
+	activeBans := func(t *testing.T, s *store.Store) []store.Ban {
+		t.Helper()
+		bans, err := s.ListBans(t.Context(), store.FilterActive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bans
+	}
+
+	t.Run("an open flag is banned and resolved", func(t *testing.T) {
+		s := storetest.New(t)
+		f := post(t, s, flagBody("ABC234", "e1", screening.ModeFlag, screening.StateTripped), "", t0).Flag
+		got, banned, ok, err := s.AutoKillContentFlag(t.Context(), f.ID, true, ban("ABC234"), store.FlagReasonDeadline, t0.Add(time.Minute), nil)
+		if err != nil || !ok || banned == nil || banned.CreatedBy != store.ActorContentFlag {
+			t.Fatalf("claim = %+v, %+v, %v, %v", got, banned, ok, err)
+		}
+		if got.Resolution != events.ContentFlagResolutionAutoKilled || got.ResolutionReason != store.FlagReasonDeadline ||
+			got.ResolvedBy != store.ActorContentFlag {
+			t.Fatalf("flag = %+v", got)
+		}
+		if res := eventsOfType(t, s, store.EventContentFlagResolved); len(res) != 1 || res[0].ContentFlag().Reason != store.FlagReasonDeadline {
+			t.Fatalf("resolved events = %+v", res)
+		}
+		if bans := activeBans(t, s); len(bans) != 1 {
+			t.Fatalf("bans = %+v", bans)
+		}
+		// Claimed once: a second claim finds it resolved.
+		if _, b, ok, err := s.AutoKillContentFlag(t.Context(), f.ID, false, ban("ABC234"), store.FlagReasonPolicy, t0.Add(2*time.Minute), nil); err != nil || ok || b != nil {
+			t.Fatalf("a second claim = %v, %+v, %v", ok, b, err)
+		}
+	})
+
+	t.Run("an active ban stands and the flag still resolves", func(t *testing.T) {
+		s := storetest.New(t)
+		f := post(t, s, flagBody("ABC234", "e1", screening.ModeFlag, screening.StateTripped), "", t0).Flag
+		operator := ban("ABC234")
+		operator.CreatedBy, operator.Reason = "op@example.com", "seen it"
+		if _, err := s.CreateBan(t.Context(), operator); err != nil {
+			t.Fatal(err)
+		}
+		got, banned, ok, err := s.AutoKillContentFlag(t.Context(), f.ID, false, ban("ABC234"), store.FlagReasonPolicy, t0.Add(time.Minute), nil)
+		if err != nil || !ok || banned != nil || got.Resolution != events.ContentFlagResolutionAutoKilled {
+			t.Fatalf("claim = %+v, %+v, %v, %v", got, banned, ok, err)
+		}
+		if bans := activeBans(t, s); len(bans) != 1 || bans[0].CreatedBy != "op@example.com" {
+			t.Fatalf("bans = %+v, want the operator's alone", bans)
+		}
+	})
+
+	t.Run("an acknowledged flag escapes the deadline, not the policy", func(t *testing.T) {
+		s := storetest.New(t)
+		f := post(t, s, flagBody("ABC234", "e1", screening.ModeFlag, screening.StateTripped), "", t0).Flag
+		if _, err := s.AcknowledgeContentFlag(t.Context(), f.ID, "op@example.com", t0.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if got, b, ok, err := s.AutoKillContentFlag(t.Context(), f.ID, true, ban("ABC234"), store.FlagReasonDeadline, t0.Add(time.Minute), nil); err != nil || ok || b != nil ||
+			got.State != store.FlagStateAcknowledged {
+			t.Fatalf("deadline claim = %+v, %v, %+v, %v", got, ok, b, err)
+		}
+		if bans := activeBans(t, s); len(bans) != 0 {
+			t.Fatalf("bans = %+v", bans)
+		}
+		if _, b, ok, err := s.AutoKillContentFlag(t.Context(), f.ID, false, ban("ABC234"), store.FlagReasonPolicy, t0.Add(time.Minute), nil); err != nil || !ok || b == nil {
+			t.Fatalf("policy claim = %v, %+v, %v", ok, b, err)
+		}
+	})
+
+	t.Run("refused: muted, dismissed, observed, unknown", func(t *testing.T) {
+		s := storetest.New(t)
+		ctx := t.Context()
+		muted := post(t, s, flagBody("MUTED2", "e1", screening.ModeFlag, screening.StateTripped), "", t0).Flag
+		if _, err := s.Pool().Exec(ctx, `INSERT INTO screening_mutes (broadcast_id, muted_until, muted_by) VALUES ('MUTED2', $1, 'op')`,
+			t0.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		dismissed := post(t, s, flagBody("DISMS2", "e1", screening.ModeFlag, screening.StateTripped), "", t0).Flag
+		if _, err := s.DismissContentFlag(ctx, dismissed.ID, "op@example.com", t0.Add(time.Second), t0.Add(time.Hour), nil); err != nil {
+			t.Fatal(err)
+		}
+		observed := post(t, s, flagBody("OBSRV2", "e1", screening.ModeObserve, screening.StateTripped), "", t0).Flag
+		for _, tc := range []struct {
+			name string
+			id   int64
+		}{{"muted", muted.ID}, {"dismissed", dismissed.ID}, {"observed", observed.ID}, {"unknown", 999999}} {
+			if _, b, ok, err := s.AutoKillContentFlag(ctx, tc.id, false, ban("MUTED2"), store.FlagReasonPolicy, t0.Add(time.Minute), nil); err != nil || ok || b != nil {
+				t.Fatalf("%s: claim = %v, %+v, %v", tc.name, ok, b, err)
+			}
+		}
+		if bans := activeBans(t, s); len(bans) != 0 {
+			t.Fatalf("bans = %+v", bans)
+		}
+		if got, _ := s.GetContentFlag(ctx, muted.ID); got.State != store.FlagStateOpen {
+			t.Fatalf("the muted broadcast's flag = %+v, want it still open", got)
+		}
+	})
+
+	t.Run("a ban that cannot be written leaves the flag open", func(t *testing.T) {
+		s := storetest.New(t)
+		f := post(t, s, flagBody("ABC234", "e1", screening.ModeFlag, screening.StateTripped), "", t0).Flag
+		bad := ban("ABC234")
+		bad.Target.Value = "" // no target: refused before the insert
+		if _, b, ok, err := s.AutoKillContentFlag(t.Context(), f.ID, true, bad, store.FlagReasonDeadline, t0.Add(time.Minute), nil); err == nil || ok || b != nil {
+			t.Fatalf("claim with a bad ban = %v, %+v, %v; want an error", ok, b, err)
+		}
+		if got, _ := s.GetContentFlag(t.Context(), f.ID); got.State != store.FlagStateOpen {
+			t.Fatalf("flag = %+v, want it still open and paging", got)
+		}
+		if res := eventsOfType(t, s, store.EventContentFlagResolved); len(res) != 0 {
+			t.Fatalf("resolved events = %+v", res)
+		}
+	})
 }
 
 // D9: a reminder is due only once the last page is repage old, the counter

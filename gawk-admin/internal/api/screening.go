@@ -276,10 +276,12 @@ func (a *API) handlePostContentFlag(w http.ResponseWriter, r *http.Request) {
 
 // sessionLive reports whether epoch is the broadcast's live publisher session
 // as the fleet scan sees it, and the broadcast's key. It fails OPEN — live —
-// whenever the scan cannot say: a scan error, a pod that did not answer, a
-// relay that predates the epoch. A page delayed by a wrong "ended" is the
-// failure this surface exists to prevent; a wrong "live" costs at most one
-// flag that the session-end sweep resolves.
+// whenever the scan cannot say: a scan error, a pod that did not answer, no
+// pod at all, a row that is not the origin's, a relay that predates the
+// epoch. Only the origin knows the publisher session: an edge's row carries
+// the edge's own epoch, which never matches (PR #500 review). A page delayed
+// by a wrong "ended" is the failure this surface exists to prevent; a wrong
+// "live" costs at most one flag that the session-end sweep resolves.
 func (a *API) sessionLive(ctx context.Context, broadcastID, epoch string) (bool, string) {
 	if a.opts.Fleet == nil {
 		return true, ""
@@ -751,32 +753,45 @@ func (a *API) resolveFlagsForKill(ctx context.Context, broadcastID, actor string
 // auto_killed — the page still goes out, as broadcast.killed and
 // content_flag.resolved. A broadcast an operator already banned is not banned
 // twice; the flag still resolves, because the broadcast is gone either way.
+//
+// f is what the caller read, which an operator may have overtaken since: the
+// ban and the resolution are one claim on the flag as it is now
+// (Store.AutoKillContentFlag), so an acknowledgement or a dismissal that got
+// there first means no kill. The deadline (reason deadline) needs the flag
+// still open; D14's policy needs it unresolved.
 func (a *API) autoKill(ctx context.Context, f store.ContentFlag, reason string) {
 	ctx, cancel := postCommit(ctx)
 	defer cancel()
 	target := moderation.Target{Type: moderation.TargetBroadcastID, Value: f.BroadcastID}
-	if _, err := a.opts.Store.ActiveBanForTarget(ctx, target); errors.Is(err, store.ErrNotFound) {
-		k, err := a.killBroadcast(ctx, f.BroadcastID, "automatic content-flag kill ("+reason+")", store.ActorContentFlag,
-			a.opts.Config.KillCooldown)
-		if err != nil && !errors.Is(err, store.ErrDuplicateActive) {
-			a.log.Error("automatic content-flag kill failed; the flag stays open and keeps paging", "flagId", f.ID, "err", err)
-			return
-		}
-		if err == nil && k.projErr != nil {
+	a.expireLapsed(ctx, target)
+	cooldown := a.opts.Config.KillCooldown
+	why := "automatic content-flag kill (" + reason + ")"
+	expires := a.now().Add(cooldown)
+	resolved, banned, ok, err := a.opts.Store.AutoKillContentFlag(ctx, f.ID, reason == store.FlagReasonDeadline, store.Ban{
+		Target:            target,
+		Reason:            why,
+		CreatedAt:         a.now(),
+		CreatedBy:         store.ActorContentFlag,
+		ExpiresAt:         &expires,
+		SourceBroadcastID: f.BroadcastID,
+	}, reason, a.now(), a.opts.Config.ConfigWebhooks())
+	if err != nil {
+		a.log.Error("automatic content-flag kill failed; the flag stays open and keeps paging", "flagId", f.ID, "err", err)
+		return
+	}
+	if !ok {
+		a.log.Info("automatic content-flag kill skipped: the flag was acknowledged, dismissed or resolved first, or its broadcast muted",
+			"flagId", f.ID, "broadcastKey", f.BroadcastKey, "reason", reason)
+		return
+	}
+	if banned != nil {
+		if k := a.enforceKill(ctx, f.BroadcastID, why, store.ActorContentFlag, cooldown, *banned); k.projErr != nil {
 			a.log.Error("projecting an automatic kill's Ban CR failed; the reconciler retries", "banId", k.ban.ID, "err", k.projErr)
 		}
 		a.afterMutation()
-	} else if err != nil {
-		a.log.Error("looking up a ban before an automatic kill failed; the flag stays open", "flagId", f.ID, "err", err)
-		return
-	}
-	if _, _, err := a.opts.Store.ResolveContentFlag(ctx, f, events.ContentFlagResolutionAutoKilled, reason,
-		store.ActorContentFlag, a.now(), a.opts.Config.ConfigWebhooks()); err != nil {
-		a.log.Error("resolving an automatically killed flag failed", "flagId", f.ID, "err", err)
-		return
 	}
 	a.kickDeliveries()
-	a.log.Warn("broadcast killed automatically by content flagging", "flagId", f.ID, "broadcastKey", f.BroadcastKey,
+	a.log.Warn("broadcast killed automatically by content flagging", "flagId", resolved.ID, "broadcastKey", f.BroadcastKey,
 		"reason", reason)
 }
 

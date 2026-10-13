@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -888,6 +889,104 @@ func TestAutoKillPolicy(t *testing.T) {
 			h.postFlag(report(flagID, flagEpoch, screening.ModeFlag, screening.StateTripped, tc.recent...), http.StatusCreated)
 			if bans, _ = h.store.ListBans(t.Context(), store.FilterAll); len(bans) != 1 {
 				t.Fatalf("the auto-kill banned %d times", len(bans))
+			}
+		})
+	}
+}
+
+// D9 and D10 against a stale read (PR #500 review). The sweep decides on the
+// flags it read at the start of a tick, and D14's kill on the POST's own
+// flag, while an operator can act at any moment. Acknowledging stops the
+// deadline (D9) and dismissing mutes the broadcast (D10): whichever commits
+// first wins, and a broadcast is never banned while its flag says it was
+// acknowledged or dismissed. The operator acts inside a fleet scan: the
+// first is the sweep's (after it read the flags) or the POST's session check,
+// the second runs inside the kill path.
+func TestAnAutomaticKillAndTheOperatorNeverBothWin(t *testing.T) {
+	acknowledge := func(h *harness, id int64, now time.Time) error {
+		_, err := h.store.AcknowledgeContentFlag(context.Background(), id, "op@example.com", now)
+		return err
+	}
+	dismiss := func(h *harness, id int64, now time.Time) error {
+		_, err := h.store.DismissContentFlag(context.Background(), id, "op@example.com", now, now.Add(30*time.Minute), nil)
+		return err
+	}
+	policy, err := config.ParseAutoKillPolicy("score>=0.9,hits>=10/12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hot := make([]float64, 12)
+	for i := range hot {
+		hot[i] = 0.95
+	}
+	cases := []struct {
+		name     string
+		policy   bool // D14 on a tripped POST; otherwise D15's deadline in the sweep
+		scan     int  // the fleet scan the operator acts in
+		act      func(*harness, int64, time.Time) error
+		wantKill bool
+		want     string // the flag's state or resolution afterwards
+	}{
+		{"deadline: acknowledged after the sweep read the flags", false, 1, acknowledge, false, store.FlagStateAcknowledged},
+		{"deadline: dismissed after the sweep read the flags", false, 1, dismiss, false, events.ContentFlagResolutionDismissed},
+		{"deadline: dismissed while the kill runs", false, 2, dismiss, true, events.ContentFlagResolutionAutoKilled},
+		{"policy: dismissed while the kill runs", true, 2, dismiss, true, events.ContentFlagResolutionAutoKilled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, clock := screeningHarness(t, withConfig(func(c *config.Config) {
+				c.ContentFlagDeadline = 30 * time.Minute
+				if tc.policy {
+					c.ContentFlagAutoKill = policy
+				}
+			}))
+			var flagged int64
+			if !tc.policy {
+				flagged = h.postFlag(report(flagID, flagEpoch, screening.ModeFlag, screening.StateTripped), http.StatusCreated).FlagID
+				clock.advance(30*time.Minute - 30*time.Second)
+				h.postFlag(report(flagID, flagEpoch, screening.ModeFlag, screening.StateTripped), http.StatusOK)
+				clock.advance(31 * time.Second)
+			}
+			var (
+				scans  int
+				actErr error
+			)
+			h.fleet.setHook(func(context.Context) {
+				scans++
+				if scans != tc.scan {
+					return
+				}
+				id := flagged
+				if id == 0 { // the POST's own flag, raised a moment ago
+					flags := h.allFlags()
+					if len(flags) == 0 {
+						return // the session check: no flag yet, so act at the kill
+					}
+					id = flags[0].ID
+				}
+				actErr = tc.act(h, id, clock.Now())
+			})
+			if tc.policy {
+				// The POST's first scan is its session check, before the flag
+				// exists; act in the kill path's scan instead.
+				res := h.postFlag(report(flagID, flagEpoch, screening.ModeFlag, screening.StateTripped, hot...), http.StatusCreated)
+				flagged = res.FlagID
+			} else {
+				h.api.ScreeningTick(t.Context())
+			}
+			h.fleet.setHook(nil)
+
+			bans, err := h.store.ListBans(t.Context(), store.FilterActive)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := h.flag(flagged)
+			got := f.State
+			if f.State == store.FlagStateResolved {
+				got = f.Resolution
+			}
+			if got != tc.want || (len(bans) > 0) != tc.wantKill {
+				t.Fatalf("flag %s with %d bans (operator: %v), want %s and kill=%v", got, len(bans), actErr, tc.want, tc.wantKill)
 			}
 		})
 	}
