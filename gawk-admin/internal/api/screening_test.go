@@ -681,6 +681,47 @@ func TestSessionEndResolvesEnded(t *testing.T) {
 	}
 }
 
+// D2's backstop fails open (PR #500 review): a tripped POST is answered
+// `ended` only on a complete scan that either lacks the broadcast or has its
+// origin's row. An edge's row carries the edge's own publisher epoch, which
+// never matches the flag's, so a hot broadcast whose origin missed the scan
+// would otherwise come back `ended`, unflagged and unpaged.
+func TestATrippedPostIsEndedOnlyByTheOrigin(t *testing.T) {
+	edgeOnly := relayscan.Aggregate{
+		ID: flagID, Key: flagKey, PublisherActive: true, PublisherEpoch: "edge-own-epoch",
+		Pods: []relayscan.Placement{{Pod: "gawk-server-1", Role: "edge", Addr: "10.42.0.8:2112"}},
+	}
+	staleOrigin := originBroadcast(flagID, flagKey, "an-older-epoch")
+	cases := []struct {
+		name  string
+		snap  relayscan.Snapshot
+		ended bool
+	}{
+		{"the origin missed the scan; an edge's row stands in", relayscan.Snapshot{PodsResolved: 2, PodsAnswered: 1, Broadcasts: []relayscan.Aggregate{edgeOnly}}, false},
+		{"a complete scan with only an edge's row", relayscan.Snapshot{PodsResolved: 2, PodsAnswered: 2, Broadcasts: []relayscan.Aggregate{edgeOnly}}, false},
+		{"no pod resolved at all", relayscan.Snapshot{}, false},
+		{"a partial scan whose origin row is another session", relayscan.Snapshot{PodsResolved: 2, PodsAnswered: 1, Broadcasts: []relayscan.Aggregate{staleOrigin}}, false},
+		{"a complete scan whose origin row is another session", relayscan.Snapshot{PodsResolved: 2, PodsAnswered: 2, Broadcasts: []relayscan.Aggregate{staleOrigin}}, true},
+		{"a complete scan without the broadcast", relayscan.Snapshot{PodsResolved: 2, PodsAnswered: 2}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := screeningHarness(t)
+			h.fleet.set(tc.snap)
+			body := report(flagID, flagEpoch, screening.ModeFlag, screening.StateTripped)
+			if tc.ended {
+				if res := h.postFlag(body, http.StatusAccepted); res.Status != screening.FlagStatusEnded {
+					t.Fatalf("POST = %+v, want ended", res)
+				}
+				return
+			}
+			if res := h.postFlag(body, http.StatusCreated); res.Status != screening.FlagStatusRaised {
+				t.Fatalf("POST = %+v, want raised", res)
+			}
+		})
+	}
+}
+
 // D9: an open flag re-pages every repage interval while its signal is live
 // AND while it is unknown — a silent sampler never silences a page — and stops
 // once acknowledged. A sampler posting every 15 s (D6 stretched 3×) keeps

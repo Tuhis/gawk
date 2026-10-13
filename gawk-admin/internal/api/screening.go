@@ -290,8 +290,14 @@ func (a *API) sessionLive(ctx context.Context, broadcastID, epoch string) (bool,
 		return true, ""
 	}
 	agg, found := snap.Broadcast(broadcastID)
-	if !found {
-		return snap.PodsAnswered < snap.PodsResolved, ""
+	complete := snap.PodsResolved > 0 && snap.PodsAnswered == snap.PodsResolved
+	switch {
+	case !complete:
+		return true, agg.Key
+	case !found:
+		return false, ""
+	case agg.OriginAddr == "":
+		return true, agg.Key
 	}
 	return sessionMatches(agg, epoch), agg.Key
 }
