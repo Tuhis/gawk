@@ -1315,6 +1315,27 @@ entries still describe code `gawk-pubsim` runs (now
   "The server is full". Rooms are also off by default. `ios.yml` starts its
   relay with `-rooms`, raised caps and a long grace.
   ([docs/70](70-ios-ux-redesign.md) §10.1)
+- **`simctl bootstatus` answers about nine minutes before an iOS 27
+  Simulator's first boot is over** on a 3-core, 7 GB GitHub runner: load
+  400-500, up to 230 processes runnable. Anything with a deadline started
+  in that window can miss it: a QUIC dial, a tap, a decode count. Build
+  first, boot, then wait for the load (`gawk-ios/scripts/settle.sh`); and
+  never boot a second Simulator on the same runner.
+  ([docs/70](70-ios-ux-redesign.md) §10.3)
+- **The Simulator's `apsd` spins on a CI runner**, and its log traffic keeps
+  both `diagnosticd`s busy too: 1-1.5 of three cores, idle or not.
+  `gawk-ios/scripts/quiet-simulator.sh` boots it out; the app uses no push.
+  ([docs/70](70-ios-ux-redesign.md) §10.3)
+- **The engine stops resuming after five minutes, and a runner can stall
+  for longer.** Its publish session ends and its room session gives up, so
+  a fixture that leaves recovery to the engine is gone for the rest of
+  the run. `gawk-devpub` starts its session again (reclaiming the code)
+  and joins its room again; the CI relay keeps empty rooms for 60 min.
+  ([docs/70](70-ios-ux-redesign.md) §10.3)
+- **A menu item that was chosen can stay in the hierarchy, refusing taps,
+  for 10 s and more**, and a menu stalled open looks the same. Confirm a
+  choice by its effect, never by the menu's state (`choose(_:from:in:until:)`
+  in `UITestSupport.swift`). ([docs/70](70-ios-ux-redesign.md) §10.3)
 - **A crash in a value witness after small edits can be a stale
   incremental build.** In Xcode 27, `EXC_BAD_ACCESS` in `destroy for
   Banner` inside a view's body came from code compiled against an older
@@ -1374,6 +1395,12 @@ entries still describe code `gawk-pubsim` runs (now
   that may not exist** (`src/<file>/<mod>/`), and Linux will not `..` out of
   a directory that isn't there. Declare the shared test harness at the top
   of the file instead.
+- **The desktop apps ignore `SSL_CERT_FILE` and `SSL_CERT_DIR`.**
+  wtransport removes both from the environment while it reads the native
+  store, so a desktop build pointed at a dev relay with a self-made CA
+  still fails its probe and its dial. Put the CA in the system store (in a
+  container, append it to `/etc/ssl/certs/ca-certificates.crt`).
+  (2026-10-13)
 
 **The desktop window (Slint, every shell)**
 
