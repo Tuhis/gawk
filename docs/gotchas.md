@@ -1321,21 +1321,21 @@ entries still describe code `gawk-pubsim` runs (now
   in that window can miss it: a QUIC dial, a tap, a decode count. Build
   first, boot, then wait for the load (`gawk-ios/scripts/settle.sh`); and
   never boot a second Simulator on the same runner.
-  ([docs/70](70-ios-ux-redesign.md) §10.3)
+  ([docs/70](70-ios-ux-redesign.md) §10.4)
 - **The Simulator's `apsd` spins on a CI runner**, and its log traffic keeps
   both `diagnosticd`s busy too: 1-1.5 of three cores, idle or not.
   `gawk-ios/scripts/quiet-simulator.sh` boots it out; the app uses no push.
-  ([docs/70](70-ios-ux-redesign.md) §10.3)
+  ([docs/70](70-ios-ux-redesign.md) §10.4)
 - **The engine stops resuming after five minutes, and a runner can stall
   for longer.** Its publish session ends and its room session gives up, so
   a fixture that leaves recovery to the engine is gone for the rest of
   the run. `gawk-devpub` starts its session again (reclaiming the code)
   and joins its room again; the CI relay keeps empty rooms for 60 min.
-  ([docs/70](70-ios-ux-redesign.md) §10.3)
+  ([docs/70](70-ios-ux-redesign.md) §10.4)
 - **A menu item that was chosen can stay in the hierarchy, refusing taps,
   for 10 s and more**, and a menu stalled open looks the same. Confirm a
   choice by its effect, never by the menu's state (`choose(_:from:in:until:)`
-  in `UITestSupport.swift`). ([docs/70](70-ios-ux-redesign.md) §10.3)
+  in `UITestSupport.swift`). ([docs/70](70-ios-ux-redesign.md) §10.4)
 - **A crash in a value witness after small edits can be a stale
   incremental build.** In Xcode 27, `EXC_BAD_ACCESS` in `destroy for
   Banner` inside a view's body came from code compiled against an older

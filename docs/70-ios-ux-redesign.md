@@ -422,14 +422,28 @@ Built against the canvas and this document in the iPhone 17 and iPad Pro
   every process stalled for minutes, and the room fixtures' publishers
   timed out. The iPhone Simulator is now shut down first, and the iPad
   gets the same post-boot settle. (Not enough: it has its own runner
-  since 2026-10-13, §10.3.)
+  since 2026-10-13, §10.4.)
 - **Still flaky on CI, not fixed here.** On the 3-core runner, a viewer
   sometimes shows only its first frame or two. The core completes the
   frames but its playout drops them (gap resync, drop to live), while a
   host-side probe of the same broadcast sees every frame. Which test hits
   it varies between runs, and main runs fewer playback tests.
 
-### 10.3 The xcode job on a 3-core runner, 2026-10-13
+**Not done here**: IX10, the owner's device pass. It covers ScreenCaptureKit
+broadcasting, the Live Activity on a real Lock Screen and Dynamic Island,
+PiP when going home, and the iPad Pro.
+
+### 10.3 IX10, 2026-10-12
+
+The owner declared device testing done after about an hour of iPhone
+gameplay broadcast from the app, and closed IX10 together with docs/67's
+IO8 (docs/67 §12). **IX10 is accepted by the owner's waiver**, not by its
+acceptance row: only that broadcast is recorded. The iPad Pro, copying the
+code and links, quality changes while live, the Live Activity and its End,
+the player controls, PiP on going home and a room of three were not
+recorded here.
+
+### 10.4 The xcode job on a 3-core runner, 2026-10-13
 
 The job failed in 21 of its 30 runs from 2026-10-06 to 2026-10-13, and in
 7 of 13 after §10.1's fixes, on main and on branches, a different test each
@@ -470,17 +484,3 @@ couldn't outlast it:
   or the Stats drawer.
 - **Spotlight is off** for the job; it indexed the checkout and the build
   products throughout.
-
-**Not done here**: IX10, the owner's device pass. It covers ScreenCaptureKit
-broadcasting, the Live Activity on a real Lock Screen and Dynamic Island,
-PiP when going home, and the iPad Pro.
-
-### 10.3 IX10, 2026-10-12
-
-The owner declared device testing done after about an hour of iPhone
-gameplay broadcast from the app, and closed IX10 together with docs/67's
-IO8 (docs/67 §12). **IX10 is accepted by the owner's waiver**, not by its
-acceptance row: only that broadcast is recorded. The iPad Pro, copying the
-code and links, quality changes while live, the Live Activity and its End,
-the player controls, PiP on going home and a room of three were not
-recorded here.
