@@ -5,6 +5,7 @@ package detect
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
@@ -23,9 +24,21 @@ var (
 // Init loads the ONNX Runtime shared library at lib and initializes its
 // environment. It may be called more than once with the same path; the first
 // call does the work.
+//
+// It turns ONNX Runtime's own telemetry off first, whatever the environment
+// said: the official Linux builds report to Microsoft by default unless
+// ORT_DISABLE_TELEMETRY=1 is set when the library initializes, and a
+// moderation sidecar does not phone home. It is not only a privacy setting:
+// 1.29.0 segfaults starting that telemetry in a shell-less image with no
+// /etc/machine-id — the distroless runtime (microsoft/onnxruntime#32173).
+// os.Setenv reaches the C environment the library's getenv reads, since
+// this file is cgo.
 func Init(lib string) error {
 	envOnce.Do(func() {
 		envLib = lib
+		if envErr = os.Setenv("ORT_DISABLE_TELEMETRY", "1"); envErr != nil {
+			return
+		}
 		ort.SetSharedLibraryPath(lib)
 		envErr = ort.InitializeEnvironment(ort.WithLogLevelError())
 	})

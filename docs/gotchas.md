@@ -1927,6 +1927,16 @@ entries still describe code `gawk-pubsim` runs (now
   fills 56% of it; the test model scores its magenta share as a ratio over
   the lit pixels, or a solid magenta 16:9 frame would score 0.56 and never
   trip. ([docs/71](71-content-flagging.md) §9.6)
+- **ONNX Runtime's official Linux builds phone home, and 1.29.0 segfaults
+  doing it on distroless.** Telemetry to Microsoft is on by default unless
+  `ORT_DISABLE_TELEMETRY=1` is in the environment when the library
+  initializes; in an image with neither `/bin/sh` nor `/etc/machine-id` its
+  device-ID fallback `popen`s, fails, and `pclose(NULL)` kills the process
+  inside `CreateEnv` (microsoft/onnxruntime#32173). The test stage passed
+  on the Go builder, which has a shell — only the runtime-check stage,
+  running on the runtime's own base, caught it. `detect.Init` sets the
+  variable itself, so no deployment can forget it.
+  ([docs/71](71-content-flagging.md) §9.5)
 - **`content_flag.observed` never reaches an unfiltered webhook.** It is
   opt-in: a webhook receives it only when its R49 `events` filter names it,
   so turning on `observe` mode cannot page an existing pager — and a webhook

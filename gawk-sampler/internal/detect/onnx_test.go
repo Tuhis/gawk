@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -62,6 +63,19 @@ func TestDetectBothInputSizes(t *testing.T) {
 				t.Fatal("a wrong-size frame was scored")
 			}
 		})
+	}
+}
+
+// ONNX Runtime's official Linux builds report telemetry to Microsoft unless
+// ORT_DISABLE_TELEMETRY=1 is in the environment when the library
+// initializes, and 1.29.0 segfaults starting that telemetry on a shell-less
+// image — the sampler's distroless runtime (microsoft/onnxruntime#32173).
+// Init sets it; deploy/Dockerfile's runtime-check stage is where the crash
+// itself would show.
+func TestInitTurnsONNXRuntimeTelemetryOff(t *testing.T) {
+	loadTestModel(t, 320)
+	if got := os.Getenv("ORT_DISABLE_TELEMETRY"); got != "1" {
+		t.Fatalf("ORT_DISABLE_TELEMETRY = %q after Init, want \"1\"", got)
 	}
 }
 

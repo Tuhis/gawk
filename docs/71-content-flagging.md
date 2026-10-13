@@ -397,8 +397,14 @@ score is a candidate when that score is ≥ 0.2; a class-agnostic NMS at
 IoU 0.45 with a 0.25 score floor keeps the boxes. A label's sample score is
 its highest kept box, 0 when it has none.
 
-Three build-time choices sit on top of that:
+Four build-time choices sit on top of that:
 
+- ONNX Runtime's own telemetry is off: `detect.Init` sets
+  `ORT_DISABLE_TELEMETRY=1` before the library initializes, overriding the
+  environment. The official Linux builds otherwise report to Microsoft by
+  default, which a moderation sidecar must not do, and 1.29.0 segfaults
+  starting that telemetry on the distroless runtime
+  (microsoft/onnxruntime#32173; caught by the image's runtime-check stage).
 - ffmpeg runs with `-xerror`, so a concealed (corrupt) frame is a decode
   failure — not counted, not windowed (D20) — rather than a smeared
   picture that gets scored.
