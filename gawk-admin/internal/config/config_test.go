@@ -184,6 +184,24 @@ func TestBlankAuthorizationKnobsRefuseToStart(t *testing.T) {
 	}
 }
 
+// R40's three sampler routes require only the flagger role, so screening
+// with that role off would have no caller — and an empty role list is what
+// panicked the portal at start-up (PR #500 review). Refuse the combination;
+// the role off with screening off is fine.
+func TestScreeningRefusesTheFlaggerRoleOff(t *testing.T) {
+	env := minimal()
+	env["GAWK_ADMIN_SCREENING"] = "true"
+	if _, err := ParseFlags([]string{"-flagger-role", "off"}, envFrom(env)); err == nil {
+		t.Error("-screening with -flagger-role off succeeded, want a refusal")
+	}
+	if _, err := ParseFlags([]string{"-flagger-role", ""}, envFrom(env)); err == nil {
+		t.Error("-screening with an empty -flagger-role succeeded, want a refusal")
+	}
+	if _, err := ParseFlags([]string{"-flagger-role", "off"}, envFrom(minimal())); err != nil {
+		t.Errorf("-flagger-role off without -screening: %v", err)
+	}
+}
+
 // The migrate subcommand shares the binary but needs only the database: the
 // Helm hook Job must not have to carry OIDC configuration it never uses
 // (docs/42 §4.15).

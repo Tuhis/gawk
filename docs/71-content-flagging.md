@@ -196,7 +196,8 @@ start-up log (the R2 rule).
 `gawk-admin` gains `-content-flag-repage` (`10m`), `-content-flag-mute`
 (`30m`), `-content-flag-auto-kill` (`off`), `-content-flag-deadline`
 (`off`), `-content-flag-stale-after` (`2m`, D9), `-screening-sample-retention` (`30d`), and starts using
-`-flagger-role`. The relay gains
+`-flagger-role` — `-screening` with it `off` refuses to start (the chart
+refuses to render it), since no sampler could then post. The relay gains
 `-screening-token` and `-screening-notice`.
 
 The sampler runs as a **StatefulSet of `replicas` pods (default 2), each

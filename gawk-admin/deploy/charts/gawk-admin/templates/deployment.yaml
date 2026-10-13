@@ -76,6 +76,11 @@ spec:
             - name: GAWK_ADMIN_OPERATOR_ROLE
               value: {{ .Values.oidc.operatorRole | quote }}
             # R40 (docs/71 D18): the same "off" rule as the room roles below.
+            # Screening with the role off would have no sampler able to post,
+            # and the binary refuses it; fail the render instead of the pod.
+            {{- if and .Values.screening.enabled (not .Values.oidc.flaggerRole) }}
+            {{- fail "screening.enabled needs oidc.flaggerRole: it is the role the gawk-sampler's client-credentials identity holds, and with it empty no sampler can reach the screening routes (docs/71 D18)" }}
+            {{- end }}
             - name: GAWK_ADMIN_FLAGGER_ROLE
               value: {{ .Values.oidc.flaggerRole | default "off" | quote }}
             # R49 (docs/50 D1): empty grants the role nowhere. An empty env var

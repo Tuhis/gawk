@@ -457,6 +457,11 @@ func (c Config) validate() error {
 	if c.OperatorRole == "" {
 		return fmt.Errorf("-operator-role must not be empty: with no required role every valid token would be an operator")
 	}
+	// R40's sampler routes require the flagger role alone: with it off,
+	// screening would be on with nothing able to post a flag or a sample.
+	if c.Screening && c.FlaggerRole == "" {
+		return fmt.Errorf("-screening needs a flagger role: with -flagger-role off no sampler can reach the screening routes")
+	}
 	for _, u := range []struct{ flag, val string }{
 		{"-external-url", c.ExternalURL},
 		{"-oidc-issuer", c.OIDCIssuer},

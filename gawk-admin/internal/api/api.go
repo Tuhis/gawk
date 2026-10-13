@@ -486,6 +486,14 @@ func (a *API) Routes() http.Handler {
 		if !a.enabled(e.Requires) {
 			continue
 		}
+		// A protected route whose every role is configured off has no
+		// caller, so it is not served — the 404 below, like a feature that
+		// is off — rather than handed to RequireRole with an empty list,
+		// which production refuses by panicking. R40's flagger routes are
+		// the first that list one optional role alone (-flagger-role=off).
+		if len(e.Roles) > 0 && len(a.resolveRoles(e.Roles)) == 0 {
+			continue
+		}
 		mux.Handle(e.Method+" "+e.Pattern, a.wrap(e.Route, e.handler(a)))
 	}
 
@@ -531,9 +539,10 @@ func (a *API) protect(h http.HandlerFunc, symbolic []string) http.Handler {
 }
 
 // resolveRoles maps the table's symbolic roles to the configured claim
-// values. A role configured empty is granted nowhere and drops out; the
-// operator role cannot be empty (config refuses to start), so every protected
-// route keeps at least one role and RequireAnyRole never sees an empty list.
+// values. A role configured empty is granted nowhere and drops out. The
+// operator role cannot be empty (config refuses to start), but a route that
+// lists only optional roles can resolve to nothing; Routes does not serve
+// such a route, so RequireAnyRole never sees an empty list.
 func (a *API) resolveRoles(symbolic []string) []string {
 	out := make([]string, 0, len(symbolic))
 	for _, s := range symbolic {

@@ -2024,11 +2024,20 @@ jobs:
           done
           on=$(helm template "$chart" $ADMIN_PG --set screening.enabled=true \
             --set-string 'screening.contentFlag.autoKill=score>=0.9\,hits>=10/12' \
-            --set screening.contentFlag.deadline=30m --set oidc.flaggerRole=)
+            --set screening.contentFlag.deadline=30m)
           grep -A1 'GAWK_ADMIN_SCREENING$' <<<"$on" | grep -q '"true"'
           grep -A1 'GAWK_ADMIN_CONTENT_FLAG_AUTO_KILL$' <<<"$on" | grep -q '"score>=0.9,hits>=10/12"'
           grep -A1 'GAWK_ADMIN_CONTENT_FLAG_DEADLINE$' <<<"$on" | grep -q '"30m"'
-          grep -A1 'GAWK_ADMIN_FLAGGER_ROLE$' <<<"$on" | grep -q '"off"'
+          grep -A1 'GAWK_ADMIN_FLAGGER_ROLE$' <<<"$on" | grep -q '"flagger"'
+          # An empty flagger role renders "off" — and with screening on it
+          # fails the render: the binary refuses that pair, so the chart says
+          # why before a pod crash-loops on it.
+          helm template "$chart" $ADMIN_PG --set oidc.flaggerRole= \
+            | grep -A1 'GAWK_ADMIN_FLAGGER_ROLE$' | grep -q '"off"'
+          if err=$(helm template "$chart" $ADMIN_PG --set screening.enabled=true --set oidc.flaggerRole= 2>&1); then
+            echo "::error::screening.enabled with an empty oidc.flaggerRole rendered"; exit 1
+          fi
+          grep -q 'screening.enabled needs oidc.flaggerRole' <<<"$err"
           helm template gawk-server/deploy/charts/gawk-server --set rooms.enabled=true | grep -q 'enum: \[exempt\]'
 
       # ---- R40 (docs/71 CF6) ----------------------------------------------

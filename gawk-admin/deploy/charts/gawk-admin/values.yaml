@@ -124,8 +124,9 @@ oidc:
   # R40 (docs/71 D18): the flag-only role of the content sampler's
   # client-credentials identity. It reaches exactly POST /api/v1/content-flags,
   # GET /api/v1/screening/targets and POST /api/v1/screening/samples — it can
-  # raise a flag, never kill. Empty grants it nowhere. Used only with
-  # screening.enabled. Recipe: docs/self-hosting.md.
+  # raise a flag, never kill. Empty grants it nowhere, which only makes sense
+  # with screening off: screening.enabled with it empty fails the render.
+  # Recipe: docs/self-hosting.md.
   flaggerRole: flagger
   # R49 (docs/50 D1): the read-only role for a bot's client-credentials
   # service identity. It reaches exactly GET /api/v1/rooms,
