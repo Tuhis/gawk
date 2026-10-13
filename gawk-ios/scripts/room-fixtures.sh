@@ -31,10 +31,12 @@ publish() {
     > "$out/$name.out" 2> "$out/$name.log" &
 }
 
-# The value of KEY in a publisher's output, once it's printed (60 s at most).
+# The value of KEY in a publisher's output, once it's printed (180 s at
+# most: gawk-devpub dials again while the relay doesn't answer, and on a
+# stalled runner one dial took the whole of the old 60 s, 2026-10-13).
 wait_for() {
   local name="$1" key="$2"
-  for _ in $(seq 120); do
+  for _ in $(seq 360); do
     if grep -q "^$key=" "$out/$name.out" 2>/dev/null; then
       sed -n "s/^$key=//p" "$out/$name.out" | head -1
       return 0
