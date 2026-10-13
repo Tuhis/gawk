@@ -92,12 +92,21 @@ struct ScreeningMark: View {
     /// Shown when either source says so.
     static func shown(probed: Bool, session: Bool) -> Bool { probed || session }
 
+    /// Laid out as `ProbeStatus` above it: a small glyph and the words. A
+    /// `Label` in a list row takes the row's icon column and moves the row's
+    /// separator to its title.
     var body: some View {
-        Label(Self.label, systemImage: "checkmark")
-            .font(.footnote)
-            .foregroundStyle(Theme.muted)
-            .accessibilityHint(Self.text)
-            .accessibilityIdentifier("server.screening")
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark")
+                .font(.caption2.weight(.semibold))
+            Text(Self.label)
+                .font(.footnote)
+        }
+        .foregroundStyle(Theme.muted)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.label)
+        .accessibilityHint(Self.text)
+        .accessibilityIdentifier("server.screening")
     }
 }
 
