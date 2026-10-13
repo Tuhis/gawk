@@ -87,13 +87,14 @@ final class SettingsTests: XCTestCase {
         XCTAssertFalse(probes.screens(url))
     }
 
-    /// The line shows when either the probe or the publish session says so,
-    /// and not otherwise.
-    func testTheScreeningLineFollowsEitherSource() {
-        XCTAssertFalse(ScreeningNotice.shown(probed: false, session: false))
-        XCTAssertTrue(ScreeningNotice.shown(probed: true, session: false))
-        XCTAssertTrue(ScreeningNotice.shown(probed: false, session: true))
-        XCTAssertEqual(ScreeningNotice.text, "This server automatically screens streams for explicit content.")
+    /// The mark shows when either the probe or the publish session says so,
+    /// and not otherwise; it reads as the web and desktop apps' does.
+    func testTheScreeningMarkFollowsEitherSource() {
+        XCTAssertFalse(ScreeningMark.shown(probed: false, session: false))
+        XCTAssertTrue(ScreeningMark.shown(probed: true, session: false))
+        XCTAssertTrue(ScreeningMark.shown(probed: false, session: true))
+        XCTAssertEqual(ScreeningMark.label, "Content screening")
+        XCTAssertEqual(ScreeningMark.text, "This server automatically screens streams for explicit content.")
     }
 
     /// Waits (briefly) for a main-actor condition a detached probe settles.

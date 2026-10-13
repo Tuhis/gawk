@@ -90,7 +90,8 @@ final class BroadcastSession {
     private(set) var refusal: (reason: String, status: UInt16?)?
     /// This broadcast's publish session said its relay screens streams for
     /// explicit content (R40, docs/71 D13). With the server probe's word,
-    /// what the Broadcast screen's line shows; never a gate.
+    /// whether Settings marks the selected server "Content screening";
+    /// never a gate.
     private(set) var screeningNotice = false
 
     // MARK: Room (D16–D18, K2)

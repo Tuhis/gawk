@@ -15,8 +15,7 @@ final class ServerProbes {
 
     private(set) var states: [String: State] = [:]
     /// The servers whose last answer said they screen streams for explicit
-    /// content (R40, docs/71 D13): the Broadcast screen says so before
-    /// going live.
+    /// content (R40, docs/71 D13): Settings marks them "Content screening".
     private(set) var screening: Set<String> = []
     @ObservationIgnored private var running: Set<String> = []
     /// Tests replace the probe.

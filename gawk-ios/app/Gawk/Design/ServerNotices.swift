@@ -78,29 +78,26 @@ struct ServerNotices: View {
     }
 }
 
-/// The server's screening notice (R40, docs/71 D13): one line on the
-/// Broadcast screen, Ready and Live, when the selected server's probe said
-/// it automatically screens streams — or this broadcast's publish session
-/// did. A disclosure, never a gate: nothing waits on it.
-struct ScreeningNotice: View {
-    @Environment(AppSettings.self) private var settings
-    @Environment(ServerProbes.self) private var probes
-    @Environment(BroadcastSession.self) private var session
-
-    /// The same sentence the web and desktop broadcasters show.
+/// A server's content screening (R40, docs/71 D13): a check and "Content
+/// screening" among the server's details in Settings, when its probe said
+/// it automatically screens streams — or, for the selected server, this
+/// broadcast's publish session did. Never on the Broadcast screen, and never
+/// a mark that a server doesn't screen. A disclosure, never a gate.
+struct ScreeningMark: View {
+    /// The words the web and desktop broadcasters show too.
+    static let label = "Content screening"
+    /// What it means, as VoiceOver's hint.
     static let text = "This server automatically screens streams for explicit content."
 
     /// Shown when either source says so.
     static func shown(probed: Bool, session: Bool) -> Bool { probed || session }
 
     var body: some View {
-        if Self.shown(probed: probes.screens(settings.relayURL), session: session.screeningNotice) {
-            Label(Self.text, systemImage: "info.circle")
-                .font(.footnote)
-                .foregroundStyle(Theme.muted)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityIdentifier("broadcast.screening")
-        }
+        Label(Self.label, systemImage: "checkmark")
+            .font(.footnote)
+            .foregroundStyle(Theme.muted)
+            .accessibilityHint(Self.text)
+            .accessibilityIdentifier("server.screening")
     }
 }
 
