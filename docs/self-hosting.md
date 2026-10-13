@@ -1615,11 +1615,13 @@ in gawk files or prepares a report.
 
    The token must differ from the admin API token (the relay refuses to start
    otherwise): the admin token reads publisher IPs, and the sampler never
-   needs them. `notice: true` makes every broadcaster — web, desktop and iOS
-   — show one line, "This server automatically screens streams for explicit
-   content." It is a separate switch because the relay cannot see whether a
-   sampler runs: turn it on when you install the sampler and off when you
-   remove it. The bundled terms describe screening as something an operator
+   needs them. `notice: true` makes every broadcaster app — web, desktop and
+   iOS — mark your server "Content screening" among its details in the
+   server list (its tooltip: "This server automatically screens streams for
+   explicit content."). Nothing shows on the broadcast screen, and no app
+   marks a server that doesn't screen. It is a separate switch because the
+   relay cannot see whether a sampler runs: turn it on when you install the
+   sampler and off when you remove it. The bundled terms describe screening as something an operator
    *may* do; if you run custom terms, say it there yourself.
 
 2. **`gawk-admin`** — the screening routes and the flagger role:

@@ -200,7 +200,8 @@ screening:
   tokenSecretRef: {}
   # Tell every broadcaster "this server automatically screens streams for
   # explicit content" (docs/71 D13): a RelayIdentity notice the web, desktop
-  # and iOS broadcasters show as one line on the broadcast screen. Turn it on
+  # and iOS broadcasters show as a "Content screening" mark in their server
+  # lists (never on the broadcast screen). Turn it on
   # whenever a sampler screens this fleet — the relay cannot see the sampler,
   # so it is a separate switch, and an operator who screens must say so. A
   # notice, never a gate.
