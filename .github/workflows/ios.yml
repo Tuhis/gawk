@@ -15,9 +15,11 @@
 #           needs no team (OD14); signing belongs to the distribution
 #           milestone.
 # `xcode` — XcodeGen, then the app built and its Swift tests run in an iOS 27
-#           Simulator: the unit tests and docs/70's UI tests against a local
-#           relay with rooms, room fixtures published by gawk-devpub, and an
-#           iPad pass for D26.
+#           Simulator, one runner per device: on the iPhone the unit tests
+#           and docs/70's UI tests against a local relay with rooms and room
+#           fixtures published by gawk-devpub, on the iPad D26's layouts.
+#           Everything is built before the Simulator boots, and nothing is
+#           published or tested until the boot has settled.
 #
 # Triggers follow the path dependencies (OD9): a change to a shared desktop
 # crate or to the canonical wire runs this workflow as well as the desktop
@@ -234,13 +236,29 @@ jobs:
       - name: Integration — the broadcast pipeline through a rotation and a relay restart
         run: cargo test --workspace --test publish_relay -- --ignored --test-threads=1 --nocapture
 
+  # One runner per Simulator. The iPad pass shared the iPhone's runner until
+  # 2026-10-13: booting it after 25 minutes of iPhone tests stalled the 7 GB
+  # VM for ten minutes (load 900, 40 GB read from disk), long enough for the
+  # fixture publishers to give up, and the iPad grid then found one tile of
+  # five. On its own runner it boots on a quiet machine, and both run at once.
   xcode:
+    name: xcode (${{ matrix.device }})
     runs-on: xcode-27
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [iPhone, iPad]
     defaults:
       run:
         working-directory: gawk-ios/app
     steps:
       - uses: actions/checkout@v7
+
+      # Spotlight indexes the checkout, the caches and every build product:
+      # it was one of the runner's busiest processes through the tests (up to
+      # 84 % of a core, 2026-10-13), on a machine with three.
+      - name: Spotlight off
+        run: sudo mdutil -a -i off
 
       - name: Select Xcode ${{ env.XCODE_VERSION }}
         run: |
@@ -272,7 +290,7 @@ jobs:
         with:
           prefix-key: v0-rust-${{ hashFiles('gawk-ios/rust/rust-toolchain.toml') }}
           workspaces: gawk-ios/rust
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.device == 'iPhone' }}
 
       - name: XcodeGen
         run: |
@@ -280,43 +298,31 @@ jobs:
           xcodegen --version
           xcodegen
 
+      # Everything is built before the Simulator boots, and nothing heavy
+      # runs while it boots and settles. The machine has three cores and
+      # 7 GB; with the app's Swift compile, the fixture publishers and the
+      # Simulator's first boot at once, it had 100 MB free, read from disk at
+      # 100 MB/s and ran at load 300-500 for the whole test run (2026-10-13),
+      # and anything with a deadline could miss it: a QUIC dial, a tap, a
+      # decode count.
+      #
       # docs/67 D24: the Swift tests that need a relay (the broadcast loop on
       # D27's test source, the Watch smoke test) run against a local one,
-      # reached from the Simulator on the host's loopback.
-      #
-      # Go is set up and the relay built before the Simulator boots: during
-      # its boot storm this disk-bound step took 400-455 s, against 17-29 s
-      # for the same step in `rust` (2026-10-04/05). The cache key matches
-      # `rust`'s, so both jobs share one entry.
+      # reached from the Simulator on the host's loopback. The cache key
+      # matches `rust`'s, so both jobs share one entry.
       - uses: actions/setup-go@v7
         with:
           go-version-file: gawk-server/go.mod
           cache-dependency-path: |
             gawk-server/go.sum
 
-      # Rooms on, with the static gated room the key test joins
-      # (scripts/static-rooms.json), and caps and a grace for a test run
-      # (docs/70 §8): the UI tests go live a few dozen times, a room holds
-      # five fixture streams plus the tests', and the away tile must
-      # outlast the run.
-      - name: Start a local relay
+      - name: Build the relay
         run: |
           bin="$RUNNER_TEMP/relay"
           mkdir -p "$bin"
           go -C ../../gawk-server build -o "$bin/" ./cmd/gawk-server ./cmd/gawk-devcert ./cmd/gawk-loadgen
           "$bin/gawk-devcert" -out "$bin/cert"
-          "$bin/gawk-server" -addr 127.0.0.1:4499 -metrics-addr 127.0.0.1:4498 \
-            -cert-file "$bin/cert/cert.pem" -key-file "$bin/cert/key.pem" \
-            -publish-secret smoke -rooms -rooms-file ../scripts/static-rooms.json \
-            -max-broadcasts 120 -max-room-broadcasts 10 -max-subscribers 40 \
-            -max-total-subscribers 200 -conn-rate-limit 0 -broadcast-grace 60m \
-            > "$RUNNER_TEMP/relay.log" 2>&1 &
-          for i in $(seq 60); do curl -sf http://127.0.0.1:4498/healthz && break; sleep 1; done
 
-      # Every Rust step runs before the Simulator boots, as Go does above.
-      # With them after the boot, a warm-cache run (2026-10-05) spent 2.5 min
-      # installing the pinned toolchain (17 s in `rust`) and 3.5 min updating
-      # the crates.io index, for 30 s of compiling.
       - name: Rust toolchain and crates
         working-directory: gawk-ios/rust
         run: |
@@ -332,60 +338,119 @@ jobs:
         working-directory: gawk-ios/rust
         run: cargo build -p gawk-devpub
 
-      # The first iPhone on the pinned iOS 27 runtime; device names vary
-      # between runner images.
+      # The first Simulator of this kind on the pinned iOS 27 runtime; device
+      # names vary between runner images.
       - name: Pick a simulator
+        env:
+          DEVICE: ${{ matrix.device }}
         run: |
           udid=$(xcrun simctl list devices available -j | python3 -c '
-          import json, sys
+          import json, os, sys
           devs = json.load(sys.stdin)["devices"]
           for rt in sorted(devs, reverse=True):
               if "iOS-27" not in rt:
                   continue
               for d in devs[rt]:
-                  if d["name"].startswith("iPhone"):
+                  if d["name"].startswith(os.environ["DEVICE"]):
                       print(d["udid"]); sys.exit(0)
           sys.exit(1)
-          ') || { echo "::error::no iPhone simulator on an iOS 27 runtime"; exit 1; }
+          ') || { echo "::error::no $DEVICE simulator on an iOS 27 runtime"; exit 1; }
           echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep "$udid"
-          # Booted explicitly and waited for below. Left to xcodebuild, it
-          # boots right before the tests, and the first test ran in its boot
-          # storm: QUIC handshakes answered 14-31 s late and sessions that
-          # went silent (2026-10-04).
-          xcrun simctl boot "$udid" || true
 
-      # The Watch smoke test (D24) watches a broadcast: gawk-devpub loops the
-      # recorded H.264 fixture to the local relay and prints its code.
+      # The app and both test bundles, for the Simulator picked above, which
+      # stays shut down: building for testing doesn't boot it, and `Test`
+      # below runs these products without building.
+      # Ad-hoc signed: an unsigned test host has no Keychain, and the
+      # identity tests (D17) need one. Needs no certificate or team.
+      - name: Build for testing
+        run: |
+          xcodebuild build-for-testing -project Gawk.xcodeproj -scheme Gawk \
+            -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
+
+      # docs/70 IX8: the Live Activity's extension draws state and nothing
+      # more; it must never carry the core.
+      # A Debug build puts the code in GawkLiveActivity.debug.dylib beside a
+      # stub executable, so every binary in the bundle is read.
+      - name: The Live Activity links no gawk Rust code
+        if: matrix.device == 'iPhone'
+        run: |
+          appex="$RUNNER_TEMP/dd/Build/Products/Debug-iphonesimulator/Gawk.app/PlugIns/GawkLiveActivity.appex"
+          test -f "$appex/GawkLiveActivity"
+          for bin in "$appex"/GawkLiveActivity "$appex"/*.dylib; do
+            if nm "$bin" 2>/dev/null | grep -iE 'uniffi|gawk_core'; then
+              echo "::error::$(basename "$bin") in the Live Activity extension links the Rust core"
+              exit 1
+            fi
+          done
+
+      # Booted explicitly and waited for. Left to xcodebuild, it boots right
+      # before the tests, and the first test ran in its boot storm: QUIC
+      # handshakes answered 14-31 s late and sessions that went silent
+      # (2026-10-04).
+      - name: Boot the simulator
+        run: |
+          xcrun simctl boot "$SIM_UDID"
+          xcrun simctl bootstatus "$SIM_UDID" -b
+
+      # The Simulator's push daemon spins on a runner, and the log traffic it
+      # makes keeps the Simulator's diagnosticd and the host's busy too: the
+      # three held 1-1.5 of the three cores whether or not a test ran
+      # (2026-10-13). The app uses no push (its Live Activity is local,
+      # pushType nil), so the daemon is booted out.
+      - name: Stop the Simulator's push daemon
+        run: ../scripts/quiet-simulator.sh "$SIM_UDID"
+
+      # bootstatus answers at "booted", while the first boot keeps the runner
+      # busy for minutes after (scripts/settle.sh). Nothing is published and
+      # no test starts until the load has come down, or the wait ends.
+      - name: Wait for the runner to settle
+        run: ../scripts/settle.sh
+
+      # Rooms on, with the static gated room the key test joins
+      # (scripts/static-rooms.json), and caps and graces for a test run
+      # (docs/70 §8): the UI tests go live a few dozen times, a room holds
+      # five fixture streams plus the tests', the away tile must outlast the
+      # run, and a fixture room must outlast its publishers' room sessions
+      # going quiet through a stall (gawk-devpub joins it again).
+      - name: Start a local relay
+        run: |
+          bin="$RUNNER_TEMP/relay"
+          "$bin/gawk-server" -addr 127.0.0.1:4499 -metrics-addr 127.0.0.1:4498 \
+            -cert-file "$bin/cert/cert.pem" -key-file "$bin/cert/key.pem" \
+            -publish-secret smoke -rooms -rooms-file ../scripts/static-rooms.json \
+            -max-broadcasts 120 -max-room-broadcasts 10 -max-subscribers 40 \
+            -max-total-subscribers 200 -conn-rate-limit 0 -broadcast-grace 60m \
+            -room-empty-grace 60m \
+            > "$RUNNER_TEMP/relay.log" 2>&1 &
+          for i in $(seq 60); do curl -sf http://127.0.0.1:4498/healthz && break; sleep 1; done
+
+      # The Watch smoke test (D24) and the player's UI tests watch a
+      # broadcast: gawk-devpub loops the recorded H.264 fixture to the local
+      # relay and prints its code. It dials again while the relay doesn't
+      # answer, hence the long wait.
       - name: Publish the H.264 fixture
+        if: matrix.device == 'iPhone'
         working-directory: gawk-ios/rust
         run: |
           ./target/debug/gawk-devpub --codec h264 --url https://127.0.0.1:4499 \
             --insecure --secret smoke > "$RUNNER_TEMP/devpub.out" 2> "$RUNNER_TEMP/devpub.log" &
-          for i in $(seq 60); do grep -q GAWK_DEVPUB_ID "$RUNNER_TEMP/devpub.out" && break; sleep 1; done
+          for i in $(seq 180); do grep -q GAWK_DEVPUB_ID "$RUNNER_TEMP/devpub.out" && break; sleep 1; done
           id=$(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP/devpub.out" | head -1)
           [ -n "$id" ] || { cat "$RUNNER_TEMP/devpub.log"; exit 1; }
           echo "SMOKE_ID=$id" >> "$GITHUB_ENV"
+
+      # docs/70 IX5, IX6: the rooms the UI tests watch and join, as
+      # GAWK_UI_* variables (scripts/room-fixtures.sh says which is which).
+      - name: Publish the room fixtures
+        run: ../scripts/room-fixtures.sh https://127.0.0.1:4499 smoke "$RUNNER_TEMP/rooms" >> "$GITHUB_ENV"
 
       # The broadcast loop's first QUIC dial sometimes never reaches the
       # relay on a fresh runner (2026-10-04); the relay logs nothing for a
       # handshake that never completes, so the loopback UDP is recorded and
       # shown on failure: long-header (handshake) packets only, so a live
       # stream's short-header traffic doesn't fill it.
-      - name: Wait for the simulator to finish booting
-        run: |
-          xcrun simctl bootstatus "$SIM_UDID" -b
-          # bootstatus returns at "booted"; give the post-boot work a moment.
-          sleep 20
-
-      # docs/70 IX5, IX6: the rooms the UI tests watch and join, as
-      # GAWK_UI_* variables (scripts/room-fixtures.sh says which is which).
-      # After the boot: publishers that ran through it had dozens of keyframe
-      # streams refused, and a room stream later delivered only its cached
-      # keyframe (2026-10-06).
-      - name: Publish the room fixtures
-        run: ../scripts/room-fixtures.sh https://127.0.0.1:4499 smoke "$RUNNER_TEMP/rooms" >> "$GITHUB_ENV"
-
       - name: Record the relay's QUIC handshakes
         run: |
           sudo tcpdump -i lo0 -n -tttt -c 300 'udp port 4499 and udp[8] & 0x80 != 0' \
@@ -405,89 +470,42 @@ jobs:
       - name: The fixtures are streaming
         run: |
           ../scripts/fixtures-streaming.sh https://127.0.0.1:4499 "$RUNNER_TEMP/relay/gawk-loadgen" \
-            "$SMOKE_ID" $(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP"/rooms/{P1,P2,P3,P4,P5,Keeper,Guest}.out)
+            ${SMOKE_ID:+"$SMOKE_ID"} $(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP"/rooms/{P1,P2,P3,P4,P5,Keeper,Guest}.out)
 
-      - name: Test (Simulator)
+      # The iPhone runs the unit tests and every UI test (IPadUITests skip
+      # themselves there); the iPad, D26's layouts (docs/70 IX9).
+      # Xcode 27 can spend 600 s in `simctl diagnose` after a test run;
+      # diagnostics are not collected.
+      - name: Test (${{ matrix.device }} Simulator)
         env:
           TEST_RUNNER_GAWK_SMOKE_RELAY_URL: https://127.0.0.1:4499
           TEST_RUNNER_GAWK_SMOKE_SECRET: smoke
           TEST_RUNNER_GAWK_UI_RELAY_URL: https://127.0.0.1:4499
           TEST_RUNNER_GAWK_UI_SECRET: smoke
           TEST_RUNNER_GAWK_UI_OUT: ${{ runner.temp }}/ui
-        # Ad-hoc signed: an unsigned test host has no Keychain, and the
-        # identity tests (D17) need one. Needs no certificate or team.
-        # Xcode 27 can spend 600 s in `simctl diagnose` after a test run;
-        # diagnostics are not collected.
+          ONLY: ${{ matrix.device == 'iPad' && '-only-testing:GawkUITests/IPadUITests' || '' }}
         run: |
-          TEST_RUNNER_GAWK_SMOKE_BROADCAST_ID="$SMOKE_ID" \
+          TEST_RUNNER_GAWK_SMOKE_BROADCAST_ID="${SMOKE_ID:-}" \
           TEST_RUNNER_GAWK_SMOKE_ROOM_CODE="$GAWK_UI_ROOM_CODE" \
-          TEST_RUNNER_GAWK_UI_BROADCAST_ID="$SMOKE_ID" \
+          TEST_RUNNER_GAWK_UI_BROADCAST_ID="${SMOKE_ID:-}" \
           TEST_RUNNER_GAWK_UI_ROOM_CODE="$GAWK_UI_ROOM_CODE" \
           TEST_RUNNER_GAWK_UI_AWAY_ROOM="$GAWK_UI_AWAY_ROOM" \
           TEST_RUNNER_GAWK_UI_CREATOR_ROOM="$GAWK_UI_CREATOR_ROOM" \
           TEST_RUNNER_GAWK_UI_CREATOR_TOKEN="$GAWK_UI_CREATOR_TOKEN" \
-          xcodebuild -project Gawk.xcodeproj -scheme Gawk \
+          xcodebuild test-without-building -project Gawk.xcodeproj -scheme Gawk \
             -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd" \
-            -collect-test-diagnostics never -resultBundlePath "$RUNNER_TEMP/results/iphone.xcresult" \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
-
-      # docs/70 IX8: the Live Activity's extension draws state and nothing
-      # more; it must never carry the core.
-      # A Debug build puts the code in GawkLiveActivity.debug.dylib beside a
-      # stub executable, so every binary in the bundle is read.
-      - name: The Live Activity links no gawk Rust code
-        run: |
-          appex="$RUNNER_TEMP/dd/Build/Products/Debug-iphonesimulator/Gawk.app/PlugIns/GawkLiveActivity.appex"
-          test -f "$appex/GawkLiveActivity"
-          for bin in "$appex"/GawkLiveActivity "$appex"/*.dylib; do
-            if nm "$bin" 2>/dev/null | grep -iE 'uniffi|gawk_core'; then
-              echo "::error::$(basename "$bin") in the Live Activity extension links the Rust core"
-              exit 1
-            fi
-          done
-
-      # docs/70 IX9, D26: the iPad layouts, on the first iPad on the runtime.
-      - name: Test (iPad Simulator)
-        env:
-          TEST_RUNNER_GAWK_UI_RELAY_URL: https://127.0.0.1:4499
-          TEST_RUNNER_GAWK_UI_SECRET: smoke
-          TEST_RUNNER_GAWK_UI_OUT: ${{ runner.temp }}/ui-ipad
-        run: |
-          ipad=$(xcrun simctl list devices available -j | python3 -c '
-          import json, sys
-          devs = json.load(sys.stdin)["devices"]
-          for rt in sorted(devs, reverse=True):
-              if "iOS-27" not in rt:
-                  continue
-              for d in devs[rt]:
-                  if d["name"].startswith("iPad"):
-                      print(d["udid"]); sys.exit(0)
-          sys.exit(1)
-          ') || { echo "::error::no iPad simulator on an iOS 27 runtime"; exit 1; }
-          # The iPhone Simulator goes first. With both booted, the runner ran
-          # out of memory in the iPad's first boot (wired 2 GB to 5.8 GB, load
-          # 640); every process stalled for minutes and four room fixtures'
-          # publishers timed out (2026-10-06, top.txt).
-          xcrun simctl shutdown "$SIM_UDID" || true
-          xcrun simctl boot "$ipad" || true
-          xcrun simctl bootstatus "$ipad" -b
-          sleep 20
-          TEST_RUNNER_GAWK_UI_ROOM_CODE="$GAWK_UI_ROOM_CODE" \
-          xcodebuild -project Gawk.xcodeproj -scheme Gawk \
-            -destination "id=$ipad" -derivedDataPath "$RUNNER_TEMP/dd" \
-            -collect-test-diagnostics never -resultBundlePath "$RUNNER_TEMP/results/ipad.xcresult" \
-            -only-testing:GawkUITests/IPadUITests \
-            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
+            -collect-test-diagnostics never -resultBundlePath "$RUNNER_TEMP/results/tests.xcresult" \
+            ${ONLY:+"$ONLY"}
 
       - name: Relay log
         if: failure()
         run: |
           cat "$RUNNER_TEMP/relay.log"
-          echo "--- room fixtures"
-          tail -n 20 "$RUNNER_TEMP"/rooms/*.log || true
+          echo "--- fixtures"
+          tail -n 20 "$RUNNER_TEMP"/devpub.log "$RUNNER_TEMP"/rooms/*.log || true
           echo "--- the fixtures after the tests"
           ../scripts/fixtures-streaming.sh https://127.0.0.1:4499 "$RUNNER_TEMP/relay/gawk-loadgen" \
-            "$SMOKE_ID" $(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP"/rooms/{P1,P2,P3,P4,P5,Keeper,Guest}.out) || true
+            ${SMOKE_ID:+"$SMOKE_ID"} $(sed -n 's/^GAWK_DEVPUB_ID=//p' "$RUNNER_TEMP"/rooms/{P1,P2,P3,P4,P5,Keeper,Guest}.out) || true
           echo "--- QUIC handshake packets to and from the relay (first 300)"
           sudo pkill tcpdump || true
           sleep 1
@@ -498,10 +516,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: ios-test-results
+          name: ios-test-results-${{ matrix.device }}
           path: |
             ${{ runner.temp }}/ui
-            ${{ runner.temp }}/ui-ipad
             ${{ runner.temp }}/results
           retention-days: 7
           if-no-files-found: ignore
