@@ -51,11 +51,12 @@
 //                             live.
 //   node run.mjs --screening-notice
 //                             R40 CF7 (docs/71 D13) — the relay runs with
-//                             -screening-notice and the Z5 browser broadcaster
-//                             must show the screening line once LIVE, learnt
-//                             from its publish session alone (no server
-//                             picker, no probe). The --browser-broadcast pass
-//                             is the control: no flag, no line.
+//                             -screening-notice, the server picker's probe
+//                             must mark the deployment's row "Content
+//                             screening", and the Z5 browser broadcaster must
+//                             go LIVE with nothing about it on its screen. The
+//                             --browser-broadcast pass is the control: no
+//                             flag, no mark.
 //   node run.mjs --muxer-check
 //                             R22 MF1 (docs/27 Decision 10) — the production
 //                             fMP4 muxer's output must PLAY in a real Chrome
@@ -107,12 +108,14 @@ const ROOMS_CHECK = process.argv.includes('--rooms');
 // relay needs a -rooms-file source, and the publisher has to be the BROWSER
 // (the state only exists for a participant that brought a stream of its own).
 const ROOMS_GATED_CHECK = process.argv.includes('--rooms-gated');
-// R40 (docs/71 D13, CF7): the screening notice. Its own mode — the relay
-// needs -screening-notice, and every other pass is the control: the
-// --browser-broadcast pass asserts the line is ABSENT on a relay without it.
+// R40 (docs/71 D13, CF7): a server's content screening. Its own mode — the
+// relay needs -screening-notice — and the --browser-broadcast pass is the
+// control: its relay runs without it, so the server picker shows no mark.
 const SCREENING_NOTICE_CHECK = process.argv.includes('--screening-notice');
-// The line, restated from gawk-app/src/features/broadcaster/screeningNotice.ts:
-// the harness asserts what a broadcaster reads, not what the code imports.
+// The mark and its tooltip, restated from gawk-app/src/features/servers/
+// screening.ts: the harness asserts what a broadcaster reads, not what the
+// code imports.
+const SCREENING_LABEL = 'Content screening';
 const SCREENING_NOTICE_TEXT = 'This server automatically screens streams for explicit content.';
 // The gated room the pass writes into that file. The code follows the
 // broadcast-ID alphabet like every room code; the secret is a fixture, not a
@@ -1451,11 +1454,15 @@ async function broadcasterScenario({ relayUrl, certHash, attempt }) {
     const diag2 = await captureDiagnostics(page, `broadcast-diagnostics-${attempt}-2`);
     assertBroadcastFlow(diag1, diag2);
     // R40 control (docs/71 D13): this relay runs without -screening-notice,
-    // so its publish session carries no identity and the broadcaster must
-    // show no screening line. Checked after the funnel's ~10 s, long past the
-    // session-start stream a screening relay would have sent.
-    if ((await page.getByTestId('screening-notice').count()) !== 0) {
-      fail('the broadcaster shows the screening notice on a relay without -screening-notice');
+    // so the server picker's probe of it carries no screening bit and its row
+    // shows no mark.
+    const picker = await openServerPicker(page.context());
+    try {
+      if (picker.marks !== 0) {
+        fail('the server picker marks content screening on a relay without -screening-notice');
+      }
+    } finally {
+      await picker.page.close();
     }
 
     return { browser, id };
@@ -1465,22 +1472,47 @@ async function broadcasterScenario({ relayUrl, certHash, attempt }) {
   }
 }
 
-// R40 (docs/71 D13, CF7): a relay started with -screening-notice says so on
-// the publish session, and the web broadcaster — on its configured relay,
-// with the server picker never opened, so no /echo probe ever ran — shows
-// the one line. LIVE is reached first: the notice must never gate the start.
+// R40 (docs/71 D13): the server picker, opened from the landing page's chip
+// in a new page of `context`, once the deployment's own row has its probe
+// result: how many content-screening marks that row shows, and the first
+// one's text and tooltip. The row's latency ends the wait either way, since
+// the mark comes from the same probe.
+async function openServerPicker(context) {
+  const page = await context.newPage();
+  await page.goto(`${APP_URL}/#/`);
+  await page.getByRole('button', { name: 'Choose server' }).click();
+  const row = page.getByRole('option', { name: /This deployment/ });
+  await row.getByText(/\d+ ms/).waitFor({ state: 'visible', timeout: 15_000 });
+  const mark = row.getByTestId('server-screening');
+  const marks = await mark.count();
+  return {
+    page,
+    marks,
+    text: marks > 0 ? ((await mark.first().textContent()) ?? '').trim() : '',
+    title: marks > 0 ? await mark.first().getAttribute('title') : null,
+  };
+}
+
+// R40 (docs/71 D13, CF7): a relay started with -screening-notice says so to
+// the server picker's probe, and the picker marks the deployment's row
+// "Content screening" — the one place the web app says it. The broadcast
+// screen says nothing, and going live is never held up by it.
 async function screeningNoticePass({ relayUrl, certHash }) {
   const { browser, page, id } = await startBrowserBroadcast({ relayUrl, certHash, attempt: 'screening' });
   try {
-    const notice = page.getByTestId('screening-notice');
-    await notice.waitFor({ state: 'visible', timeout: 10_000 });
-    const text = ((await notice.textContent()) ?? '').trim();
-    if (text !== SCREENING_NOTICE_TEXT) fail(`screening notice reads "${text}", want "${SCREENING_NOTICE_TEXT}"`);
-    if ((await page.getByText(SCREENING_NOTICE_TEXT).count()) !== 1) {
-      fail('the screening notice is shown more than once');
+    for (const words of [SCREENING_LABEL, SCREENING_NOTICE_TEXT]) {
+      if ((await page.getByText(words).count()) !== 0) {
+        fail(`the broadcast screen shows "${words}"; it belongs in the server picker`);
+      }
     }
-    log(`screening notice shown on ${id}, from the publish session alone`);
-    writeFileSync(join(OUT, 'broadcast-screening-notice.png'), await page.screenshot());
+    const picker = await openServerPicker(page.context());
+    if (picker.marks !== 1) fail(`the deployment's row shows ${picker.marks} screening marks, want 1`);
+    if (picker.text !== SCREENING_LABEL) fail(`the mark reads "${picker.text}", want "${SCREENING_LABEL}"`);
+    if (picker.title !== SCREENING_NOTICE_TEXT) {
+      fail(`the mark's tooltip reads "${picker.title}", want "${SCREENING_NOTICE_TEXT}"`);
+    }
+    log(`the server picker marks content screening; ${id} went live with nothing on its screen`);
+    writeFileSync(join(OUT, 'server-picker-screening.png'), await picker.page.screenshot());
   } finally {
     await browser.close();
   }
