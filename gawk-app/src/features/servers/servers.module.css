@@ -168,6 +168,17 @@
   text-overflow: ellipsis;
 }
 
+/* The server's content screening (docs/71 D13): as quiet as the host above
+   it — a fact about the server, not a warning. */
+.rowScreening {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.82rem;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
 .rowProbe {
   display: inline-flex;
   align-items: center;

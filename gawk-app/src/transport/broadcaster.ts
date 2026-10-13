@@ -81,10 +81,8 @@ import {
   TYPE_TELEMETRY_ENDPOINT,
   parseTelemetryEndpoint,
   TYPE_RELAY_IDENTITY,
-  parseRelayIdentity,
   TYPE_VIEWER_COUNT,
   VIEWER_COUNT_SIZE,
-  type RelayIdentityMessage,
   type TelemetryHelloMessage,
 } from './wire';
 
@@ -276,11 +274,6 @@ export interface BroadcastCallbacks {
   // new session.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   onTelemetryEndpoint?: (url: string) => void;
-  // The relay's identity, sent on the publish session only when it has a
-  // notice to give (docs/71 D13: -screening-notice). Optional and
-  // never awaited: a relay with nothing to say sends no stream, and the
-  // broadcast never waits for one — the notice is a line, never a gate.
-  onRelayIdentity?: (identity: RelayIdentityMessage) => void;
 }
 
 function roundDownToEven(n: number): number {
@@ -693,14 +686,12 @@ export class BroadcastPipeline {
           if (!this.stopping) this.cb.onTelemetryEndpoint?.(url);
           break;
         }
-        // The relay's notices (docs/71 D13). Sent on the publish session only
-        // when the relay screens streams, so the web broadcaster learns it on
-        // the default relay without the server picker's probe ever running.
-        case TYPE_RELAY_IDENTITY: {
-          const identity = parseRelayIdentity(data);
-          if (!this.stopping) this.cb.onRelayIdentity?.(identity);
+        // A screening relay's identity (docs/71 D13), sent on the publish
+        // session for the native broadcasters. This page shows a server's
+        // screening in the server picker, from the picker's own probe, so it
+        // drops the message here rather than warn about it on every session.
+        case TYPE_RELAY_IDENTITY:
           break;
-        }
         // The fleet's parity level. An older relay sends no such stream, so
         // parityLevel stays 0 and this producer emits no parity chunks. A
         // relay configured off sends level 0 for the same effect, so the

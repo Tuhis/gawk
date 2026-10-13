@@ -20,7 +20,6 @@ import {
   type EncoderSettings,
 } from './broadcaster';
 import type { ConnectOptions } from './connection';
-import type { RelayIdentityMessage } from './wire';
 
 // Main thread → worker.
 export type BroadcastWorkerCommand =
@@ -70,10 +69,6 @@ export type BroadcastWorkerEvent =
   // The relay-minted resume token (hex) — the main thread keeps it
   // next to the broadcast ID for manual-restart reclaims.
   | { type: 'resumeToken'; token: string }
-  // The relay's identity off the publish session (docs/71 D13). Forwarded,
-  // unlike the telemetry pair: the screening notice is a broadcaster
-  // disclosure, and Safari's worker path must show it too.
-  | { type: 'relayIdentity'; identity: RelayIdentityMessage }
   // Auto-resume progress: transport died / transport re-attached.
   | { type: 'reconnecting'; attempt: number; delayMs: number; reason: string; closeCode?: number | null }
   | { type: 'resumed' }
@@ -186,9 +181,6 @@ export class BroadcastWorkerCore {
       },
       onResumeToken: (token) => {
         if (current()) this.host.post({ type: 'resumeToken', token });
-      },
-      onRelayIdentity: (identity) => {
-        if (current()) this.host.post({ type: 'relayIdentity', identity });
       },
       onReconnecting: ({ attempt, delayMs, reason, closeCode }) => {
         if (current()) this.host.post({ type: 'reconnecting', attempt, delayMs, reason, closeCode });

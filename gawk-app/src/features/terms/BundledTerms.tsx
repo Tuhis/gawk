@@ -123,8 +123,9 @@ export function BundledTerms() {
         explicit sexual content; a broadcast that scores high for a sustained period is flagged to
         the Operator, who may join it to look and may end it or block it under this Section. The
         frames are examined in memory and discarded; only the scores and the time are kept. A
-        broadcaster on a server that screens is told so on the broadcast screen. An automated
-        score is not a finding: a person decides what happens to a flagged broadcast.
+        server that screens says so in the apps&rsquo; server lists, as &ldquo;Content
+        screening&rdquo;. An automated score is not a finding: a person decides what happens to a
+        flagged broadcast.
       </p>
 
       <h2>7. Recording and data.</h2>

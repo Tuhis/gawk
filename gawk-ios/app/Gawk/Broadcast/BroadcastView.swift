@@ -75,7 +75,6 @@ struct BroadcastView: View {
                         .accessibilityIdentifier("link.notice")
                     }
                     ServerNotices()
-                    ScreeningNotice()
                     if let summary = session.summary {
                         SummaryCard(summary: summary) {
                             session.dismissSummary()
