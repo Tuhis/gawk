@@ -402,6 +402,21 @@ jobs:
       - name: Stop the Simulator's push daemon
         run: ../scripts/quiet-simulator.sh "$SIM_UDID"
 
+      # Installing the app sets off a second round of work in the Simulator:
+      # SpringBoard re-renders its home-screen widgets, and App Shortcuts and
+      # Spotlight index the new app. Left to the test step, it came right
+      # after the runner had settled and took the load from 25 to 288 for
+      # five minutes of UI tests (2026-10-13). So the app and the test runner
+      # are installed, and the app opened once, before the settle wait.
+      - name: Install the app and open it once
+        run: |
+          for app in "$RUNNER_TEMP"/dd/Build/Products/Debug-iphonesimulator/*.app; do
+            xcrun simctl install "$SIM_UDID" "$app"
+          done
+          xcrun simctl launch "$SIM_UDID" fi.ioio.gawk
+          sleep 20
+          xcrun simctl terminate "$SIM_UDID" fi.ioio.gawk || true
+
       # bootstatus answers at "booted", while the first boot keeps the runner
       # busy for minutes after (scripts/settle.sh). Nothing is published and
       # no test starts until the load has come down, or the wait ends.
