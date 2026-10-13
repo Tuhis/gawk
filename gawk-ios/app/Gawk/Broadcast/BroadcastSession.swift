@@ -88,11 +88,16 @@ final class BroadcastSession {
     private(set) var lastCode: String?
     /// A start refused before it went live (D25), with its HTTP status.
     private(set) var refusal: (reason: String, status: UInt16?)?
-    /// This broadcast's publish session said its relay screens streams for
-    /// explicit content (R40, docs/71 D13). With the server probe's word,
-    /// whether Settings marks the selected server "Content screening";
-    /// never a gate.
-    private(set) var screeningNotice = false
+    /// The relay whose publish session said it screens streams for explicit
+    /// content (R40, docs/71 D13), while that broadcast is up: with the
+    /// server probe's word, whether Settings marks the server "Content
+    /// screening". Never a gate. Held by relay and cleared at every end, so
+    /// it can't follow the selection to another server or outlive its
+    /// broadcast (PR #500 review).
+    private(set) var screeningRelay: String?
+
+    /// Whether this broadcast's publish session says `url` screens streams.
+    func screens(relay url: String) -> Bool { screeningRelay == url }
 
     // MARK: Room (D16–D18, K2)
 
@@ -179,7 +184,7 @@ final class BroadcastSession {
         roomLeaving = false
         viewerCount = 0
         // A new broadcast's session says it again, or not.
-        screeningNotice = false
+        screeningRelay = nil
         liveSince = nil
         counters = nil
         tracker = SummaryTracker()
@@ -224,6 +229,7 @@ final class BroadcastSession {
         media.attach(nil)
         broadcaster?.stop()
         broadcaster = nil
+        screeningRelay = nil
         switch phase {
         case .idle, .ended, .stopping: return
         default: break
@@ -379,6 +385,7 @@ final class BroadcastSession {
     private func finish(reason: String?) {
         media.attach(nil)
         broadcaster = nil
+        screeningRelay = nil
         sampler?.cancel()
         sampler = nil
         summary = tracker.summary(at: Date())
@@ -415,7 +422,7 @@ final class BroadcastSession {
     }
 
     func setScreening(_ screening: Bool) {
-        screeningNotice = screening
+        screeningRelay = screening ? relay : nil
     }
 
     func applyRoom(_ view: RoomView, attached: Bool, needsKey: Bool) {

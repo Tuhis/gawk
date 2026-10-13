@@ -80,9 +80,9 @@ struct ServerNotices: View {
 
 /// A server's content screening (R40, docs/71 D13): a check and "Content
 /// screening" among the server's details in Settings, when its probe said
-/// it automatically screens streams — or, for the selected server, this
-/// broadcast's publish session did. Never on the Broadcast screen, and never
-/// a mark that a server doesn't screen. A disclosure, never a gate.
+/// it automatically screens streams — or, for the server a broadcast is up
+/// on, that broadcast's publish session did. Never on the Broadcast screen,
+/// and never a mark that a server doesn't screen. A disclosure, never a gate.
 struct ScreeningMark: View {
     /// The words the web and desktop broadcasters show too.
     static let label = "Content screening"

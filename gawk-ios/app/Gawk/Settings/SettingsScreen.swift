@@ -109,8 +109,7 @@ struct SettingsScreen: View {
     /// button opens Edit.
     private func serverRow(name: String, url: String, selected: Bool, select: @escaping () -> Void) -> some View {
         let state = probes.state(url)
-        let screens = ScreeningMark.shown(
-            probed: probes.screens(url), session: selected && broadcast.screeningNotice)
+        let screens = ScreeningMark.shown(probed: probes.screens(url), session: broadcast.screens(relay: url))
         return HStack(spacing: 12) {
             Button(action: select) {
                 HStack(spacing: 12) {
@@ -225,10 +224,7 @@ struct EditServerScreen: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(name).font(.title3.bold()).foregroundStyle(Theme.text)
                             ProbeStatus(state: probes.state(key))
-                            if ScreeningMark.shown(
-                                probed: probes.screens(key),
-                                session: key == settings.relayURL && broadcast.screeningNotice)
-                            {
+                            if ScreeningMark.shown(probed: probes.screens(key), session: broadcast.screens(relay: key)) {
                                 ScreeningMark()
                             }
                         }
