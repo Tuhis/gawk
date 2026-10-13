@@ -161,32 +161,60 @@ extension XCTestCase {
         if open.waitForExistence(timeout: 1) { open.tap() }
     }
 
-    /// Taps an open menu's item once it can take the tap. While the menu is
-    /// still appearing, its items have no frame yet ({inf, inf}); a tap then
-    /// lands nowhere and the menu stays open, and `isHittable` fails the test
-    /// outright (CI, 2026-10-06), hence `canTap`. Even a menu that has
-    /// settled can drop a tap on a slow runner: the item was hittable, the
-    /// tap was sent, and the menu stayed open (CI's recording, 2026-10-06).
-    /// A chosen item closes the menu, so the tap is repeated until it does.
-    /// "Closed" is the item gone from the hierarchy, never "can't take a
-    /// tap": a menu stalled open on a slow runner can answer that too, and
-    /// the next tap elsewhere then dismisses it unchosen (CI, 2026-10-06).
+    /// Opens the menu `opener` shows until `item` is in it: a tap on the
+    /// opener can be dropped on a slow runner like any other. An open that
+    /// is only slow gets 5 s before the next tap, which would close it.
     @MainActor
-    func tapMenuItem(_ label: String, in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-        let items = app.buttons.matching(NSPredicate(format: "label == %@", label))
+    func openMenu(_ opener: XCUIElement, showing item: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
         let deadline = Date().addingTimeInterval(UIWait.step)
         repeat {
+            if item.exists { return }
+            if canTap(opener) {
+                opener.tap()
+                if item.waitForExistence(timeout: 5) { return }
+            } else {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            }
+        } while Date() < deadline
+        if item.exists { return }
+        XCTFail("\(opener) never showed \(item)", file: file, line: line)
+    }
+
+    /// Chooses the item labelled `label` in the menu `opener` opens, and
+    /// returns once `chosen` holds: the item's effect, not the menu's state,
+    /// is what says the choice took. On a slow runner a tap on a settled item
+    /// can be dropped with the menu left open (CI's recording, 2026-10-06),
+    /// and a tap that took can leave the item in the hierarchy, taking no
+    /// taps, for 10 s and more while the menu closes (CI, 2026-10-13); a
+    /// menu stalled open can look the same. So an item that can take a tap
+    /// again is tapped again, a menu that closed without the effect is opened
+    /// again, and anything else is waited out. While the menu is still
+    /// appearing its items have no frame ({inf, inf}) and `isHittable` fails
+    /// the test outright (CI, 2026-10-06), hence `canTap`.
+    @MainActor
+    func choose(
+        _ label: String, from opener: XCUIElement, in app: XCUIApplication, until chosen: () -> Bool,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let items = app.buttons.matching(NSPredicate(format: "label == %@", label))
+        let deadline = Date().addingTimeInterval(2 * UIWait.step)
+        repeat {
+            if chosen() { return }
             if let item = items.allElementsBoundByIndex.first(where: { canTap($0) }) {
                 item.tap()
-                let settle = Date().addingTimeInterval(3)
-                while Date() < settle, items.firstMatch.exists {
-                    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+                let shown = Date().addingTimeInterval(5)
+                while Date() < shown {
+                    if chosen() { return }
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.25))
                 }
-                if !items.firstMatch.exists { return }
+            } else if !items.firstMatch.exists {
+                openMenu(opener, showing: items.firstMatch, file: file, line: line)
+            } else {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.25))
             }
-            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         } while Date() < deadline
-        XCTFail("no \"\(label)\" menu item took a tap", file: file, line: line)
+        if chosen() { return }
+        XCTFail("choosing \"\(label)\" never took", file: file, line: line)
     }
 
     /// Shows a player's controls if they've hidden (docs/70 D5: they go

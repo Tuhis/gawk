@@ -135,9 +135,11 @@ final class AccessibilityUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["player.live"].waitForExistence(timeout: UIWait.media))
         revealControls(app)
         audit(app, "Player", overVideo: true)
-        app.buttons["player.settings"].tap()
-        tapMenuItem("Stats", in: app)
-        XCTAssertTrue(app.descendants(matching: .any)["stats.drawer"].waitForExistence(timeout: UIWait.step))
+        let settings = app.buttons["player.settings"]
+        let drawer = app.descendants(matching: .any)["stats.drawer"]
+        openMenu(settings, showing: app.buttons["Stats"])
+        choose("Stats", from: settings, in: app) { drawer.exists }
+        XCTAssertTrue(drawer.waitForExistence(timeout: UIWait.step))
         audit(app, "Stats", videoInView: true)
         app.swipeDown()
         app.buttons["player.close"].tap()
