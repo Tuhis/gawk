@@ -263,10 +263,21 @@ const MODERATION_EVENTS: WebhookEventName[] = [
   'ban.expired',
   'ban.removed',
   'content_flag.raised',
+  'content_flag.reminded',
+  'content_flag.resolved',
   'room.created',
   'room.ended',
   'room.secret_rotated',
+  'room.screening_changed',
 ];
+
+/**
+ * R40's calibration notice (docs/71 D16, OD14). Opt-in like room activity:
+ * an observed flag pages no one unless a webhook names it here, so a fresh
+ * install in observe mode never reaches an existing pager — route it to a
+ * quiet channel.
+ */
+const OBSERVED: WebhookEventName = 'content_flag.observed';
 
 const ACTIVITY_EVENTS: WebhookEventName[] = [
   'room.attached',
@@ -344,7 +355,7 @@ function WebhookEditor({
         // Always sent: an update REPLACES the filter, so leaving it out
         // would quietly reset a bot's subscription to the default.
         events: custom
-          ? [...MODERATION_EVENTS, ...ACTIVITY_EVENTS, REJOINED].filter((e) => picked.has(e))
+          ? [...MODERATION_EVENTS, ...ACTIVITY_EVENTS, REJOINED, OBSERVED].filter((e) => picked.has(e))
           : null,
       };
       if (webhook?.id) await api.updateWebhook(webhook.id, body);
@@ -441,9 +452,21 @@ function WebhookEditor({
                 <code className={ui.mono}>{REJOINED}</code>)
               </span>
             </label>
+            <p className={ui.dim}>
+              Screening calibration — observe-mode trips that page no one. Point it at a quiet
+              channel, not a pager.
+            </p>
+            <label className={ui.row}>
+              <input
+                type="checkbox"
+                checked={picked.has(OBSERVED)}
+                onChange={(ev) => toggle(OBSERVED, ev.target.checked)}
+              />
+              <code className={ui.mono}>{OBSERVED}</code>
+            </label>
           </>
         ) : (
-          <p className={ui.dim}>Every moderation event; no room activity.</p>
+          <p className={ui.dim}>Every moderation event; no room activity and no observed flags.</p>
         )}
       </fieldset>
       <div className={ui.actions}>

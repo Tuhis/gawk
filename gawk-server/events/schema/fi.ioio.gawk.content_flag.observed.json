@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.content_flag.observed.json",
+  "title": "Content flag observed",
+  "description": "A content sampler in observe mode would have flagged a live broadcast (R40, docs/71 D19): calibration data, not a page. Delivered only to a webhook whose event filter names this type. Same shape as content_flag.raised. The `data` of a `fi.ioio.gawk.content_flag.observed` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "common.json#/$defs/actor"
+    },
+    "broadcastKey": {
+      "$ref": "common.json#/$defs/broadcastKey"
+    },
+    "broadcastId": {
+      "$ref": "common.json#/$defs/broadcastId",
+      "x-gawk-sensitive": true
+    },
+    "reason": {
+      "$ref": "common.json#/$defs/reason"
+    },
+    "flagId": {
+      "$ref": "common.json#/$defs/contentFlagId"
+    },
+    "samplerId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The sampler instance that observed the window."
+    },
+    "window": {
+      "$ref": "common.json#/$defs/contentFlagWindow"
+    },
+    "scores": {
+      "$ref": "common.json#/$defs/contentFlagScores"
+    },
+    "labels": {
+      "type": "array",
+      "description": "The detector labels that fired in the window.",
+      "items": {
+        "$ref": "common.json#/$defs/detectorLabel"
+      }
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "actor"
+  ]
+}

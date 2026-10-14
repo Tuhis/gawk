@@ -421,7 +421,8 @@ Built against the canvas and this document in the iPhone 17 and iPad Pro
   booted while the iPad one booted, and the 7 GB runner ran out of memory:
   every process stalled for minutes, and the room fixtures' publishers
   timed out. The iPhone Simulator is now shut down first, and the iPad
-  gets the same post-boot settle.
+  gets the same post-boot settle. (Not enough: it has its own runner
+  since 2026-10-13, §10.4.)
 - **Still flaky on CI, not fixed here.** On the 3-core runner, a viewer
   sometimes shows only its first frame or two. The core completes the
   frames but its playout drops them (gap resync, drop to live), while a
@@ -441,3 +442,51 @@ acceptance row: only that broadcast is recorded. The iPad Pro, copying the
 code and links, quality changes while live, the Live Activity and its End,
 the player controls, PiP on going home and a room of three were not
 recorded here.
+
+### 10.4 The xcode job on a 3-core runner, 2026-10-13
+
+The job failed in 21 of its 30 runs from 2026-10-06 to 2026-10-13, and in
+7 of 13 after §10.1's fixes, on main and on branches, a different test each
+time. A diagnostic workflow measured the runner (3 cores, 7 GB) through a
+run. Every failure came from the runner's load, or from something that
+couldn't outlast it:
+
+- **The Simulator's first boot outlasts `bootstatus` by about nine
+  minutes.** After "booted" the load climbs to 400-500 with up to 230
+  processes runnable, and comes back under 30 nine minutes later. The job
+  waited 20 s, then compiled the app's Swift and published the fixtures
+  into that. Everything is now built first (`build-for-testing`, with the
+  Simulator shut down), and `scripts/settle.sh` holds the relay, the
+  fixtures and the tests until the 1-minute load stays under 40.
+- **Installing the app starts a second round.** SpringBoard re-renders its
+  home-screen widgets, and App Shortcuts and Spotlight index the new app:
+  when the test step installed it, the load went from 25 to 288 within
+  three minutes of a settled runner, and a menu tap waited 60 s for the app
+  to go idle. The job installs the app and the test runner, and opens the
+  app once, before the settle wait.
+- **The Simulator's push daemon spins.** With the log traffic it makes,
+  it and both `diagnosticd`s (the Simulator's and the host's) held 1-1.5
+  of the three cores whether or not a test ran.
+  `scripts/quiet-simulator.sh` disables it and boots it out; the app uses
+  no push.
+- **The iPad has its own runner.** Shutting the iPhone Simulator down first
+  wasn't enough: the iPad's boot after 25 minutes of iPhone tests still
+  stalled the VM for about ten minutes (load 900, 40 GB read from disk).
+  `ios.yml`'s `xcode` job is a matrix of the two, run at once.
+- **Fixtures don't give up.** The engine resumes a lost publish session
+  and redials a lost room for five minutes, then ends them; through that
+  stall four room publishers lost the room for good and three broadcasts
+  never came back, so the iPad grid waited for tiles that weren't coming.
+  `gawk-devpub` now dials again while the relay doesn't answer, starts an
+  ended session again reclaiming its code, and joins a lost room again
+  unless the room's creator removed it. The CI relay keeps an empty room
+  for 60 min (`-room-empty-grace`), so the room is still there to join.
+- **A menu choice is confirmed by its effect.** After a tap that chose
+  "Lowest latency", the item stayed in the hierarchy, refusing taps, for
+  the 10 s left of the wait, and `tapMenuItem` failed the test. A menu
+  stalled open can look the same, so the menu can't say whether a choice
+  took. `choose(_:from:in:until:)` waits for the effect: the latency as
+  the Settings button's accessibility value (also read by VoiceOver now),
+  or the Stats drawer.
+- **Spotlight is off** for the job; it indexed the checkout and the build
+  products throughout.

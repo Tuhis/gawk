@@ -8,11 +8,26 @@
   "datacontenttype": "application/json",
   "dataschema": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.content_flag.raised.json",
   "data": {
-    "actor": "juho@example.com",
+    "actor": "service-account-gawk-sampler",
     "broadcastKey": "3f9a1c2b4d5e",
     "broadcastId": "ABC234",
-    "reason": "reported by a viewer",
-    "summary": "a content flag was raised on broadcast ABC234 by juho@example.com",
+    "reason": "sustained explicit signal",
+    "flagId": 42,
+    "samplerId": "gawk-sampler-1",
+    "window": {
+      "start": "2026-09-17T11:59:35Z",
+      "end": "2026-09-17T12:00:00Z",
+      "samples": 6,
+      "flaggedSamples": 4
+    },
+    "scores": {
+      "max": 0.97,
+      "mean": 0.81
+    },
+    "labels": [
+      "FEMALE_GENITALIA_EXPOSED"
+    ],
+    "summary": "content flag raised on broadcast ABC234: 4 of 6 samples flagged, peak score 0.97 — join and judge it",
     "portalUrl": "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e"
   }
 }

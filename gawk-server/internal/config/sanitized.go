@@ -109,6 +109,10 @@ type SanitizedConfig struct {
 	AdminOIDCRolesClaim string `json:"adminOidcRolesClaim"`
 	AdminOIDCRole       string `json:"adminOidcRole"`
 
+	// Screening (R40). The token's presence is the route's switch, so its
+	// setness below answers "can a sampler read keyframes here?".
+	ScreeningNotice bool `json:"screeningNotice"`
+
 	// Secret-bearing fields. Every one of these renders as a placeholder and
 	// NEVER as its value; a sentinel test proves it. EventBusCredsFile is a
 	// path, but shown only as set/unset.
@@ -118,6 +122,7 @@ type SanitizedConfig struct {
 	StatelessResetKey string `json:"statelessResetKey"`
 	TelemetryKey      string `json:"telemetryKey"`
 	AdminAPIToken     string `json:"adminApiToken"`
+	ScreeningToken    string `json:"screeningToken"`
 	RoomCreateSecret  string `json:"roomCreateSecret"`
 	EventBusCredsFile string `json:"eventBusCredsFile"`
 	// ResumeTokenKey names the mode as well as the presence.
@@ -192,12 +197,15 @@ func (c Config) Sanitized() SanitizedConfig {
 		AdminOIDCRolesClaim: c.AdminOIDCRolesClaim,
 		AdminOIDCRole:       c.AdminOIDCRole,
 
+		ScreeningNotice: c.ScreeningNotice,
+
 		PublishSecret:     setness(c.PublishSecret != ""),
 		InternalPSK:       setness(c.InternalPSK != ""),
 		StatsKey:          setness(len(c.StatsKey) > 0),
 		StatelessResetKey: setness(len(c.StatelessResetKey) > 0),
 		TelemetryKey:      setness(len(c.TelemetryKey) > 0),
 		AdminAPIToken:     setness(c.AdminAPIToken != ""),
+		ScreeningToken:    setness(c.ScreeningToken != ""),
 		RoomCreateSecret:  setness(c.RoomCreateSecret != ""),
 		EventBusCredsFile: setness(c.EventBusCredsFile != ""),
 		ResumeTokenKey:    resumeTokenKeyRedaction(c),

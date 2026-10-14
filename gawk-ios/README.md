@@ -19,6 +19,9 @@ app/GawkUITests/         UI tests, against a local relay
 scripts/build-core.sh    builds the core and its Swift bindings for one platform
 scripts/check-theme.sh   Theme.swift's colours against gawk-app's and the desktop's tokens
 scripts/room-fixtures.sh the rooms the UI tests watch and join
+scripts/fixtures-streaming.sh  whether every fixture still delivers video
+scripts/settle.sh        CI: waits for the runner to go quiet after the Simulator boots
+scripts/quiet-simulator.sh  CI: stops the Simulator's push daemon
 ```
 
 ## Requirements
@@ -86,7 +89,7 @@ variables with xcodebuild's `TEST_RUNNER_` prefix, as `ios.yml` does:
 ```sh
 gawk-server -addr 127.0.0.1:4499 -cert-file cert.pem -key-file key.pem \
   -publish-secret smoke -rooms -rooms-file gawk-ios/scripts/static-rooms.json \
-  -max-broadcasts 120 -max-room-broadcasts 10 -broadcast-grace 60m
+  -max-broadcasts 120 -max-room-broadcasts 10 -broadcast-grace 60m -room-empty-grace 60m
 gawk-ios/rust/target/debug/gawk-devpub --url https://127.0.0.1:4499 --insecure --secret smoke
 gawk-ios/scripts/room-fixtures.sh https://127.0.0.1:4499 smoke /tmp/rooms
 ```

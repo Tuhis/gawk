@@ -45,6 +45,12 @@ type Broadcast struct {
 	// PublisherSessionID is the R28 telemetry session handle, omitted when
 	// telemetry is off — the join into the broadcaster's own reports.
 	PublisherSessionID string `json:"publisherSessionId,omitempty"`
+	// PublisherEpoch is an opaque handle the hub mints on every publisher-slot
+	// claim (new session, reclaim, takeover), whatever telemetry is set to,
+	// and keeps after the publisher leaves. A changed value is a new publisher
+	// session: R40 keys its screening windows, sample numbering and flag
+	// lifecycle on it (docs/71 §9.1). Omitted only before any claim.
+	PublisherEpoch string `json:"publisherEpoch,omitempty"`
 	// StartedAt is when this pod registered the hub, not when the current
 	// publisher session began: a broadcast that survived a reclaim keeps its
 	// age.

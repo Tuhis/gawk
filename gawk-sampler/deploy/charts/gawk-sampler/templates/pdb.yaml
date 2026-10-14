@@ -1,0 +1,16 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+# maxUnavailable 1 (docs/71 D22): a node drain evicts one share at a time, so
+# a voluntary disruption never darkens two shares at once. Safe at one
+# replica too — unlike a minAvailable PDB, it never blocks a drain outright.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "gawk-sampler.fullname" . }}
+  labels:
+    {{- include "gawk-sampler.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "gawk-sampler.selectorLabels" . | nindent 6 }}
+{{- end }}

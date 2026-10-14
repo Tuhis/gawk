@@ -89,6 +89,17 @@ func (s *frameSink) parityCount() int {
 	return s.parityDatagrams
 }
 
+// datagrams is how many datagrams arrived, data chunks and parity symbols.
+func (s *frameSink) datagrams() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.parityDatagrams
+	for _, c := range s.chunks {
+		n += len(c)
+	}
+	return n
+}
+
 // frameCount is the locked read the settle loop needs. Reading len(s.chunks)
 // directly from the test goroutine races the reader goroutines writing it —
 // caught by -race in CI, and silently fine without it.
@@ -199,6 +210,8 @@ func TestParityRecoversFramesLostOnALossyDownlink(t *testing.T) {
 		chunks      = 9
 		payloadLen  = 600
 		lossPercent = 3
+		// The stream's own cadence, 60 fps — the frames' timestamps below.
+		frameInterval = 16_667 * time.Microsecond
 	)
 	frameBytes := chunks * payloadLen
 
@@ -219,7 +232,7 @@ func TestParityRecoversFramesLostOnALossyDownlink(t *testing.T) {
 			payloads[i] = p
 			d, err := wire.AppendVideoChunk(nil, wire.VideoChunkHeader{
 				FrameID: frameID, ChunkIndex: uint16(i), ChunkCount: chunks,
-				TimestampUs: uint64(frameID) * 16_667,
+				TimestampUs: uint64(frameID) * uint64(frameInterval/time.Microsecond),
 			}, p)
 			if err != nil {
 				t.Fatalf("AppendVideoChunk: %v", err)
@@ -274,9 +287,14 @@ func TestParityRecoversFramesLostOnALossyDownlink(t *testing.T) {
 				t.Fatalf("SendDatagram: %v", err)
 			}
 		}
-		// Paced so nothing overruns a receive buffer on the way in — an
-		// ingress drop would be loss this test does not model.
-		time.Sleep(2 * time.Millisecond)
+		// Paced at the stream's own cadence, so the only loss is the link's.
+		// At the 2 ms this once used — 500 frames/s, 5,500 datagrams/s per
+		// subscriber — a CPU-throttled runner overflowed the QUIC endpoints'
+		// own datagram queues whenever a goroutine stalled: the subscribers
+		// lost ~250 datagrams to the link's ~70 dropped packets, in bursts
+		// k=2 cannot repair, and the 4x criterion failed on a parity path
+		// that worked (PR #500's CI, beside R40's ffmpeg builds).
+		time.Sleep(frameInterval)
 	}
 
 	// Let the tail drain.
@@ -291,6 +309,14 @@ func TestParityRecoversFramesLostOnALossyDownlink(t *testing.T) {
 		prot.completeOnArrival, prot.recoveredByParity, prot.stillMissing, prot.corrupt, protectedSink.parityCount())
 	t.Logf("control:   complete=%d recovered=%d missing=%d (parity datagrams %d)",
 		ctrl.completeOnArrival, ctrl.recoveredByParity, ctrl.stillMissing, controlSink.parityCount())
+	// Where the loss happened. Each dropped packet carries at most two of
+	// these datagrams, so subscribers missing far more than the link dropped
+	// lost them somewhere else — a starved endpoint's own queues — and the
+	// criteria below are then measuring the runner, not parity.
+	lost := frames*(chunks+2) - protectedSink.datagrams() + frames*chunks - controlSink.datagrams()
+	accounting := fmt.Sprintf("the link dropped %d packets, the subscribers lost %d datagrams, the relay dropped %d",
+		link.dropped.Load(), lost, r.Stats().Totals.DatagramsDropped)
+	t.Log(accounting)
 
 	// 1. The per-subscriber filter held under load: the control asked for 0 and
 	//    must not have received a single symbol, and the protected subscriber
@@ -322,15 +348,15 @@ func TestParityRecoversFramesLostOnALossyDownlink(t *testing.T) {
 	// is real, so a criterion written against a 100 % ceiling would be a flake
 	// generator rather than a regression detector.
 	//
-	// Measured on this rig: control ~29 % frame loss, protected ~2.5 % — an
-	// ~11x reduction, which leaves the 4x threshold a wide margin while still
+	// Measured on this rig: control ~28 % frame loss, protected ~1 % — a
+	// 17-34x reduction, which leaves the 4x threshold a wide margin while still
 	// failing unmistakably if parity stops being applied, since the two rates
 	// would then converge on each other.
 	protectedLossRate := float64(prot.stillMissing) / float64(frames)
 	controlLossRate := float64(ctrl.stillMissing) / float64(frames)
 	if protectedLossRate*4 > controlLossRate {
-		t.Errorf("protected lost %.1f%% of frames against the control's %.1f%%: parity did not cut frame loss 4x",
-			protectedLossRate*100, controlLossRate*100)
+		t.Errorf("protected lost %.1f%% of frames against the control's %.1f%%: parity did not cut frame loss 4x (%s)",
+			protectedLossRate*100, controlLossRate*100, accounting)
 	}
 	t.Logf("parity cut frame loss %.1fx (%.1f%% -> %.1f%%), recovering %d of the %d frames that arrived incomplete",
 		controlLossRate/max(protectedLossRate, 1e-9), controlLossRate*100, protectedLossRate*100,

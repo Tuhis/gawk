@@ -167,6 +167,9 @@ struct PlayerSettingsMenu: View {
         }
         .menuOrder(.fixed)
         .accessibilityLabel("Settings")
+        // The latency in force, so VoiceOver reads it without the menu
+        // open, and a UI test can see that a choice took.
+        .accessibilityValue(preset == .lowestLatency ? "Lowest latency" : "Balanced")
         .accessibilityIdentifier("player.settings")
     }
 }

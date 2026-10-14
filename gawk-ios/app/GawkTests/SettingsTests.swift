@@ -66,4 +66,41 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(ServerNotices.port("https://relay.example.net:4433"), 4433)
         XCTAssertEqual(ServerNotices.port("https://relay.example.net"), 443)
     }
+
+    /// R40 (docs/71 D13): the probe's screening notice is kept per server,
+    /// replaced by the next answer, and dropped when the server can't be
+    /// reached.
+    func testTheProbeKeepsTheScreeningNotice() async throws {
+        let probes = ServerProbes()
+        let url = "https://relay.example.net:4433"
+        var answer: ServerProbe = .reachable(rttMs: 5, name: nil, screens: true)
+        probes.probe = { [answer] _, _ in answer }
+        probes.refresh(url, insecure: false)
+        try await settle { probes.screens(url) }
+        XCTAssertTrue(probes.screens(url))
+        XCTAssertFalse(probes.screens("https://other.example:4433"))
+
+        answer = .unreachable
+        probes.probe = { [answer] _, _ in answer }
+        probes.refresh(url, insecure: false)
+        try await settle { !probes.screens(url) }
+        XCTAssertFalse(probes.screens(url))
+    }
+
+    /// The mark shows when either the probe or the publish session says so,
+    /// and not otherwise; it reads as the web and desktop apps' does.
+    func testTheScreeningMarkFollowsEitherSource() {
+        XCTAssertFalse(ScreeningMark.shown(probed: false, session: false))
+        XCTAssertTrue(ScreeningMark.shown(probed: true, session: false))
+        XCTAssertTrue(ScreeningMark.shown(probed: false, session: true))
+        XCTAssertEqual(ScreeningMark.label, "Content screening")
+        XCTAssertEqual(ScreeningMark.text, "This server automatically screens streams for explicit content.")
+    }
+
+    /// Waits (briefly) for a main-actor condition a detached probe settles.
+    private func settle(_ done: () -> Bool) async throws {
+        for _ in 0..<200 where !done() {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
 }

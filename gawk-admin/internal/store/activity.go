@@ -89,13 +89,13 @@ func RowTypeForBusType(busType string) (string, bool) {
 }
 
 // CloudEventsType maps any stored row type to its CloudEvents type: a
-// moderation row through the contract's own table, an activity row by the
-// prefix it was stripped of (docs/52 D6 (e)).
+// moderation row through the contract's own table, an activity or screening
+// row by the prefix it was stripped of (docs/52 D6 (e)).
 func CloudEventsType(rowType string) (string, bool) {
 	if t, ok := events.ModerationType(rowType); ok {
 		return t, true
 	}
-	for _, a := range ActivityEventTypes() {
+	for _, a := range append(ActivityEventTypes(), ScreeningEventTypes()...) {
 		if a == rowType {
 			return events.TypePrefix + rowType, true
 		}

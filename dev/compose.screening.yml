@@ -1,0 +1,138 @@
+# The R40 content-screening lane of the local development stack (docs/71
+# §9.7, docs/41 §4.5). TEST ONLY, like the rest of the stack: it screens
+# with a generated test model that flags MAGENTA, never with NudeNet.
+#
+#     docker compose -f docker-compose.yml -f dev/compose.screening.yml up -d --build --wait
+#     ./e2e/screening-assert.sh          # the whole flag path, end to end
+#
+# (or put COMPOSE_FILE=docker-compose.yml:dev/compose.screening.yml in .env
+# and every plain `docker compose` command includes it).
+#
+# What it adds: two samplers shaped like the chart's StatefulSet
+# (gawk-sampler-0 and -1, two shards), three synthetic broadcasters
+# publishing `-fixture magenta` — 45 s of solid magenta, then 45 s of grey,
+# on a loop — so every window trips and clears again, and a webhook receiver
+# standing in for the operator's pager. Open the portal
+# (http://localhost:8088) to see the flags pinned on Broadcasts, the
+# Calibration tab, and `docker compose logs -f webhook-sink` for the pages.
+#
+# An OVERRIDE FILE rather than a docs/41 D11 profile, because a profile can
+# only add services and this lane must also change two default ones: the
+# relay advertises the screening notice and opens the keyframe route, and
+# gawk-admin serves the screening routes with a pager configured — without a
+# pager there is no flagging at all (docs/71 D12), so a lane without one
+# would show nothing but the paused banner. The default lane is untouched.
+
+services:
+  relay:
+    environment:
+      # The keyframe route's credential (docs/71 D1). It must differ from
+      # GAWK_ADMIN_API_TOKEN — the relay refuses to start otherwise.
+      GAWK_SCREENING_TOKEN: "${SCREENING_TOKEN:-gawk-dev-screening-token}"
+      # The disclosure (docs/71 D13): every broadcaster surface shows its
+      # one line on this stack while this lane is on.
+      GAWK_SCREENING_NOTICE: "true"
+
+  admin:
+    environment:
+      GAWK_ADMIN_SCREENING: "true"
+      # The pager (docs/71 D12). `dev-pager` is unfiltered, so it receives
+      # every moderation event — content_flag.raised, .reminded, .resolved
+      # among them — and never content_flag.observed, which is opt-in
+      # (D16). `dev-observed` is the opt-in: a quiet channel that names it.
+      GAWK_ADMIN_STATIC_WEBHOOKS: >-
+        [{"name":"dev-pager","url":"http://webhook-sink:8080/pager","secretEnv":"GAWK_DEV_WEBHOOK_SECRET"},
+        {"name":"dev-observed","url":"http://webhook-sink:8080/observed","secretEnv":"GAWK_DEV_WEBHOOK_SECRET","events":["content_flag.observed"]}]
+      # base64("dev-webhook-secret"): the sink verifies nothing.
+      GAWK_DEV_WEBHOOK_SECRET: "whsec_ZGV2LXdlYmhvb2stc2VjcmV0"
+      # Shorter than production (30m / 10m) so a dismissal's mute and a
+      # re-page both happen while a developer is still looking.
+      GAWK_ADMIN_CONTENT_FLAG_MUTE: "${CONTENT_FLAG_MUTE:-3m}"
+      GAWK_ADMIN_CONTENT_FLAG_REPAGE: "${CONTENT_FLAG_REPAGE:-2m}"
+    ports:
+      # The two samplers share this container's network namespace (below),
+      # so their metrics listeners are published from here — loopback only,
+      # like the relay's ops port (docs/41 D14).
+      - "127.0.0.1:9190:9190"
+      - "127.0.0.1:9191:9191"
+
+  # Two shards, named and numbered the way the chart's StatefulSet names its
+  # pods, so -shard-index comes from POD_NAME exactly as it does there.
+  #
+  # They join gawk-admin's network namespace. The OIDC issuer here is
+  # ${ADMIN_URL}/idp — localhost:8088, the portal's own origin (docs/41
+  # §4.8's one-URL trick) — and the sampler discovers its token endpoint
+  # from the issuer. localhost:8088 is gawk-admin's own listener only from
+  # inside gawk-admin's namespace; from anywhere else it is nothing. The
+  # relay is still reached by its compose address, from the target list.
+  sampler-0: &sampler
+    build:
+      # Repo root: gawk-sampler `replace`s gawk-server. The real Dockerfile
+      # in every lane, CI's fast path included: the sampler is cgo with an
+      # ffmpeg and ONNX Runtime beside it, so there is no binary to prebuild.
+      context: .
+      dockerfile: gawk-sampler/deploy/Dockerfile
+    network_mode: "service:admin"
+    volumes:
+      - ./gawk-sampler/testdata/models:/models:ro
+    environment: &sampler-env
+      POD_NAME: gawk-sampler-0
+      GAWK_SAMPLER_SHARD_COUNT: "2"
+      # `flag` here, not the chart's `observe`: this lane exists to show the
+      # page. SAMPLER_MODE=observe shows the calibration half instead.
+      GAWK_SAMPLER_MODE: "${SAMPLER_MODE:-flag}"
+      GAWK_SAMPLER_ADMIN_URL: "http://localhost:${ADMIN_PORT:-8088}"
+      GAWK_SAMPLER_OIDC_ISSUER: "${ADMIN_URL:-http://localhost:8088}/idp"
+      # The fake IdP's second service client, which carries only `flagger`.
+      GAWK_SAMPLER_OIDC_CLIENT_ID: gawk-sampler
+      GAWK_SAMPLER_OIDC_CLIENT_SECRET: dev-sampler-secret
+      GAWK_SAMPLER_SCREENING_TOKEN: "${SCREENING_TOKEN:-gawk-dev-screening-token}"
+      GAWK_SAMPLER_MODEL: /models/test-320.onnx
+      GAWK_SAMPLER_MODEL_INPUT: "320"
+      # 2 s rather than 5 s, so a window of six fills in twelve seconds and
+      # the lane's whole lifecycle fits inside one fixture cycle.
+      GAWK_SAMPLER_INTERVAL: "2s"
+      GAWK_SAMPLER_TARGETS_REFRESH: "2s"
+      GAWK_SAMPLER_METRICS_ADDR: ":9190"
+      GAWK_SAMPLER_LOG_LEVEL: "${LOG_LEVEL:-info}"
+    depends_on:
+      admin:
+        condition: service_started
+      relay:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sampler-1:
+    <<: *sampler
+    environment:
+      <<: *sampler-env
+      POD_NAME: gawk-sampler-1
+      GAWK_SAMPLER_METRICS_ADDR: ":9191"
+
+  # Three broadcasters, so both shards have something to screen in most
+  # draws, each looping 45 s magenta / 45 s grey. -insecure for the single
+  # reason the `sim` profile gives (docs/41 §5).
+  pubsim-magenta:
+    build:
+      context: ./gawk-server
+      dockerfile: ../dev/Dockerfile.pubsim
+    command: ["-url", "https://relay:4433", "-insecure", "-fps", "30", "-fixture", "magenta", "-nick", "magenta"]
+    deploy:
+      replicas: 3
+    depends_on:
+      relay:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The pager stand-in: one JSON line per delivery on stdout (dev/webhook-sink.py).
+  webhook-sink:
+    image: python:3.13-alpine
+    command: ["python", "-u", "/sink/webhook-sink.py"]
+    volumes:
+      - ./dev/webhook-sink.py:/sink/webhook-sink.py:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped

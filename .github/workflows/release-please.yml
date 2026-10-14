@@ -1,6 +1,6 @@
 # Release automation: release-please maintains ONE combined release PR
 # covering every component (gawk-server, gawk-app, gawk-broadcast-desktop,
-# gawk-telemetry, gawk-admin, gawk-ios), computing each one's
+# gawk-telemetry, gawk-admin, gawk-ios, gawk-sampler), computing each one's
 # next SemVer from conventional commits; merging it tags per component (e.g.
 # gawk-server/v0.5.0 — tag-separator "/") and the publish jobs below push the
 # docker image and OCI Helm chart to GHCR with matching versions.
@@ -51,6 +51,8 @@ jobs:
       telemetry_version: ${{ steps.rp.outputs['gawk-telemetry--version'] }}
       admin_release: ${{ steps.rp.outputs['gawk-admin--release_created'] }}
       admin_version: ${{ steps.rp.outputs['gawk-admin--version'] }}
+      sampler_release: ${{ steps.rp.outputs['gawk-sampler--release_created'] }}
+      sampler_version: ${{ steps.rp.outputs['gawk-sampler--version'] }}
     steps:
       - uses: googleapis/release-please-action@v5
         id: rp
@@ -217,3 +219,50 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
           helm package gawk-admin/deploy/charts/gawk-admin --version "$VERSION" --app-version "$VERSION"
           helm push "gawk-admin-$VERSION.tgz" oci://ghcr.io/tuhis/charts
+
+  # R40 (docs/71 OD6). The fifth cluster-side publish, shaped like the four
+  # above: image + OCI chart, versions in lockstep. Its chart is default-off in
+  # the only sense a chart can be — nothing installs it — and installed, it
+  # starts in observe mode, which pages no one (D19). Releasing it changes
+  # nothing for a deployment that never installs it.
+  #
+  # ONE IMAGE, TWO JOBS IN THE POD: the chart's init container runs
+  # `gawk-sampler fetch-model` from this exact tag, so the downloader that
+  # checks the model's pinned SHA-256 is always this release's. The model
+  # itself is never in the image (D5, §8.1).
+  publish-sampler:
+    needs: release-please
+    if: needs.release-please.outputs.sampler_release == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.release-please.outputs.sampler_version }}
+    steps:
+      - uses: actions/checkout@v7
+      # Host networking and the in-cluster registry mirror — see the action.
+      - uses: ./.github/actions/setup-buildx
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          # The REPO ROOT, not the module dir: gawk-sampler consumes
+          # gawk-server/screening through a local `replace` (docs/71 D3).
+          # No `target`: the runtime stage is the Dockerfile's last.
+          context: .
+          file: gawk-sampler/deploy/Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          tags: |
+            ghcr.io/tuhis/gawk-sampler:${{ env.VERSION }}
+            ghcr.io/tuhis/gawk-sampler:latest
+      - name: Push Helm chart
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm package gawk-sampler/deploy/charts/gawk-sampler --version "$VERSION" --app-version "$VERSION"
+          helm push "gawk-sampler-$VERSION.tgz" oci://ghcr.io/tuhis/charts

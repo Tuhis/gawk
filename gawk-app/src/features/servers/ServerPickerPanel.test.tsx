@@ -6,7 +6,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 
 import { ServerPickerPanel } from './ServerPickerPanel';
 import { useTransportStore } from '../../state/transportStore';
+import { RELAY_NOTICE_SCREENING } from '../../transport/wire';
 import type { ProbeResult } from './probe';
+import { SCREENING_LABEL, SCREENING_NOTICE } from './screening';
 import type { ProbeFn } from './useServerProbe';
 
 const okProbe = (rtt = 42): ProbeFn =>
@@ -59,6 +61,63 @@ describe('ServerPickerPanel probe (SP6)', () => {
     render(<ServerPickerPanel onClose={() => {}} probeFn={probeFn} />);
     await waitFor(() => expect(screen.getByText(/7 ms/)).toBeTruthy());
     expect(screen.queryByText(/gawk-server/)).toBeNull();
+  });
+});
+
+// R40 (docs/71 D13): a server's content screening is a mark among its
+// details, from its own probe — and only ever a mark that it does screen.
+describe('ServerPickerPanel content screening (R40)', () => {
+  const screeningProbe = (notices: number): ProbeFn =>
+    vi.fn(async () => ({
+      state: 'ok' as const,
+      rttMs: 12,
+      identity: { serverVersion: '9.9.9', name: '', notices },
+    }));
+
+  it('marks a server whose probe says it screens', async () => {
+    render(<ServerPickerPanel onClose={() => {}} probeFn={screeningProbe(RELAY_NOTICE_SCREENING)} />);
+    const mark = await screen.findByTestId('server-screening');
+    expect(mark.textContent).toBe(SCREENING_LABEL);
+    expect(mark.getAttribute('title')).toBe(SCREENING_NOTICE);
+    expect(screen.getByRole('option', { name: /This deployment/ }).textContent).toContain(SCREENING_LABEL);
+  });
+
+  it.each([
+    ['no notices', 0],
+    ['only a bit this build does not know', 0x02],
+  ])('marks nothing for a server that sends %s', async (_, notices) => {
+    render(<ServerPickerPanel onClose={() => {}} probeFn={screeningProbe(notices)} />);
+    await waitFor(() => expect(screen.getByText(/12 ms/)).toBeTruthy());
+    expect(screen.queryByTestId('server-screening')).toBeNull();
+    // Never a mark that a server doesn't screen.
+    expect(screen.queryByText(/screen/i)).toBeNull();
+  });
+
+  it('marks nothing for a server that did not answer', async () => {
+    const probeFn = vi.fn(async () => ({ state: 'failed' as const }));
+    render(<ServerPickerPanel onClose={() => {}} probeFn={probeFn} />);
+    await waitFor(() => expect(screen.getByText('unreachable')).toBeTruthy());
+    expect(screen.queryByTestId('server-screening')).toBeNull();
+  });
+
+  it("marks each server by its own probe", async () => {
+    act(() => {
+      useTransportStore.getState().addServer({ label: 'Friend', url: 'https://relay.friend.example:4433' });
+    });
+    const probeFn: ProbeFn = vi.fn(async (url: string) => ({
+      state: 'ok' as const,
+      rttMs: 12,
+      identity: {
+        serverVersion: '9.9.9',
+        name: '',
+        notices: url.includes('friend') ? 0 : RELAY_NOTICE_SCREENING,
+      },
+    }));
+    render(<ServerPickerPanel onClose={() => {}} probeFn={probeFn} />);
+    await waitFor(() => expect(screen.getAllByText(/12 ms/)).toHaveLength(2));
+    expect(screen.getAllByTestId('server-screening')).toHaveLength(1);
+    expect(screen.getByRole('option', { name: /This deployment/ }).textContent).toContain(SCREENING_LABEL);
+    expect(screen.getByRole('option', { name: /Friend/ }).textContent).not.toContain(SCREENING_LABEL);
   });
 });
 

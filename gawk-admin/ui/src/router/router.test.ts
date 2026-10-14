@@ -33,6 +33,7 @@ describe('portal routes (§4.9)', () => {
       'relays',
       'webhooks',
       'rooms',
+      'calibration',
       'api',
     ] as const) {
       expect(parseHash(href(view)).view).toBe(view);

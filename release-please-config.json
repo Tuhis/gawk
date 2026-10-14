@@ -92,6 +92,17 @@
           "jsonpath": "$.package[?(@.name.value==\"gawk-broadcast\" || @.name.value==\"gawk-core\" || @.name.value==\"gawk-devpub\" || @.name.value==\"gawk-viewer\" || @.name.value==\"uniffi-bindgen\")].version"
         }
       ]
+    },
+    "gawk-sampler": {
+      "release-type": "go",
+      "component": "gawk-sampler",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "deploy/charts/gawk-sampler/Chart.yaml"
+        }
+      ]
     }
   }
 }

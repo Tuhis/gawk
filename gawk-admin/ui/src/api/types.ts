@@ -32,6 +32,12 @@ export interface Me {
    */
   features?: {
     rooms?: boolean;
+    /**
+     * R40 content flagging (docs/71 §9.4), default-off like rooms: with it
+     * off every screening route answers 404, so the shell offers no
+     * calibration view and the fleet view polls no flags.
+     */
+    screening?: boolean;
   };
 }
 
@@ -99,7 +105,20 @@ export interface Room {
   hasAttachSecret: boolean;
   /** Created by the portal; false for a `kubectl apply`'d room. */
   managed: boolean;
+  /**
+   * The Room CR's `spec.screening` (R40, docs/71 D11): `exempt` while the
+   * sampler skips the room's broadcasts. Absent (an older binary) reads as
+   * screened, the default.
+   */
+  screening?: RoomScreening;
 }
+
+/**
+ * `exempt` or `''` (screened). Only a static room with an attach secret may be
+ * exempt (docs/71 D11): an open or dynamic room would be an unscreened lane for
+ * anyone who found the link.
+ */
+export type RoomScreening = 'exempt' | '';
 
 export interface CreateRoomRequest {
   code: string;
@@ -255,6 +274,140 @@ export interface Broadcast {
   links?: BroadcastLinks;
   /** null = unknown (see BroadcastBanState), NOT "not banned". */
   banState: BroadcastBanState | null;
+  /**
+   * The broadcast's unresolved `flag`-mode content flag (R40, docs/71 §9.4),
+   * which pins the row to the top of the fleet view. Absent or null when
+   * there is none — or when screening is off.
+   */
+  contentFlag?: ContentFlag | null;
+}
+
+// ---------------------------------------------------------------------------
+// R40 content flagging (docs/71 §9.4)
+// ---------------------------------------------------------------------------
+
+/** `flag` pages a human; `observe` is calibration and pages no one (D19). */
+export type ContentFlagMode = 'flag' | 'observe';
+
+/** A flag is UNRESOLVED while `open` or `acknowledged` (D9). */
+export type ContentFlagState = 'open' | 'acknowledged' | 'resolved';
+
+export type ContentFlagResolution = 'cleared' | 'dismissed' | 'killed' | 'auto_killed' | 'ended';
+
+/**
+ * What the sampler last said (D9). `unknown` means no report for longer than
+ * `-content-flag-stale-after`: a silent sampler is NOT evidence of a clean
+ * broadcast, so the flag keeps re-paging.
+ */
+export type ContentFlagSignal = 'live' | 'unknown' | 'cleared';
+
+/** The sampler's window at its last report: never a frame (D8). */
+export interface ContentFlagWindow {
+  start: string;
+  end: string;
+  samples: number;
+  flaggedSamples: number;
+}
+
+export interface ContentFlagScores {
+  max: number;
+  mean: number;
+}
+
+/** One content flag, as the portal sees it (§9.4). */
+export interface ContentFlag {
+  id: number;
+  mode: ContentFlagMode;
+  state: ContentFlagState;
+  resolution?: ContentFlagResolution | null;
+  /** `stale`, `deadline` or `policy` — why an automatic resolution happened. */
+  resolutionReason?: string | null;
+  /** Raw, joinable: portal-only, like every broadcast ID on screen (D8). */
+  broadcastId: string;
+  broadcastKey: string;
+  publisherEpoch: string;
+  samplerId: string;
+  raisedAt: string;
+  updatedAt: string;
+  lastPostAt: string;
+  acknowledgedAt?: string | null;
+  acknowledgedBy?: string | null;
+  resolvedAt?: string | null;
+  resolvedBy?: string | null;
+  signal: ContentFlagSignal;
+  window: ContentFlagWindow;
+  scores: ContentFlagScores;
+  /** The flagged labels that fired in the window, and in how many samples. */
+  labels: string[];
+  labelCounts?: Record<string, number>;
+  peakScore: number;
+  /** How many `content_flag.reminded` pages this flag has sent. */
+  reminders: number;
+  /** Set after a dismissal: re-flagging of the broadcast is muted until then (D10). */
+  mutedUntil?: string | null;
+  /**
+   * The watch link, built server-side from `-app-base-url` exactly like a
+   * broadcast row's and omitted when that is unset. It is what makes an
+   * observed flag worth listing: the operator joins live while the trigger is
+   * on screen (OD14).
+   */
+  links?: { watch?: string };
+}
+
+/**
+ * The screening plane's health, read by the portal's two banners: no pager
+ * (D12) and missing sampler shards (D22).
+ */
+export interface ScreeningStatus {
+  /** False when no enabled webhook would deliver `content_flag.raised`. */
+  flagRoute: boolean;
+  /** The `of` of the most recent sampler poll; 0 before any sampler polled. */
+  expectedShards: number;
+  /** Shard indices that have not polled for 30 s. */
+  missingShards: number[];
+  lastPollAt?: string | null;
+}
+
+/** `GET /api/v1/content-flags`. */
+export interface ContentFlagPage {
+  contentFlags: ContentFlag[];
+  screening: ScreeningStatus;
+}
+
+/** `POST /api/v1/screening/replay` — a candidate window rule over stored samples (D21). */
+export interface ReplayRequest {
+  threshold: number;
+  window: number;
+  windowHits: number;
+  /** A subset of the stored labels; empty means all of them. */
+  labels?: string[];
+  /** RFC3339. */
+  from: string;
+  to: string;
+}
+
+export interface ReplayTrip {
+  broadcastKey: string;
+  broadcastId: string;
+  publisherEpoch: string;
+  at: string;
+  peakScore: number;
+}
+
+export interface ReplayResponse {
+  schema: string;
+  request: ReplayRequest;
+  /** The highest sample floor among the replayed sessions. */
+  floor: number;
+  sessions: number;
+  samplesTaken: number;
+  samplesStored: number;
+  broadcastHours: number;
+  wouldTrips: number;
+  wouldTripsPer100h: number;
+  /** Newest first, capped; `truncated` says the list was cut (the count is exact). */
+  trips: ReplayTrip[];
+  truncated: boolean;
 }
 
 export type DeliveryState = 'pending' | 'delivered' | 'failed';
@@ -318,7 +471,9 @@ export type WebhookSource = 'config' | 'ui';
  * A value of a webhook's event filter (R49, docs/50 D8). The moderation types,
  * the four room activity types, and `room.participant_rejoined`, which is not
  * an event but opts into the reconnect pair a room's move to another relay pod
- * produces.
+ * produces. R40 (docs/71 D16) adds three moderation types and the opt-in
+ * `content_flag.observed`, which a webhook receives only when its filter
+ * names it — calibration data must never page an existing pager.
  */
 export type WebhookEventName =
   | 'broadcast.killed'
@@ -326,9 +481,13 @@ export type WebhookEventName =
   | 'ban.expired'
   | 'ban.removed'
   | 'content_flag.raised'
+  | 'content_flag.reminded'
+  | 'content_flag.resolved'
+  | 'content_flag.observed'
   | 'room.created'
   | 'room.ended'
   | 'room.secret_rotated'
+  | 'room.screening_changed'
   | 'room.attached'
   | 'room.detached'
   | 'room.participant_joined'
@@ -379,6 +538,8 @@ export type ApiErrorCode =
   | 'room_not_static'
   | 'room_not_dynamic'
   | 'room_not_owned'
+  | 'screening_not_allowed'
+  | 'no_flag_route'
   | 'unavailable'
   | 'internal';
 

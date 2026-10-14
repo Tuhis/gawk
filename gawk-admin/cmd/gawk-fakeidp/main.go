@@ -1,10 +1,10 @@
 // Command gawk-fakeidp is a TEST-ONLY OIDC issuer for the docs/41 compose
 // lane and the kind e2e tier: discovery, a JWKS, a real authorization-code +
 // PKCE flow the portal SPA can drive from a browser, refresh-token rotation
-// for its silent renew, a client-credentials grant for one confidential
-// service client (R49's rooms-reader bot, docs/50 D9, which since R60 also
-// holds rooms-manager, docs/62 D7), and a /mint endpoint
-// for scripts.
+// for its silent renew, a client-credentials grant for two confidential
+// service clients — R49's rooms-reader bot (docs/50 D9, which since R60 also
+// holds rooms-manager, docs/62 D7) and R40's content sampler, which holds
+// only flagger (docs/71 D18) — and a /mint endpoint for scripts.
 //
 // It auto-approves every authorization request as one fixed operator — there
 // is no login page, no consent and no user database, which is exactly what
@@ -54,6 +54,10 @@ func main() {
 		serviceClientID     = flag.String("service-client-id", "gawk-rooms-bot", "the confidential client the client_credentials grant accepts")
 		serviceClientSecret = flag.String("service-client-secret", "dev-rooms-bot-secret", "that client's secret")
 		serviceRole         = flag.String("service-role", defaultServiceRoles, "the roles its service-account tokens carry, comma-separated")
+
+		flaggerClientID     = flag.String("flagger-client-id", "gawk-sampler", "R40's content sampler: a second confidential client the client_credentials grant accepts; empty disables it")
+		flaggerClientSecret = flag.String("flagger-client-secret", "dev-sampler-secret", "that client's secret")
+		flaggerRole         = flag.String("flagger-role", "flagger", "the roles the sampler's tokens carry, comma-separated")
 	)
 	flag.Parse()
 	if *issuer == "" {
@@ -72,6 +76,10 @@ func main() {
 		ServiceClientID:     *serviceClientID,
 		ServiceClientSecret: *serviceClientSecret,
 		ServiceRoles:        splitRoles(*serviceRole),
+
+		FlaggerClientID:     *flaggerClientID,
+		FlaggerClientSecret: *flaggerClientSecret,
+		FlaggerRoles:        splitRoles(*flaggerRole),
 	})
 	if err != nil {
 		log.Fatalf("gawk-fakeidp: %v", err)
@@ -95,6 +103,13 @@ type idpConfig struct {
 	ServiceClientID     string
 	ServiceClientSecret string
 	ServiceRoles        []string
+	// FlaggerClientID / FlaggerClientSecret / FlaggerRoles are R40's content
+	// sampler (docs/71 D18): a second service client whose tokens carry only
+	// flagger, so the dev stack's samplers authenticate the way a deployment's
+	// do. An empty ID disables it.
+	FlaggerClientID     string
+	FlaggerClientSecret string
+	FlaggerRoles        []string
 	// Now is the clock; nil means time.Now. A test seam.
 	Now func() time.Time
 }
@@ -298,15 +313,21 @@ func (i *idp) clientCredentials(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		id, secret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
 	}
-	if i.cfg.ServiceClientID == "" || id != i.cfg.ServiceClientID || secret != i.cfg.ServiceClientSecret {
+	var roles []string
+	switch {
+	case i.cfg.ServiceClientID != "" && id == i.cfg.ServiceClientID && secret == i.cfg.ServiceClientSecret:
+		roles = i.cfg.ServiceRoles
+	case i.cfg.FlaggerClientID != "" && id == i.cfg.FlaggerClientID && secret == i.cfg.FlaggerClientSecret:
+		roles = i.cfg.FlaggerRoles
+	default:
 		w.Header().Set("WWW-Authenticate", `Basic realm="gawk-fakeidp"`)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_client", "error_description": "unknown client or wrong secret"})
 		return
 	}
-	serviceRoles := make([]any, 0, len(i.cfg.ServiceRoles))
-	for _, r := range i.cfg.ServiceRoles {
+	serviceRoles := make([]any, 0, len(roles))
+	for _, r := range roles {
 		serviceRoles = append(serviceRoles, r)
 	}
 	now := i.cfg.Now()

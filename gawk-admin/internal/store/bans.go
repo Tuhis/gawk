@@ -27,6 +27,17 @@ const banColumns = `id, target_type, target_value, state, reason, created_at, cr
 // partial unique index, not from a read-then-write check, so two replicas
 // racing produce one ban and one 409 rather than two bans.
 func (s *Store) CreateBan(ctx context.Context, b Ban) (Ban, error) {
+	return s.insertBan(ctx, s.pool, b)
+}
+
+// rowQuerier is what insertBan needs from the pool or a transaction.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// insertBan is CreateBan on q: the pool, or a transaction an automatic kill
+// claims its flag in (AutoKillContentFlag).
+func (s *Store) insertBan(ctx context.Context, q rowQuerier, b Ban) (Ban, error) {
 	rec, err := moderation.Normalize(b.Record())
 	if err != nil {
 		return Ban{}, err
@@ -46,10 +57,10 @@ func (s *Store) CreateBan(ctx context.Context, b Ban) (Ban, error) {
 	}
 	b.CreatedAt = b.CreatedAt.UTC()
 
-	const q = `INSERT INTO bans (` + banColumns + `)
+	const insert = `INSERT INTO bans (` + banColumns + `)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULL,NULL,$9,$10)
 		RETURNING ` + banColumns
-	row := s.pool.QueryRow(ctx, q,
+	row := q.QueryRow(ctx, insert,
 		b.ID, string(b.Target.Type), b.Target.Value, string(b.State), b.Reason,
 		b.CreatedAt, b.CreatedBy, b.ExpiresAt, nullString(b.SourceBroadcastID), b.CRName)
 	out, err := scanBan(row)

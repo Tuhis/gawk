@@ -199,6 +199,19 @@ func withConfig(mutate func(*config.Config)) harnessOption {
 	return func(o *api.Options, _ *harness) { mutate(&o.Config) }
 }
 
+// withScreening switches R40's content flagging on (docs/71 §9.4) with the
+// documented defaults, so the screening routes are registered.
+func withScreening() harnessOption {
+	return func(o *api.Options, _ *harness) {
+		o.Config.Screening = true
+		o.Config.FlaggerRole = "flagger"
+		o.Config.ContentFlagRepage = 10 * time.Minute
+		o.Config.ContentFlagMute = 30 * time.Minute
+		o.Config.ContentFlagStaleAfter = 2 * time.Minute
+		o.Config.ScreeningSampleRetention = 30 * 24 * time.Hour
+	}
+}
+
 func withProjectorError(err error) harnessOption {
 	return func(_ *api.Options, h *harness) { h.proj.err = err }
 }

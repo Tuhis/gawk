@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.content_flag.raised.json",
   "title": "Content flag raised",
-  "description": "Reserved for R40 (docs/42 §4.11): a content flag was raised on a broadcast. Nothing produces it yet; the type is fixed so the vocabulary exists before anything does. The `data` of a `fi.ioio.gawk.content_flag.raised` CloudEvent.",
+  "description": "A content sampler's window tripped on a live broadcast and a flag was raised (R40, docs/71 D9): someone should join the broadcast and judge it. Scores and metadata only, never a frame. The `data` of a `fi.ioio.gawk.content_flag.raised` CloudEvent.",
   "type": "object",
   "properties": {
     "actor": {
@@ -17,6 +17,27 @@
     },
     "reason": {
       "$ref": "common.json#/$defs/reason"
+    },
+    "flagId": {
+      "$ref": "common.json#/$defs/contentFlagId"
+    },
+    "samplerId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The sampler instance that raised the flag."
+    },
+    "window": {
+      "$ref": "common.json#/$defs/contentFlagWindow"
+    },
+    "scores": {
+      "$ref": "common.json#/$defs/contentFlagScores"
+    },
+    "labels": {
+      "type": "array",
+      "description": "The detector labels that fired in the window.",
+      "items": {
+        "$ref": "common.json#/$defs/detectorLabel"
+      }
     },
     "summary": {
       "$ref": "common.json#/$defs/summary"

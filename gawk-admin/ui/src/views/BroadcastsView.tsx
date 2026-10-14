@@ -1,16 +1,27 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import { useApi } from '../auth/AuthContext.tsx';
 import { ApiError, enforcementNotice } from '../api/client.ts';
 import type { ApiClient } from '../api/client.ts';
-import type { Ban, Broadcast, BroadcastBanState, BroadcastsPage, CreateBanRequest } from '../api/types.ts';
+import type {
+  Ban,
+  Broadcast,
+  BroadcastBanState,
+  BroadcastsPage,
+  ContentFlag,
+  ContentFlagPage,
+  CreateBanRequest,
+} from '../api/types.ts';
 import { AuthRedirect } from '@gawk/oidc-session';
 import { BanDialog } from '../components/BanDialog.tsx';
 import type { BanRequestDraft } from '../components/BanDialog.tsx';
-import { FlaggedPinSlot } from '../components/FlaggedPin.tsx';
+import { DismissFlagDialog } from '../components/DismissFlagDialog.tsx';
+import { ContentFlagStrip, FlaggedPinSlot } from '../components/FlaggedPin.tsx';
 import { KillDialog } from '../components/KillDialog.tsx';
 import type { KillRequestDraft } from '../components/KillDialog.tsx';
-import { uptime } from '../lib/format.ts';
+import { ScreeningBanners } from '../components/ScreeningBanners.tsx';
+import { comparePinned, isPinned } from '../lib/flags.ts';
+import { formatInstant, uptime } from '../lib/format.ts';
 import { useLoader } from '../lib/useLoader.ts';
 import ui from '../styles/ui.module.css';
 
@@ -35,14 +46,36 @@ export function BroadcastsView({
   // the default; a test that left a 5 s interval running would fire refetches
   // and out-of-act state updates in the middle of its own assertions.
   refreshMs = REFRESH_MS,
+  // R40: whether the deployment serves content flags (`me.features.screening`).
+  // Off, nothing here asks for them and the table is exactly R39's.
+  screening = false,
 }: {
   killCooldownSeconds: number;
   initialFilter?: string;
   refreshMs?: number;
+  screening?: boolean;
 }) {
   const api = useApi();
   const load = useCallback(() => api.broadcasts(), [api]);
   const { data, loadedAt, error, loading, reload } = useLoader<BroadcastsPage>(load, refreshMs);
+
+  // The unresolved flags, polled beside the fleet. Each broadcast row already
+  // carries its own flag; this list is still read, for two things the rows
+  // cannot give: the screening plane's health (the banners) and any flag whose
+  // broadcast is MISSING from this scan — a relay pod that did not answer must
+  // not be able to hide a page (docs/71 §1: a flag always reaches a human).
+  const loadFlags = useCallback(
+    () => (screening ? api.contentFlags('unresolved', 'flag') : Promise.resolve(null)),
+    [api, screening],
+  );
+  const {
+    data: flagsPage,
+    error: flagsError,
+    reload: reloadFlags,
+  } = useLoader<ContentFlagPage | null>(loadFlags, screening ? refreshMs : 0);
+  // A 404 is the deployment answering "screening is off" to a stale feature
+  // probe; it is not an outage to alarm about.
+  const flagsOff = flagsError !== null && /HTTP 404|no such endpoint/i.test(flagsError);
 
   // A client-side filter: at "hundreds of concurrent broadcasts" a paged
   // operator must not scan a fleet-sized table by eye mid-incident.
@@ -56,22 +89,108 @@ export function BroadcastsView({
   }, [initialFilter]);
 
   const [killing, setKilling] = useState<Broadcast | null>(null);
+  const [killReason, setKillReason] = useState('');
   const [banning, setBanning] = useState<Broadcast | null>(null);
+  const [dismissing, setDismissing] = useState<ContentFlag | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [flagError, setFlagError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
 
-  const all = data?.broadcasts ?? [];
+  // One pinned flag per broadcast: the row's own, superseded by the flags
+  // list's copy. A union, never an intersection — the two reads are a few
+  // milliseconds apart, and the safe way to disagree is to show a flag.
+  const pinnedFlags = new Map<string, ContentFlag>();
+  for (const b of data?.broadcasts ?? []) {
+    if (isPinned(b.contentFlag)) pinnedFlags.set(b.id, b.contentFlag);
+  }
+  for (const f of flagsPage?.contentFlags ?? []) {
+    if (isPinned(f)) pinnedFlags.set(f.broadcastId, f);
+  }
+  const all = (data?.broadcasts ?? []).map((b) => {
+    const flag = pinnedFlags.get(b.id) ?? null;
+    return flag === (b.contentFlag ?? null) ? b : { ...b, contentFlag: flag };
+  });
+  const scanned = new Set(all.map((b) => b.id));
+  // Flags whose broadcast this scan did not see. They get a strip of their
+  // own at the very top: the broadcast may be live on a pod that did not
+  // answer, and Acknowledge and Dismiss work on the flag either way.
+  const orphans = [...pinnedFlags.values()].filter((f) => !scanned.has(f.broadcastId)).sort(comparePinned);
+
   const needle = filter.trim().toLowerCase();
-  const broadcasts = needle
-    ? all.filter(
-        (b) =>
-          b.id.toLowerCase().includes(needle) ||
-          b.key.toLowerCase().includes(needle) ||
-          (b.publisherRemoteIp ?? '').toLowerCase().includes(needle),
-      )
-    : all;
+  // Flagged rows are PINNED: first, in pin order, and exempt from the filter
+  // — a page must not be filterable out of sight while someone is typing.
+  const pinned = all
+    .filter((b) => isPinned(b.contentFlag))
+    .sort((a, b) => comparePinned(a.contentFlag as ContentFlag, b.contentFlag as ContentFlag));
+  const rest = all.filter((b) => !isPinned(b.contentFlag));
+  const broadcasts = [
+    ...pinned,
+    ...(needle
+      ? rest.filter(
+          (b) =>
+            b.id.toLowerCase().includes(needle) ||
+            b.key.toLowerCase().includes(needle) ||
+            (b.publisherRemoteIp ?? '').toLowerCase().includes(needle),
+        )
+      : rest),
+  ];
+
+  function reloadAll() {
+    reload();
+    if (screening) reloadFlags();
+  }
+
+  function openKill(b: Broadcast, flag: ContentFlag | null) {
+    setActionError(null);
+    setKillReason(flag ? `Content flag #${flag.id}: explicit content` : '');
+    setKilling(b);
+  }
+
+  async function acknowledge(flag: ContentFlag) {
+    setBusy(true);
+    setFlagError(null);
+    try {
+      await api.acknowledgeContentFlag(flag.id);
+      setWarning(null);
+      setNote(
+        `Acknowledged flag #${flag.id} on ${flag.broadcastId}: reminders stop, and it stays pinned until it resolves.`,
+      );
+      reloadAll();
+    } catch (err) {
+      if (err instanceof AuthRedirect) return;
+      setFlagError(flagActionError(flag, err));
+      reloadAll();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmDismiss() {
+    if (!dismissing) return;
+    const flag = dismissing;
+    setBusy(true);
+    setActionError(null);
+    setFlagError(null);
+    try {
+      const after = await api.dismissContentFlag(flag.id);
+      setWarning(null);
+      setNote(
+        after.mutedUntil
+          ? `Dismissed flag #${flag.id}; re-flagging ${flag.broadcastId} is muted until ${formatInstant(after.mutedUntil)}.`
+          : `Dismissed flag #${flag.id} on ${flag.broadcastId}.`,
+      );
+      setDismissing(null);
+      reloadAll();
+    } catch (err) {
+      if (err instanceof AuthRedirect) return;
+      setActionError(flagActionError(flag, err));
+      reloadAll();
+    } finally {
+      setBusy(false);
+    }
+  }
   // Uptime is measured from the fetch that produced these rows, not from
   // whenever React re-rendered them (see `useLoader`'s `loadedAt`).
   const now = loadedAt;
@@ -106,7 +225,8 @@ export function BroadcastsView({
       });
       reportSuccess(notice(target.id, ban), `Killed ${target.id}.`);
       setKilling(null);
-      reload();
+      // The server resolves the broadcast's flag as `killed`; re-read both.
+      reloadAll();
     } catch (err) {
       // "This page is going away", not an error to render (session.ts): the
       // kill did NOT run, and flashing red under a full-page IdP redirect
@@ -166,7 +286,7 @@ export function BroadcastsView({
         setNote(null);
         setWarning(pending);
         setActionError(failure);
-        reload();
+        reloadAll();
         return;
       }
       reportSuccess(
@@ -174,7 +294,7 @@ export function BroadcastsView({
         banSummary(target.id, id.ok && id.existed, ip === null ? null : ip.ok && ip.existed),
       );
       setBanning(null);
-      reload();
+      reloadAll();
     } catch (err) {
       // The one throw `attemptBan` lets through: the session has started a
       // full-page IdP redirect, so this page is going away (session.ts).
@@ -221,6 +341,18 @@ export function BroadcastsView({
           {warning}
         </p>
       ) : null}
+      {screening && !flagsOff ? <ScreeningBanners status={flagsPage?.screening ?? null} /> : null}
+      {screening && flagsError && !flagsOff ? (
+        <p className={ui.error} role="alert">
+          Content flags could not be loaded ({flagsError}). Flags on the broadcasts below are still
+          pinned from the fleet scan, but a flag on a broadcast the scan missed would not be.
+        </p>
+      ) : null}
+      {flagError ? (
+        <p className={ui.error} role="alert">
+          {flagError}
+        </p>
+      ) : null}
 
       <div className={ui.tableCard}>
         <table className={ui.table}>
@@ -237,69 +369,120 @@ export function BroadcastsView({
             </tr>
           </thead>
           <tbody>
-            {broadcasts.map((b) => (
-              <tr key={b.id} className={b.publisherActive ? undefined : ui.recessed}>
-                <td>
+            {orphans.map((f) => (
+              <tr key={`flag-${f.id}`} className={ui.flagStrip}>
+                <td colSpan={8}>
                   <div className={ui.row}>
-                    <FlaggedPinSlot broadcast={b} />
-                    <code className={ui.mono}>{b.id}</code>
-                    <CopyButton value={b.id} />
+                    <span className={ui.badgeBad}>flagged</span>
+                    <code className={ui.mono}>{f.broadcastId}</code>
+                    <span className={ui.dim}>
+                      not in this fleet scan — its relay pod may not have answered, or the
+                      broadcast just ended
+                    </span>
                   </div>
-                  <div className={ui.dim}>
-                    key <code className={ui.mono}>{b.key}</code>
-                  </div>
-                </td>
-                <td>
-                  {b.publisherActive ? (
-                    <span className={ui.badgeOk}>live</span>
-                  ) : (
-                    <span className={ui.badge}>away</span>
-                  )}
-                  <div className={ui.mono}>{b.publisherRemoteIp ?? '—'}</div>
-                </td>
-                <td>{uptime(b.startedAt, now)}</td>
-                <td>{b.viewersGlobal}</td>
-                <td>
-                  {b.pods.length === 0 ? (
-                    <span className={ui.dim}>—</span>
-                  ) : (
-                    b.pods.map((p) => (
-                      <div key={p.pod} className={`${ui.dim} ${ui.nowrap}`}>
-                        <span className={ui.mono}>{p.pod}</span> {p.role} · {p.viewersLocal}
-                      </div>
-                    ))
-                  )}
-                </td>
-                <td>
-                  <BanCell state={b.banState} publisherActive={b.publisherActive} now={now} />
-                </td>
-                <td>
-                  <div className={ui.actions}>
-                    {/* Omitted by the server when -app-base-url / -telemetry-base-url
-                        are unset (§4.12). A link to nowhere is worse than none. */}
-                    {b.links?.watch ? (
-                      <a href={b.links.watch} target="_blank" rel="noreferrer">
-                        Watch
-                      </a>
-                    ) : null}
-                    {b.links?.telemetry ? (
-                      <a href={b.links.telemetry} target="_blank" rel="noreferrer">
-                        Telemetry
-                      </a>
-                    ) : null}
-                  </div>
-                </td>
-                <td>
-                  <div className={ui.actions}>
-                    <button type="button" onClick={() => setKilling(b)}>
-                      Kill
-                    </button>
-                    <button type="button" className={ui.danger} onClick={() => setBanning(b)}>
-                      Kill + ban
-                    </button>
-                  </div>
+                  <ContentFlagStrip
+                    flag={f}
+                    now={now}
+                    busy={busy}
+                    watch={f.links?.watch}
+                    onAcknowledge={() => void acknowledge(f)}
+                    onDismiss={() => {
+                      setActionError(null);
+                      setDismissing(f);
+                    }}
+                  />
                 </td>
               </tr>
+            ))}
+            {broadcasts.map((b) => (
+              <Fragment key={b.id}>
+                <tr
+                  className={
+                    [isPinned(b.contentFlag) ? ui.flagged : '', b.publisherActive ? '' : ui.recessed]
+                      .filter(Boolean)
+                      .join(' ') || undefined
+                  }
+                >
+                  <td>
+                    <div className={ui.row}>
+                      <FlaggedPinSlot broadcast={b} />
+                      <code className={ui.mono}>{b.id}</code>
+                      <CopyButton value={b.id} />
+                    </div>
+                    <div className={ui.dim}>
+                      key <code className={ui.mono}>{b.key}</code>
+                    </div>
+                  </td>
+                  <td>
+                    {b.publisherActive ? (
+                      <span className={ui.badgeOk}>live</span>
+                    ) : (
+                      <span className={ui.badge}>away</span>
+                    )}
+                    <div className={ui.mono}>{b.publisherRemoteIp ?? '—'}</div>
+                  </td>
+                  <td>{uptime(b.startedAt, now)}</td>
+                  <td>{b.viewersGlobal}</td>
+                  <td>
+                    {b.pods.length === 0 ? (
+                      <span className={ui.dim}>—</span>
+                    ) : (
+                      b.pods.map((p) => (
+                        <div key={p.pod} className={`${ui.dim} ${ui.nowrap}`}>
+                          <span className={ui.mono}>{p.pod}</span> {p.role} · {p.viewersLocal}
+                        </div>
+                      ))
+                    )}
+                  </td>
+                  <td>
+                    <BanCell state={b.banState} publisherActive={b.publisherActive} now={now} />
+                  </td>
+                  <td>
+                    <div className={ui.actions}>
+                      {/* Omitted by the server when -app-base-url / -telemetry-base-url
+                          are unset (§4.12). A link to nowhere is worse than none. */}
+                      {b.links?.watch ? (
+                        <a href={b.links.watch} target="_blank" rel="noreferrer">
+                          Watch
+                        </a>
+                      ) : null}
+                      {b.links?.telemetry ? (
+                        <a href={b.links.telemetry} target="_blank" rel="noreferrer">
+                          Telemetry
+                        </a>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td>
+                    <div className={ui.actions}>
+                      <button type="button" onClick={() => openKill(b, null)}>
+                        Kill
+                      </button>
+                      <button type="button" className={ui.danger} onClick={() => setBanning(b)}>
+                        Kill + ban
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                {isPinned(b.contentFlag) ? (
+                  <tr className={ui.flagStrip}>
+                    <td colSpan={8}>
+                      <ContentFlagStrip
+                        flag={b.contentFlag}
+                        now={now}
+                        busy={busy}
+                        watch={b.links?.watch ?? b.contentFlag.links?.watch}
+                        onAcknowledge={() => void acknowledge(b.contentFlag as ContentFlag)}
+                        onDismiss={() => {
+                          setActionError(null);
+                          setDismissing(b.contentFlag ?? null);
+                        }}
+                        onKill={() => openKill(b, b.contentFlag ?? null)}
+                      />
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -309,7 +492,7 @@ export function BroadcastsView({
           unanswered, "nothing is broadcasting" is exactly the claim we cannot
           make, and the amber line above is already saying why. A filter that
           matched nothing is its own message — the fleet may be busy. */}
-      {!loading && broadcasts.length === 0 && !error && !partial ? (
+      {!loading && broadcasts.length === 0 && orphans.length === 0 && !error && !partial ? (
         needle ? (
           <p className={ui.dim}>
             Nothing matches “{filter.trim()}” ({all.length} live).
@@ -323,6 +506,7 @@ export function BroadcastsView({
         <KillDialog
           broadcast={killing}
           defaultCooldownSeconds={killCooldownSeconds}
+          initialReason={killReason}
           busy={busy}
           error={actionError}
           onCancel={() => {
@@ -348,8 +532,36 @@ export function BroadcastsView({
           onConfirm={(d) => void confirmBan(d)}
         />
       ) : null}
+
+      {dismissing ? (
+        <DismissFlagDialog
+          flag={dismissing}
+          busy={busy}
+          error={actionError}
+          onCancel={() => {
+            setDismissing(null);
+            setActionError(null);
+          }}
+          onConfirm={() => void confirmDismiss()}
+        />
+      ) : null}
     </section>
   );
+}
+
+/**
+ * The line to show when acknowledging or dismissing a flag failed.
+ *
+ * A `409` is not a fault: another operator (or the lifecycle — a clear, a
+ * kill, the session ending) resolved or acknowledged the flag first, and the
+ * view re-reads it. Saying so stops a paged operator from retrying an action
+ * that is already moot.
+ */
+function flagActionError(flag: ContentFlag, err: unknown): string {
+  if (err instanceof ApiError && err.status === 409) {
+    return `Flag #${flag.id} on ${flag.broadcastId} changed before your action landed (${err.message}); the list has been refreshed.`;
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**

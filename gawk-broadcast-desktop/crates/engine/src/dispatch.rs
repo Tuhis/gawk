@@ -16,6 +16,12 @@ use gawk_wire as wire;
 /// extension bytes past a maximal payload — which parsers ignore anyway
 /// (docs/40 §4.9).
 pub const SERVER_STREAM_READ_LIMIT: usize = 5 + wire::MAX_TELEMETRY_ENDPOINT_URL_LEN;
+// A screening relay's RelayIdentity (R40, docs/71 D13) — header, maximal
+// version and name, the notices byte — fits the bound with room to spare.
+const _: () = assert!(
+    4 + wire::MAX_RELAY_IDENTITY_VERSION_LEN + 1 + wire::MAX_RELAY_IDENTITY_NAME_LEN
+        < SERVER_STREAM_READ_LIMIT
+);
 /// Deadline for reading one server stream to completion.
 pub const SERVER_STREAM_READ_TIMEOUT_MS: u64 = 10_000;
 
@@ -38,6 +44,11 @@ pub enum ServerMessage {
     /// The relay fleet's advertised telemetry ingest URL (0x12, R37 docs/40
     /// §4.10) — already validated as absolute https by the wire parser.
     TelemetryEndpoint(String),
+    /// The notices byte of a RelayIdentity (0x11) a relay sent on the
+    /// publish session (R40, docs/71 D13): it does so only when it has a
+    /// notice to give. Builds before R40 dispatch this as `Unknown(0x11)`
+    /// and carry on — the CF1 compatibility claim.
+    RelayNotices(u8),
     /// A type this build does not know — ignored, never an error.
     Unknown(u8),
 }
@@ -72,6 +83,9 @@ pub fn dispatch_server_message(msg: &[u8]) -> Result<ServerMessage, wire::WireEr
         }
         wire::TYPE_TELEMETRY_ENDPOINT => Ok(ServerMessage::TelemetryEndpoint(
             wire::parse_telemetry_endpoint(msg)?.to_owned(),
+        )),
+        wire::TYPE_RELAY_IDENTITY => Ok(ServerMessage::RelayNotices(
+            wire::parse_relay_identity(msg)?.notices,
         )),
         other => Ok(ServerMessage::Unknown(other)),
     }
@@ -119,6 +133,36 @@ mod tests {
             dispatch_server_message(&[0x01, 0x7f, 0xaa]).unwrap(),
             ServerMessage::Unknown(0x7f)
         );
+    }
+
+    // R40 (docs/71 D13): a screening relay's identity on the publish session
+    // dispatches to its notices; one without the byte reads as no notices.
+    #[test]
+    fn relay_identity_dispatches_to_its_notices() {
+        let id = |notices| {
+            let mut msg = Vec::new();
+            wire::append_relay_identity(
+                &mut msg,
+                &wire::RelayIdentity {
+                    server_version: "1.42.0",
+                    name: "",
+                    notices,
+                },
+            )
+            .unwrap();
+            msg
+        };
+        assert_eq!(
+            dispatch_server_message(&id(wire::RELAY_NOTICE_SCREENING)).unwrap(),
+            ServerMessage::RelayNotices(wire::RELAY_NOTICE_SCREENING)
+        );
+        assert_eq!(
+            dispatch_server_message(&id(0)).unwrap(),
+            ServerMessage::RelayNotices(0)
+        );
+        let mut flagged = id(wire::RELAY_NOTICE_SCREENING);
+        flagged[2] = 0x80;
+        assert!(dispatch_server_message(&flagged).is_err());
     }
 
     #[test]

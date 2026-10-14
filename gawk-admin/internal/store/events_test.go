@@ -248,14 +248,16 @@ func TestSummarizeGradesTheSentenceOnEnforcement(t *testing.T) {
 			pending:   "a publisher IP ban expired in the record — the target is STILL banned",
 		},
 		{
-			// R40's reserved type falls to the default arm, where the grade is
-			// DIRECTION-FREE: with no idea whether the event asserts a ban or
-			// its lifting, "NOT enforced yet" could be the backwards half.
+			// A type this summariser does not know falls to the default arm,
+			// where the grade is DIRECTION-FREE: with no idea whether the
+			// event asserts a ban or its lifting, "NOT enforced yet" could be
+			// the backwards half. (R40's content_flag.raised used to be the
+			// example here; it has a sentence of its own since R40.)
 			name:      "an ungraded event type",
-			eventType: store.EventContentFlag,
+			eventType: "some.future_event",
 			target:    moderation.TargetBroadcastID,
-			inSync:    "content_flag.raised",
-			pending:   "content_flag.raised — enforcement pending",
+			inSync:    "some.future_event",
+			pending:   "some.future_event — enforcement pending",
 		},
 	}
 

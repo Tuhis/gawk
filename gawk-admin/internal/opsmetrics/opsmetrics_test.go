@@ -104,3 +104,35 @@ func TestNilMetricsIsInert(t *testing.T) {
 		t.Fatal("nil Middleware returned nil")
 	}
 }
+
+// R40 (docs/71 D22, §3.1): the two screening gauges are read per scrape, and
+// a failed read emits nothing rather than a reassuring zero.
+func TestScreeningGauges(t *testing.T) {
+	m := New("test")
+	missing, failing := 1, false
+	m.RegisterScreening(
+		func(context.Context) (int, error) {
+			if failing {
+				return 0, context.DeadlineExceeded
+			}
+			return missing, nil
+		},
+		func(context.Context) (int64, error) { return 4096, nil },
+	)
+	body := scrape(t, m)
+	for _, want := range []string{"gawk_admin_screening_shards_missing 1", "gawk_admin_screening_samples_bytes 4096"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scrape lacks %q", want)
+		}
+	}
+	missing = 0
+	if body = scrape(t, m); !strings.Contains(body, "gawk_admin_screening_shards_missing 0") {
+		t.Error("the gauge is not read per scrape")
+	}
+	failing = true
+	if body = scrape(t, m); strings.Contains(body, "gawk_admin_screening_shards_missing ") {
+		t.Error("a failed read exported a value")
+	}
+	var nilMetrics *Metrics
+	nilMetrics.RegisterScreening(nil, nil) // must not panic
+}

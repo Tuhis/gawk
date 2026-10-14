@@ -239,6 +239,11 @@ func run(args []string, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+	// R40 (docs/71 D22, §3.1): the screening plane's two gauges, read from
+	// Postgres on each scrape so every replica answers for the fleet.
+	if cfg.Screening {
+		om.RegisterScreening(a.ShardsMissing, st.ScreeningSamplesBytes)
+	}
 
 	pages, err := portal.Handler()
 	if err != nil {
@@ -296,6 +301,10 @@ func run(args []string, getenv func(string) string) error {
 				}
 			}()
 			go pruneActivity(ctx, st, cfg.ActivityRetention, log)
+			// R40 (docs/71 D9, D15, D17): re-pages, session ends, the
+			// deadline kill and calibration-data pruning. A no-op with
+			// -screening off.
+			go a.RunScreening(ctx)
 			reconciler.Run(ctx)
 		},
 		// A clean shutdown hands the Lease over rather than making the next

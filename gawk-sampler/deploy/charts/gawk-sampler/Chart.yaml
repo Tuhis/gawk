@@ -1,0 +1,16 @@
+apiVersion: v2
+name: gawk-sampler
+description: Automatic content screening for a gawk relay fleet (R40) — samples every live broadcast's cached keyframe, scores it with a nudity detector and posts content flags to gawk-admin.
+type: application
+# Both fields are bumped by release-please; the image tag defaults to
+# appVersion, so chart version == image version always holds — and the
+# fetch-model init container runs from the SAME image as the sampler, so the
+# downloader that verifies the model's SHA-256 is always this release's.
+#
+# 0.0.0 is the UNRELEASED seed, matching .release-please-manifest.json (the
+# gawk-admin precedent): no gawk-sampler tag, image or chart exists yet, and
+# release-please diffs from the tag its manifest names. The first release PR
+# rewrites both lines to the first real version (gawk-admin's came out as
+# 1.0.0), and from then on this file tracks what is actually published.
+version: 0.0.0 # x-release-please-version
+appVersion: "0.0.0" # x-release-please-version

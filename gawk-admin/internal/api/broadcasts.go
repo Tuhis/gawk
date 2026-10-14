@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -29,7 +30,7 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 		Subject:  id.Subject,
 		Roles:    roles,
 		Defaults: meDefaultsJSON{KillCooldownSeconds: int(a.opts.Config.KillCooldown.Seconds())},
-		Features: meFeaturesJSON{Rooms: a.opts.Rooms != nil},
+		Features: meFeaturesJSON{Rooms: a.opts.Rooms != nil, Screening: a.opts.Config.Screening},
 	})
 }
 
@@ -58,6 +59,7 @@ func (a *API) handleListBroadcasts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := a.now()
+	flags, mutes := a.flagsByBroadcast(r.Context())
 	cfg := linkConfig{app: a.opts.Config.AppBaseURL, telemetry: a.opts.Config.TelemetryBaseURL}
 	out := make([]broadcastJSON, 0, len(snap.Broadcasts))
 	for _, agg := range snap.Broadcasts {
@@ -71,7 +73,12 @@ func (a *API) handleListBroadcasts(w http.ResponseWriter, r *http.Request) {
 				state.Ban = &rendered
 			}
 		}
-		out = append(out, renderBroadcast(agg, cfg, state))
+		row := renderBroadcast(agg, cfg, state)
+		if f, ok := flags[agg.ID]; ok {
+			rendered := a.renderFlag(f, mutes)
+			row.ContentFlag = &rendered
+		}
+		out = append(out, row)
 	}
 	// The coverage counters ride along so partial coverage is VISIBLE: relayscan
 	// treats a pod-level scrape failure as data rather than an error, and
@@ -141,64 +148,100 @@ func (a *API) handleKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.expireLapsed(r.Context(), target)
-
-	expires := a.now().Add(cooldown)
-	created, err := a.opts.Store.CreateBan(r.Context(), store.Ban{
-		Target:            target,
-		Reason:            reason,
-		CreatedAt:         a.now(),
-		CreatedBy:         id.Actor(),
-		ExpiresAt:         &expires,
-		SourceBroadcastID: normID,
-	})
+	k, err := a.killBroadcast(r.Context(), normID, reason, id.Actor(), cooldown)
 	if err != nil {
 		a.fail(w, r, "create the kill ban", err)
 		return
 	}
-
-	// The HMAC'd key, if the broadcast is live — what the portal link is
-	// keyed by. The sentence names the raw ID, as the delivery does (docs/52
-	// D9).
-	key := a.broadcastKey(r, normID)
-	projErr := a.project(r.Context(), created)
-	enforcement := enforcementState(projErr)
-
-	a.record(r.Context(), store.Event{
-		Type:         store.EventBroadcastKilled,
-		OccurredAt:   a.now(),
-		Actor:        id.Actor(),
-		BroadcastKey: key,
-		BroadcastID:  normID,
-		Payload: killPayload(reason,
-			store.SummarizeWithEnforcement(store.EventBroadcastKilled, target.Type, normID, id.Actor(), enforcement),
-			int(cooldown.Seconds()), created.ID.String(), enforcement),
-	})
+	// The operator's kill resolves the broadcast's open content flag as
+	// killed (docs/71 D9): the page has been answered.
+	a.resolveFlagsForKill(r.Context(), normID, id.Actor())
 	a.afterMutation()
 
 	// 202, not an error: the row is committed and durable, and the reconciler
 	// is exactly the "other process" RFC 9110 §15.3.3 defines 202 for. The
 	// body keeps kill's `{ban}` envelope so a client parses one shape either
 	// way; `enforcement` is what tells it enforcement has not started.
-	if projErr != nil {
-		a.log.Error("projecting the kill ban to a Ban CR failed", "banId", created.ID, "err", projErr)
-		writeJSON(w, http.StatusAccepted, killResultJSON{Ban: renderPendingBan(created, DetailBanPending)})
+	if k.projErr != nil {
+		a.log.Error("projecting the kill ban to a Ban CR failed", "banId", k.ban.ID, "err", k.projErr)
+		writeJSON(w, http.StatusAccepted, killResultJSON{Ban: renderPendingBan(k.ban, DetailBanPending)})
 		return
 	}
 	// Ban reasons are operator-private context: Debug only (docs/42 §5).
-	a.log.Info("broadcast killed", "broadcastKey", key, "actor", id.Actor(), "cooldownSeconds", int(cooldown.Seconds()))
-	a.log.Debug("kill reason recorded", "broadcastKey", key, "reason", reason)
-	writeJSON(w, http.StatusCreated, killResultJSON{Ban: renderBan(created)})
+	a.log.Info("broadcast killed", "broadcastKey", k.key, "actor", id.Actor(), "cooldownSeconds", int(cooldown.Seconds()))
+	a.log.Debug("kill reason recorded", "broadcastKey", k.key, "reason", reason)
+	writeJSON(w, http.StatusCreated, killResultJSON{Ban: renderBan(k.ban)})
+}
+
+// killOutcome is what one kill did: the ban row it wrote, the broadcast's
+// HMAC'd key when it was live, and whether projecting the Ban CR failed.
+type killOutcome struct {
+	ban     store.Ban
+	key     string
+	projErr error
+}
+
+// killBroadcast is the one kill path (D5): a cooldown ban on the ID, its CR
+// projected inline, and the broadcast.killed event graded on whether that
+// landed. The operator's kill and R40's automatic ones (docs/71 D14, D15) all
+// come through here, so an automatic kill is enforced, audited and paged
+// exactly like one from the portal. The caller has already answered an
+// existing active ban; a race that loses to one returns ErrDuplicateActive.
+//
+// It runs on the request context up to the row write; everything after is
+// post-commit work (project and record detach on their own).
+func (a *API) killBroadcast(ctx context.Context, normID, reason, actor string, cooldown time.Duration) (killOutcome, error) {
+	target := moderation.Target{Type: moderation.TargetBroadcastID, Value: normID}
+	a.expireLapsed(ctx, target)
+
+	expires := a.now().Add(cooldown)
+	created, err := a.opts.Store.CreateBan(ctx, store.Ban{
+		Target:            target,
+		Reason:            reason,
+		CreatedAt:         a.now(),
+		CreatedBy:         actor,
+		ExpiresAt:         &expires,
+		SourceBroadcastID: normID,
+	})
+	if err != nil {
+		return killOutcome{}, err
+	}
+	return a.enforceKill(ctx, normID, reason, actor, cooldown, created), nil
+}
+
+// enforceKill is everything a kill does once its ban row exists: the Ban CR
+// that makes the relays enforce it, and broadcast.killed. Shared by the
+// operator's kill and the automatic one, whose ban is written inside its
+// claim on the flag (Store.AutoKillContentFlag).
+func (a *API) enforceKill(ctx context.Context, normID, reason, actor string, cooldown time.Duration, created store.Ban) killOutcome {
+	// The HMAC'd key, if the broadcast is live — what the portal link is
+	// keyed by. The sentence names the raw ID, as the delivery does (docs/52
+	// D9).
+	key := a.broadcastKey(ctx, normID)
+	projErr := a.project(ctx, created)
+	enforcement := enforcementState(projErr)
+
+	a.record(ctx, store.Event{
+		Type:         store.EventBroadcastKilled,
+		OccurredAt:   a.now(),
+		Actor:        actor,
+		BroadcastKey: key,
+		BroadcastID:  normID,
+		Payload: killPayload(reason,
+			store.SummarizeWithEnforcement(store.EventBroadcastKilled, created.Target.Type, normID, actor, enforcement),
+			int(cooldown.Seconds()), created.ID.String(), enforcement),
+	})
+	return killOutcome{ban: created, key: key, projErr: projErr}
 }
 
 // broadcastKey resolves a raw ID to its HMAC'd key through relayscan. Empty
 // when the broadcast is not live — an event about a broadcast that already
 // ended simply carries no key rather than carrying the raw ID instead.
-func (a *API) broadcastKey(r *http.Request, normID string) string {
+func (a *API) broadcastKey(ctx context.Context, normID string) string {
 	if a.opts.Fleet == nil {
 		return ""
 	}
-	snap, err := a.opts.Fleet.Snapshot(r.Context())
+	snap, err := a.opts.Fleet.Snapshot(ctx)
 	if err != nil {
 		return ""
 	}

@@ -20,6 +20,7 @@ export type ViewName =
   | 'relays'
   | 'webhooks'
   | 'rooms'
+  | 'calibration'
   | 'api'
   | 'not-found';
 
@@ -40,6 +41,7 @@ export interface Route {
 // `rooms` resolves whether or not the deployment serves it: a webhook's deep
 // link must land on the view, and the view itself is what says "not enabled"
 // when the API answers 404 — a not-found page would read as a broken link.
+// `calibration` (R40) follows the same rule.
 const VIEWS: readonly ViewName[] = [
   'broadcasts',
   'bans',
@@ -47,6 +49,7 @@ const VIEWS: readonly ViewName[] = [
   'relays',
   'webhooks',
   'rooms',
+  'calibration',
   'api',
 ];
 

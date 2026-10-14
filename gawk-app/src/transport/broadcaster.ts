@@ -80,6 +80,7 @@ import {
   TYPE_TELEMETRY_HELLO,
   TYPE_TELEMETRY_ENDPOINT,
   parseTelemetryEndpoint,
+  TYPE_RELAY_IDENTITY,
   TYPE_VIEWER_COUNT,
   VIEWER_COUNT_SIZE,
   type TelemetryHelloMessage,
@@ -610,8 +611,8 @@ export class BroadcastPipeline {
 
   // Reads server-initiated unidirectional streams for the session's life,
   // dispatching each message by wire type (BroadcastAnnounce 0x03,
-  // ResumeToken 0x09, telemetry, relay capabilities) — arrival order is not
-  // guaranteed.
+  // ResumeToken 0x09, telemetry, relay capabilities, relay identity) —
+  // arrival order is not guaranteed.
   // Failures are logged, never fatal: the broadcast runs fine without the
   // code being displayed.
   private async readServerMessages(wt: WebTransport, gen: number): Promise<void> {
@@ -685,6 +686,12 @@ export class BroadcastPipeline {
           if (!this.stopping) this.cb.onTelemetryEndpoint?.(url);
           break;
         }
+        // A screening relay's identity (docs/71 D13), sent on the publish
+        // session for the native broadcasters. This page shows a server's
+        // screening in the server picker, from the picker's own probe, so it
+        // drops the message here rather than warn about it on every session.
+        case TYPE_RELAY_IDENTITY:
+          break;
         // The fleet's parity level. An older relay sends no such stream, so
         // parityLevel stays 0 and this producer emits no parity chunks. A
         // relay configured off sends level 0 for the same effect, so the

@@ -249,15 +249,20 @@ class Package:
 # --------------------------------------------------------------------------
 
 
-def collect_go(module: str, tags: str = "") -> list[Package]:
+def collect_go(module: str, tags: str = "", cgo: bool = False) -> list[Package]:
+    """`cgo` lists the module as its cgo build sees it. gawk-sampler's
+    onnxruntime_go binding is cgo in every file, so with CGO_ENABLED=0 (the
+    default wherever no C compiler is found) `go list` reports the package as
+    excluded by build constraints and fails. Listing needs no compiler."""
     cwd = REPO / module
     fmt = "{{if .Module}}{{.Module.Path}}\t{{.Module.Version}}\t{{.Module.Dir}}{{end}}"
     cmd = ["go", "list", "-deps"]
     if tags:
         cmd += ["-tags", tags]
     cmd += ["-f", fmt, "./..."]
+    env = {"CGO_ENABLED": "1"} if cgo else None
     seen: dict[tuple[str, str], Package] = {}
-    for line in run(cmd, cwd).splitlines():
+    for line in run(cmd, cwd, env).splitlines():
         if not line.strip():
             continue
         path, version, directory = (line.split("\t") + ["", ""])[:3]
@@ -524,6 +529,28 @@ COMPONENTS = {
         sources="`package-lock.json` entries without `dev: true`.",
         collect=lambda: collect_npm("gawk-admin/ui"),
     ),
+    # R40 (docs/71 OD6): the content-screening sampler. Its image carries two
+    # native components that are not Go dependencies and are not listed here:
+    # ffmpeg, run as a separate executable and never linked (D4), and ONNX
+    # Runtime's shared library. Each ships its own terms under /licenses in
+    # the image.
+    "sampler": dict(
+        path="gawk-sampler",
+        blurb=(
+            "The content-screening sampler (`gawk-sampler`), listed as its cgo\n"
+            "build links it. Its image also carries two native components that\n"
+            "are not Go dependencies and so are not listed here, each with its\n"
+            "own terms under `/licenses` in the image: a minimal **ffmpeg**\n"
+            "(LGPL-2.1-or-later), which the sampler runs as a separate\n"
+            "executable and never links, shipped with its licence text and the\n"
+            "exact source and configure line it was built from; and **ONNX\n"
+            "Runtime**'s shared library (MIT), with Microsoft's\n"
+            "ThirdPartyNotices. The detector model is not in the image at all:\n"
+            "it is fetched at deploy time (docs/71 D5, §8.1)."
+        ),
+        sources="`go list -deps ./...` in `gawk-sampler/` (CGO_ENABLED=1).",
+        collect=lambda: collect_go("gawk-sampler", cgo=True),
+    ),
     "windows": dict(
         path="gawk-broadcast-desktop",
         blurb=(
@@ -698,12 +725,13 @@ def check() -> int:
     failures: list[str] = []
     checked = 0
 
-    for module, tags in (
-        ("gawk-server", ""),
-        ("gawk-telemetry", "duckdb"),
-        ("gawk-admin", ""),
+    for module, tags, cgo in (
+        ("gawk-server", "", False),
+        ("gawk-telemetry", "duckdb", False),
+        ("gawk-admin", "", False),
+        ("gawk-sampler", "", True),
     ):
-        for pkg in collect_go(module, tags):
+        for pkg in collect_go(module, tags, cgo):
             checked += 1
             if not expression_allowed(pkg.spdx):
                 failures.append(f"{module}: {pkg.name}@{pkg.version} is {pkg.spdx}")

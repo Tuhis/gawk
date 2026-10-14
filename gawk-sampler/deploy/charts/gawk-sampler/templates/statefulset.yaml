@@ -1,0 +1,217 @@
+{{- if not (has .Values.config.mode (list "observe" "flag")) }}
+{{- fail (printf "config.mode %q: must be observe or flag (docs/71 D19)" .Values.config.mode) }}
+{{- end }}
+{{- if lt (int .Values.replicas) 1 }}
+{{- fail "replicas must be at least 1: each pod screens one share of the broadcasts (docs/71 D22)" }}
+{{- end }}
+{{- if not (has .Values.podAntiAffinity (list "soft" "hard" "none")) }}
+{{- fail "podAntiAffinity must be one of: soft, hard, none" }}
+{{- end }}
+{{- if and (not .Values.model.volume) (or (not .Values.model.url) (not (regexMatch "^[0-9a-f]{64}$" (toString .Values.model.sha256)))) }}
+{{- fail "model.url and model.sha256 (64 lower-case hex digits) are both required unless model.volume provides the model: the SHA-256 pin is what keeps a swapped file from loading (docs/71 D5)" }}
+{{- end }}
+apiVersion: apps/v1
+# A StatefulSet, not a Deployment, for the stable names (docs/71 D22): pod
+# gawk-sampler-<i> screens share i of `replicas`, by broadcast key, with no
+# coordination between pods and nothing elected. A broadcast's key never
+# changes, so it stays on one pod for its whole life — the "exactly one
+# sampler per session" gawk-admin's sample numbering relies on (D20).
+#
+# The price, accepted in D22 (a): a StatefulSet never runs two pods of one
+# name, so a pod on an UNREACHABLE node is not replaced until someone acts.
+# The missing-shard alert (prometheusrule.yaml) names the two recovery steps.
+kind: StatefulSet
+metadata:
+  name: {{ include "gawk-sampler.fullname" . }}
+  labels:
+    {{- include "gawk-sampler.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "gawk-sampler.fullname" . }}
+  replicas: {{ int .Values.replicas }}
+  # Parallel: no pod waits for a lower ordinal to be Ready. The shares are
+  # independent, and OrderedReady would hold every higher share dark behind
+  # one pod that cannot start.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "gawk-sampler.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gawk-sampler.selectorLabels" . | nindent 8 }}
+    spec:
+      # The sampler talks to the relay, gawk-admin and the IdP — never to the
+      # Kubernetes API — so the pod carries no ServiceAccount token at all.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if ne .Values.podAntiAffinity "none" }}
+      affinity:
+        podAntiAffinity:
+          {{- if eq .Values.podAntiAffinity "hard" }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "gawk-sampler.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "gawk-sampler.selectorLabels" . | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+          {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if not .Values.model.volume }}
+      initContainers:
+        # The model download (docs/71 D5): the image's own `fetch-model`, which
+        # writes the file only when its SHA-256 equals the pin and exits
+        # non-zero otherwise, so the pod never starts on a file nobody pinned.
+        - name: fetch-model
+          image: "{{ include "gawk-sampler.image" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - fetch-model
+            - -url
+            - {{ .Values.model.url | quote }}
+            - -sha256
+            - {{ .Values.model.sha256 | quote }}
+            - -out
+            - {{ printf "/models/%s" .Values.model.file | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.fetchModelResources | nindent 12 }}
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      {{- end }}
+      containers:
+        - name: gawk-sampler
+          image: "{{ include "gawk-sampler.image" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Nothing is ever written: frames live in memory between fetch and
+            # score and never touch a disk (docs/71 D8), and ffmpeg runs from
+            # pipes with RLIMIT_CORE 0.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+          env:
+            # The pod's name is its identity twice over: the samplerId in
+            # every flag, and — from its ordinal — its share (D22).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # The share count IS the replica count: rendered from the same
+            # value, so the two cannot disagree.
+            - name: GAWK_SAMPLER_SHARD_COUNT
+              value: {{ int .Values.replicas | quote }}
+            - name: GAWK_SAMPLER_MODE
+              value: {{ .Values.config.mode | quote }}
+            - name: GAWK_SAMPLER_ADMIN_URL
+              value: {{ .Values.adminUrl | quote }}
+            - name: GAWK_SAMPLER_OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: GAWK_SAMPLER_OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientId | quote }}
+            {{- with .Values.oidc.scope }}
+            - name: GAWK_SAMPLER_OIDC_SCOPE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- include "gawk-sampler.secretEnv" (dict "name" "GAWK_SAMPLER_OIDC_CLIENT_SECRET" "value" .Values.oidc.clientSecret "ref" .Values.oidc.clientSecretRef) | nindent 12 }}
+            {{- include "gawk-sampler.secretEnv" (dict "name" "GAWK_SAMPLER_SCREENING_TOKEN" "value" .Values.relay.screeningToken "ref" .Values.relay.screeningTokenRef) | nindent 12 }}
+            - name: GAWK_SAMPLER_MODEL
+              value: {{ printf "/models/%s" .Values.model.file | quote }}
+            - name: GAWK_SAMPLER_MODEL_INPUT
+              value: {{ int .Values.model.inputSize | quote }}
+            - name: GAWK_SAMPLER_LABELS
+              value: {{ .Values.config.labels | quote }}
+            - name: GAWK_SAMPLER_THRESHOLD
+              value: {{ .Values.config.threshold | toString | quote }}
+            - name: GAWK_SAMPLER_WINDOW
+              value: {{ int .Values.config.window | quote }}
+            - name: GAWK_SAMPLER_WINDOW_HITS
+              value: {{ int .Values.config.windowHits | quote }}
+            - name: GAWK_SAMPLER_INTERVAL
+              value: {{ .Values.config.interval | quote }}
+            {{- with .Values.config.workers }}
+            - name: GAWK_SAMPLER_WORKERS
+              value: {{ int . | quote }}
+            {{- end }}
+            - name: GAWK_SAMPLER_DECODE_TIMEOUT
+              value: {{ .Values.config.decodeTimeout | quote }}
+            {{- with .Values.config.decodeMemoryLimit }}
+            # A number reaches the binary as DIGITS: Helm reads a values file's
+            # numbers as float64, and `quote` on a large one yields scientific
+            # notation the binary would refuse (the R50 eventbus.maxBytes
+            # crash, ci.yml's helm job).
+            - name: GAWK_SAMPLER_DECODE_MEMORY_LIMIT
+              value: {{ if kindIs "string" . }}{{ . | quote }}{{ else }}{{ int64 . | toString | quote }}{{ end }}
+            {{- end }}
+            - name: GAWK_SAMPLER_TARGETS_REFRESH
+              value: {{ .Values.config.targetsRefresh | quote }}
+            - name: GAWK_SAMPLER_REPORT_SAMPLES
+              value: {{ int .Values.config.reportSamples | quote }}
+            - name: GAWK_SAMPLER_SAMPLE_FLOOR
+              value: {{ .Values.config.sampleFloor | toString | quote }}
+            - name: GAWK_SAMPLER_METRICS_ADDR
+              value: {{ printf ":%v" .Values.metrics.port | quote }}
+            - name: GAWK_SAMPLER_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: GAWK_SAMPLER_LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+      volumes:
+        - name: models
+          {{- if .Values.model.volume }}
+          {{- toYaml .Values.model.volume | nindent 10 }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.model.emptyDirSizeLimit }}
+          {{- end }}

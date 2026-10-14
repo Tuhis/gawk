@@ -10,10 +10,9 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 )
 
-// POST /api/v1/content-flags is R40's (docs/42 §4.11, D11). In R39 it must
-// 404: the path is frozen in the design so R40 integrates against a known
-// contract, and this test is what keeps anything else from squatting it in the
-// meantime.
+// POST /api/v1/content-flags is R40's (docs/42 §4.11, D11). With -screening
+// off — every deployment's default — it still 404s exactly as R39 reserved it,
+// so a deployment that never turned screening on has no flag surface at all.
 func TestContentFlagsRouteIsReservedAnd404s(t *testing.T) {
 	h := newHarnessWithoutPostgres(t)
 
@@ -156,7 +155,7 @@ func TestRoutesAreBehindTheInjectedRoleCheck(t *testing.T) {
 	// check. The second pass below is where they are actually covered — and it
 	// is the reason this test does not simply expect 404 for them and call the
 	// table "walked".
-	withRooms := newHarnessWithoutPostgres(t, withRoomsEnabled())
+	withRooms := newHarnessWithoutPostgres(t, withRoomsEnabled(), withScreening())
 	withRooms.identity.Roles = []string{"someone-else"}
 
 	checked := 0
@@ -175,7 +174,7 @@ func TestRoutesAreBehindTheInjectedRoleCheck(t *testing.T) {
 		// Every route that declares a role answers 403 without it — on the
 		// harness that actually registers it.
 		harness := h
-		if r.Requires == api.RequiresRooms {
+		if r.Requires == api.RequiresRooms || r.Requires == api.RequiresScreening {
 			harness = withRooms
 		}
 		if status, body := harness.raw(r.Method, path, nil); status != http.StatusForbidden {
@@ -192,11 +191,11 @@ func TestRoutesAreBehindTheInjectedRoleCheck(t *testing.T) {
 	// the other half of the claim, and what makes rooms default-off mean
 	// something.
 	for _, r := range api.RouteTable() {
-		if r.Requires != api.RequiresRooms {
+		if r.Requires != api.RequiresRooms && r.Requires != api.RequiresScreening {
 			continue
 		}
 		if status, _ := h.raw(r.Method, concretePath(r.Pattern), nil); status != http.StatusNotFound {
-			t.Fatalf("%s %s with rooms off = %d, want the catch-all's 404", r.Method, r.Pattern, status)
+			t.Fatalf("%s %s with %s off = %d, want the catch-all's 404", r.Method, r.Pattern, r.Requires, status)
 		}
 	}
 }

@@ -7,8 +7,10 @@
 package opsmetrics
 
 import (
+	"context"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
@@ -70,6 +72,50 @@ func (m *Metrics) RegisterPool(p *pgxpool.Pool) {
 		return
 	}
 	m.reg.MustRegister(newPoolCollector(p.Stat))
+}
+
+// RegisterScreening exports R40's screening-plane gauges (docs/71 D22, §3.1),
+// read from Postgres on each scrape so every replica answers alike:
+// gawk_admin_screening_shards_missing — sampler shards that have not polled
+// for 30 s, whose broadcasts nobody is screening — and
+// gawk_admin_screening_samples_bytes, the samples table's size on disk, the
+// number a small database volume needs watched. A read that fails emits
+// nothing rather than a zero that would read as "all well".
+func (m *Metrics) RegisterScreening(missing func(context.Context) (int, error), sampleBytes func(context.Context) (int64, error)) {
+	if m == nil {
+		return
+	}
+	m.reg.MustRegister(&screeningCollector{
+		missing:     missing,
+		sampleBytes: sampleBytes,
+		missingDesc: prometheus.NewDesc("gawk_admin_screening_shards_missing",
+			"Content-sampler shards that have not polled the target list for 30 s: their broadcasts are not being screened.", nil, nil),
+		bytesDesc: prometheus.NewDesc("gawk_admin_screening_samples_bytes",
+			"On-disk size of the screening samples table with its indexes.", nil, nil),
+	})
+}
+
+type screeningCollector struct {
+	missing                func(context.Context) (int, error)
+	sampleBytes            func(context.Context) (int64, error)
+	missingDesc, bytesDesc *prometheus.Desc
+}
+
+func (c *screeningCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.missingDesc
+	ch <- c.bytesDesc
+}
+
+func (c *screeningCollector) Collect(ch chan<- prometheus.Metric) {
+	// Bounded: a scrape must not hang on a database that does not answer.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if n, err := c.missing(ctx); err == nil {
+		ch <- prometheus.MustNewConstMetric(c.missingDesc, prometheus.GaugeValue, float64(n))
+	}
+	if n, err := c.sampleBytes(ctx); err == nil {
+		ch <- prometheus.MustNewConstMetric(c.bytesDesc, prometheus.GaugeValue, float64(n))
+	}
 }
 
 // Event records one bus message's outcome.

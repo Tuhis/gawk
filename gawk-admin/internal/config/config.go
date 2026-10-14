@@ -79,7 +79,10 @@ type Config struct {
 	OIDCAudience   string
 	OIDCRolesClaim string // dot-path template to the roles array; oidcroles.Placeholder is substituted per segment
 	OperatorRole   string // the role every R39 route requires
-	FlaggerRole    string // reserved for R40's service identity; unused by any R39 route
+	// FlaggerRole grants R40's sampler identity exactly the three flagger
+	// routes (docs/71 D18, docs/42 §4.11) — flag-only rights, never a kill.
+	// Empty grants it nowhere.
+	FlaggerRole string
 	// RoomsReaderRole grants exactly the two room reads and /me (R49,
 	// docs/50 D1) — a bot's service identity. Empty grants it nowhere.
 	RoomsReaderRole string
@@ -104,6 +107,30 @@ type Config struct {
 	// the same value that grants the Role its Room CR and Secret verbs, so
 	// the binary never serves routes its ServiceAccount cannot act on.
 	Rooms bool
+
+	// Screening enables R40's content flagging (docs/71 §9.4): the flagger
+	// routes the sampler calls, the operator's flag list and actions, the
+	// calibration replay, and the leader's reminder/deadline sweep. Default
+	// OFF: with it off every one of those paths answers 404, exactly as R39's
+	// reserved POST /content-flags did.
+	Screening bool
+	// ContentFlagRepage is how often an open flag re-pages (D9).
+	ContentFlagRepage time.Duration
+	// ContentFlagMute is how long a dismissal mutes re-flagging (D10, OD11).
+	ContentFlagMute time.Duration
+	// ContentFlagStaleAfter is how long after the last tripped POST a flag's
+	// signal turns from live to unknown (D9).
+	ContentFlagStaleAfter time.Duration
+	// ContentFlagAutoKill is the auto-kill tier (D14); nil is off, the
+	// default.
+	ContentFlagAutoKill *AutoKillPolicy
+	// ContentFlagDeadline kills an unacknowledged flag whose signal is live
+	// after this long (D15); 0 is off, the default.
+	ContentFlagDeadline time.Duration
+	// ScreeningSampleRetention is how long calibration data is kept: the
+	// samples, observed flags and their events (D17). Flag-mode flags are
+	// never pruned.
+	ScreeningSampleRetention time.Duration
 
 	// EventBus* configure the R50 consumer (docs/51 D6). Operator-provided
 	// NATS, default off: an empty URL means no client, no stream, no activity
@@ -208,7 +235,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	operatorRole := fs.String("operator-role", env("GAWK_ADMIN_OPERATOR_ROLE", "operator"),
 		"role every R39 route requires")
 	flaggerRole := fs.String("flagger-role", env("GAWK_ADMIN_FLAGGER_ROLE", "flagger"),
-		"reserved for R40: the role granting flag-only rights; unused by any R39 route")
+		"role granting R40's sampler the three flagger routes only — POST /api/v1/content-flags, GET /api/v1/screening/targets, POST /api/v1/screening/samples; \"off\" grants it nowhere")
 	roomsReaderRole := fs.String("rooms-reader-role", env("GAWK_ADMIN_ROOMS_READER_ROLE", "rooms-reader"),
 		"role granting GET /api/v1/rooms, GET /api/v1/rooms/{name} and GET /api/v1/me only (R49); \"off\" grants it nowhere")
 	roomsManagerRole := fs.String("rooms-manager-role", env("GAWK_ADMIN_ROOMS_MANAGER_ROLE", "rooms-manager"),
@@ -256,6 +283,20 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"how long ingested activity events are kept; moderation events are never pruned")
 	roomsOn := fs.String("rooms", env("GAWK_ADMIN_ROOMS", "false"),
 		"enable room management (R42, docs/44 D20): /api/v1/rooms, the rooms view and the room sweep; needs the chart's rooms.enabled RBAC")
+	screeningOn := fs.String("screening", env("GAWK_ADMIN_SCREENING", "false"),
+		"enable R40 content flagging (docs/71): the flagger routes, the flag list and actions, the calibration replay and the reminder sweep")
+	contentFlagRepage := fs.String("content-flag-repage", env("GAWK_ADMIN_CONTENT_FLAG_REPAGE", "10m"),
+		"how often an unacknowledged content flag re-pages")
+	contentFlagMute := fs.String("content-flag-mute", env("GAWK_ADMIN_CONTENT_FLAG_MUTE", "30m"),
+		"how long dismissing a content flag mutes re-flagging of its broadcast")
+	contentFlagStaleAfter := fs.String("content-flag-stale-after", env("GAWK_ADMIN_CONTENT_FLAG_STALE_AFTER", "2m"),
+		"how long after the sampler's last report a flag's signal turns from live to unknown")
+	contentFlagAutoKill := fs.String("content-flag-auto-kill", env("GAWK_ADMIN_CONTENT_FLAG_AUTO_KILL", "off"),
+		"auto-kill tier: off, or a policy like score>=0.9,hits>=10/12 over a flag's recent per-sample scores")
+	contentFlagDeadline := fs.String("content-flag-deadline", env("GAWK_ADMIN_CONTENT_FLAG_DEADLINE", "off"),
+		"kill an unacknowledged flag whose signal is still live after this long: off, or a duration like 30m")
+	sampleRetention := fs.String("screening-sample-retention", env("GAWK_ADMIN_SCREENING_SAMPLE_RETENTION", "30d"),
+		"how long calibration data (samples, observed flags) is kept; flag-mode flags are never pruned")
 	logLevel := fs.String("log-level", env("GAWK_ADMIN_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logFormat := fs.String("log-format", env("GAWK_ADMIN_LOG_FORMAT", "text"), "log format: text|json")
 	devOIDCProxy := fs.String("dev-oidc-proxy", env("GAWK_ADMIN_DEV_OIDC_PROXY", ""),
@@ -275,7 +316,7 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		OIDCAudience:     *audience,
 		OIDCRolesClaim:   strings.TrimSpace(*rolesClaim),
 		OperatorRole:     strings.TrimSpace(*operatorRole),
-		FlaggerRole:      strings.TrimSpace(*flaggerRole),
+		FlaggerRole:      roleOrOff(*flaggerRole),
 		RoomsReaderRole:  roleOrOff(*roomsReaderRole),
 		RoomsManagerRole: roleOrOff(*roomsManagerRole),
 		PGDSN:            *pgDSN,
@@ -305,6 +346,11 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid -rooms %q (want true|false)", *roomsOn)
 	}
 	cfg.Rooms = rooms
+
+	if err := parseScreening(&cfg, *screeningOn, *contentFlagRepage, *contentFlagMute, *contentFlagStaleAfter,
+		*contentFlagAutoKill, *contentFlagDeadline, *sampleRetention); err != nil {
+		return Config{}, err
+	}
 
 	cfg.EventBusURL = strings.TrimSpace(*eventBusURL)
 	cfg.EventBusCredsFile = strings.TrimSpace(*eventBusCredsFile)
@@ -411,6 +457,11 @@ func (c Config) validate() error {
 	if c.OperatorRole == "" {
 		return fmt.Errorf("-operator-role must not be empty: with no required role every valid token would be an operator")
 	}
+	// R40's sampler routes require the flagger role alone: with it off,
+	// screening would be on with nothing able to post a flag or a sample.
+	if c.Screening && c.FlaggerRole == "" {
+		return fmt.Errorf("-screening needs a flagger role: with -flagger-role off no sampler can reach the screening routes")
+	}
 	for _, u := range []struct{ flag, val string }{
 		{"-external-url", c.ExternalURL},
 		{"-oidc-issuer", c.OIDCIssuer},
@@ -425,6 +476,50 @@ func (c Config) validate() error {
 			return fmt.Errorf("invalid %s %q (want an absolute URL)", u.flag, u.val)
 		}
 	}
+	return nil
+}
+
+// parseScreening resolves the R40 knobs (docs/71 §5). They are parsed and
+// validated whether or not -screening is on, so a typo in a value is a
+// start-up error the day it is written rather than the day screening is
+// switched on.
+func parseScreening(cfg *Config, on, repage, mute, staleAfter, autoKill, deadline, retention string) error {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(on))
+	if err != nil {
+		return fmt.Errorf("invalid -screening %q (want true|false)", on)
+	}
+	cfg.Screening = enabled
+	for _, d := range []struct {
+		flag, raw string
+		dst       *time.Duration
+	}{
+		{"-content-flag-repage", repage, &cfg.ContentFlagRepage},
+		{"-content-flag-mute", mute, &cfg.ContentFlagMute},
+		{"-content-flag-stale-after", staleAfter, &cfg.ContentFlagStaleAfter},
+	} {
+		v, err := time.ParseDuration(strings.TrimSpace(d.raw))
+		if err != nil || v <= 0 {
+			return fmt.Errorf("invalid %s %q (want a positive duration)", d.flag, d.raw)
+		}
+		*d.dst = v
+	}
+	policy, err := ParseAutoKillPolicy(autoKill)
+	if err != nil {
+		return fmt.Errorf("invalid -content-flag-auto-kill: %w", err)
+	}
+	cfg.ContentFlagAutoKill = policy
+	if dl := strings.TrimSpace(deadline); dl != "off" && dl != "" {
+		v, err := time.ParseDuration(dl)
+		if err != nil || v <= 0 {
+			return fmt.Errorf("invalid -content-flag-deadline %q (want off or a positive duration)", deadline)
+		}
+		cfg.ContentFlagDeadline = v
+	}
+	keep, err := parseRetention(retention)
+	if err != nil {
+		return fmt.Errorf("invalid -screening-sample-retention: %w", err)
+	}
+	cfg.ScreeningSampleRetention = keep
 	return nil
 }
 
@@ -523,6 +618,13 @@ func (c Config) LogAttrs() []any {
 		"appBaseUrl", c.AppBaseURL,
 		"telemetryBaseUrl", c.TelemetryBaseURL,
 		"rooms", c.Rooms,
+		"screening", c.Screening,
+		"contentFlagRepage", c.ContentFlagRepage.String(),
+		"contentFlagMute", c.ContentFlagMute.String(),
+		"contentFlagStaleAfter", c.ContentFlagStaleAfter.String(),
+		"contentFlagAutoKill", c.ContentFlagAutoKill.String(),
+		"contentFlagDeadline", durationOrOff(c.ContentFlagDeadline),
+		"screeningSampleRetention", c.ScreeningSampleRetention.String(),
 		// The creds PATH is not a secret; whether one is configured is the
 		// question an operator debugging a silent bus is asking.
 		"eventBusUrl", c.EventBusURL,
@@ -548,6 +650,13 @@ func roleOrOff(v string) string {
 		return ""
 	}
 	return v
+}
+
+func durationOrOff(d time.Duration) string {
+	if d <= 0 {
+		return "off"
+	}
+	return d.String()
 }
 
 // metricsListen maps the -metrics-addr value to a listen address; "off" (or an

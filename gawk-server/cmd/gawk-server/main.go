@@ -293,11 +293,14 @@ func run() error {
 	if roomReg != nil {
 		adminOpts.Rooms = roomReg.AdminRooms
 	}
+	// R40's keyframe route (docs/71 D1), under its own token and nothing
+	// else; an empty -screening-token leaves it unregistered (404).
+	screeningOpts := screeningOptions(cfg, r, log)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Run(runCtx) }()
 	go func() {
-		errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, roomStats, promReg, log, srv.Ready, adminOpts), log)
+		errCh <- ops.Run(runCtx, cfg.MetricsAddr, ops.Handler(r, roomStats, promReg, log, srv.Ready, adminOpts, screeningOpts), log)
 	}()
 
 	var firstErr error
@@ -409,6 +412,14 @@ func roomOptions(cfg config.Config) roomsrv.Options {
 		MaxParticipants: cfg.MaxRoomParticipants,
 		CreateSecret:    cfg.RoomCreateSecret,
 	}
+}
+
+// screeningOptions maps the parsed config onto the R40 keyframe route
+// (docs/71 D1) — the production call site of -screening-token, under the
+// registryOptions rule (TestScreeningOptionsCarryTheToken). -screening-notice
+// needs no mapping: the transport reads cfg directly.
+func screeningOptions(cfg config.Config, r *hub.Registry, log *slog.Logger) *ops.ScreeningOptions {
+	return &ops.ScreeningOptions{Registry: r, Token: cfg.ScreeningToken, Log: log}
 }
 
 // wireRoomClusterSeams installs the registry's cluster seams (docs/44 §4.5)

@@ -312,7 +312,8 @@ describe('the event filter (R49, docs/50 D8)', () => {
     // Choosing starts from the moderation set — the default made explicit —
     // so a bot unticks what it does not want.
     for (const e of ['broadcast.killed', 'ban.created', 'ban.expired', 'ban.removed',
-      'content_flag.raised', 'room.created', 'room.ended', 'room.secret_rotated']) {
+      'content_flag.raised', 'content_flag.reminded', 'content_flag.resolved',
+      'room.created', 'room.ended', 'room.secret_rotated', 'room.screening_changed']) {
       fireEvent.click(screen.getByLabelText(e));
     }
     fireEvent.click(screen.getByLabelText('room.participant_joined'));
@@ -327,6 +328,35 @@ describe('the event filter (R49, docs/50 D8)', () => {
       'room.attached',
       'room.participant_joined',
     ]);
+  });
+
+  // R40 (docs/71 D16, OD14): observed flags are calibration data. Choosing
+  // events starts from the moderation set WITHOUT them, so a pager never
+  // receives one unless someone ticks it on purpose — and then it is sent.
+  it('offers content_flag.observed only as an opt-in', async () => {
+    const session = mount([], (path, init) =>
+      path === 'api/v1/webhooks' && init.method === 'POST' ? json(BOT, 201) : json({}),
+    );
+    await waitFor(() => expect(session.calls.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Add webhook' }));
+    expect(screen.getByText(/no observed flags/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'calibration' } });
+    fireEvent.change(screen.getByLabelText('URL'), { target: { value: 'https://quiet.example/hook' } });
+    fireEvent.click(screen.getByLabelText('Choose events'));
+    const observed = screen.getByLabelText('content_flag.observed') as HTMLInputElement;
+    expect(observed.checked).toBe(false);
+    expect((screen.getByLabelText('content_flag.raised') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText('content_flag.reminded') as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(observed);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => {
+      expect(session.calls.some((c) => c.init.method === 'POST')).toBe(true);
+    });
+    const events = (bodyOf(session.calls.find((c) => c.init.method === 'POST')!) as {
+      events?: string[];
+    }).events;
+    expect(events).toContain('content_flag.observed');
+    expect(events).toContain('content_flag.raised');
   });
 
   it('opens an existing filter as chosen and can return it to the default', async () => {

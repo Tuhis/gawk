@@ -48,15 +48,16 @@ func (a *API) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// R50: the feed carries two categories now. An unfiltered request answers
-	// with BOTH, because a cursor that silently hid half the rows would page
-	// past events the caller can see in the UI; the SPA sends the filter.
+	// R50: the feed carries more than one category. An unfiltered request
+	// answers with ALL of them, because a cursor that silently hid rows would
+	// page past events the caller can see in the UI; the SPA sends the filter.
+	// R40 adds screening: observe-mode calibration rows (docs/71 D16).
 	category := q.Get("category")
 	switch category {
-	case "", store.CategoryModeration, store.CategoryActivity:
+	case "", store.CategoryModeration, store.CategoryActivity, store.CategoryScreening:
 	default:
 		writeError(w, http.StatusBadRequest, CodeBadRequest,
-			"category must be moderation or activity")
+			"category must be moderation, activity or screening")
 		return
 	}
 

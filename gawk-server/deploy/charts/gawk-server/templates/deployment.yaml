@@ -33,6 +33,9 @@ spec:
   {{- if and .Values.moderation.enabled (not .Values.metrics.enabled) (or .Values.moderation.adminApi.token .Values.moderation.adminApi.tokenRef .Values.moderation.adminApi.oidc.issuer) }}
   {{- fail "moderation.adminApi (token/tokenRef/oidc.issuer) requires metrics.enabled: true — the relay admin API and its per-pod headless Service both ride the ops listener (see docs/42-admin-moderation-portal.md §4.5)" }}
   {{- end }}
+  {{- if and (not .Values.metrics.enabled) (or .Values.screening.token .Values.screening.tokenSecretRef) }}
+  {{- fail "screening.token/tokenSecretRef requires metrics.enabled: true — the keyframe route rides the ops listener (see docs/71-content-flagging.md D1)" }}
+  {{- end }}
   replicas: {{ .Values.replicas }}
   # RollingUpdate with surge 1 / unavailable 0: pods drain one at a time and
   # a reconnecting client always has a ready pod to land on. At replicas: 1
@@ -345,6 +348,24 @@ spec:
             # this relay (wire 0x11 on /echo).
             - name: GAWK_SERVER_NAME
               value: {{ .Values.config.serverName | quote }}
+            {{- end }}
+            {{- if or .Values.screening.tokenSecretRef .Values.screening.token }}
+            # R40 (docs/71 D1): gawk-sampler's credential for the keyframe
+            # route on the ops listener — its own, never the admin token.
+            - name: GAWK_SCREENING_TOKEN
+              {{- if .Values.screening.tokenSecretRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.screening.tokenSecretRef.name | quote }}
+                  key: {{ .Values.screening.tokenSecretRef.key | quote }}
+              {{- else }}
+              value: {{ .Values.screening.token | quote }}
+              {{- end }}
+            {{- end }}
+            {{- if .Values.screening.notice }}
+            # R40 (docs/71 D13): every broadcaster is told it is screened.
+            - name: GAWK_SCREENING_NOTICE
+              value: "true"
             {{- end }}
             # R17 W1: the QUIC stateless reset key (docs/22 Decision 3) —
             # SHARED across all relay pods (that is the whole point), so it

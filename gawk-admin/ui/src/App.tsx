@@ -8,6 +8,7 @@ import { href, useRoute } from './router/router.ts';
 import type { ViewName } from './router/router.ts';
 import { BansView } from './views/BansView.tsx';
 import { BroadcastsView } from './views/BroadcastsView.tsx';
+import { CalibrationView } from './views/CalibrationView.tsx';
 import { EventsView } from './views/EventsView.tsx';
 import { RelaysView } from './views/RelaysView.tsx';
 import { RoomsView } from './views/RoomsView.tsx';
@@ -33,6 +34,10 @@ const NAV: readonly { view: ViewName; label: string }[] = [
 // route that would 404. The route itself still resolves (a webhook deep link
 // must land somewhere that explains itself).
 const ROOMS_NAV = { view: 'rooms' as const, label: 'Rooms' };
+
+// Calibration (R40, docs/71 D21) follows `features.screening` the same way:
+// default-off, and its routes 404 when off.
+const CALIBRATION_NAV = { view: 'calibration' as const, label: 'Calibration' };
 
 // The API reference is last, and unconditional: the contract it renders is the
 // same one this deployment serves unauthenticated, so there is no feature to
@@ -89,7 +94,13 @@ function Portal() {
   // documented default and the error on screen — a dead `/api/v1/me` should not
   // black out a moderation console.
   const probeSettled = me !== null || error !== null;
-  const nav = [...NAV, ...(me?.features?.rooms ? [ROOMS_NAV] : []), API_NAV];
+  const screening = me?.features?.screening ?? false;
+  const nav = [
+    ...NAV,
+    ...(me?.features?.rooms ? [ROOMS_NAV] : []),
+    ...(screening ? [CALIBRATION_NAV] : []),
+    API_NAV,
+  ];
 
   return (
     <div className={styles.app}>
@@ -125,6 +136,7 @@ function Portal() {
             path={route.path}
             filterKey={route.key}
             cooldownSeconds={cooldown}
+            screening={screening}
           />
         ) : (
           <p className={styles.dim}>Loading…</p>
@@ -139,16 +151,22 @@ function Routed({
   path,
   filterKey,
   cooldownSeconds,
+  screening,
 }: {
   view: ViewName;
   path: string;
   filterKey: string;
   cooldownSeconds: number;
+  screening: boolean;
 }) {
   switch (view) {
     case 'broadcasts':
       return (
-        <BroadcastsView killCooldownSeconds={cooldownSeconds} initialFilter={filterKey} />
+        <BroadcastsView
+          killCooldownSeconds={cooldownSeconds}
+          initialFilter={filterKey}
+          screening={screening}
+        />
       );
     case 'bans':
       return <BansView />;
@@ -159,7 +177,9 @@ function Routed({
     case 'webhooks':
       return <WebhooksView />;
     case 'rooms':
-      return <RoomsView initialFilter={filterKey} />;
+      return <RoomsView initialFilter={filterKey} screening={screening} />;
+    case 'calibration':
+      return <CalibrationView />;
     case 'api':
       return (
         <Suspense fallback={<p className={styles.dim}>Loading the API reference…</p>}>

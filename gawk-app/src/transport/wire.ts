@@ -1020,19 +1020,29 @@ export function parseBroadcastAnnounce(dgram: Uint8Array): string {
 
 // RelayIdentity: version, type 0x11, strict-zero flags,
 // uint8 versionLen (1–32) + printable-ASCII release version, uint8 nameLen
-// (0–64) + valid-UTF-8 operator name, then IGNORED trailing extension bytes —
-// the one message family whose parser deliberately tolerates a longer buffer
+// (0–64) + valid-UTF-8 operator name, then the appended uint8 notices
+// (docs/71 §9.3) when present, then IGNORED trailing extension bytes — the one
+// message family whose parser deliberately tolerates a longer buffer
 // (appended fields are the extension mechanism, flags are not).
 // The encoder exists for tests and golden vectors; browsers only ever parse.
 
 export const RELAY_IDENTITY_MAX_VERSION_LEN = 32;
 export const RELAY_IDENTITY_MAX_NAME_LEN = 64;
+// Notices bit 0: this relay automatically screens streams for explicit
+// content (R40, docs/71 D13). The other bits are reserved and ignored —
+// notices is an appended field, so an unknown bit from a newer relay must
+// still parse.
+export const RELAY_NOTICE_SCREENING = 0x01;
 
 export interface RelayIdentityMessage {
   serverVersion: string;
   // Attacker-influenced trust UI: render sanitized, never in place of the
   // host.
   name: string;
+  // The appended notices byte; 0 when the relay sent none. The encoder
+  // writes it only when non-zero, so a notice-less identity stays
+  // byte-identical to the pre-R40 vectors.
+  notices?: number;
 }
 
 export function encodeRelayIdentity(msg: RelayIdentityMessage): Uint8Array<ArrayBuffer> {
@@ -1044,7 +1054,11 @@ export function encodeRelayIdentity(msg: RelayIdentityMessage): Uint8Array<Array
   if (name.length > RELAY_IDENTITY_MAX_NAME_LEN) {
     throw new WireError(`relay identity name exceeds ${RELAY_IDENTITY_MAX_NAME_LEN} bytes`);
   }
-  const out = new Uint8Array(4 + version.length + 1 + name.length);
+  const notices = msg.notices ?? 0;
+  if (!Number.isInteger(notices) || notices < 0 || notices > 0xff) {
+    throw new WireError(`relay identity notices ${notices} is not a byte`);
+  }
+  const out = new Uint8Array(4 + version.length + 1 + name.length + (notices !== 0 ? 1 : 0));
   out[0] = WIRE_VERSION;
   out[1] = TYPE_RELAY_IDENTITY;
   out[2] = 0;
@@ -1052,7 +1066,13 @@ export function encodeRelayIdentity(msg: RelayIdentityMessage): Uint8Array<Array
   out.set(version, 4);
   out[4 + version.length] = name.length;
   out.set(name, 4 + version.length + 1);
+  if (notices !== 0) out[4 + version.length + 1 + name.length] = notices;
   return out;
+}
+
+/** Whether a parsed identity carries the screening notice (docs/71 D13). */
+export function relayScreens(identity: RelayIdentityMessage | null | undefined): boolean {
+  return ((identity?.notices ?? 0) & RELAY_NOTICE_SCREENING) !== 0;
 }
 
 export function parseRelayIdentity(msg: Uint8Array): RelayIdentityMessage {
@@ -1093,8 +1113,11 @@ export function parseRelayIdentity(msg: Uint8Array): RelayIdentityMessage {
   } catch {
     throw new WireError('relay identity name is not valid UTF-8');
   }
-  // Bytes past the name are the reserved extension space — ignored.
-  return { serverVersion: new TextDecoder().decode(versionBytes), name };
+  // The first byte past the name is the notices byte (docs/71 §9.3), absent
+  // = 0; every byte after it is the reserved extension space — ignored.
+  const nameEnd = nameStart + nameLen;
+  const notices = nameEnd < msg.length ? msg[nameEnd] : 0;
+  return { serverVersion: new TextDecoder().decode(versionBytes), name, notices };
 }
 
 // TelemetryEndpoint: version, type 0x12, strict-zero flags, uint16 urlLen

@@ -41,6 +41,16 @@ can't reach. Never expose this port publicly; the Helm chart exposes it via
 a ClusterIP Service + optional ServiceMonitor only. Details:
 [`../docs/13-observability.md`](../docs/13-observability.md).
 
+Two credential-gated surfaces ride the same listener and do not exist at all
+(404) until their credential is set: the read-only moderation API,
+`/internal/admin/*`, for `gawk-admin` (`-admin-api-token` or an admin OIDC
+issuer; [`../docs/42`](../docs/42-admin-moderation-portal.md) §4.5), and
+R40's `GET /internal/screening/broadcasts/{id}/keyframe` for `gawk-sampler`
+(`-screening-token`, a different token by rule;
+[`../docs/71`](../docs/71-content-flagging.md) §9.2). `-screening-notice`
+tells every broadcaster the server screens streams. Both are described in
+[`docs/flags.md`](docs/flags.md).
+
 ## Build & test
 
 ```sh
@@ -120,6 +130,9 @@ and the iOS viewer tests need no GPU. It prints the minted code as
 `GAWK_PUBSIM_ID=<code>` on stdout, and its package comment lists the rest.
 It dials with Origin `gawk-broadcast://native`. The engine is what remains
 of the Go Linux broadcaster, removed in R56 LX9 (`docs/58` D15).
+`-fixture magenta` publishes the R40 screening clip — 45 s of solid magenta,
+then 45 s of solid grey, looped — which the screening test model flags and
+then clears (see [`internal/pubsim/fixture/README.md`](internal/pubsim/fixture/README.md)).
 
 ```sh
 CGO_ENABLED=0 go run ./cmd/gawk-pubsim -url https://127.0.0.1:4433 -insecure -duration 60s

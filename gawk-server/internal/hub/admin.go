@@ -36,6 +36,7 @@ func (r *Registry) AdminStats() []AdminBroadcast {
 			Role:               "origin",
 			PublisherActive:    b.publisherActive,
 			PublisherSessionID: b.publisherSessionID,
+			PublisherEpoch:     b.publisherEpoch,
 			StartedAt:          b.startedAt,
 		}
 		if b.edge {

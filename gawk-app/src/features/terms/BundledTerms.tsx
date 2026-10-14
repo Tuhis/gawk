@@ -117,6 +117,16 @@ export function BundledTerms() {
         Service. The Operator is under <strong>no obligation</strong> to monitor Content, and any
         decision to do so, or not to, does not create any duty or liability.
       </p>
+      <p>
+        The Operator may use <strong>automated screening</strong> of broadcasts. Where it does,
+        software looks at a still frame of each live broadcast every few seconds and scores it for
+        explicit sexual content; a broadcast that scores high for a sustained period is flagged to
+        the Operator, who may join it to look and may end it or block it under this Section. The
+        frames are examined in memory and discarded; only the scores and the time are kept. A
+        server that screens says so in the apps&rsquo; server lists, as &ldquo;Content
+        screening&rdquo;. An automated score is not a finding: a person decides what happens to a
+        flagged broadcast.
+      </p>
 
       <h2>7. Recording and data.</h2>
       <p>

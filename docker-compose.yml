@@ -24,6 +24,14 @@
 #                                     working on it (R42/R48). See the admin
 #                                     service for what it does and does not
 #                                     reach.
+#   docker compose -f docker-compose.yml -f dev/compose.screening.yml up
+#                                     the R40 content-screening lane: two
+#                                     samplers on a test model that flags
+#                                     magenta, magenta broadcasters and a
+#                                     pager stand-in. An override, not a
+#                                     profile — dev/compose.screening.yml
+#                                     says why; ./e2e/screening-assert.sh
+#                                     checks it end to end.
 #
 # Images are BUILT FROM THIS CHECKOUT (D15) — a contributor runs the stack to
 # see their own change, so nothing here pulls ghcr.io/tuhis/*.

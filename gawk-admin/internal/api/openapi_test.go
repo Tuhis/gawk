@@ -28,11 +28,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
+	"github.com/Tuhis/gawk/gawk-server/screening"
 )
 
 const openAPIPath = "../../openapi.yaml"
@@ -624,6 +626,44 @@ func wirings() map[string]opWiring {
 		}},
 		"POST /api/v1/rooms/{name}/end": {},
 		"DELETE /api/v1/rooms/{name}":   {},
+		"PATCH /api/v1/rooms/{name}": {
+			request: func() any { return &roomPatchRequest{} },
+			success: map[string]func() any{"200": func() any { return &roomJSON{} }},
+		},
+
+		// R40 (docs/71 §9.4). The flagger routes speak the shared
+		// gawk-server/screening types, so the document is held to the very
+		// structs the sampler compiles.
+		"POST /api/v1/content-flags": {
+			request: func() any { return &screening.ContentFlag{} },
+			success: map[string]func() any{
+				"201": func() any { return &screening.FlagResponse{} },
+				"200": func() any { return &screening.FlagResponse{} },
+				"202": func() any { return &screening.FlagResponse{} },
+			},
+		},
+		"GET /api/v1/content-flags": {success: map[string]func() any{
+			"200": func() any { return &contentFlagsPageJSON{} },
+		}},
+		"POST /api/v1/content-flags/{id}/acknowledge": {
+			request: func() any { return &emptyRequest{} },
+			success: map[string]func() any{"200": func() any { return &contentFlagJSON{} }},
+		},
+		"POST /api/v1/content-flags/{id}/dismiss": {
+			request: func() any { return &emptyRequest{} },
+			success: map[string]func() any{"200": func() any { return &contentFlagJSON{} }},
+		},
+		"GET /api/v1/screening/targets": {success: map[string]func() any{
+			"200": func() any { return &screening.TargetsResponse{} },
+		}},
+		"POST /api/v1/screening/samples": {
+			request: func() any { return &screening.SampleBatch{} },
+			success: map[string]func() any{"200": func() any { return &screening.SamplesResponse{} }},
+		},
+		"POST /api/v1/screening/replay": {
+			request: func() any { return &screening.ReplayRequest{} },
+			success: map[string]func() any{"200": func() any { return &screening.ReplayResponse{} }},
+		},
 	}
 }
 
@@ -792,7 +832,38 @@ func schemaFixtures() map[string]any {
 		Attachments: &[]roomAttachmentJSON{attachment}, Participants: &[]roomParticipantJSON{participant},
 		HomeHolder: "gawk-server-7c9f8b6d5-2xk4p",
 		Key:        "3c7d91fe20ab", CreatedAt: ts, EmptySince: ts, HasAttachSecret: true, Managed: true,
+		Screening: "exempt",
 	}
+
+	// R40 (docs/71 §9.4).
+	window := flagWindowJSON{Start: ts, End: ts, Samples: 6, FlaggedSamples: 4}
+	scores := flagScoresJSON{Max: 0.97, Mean: 0.81}
+	flag := contentFlagJSON{
+		ID: 42, Mode: "flag", State: "resolved", Resolution: "auto_killed", ResolutionReason: "deadline",
+		BroadcastID: "ABC234", BroadcastKey: "9f2c41ab77de", PublisherEpoch: "5f2c9a0b11d4e6f7", SamplerID: "gawk-sampler-0",
+		RaisedAt: ts, UpdatedAt: ts, LastPostAt: ts, AcknowledgedAt: ts, AcknowledgedBy: "op@example.org",
+		ResolvedAt: ts, ResolvedBy: "system:content-flag", Signal: "live", Window: window, Scores: scores,
+		Labels: []string{"FEMALE_GENITALIA_EXPOSED"}, LabelCounts: map[string]int{"FEMALE_GENITALIA_EXPOSED": 4},
+		PeakScore: 0.97, Reminders: 2, MutedUntil: ts, Links: &watchLinkJSON{Watch: "https://gawk.example/#/view/ABC234"},
+	}
+	broadcast.ContentFlag = &flag
+	status := screeningStatusJSON{FlagRoute: true, ExpectedShards: 2, MissingShards: []int{1}, LastPollAt: ts}
+	t0 := time.Date(2026, 9, 16, 9, 31, 0, 0, time.UTC)
+	report := screening.ContentFlag{
+		Schema: screening.SchemaContentFlag, BroadcastID: "ABC234", PublisherEpoch: "5f2c9a0b11d4e6f7",
+		SamplerID: "gawk-sampler-0", Mode: screening.ModeFlag, State: screening.StateTripped,
+		Window: screening.WindowSummary{Start: t0, End: t0, Samples: 6, FlaggedSamples: 4},
+		Scores: screening.Scores{Max: 0.97, Mean: 0.81}, Labels: []string{"ANUS_EXPOSED"},
+		LabelCounts: map[string]int{"ANUS_EXPOSED": 4}, Recent: []float64{0.9}, Summary: "x",
+	}
+	target := screening.Target{BroadcastID: "ABC234", BroadcastKey: "9f2c41ab77de", PublisherEpoch: "e",
+		Relay: "http://10.42.0.7:2112", Muted: true, Exempt: true}
+	sample := screening.Sample{Position: 1, At: t0, Scores: map[string]float64{"ANUS_EXPOSED": 0.4}}
+	sessionSamples := screening.SessionSamples{BroadcastID: "ABC234", BroadcastKey: "9f2c41ab77de", PublisherEpoch: "e",
+		Taken: 2, FirstAt: t0, LastAt: t0, Samples: []screening.Sample{sample}}
+	replayReq := screening.ReplayRequest{Threshold: 0.8, Window: 6, WindowHits: 4, Labels: []string{"ANUS_EXPOSED"}, From: t0, To: t0}
+	trip := screening.ReplayTrip{BroadcastKey: "9f2c41ab77de", BroadcastID: "ABC234", PublisherEpoch: "e", At: t0, PeakScore: 0.9}
+	screeningExempt := "exempt"
 	prefix := 24
 	cooldown := 900
 
@@ -802,7 +873,7 @@ func schemaFixtures() map[string]any {
 	return map[string]any{
 		"Error":             errorEnvelope{Error: errorBody{Code: CodeBadRequest, Message: "reason is required"}},
 		"ErrorBody":         errorBody{Code: CodeBadRequest, Message: "reason is required"},
-		"Me":                meJSON{Email: "op@example.org", Subject: "sub-1", Roles: []string{RoleOperator}, Defaults: meDefaultsJSON{KillCooldownSeconds: 600}, Features: meFeaturesJSON{Rooms: true}},
+		"Me":                meJSON{Email: "op@example.org", Subject: "sub-1", Roles: []string{RoleOperator}, Defaults: meDefaultsJSON{KillCooldownSeconds: 600}, Features: meFeaturesJSON{Rooms: true, Screening: true}},
 		"BanTarget":         banTargetJSON{Type: moderation.TargetBroadcastID, Value: "ABC234"},
 		"Enforcement":       enforcementJSON{InSync: false, Detail: DetailUnbanPending},
 		"Ban":               ban,
@@ -837,6 +908,26 @@ func schemaFixtures() map[string]any {
 		"RoomParticipant":   participant,
 		"CreateRoomRequest": createRoomRequest{Code: "team-standup", DisplayName: "Team standup", MaxBroadcasts: 4, WithAttachSecret: true},
 		"RoomWithSecret":    roomWithSecretJSON{Room: room, AttachSecret: "s3cr3t"},
+
+		"RoomPatchRequest":        roomPatchRequest{Screening: &screeningExempt},
+		"EmptyRequest":            emptyRequest{},
+		"ContentFlagWindow":       window,
+		"ContentFlagScores":       scores,
+		"ContentFlagLinks":        watchLinkJSON{Watch: "https://gawk.example/#/view/ABC234"},
+		"ContentFlag":             flag,
+		"ScreeningStatus":         status,
+		"ContentFlagsPage":        contentFlagsPageJSON{ContentFlags: []contentFlagJSON{flag}, Screening: status},
+		"ContentFlagReport":       report,
+		"ContentFlagReportResult": screening.FlagResponse{Status: screening.FlagStatusRaised, FlagID: 42},
+		"ScreeningTarget":         target,
+		"ScreeningTargets":        screening.TargetsResponse{Schema: screening.SchemaTargets, Shard: 0, Of: 2, FlagRoute: true, Targets: []screening.Target{target}},
+		"Sample":                  sample,
+		"SessionSamples":          sessionSamples,
+		"SampleBatch":             screening.SampleBatch{Schema: screening.SchemaSamples, SamplerID: "s", Mode: screening.ModeObserve, Floor: 0.3, Labels: []string{"ANUS_EXPOSED"}, Sessions: []screening.SessionSamples{sessionSamples}},
+		"SamplesResult":           screening.SamplesResponse{Stored: 1},
+		"ReplayRequest":           replayReq,
+		"ReplayTrip":              trip,
+		"ReplayResult":            screening.ReplayResponse{Schema: screening.SchemaReplay, Request: replayReq, Floor: 0.3, Sessions: 1, SamplesTaken: 2, SamplesStored: 1, BroadcastHours: 1.5, WouldTrips: 1, WouldTripsPer100h: 66.7, Trips: []screening.ReplayTrip{trip}, Truncated: false},
 	}
 }
 

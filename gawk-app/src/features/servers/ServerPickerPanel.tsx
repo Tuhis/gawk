@@ -11,9 +11,10 @@ import { createPortal } from 'react-dom';
 import styles from './servers.module.css';
 import { Button } from '../../ui/Button';
 import { GlassPanel } from '../../ui/GlassPanel';
-import { PlusIcon } from '../../ui/Icons';
+import { CheckIcon, PlusIcon } from '../../ui/Icons';
 import { getServerDirectoryUrl, isDevEnvironment } from '../../config';
 import { relayHost } from '../../lib/relayUrl';
+import { relayScreens } from '../../transport/wire';
 import {
   DEFAULT_SERVER_ID,
   certHashWithDevFallback,
@@ -23,6 +24,7 @@ import {
 } from '../../state/transportStore';
 import { fetchServerDirectory, type DirectoryOffer } from './directory';
 import { sanitizeIdentityName } from './probe';
+import { SCREENING_LABEL, SCREENING_NOTICE } from './screening';
 import { useServerProbe, type ProbeFn, type RowProbeState } from './useServerProbe';
 
 interface Props {
@@ -90,6 +92,19 @@ function ProbeCell({ probe }: { probe: RowProbeState | undefined }) {
     <span className={styles.rowProbe}>
       <ProbeDot quality={qualityForRtt(probe.rttMs)} />
       {Math.round(probe.rttMs)} ms{detail}
+    </span>
+  );
+}
+
+// The server's content screening (R40, docs/71 D13): a line under the host
+// when its probe said it screens, and nothing otherwise — no mark ever says
+// that a server doesn't.
+function ScreeningMark({ probe }: { probe: RowProbeState | undefined }) {
+  if (probe?.state !== 'ok' || !relayScreens(probe.identity)) return null;
+  return (
+    <span className={styles.rowScreening} title={SCREENING_NOTICE} data-testid="server-screening">
+      <CheckIcon />
+      {SCREENING_LABEL}
     </span>
   );
 }
@@ -451,6 +466,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
               <span className={styles.rowMain}>
                 <span className={styles.rowLabel}>This deployment</span>
                 <span className={styles.rowHost}>{relayHost(defaultUrl)}</span>
+                <ScreeningMark probe={probeResults[DEFAULT_SERVER_ID]} />
               </span>
               <ProbeCell probe={probeResults[DEFAULT_SERVER_ID]} />
               <span className={styles.rowActions}>
@@ -487,6 +503,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
                 <span className={styles.rowMain}>
                   <span className={styles.rowLabel}>{entry.label || relayHost(entry.url)}</span>
                   <span className={styles.rowHost}>{relayHost(entry.url)}</span>
+                  <ScreeningMark probe={probeResults[entry.id]} />
                 </span>
                 <ProbeCell probe={probeResults[entry.id]} />
                 <span className={styles.rowActions}>
@@ -552,6 +569,7 @@ export function ServerPickerPanel({ onClose, probeFn, fetchFn }: Props) {
                             {offer.managed ? ' · managed' : ''}
                           </span>
                           <span className={styles.rowHost}>{relayHost(offer.url)}</span>
+                          <ScreeningMark probe={probeResults[key]} />
                         </span>
                         <ProbeCell probe={probeResults[key]} />
                         <span className={styles.rowActions}>

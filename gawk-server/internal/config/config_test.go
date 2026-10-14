@@ -671,6 +671,59 @@ func TestAdminAPIKnobs(t *testing.T) {
 	}
 }
 
+// R40 (docs/71 D1, D13): both screening knobs reach the Config from a flag and
+// from GAWK_*, default off, and the token can never be the admin token.
+func TestScreeningKnobs(t *testing.T) {
+	cfg, err := ParseFlags(nil, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.ScreeningToken != "" || cfg.ScreeningNotice {
+		t.Fatalf("defaults: token %q notice %v, want both off", cfg.ScreeningToken, cfg.ScreeningNotice)
+	}
+
+	cfg, err = ParseFlags([]string{"-screening-token", " scr ", "-screening-notice"}, noEnv)
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	// Trimmed like the admin token: the route trims what is presented.
+	if cfg.ScreeningToken != "scr" || !cfg.ScreeningNotice {
+		t.Errorf("flags not carried through: token %q notice %v", cfg.ScreeningToken, cfg.ScreeningNotice)
+	}
+
+	cfg, err = ParseFlags(nil, envMap(map[string]string{
+		"GAWK_SCREENING_TOKEN":  "env-scr",
+		"GAWK_SCREENING_NOTICE": "true",
+	}))
+	if err != nil {
+		t.Fatalf("ParseFlags(env): %v", err)
+	}
+	if cfg.ScreeningToken != "env-scr" || !cfg.ScreeningNotice {
+		t.Errorf("env fallback not honoured: token %q notice %v", cfg.ScreeningToken, cfg.ScreeningNotice)
+	}
+	// An explicit false in the env turns it off, and a flag beats the env.
+	cfg, err = ParseFlags([]string{"-screening-token", "flag-scr"}, envMap(map[string]string{
+		"GAWK_SCREENING_TOKEN":  "env-scr",
+		"GAWK_SCREENING_NOTICE": "false",
+	}))
+	if err != nil {
+		t.Fatalf("ParseFlags(flag over env): %v", err)
+	}
+	if cfg.ScreeningToken != "flag-scr" || cfg.ScreeningNotice {
+		t.Errorf("flag over env: token %q notice %v", cfg.ScreeningToken, cfg.ScreeningNotice)
+	}
+
+	// One token for both routes is refused, whitespace or not.
+	for _, args := range [][]string{
+		{"-admin-api-token", "same", "-screening-token", "same"},
+		{"-admin-api-token", "same", "-screening-token", " same "},
+	} {
+		if _, err := ParseFlags(args, noEnv); err == nil {
+			t.Errorf("ParseFlags accepted %v: the sampler would read publisher IPs", args)
+		}
+	}
+}
+
 // WHITESPACE IS EMPTY, to the pair check as well as to the Config. The check
 // used to run on the raw flag values while the literal stored trimmed ones, so
 // a stray space or newline out of a templated secret — the usual way a k8s

@@ -28,3 +28,15 @@ var TS []byte
 //
 //go:embed sample-large.ts
 var TSLarge []byte
+
+// TSMagenta is the R40 screening fixture (docs/71 §9.6): same container and
+// encoder invariants as TS, 320x240, 1 s of solid magenta (two GOPs) followed
+// by 1 s of solid mid-grey (two GOPs). gawk-pubsim stretches it into long
+// phases by repeating whole GOPs (pubsim.PhasedLoop) rather than committing
+// the long clip: MPEG-TS costs ~350 bytes a frame even for a solid colour,
+// so 90 s would be a ~1 MB file of padding. The test model the dev stack
+// and CI run scores magenta as the flagged label and grey far below any
+// threshold, so one session trips and then clears.
+//
+//go:embed sample-magenta.ts
+var TSMagenta []byte

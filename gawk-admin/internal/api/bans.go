@@ -202,7 +202,7 @@ func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {
 	bid := created.BroadcastID()
 	key := ""
 	if source != "" {
-		key = a.broadcastKey(r, source)
+		key = a.broadcastKey(r.Context(), source)
 	}
 	projErr := a.project(r.Context(), created)
 	enforcement := enforcementState(projErr)

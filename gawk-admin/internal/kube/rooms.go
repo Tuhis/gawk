@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -382,6 +383,48 @@ func (c *RoomClient) DeleteExisting(ctx context.Context, name string, check func
 		return obj, fmt.Errorf("kube: room %s deleted, but its attach secret %s was not: %w", name, secretName, err)
 	}
 	return obj, nil
+}
+
+// SetScreening sets a room's spec.screening (R40, docs/71 D11) — "" to screen
+// it, rooms.ScreeningExempt to exempt it — and returns the room before and
+// after.
+//
+// check decides on the room as read, exactly as DeleteExisting's does: a
+// non-nil error refuses the write with nothing touched. The merge patch then
+// carries the UID read, which the API server holds as a precondition, so a
+// room deleted and re-created under the same name in between is not edited
+// unchecked. Like the delete it is not bound by resourceVersion: the home pod
+// rewrites the room's status every few seconds.
+func (c *RoomClient) SetScreening(ctx context.Context, name, value string, check func(RoomObject) error) (RoomObject, RoomObject, error) {
+	before, err := c.Get(ctx, name)
+	if err != nil {
+		return RoomObject{}, RoomObject{}, err
+	}
+	if check != nil {
+		if err := check(before); err != nil {
+			return before, RoomObject{}, err
+		}
+	}
+	var spec any = value
+	if value == "" {
+		spec = nil // a merge patch's null removes the key
+	}
+	body := map[string]any{"spec": map[string]any{"screening": spec}}
+	if uid := before.Room.UID; uid != "" {
+		body["metadata"] = map[string]any{"uid": string(uid)}
+	}
+	patch, err := json.Marshal(body)
+	if err != nil {
+		return before, RoomObject{}, fmt.Errorf("kube: encode room screening patch: %w", err)
+	}
+	u, err := c.ri.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+			return before, RoomObject{}, ErrRoomNotFound
+		}
+		return before, RoomObject{}, fmt.Errorf("kube: set screening on room %s: %w", name, err)
+	}
+	return before, decodeRoom(u), nil
 }
 
 // writeSecret creates or replaces the portal-named Secret with one key.

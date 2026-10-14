@@ -380,3 +380,86 @@ describe('ending and deleting', () => {
     expect(screen.getByRole('dialog')).toBeTruthy();
   });
 });
+
+// R40 (docs/71 D11): a static room with an attach secret can be exempted from
+// content screening; nothing else can, because an open or dynamic room would
+// be an unscreened lane for anyone who found the link.
+describe('the screening exemption', () => {
+  function mountScreening(rooms: Room[], extra?: (path: string, init: RequestInit) => Response) {
+    const session = stubSession((path, init) => {
+      if (path === 'api/v1/rooms' && (init.method ?? 'GET') === 'GET') return json({ rooms });
+      if (extra) return extra(path, init);
+      return json({});
+    });
+    renderWithSession(<RoomsView screening />, session);
+    return session;
+  }
+
+  it('has no screening column while screening is off', async () => {
+    mount([STATIC]);
+    await screen.findByText('TuhisRoom');
+    expect(screen.queryByRole('columnheader', { name: 'Screening' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Exempt…' })).toBeNull();
+  });
+
+  it('offers the toggle only on a static room with an attach secret', async () => {
+    mountScreening([STATIC, OPEN_KUBECTL, DYNAMIC]);
+    await screen.findByText('TuhisRoom');
+    expect(screen.getByRole('columnheader', { name: 'Screening' })).toBeTruthy();
+    expect(within(rowFor('TuhisRoom')).getByRole('button', { name: 'Exempt…' })).toBeTruthy();
+    for (const code of ['ourroom', 'R7K3MX']) {
+      expect(within(rowFor(code)).getByText('screened')).toBeTruthy();
+      expect(within(rowFor(code)).queryByRole('button', { name: 'Exempt…' })).toBeNull();
+    }
+  });
+
+  it('exempts after a confirm that names the trade-off', async () => {
+    const session = mountScreening([STATIC], (path, init) =>
+      path === 'api/v1/rooms/tuhisroom' && init.method === 'PATCH'
+        ? json({ ...STATIC, screening: 'exempt' })
+        : json({}),
+    );
+    await screen.findByText('TuhisRoom');
+    fireEvent.click(within(rowFor('TuhisRoom')).getByRole('button', { name: 'Exempt…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Exempt TuhisRoom from screening' });
+    expect(within(dialog).getByText(/can then stream unscreened/)).toBeTruthy();
+    expect(session.calls.some((c) => c.init.method === 'PATCH')).toBe(false);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Exempt' }));
+    await waitFor(() => {
+      expect(session.calls.some((c) => c.init.method === 'PATCH')).toBe(true);
+    });
+    const patch = session.calls.find((c) => c.init.method === 'PATCH');
+    expect(patch!.path).toBe('api/v1/rooms/tuhisroom');
+    expect(bodyOf(patch!)).toEqual({ screening: 'exempt' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('shows an exempt room as such and screens it again', async () => {
+    const session = mountScreening([{ ...STATIC, screening: 'exempt' }], (_path, init) =>
+      init.method === 'PATCH' ? json(STATIC) : json({}),
+    );
+    await screen.findByText('TuhisRoom');
+    expect(within(rowFor('TuhisRoom')).getByText('exempt')).toBeTruthy();
+    fireEvent.click(within(rowFor('TuhisRoom')).getByRole('button', { name: 'Screen again' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Screen again' }));
+    await waitFor(() => {
+      expect(session.calls.some((c) => c.init.method === 'PATCH')).toBe(true);
+    });
+    expect(bodyOf(session.calls.find((c) => c.init.method === 'PATCH')!)).toEqual({ screening: '' });
+  });
+
+  it('explains the server’s refusal inside the dialog', async () => {
+    mountScreening([STATIC], (_path, init) =>
+      init.method === 'PATCH'
+        ? json({ error: { code: 'screening_not_allowed', message: 'room has no attach secret' } }, 400)
+        : json({}),
+    );
+    await screen.findByText('TuhisRoom');
+    fireEvent.click(within(rowFor('TuhisRoom')).getByRole('button', { name: 'Exempt…' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Exempt' }));
+    expect(
+      await within(dialog).findByText('Only a static room with an attach secret can be exempt from screening.'),
+    ).toBeTruthy();
+  });
+});

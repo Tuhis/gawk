@@ -46,8 +46,9 @@ info:
 
     The served copy of this document names the role claim values this
     deployment is configured with (`-operator-role`, `-rooms-reader-role`,
-    `-rooms-manager-role`). The repository copy uses the symbolic names
-    `operator`, `rooms-reader` and `rooms-manager`.
+    `-rooms-manager-role`, `-flagger-role`). The repository copy uses the
+    symbolic names `operator`, `rooms-reader`, `rooms-manager` and
+    `flagger`.
 
     Service identities use the client-credentials grant against the same
     provider. `docs/self-hosting.md` §9.8 has a worked example. A bot that
@@ -57,7 +58,9 @@ info:
     room in the deployment. A bot that provisions rooms should hold
     `rooms-manager`, which reaches `getMe`, `createRoom` and `deleteRoom`
     and nothing else, and may delete only the static rooms it created
-    itself.
+    itself. The content sampler (R40) holds `flagger`, which reaches
+    `postContentFlag`, `listScreeningTargets` and `postScreeningSamples` and
+    nothing else: it can raise a content flag, never kill.
 
     The routes that need no token: `GET /auth/config` returns the issuer,
     client ID and audience a browser client needs; `GET /api/v1/openapi.json`
@@ -130,11 +133,13 @@ info:
     | `401` | `idp_unavailable` | OIDC discovery has not completed yet, so no token can be verified. Retry shortly. |
     | `403` | `forbidden` | The token is valid but lacks the required role. Re-authenticating does not help until the role is granted. |
     | `403` | `room_not_owned` | A `rooms-manager` caller without `operator` tried to delete a room it did not create. |
+    | `400` | `screening_not_allowed` | Only a static room with an attach secret can be exempt from content screening. |
     | `404` | `not_found` | No such object, or a route for a feature this deployment has disabled. |
-    | `409` | `duplicate_active`, `duplicate_name`, `source_immutable`, `ban_not_active`, `room_exists`, `room_not_static`, `room_not_dynamic` | The current state of the object refuses the request. |
+    | `409` | `duplicate_active`, `duplicate_name`, `source_immutable`, `ban_not_active`, `room_exists`, `room_not_static`, `room_not_dynamic`, `content_flag_state` | The current state of the object refuses the request. |
     | `429` | `rate_limited` | Too many rejected tokens from your address. Honour `Retry-After` and obtain a fresh token before retrying. Valid tokens never count against this limit. |
     | `500` | `internal` | An unexpected server error. |
     | `503` | `unavailable` | A dependency (usually Postgres) is unreachable. Retry later. Existing bans stay enforced. |
+    | `503` | `no_flag_route` | A `flag`-mode content flag was refused: no enabled webhook would deliver `content_flag.raised`, so nobody would be paged. |
 
 servers:
   # One line, deliberately: a renderer puts this next to the URL, where a
@@ -164,6 +169,8 @@ tags:
     description: Outbound notification targets.
   - name: rooms
     description: Room custom resources. Only served when the deployment enables rooms.
+  - name: screening
+    description: Automatic content flagging (R40). Only served when the deployment enables screening.
 
 paths:
   /api/v1/openapi.json:
@@ -272,6 +279,7 @@ paths:
                   killCooldownSeconds: 600
                 features:
                   rooms: true
+                  screening: true
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -680,9 +688,10 @@ paths:
           in: query
           required: false
           description: |
-            Only return rows of this category: `moderation` (the audit trail)
-            or `activity` (what the fleet did, ingested from the relay event
-            bus). Absent returns both.
+            Only return rows of this category: `moderation` (the audit trail),
+            `activity` (what the fleet did, ingested from the relay event
+            bus) or `screening` (content-screening calibration rows, R40).
+            Absent returns all of them.
           schema: { $ref: '#/components/schemas/EventCategory' }
       responses:
         '200':
@@ -1177,6 +1186,58 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/Internal' }
+    patch:
+      operationId: patchRoom
+      tags: [rooms, screening]
+      summary: Set a room's content screening
+      description: |
+        Exempts a room's broadcasts from automatic content screening, or puts
+        them back under it, and records a `room.screening_changed` event.
+        Only a static room with an attach secret can be exempt: an open or
+        dynamic room could be joined by anyone, so exempting it would leave an
+        unscreened lane open to everyone. Any other room returns `400` with
+        code `screening_not_allowed`.
+
+        Served when the deployment enables screening; every room returns `404`
+        when it does not also enable rooms.
+      x-gawk-roles: [operator]
+      x-gawk-requires: screening
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The room code, in any spelling.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RoomPatchRequest' }
+            example:
+              screening: exempt
+      responses:
+        '200':
+          description: The room after the change.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: '`name`, `code` and `links.join` carry the raw room code.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Room' }
+              example:
+                name: team-standup
+                kind: static
+                code: team-standup
+                live: false
+                counts: { participants: 0, streaming: 0, watching: 0, attachments: 0 }
+                hasAttachSecret: true
+                managed: true
+                screening: exempt
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
     delete:
       operationId: deleteRoom
       tags: [rooms]
@@ -1206,6 +1267,448 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/Internal' }
+
+  /api/v1/content-flags:
+    post:
+      operationId: postContentFlag
+      tags: [screening]
+      summary: Report a content sampler's window
+      description: |
+        The content sampler's report on one broadcast's window (R40). While
+        the window is tripped the sampler posts `state: tripped` after every
+        sample; when it clears it posts `state: cleared` once.
+
+        The first tripped post for a broadcast with no unresolved flag raises
+        one (`201`) and records `content_flag.raised` — in `flag` mode that
+        event IS the page — or `content_flag.observed` in `observe` mode.
+        Later tripped posts update it (`200`). A cleared post resolves it
+        (`200`). `202` means nothing changed: the broadcast is muted by a
+        dismissal (`muted`), the session posted about is no longer the
+        broadcast's live one (`ended`), or a cleared post found no flag to
+        resolve (`ignored`).
+
+        `mode` is required: it decides between paging and silence, so there
+        is no default. In `flag` mode, with no enabled webhook that would
+        deliver `content_flag.raised`, the post is refused with `503` and
+        code `no_flag_route`.
+
+        A flag carries scores and metadata only, never a frame.
+      x-gawk-roles: [flagger]
+      x-gawk-requires: screening
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContentFlagReport' }
+            example:
+              schema: gawk.content-flag.v1
+              broadcastId: ABC234
+              publisherEpoch: 5f2c9a0b11d4e6f7
+              samplerId: gawk-sampler-0
+              mode: flag
+              state: tripped
+              window: { start: '2026-09-16T09:30:35Z', end: '2026-09-16T09:31:00Z', samples: 6, flaggedSamples: 4 }
+              scores: { max: 0.97, mean: 0.81 }
+              labels: [FEMALE_GENITALIA_EXPOSED]
+              labelCounts: { FEMALE_GENITALIA_EXPOSED: 4 }
+              recent: [0.12, 0.2, 0.91, 0.95, 0.97, 0.93]
+              summary: sustained explicit signal
+      responses:
+        '201':
+          description: A flag was raised.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContentFlagReportResult' }
+              example: { status: raised, flagId: 42 }
+        '200':
+          description: The unresolved flag was updated or resolved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContentFlagReportResult' }
+              example: { status: updated, flagId: 42 }
+        '202':
+          description: Nothing changed (muted, ended or ignored).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContentFlagReportResult' }
+              example: { status: muted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503':
+          description: No pager, so no flag; or a dependency is unreachable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  code: no_flag_route
+                  message: 'no enabled webhook would deliver content_flag.raised: flagging is paused until one does (docs/71 D12)'
+    get:
+      operationId: listContentFlags
+      tags: [screening]
+      summary: List content flags
+      description: |
+        Returns content flags newest first, with the screening plane's health
+        beside them: `screening.flagRoute` is `false` when no enabled webhook
+        would page anyone, and `screening.missingShards` lists sampler shards
+        that have not polled for 30 seconds — the broadcasts of a missing
+        shard are not being screened.
+
+        A flag is unresolved while `open` or `acknowledged`. `signal` is
+        `live` while the sampler keeps reporting the window tripped and
+        `unknown` once it has gone quiet: a quiet sampler is not evidence of
+        a clean broadcast, so an open flag keeps re-paging either way.
+      x-gawk-roles: [operator]
+      x-gawk-requires: screening
+      parameters:
+        - name: state
+          in: query
+          description: '`unresolved` (the default), `resolved` or `all`.'
+          schema: { type: string, enum: [unresolved, resolved, all] }
+        - name: mode
+          in: query
+          description: '`flag` (the default), `observe` or `all`.'
+          schema: { type: string, enum: [flag, observe, all] }
+        - name: limit
+          in: query
+          description: Page size, at most 500. Defaults to 100.
+          schema: { type: integer, format: int32, minimum: 1 }
+      responses:
+        '200':
+          description: The flags and the screening plane's health.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: Contains raw broadcast IDs and watch links.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContentFlagsPage' }
+              example:
+                contentFlags:
+                  - id: 42
+                    mode: flag
+                    state: open
+                    broadcastId: ABC234
+                    broadcastKey: 9f2c41ab77de
+                    publisherEpoch: 5f2c9a0b11d4e6f7
+                    samplerId: gawk-sampler-0
+                    raisedAt: '2026-09-16T09:31:00Z'
+                    updatedAt: '2026-09-16T09:33:05Z'
+                    lastPostAt: '2026-09-16T09:33:05Z'
+                    signal: live
+                    window: { start: '2026-09-16T09:32:40Z', end: '2026-09-16T09:33:05Z', samples: 6, flaggedSamples: 5 }
+                    scores: { max: 0.97, mean: 0.84 }
+                    labels: [FEMALE_GENITALIA_EXPOSED]
+                    labelCounts: { FEMALE_GENITALIA_EXPOSED: 5 }
+                    peakScore: 0.97
+                    reminders: 0
+                    links: { watch: 'https://gawk.example/#/view/ABC234' }
+                screening:
+                  flagRoute: true
+                  expectedShards: 2
+                  missingShards: []
+                  lastPollAt: '2026-09-16T09:33:04Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/content-flags/{id}/acknowledge:
+    post:
+      operationId: acknowledgeContentFlag
+      tags: [screening]
+      summary: Acknowledge a content flag
+      description: |
+        Says "I'm looking": the flag stops re-paging and no deadline kill
+        applies to it. It stays unresolved until the sampler clears it, the
+        broadcast ends, or an operator dismisses it or kills the broadcast.
+        Only an open `flag`-mode flag can be acknowledged; anything else
+        returns `409` with code `content_flag_state`.
+      x-gawk-roles: [operator]
+      x-gawk-requires: screening
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The flag's `id`.
+          schema: { type: integer, format: int64 }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyRequest' }
+            example: {}
+      responses:
+        '200':
+          description: The acknowledged flag.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: Contains the raw broadcast ID and its watch link.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContentFlag' }
+              example:
+                id: 42
+                mode: flag
+                state: acknowledged
+                broadcastId: ABC234
+                broadcastKey: 9f2c41ab77de
+                publisherEpoch: 5f2c9a0b11d4e6f7
+                samplerId: gawk-sampler-0
+                raisedAt: '2026-09-16T09:31:00Z'
+                updatedAt: '2026-09-16T09:34:00Z'
+                lastPostAt: '2026-09-16T09:33:55Z'
+                acknowledgedAt: '2026-09-16T09:34:00Z'
+                acknowledgedBy: operator@example.org
+                signal: live
+                window: { start: '2026-09-16T09:33:30Z', end: '2026-09-16T09:33:55Z', samples: 6, flaggedSamples: 5 }
+                scores: { max: 0.97, mean: 0.84 }
+                labels: [FEMALE_GENITALIA_EXPOSED]
+                peakScore: 0.97
+                reminders: 0
+                links: { watch: 'https://gawk.example/#/view/ABC234' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /api/v1/content-flags/{id}/dismiss:
+    post:
+      operationId: dismissContentFlag
+      tags: [screening]
+      summary: Dismiss a content flag
+      description: |
+        Resolves the flag as `dismissed` and mutes re-flagging of its
+        broadcast for the deployment's mute period (`mutedUntil`). When the
+        mute expires, a signal that persists raises a new flag. Records
+        `content_flag.resolved`. An already resolved or an `observe`-mode
+        flag returns `409` with code `content_flag_state`.
+      x-gawk-roles: [operator]
+      x-gawk-requires: screening
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The flag's `id`.
+          schema: { type: integer, format: int64 }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyRequest' }
+            example: {}
+      responses:
+        '200':
+          description: The dismissed flag, with the mute's end.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: Contains the raw broadcast ID and its watch link.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContentFlag' }
+              example:
+                id: 42
+                mode: flag
+                state: resolved
+                resolution: dismissed
+                broadcastId: ABC234
+                broadcastKey: 9f2c41ab77de
+                publisherEpoch: 5f2c9a0b11d4e6f7
+                samplerId: gawk-sampler-0
+                raisedAt: '2026-09-16T09:31:00Z'
+                updatedAt: '2026-09-16T09:35:00Z'
+                lastPostAt: '2026-09-16T09:34:55Z'
+                resolvedAt: '2026-09-16T09:35:00Z'
+                resolvedBy: operator@example.org
+                signal: live
+                window: { start: '2026-09-16T09:34:30Z', end: '2026-09-16T09:34:55Z', samples: 6, flaggedSamples: 4 }
+                scores: { max: 0.91, mean: 0.8 }
+                labels: [FEMALE_GENITALIA_EXPOSED]
+                peakScore: 0.97
+                reminders: 0
+                mutedUntil: '2026-09-16T10:05:00Z'
+                links: { watch: 'https://gawk.example/#/view/ABC234' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /api/v1/screening/targets:
+    get:
+      operationId: listScreeningTargets
+      tags: [screening]
+      summary: List one sampler shard's screening targets
+      description: |
+        The content sampler's work list (R40): every live origin broadcast
+        whose publisher is active and whose key falls into shard `shard` of
+        `of`, with the ops address of the relay pod holding it. Each poll is
+        recorded; a shard that stops polling is reported missing by
+        `listContentFlags`.
+
+        `exempt` broadcasts are listed so the sampler's metrics see them, and
+        are not sampled. `muted` ones are sampled, and their `flag`-mode
+        reports answer `202 muted`. With `flagRoute: false`, a sampler in
+        `flag` mode samples nothing.
+      x-gawk-roles: [flagger]
+      x-gawk-requires: screening
+      parameters:
+        - name: shard
+          in: query
+          required: true
+          description: This sampler's share, `0` to `of - 1`.
+          schema: { type: integer, format: int32, minimum: 0 }
+        - name: of
+          in: query
+          required: true
+          description: How many shares there are, 1 to 64.
+          schema: { type: integer, format: int32, minimum: 1, maximum: 64 }
+      responses:
+        '200':
+          description: The shard's targets.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: Contains raw broadcast IDs and relay pod addresses.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScreeningTargets' }
+              example:
+                schema: gawk.screening.targets.v1
+                shard: 0
+                of: 2
+                flagRoute: true
+                targets:
+                  - broadcastId: ABC234
+                    broadcastKey: 9f2c41ab77de
+                    publisherEpoch: 5f2c9a0b11d4e6f7
+                    relay: http://10.42.0.7:2112
+                    muted: false
+                    exempt: false
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/screening/samples:
+    post:
+      operationId: postScreeningSamples
+      tags: [screening]
+      summary: Store a sampler's samples
+      description: |
+        One content sampler batch: per publisher session, how many samples it
+        scored and the ones at or above its floor. The server numbers them —
+        a sent sample is the session's count so far plus its `position` —
+        so the numbering survives a sampler restart, and a gap in it always
+        means "scored below the floor". These are the data
+        `replayScreening` runs over.
+      x-gawk-roles: [flagger]
+      x-gawk-requires: screening
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SampleBatch' }
+            example:
+              schema: gawk.screening.samples.v1
+              samplerId: gawk-sampler-1
+              mode: observe
+              floor: 0.3
+              labels: [FEMALE_GENITALIA_EXPOSED, MALE_GENITALIA_EXPOSED, ANUS_EXPOSED]
+              sessions:
+                - broadcastId: ABC234
+                  broadcastKey: 9f2c41ab77de
+                  publisherEpoch: 5f2c9a0b11d4e6f7
+                  taken: 1
+                  firstAt: '2026-09-16T09:31:00Z'
+                  lastAt: '2026-09-16T09:31:00Z'
+                  samples:
+                    - position: 1
+                      at: '2026-09-16T09:31:00Z'
+                      scores: { FEMALE_GENITALIA_EXPOSED: 0.41, MALE_GENITALIA_EXPOSED: 0, ANUS_EXPOSED: 0.02 }
+      responses:
+        '200':
+          description: How many samples were stored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SamplesResult' }
+              example: { stored: 1 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/screening/replay:
+    post:
+      operationId: replayScreening
+      tags: [screening]
+      summary: Replay a candidate window rule over stored samples
+      description: |
+        Answers "what would this setting have done?" (R40 calibration): runs
+        the sampler's window rule — trip when at least `windowHits` of the
+        last `window` samples score at or above `threshold`, clear when none
+        does — over every stored session overlapping `from`–`to`, and counts
+        the trips in the range per 100 broadcast-hours.
+
+        A `threshold` below the highest sample floor among those sessions is
+        refused with `400`: below it, a missing sample no longer means "below
+        the threshold".
+      x-gawk-roles: [operator]
+      x-gawk-requires: screening
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReplayRequest' }
+            example:
+              threshold: 0.8
+              window: 6
+              windowHits: 4
+              from: '2026-09-09T00:00:00Z'
+              to: '2026-09-16T00:00:00Z'
+      responses:
+        '200':
+          description: The would-trips.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: Contains raw broadcast IDs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReplayResult' }
+              example:
+                schema: gawk.screening.replay.v1
+                request: { threshold: 0.8, window: 6, windowHits: 4, from: '2026-09-09T00:00:00Z', to: '2026-09-16T00:00:00Z' }
+                floor: 0.3
+                sessions: 212
+                samplesTaken: 98113
+                samplesStored: 2871
+                broadcastHours: 136.4
+                wouldTrips: 1
+                wouldTripsPer100h: 0.73
+                trips:
+                  - broadcastKey: 9f2c41ab77de
+                    broadcastId: ABC234
+                    publisherEpoch: 5f2c9a0b11d4e6f7
+                    at: '2026-09-12T21:04:05Z'
+                    peakScore: 0.86
+                truncated: false
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
 
 components:
   securitySchemes:
@@ -1322,6 +1825,9 @@ components:
         - room_not_static
         - room_not_dynamic
         - room_not_owned
+        - no_flag_route
+        - screening_not_allowed
+        - content_flag_state
 
     ErrorBody:
       type: object
@@ -1343,10 +1849,11 @@ components:
       type: string
       description: |
         The type of a recorded event. The enum only grows; treat unknown
-        values as unknown. `content_flag.raised` is reserved and not yet
-        produced.
+        values as unknown.
 
-        The first eight are moderation events — what an operator did. The
+        The first eleven are moderation events — what an operator, or the
+        content-flag lifecycle (R40), did. `content_flag.observed` is a
+        screening row: what a sampler in observe mode would have flagged. The
         rest are activity events ingested from the relay event bus (R50),
         present only on a deployment with the bus configured; filter with
         the `category` query parameter rather than by listing types.
@@ -1356,9 +1863,13 @@ components:
         - ban.expired
         - ban.removed
         - content_flag.raised
+        - content_flag.reminded
+        - content_flag.resolved
         - room.created
         - room.ended
         - room.secret_rotated
+        - room.screening_changed
+        - content_flag.observed
         - broadcast.started
         - broadcast.publisher_away
         - broadcast.publisher_back
@@ -1376,11 +1887,13 @@ components:
       description: |
         Which kind of row an event is: `moderation` is the audit trail of
         operator actions, `activity` is what the fleet did, ingested from the
-        relay event bus (R50). Activity rows exist only where the bus is
-        configured, and are pruned by age.
+        relay event bus (R50), and `screening` is content-screening
+        calibration data (R40). Activity rows exist only where the bus is
+        configured; activity and screening rows are pruned by age.
       enum:
         - moderation
         - activity
+        - screening
 
     BroadcastId:
       type: string
@@ -1423,11 +1936,14 @@ components:
         features:
           type: object
           description: Optional features this deployment serves. Routes of a disabled feature return `404`.
-          required: [rooms]
+          required: [rooms, screening]
           properties:
             rooms:
               type: boolean
               description: Whether the `/api/v1/rooms` routes are served.
+            screening:
+              type: boolean
+              description: Whether the content-flagging routes (R40) are served.
 
     BanTarget:
       type: object
@@ -1642,6 +2158,13 @@ components:
             - $ref: '#/components/schemas/BanState'
             - type: 'null'
           description: '`null` means unknown (the moderation database was unreachable), not "not banned".'
+        contentFlag:
+          allOf:
+            - $ref: '#/components/schemas/ContentFlag'
+          description: |
+            The broadcast's unresolved `flag`-mode content flag (R40), which
+            a client pins to the top of the list. Absent when there is none,
+            and always absent when screening is off.
 
     BroadcastsPage:
       type: object
@@ -1822,8 +2345,11 @@ components:
       description: |
         A value of a webhook's `events` filter. With no filter (`null`) a
         webhook receives every moderation event and none of the four room
-        activity events; a list is exact. The activity events are only
-        delivered on a deployment with the relay event bus configured.
+        activity events or `content_flag.observed`; a list is exact. The
+        activity events are only delivered on a deployment with the relay
+        event bus configured. `content_flag.observed` is a content sampler's
+        calibration signal (R40): opt-in, so it never wakes a pager that did
+        not ask for it.
 
         `room.participant_rejoined` is not an event type. When a room moves
         to another relay pod its participants reconnect, which the bus reports
@@ -1836,9 +2362,13 @@ components:
         - ban.expired
         - ban.removed
         - content_flag.raised
+        - content_flag.reminded
+        - content_flag.resolved
+        - content_flag.observed
         - room.created
         - room.ended
         - room.secret_rotated
+        - room.screening_changed
         - room.attached
         - room.detached
         - room.participant_joined
@@ -1944,6 +2474,13 @@ components:
         managed:
           type: boolean
           description: '`true` for rooms created through this API. Rooms applied with `kubectl` are listed and deletable but not managed.'
+        screening:
+          type: string
+          enum: [exempt]
+          description: |
+            `exempt` while the room's broadcasts are exempt from content
+            screening (R40); absent for a screened room. Honoured only on a
+            static room with an attach secret.
 
     RoomLinks:
       type: object
@@ -2061,3 +2598,352 @@ components:
         attachSecret:
           type: string
           description: Returned once, in this response only. It cannot be read back; rotate if lost.
+
+    RoomPatchRequest:
+      type: object
+      required: [screening]
+      properties:
+        screening:
+          type: string
+          enum: ['', exempt]
+          description: '`exempt` to exempt the room from content screening, `""` to screen it again.'
+
+    EmptyRequest:
+      type: object
+      description: No fields. `{}` or no body at all.
+      properties: {}
+
+    ContentFlagWindow:
+      type: object
+      description: The sampler's window at its last report. Never a frame.
+      required: [start, end, samples, flaggedSamples]
+      properties:
+        start: { type: string, format: date-time }
+        end: { type: string, format: date-time }
+        samples:
+          type: integer
+          format: int32
+          description: Samples in the window.
+        flaggedSamples:
+          type: integer
+          format: int32
+          description: Samples in the window that scored at or above the threshold.
+
+    ContentFlagScores:
+      type: object
+      description: The window's highest and mean sample score, 0 to 1.
+      required: [max, mean]
+      properties:
+        max: { type: number, minimum: 0, maximum: 1 }
+        mean: { type: number, minimum: 0, maximum: 1 }
+
+    ContentFlagLinks:
+      type: object
+      description: Absent when the deployment has no `-app-base-url`.
+      required: [watch]
+      properties:
+        watch:
+          type: string
+          format: uri
+          description: Opens the broadcast in the gawk app — how an operator judges a flag.
+
+    ContentFlag:
+      type: object
+      description: |
+        One content flag (R40). A flag is unresolved while `open` or
+        `acknowledged`; it ends in exactly one `resolution`. `observe`-mode
+        flags are calibration data: they page nobody and cannot be
+        acknowledged or dismissed.
+      required: [id, mode, state, broadcastId, broadcastKey, publisherEpoch, samplerId, raisedAt, updatedAt,
+        lastPostAt, signal, window, scores, labels, peakScore, reminders]
+      properties:
+        id: { type: integer, format: int64 }
+        mode:
+          type: string
+          enum: [flag, observe]
+          description: '`flag` pages a human; `observe` is what a sampler in observe mode would have flagged.'
+        state:
+          type: string
+          enum: [open, acknowledged, resolved]
+        resolution:
+          type: string
+          enum: [cleared, dismissed, killed, auto_killed, ended]
+          description: How the flag ended. Absent while it is unresolved.
+        resolutionReason:
+          type: string
+          enum: [deadline, policy, stale]
+          description: Why an automatic resolution happened. Absent otherwise.
+        broadcastId: { $ref: '#/components/schemas/BroadcastId' }
+        broadcastKey: { $ref: '#/components/schemas/BroadcastKey' }
+        publisherEpoch:
+          type: string
+          description: The publisher session the flag belongs to. A new session raises a new flag.
+        samplerId:
+          type: string
+          description: The sampler instance that last reported.
+        raisedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        lastPostAt:
+          type: string
+          format: date-time
+          description: The sampler's last report on the flag.
+        acknowledgedAt: { type: string, format: date-time }
+        acknowledgedBy: { type: string }
+        resolvedAt: { type: string, format: date-time }
+        resolvedBy: { type: string }
+        signal:
+          type: string
+          enum: [live, unknown, cleared]
+          description: |
+            `live` while the sampler keeps reporting the window tripped,
+            `unknown` once it has been quiet for longer than the deployment's
+            stale-after, `cleared` when it reported the window clear. An open
+            flag re-pages while its signal is live or unknown.
+        window: { $ref: '#/components/schemas/ContentFlagWindow' }
+        scores: { $ref: '#/components/schemas/ContentFlagScores' }
+        labels:
+          type: array
+          description: The detector labels that fired in the window.
+          items: { type: string }
+        labelCounts:
+          type: object
+          description: How many of the window's samples each label fired in, by label.
+          additionalProperties: true
+        peakScore:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: The highest window score any report for the flag carried.
+        reminders:
+          type: integer
+          format: int32
+          description: How many `content_flag.reminded` pages the flag has sent.
+        mutedUntil:
+          type: string
+          format: date-time
+          description: While a dismissal mutes re-flagging of the broadcast, when the mute ends.
+        links: { $ref: '#/components/schemas/ContentFlagLinks' }
+
+    ScreeningStatus:
+      type: object
+      description: |
+        The screening plane's health. `flagRoute: false` means no enabled
+        webhook would page anyone, so `flag`-mode samplers are paused.
+        `missingShards` are sampler shards that have not polled for 30
+        seconds: their broadcasts are not being screened.
+      required: [flagRoute, expectedShards, missingShards]
+      properties:
+        flagRoute: { type: boolean }
+        expectedShards:
+          type: integer
+          format: int32
+          description: The shard count of the most recent sampler poll; `0` before any sampler polled.
+        missingShards:
+          type: array
+          items: { type: integer, format: int32 }
+        lastPollAt: { type: string, format: date-time }
+
+    ContentFlagsPage:
+      type: object
+      required: [contentFlags, screening]
+      properties:
+        contentFlags:
+          type: array
+          items: { $ref: '#/components/schemas/ContentFlag' }
+        screening: { $ref: '#/components/schemas/ScreeningStatus' }
+
+    ContentFlagReport:
+      type: object
+      description: |
+        The `gawk.content-flag.v1` body (docs/42 §4.11, extended additively by
+        R40). Scores and metadata only, never a frame.
+      required: [schema, broadcastId, publisherEpoch, samplerId, mode, state, window, scores, labels]
+      properties:
+        schema: { type: string, const: gawk.content-flag.v1 }
+        broadcastId: { $ref: '#/components/schemas/BroadcastId' }
+        publisherEpoch:
+          type: string
+          description: The relay's handle for the publisher session the window was built over.
+        samplerId: { type: string }
+        mode:
+          type: string
+          enum: [observe, flag]
+          description: Required. `observe` pages nobody.
+        state:
+          type: string
+          enum: [tripped, cleared]
+        window: { $ref: '#/components/schemas/ContentFlagWindow' }
+        scores: { $ref: '#/components/schemas/ContentFlagScores' }
+        labels:
+          type: array
+          maxItems: 32
+          items: { type: string, pattern: '^[A-Z0-9_]{1,64}$' }
+        labelCounts:
+          type: object
+          description: How many of the window's samples each label fired in.
+          additionalProperties: true
+        recent:
+          type: array
+          maxItems: 64
+          description: The session's last per-sample scores, oldest first — what an auto-kill policy is evaluated over.
+          items: { type: number, minimum: 0, maximum: 1 }
+        summary: { type: string, maxLength: 512 }
+
+    ContentFlagReportResult:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [raised, updated, resolved, muted, ended, ignored]
+        flagId:
+          type: integer
+          format: int64
+          description: The flag the report raised, updated or resolved.
+
+    ScreeningTarget:
+      type: object
+      required: [broadcastId, broadcastKey, publisherEpoch, relay, muted, exempt]
+      properties:
+        broadcastId: { $ref: '#/components/schemas/BroadcastId' }
+        broadcastKey: { $ref: '#/components/schemas/BroadcastKey' }
+        publisherEpoch: { type: string }
+        relay:
+          type: string
+          description: Base URL of the ops listener of the relay pod holding the broadcast's origin.
+        muted:
+          type: boolean
+          description: A dismissal mutes re-flagging; `flag`-mode reports answer `202 muted`.
+        exempt:
+          type: boolean
+          description: Attached to an exempt room. Listed, never sampled.
+
+    ScreeningTargets:
+      type: object
+      required: [schema, shard, of, flagRoute, targets]
+      properties:
+        schema: { type: string, const: gawk.screening.targets.v1 }
+        shard: { type: integer, format: int32 }
+        of: { type: integer, format: int32 }
+        flagRoute:
+          type: boolean
+          description: '`false` when no enabled webhook would page anyone: a `flag`-mode sampler samples nothing.'
+        targets:
+          type: array
+          items: { $ref: '#/components/schemas/ScreeningTarget' }
+
+    Sample:
+      type: object
+      required: [position, at, scores]
+      properties:
+        position:
+          type: integer
+          format: int32
+          description: The sample's 1-based place among the session's `taken`.
+        at: { type: string, format: date-time }
+        scores:
+          type: object
+          description: Every label of the batch's `labels`, by label, 0 to 1.
+          additionalProperties: true
+
+    SessionSamples:
+      type: object
+      required: [broadcastId, broadcastKey, publisherEpoch, taken, firstAt, lastAt, samples]
+      properties:
+        broadcastId: { $ref: '#/components/schemas/BroadcastId' }
+        broadcastKey: { $ref: '#/components/schemas/BroadcastKey' }
+        publisherEpoch: { type: string }
+        taken:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Samples scored for the session in this batch, sent or not.
+        firstAt: { type: string, format: date-time }
+        lastAt: { type: string, format: date-time }
+        samples:
+          type: array
+          description: The samples at or above the floor, in position order.
+          items: { $ref: '#/components/schemas/Sample' }
+
+    SampleBatch:
+      type: object
+      required: [schema, samplerId, mode, floor, labels, sessions]
+      properties:
+        schema: { type: string, const: gawk.screening.samples.v1 }
+        samplerId: { type: string }
+        mode:
+          type: string
+          enum: [observe, flag]
+        floor:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Only samples where some label scores at or above it are sent.
+        labels:
+          type: array
+          items: { type: string, pattern: '^[A-Z0-9_]{1,64}$' }
+        sessions:
+          type: array
+          items: { $ref: '#/components/schemas/SessionSamples' }
+
+    SamplesResult:
+      type: object
+      required: [stored]
+      properties:
+        stored: { type: integer, format: int32 }
+
+    ReplayRequest:
+      type: object
+      required: [threshold, window, windowHits, from, to]
+      properties:
+        threshold: { type: number, exclusiveMinimum: 0, maximum: 1 }
+        window: { type: integer, format: int32, minimum: 1, maximum: 64 }
+        windowHits:
+          type: integer
+          format: int32
+          minimum: 1
+          description: At most `window`.
+        labels:
+          type: array
+          description: A subset of the stored labels to score by. Absent or empty means all of them.
+          items: { type: string }
+        from: { type: string, format: date-time }
+        to:
+          type: string
+          format: date-time
+          description: At most 92 days after `from`.
+
+    ReplayTrip:
+      type: object
+      required: [broadcastKey, broadcastId, publisherEpoch, at, peakScore]
+      properties:
+        broadcastKey: { $ref: '#/components/schemas/BroadcastKey' }
+        broadcastId: { $ref: '#/components/schemas/BroadcastId' }
+        publisherEpoch: { type: string }
+        at:
+          type: string
+          format: date-time
+          description: When the window would have tripped.
+        peakScore: { type: number, minimum: 0, maximum: 1 }
+
+    ReplayResult:
+      type: object
+      required: [schema, request, floor, sessions, samplesTaken, samplesStored, broadcastHours, wouldTrips,
+        wouldTripsPer100h, trips, truncated]
+      properties:
+        schema: { type: string, const: gawk.screening.replay.v1 }
+        request: { $ref: '#/components/schemas/ReplayRequest' }
+        floor:
+          type: number
+          description: The highest sample floor among the replayed sessions.
+        sessions: { type: integer, format: int32 }
+        samplesTaken: { type: integer, format: int64 }
+        samplesStored: { type: integer, format: int64 }
+        broadcastHours: { type: number }
+        wouldTrips: { type: integer, format: int32 }
+        wouldTripsPer100h: { type: number }
+        trips:
+          type: array
+          description: Newest first, at most 1000; `truncated` says the list was cut. The count is exact.
+          items: { $ref: '#/components/schemas/ReplayTrip' }
+        truncated: { type: boolean }

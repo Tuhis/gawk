@@ -14,6 +14,9 @@ final class ServerProbes {
     }
 
     private(set) var states: [String: State] = [:]
+    /// The servers whose last answer said they screen streams for explicit
+    /// content (R40, docs/71 D13): Settings marks them "Content screening".
+    private(set) var screening: Set<String> = []
     @ObservationIgnored private var running: Set<String> = []
     /// Tests replace the probe.
     @ObservationIgnored var probe: @Sendable (_ url: String, _ insecure: Bool) async -> ServerProbe = { url, insecure in
@@ -21,6 +24,9 @@ final class ServerProbes {
     }
 
     func state(_ url: String) -> State? { states[url] }
+
+    /// Whether `url`'s last answer carried the screening notice.
+    func screens(_ url: String) -> Bool { screening.contains(url) }
 
     /// Probes `url` unless a probe of it is already out. A new result
     /// replaces the old one; until then the old one stays on screen.
@@ -32,8 +38,13 @@ final class ServerProbes {
             let result = await probe(url, insecure)
             running.remove(url)
             switch result {
-            case .reachable(let rtt, let name): states[url] = .reachable(rttMs: rtt, operatorName: name)
-            case .unreachable: states[url] = .unreachable
+            case .reachable(let rtt, let name, let screens):
+                states[url] = .reachable(rttMs: rtt, operatorName: name)
+                if screens { screening.insert(url) } else { screening.remove(url) }
+            case .unreachable:
+                states[url] = .unreachable
+                // An unreachable server says nothing either way.
+                screening.remove(url)
             }
         }
     }

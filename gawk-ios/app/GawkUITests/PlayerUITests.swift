@@ -65,15 +65,16 @@ final class PlayerUITests: XCTestCase {
     /// D6: Latency applies at once, Share is there, and Copy link isn't.
     func testTheSettingsMenu() {
         watch()
-        app.buttons["player.settings"].tap()
-        XCTAssertTrue(app.buttons["Lowest latency"].waitForExistence(timeout: UIWait.step))
+        let settings = app.buttons["player.settings"]
+        XCTAssertEqual(settings.value as? String, "Balanced")
+        openMenu(settings, showing: app.buttons["Lowest latency"])
         XCTAssertTrue(app.buttons["Share…"].exists)
         XCTAssertTrue(app.buttons["Stats"].exists)
         XCTAssertFalse(app.buttons["Copy link"].exists, "Copy link is the pill's")
         shot("player-menu", app)
-        tapMenuItem("Lowest latency", in: app)
+        choose("Lowest latency", from: settings, in: app) { settings.value as? String == "Lowest latency" }
         revealControls(app)
-        app.buttons["player.settings"].tap()
+        openMenu(settings, showing: app.buttons["Lowest latency"])
         let chosen = expectation(for: NSPredicate(format: "selected == true"), evaluatedWith: app.buttons["Lowest latency"])
         XCTAssertEqual(XCTWaiter().wait(for: [chosen], timeout: UIWait.step), .completed, "the preset stuck")
     }
@@ -82,8 +83,9 @@ final class PlayerUITests: XCTestCase {
     /// all the way out.
     func testStatsOpensSmallAndPullsToFull() {
         watch()
-        app.buttons["player.settings"].tap()
-        tapMenuItem("Stats", in: app)
+        let settings = app.buttons["player.settings"]
+        openMenu(settings, showing: app.buttons["Stats"])
+        choose("Stats", from: settings, in: app) { app.staticTexts["Playout delay"].exists }
         XCTAssertTrue(app.staticTexts["Playout delay"].waitForExistence(timeout: UIWait.step))
         XCTAssertFalse(app.staticTexts["Frames"].exists, "small: the tiles only")
         shot("player-stats-small", app)

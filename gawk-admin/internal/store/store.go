@@ -135,15 +135,20 @@ func (b Ban) Record() moderation.Record {
 	}
 }
 
-// Event types written to moderation_events. content_flag.raised is reserved
-// for R40 (docs/42 §4.11) and is deliberately named here so the vocabulary is
-// fixed before anything produces it.
+// Event types written to moderation_events. content_flag.raised was reserved
+// by R39 (docs/42 §4.11) and is produced since R40 (docs/71 D9), with the
+// reminded/resolved pair that make a flag's lifecycle visible on the pager.
 const (
 	EventBroadcastKilled = "broadcast.killed"
 	EventBanCreated      = "ban.created"
 	EventBanExpired      = "ban.expired"
 	EventBanRemoved      = "ban.removed"
-	EventContentFlag     = "content_flag.raised" // R40
+	EventContentFlag     = "content_flag.raised"
+
+	// R40 content-flag lifecycle (docs/71 D9, D16): moderation rows, so a
+	// webhook with no filter receives them as it receives the raise.
+	EventContentFlagReminded = "content_flag.reminded"
+	EventContentFlagResolved = "content_flag.resolved"
 
 	// Room events (R42, docs/44 D20 / §9 RM7). room.ended is recorded both by
 	// the portal (an operator ended or deleted a room) and by the reconciler's
@@ -152,6 +157,8 @@ const (
 	EventRoomCreated       = "room.created"
 	EventRoomEnded         = "room.ended"
 	EventRoomSecretRotated = "room.secret_rotated"
+	// EventRoomScreeningChanged audits an exemption toggle (docs/71 D11).
+	EventRoomScreeningChanged = "room.screening_changed"
 )
 
 // AllEventTypes is the closed vocabulary of `type` values a moderation_events
@@ -172,29 +179,36 @@ func AllEventTypes() []string {
 		EventBanExpired,
 		EventBanRemoved,
 		EventContentFlag,
+		EventContentFlagReminded,
+		EventContentFlagResolved,
 		EventRoomCreated,
 		EventRoomEnded,
 		EventRoomSecretRotated,
+		EventRoomScreeningChanged,
 	}
 }
 
 // FeedEventTypes is every `type` a row on GET /api/v1/events may carry: the
-// moderation vocabulary plus R50's ingested activity types (docs/51 D5).
+// moderation vocabulary, R40's screening rows (docs/71 D16) and R50's
+// ingested activity types (docs/51 D5).
 //
 // It is deliberately NOT AllEventTypes: that one is the MODERATION row table,
 // which R51's contract holds equal to events.ModerationRowTypes() so every
 // row type maps to exactly one CloudEvents type and can be delivered to a
-// webhook. An activity row is never delivered — it is ingested from the bus,
-// which already carries the CloudEvent — so it belongs to the feed's
-// vocabulary and to no other.
+// webhook with no filter. An activity row is never delivered — it is ingested
+// from the bus, which already carries the CloudEvent — and a screening row is
+// delivered only on request, so both belong to the feed's vocabulary and not
+// to that table.
 func FeedEventTypes() []string {
-	return append(AllEventTypes(), ActivityEventTypes()...)
+	out := append(AllEventTypes(), ScreeningEventTypes()...)
+	return append(out, ActivityEventTypes()...)
 }
 
 // WebhookEventTypes is every row type the dispatcher may forward to a
-// webhook: the moderation vocabulary plus, since R49 (docs/50 D6), the four
-// room activity types a bot subscribes to. Which of them a given webhook
-// receives is its filter's decision (WebhookWants); this is the ceiling.
+// webhook: the moderation vocabulary, R40's opt-in content_flag.observed
+// (docs/71 D16) and, since R49 (docs/50 D6), the four room activity types a
+// bot subscribes to. Which of them a given webhook receives is its filter's
+// decision (WebhookWants); this is the ceiling.
 //
 // room.participant_updated and the delta types are not here: a bot announcing
 // every rename or viewer-count tick is noise, and the read API has the
@@ -202,7 +216,8 @@ func FeedEventTypes() []string {
 // channel's messages, so a type outside it cannot be forwarded, listed or
 // documented.
 func WebhookEventTypes() []string {
-	return append(AllEventTypes(),
+	out := append(AllEventTypes(), ScreeningEventTypes()...)
+	return append(out,
 		EventRoomAttached,
 		EventRoomDetached,
 		EventRoomParticipantJoined,
@@ -307,9 +322,10 @@ type Event struct {
 	// Payload is free-form context. See the PayloadReason/PayloadSummary
 	// comment above before forwarding any of it anywhere.
 	Payload json.RawMessage
-	// Category is CategoryModeration (what an operator did) or
-	// CategoryActivity (what the fleet did, ingested from the R50 bus).
-	// Empty on a value being written means moderation.
+	// Category is CategoryModeration (what an operator did),
+	// CategoryActivity (what the fleet did, ingested from the R50 bus) or
+	// CategoryScreening (R40 calibration rows, docs/71 D16). Empty on a
+	// value being written means moderation.
 	Category string
 	// Source is the CloudEvents id of the bus message an activity row came
 	// from, and the UNIQUE key that makes ingest exactly-once. Empty for every

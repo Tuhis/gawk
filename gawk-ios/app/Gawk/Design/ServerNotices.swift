@@ -78,6 +78,38 @@ struct ServerNotices: View {
     }
 }
 
+/// A server's content screening (R40, docs/71 D13): a check and "Content
+/// screening" among the server's details in Settings, when its probe said
+/// it automatically screens streams — or, for the server a broadcast is up
+/// on, that broadcast's publish session did. Never on the Broadcast screen,
+/// and never a mark that a server doesn't screen. A disclosure, never a gate.
+struct ScreeningMark: View {
+    /// The words the web and desktop broadcasters show too.
+    static let label = "Content screening"
+    /// What it means, as VoiceOver's hint.
+    static let text = "This server automatically screens streams for explicit content."
+
+    /// Shown when either source says so.
+    static func shown(probed: Bool, session: Bool) -> Bool { probed || session }
+
+    /// Laid out as `ProbeStatus` above it: a small glyph and the words. A
+    /// `Label` in a list row takes the row's icon column and moves the row's
+    /// separator to its title.
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark")
+                .font(.caption2.weight(.semibold))
+            Text(Self.label)
+                .font(.footnote)
+        }
+        .foregroundStyle(Theme.muted)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.label)
+        .accessibilityHint(Self.text)
+        .accessibilityIdentifier("server.screening")
+    }
+}
+
 #Preview("Server strip") {
     ServerStrip(name: "Home relay", url: "https://relay.example.net:4433") {}
         .padding()

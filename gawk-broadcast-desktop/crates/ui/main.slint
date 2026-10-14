@@ -609,6 +609,9 @@ component RowText inherits VerticalLayout {
     in property <string> sub;
     in property <color> sub-color: T.muted;
     in property <string> title-font;
+    // A fact with a check under the sub line: a server's content screening
+    // (docs/71 D13).
+    in property <string> mark;
     horizontal-stretch: 1;
     spacing: 1px;
     alignment: center;
@@ -625,6 +628,22 @@ component RowText inherits VerticalLayout {
         color: root.sub-color;
         font-size: 12.5px;
         overflow: elide;
+    }
+    if root.mark != "": HorizontalLayout {
+        spacing: 4px;
+        alignment: start;
+        cross-axis-alignment: center;
+        Icon {
+            commands: Icons.check;
+            ink: T.muted;
+            size: 12px;
+        }
+        Text {
+            text: root.mark;
+            color: T.muted;
+            font-size: 12.5px;
+            overflow: elide;
+        }
     }
 }
 
@@ -1899,6 +1918,10 @@ export component MainWindow inherits Window {
     in property <string> server-name: "";
     in property <string> server-host: "";
     in property <string> server-note: "";
+    // R40 (docs/71 D13): the selected server says it screens streams —
+    // from the probe or the publish session. A mark on its row in Settings,
+    // never on the broadcast page, and never a gate.
+    in property <bool> server-screens: false;
 
     // ----- paused (docs/64 D9, D11) -----
     in property <bool> paused: false;
@@ -3411,6 +3434,8 @@ export component MainWindow inherits Window {
                             }
                             accessible-role: button;
                             accessible-label: label;
+                            accessible-description: root.set-server == i && root.server-screens
+                                ? "Content screening: this server automatically screens streams for explicit content." : "";
                             accessible-checked: root.set-server == i;
                             accessible-action-default => {
                                 if (!root.busy && !root.paused) {
@@ -3425,10 +3450,14 @@ export component MainWindow inherits Window {
                                 border-width: root.set-server == i ? 5px : 1.5px;
                                 border-color: root.set-server == i ? T.accent : T.faint;
                             }
+                            // The selected server is the one probed; its
+                            // content screening (docs/71 D13) is marked only
+                            // when it says so, never the lack of it.
                             RowText {
                                 title: label;
                                 sub: i < root.server-urls.length ? root.server-urls[i] : "";
                                 sub-color: root.set-server == i && root.probe-state == 2 ? T.warn-text : T.muted;
+                                mark: root.set-server == i && root.server-screens ? "Content screening" : "";
                             }
                             RowLink {
                                 text: "Edit";

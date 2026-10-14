@@ -367,3 +367,36 @@
   line-height: 1.5;
   margin: var(--sp-1) 0 0;
 }
+
+/* Red, and reserved for a gap in the moderation plane itself (R40): no pager
+   for a flag, or a sampler shard screening nothing. Not `.error` — no request
+   failed — and not `.warning` — nothing here worked. */
+.alarm {
+  composes: warning;
+  border-color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 12%, transparent);
+}
+
+/* A content-flagged broadcast (R40): the row and the strip under it read as
+   one unit, held together by the danger rule down their left edge. */
+.flagged td:first-child,
+.flagStrip td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.flagged td {
+  border-bottom: 0;
+}
+
+.flagStrip td {
+  background: color-mix(in oklab, var(--danger) 7%, transparent);
+  font-size: var(--fs-sm);
+}
+
+.flagFacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  align-items: center;
+  margin-bottom: var(--sp-2);
+}

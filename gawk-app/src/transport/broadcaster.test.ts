@@ -35,12 +35,15 @@ vi.mock('../media/encoder', () => ({
 }));
 
 import { BroadcastPipeline, type BroadcastCallbacks } from './broadcaster';
+import { log } from '../lib/logger';
 import { EncoderSupportProber } from '../media/probe';
 import { DEFAULT_CAPTURE_CONFIG } from '../media/types';
 import { CLOCK_MAPPING_INTERVAL_MS } from './time-sync';
 import {
+  RELAY_NOTICE_SCREENING,
   TYPE_CLOCK_MAPPING,
   TYPE_TIME_SYNC,
+  encodeRelayIdentity,
   encodeTimeSync,
   encodeViewerCount,
   parseClockMapping,
@@ -57,18 +60,19 @@ interface FakeWT {
 
 // announceChunks: byte chunks delivered on the first server-initiated uni
 // stream; null = the stream never arrives (but the connection stays up).
-function makeFakeWT(announceChunks: Uint8Array[] | null): FakeWT {
+// moreStreams: further uni streams, one array of chunks each, after it.
+function makeFakeWT(announceChunks: Uint8Array[] | null, moreStreams: Uint8Array[][] = []): FakeWT {
   let resolveClosed: (info: unknown) => void = () => {};
   const closed = new Promise((res) => {
     resolveClosed = res;
   });
   const incomingUnidirectionalStreams = new ReadableStream<ReadableStream<Uint8Array>>({
     start(controller) {
-      if (announceChunks) {
+      for (const chunks of announceChunks ? [announceChunks, ...moreStreams] : moreStreams) {
         controller.enqueue(
           new ReadableStream<Uint8Array>({
             start(c) {
-              for (const chunk of announceChunks) c.enqueue(chunk);
+              for (const chunk of chunks) c.enqueue(chunk);
               c.close();
             },
           }),
@@ -339,6 +343,36 @@ describe('BroadcastPipeline announce handling', () => {
     expect(outcome).toBe('started');
     expect(startCapture).toHaveBeenCalled();
     await pipeline.stop();
+  });
+});
+
+// R40 (docs/71 D13): a relay with -screening-notice sends its RelayIdentity
+// on the publish session, for the native broadcasters. This page shows a
+// server's screening in the server picker instead, so the pipeline reads the
+// stream and drops it: no warning, and nothing disturbed.
+describe('BroadcastPipeline relay identity (R40)', () => {
+  it("drops a screening relay's identity quietly", async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const identity = encodeRelayIdentity({
+      serverVersion: '1.42.0',
+      name: 'gawk home',
+      notices: RELAY_NOTICE_SCREENING,
+    });
+    // The identity first, then the announce: once the code is out and a
+    // macrotask has passed, both streams have been read (they're in memory).
+    const fake = makeFakeWT([identity.subarray(0, 5), identity.subarray(5)], [[ANNOUNCE_K7XQ2M]]);
+    connectWebTransport.mockResolvedValue(fake.wt);
+    startCapture.mockResolvedValue(makeCaptureHandle());
+    const cbs = makeCallbacks();
+    const pipeline = makePipeline(cbs);
+    await pipeline.start();
+    await vi.waitFor(() => expect(cbs.onBroadcastId).toHaveBeenCalledWith('K7XQ2M'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).not.toHaveBeenCalled();
+    expect(cbs.onError).not.toHaveBeenCalled();
+    expect(cbs.onEnded).not.toHaveBeenCalled();
+    await pipeline.stop();
+    warn.mockRestore();
   });
 });
 

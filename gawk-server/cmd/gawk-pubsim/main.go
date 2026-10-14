@@ -109,8 +109,14 @@ func run() error {
 	// which is what the striped e2e pass needs — and only that pass: every
 	// other tier-1 step keeps the small clip so its cost and flake profile
 	// stay untouched.
+	// R40 (docs/71 CF8): `magenta` is the screening fixture — 45 s of solid
+	// magenta then 45 s of solid grey at the default 30 fps, looped, so one
+	// publisher session trips a screening window (the test model scores
+	// magenta as the flagged label) and then clears it. The dev stack and the
+	// screening assertions rely on those phase lengths.
 	fixtureName := flag.String("fixture", "default",
-		"committed clip to publish: default (320x240) or large (720p noise, >8-chunk deltas — the R30 striping fixture)")
+		"committed clip to publish: default (320x240), large (720p noise, >8-chunk deltas — the R30 striping fixture) "+
+			"or magenta (R40 screening: 45 s solid magenta then 45 s solid grey at 30 fps, looped; 1350 frames per phase at other rates)")
 	// R42 rooms.
 	roomNew := flag.Bool("room-new", false, "mint a room from this broadcast and print `ROOM <CODE> <creatorTokenHex>` on stdout")
 	room := flag.String("room", "", "attach this broadcast to an existing room (code or slug)")
@@ -127,16 +133,7 @@ func run() error {
 		*secret = os.Getenv("GAWK_SECRET")
 	}
 
-	ts := fixture.TS
-	switch *fixtureName {
-	case "default":
-	case "large":
-		ts = fixture.TSLarge
-	default:
-		return fmt.Errorf("unknown -fixture %q (want default or large)", *fixtureName)
-	}
-
-	aus, err := pubsim.Demux(ts)
+	aus, err := fixtureAUs(*fixtureName)
 	if err != nil {
 		return err
 	}
@@ -259,6 +256,24 @@ func run() error {
 // roomLine is the -room-new stdout contract: `ROOM <CODE> <creatorTokenHex>`
 // followed by a newline, the code upper-cased so a harness can compare it
 // without normalizing (dynamic codes are case-insensitive, docs/44 §4.2).
+// fixtureAUs demuxes the named committed clip into the access units the
+// source loops.
+func fixtureAUs(name string) ([]engine.AccessUnit, error) {
+	switch name {
+	case "default":
+		return pubsim.Demux(fixture.TS)
+	case "large":
+		return pubsim.Demux(fixture.TSLarge)
+	case "magenta":
+		aus, err := pubsim.Demux(fixture.TSMagenta)
+		if err != nil {
+			return nil, err
+		}
+		return pubsim.PhasedLoop(aus, pubsim.MagentaPhaseFrames)
+	}
+	return nil, fmt.Errorf("unknown -fixture %q (want default, large or magenta)", name)
+}
+
 func roomLine(code, creatorTokenHex string) string {
 	return fmt.Sprintf("ROOM %s %s\n", strings.ToUpper(code), creatorTokenHex)
 }

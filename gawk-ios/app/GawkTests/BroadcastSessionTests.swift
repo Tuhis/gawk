@@ -41,6 +41,48 @@ final class BroadcastSessionTests: XCTestCase {
         BroadcastSession(identity: IdentityStore(service: "fi.ioio.gawk.tests.\(UUID().uuidString)"))
     }
 
+    /// R40 (docs/71 D13): the publish session's screening notice is about the
+    /// relay that sent it, and only while its broadcast is up. Another
+    /// server, a broadcast that has ended or stopped, and the next start say
+    /// nothing (PR #500 review: Settings marked whichever server was
+    /// selected, until the next broadcast started).
+    func testTheScreeningNoticeIsTheBroadcastsRelaysAlone() {
+        let s = session()
+        s.start(
+            relayURL: relay, secret: "", quality: .standard,
+            nickname: "", telemetry: false, insecure: true
+        )
+        s.setScreening(true)
+        XCTAssertTrue(s.screens(relay: relay))
+        XCTAssertFalse(s.screens(relay: "https://other.example:4433"), "another server")
+        s.setScreening(false)
+        XCTAssertFalse(s.screens(relay: relay), "the relay took it back")
+        s.setScreening(true)
+        s.apply(.ended(error: nil, reclaimStatus: nil))
+        XCTAssertFalse(s.screens(relay: relay), "the broadcast ended")
+        s.stop()
+    }
+
+    func testStopAndTheNextStartForgetTheScreeningNotice() {
+        let s = session()
+        s.start(
+            relayURL: relay, secret: "", quality: .standard,
+            nickname: "", telemetry: false, insecure: true
+        )
+        s.setScreening(true)
+        s.stop()
+        XCTAssertFalse(s.screens(relay: relay), "stopped")
+        s.apply(.ended(error: nil, reclaimStatus: nil))
+
+        s.start(
+            relayURL: relay, secret: "", quality: .standard,
+            nickname: "", telemetry: false, insecure: true
+        )
+        XCTAssertFalse(s.screens(relay: relay), "a new broadcast, until its session says so")
+        s.apply(.ended(error: nil, reclaimStatus: nil))
+        s.stop()
+    }
+
     func testStopAnswersAtOnceAndALateLiveDoesNotUndoIt() {
         let s = session()
         s.apply(.live(code: "AB2CD3", joinLink: "https://gawk.ioio.fi/#/AB2CD3"))

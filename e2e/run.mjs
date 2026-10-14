@@ -49,6 +49,14 @@
 //                             out of the room (the relay keeps attachments
 //                             across a session end) with the broadcast still
 //                             live.
+//   node run.mjs --screening-notice
+//                             R40 CF7 (docs/71 D13) — the relay runs with
+//                             -screening-notice, the server picker's probe
+//                             must mark the deployment's row "Content
+//                             screening", and the Z5 browser broadcaster must
+//                             go LIVE with nothing about it on its screen. The
+//                             --browser-broadcast pass is the control: no
+//                             flag, no mark.
 //   node run.mjs --muxer-check
 //                             R22 MF1 (docs/27 Decision 10) — the production
 //                             fMP4 muxer's output must PLAY in a real Chrome
@@ -100,6 +108,15 @@ const ROOMS_CHECK = process.argv.includes('--rooms');
 // relay needs a -rooms-file source, and the publisher has to be the BROWSER
 // (the state only exists for a participant that brought a stream of its own).
 const ROOMS_GATED_CHECK = process.argv.includes('--rooms-gated');
+// R40 (docs/71 D13, CF7): a server's content screening. Its own mode — the
+// relay needs -screening-notice — and the --browser-broadcast pass is the
+// control: its relay runs without it, so the server picker shows no mark.
+const SCREENING_NOTICE_CHECK = process.argv.includes('--screening-notice');
+// The mark and its tooltip, restated from gawk-app/src/features/servers/
+// screening.ts: the harness asserts what a broadcaster reads, not what the
+// code imports.
+const SCREENING_LABEL = 'Content screening';
+const SCREENING_NOTICE_TEXT = 'This server automatically screens streams for explicit content.';
 // The gated room the pass writes into that file. The code follows the
 // broadcast-ID alphabet like every room code; the secret is a fixture, not a
 // credential — it never leaves this harness's temp file.
@@ -1380,7 +1397,13 @@ async function desktopHandoffCheck({ relayUrl, certHash }) {
     const linkPage = await linkContext.newPage();
     wirePageLogs(linkPage, 'console-desktop-handoff-link');
     await linkPage.goto(`${APP_URL}/#/broadcast?room=vip-e2e-handoff&desktop=1`);
-    await linkPage.getByRole('dialog', { name: 'Opening the desktop app' }).waitFor({ state: 'visible', timeout: 5000 });
+    // The dialog is the mount's first render, so this wait starts at the
+    // load event and covers the whole cold boot of a fresh browser — the
+    // offer's 5 s above starts after a click whose own auto-wait already
+    // absorbed it. Boot-sized like every other first wait in this file:
+    // under a 25% CPU quota the dialog shows at 7-8 s, and 5 s failed CI
+    // runs that the next attempt passed.
+    await linkPage.getByRole('dialog', { name: 'Opening the desktop app' }).waitFor({ state: 'visible', timeout: 15_000 });
     await sleep(1000);
     await assertStillHere(linkPage, '?desktop=1');
     if (linkPage.url().includes('desktop=')) fail('desktop handoff: ?desktop= was not stripped from the URL');
@@ -1430,11 +1453,68 @@ async function broadcasterScenario({ relayUrl, certHash, attempt }) {
     await sleep(SAMPLE_GAP_MS);
     const diag2 = await captureDiagnostics(page, `broadcast-diagnostics-${attempt}-2`);
     assertBroadcastFlow(diag1, diag2);
+    // R40 control (docs/71 D13): this relay runs without -screening-notice,
+    // so the server picker's probe of it carries no screening bit and its row
+    // shows no mark.
+    const picker = await openServerPicker(page.context());
+    try {
+      if (picker.marks !== 0) {
+        fail('the server picker marks content screening on a relay without -screening-notice');
+      }
+    } finally {
+      await picker.page.close();
+    }
 
     return { browser, id };
   } catch (err) {
     await browser.close();
     throw err;
+  }
+}
+
+// R40 (docs/71 D13): the server picker, opened from the landing page's chip
+// in a new page of `context`, once the deployment's own row has its probe
+// result: how many content-screening marks that row shows, and the first
+// one's text and tooltip. The row's latency ends the wait either way, since
+// the mark comes from the same probe.
+async function openServerPicker(context) {
+  const page = await context.newPage();
+  await page.goto(`${APP_URL}/#/`);
+  await page.getByRole('button', { name: 'Choose server' }).click();
+  const row = page.getByRole('option', { name: /This deployment/ });
+  await row.getByText(/\d+ ms/).waitFor({ state: 'visible', timeout: 15_000 });
+  const mark = row.getByTestId('server-screening');
+  const marks = await mark.count();
+  return {
+    page,
+    marks,
+    text: marks > 0 ? ((await mark.first().textContent()) ?? '').trim() : '',
+    title: marks > 0 ? await mark.first().getAttribute('title') : null,
+  };
+}
+
+// R40 (docs/71 D13, CF7): a relay started with -screening-notice says so to
+// the server picker's probe, and the picker marks the deployment's row
+// "Content screening" — the one place the web app says it. The broadcast
+// screen says nothing, and going live is never held up by it.
+async function screeningNoticePass({ relayUrl, certHash }) {
+  const { browser, page, id } = await startBrowserBroadcast({ relayUrl, certHash, attempt: 'screening' });
+  try {
+    for (const words of [SCREENING_LABEL, SCREENING_NOTICE_TEXT]) {
+      if ((await page.getByText(words).count()) !== 0) {
+        fail(`the broadcast screen shows "${words}"; it belongs in the server picker`);
+      }
+    }
+    const picker = await openServerPicker(page.context());
+    if (picker.marks !== 1) fail(`the deployment's row shows ${picker.marks} screening marks, want 1`);
+    if (picker.text !== SCREENING_LABEL) fail(`the mark reads "${picker.text}", want "${SCREENING_LABEL}"`);
+    if (picker.title !== SCREENING_NOTICE_TEXT) {
+      fail(`the mark's tooltip reads "${picker.title}", want "${SCREENING_NOTICE_TEXT}"`);
+    }
+    log(`the server picker marks content screening; ${id} went live with nothing on its screen`);
+    writeFileSync(join(OUT, 'server-picker-screening.png'), await picker.page.screenshot());
+  } finally {
+    await browser.close();
   }
 }
 
@@ -1984,6 +2064,9 @@ async function main() {
     if (TELEMETRY_CHECK) relayArgs.push('-telemetry-key', TELEMETRY_KEY);
     // R42: the room routes exist only with the flag on (docs/44 D17).
     if (ROOMS_CHECK || ROOMS_GATED_CHECK) relayArgs.push('-rooms');
+    // R40: the screening notice is off unless asked for; every other pass is
+    // its control.
+    if (SCREENING_NOTICE_CHECK) relayArgs.push('-screening-notice');
     // R42 D8: the static room, from the file source — the shape an operator
     // writes where there is no Kubernetes API, and the only way to get a
     // gated room without a cluster.
@@ -2039,7 +2122,7 @@ async function main() {
       log(`telemetry service up: ingest :${TM_INGEST_PORT}, read :${TM_READ_PORT}`);
     }
 
-    if (!BROWSER_BROADCAST && !ROOMS_CHECK && !ROOMS_GATED_CHECK) {
+    if (!BROWSER_BROADCAST && !ROOMS_CHECK && !ROOMS_GATED_CHECK && !SCREENING_NOTICE_CHECK) {
       const pubsim = launch('pubsim', PUBSIM_BIN, [
         '-url', relayUrl,
         '-insecure',
@@ -2073,6 +2156,13 @@ async function main() {
   // it needs the preview server too.
   if (ROOMS_GATED_CHECK) {
     await roomsGatedPass({ relayUrl, certHash, opsUrl });
+    log('PASS');
+    return;
+  }
+
+  // R40: the browser is the publisher, so it needs the preview server too.
+  if (SCREENING_NOTICE_CHECK) {
+    await screeningNoticePass({ relayUrl, certHash });
     log('PASS');
     return;
   }

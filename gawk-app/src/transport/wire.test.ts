@@ -24,6 +24,8 @@ import {
   TELEMETRY_HELLO_SIZE,
   encodeRelayIdentity,
   parseRelayIdentity,
+  RELAY_NOTICE_SCREENING,
+  relayScreens,
   encodeTelemetryEndpoint,
   parseTelemetryEndpoint,
   TELEMETRY_SESSION_ID_LEN,
@@ -980,6 +982,8 @@ describe('StripeState (R30)', () => {
 
 const GOLDEN_RELAY_IDENTITY_HEX = '01110006312e34322e30096761776b20686f6d65';
 const GOLDEN_RELAY_IDENTITY_NO_NAME_HEX = '01110006312e34322e3000';
+// R40 (docs/71 §9.3): the same identity with the screening notice appended.
+const GOLDEN_RELAY_IDENTITY_SCREENING_HEX = '01110006312e34322e30096761776b20686f6d6501';
 const GOLDEN_TELEMETRY_ENDPOINT_HEX =
   '011200003068747470733a2f2f6761776b2e6578616d706c652e636f6d2f6170692f74656c656d657472792f76312f696e67657374';
 const GOLDEN_TELEMETRY_ENDPOINT_URL = 'https://gawk.example.com/api/telemetry/v1/ingest';
@@ -992,26 +996,47 @@ describe('relay identity (0x11)', () => {
     expect(toHex(encodeRelayIdentity({ serverVersion: '1.42.0', name: '' }))).toBe(
       GOLDEN_RELAY_IDENTITY_NO_NAME_HEX,
     );
+    // Notices 0 writes no byte: a relay with the notice off stays identical
+    // to the pre-R40 shape.
+    expect(toHex(encodeRelayIdentity({ serverVersion: '1.42.0', name: 'gawk home', notices: 0 }))).toBe(
+      GOLDEN_RELAY_IDENTITY_HEX,
+    );
+    expect(
+      toHex(
+        encodeRelayIdentity({ serverVersion: '1.42.0', name: 'gawk home', notices: RELAY_NOTICE_SCREENING }),
+      ),
+    ).toBe(GOLDEN_RELAY_IDENTITY_SCREENING_HEX);
   });
 
   it('parses the golden vectors', () => {
     expect(parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_HEX))).toEqual({
       serverVersion: '1.42.0',
       name: 'gawk home',
+      notices: 0,
     });
     expect(parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_NO_NAME_HEX))).toEqual({
       serverVersion: '1.42.0',
       name: '',
+      notices: 0,
     });
+    const screening = parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_SCREENING_HEX));
+    expect(screening).toEqual({ serverVersion: '1.42.0', name: 'gawk home', notices: RELAY_NOTICE_SCREENING });
+    expect(relayScreens(screening)).toBe(true);
+    expect(relayScreens(parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_HEX)))).toBe(false);
   });
 
-  // The extension-point contract: trailing bytes parse as if
-  // absent — appended future fields must not break this build.
+  // The extension-point contract: trailing bytes still parse. Since R40 the
+  // first of them is the notices byte; everything after it is ignored, and
+  // unknown notice bits are not an error.
   it('tolerates trailing extension bytes', () => {
     expect(parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_HEX + 'a1b2c3'))).toEqual({
       serverVersion: '1.42.0',
       name: 'gawk home',
+      notices: 0xa1,
     });
+    // 0xa1 has bit 0 set; 0xa2 does not, and its other bits mean nothing yet.
+    expect(relayScreens(parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_HEX + 'a1b2c3')))).toBe(true);
+    expect(relayScreens(parseRelayIdentity(fromHex(GOLDEN_RELAY_IDENTITY_HEX + 'a2')))).toBe(false);
   });
 
   it('rejects nonzero flags and length overruns', () => {

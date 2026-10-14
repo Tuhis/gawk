@@ -44,6 +44,7 @@ const PRESETS: readonly { label: string; seconds: number }[] = [
 export function KillDialog({
   broadcast,
   defaultCooldownSeconds,
+  initialReason = '',
   busy = false,
   error = null,
   onCancel,
@@ -51,12 +52,18 @@ export function KillDialog({
 }: {
   broadcast: Broadcast;
   defaultCooldownSeconds: number;
+  /**
+   * A starting reason the operator can edit — a kill from a content flag's
+   * strip names the flag, so the audit trail links the two (R40). Seeded once,
+   * when the dialog opens, like the cooldown.
+   */
+  initialReason?: string;
   busy?: boolean;
   error?: string | null;
   onCancel: () => void;
   onConfirm: (draft: KillRequestDraft) => void;
 }) {
-  const [reason, setReason] = useState('');
+  const [reason, setReason] = useState(initialReason);
   const [cooldown, setCooldown] = useState(String(defaultCooldownSeconds));
   const [complaint, setComplaint] = useState<string | null>(null);
 

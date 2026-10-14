@@ -93,6 +93,17 @@ func poisonedEvent(eventType string) store.Event {
 		store.PayloadRoomKey:     poisonRoomCode,
 		store.PayloadDisplayCode: poisonRoomSlug,
 		"attachSecret":           poisonAttachSecret,
+		// The R40 keys (docs/71 D16), each well-formed so every flag type
+		// renders, and the sampler ID planted with an address: a sampler is
+		// named by its pod, and an ID that IS an address is refused.
+		store.PayloadFlagID:     7,
+		store.PayloadSamplerID:  poisonRawIPv4,
+		store.PayloadResolution: "killed",
+		store.PayloadSignal:     "live",
+		store.PayloadReminder:   1,
+		store.PayloadRaisedAt:   "2026-08-20T15:00:00Z",
+		store.PayloadLabels:     []string{"FEMALE_GENITALIA_EXPOSED"},
+		store.PayloadScreening:  "exempt",
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -201,7 +212,7 @@ func TestNoIPOrStraySecretInAnyDelivery(t *testing.T) {
 			}
 			envelope, data := decode(t, body)
 			summaryNamesOnlyItsOwnEvent(t, envelope, data)
-			typ, ok := events.ModerationType(eventType)
+			typ, ok := store.CloudEventsType(eventType)
 			if !ok || envelope["type"] != typ {
 				t.Errorf("type = %v, want %s", envelope["type"], typ)
 			}
@@ -299,6 +310,11 @@ func assertProjected(t *testing.T, typ string, data map[string]any) {
 func TestSummaryPresentWithoutOneInThePayload(t *testing.T) {
 	const column = "ABC234"
 	for _, eventType := range storeEventTypes(t) {
+		if eventType == store.EventContentFlagResolved {
+			// Refused outright without its resolution, which has no safe
+			// default: TestAResolvedFlagWithoutAResolutionIsRefused.
+			continue
+		}
 		t.Run(eventType, func(t *testing.T) {
 			ev := poisonedEvent(eventType)
 			ev.BroadcastID = column
@@ -583,6 +599,91 @@ func TestAnUnknownRowTypeIsRefused(t *testing.T) {
 	}
 }
 
+// A resolution is required and has no safe default — "ended" for a kill, or
+// "cleared" for a dismissal, would each tell the receiver something false.
+func TestAResolvedFlagWithoutAResolutionIsRefused(t *testing.T) {
+	ev := poisonedEvent(store.EventContentFlagResolved)
+	ev.Payload = json.RawMessage(`{"summary":"content flag resolved","resolution":"vanished"}`)
+	if _, err := buildEvent(ev, ""); err == nil {
+		t.Fatal("buildEvent delivered a content_flag.resolved with no resolution it knows")
+	}
+}
+
+// docs/71 D16, D8: a flag event carries the flag's scores and metadata,
+// each read through the store's closed accessor, and validates against its
+// schema — observed included, built from the same named fields.
+func TestContentFlagEventsCarryTheFlagThroughClosedAccessors(t *testing.T) {
+	payload := map[string]any{
+		store.PayloadSummary:   "content flag raised on broadcast ABC234",
+		store.PayloadFlagID:    42,
+		store.PayloadSamplerID: "gawk-sampler-1",
+		store.PayloadWindow:    map[string]any{"start": "2026-09-17T11:59:35Z", "end": "2026-09-17T12:00:00Z", "samples": 6, "flaggedSamples": 4},
+		store.PayloadScores:    map[string]any{"max": 0.97, "mean": 0.81},
+		// One label well-formed, one not: the accessor drops what is not
+		// a detector label rather than forwarding free text.
+		store.PayloadLabels:     []string{"FEMALE_GENITALIA_EXPOSED", "<script>"},
+		store.PayloadResolution: "auto_killed",
+		store.PayloadReason:     "deadline",
+		store.PayloadSignal:     "unknown",
+		store.PayloadReminder:   3,
+		store.PayloadRaisedAt:   "2026-09-17T11:40:00Z",
+	}
+	raw, _ := json.Marshal(payload)
+	for _, typ := range []string{store.EventContentFlag, store.EventContentFlagObserved, store.EventContentFlagReminded, store.EventContentFlagResolved} {
+		t.Run(typ, func(t *testing.T) {
+			ev := store.Event{ID: 9, Type: typ, OccurredAt: time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC),
+				Actor: "service-account-gawk-sampler", BroadcastKey: "3f9a1c2b4d5e", BroadcastID: "ABC234", Payload: raw}
+			if typ == store.EventContentFlagObserved {
+				ev.Category = store.CategoryScreening
+			}
+			envelope, data := decode(t, render(t, ev, "https://admin.example.com"))
+			cloud, _ := store.CloudEventsType(typ)
+			if envelope["type"] != cloud || envelope["subject"] != "ABC234" {
+				t.Fatalf("envelope = %v", envelope)
+			}
+			validateData(t, cloud, data)
+			assertProjected(t, cloud, data)
+			if data["flagId"] != float64(42) {
+				t.Errorf("flagId = %v", data["flagId"])
+			}
+			switch typ {
+			case store.EventContentFlag, store.EventContentFlagObserved:
+				if labels, _ := data["labels"].([]any); len(labels) != 1 || labels[0] != "FEMALE_GENITALIA_EXPOSED" {
+					t.Errorf("labels = %v, want only the well-formed one", data["labels"])
+				}
+				if w, _ := data["window"].(map[string]any); w["flaggedSamples"] != float64(4) {
+					t.Errorf("window = %v", data["window"])
+				}
+			case store.EventContentFlagReminded:
+				if data["signal"] != "unknown" || data["reminder"] != float64(3) {
+					t.Errorf("reminded data = %v", data)
+				}
+			case store.EventContentFlagResolved:
+				if data["resolution"] != "auto_killed" || data["reason"] != "deadline" {
+					t.Errorf("resolved data = %v", data)
+				}
+			}
+		})
+	}
+}
+
+// room.screening_changed carries the value through its closed vocabulary; an
+// unreadable value reads as screened, which claims no exemption.
+func TestRoomScreeningChangedCarriesTheValue(t *testing.T) {
+	for in, want := range map[string]string{"exempt": "exempt", "screened": "screened", "off": "screened"} {
+		ev := roomEvent(store.EventRoomScreeningChanged, "static", "9c1d2e3f4a5b", "op@example.com")
+		var p map[string]any
+		_ = json.Unmarshal(ev.Payload, &p)
+		p[store.PayloadScreening] = in
+		ev.Payload, _ = json.Marshal(p)
+		_, data := decode(t, render(t, ev, "https://admin.example.com"))
+		if data["screening"] != want {
+			t.Errorf("screening %q delivered as %v, want %q", in, data["screening"], want)
+		}
+		validateData(t, "fi.ioio.gawk.room.screening_changed", data)
+	}
+}
+
 // storeEventTypes parses internal/store's non-test sources and returns the
 // value of every exported `Event*` string constant.
 //
@@ -640,9 +741,12 @@ func storeEventTypes(t *testing.T) []string {
 	// moderation CloudEvents type and buildEvent rightly refuses it. Drop
 	// them — and assert the dropped set is exactly the activity vocabulary,
 	// so this cannot quietly swallow a moderation type somebody forgot to map.
+	// R40's content_flag.observed is a screening row, not a moderation one,
+	// but gawk-admin builds it from named fields like the moderation rows —
+	// so it is deliverable here and must pass every check they pass.
 	var deliverable, skipped []string
 	for _, typ := range out {
-		if _, ok := events.ModerationType(typ); ok {
+		if _, ok := events.ModerationType(typ); ok || slices.Contains(store.ScreeningEventTypes(), typ) {
 			deliverable = append(deliverable, typ)
 			continue
 		}
@@ -658,7 +762,8 @@ func storeEventTypes(t *testing.T) []string {
 
 	// A parse that silently found nothing would make every D8 case vacuous.
 	for _, want := range []string{"broadcast.killed", "ban.created", "ban.expired", "ban.removed", "content_flag.raised",
-		"room.created", "room.ended", "room.secret_rotated"} {
+		"content_flag.reminded", "content_flag.resolved", "content_flag.observed",
+		"room.created", "room.ended", "room.secret_rotated", "room.screening_changed"} {
 		if !slices.Contains(out, want) {
 			t.Fatalf("event type %q not found in internal/store; parsed: %v", want, out)
 		}

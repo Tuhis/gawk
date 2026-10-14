@@ -81,6 +81,26 @@ const (
 	// reconnecting there. It follows a room.home_changed published by the NEW
 	// home, and the joins that follow carry rejoin: true — nobody left.
 	ParticipantLeftHomeMoved = "home_moved"
+
+	// How a content flag ended (R40, docs/71 D9). Every flag ends in exactly
+	// one of them, carried by content_flag.resolved.
+	ContentFlagResolutionCleared    = "cleared"
+	ContentFlagResolutionDismissed  = "dismissed"
+	ContentFlagResolutionKilled     = "killed"
+	ContentFlagResolutionAutoKilled = "auto_killed"
+	ContentFlagResolutionEnded      = "ended"
+
+	// The state of a flag's signal when it is re-paged (docs/71 D9): live
+	// while the sampler keeps reporting the window tripped, unknown once it
+	// has gone quiet for longer than the portal's stale-after. A silent
+	// sampler is not evidence of a clean broadcast, so both re-page.
+	ContentFlagSignalLive    = "live"
+	ContentFlagSignalUnknown = "unknown"
+
+	// A room's screening (docs/71 D11): exempt from the sampler, or screened
+	// like every other broadcast.
+	RoomScreeningExempt   = "exempt"
+	RoomScreeningScreened = "screened"
 )
 
 // ---------------------------------------------------------------------------
@@ -133,14 +153,77 @@ type BanRemovedData struct {
 	Delivery
 }
 
-// ContentFlagRaisedData is `fi.ioio.gawk.content_flag.raised` — reserved for
-// R40 (docs/42 §4.11), fixed here so the vocabulary exists before anything
-// produces it.
+// ContentFlagRaisedData is `fi.ioio.gawk.content_flag.raised`: a sampler's
+// window tripped on a broadcast and a flag was raised (R40, docs/71 D9). The
+// webhook IS the page. `fi.ioio.gawk.content_flag.observed` carries the same
+// shape for a sampler in observe mode, which pages nobody unless asked.
+//
+// Scores and metadata only — never a frame, never a thumbnail (docs/71 D8).
+// The four R40 fields are additive to the shape docs/42 §4.11 reserved.
 type ContentFlagRaisedData struct {
+	// Actor is the sampler's service identity.
 	Actor        string `json:"actor"`
 	BroadcastKey string `json:"broadcastKey,omitempty"`
 	BroadcastID  string `json:"broadcastId,omitempty"`
 	Reason       string `json:"reason,omitempty"`
+	// FlagID identifies the flag in the portal; reminded and resolved carry
+	// the same number.
+	FlagID    int64              `json:"flagId,omitempty"`
+	SamplerID string             `json:"samplerId,omitempty"`
+	Window    *ContentFlagWindow `json:"window,omitempty"`
+	Scores    *ContentFlagScores `json:"scores,omitempty"`
+	// Labels are the detector labels that fired in the window.
+	Labels []string `json:"labels,omitempty"`
+	Delivery
+}
+
+// ContentFlagWindow is the sampler's window when the flag was raised.
+type ContentFlagWindow struct {
+	// Start and End are RFC 3339 UTC.
+	Start          string `json:"start"`
+	End            string `json:"end"`
+	Samples        int    `json:"samples"`
+	FlaggedSamples int    `json:"flaggedSamples"`
+}
+
+// ContentFlagScores are the window's highest and mean sample score, 0–1.
+type ContentFlagScores struct {
+	Max  float64 `json:"max"`
+	Mean float64 `json:"mean"`
+}
+
+// ContentFlagRemindedData is `fi.ioio.gawk.content_flag.reminded`: a flag is
+// still open — nobody has acknowledged it — and its signal is live or unknown
+// (docs/71 D9). Sent every -content-flag-repage until someone acts.
+type ContentFlagRemindedData struct {
+	// Actor is `system`: the portal re-pages on its own.
+	Actor        string `json:"actor"`
+	BroadcastKey string `json:"broadcastKey,omitempty"`
+	BroadcastID  string `json:"broadcastId,omitempty"`
+	FlagID       int64  `json:"flagId,omitempty"`
+	// RaisedAt is when the flag was raised, RFC 3339 UTC.
+	RaisedAt string `json:"raisedAt,omitempty"`
+	// Reminder counts this flag's reminders, 1 for the first.
+	Reminder int `json:"reminder"`
+	// Signal is ContentFlagSignalLive or ContentFlagSignalUnknown.
+	Signal string `json:"signal"`
+	Delivery
+}
+
+// ContentFlagResolvedData is `fi.ioio.gawk.content_flag.resolved`: a flag
+// ended, by the sampler clearing it, an operator dismissing it or killing the
+// broadcast, an automatic kill, or the publisher session ending (docs/71 D9).
+type ContentFlagResolvedData struct {
+	// Actor is the operator, the sampler's identity for a clear, or
+	// `system` (`system:content-flag` for an automatic kill).
+	Actor        string `json:"actor"`
+	BroadcastKey string `json:"broadcastKey,omitempty"`
+	BroadcastID  string `json:"broadcastId,omitempty"`
+	FlagID       int64  `json:"flagId,omitempty"`
+	// Resolution is one of the ContentFlagResolution* values.
+	Resolution string `json:"resolution"`
+	// Reason qualifies it: `deadline` or `policy` for an automatic kill.
+	Reason string `json:"reason,omitempty"`
 	Delivery
 }
 
@@ -182,6 +265,21 @@ type RoomSecretRotatedData struct {
 	RoomCode    string `json:"roomCode,omitempty"`
 	DisplayCode string `json:"displayCode,omitempty"`
 	Kind        string `json:"kind,omitempty"`
+	Delivery
+}
+
+// RoomScreeningChangedData is `fi.ioio.gawk.room.screening_changed`: an
+// operator exempted a static room from content screening, or put it back
+// (docs/71 D11). Its audit trail is this event.
+type RoomScreeningChangedData struct {
+	Actor       string `json:"actor"`
+	RoomKey     string `json:"roomKey,omitempty"`
+	RoomCode    string `json:"roomCode,omitempty"`
+	DisplayCode string `json:"displayCode,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	// Screening is RoomScreeningExempt or RoomScreeningScreened: the value
+	// after the change.
+	Screening string `json:"screening"`
 	Delivery
 }
 

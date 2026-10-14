@@ -163,6 +163,47 @@ type RoomSpec struct {
 	MaxBroadcasts int `json:"maxBroadcasts,omitempty"`
 	// Integrations is reserved (docs/44 D18, §4.11); empty in v1.
 	Integrations Integrations `json:"integrations,omitempty"`
+	// Screening is ScreeningExempt to exempt the room's broadcasts from R40's
+	// content screening, or empty (docs/71 D11). Only a static room with an
+	// attach secret may be exempt — ValidateScreening and
+	// ScreeningExempt both hold that rule, so a CR applied by hand that breaks
+	// it is screened anyway.
+	Screening string `json:"screening,omitempty"`
+}
+
+// ScreeningExempt is the one non-empty RoomSpec.Screening value.
+const ScreeningExempt = "exempt"
+
+// ErrScreeningNotAllowed is returned (wrapped) for an exemption the room's
+// shape does not allow.
+var ErrScreeningNotAllowed = errors.New("rooms: only a static room with an attach secret can be exempt from screening")
+
+// ValidateScreening checks spec.Screening against the room's shape (docs/71
+// D11): empty is always valid, ScreeningExempt only on a static room whose
+// attach secret makes "my friends' room" a trust boundary — an open or
+// dynamic room could be joined by anyone, so exempting it would hand an
+// abuser an unscreened lane. Anything else is an unknown value.
+func ValidateScreening(spec RoomSpec) error {
+	switch spec.Screening {
+	case "":
+		return nil
+	case ScreeningExempt:
+		if spec.Kind != KindStatic || spec.AttachSecretRef == nil ||
+			spec.AttachSecretRef.Name == "" || spec.AttachSecretRef.Key == "" {
+			return ErrScreeningNotAllowed
+		}
+		return nil
+	default:
+		return fmt.Errorf("rooms: unknown screening %q (want %q or empty)", spec.Screening, ScreeningExempt)
+	}
+}
+
+// ScreeningExempt reports whether broadcasts attached to the room skip
+// content screening. It fails closed: a room whose spec does not pass
+// ValidateScreening — a dynamic room someone marked exempt with kubectl, a
+// static one whose secret reference was removed — is screened.
+func (r *Room) ScreeningExempt() bool {
+	return r != nil && r.Spec.Screening == ScreeningExempt && ValidateScreening(r.Spec) == nil
 }
 
 // SecretKeyRef points at one key of a Kubernetes Secret in the room's

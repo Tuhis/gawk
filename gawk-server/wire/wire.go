@@ -204,10 +204,13 @@ const (
 	// §4.4): relay→client on a server-opened unidirectional stream at
 	// /echo session start, carrying the relay's release version and an
 	// operator-set display name so a server picker can label a probed
-	// relay. Echo-route only in R37 — publish/subscribe sessions stay
-	// byte-identical. The browser WebTransport API exposes no response
-	// headers (the ResumeToken/TelemetryHello precedent), so identity is
-	// in-band.
+	// relay. Since R40 (docs/71 D13, §9.3) it also carries a notices byte,
+	// and a relay with -screening-notice on sends it on PUBLISH sessions
+	// too, so every broadcaster learns it is screened from the one session
+	// it always opens. With the knob off, publish sessions stay
+	// byte-identical; subscribe and /internal/subscribe never receive it.
+	// The browser WebTransport API exposes no response headers (the
+	// ResumeToken/TelemetryHello precedent), so identity is in-band.
 	//
 	// Deliberate deviation from house parser strictness (docs/40 §4.4,
 	// stated there so it survives review): TRAILING BYTES ARE TOLERATED —
@@ -1114,6 +1117,8 @@ func ParseStreamFrameHeader(buf []byte) (StreamFrameHeader, error) {
 //	          bytes of printable-ASCII release version ("1.42.0")
 //	next      uint8 nameLen (0–MaxRelayIdentityNameLen), then that many bytes
 //	          of valid UTF-8 operator display name (empty = unset)
+//	next      uint8 notices (R40, docs/71 §9.3) — OPTIONAL: written only
+//	          when non-zero, absent reads as 0
 //	rest      reserved extension bytes — ignored by parsers (see the type
 //	          constant's doc comment for why this deviates from house
 //	          strictness)
@@ -1124,12 +1129,24 @@ type RelayIdentity struct {
 	// Attacker-influenced trust UI: renderers sanitize and never show it in
 	// place of the host (docs/40 §4.4 F6).
 	Name string
+	// Notices is a bit set of things the relay tells every broadcaster
+	// (RelayNotice*). An appended field, not the flags byte: bits a parser
+	// does not know are IGNORED, so a newer relay's notice never breaks an
+	// older reader. Zero is not written, which keeps a relay with no notice
+	// byte-identical to an R37 one.
+	Notices uint8
 }
+
+// RelayNoticeScreening is the Notices bit a relay sets when its operator
+// screens streams for explicit content (docs/71 D13, -screening-notice).
+// Broadcaster surfaces show one line for it; it is a notice, never a gate.
+const RelayNoticeScreening uint8 = 0x01
 
 // AppendRelayIdentity appends a RelayIdentity message encoding id to dst and
 // returns the extended slice. It returns ErrBadRelayIdentity for an empty or
 // oversize version, a non-printable-ASCII version, an oversize name, or a
-// name that is not valid UTF-8.
+// name that is not valid UTF-8. The notices byte is appended only when
+// id.Notices is non-zero.
 func AppendRelayIdentity(dst []byte, id RelayIdentity) ([]byte, error) {
 	if len(id.ServerVersion) == 0 || len(id.ServerVersion) > MaxRelayIdentityVersionLen {
 		return nil, fmt.Errorf("%w: version %d bytes, want 1-%d", ErrBadRelayIdentity, len(id.ServerVersion), MaxRelayIdentityVersionLen)
@@ -1149,13 +1166,17 @@ func AppendRelayIdentity(dst []byte, id RelayIdentity) ([]byte, error) {
 	dst = append(dst, id.ServerVersion...)
 	dst = append(dst, uint8(len(id.Name)))
 	dst = append(dst, id.Name...)
+	if id.Notices != 0 {
+		dst = append(dst, id.Notices)
+	}
 	return dst, nil
 }
 
-// ParseRelayIdentity parses a RelayIdentity message. Trailing bytes beyond
-// the name are IGNORED — they are the message's reserved extension space
-// (docs/40 §4.9) — but the flags byte is strict (reserved bits must be 0)
-// and the declared version/name must fit inside msg and pass validation.
+// ParseRelayIdentity parses a RelayIdentity message. The first byte after
+// the name, when present, is Notices (R40); bytes beyond it are IGNORED —
+// they are the message's reserved extension space (docs/40 §4.9) — but the
+// flags byte is strict (reserved bits must be 0) and the declared
+// version/name must fit inside msg and pass validation.
 func ParseRelayIdentity(msg []byte) (RelayIdentity, error) {
 	if len(msg) < 5 {
 		return RelayIdentity{}, fmt.Errorf("%w: %d bytes, need at least 5 for relay identity", ErrShortDatagram, len(msg))
@@ -1194,8 +1215,14 @@ func ParseRelayIdentity(msg []byte) (RelayIdentity, error) {
 	if !utf8.ValidString(name) {
 		return RelayIdentity{}, fmt.Errorf("%w: name is not valid UTF-8", ErrBadRelayIdentity)
 	}
-	// Bytes past the name are the reserved extension space — ignored.
-	return RelayIdentity{ServerVersion: serverVersion, Name: name}, nil
+	id := RelayIdentity{ServerVersion: serverVersion, Name: name}
+	if nameStart+nameLen < len(msg) {
+		// All eight bits are kept: a reader tests the bits it knows and
+		// ignores the rest.
+		id.Notices = msg[nameStart+nameLen]
+	}
+	// Bytes past the notices are the reserved extension space — ignored.
+	return id, nil
 }
 
 // AppendTelemetryEndpoint appends a TelemetryEndpoint message (R37, docs/40

@@ -1,0 +1,20 @@
+# The StatefulSet's governing Service, headless, and the metrics Service in
+# one: one A record per pod, so a ServiceMonitor scrapes every share rather
+# than whichever pod a ClusterIP picked. ClusterIP-only by construction — it
+# carries operational numbers, never a frame or a broadcast ID.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gawk-sampler.fullname" . }}
+  labels:
+    {{- include "gawk-sampler.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  clusterIP: None
+  selector:
+    {{- include "gawk-sampler.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP

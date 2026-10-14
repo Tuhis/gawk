@@ -1315,6 +1315,29 @@ entries still describe code `gawk-pubsim` runs (now
   "The server is full". Rooms are also off by default. `ios.yml` starts its
   relay with `-rooms`, raised caps and a long grace.
   ([docs/70](70-ios-ux-redesign.md) §10.1)
+- **`simctl bootstatus` answers about nine minutes before an iOS 27
+  Simulator's first boot is over** on a 3-core, 7 GB GitHub runner: load
+  400-500, up to 230 processes runnable. Anything with a deadline started
+  in that window can miss it: a QUIC dial, a tap, a decode count. Build
+  first, boot, then wait for the load (`gawk-ios/scripts/settle.sh`); and
+  never boot a second Simulator on the same runner. Installing an app
+  starts another round (widgets, App Shortcuts, Spotlight), so install and
+  open it before the wait, not in the test step.
+  ([docs/70](70-ios-ux-redesign.md) §10.4)
+- **The Simulator's `apsd` spins on a CI runner**, and its log traffic keeps
+  both `diagnosticd`s busy too: 1-1.5 of three cores, idle or not.
+  `gawk-ios/scripts/quiet-simulator.sh` boots it out; the app uses no push.
+  ([docs/70](70-ios-ux-redesign.md) §10.4)
+- **The engine stops resuming after five minutes, and a runner can stall
+  for longer.** Its publish session ends and its room session gives up, so
+  a fixture that leaves recovery to the engine is gone for the rest of
+  the run. `gawk-devpub` starts its session again (reclaiming the code)
+  and joins its room again; the CI relay keeps empty rooms for 60 min.
+  ([docs/70](70-ios-ux-redesign.md) §10.4)
+- **A menu item that was chosen can stay in the hierarchy, refusing taps,
+  for 10 s and more**, and a menu stalled open looks the same. Confirm a
+  choice by its effect, never by the menu's state (`choose(_:from:in:until:)`
+  in `UITestSupport.swift`). ([docs/70](70-ios-ux-redesign.md) §10.4)
 - **A crash in a value witness after small edits can be a stale
   incremental build.** In Xcode 27, `EXC_BAD_ACCESS` in `destroy for
   Banner` inside a view's body came from code compiled against an older
@@ -1374,6 +1397,12 @@ entries still describe code `gawk-pubsim` runs (now
   that may not exist** (`src/<file>/<mod>/`), and Linux will not `..` out of
   a directory that isn't there. Declare the shared test harness at the top
   of the file instead.
+- **The desktop apps ignore `SSL_CERT_FILE` and `SSL_CERT_DIR`.**
+  wtransport removes both from the environment while it reads the native
+  store, so a desktop build pointed at a dev relay with a self-made CA
+  still fails its probe and its dial. Put the CA in the system store (in a
+  container, append it to `/etc/ssl/certs/ca-certificates.crt`).
+  (2026-10-13)
 
 **The desktop window (Slint, every shell)**
 
@@ -1898,8 +1927,85 @@ entries still describe code `gawk-pubsim` runs (now
   answer that repeat instead, as the mint now does with the minter's room.
   ([docs/44](44-rooms.md) §11.1)
 
+**Content screening (R40)**
+
+- **The relay's `publisherSessionId` is empty whenever telemetry is off** —
+  it is the R28 telemetry handle, not a session identity. Anything that
+  must notice "a new publisher session" (the sampler's window reset,
+  gawk-admin's sample numbering and its `ended` resolution) keys on the
+  **publisher epoch** the hub mints on every claim instead.
+  ([docs/71](71-content-flagging.md) §9.1)
+- **NudeNet's GitHub release downloads redirect anonymous clients to a
+  sign-in page** (seen 2026-10-13; other repositories' release assets still
+  download). The chart pins the weights by the **API asset route**
+  (`api.github.com/repos/…/releases/assets/<id>`), which serves the bytes
+  only with `Accept: application/octet-stream` and JSON metadata otherwise —
+  a downloader that forgets the header gets a few hundred bytes of JSON and
+  a SHA mismatch, not an error that says why. ([docs/71](71-content-flagging.md) D5)
+- **Both NudeNet exports take any input size**, so the 640m weights load
+  and run at `-model-input 320` without complaint — only fixed-shape models
+  can be checked at load. Pair `model.url`/`model.sha256` with
+  `model.inputSize` yourself. ([docs/71](71-content-flagging.md) §9.5)
+- **ffmpeg decodes a truncated keyframe into a smeared picture and exits
+  0.** Error concealment fills in what is missing; without `-xerror` the
+  sampler would score that picture as a real frame. With it, a concealed
+  frame is a decode failure — neither counted nor windowed (D20).
+  ([docs/71](71-content-flagging.md) §9.5)
+- **A whole-frame average is diluted by the letterbox.** The model input is
+  the frame scaled to fit a square and padded with black, so a 16:9 frame
+  fills 56% of it; the test model scores its magenta share as a ratio over
+  the lit pixels, or a solid magenta 16:9 frame would score 0.56 and never
+  trip. ([docs/71](71-content-flagging.md) §9.6)
+- **ONNX Runtime's official Linux builds phone home, and 1.29.0 segfaults
+  doing it on distroless.** Telemetry to Microsoft is on by default unless
+  `ORT_DISABLE_TELEMETRY=1` is in the environment when the library
+  initializes; in an image with neither `/bin/sh` nor `/etc/machine-id` its
+  device-ID fallback `popen`s, fails, and `pclose(NULL)` kills the process
+  inside `CreateEnv` (microsoft/onnxruntime#32173). The test stage passed
+  on the Go builder, which has a shell — only the runtime-check stage,
+  running on the runtime's own base, caught it. `detect.Init` sets the
+  variable itself, so no deployment can forget it.
+  ([docs/71](71-content-flagging.md) §9.5)
+- **`content_flag.observed` never reaches an unfiltered webhook.** It is
+  opt-in: a webhook receives it only when its R49 `events` filter names it,
+  so turning on `observe` mode cannot page an existing pager — and a webhook
+  meant to show observed flags must name the type explicitly.
+  ([docs/71](71-content-flagging.md) D16)
+- **A sampler pod on an unreachable node is never replaced by itself.** A
+  StatefulSet will not run two pods of one name, and the old one stays
+  Terminating until its kubelet confirms; a plain `kubectl delete pod`
+  changes nothing. Force-delete it (`--grace-period=0 --force`) or apply the
+  `node.kubernetes.io/out-of-service` taint; until then its share of the
+  fleet is unscreened, which `GawkSamplerShardsMissing` makes loud.
+  ([docs/71](71-content-flagging.md) D22, [self-hosting §13.4](self-hosting.md#134-two-alerts-and-what-to-do-about-them))
+- **In the compose stack, the OIDC issuer only resolves from inside
+  gawk-admin.** It is the portal's own origin (`localhost:8088/idp`), and a
+  client-credentials client discovers its token endpoint from the issuer, so
+  the screening lane's samplers join gawk-admin's network namespace — any
+  other container that needs a token from the dev IdP has to do the same.
+  ([docs/41](41-local-dev-stack.md) §4.5)
+
 **CI / deployment**
 
+- **A loss-injection test that sends faster than real time measures the
+  runner, not the code.** R29's parity loss test paced 120 frames at 2 ms
+  (500 fps, 5,500 datagrams/s per subscriber). On a CPU-throttled runner pod
+  — here beside R40's ffmpeg builds — a stalled goroutine overflowed the QUIC
+  endpoints' own datagram queues: the subscribers lost ~250 datagrams to the
+  link's ~70 dropped packets, in bursts k=2 cannot repair, and the 4x
+  criterion failed on a parity path that worked. It now sends at the
+  frames' own 60 fps and logs where the loss happened (link, endpoints,
+  relay). Reproduce locally with the test and a few busy loops `taskset` to
+  two cores; plain busy loops across all cores do not. ([docs/34](34-live-edge-forward-parity.md))
+- **An e2e wait that starts at a fresh page's load event has to cover the
+  app's cold boot.** `page.goto` returns at `load`, before the bundle has
+  run and React has rendered; a click's own auto-wait (30 s) absorbs that,
+  a bare `waitFor` does not. The `?desktop=1` handoff check gave its
+  mount-time dialog 5 s: ~0.25 s on an idle box, 7-8 s under a 25% CPU
+  quota (`systemd-run --user --scope -p CPUQuota=25%` reproduces it;
+  `taskset` pinning does not), so it failed throttled CI runs that a rerun
+  passed. Give a first wait the boot budget the rest of `e2e/run.mjs`
+  uses (15 s or more). ([docs/69](69-app-desktop-handoff.md))
 - **`-race` and a coverage profile in one `go test` run compound
   catastrophically.** The detector shadows every access, including the coverage
   counter writes, so a compute-heavy package pays both: `gawk-server/wire` went

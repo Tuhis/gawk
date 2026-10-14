@@ -180,8 +180,9 @@ export const SITE_URL = 'https://tuhis.github.io/gawk/';
 export const SITE_DOWNLOAD_URL = `${SITE_URL}#download`;
 
 // The terms version baked into this release; config.termsVersion overrides it
-// to re-prompt broadcasters after a meaningful edit.
-export const BUNDLED_TERMS_VERSION = '2026-07-26';
+// to re-prompt broadcasters after a meaningful edit. 2026-10-13: Section 6
+// gained the automated-screening paragraph (R40, docs/71 D13).
+export const BUNDLED_TERMS_VERSION = '2026-10-13';
 
 // Empty string counts as unset — the ConfigMap renders an empty default rather
 // than duplicating the version constant, so an un-configured install falls

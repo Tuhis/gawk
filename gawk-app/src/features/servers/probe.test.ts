@@ -91,7 +91,8 @@ describe('probeRelay', () => {
     expect(result.state).toBe('ok');
     if (result.state !== 'ok') return;
     expect(result.rttMs).toBeGreaterThan(0);
-    expect(result.identity).toEqual({ serverVersion: '9.9.9', name: 'Homelab' });
+    // notices 0: this relay says nothing beyond its name (docs/71 §9.3).
+    expect(result.identity).toEqual({ serverVersion: '9.9.9', name: 'Homelab', notices: 0 });
   });
 
   // WebKit has no `datagrams.writable`, only `createWritable()`; a probe that

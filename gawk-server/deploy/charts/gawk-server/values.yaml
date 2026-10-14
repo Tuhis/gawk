@@ -182,6 +182,31 @@ rooms:
   # clusterMode. Without clusterMode a rooms-enabled relay uses no
   # Kubernetes client at all.
 
+# R40 (docs/71): automatic content screening. Both halves are OFF by default
+# and the relay is byte-identical to one predating R40 until one is set.
+screening:
+  # The bearer credential for GET /internal/screening/broadcasts/{id}/keyframe
+  # on the ops listener (ClusterIP-only, port metrics.port): the one read
+  # gawk-sampler makes of the relay — each live broadcast's cached keyframe,
+  # every few seconds (docs/71 D1). MUST equal the gawk-sampler chart's relay
+  # screening token, and MUST differ from moderation.adminApi.token (the relay
+  # refuses to start otherwise): the admin token also reads publisher IPs,
+  # which the sampler never needs. Empty leaves the route unregistered (404).
+  # Generate once:
+  #   kubectl -n gawk create secret generic gawk-screening-token \
+  #     --from-literal=token=$(openssl rand -hex 32)
+  # then set: tokenSecretRef: {name: gawk-screening-token, key: token}
+  token: ""
+  tokenSecretRef: {}
+  # Tell every broadcaster "this server automatically screens streams for
+  # explicit content" (docs/71 D13): a RelayIdentity notice the web, desktop
+  # and iOS broadcasters show as a "Content screening" mark in their server
+  # lists (never on the broadcast screen). Turn it on
+  # whenever a sampler screens this fleet — the relay cannot see the sampler,
+  # so it is a separate switch, and an operator who screens must say so. A
+  # notice, never a gate.
+  notice: false
+
 # R50 (docs/51): publish broadcast and room lifecycle events to an
 # operator-provided NATS JetStream. OPTIONAL and OFF by default — with url
 # empty the relay builds no client, starts no goroutine and is byte-identical

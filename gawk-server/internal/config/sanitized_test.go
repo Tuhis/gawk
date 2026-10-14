@@ -30,6 +30,7 @@ var (
 		"TelemetryKey",
 		"StatelessResetKey",
 		"AdminAPIToken",
+		"ScreeningToken",
 		"RoomCreateSecret",
 	}
 	publicFields = []string{
@@ -57,6 +58,8 @@ var (
 		// which file a pod was told to authenticate with is exactly what an
 		// operator needs when a fleet disagrees about who it is.
 		"EventBusTLSCert", "EventBusTLSKey", "EventBusCAFile",
+		// R40: whether broadcasters are told they are screened.
+		"ScreeningNotice",
 	}
 )
 
@@ -69,6 +72,7 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 		sentinelSecret = "SENTINEL-publish-secret-xyzzy"
 		sentinelPSK    = "SENTINEL-internal-psk-xyzzy"
 		sentinelToken  = "SENTINEL-admin-token-xyzzy"
+		sentinelScreen = "SENTINEL-screening-token-xyzzy"
 	)
 	// Distinct 32-byte keys, so a swapped assignment shows up as a leak of
 	// the wrong one rather than passing by coincidence.
@@ -81,6 +85,7 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 		PublishSecret:     sentinelSecret,
 		InternalPSK:       sentinelPSK,
 		AdminAPIToken:     sentinelToken,
+		ScreeningToken:    sentinelScreen,
 		StatsKey:          statsKey,
 		ResumeTokenKey:    resumeKey,
 		TelemetryKey:      telemetryKey,
@@ -99,7 +104,7 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 	}
 	out := string(body)
 
-	for _, secret := range []string{sentinelSecret, sentinelPSK, sentinelToken, "SENTINEL", "xyzzy"} {
+	for _, secret := range []string{sentinelSecret, sentinelPSK, sentinelToken, sentinelScreen, "SENTINEL", "xyzzy"} {
 		if strings.Contains(out, secret) {
 			t.Errorf("sanitized config leaked %q:\n%s", secret, out)
 		}
@@ -125,6 +130,7 @@ func TestSanitizedLeaksNoSecretValue(t *testing.T) {
 		"statelessResetKey": san.StatelessResetKey,
 		"telemetryKey":      san.TelemetryKey,
 		"adminApiToken":     san.AdminAPIToken,
+		"screeningToken":    san.ScreeningToken,
 	} {
 		if got != secretSet {
 			t.Errorf("%s = %q, want %q", name, got, secretSet)
@@ -150,6 +156,7 @@ func TestSanitizedReportsUnsetSecrets(t *testing.T) {
 		"statelessResetKey": san.StatelessResetKey,
 		"telemetryKey":      san.TelemetryKey,
 		"adminApiToken":     san.AdminAPIToken,
+		"screeningToken":    san.ScreeningToken,
 	} {
 		if got != secretUnset {
 			t.Errorf("%s = %q, want %q", name, got, secretUnset)

@@ -587,6 +587,13 @@ type broadcastHub struct {
 	// holding the publisher slot. Cleared alongside publisherActive so a
 	// graced broadcast never attributes observations to an ended session.
 	publisherSessionID string
+	// publisherEpoch identifies the publisher session whatever telemetry is
+	// set to (docs/71 §9.1): minted on every claim, KEPT after the publisher
+	// leaves (the admin row of a graced broadcast still names its last
+	// session). R40's screening keys windows, sample numbering and the flag
+	// lifecycle on it; the telemetry handle above is empty with telemetry
+	// off, so it cannot serve.
+	publisherEpoch string
 	// publisher is the handle currently holding the slot (nil when inactive).
 	// TakeOverPublish needs it to depose the incumbent.
 	publisher  *Publisher
@@ -1163,6 +1170,9 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	// The outgoing session's telemetry handle must not be attributed to the
 	// new one, which gets its own after the upgrade.
 	b.publisherSessionID = ""
+	// A new session, a new epoch — for a reclaim and a takeover too, which
+	// reset the keyframe cache below for the same reason (frame IDs restart).
+	b.publisherEpoch = newPublisherEpoch()
 	b.generation++
 	// A new stall clock (starting at the claim, so a publisher that never
 	// sends still stalls) and a fresh onset log.
@@ -3580,6 +3590,21 @@ func (b *broadcastHub) countBandwidthDropBytes(n int) {
 	} else {
 		r.totalBandwidthDroppedBytes += uint64(n)
 	}
+}
+
+// newPublisherEpoch mints a publisher session's epoch (docs/71 §9.1): 16
+// lower-case hex characters. Random rather than a counter so a hub that is
+// garbage-collected and re-created under the same ID — or the same
+// broadcast reclaimed on another pod — can never repeat an epoch, and with it
+// a keyframe ETag or a sample sequence.
+func newPublisherEpoch() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// Unreachable on supported platforms (crypto/rand.Read does not fail
+		// since Go 1.24); a constant here would merge every session.
+		panic("hub: crypto/rand unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(buf[:])
 }
 
 // newSubscriberStatsKey mints the random per-session key naming a subscriber

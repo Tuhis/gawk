@@ -37,10 +37,14 @@ func (s *Store) AppendEvent(ctx context.Context, e Event) (Event, error) {
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
 	}
-	const q = `INSERT INTO moderation_events (type, occurred_at, actor, broadcast_key, broadcast_id, payload)
-		VALUES ($1,$2,$3,$4,$5,$6) RETURNING ` + eventColumns
+	category := e.Category
+	if category == "" {
+		category = CategoryModeration
+	}
+	const q = `INSERT INTO moderation_events (type, occurred_at, actor, broadcast_key, broadcast_id, payload, category)
+		VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ` + eventColumns
 	row := s.pool.QueryRow(ctx, q, e.Type, e.OccurredAt, e.Actor,
-		nullString(e.BroadcastKey), nullString(e.BroadcastID), []byte(payload))
+		nullString(e.BroadcastKey), nullString(e.BroadcastID), []byte(payload), category)
 	out, err := scanEvent(row)
 	if err != nil {
 		return Event{}, fmt.Errorf("store: append event: %w", err)
@@ -67,6 +71,28 @@ func (s *Store) AppendEvent(ctx context.Context, e Event) (Event, error) {
 // secret — the same config-wins rule notify applies at send time (docs/42 D9).
 // Each webhook's filter decides whether it is a receiver (docs/50 D8).
 func (s *Store) AppendEventAndEnqueue(ctx context.Context, e Event, config []ConfigWebhook) (Event, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Event{}, fmt.Errorf("store: append event: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	out, err := s.appendEventTx(ctx, tx, e, config)
+	if err != nil {
+		return Event{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Event{}, fmt.Errorf("store: append event: %w", err)
+	}
+	return out, nil
+}
+
+// appendEventTx is AppendEventAndEnqueue inside a caller's transaction: R40's
+// flag transitions write their row and their event together (contentflags.go),
+// so a page cannot be lost between the two. e.Category is honoured — empty is
+// moderation — because content_flag.observed is a screening row.
+func (s *Store) appendEventTx(ctx context.Context, tx pgx.Tx, e Event, config []ConfigWebhook) (Event, error) {
 	if e.OccurredAt.IsZero() {
 		e.OccurredAt = s.now()
 	}
@@ -75,27 +101,21 @@ func (s *Store) AppendEventAndEnqueue(ctx context.Context, e Event, config []Con
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
 	}
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return Event{}, fmt.Errorf("store: append event: %w", err)
+	category := e.Category
+	if category == "" {
+		category = CategoryModeration
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
 
-	const q = `INSERT INTO moderation_events (type, occurred_at, actor, broadcast_key, broadcast_id, payload)
-		VALUES ($1,$2,$3,$4,$5,$6) RETURNING ` + eventColumns
+	const q = `INSERT INTO moderation_events (type, occurred_at, actor, broadcast_key, broadcast_id, payload, category)
+		VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ` + eventColumns
 	out, err := scanEvent(tx.QueryRow(ctx, q, e.Type, e.OccurredAt, e.Actor,
-		nullString(e.BroadcastKey), nullString(e.BroadcastID), []byte(payload)))
+		nullString(e.BroadcastKey), nullString(e.BroadcastID), []byte(payload), category))
 	if err != nil {
 		return Event{}, fmt.Errorf("store: append event: %w", err)
 	}
 
 	if err := s.enqueueDeliveriesTx(ctx, tx, out.ID, out, config); err != nil {
 		return Event{}, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return Event{}, fmt.Errorf("store: append event: %w", err)
 	}
 	return out, nil
 }
@@ -268,10 +288,28 @@ func SummarizeWithEnforcement(eventType string, targetType moderation.TargetType
 				" — the target is STILL banned"
 		}
 		return ban + " was lifted by " + who
-	case EventRoomCreated, EventRoomEnded, EventRoomSecretRotated:
+	case EventRoomCreated, EventRoomEnded, EventRoomSecretRotated, EventRoomScreeningChanged:
 		// Rooms have no enforcement grade: a CR write either landed or the
 		// mutation failed outright, there is no row ahead of it.
 		return SummarizeRoom(eventType, "", "", actor)
+	case EventContentFlag, EventContentFlagObserved, EventContentFlagReminded, EventContentFlagResolved:
+		// The flag sentences need the flag; every R40 producer writes one, so
+		// this is the no-payload fallback a delivery must still be able to
+		// render (§4.10: never an empty notification).
+		subject := "a broadcast"
+		if broadcastID != "" {
+			subject = "broadcast " + broadcastID
+		}
+		switch eventType {
+		case EventContentFlag:
+			return "content flag raised on " + subject
+		case EventContentFlagObserved:
+			return "observe mode would have flagged " + subject
+		case EventContentFlagReminded:
+			return "content flag on " + subject + " is still unacknowledged"
+		default:
+			return "content flag on " + subject + " resolved"
+		}
 	default:
 		// An unknown type gets a DIRECTION-FREE qualifier: with no idea
 		// whether the event asserts a ban or its lifting, "not enforced yet"
@@ -320,6 +358,8 @@ func SummarizeRoom(eventType, kind, name, actor string) string {
 		return what + " was created by " + who
 	case EventRoomSecretRotated:
 		return "the attach secret of " + what + " was rotated by " + who
+	case EventRoomScreeningChanged:
+		return "the content screening of " + what + " was changed by " + who
 	case EventRoomEnded:
 		if actor == "" || actor == "system" {
 			// The relay ended it: empty grace expired, or the creator ended

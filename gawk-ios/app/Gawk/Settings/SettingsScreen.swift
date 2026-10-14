@@ -7,6 +7,7 @@ struct SettingsScreen: View {
     @Environment(AppSettings.self) private var settings
     @Environment(ServerProbes.self) private var probes
     @Environment(AppRouter.self) private var router
+    @Environment(BroadcastSession.self) private var broadcast
     let identity: IdentityStore
     @State private var path: [ServerRoute] = []
 
@@ -104,9 +105,11 @@ struct SettingsScreen: View {
     }
 
     /// One server (D22): a tap selects it, its status says whether it
-    /// answers, and the info button opens Edit.
+    /// answers and whether it screens streams (docs/71 D13), and the info
+    /// button opens Edit.
     private func serverRow(name: String, url: String, selected: Bool, select: @escaping () -> Void) -> some View {
         let state = probes.state(url)
+        let screens = ScreeningMark.shown(probed: probes.screens(url), session: broadcast.screens(relay: url))
         return HStack(spacing: 12) {
             Button(action: select) {
                 HStack(spacing: 12) {
@@ -116,6 +119,7 @@ struct SettingsScreen: View {
                             .font(.body)
                             .foregroundStyle(Theme.text)
                         ProbeStatus(state: state)
+                        if screens { ScreeningMark() }
                     }
                     Spacer(minLength: 8)
                     if selected {
@@ -185,6 +189,7 @@ struct EditServerScreen: View {
     var done: () -> Void
     @Environment(AppSettings.self) private var settings
     @Environment(ServerProbes.self) private var probes
+    @Environment(BroadcastSession.self) private var broadcast
     @State private var name = ""
     @State private var url = "https://"
     @State private var secret = ""
@@ -219,6 +224,9 @@ struct EditServerScreen: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(name).font(.title3.bold()).foregroundStyle(Theme.text)
                             ProbeStatus(state: probes.state(key))
+                            if ScreeningMark.shown(probed: probes.screens(key), session: broadcast.screens(relay: key)) {
+                                ScreeningMark()
+                            }
                         }
                     }
                     .listRowBackground(Color.clear)

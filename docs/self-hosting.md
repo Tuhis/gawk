@@ -21,6 +21,8 @@ your laptop in about five minutes with a self-signed certificate.
 9. [`gawk-admin` — the moderation portal](#9-gawk-admin--the-moderation-portal-r39)
 10. [Rooms (R42)](#10-rooms-r42)
 11. [Troubleshooting](#11-troubleshooting)
+12. [The event bus (NATS)](#12-the-event-bus-nats--r50)
+13. [Automatic content screening](#13-automatic-content-screening-r40)
 
 ---
 
@@ -1559,3 +1561,184 @@ your grant to make; make it deliberately.
 Unset `eventbus.url` on both charts. The portal's room sweep resumes, activity
 events stop, and the stream can be deleted at your leisure. Nothing else
 changes — which is the point of it being optional.
+
+## 13. Automatic content screening (R40)
+
+Optional, **off by default**, and when you install it, it starts in
+**`observe` mode, which pages no one**. [`docs/71`](71-content-flagging.md)
+is the design; this section is what an operator has to do.
+
+What it gives you: `gawk-sampler` looks at every live broadcast's latest
+keyframe every few seconds and scores it with NudeNet's nudity detector. A
+**sustained** explicit signal (four of the last six samples over the
+threshold, by default) raises a **content flag** in `gawk-admin`: the
+broadcast is pinned to the top of the portal and your webhook pages you, and
+keeps re-paging every 10 minutes until somebody acknowledges it. You judge by
+joining the broadcast live (the portal's Watch link) and act through the
+portal's kill and ban. Frames are never stored anywhere — not on disk, not in
+a log, not in the flag — only scores and times.
+
+What it is honest about: a nudity detector detects skin, not legality, and
+game footage is full of it. That is why it ships in `observe` mode, and why
+the thresholds are calibrated on your own traffic before it pages anyone
+(§13.5). What it does **not** do: report anything to any authority. R40 stops
+at flag, kill and ban; reporting is the operator's own business, and nothing
+in gawk files or prepares a report.
+
+### 13.1 Prerequisites
+
+- **`gawk-admin`** (§9) — it is the only actuator; the sampler cannot kill.
+- **A webhook that delivers `content_flag.raised`** (§9.5). This is not a
+  recommendation: with no pager, the sampler **samples nothing** in `flag`
+  mode, the portal shows a banner, and
+  `gawk_sampler_paused{reason="no_flag_route"}` is `1`. Detecting without
+  anyone to tell is worse than not detecting
+  ([`docs/71`](71-content-flagging.md) §1, D12).
+- **CPU**: one sample per broadcast every 5 s, CPU only. Two replicas is the
+  default; if `gawk_sampler_interval_effective_seconds` climbs above twice
+  the 5 s target, add replicas (§13.4).
+- **Database room**: stored samples land in `gawk-admin`'s Postgres (30 days
+  by default, and only samples above a 0.3 floor). Watch
+  `gawk_admin_screening_samples_bytes` on a small volume.
+
+### 13.2 Turn it on, in this order
+
+1. **The relay** — open the keyframe route with its own token, and tell
+   broadcasters you screen:
+
+   ```yaml
+   # gawk-server values
+   screening:
+     tokenSecretRef: {name: gawk-screening, key: token}   # or token: "…"
+     notice: true
+   ```
+
+   The token must differ from the admin API token (the relay refuses to start
+   otherwise): the admin token reads publisher IPs, and the sampler never
+   needs them. `notice: true` makes every broadcaster app — web, desktop and
+   iOS — mark your server "Content screening" among its details in the
+   server list (its tooltip: "This server automatically screens streams for
+   explicit content."). Nothing shows on the broadcast screen, and no app
+   marks a server that doesn't screen. It is a separate switch because the
+   relay cannot see whether a sampler runs: turn it on when you install the
+   sampler and off when you remove it. The bundled terms describe screening as something an operator
+   *may* do; if you run custom terms, say it there yourself.
+
+2. **`gawk-admin`** — the screening routes and the flagger role:
+
+   ```yaml
+   # gawk-admin values
+   screening:
+     enabled: true
+   ```
+
+3. **A service identity for the sampler** — a confidential client on the
+   client-credentials grant, exactly as §9.8's bot recipe, with one role: the
+   **`flagger`** client role of the `gawk-admin` client. `flagger` reaches
+   exactly `POST /api/v1/content-flags`, `GET /api/v1/screening/targets` and
+   `POST /api/v1/screening/samples` — it cannot kill, ban or read publisher
+   addresses. Never give the sampler `operator`.
+
+4. **The sampler**:
+
+   ```yaml
+   # gawk-sampler values
+   adminUrl: http://gawk-admin.gawk.svc:8090        # the in-cluster Service
+   oidc:
+     issuer: https://idp.example.com/realms/gawk
+     clientId: gawk-sampler
+     clientSecretRef: {name: gawk-sampler-oidc, key: secret}
+   relay:
+     screeningTokenRef: {name: gawk-screening, key: token}   # the relay's token
+   metrics:
+     serviceMonitor: {enabled: true}
+     prometheusRule: {enabled: true}
+   ```
+
+   ```console
+   $ helm upgrade --install gawk-sampler oci://ghcr.io/tuhis/charts/gawk-sampler \
+       --namespace gawk --values sampler-values.yaml
+   ```
+
+   The init container downloads NudeNet's weights at install time from
+   NudeNet's own GitHub release, pinned by SHA-256 (`model.url`,
+   `model.sha256`; the 640 model's pin is in the chart's values comments).
+   **The weights are AGPL-3.0 and never in gawk's image**: you fetch and run
+   them unmodified, which the licence permits
+   ([`docs/71`](71-content-flagging.md) §8.1). A cluster without egress to
+   GitHub mounts a volume holding the file instead (`model.volume`).
+
+### 13.3 Is it working?
+
+- Every sampler pod is `Ready` once its model has loaded and ffmpeg was
+  found.
+- `gawk_sampler_samples_total` rises on every pod that has broadcasts to
+  screen, and `gawk_sampler_targets{state="screened"}` summed across the
+  pods is your live broadcast count.
+- In the portal, **Calibration** lists observed flags and replays stored
+  samples; with any traffic at all, samples arrive within a minute.
+
+### 13.4 Two alerts, and what to do about them
+
+The sampler chart's `PrometheusRule` carries both:
+
+- **`GawkSamplerIntervalStretched`** — the samplers cannot keep up, so every
+  broadcast is sampled less often than the target. Nothing is skipped;
+  everything is slower. Add replicas.
+- **`GawkSamplerShardsMissing`** (critical, after 2 minutes) — a share of the
+  fleet is **not being screened at all**. Each sampler pod screens a fixed
+  share (`gawk-sampler-<n>` takes share `n`). If that pod was on a node that
+  became unreachable, Kubernetes will **not** replace it on its own: a
+  StatefulSet never runs two pods of one name, and the old one stays
+  Terminating until its kubelet answers. A plain `kubectl delete pod` does
+  nothing. Do one of:
+
+  ```console
+  $ kubectl -n gawk delete pod gawk-sampler-<n> --grace-period=0 --force
+  $ kubectl taint node <node> node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
+  ```
+
+  The portal shows the same as a banner.
+
+### 13.5 From `observe` to `flag`
+
+In `observe` mode the sampler does everything except page: flags are
+recorded as **observed** (never pinned, never re-paged, never killed), and
+each one emits a low-priority `content_flag.observed` event that reaches only
+a webhook whose filter names it — point one at a quiet channel if you want to
+join live while the trigger is on screen. Let it run on real traffic (the
+reference deployment's bar: at least 100 broadcast-hours over at least 20
+games), then use **Calibration** to replay candidate thresholds over the
+stored samples, and pick one with fewer than one would-trip per 100
+broadcast-hours. Set it, then switch:
+
+```yaml
+# gawk-sampler values
+config:
+  mode: flag
+  threshold: 0.8       # what your replay chose
+```
+
+Test the pager first with the portal's webhook **Test** button
+(`POST /api/v1/webhooks/{name}/test`): a real flag's page is the same
+delivery.
+
+### 13.6 The knobs worth knowing
+
+All of them are documented in the charts' `values.yaml`; the full table is
+[`docs/71`](71-content-flagging.md) §5. The ones you are likely to touch:
+
+| Chart | Value | Default | What |
+|---|---|---|---|
+| sampler | `replicas` | `2` | Pods; each screens a fixed share. Changing it reshuffles every broadcast and resets its window — do it deliberately, never autoscale. |
+| sampler | `config.threshold` / `window` / `windowHits` | `0.8` / `6` / `4` | When a window trips (until your calibration says otherwise). |
+| admin | `screening.contentFlag.repage` | `10m` | Re-page cadence for an unacknowledged flag. |
+| admin | `screening.contentFlag.mute` | `30m` | How long Dismiss mutes a broadcast. |
+| admin | `screening.contentFlag.deadline` | `off` | Kill a broadcast whose flag nobody acknowledged within this long. |
+| admin | `screening.contentFlag.autoKill` | `off` | Kill without a human on a very strong signal, e.g. `score>=0.9,hits>=10/12`. The page still goes out. |
+| admin | `screening.sampleRetention` | `30d` | How long calibration data is kept. Flag-mode flags are the audit trail and are never pruned. |
+
+A room you trust — a **static room with an attach secret** — can be exempted
+from screening in the portal's Rooms view. Open and dynamic rooms cannot be:
+anyone could join them, so exempting one would hand an abuser an unscreened
+lane.

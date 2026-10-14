@@ -1,0 +1,70 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{- $factor := .Values.metrics.prometheusRule.intervalFactor }}
+{{- $pod := printf "%s-<n>" (include "gawk-sampler.fullname" .) }}
+# Requires the prometheus-operator CRDs and a scrape of the sampler's metrics
+# (metrics.serviceMonitor, or your own) — and, for the missing-shard alert, of
+# gawk-admin's (its chart's metrics.serviceMonitor). With kube-prometheus-stack,
+# set metrics.prometheusRule.labels to match its ruleSelector.
+#
+# Both alerts exist for the same reason (docs/71 §1): the DSA posture forbids
+# a SILENT gap in screening, not every gap. A sampler that falls behind, or a
+# share nobody screens, must reach a human the way a flag does.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "gawk-sampler.fullname" . }}
+  labels:
+    {{- include "gawk-sampler.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: gawk-sampler
+      rules:
+        # D6: overload stretches every broadcast's interval evenly instead of
+        # skipping some, and this is where the stretch becomes visible. The
+        # target is the pod's own gauge of the -interval it parsed, so the
+        # threshold can never disagree with what the pod is actually doing.
+        - alert: GawkSamplerIntervalStretched
+          expr: >-
+            max by (pod) (gawk_sampler_interval_effective_seconds)
+            > {{ $factor }} * max by (pod) (gawk_sampler_interval_target_seconds)
+          for: {{ .Values.metrics.prometheusRule.intervalFor }}
+          labels:
+            severity: {{ .Values.metrics.prometheusRule.severity }}
+          annotations:
+            summary: "gawk-sampler {{`{{ $labels.pod }}`}} samples each broadcast less often than {{ $factor }}× its target interval"
+            description: >-
+              The pod's worker pool cannot keep up with its share of the
+              broadcasts, so every broadcast in that share is sampled less
+              often (none is skipped — docs/71 D6). Raise the pod's CPU (and
+              with it the worker count), or raise replicas — which reshuffles
+              the shares and resets every window (D22 (b)).
+        # D22: a shard that stops polling gawk-admin leaves its share
+        # unscreened. `for: 2m` also rides out a resize, while old and new
+        # pods overlap.
+        - alert: GawkSamplerShardsMissing
+          expr: max(gawk_admin_screening_shards_missing) > 0
+          for: 2m
+          labels:
+            severity: {{ .Values.metrics.prometheusRule.shardsMissingSeverity }}
+          annotations:
+            summary: "{{`{{ $value }}`}} gawk-sampler shard(s) have not polled gawk-admin for over 30 s — their broadcasts are not being screened"
+            description: >-
+              gawk-admin has seen no targets poll from one or more sampler
+              shards (the portal's banner names which). If a pod is Pending or
+              crash-looping, its logs say why. If its NODE is unreachable, the
+              StatefulSet will not replace the pod by itself: after the
+              unreachable toleration it only marks the pod for deletion, the
+              kubelet cannot confirm it, and the controller never runs two
+              pods of one name. A plain `kubectl delete pod` does nothing.
+              Recover the shard with exactly one of — force-delete the pod:
+              `kubectl -n {{ .Release.Namespace }} delete pod {{ $pod }} --grace-period=0 --force`;
+              or apply the `node.kubernetes.io/out-of-service` taint to the dead
+              node. It also returns by itself when the kubelet comes back or
+              the Node object is deleted (docs/71 D22 (a)).
+            runbook: >-
+              kubectl -n {{ .Release.Namespace }} delete pod {{ $pod }} --grace-period=0 --force
+              — or — kubectl taint nodes <node> node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
+{{- end }}
