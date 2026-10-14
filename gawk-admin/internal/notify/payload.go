@@ -197,7 +197,10 @@ func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 			// store's closed accessor rather than copied from the jsonb.
 			f := ev.ContentFlag()
 			data = events.ContentFlagRaisedData{Actor: ev.Actor, BroadcastKey: ev.BroadcastKey, BroadcastID: ev.BroadcastID,
-				Reason: reason, FlagID: f.FlagID, SamplerID: f.SamplerID, Window: f.Window, Scores: f.Scores, Labels: f.Labels}
+				Reason: reason, FlagID: f.FlagID, SamplerID: f.SamplerID, Window: f.Window, Scores: f.Scores, Labels: f.Labels,
+				// A page's mark only (docs/72 D4): an observed flag never had a
+				// review to return after.
+				ReturnedAfterReview: f.ReturnedAfterReview && typ == events.TypeContentFlagRaised}
 		case events.TypeContentFlagReminded:
 			f := ev.ContentFlag()
 			signal := f.Signal

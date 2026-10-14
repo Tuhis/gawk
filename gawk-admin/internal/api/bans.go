@@ -217,6 +217,15 @@ func (a *API) handleCreateBan(w http.ResponseWriter, r *http.Request) {
 			store.SummarizeWithEnforcement(store.EventBanCreated, target.Type, bid, id.Actor(), enforcement),
 			enforcement),
 	})
+	// A ban that ends a broadcast answers its open content flag as killed,
+	// as handleKill does (docs/72 D6): an ID ban is about that broadcast,
+	// and an IP ban placed from a live broadcast ends that one too.
+	switch {
+	case target.Type == moderation.TargetBroadcastID:
+		a.resolveFlagsForKill(r.Context(), target.Value, id.Actor())
+	case source != "":
+		a.resolveFlagsForKill(r.Context(), source, id.Actor())
+	}
 	a.afterMutation()
 
 	// 202 Accepted: the record is durable, the reconciler completes it. See

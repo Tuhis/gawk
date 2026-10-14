@@ -650,7 +650,7 @@ func wirings() map[string]opWiring {
 			success: map[string]func() any{"200": func() any { return &contentFlagJSON{} }},
 		},
 		"POST /api/v1/content-flags/{id}/dismiss": {
-			request: func() any { return &emptyRequest{} },
+			request: func() any { return &dismissRequest{} },
 			success: map[string]func() any{"200": func() any { return &contentFlagJSON{} }},
 		},
 		"GET /api/v1/screening/targets": {success: map[string]func() any{
@@ -845,6 +845,7 @@ func schemaFixtures() map[string]any {
 		ResolvedAt: ts, ResolvedBy: "system:content-flag", Signal: "live", Window: window, Scores: scores,
 		Labels: []string{"FEMALE_GENITALIA_EXPOSED"}, LabelCounts: map[string]int{"FEMALE_GENITALIA_EXPOSED": 4},
 		PeakScore: 0.97, Reminders: 2, MutedUntil: ts, Links: &watchLinkJSON{Watch: "https://gawk.example/#/view/ABC234"},
+		MuteScope: "episode", Trips: 2, ClearedAt: ts, ReturnedAfterReview: true,
 	}
 	broadcast.ContentFlag = &flag
 	status := screeningStatusJSON{FlagRoute: true, ExpectedShards: 2, MissingShards: []int{1}, LastPollAt: ts}
@@ -909,25 +910,27 @@ func schemaFixtures() map[string]any {
 		"CreateRoomRequest": createRoomRequest{Code: "team-standup", DisplayName: "Team standup", MaxBroadcasts: 4, WithAttachSecret: true},
 		"RoomWithSecret":    roomWithSecretJSON{Room: room, AttachSecret: "s3cr3t"},
 
-		"RoomPatchRequest":        roomPatchRequest{Screening: &screeningExempt},
-		"EmptyRequest":            emptyRequest{},
-		"ContentFlagWindow":       window,
-		"ContentFlagScores":       scores,
-		"ContentFlagLinks":        watchLinkJSON{Watch: "https://gawk.example/#/view/ABC234"},
-		"ContentFlag":             flag,
-		"ScreeningStatus":         status,
-		"ContentFlagsPage":        contentFlagsPageJSON{ContentFlags: []contentFlagJSON{flag}, Screening: status},
-		"ContentFlagReport":       report,
-		"ContentFlagReportResult": screening.FlagResponse{Status: screening.FlagStatusRaised, FlagID: 42},
-		"ScreeningTarget":         target,
-		"ScreeningTargets":        screening.TargetsResponse{Schema: screening.SchemaTargets, Shard: 0, Of: 2, FlagRoute: true, Targets: []screening.Target{target}},
-		"Sample":                  sample,
-		"SessionSamples":          sessionSamples,
-		"SampleBatch":             screening.SampleBatch{Schema: screening.SchemaSamples, SamplerID: "s", Mode: screening.ModeObserve, Floor: 0.3, Labels: []string{"ANUS_EXPOSED"}, Sessions: []screening.SessionSamples{sessionSamples}},
-		"SamplesResult":           screening.SamplesResponse{Stored: 1},
-		"ReplayRequest":           replayReq,
-		"ReplayTrip":              trip,
-		"ReplayResult":            screening.ReplayResponse{Schema: screening.SchemaReplay, Request: replayReq, Floor: 0.3, Sessions: 1, SamplesTaken: 2, SamplesStored: 1, BroadcastHours: 1.5, WouldTrips: 1, WouldTripsPer100h: 66.7, Trips: []screening.ReplayTrip{trip}, Truncated: false},
+		"RoomPatchRequest":          roomPatchRequest{Screening: &screeningExempt},
+		"EmptyRequest":              emptyRequest{},
+		"ContentFlagWindow":         window,
+		"ContentFlagScores":         scores,
+		"ContentFlagLinks":          watchLinkJSON{Watch: "https://gawk.example/#/view/ABC234"},
+		"ContentFlag":               flag,
+		"ScreeningStatus":           status,
+		"ContentFlagsPage":          contentFlagsPageJSON{ContentFlags: []contentFlagJSON{flag}, Screening: status},
+		"ContentFlagReport":         report,
+		"ContentFlagReportResult":   screening.FlagResponse{Status: screening.FlagStatusRaised, FlagID: 42},
+		"ScreeningTarget":           target,
+		"ScreeningTargets":          screening.TargetsResponse{Schema: screening.SchemaTargets, Shard: 0, Of: 2, FlagRoute: true, Targets: []screening.Target{target}},
+		"Sample":                    sample,
+		"SessionSamples":            sessionSamples,
+		"SampleBatch":               screening.SampleBatch{Schema: screening.SchemaSamples, SamplerID: "s", Mode: screening.ModeObserve, Floor: 0.3, Labels: []string{"ANUS_EXPOSED"}, Rule: &screening.BatchRule{Threshold: 0.5, Window: 6, WindowHits: 3}, Sessions: []screening.SessionSamples{sessionSamples}},
+		"SamplerRule":               screening.BatchRule{Threshold: 0.5, Window: 6, WindowHits: 3},
+		"DismissContentFlagRequest": dismissRequest{Reason: "game_scene", Scope: "episode"},
+		"SamplesResult":             screening.SamplesResponse{Stored: 1},
+		"ReplayRequest":             replayReq,
+		"ReplayTrip":                trip,
+		"ReplayResult":              screening.ReplayResponse{Schema: screening.SchemaReplay, Request: replayReq, Floor: 0.3, Sessions: 1, SamplesTaken: 2, SamplesStored: 1, BroadcastHours: 1.5, WouldTrips: 1, WouldTripsPer100h: 66.7, Trips: []screening.ReplayTrip{trip}, Truncated: false},
 	}
 }
 

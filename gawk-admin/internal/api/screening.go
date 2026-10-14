@@ -79,7 +79,17 @@ type contentFlagJSON struct {
 	PeakScore   float64        `json:"peakScore"`
 	Reminders   int            `json:"reminders"`
 	MutedUntil  string         `json:"mutedUntil,omitempty"`
-	Links       *watchLinkJSON `json:"links,omitempty"`
+	// MuteScope is the dismissal's scope: episode, duration or session
+	// (docs/72 D5). Absent on a flag that was not dismissed.
+	MuteScope string `json:"muteScope,omitempty"`
+	// Trips counts the window trips the incident absorbed (docs/72 D3).
+	Trips int `json:"trips"`
+	// ClearedAt is set while a clear is held for the rejoin window.
+	ClearedAt string `json:"clearedAt,omitempty"`
+	// ReturnedAfterReview: an earlier incident on the broadcast was
+	// acknowledged, dismissed or killed (docs/72 D4).
+	ReturnedAfterReview bool           `json:"returnedAfterReview"`
+	Links               *watchLinkJSON `json:"links,omitempty"`
 }
 
 type flagWindowJSON struct {
@@ -127,7 +137,7 @@ type roomPatchRequest struct {
 	Screening *string `json:"screening"`
 }
 
-func (a *API) renderFlag(f store.ContentFlag, mutes map[string]time.Time) contentFlagJSON {
+func (a *API) renderFlag(f store.ContentFlag, mutes map[string]store.Mute) contentFlagJSON {
 	b := f.Body
 	out := contentFlagJSON{
 		ID: f.ID, Mode: f.Mode, State: f.State,
@@ -154,8 +164,19 @@ func (a *API) renderFlag(f store.ContentFlag, mutes map[string]time.Time) conten
 	if f.ResolvedAt != nil {
 		out.ResolvedAt = stamp(*f.ResolvedAt)
 	}
-	if until, ok := mutes[f.BroadcastID]; ok {
-		out.MutedUntil = stamp(until)
+	// A dismissed flag shows the mute its own dismissal set (docs/72 D5);
+	// any other shows the broadcast's current mute, when it covers the
+	// flag's session.
+	if f.MutedUntil != nil {
+		out.MutedUntil = stamp(*f.MutedUntil)
+	} else if m, ok := mutes[f.BroadcastID]; ok && m.Covers(f.PublisherEpoch) {
+		out.MutedUntil = stamp(m.Until)
+	}
+	out.MuteScope = f.MuteScope
+	out.Trips = f.Trips
+	out.ReturnedAfterReview = f.ReturnedAfterReview
+	if f.ClearedAt != nil {
+		out.ClearedAt = stamp(*f.ClearedAt)
 	}
 	if base := a.opts.Config.AppBaseURL; base != "" {
 		out.Links = &watchLinkJSON{Watch: base + "/#/view/" + f.BroadcastID}
@@ -167,7 +188,7 @@ func (a *API) renderFlag(f store.ContentFlag, mutes map[string]time.Time) conten
 // one, for the broadcast view's pinned rows (§9.4), with the mutes their views
 // render. Empty with screening off; a failure degrades to no pins rather than
 // failing the fleet view, which an operator needs most when something is wrong.
-func (a *API) flagsByBroadcast(ctx context.Context) (map[string]store.ContentFlag, map[string]time.Time) {
+func (a *API) flagsByBroadcast(ctx context.Context) (map[string]store.ContentFlag, map[string]store.Mute) {
 	out := map[string]store.ContentFlag{}
 	if !a.opts.Config.Screening {
 		return out, nil
@@ -240,7 +261,8 @@ func (a *API) handlePostContentFlag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := a.opts.Store.PostContentFlag(ctx, store.FlagPost{Body: body, BroadcastKey: key, Actor: id.Actor(), Now: a.now()}, cfg)
+	res, err := a.opts.Store.PostContentFlag(ctx, store.FlagPost{Body: body, BroadcastKey: key, Actor: id.Actor(), Now: a.now(),
+		Rejoin: a.opts.Config.ContentFlagRejoin}, cfg)
 	if err != nil {
 		a.fail(w, r, "record the content flag", err)
 		return
@@ -374,7 +396,8 @@ func (a *API) handleScreeningTargets(w http.ResponseWriter, r *http.Request) {
 		if screening.Shard(agg.Key, of) != shard {
 			continue
 		}
-		_, muted := mutes[agg.ID]
+		m, muted := mutes[agg.ID]
+		muted = muted && m.Covers(agg.PublisherEpoch)
 		out.Targets = append(out.Targets, screening.Target{
 			BroadcastID: agg.ID, BroadcastKey: agg.Key, PublisherEpoch: agg.PublisherEpoch,
 			Relay: "http://" + agg.OriginAddr, Muted: muted, Exempt: exempt[agg.ID],
@@ -584,26 +607,52 @@ func (a *API) handleAcknowledgeContentFlag(w http.ResponseWriter, r *http.Reques
 	a.writeFlag(w, r, f)
 }
 
-// handleDismissContentFlag resolves a flag as dismissed and mutes the
-// broadcast for -content-flag-mute (D10).
+// dismissRequest is POST /api/v1/content-flags/{id}/dismiss (docs/72 D5).
+// Both fields are optional: `{}` is R40's dismissal — no reason, a
+// -content-flag-mute mute.
+type dismissRequest struct {
+	// Reason is game_scene, not_explicit, detector_error or other.
+	Reason string `json:"reason,omitempty"`
+	// Scope is episode, duration (the default) or session.
+	Scope string `json:"scope,omitempty"`
+}
+
+// sessionMuteCap bounds the two session-bound mute scopes (docs/72 D5): a
+// publisher session longer than a day is screened again after it.
+const sessionMuteCap = 24 * time.Hour
+
+// handleDismissContentFlag resolves a flag as dismissed, with the operator's
+// reason, and mutes the broadcast for the chosen scope (D10, docs/72 D5).
 func (a *API) handleDismissContentFlag(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.caller(w, r)
 	if !ok {
 		return
 	}
 	flagID, ok := flagIDParam(w, r)
-	if !ok || !decodeOptional(w, r, &emptyRequest{}) {
+	var req dismissRequest
+	if !ok || !decodeOptional(w, r, &req) {
 		return
 	}
 	now := a.now()
-	f, err := a.opts.Store.DismissContentFlag(r.Context(), flagID, id.Actor(), now, now.Add(a.opts.Config.ContentFlagMute),
-		a.opts.Config.ConfigWebhooks())
+	d := store.Dismissal{Reason: req.Reason, Scope: req.Scope, MutedUntil: now.Add(sessionMuteCap)}
+	if d.Scope == "" {
+		d.Scope = store.MuteScopeDuration
+	}
+	if d.Scope == store.MuteScopeDuration {
+		d.MutedUntil = now.Add(a.opts.Config.ContentFlagMute)
+	}
+	f, err := a.opts.Store.DismissContentFlag(r.Context(), flagID, id.Actor(), now, d, a.opts.Config.ConfigWebhooks())
+	if errors.Is(err, store.ErrInvalidDismissal) {
+		writeError(w, http.StatusBadRequest, CodeBadRequest,
+			"reason must be game_scene, not_explicit, detector_error or other, and scope episode, duration or session")
+		return
+	}
 	if a.flagStateError(w, r, "dismiss the content flag", err) {
 		return
 	}
 	a.kickDeliveries()
 	a.log.Info("content flag dismissed", "flagId", f.ID, "broadcastKey", f.BroadcastKey, "actor", id.Actor(),
-		"mute", a.opts.Config.ContentFlagMute.String())
+		"reason", d.Reason, "scope", d.Scope, "mutedUntil", d.MutedUntil)
 	a.writeFlag(w, r, f)
 }
 
@@ -836,6 +885,15 @@ func (a *API) RunScreening(ctx context.Context) {
 // is killed; and an open flag-mode flag whose last page is a repage old is
 // reminded, live signal or unknown.
 func (a *API) ScreeningTick(ctx context.Context) {
+	// Held clears whose rejoin window has passed (docs/72 D3) resolve first,
+	// so the list below sees them resolved.
+	if done, err := a.opts.Store.ResolveHeldClears(ctx, a.opts.Config.ContentFlagRejoin, a.now(), a.opts.Config.ConfigWebhooks()); err != nil {
+		if ctx.Err() == nil {
+			a.log.Warn("content-flag sweep: resolving held clears failed", "err", err)
+		}
+	} else if len(done) > 0 {
+		a.kickDeliveries()
+	}
 	flags, err := a.opts.Store.UnresolvedContentFlags(ctx, "")
 	if err != nil {
 		if ctx.Err() == nil {
@@ -892,11 +950,15 @@ func (a *API) ScreeningTick(ctx context.Context) {
 		if f.State != store.FlagStateOpen {
 			continue // acknowledged: no reminders, no deadline (D9)
 		}
-		_, muted := mutes[f.BroadcastID]
+		m, muted := mutes[f.BroadcastID]
+		muted = muted && m.Covers(f.PublisherEpoch)
 		if cfg.ContentFlagDeadline > 0 && mutes != nil && !muted && signal == events.ContentFlagSignalLive &&
 			now.Sub(f.RaisedAt) >= cfg.ContentFlagDeadline {
 			a.autoKill(ctx, f, store.FlagReasonDeadline)
 			continue
+		}
+		if signal == "cleared" {
+			continue // a held clear (docs/72 D3): the content went away, nothing to re-page
 		}
 		if _, ok, err := a.opts.Store.RemindContentFlag(ctx, f.ID, signal, cfg.ContentFlagRepage, now, webhooks); err != nil {
 			a.log.Warn("content-flag sweep: a reminder failed", "flagId", f.ID, "err", err)

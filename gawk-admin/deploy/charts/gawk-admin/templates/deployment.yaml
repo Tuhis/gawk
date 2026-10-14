@@ -144,6 +144,13 @@ spec:
               value: {{ .Values.screening.contentFlag.deadline | default "off" | quote }}
             - name: GAWK_ADMIN_SCREENING_SAMPLE_RETENTION
               value: {{ .Values.screening.sampleRetention | quote }}
+            # R70 moderation timeline (docs/72 §4).
+            - name: GAWK_ADMIN_SCREENING_CRITICAL
+              value: {{ .Values.screening.criticalScore | quote }}
+            - name: GAWK_ADMIN_SCREENING_SUSTAINED_AFTER
+              value: {{ .Values.screening.sustainedAfter | quote }}
+            - name: GAWK_ADMIN_CONTENT_FLAG_REJOIN
+              value: {{ .Values.screening.contentFlag.rejoin | default "off" | quote }}
             {{- with .Values.notifications.webhooks }}
             # Chart-defined webhooks (docs/42 D9). This knob carries names,
             # URLs and the NAME of each signing key's environment variable —

@@ -103,15 +103,29 @@ type ContentFlag struct {
 	// Body is the last POST, kept for audit: what the portal shows and what
 	// an automatic kill decided on (D14).
 	Body screening.ContentFlag
+	// Trips counts the window trips this incident absorbed: a re-trip inside
+	// the rejoin window is the same incident (docs/72 D3).
+	Trips int
+	// ClearedAt is set while a clear is held for the rejoin window: the
+	// signal is cleared and the incident not yet resolved (D3).
+	ClearedAt *time.Time
+	// ReturnedAfterReview is true when an earlier incident on the broadcast
+	// was acknowledged, dismissed or killed within ReviewLookback (D4).
+	ReturnedAfterReview bool
+	// MutedUntil and MuteScope record what a dismissal muted (D5). An
+	// episode mute's end moves to the clear that ended it.
+	MutedUntil *time.Time
+	MuteScope  string
 }
 
 // Unresolved reports whether the flag is open or acknowledged.
 func (f ContentFlag) Unresolved() bool { return f.State != FlagStateResolved }
 
 // Signal is the flag's signal at now (D9): `cleared` once the sampler said
-// so, `live` while a tripped POST arrived within staleAfter, `unknown` after.
+// so — a held clear included (docs/72 D3) — `live` while a tripped POST
+// arrived within staleAfter, `unknown` after.
 func (f ContentFlag) Signal(now time.Time, staleAfter time.Duration) string {
-	if f.Resolution == events.ContentFlagResolutionCleared {
+	if f.Resolution == events.ContentFlagResolutionCleared || f.ClearedAt != nil {
 		return "cleared"
 	}
 	if now.Sub(f.LastPostAt) <= staleAfter {
@@ -122,23 +136,26 @@ func (f ContentFlag) Signal(now time.Time, staleAfter time.Duration) string {
 
 const flagColumns = `id, mode, state, resolution, resolution_reason, broadcast_id, broadcast_key,
 	publisher_epoch, sampler_id, raised_at, updated_at, last_post_at, acknowledged_at, acknowledged_by,
-	resolved_at, resolved_by, peak_score, reminders, last_reminded_at, body`
+	resolved_at, resolved_by, peak_score, reminders, last_reminded_at, body,
+	trips, cleared_at, returned_after_review, muted_until, mute_scope`
 
 func scanFlag(row pgx.Row) (ContentFlag, error) {
 	var (
-		f                                          ContentFlag
-		resolution, reason, key, ackBy, resolvedBy *string
-		body                                       []byte
+		f                                                     ContentFlag
+		resolution, reason, key, ackBy, resolvedBy, muteScope *string
+		body                                                  []byte
 	)
 	if err := row.Scan(&f.ID, &f.Mode, &f.State, &resolution, &reason, &f.BroadcastID, &key,
 		&f.PublisherEpoch, &f.SamplerID, &f.RaisedAt, &f.UpdatedAt, &f.LastPostAt, &f.AcknowledgedAt, &ackBy,
-		&f.ResolvedAt, &resolvedBy, &f.PeakScore, &f.Reminders, &f.LastRemindedAt, &body); err != nil {
+		&f.ResolvedAt, &resolvedBy, &f.PeakScore, &f.Reminders, &f.LastRemindedAt, &body,
+		&f.Trips, &f.ClearedAt, &f.ReturnedAfterReview, &f.MutedUntil, &muteScope); err != nil {
 		return ContentFlag{}, err
 	}
 	f.Resolution, f.ResolutionReason = derefString(resolution), derefString(reason)
 	f.BroadcastKey, f.AcknowledgedBy, f.ResolvedBy = derefString(key), derefString(ackBy), derefString(resolvedBy)
+	f.MuteScope = derefString(muteScope)
 	f.RaisedAt, f.UpdatedAt, f.LastPostAt = f.RaisedAt.UTC(), f.UpdatedAt.UTC(), f.LastPostAt.UTC()
-	for _, t := range []*time.Time{f.AcknowledgedAt, f.ResolvedAt, f.LastRemindedAt} {
+	for _, t := range []*time.Time{f.AcknowledgedAt, f.ResolvedAt, f.LastRemindedAt, f.ClearedAt, f.MutedUntil} {
 		if t != nil {
 			*t = t.UTC()
 		}
@@ -160,6 +177,10 @@ type FlagPost struct {
 	// Actor is the sampler's service identity.
 	Actor string
 	Now   time.Time
+	// Rejoin is -content-flag-rejoin (docs/72 D3): a clear of an open flag
+	// is held this long, and a trip inside it rejoins the same incident.
+	// Zero resolves a clear at once, as R40 did.
+	Rejoin time.Duration
 }
 
 // FlagPostResult is what a POST did: one of the screening.FlagStatus*
@@ -210,14 +231,15 @@ func (s *Store) postContentFlag(ctx context.Context, p FlagPost, config []Config
 	// Read before it, the mute was missing, the dismissed flag was gone, and
 	// the POST raised — and paged — a new flag.
 	if b.Mode == screening.ModeFlag {
-		var until time.Time
-		err := tx.QueryRow(ctx, `SELECT muted_until FROM screening_mutes WHERE broadcast_id = $1 AND muted_until > $2`,
-			b.BroadcastID, now).Scan(&until)
-		switch {
-		case err == nil:
-			return FlagPostResult{Status: screening.FlagStatusMuted}, nil
-		case !errors.Is(err, pgx.ErrNoRows):
+		muted, err := applyMute(ctx, tx, b, now)
+		if err != nil {
 			return FlagPostResult{}, err
+		}
+		if muted {
+			if err := tx.Commit(ctx); err != nil {
+				return FlagPostResult{}, err
+			}
+			return FlagPostResult{Status: screening.FlagStatusMuted}, nil
 		}
 	}
 
@@ -234,8 +256,22 @@ func (s *Store) postContentFlag(ctx context.Context, p FlagPost, config []Config
 			}
 			found = false
 		}
+		if found && existing.ClearedAt != nil && now.Sub(*existing.ClearedAt) > p.Rejoin {
+			// A held clear whose window passed before the sweep got to it:
+			// that incident is over, and this trip is a new one (docs/72 D3).
+			if _, _, err := s.resolveFlagTx(ctx, tx, existing, events.ContentFlagResolutionCleared, "", "system", now, config); err != nil {
+				return FlagPostResult{}, err
+			}
+			found = false
+		}
 		if !found {
-			flag, err := insertFlag(ctx, tx, p, now)
+			returned := false
+			if b.Mode == screening.ModeFlag {
+				if returned, err = reviewedRecently(ctx, tx, b.BroadcastID, now); err != nil {
+					return FlagPostResult{}, err
+				}
+			}
+			flag, err := insertFlag(ctx, tx, p, now, returned)
 			if err != nil {
 				return FlagPostResult{}, err
 			}
@@ -244,7 +280,9 @@ func (s *Store) postContentFlag(ctx context.Context, p FlagPost, config []Config
 			}
 			res = FlagPostResult{Status: screening.FlagStatusRaised, Flag: flag}
 		} else {
-			flag, err := updateFlag(ctx, tx, existing.ID, p, now)
+			// A trip on a held clear rejoins the incident: one more trip, no
+			// new row and no page (docs/72 D3).
+			flag, err := updateFlag(ctx, tx, existing.ID, p, now, existing.ClearedAt != nil)
 			if err != nil {
 				return FlagPostResult{}, err
 			}
@@ -254,10 +292,26 @@ func (s *Store) postContentFlag(ctx context.Context, p FlagPost, config []Config
 		// A clear for another session than the unresolved flag's says nothing
 		// about that flag: its session has ended and the sweep resolves it.
 		if !found || existing.PublisherEpoch != b.PublisherEpoch {
-			return FlagPostResult{Status: screening.FlagStatusIgnored}, nil
+			return FlagPostResult{Status: screening.FlagStatusIgnored}, tx.Commit(ctx)
 		}
-		// A clear resolves an acknowledged flag too, so a later episode in the
-		// same session raises a NEW flag and pages again (D9).
+		// An open flag's clear is held for the rejoin window: flicker is one
+		// incident, and a re-trip inside the window must not page again
+		// (docs/72 D3). The leader's sweep resolves it once the window passes.
+		if p.Rejoin > 0 && existing.State == FlagStateOpen {
+			flag := existing
+			if existing.ClearedAt == nil {
+				if flag, err = scanFlag(tx.QueryRow(ctx, `UPDATE content_flags SET cleared_at = $2, updated_at = $2
+					WHERE id = $1 RETURNING `+flagColumns, existing.ID, now)); err != nil {
+					return FlagPostResult{}, err
+				}
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return FlagPostResult{}, err
+			}
+			return FlagPostResult{Status: screening.FlagStatusUpdated, Flag: flag}, nil
+		}
+		// A clear resolves an acknowledged flag at once, so a later episode
+		// in the same session raises a NEW flag and pages again (D9).
 		flag, _, err := s.resolveFlagTx(ctx, tx, existing, events.ContentFlagResolutionCleared, "", p.Actor, now, config)
 		if err != nil {
 			return FlagPostResult{}, err
@@ -285,30 +339,89 @@ func lockUnresolvedFlag(ctx context.Context, tx pgx.Tx, broadcastID, mode string
 	return f, true, nil
 }
 
-func insertFlag(ctx context.Context, tx pgx.Tx, p FlagPost, now time.Time) (ContentFlag, error) {
+func insertFlag(ctx context.Context, tx pgx.Tx, p FlagPost, now time.Time, returned bool) (ContentFlag, error) {
 	body, err := json.Marshal(p.Body)
 	if err != nil {
 		return ContentFlag{}, err
 	}
 	row := tx.QueryRow(ctx, `INSERT INTO content_flags
-		(mode, state, broadcast_id, broadcast_key, publisher_epoch, sampler_id, raised_at, updated_at, last_post_at, peak_score, body)
-		VALUES ($1,'open',$2,$3,$4,$5,$6,$6,$6,$7,$8) RETURNING `+flagColumns,
+		(mode, state, broadcast_id, broadcast_key, publisher_epoch, sampler_id, raised_at, updated_at, last_post_at, peak_score, body,
+		 returned_after_review)
+		VALUES ($1,'open',$2,$3,$4,$5,$6,$6,$6,$7,$8,$9) RETURNING `+flagColumns,
 		p.Body.Mode, p.Body.BroadcastID, nullString(p.BroadcastKey), p.Body.PublisherEpoch, p.Body.SamplerID, now,
-		p.Body.Scores.Max, body)
+		p.Body.Scores.Max, body, returned)
 	return scanFlag(row)
 }
 
-func updateFlag(ctx context.Context, tx pgx.Tx, id int64, p FlagPost, now time.Time) (ContentFlag, error) {
+// updateFlag records a tripped POST on the unresolved flag; rejoin says it
+// ends a held clear, which counts one more trip (docs/72 D3).
+func updateFlag(ctx context.Context, tx pgx.Tx, id int64, p FlagPost, now time.Time, rejoin bool) (ContentFlag, error) {
 	body, err := json.Marshal(p.Body)
 	if err != nil {
 		return ContentFlag{}, err
 	}
 	row := tx.QueryRow(ctx, `UPDATE content_flags SET
 		updated_at = $2, last_post_at = $2, sampler_id = $3, peak_score = GREATEST(peak_score, $4), body = $5,
-		broadcast_key = COALESCE(broadcast_key, $6)
+		broadcast_key = COALESCE(broadcast_key, $6),
+		trips = trips + CASE WHEN $7 THEN 1 ELSE 0 END, cleared_at = NULL
 		WHERE id = $1 RETURNING `+flagColumns,
-		id, now, p.Body.SamplerID, p.Body.Scores.Max, body, nullString(p.BroadcastKey))
+		id, now, p.Body.SamplerID, p.Body.Scores.Max, body, nullString(p.BroadcastKey), rejoin)
 	return scanFlag(row)
+}
+
+// ReviewLookback bounds docs/72 D4: a review older than this does not make a
+// new raise a return. Broadcast IDs are re-minted eventually; a day is far
+// longer than any one broadcast's away grace.
+const ReviewLookback = 24 * time.Hour
+
+// reviewedRecently reports whether a person acknowledged, dismissed or killed
+// an earlier flag-mode incident on the broadcast within ReviewLookback.
+func reviewedRecently(ctx context.Context, tx pgx.Tx, broadcastID string, now time.Time) (bool, error) {
+	var ok bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM content_flags
+		WHERE broadcast_id = $1 AND mode = 'flag' AND state = 'resolved' AND resolved_at > $2
+		  AND (acknowledged_at IS NOT NULL OR resolution IN ('dismissed','killed')))`,
+		broadcastID, now.Add(-ReviewLookback)).Scan(&ok)
+	return ok, err
+}
+
+// applyMute decides whether the broadcast's mute silences this flag-mode POST
+// (D10, docs/72 D5), and ends the mutes the POST itself ends: an `episode` or
+// `session` mute belongs to one publisher session, so a POST for another one
+// is not muted and drops it, and an `episode` mute ends on its session's
+// clear. Locks the mute row, so a concurrent dismissal is seen.
+func applyMute(ctx context.Context, tx pgx.Tx, b screening.ContentFlag, now time.Time) (bool, error) {
+	var (
+		m      Mute
+		epoch  *string
+		flagID *int64
+	)
+	err := tx.QueryRow(ctx, `SELECT muted_until, scope, publisher_epoch, flag_id FROM screening_mutes
+		WHERE broadcast_id = $1 AND muted_until > $2 FOR UPDATE`, b.BroadcastID, now).Scan(&m.Until, &m.Scope, &epoch, &flagID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	m.Epoch = derefString(epoch)
+	end := func() error {
+		if _, err := tx.Exec(ctx, `DELETE FROM screening_mutes WHERE broadcast_id = $1`, b.BroadcastID); err != nil {
+			return err
+		}
+		if flagID != nil {
+			_, err := tx.Exec(ctx, `UPDATE content_flags SET muted_until = LEAST(muted_until, $2) WHERE id = $1`, *flagID, now)
+			return err
+		}
+		return nil
+	}
+	switch {
+	case !m.Covers(b.PublisherEpoch):
+		return false, end()
+	case m.Scope == MuteScopeEpisode && b.State == screening.StateCleared:
+		return true, end()
+	}
+	return true, nil
 }
 
 // resolveFlagTx resolves f inside tx unless it already is, and — for a
@@ -353,13 +466,13 @@ func (s *Store) appendFlagRaisedTx(ctx context.Context, tx pgx.Tx, f ContentFlag
 		Type: EventContentFlag, OccurredAt: f.RaisedAt, Actor: actor,
 		BroadcastKey: f.BroadcastKey, BroadcastID: f.BroadcastID,
 	}
-	summary := SummarizeContentFlagRaised(f.BroadcastID, f.Body.Window.FlaggedSamples, f.Body.Window.Samples, f.Body.Scores.Max)
+	summary := SummarizeContentFlagRaised(f.BroadcastID, f.Body.Window.FlaggedSamples, f.Body.Window.Samples, f.Body.Scores.Max, f.ReturnedAfterReview)
 	if f.Mode == screening.ModeObserve {
 		ev.Type, ev.Category = EventContentFlagObserved, CategoryScreening
 		summary = SummarizeContentFlagObserved(f.BroadcastID, f.Body.Window.FlaggedSamples, f.Body.Window.Samples, f.Body.Scores.Max)
 	}
 	b := f.Body
-	payload := flagPayload(f, summary, map[string]any{
+	extra := map[string]any{
 		PayloadSamplerID: b.SamplerID,
 		PayloadWindow: events.ContentFlagWindow{
 			Start: rfc3339(b.Window.Start), End: rfc3339(b.Window.End),
@@ -367,7 +480,11 @@ func (s *Store) appendFlagRaisedTx(ctx context.Context, tx pgx.Tx, f ContentFlag
 		},
 		PayloadScores: events.ContentFlagScores{Max: b.Scores.Max, Mean: b.Scores.Mean},
 		PayloadLabels: b.Labels,
-	})
+	}
+	if f.ReturnedAfterReview {
+		extra[PayloadReturnedAfterReview] = true
+	}
+	payload := flagPayload(f, summary, extra)
 	ev.Payload = mustJSON(payload)
 	_, err := s.appendEventTx(ctx, tx, ev, config)
 	return err
@@ -504,10 +621,78 @@ func (s *Store) AcknowledgeContentFlag(ctx context.Context, id int64, actor stri
 	return ContentFlag{}, ErrFlagNotOpen
 }
 
+// Dismissal reasons (docs/72 D5): why an operator judged a flag not a
+// violation. A closed vocabulary, delivered as content_flag.resolved's
+// `reason`.
+const (
+	DismissReasonGameScene     = "game_scene"
+	DismissReasonNotExplicit   = "not_explicit"
+	DismissReasonDetectorError = "detector_error"
+	DismissReasonOther         = "other"
+)
+
+// Mute scopes (docs/72 D5).
+const (
+	// MuteScopeEpisode mutes until the sampler next reports the window
+	// cleared for the dismissed flag's publisher session.
+	MuteScopeEpisode = "episode"
+	// MuteScopeDuration mutes for a fixed time, every session: R40's mute.
+	MuteScopeDuration = "duration"
+	// MuteScopeSession mutes until the dismissed flag's publisher session
+	// ends.
+	MuteScopeSession = "session"
+)
+
+// ErrInvalidDismissal: a dismissal names a reason or scope outside the
+// vocabulary.
+var ErrInvalidDismissal = errors.New("store: invalid dismissal")
+
+// Dismissal is how an operator dismissed a flag (docs/72 D5).
+type Dismissal struct {
+	// Reason is one of the DismissReason* values, or empty.
+	Reason string
+	// Scope is one of the MuteScope* values.
+	Scope string
+	// MutedUntil ends the mute: the caller's -content-flag-mute for a
+	// duration mute, its cap for the session-bound two.
+	MutedUntil time.Time
+}
+
+func (d Dismissal) validate() error {
+	switch d.Reason {
+	case "", DismissReasonGameScene, DismissReasonNotExplicit, DismissReasonDetectorError, DismissReasonOther:
+	default:
+		return fmt.Errorf("%w: reason %q", ErrInvalidDismissal, d.Reason)
+	}
+	switch d.Scope {
+	case MuteScopeEpisode, MuteScopeDuration, MuteScopeSession:
+	default:
+		return fmt.Errorf("%w: scope %q", ErrInvalidDismissal, d.Scope)
+	}
+	return nil
+}
+
+// Mute is one broadcast's active mute (D10, docs/72 D5).
+type Mute struct {
+	Until time.Time
+	Scope string
+	// Epoch is the publisher session an episode or session mute is bound
+	// to; empty for a duration mute.
+	Epoch string
+}
+
+// Covers reports whether the mute silences the given publisher session.
+func (m Mute) Covers(epoch string) bool {
+	return m.Epoch == "" || m.Epoch == epoch
+}
+
 // DismissContentFlag resolves a flag-mode flag as dismissed and mutes its
-// broadcast until mutedUntil (D10), with the resolved event, in one
+// broadcast as d says (D10, docs/72 D5), with the resolved event, in one
 // transaction.
-func (s *Store) DismissContentFlag(ctx context.Context, id int64, actor string, now, mutedUntil time.Time, config []ConfigWebhook) (ContentFlag, error) {
+func (s *Store) DismissContentFlag(ctx context.Context, id int64, actor string, now time.Time, d Dismissal, config []ConfigWebhook) (ContentFlag, error) {
+	if err := d.validate(); err != nil {
+		return ContentFlag{}, err
+	}
 	now = now.UTC()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -524,15 +709,24 @@ func (s *Store) DismissContentFlag(ctx context.Context, id int64, actor string, 
 	case !f.Unresolved():
 		return ContentFlag{}, ErrFlagResolved
 	}
-	out, _, err := s.resolveFlagTx(ctx, tx, f, events.ContentFlagResolutionDismissed, "", actor, now, config)
+	if _, err := tx.Exec(ctx, `UPDATE content_flags SET muted_until = $2, mute_scope = $3 WHERE id = $1`,
+		f.ID, d.MutedUntil.UTC(), d.Scope); err != nil {
+		return ContentFlag{}, fmt.Errorf("store: dismiss content flag: %w", err)
+	}
+	out, _, err := s.resolveFlagTx(ctx, tx, f, events.ContentFlagResolutionDismissed, d.Reason, actor, now, config)
 	if err != nil {
 		return ContentFlag{}, fmt.Errorf("store: dismiss content flag: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO screening_mutes (broadcast_id, muted_until, muted_by, flag_id)
-		VALUES ($1,$2,$3,$4)
+	epoch := ""
+	if d.Scope != MuteScopeDuration {
+		epoch = f.PublisherEpoch
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO screening_mutes (broadcast_id, muted_until, muted_by, flag_id, scope, publisher_epoch)
+		VALUES ($1,$2,$3,$4,$5,$6)
 		ON CONFLICT (broadcast_id) DO UPDATE SET muted_until = EXCLUDED.muted_until,
-			muted_by = EXCLUDED.muted_by, flag_id = EXCLUDED.flag_id`,
-		f.BroadcastID, mutedUntil.UTC(), actor, f.ID); err != nil {
+			muted_by = EXCLUDED.muted_by, flag_id = EXCLUDED.flag_id,
+			scope = EXCLUDED.scope, publisher_epoch = EXCLUDED.publisher_epoch`,
+		f.BroadcastID, d.MutedUntil.UTC(), actor, f.ID, d.Scope, nullString(epoch)); err != nil {
 		return ContentFlag{}, fmt.Errorf("store: mute broadcast: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -592,8 +786,9 @@ func (s *Store) AutoKillContentFlag(ctx context.Context, id int64, requireOpen b
 		return f, nil, false, nil
 	}
 	var muted bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM screening_mutes WHERE broadcast_id = $1 AND muted_until > $2)`,
-		f.BroadcastID, now).Scan(&muted); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM screening_mutes WHERE broadcast_id = $1 AND muted_until > $2
+		AND (publisher_epoch IS NULL OR publisher_epoch = $3))`,
+		f.BroadcastID, now, f.PublisherEpoch).Scan(&muted); err != nil {
 		return ContentFlag{}, nil, false, fmt.Errorf("store: auto-kill content flag: %w", err)
 	}
 	if muted {
@@ -695,25 +890,84 @@ func (s *Store) RemindContentFlag(ctx context.Context, id int64, signal string, 
 	return f, true, nil
 }
 
-// ActiveMutes returns every broadcast muted at now, with its mute's end.
-func (s *Store) ActiveMutes(ctx context.Context, now time.Time) (map[string]time.Time, error) {
-	rows, err := s.pool.Query(ctx, `SELECT broadcast_id, muted_until FROM screening_mutes WHERE muted_until > $1`, now.UTC())
+// ActiveMutes returns every broadcast muted at now, with its mute. A caller
+// asks Mute.Covers whether it silences a given publisher session.
+func (s *Store) ActiveMutes(ctx context.Context, now time.Time) (map[string]Mute, error) {
+	rows, err := s.pool.Query(ctx, `SELECT broadcast_id, muted_until, scope, publisher_epoch FROM screening_mutes
+		WHERE muted_until > $1`, now.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("store: active mutes: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]time.Time{}
+	out := map[string]Mute{}
 	for rows.Next() {
 		var (
 			id    string
-			until time.Time
+			m     Mute
+			epoch *string
 		)
-		if err := rows.Scan(&id, &until); err != nil {
+		if err := rows.Scan(&id, &m.Until, &m.Scope, &epoch); err != nil {
 			return nil, fmt.Errorf("store: active mutes: %w", err)
 		}
-		out[id] = until.UTC()
+		m.Until, m.Epoch = m.Until.UTC(), derefString(epoch)
+		out[id] = m
 	}
 	return out, rows.Err()
+}
+
+// ResolveHeldClears is the leader's half of docs/72 D3: every unresolved flag
+// whose clear has been held for longer than rejoin — or that a person
+// acknowledged meanwhile, which needs no window — resolves as cleared, with
+// R40's content_flag.resolved for a flag-mode one. A rejoin of zero resolves
+// every held clear, which is what switching the window off must do.
+func (s *Store) ResolveHeldClears(ctx context.Context, rejoin time.Duration, now time.Time, config []ConfigWebhook) ([]ContentFlag, error) {
+	now = now.UTC()
+	rows, err := s.pool.Query(ctx, `SELECT `+flagColumns+` FROM content_flags
+		WHERE state <> 'resolved' AND cleared_at IS NOT NULL AND (state = 'acknowledged' OR cleared_at <= $1)
+		ORDER BY id`, now.Add(-rejoin))
+	if err != nil {
+		return nil, fmt.Errorf("store: held clears: %w", err)
+	}
+	list, err := collectFlags(rows)
+	if err != nil {
+		return nil, fmt.Errorf("store: held clears: %w", err)
+	}
+	var out []ContentFlag
+	for _, f := range list {
+		r, ok, err := s.resolveHeldClear(ctx, f.ID, rejoin, now, config)
+		if err != nil {
+			return out, err
+		}
+		if ok {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// resolveHeldClear re-reads the flag under its lock: a trip that rejoined it
+// since the list was read wins, and nothing is resolved.
+func (s *Store) resolveHeldClear(ctx context.Context, id int64, rejoin time.Duration, now time.Time, config []ConfigWebhook) (ContentFlag, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ContentFlag{}, false, fmt.Errorf("store: held clear: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	f, err := scanFlag(tx.QueryRow(ctx, `SELECT `+flagColumns+` FROM content_flags WHERE id = $1 FOR UPDATE`, id))
+	if err != nil {
+		return ContentFlag{}, false, fmt.Errorf("store: held clear: %w", err)
+	}
+	if !f.Unresolved() || f.ClearedAt == nil || (f.State != FlagStateAcknowledged && now.Sub(*f.ClearedAt) < rejoin) {
+		return f, false, nil
+	}
+	out, ok, err := s.resolveFlagTx(ctx, tx, f, events.ContentFlagResolutionCleared, "", "system", now, config)
+	if err != nil || !ok {
+		return out, ok, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ContentFlag{}, false, fmt.Errorf("store: held clear: %w", err)
+	}
+	return out, true, nil
 }
 
 // FlagRoute reports whether any enabled webhook — chart-defined or
@@ -767,6 +1021,8 @@ type ContentFlagPayload struct {
 	RaisedAt   string
 	Reminder   int
 	Signal     string
+	// ReturnedAfterReview is docs/72 D4's mark on a raise.
+	ReturnedAfterReview bool
 }
 
 // ContentFlag decodes the flag payload of a content-flag event.
@@ -782,6 +1038,7 @@ func (e Event) ContentFlag() ContentFlagPayload {
 		RaisedAt   string                    `json:"raisedAt"`
 		Reminder   json.Number               `json:"reminder"`
 		Signal     string                    `json:"signal"`
+		Returned   bool                      `json:"returnedAfterReview"`
 	}
 	if len(e.Payload) == 0 || json.Unmarshal(e.Payload, &raw) != nil {
 		return ContentFlagPayload{}
@@ -813,9 +1070,11 @@ func (e Event) ContentFlag() ContentFlagPayload {
 		out.Resolution = raw.Resolution
 	}
 	switch raw.Reason {
-	case FlagReasonDeadline, FlagReasonPolicy, FlagReasonStale:
+	case FlagReasonDeadline, FlagReasonPolicy, FlagReasonStale,
+		DismissReasonGameScene, DismissReasonNotExplicit, DismissReasonDetectorError, DismissReasonOther:
 		out.Reason = raw.Reason
 	}
+	out.ReturnedAfterReview = raw.Returned
 	out.RaisedAt = timestampOrEmpty(raw.RaisedAt)
 	if n, err := strconv.Atoi(raw.Reminder.String()); err == nil && n > 0 {
 		out.Reminder = n
@@ -869,4 +1128,7 @@ const (
 	PayloadReminder   = "reminder"
 	PayloadSignal     = "signal"
 	PayloadScreening  = "screening"
+	// PayloadReturnedAfterReview marks a raise after a reviewed incident
+	// (docs/72 D4).
+	PayloadReturnedAfterReview = "returnedAfterReview"
 )

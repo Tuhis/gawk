@@ -12,9 +12,14 @@ import (
 // delivery does not already carry.
 
 // SummarizeContentFlagRaised is the page: what tripped, and what to do.
-func SummarizeContentFlagRaised(broadcastID string, flagged, samples int, peak float64) string {
+func SummarizeContentFlagRaised(broadcastID string, flagged, samples int, peak float64, returned bool) string {
+	what := broadcastName(broadcastID)
+	if returned {
+		// docs/72 D4: said first, because it changes what the page asks for.
+		what += ", which returned after review"
+	}
 	return fmt.Sprintf("content flag raised on %s: %d of %d samples flagged, peak score %.2f — join and judge it",
-		broadcastName(broadcastID), flagged, samples, peak)
+		what, flagged, samples, peak)
 }
 
 // SummarizeContentFlagObserved is the calibration notice (D19).

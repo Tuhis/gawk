@@ -627,6 +627,8 @@ func TestContentFlagEventsCarryTheFlagThroughClosedAccessors(t *testing.T) {
 		store.PayloadSignal:     "unknown",
 		store.PayloadReminder:   3,
 		store.PayloadRaisedAt:   "2026-09-17T11:40:00Z",
+		// docs/72 D4: forwarded on a raise, never on an observed flag.
+		store.PayloadReturnedAfterReview: true,
 	}
 	raw, _ := json.Marshal(payload)
 	for _, typ := range []string{store.EventContentFlag, store.EventContentFlagObserved, store.EventContentFlagReminded, store.EventContentFlagResolved} {
@@ -653,6 +655,9 @@ func TestContentFlagEventsCarryTheFlagThroughClosedAccessors(t *testing.T) {
 				}
 				if w, _ := data["window"].(map[string]any); w["flaggedSamples"] != float64(4) {
 					t.Errorf("window = %v", data["window"])
+				}
+				if want := typ == store.EventContentFlag; (data["returnedAfterReview"] == true) != want {
+					t.Errorf("returnedAfterReview = %v, want it only on a raise", data["returnedAfterReview"])
 				}
 			case store.EventContentFlagReminded:
 				if data["signal"] != "unknown" || data["reminder"] != float64(3) {

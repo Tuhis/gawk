@@ -1484,11 +1484,17 @@ paths:
       tags: [screening]
       summary: Dismiss a content flag
       description: |
-        Resolves the flag as `dismissed` and mutes re-flagging of its
-        broadcast for the deployment's mute period (`mutedUntil`). When the
-        mute expires, a signal that persists raises a new flag. Records
-        `content_flag.resolved`. An already resolved or an `observe`-mode
-        flag returns `409` with code `content_flag_state`.
+        Resolves the flag as `dismissed`, with the operator's `reason`, and
+        mutes re-flagging of its broadcast for the chosen `scope` (R70):
+        `episode` until the sampler next reports the window cleared for
+        this publisher session, `duration` for the deployment's mute period
+        (the default, and R40's only kind), `session` until this publisher
+        session ends. The two session-bound scopes are capped at 24 hours.
+        When the mute ends, a signal that persists raises a new flag, marked
+        `returnedAfterReview`. Records `content_flag.resolved` with the
+        reason. An empty body is `{"scope": "duration"}`. An already
+        resolved or an `observe`-mode flag returns `409` with code
+        `content_flag_state`; an unknown reason or scope is `400`.
       x-gawk-roles: [operator]
       x-gawk-requires: screening
       parameters:
@@ -1500,8 +1506,8 @@ paths:
       requestBody:
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/EmptyRequest' }
-            example: {}
+            schema: { $ref: '#/components/schemas/DismissContentFlagRequest' }
+            example: { reason: game_scene, scope: episode }
       responses:
         '200':
           description: The dismissed flag, with the mute's end.
@@ -1622,6 +1628,7 @@ paths:
               mode: observe
               floor: 0.3
               labels: [FEMALE_GENITALIA_EXPOSED, MALE_GENITALIA_EXPOSED, ANUS_EXPOSED]
+              rule: { threshold: 0.5, window: 6, windowHits: 3 }
               sessions:
                 - broadcastId: ABC234
                   broadcastKey: 9f2c41ab77de
@@ -2655,7 +2662,7 @@ components:
         flags are calibration data: they page nobody and cannot be
         acknowledged or dismissed.
       required: [id, mode, state, broadcastId, broadcastKey, publisherEpoch, samplerId, raisedAt, updatedAt,
-        lastPostAt, signal, window, scores, labels, peakScore, reminders]
+        lastPostAt, signal, window, scores, labels, peakScore, reminders, trips, returnedAfterReview]
       properties:
         id: { type: integer, format: int64 }
         mode:
@@ -2671,8 +2678,11 @@ components:
           description: How the flag ended. Absent while it is unresolved.
         resolutionReason:
           type: string
-          enum: [deadline, policy, stale]
-          description: Why an automatic resolution happened. Absent otherwise.
+          enum: [deadline, policy, stale, game_scene, not_explicit, detector_error, other]
+          description: |
+            Why the flag resolved: `deadline`, `policy` or `stale` for an
+            automatic resolution; for a dismissal, the operator's reason
+            (R70). Absent otherwise.
         broadcastId: { $ref: '#/components/schemas/BroadcastId' }
         broadcastKey: { $ref: '#/components/schemas/BroadcastKey' }
         publisherEpoch:
@@ -2721,8 +2731,50 @@ components:
         mutedUntil:
           type: string
           format: date-time
-          description: While a dismissal mutes re-flagging of the broadcast, when the mute ends.
+          description: |
+            For a dismissed flag, when the mute its dismissal set ends (an
+            `episode` mute ends at the clear that ended it). For any other,
+            while a mute covers the flag's publisher session, when it ends.
+        muteScope:
+          type: string
+          enum: [episode, duration, session]
+          description: The dismissal's mute scope (R70). Absent on a flag that was not dismissed.
+        trips:
+          type: integer
+          format: int32
+          minimum: 1
+          description: |
+            How many times the sampler's window tripped within this one
+            incident (R70): a re-trip inside the deployment's rejoin window
+            is the same incident and pages nobody again.
+        clearedAt:
+          type: string
+          format: date-time
+          description: |
+            Set while the sampler's clear of an unacknowledged flag is held
+            for the rejoin window (R70); the signal reads `cleared` and the
+            flag resolves `cleared` when the window passes.
+        returnedAfterReview:
+          type: boolean
+          description: |
+            True when an earlier incident on the broadcast was acknowledged,
+            dismissed or killed within the last 24 hours and the signal came
+            back (R70).
         links: { $ref: '#/components/schemas/ContentFlagLinks' }
+
+    DismissContentFlagRequest:
+      type: object
+      additionalProperties: false
+      description: How an operator dismissed a flag (R70). Both fields are optional.
+      properties:
+        reason:
+          type: string
+          enum: [game_scene, not_explicit, detector_error, other]
+          description: Why it is not a violation; delivered as `content_flag.resolved`'s `reason`.
+        scope:
+          type: string
+          enum: [episode, duration, session]
+          default: duration
 
     ScreeningStatus:
       type: object
@@ -2882,9 +2934,23 @@ components:
         labels:
           type: array
           items: { type: string, pattern: '^[A-Z0-9_]{1,64}$' }
+        rule: { $ref: '#/components/schemas/SamplerRule' }
         sessions:
           type: array
           items: { $ref: '#/components/schemas/SessionSamples' }
+
+    SamplerRule:
+      type: object
+      description: |
+        The sampler's window rule (R70): a window trips when `windowHits` of
+        its last `window` samples score at or above `threshold`. Reported
+        so the portal draws the threshold that was in force; absent from a
+        sampler older than R70. `threshold` may not be below `floor`.
+      required: [threshold, window, windowHits]
+      properties:
+        threshold: { type: number, exclusiveMinimum: 0, maximum: 1 }
+        window: { type: integer, format: int32, minimum: 1, maximum: 64 }
+        windowHits: { type: integer, format: int32, minimum: 1, maximum: 64 }
 
     SamplesResult:
       type: object

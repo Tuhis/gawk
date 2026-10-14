@@ -908,7 +908,7 @@ func TestAnAutomaticKillAndTheOperatorNeverBothWin(t *testing.T) {
 		return err
 	}
 	dismiss := func(h *harness, id int64, now time.Time) error {
-		_, err := h.store.DismissContentFlag(context.Background(), id, "op@example.com", now, now.Add(30*time.Minute), nil)
+		_, err := h.store.DismissContentFlag(context.Background(), id, "op@example.com", now, store.Dismissal{Scope: store.MuteScopeDuration, MutedUntil: now.Add(30 * time.Minute)}, nil)
 		return err
 	}
 	policy, err := config.ParseAutoKillPolicy("score>=0.9,hits>=10/12")

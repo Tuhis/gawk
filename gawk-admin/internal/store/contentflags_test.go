@@ -195,7 +195,7 @@ func TestDismissContentFlagMutesTheBroadcast(t *testing.T) {
 	f := post(t, s, flagBody("ABC234", "e1", screening.ModeFlag, screening.StateTripped), "", t0).Flag
 	until := t0.Add(30 * time.Minute)
 
-	out, err := s.DismissContentFlag(ctx, f.ID, "op@example.com", t0.Add(time.Minute), until, nil)
+	out, err := s.DismissContentFlag(ctx, f.ID, "op@example.com", t0.Add(time.Minute), store.Dismissal{Scope: store.MuteScopeDuration, MutedUntil: until}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestDismissContentFlagMutesTheBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := mutes["ABC234"]; !ok || !got.Equal(until) || len(mutes) != 1 {
+	if got, ok := mutes["ABC234"]; !ok || !got.Until.Equal(until) || got.Scope != store.MuteScopeDuration || !got.Covers("any") || len(mutes) != 1 {
 		t.Fatalf("active mutes = %v, want ABC234 until %v", mutes, until)
 	}
 
@@ -226,17 +226,17 @@ func TestDismissContentFlagMutesTheBroadcast(t *testing.T) {
 		t.Fatalf("raised events = %d, want only the original page", n)
 	}
 
-	if _, err := s.DismissContentFlag(ctx, f.ID, "op@example.com", t0, until, nil); !errors.Is(err, store.ErrFlagResolved) {
+	if _, err := s.DismissContentFlag(ctx, f.ID, "op@example.com", t0, store.Dismissal{Scope: store.MuteScopeDuration, MutedUntil: until}, nil); !errors.Is(err, store.ErrFlagResolved) {
 		t.Fatalf("dismiss a resolved flag = %v, want ErrFlagResolved", err)
 	}
 	obs, err := s.UnresolvedContentFlags(ctx, screening.ModeObserve)
 	if err != nil || len(obs) != 1 {
 		t.Fatalf("observed flags = %+v, %v", obs, err)
 	}
-	if _, err := s.DismissContentFlag(ctx, obs[0].ID, "op@example.com", t0, until, nil); !errors.Is(err, store.ErrFlagObserved) {
+	if _, err := s.DismissContentFlag(ctx, obs[0].ID, "op@example.com", t0, store.Dismissal{Scope: store.MuteScopeDuration, MutedUntil: until}, nil); !errors.Is(err, store.ErrFlagObserved) {
 		t.Fatalf("dismiss an observed flag = %v, want ErrFlagObserved", err)
 	}
-	if _, err := s.DismissContentFlag(ctx, f.ID+1000, "op@example.com", t0, until, nil); !errors.Is(err, store.ErrNotFound) {
+	if _, err := s.DismissContentFlag(ctx, f.ID+1000, "op@example.com", t0, store.Dismissal{Scope: store.MuteScopeDuration, MutedUntil: until}, nil); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("dismiss an unknown flag = %v, want ErrNotFound", err)
 	}
 
@@ -250,7 +250,7 @@ func TestDismissContentFlagMutesTheBroadcast(t *testing.T) {
 		t.Fatalf("a trip after the mute: %q, want raised", second.Status)
 	}
 	later := until.Add(time.Hour)
-	if _, err := s.DismissContentFlag(ctx, second.Flag.ID, "lead@example.com", until.Add(time.Minute), later, nil); err != nil {
+	if _, err := s.DismissContentFlag(ctx, second.Flag.ID, "lead@example.com", until.Add(time.Minute), store.Dismissal{Scope: store.MuteScopeDuration, MutedUntil: later}, nil); err != nil {
 		t.Fatal(err)
 	}
 	var rows int
@@ -402,7 +402,7 @@ func TestAutoKillContentFlagClaimsTheFlag(t *testing.T) {
 			t.Fatal(err)
 		}
 		dismissed := post(t, s, flagBody("DISMS2", "e1", screening.ModeFlag, screening.StateTripped), "", t0).Flag
-		if _, err := s.DismissContentFlag(ctx, dismissed.ID, "op@example.com", t0.Add(time.Second), t0.Add(time.Hour), nil); err != nil {
+		if _, err := s.DismissContentFlag(ctx, dismissed.ID, "op@example.com", t0.Add(time.Second), store.Dismissal{Scope: store.MuteScopeDuration, MutedUntil: t0.Add(time.Hour)}, nil); err != nil {
 			t.Fatal(err)
 		}
 		observed := post(t, s, flagBody("OBSRV2", "e1", screening.ModeObserve, screening.StateTripped), "", t0).Flag
@@ -670,8 +670,10 @@ func TestEventRoomScreeningIsAClosedVocabulary(t *testing.T) {
 // and fall back to "a broadcast" / "an operator" rather than print nothing.
 func TestSummarizeContentFlagSentences(t *testing.T) {
 	for _, tc := range []struct{ got, want string }{
-		{store.SummarizeContentFlagRaised("ABC234", 4, 6, 0.951),
+		{store.SummarizeContentFlagRaised("ABC234", 4, 6, 0.951, false),
 			"content flag raised on broadcast ABC234: 4 of 6 samples flagged, peak score 0.95 — join and judge it"},
+		{store.SummarizeContentFlagRaised("ABC234", 4, 6, 0.951, true),
+			"content flag raised on broadcast ABC234, which returned after review: 4 of 6 samples flagged, peak score 0.95 — join and judge it"},
 		{store.SummarizeContentFlagObserved("", 4, 6, 0.9),
 			"observe mode would have flagged a broadcast: 4 of 6 samples, peak score 0.90"},
 		{store.SummarizeContentFlagReminded("ABC234", 1, 10*time.Minute+20*time.Second, events.ContentFlagSignalLive),

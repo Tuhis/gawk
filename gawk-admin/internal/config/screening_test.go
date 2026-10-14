@@ -131,3 +131,54 @@ func TestAutoKillPolicyMatch(t *testing.T) {
 		t.Error("a nil policy matched or did not read as off")
 	}
 }
+
+// R70's knobs (docs/72 §4): the critical level, the sustained run and the
+// rejoin window — defaults, env, flags, refusals and the startup log.
+func TestTimelineKnobs(t *testing.T) {
+	cfg, err := ParseFlags(nil, envFrom(minimal()))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.ScreeningCritical != 0.7 || cfg.ScreeningSustainedAfter != 3*time.Minute || cfg.ContentFlagRejoin != 10*time.Minute {
+		t.Errorf("critical/sustained/rejoin = %v/%v/%v, want 0.7/3m/10m", cfg.ScreeningCritical, cfg.ScreeningSustainedAfter, cfg.ContentFlagRejoin)
+	}
+	attrs := strings.Join(asStrings(cfg.LogAttrs()), " ")
+	for _, want := range []string{"screeningCritical 0.7", "screeningSustainedAfter 3m0s", "contentFlagRejoin 10m0s"} {
+		if !strings.Contains(attrs, want) {
+			t.Errorf("LogAttrs lacks %q: %s", want, attrs)
+		}
+	}
+
+	env := minimal()
+	env["GAWK_ADMIN_SCREENING_CRITICAL"] = "0.85"
+	env["GAWK_ADMIN_SCREENING_SUSTAINED_AFTER"] = "90s"
+	env["GAWK_ADMIN_CONTENT_FLAG_REJOIN"] = "off"
+	cfg, err = ParseFlags(nil, envFrom(env))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.ScreeningCritical != 0.85 || cfg.ScreeningSustainedAfter != 90*time.Second || cfg.ContentFlagRejoin != 0 {
+		t.Errorf("env did not reach the config: %v/%v/%v", cfg.ScreeningCritical, cfg.ScreeningSustainedAfter, cfg.ContentFlagRejoin)
+	}
+	if attrs := strings.Join(asStrings(cfg.LogAttrs()), " "); !strings.Contains(attrs, "contentFlagRejoin off") {
+		t.Errorf("LogAttrs lacks contentFlagRejoin off: %s", attrs)
+	}
+	cfg, err = ParseFlags([]string{"-screening-critical", "1", "-content-flag-rejoin", "5m"}, envFrom(env))
+	if err != nil || cfg.ScreeningCritical != 1 || cfg.ContentFlagRejoin != 5*time.Minute {
+		t.Errorf("flags did not beat the env: %v, %v/%v", err, cfg.ScreeningCritical, cfg.ContentFlagRejoin)
+	}
+
+	for _, args := range [][]string{
+		{"-screening-critical", "0"},
+		{"-screening-critical", "1.2"},
+		{"-screening-critical", "high"},
+		{"-screening-sustained-after", "0s"},
+		{"-screening-sustained-after", "-1m"},
+		{"-content-flag-rejoin", "-5m"},
+		{"-content-flag-rejoin", "later"},
+	} {
+		if _, err := ParseFlags(args, envFrom(minimal())); err == nil {
+			t.Errorf("ParseFlags(%v) succeeded, want an error", args)
+		}
+	}
+}
