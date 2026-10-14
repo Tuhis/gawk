@@ -7,6 +7,7 @@ import { ScreeningBanners } from '../components/ScreeningBanners.tsx';
 import { describeLabels, describeResolution, formatScore } from '../lib/flags.ts';
 import { formatInstant } from '../lib/format.ts';
 import { useLoader } from '../lib/useLoader.ts';
+import { timelineHref } from '../router/router.ts';
 import ui from '../styles/ui.module.css';
 
 const REFRESH_MS = 15_000;
@@ -307,7 +308,11 @@ function ReplayResult({ result }: { result: ReplayResponse }) {
                 <tr key={`${t.publisherEpoch}-${t.at}`}>
                   <td className={ui.nowrap}>{formatInstant(t.at)}</td>
                   <td className={ui.mono}>{t.broadcastId}</td>
-                  <td className={ui.mono}>{t.broadcastKey}</td>
+                  <td className={ui.mono}>
+                    <a href={timelineHref(t.broadcastKey)} title="Open the broadcast's moderation timeline">
+                      {t.broadcastKey}
+                    </a>
+                  </td>
                   <td>{formatScore(t.peakScore)}</td>
                 </tr>
               ))}
@@ -385,11 +390,14 @@ function ObservedFlags({
                   </td>
                   <td className={ui.mono}>{describeLabels(f)}</td>
                   <td>
-                    {f.links?.watch ? (
-                      <a href={f.links.watch} target="_blank" rel="noreferrer">
-                        Watch
-                      </a>
-                    ) : null}
+                    <div className={ui.actions}>
+                      {f.links?.watch ? (
+                        <a href={f.links.watch} target="_blank" rel="noreferrer">
+                          Watch
+                        </a>
+                      ) : null}
+                      {f.broadcastKey ? <a href={timelineHref(f.broadcastKey)}>Timeline</a> : null}
+                    </div>
                   </td>
                 </tr>
               ))}

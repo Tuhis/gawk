@@ -36,6 +36,11 @@ export interface Route {
    * (R42) use the same shape on `#/rooms?key=<roomKey>`.
    */
   key: string;
+  /**
+   * The path's second segment: `#/broadcasts/<broadcastKey>` is one
+   * broadcast's moderation timeline (R70, docs/72 D9). Empty otherwise.
+   */
+  detail: string;
 }
 
 // `rooms` resolves whether or not the deployment serves it: a webhook's deep
@@ -76,17 +81,22 @@ export function parseHash(hash: string): Route {
   const [pathPart = '', queryPart = ''] = raw.split('?');
   const key = new URLSearchParams(queryPart).get('key') ?? '';
   const segments = pathPart.split('/').filter(Boolean);
-  if (segments.length === 0) return { view: 'broadcasts', path: pathPart, key };
+  if (segments.length === 0) return { view: 'broadcasts', path: pathPart, key, detail: '' };
   const head = segments[0] as ViewName;
-  if (VIEWS.includes(head)) return { view: head, path: pathPart, key };
-  if (REDOC_FRAGMENTS.includes(segments[0])) return { view: 'api', path: pathPart, key };
+  if (VIEWS.includes(head)) return { view: head, path: pathPart, key, detail: segments[1] ?? '' };
+  if (REDOC_FRAGMENTS.includes(segments[0])) return { view: 'api', path: pathPart, key, detail: '' };
   // Named, not silently redirected: a link that lands nowhere should say so
   // rather than look like it worked.
-  return { view: 'not-found', path: pathPart, key };
+  return { view: 'not-found', path: pathPart, key, detail: '' };
 }
 
 export function href(view: ViewName): string {
   return `#/${view}`;
+}
+
+/** One broadcast's moderation timeline, by its HMAC'd key — never a raw ID. */
+export function timelineHref(broadcastKey: string): string {
+  return `#/broadcasts/${encodeURIComponent(broadcastKey)}`;
 }
 
 const listeners = new Set<() => void>();

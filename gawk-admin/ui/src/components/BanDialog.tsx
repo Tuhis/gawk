@@ -6,13 +6,9 @@ import { defaultPrefixLength, parseIp, prefixChoices, sharedIpVerdict } from '..
 import { Dialog } from './Dialog.tsx';
 import ui from '../styles/ui.module.css';
 
-export interface BanRequestDraft {
-  reason: string;
-  /** RFC3339, or null for a permanent ban. */
-  expiresAt: string | null;
-  /** null = do not ban the publisher IP. */
-  ip: { prefixLength: number } | null;
-}
+// The draft lives with the sequence that sends it (lib/moderate.ts).
+export type { BanRequestDraft } from '../lib/moderate.ts';
+import type { BanRequestDraft } from '../lib/moderate.ts';
 
 /**
  * Kill + ban (docs/42 §4.9).

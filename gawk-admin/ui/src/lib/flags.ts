@@ -45,8 +45,17 @@ const RESOLUTION_LABEL: Record<string, string> = {
   ended: 'session ended',
 };
 
-/** A resolved flag's outcome in words, with the automatic reason if any. */
+// A dismissal's reason (R70, docs/72 D5) reads as words; the automatic
+// reasons are already words.
+const REASON_LABEL: Record<string, string> = {
+  game_scene: 'game scene',
+  not_explicit: 'not explicit',
+  detector_error: 'detector error',
+};
+
+/** A resolved flag's outcome in words, with its reason if any. */
 export function describeResolution(flag: ContentFlag): string {
   const base = flag.resolution ? (RESOLUTION_LABEL[flag.resolution] ?? flag.resolution) : 'resolved';
-  return flag.resolutionReason ? `${base} (${flag.resolutionReason})` : base;
+  const reason = flag.resolutionReason ? (REASON_LABEL[flag.resolutionReason] ?? flag.resolutionReason) : '';
+  return reason ? `${base} (${reason})` : base;
 }

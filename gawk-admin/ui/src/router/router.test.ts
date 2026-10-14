@@ -2,7 +2,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { href, parseHash, useRoute } from './router.ts';
+import { href, parseHash, timelineHref, useRoute } from './router.ts';
 
 describe('portal routes (§4.9)', () => {
   it('lands on broadcasts for an empty hash', () => {
@@ -83,6 +83,14 @@ describe('portal routes (§4.9)', () => {
     const route = parseHash('#/nonsense');
     expect(route.view).toBe('not-found');
     expect(route.path).toBe('/nonsense');
+  });
+
+  it("resolves one broadcast's moderation timeline by its key (R70)", () => {
+    const route = parseHash(timelineHref('3f9a1c2b4d5e'));
+    expect(route.view).toBe('broadcasts');
+    expect(route.detail).toBe('3f9a1c2b4d5e');
+    expect(parseHash('#/broadcasts').detail).toBe('');
+    expect(parseHash('#/broadcasts?key=3f9a1c2b4d5e').detail).toBe('');
   });
 
   it('ignores a query inside the hash', () => {

@@ -1,6 +1,7 @@
 import type { Broadcast, ContentFlag } from '../api/types.ts';
 import { formatDuration, formatInstant } from '../lib/format.ts';
 import { describeLabels, formatScore, isPinned } from '../lib/flags.ts';
+import { timelineHref } from '../router/router.ts';
 import ui from '../styles/ui.module.css';
 
 /**
@@ -103,6 +104,8 @@ export function ContentFlagStrip({
             Watch
           </a>
         ) : null}
+        {/* R70: the history behind the flag, where the decision is made. */}
+        {flag.broadcastKey ? <a href={timelineHref(flag.broadcastKey)}>Timeline</a> : null}
         {onKill ? (
           <button type="button" className={ui.danger} disabled={busy} onClick={onKill}>
             Kill…
