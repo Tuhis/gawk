@@ -282,7 +282,9 @@ export function DecisionPanel({
                   <input type="radio" name="dismiss-scope" value={s.value} checked={scope === s.value} onChange={() => setScope(s.value)} />
                   <span>
                     {s.label}
-                    <span className={styles.optionHint}>{s.hint}</span>
+                    <span className={styles.optionHint}>
+                      {s.value === 'episode' && flag.clearedAt ? 'This episode has already cleared: mutes nothing' : s.hint}
+                    </span>
                   </span>
                 </label>
               ))}

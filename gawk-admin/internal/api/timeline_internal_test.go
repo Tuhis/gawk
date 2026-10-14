@@ -47,7 +47,7 @@ func tlInput(sessions []store.ScreeningSession, samples []store.TimelineSample, 
 
 func TestTimelineBuckets(t *testing.T) {
 	samples := append(tlSamples("e1", 1, 3, 0.4), tlSamples("e1", 4, 4, 0.75)...) // 0:00–0:15, one bucket
-	samples = append(samples, tlSamples("e1", 13, 13, 0.55)...)                    // 1:00, the next bucket
+	samples = append(samples, tlSamples("e1", 13, 13, 0.55)...)                   // 1:00, the next bucket
 	tl := buildTimeline(tlInput([]store.ScreeningSession{tlSession("e1", 30, tlRule)}, samples))
 	if len(tl.buckets) != 2 {
 		t.Fatalf("buckets = %+v, want 2 (an empty bucket is omitted)", tl.buckets)
@@ -84,7 +84,7 @@ func TestTimelinePatterns(t *testing.T) {
 		{name: "recurring: two sustained runs", samples: concat(tlSamples("e1", 1, 40, 0.6), tlSamples("e1", 100, 140, 0.6)),
 			pattern: patternRecurring, verdict: verdictViolation, ban: 604_800},
 		{name: "recurring: returned after review", samples: tlSamples("e1", 1, 2, 0.6),
-			flags: []store.ContentFlag{{Mode: screening.ModeFlag, Trips: 1, ReturnedAfterReview: true}},
+			flags:   []store.ContentFlag{{Mode: screening.ModeFlag, Trips: 1, ReturnedAfterReview: true}},
 			pattern: patternRecurring, verdict: verdictViolation, ban: 604_800},
 		// A missing sequence number is a sample below the floor: it breaks
 		// the run, so two 20-sample halves are not one sustained run.
@@ -142,7 +142,7 @@ func TestTimelineBucketSize(t *testing.T) {
 	for _, tc := range []struct {
 		span, asked, want time.Duration
 	}{
-		{4 * time.Hour, 0, 48 * time.Second},              // ~300 across the range
+		{4 * time.Hour, 0, 48 * time.Second},             // ~300 across the range
 		{10 * time.Minute, 0, 5 * time.Second},           // never below 5 s
 		{48 * time.Hour, time.Second, 116 * time.Second}, // capped at 1 500 buckets
 		{time.Hour, 30 * time.Second, 30 * time.Second},  // honoured

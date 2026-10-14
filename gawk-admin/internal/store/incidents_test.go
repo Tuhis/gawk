@@ -344,3 +344,27 @@ func TestIngestRecordsTheRule(t *testing.T) {
 		t.Fatalf("another key's sessions = %+v, want none", other)
 	}
 }
+
+// D5 with D3 (PR #507 review): an episode dismissal of a flag whose clear is
+// already held mutes nothing — that episode has ended — so the next trip in
+// the same session pages.
+func TestEpisodeDismissalOfAHeldClearMutesNothing(t *testing.T) {
+	s := storetest.New(t)
+	ctx := t.Context()
+	f := postRejoin(t, s, tripped("ABC234", "e1"), t0).Flag
+	postRejoin(t, s, cleared("ABC234", "e1"), t0.Add(time.Minute))
+	out, err := s.DismissContentFlag(ctx, f.ID, "op@example.com", t0.Add(2*time.Minute),
+		store.Dismissal{Reason: store.DismissReasonGameScene, Scope: store.MuteScopeEpisode, MutedUntil: t0.Add(24 * time.Hour)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.MutedUntil == nil || !out.MutedUntil.Equal(t0.Add(2*time.Minute)) {
+		t.Fatalf("muted_until = %v, want the dismissal's time: the episode had already cleared", out.MutedUntil)
+	}
+	if mutes, _ := s.ActiveMutes(ctx, t0.Add(2*time.Minute)); len(mutes) != 0 {
+		t.Fatalf("mutes = %v, want none", mutes)
+	}
+	if r := postRejoin(t, s, tripped("ABC234", "e1"), t0.Add(3*time.Minute)); r.Status != screening.FlagStatusRaised {
+		t.Fatalf("the next trip: %q, want raised", r.Status)
+	}
+}

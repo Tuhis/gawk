@@ -709,6 +709,13 @@ func (s *Store) DismissContentFlag(ctx context.Context, id int64, actor string, 
 	case !f.Unresolved():
 		return ContentFlag{}, ErrFlagResolved
 	}
+	// An episode whose clear is already held has ended: muting "until it
+	// clears" would mute the NEXT episode instead, because the sampler sends
+	// no further clear for this one (PR #507 review). It mutes nothing.
+	episodeOver := d.Scope == MuteScopeEpisode && f.ClearedAt != nil
+	if episodeOver {
+		d.MutedUntil = now
+	}
 	if _, err := tx.Exec(ctx, `UPDATE content_flags SET muted_until = $2, mute_scope = $3 WHERE id = $1`,
 		f.ID, d.MutedUntil.UTC(), d.Scope); err != nil {
 		return ContentFlag{}, fmt.Errorf("store: dismiss content flag: %w", err)
@@ -720,6 +727,12 @@ func (s *Store) DismissContentFlag(ctx context.Context, id int64, actor string, 
 	epoch := ""
 	if d.Scope != MuteScopeDuration {
 		epoch = f.PublisherEpoch
+	}
+	if episodeOver {
+		if err := tx.Commit(ctx); err != nil {
+			return ContentFlag{}, fmt.Errorf("store: dismiss content flag: %w", err)
+		}
+		return out, nil
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO screening_mutes (broadcast_id, muted_until, muted_by, flag_id, scope, publisher_epoch)
 		VALUES ($1,$2,$3,$4,$5,$6)
