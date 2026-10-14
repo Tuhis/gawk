@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.7.0...gawk-admin/v1.8.0) (2026-10-14)
+
+
+### Features
+
+* **r40:** automatic content flagging — gawk-sampler, content flags and the screening notice (CF0–CF8) ([#500](https://github.com/Tuhis/gawk/issues/500)) ([99cf6d4](https://github.com/Tuhis/gawk/commit/99cf6d41c07803f7d5ce60716b1f7f99ba6be560))
+
 ## [1.7.0](https://github.com/Tuhis/gawk/compare/gawk-admin/v1.6.0...gawk-admin/v1.7.0) (2026-10-04)
 
 

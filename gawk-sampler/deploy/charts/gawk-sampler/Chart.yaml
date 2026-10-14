@@ -12,5 +12,5 @@ type: application
 # release-please diffs from the tag its manifest names. The first release PR
 # rewrites both lines to the first real version (gawk-admin's came out as
 # 1.0.0), and from then on this file tracks what is actually published.
-version: 0.0.0 # x-release-please-version
-appVersion: "0.0.0" # x-release-please-version
+version: 1.0.0 # x-release-please-version
+appVersion: "1.0.0" # x-release-please-version
