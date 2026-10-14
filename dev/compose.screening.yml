@@ -49,6 +49,13 @@ services:
       # re-page both happen while a developer is still looking.
       GAWK_ADMIN_CONTENT_FLAG_MUTE: "${CONTENT_FLAG_MUTE:-3m}"
       GAWK_ADMIN_CONTENT_FLAG_REPAGE: "${CONTENT_FLAG_REPAGE:-2m}"
+      # R70's rejoin window (docs/72 D3), shorter than production's 10m so a
+      # clear resolves well inside the fixture's 45 s grey phase and the next
+      # magenta phase is a new incident that pages — what the screening
+      # assertions walk through. A trip arriving later than the window
+      # resolves the held clear itself, so the sweep's timing cannot merge
+      # two phases.
+      GAWK_ADMIN_CONTENT_FLAG_REJOIN: "${CONTENT_FLAG_REJOIN:-10s}"
     ports:
       # The two samplers share this container's network namespace (below),
       # so their metrics listeners are published from here — loopback only,
