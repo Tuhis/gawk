@@ -34,6 +34,8 @@ CREATE INDEX content_flags_broadcast_key ON content_flags (broadcast_key, raised
 CREATE INDEX content_flags_broadcast_resolved ON content_flags (broadcast_id, resolved_at) WHERE state = 'resolved';
 CREATE INDEX screening_samples_key_time ON screening_samples (broadcast_key, sampled_at);
 CREATE INDEX screening_sessions_key ON screening_sessions (broadcast_key, first_sample_at);
+-- And its moderation log.
+CREATE INDEX moderation_events_broadcast_key ON moderation_events (broadcast_key, occurred_at);
 
 -- A mute's scope (D5). `episode` and `session` mutes are bound to the
 -- publisher session they were set in; `duration` (R40's only kind) is not.

@@ -430,6 +430,8 @@ var routeTable = []routeEntry{
 		func(a *API) http.HandlerFunc { return a.handleScreeningSamples }},
 	{Route{Method: "POST", Pattern: "/api/v1/screening/replay", Roles: []string{RoleOperator}, Requires: RequiresScreening},
 		func(a *API) http.HandlerFunc { return a.handleScreeningReplay }},
+	{Route{Method: "GET", Pattern: "/api/v1/screening/timeline", Roles: []string{RoleOperator}, Requires: RequiresScreening},
+		func(a *API) http.HandlerFunc { return a.handleScreeningTimeline }},
 	{Route{Method: "GET", Pattern: "/api/v1/content-flags", Roles: []string{RoleOperator}, Requires: RequiresScreening},
 		func(a *API) http.HandlerFunc { return a.handleListContentFlags }},
 	{Route{Method: "POST", Pattern: "/api/v1/content-flags/{id}/acknowledge", Roles: []string{RoleOperator}, Requires: RequiresScreening},

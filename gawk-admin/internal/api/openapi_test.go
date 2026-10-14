@@ -664,6 +664,9 @@ func wirings() map[string]opWiring {
 			request: func() any { return &screening.ReplayRequest{} },
 			success: map[string]func() any{"200": func() any { return &screening.ReplayResponse{} }},
 		},
+		"GET /api/v1/screening/timeline": {success: map[string]func() any{
+			"200": func() any { return &timelineJSON{} },
+		}},
 	}
 }
 
@@ -926,6 +929,13 @@ func schemaFixtures() map[string]any {
 		"SessionSamples":            sessionSamples,
 		"SampleBatch":               screening.SampleBatch{Schema: screening.SchemaSamples, SamplerID: "s", Mode: screening.ModeObserve, Floor: 0.3, Labels: []string{"ANUS_EXPOSED"}, Rule: &screening.BatchRule{Threshold: 0.5, Window: 6, WindowHits: 3}, Sessions: []screening.SessionSamples{sessionSamples}},
 		"SamplerRule":               screening.BatchRule{Threshold: 0.5, Window: 6, WindowHits: 3},
+		"ScreeningTimeline":         timelineFixture(flag),
+		"TimelineLevels":            timelineFixture(flag).Levels,
+		"TimelineSession":           timelineFixture(flag).Sessions[0],
+		"TimelineBucket":            timelineFixture(flag).Buckets[0],
+		"TimelineEvent":             timelineFixture(flag).Events[0],
+		"TimelineSummary":           timelineFixture(flag).Summary,
+		"TimelineSuggestion":        timelineFixture(flag).Suggestion,
 		"DismissContentFlagRequest": dismissRequest{Reason: "game_scene", Scope: "episode"},
 		"SamplesResult":             screening.SamplesResponse{Stored: 1},
 		"ReplayRequest":             replayReq,
@@ -1154,4 +1164,29 @@ func allowsAnything(schema map[string]any) bool {
 
 func sortErrs(errs []error) {
 	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
+}
+
+// timelineFixture is a fully-populated timeline (R70), every optional field
+// set, so the schema is held to every field the Go type can emit.
+func timelineFixture(flag contentFlagJSON) timelineJSON {
+	ts := "2026-10-15T20:00:00Z"
+	th, win, hits, ban := 0.5, 6, 3, 604_800
+	return timelineJSON{
+		Schema: SchemaTimeline, BroadcastKey: "9f2c41ab77de", BroadcastID: "ABC234", Live: true, From: ts, To: ts,
+		BucketSeconds: 30, Truncated: true,
+		Levels: timelineLevelsJSON{Floor: 0.3, Threshold: &th, Window: &win, WindowHits: &hits, Critical: 0.7,
+			SustainedAfterSeconds: 180, RejoinSeconds: 600},
+		Labels: []string{"ANUS_EXPOSED"},
+		Sessions: []timelineSessionJSON{{PublisherEpoch: "5f2c9a0b11d4e6f7", BroadcastID: "ABC234", FirstSampleAt: ts,
+			LastSampleAt: ts, SamplesTaken: 10, SamplesStored: 2, Floor: 0.3, Threshold: &th, Window: &win, WindowHits: &hits,
+			Mode: "flag", SamplerID: "gawk-sampler-0"}},
+		Buckets: []timelineBucketJSON{{Start: ts, Max: 0.8, Scores: map[string]float64{"ANUS_EXPOSED": 0.8},
+			Stored: 2, Above: 2, Critical: 1}},
+		Incidents: []contentFlagJSON{flag},
+		Events:    []timelineEventJSON{{ID: 1, Type: "content_flag.raised", OccurredAt: ts, Actor: "s", Summary: "x"}},
+		Summary: timelineSummaryJSON{Pattern: "recurring", ThresholdKnown: true, SampledSeconds: 1, AboveSeconds: 1,
+			CriticalSeconds: 1, LongestRunSeconds: 1, Runs: 2, SustainedRuns: 2, Peak: 0.8, PeakLabel: "ANUS_EXPOSED"},
+		Suggestion: timelineSuggestionJSON{Verdict: "violation", BanSeconds: &ban, Why: "w"},
+		Links:      &watchLinkJSON{Watch: "https://gawk.example/#/view/ABC234"},
+	}
 }

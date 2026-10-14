@@ -187,6 +187,37 @@ func (s *Store) ListEvents(ctx context.Context, q EventQuery) ([]Event, error) {
 	return out, rows.Err()
 }
 
+// MaxBroadcastEvents bounds one broadcast's event log in the timeline.
+const MaxBroadcastEvents = 500
+
+// EventsForBroadcast returns the events about one broadcast that occurred in
+// [from, to], newest first, at most MaxBroadcastEvents (docs/72 D7): matched
+// by its key, or — for a row written before the fleet scan knew the key — by
+// one of ids.
+func (s *Store) EventsForBroadcast(ctx context.Context, key string, ids []string, from, to time.Time) ([]Event, error) {
+	if ids == nil {
+		ids = []string{}
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+eventColumns+` FROM moderation_events
+		WHERE (broadcast_key = $1 OR (broadcast_key IS NULL AND broadcast_id = ANY($2)))
+		  AND occurred_at >= $3 AND occurred_at <= $4
+		ORDER BY occurred_at DESC, id DESC LIMIT $5`,
+		key, ids, from.UTC(), to.UTC(), MaxBroadcastEvents)
+	if err != nil {
+		return nil, fmt.Errorf("store: events for broadcast: %w", err)
+	}
+	defer rows.Close()
+	out := []Event{}
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: events for broadcast: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // GetEvent returns one event by ID.
 func (s *Store) GetEvent(ctx context.Context, id int64) (Event, error) {
 	row := s.pool.QueryRow(ctx, `SELECT `+eventColumns+` FROM moderation_events WHERE id = $1`, id)
