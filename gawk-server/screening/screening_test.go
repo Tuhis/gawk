@@ -125,6 +125,7 @@ func validBatch() SampleBatch {
 		Mode:      ModeObserve,
 		Floor:     0.3,
 		Labels:    labels,
+		Rule:      &BatchRule{Threshold: 0.5, Window: 6, WindowHits: 3},
 		Sessions: []SessionSamples{{
 			BroadcastID:    "ABC234",
 			BroadcastKey:   "0123456789ab",
@@ -145,6 +146,12 @@ func TestSampleBatchValidate(t *testing.T) {
 	b := validBatch()
 	if err := b.Validate(); err != nil {
 		t.Fatalf("valid batch refused: %v", err)
+	}
+	// A sampler older than R70 sends no rule; that batch is still valid
+	// (docs/72 D1).
+	b.Rule = nil
+	if err := b.Validate(); err != nil {
+		t.Fatalf("batch without a rule refused: %v", err)
 	}
 	cases := map[string]func(*SampleBatch){
 		"wrong schema":         func(b *SampleBatch) { b.Schema = SchemaContentFlag },
@@ -168,6 +175,12 @@ func TestSampleBatchValidate(t *testing.T) {
 			s.Position = 1
 			b.Sessions[0].Samples = append(b.Sessions[0].Samples, s)
 		},
+		// docs/72 D1: the rule is optional, and checked when present.
+		"rule threshold zero":        func(b *SampleBatch) { b.Rule.Threshold = 0 },
+		"rule threshold above 1":     func(b *SampleBatch) { b.Rule.Threshold = 1.5 },
+		"rule hits above window":     func(b *SampleBatch) { b.Rule.WindowHits = 7 },
+		"rule window too large":      func(b *SampleBatch) { b.Rule.Window = MaxWindow + 1 },
+		"rule threshold below floor": func(b *SampleBatch) { b.Rule.Threshold = 0.2 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

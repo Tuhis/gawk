@@ -174,6 +174,11 @@ type ContentFlagRaisedData struct {
 	Scores    *ContentFlagScores `json:"scores,omitempty"`
 	// Labels are the detector labels that fired in the window.
 	Labels []string `json:"labels,omitempty"`
+	// ReturnedAfterReview is true when an operator acknowledged or dismissed
+	// an earlier flag on this broadcast and the signal came back (R70,
+	// docs/72 D4): the strongest evidence a flag can carry, there for a
+	// pager to route at a higher priority. Never set on an observed flag.
+	ReturnedAfterReview bool `json:"returnedAfterReview,omitempty"`
 	Delivery
 }
 

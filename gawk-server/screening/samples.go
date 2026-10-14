@@ -34,8 +34,25 @@ type SampleBatch struct {
 	// highest floor among the sessions it reads (D21).
 	Floor float64 `json:"floor"`
 	// Labels is -labels: the label set every sample's Scores covers.
-	Labels   []string         `json:"labels"`
+	Labels []string `json:"labels"`
+	// Rule is the sampler's window rule (-threshold, -window, -window-hits),
+	// reported so gawk-admin draws and reasons with the threshold that was in
+	// force rather than a copy of it in its own config (docs/72 D1). Absent
+	// from a sampler older than R70; gawk-admin then knows no threshold.
+	Rule     *BatchRule       `json:"rule,omitempty"`
 	Sessions []SessionSamples `json:"sessions"`
+}
+
+// BatchRule is a WindowRule as a sample batch reports it.
+type BatchRule struct {
+	Threshold  float64 `json:"threshold"`
+	Window     int     `json:"window"`
+	WindowHits int     `json:"windowHits"`
+}
+
+// WindowRule is the rule in the sampler's own terms.
+func (r BatchRule) WindowRule() WindowRule {
+	return WindowRule{Threshold: r.Threshold, Size: r.Window, Hits: r.WindowHits}
 }
 
 // SessionSamples is one publisher session's share of a batch.
@@ -86,6 +103,16 @@ func (b *SampleBatch) Validate() error {
 	}
 	if err := ValidateLabels(b.Labels); err != nil {
 		return err
+	}
+	if b.Rule != nil {
+		if err := b.Rule.WindowRule().Validate(); err != nil {
+			return err
+		}
+		// The sampler refuses to start with its threshold under its floor;
+		// a batch saying otherwise was not written by one.
+		if b.Rule.Threshold < b.Floor {
+			return invalid("rule threshold %v below floor %v", b.Rule.Threshold, b.Floor)
+		}
 	}
 	if len(b.Sessions) > MaxBatchSessions {
 		return invalid("%d sessions, max %d", len(b.Sessions), MaxBatchSessions)

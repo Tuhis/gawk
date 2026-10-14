@@ -39,6 +39,10 @@
         "$ref": "common.json#/$defs/detectorLabel"
       }
     },
+    "returnedAfterReview": {
+      "type": "boolean",
+      "description": "True when an operator acknowledged or dismissed an earlier flag on this broadcast and the signal came back (R70, docs/72 D4). Absent otherwise. A pager may route it at a higher priority."
+    },
     "summary": {
       "$ref": "common.json#/$defs/summary"
     },
