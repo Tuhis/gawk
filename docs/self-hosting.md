@@ -1723,7 +1723,34 @@ Test the pager first with the portal's webhook **Test** button
 (`POST /api/v1/webhooks/{name}/test`): a real flag's page is the same
 delivery.
 
-### 13.6 The knobs worth knowing
+### 13.6 Judging a flag: the moderation timeline
+
+Every broadcast row, every pinned flag and every observed flag in
+**Calibration** links to **Timeline**: the broadcast's screening history on
+one time axis — its publisher sessions, a score bar per time bucket, a strip
+per detector label, its incidents and the moderation events — with a
+**pattern** (isolated, flicker, sustained, recurring) and a suggested
+decision. The levels it draws are the ones in force: the floor and the
+threshold each session's sampler reported, and the portal's own critical
+level ([`docs/72`](72-moderation-timeline.md) §4).
+
+The panel beside it acts on one incident at a time, in two steps: **Look**
+(Watch & acknowledge, which opens the stream and stops the re-pages) and
+**Decide** — **Not a violation**, with a reason and how long to mute
+re-flagging (until this episode clears, the mute period, or the rest of the
+publisher session), or **Violation**, which ends the broadcast with the ban
+length in the same form. A suggestion only pre-selects a choice; nothing on
+the page acts by itself. On a phone the panel is a bar at the bottom of the
+screen.
+
+Two things change in what pages you: a score that flickers around the
+threshold is **one incident** — it pages once, and its row says how many
+times it tripped — and a flag on a broadcast whose earlier flag someone
+acknowledged or dismissed is marked **returned after review**, in the portal
+and as `returnedAfterReview: true` on the `content_flag.raised` webhook, so
+your pager can route it at a higher priority.
+
+### 13.7 The knobs worth knowing
 
 All of them are documented in the charts' `values.yaml`; the full table is
 [`docs/71`](71-content-flagging.md) §5. The ones you are likely to touch:
@@ -1737,6 +1764,9 @@ All of them are documented in the charts' `values.yaml`; the full table is
 | admin | `screening.contentFlag.deadline` | `off` | Kill a broadcast whose flag nobody acknowledged within this long. |
 | admin | `screening.contentFlag.autoKill` | `off` | Kill without a human on a very strong signal, e.g. `score>=0.9,hits>=10/12`. The page still goes out. |
 | admin | `screening.sampleRetention` | `30d` | How long calibration data is kept. Flag-mode flags are the audit trail and are never pruned. |
+| admin | `screening.contentFlag.rejoin` | `10m` | A clear of an unacknowledged flag is held this long; a re-trip inside it is the same incident and does not page again. `off` resolves every clear at once. |
+| admin | `screening.criticalScore` | `0.7` | The moderation timeline's top band and its 24-hour ban suggestion. It flags nothing. |
+| admin | `screening.sustainedAfter` | `3m` | How long a run above the threshold lasts before the timeline calls it sustained. |
 
 A room you trust — a **static room with an attach secret** — can be exempted
 from screening in the portal's Rooms view. Open and dynamic rooms cannot be:

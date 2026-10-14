@@ -1,8 +1,9 @@
 # R70 — The broadcast moderation timeline (docs/72)
 
 **Status**: designed 2026-10-15 in a Claude Design pass (canvas
-"Stream moderation timeline", two iterations with the owner) and built the
-same day. Chunks **MT1–MT7** (`MT` = Moderation Timeline). Touches
+"Stream moderation timeline", two iterations with the owner); **MT1–MT6
+implemented 2026-10-15**; MT7, the owner's pass on the reference
+deployment, is open. Chunks **MT1–MT7** (`MT` = Moderation Timeline). Touches
 `gawk-server/screening` (one additive batch field), `gawk-server/events`
 (one additive field on `content_flag.raised`), `gawk-sampler` (sends its
 window rule), and mostly `gawk-admin`: a migration, the flag lifecycle, three
@@ -104,3 +105,16 @@ Every level the view draws or reasons with, and where it is set:
   is there to route on.
 - The pattern thresholds (`sustained-after`, the suggestion's ban lengths)
   are first guesses, tuned in the same CF9 run that tunes the threshold.
+
+## 7. Notes from the build (2026-10-15)
+
+- **The phone bar is CSS, not a second component.** Under 720 px the same
+  panel is fixed to the bottom of the screen; it renders only the current
+  step's controls on every width, so the "one step at a time" rule is
+  tested once (jsdom has no layout, so the breakpoint itself was checked
+  in headless Chromium screenshots at 390 px, not in a unit test).
+- **A timeline without a reported rule reads `pattern: unknown`**, not
+  `none`: there are samples, the runs just cannot be told.
+- **The suggestion's ban lengths are fixed** (7 days for `recurring`, 24
+  hours for a `sustained` run at critical); only the levels behind them are
+  knobs. They are first guesses, tuned with CF9.
