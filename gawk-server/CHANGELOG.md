@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.34.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.33.0...gawk-server/v0.34.0) (2026-10-15)
+
+
+### Features
+
+* **admin:** name the fired labels in content-flag summaries ([#511](https://github.com/Tuhis/gawk/issues/511)) ([d2f1e66](https://github.com/Tuhis/gawk/commit/d2f1e6614f4eb3fc213c16d1030e2c7b29e40935))
+* **r70:** broadcast moderation timeline (MT1–MT6) ([#507](https://github.com/Tuhis/gawk/issues/507)) ([25a0768](https://github.com/Tuhis/gawk/commit/25a0768bde09aeed9eea0d788bd218a6724da36f))
+
 ## [0.33.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.32.1...gawk-server/v0.33.0) (2026-10-14)
 
 
