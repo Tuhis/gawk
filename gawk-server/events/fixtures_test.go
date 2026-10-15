@@ -88,7 +88,7 @@ func fixtures() map[string]Event {
 			Labels:              []string{"FEMALE_GENITALIA_EXPOSED"},
 			ReturnedAfterReview: true,
 			Delivery: Delivery{
-				Summary:   "content flag raised on broadcast ABC234, which returned after review: 4 of 6 samples flagged, peak score 0.97 — join and judge it",
+				Summary:   "content flag raised on broadcast ABC234, which returned after review: 4 of 6 samples flagged (FEMALE_GENITALIA_EXPOSED), peak score 0.97 — join and judge it",
 				PortalURL: fixturePortalB,
 			},
 		}),
@@ -99,7 +99,7 @@ func fixtures() map[string]Event {
 			Scores: &ContentFlagScores{Max: 0.91, Mean: 0.77},
 			Labels: []string{"ANUS_EXPOSED", "MALE_GENITALIA_EXPOSED"},
 			Delivery: Delivery{
-				Summary:   "observe mode would have flagged broadcast ABC234: 5 of 6 samples, peak score 0.91",
+				Summary:   "observe mode would have flagged broadcast ABC234: 5 of 6 samples (ANUS_EXPOSED, MALE_GENITALIA_EXPOSED), peak score 0.91",
 				PortalURL: fixturePortalB,
 			},
 		}),

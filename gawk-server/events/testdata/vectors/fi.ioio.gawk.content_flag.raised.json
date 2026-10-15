@@ -28,7 +28,7 @@
       "FEMALE_GENITALIA_EXPOSED"
     ],
     "returnedAfterReview": true,
-    "summary": "content flag raised on broadcast ABC234, which returned after review: 4 of 6 samples flagged, peak score 0.97 — join and judge it",
+    "summary": "content flag raised on broadcast ABC234, which returned after review: 4 of 6 samples flagged (FEMALE_GENITALIA_EXPOSED), peak score 0.97 — join and judge it",
     "portalUrl": "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e"
   }
 }

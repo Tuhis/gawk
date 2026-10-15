@@ -28,7 +28,7 @@
       "ANUS_EXPOSED",
       "MALE_GENITALIA_EXPOSED"
     ],
-    "summary": "observe mode would have flagged broadcast ABC234: 5 of 6 samples, peak score 0.91",
+    "summary": "observe mode would have flagged broadcast ABC234: 5 of 6 samples (ANUS_EXPOSED, MALE_GENITALIA_EXPOSED), peak score 0.91",
     "portalUrl": "https://admin.example.com/#/broadcasts?key=3f9a1c2b4d5e"
   }
 }

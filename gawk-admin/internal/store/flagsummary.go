@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/events"
@@ -11,21 +12,33 @@ import (
 // raw ID, as every summary does since docs/52 D9, and never anything a
 // delivery does not already carry.
 
-// SummarizeContentFlagRaised is the page: what tripped, and what to do.
-func SummarizeContentFlagRaised(broadcastID string, flagged, samples int, peak float64, returned bool) string {
+// SummarizeContentFlagRaised is the page: what tripped, and what to do. It
+// names the labels that fired, so the page says what was seen without a trip
+// to the portal.
+func SummarizeContentFlagRaised(broadcastID string, labels []string, flagged, samples int, peak float64, returned bool) string {
 	what := broadcastName(broadcastID)
 	if returned {
 		// docs/72 D4: said first, because it changes what the page asks for.
 		what += ", which returned after review"
 	}
-	return fmt.Sprintf("content flag raised on %s: %d of %d samples flagged, peak score %.2f — join and judge it",
-		what, flagged, samples, peak)
+	return fmt.Sprintf("content flag raised on %s: %d of %d samples flagged%s, peak score %.2f — join and judge it",
+		what, flagged, samples, labelList(labels), peak)
 }
 
 // SummarizeContentFlagObserved is the calibration notice (D19).
-func SummarizeContentFlagObserved(broadcastID string, flagged, samples int, peak float64) string {
-	return fmt.Sprintf("observe mode would have flagged %s: %d of %d samples, peak score %.2f",
-		broadcastName(broadcastID), flagged, samples, peak)
+func SummarizeContentFlagObserved(broadcastID string, labels []string, flagged, samples int, peak float64) string {
+	return fmt.Sprintf("observe mode would have flagged %s: %d of %d samples%s, peak score %.2f",
+		broadcastName(broadcastID), flagged, samples, labelList(labels), peak)
+}
+
+// labelList is " (A, B)", or nothing for no labels. The labels are the
+// validated closed vocabulary of screening.ContentFlag (upper-case detector
+// names, at most screening.MaxLabels), so they are printed as they are.
+func labelList(labels []string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(labels, ", ") + ")"
 }
 
 // SummarizeContentFlagReminded is the re-page (D9). The signal is spelled out

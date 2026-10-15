@@ -666,15 +666,19 @@ func TestEventRoomScreeningIsAClosedVocabulary(t *testing.T) {
 	}
 }
 
-// The R40 sentences name the broadcast, say how a flag ended and who did it,
-// and fall back to "a broadcast" / "an operator" rather than print nothing.
+// The R40 sentences name the broadcast and the labels that fired, say how a
+// flag ended and who did it, and fall back to "a broadcast" / "an operator" rather than print nothing.
 func TestSummarizeContentFlagSentences(t *testing.T) {
 	for _, tc := range []struct{ got, want string }{
-		{store.SummarizeContentFlagRaised("ABC234", 4, 6, 0.951, false),
+		{store.SummarizeContentFlagRaised("ABC234", []string{"FEMALE_GENITALIA_EXPOSED"}, 4, 6, 0.951, false),
+			"content flag raised on broadcast ABC234: 4 of 6 samples flagged (FEMALE_GENITALIA_EXPOSED), peak score 0.95 — join and judge it"},
+		{store.SummarizeContentFlagRaised("ABC234", []string{"ANUS_EXPOSED", "MALE_GENITALIA_EXPOSED"}, 4, 6, 0.951, true),
+			"content flag raised on broadcast ABC234, which returned after review: 4 of 6 samples flagged (ANUS_EXPOSED, MALE_GENITALIA_EXPOSED), peak score 0.95 — join and judge it"},
+		{store.SummarizeContentFlagRaised("ABC234", nil, 4, 6, 0.951, false),
 			"content flag raised on broadcast ABC234: 4 of 6 samples flagged, peak score 0.95 — join and judge it"},
-		{store.SummarizeContentFlagRaised("ABC234", 4, 6, 0.951, true),
-			"content flag raised on broadcast ABC234, which returned after review: 4 of 6 samples flagged, peak score 0.95 — join and judge it"},
-		{store.SummarizeContentFlagObserved("", 4, 6, 0.9),
+		{store.SummarizeContentFlagObserved("", []string{"ANUS_EXPOSED"}, 4, 6, 0.9),
+			"observe mode would have flagged a broadcast: 4 of 6 samples (ANUS_EXPOSED), peak score 0.90"},
+		{store.SummarizeContentFlagObserved("", nil, 4, 6, 0.9),
 			"observe mode would have flagged a broadcast: 4 of 6 samples, peak score 0.90"},
 		{store.SummarizeContentFlagReminded("ABC234", 1, 10*time.Minute+20*time.Second, events.ContentFlagSignalLive),
 			"content flag on broadcast ABC234 is still unacknowledged after 10m0s (reminder 1; the signal is still live)"},

@@ -466,10 +466,10 @@ func (s *Store) appendFlagRaisedTx(ctx context.Context, tx pgx.Tx, f ContentFlag
 		Type: EventContentFlag, OccurredAt: f.RaisedAt, Actor: actor,
 		BroadcastKey: f.BroadcastKey, BroadcastID: f.BroadcastID,
 	}
-	summary := SummarizeContentFlagRaised(f.BroadcastID, f.Body.Window.FlaggedSamples, f.Body.Window.Samples, f.Body.Scores.Max, f.ReturnedAfterReview)
+	summary := SummarizeContentFlagRaised(f.BroadcastID, f.Body.Labels, f.Body.Window.FlaggedSamples, f.Body.Window.Samples, f.Body.Scores.Max, f.ReturnedAfterReview)
 	if f.Mode == screening.ModeObserve {
 		ev.Type, ev.Category = EventContentFlagObserved, CategoryScreening
-		summary = SummarizeContentFlagObserved(f.BroadcastID, f.Body.Window.FlaggedSamples, f.Body.Window.Samples, f.Body.Scores.Max)
+		summary = SummarizeContentFlagObserved(f.BroadcastID, f.Body.Labels, f.Body.Window.FlaggedSamples, f.Body.Window.Samples, f.Body.Scores.Max)
 	}
 	b := f.Body
 	extra := map[string]any{
