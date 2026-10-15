@@ -1,0 +1,899 @@
+/* The broadcast moderation timeline (R70, docs/72 D9). The portal's tokens
+   only; the score colours are the status trio — danger for critical, warning
+   for above threshold, a muted grey under it — so a reader who knows the
+   badges already knows the chart. Lightness differs between the three, not
+   only hue. */
+
+.view {
+  --tl-critical: var(--danger);
+  --tl-above: var(--warning);
+  --tl-below: color-mix(in oklab, var(--muted) 70%, var(--surface-1));
+  --tl-ack: var(--accent);
+  padding-bottom: var(--sp-6);
+}
+
+.breadcrumb {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  margin-bottom: var(--sp-2);
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-3);
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.titleRow {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.titleRow h1 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.headerButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.menuWrap {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  min-width: 12rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+}
+
+.menu button {
+  text-align: left;
+}
+
+/* Two columns that wrap: the panel stacks under the timeline before the
+   chart gets cramped, and becomes a bottom bar on a phone (below). */
+.layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  align-items: flex-start;
+}
+
+.main {
+  flex: 999 1 560px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--sp-3);
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+}
+
+.tileLabel {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.tileValue {
+  font-size: 1.35rem;
+  font-weight: 600;
+}
+
+.tileSub {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.toneBad {
+  color: var(--danger);
+}
+
+.toneWarn {
+  color: var(--warning);
+}
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-md);
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.card h2 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.cardHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+
+.seg,
+.segOn {
+  border: 0;
+  min-height: 2.25rem;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-sm);
+  background: transparent;
+  color: var(--muted);
+}
+
+.segOn {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+/* ---------------------------------------------------------------- tracks */
+
+.tracks {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  column-gap: var(--sp-3);
+  row-gap: var(--sp-2);
+  align-items: center;
+}
+
+.trackLabel {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+}
+
+.trackHint {
+  color: var(--faint);
+  line-height: 1.35;
+  margin-top: var(--sp-1);
+}
+
+.sessionTrack,
+.laneTrack,
+.markTrack {
+  position: relative;
+  height: 1.5rem;
+  border-radius: var(--r-sm);
+  background: repeating-linear-gradient(135deg, var(--surface-2) 0 4px, var(--bg) 4px 8px);
+}
+
+.markTrack {
+  background: none;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.session {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+  font-size: var(--fs-xs);
+  line-height: 1.5rem;
+  padding-left: var(--sp-1);
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--muted);
+  box-sizing: border-box;
+}
+
+.chart {
+  position: relative;
+  height: 11rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  background: repeating-linear-gradient(135deg, var(--surface-2) 0 4px, var(--bg) 4px 8px);
+  overflow: hidden;
+}
+
+.chartSvg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.sampledSpan {
+  fill: var(--bg);
+}
+
+.belowFloor {
+  fill: color-mix(in oklab, var(--surface-2) 70%, transparent);
+}
+
+.band {
+  fill: color-mix(in oklab, var(--muted) 7%, transparent);
+}
+
+.bandSelected {
+  fill: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+.barCritical {
+  fill: var(--tl-critical);
+}
+
+.barAbove {
+  fill: var(--tl-above);
+}
+
+.barBelow {
+  fill: var(--tl-below);
+}
+
+.thresholdLine {
+  stroke: var(--tl-above);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+
+.criticalLine {
+  stroke: var(--tl-critical);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+  opacity: 0.8;
+}
+
+.laneLabel {
+  display: flex;
+  gap: var(--sp-1);
+  align-items: center;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  min-height: 1.5rem;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.laneLabel span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lane,
+.laneOff {
+  height: 1.25rem;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.laneOff {
+  opacity: 0.3;
+}
+
+.cellAbove {
+  fill: var(--tl-critical);
+}
+
+.cellBelow {
+  fill: var(--muted);
+}
+
+.incident {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  min-width: 1.5rem;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  min-height: 0;
+  line-height: 1;
+}
+
+.incidentOpen {
+  background: var(--danger);
+  border: 1px solid var(--danger);
+  color: #fff;
+}
+
+.incidentAck {
+  background: color-mix(in oklab, var(--warning) 35%, var(--surface-1));
+  border: 1px solid var(--warning);
+  color: var(--text);
+}
+
+.incidentResolved {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.incidentObserved {
+  background: transparent;
+  border: 1px dashed var(--muted);
+  color: var(--muted);
+}
+
+.incidentSelected {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+.mute {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  background: repeating-linear-gradient(90deg, var(--accent-soft) 0 3px, transparent 3px 6px);
+}
+
+.mark {
+  position: absolute;
+  top: 1px;
+  transform: translateX(-50%);
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--bg);
+  border: 2px solid var(--surface-1);
+}
+
+.markBad {
+  background: var(--danger);
+}
+
+.markWarn {
+  background: var(--warning);
+}
+
+.markPlain {
+  background: var(--muted);
+}
+
+.markAck {
+  background: var(--tl-ack);
+}
+
+.axis {
+  position: relative;
+  height: 1.1rem;
+  font-size: var(--fs-xs);
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.axis span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-4);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-soft);
+}
+
+.legend span {
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+}
+
+.legend i {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+}
+
+.swCritical {
+  background: var(--tl-critical);
+}
+
+.swAbove {
+  background: var(--tl-above);
+}
+
+.swBelow {
+  background: var(--tl-below);
+}
+
+.swSampled {
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.swNotSampled {
+  background: repeating-linear-gradient(135deg, var(--border) 0 2px, var(--bg) 2px 4px);
+}
+
+.swThreshold {
+  height: 0 !important;
+  border-top: 2px dashed var(--tl-above);
+}
+
+.swCriticalLine {
+  height: 0 !important;
+  border-top: 2px dotted var(--tl-critical);
+}
+
+/* -------------------------------------------------------------- incidents */
+
+.incidents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.incidentRow,
+.incidentRowOn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  width: 100%;
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  color: var(--text);
+  font-weight: 400;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.incidentRowOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.incidentTop {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.events li {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1fr);
+  gap: var(--sp-2);
+}
+
+/* ------------------------------------------------------------------ panel */
+
+.panel {
+  flex: 1 1 320px;
+  max-width: 26rem;
+  min-width: 0;
+  position: sticky;
+  top: 4.5rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.panelUrgent {
+  border-color: var(--danger);
+}
+
+.panelHead {
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.panelUrgent .panelHead {
+  background: color-mix(in oklab, var(--danger) 8%, transparent);
+}
+
+.panelTitle {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.panelTitle h2 {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+
+.panelSub,
+.panelFacts {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.returned {
+  color: var(--danger);
+}
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-4) 0;
+  display: flex;
+  gap: var(--sp-1);
+}
+
+.step,
+.stepOn,
+.stepDone {
+  flex: 1;
+  text-align: center;
+  font-size: var(--fs-xs);
+  padding: var(--sp-1) 0;
+  border-radius: var(--r-sm);
+  color: var(--faint);
+}
+
+.stepOn {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.stepDone {
+  color: var(--accent);
+}
+
+.panelBody {
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.question {
+  margin: 0;
+  font-weight: 600;
+}
+
+/* Touch targets are at least 44 px: this panel is used from a phone. */
+.bigButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 3rem;
+  border-radius: var(--r-md);
+  text-decoration: none;
+}
+
+.quietButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 4rem;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: left;
+  font-weight: 400;
+}
+
+.choiceDanger {
+  border-color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 8%, var(--surface-1));
+}
+
+.choiceTitle {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  font-weight: 600;
+}
+
+.choiceSub {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.suggested {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  color: var(--warning);
+}
+
+.fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.fieldset legend {
+  font-weight: 600;
+  margin-bottom: var(--sp-2);
+  padding: 0;
+}
+
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.pill,
+.pillOn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  padding: 0 var(--sp-3);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.pillOn {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.pill input,
+.pillOn input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pill:has(input:focus-visible),
+.pillOn:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+}
+
+.option,
+.optionOn,
+.optionDangerOn {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  min-height: 2.75rem;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.optionOn {
+  border-color: var(--accent);
+}
+
+.optionDangerOn {
+  border-color: var(--danger);
+}
+
+.option span,
+.optionOn span,
+.optionDangerOn span {
+  display: flex;
+  flex-direction: column;
+}
+
+.optionHint {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.textField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-weight: 600;
+}
+
+.textField input {
+  font-weight: 400;
+  min-height: 2.5rem;
+}
+
+.checkRow {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  font-size: var(--fs-sm);
+}
+
+.formButtons {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-2);
+}
+
+.formButtons button {
+  min-height: 2.75rem;
+}
+
+.confirmDanger {
+  background: var(--danger);
+  color: #fff;
+  font-weight: 600;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+}
+
+/* --------------------------------------------------------------- phone */
+
+/* Under 720 px the panel is a bar fixed to the bottom of the screen: it shows
+   the current step's buttons, and a form opens it upward like a sheet. The
+   page gets room underneath so its end is never covered. */
+@media (max-width: 720px) {
+  .view {
+    padding-bottom: 16rem;
+  }
+
+  .tracks {
+    grid-template-columns: 5.5rem minmax(0, 1fr);
+  }
+
+  .chart {
+    height: 8rem;
+  }
+
+  .events li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  /* Half the ticks fit a phone's axis. */
+  .axis span:nth-child(even) {
+    display: none;
+  }
+
+  .panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    max-width: none;
+    max-height: 75vh;
+    overflow-y: auto;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    border-bottom: 0;
+    z-index: 15;
+    box-shadow: var(--shadow);
+  }
+
+  .panelFacts,
+  .steps {
+    display: none;
+  }
+
+  .panelHead {
+    padding: var(--sp-2) var(--sp-4);
+  }
+}

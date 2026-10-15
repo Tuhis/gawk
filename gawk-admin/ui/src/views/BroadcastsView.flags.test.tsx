@@ -263,6 +263,24 @@ describe('the actions', () => {
   });
 });
 
+describe('the moderation timeline (R70)', () => {
+  it('links every row and the flag strip to the broadcast’s timeline, by key', async () => {
+    mount({ broadcasts: [broadcast({ contentFlag: contentFlag() })] });
+    await screen.findByText('Content flag #12');
+    const strip = screen.getByText('Content flag #12').closest('tr') as HTMLElement;
+    expect(within(strip).getByRole('link', { name: 'Timeline' }).getAttribute('href')).toBe('#/broadcasts/3f9a1c2b4d5e');
+    const links = screen.getAllByRole('link', { name: 'Timeline' }).map((a) => a.getAttribute('href'));
+    expect(links.every((h) => h === '#/broadcasts/3f9a1c2b4d5e')).toBe(true);
+    expect(links.length).toBe(2);
+  });
+
+  it('offers no timeline when screening is off', async () => {
+    mount({ broadcasts: [broadcast()], screening: false });
+    await screen.findByText('ABC123');
+    expect(screen.queryByRole('link', { name: 'Timeline' })).toBeNull();
+  });
+});
+
 describe('the screening banners', () => {
   it('raises the no-pager alarm when no webhook delivers content_flag.raised (D12)', async () => {
     mount({ broadcasts: [broadcast()], status: { ...HEALTHY, flagRoute: false } });

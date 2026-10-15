@@ -19,6 +19,8 @@ import type {
   ContentFlag,
   ContentFlagMode,
   ContentFlagPage,
+  DismissRequest,
+  Timeline,
   CreateBanRequest,
   CreateWebhookRequest,
   EventPage,
@@ -298,9 +300,24 @@ export class ApiClient {
     return this.post<ContentFlag>(`content-flags/${id}/acknowledge`, {});
   }
 
-  /** Resolve as `dismissed` and mute the broadcast for `-content-flag-mute` (D10). */
-  dismissContentFlag(id: number): Promise<ContentFlag> {
-    return this.post<ContentFlag>(`content-flags/${id}/dismiss`, {});
+  /**
+   * Resolve as `dismissed` and mute the broadcast (D10). With no request it
+   * is R40's dismissal: no reason, a `-content-flag-mute` mute; R70 adds a
+   * reason and a scope (docs/72 D5).
+   */
+  dismissContentFlag(id: number, req: DismissRequest = {}): Promise<ContentFlag> {
+    return this.post<ContentFlag>(`content-flags/${id}/dismiss`, req);
+  }
+
+  /**
+   * One broadcast's moderation timeline (R70, docs/72 D7), by its key. With
+   * no range the server starts at the broadcast's first sampled session.
+   */
+  timeline(key: string, range: { from?: string; to?: string } = {}): Promise<Timeline> {
+    const qs = new URLSearchParams({ key });
+    if (range.from) qs.set('from', range.from);
+    if (range.to) qs.set('to', range.to);
+    return this.json<Timeline>(`screening/timeline?${qs.toString()}`);
   }
 
   /** "What would this setting have done?" over the stored samples (D21). */

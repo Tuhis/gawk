@@ -1404,6 +1404,8 @@ paths:
                     labelCounts: { FEMALE_GENITALIA_EXPOSED: 5 }
                     peakScore: 0.97
                     reminders: 0
+                    trips: 1
+                    returnedAfterReview: false
                     links: { watch: 'https://gawk.example/#/view/ABC234' }
                 screening:
                   flagRoute: true
@@ -1469,6 +1471,8 @@ paths:
                 labels: [FEMALE_GENITALIA_EXPOSED]
                 peakScore: 0.97
                 reminders: 0
+                trips: 1
+                returnedAfterReview: false
                 links: { watch: 'https://gawk.example/#/view/ABC234' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1484,11 +1488,17 @@ paths:
       tags: [screening]
       summary: Dismiss a content flag
       description: |
-        Resolves the flag as `dismissed` and mutes re-flagging of its
-        broadcast for the deployment's mute period (`mutedUntil`). When the
-        mute expires, a signal that persists raises a new flag. Records
-        `content_flag.resolved`. An already resolved or an `observe`-mode
-        flag returns `409` with code `content_flag_state`.
+        Resolves the flag as `dismissed`, with the operator's `reason`, and
+        mutes re-flagging of its broadcast for the chosen `scope` (R70):
+        `episode` until the sampler next reports the window cleared for
+        this publisher session, `duration` for the deployment's mute period
+        (the default, and R40's only kind), `session` until this publisher
+        session ends. The two session-bound scopes are capped at 24 hours.
+        When the mute ends, a signal that persists raises a new flag, marked
+        `returnedAfterReview`. Records `content_flag.resolved` with the
+        reason. An empty body is `{"scope": "duration"}`. An already
+        resolved or an `observe`-mode flag returns `409` with code
+        `content_flag_state`; an unknown reason or scope is `400`.
       x-gawk-roles: [operator]
       x-gawk-requires: screening
       parameters:
@@ -1500,8 +1510,8 @@ paths:
       requestBody:
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/EmptyRequest' }
-            example: {}
+            schema: { $ref: '#/components/schemas/DismissContentFlagRequest' }
+            example: { reason: game_scene, scope: episode }
       responses:
         '200':
           description: The dismissed flag, with the mute's end.
@@ -1530,6 +1540,8 @@ paths:
                 labels: [FEMALE_GENITALIA_EXPOSED]
                 peakScore: 0.97
                 reminders: 0
+                trips: 1
+                returnedAfterReview: false
                 mutedUntil: '2026-09-16T10:05:00Z'
                 links: { watch: 'https://gawk.example/#/view/ABC234' }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -1622,6 +1634,7 @@ paths:
               mode: observe
               floor: 0.3
               labels: [FEMALE_GENITALIA_EXPOSED, MALE_GENITALIA_EXPOSED, ANUS_EXPOSED]
+              rule: { threshold: 0.5, window: 6, windowHits: 3 }
               sessions:
                 - broadcastId: ABC234
                   broadcastKey: 9f2c41ab77de
@@ -1701,6 +1714,118 @@ paths:
                     at: '2026-09-12T21:04:05Z'
                     peakScore: 0.86
                 truncated: false
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/screening/timeline:
+    get:
+      operationId: getScreeningTimeline
+      tags: [screening]
+      summary: One broadcast's moderation timeline
+      description: |
+        Everything the portal's broadcast drill-down draws (R70): the
+        broadcast's sampled publisher sessions with the window rule each
+        sampler reported, its stored samples bucketed (the highest score per
+        label, and how many samples reached the session's threshold and the
+        critical level), its content flags of both modes, its events, the
+        levels in force, and a computed `summary` with a `pattern` and a
+        `suggestion`. The suggestion pre-selects a choice in the portal; it
+        never acts.
+
+        Keyed by the broadcast key, so a timeline outlives the broadcast.
+        `to` defaults to now; `from` to the broadcast's first sampled session
+        in the 24 hours before `to` (at least 10 minutes before `to`). The
+        range may be at most 48 hours. `bucket` (seconds) defaults to about
+        300 buckets across the range, never under 5 seconds or over 1 500
+        buckets. A bucket with no stored samples is omitted: inside a
+        session's span it was sampled below the floor, outside every span
+        it was not sampled. Samples are pruned after the deployment's sample
+        retention, so an older range has incidents and events but no buckets.
+      x-gawk-roles: [operator]
+      x-gawk-requires: screening
+      parameters:
+        - name: key
+          in: query
+          required: true
+          description: The broadcast key.
+          schema: { type: string, pattern: '^[0-9a-f]{1,64}$' }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: bucket
+          in: query
+          description: Bucket width in seconds.
+          schema: { type: integer, format: int32, minimum: 1 }
+      responses:
+        '200':
+          description: The timeline.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: Contains the raw broadcast ID and its watch link.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScreeningTimeline' }
+              example:
+                schema: gawk.screening.timeline.v1
+                broadcastKey: 9f2c41ab77de
+                broadcastId: ABC234
+                live: true
+                from: '2026-10-15T19:42:00Z'
+                to: '2026-10-15T21:56:00Z'
+                bucketSeconds: 30
+                truncated: false
+                levels: { floor: 0.3, threshold: 0.5, window: 6, windowHits: 3, critical: 0.7, sustainedAfterSeconds: 180, rejoinSeconds: 600 }
+                labels: [FEMALE_GENITALIA_EXPOSED, MALE_GENITALIA_EXPOSED, ANUS_EXPOSED]
+                sessions:
+                  - publisherEpoch: 5f2c9a0b11d4e6f7
+                    broadcastId: ABC234
+                    firstSampleAt: '2026-10-15T19:42:00Z'
+                    lastSampleAt: '2026-10-15T21:56:00Z'
+                    samplesTaken: 1608
+                    samplesStored: 512
+                    floor: 0.3
+                    threshold: 0.5
+                    window: 6
+                    windowHits: 3
+                    mode: flag
+                    samplerId: gawk-sampler-0
+                buckets:
+                  - start: '2026-10-15T20:53:00Z'
+                    max: 0.79
+                    scores: { FEMALE_GENITALIA_EXPOSED: 0, MALE_GENITALIA_EXPOSED: 0.79, ANUS_EXPOSED: 0.41 }
+                    stored: 6
+                    above: 5
+                    critical: 2
+                incidents: []
+                events:
+                  - id: 812
+                    type: content_flag.raised
+                    occurredAt: '2026-10-15T20:54:00Z'
+                    actor: service-account-gawk-sampler
+                    summary: 'content flag raised on broadcast ABC234: 4 of 6 samples flagged, peak score 0.79 — join and judge it'
+                summary:
+                  pattern: recurring
+                  thresholdKnown: true
+                  sampledSeconds: 7800
+                  aboveSeconds: 3360
+                  criticalSeconds: 1210
+                  longestRunSeconds: 2460
+                  runs: 4
+                  sustainedRuns: 2
+                  peak: 0.84
+                  peakLabel: ANUS_EXPOSED
+                suggestion:
+                  verdict: violation
+                  banSeconds: 604800
+                  why: 'the signal came back: two sustained runs, or a return after review'
+                links: { watch: 'https://gawk.example/#/view/ABC234' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2655,7 +2780,7 @@ components:
         flags are calibration data: they page nobody and cannot be
         acknowledged or dismissed.
       required: [id, mode, state, broadcastId, broadcastKey, publisherEpoch, samplerId, raisedAt, updatedAt,
-        lastPostAt, signal, window, scores, labels, peakScore, reminders]
+        lastPostAt, signal, window, scores, labels, peakScore, reminders, trips, returnedAfterReview]
       properties:
         id: { type: integer, format: int64 }
         mode:
@@ -2671,8 +2796,11 @@ components:
           description: How the flag ended. Absent while it is unresolved.
         resolutionReason:
           type: string
-          enum: [deadline, policy, stale]
-          description: Why an automatic resolution happened. Absent otherwise.
+          enum: [deadline, policy, stale, game_scene, not_explicit, detector_error, other]
+          description: |
+            Why the flag resolved: `deadline`, `policy` or `stale` for an
+            automatic resolution; for a dismissal, the operator's reason
+            (R70). Absent otherwise.
         broadcastId: { $ref: '#/components/schemas/BroadcastId' }
         broadcastKey: { $ref: '#/components/schemas/BroadcastKey' }
         publisherEpoch:
@@ -2721,8 +2849,192 @@ components:
         mutedUntil:
           type: string
           format: date-time
-          description: While a dismissal mutes re-flagging of the broadcast, when the mute ends.
+          description: |
+            For a dismissed flag, when the mute its dismissal set ends (an
+            `episode` mute ends at the clear that ended it). For any other,
+            while a mute covers the flag's publisher session, when it ends.
+        muteScope:
+          type: string
+          enum: [episode, duration, session]
+          description: The dismissal's mute scope (R70). Absent on a flag that was not dismissed.
+        trips:
+          type: integer
+          format: int32
+          minimum: 1
+          description: |
+            How many times the sampler's window tripped within this one
+            incident (R70): a re-trip inside the deployment's rejoin window
+            is the same incident and pages nobody again.
+        clearedAt:
+          type: string
+          format: date-time
+          description: |
+            Set while the sampler's clear of an unacknowledged flag is held
+            for the rejoin window (R70); the signal reads `cleared` and the
+            flag resolves `cleared` when the window passes.
+        returnedAfterReview:
+          type: boolean
+          description: |
+            True when an earlier incident on the broadcast was acknowledged,
+            dismissed or killed within the last 24 hours and the signal came
+            back (R70).
         links: { $ref: '#/components/schemas/ContentFlagLinks' }
+
+    ScreeningTimeline:
+      type: object
+      required: [schema, broadcastKey, live, from, to, bucketSeconds, truncated, levels, labels, sessions, buckets,
+        incidents, events, summary, suggestion]
+      properties:
+        schema: { type: string, const: gawk.screening.timeline.v1 }
+        broadcastKey: { $ref: '#/components/schemas/BroadcastKey' }
+        broadcastId: { $ref: '#/components/schemas/BroadcastId' }
+        live:
+          type: boolean
+          description: Whether the fleet scan sees the broadcast now.
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        bucketSeconds: { type: integer, format: int32 }
+        truncated:
+          type: boolean
+          description: The range held more stored samples than one read returns; the newest are missing.
+        levels: { $ref: '#/components/schemas/TimelineLevels' }
+        labels:
+          type: array
+          description: The flagged labels the sessions scored.
+          items: { type: string }
+        sessions:
+          type: array
+          items: { $ref: '#/components/schemas/TimelineSession' }
+        buckets:
+          type: array
+          items: { $ref: '#/components/schemas/TimelineBucket' }
+        incidents:
+          type: array
+          description: The broadcast's content flags of both modes in the range, oldest first.
+          items: { $ref: '#/components/schemas/ContentFlag' }
+        events:
+          type: array
+          description: The broadcast's events in the range, newest first, at most 500.
+          items: { $ref: '#/components/schemas/TimelineEvent' }
+        summary: { $ref: '#/components/schemas/TimelineSummary' }
+        suggestion: { $ref: '#/components/schemas/TimelineSuggestion' }
+        links: { $ref: '#/components/schemas/ContentFlagLinks' }
+
+    TimelineLevels:
+      type: object
+      description: |
+        Every level the timeline draws. `floor` and the window rule are the
+        sampler's (the newest session's that reported one); `critical`,
+        `sustainedAfterSeconds` and `rejoinSeconds` are this deployment's.
+      required: [floor, critical, sustainedAfterSeconds, rejoinSeconds]
+      properties:
+        floor: { type: number, minimum: 0, maximum: 1 }
+        threshold: { type: number, minimum: 0, maximum: 1 }
+        window: { type: integer, format: int32 }
+        windowHits: { type: integer, format: int32 }
+        critical: { type: number, minimum: 0, maximum: 1 }
+        sustainedAfterSeconds: { type: integer, format: int32 }
+        rejoinSeconds: { type: integer, format: int32, description: '`0` when the rejoin window is off.' }
+
+    TimelineSession:
+      type: object
+      required: [publisherEpoch, broadcastId, firstSampleAt, lastSampleAt, samplesTaken, samplesStored, floor, mode, samplerId]
+      properties:
+        publisherEpoch: { type: string }
+        broadcastId: { $ref: '#/components/schemas/BroadcastId' }
+        firstSampleAt: { type: string, format: date-time }
+        lastSampleAt: { type: string, format: date-time }
+        samplesTaken: { type: integer, format: int64 }
+        samplesStored: { type: integer, format: int64 }
+        floor: { type: number }
+        threshold:
+          type: number
+          description: Absent when the session's sampler predates R70 and reported no rule.
+        window: { type: integer, format: int32 }
+        windowHits: { type: integer, format: int32 }
+        mode: { type: string, enum: [observe, flag] }
+        samplerId: { type: string }
+
+    TimelineBucket:
+      type: object
+      required: [start, max, scores, stored, above, critical]
+      properties:
+        start: { type: string, format: date-time }
+        max:
+          type: number
+          description: The highest score among the flagged labels in the bucket.
+        scores:
+          type: object
+          description: The highest score per label, 0–1, by label.
+          additionalProperties: true
+        stored: { type: integer, format: int32 }
+        above:
+          type: integer
+          format: int32
+          description: Stored samples at or above their session's threshold.
+        critical:
+          type: integer
+          format: int32
+          description: Stored samples at or above the critical level.
+
+    TimelineEvent:
+      type: object
+      required: [id, type, occurredAt, actor, summary]
+      properties:
+        id: { type: integer, format: int64 }
+        type: { type: string }
+        occurredAt: { type: string, format: date-time }
+        actor: { type: string }
+        summary: { type: string }
+
+    TimelineSummary:
+      type: object
+      description: |
+        Runs are consecutive sampled frames at or above their session's
+        threshold; a missing sample is below the floor and breaks a run.
+        `recurring`: two or more runs at least the sustained length, or an
+        incident that returned after review. `sustained`: one such run.
+        `flicker`: three or more runs, or an incident that tripped twice.
+        `isolated`: any other run. `unknown`: no session reported a
+        threshold.
+      required: [pattern, thresholdKnown, sampledSeconds, aboveSeconds, criticalSeconds, longestRunSeconds, runs, sustainedRuns, peak]
+      properties:
+        pattern: { type: string, enum: [none, isolated, flicker, sustained, recurring, unknown] }
+        thresholdKnown: { type: boolean }
+        sampledSeconds: { type: integer, format: int32 }
+        aboveSeconds: { type: integer, format: int32 }
+        criticalSeconds: { type: integer, format: int32 }
+        longestRunSeconds: { type: integer, format: int32 }
+        runs: { type: integer, format: int32 }
+        sustainedRuns: { type: integer, format: int32 }
+        peak: { type: number }
+        peakLabel: { type: string }
+
+    TimelineSuggestion:
+      type: object
+      description: |
+        What the pattern suggests: `violation` with a ban length for
+        `recurring` (7 days) and for `sustained` reaching the critical level
+        (24 hours); `not_violation` for `isolated`; nothing otherwise. A
+        reading aid — it never acts.
+      properties:
+        verdict: { type: string, enum: [violation, not_violation] }
+        banSeconds: { type: integer, format: int32 }
+        why: { type: string }
+
+    DismissContentFlagRequest:
+      type: object
+      additionalProperties: false
+      description: How an operator dismissed a flag (R70). Both fields are optional.
+      properties:
+        reason:
+          type: string
+          enum: [game_scene, not_explicit, detector_error, other]
+          description: Why it is not a violation; delivered as `content_flag.resolved`'s `reason`.
+        scope:
+          type: string
+          enum: [episode, duration, session]
+          default: duration
 
     ScreeningStatus:
       type: object
@@ -2882,9 +3194,23 @@ components:
         labels:
           type: array
           items: { type: string, pattern: '^[A-Z0-9_]{1,64}$' }
+        rule: { $ref: '#/components/schemas/SamplerRule' }
         sessions:
           type: array
           items: { $ref: '#/components/schemas/SessionSamples' }
+
+    SamplerRule:
+      type: object
+      description: |
+        The sampler's window rule (R70): a window trips when `windowHits` of
+        its last `window` samples score at or above `threshold`. Reported
+        so the portal draws the threshold that was in force; absent from a
+        sampler older than R70. `threshold` may not be below `floor`.
+      required: [threshold, window, windowHits]
+      properties:
+        threshold: { type: number, exclusiveMinimum: 0, maximum: 1 }
+        window: { type: integer, format: int32, minimum: 1, maximum: 64 }
+        windowHits: { type: integer, format: int32, minimum: 1, maximum: 64 }
 
     SamplesResult:
       type: object

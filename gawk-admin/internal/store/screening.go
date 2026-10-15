@@ -63,13 +63,21 @@ func (s *Store) IngestSamples(ctx context.Context, b screening.SampleBatch) (int
 			}
 			stored++
 		}
+		// The rule follows the newest batch that reports one; a batch from a
+		// sampler older than R70 leaves it as it was (docs/72 D1).
+		var threshold *float64
+		var size, hits *int
+		if r := b.Rule; r != nil {
+			threshold, size, hits = &r.Threshold, &r.Window, &r.WindowHits
+		}
 		if _, err := tx.Exec(ctx, `UPDATE screening_sessions SET
 			samples_taken = samples_taken + $2, samples_stored = samples_stored + $3,
 			first_sample_at = LEAST(first_sample_at, $4), last_sample_at = GREATEST(last_sample_at, $5),
-			floor = GREATEST(floor, $6), sampler_id = $7, mode = $8
+			floor = GREATEST(floor, $6), sampler_id = $7, mode = $8,
+			threshold = COALESCE($9, threshold), window_size = COALESCE($10, window_size), window_hits = COALESCE($11, window_hits)
 			WHERE publisher_epoch = $1`,
 			sess.PublisherEpoch, sess.Taken, len(sess.Samples), sess.FirstAt.UTC(), sess.LastAt.UTC(),
-			b.Floor, b.SamplerID, b.Mode); err != nil {
+			b.Floor, b.SamplerID, b.Mode, threshold, size, hits); err != nil {
 			return 0, fmt.Errorf("store: ingest samples: count: %w", err)
 		}
 	}
@@ -344,4 +352,120 @@ func (s *Store) ScreeningSamplesBytes(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("store: samples table size: %w", err)
 	}
 	return n, nil
+}
+
+// ScreeningSession is one row of screening_sessions as the timeline reads it
+// (docs/72 D7).
+type ScreeningSession struct {
+	PublisherEpoch string
+	BroadcastID    string
+	BroadcastKey   string
+	SamplesTaken   int64
+	SamplesStored  int64
+	FirstSampleAt  time.Time
+	LastSampleAt   time.Time
+	Floor          float64
+	Labels         []string
+	Mode           string
+	SamplerID      string
+	// Rule is the sampler's reported window rule, nil when no batch for the
+	// session carried one (docs/72 D1).
+	Rule *screening.BatchRule
+}
+
+// ScreeningSessionsForKey returns the broadcast's sessions that overlap
+// [from, to], oldest first.
+func (s *Store) ScreeningSessionsForKey(ctx context.Context, key string, from, to time.Time) ([]ScreeningSession, error) {
+	rows, err := s.pool.Query(ctx, `SELECT publisher_epoch, broadcast_id, broadcast_key, samples_taken, samples_stored,
+			first_sample_at, last_sample_at, floor, labels, mode, sampler_id, threshold, window_size, window_hits
+		FROM screening_sessions WHERE broadcast_key = $1 AND first_sample_at <= $3 AND last_sample_at >= $2
+		ORDER BY first_sample_at, publisher_epoch`, key, from.UTC(), to.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("store: screening sessions: %w", err)
+	}
+	defer rows.Close()
+	out := []ScreeningSession{}
+	for rows.Next() {
+		var (
+			ss        ScreeningSession
+			threshold *float64
+			size      *int
+			hits      *int
+		)
+		if err := rows.Scan(&ss.PublisherEpoch, &ss.BroadcastID, &ss.BroadcastKey, &ss.SamplesTaken, &ss.SamplesStored,
+			&ss.FirstSampleAt, &ss.LastSampleAt, &ss.Floor, &ss.Labels, &ss.Mode, &ss.SamplerID, &threshold, &size, &hits); err != nil {
+			return nil, fmt.Errorf("store: screening sessions: %w", err)
+		}
+		ss.FirstSampleAt, ss.LastSampleAt = ss.FirstSampleAt.UTC(), ss.LastSampleAt.UTC()
+		if threshold != nil && size != nil && hits != nil {
+			ss.Rule = &screening.BatchRule{Threshold: *threshold, Window: *size, WindowHits: *hits}
+		}
+		out = append(out, ss)
+	}
+	return out, rows.Err()
+}
+
+// TimelineSample is one stored sample as the timeline reads it.
+type TimelineSample struct {
+	PublisherEpoch string
+	Seq            int64
+	At             time.Time
+	Scores         map[string]float64
+}
+
+// MaxTimelineSamples bounds one timeline read. At one sample per 5 s a
+// broadcast stores at most 34 560 in 48 h, and only those above the floor.
+const MaxTimelineSamples = 50_000
+
+// TimelineSamples returns the broadcast's stored samples in [from, to], in
+// session then sequence order, at most MaxTimelineSamples; truncated says the
+// cap cut the range.
+func (s *Store) TimelineSamples(ctx context.Context, key string, from, to time.Time) (out []TimelineSample, truncated bool, err error) {
+	rows, err := s.pool.Query(ctx, `SELECT publisher_epoch, seq, sampled_at, scores FROM screening_samples
+		WHERE broadcast_key = $1 AND sampled_at >= $2 AND sampled_at <= $3
+		ORDER BY sampled_at, publisher_epoch, seq LIMIT $4`, key, from.UTC(), to.UTC(), MaxTimelineSamples+1)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: timeline samples: %w", err)
+	}
+	defer rows.Close()
+	out = []TimelineSample{}
+	for rows.Next() {
+		var (
+			sm  TimelineSample
+			raw []byte
+		)
+		if err := rows.Scan(&sm.PublisherEpoch, &sm.Seq, &sm.At, &raw); err != nil {
+			return nil, false, fmt.Errorf("store: timeline samples: %w", err)
+		}
+		if err := json.Unmarshal(raw, &sm.Scores); err != nil {
+			return nil, false, fmt.Errorf("store: timeline samples: %w", err)
+		}
+		sm.At = sm.At.UTC()
+		out = append(out, sm)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("store: timeline samples: %w", err)
+	}
+	if len(out) > MaxTimelineSamples {
+		return out[:MaxTimelineSamples], true, nil
+	}
+	return out, false, nil
+}
+
+// ContentFlagsForKey returns the broadcast's flags of both modes raised in
+// [from, to] or still unresolved, oldest first. A flag raised before the
+// fleet scan saw its broadcast has no key, so ids — the raw IDs the key's
+// sessions carry — match it too.
+func (s *Store) ContentFlagsForKey(ctx context.Context, key string, ids []string, from, to time.Time) ([]ContentFlag, error) {
+	if ids == nil {
+		ids = []string{}
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+flagColumns+` FROM content_flags
+		WHERE (broadcast_key = $1 OR (broadcast_key IS NULL AND broadcast_id = ANY($4)))
+		  AND raised_at <= $3 AND (raised_at >= $2 OR resolved_at >= $2 OR state <> 'resolved')
+		ORDER BY raised_at, id`, key, from.UTC(), to.UTC(), ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: content flags for key: %w", err)
+	}
+	return collectFlags(rows)
 }

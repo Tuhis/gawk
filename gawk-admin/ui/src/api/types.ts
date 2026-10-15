@@ -343,8 +343,20 @@ export interface ContentFlag {
   peakScore: number;
   /** How many `content_flag.reminded` pages this flag has sent. */
   reminders: number;
-  /** Set after a dismissal: re-flagging of the broadcast is muted until then (D10). */
+  /**
+   * A dismissed flag: when the mute its dismissal set ends (an `episode`
+   * mute ends at the clear that ended it). Any other: while a mute covers
+   * the flag's session, when it ends (D10, docs/72 D5).
+   */
   mutedUntil?: string | null;
+  /** The dismissal's scope (R70); absent when the flag was not dismissed. */
+  muteScope?: MuteScope | null;
+  /** Window trips this one incident absorbed (R70, docs/72 D3). */
+  trips?: number;
+  /** Set while the sampler's clear is held for the rejoin window (R70). */
+  clearedAt?: string | null;
+  /** An earlier incident on the broadcast was reviewed and the signal came back (R70). */
+  returnedAfterReview?: boolean;
   /**
    * The watch link, built server-side from `-app-base-url` exactly like a
    * broadcast row's and omitted when that is unset. It is what makes an
@@ -372,6 +384,107 @@ export interface ScreeningStatus {
 export interface ContentFlagPage {
   contentFlags: ContentFlag[];
   screening: ScreeningStatus;
+}
+
+/** How long a dismissal mutes re-flagging (R70, docs/72 D5). */
+export type MuteScope = 'episode' | 'duration' | 'session';
+
+/** Why an operator judged a flag not a violation (R70, docs/72 D5). */
+export type DismissReason = 'game_scene' | 'not_explicit' | 'detector_error' | 'other';
+
+/** `POST /api/v1/content-flags/{id}/dismiss`. Both fields optional. */
+export interface DismissRequest {
+  reason?: DismissReason;
+  scope?: MuteScope;
+}
+
+/** The timeline's patterns (R70, docs/72 D8). */
+export type TimelinePattern = 'none' | 'isolated' | 'flicker' | 'sustained' | 'recurring' | 'unknown';
+
+/** Every level the timeline draws (docs/72 §4). */
+export interface TimelineLevels {
+  floor: number;
+  /** The newest session's reported threshold; absent from a pre-R70 sampler. */
+  threshold?: number | null;
+  window?: number | null;
+  windowHits?: number | null;
+  critical: number;
+  sustainedAfterSeconds: number;
+  /** 0 when the rejoin window is off. */
+  rejoinSeconds: number;
+}
+
+export interface TimelineSession {
+  publisherEpoch: string;
+  broadcastId: string;
+  firstSampleAt: string;
+  lastSampleAt: string;
+  samplesTaken: number;
+  samplesStored: number;
+  floor: number;
+  threshold?: number | null;
+  window?: number | null;
+  windowHits?: number | null;
+  mode: ContentFlagMode;
+  samplerId: string;
+}
+
+/** One time bucket holding stored samples; empty buckets are omitted. */
+export interface TimelineBucket {
+  start: string;
+  max: number;
+  scores: Record<string, number>;
+  stored: number;
+  above: number;
+  critical: number;
+}
+
+export interface TimelineEvent {
+  id: number;
+  type: string;
+  occurredAt: string;
+  actor: string;
+  summary: string;
+}
+
+export interface TimelineSummary {
+  pattern: TimelinePattern;
+  thresholdKnown: boolean;
+  sampledSeconds: number;
+  aboveSeconds: number;
+  criticalSeconds: number;
+  longestRunSeconds: number;
+  runs: number;
+  sustainedRuns: number;
+  peak: number;
+  peakLabel?: string | null;
+}
+
+export interface TimelineSuggestion {
+  verdict?: 'violation' | 'not_violation' | null;
+  banSeconds?: number | null;
+  why?: string | null;
+}
+
+/** `GET /api/v1/screening/timeline` (R70, docs/72 D7). */
+export interface Timeline {
+  schema: string;
+  broadcastKey: string;
+  broadcastId?: string | null;
+  live: boolean;
+  from: string;
+  to: string;
+  bucketSeconds: number;
+  truncated: boolean;
+  levels: TimelineLevels;
+  labels: string[];
+  sessions: TimelineSession[];
+  buckets: TimelineBucket[];
+  incidents: ContentFlag[];
+  events: TimelineEvent[];
+  summary: TimelineSummary;
+  suggestion: TimelineSuggestion;
+  links?: { watch?: string } | null;
 }
 
 /** `POST /api/v1/screening/replay` — a candidate window rule over stored samples (D21). */

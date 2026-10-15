@@ -7,6 +7,7 @@ import { useLoader } from './lib/useLoader.ts';
 import { href, useRoute } from './router/router.ts';
 import type { ViewName } from './router/router.ts';
 import { BansView } from './views/BansView.tsx';
+import { BroadcastTimelineView } from './views/BroadcastTimelineView.tsx';
 import { BroadcastsView } from './views/BroadcastsView.tsx';
 import { CalibrationView } from './views/CalibrationView.tsx';
 import { EventsView } from './views/EventsView.tsx';
@@ -135,6 +136,7 @@ function Portal() {
             view={route.view}
             path={route.path}
             filterKey={route.key}
+            detail={route.detail}
             cooldownSeconds={cooldown}
             screening={screening}
           />
@@ -150,17 +152,23 @@ function Routed({
   view,
   path,
   filterKey,
+  detail,
   cooldownSeconds,
   screening,
 }: {
   view: ViewName;
   path: string;
   filterKey: string;
+  detail: string;
   cooldownSeconds: number;
   screening: boolean;
 }) {
   switch (view) {
     case 'broadcasts':
+      // `#/broadcasts/<key>`: one broadcast's moderation timeline (R70).
+      if (detail && screening) {
+        return <BroadcastTimelineView broadcastKey={detail} killCooldownSeconds={cooldownSeconds} />;
+      }
       return (
         <BroadcastsView
           killCooldownSeconds={cooldownSeconds}

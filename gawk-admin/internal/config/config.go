@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -131,6 +132,17 @@ type Config struct {
 	// samples, observed flags and their events (D17). Flag-mode flags are
 	// never pruned.
 	ScreeningSampleRetention time.Duration
+	// ScreeningCritical is the timeline's critical score level (docs/72 D2):
+	// the chart's top band, "time at critical" and the 24-hour suggestion.
+	// It flags and kills nothing.
+	ScreeningCritical float64
+	// ScreeningSustainedAfter is how long a run above the threshold lasts
+	// before the timeline calls it sustained (docs/72 D8).
+	ScreeningSustainedAfter time.Duration
+	// ContentFlagRejoin holds a clear of an unacknowledged flag this long,
+	// so a re-trip inside it is the same incident and does not page again
+	// (docs/72 D3); 0 resolves clears at once, as R40 did.
+	ContentFlagRejoin time.Duration
 
 	// EventBus* configure the R50 consumer (docs/51 D6). Operator-provided
 	// NATS, default off: an empty URL means no client, no stream, no activity
@@ -297,6 +309,12 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"kill an unacknowledged flag whose signal is still live after this long: off, or a duration like 30m")
 	sampleRetention := fs.String("screening-sample-retention", env("GAWK_ADMIN_SCREENING_SAMPLE_RETENTION", "30d"),
 		"how long calibration data (samples, observed flags) is kept; flag-mode flags are never pruned")
+	screeningCritical := fs.String("screening-critical", env("GAWK_ADMIN_SCREENING_CRITICAL", "0.7"),
+		"the moderation timeline's critical score level, in (0, 1]: its top band and the 24-hour ban suggestion; it flags nothing")
+	sustainedAfter := fs.String("screening-sustained-after", env("GAWK_ADMIN_SCREENING_SUSTAINED_AFTER", "3m"),
+		"how long a run above the threshold lasts before the moderation timeline calls it sustained")
+	contentFlagRejoin := fs.String("content-flag-rejoin", env("GAWK_ADMIN_CONTENT_FLAG_REJOIN", "10m"),
+		"hold a clear of an unacknowledged flag this long, so a re-trip is the same incident and does not page again: off, or a duration")
 	logLevel := fs.String("log-level", env("GAWK_ADMIN_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logFormat := fs.String("log-format", env("GAWK_ADMIN_LOG_FORMAT", "text"), "log format: text|json")
 	devOIDCProxy := fs.String("dev-oidc-proxy", env("GAWK_ADMIN_DEV_OIDC_PROXY", ""),
@@ -349,6 +367,9 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 	if err := parseScreening(&cfg, *screeningOn, *contentFlagRepage, *contentFlagMute, *contentFlagStaleAfter,
 		*contentFlagAutoKill, *contentFlagDeadline, *sampleRetention); err != nil {
+		return Config{}, err
+	}
+	if err := parseTimeline(&cfg, *screeningCritical, *sustainedAfter, *contentFlagRejoin); err != nil {
 		return Config{}, err
 	}
 
@@ -523,6 +544,30 @@ func parseScreening(cfg *Config, on, repage, mute, staleAfter, autoKill, deadlin
 	return nil
 }
 
+// parseTimeline resolves the R70 knobs (docs/72 §4), validated whether or not
+// -screening is on, like parseScreening's.
+func parseTimeline(cfg *Config, critical, sustained, rejoin string) error {
+	c, err := strconv.ParseFloat(strings.TrimSpace(critical), 64)
+	if err != nil || math.IsNaN(c) || c <= 0 || c > 1 {
+		return fmt.Errorf("invalid -screening-critical %q (want a score in (0, 1])", critical)
+	}
+	cfg.ScreeningCritical = c
+	v, err := time.ParseDuration(strings.TrimSpace(sustained))
+	if err != nil || v <= 0 {
+		return fmt.Errorf("invalid -screening-sustained-after %q (want a positive duration)", sustained)
+	}
+	cfg.ScreeningSustainedAfter = v
+	cfg.ContentFlagRejoin = 0
+	if r := strings.TrimSpace(rejoin); r != "off" && r != "" {
+		v, err := time.ParseDuration(r)
+		if err != nil || v <= 0 {
+			return fmt.Errorf("invalid -content-flag-rejoin %q (want off or a positive duration)", rejoin)
+		}
+		cfg.ContentFlagRejoin = v
+	}
+	return nil
+}
+
 func parseStaticWebhooks(raw string, getenv func(string) string) ([]StaticWebhook, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -625,6 +670,9 @@ func (c Config) LogAttrs() []any {
 		"contentFlagAutoKill", c.ContentFlagAutoKill.String(),
 		"contentFlagDeadline", durationOrOff(c.ContentFlagDeadline),
 		"screeningSampleRetention", c.ScreeningSampleRetention.String(),
+		"screeningCritical", strconv.FormatFloat(c.ScreeningCritical, 'g', -1, 64),
+		"screeningSustainedAfter", c.ScreeningSustainedAfter.String(),
+		"contentFlagRejoin", durationOrOff(c.ContentFlagRejoin),
 		// The creds PATH is not a secret; whether one is configured is the
 		// question an operator debugging a silent bus is asking.
 		"eventBusUrl", c.EventBusURL,

@@ -85,9 +85,10 @@ func fixtures() map[string]Event {
 			Reason: "sustained explicit signal", FlagID: 42, SamplerID: "gawk-sampler-1",
 			Window: &ContentFlagWindow{Start: "2026-09-17T11:59:35Z", End: "2026-09-17T12:00:00Z", Samples: 6, FlaggedSamples: 4},
 			Scores: &ContentFlagScores{Max: 0.97, Mean: 0.81},
-			Labels: []string{"FEMALE_GENITALIA_EXPOSED"},
+			Labels:              []string{"FEMALE_GENITALIA_EXPOSED"},
+			ReturnedAfterReview: true,
 			Delivery: Delivery{
-				Summary:   "content flag raised on broadcast ABC234: 4 of 6 samples flagged, peak score 0.97 — join and judge it",
+				Summary:   "content flag raised on broadcast ABC234, which returned after review: 4 of 6 samples flagged, peak score 0.97 — join and judge it",
 				PortalURL: fixturePortalB,
 			},
 		}),

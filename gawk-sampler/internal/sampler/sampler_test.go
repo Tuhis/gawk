@@ -283,6 +283,13 @@ func TestSampleAccounting(t *testing.T) {
 	if b.Mode != screening.ModeObserve || b.Floor != 0.3 || b.SamplerID != "gawk-sampler-1" || len(b.Sessions) != 1 {
 		t.Fatalf("batch %+v", b)
 	}
+	// docs/72 D1: every batch reports the rule the window ran with.
+	if want := (screening.BatchRule{Threshold: 0.8, Window: 6, WindowHits: 4}); b.Rule == nil || *b.Rule != want {
+		t.Fatalf("batch rule %+v, want %+v", b.Rule, want)
+	}
+	if err := b.Validate(); err != nil {
+		t.Fatalf("the batch the sampler sent does not validate: %v", err)
+	}
 	s := b.Sessions[0]
 	var pos []int
 	var vals []float64

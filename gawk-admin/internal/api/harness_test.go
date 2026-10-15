@@ -209,6 +209,8 @@ func withScreening() harnessOption {
 		o.Config.ContentFlagMute = 30 * time.Minute
 		o.Config.ContentFlagStaleAfter = 2 * time.Minute
 		o.Config.ScreeningSampleRetention = 30 * 24 * time.Hour
+		o.Config.ScreeningCritical = 0.7
+		o.Config.ScreeningSustainedAfter = 3 * time.Minute
 	}
 }
 

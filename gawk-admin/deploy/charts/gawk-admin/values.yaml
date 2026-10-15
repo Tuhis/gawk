@@ -218,11 +218,25 @@ screening:
     # The deadline kill (D15, OD2): "off", or how long an UNACKNOWLEDGED flag
     # with a live signal may stay open before its broadcast is killed.
     deadline: "off"
+    # Flicker (docs/72 D3): how long a clear of an UNACKNOWLEDGED flag is
+    # held. A re-trip inside it is the same incident — one more trip on the
+    # same flag, no new page. "off" resolves every clear at once (R40).
+    rejoin: 10m
   # How long calibration data — the stored samples, observed flags and their
   # events — is kept (D17). Flag-mode flags are the moderation audit trail and
   # are never pruned. The samples table's size is exported as
   # gawk_admin_screening_samples_bytes; watch it on a small database volume.
   sampleRetention: 30d
+  # The moderation timeline's levels (docs/72 §4). The floor and the
+  # threshold are the SAMPLER's (its chart's config.sampleFloor and
+  # config.threshold) and reach the timeline in every sample batch; these two
+  # are the portal's own reading aids and never flag or kill anything.
+  #   criticalScore — the score chart's top band, "time at critical", and the
+  #     24-hour ban suggestion for a sustained run that reaches it. (0, 1].
+  #   sustainedAfter — how long a run above the threshold lasts before the
+  #     timeline calls it sustained (two such runs: recurring).
+  criticalScore: 0.7
+  sustainedAfter: 3m
 
 config:
   # A plain "kill" is an ID ban with this cooldown (docs/42 D5): the

@@ -2015,7 +2015,8 @@ jobs:
           out=$(helm template "$chart" $ADMIN_PG)
           grep -A1 'GAWK_ADMIN_SCREENING$' <<<"$out" | grep -q '"false"' || {
             echo "::error::screening is not off by default"; exit 1; }
-          for env in CONTENT_FLAG_REPAGE CONTENT_FLAG_MUTE CONTENT_FLAG_STALE_AFTER SCREENING_SAMPLE_RETENTION; do
+          for env in CONTENT_FLAG_REPAGE CONTENT_FLAG_MUTE CONTENT_FLAG_STALE_AFTER SCREENING_SAMPLE_RETENTION \
+              SCREENING_CRITICAL SCREENING_SUSTAINED_AFTER CONTENT_FLAG_REJOIN; do
             grep -q "GAWK_ADMIN_$env\$" <<<"$out" || { echo "::error::GAWK_ADMIN_$env is not rendered"; exit 1; }
           done
           for env in CONTENT_FLAG_AUTO_KILL CONTENT_FLAG_DEADLINE; do

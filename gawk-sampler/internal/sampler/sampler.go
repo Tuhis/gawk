@@ -838,7 +838,12 @@ func (e *Engine) flush(ctx context.Context) {
 		Mode:      e.opts.Mode,
 		Floor:     e.opts.Floor,
 		Labels:    e.opts.Labels,
-		Sessions:  sessions,
+		// The rule travels with the samples so gawk-admin draws the threshold
+		// that was in force (docs/72 D1).
+		Rule: &screening.BatchRule{
+			Threshold: e.opts.Rule.Threshold, Window: e.opts.Rule.Size, WindowHits: e.opts.Rule.Hits,
+		},
+		Sessions: sessions,
 	}
 	cctx, cancel := context.WithTimeout(ctx, e.opts.PostTimeout)
 	err := e.opts.Admin.PostSamples(cctx, batch)

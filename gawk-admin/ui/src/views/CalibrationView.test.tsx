@@ -163,6 +163,8 @@ describe('observed flags (OD14)', () => {
     });
     const watch = await screen.findByRole('link', { name: 'Watch' });
     expect(watch.getAttribute('href')).toBe('https://gawk.example/#/view/OBS111');
+    // R70: each observed flag opens its broadcast's timeline, by key.
+    expect(screen.getAllByRole('link', { name: 'Timeline' })[0].getAttribute('href')).toBe('#/broadcasts/3f9a1c2b4d5e');
     expect(screen.getByText('OBS111')).toBeTruthy();
     expect(screen.getByText('tripped')).toBeTruthy();
     expect(screen.getByText('cleared (stale)')).toBeTruthy();

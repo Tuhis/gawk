@@ -98,6 +98,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`69`](69-app-desktop-handoff.md) | R67 — Open a broadcast in the desktop app from `gawk-app`: an offer on the start card and in rooms, no install detection, a remembered "always" |
 | [`70`](70-ios-ux-redesign.md) | R68 — iOS app UX redesign: gawk's dark tokens in Liquid Glass, three tabs with one code box for broadcasts and rooms, a video-only player with controls on tap, the web room screen, a Live Activity, iPad layouts |
 | [`71`](71-content-flagging.md) | R40 — automatic content flagging: a `gawk-sampler` module scores cached keyframes with NudeNet, `gawk-admin` pages and tracks content flags, the operator judges live; ships observing, calibrated on real broadcasts before it flags |
+| [`72`](72-moderation-timeline.md) | R70 — the broadcast moderation timeline: a per-broadcast drill-down of scores, incidents and events with a decision panel per incident; flicker pages once, returns after review are marked, dismissals carry a reason and a scope |
 
 ## Audio
 
