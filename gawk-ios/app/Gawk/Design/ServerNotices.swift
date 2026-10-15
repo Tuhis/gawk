@@ -86,7 +86,8 @@ struct ServerNotices: View {
 struct ScreeningMark: View {
     /// The words the web and desktop broadcasters show too.
     static let label = "Content screening"
-    /// What it means, as VoiceOver's hint.
+    /// What it means, as VoiceOver's value: a hint says what activating an
+    /// element does, and the mark does nothing.
     static let text = "This server automatically screens streams for explicit content."
 
     /// Shown when either source says so.
@@ -94,7 +95,10 @@ struct ScreeningMark: View {
 
     /// Laid out as `ProbeStatus` above it: a small glyph and the words. A
     /// `Label` in a list row takes the row's icon column and moves the row's
-    /// separator to its title.
+    /// separator to its title. Ignoring its children drops the `Text`'s
+    /// static-text trait, and the accessibility audit takes an element with
+    /// no traits for a control: on a server's page, where the mark stands
+    /// alone, it failed its hit area. The trait is put back.
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "checkmark")
@@ -105,7 +109,8 @@ struct ScreeningMark: View {
         .foregroundStyle(Theme.muted)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Self.label)
-        .accessibilityHint(Self.text)
+        .accessibilityValue(Self.text)
+        .accessibilityAddTraits(.isStaticText)
         .accessibilityIdentifier("server.screening")
     }
 }
