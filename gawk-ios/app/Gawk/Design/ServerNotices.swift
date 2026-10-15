@@ -86,7 +86,9 @@ struct ServerNotices: View {
 struct ScreeningMark: View {
     /// The words the web and desktop broadcasters show too.
     static let label = "Content screening"
-    /// What it means, as VoiceOver's hint.
+    /// What it means, as VoiceOver's value. Not a hint: a hint says what
+    /// activating an element does, so the accessibility audit took the
+    /// footnote-sized mark for a control and failed its hit area.
     static let text = "This server automatically screens streams for explicit content."
 
     /// Shown when either source says so.
@@ -105,7 +107,7 @@ struct ScreeningMark: View {
         .foregroundStyle(Theme.muted)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Self.label)
-        .accessibilityHint(Self.text)
+        .accessibilityValue(Self.text)
         .accessibilityIdentifier("server.screening")
     }
 }
