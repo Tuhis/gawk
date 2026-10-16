@@ -38,6 +38,27 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Reports the session's tokens and equivalent cost to the ioio telemetry
+      # collector as device-gawk-ci. Turns itself off, without failing the
+      # run, if the secrets or Keycloak are unavailable. It writes the whole
+      # settings file, so the session's own env goes in `env` here: a second
+      # `env` passed to the Claude step would replace this one, not add to it.
+      - name: Claude telemetry settings
+        id: otel
+        uses: ./.github/actions/claude-otel
+        with:
+          client-id: ${{ secrets.CLAUDE_OTEL_CLIENT_ID }}
+          client-secret: ${{ secrets.CLAUDE_OTEL_CLIENT_SECRET }}
+          device-name: gawk-ci
+          # Keep every subagent in the foreground. Headless -p mode ends the
+          # session when the main agent ends its turn, and it does not wait for
+          # background agents. On #354 the bot started its four reviewers with
+          # run_in_background, ended its turn "waiting for their results", and
+          # the job exited before any reviewer reported back: no comment, green
+          # check. Several foreground Agent calls in one turn still run in
+          # parallel.
+          env: '{"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}'
+
       - name: Run Claude Code Review
         id: claude-review
         # Pinned to main for Claude Code 2.1.280: the v1 tag still installs 2.1.278,
@@ -51,14 +72,7 @@ jobs:
           allowed_bots: 'tuhokuutio[bot]'
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          # Keep every subagent in the foreground. Headless -p mode ends the
-          # session when the main agent ends its turn, and it does not wait for
-          # background agents. On #354 the bot started its four reviewers with
-          # run_in_background, ended its turn "waiting for their results", and
-          # the job exited before any reviewer reported back: no comment, green
-          # check. Several foreground Agent calls in one turn still run in
-          # parallel.
-          settings: '{"env": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}}'
+          settings: ${{ steps.otel.outputs.settings }}
           prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           # The allowlist is the code-review plugin's own `allowed-tools`
           # (plugins/code-review/commands/code-review.md), verbatim. Allowing the
