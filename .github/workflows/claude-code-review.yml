@@ -14,9 +14,16 @@ jobs:
     # without this they'd just fail noisily on every push; this skips them
     # cleanly. To review an outside contribution, comment "@claude review this"
     # on it — claude.yml handles that, gated the same way.
+    #
+    # tuhokuutio[bot] is the GitHub App the coding agent opens PRs as. It can
+    # push here, but GitHub reports an App's author_association as NONE, so it
+    # is named explicitly. A login cannot be spoofed, and the same-repo check
+    # still applies. allowed_bots below lets the action run for it too.
     if: |
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+      github.event.pull_request.head.repo.full_name == github.repository && (
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+        github.event.pull_request.user.login == 'tuhokuutio[bot]'
+      )
 
     runs-on: ubuntu-latest
     permissions:
@@ -39,6 +46,9 @@ jobs:
         uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The action refuses runs started by a bot unless it is listed; pushes
+          # to the agent's PRs come from tuhokuutio[bot].
+          allowed_bots: 'tuhokuutio[bot]'
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           # Keep every subagent in the foreground. Headless -p mode ends the
