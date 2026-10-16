@@ -1,0 +1,53 @@
+#!/bin/sh
+# Copy of the ioio repo's .claude/skills/claude-telemetry-device/otel-headers;
+# keep the two in step. In CI, action.yml writes client.json from the repo's
+# secrets where a workstation has it from enroll.sh.
+#
+# Claude Code otelHeadersHelper for the ioio telemetry collector
+# (docs/claude-telemetry.md, D5). Prints {"Authorization":"Bearer <jwt>"}.
+#
+# Gets a token from Keycloak with this device's own client credentials
+# (~/.config/claude-otel/client.json, written by enroll.sh) and caches it in
+# ~/.cache/claude-otel/token until a minute before it expires. Claude Code
+# runs this every CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS (5 min); tokens
+# last 15 min, so a Keycloak blip under ~10 min loses nothing.
+#
+# Needs only sh, curl, sed and date. Exits non-zero on failure, which Claude
+# Code reports as a helper error; it then sends nothing rather than sending
+# without auth.
+set -eu
+
+cfg="${CLAUDE_OTEL_CONFIG:-$HOME/.config/claude-otel/client.json}"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/claude-otel"
+cache="$cache_dir/token"
+now=$(date +%s)
+
+if [ -r "$cache" ]; then
+  exp=$(sed -n 1p "$cache")
+  if [ -n "$exp" ] && [ "$now" -lt "$((exp - 60))" ]; then
+    printf '{"Authorization":"Bearer %s"}\n' "$(sed -n 2p "$cache")"
+    exit 0
+  fi
+fi
+
+# client.json is written by enroll.sh as flat JSON with string values.
+field() { sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p" "$cfg"; }
+client_id=$(field client_id)
+client_secret=$(field client_secret)
+token_url=$(field token_url)
+[ -n "$client_id" ] && [ -n "$client_secret" ] && [ -n "$token_url" ] || {
+  echo "claude-otel: incomplete $cfg" >&2; exit 1; }
+
+resp=$(curl -fsS --max-time 10 -u "$client_id:$client_secret" \
+  -d grant_type=client_credentials "$token_url") || {
+  echo "claude-otel: token request to $token_url failed" >&2; exit 1; }
+
+token=$(printf '%s' "$resp" | sed -n 's/.*"access_token" *: *"\([^"]*\)".*/\1/p')
+ttl=$(printf '%s' "$resp" | sed -n 's/.*"expires_in" *: *\([0-9]*\).*/\1/p')
+[ -n "$token" ] && [ -n "$ttl" ] || { echo "claude-otel: no token in response" >&2; exit 1; }
+
+mkdir -p "$cache_dir"
+umask 077
+tmp="$cache.$$"
+printf '%s\n%s\n' "$((now + ttl))" "$token" > "$tmp" && mv "$tmp" "$cache"
+printf '{"Authorization":"Bearer %s"}\n' "$token"

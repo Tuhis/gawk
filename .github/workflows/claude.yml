@@ -52,6 +52,17 @@ jobs:
         with:
           fetch-depth: 1
 
+      # Reports the session's tokens and equivalent cost to the ioio telemetry
+      # collector as device-gawk-ci. Turns itself off, without failing the
+      # run, if the secrets or Keycloak are unavailable.
+      - name: Claude telemetry settings
+        id: otel
+        uses: ./.github/actions/claude-otel
+        with:
+          client-id: ${{ secrets.CLAUDE_OTEL_CLIENT_ID }}
+          client-secret: ${{ secrets.CLAUDE_OTEL_CLIENT_SECRET }}
+          device-name: gawk-ci
+
       - name: Run Claude Code
         id: claude
         # Pinned to main for Claude Code 2.1.280: the v1 tag still installs 2.1.278,
@@ -60,6 +71,7 @@ jobs:
         uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          settings: ${{ steps.otel.outputs.settings }}
           # The action refuses runs started by a bot unless it is listed.
           allowed_bots: 'tuhokuutio[bot]'
 
