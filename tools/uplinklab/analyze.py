@@ -3,6 +3,11 @@
 frameId and reports, per run, what the relay would have had and when.
 
 Usage: analyze.py <run-dir> [--skip-s 5] [--json out.json] [--viewer-trace out.json]
+                  [--viewer-trace-noparity out.json]
+
+The no-parity trace is what a viewer on reliable delivery (Smoother, Most
+stable) is sent: the relay serves those viewers no parity (hub.NegotiateParity),
+so a delta reaches them complete only if every data chunk reached the relay.
 
 Sender log lines (gawk-broadcast-desktop/tools/uplinklab): F frame, K keyframe
 stream outcome, C carrier retired, O carrier opened, W a write that blocked
@@ -104,12 +109,14 @@ def analyze(run, skip_s=5.0, tail_s=1.0):
     hi = t_end - int(tail_s * 1e9)
 
     done = {}
+    done_np = {}
     for fid in ids:
         f = frames[fid]
         if f["key"]:
-            done[fid] = kdone.get(fid)
+            done[fid] = done_np[fid] = kdone.get(fid)
         else:
             done[fid] = complete_time(f, data, parity)
+            done_np[fid] = complete_time(f, data, parity, use_parity=False)
 
     # Decode-ready: max over the GOP prefix; None once the prefix breaks.
     ready = {}
@@ -172,7 +179,7 @@ def analyze(run, skip_s=5.0, tail_s=1.0):
         dur = (t_end - t0) / 1e9 + 1.5
         out["uplink_mbps"] = stats["udp_tx_bytes"] * 8 / dur / 1e6
         out["pkt_loss_pct"] = 100.0 * stats["lost_pkts"] / max(1, stats["sent_pkts"])
-    return out, frames, done, t0
+    return out, frames, done, done_np, t0
 
 
 def viewer_trace(frames, done, t0):
@@ -192,7 +199,7 @@ def viewer_trace(frames, done, t0):
 if __name__ == "__main__":
     run = sys.argv[1]
     skip = 5.0
-    jout = vout = None
+    jout = vout = vnp = None
     a = sys.argv[2:]
     while a:
         if a[0] == "--skip-s":
@@ -201,11 +208,15 @@ if __name__ == "__main__":
             jout = a[1]; a = a[2:]
         elif a[0] == "--viewer-trace":
             vout = a[1]; a = a[2:]
+        elif a[0] == "--viewer-trace-noparity":
+            vnp = a[1]; a = a[2:]
         else:
             raise SystemExit("bad arg " + a[0])
-    res, frames, done, t0 = analyze(run, skip)
+    res, frames, done, done_np, t0 = analyze(run, skip)
     if jout:
         json.dump(res, open(jout, "w"), indent=1)
     if vout:
         json.dump(viewer_trace(frames, done, t0), open(vout, "w"))
+    if vnp:
+        json.dump(viewer_trace(frames, done_np, t0), open(vnp, "w"))
     print(json.dumps(res, indent=1, default=lambda x: round(x, 2)))

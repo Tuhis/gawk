@@ -6,7 +6,7 @@ $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
 Usage: matrix.py core|cc|hi|jit|win|all [--jobs 3] [--seconds 100] [--only substr]
-       matrix.py rescore [substr]   # replay every finished run again
+       matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
 import json
@@ -112,20 +112,37 @@ def sets():
     return s
 
 
+# The four viewer presets (gawk-app playbackPresets.ts): name → the trace it
+# is sent, its playout mode, its delivery mode. Live-edge delivery gets parity;
+# reliable delivery (resilient, deep) is served none, so it replays the trace
+# of frames complete without it.
+PRESETS = {
+    "off": ("vt.json", "off", "live"),            # Lowest latency
+    "adaptive": ("vt.json", "adaptive", "live"),  # Balanced (default)
+    "resilient": ("vt-noparity.json", "adaptive", "resilient"),  # Smoother
+    "deep": ("vt-noparity.json", "adaptive", "deep"),            # Most stable
+    # What-if (docs/73 F14): the relay serving parity to reliable delivery
+    # too. Leg B is reliable and clean here, so such a viewer receives exactly
+    # what a live-edge viewer can complete.
+    "resilient-parity": ("vt.json", "adaptive", "resilient"),
+    "deep-parity": ("vt.json", "adaptive", "deep"),
+}
+
+
 def replay(runs, skip_ms):
-    """The viewer replay for each run dir, both presets, in one vitest
+    """The viewer replay for each run dir, every preset, in one vitest
     process; then each run's summary.json is (re)written."""
     batch = f"{OUT}/replay-batch.{os.getpid()}.{id(runs)}.txt"
     with open(batch, "w") as b:
         for r in runs:
-            for po in ("off", "adaptive"):
-                b.write(f"{r}/vt.json {po} {r}/view-{po}.json\n")
+            for name, (trace, po, delivery) in PRESETS.items():
+                b.write(f"{r}/{trace} {po} {r}/view-{name}.json {delivery}\n")
     env = dict(os.environ, UPLINK_BATCH=batch, UPLINK_SKIP_MS=str(int(skip_ms)))
     subprocess.run(["npx", "vitest", "run", REPLAY, "--testTimeout", "3600000"], cwd=APP,
                    env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     os.remove(batch)
     for r in runs:
-        view = {po: json.load(open(f"{r}/view-{po}.json")) for po in ("off", "adaptive")}
+        view = {name: json.load(open(f"{r}/view-{name}.json")) for name in PRESETS}
         t = json.load(open(f"{r}/transport.json"))
         json.dump(dict(transport=t, view=view, proxy=open(f"{r}/proxy.txt").read()),
                   open(f"{r}/summary.json", "w"), indent=1)
@@ -141,24 +158,42 @@ def run_one(sc, mode, seconds):
     env = dict(os.environ, RECV_ARGS=sc["recv"])
     subprocess.run(args, check=True, timeout=seconds + 120, env=env)
     subprocess.run(["python3", f"{HERE}/analyze.py", out, "--json", f"{out}/transport.json",
-                    "--viewer-trace", f"{out}/vt.json"], check=True, stdout=subprocess.DEVNULL)
+                    "--viewer-trace", f"{out}/vt.json", "--viewer-trace-noparity", f"{out}/vt-noparity.json"],
+                   check=True, stdout=subprocess.DEVNULL)
     # The second half of the run: the adaptive controller has settled.
     replay([out], seconds * 1000 / 2)
     return out
 
 
-def rescore(flt):
+def rescore(flt, jobs):
+    """Re-analyses every finished run and replays it again, split over `jobs`
+    vitest processes."""
     import glob
     runs = sorted(os.path.dirname(p) for p in glob.glob(f"{OUT}/results/*/*/transport.json"))
     runs = [r for r in runs if flt in r]
-    replay(runs, 50000)
+
+    def analyse(r):
+        subprocess.run(["python3", f"{HERE}/analyze.py", r, "--json", f"{r}/transport.json",
+                        "--viewer-trace", f"{r}/vt.json", "--viewer-trace-noparity", f"{r}/vt-noparity.json"],
+                       check=True, stdout=subprocess.DEVNULL)
+    with cf.ThreadPoolExecutor(jobs) as ex:
+        list(ex.map(analyse, runs))
+    parts = [runs[i::jobs] for i in range(jobs)]
+    with cf.ThreadPoolExecutor(jobs) as ex:
+        list(ex.map(lambda part: replay(part, 50000), [p for p in parts if p]))
     print(len(runs), "rescored")
 
 
 def main():
     which = sys.argv[1]
     if which == "rescore":
-        rescore(sys.argv[2] if len(sys.argv) > 2 else "")
+        a = sys.argv[2:]
+        jobs = 1
+        if "--jobs" in a:
+            i = a.index("--jobs")
+            jobs = int(a[i + 1])
+            a = a[:i] + a[i + 2:]
+        rescore(a[0] if a else "", jobs)
         return
     jobs, seconds, only = 3, 100, None
     a = sys.argv[2:]

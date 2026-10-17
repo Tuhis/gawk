@@ -162,3 +162,46 @@ for rtt in (10, 40):
                 continue
             b = s["view"]["off"]["hitchBandsPerMin"]
             print(f"| {rtt} ms | {label} | {d} | {f(b['50-100'])} · {f(b['100-250'])} · {f(b['250-500'])} · {f(b['500+'])} | {f(s['view']['off']['longestHoldMs'])} ms |")
+
+
+def sv(s, k):
+    x = s["view"][k]
+    return f"{f(min(100, x['shownPct']), 1)} % · {f(x['stallPct'], 1)} %"
+
+
+def freezes(s, k):
+    b = s["view"][k]["hitchBandsPerMin"]
+    return f(b["250-500"] + b["500+"])
+
+
+print("\n#### Table J — what each viewer preset sees, by uplink delivery, BBR (F14)\n")
+print("Shown · stalled. Lowest latency and Balanced get parity; Smoother and Most stable ride reliable")
+print("delivery and are served none (`hub.NegotiateParity`), so they are sent only frames that reached")
+print("the relay whole. Freezes: holds ≥ 250 ms per minute. For Lowest latency \"shown\" also falls when")
+print("two frames land in one vsync (the newer wins); its stalled time is the loss measure.\n")
+print("| RTT | Path | Uplink | Lowest latency | Balanced | Smoother | Most stable | Smoother freezes /min |")
+print("|---|---|---|---|---|---|---|---|")
+JP = [("clean", "clean"), ("loss0.001", "0.1 % loss"), ("loss0.01", "1 % loss"), ("ge1pct", "bursts (GE)"),
+      ("out20drop", "radio away 20 ms"), ("out80drop", "radio away 80 ms")]
+for rtt in (10, 40, 100):
+    for sc, label in JP:
+        for d, m in (("datagram", "dgram-bbr"), ("carrier", "carrier-bbr")):
+            s = get(f"rtt{rtt}-{sc}", m)
+            if not s or "resilient" not in s["view"]:
+                continue
+            print(f"| {rtt} ms | {label} | {d} | {sv(s, 'off')} | {sv(s, 'adaptive')} | {sv(s, 'resilient')} "
+                  f"| {sv(s, 'deep')} | {freezes(s, 'resilient')} |")
+
+print("\n#### Table K — what-if: the relay serves parity to reliable delivery too, datagram uplink, BBR (F14, OD6)\n")
+print("| RTT | Path | Smoother today → with parity | Most stable today → with parity | Smoother on the carrier uplink |")
+print("|---|---|---|---|---|")
+KP = [("loss0.001", "0.1 % loss"), ("loss0.005", "0.5 % loss"), ("loss0.01", "1 % loss"), ("loss0.02", "2 % loss"),
+      ("ge1pct", "bursts (GE)"), ("out20drop", "radio away 20 ms"), ("out80drop", "radio away 80 ms")]
+for rtt in (10, 40, 100):
+    for sc, label in KP:
+        s = get(f"rtt{rtt}-{sc}", "dgram-bbr")
+        c = get(f"rtt{rtt}-{sc}", "carrier-bbr")
+        if not s or "resilient-parity" not in s["view"]:
+            continue
+        print(f"| {rtt} ms | {label} | {sv(s, 'resilient')} → {sv(s, 'resilient-parity')} "
+              f"| {sv(s, 'deep')} → {sv(s, 'deep-parity')} | {sv(c, 'resilient') if c else '–'} |")

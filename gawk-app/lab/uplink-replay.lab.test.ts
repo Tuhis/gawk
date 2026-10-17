@@ -6,20 +6,26 @@
 // Not part of the suite: it only runs with UPLINK_TRACE or UPLINK_BATCH set.
 //   UPLINK_TRACE=trace.json UPLINK_PLAYOUT=adaptive UPLINK_OUT=view.json \
 //     npx vitest run lab/uplink-replay.lab.test.ts
-// UPLINK_BATCH names a file of "trace playout out" lines, replayed in turn.
+// UPLINK_BATCH names a file of "trace playout out [delivery]" lines, replayed
+// in turn. delivery is the viewer's delivery mode — live (default), resilient
+// (the Smoother preset) or deep (Most stable) — and selects the shipping
+// profile for it: buffer envelope, gap grace, keyframe wait, loss allowance.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { it } from 'vitest';
 
 import {
   DECODE_LEAD_MS,
+  getPlayoutMode,
   getPlayoutOffsetMs,
+  getPlayoutProfile,
   resetPlayoutController,
   setPlayoutMode,
+  setViewerDeliveryMode,
   updatePlayoutController,
 } from '../src/transport/playout';
 import { ReorderBuffer, resetGraceController, updateGraceController } from '../src/transport/reorder-buffer';
-import { getLossAllowanceFrames } from '../src/transport/resilient';
+import { getLossAllowanceFrames, getResilientMode, type ViewerDeliveryMode } from '../src/transport/resilient';
 
 interface TraceFrame {
   id: number;
@@ -33,28 +39,38 @@ const single = process.env.UPLINK_TRACE;
 const batch = process.env.UPLINK_BATCH;
 
 it.runIf(!!single || !!batch)('replays uplink traces through the viewer', () => {
-  const jobs: [string, string, string | undefined][] = batch
+  const jobs: [string, string, string | undefined, string | undefined][] = batch
     ? readFileSync(batch, 'utf8')
         .split('\n')
         .filter((l) => l.trim())
-        .map((l) => l.trim().split(/\s+/) as [string, string, string])
-    : [[single!, process.env.UPLINK_PLAYOUT ?? 'adaptive', process.env.UPLINK_OUT]];
-  for (const [trace, playout, outPath] of jobs) {
-    replay(trace, playout as 'off' | 'adaptive', outPath);
+        .map((l) => l.trim().split(/\s+/) as [string, string, string, string | undefined])
+    : [[single!, process.env.UPLINK_PLAYOUT ?? 'adaptive', process.env.UPLINK_OUT, process.env.UPLINK_DELIVERY]];
+  for (const [trace, playout, outPath, delivery] of jobs) {
+    replay(trace, playout as 'off' | 'adaptive', outPath, (delivery ?? 'live') as ViewerDeliveryMode);
   }
 });
 
-function replay(trace: string, playout: 'off' | 'adaptive', outPath: string | undefined): void {
+function replay(
+  trace: string,
+  playout: 'off' | 'adaptive',
+  outPath: string | undefined,
+  delivery: ViewerDeliveryMode,
+): void {
   const frames: TraceFrame[] = JSON.parse(readFileSync(trace, 'utf8'));
   const legBms = Number(process.env.UPLINK_LEG_B_MS ?? '0');
   const decodeMs = Number(process.env.UPLINK_DECODE_MS ?? '2');
   const skipMs = Number(process.env.UPLINK_SKIP_MS ?? '10000');
   const vsyncMs = 1000 / 60;
 
+  // A fresh viewer: live delivery, live edge, both controllers reset — then
+  // the requested mode, exactly as a reconnect into it would set it.
+  setViewerDeliveryMode('live');
   setPlayoutMode('off');
   resetPlayoutController();
   resetGraceController();
+  setViewerDeliveryMode(delivery);
   setPlayoutMode(playout);
+  resetPlayoutController();
 
   const clock = { t: 0 };
   // Decoded frames waiting for the sink, in decode order.
@@ -112,7 +128,9 @@ function replay(trace: string, playout: 'off' | 'adaptive', outPath: string | un
       const d = decoding.shift()!;
       const offset = getPlayoutOffsetMs();
       const base = rb.arrivalBaselineMs();
-      if (playout === 'adaptive' && offset > 0 && base !== null) {
+      // viewer.ts displayTargetMs: the EFFECTIVE mode decides — resilient
+      // and deep delivery imply adaptive pacing whatever the stored mode.
+      if (getPlayoutMode() === 'adaptive' && offset > 0 && base !== null) {
         held.push({ id: d.id, ts: d.ts, target: d.ts + base + offset });
         while (held.length > 3) {
           held.shift();
@@ -147,8 +165,9 @@ function replay(trace: string, playout: 'off' | 'adaptive', outPath: string | un
   // the skip to the last capture. Time with nothing new on screen —
   // including before the first frame and after the last — is a hold, so a
   // viewer who saw nothing is 100 % stalled rather than an empty
-  // measurement. "Shown" counts the frames captured at least 1 s before the
-  // window closes (past any offset the controller can reach).
+  // measurement. "Shown" counts the frames captured at least 1 s plus the
+  // largest offset the viewer ran at before the window closes, so a deep
+  // buffer is not charged for frames it had no time to present.
   const windowEnd = frames[frames.length - 1].sched;
   const durS = (windowEnd - skipMs) / 1000;
   const shown = presented.filter((p) => p.at >= skipMs && p.at < windowEnd);
@@ -165,14 +184,18 @@ function replay(trace: string, playout: 'off' | 'adaptive', outPath: string | un
   // very differently from a freeze to the next keyframe (250 ms and up).
   const band = (lo: number, hi: number) => (holds.filter((h) => h >= lo && h < hi).length * 60) / durS;
   const stallMs = holds.filter((h) => h > 2.5 * vsyncMs).reduce((a, h) => a + h, 0);
+  const maxOffset = Math.max(0, ...offsets.filter((o) => o.t >= skipMs).map((o) => o.offset));
   const firstId = Math.round((skipMs * 60) / 1000);
-  const lastId = Math.round(((windowEnd - 1000) * 60) / 1000);
+  const lastId = Math.round(((windowEnd - 1000 - maxOffset) * 60) / 1000);
   const expected = lastId - firstId + 1;
   const shownIds = new Set(shown.map((p) => p.id).filter((id) => id >= firstId && id <= lastId));
   const offs = offsets.filter((o) => o.t >= skipMs).map((o) => o.offset);
   const stats = rb.getStats();
   const out = {
     playout,
+    delivery,
+    effectivePlayout: getPlayoutMode(),
+    profile: getResilientMode() ? getPlayoutProfile() : null,
     allowance: getLossAllowanceFrames(),
     seconds: durS,
     shownPct: (100 * shownIds.size) / expected,
