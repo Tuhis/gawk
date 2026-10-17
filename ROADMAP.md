@@ -88,7 +88,7 @@ feature set exists).
 | R67 | [Open a broadcast in the desktop app from `gawk-app`](#r67--open-a-broadcast-in-the-desktop-app-from-gawk-app) | 🔧 **implemented 2026-10-06** (HO1–HO3 in one PR; proposed 2026-10-03, owner decision OD3; the owner's UX review and `?desktop=1` (D9) on 2026-10-06), the owner's per-browser pass (HO4, V-1) open — on Windows, macOS and Linux the broadcaster's start card and a room's "Start streaming here" offer **Open in the desktop app** (a `gawk://broadcast` link with room, nickname and a non-default relay, never a secret); no install detection, the browser flow stays underneath an **Opening** modal with "Get the app" and "Continue in the browser"; an opt-in "always" makes broadcast links from outside launch the app once per room in a tab, behind an **Opened** modal; `#/broadcast?…&desktop=1` asks for the app from the link itself; operator switch `config.desktopHandoff` ([docs/69](docs/69-app-desktop-handoff.md)) |
 | R68 | [iOS app UX redesign](#r68--ios-app-ux-redesign) | ✅ done — designed 2026-10-05 in a Claude Design pass (owner decisions OD1–OD12 from canvas comments and chat), **IX1–IX9 implemented 2026-10-06** (Simulator-verified; deviations in docs/70 §10), IX10 (the owner's device pass) closed by the owner 2026-10-12 — the R65 screens rebuilt on the web app's dark tokens and the desktop's primitives in iOS 26+ Liquid Glass: three tabs (Watch, Broadcast, Settings; rooms join from the one code box, as on the web); a player that is only the video until a tap shows glass controls (LIVE chip, a code pill that copies the link as the room's does, PiP, a settings menu, a two-height stats drawer); Broadcast as one button then one code, with quality changeable while live on the same code; the room player as the web room screen with Grid / Focus and a People sheet; a Live Activity in the Dynamic Island; iPad layouts. Whatever the design needs that the app or core lacks (room roster, creator controls, upload rate, link handling) is built here. no wire or relay change ([docs/70](docs/70-ios-ux-redesign.md)) |
 | R70 | [Broadcast moderation timeline](#r70--broadcast-moderation-timeline) | 🔧 **implemented 2026-10-15** (MT1–MT6 in one PR; designed the same day in a Claude Design pass, owner decisions OD1–OD9), the owner's pass on the reference deployment (MT7) open — `#/broadcasts/<key>` in `gawk-admin` draws one broadcast's screening history on one time axis (sessions, a score bar per bucket against each session's reported threshold and the configurable critical level, per-label strips, incidents, mutes and events) with a server-computed pattern and suggestion, and a decision panel per incident: Look (Watch & acknowledge), then Decide (Not a violation with a reason and a mute scope, or Violation with the ban length in one form); a bottom bar on a phone. The flag lifecycle gains a rejoin window (`-content-flag-rejoin`, 10m: flicker is one incident and pages once), `returnedAfterReview` on raises, dismissal reasons and `episode` / `duration` / `session` mutes, and a ban that resolves its flag; the sampler reports its window rule in every batch. Revises docs/71 D9, D10 ([docs/72](docs/72-moderation-timeline.md)) |
-| R71 | [Reliable broadcaster uplink](#r71--reliable-broadcaster-uplink) | 🔧 **designed 2026-10-17** from a lab measurement pass (the shipping quinn and quic-go stacks, real-encoder frame sizes, the shipping viewer replayed), split out of R55; owner decisions OD1–OD5 open, RU0–RU7 not started — the per-GOP carrier costs nothing on a clean path and keeps GOPs whole through bursts and outages; quinn's Cubic, not the delivery mode, is what breaks a lossy path longer than a LAN, and its BBR fixes that; the relay itself drops ~2 % of a 1440p publisher's chunks in quic-go's 32-deep datagram queue; recommended: Reliable by default with Lowest latency a real choice, BBR behind gates ([docs/73](docs/73-reliable-uplink.md)) |
+| R71 | [Reliable broadcaster uplink](#r71--reliable-broadcaster-uplink) | 🔧 **designed 2026-10-17** from a lab measurement pass (the shipping quinn and quic-go stacks, real-encoder frame sizes, the shipping viewer replayed), split out of R55; owner decisions OD1–OD6 open, RU0–RU8 not started — the per-GOP carrier costs nothing on a clean path and keeps GOPs whole through bursts and outages; quinn's Cubic, not the delivery mode, is what breaks a lossy path longer than a LAN, and its BBR fixes that; the relay itself drops ~2 % of a 1440p publisher's chunks in quic-go's 32-deep datagram queue; viewers on *Smoother* and *Most stable* get no parity, so today 0.1 % uplink loss costs them one frame in eight while *Balanced* loses none, and only the carrier protects them from outages; recommended: Reliable by default with Lowest latency a real choice, BBR behind gates ([docs/73](docs/73-reliable-uplink.md)) |
 
 ---
 
@@ -5199,7 +5199,7 @@ lab (docs/73 §4) found it is free on a clean path, decisive on bursts and
 outages, and that quinn's default congestion controller is the bigger
 problem on any lossy path longer than a LAN.
 
-**Scope** (chunks RU0–RU7 in [docs/73](docs/73-reliable-uplink.md)):
+**Scope** (chunks RU0–RU8 in [docs/73](docs/73-reliable-uplink.md)):
 
 - **RU0** — telemetry that sees leg A in frames, and tells the uplink's
   loss from the relay's own (docs/57 WU0, moved).
@@ -5214,12 +5214,15 @@ problem on any lossy path longer than a LAN.
   Diagnostics, and the R55 line's harm input per mode.
 - **RU6** — the lab, landed so the numbers can be re-measured.
 - **RU7** — the hardware pass.
+- **RU8** — relay: parity for *Smoother* and *Most stable* viewers too
+  (revises docs/34 §3): their reliable leg B repairs leg-B loss but not a
+  chunk the broadcaster's uplink lost.
 
 **Non-goals**: a viewer-side change; pacing or frame-size capping; a
 home-grown congestion controller; the browser broadcaster (measured first,
 separately).
 
-**Status**: 🔧 designed 2026-10-17; owner decisions OD1–OD5 open; not
+**Status**: 🔧 designed 2026-10-17; owner decisions OD1–OD6 open; not
 started.
 
 ## Explicitly out of scope (unchanged from CLAUDE.md)

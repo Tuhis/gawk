@@ -1529,6 +1529,13 @@ entries still describe code `gawk-pubsim` runs (now
   else that sends datagrams over quinn must handle `TooLarge` too, or it
   silently loses every frame from then on
   ([docs/73](73-reliable-uplink.md) F8).
+- **Reliable delivery repairs leg B, not leg A.** *Smoother* and *Most
+  stable* viewers get no parity (`hub.NegotiateParity` serves carrier and
+  DVR delivery 0), the DVR ring keeps none, and their loss allowance is 0 —
+  so a chunk the broadcaster's uplink lost, which a *Balanced* viewer's
+  parity repairs unseen, is a freeze to the next keyframe for them, whatever
+  their buffer. At 0.1 % uplink loss: 100 % of frames for *Balanced*, ~88 %
+  for them ([docs/73](73-reliable-uplink.md) F14).
 - **quinn's default Cubic cannot carry the default rung over a lossy long
   path.** It treats every random loss as congestion: at 40 ms RTT, 0.1 %
   loss already leaves 15–25 % of frames undecodable in either delivery

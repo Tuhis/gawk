@@ -859,6 +859,24 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   audio and video bytes must give the video-plus-audio rate once; then drop
   the `+ st.audio_bytes_sent` in both places.
 
+## Smoother and Most stable viewers freeze on uplink loss that Balanced viewers never see
+
+- **Found**: 2026-10-17, docs/73 F14, by replaying lab traces through the
+  shipping viewer code in each preset (§11 table J). Not yet seen on the
+  fleet; the mechanism is read in code.
+- **Cause**: reliable delivery (R19 *Smoother*, R21 *Most stable*) is served
+  no parity — `hub.NegotiateParity` clamps carrier and DVR delivery to 0,
+  and the DVR ring keeps only video chunks — and its reorder buffer has no
+  loss allowance. Both assume leg A is clean. A chunk lost on the
+  broadcaster's uplink is missing at the relay, so the carrier cannot
+  retransmit it, and the viewer freezes to the next keyframe.
+- **Impact**: at 0.1 % random uplink loss (BBR uplink, 10–100 ms RTT)
+  *Balanced* shows 100 % of frames, these presets 87.5–89 % with ~15
+  freezes a minute; at 1 % loss, 32–39 %. The viewers who chose seconds of
+  delay for stability get the least of it.
+- **Fix would start**: docs/73 RU8 (serve them parity; fixes random loss,
+  not outages) and RU3 (the carrier uplink; fixes both).
+
 ## The relay drops high-rung publisher datagrams that QUIC already acknowledged
 
 - **Found**: 2026-10-17, in docs/73's lab (F7), then on the real relay
