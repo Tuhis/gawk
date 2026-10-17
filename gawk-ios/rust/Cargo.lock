@@ -902,7 +902,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-broadcast"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "gawk-audio",
  "gawk-capture",
@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-core"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "gawk-broadcast",
  "gawk-capture",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-devpub"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "gawk-encode",
  "gawk-engine",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "gawk-viewer"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "gawk-encode",
  "gawk-engine",
@@ -2942,7 +2942,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "serde_json",
  "uniffi",
