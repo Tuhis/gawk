@@ -829,6 +829,10 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   diagnosis sends the operator to the wrong machine. This is worst when there
   is no broadcaster telemetry session, because then the relay's ingress facts
   are the only testimony about leg A.
+- *2026-10-17*: the relay itself produces this signature on a clean path
+  at the high rung — see "The relay drops high-rung publisher datagrams that
+  QUIC already acknowledged" below. The playbook fix needs a row for that
+  case too (docs/73 D8).
 - **Fix would start**: test-first in `rules`. First, a broadcast whose relay
   facts carry heavy chunk loss and near-zero whole-frame loss must fire
   `leg-a-broadcaster-uplink`. Second, a viewer with the same relay facts must
@@ -854,6 +858,32 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Fix would start**: test-first in `ui/src/shell.rs`: stats with known
   audio and video bytes must give the video-plus-audio rate once; then drop
   the `+ st.audio_bytes_sent` in both places.
+
+## The relay drops high-rung publisher datagrams that QUIC already acknowledged
+
+- **Found**: 2026-10-17, in docs/73's lab (F7), then on the real relay
+  (§11 table G). A 1440p60 publisher (deltas of 52–84 datagrams) on a clean
+  path, 10 ms RTT and a 300 Mbps bottleneck, with 15 `gawk-loadgen` viewers:
+  the relay's `gawk_relay_ingress_chunks_lost_total` read 4 252 in 60 s
+  (≈ 2 % of chunks; 182 with no viewers) while the publisher's quinn counted
+  **0 lost packets** and the path dropped nothing. At 1080p the same run lost
+  nothing.
+- **Cause (measured)**: quic-go's HTTP/3 layer keeps at most
+  `streamDatagramQueueLen = 32` datagrams per WebTransport session and drops
+  new ones silently (`http3/state_tracking_stream.go`, quic-go 0.62.0).
+  Raising it to 4096 in a test build took the loss to 0; raising the
+  connection-level queue (128) did nothing, and a relay goroutine that only
+  drains the queue did not help (3 957), because it is starved by the same
+  CPU. The edge's pull session reads origin → edge datagrams through the
+  same queue.
+- **Impact**: high-rung datagram publishers lose the tails of their largest
+  frames — parity included — at the relay, for every viewer, and the loss
+  is booked as leg-A loss. The signature (chunks lost, no whole frames) is
+  the one the 2026-09-27 incident below recorded; whether that incident was
+  this is not known (its rung is not on record). R71's carrier is immune.
+- **Fix would start**: docs/73 RU2 — red first with a burst of 200
+  datagrams against a relay loop blocked for 20 ms, then a longer queue,
+  upstream or as a pinned quic-go fork.
 
 (The "Telemetry SQL console: the `rollups` view rots after boot, and any
 unpruned `sessions` query OOMs" entry was resolved 2026-09-22: views

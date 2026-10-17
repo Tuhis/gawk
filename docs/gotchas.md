@@ -1498,6 +1498,43 @@ entries still describe code `gawk-pubsim` runs (now
   config with the linking half and no hardware monitors.
   ([docs/39](39-linux-app-sharing.md) F6)
 
+**The broadcaster uplink (R71)**
+
+- **quinn writes DATAGRAM frames into every packet ahead of stream data**
+  (`populate_packet`). With deltas as datagrams, a keyframe stream gets only
+  what is left: at full rate it livelocked F-12's supersede rule
+  ([docs/38](38-windows-native-broadcaster.md) F-12), and under a window
+  that loss has shrunk it starves keyframes while deltas stay fast — and no
+  delta decodes before its keyframe ([docs/73](73-reliable-uplink.md) F6).
+- **quinn cannot tell you which bytes of a stream were acknowledged.**
+  `SendStream` has no per-offset acknowledgement; `stopped()` (and
+  wtransport's `finish()`) resolve only once a finished stream is fully
+  acknowledged. A deadline like "reset when the oldest unacknowledged
+  record is 150 ms old" cannot be built on it — enforce deadlines where a
+  stream ends ([docs/73](73-reliable-uplink.md) D3).
+- **quic-go keeps 32 datagrams per WebTransport session and drops the
+  newest.** `http3`'s `streamDatagramQueueLen = 32` is a tail drop, silent
+  and not configurable, on server and client sessions alike. 32 is about a
+  millisecond of a 1440p delta's burst: on a clean path the real relay lost
+  ~2 % of a 1440p publisher's chunks with 15 viewers attached, all of them
+  acknowledged by QUIC first, and counted them as leg-A loss. A goroutine
+  that only drains the queue does not help (it is starved by the same CPU);
+  a longer queue does — 4096 took it to zero
+  ([docs/73](73-reliable-uplink.md) F7, D7).
+- **quinn's MTU black-hole detector reads random loss as a black hole.**
+  More than three loss bursts of full-size packets, with no larger packet
+  acknowledged since, reset the path MTU to 1200; `max_datagram_size` falls
+  to 1165 and a 1200-byte chunk fails `TooLarge`. At 2 % random loss it
+  fired within 17 s. The engine re-chunks once and carries on; anything
+  else that sends datagrams over quinn must handle `TooLarge` too, or it
+  silently loses every frame from then on
+  ([docs/73](73-reliable-uplink.md) F8).
+- **quinn's default Cubic cannot carry the default rung over a lossy long
+  path.** It treats every random loss as congestion: at 40 ms RTT, 0.1 %
+  loss already leaves 15–25 % of frames undecodable in either delivery
+  mode, and at 100 ms it halves the throughput
+  ([docs/73](73-reliable-uplink.md) F4).
+
 **Relay fleet (R17)**
 
 - **Sessions created as a group must carry their group identity from
