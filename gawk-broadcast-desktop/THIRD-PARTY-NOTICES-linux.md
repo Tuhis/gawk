@@ -326,7 +326,7 @@ script for what counts as a dependency here and why.
 | `serde` | 1.0.229 | `MIT OR Apache-2.0` | — |
 | `serde_core` | 1.0.229 | `MIT OR Apache-2.0` | — |
 | `serde_json` | 1.0.154 | `MIT OR Apache-2.0` | — |
-| `sha2` | 0.11.0 | `MIT OR Apache-2.0` | Copyright (c) 2016-2026 The RustCrypto Project Developers<br>Copyright (c) 2016 Artyom Pavlov<br>Copyright (c) 2009-2013 Mozilla Foundation<br>Copyright (c) 2006-2009 Graydon Hoare |
+| `sha2` | 0.11.1 | `MIT OR Apache-2.0` | Copyright (c) 2016-2026 The RustCrypto Project Developers<br>Copyright (c) 2016 Artyom Pavlov<br>Copyright (c) 2009-2013 Mozilla Foundation<br>Copyright (c) 2006-2009 Graydon Hoare |
 | `signal-hook-registry` | 1.4.8 | `MIT OR Apache-2.0` | Copyright (c) 2017 tokio-jsonrpc developers |
 | `simd-adler32` | 0.3.10 | `MIT` | — |
 | `simplecss` | 0.2.2 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Reizner Evgeniy |
