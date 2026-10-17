@@ -104,9 +104,11 @@ window that loss shrank. It is not better everywhere: on datagrams under
 radio outages BBR shows 0.6–3.7 points fewer frames than Cubic (73.5 vs
 77.2 % at 10 ms with 80 ms outages), at a far lower tail (p99 14 vs 100 ms) —
 Cubic backs off after the first loss and *delays* what it sends into an
-outage, BBR keeps sending and loses it. On the carrier, which retransmits,
-BBR is no worse than Cubic on any cell once D10's windows are in place. §10
-lists what makes it a risk.
+outage, BBR keeps sending and loses it — and on a clean 1440p path its
+faster bursts overflow quic-go's 32-deep queue (F7) more than Cubic's (81.8
+vs 89.5 % shown), which D7's longer queue removes (100 % both, F15). On the
+carrier, which retransmits, BBR is within the run-to-run spread of Cubic or
+better on every cell (§11 table M). §10 lists what makes it a risk.
 
 **F6 — Under a small window, datagram-first packing starves keyframes.**
 quinn writes DATAGRAM frames into each packet before STREAM data (docs/38
@@ -169,7 +171,8 @@ lost frames on a clean path.
 **F12 — At the high rung the carrier matters more, and docs/57 D9's headroom
 fear did not hold.** At 1440p60 (38.9 Mbps mean, 50 Mbps ceiling, deltas of
 52–84 chunks) datagram delivery lost frames even on a clean path —
-27–40 % undecodable on loopback, 7–9 % behind a 300 Mbps bottleneck. Those
+12.6 % (Cubic) and 23.2 % (BBR) undecodable on loopback with the run alone
+on the host, 7–9 % behind a 300 Mbps bottleneck. Those
 losses were not on the path: behind 300 Mbps quinn counted no lost packet
 and the path dropped nothing, yet ~500 of 356 000 datagrams never reached
 the receiving application — quic-go's 32-deep queue (F7) — and because they
@@ -177,11 +180,11 @@ were the tails of the largest frames they broke 7–9 % of frames. (Behind
 80 Mbps the bottleneck's own queue drops most of what is lost: 3 %.) The
 carrier lost none. With BBR it also kept every GOP through
 0.1 % loss and through bursts, and through 80 ms outages behind 300 or
-80 Mbps of capacity it left 0–0.1 % undecodable with the Balanced viewer at
-97–98 % shown and an offset of 86–124 ms. D9 predicted the 80 Mbps case
+80 Mbps of capacity it left 0.1–0.2 % undecodable with the Balanced viewer
+at 95–98 % shown and an offset of 85–121 ms. D9 predicted the 80 Mbps case
 would expire a GOP at every outage; with the deadline at the GOP boundary
-(D3) 9 of ~200 carriers expired. Cubic collapses at this rung under bursts
-(43 % undecodable on the carrier, 91 % on datagrams) (§11 table E).
+(D3) 11 of ~200 carriers expired. Cubic collapses at this rung under bursts
+(54 % undecodable on the carrier, 91 % on datagrams) (§11 table E).
 
 **F13 — None of it depends on a perfectly steady path.** With 3 ms of
 delay jitter at 10 and 40 ms RTT, every comparison above keeps its sign:
@@ -217,6 +220,38 @@ outage half (§11 table K): 32–89 % → 95.6–100 % at 0.1–1 % loss, 70–7
 81–84 % under bursts, outages unchanged, because an outage takes whole
 frames. Its cost is parity's share of the video bytes: 10.4 % at 1080p,
 2.5 % at 1440p (measured on the lab's traces).
+
+**F15 — BBR and a longer relay queue, without the carrier, fix random loss
+for live-edge viewers and nothing else.** Measured as options of their own
+(datagrams kept; §11 tables L1–L4, spread in table M):
+
+- *Balanced*, random loss: BBR does the work at every RTT (40 ms, 0.1 %:
+  63 → 99.9 %; 100 ms, 0.5 %: 0.1 → 94–97 %). The longer queue changes
+  nothing at 1080p, where a delta is 10–17 datagrams, and is what makes the
+  high rung work: on a clean 1440p path, 89.5 % today, 81.8 % with BBR
+  alone, **100 % with BBR and the queue**, and 100 % at 0.1 % loss.
+- *Balanced*, bursts and outages: BBR + queue is the same as BBR alone
+  (three seeds agree within 3 points): 90–93 % under bursts at 10–40 ms,
+  82 % at 100 ms, 57 % at 1440p; 71–92 % with the radio away. The carrier
+  holds 93.5–100 % on the same cells.
+- *Lowest latency*: the same split. On random loss over a long path BBR +
+  queue stalls less than the carrier (100 ms, 1 %: 28.9 vs 58.7 % of the
+  time) — F3's trade.
+- *Smoother* and *Most stable* barely move, because they still get no
+  parity: 86–89 % at 0.1 % loss, 34–41 % at 1 %, 70–77 % with the radio
+  away. Adding OD6's parity lifts random loss to 95–100 % and bursts to
+  80–84 %; outages stay at 70–77 %. Only the carrier gives them 94–100 %
+  everywhere.
+- Not explained: at 40 ms random loss, BBR + queue showed Balanced 3–4
+  points lower than BBR alone on all three seeds (89–97 against 92–99.5 %)
+  with no difference in delivery (undecodable, latency percentiles). The
+  queue does no harm at 1080p that the transport counters can see; the
+  viewer-side difference is small and its cause is open.
+
+So the cheap path — BBR plus the queue, which together are one transport
+option and one constant — repairs what parity can repair, for viewers who get
+parity. Bursts, outages, and every viewer on reliable delivery need the
+carrier (or, for random loss only, OD6).
 
 ## 3. Owner decisions (open)
 
@@ -288,6 +323,15 @@ moved nothing beyond one damaged datagram frame in 100 s (F7 explains it).
 An early version phase-locked the outages to the GOP (period 1.000 s against
 0.5 s GOPs), so every outage landed at the same point in a GOP; it was
 discarded and re-run at 1.07 s.
+
+**Contention and spread.** Every 1440p cell was re-run alone on the host:
+three of them at a time, CPU contention starved the lab receiver and
+inflated exactly the quic-go queue drops F7 is about (40 % undecodable for
+BBR datagrams on a clean path in parallel, 23 % alone). At 1080p the
+parallel and serial runs agree. A single 100 s run's viewer figures move with the loss process's seed —
+up to ~5 points for *Balanced* and ~9 for *Smoother* — because a few
+half-second freezes dominate the 50 s window; table M measures that spread
+on four cells, and differences smaller than it are not findings.
 
 **The lab's own defects, found and fixed.** Three sender bugs surfaced
 during the pass; each was fixed and every run it could have touched was
@@ -495,10 +539,10 @@ Every GOP opens a new stream, and quic-go starts each at a 512 KiB receive
 window (`DefaultInitialMaxStreamData`; the connection at 1.5× that), auto-
 tuning only once the stream is under way. At 1080p a GOP's deltas
 (~350 KB) fit; at 1440p (~1.8 MB) they do not, and on a clean path the
-carrier's writes blocked and its decode-ready p95 / p99 rose to 16 / 33 ms.
-With the windows docs/57 D9 derived — **2 MB per stream, 3 MB per
-connection** at a 50 Mbps ceiling — the same run measured 9 / 15 ms and
-blocked once in 100 s (§11 table H). Behind an 80 Mbps bottleneck with
+carrier's writes blocked 11 times in 100 s, its decode-ready p95 / p99 at
+12 / 22 ms. With the windows docs/57 D9 derived — **2 MB per stream, 3 MB
+per connection** at a 50 Mbps ceiling — the same run measured 9 / 15 ms and
+blocked once (§11 table H). Behind an 80 Mbps bottleneck with
 outages the windows stop mattering (the bottleneck dominates).
 
 - The relay sets `InitialStreamReceiveWindow` and
@@ -604,7 +648,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | G2 | **Bursts and outages stop breaking GOPs**: on the GE and outage cells at 10 and 40 ms, Reliable leaves ≤ 0.5 % of frames undecodable and the Balanced viewer shows ≥ 97 % of frames (with OD2's controller; at 10 ms with either) | lab |
 | G3 | **The latency it costs is bounded and visible**: on the same cells, the Balanced offset rises by ≤ 60 ms at 10–40 ms RTT; Diagnostics shows the mode and the counters that explain it | lab + unit |
 | G4 | **The R55 Mac is fixed**: the reference Mac on Wi-Fi with AWDL on, 10 min at the default rung: leg-A damaged frames (`ingressFrameLossRatio`) ≤ 0.1 %, viewer gap resyncs ≤ 2/min, no `keyframe-only-delivery` | hardware |
-| G5 | **The controller is not a regression** (if OD2 is taken): on the carrier, BBR is no worse than Cubic on any §11 cell (Balanced frames shown − 0.5 points, decode-ready p99 + 5 ms, with D10's windows); on datagrams, no worse on random loss and bursts, and within 4 points of frames shown on outages at a lower p99 (F5); and it passes RU4's shared-bottleneck gate | lab |
+| G5 | **The controller is not a regression** (if OD2 is taken): on the carrier, BBR is no worse than Cubic on any §11 cell beyond the run-to-run spread (Balanced frames shown − 3 points, table M; decode-ready p99 + 5 ms); on datagrams with D7's queue, the same on clean paths, random loss and bursts, and within 6 points of frames shown on outages at a lower p99 (F5, F15); and it passes RU4's shared-bottleneck gate | lab |
 | G6 | **Compatibility**: a new broadcaster on an old relay sends datagrams unchanged; an old broadcaster on a new relay is unchanged; `-uplink-carriers=false` leaves `/statusz`, metrics and wire byte-identical to before | integration (real `gawk-server`) + diff assertion |
 | G7 | **Wire parity**: `CapUplinkCarriers` in `gawk-server/wire`, `parity.ts` and `crates/wire`, golden vectors byte-identical in all three | unit (mirror tests) |
 | G8 | **Viewers untouched**: no `gawk-app` change beyond the capability constant | review |
@@ -659,7 +703,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | Acceptance criterion | Verified by |
 |---|---|
 | `congestion: "bbr" \| "cubic"` in `broadcast.json`, reported as `uplinkCongestion`, shown in Diagnostics; `cubic` restores today's transport exactly | unit |
-| G5's lab gate, recorded in §11 (this pass already meets it, except the 1440p clean carrier cell, which needs D10's windows) | lab |
+| G5's lab gate, recorded in §11 (this pass meets it) | lab |
 | Shared bottleneck: through an 80 Mbps bottleneck with a 50 ms queue and one competing TCP flow, the broadcast holds its rate and the TCP flow keeps ≥ 50 % of its fair share; recorded | lab (the proxy grows a second client) |
 | The hardware pass (RU7) shows no regression against Cubic on either machine | hardware |
 | Default flips to `bbr` only when all three pass; otherwise this chunk records why and Cubic stays | review |
@@ -726,7 +770,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
   a bound on anything); one throughput dip in a clean 100 s run that a
   150 KB datagram buffer turned into four lost frames; and behind an 80 Mbps
   bottleneck it overran the 50 ms queue more often than Cubic (175 against
-  66 drops in 100 s on the carrier, and 5 171 against none after outages,
+  66 drops in 100 s on the carrier, and 4 400 against none after outages,
   where it re-sends what the outage lost without backing off) — harmless to
   the broadcast (§11 table E), not obviously to anything sharing that queue.
   BBRv1 is also known to be unfair to Cubic flows on a shared bottleneck —
@@ -766,14 +810,18 @@ viewer figures the second half, after the adaptive controller settled.
 lost, or after a hole in their GOP. Tables are generated from the runs by
 `tools/uplinklab/tables.py`; nothing below is transcribed by hand.
 
-**Reproducing** (8 vCPU; about 2.5 h for every set at three runs at a time):
+**Reproducing** (8 vCPU; about 4 h — 1080p cells three at a time, 1440p
+cells alone, see §4):
 
 ```sh
-tools/uplinklab/build.sh                      # the Go lab, relay and loadgen; the Rust sender
+tools/uplinklab/build.sh                      # the Go lab, relay and loadgen, their D7 variants; the Rust sender
 tools/uplinklab/traces.sh                     # ffmpeg + libx264, ~15 min
-python3 tools/uplinklab/matrix.py all --jobs 3
+for set in core cc jit win seeds; do python3 tools/uplinklab/matrix.py $set --jobs 3; done
+python3 tools/uplinklab/matrix.py bigq --jobs 3 --only rtt
+python3 tools/uplinklab/matrix.py hi --jobs 1
+python3 tools/uplinklab/matrix.py bigq --jobs 1 --only hi-
 python3 tools/uplinklab/tables.py             # the tables below
-# F7, against the real relay (§11 table G):
+# F7, against the real relay (§11 table G); RELAY_BIN=tools/uplinklab/out/bin/gawk-server-bigq for D7:
 RELAY_CPUS=0-2 VIEWER_CPUS=3-4 SENDER_CPUS=5-6 PROXY_ARGS="-rtt 10ms -rate 300e6 -queue 50ms" \
   tools/uplinklab/relay.sh out/relay-1440 tools/uplinklab/out/traces/r1440p60.csv 15 60
 ```
@@ -880,34 +928,34 @@ RELAY_CPUS=0-2 VIEWER_CPUS=3-4 SENDER_CPUS=5-6 PROXY_ARGS="-rtt 10ms -rate 300e6
 
 | Path | Controller | Delivery | Mbps | Undecodable | Decode-ready p50 / p95 / p99 ms | Shed / expired | Balanced: offset · shown · stalled |
 |---|---|---|---|---|---|---|---|
-| clean | Cubic | datagram | 41.4 | 27.5 % | 7 / 11 / 27 | – | 50 ms · 71.3 % · 32.5 % |
-| clean | Cubic | carrier | 41.4 | 0.0 % | 7 / 12 / 24 | 0 / 0 | 50 ms · 99.9 % · 0.0 % |
-| clean | BBR | datagram | 41.4 | 40.2 % | 7 / 13 / 31 | – | 52 ms · 91.4 % · 9.7 % |
-| clean | BBR | carrier | 41.4 | 0.0 % | 7 / 16 / 33 | 0 / 0 | 50 ms · 100.0 % · 0.0 % |
-| 0.1 % loss | Cubic | datagram | 38.0 | 27.8 % | 169 / 952 / 1290 | – | 350 ms · 46.6 % · 55.8 % |
-| 0.1 % loss | Cubic | carrier | 37.3 | 10.9 % | 73 / 267 / 413 | 399 / 93 | 286 ms · 83.8 % · 17.1 % |
-| 0.1 % loss | BBR | datagram | 41.4 | 8.4 % | 7 / 11 / 22 | – | 50 ms · 98.5 % · 1.9 % |
+| clean | Cubic | datagram | 41.4 | 12.6 % | 7 / 11 / 22 | – | 50 ms · 89.5 % · 11.8 % |
+| clean | Cubic | carrier | 41.4 | 0.0 % | 7 / 12 / 24 | 0 / 0 | 50 ms · 100.0 % · 0.0 % |
+| clean | BBR | datagram | 41.4 | 23.2 % | 7 / 11 / 23 | – | 50 ms · 81.8 % · 20.1 % |
+| clean | BBR | carrier | 41.4 | 0.0 % | 7 / 12 / 22 | 0 / 0 | 50 ms · 99.8 % · 0.2 % |
+| 0.1 % loss | Cubic | datagram | 38.0 | 29.2 % | 119 / 917 / 1381 | – | 350 ms · 49.6 % · 52.1 % |
+| 0.1 % loss | Cubic | carrier | 37.3 | 11.0 % | 40 / 188 / 240 | 229 / 42 | 218 ms · 86.8 % · 13.8 % |
+| 0.1 % loss | BBR | datagram | 41.4 | 6.2 % | 7 / 17 / 22 | – | 50 ms · 97.7 % · 2.7 % |
 | 0.1 % loss | BBR | carrier | 41.4 | 0.0 % | 7 / 17 / 22 | 0 / 0 | 50 ms · 100.0 % · 0.0 % |
-| bursts (GE) | Cubic | datagram | 26.9 | 91.0 % | 909 / 1685 / 2018 | – | 350 ms · 2.1 % · 99.8 % |
-| bursts (GE) | Cubic | carrier | 26.6 | 42.6 % | 153 / 310 / 373 | 1301 / 28 | 346 ms · 54.6 % · 47.9 % |
-| bursts (GE) | BBR | datagram | 41.5 | 65.9 % | 7 / 24 / 39 | – | 50 ms · 55.7 % · 48.9 % |
-| bursts (GE) | BBR | carrier | 41.7 | 0.0 % | 7 / 19 / 31 | 0 / 0 | 50 ms · 99.9 % · 0.1 % |
+| bursts (GE) | Cubic | datagram | 26.9 | 90.5 % | 932 / 1668 / 2383 | – | 350 ms · 2.1 % · 99.8 % |
+| bursts (GE) | Cubic | carrier | 23.4 | 53.7 % | 187 / 362 / 409 | 1763 / 15 | 350 ms · 41.5 % · 61.2 % |
+| bursts (GE) | BBR | datagram | 41.5 | 58.4 % | 7 / 21 / 35 | – | 50 ms · 57.7 % · 46.6 % |
+| bursts (GE) | BBR | carrier | 41.7 | 0.0 % | 7 / 18 / 32 | 0 / 0 | 50 ms · 100.0 % · 0.0 % |
 | 300 Mbps bottleneck | Cubic | datagram | 41.4 | 8.6 % | 8 / 11 / 26 | – | 50 ms · 96.8 % · 3.6 % |
 | 300 Mbps bottleneck | Cubic | carrier | 41.4 | 0.0 % | 8 / 10 / 24 | 0 / 0 | 50 ms · 100.0 % · 0.0 % |
 | 300 Mbps bottleneck | BBR | datagram | 41.4 | 6.7 % | 8 / 11 / 26 | – | 50 ms · 98.1 % · 2.5 % |
 | 300 Mbps bottleneck | BBR | carrier | 41.4 | 0.0 % | 8 / 10 / 24 | 0 / 0 | 50 ms · 100.0 % · 0.0 % |
-| 300 Mbps + outages | Cubic | datagram | 41.5 | 25.3 % | 10 / 99 / 234 | – | 134 ms · 72.4 % · 29.3 % |
-| 300 Mbps + outages | Cubic | carrier | 42.2 | 0.8 % | 10 / 123 / 183 | 25 / 25 | 152 ms · 72.6 % · 4.7 % |
-| 300 Mbps + outages | BBR | datagram | 41.8 | 31.4 % | 8 / 12 / 28 | – | 50 ms · 71.4 % · 30.5 % |
-| 300 Mbps + outages | BBR | carrier | 44.1 | 0.0 % | 8 / 59 / 101 | 0 / 0 | 86 ms · 97.0 % · 3.5 % |
+| 300 Mbps + outages | Cubic | datagram | 41.5 | 22.2 % | 10 / 78 / 199 | – | 120 ms · 75.5 % · 26.1 % |
+| 300 Mbps + outages | Cubic | carrier | 41.9 | 2.0 % | 10 / 110 / 167 | 29 / 20 | 138 ms · 95.8 % · 4.9 % |
+| 300 Mbps + outages | BBR | datagram | 41.8 | 28.5 % | 8 / 12 / 26 | – | 50 ms · 72.7 % · 28.7 % |
+| 300 Mbps + outages | BBR | carrier | 44.0 | 0.2 % | 8 / 59 / 101 | 0 / 0 | 85 ms · 95.1 % · 3.5 % |
 | 80 Mbps bottleneck | Cubic | datagram | 41.4 | 3.0 % | 13 / 46 / 82 | – | 74 ms · 96.5 % · 3.3 % |
 | 80 Mbps bottleneck | Cubic | carrier | 41.4 | 0.0 % | 13 / 45 / 84 | 0 / 0 | 73 ms · 97.5 % · 2.1 % |
 | 80 Mbps bottleneck | BBR | datagram | 41.4 | 2.6 % | 13 / 46 / 86 | – | 73 ms · 97.0 % · 2.7 % |
 | 80 Mbps bottleneck | BBR | carrier | 41.4 | 0.0 % | 13 / 45 / 85 | 0 / 0 | 75 ms · 97.3 % · 2.2 % |
-| 80 Mbps + outages | Cubic | datagram | 41.4 | 24.0 % | 14 / 191 / 327 | – | 204 ms · 74.8 % · 26.8 % |
-| 80 Mbps + outages | Cubic | carrier | 41.7 | 1.6 % | 15 / 160 / 212 | 52 / 31 | 201 ms · 86.2 % · 4.9 % |
-| 80 Mbps + outages | BBR | datagram | 41.8 | 30.0 % | 13 / 57 / 99 | – | 95 ms · 71.4 % · 30.3 % |
-| 80 Mbps + outages | BBR | carrier | 44.8 | 0.1 % | 14 / 98 / 145 | 0 / 9 | 124 ms · 98.3 % · 1.7 % |
+| 80 Mbps + outages | Cubic | datagram | 41.4 | 21.7 % | 13 / 163 / 301 | – | 246 ms · 75.7 % · 25.4 % |
+| 80 Mbps + outages | Cubic | carrier | 41.4 | 2.4 % | 14 / 136 / 183 | 28 / 25 | 173 ms · 95.9 % · 4.7 % |
+| 80 Mbps + outages | BBR | datagram | 41.9 | 28.2 % | 13 / 56 / 99 | – | 71 ms · 70.5 % · 30.9 % |
+| 80 Mbps + outages | BBR | carrier | 44.7 | 0.1 % | 14 / 95 / 143 | 0 / 11 | 121 ms · 98.4 % · 1.6 % |
 
 #### Table F — with 3 ms of path jitter (robustness)
 
@@ -988,9 +1036,9 @@ this doc.
 
 | Path | Windows (stream / connection) | Writes blocked > 1 ms | Decode-ready p50 / p95 / p99 ms | Balanced: offset · shown · stalled |
 |---|---|---|---|---|
-| clean | 512 KiB / 768 KiB (quic-go default) | 11 | 7 / 16 / 33 | 50 ms · 100.0 % · 0.0 % |
+| clean | 512 KiB / 768 KiB (quic-go default) | 11 | 7 / 12 / 22 | 50 ms · 99.8 % · 0.2 % |
 | clean | 2 MB / 3 MB | 1 | 7 / 9 / 15 | 50 ms · 100.0 % · 0.0 % |
-| 80 Mbps + outages | 512 KiB / 768 KiB (quic-go default) | 119 | 14 / 98 / 145 | 124 ms · 98.3 % · 1.7 % |
+| 80 Mbps + outages | 512 KiB / 768 KiB (quic-go default) | 106 | 14 / 95 / 143 | 121 ms · 98.4 % · 1.6 % |
 | 80 Mbps + outages | 2 MB / 3 MB | 5 | 14 / 97 / 149 | 120 ms · 98.2 % · 1.9 % |
 
 #### Table I — what a live-edge viewer's hitches look like, BBR (F2, §6)
@@ -1081,6 +1129,164 @@ two frames land in one vsync (the newer wins); its stalled time is the loss meas
 | 100 ms | bursts (GE) | 69.9 % · 32.6 % → 80.9 % · 20.8 % | 69.8 % · 30.4 % → 81.4 % · 18.4 % | 98.3 % · 2.3 % |
 | 100 ms | radio away 20 ms | 76.4 % · 24.9 % → 76.4 % · 24.9 % | 76.8 % · 23.3 % → 76.8 % · 23.3 % | 98.5 % · 1.6 % |
 | 100 ms | radio away 80 ms | 69.9 % · 31.4 % → 69.9 % · 31.4 % | 71.4 % · 29.4 % → 71.4 % · 29.4 % | 96.4 % · 3.4 % |
+
+#### Table L — what the cheap changes buy without the carrier (shown · stalled)
+
+"today": datagrams, Cubic, quic-go's 32-deep queue. "queue": the receiver built with D7's 4096-deep
+queue. "carrier + BBR" is OD1 + OD2 for comparison; its deltas never meet the queue.
+
+#### Table L1 — Balanced (the default viewer)
+
+| RTT | Path | today | BBR only | queue only | BBR + queue | carrier + BBR |
+|---|---|---|---|---|---|---|
+| 10 ms | clean | 99.9 % · 0.1 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 10 ms | 0.1 % loss | 99.6 % · 0.1 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 10 ms | 0.5 % loss | 94.1 % · 5.6 % | 100.0 % · 0.0 % | 94.7 % · 5.2 % | 100.0 % · 0.1 % | 100.0 % · 0.0 % |
+| 10 ms | 1 % loss | 70.4 % · 29.3 % | 100.0 % · 0.0 % | 76.3 % · 22.8 % | 99.8 % · 0.2 % | 100.0 % · 0.0 % |
+| 10 ms | 2 % loss | 28.9 % · 73.1 % | 99.1 % · 1.3 % | 31.6 % · 69.6 % | 99.1 % · 1.1 % | 99.9 % · 0.0 % |
+| 10 ms | bursts (GE) | 87.8 % · 12.3 % | 92.4 % · 9.1 % | 86.4 % · 14.2 % | 93.0 % · 8.1 % | 100.0 % · 0.0 % |
+| 10 ms | radio away 20 ms | 92.2 % · 9.1 % | 91.6 % · 9.8 % | 92.1 % · 9.1 % | 91.2 % · 10.1 % | 99.8 % · 0.0 % |
+| 10 ms | radio away 80 ms | 77.2 % · 24.1 % | 73.5 % · 27.9 % | 77.3 % · 24.1 % | 73.1 % · 28.2 % | 97.2 % · 3.2 % |
+| 40 ms | clean | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 40 ms | 0.1 % loss | 63.3 % · 37.8 % | 99.9 % · 0.0 % | 62.3 % · 38.4 % | 99.9 % · 0.0 % | 99.5 % · 0.4 % |
+| 40 ms | 0.5 % loss | 0.6 % · 99.9 % | 99.5 % · 0.2 % | 0.6 % · 100.0 % | 94.2 % · 5.6 % | 99.5 % · 0.4 % |
+| 40 ms | 1 % loss | 0.3 % · 100.0 % | 95.8 % · 3.5 % | 0.4 % · 100.0 % | 89.1 % · 10.7 % | 99.2 % · 0.4 % |
+| 40 ms | 2 % loss | 0.1 % · 100.0 % | 85.7 % · 15.0 % | 0.2 % · 100.0 % | 80.9 % · 20.3 % | 97.0 % · 2.6 % |
+| 40 ms | bursts (GE) | 1.1 % · 99.5 % | 93.4 % · 7.8 % | 2.4 % · 98.5 % | 92.9 % · 8.5 % | 98.5 % · 1.4 % |
+| 40 ms | radio away 20 ms | 20.0 % · 82.5 % | 92.4 % · 8.9 % | 24.6 % · 77.5 % | 91.7 % · 9.6 % | 98.0 % · 1.1 % |
+| 40 ms | radio away 80 ms | 18.6 % · 82.3 % | 73.4 % · 28.1 % | 19.0 % · 82.9 % | 73.4 % · 28.0 % | 97.6 % · 1.9 % |
+| 100 ms | clean | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 100 ms | 0.1 % loss | 2.7 % · 97.9 % | 90.7 % · 9.9 % | 2.7 % · 98.0 % | 93.0 % · 2.3 % | 97.0 % · 2.5 % |
+| 100 ms | 0.5 % loss | 0.1 % · 100.0 % | 93.8 % · 4.9 % | 0.1 % · 100.0 % | 97.1 % · 2.7 % | 95.8 % · 5.0 % |
+| 100 ms | 1 % loss | 0.0 % · 100.0 % | 94.4 % · 5.9 % | 0.1 % · 100.0 % | 96.8 % · 2.9 % | 95.8 % · 4.0 % |
+| 100 ms | 2 % loss | 0.0 % · 100.0 % | 95.4 % · 4.0 % | 0.0 % · 100.0 % | 94.7 % · 4.8 % | 97.0 % · 3.5 % |
+| 100 ms | bursts (GE) | 0.4 % · 100.0 % | 79.9 % · 18.8 % | 0.3 % · 100.0 % | 82.2 % · 19.8 % | 98.2 % · 2.3 % |
+| 100 ms | radio away 20 ms | 0.1 % · 100.0 % | 85.9 % · 15.4 % | 0.2 % · 100.0 % | 90.0 % · 11.2 % | 98.3 % · 1.6 % |
+| 100 ms | radio away 80 ms | 0.0 % · 100.0 % | 70.7 % · 31.0 % | 0.0 % · 100.0 % | 70.7 % · 30.9 % | 93.5 % · 4.9 % |
+| 10 ms | 1440p clean | 89.5 % · 11.8 % | 81.8 % · 20.1 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 99.8 % · 0.2 % |
+| 10 ms | 1440p 0.1 % loss | 49.6 % · 52.1 % | 97.7 % · 2.7 % | 42.1 % · 59.5 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 10 ms | 1440p bursts | 2.1 % · 99.8 % | 57.7 % · 46.6 % | 3.9 % · 98.1 % | 57.0 % · 47.4 % | 100.0 % · 0.0 % |
+| 10 ms | 1440p 300 Mbps + outages | 75.5 % · 26.1 % | 72.7 % · 28.7 % | 75.6 % · 26.0 % | 73.0 % · 28.4 % | 95.1 % · 3.5 % |
+| 10 ms | 1440p 80 Mbps + outages | 75.7 % · 25.4 % | 70.5 % · 30.9 % | 75.9 % · 25.0 % | 71.0 % · 30.3 % | 98.4 % · 1.6 % |
+
+#### Table L2 — Lowest latency (stalled is the loss measure)
+
+| RTT | Path | today | BBR only | queue only | BBR + queue | carrier + BBR |
+|---|---|---|---|---|---|---|
+| 10 ms | clean | 98.4 % · 0.3 % | 99.7 % · 0.0 % | 99.7 % · 0.0 % | 100.0 % · 0.0 % | 99.9 % · 0.0 % |
+| 10 ms | 0.1 % loss | 94.9 % · 3.8 % | 98.9 % · 0.0 % | 96.2 % · 2.6 % | 99.6 % · 0.0 % | 98.8 % · 0.0 % |
+| 10 ms | 0.5 % loss | 68.7 % · 32.1 % | 98.2 % · 0.1 % | 68.2 % · 32.9 % | 98.2 % · 0.2 % | 94.0 % · 0.2 % |
+| 10 ms | 1 % loss | 43.0 % · 56.9 % | 92.8 % · 0.4 % | 43.9 % · 55.8 % | 93.7 % · 0.9 % | 89.7 % · 0.6 % |
+| 10 ms | 2 % loss | 15.7 % · 85.3 % | 95.4 % · 2.9 % | 16.5 % · 84.4 % | 95.5 % · 2.4 % | 84.0 % · 1.5 % |
+| 10 ms | bursts (GE) | 77.7 % · 24.7 % | 89.7 % · 10.7 % | 76.0 % · 26.5 % | 89.8 % · 10.0 % | 95.9 % · 1.2 % |
+| 10 ms | radio away 20 ms | 86.1 % · 14.3 % | 89.3 % · 12.1 % | 86.2 % · 13.3 % | 89.1 % · 12.3 % | 96.7 % · 4.1 % |
+| 10 ms | radio away 80 ms | 73.2 % · 27.2 % | 72.8 % · 28.4 % | 72.9 % · 27.4 % | 72.9 % · 28.4 % | 91.3 % · 10.2 % |
+| 40 ms | clean | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 99.6 % · 0.0 % | 100.0 % · 0.0 % | 99.8 % · 0.0 % |
+| 40 ms | 0.1 % loss | 38.1 % · 64.2 % | 99.3 % · 0.6 % | 38.4 % · 63.2 % | 99.1 % · 1.0 % | 96.7 % · 4.5 % |
+| 40 ms | 0.5 % loss | 0.6 % · 99.9 % | 96.3 % · 5.5 % | 0.5 % · 100.0 % | 90.0 % · 10.8 % | 84.9 % · 20.8 % |
+| 40 ms | 1 % loss | 0.3 % · 100.0 % | 90.7 % · 12.0 % | 0.4 % · 100.0 % | 81.0 % · 20.0 % | 77.8 % · 29.7 % |
+| 40 ms | 2 % loss | 0.1 % · 100.0 % | 76.0 % · 25.7 % | 0.2 % · 100.0 % | 72.2 % · 29.4 % | 58.6 % · 51.1 % |
+| 40 ms | bursts (GE) | 1.1 % · 99.5 % | 88.9 % · 12.9 % | 2.4 % · 98.5 % | 89.4 % · 12.9 % | 89.4 % · 13.1 % |
+| 40 ms | radio away 20 ms | 8.5 % · 93.8 % | 90.1 % · 11.3 % | 10.2 % · 91.6 % | 89.5 % · 11.9 % | 95.0 % · 6.5 % |
+| 40 ms | radio away 80 ms | 8.8 % · 93.1 % | 72.8 % · 28.6 % | 10.4 % · 91.0 % | 73.1 % · 28.4 % | 89.3 % · 12.3 % |
+| 100 ms | clean | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 100 ms | 0.1 % loss | 2.3 % · 98.3 % | 89.9 % · 10.6 % | 1.7 % · 98.9 % | 96.5 % · 3.8 % | 91.3 % · 10.0 % |
+| 100 ms | 0.5 % loss | 0.1 % · 100.0 % | 83.0 % · 18.4 % | 0.1 % · 100.0 % | 83.4 % · 18.3 % | 64.7 % · 40.1 % |
+| 100 ms | 1 % loss | 0.0 % · 100.0 % | 73.3 % · 28.6 % | 0.1 % · 100.0 % | 73.4 % · 28.9 % | 49.1 % · 58.7 % |
+| 100 ms | 2 % loss | 0.0 % · 100.0 % | 59.3 % · 44.3 % | 0.0 % · 100.0 % | 64.3 % · 38.5 % | 32.7 % · 76.1 % |
+| 100 ms | bursts (GE) | 0.3 % · 100.0 % | 77.8 % · 25.3 % | 0.3 % · 100.0 % | 76.0 % · 25.5 % | 77.6 % · 25.7 % |
+| 100 ms | radio away 20 ms | 0.1 % · 100.0 % | 82.3 % · 19.0 % | 0.2 % · 100.0 % | 76.3 % · 15.8 % | 88.6 % · 13.0 % |
+| 100 ms | radio away 80 ms | 0.0 % · 100.0 % | 69.8 % · 31.8 % | 0.0 % · 100.0 % | 68.9 % · 31.9 % | 82.4 % · 19.0 % |
+| 10 ms | 1440p clean | 86.0 % · 13.6 % | 77.3 % · 23.0 % | 98.1 % · 0.1 % | 98.3 % · 0.1 % | 96.9 % · 1.3 % |
+| 10 ms | 1440p 0.1 % loss | 29.3 % · 70.6 % | 89.8 % · 4.3 % | 24.3 % · 75.6 % | 96.7 % · 1.0 % | 93.1 % · 0.6 % |
+| 10 ms | 1440p bursts | 2.0 % · 99.9 % | 48.7 % · 52.9 % | 2.4 % · 99.5 % | 48.5 % · 53.5 % | 87.4 % · 2.5 % |
+| 10 ms | 1440p 300 Mbps + outages | 65.4 % · 36.4 % | 70.2 % · 30.4 % | 66.4 % · 35.5 % | 69.9 % · 30.7 % | 88.5 % · 11.5 % |
+| 10 ms | 1440p 80 Mbps + outages | 56.7 % · 44.4 % | 59.9 % · 39.9 % | 57.3 % · 43.2 % | 60.6 % · 39.6 % | 78.8 % · 22.8 % |
+
+#### Table L3 — Smoother (no parity today; the last column adds OD6's parity)
+
+| RTT | Path | today | BBR only | queue only | BBR + queue | carrier + BBR | BBR + queue + OD6 parity |
+|---|---|---|---|---|---|---|---|
+| 10 ms | clean | 99.2 % · 0.7 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 10 ms | 0.1 % loss | 86.7 % · 13.9 % | 88.1 % · 12.7 % | 86.4 % · 14.2 % | 87.5 % · 13.4 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 10 ms | 0.5 % loss | 48.2 % · 53.8 % | 57.9 % · 44.2 % | 50.5 % · 52.1 % | 52.3 % · 49.9 % | 99.9 % · 0.0 % | 99.9 % · 0.4 % |
+| 10 ms | 1 % loss | 28.9 % · 73.7 % | 38.4 % · 64.4 % | 28.7 % · 73.4 % | 39.4 % · 63.4 % | 99.9 % · 0.0 % | 99.8 % · 0.2 % |
+| 10 ms | 2 % loss | 16.8 % · 85.5 % | 21.9 % · 81.1 % | 16.1 % · 86.7 % | 18.8 % · 84.6 % | 99.9 % · 0.0 % | 95.9 % · 4.1 % |
+| 10 ms | bursts (GE) | 69.3 % · 31.9 % | 72.1 % · 29.8 % | 68.8 % · 32.5 % | 70.3 % · 31.4 % | 99.9 % · 0.0 % | 81.9 % · 18.7 % |
+| 10 ms | radio away 20 ms | 77.2 % · 23.8 % | 76.9 % · 24.1 % | 78.6 % · 22.3 % | 76.6 % · 24.4 % | 99.9 % · 0.0 % | 76.6 % · 24.4 % |
+| 10 ms | radio away 80 ms | 76.7 % · 24.5 % | 72.7 % · 28.4 % | 76.8 % · 24.4 % | 72.1 % · 28.9 % | 99.9 % · 0.0 % | 72.1 % · 28.9 % |
+| 40 ms | clean | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 40 ms | 0.1 % loss | 70.8 % · 30.9 % | 88.6 % · 12.2 % | 69.4 % · 31.0 % | 86.1 % · 15.1 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 40 ms | 0.5 % loss | 0.7 % · 99.9 % | 53.2 % · 49.4 % | 0.8 % · 99.7 % | 51.9 % · 50.9 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 40 ms | 1 % loss | 0.4 % · 100.0 % | 33.6 % · 68.9 % | 0.4 % · 100.0 % | 41.1 % · 61.3 % | 99.9 % · 0.0 % | 99.2 % · 0.7 % |
+| 40 ms | 2 % loss | 0.1 % · 100.0 % | 22.6 % · 80.6 % | 0.2 % · 100.0 % | 22.0 % · 81.5 % | 99.7 % · 0.2 % | 94.6 % · 5.3 % |
+| 40 ms | bursts (GE) | 1.3 % · 99.3 % | 70.5 % · 31.6 % | 5.3 % · 95.9 % | 73.5 % · 28.6 % | 99.9 % · 0.0 % | 83.5 % · 18.0 % |
+| 40 ms | radio away 20 ms | 44.3 % · 56.6 % | 76.4 % · 24.7 % | 46.2 % · 55.0 % | 76.1 % · 25.0 % | 99.9 % · 0.0 % | 76.1 % · 25.0 % |
+| 40 ms | radio away 80 ms | 36.1 % · 64.7 % | 71.6 % · 29.5 % | 34.5 % · 66.3 % | 71.7 % · 29.5 % | 98.6 % · 1.5 % | 71.7 % · 29.5 % |
+| 100 ms | clean | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 100 ms | 0.1 % loss | 5.8 % · 94.3 % | 88.4 % · 12.4 % | 5.6 % · 94.4 % | 89.4 % · 11.3 % | 98.9 % · 1.2 % | 99.8 % · 0.1 % |
+| 100 ms | 0.5 % loss | 0.1 % · 100.0 % | 55.2 % · 47.1 % | 0.1 % · 100.0 % | 53.0 % · 49.0 % | 97.6 % · 2.7 % | 98.9 % · 1.0 % |
+| 100 ms | 1 % loss | 0.0 % · 100.0 % | 33.7 % · 68.5 % | 0.1 % · 100.0 % | 34.4 % · 68.3 % | 94.1 % · 6.7 % | 95.0 % · 5.7 % |
+| 100 ms | 2 % loss | 0.0 % · 100.0 % | 16.5 % · 87.0 % | 0.0 % · 100.0 % | 17.0 % · 86.6 % | 96.3 % · 4.1 % | 86.7 % · 14.2 % |
+| 100 ms | bursts (GE) | 0.3 % · 100.0 % | 69.9 % · 32.6 % | 0.3 % · 100.0 % | 69.7 % · 32.6 % | 98.3 % · 2.3 % | 80.2 % · 21.3 % |
+| 100 ms | radio away 20 ms | 0.1 % · 100.0 % | 76.4 % · 24.9 % | 0.2 % · 100.0 % | 76.8 % · 24.6 % | 98.5 % · 1.6 % | 76.8 % · 24.6 % |
+| 100 ms | radio away 80 ms | 0.0 % · 100.0 % | 69.9 % · 31.4 % | 0.0 % · 100.0 % | 70.3 % · 31.3 % | 96.4 % · 3.4 % | 70.3 % · 31.3 % |
+| 10 ms | 1440p clean | 81.3 % · 19.7 % | 69.4 % · 31.4 % | 99.9 % · 0.0 % | 99.6 % · 0.0 % | 99.9 % · 0.0 % | 99.6 % · 0.0 % |
+| 10 ms | 1440p 0.1 % loss | 30.9 % · 72.0 % | 50.7 % · 51.5 % | 25.0 % · 78.4 % | 49.8 % · 52.5 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 10 ms | 1440p bursts | 3.1 % · 98.8 % | 27.2 % · 76.0 % | 6.0 % · 96.1 % | 25.6 % · 78.0 % | 99.9 % · 0.0 % | 38.4 % · 64.2 % |
+| 10 ms | 1440p 300 Mbps + outages | 73.7 % · 27.7 % | 71.1 % · 30.0 % | 75.4 % · 26.0 % | 72.0 % · 29.0 % | 99.4 % · 0.5 % | 72.0 % · 29.0 % |
+| 10 ms | 1440p 80 Mbps + outages | 73.3 % · 27.9 % | 70.5 % · 30.7 % | 73.9 % · 27.3 % | 71.9 % · 29.2 % | 98.8 % · 1.2 % | 71.9 % · 29.2 % |
+
+#### Table L4 — Most stable (no parity today; the last column adds OD6's parity)
+
+| RTT | Path | today | BBR only | queue only | BBR + queue | carrier + BBR | BBR + queue + OD6 parity |
+|---|---|---|---|---|---|---|---|
+| 10 ms | clean | 99.3 % · 0.7 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 10 ms | 0.1 % loss | 86.7 % · 14.2 % | 87.5 % · 12.4 % | 85.7 % · 15.2 % | 87.1 % · 12.9 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 10 ms | 0.5 % loss | 50.7 % · 53.0 % | 56.7 % · 44.7 % | 54.7 % · 48.1 % | 52.3 % · 50.7 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 10 ms | 1 % loss | 39.8 % · 63.7 % | 38.6 % · 63.6 % | 36.3 % · 66.4 % | 39.8 % · 62.9 % | 100.0 % · 0.0 % | 99.9 % · 0.2 % |
+| 10 ms | 2 % loss | 17.5 % · 83.2 % | 20.7 % · 81.0 % | 16.8 % · 83.9 % | 18.2 % · 84.5 % | 100.0 % · 0.0 % | 95.7 % · 4.1 % |
+| 10 ms | bursts (GE) | 69.2 % · 31.0 % | 72.4 % · 29.4 % | 68.6 % · 31.5 % | 68.6 % · 32.4 % | 100.0 % · 0.0 % | 80.9 % · 18.7 % |
+| 10 ms | radio away 20 ms | 77.5 % · 24.5 % | 77.2 % · 24.7 % | 79.0 % · 22.0 % | 76.9 % · 25.0 % | 100.0 % · 0.0 % | 76.9 % · 25.0 % |
+| 10 ms | radio away 80 ms | 77.3 % · 24.6 % | 72.7 % · 30.0 % | 77.4 % · 24.5 % | 72.1 % · 30.6 % | 100.0 % · 0.0 % | 72.1 % · 30.6 % |
+| 40 ms | clean | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 40 ms | 0.1 % loss | 75.8 % · 23.1 % | 89.0 % · 11.0 % | 73.6 % · 25.2 % | 86.5 % · 13.8 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 40 ms | 0.5 % loss | 0.7 % · 99.4 % | 53.3 % · 48.7 % | 0.8 % · 99.7 % | 51.9 % · 50.8 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 40 ms | 1 % loss | 0.4 % · 100.0 % | 32.4 % · 68.2 % | 0.4 % · 100.0 % | 39.6 % · 62.7 % | 100.0 % · 0.0 % | 99.3 % · 0.7 % |
+| 40 ms | 2 % loss | 0.1 % · 100.0 % | 21.6 % · 80.6 % | 0.2 % · 100.0 % | 22.7 % · 80.6 % | 100.0 % · 0.0 % | 94.9 % · 5.0 % |
+| 40 ms | bursts (GE) | 1.3 % · 99.3 % | 71.2 % · 32.2 % | 7.0 % · 94.3 % | 74.2 % · 28.7 % | 100.0 % · 0.0 % | 83.7 % · 17.1 % |
+| 40 ms | radio away 20 ms | 52.5 % · 47.1 % | 77.1 % · 24.2 % | 53.8 % · 46.2 % | 76.8 % · 24.5 % | 100.0 % · 0.0 % | 76.8 % · 24.5 % |
+| 40 ms | radio away 80 ms | 45.3 % · 54.8 % | 71.9 % · 30.1 % | 43.7 % · 56.3 % | 72.0 % · 30.1 % | 100.0 % · 0.0 % | 72.0 % · 30.1 % |
+| 100 ms | clean | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 100 ms | 0.1 % loss | 6.8 % · 94.3 % | 88.7 % · 12.0 % | 5.2 % · 94.9 % | 89.3 % · 10.4 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 100 ms | 0.5 % loss | 0.1 % · 100.0 % | 58.3 % · 43.9 % | 0.1 % · 100.0 % | 54.6 % · 47.9 % | 99.9 % · 0.2 % | 100.0 % · 0.0 % |
+| 100 ms | 1 % loss | 0.0 % · 100.0 % | 35.8 % · 66.9 % | 0.1 % · 100.0 % | 38.1 % · 64.2 % | 98.9 % · 1.3 % | 100.0 % · 0.0 % |
+| 100 ms | 2 % loss | 0.0 % · 100.0 % | 22.5 % · 80.9 % | 0.0 % · 100.0 % | 21.2 % · 80.9 % | 98.4 % · 2.2 % | 93.9 % · 5.9 % |
+| 100 ms | bursts (GE) | 0.3 % · 100.0 % | 69.8 % · 30.4 % | 0.3 % · 100.0 % | 70.0 % · 31.4 % | 99.9 % · 0.2 % | 80.1 % · 19.9 % |
+| 100 ms | radio away 20 ms | 0.1 % · 100.0 % | 76.8 % · 23.3 % | 0.2 % · 100.0 % | 77.4 % · 22.9 % | 100.0 % · 0.0 % | 77.4 % · 22.9 % |
+| 100 ms | radio away 80 ms | 0.0 % · 100.0 % | 71.4 % · 29.4 % | 0.0 % · 100.0 % | 71.4 % · 29.5 % | 99.5 % · 0.6 % | 71.4 % · 29.5 % |
+| 10 ms | 1440p clean | 81.2 % · 20.1 % | 69.1 % · 32.7 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 10 ms | 1440p 0.1 % loss | 40.1 % · 63.2 % | 49.3 % · 51.1 % | 32.2 % · 71.6 % | 48.2 % · 53.1 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 10 ms | 1440p bursts | 4.2 % · 97.7 % | 26.7 % · 77.4 % | 7.2 % · 95.0 % | 25.7 % · 77.2 % | 100.0 % · 0.0 % | 37.1 % · 65.1 % |
+| 10 ms | 1440p 300 Mbps + outages | 75.5 % · 25.7 % | 71.0 % · 31.6 % | 77.1 % · 23.8 % | 72.0 % · 30.7 % | 99.7 % · 0.4 % | 72.0 % · 30.7 % |
+| 10 ms | 1440p 80 Mbps + outages | 77.0 % · 24.6 % | 70.5 % · 32.2 % | 77.9 % · 23.1 % | 72.0 % · 30.7 % | 99.9 % · 0.0 % | 72.0 % · 30.7 % |
+
+#### Table M — run-to-run spread: three loss-process seeds per cell (shown, % of frames)
+
+| Path | Delivery | Balanced: seeds 7 · 8 · 9 | Smoother: seeds 7 · 8 · 9 | Lowest latency stalled: seeds 7 · 8 · 9 |
+|---|---|---|---|---|
+| 40 ms, 0.5 % loss | BBR only | 99.5 · 96.8 · 99.3 | 53.2 · 49.8 · 51.9 | 5.5 · 8.5 · 6.2 |
+| 40 ms, 0.5 % loss | BBR + queue | 94.2 · 96.8 · 95.4 | 51.9 · 50.5 · 50.3 | 10.8 · 8.3 · 9.8 |
+| 40 ms, 0.5 % loss | carrier + BBR | 99.5 · 99.6 · 99.2 | 99.9 · 99.9 · 99.9 | 20.8 · 21.4 · 19.5 |
+| 40 ms, 1 % loss | BBR only | 95.8 · 92.3 · 96.8 | 33.6 · 36.0 · 34.4 | 12.0 · 16.9 · 10.6 |
+| 40 ms, 1 % loss | BBR + queue | 89.1 · 90.8 · 92.8 | 41.1 · 37.2 · 36.9 | 20.0 · 17.3 · 15.1 |
+| 40 ms, 1 % loss | carrier + BBR | 99.2 · 99.8 · 99.3 | 99.9 · 99.9 · 99.9 | 29.7 · 31.7 · 31.0 |
+| 10 ms, bursts (GE) | BBR only | 92.4 · 92.0 · 89.7 | 72.1 · 63.5 · 66.4 | 10.7 · 12.0 · 13.8 |
+| 10 ms, bursts (GE) | BBR + queue | 93.0 · 91.4 · 90.4 | 70.3 · 62.9 · 64.1 | 10.0 · 12.5 · 13.5 |
+| 10 ms, bursts (GE) | carrier + BBR | 100.0 · 100.0 · 100.0 | 99.9 · 99.9 · 99.9 | 1.2 · 2.0 · 1.5 |
+| 10 ms, radio away 80 ms | BBR only | 73.5 · 72.7 · 72.8 | 72.7 · 71.7 · 71.8 | 28.4 · 28.8 · 28.8 |
+| 10 ms, radio away 80 ms | BBR + queue | 73.1 · 73.2 · 73.3 | 72.1 · 72.2 · 72.3 | 28.4 · 28.5 · 28.8 |
+| 10 ms, radio away 80 ms | carrier + BBR | 97.2 · 97.2 · 97.1 | 99.9 · 99.9 · 99.8 | 10.2 · 10.3 · 10.2 |
 
 ## 12. References
 
