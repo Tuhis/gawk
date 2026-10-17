@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# One lab run: receiver, proxy and sender on loopback.
+#   run.sh <out-dir> <sender args...> -- <proxy args...>
+# RECV_ARGS adds receiver flags (e.g. -stream-window).
+set -u
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+OUT=${UPLINK_OUT:-$ROOT/tools/uplinklab/out}
+LAB=$OUT/bin/gawk-uplinklab
+SND=$OUT/bin/sender
+dir=$1; shift
+s_args=()
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do s_args+=("$1"); shift; done
+[ $# -gt 0 ] && shift
+p_args=("$@")
+mkdir -p "$dir"
+port=$(( 20000 + RANDOM % 20000 ))
+pport=$(( port + 1 ))
+# shellcheck disable=SC2086
+$LAB recv -addr 127.0.0.1:$port -out "$dir/recv.csv" ${RECV_ARGS:-} 2> "$dir/recv.log" &
+rp=$!
+$LAB proxy -listen 127.0.0.1:$pport -upstream 127.0.0.1:$port -stats "$dir/proxy.txt" "${p_args[@]}" 2> "$dir/proxy.log" &
+pp=$!
+sleep 0.3
+$SND --url https://127.0.0.1:$pport/lab --out "$dir/send.csv" "${s_args[@]}" 2> "$dir/send.log"
+sleep 0.5
+kill -INT $pp 2>/dev/null; kill -INT $rp 2>/dev/null
+wait $pp $rp 2>/dev/null
