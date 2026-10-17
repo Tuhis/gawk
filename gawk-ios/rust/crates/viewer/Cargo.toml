@@ -26,7 +26,7 @@ opus = "0.3"
 # first release whose source build cross-compiles for the iOS device and
 # simulator (2026.1.0 configures libvpx for the host). The build needs git,
 # network access to github.com and rustup's llvm-tools (rust-toolchain.toml).
-shiguredo_libvpx = { version = "=2026.2.0-canary.2", features = ["source-build"] }
+shiguredo_libvpx = { version = "=2026.2.0-canary.3", features = ["source-build"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "net", "test-util"] }
