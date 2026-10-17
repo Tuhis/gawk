@@ -205,3 +205,62 @@ for rtt in (10, 40, 100):
             continue
         print(f"| {rtt} ms | {label} | {sv(s, 'resilient')} → {sv(s, 'resilient-parity')} "
               f"| {sv(s, 'deep')} → {sv(s, 'deep-parity')} | {sv(c, 'resilient') if c else '–'} |")
+
+LP = [("clean", "clean"), ("loss0.001", "0.1 % loss"), ("loss0.005", "0.5 % loss"), ("loss0.01", "1 % loss"),
+      ("loss0.02", "2 % loss"), ("ge1pct", "bursts (GE)"), ("out20drop", "radio away 20 ms"),
+      ("out80drop", "radio away 80 ms")]
+HP = [("clean", "1440p clean"), ("loss0.001", "1440p 0.1 % loss"), ("ge1pct", "1440p bursts"),
+      ("rate300M-out80drop", "1440p 300 Mbps + outages"), ("rate80M-out80drop", "1440p 80 Mbps + outages")]
+OPTS = [("dgram", "today"), ("dgram-bbr", "BBR only"), ("dgram-bigq", "queue only"),
+        ("dgram-bbr-bigq", "BBR + queue"), ("carrier-bbr", "carrier + BBR")]
+
+
+def cells():
+    for rtt in (10, 40, 100):
+        for sc, label in LP:
+            yield f"{rtt} ms", label, f"rtt{rtt}-{sc}"
+    for sc, label in HP:
+        yield "10 ms", label, f"hi-rtt10-{sc}"
+
+
+def opt_table(title, view, extra=None):
+    print(f"\n#### {title}\n")
+    heads = [o[1] for o in OPTS] + ([extra[1]] if extra else [])
+    print("| RTT | Path | " + " | ".join(heads) + " |")
+    print("|---|---|" + "---|" * len(heads))
+    for rtt, label, name in cells():
+        row = []
+        for m, _ in OPTS:
+            s = get(name, m)
+            row.append(sv(s, view) if s and view in s["view"] else "–")
+        if extra:
+            s = get(name, extra[0][0])
+            row.append(sv(s, extra[0][1]) if s and extra[0][1] in s["view"] else "–")
+        if all(r == "–" for r in row):
+            continue
+        print(f"| {rtt} | {label} | " + " | ".join(row) + " |")
+
+
+print("\n#### Table L — what the cheap changes buy without the carrier (shown · stalled)\n")
+print("\"today\": datagrams, Cubic, quic-go's 32-deep queue. \"queue\": the receiver built with D7's 4096-deep")
+print("queue. \"carrier + BBR\" is OD1 + OD2 for comparison; its deltas never meet the queue.")
+opt_table("Table L1 — Balanced (the default viewer)", "adaptive")
+opt_table("Table L2 — Lowest latency (stalled is the loss measure)", "off")
+opt_table("Table L3 — Smoother (no parity today; the last column adds OD6's parity)", "resilient",
+          (("dgram-bbr-bigq", "resilient-parity"), "BBR + queue + OD6 parity"))
+opt_table("Table L4 — Most stable (no parity today; the last column adds OD6's parity)", "deep",
+          (("dgram-bbr-bigq", "deep-parity"), "BBR + queue + OD6 parity"))
+
+print("\n#### Table M — run-to-run spread: three loss-process seeds per cell (shown, % of frames)\n")
+print("| Path | Delivery | Balanced: seeds 7 · 8 · 9 | Smoother: seeds 7 · 8 · 9 | Lowest latency stalled: seeds 7 · 8 · 9 |")
+print("|---|---|---|---|---|")
+for name, label in (("rtt40-loss0.005", "40 ms, 0.5 % loss"), ("rtt40-loss0.01", "40 ms, 1 % loss"),
+                    ("rtt10-ge1pct", "10 ms, bursts (GE)"), ("rtt10-out80drop", "10 ms, radio away 80 ms")):
+    for m, d in (("dgram-bbr", "BBR only"), ("dgram-bbr-bigq", "BBR + queue"), ("carrier-bbr", "carrier + BBR")):
+        runs = [get(n, m) for n in (name, f"{name}-s8", f"{name}-s9")]
+        if not all(runs):
+            continue
+
+        def pick(k, metric):
+            return " · ".join(f(min(100, r["view"][k][metric]), 1) for r in runs)
+        print(f"| {label} | {d} | {pick('adaptive', 'shownPct')} | {pick('resilient', 'shownPct')} | {pick('off', 'stallPct')} |")
