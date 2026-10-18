@@ -1,7 +1,8 @@
 # R71 — Reliable broadcaster uplink: measured first (docs/73)
 
 **Status**: designed 2026-10-17 from a measurement pass (§4, §11), extended
-2026-10-18 with the relay's queue by depth and a shared uplink (F16, F17).
+2026-10-18 with the relay's queue by depth, a shared uplink and the browser
+broadcaster on Chrome's own stack (F16–F18).
 Owner decisions OD1–OD4 and OD6 taken 2026-10-18, OD5 open (§3); chunks **RU0–RU8** not started, in §8's order (`RU` = Reliable
 Uplink). **Split out of R55** ([docs/57](57-wifi-uplink.md)) on
 2026-10-17 by owner direction: how deltas cross the broadcaster → relay leg
@@ -53,7 +54,7 @@ the owner moved the transport into its own design with three instructions:
 So this doc starts from measurements (§4), states what they showed (§2), and
 only then decides (§3, §5).
 
-## 2. What the lab found (2026-10-17; F16–F17 2026-10-18)
+## 2. What the lab found (2026-10-17; F16–F18 2026-10-18)
 
 Numbers are from §11's tables; "Balanced" is the default viewer, "live
 edge" the *Lowest latency* preset.
@@ -137,8 +138,12 @@ chunks. A 128-deep queue took every one of those runs to 0, 512 and 4096
 to 0–21 (F16); raising quic-go's other queue (128, per connection) changed
 nothing, and neither did a
 goroutine that does nothing but drain the queue, with CPU to spare or
-without (2 099 and 3 981 chunks against 2 120 and 4 127; 3 957 saturated):
-it gets the same scheduling gaps as the loop it replaced. At 1080p (10–17
+without (1 810 and 3 383 chunks against 2 120 and 4 127; 3 957 saturated).
+Its own 1024-deep channel never overflowed (0 in six runs), so every one
+of those datagrams was gone from quic-go's 32 before any reader could take
+it — whether because no goroutine is scheduled that reliably, or because
+quic-go hands a received batch to the queue faster than a reader can empty
+it; D7's fix is the same either way. At 1080p (10–17
 datagrams per delta) the stock relay lost nothing. The signature — chunks
 lost, no whole frames — is the one `BUGS.md` recorded in the 2026-09-27 incident
 (21–22 % of chunks, 0.01 % of frames); that broadcast's rung is not on
@@ -362,6 +367,89 @@ it there: the stream alone takes ≈ 11 Mbps on the wire (with Cubic) of the
 14.4 Mbps the upload gets alone, which leaves at most 3.3 Mbps, 46 % of
 the upload's share (D5).
 
+**F18 — A browser broadcaster gets Chrome's QUIC stack, and three of its
+properties decide what it can do (OD5).** Measured with Chrome for Testing
+151 replaying the same traces through gawk-app's shipping packetizer,
+parity and `DatagramSender`, over the same proxy and receiver (§4; §11
+table P; one 100 s run a cell, alone on the host):
+
+- **Its congestion controller is Cubic, whatever the page asks.** Chrome's
+  net-log records `CUBIC_BYTES` for `congestionControl: 'low-latency'`
+  (what gawk asks for), `'default'` and `'throughput'` alike, and the page
+  has no other lever. So F4 applies: at 40 ms with 0.5 % loss, or at
+  100 ms with any loss, the Balanced viewer sees 0–3 % of a browser
+  broadcaster's frames. Chrome's Cubic is less fragile than quinn's on
+  light loss and bursts, though: at 40 ms the Balanced viewer sees 93.5 %
+  of frames at 0.1 % loss (native Cubic: 63 %) and 62–80 % under bursts
+  and outages (native: 1–20 %).
+- **It pays per datagram.** Chrome caps `maxDatagramSize` at 1024 bytes
+  and sends each datagram in a packet of its own, 0.3–0.6 ms apart on the
+  lab host at any RTT — handing it a frame's datagrams all at once
+  (`writes=nowait`) changed nothing, so the cost is inside Chrome. A frame's
+  chunks leave about 0.45 ms apart: decode-ready p50 13 ms against the
+  native sender's 6 ms at 10 ms RTT, keyframes p50 33 against 12 ms. The
+  ceiling on this host is about 1 900 datagrams a second (23 Mbps on the
+  wire, keyframes included): above the browser ladder's 10 Mbps cap, below
+  what its 50 Mbps bitrate override allows — at 1440p Chrome got 47 % of
+  its datagrams out. The cost
+  is the host's (Chrome's network process and renderer ran at 65 % and 49 %
+  of a Sandy Bridge-class core), so a gaming PC will do better by a factor
+  this lab cannot give.
+- **Its send queue never drops.** `DatagramSender` chains every frame onto
+  one promise, and the auto-ladder reacts only to encoder backpressure, so
+  whatever Chrome cannot send waits. Where Cubic collapses, decode-ready
+  p50 reached 15–38 s within a 100 s run, against the native sender's
+  under 2 s, which drops instead (quinn's 1 MiB buffer, oldest first). The
+  viewer sees nothing during the shortfall either way, but the backlog
+  outlives it. Recorded in `BUGS.md`.
+
+A browser carrier, prototyped on D3's rules (Chrome 151 has no stream
+priority — no `sendOrder` — so its keyframes share the link with the GOP's
+records):
+
+- **It bounds latency**: shedding keeps decode-ready p50 at 0.25–1.2 s
+  where datagrams reach 15–38 s — except where even the keyframes outrun
+  the link (100 ms, 1 % loss: 13 s), because the browser never cancels a
+  keyframe stream (the engine's F-12 rule has no browser counterpart).
+- **It wins wherever loss is not random and light.** At 40 ms on every
+  lossy cell (Balanced: 0.1 % loss 96.4 against 93.5 %, 0.5 % 38.6 against
+  3.3 %, bursts 78.8 against 62.0 %, outages 88–95 against 75–80 %); at
+  10 ms under outages (93.6 / 96.0 against 86.1 / 76.1 %) and 1 % loss
+  (97.4 against 87.0 %).
+- **It protects *Smoother* viewers** as the native carrier does (F14):
+  95–99.9 % of frames on every 10 ms cell, against 38–83 % on the lossy
+  ones over datagrams.
+- **It passes the datagram ceiling**: at 1440p it carried 41 Mbps where
+  datagrams managed 23, and the Balanced viewer saw 80–88 % of frames
+  against 3 %.
+- **It costs at 10 ms with light loss**, because keyframes wait behind the
+  carrier (p50 43 / p95 77 ms against 33 / 48 on datagrams): Balanced
+  97.9 against 100 % on a clean path, 91.7 against 98.7 % at 0.1 % loss,
+  80.4 against 88.3 % at 0.5 %.
+- **A keyframe gate removes that cost.** Holding a GOP's records until its
+  keyframe stream is acknowledged (`close()` resolved, `kforder=ack`) is
+  the browser's stand-in for priority. With it the Balanced viewer saw
+  99.9 % of frames on a clean path, 99.6 % at 0.5 % loss, 98.2 % under
+  80 ms outages, 99.2 % at 40 ms with 0.1 % loss and 99.4 % at 1440p
+  (table P5), at a Balanced offset −3 to +31 ms from Chrome's datagrams'.
+  Gating on the keyframe's write instead (`kforder=write`) helped less
+  (94–98.8 %). *Not explained*: at 1440p either gate cost *Smoother*
+  26–30 points of frames shown with no stalls (73 / 70 % against 99.7 %),
+  frames superseded in bursts at the sink; at 1080p it held 94.5–99.9 %.
+- **Beside a household's upload** (table O) a browser broadcaster does
+  about as well as today's native one where the uplink has room, and
+  better where it does not: Balanced 90.3 % of frames on Chrome's
+  datagrams and 88.8 % on its carrier at 30 Mbps (native today 88.9 %, at
+  183 / 167 ms against 289), 61.7 and 70.0 % at 15 Mbps (native today
+  18.6 %), and at 1440p on 80 Mbps only the carrier carries it (86.8 %;
+  Chrome's datagrams 3.4 %, native today 30.1 %). Chrome's Cubic leaves the
+  household's upload 100 % of its share at 30 Mbps, 97–103 % at 80, and
+  49–57 % at 15 — less than quinn's Cubic there (63–74 %). The native
+  carrier with BBR stays ahead on every cell (92–98 %).
+
+None of it reaches the long lossy paths: a browser broadcaster there is
+where the native app was before D5, and only Chrome can change that.
+
 ## 3. Owner decisions
 
 The owner took OD1–OD4 and OD6 on 2026-10-18, as recommended and with the
@@ -374,9 +462,9 @@ decisions.
 | OD1 | What does a broadcaster get by default? | **Reliable** (the carrier, whenever the relay supports it) with *Lowest latency* (datagrams + parity) as a choice; or *Lowest latency* by default with Reliable as the choice. | **Decided 2026-10-18: Reliable by default** (D4), switched on with BBR once RU7's hardware pass holds. It costs nothing on a clean path (F1), fixes the bursts and outages that motivated R55 (F2), serves the default viewer at least as well on every lossy path measured — within half a point on random loss, far better on bursts and outages (F2, F3) — and is the only thing measured that protects *Smoother* and *Most stable* viewers from every kind of leg-A loss (F14). Beside a household's upload it is what keeps the picture (F17: 92–98 % of frames shown with BBR at 117–283 ms on screen, against today's 19–89 % at 117–395 ms). *Lowest latency* stays a first-class choice, not a warned-against legacy mode: on a long path with random loss it is what keeps live-edge viewers from waiting (F3). |
 | OD2 | Which congestion controller does the engine run? | quinn's Cubic (today); quinn's BBR; a controller of our own. | **Decided 2026-10-18: BBR for both delivery modes, behind RU4's gates, shipped with the carrier and not ahead of it** (D5, §8). F4/F5 make it the larger reliability lever. It helps *Lowest latency* on every random-loss path too, and costs it a few points of frames under outages (F5). Beside a household's upload, the carrier with BBR is the only combination that stays watchable on every uplink measured (F17). Its measured costs are on an uplink the stream nearly fills: there it loses 7–10 % of its own packets, which costs the Balanced viewer 3 points and 33 ms on the carrier and 13 points on datagrams, and it leaves a household upload about half its share (F17). That cost is why it ships with the carrier: 3 points there against 13 on datagrams. **That cell is recorded, not gated** (G5): no controller that holds the stream's rate passes RU4's share gate there, and today's broadcast (datagrams, Cubic) is already broken on it (82 % shown alone, 19 % beside an upload). Instead RU4 requires the upload-bandwidth warning to fire on it, because a lower rung is the fix there, not a controller. It is the one decision here with a production risk (§10): RU4 ships it with the old controller one setting away, and it stays on Cubic if the gates fail. Our own controller is out of scope (§9). |
 | OD3 | Who can choose? | The broadcaster's app; the relay operator; viewers. | **Decided 2026-10-18: the broadcaster (Quality page) and the operator (`-uplink-carriers`)** (D4, §6). Viewers choose their own buffering (R32 presets) and cannot choose how leg A is carried — it is one stream for all of them. The iOS app follows the engine default with no setting until someone asks for one. |
-| OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Decided 2026-10-18: make the queue longer, to 512** (D7), first (§8): measured, it is the only one of the three that works (≈ 2 100 → 0–21 chunks a minute on a relay with CPU to spare, 0 in every 128 run; the drain: 2 099), and 512 rather than longer because past capacity a longer queue only adds delay (F16). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
+| OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Decided 2026-10-18: make the queue longer, to 512** (D7), first (§8): measured, it is the only one of the three that works (≈ 2 100 → 0–21 chunks a minute on a relay with CPU to spare, 0 in every 128 run; the drain: 1 810), and 512 rather than longer because past capacity a longer queue only adds delay (F16). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
 | OD6 | Does the relay serve parity to reliable delivery (*Smoother*, *Most stable*)? | Keep serving them none (docs/34 §3); serve them the fleet's parity like live-edge viewers. | **Decided 2026-10-18: serve it** (D11), first (§8). On any datagram uplink — *Lowest latency*, the browser broadcaster, an older app — it lifts those viewers from 32–89 % to 95.6–100 % of frames under 0.1–1 % loss (F14), for 2.5–10.4 % more egress to them, relay-side only. It does not replace the carrier: it cannot repair an outage. |
-| OD5 | Does the browser broadcaster follow? | Now; after measuring Chrome's QUIC stack; not at all. | **Recommendation (open): after a measurement**, as its own chunk outside this milestone. Chrome's controller and stream scheduling are not quinn's, nothing here measured them, and the browser broadcaster is not where the losing uplinks were found. |
+| OD5 | Does the browser broadcaster follow? | Now; after measuring Chrome's QUIC stack; not at all. | **Recommendation (open, measured 2026-10-18, F18): follow, in two steps, outside this milestone.** (1) Now, as a bug fix: bound the browser's send queue — drop a delta past a GOP's age, abort a keyframe stream the F-12 way — so a slow uplink costs frames, not tens of seconds of backlog (`BUGS.md`). (2) Then a browser Reliable mode on RU1's relay ingest: the carrier with the keyframe gate measured here gives the default viewer 98–99.9 % of frames at 10–40 ms where Chrome's datagrams give 76–100 % (3 % at 1440p), protects *Smoother*, and passes Chrome's per-datagram ceiling. Measure it on a real Chrome on the gaming PC first, because that ceiling is the host's. Neither step reaches the long lossy paths: Chrome runs Cubic whatever the page asks, so the native app stays the answer there. |
 
 ## 4. How it was measured
 
@@ -390,6 +478,7 @@ network path; both QUIC stacks are the ones that ship.
 | Receiver | `gawk-server/cmd/gawk-uplinklab recv`: a WebTransport server with the relay's `webtransport.Server` limits and `quic.Config` (quic-go 0.62.0, webtransport-go 0.13.0), logging every datagram, record and keyframe on arrival. | `internal/transport/server.go` |
 | Path | `gawk-uplinklab proxy`: a UDP forwarder with a scripted path — one-way delay each way, Bernoulli or Gilbert-Elliott loss, periodic outages in both directions (dropped or held), an uplink bottleneck with a drop-tail queue, delay jitter that keeps order. Seeded, so a scenario's loss process repeats. | — |
 | Frame sizes | x264 (`veryfast`, `zerolatency`, no B-frames, keyframe every 30 frames) on a 60 s Mandelbrot zoom, rate-controlled like the broadcaster: **1080p60, 9 Mbps target / 12 Mbps ceiling** (mean 9.5 Mbps; keyframes 230 KB on average, deltas 11.7 KB at p50, 20 KB at p90) and **1440p60, 37.5 / 50 Mbps** (mean 38.9 Mbps; keyframes 495 KB, deltas 61 KB at p50, 98 KB at p90). The 1080p keyframe matches the ~236 KB field measurement in docs/14. | `vt_policy.rs` / `gst_policy.rs` (75 % VBR target, GOP = fps/2) |
+| Browser sender (F18) | `tools/uplinklab/browser/sender.mjs` drives a headless Chrome for Testing 151 at `gawk-app/lab/uplink-sender.lab.ts`, which replays the trace as `BroadcastPipeline.handleEncoded` sends frames — gawk-app's own `packetizeFrameWithParity` (at Chrome's `maxDatagramSize`), `DatagramSender` and one uni stream per keyframe, with `webTransportInit`'s options — plus a carrier prototype on D3's rules. Chrome exposes no transport stats to a page, so the sender's counters come from Chrome's net-log; its clock is the page's, aligned to the host's wall clock against `Date.now()` (the first chunk of a frame lands 6.0 ms after its send at 10 ms RTT, as the native sender's does). | `broadcaster.ts`, `connection.ts`, `packetizer.ts` |
 | Viewer | `gawk-app/lab/uplink-replay.lab.test.ts`: the measured arrival trace replayed through the **shipping** `ReorderBuffer`, `PlayoutController` and adaptive delta-gap grace under a fake clock, then a model of `PacedPresentationSink` on a 60 Hz vsync (newest due frame wins, three held at most, live edge presents on the next tick), once per viewer preset with that preset's own profile (`setViewerDeliveryMode`). Live-edge delivery is sent every frame the relay could complete with parity; reliable delivery (*Smoother*, *Most stable*) only the frames that reached the relay whole, because the relay serves it no parity. Leg B is taken as clean and instant. | `reorder-buffer.ts`, `playout.ts`, `render-sink.ts`, `resilient.ts`, `hub.NegotiateParity` |
 
 **Delivery modes compared.** *Datagram* is today's engine. *Carrier* sends
@@ -455,8 +544,8 @@ up to ~5 points for *Balanced* and ~9 for *Smoother* — because a few
 half-second freezes dominate the 50 s window; table M measures that spread
 on four cells, and differences smaller than it are not findings.
 
-**The lab's own defects, found and fixed.** Three sender bugs and one
-harness bug surfaced during the pass; each was fixed and every run it could
+**The lab's own defects, found and fixed.** Three sender bugs, one harness
+bug and one receiver bug surfaced during the pass; each was fixed and every run it could
 have touched was re-run, so no table mixes versions. (1) The first carrier queued instead of
 shedding (F10). (2) The second shed between writes but not during one
 (F10). (3) Datagram mode ignored `TooLarge` where the engine re-chunks, so
@@ -468,6 +557,14 @@ home uplink they come down a different link. It overstated the household's
 ping and the TCP flow's loss to BBR at 30 Mbps (17.3 against 18.0–19.4
 Mbps; with the downlink unshaped every mode leaves it 17.7–17.8), and every
 F17 figure is from the corrected harness.
+(5) The receiver counted a keyframe as arrived at its last declared byte,
+where the relay waits for the stream's FIN (`IngestKeyframeStream`). quinn
+sends the FIN with the last data, so nothing native moved (two lossy cells
+re-run with the fixed receiver landed within table M's spread of the
+originals — Balanced within 4 points, keyframe p50 −138 to +11 ms with no
+consistent sign); Chrome sends it in a frame of its own, which also
+left every stream unretired until quic-go's 100-stream credit ran out. The
+receiver now reads to the FIN, and every Chrome run is from it.
 
 **Limits.** One host and loopback, so no NIC, driver or Wi-Fi MAC behaviour:
 the outage shapes are AWDL's published ones, not a capture. One receiver,
@@ -475,7 +572,9 @@ not the relay's fan-out, except in F7's and F16's runs. The shared uplink
 is a 50 ms drop-tail `tbf` with one TCP flow; a real modem's buffer can be
 deeper or managed (fq_codel, CAKE), and was not modelled. Leg B is clean in
 the replay.
-The browser broadcaster's QUIC stack (Chrome's) is not measured.
+Chrome is measured as Chrome for Testing 151, headless on Linux, on this
+host; not Chrome on Windows or macOS, and not with a real capture and
+encoder beside it.
 
 **Reproducing**: §11 lists the commands.
 
@@ -661,9 +760,9 @@ frames the uplink actually lost (RU5).
   queue, at pod-to-pod speed.
 - **Not a relay-side reader**: draining the queue on a dedicated goroutine
   was measured and does not work (F7), on a relay with CPU to spare as on a
-  saturated one — the goroutine gets the same scheduling gaps as the loop
-  it replaced. 32 entries are about a millisecond; the queue has to hold
-  more than any goroutine can promise.
+  saturated one, and its own channel never overflowed — the datagrams were
+  lost in quic-go's 32 before any reader took them. 32 entries are about a
+  millisecond; the queue has to hold more than any reader can promise.
 - **Not a fix for an overloaded relay**: when the relay is short of CPU,
   the queue is where the shortfall waits (F16: decode-ready p99 85 → 98 ms
   at 512 with one core for 15 viewers). Capacity is the operator's — more
@@ -944,8 +1043,9 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
   a milestone of its own if D5's gates fail.
 - **Changing the rung on loss.** No auto-ladder for the native apps (docs/38
   D11); this fixes delivery, not bitrate.
-- **The browser broadcaster.** Chrome's QUIC stack and its controller were
-  not measured; OD5 decides whether it follows.
+- **The browser broadcaster.** Measured (F18), not changed: OD5 recommends
+  bounding its send queue as a bug fix and a browser Reliable mode as a
+  milestone of its own.
 
 ## 10. Risks
 
@@ -1018,7 +1118,12 @@ RELAY_CPUS=0-2 VIEWER_CPUS=3-4 SENDER_CPUS=5-6 PROXY_ARGS="-rtt 10ms -rate 300e6
 tools/uplinklab/queue.sh                      # F16, the queue by depth (~45 min, alone on the host)
 python3 tools/uplinklab/relaytables.py        # tables G and N
 tools/uplinklab/fair/matrix.sh                # F17, the shared uplink (Docker, NET_ADMIN; ~55 min)
+# F18, Chrome (Chrome for Testing in ~/.cache/ms-playwright, or CHROME=…), alone on the host:
+python3 tools/uplinklab/matrix.py chrome --jobs 1      # ~1 h 45
+python3 tools/uplinklab/matrix.py chrome-kf --jobs 1   # the keyframe gate (OD5)
+IPERF3=$(command -v iperf3) tools/uplinklab/fair/chrome.sh   # rootless netns (unshare -rn), ~30 min
 python3 tools/uplinklab/fair/analyze.py       # table O
+python3 tools/uplinklab/tables.py             # table P with the rest
 ```
 
 #### Table A — the clean path (F1)
@@ -1504,12 +1609,12 @@ subscribers). Mean of the runs, range in brackets.
 | 1440p, 3 cores, 2 viewers | 128 | 3 | 0 | 0.0 % | 0.6 % (0.0–0.9) | 13 (13–13) / 23 (22–23) | 50 (49–52) | 41 MB (40–41) |
 | 1440p, 3 cores, 2 viewers | 512 | 3 | 7 (0–21) | 0.0 % | 0.7 % (0.2–0.9) | 13 (13–14) / 24 (22–27) | 51 (51–53) | 41 MB (40–41) |
 | 1440p, 3 cores, 2 viewers | 4096 | 3 | 0 | 0.0 % | 0.3 % (0.0–0.9) | 13 (13–13) / 23 (22–25) | 50 (48–52) | 40 MB (40–41) |
-| 1440p, 3 cores, 2 viewers | 32, drained | 3 | 2 099 (1 684–2 497) | 0.0 % | 45.2 % (38.3–50.3) | 13 (13–13) / 22 (22–22) | 56 (55–58) | 41 MB (40–41) |
+| 1440p, 3 cores, 2 viewers | 32, drained | 3 | 1 810 (1 733–1 953) | 0.0 % | 43.8 % (37.9–47.6) | 13 (13–14) / 22 (22–23) | 58 (57–59) | 41 MB (41–41) |
 | 1440p, 3 cores, 4 viewers | 32 | 3 | 4 127 (3 205–5 337) | 0.2 % (0.0–0.5) | 53.8 % (51.5–56.5) | 15 (15–15) / 35 (35–36) | 62 (59–67) | 44 MB (43–44) |
 | 1440p, 3 cores, 4 viewers | 128 | 3 | 0 | 0.0 % | 0.9 % (0.0–1.8) | 15 (15–15) / 47 (38–63) | 62 (56–67) | 44 MB (43–44) |
 | 1440p, 3 cores, 4 viewers | 512 | 3 | 1 (0–3) | 0.0 % (0.0–0.0) | 0.4 % (0.0–1.0) | 15 (15–15) / 57 (47–63) | 64 (61–67) | 43 MB (43–44) |
 | 1440p, 3 cores, 4 viewers | 4096 | 3 | 0 | 0.0 % | 0.6 % (0.0–0.9) | 15 (15–15) / 69 (53–80) | 74 (66–79) | 45 MB (44–46) |
-| 1440p, 3 cores, 4 viewers | 32, drained | 3 | 3 981 (3 808–4 079) | 0.0 % | 49.7 % (49.1–51.0) | 15 (15–15) / 37 (33–42) | 58 (57–60) | 43 MB (43–44) |
+| 1440p, 3 cores, 4 viewers | 32, drained | 3 | 3 383 (3 058–3 667) | 0.0 % | 49.9 % (47.2–51.4) | 15 (15–15) / 46 (33–71) | 62 (62–62) | 43 MB (43–44) |
 | 1440p, 3 cores, 15 viewers (fan-out saturated) | 32 | 1 | 5 749 | 16.4 % | 87.0 % | 75 / 488 | 443 | 66 MB |
 | 1440p, 3 cores, 15 viewers (fan-out saturated) | 128 | 1 | 0 | 18.8 % | 34.9 % | 97 / 482 | 453 | 68 MB |
 | 1440p, 3 cores, 15 viewers (fan-out saturated) | 512 | 1 | 0 | 19.2 % | 32.7 % | 90 / 463 | 450 | 64 MB |
@@ -1542,22 +1647,29 @@ while the upload runs.
 | | datagram · BBR | 17.8 | 101 % (101–101) | 622 (542–691) | 25 (22–27) / 61 (58–63) |
 | | carrier · Cubic | 17.8 (17.7–17.8) | 100 % (100–101) | 330 (314–349) | 46 (45–47) / 63 (63–64) |
 | | carrier · BBR | 17.8 (17.7–17.8) | 102 % (101–102) | 622 (358–963) | 31 (21–42) / 60 (54–63) |
+| | Chrome datagrams (today's browser) | 17.8 (17.8–17.9) | 100 % (100–100) | 308 (273–344) | 45 (44–47) / 66 (66–67) |
+| | Chrome carrier (prototype) | 17.9 | 100 % (100–100) | 204 (104–305) | 44 (44–45) / 67 |
 | 15 Mbps, 1080p | none | 14.4 (14.3–14.4) | – | 96 (75–107) | 69 (68–69) / 75 |
 | | datagram · Cubic (today) | 5.3 (4.9–5.6) | 74 % (68–78) | 210 (181–245) | 65 (65–66) / 72 |
 | | datagram · BBR | 3.8 (3.7–3.9) | 53 % (52–54) | 763 (724–829) | 48 (46–49) / 72 |
 | | carrier · Cubic | 4.5 (4.0–5.0) | 63 % (56–70) | 272 (258–297) | 63 (62–65) / 69 (69–70) |
 | | carrier · BBR | 3.4 (3.4–3.5) | 48 % (48–49) | 670 (645–716) | 53 (53–54) / 72 (72–73) |
+| | Chrome datagrams (today's browser) | 3.5 (3.5–3.6) | 49 % (49–50) | 234 (197–271) | 70 (69–70) / 75 |
+| | Chrome carrier (prototype) | 4.0 (4.0–4.1) | 56 % (55–57) | 231 (216–246) | 70 (69–70) / 75 |
 | 80 Mbps, 1440p (38.9 Mbps mean, 50 ceiling) | none | 76.4 | – | 79 (70–88) | 53 / 61 |
 | | datagram · Cubic (today) | 39.1 (38.6–39.6) | 102 % (101–104) | 132 (132–133) | 52 (51–53) / 61 (60–61) |
 | | datagram · BBR | 34.7 (34.6–34.8) | 91 % (91–91) | 408 (392–423) | 23 (22–23) / 56 (54–58) |
 | | carrier · Cubic | 37.0 (36.0–38.1) | 97 % (94–100) | 160 (100–220) | 47 (46–48) / 61 |
 | | carrier · BBR | 34.5 (34.4–34.6) | 90 % (90–91) | 444 (441–448) | 23 (23–24) / 56 (54–58) |
+| | Chrome datagrams (today's browser) | 55.6 (55.3–55.9) | 102 % (102–103) | 110 (106–113) | 42 (41–44) / 60 |
+| | Chrome carrier (prototype) | 37.3 (37.0–37.6) | 98 % (97–98) | 156 (105–206) | 51 (48–54) / 62 (61–62) |
 
 **O2 — what the broadcast gets, alone on the uplink → beside the upload.**
-Packets lost, undecodable and decode-ready cover the upload (25–80 s); the
-viewer columns its last 40 s, after the playout controller settled.
-*Undecodable* is strict (a frame after a hole in its GOP counts); the
-viewers skip one lost delta per GOP (R29), so they can show more.
+Packets lost (quinn's count; Chrome exposes none), undecodable and
+decode-ready cover the upload (25–80 s); the viewer columns its last 40 s,
+after the playout controller settled. *Undecodable* is strict (a frame after
+a hole in its GOP counts); the viewers skip one lost delta per GOP (R29), so
+they can show more.
 
 | Uplink | Broadcast | quinn: packets lost | Undecodable | Decode-ready p99 ms | Balanced: shown · stalled | Balanced: on-screen latency p50 ms | Lowest latency: stalled |
 |---|---|---|---|---|---|---|---|
@@ -1565,14 +1677,160 @@ viewers skip one lost delta per GOP (R29), so they can show more.
 |  | datagram · BBR | 1.3 % (0.0–2.2) → 5.0 % (2.6–7.1) | 1.2 % (0.0–2.7) → 25.8 % (12.1–42.5) | 94 (89–96) → 169 (154–197) | 97.1 (96.0–97.7) · 2.8 (2.3–3.6) → 86.2 (82.5–89.7) · 15.5 (11.2–19.5) % | 83 → 111 (100–133) | 12.7 % (12.4–13.0) → 28.7 % (24.1–33.3) |
 |  | carrier · Cubic | 0.4 % (0.3–0.4) → 0.4 % (0.4–0.5) | 0.0 % → 0.4 % (0.0–0.7) | 89 (89–90) → 223 (215–231) | 98.1 · 1.8 (1.8–1.9) → 98.0 (95.8–99.6) · 2.1 (0.3–4.7) % | 83 → 211 (183–234) | 12.3 % (12.3–12.4) → 25.3 % (25.3–25.4) |
 |  | carrier · BBR | 1.8 % (1.4–2.3) → 3.7 % (1.5–7.3) | 0.0 % → 0.0 % | 92 (90–95) → 172 (146–204) | 98.0 (96.9–99.1) · 1.8 (0.1–3.3) → 97.9 (96.8–98.7) · 1.6 (1.1–2.5) % | 89 (83–100) → 167 (133–200) | 12.7 % (12.6–12.7) → 22.2 % (19.3–25.0) |
+|  | Chrome datagrams (today's browser) | – → – | 0.0 % → 0.0 % | 89 → 329 (250–408) | 97.9 · 1.8 → 90.3 (88.8–91.8) · 10.8 (9.1–12.5) % | 83 → 183 (167–200) | 11.6 % → 28.8 % (28.6–28.9) |
+|  | Chrome carrier (prototype) | – → – | 0.0 % → 0.0 % | 93 → 256 (239–273) | 96.4 · 3.7 → 88.8 (88.1–89.6) · 12.0 (11.5–12.5) % | 83 → 167 | 13.9 % → 31.8 % (30.3–33.3) |
 | 15 Mbps, 1080p | datagram · Cubic (today) | 1.0 % (1.0–1.1) → 0.6 % (0.5–0.7) | 13.5 % (9.8–15.3) → 50.9 % (44.4–57.9) | 287 (281–296) → 2049 (1929–2255) | 82.3 (81.2–83.3) · 19.3 (18.1–20.4) → 18.6 (16.8–21.1) · 82.4 (79.3–84.3) % | 200 (183–217) → 395 (384–400) | 38.3 % (37.7–38.7) → 90.3 % (89.2–91.8) |
 |  | datagram · BBR | 6.7 % (5.3–8.5) → 14.6 % (11.9–16.1) | 42.9 % (37.9–49.0) → 82.2 % (78.8–86.3) | 250 (243–260) → 367 (349–398) | 69.2 (65.5–73.0) · 33.3 (29.4–37.6) → 31.1 (24.6–39.9) · 72.6 (63.4–79.2) % | 139 (100–183) → 128 (117–133) | 45.6 % (43.7–48.5) → 78.4 % (72.6–82.7) |
 |  | carrier · Cubic | 1.1 % (1.0–1.2) → 0.7 % (0.6–0.8) | 0.1 % → 13.0 % (6.0–20.8) | 186 (183–189) → 374 (325–429) | 97.3 (97.1–97.6) · 2.7 (2.6–2.8) → 82.5 (75.5–87.6) · 18.9 (13.8–26.1) % | 178 (167–183) → 333 (300–350) | 25.9 % (25.7–25.9) → 39.7 % (36.9–43.2) |
 |  | carrier · BBR | 9.9 % (8.7–11.1) → 15.1 % (14.1–16.7) | 0.3 % (0.1–0.5) → 2.1 % (2.0–2.3) | 254 (249–263) → 358 (344–378) | 94.5 (92.9–95.7) · 6.0 (4.0–7.8) → 91.7 (89.8–92.7) · 9.2 (7.8–11.3) % | 211 (183–233) → 283 (267–300) | 32.1 % (31.2–32.8) → 52.2 % (51.0–53.3) |
+|  | Chrome datagrams (today's browser) | – → – | 0.0 % → 0.8 % (0.7–0.9) | 224 → 1372 (1049–1694) | 92.1 · 8.3 → 61.7 (59.3–64.0) · 39.4 (37.3–41.6) % | 183 → 367 | 28.6 % → 63.9 % (61.1–66.7) |
+|  | Chrome carrier (prototype) | – → – | 0.2 % → 5.7 % (5.1–6.3) | 232 → 746 (736–756) | 89.5 · 11.8 → 70.0 (68.3–71.7) · 30.8 (28.6–33.1) % | 134 → 367 | 30.1 % → 57.5 % (55.4–59.6) |
 | 80 Mbps, 1440p (38.9 Mbps mean, 50 ceiling) | datagram · Cubic (today) | 0.1 % → 0.2 % | 0.0 % → 37.7 % (37.4–38.0) | 88 (87–88) → 1529 (1259–1799) | 97.1 · 3.0 → 30.1 (29.6–30.5) · 70.4 (68.8–72.0) % | 83 → 117 (100–134) | 10.9 % (10.8–11.1) → 79.2 % (78.2–80.2) |
 |  | datagram · BBR | 0.1 % → 1.1 % | 0.0 % → 31.2 % (26.2–36.1) | 91 (91–92) → 137 (134–140) | 97.0 · 3.1 → 83.5 (81.5–85.5) · 17.9 (16.1–19.8) % | 83 → 83 (83–84) | 11.2 % → 25.2 % (23.4–27.1) |
 |  | carrier · Cubic | 0.1 % → 0.2 % | 0.0 % → 3.9 % (1.9–6.0) | 87 (86–87) → 243 (221–265) | 97.5 (97.3–97.6) · 2.5 (2.3–2.8) → 91.1 (88.3–93.8) · 9.2 (6.5–11.9) % | 100 → 183 (183–184) | 10.9 % (10.8–11.0) → 17.9 % (17.3–18.5) |
 |  | carrier · BBR | 0.1 % (0.0–0.1) → 1.4 % | 0.0 % → 0.0 % | 89 (88–90) → 142 (141–142) | 97.9 (97.5–98.3) · 2.3 (1.9–2.8) → 96.3 (95.7–96.9) · 4.1 (3.7–4.5) % | 92 (83–100) → 117 | 10.4 % (10.0–10.8) → 16.4 % (15.6–17.1) |
+|  | Chrome datagrams (today's browser) | – → – | 83.0 % → 92.5 % (91.0–93.9) | 48863 → 54128 (53285–54970) | 3.4 · 100.0 → 3.4 · 100.0 % | 267 → 333 (317–350) | 100.0 % → 100.0 % |
+|  | Chrome carrier (prototype) | – → – | 0.4 % → 5.3 % (4.8–5.8) | 171 → 326 (325–327) | 88.3 · 12.3 → 86.8 (86.3–87.4) · 14.4 (13.8–15.1) % | 100 → 283 (233–334) | 21.4 % → 31.3 % (29.4–33.1) |
+
+#### Table P — the browser broadcaster: Chrome's QUIC stack against the native sender (OD5)
+
+Chrome for Testing 151 replaying the same traces through gawk-app's shipping packetizer and
+DatagramSender (browser/sender.mjs); its QUIC runs Cubic whatever the page asks. One 100 s run
+a cell, alone on the host. The receiver has the 4096-deep queue for the Chrome columns.
+
+#### Table P1 — Balanced: shown · stalled
+
+| RTT | Path | native today (datagrams · Cubic) | Chrome today (datagrams) | Chrome carrier (prototype) | native carrier · Cubic | native carrier · BBR |
+|---|---|---|---|---|---|---|
+| 10 ms | clean | 99.9 % · 0.1 % | 100.0 % · 0.0 % | 97.9 % · 2.3 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 10 ms | 0.1 % loss | 99.6 % · 0.1 % | 98.7 % · 0.4 % | 91.7 % · 8.2 % | 99.7 % · 0.2 % | 100.0 % · 0.0 % |
+| 10 ms | 0.5 % loss | 94.1 % · 5.6 % | 88.3 % · 12.3 % | 80.4 % · 20.9 % | 98.0 % · 1.9 % | 100.0 % · 0.0 % |
+| 10 ms | 1 % loss | 70.4 % · 29.3 % | 87.0 % · 14.2 % | 97.4 % · 2.1 % | 94.5 % · 6.0 % | 100.0 % · 0.0 % |
+| 10 ms | bursts (GE) | 87.8 % · 12.3 % | 86.0 % · 16.4 % | 86.2 % · 15.7 % | 97.9 % · 1.2 % | 100.0 % · 0.0 % |
+| 10 ms | radio away 20 ms | 92.2 % · 9.1 % | 86.1 % · 14.8 % | 93.6 % · 6.2 % | 99.7 % · 0.3 % | 99.8 % · 0.0 % |
+| 10 ms | radio away 80 ms | 77.2 % · 24.1 % | 76.1 % · 25.3 % | 96.0 % · 4.3 % | 97.5 % · 2.3 % | 97.2 % · 3.2 % |
+| 40 ms | clean | 100.0 % · 0.0 % | 99.5 % · 0.1 % | 98.9 % · 0.9 % | 100.0 % · 0.0 % | 100.0 % · 0.0 % |
+| 40 ms | 0.1 % loss | 63.3 % · 37.8 % | 93.5 % · 6.2 % | 96.4 % · 3.4 % | 88.9 % · 11.5 % | 99.5 % · 0.4 % |
+| 40 ms | 0.5 % loss | 0.6 % · 99.9 % | 3.3 % · 100.0 % | 38.6 % · 64.8 % | 13.1 % · 89.1 % | 99.5 % · 0.4 % |
+| 40 ms | 1 % loss | 0.3 % · 100.0 % | 2.3 % · 99.7 % | 14.9 % · 88.3 % | 8.5 % · 94.4 % | 99.2 % · 0.4 % |
+| 40 ms | bursts (GE) | 1.1 % · 99.5 % | 62.0 % · 37.3 % | 78.8 % · 21.8 % | 27.7 % · 75.5 % | 98.5 % · 1.4 % |
+| 40 ms | radio away 20 ms | 20.0 % · 82.5 % | 79.7 % · 22.0 % | 95.4 % · 4.2 % | 79.0 % · 22.7 % | 98.0 % · 1.1 % |
+| 40 ms | radio away 80 ms | 18.6 % · 82.3 % | 74.6 % · 26.7 % | 88.0 % · 11.8 % | 71.6 % · 30.3 % | 97.6 % · 1.9 % |
+| 100 ms | clean | 99.9 % · 0.0 % | 99.6 % · 0.2 % | 99.1 % · 0.2 % | 99.8 % · 0.0 % | 100.0 % · 0.0 % |
+| 100 ms | 0.1 % loss | 2.7 % · 97.9 % | 3.4 % · 100.0 % | 49.9 % · 52.6 % | 20.2 % · 82.5 % | 97.0 % · 2.5 % |
+| 100 ms | 0.5 % loss | 0.1 % · 100.0 % | 0.0 % · 100.0 % | 1.7 % · 99.8 % | 2.3 % · 99.2 % | 95.8 % · 5.0 % |
+| 100 ms | 1 % loss | 0.0 % · 100.0 % | 0.0 % · 100.0 % | 0.3 % · 100.0 % | 1.7 % · 99.7 % | 95.8 % · 4.0 % |
+| 100 ms | bursts (GE) | 0.4 % · 100.0 % | 0.5 % · 100.0 % | 8.1 % · 94.6 % | 7.2 % · 95.6 % | 98.2 % · 2.3 % |
+| 100 ms | radio away 20 ms | 0.1 % · 100.0 % | 2.9 % · 99.9 % | 16.5 % · 87.2 % | 3.5 % · 98.7 % | 98.3 % · 1.6 % |
+| 100 ms | radio away 80 ms | 0.0 % · 100.0 % | 0.0 % · 100.0 % | 4.3 % · 98.0 % | 1.2 % · 100.0 % | 93.5 % · 4.9 % |
+| 10 ms | 1440p clean | 89.5 % · 11.8 % | 3.4 % · 100.0 % | 82.6 % · 18.8 % | 100.0 % · 0.0 % | 99.8 % · 0.2 % |
+| 10 ms | 1440p 0.1 % loss | 49.6 % · 52.1 % | 3.4 % · 100.0 % | 83.8 % · 18.6 % | 86.8 % · 13.8 % | 100.0 % · 0.0 % |
+| 10 ms | 1440p bursts | 2.1 % · 99.8 % | 3.4 % · 100.0 % | 87.5 % · 14.0 % | 41.5 % · 61.2 % | 100.0 % · 0.0 % |
+| 10 ms | 1440p 80 Mbps | 96.5 % · 3.3 % | 3.4 % · 100.0 % | 80.4 % · 21.3 % | 97.5 % · 2.1 % | 97.3 % · 2.2 % |
+| 10 ms | 1440p 80 Mbps + outages | 75.7 % · 25.4 % | 3.4 % · 100.0 % | 86.2 % · 15.2 % | 95.9 % · 4.7 % | 98.4 % · 1.6 % |
+
+#### Table P2 — Lowest latency: shown · stalled
+
+| RTT | Path | native today (datagrams · Cubic) | Chrome today (datagrams) | Chrome carrier (prototype) | native carrier · Cubic | native carrier · BBR |
+|---|---|---|---|---|---|---|
+| 10 ms | clean | 98.4 % · 0.3 % | 86.9 % · 4.7 % | 92.6 % · 8.7 % | 99.7 % · 0.0 % | 99.9 % · 0.0 % |
+| 10 ms | 0.1 % loss | 94.9 % · 3.8 % | 81.9 % · 11.8 % | 82.3 % · 19.5 % | 95.1 % · 2.7 % | 98.8 % · 0.0 % |
+| 10 ms | 0.5 % loss | 68.7 % · 32.1 % | 66.3 % · 28.0 % | 63.8 % · 33.6 % | 79.0 % · 19.8 % | 94.0 % · 0.2 % |
+| 10 ms | 1 % loss | 43.0 % · 56.9 % | 60.4 % · 35.8 % | 64.2 % · 32.5 % | 68.9 % · 28.9 % | 89.7 % · 0.6 % |
+| 10 ms | bursts (GE) | 77.7 % · 24.7 % | 65.3 % · 32.8 % | 74.9 % · 27.0 % | 88.1 % · 11.4 % | 95.9 % · 1.2 % |
+| 10 ms | radio away 20 ms | 86.1 % · 14.3 % | 68.4 % · 27.2 % | 82.8 % · 20.7 % | 93.3 % · 6.0 % | 96.7 % · 4.1 % |
+| 10 ms | radio away 80 ms | 73.2 % · 27.2 % | 60.6 % · 36.6 % | 78.2 % · 25.3 % | 86.5 % · 13.7 % | 91.3 % · 10.2 % |
+| 40 ms | clean | 99.9 % · 0.0 % | 88.7 % · 4.2 % | 94.0 % · 6.9 % | 99.9 % · 0.0 % | 99.8 % · 0.0 % |
+| 40 ms | 0.1 % loss | 38.1 % · 64.2 % | 65.4 % · 33.9 % | 63.2 % · 40.0 % | 66.8 % · 33.6 % | 96.7 % · 4.5 % |
+| 40 ms | 0.5 % loss | 0.6 % · 99.9 % | 3.3 % · 99.9 % | 23.0 % · 79.4 % | 11.5 % · 91.9 % | 84.9 % · 20.8 % |
+| 40 ms | 1 % loss | 0.3 % · 100.0 % | 2.6 % · 99.6 % | 10.9 % · 91.4 % | 7.9 % · 95.6 % | 77.8 % · 29.7 % |
+| 40 ms | bursts (GE) | 1.1 % · 99.5 % | 34.6 % · 65.2 % | 39.8 % · 62.6 % | 22.9 % · 76.7 % | 89.4 % · 13.1 % |
+| 40 ms | radio away 20 ms | 8.5 % · 93.8 % | 50.5 % · 50.9 % | 58.2 % · 45.4 % | 53.5 % · 47.0 % | 95.0 % · 6.5 % |
+| 40 ms | radio away 80 ms | 8.8 % · 93.1 % | 46.7 % · 54.6 % | 51.7 % · 51.2 % | 48.0 % · 52.2 % | 89.3 % · 12.3 % |
+| 100 ms | clean | 99.9 % · 0.0 % | 92.5 % · 4.6 % | 94.1 % · 7.1 % | 99.7 % · 0.1 % | 100.0 % · 0.0 % |
+| 100 ms | 0.1 % loss | 2.3 % · 98.3 % | 3.4 % · 100.0 % | 28.6 % · 71.5 % | 15.1 % · 87.9 % | 91.3 % · 10.0 % |
+| 100 ms | 0.5 % loss | 0.1 % · 100.0 % | 0.0 % · 100.0 % | 1.9 % · 99.7 % | 2.2 % · 99.6 % | 64.7 % · 40.1 % |
+| 100 ms | 1 % loss | 0.0 % · 100.0 % | 0.0 % · 100.0 % | 0.5 % · 99.8 % | 1.7 % · 99.8 % | 49.1 % · 58.7 % |
+| 100 ms | bursts (GE) | 0.3 % · 100.0 % | 0.5 % · 99.9 % | 6.2 % · 94.7 % | 7.1 % · 95.9 % | 77.6 % · 25.7 % |
+| 100 ms | radio away 20 ms | 0.1 % · 100.0 % | 3.1 % · 99.8 % | 11.9 % · 89.4 % | 3.3 % · 99.3 % | 88.6 % · 13.0 % |
+| 100 ms | radio away 80 ms | 0.0 % · 100.0 % | 0.0 % · 100.0 % | 3.7 % · 98.1 % | 1.2 % · 100.0 % | 82.4 % · 19.0 % |
+| 10 ms | 1440p clean | 86.0 % · 13.6 % | 3.4 % · 100.0 % | 69.7 % · 27.2 % | 97.3 % · 1.0 % | 96.9 % · 1.3 % |
+| 10 ms | 1440p 0.1 % loss | 29.3 % · 70.6 % | 3.4 % · 100.0 % | 65.7 % · 33.0 % | 72.4 % · 22.5 % | 93.1 % · 0.6 % |
+| 10 ms | 1440p bursts | 2.0 % · 99.9 % | 3.4 % · 100.0 % | 58.9 % · 38.1 % | 38.8 % · 55.5 % | 87.4 % · 2.5 % |
+| 10 ms | 1440p 80 Mbps | 84.9 % · 13.9 % | 3.4 % · 100.0 % | 69.8 % · 29.3 % | 86.2 % · 12.2 % | 86.5 % · 12.4 % |
+| 10 ms | 1440p 80 Mbps + outages | 56.7 % · 44.4 % | 3.4 % · 100.0 % | 61.8 % · 39.1 % | 76.9 % · 24.3 % | 78.8 % · 22.8 % |
+
+#### Table P3 — Smoother: shown · stalled (no parity, as today)
+
+| RTT | Path | native today (datagrams · Cubic) | Chrome today (datagrams) | Chrome carrier (prototype) | native carrier · Cubic | native carrier · BBR |
+|---|---|---|---|---|---|---|
+| 10 ms | clean | 99.2 % · 0.7 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 10 ms | 0.1 % loss | 86.7 % · 13.9 % | 83.4 % · 17.3 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 10 ms | 0.5 % loss | 48.2 % · 53.8 % | 49.7 % · 53.7 % | 99.2 % · 0.7 % | 99.1 % · 0.9 % | 99.9 % · 0.0 % |
+| 10 ms | 1 % loss | 28.9 % · 73.7 % | 37.9 % · 65.4 % | 94.6 % · 6.0 % | 93.3 % · 5.8 % | 99.9 % · 0.0 % |
+| 10 ms | bursts (GE) | 69.3 % · 31.9 % | 62.5 % · 40.0 % | 99.9 % · 0.0 % | 99.6 % · 0.4 % | 99.9 % · 0.0 % |
+| 10 ms | radio away 20 ms | 77.2 % · 23.8 % | 74.9 % · 26.1 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 10 ms | radio away 80 ms | 76.7 % · 24.5 % | 70.8 % · 30.3 % | 98.0 % · 1.8 % | 99.0 % · 1.1 % | 99.9 % · 0.0 % |
+| 40 ms | clean | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 40 ms | 0.1 % loss | 70.8 % · 30.9 % | 80.2 % · 21.1 % | 91.7 % · 9.7 % | 88.7 % · 11.6 % | 99.9 % · 0.0 % |
+| 40 ms | 0.5 % loss | 0.7 % · 99.9 % | 3.2 % · 100.0 % | 59.0 % · 43.8 % | 17.8 % · 84.7 % | 99.9 % · 0.0 % |
+| 40 ms | 1 % loss | 0.4 % · 100.0 % | 1.7 % · 99.9 % | 28.0 % · 74.7 % | 12.1 % · 90.9 % | 99.9 % · 0.0 % |
+| 40 ms | bursts (GE) | 1.3 % · 99.3 % | 59.8 % · 40.8 % | 85.2 % · 16.1 % | 31.3 % · 72.5 % | 99.9 % · 0.0 % |
+| 40 ms | radio away 20 ms | 44.3 % · 56.6 % | 71.5 % · 30.1 % | 88.1 % · 13.7 % | 78.9 % · 22.2 % | 99.9 % · 0.0 % |
+| 40 ms | radio away 80 ms | 36.1 % · 64.7 % | 70.8 % · 30.7 % | 87.4 % · 12.5 % | 72.5 % · 29.3 % | 98.6 % · 1.5 % |
+| 100 ms | clean | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 100 ms | 0.1 % loss | 5.8 % · 94.3 % | 3.4 % · 100.0 % | 75.2 % · 26.1 % | 25.6 % · 77.2 % | 98.9 % · 1.2 % |
+| 100 ms | 0.5 % loss | 0.1 % · 100.0 % | 0.0 % · 100.0 % | 1.5 % · 99.7 % | 4.4 % · 97.1 % | 97.6 % · 2.7 % |
+| 100 ms | 1 % loss | 0.0 % · 100.0 % | 0.0 % · 100.0 % | 0.2 % · 100.0 % | 2.8 % · 98.5 % | 94.1 % · 6.7 % |
+| 100 ms | bursts (GE) | 0.3 % · 100.0 % | 0.1 % · 100.0 % | 9.8 % · 93.2 % | 11.5 % · 91.2 % | 98.3 % · 2.3 % |
+| 100 ms | radio away 20 ms | 0.1 % · 100.0 % | 2.7 % · 100.0 % | 33.1 % · 70.7 % | 5.2 % · 96.6 % | 98.5 % · 1.6 % |
+| 100 ms | radio away 80 ms | 0.0 % · 100.0 % | 0.0 % · 100.0 % | 6.4 % · 96.2 % | 2.4 % · 98.9 % | 96.4 % · 3.4 % |
+| 10 ms | 1440p clean | 81.3 % · 19.7 % | 3.4 % · 100.0 % | 99.7 % · 0.1 % | 99.9 % · 0.0 % | 99.9 % · 0.0 % |
+| 10 ms | 1440p 0.1 % loss | 30.9 % · 72.0 % | 3.4 % · 100.0 % | 93.5 % · 7.4 % | 86.7 % · 14.1 % | 99.9 % · 0.0 % |
+| 10 ms | 1440p bursts | 3.1 % · 98.8 % | 3.4 % · 100.0 % | 84.4 % · 18.2 % | 41.2 % · 61.6 % | 99.9 % · 0.0 % |
+| 10 ms | 1440p 80 Mbps | 93.8 % · 6.3 % | 3.4 % · 100.0 % | 99.4 % · 0.5 % | 75.4 % · 0.0 % | 99.9 % · 0.0 % |
+| 10 ms | 1440p 80 Mbps + outages | 73.3 % · 27.9 % | 3.4 % · 100.0 % | 88.6 % · 12.9 % | 95.6 % · 4.9 % | 98.8 % · 1.2 % |
+
+#### Table P4 — decode-ready p50 / p99 ms · undecodable
+
+| RTT | Path | native today (datagrams · Cubic) | Chrome today (datagrams) | Chrome carrier (prototype) | native carrier · Cubic | native carrier · BBR |
+|---|---|---|---|---|---|---|
+| 10 ms | clean | 6 / 16 · 0.4 % | 13 / 40 · 0.0 % | 8 / 59 · 0.0 % | 6 / 14 · 0.0 % | 6 / 10 · 0.0 % |
+| 10 ms | 0.1 % loss | 6 / 41 · 0.0 % | 13 / 72 · 0.0 % | 8 / 80 · 0.0 % | 6 / 36 · 0.0 % | 6 / 16 · 0.0 % |
+| 10 ms | 0.5 % loss | 7 / 454 · 0.0 % | 14 / 170 · 0.2 % | 11 / 162 · 0.0 % | 6 / 168 · 0.0 % | 6 / 19 · 0.0 % |
+| 10 ms | 1 % loss | 87 / 671 · 0.7 % | 15 / 207 · 1.6 % | 14 / 233 · 0.0 % | 30 / 273 · 3.5 % | 6 / 20 · 0.0 % |
+| 10 ms | bursts (GE) | 6 / 164 · 20.7 % | 13 / 117 · 21.7 % | 9 / 116 · 0.0 % | 6 / 110 · 0.0 % | 6 / 19 · 0.0 % |
+| 10 ms | radio away 20 ms | 6 / 37 · 21.9 % | 13 / 74 · 21.1 % | 8 / 80 · 0.0 % | 6 / 37 · 0.0 % | 6 / 33 · 0.0 % |
+| 10 ms | radio away 80 ms | 6 / 100 · 22.0 % | 13 / 134 · 28.3 % | 8 / 174 · 0.5 % | 6 / 118 · 0.1 % | 6 / 97 · 0.0 % |
+| 40 ms | clean | 21 / 30 · 0.0 % | 28 / 58 · 0.0 % | 23 / 65 · 0.0 % | 21 / 30 · 0.0 % | 21 / 25 · 0.0 % |
+| 40 ms | 0.1 % loss | 181 / 2054 · 23.1 % | 36 / 266 · 0.0 % | 29 / 328 · 0.1 % | 63 / 431 · 16.4 % | 21 / 61 · 0.0 % |
+| 40 ms | 0.5 % loss | 629 / 2224 · 95.3 % | 20388 / 34420 · 32.7 % | 254 / 1500 · 31.3 % | 345 / 1069 · 78.0 % | 21 / 68 · 0.0 % |
+| 40 ms | 1 % loss | 1300 / 2367 · 99.7 % | 34203 / 60872 · 60.9 % | 697 / 4936 · 62.5 % | 499 / 1445 · 88.5 % | 21 / 78 · 0.0 % |
+| 40 ms | bursts (GE) | 1126 / 2004 · 90.5 % | 463 / 2508 · 16.1 % | 102 / 736 · 6.8 % | 217 / 983 · 59.4 % | 21 / 70 · 0.0 % |
+| 40 ms | radio away 20 ms | 550 / 1570 · 42.6 % | 36 / 243 · 23.2 % | 30 / 294 · 0.1 % | 137 / 368 · 17.0 % | 21 / 78 · 0.0 % |
+| 40 ms | radio away 80 ms | 656 / 1631 · 49.8 % | 45 / 298 · 27.2 % | 46 / 383 · 1.9 % | 151 / 421 · 24.2 % | 21 / 143 · 0.0 % |
+| 100 ms | clean | 51 / 61 · 0.0 % | 58 / 91 · 0.0 % | 53 / 97 · 0.0 % | 51 / 62 · 0.0 % | 51 / 56 · 0.0 % |
+| 100 ms | 0.1 % loss | 230 / 2093 · 89.1 % | 15346 / 29383 · 27.7 % | 256 / 1296 · 23.5 % | 342 / 1150 · 72.9 % | 51 / 152 · 0.0 % |
+| 100 ms | 0.5 % loss | 67 / 1888 · 97.4 % | 37855 / 73903 · 77.0 % | 1151 / 32537 · 89.7 % | 647 / 2231 · 92.2 % | 51 / 220 · 0.2 % |
+| 100 ms | 1 % loss | 1957 / 1957 · 100.0 % | 30972 / 74958 · 88.0 % | 13258 / 60206 · 95.6 % | 904 / 2448 · 97.0 % | 88 / 270 · 0.9 % |
+| 100 ms | bursts (GE) | 52 / 1963 · 96.6 % | 33766 / 65049 · 71.7 % | 853 / 12261 · 74.0 % | 426 / 1968 · 85.7 % | 51 / 188 · 0.2 % |
+| 100 ms | radio away 20 ms | 51 / 1792 · 95.3 % | 2560 / 41418 · 61.5 % | 331 / 2269 · 41.6 % | 221 / 1946 · 87.2 % | 51 / 172 · 0.0 % |
+| 100 ms | radio away 80 ms | 51 / 1398 · 95.9 % | 5307 / 65844 · 84.9 % | 268 / 9776 · 59.6 % | 142 / 2326 · 91.8 % | 51 / 234 · 0.3 % |
+| 10 ms | 1440p clean | 7 / 22 · 12.6 % | 39656 / 54527 · 53.9 % | 13 / 118 · 0.1 % | 7 / 24 · 0.0 % | 7 / 22 · 0.0 % |
+| 10 ms | 1440p 0.1 % loss | 119 / 1381 · 29.2 % | 41299 / 57909 · 57.1 % | 20 / 216 · 0.8 % | 40 / 240 · 11.0 % | 7 / 22 · 0.0 % |
+| 10 ms | 1440p bursts | 932 / 2383 · 90.5 % | 44795 / 62064 · 82.7 % | 55 / 284 · 6.5 % | 187 / 409 · 53.7 % | 7 / 32 · 0.0 % |
+| 10 ms | 1440p 80 Mbps | 13 / 82 · 3.0 % | 40112 / 54755 · 54.0 % | 15 / 132 · 0.2 % | 13 / 84 · 0.0 % | 13 / 85 · 0.0 % |
+| 10 ms | 1440p 80 Mbps + outages | 13 / 301 · 21.7 % | 44538 / 65610 · 85.4 % | 20 / 299 · 7.3 % | 14 / 183 · 2.4 % | 14 / 143 · 0.1 % |
+
+#### Table P5 — the keyframe gate: Balanced shown · stalled · offset · keyframe latency p50 / p95
+
+| RTT | Path | Chrome datagrams | Chrome carrier | carrier, records after the keyframe's write | carrier, records after the keyframe's acknowledgement |
+|---|---|---|---|---|---|
+| 10 ms | clean | 100.0 % · 0.0 % · offset 57 ms · keyframes 33 / 48 ms | 97.9 % · 2.3 % · offset 50 ms · keyframes 43 / 77 ms | 98.8 % · 0.4 % · offset 54 ms · keyframes 46 / 76 ms | 99.9 % · 0.0 % · offset 59 ms · keyframes 40 / 62 ms |
+| 10 ms | 0.5 % loss | 88.3 % · 12.3 % · offset 119 ms · keyframes 114 / 174 ms | 80.4 % · 20.9 % · offset 81 ms · keyframes 116 / 189 ms | 96.4 % · 4.0 % · offset 107 ms · keyframes 117 / 182 ms | 99.6 % · 0.2 % · offset 131 ms · keyframes 98 / 148 ms |
+| 10 ms | radio away 80 ms | 76.1 % · 25.3 % · offset 139 ms · keyframes 57 / 188 ms | 96.0 % · 4.3 % · offset 146 ms · keyframes 60 / 215 ms | 97.5 % · 2.8 % · offset 157 ms · keyframes 62 / 214 ms | 98.2 % · 1.9 % · offset 136 ms · keyframes 57 / 181 ms |
+| 40 ms | 0.1 % loss | 93.5 % · 6.2 % · offset 212 ms · keyframes 173 / 296 ms | 96.4 % · 3.4 % · offset 272 ms · keyframes 186 / 359 ms | 94.3 % · 6.7 % · offset 172 ms · keyframes 185 / 286 ms | 99.2 % · 0.8 % · offset 243 ms · keyframes 140 / 235 ms |
+| 10 ms | 1440p clean | 3.4 % · 100.0 % · offset 187 ms · keyframes 62 / 118 ms | 82.6 % · 18.8 % · offset 66 ms · keyframes 67 / 140 ms | 98.5 % · 1.5 % · offset 83 ms · keyframes 57 / 115 ms | 99.4 % · 0.5 % · offset 89 ms · keyframes 59 / 101 ms |
 
 ## 12. References
 

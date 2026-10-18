@@ -1519,7 +1519,8 @@ entries still describe code `gawk-pubsim` runs (now
   CPU to spare lost ~1 % of a 1440p publisher's chunks, all of them
   acknowledged by QUIC first, counted them as leg-A loss, and left a viewer
   unable to decode 39–47 % of frames. A goroutine that only drains the
-  queue does not help (it gets the same scheduling gaps). A longer queue does —
+  queue does not help: its own channel never overflowed, the loss was in
+  quic-go's 32 before any reader took the datagrams. A longer queue does —
   128 already took it to zero — but size it for a burst, not a backlog: on a
   relay short of CPU every extra entry is delay, and 4096 had the worst tail
   of the depths measured ([docs/73](73-reliable-uplink.md) F7, F16, D7).
@@ -1549,6 +1550,24 @@ entries still describe code `gawk-pubsim` runs (now
   undecodable on datagrams. Where the uplink has room it keeps a household's
   TCP upload at 90–102 % of its fair share; on such a link, about half
   ([docs/73](73-reliable-uplink.md) F17).
+- **Chrome's WebTransport runs Cubic whatever `congestionControl` says.**
+  Chrome 151's net-log (`QUIC_CONGESTION_CONTROL_CONFIGURED`) shows
+  `CUBIC_BYTES` for `low-latency`, `default` and `throughput` alike; a page
+  cannot choose BBR. It also caps `maxDatagramSize` at 1024, sends one
+  datagram per packet, and exposes neither `getStats()` nor stream
+  `sendOrder` ([docs/73](73-reliable-uplink.md) F18).
+- **Chrome pays per datagram.** On the lab host each datagram left 0.3–0.6
+  ms after the last at any RTT, so a frame's chunks spread out and Chrome
+  topped out near 1 900 datagrams a second; stream data does not pay it.
+  Measure a browser sender's datagram rate on the machine that matters
+  ([docs/73](73-reliable-uplink.md) F18).
+- **Chrome resolves a send stream's `close()` on acknowledgement**, and
+  `abort()` still sends `RST_STREAM` while that close is in flight — the
+  two pieces a per-GOP deadline needs. It FINs in a frame of its own, so a
+  reader that stops at the declared length never retires the stream, and
+  quic-go's 100-stream credit runs out after 100 keyframes (the relay
+  reads to the FIN; the lab's receiver did not)
+  ([docs/73](73-reliable-uplink.md) §4).
 - **Shape only the upstream when you model a home uplink.** A `tbf` on a
   loopback queues both directions in one FIFO, so acknowledgements and ping
   replies wait behind the upload they report on. It overstated the

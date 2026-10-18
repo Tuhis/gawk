@@ -877,6 +877,39 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Fix would start**: docs/73 RU8 (serve them parity; fixes random loss,
   not outages) and RU3 (the carrier uplink; fixes both).
 
+## Browser broadcaster: a slow uplink becomes unbounded delay, not dropped frames
+
+- **Found**: 2026-10-18, in docs/73's lab (F18): Chrome for Testing 151
+  replaying frame-size traces through the shipping packetizer and
+  `DatagramSender`, on paths where Chrome's Cubic carries less than the
+  stream (40 ms RTT with 0.5–1 % loss, 100 ms with any loss), or past
+  Chrome's per-datagram ceiling (the 1440p trace, reachable through the
+  50 Mbps bitrate override).
+- **Symptom**: decode-ready latency at the relay grew without bound —
+  p50 15–38 s within a 100 s run, about 40 s at 1440p — where the native
+  engine on the same path stays under 2 s by dropping (quinn's 1 MiB
+  datagram buffer, oldest first). Viewers see nothing during the shortfall
+  either way, but the backlog outlives it: the stream stays stale until
+  the queue has drained.
+- **Cause (read from source)**: `DatagramSender.send`
+  (`transport/connection.ts`) chains every frame's writes onto one promise
+  and never refuses one; `BroadcastPipeline.handleEncoded` sends every
+  delta; `FallbackController` counts only encoder backpressure
+  (`encoder.encode` rejected), so a send backlog never steps the ladder
+  down. Keyframe streams have the same shape: `sendKeyframeStream` opens
+  one per keyframe and never cancels it, so where even keyframes outrun
+  the link they queue too (13 s at 100 ms with 1 % loss, docs/73 F18) —
+  the engine's F-12 rule has no browser counterpart.
+- **Impact**: violates "favor dropped frames over stalled playback" on the
+  browser broadcaster. Within the default ladder (10 Mbps cap) it takes a
+  lossy long path to trigger; with the bitrate override a fast enough
+  stream triggers it on a clean one.
+- **Fix would start**: test-first, with a fake datagram writer that stalls:
+  a delta whose frame is older than a bound (one GOP, as the native
+  carrier's deadline) is dropped whole and counted in `droppedFrames`, and
+  a keyframe stream still writing 2 s on, with a newer keyframe waiting,
+  is aborted — the engine's F-12 rule (docs/38). docs/73 OD5.
+
 ## The relay drops high-rung publisher datagrams that QUIC already acknowledged
 
 - **Found**: 2026-10-17, in docs/73's lab (F7), then on the real relay
@@ -896,8 +929,9 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   512 or 4096 to 0–21;
   raising the connection-level queue (128) did nothing, and a relay
   goroutine that only drains the queue did not help, with CPU to spare or
-  without (2 099 against 2 120 with 2 viewers): it gets the same scheduling
-  gaps as the loop it replaced. The edge's
+  without (1 810 against 2 120 with 2 viewers) — its own channel never
+  overflowed, so the datagrams were lost in quic-go's 32 before any reader
+  took them. The edge's
   pull session reads origin → edge datagrams through the same queue.
 - **Impact**: high-rung datagram publishers lose the tails of their largest
   frames — parity included — at the relay, for every viewer, and the loss

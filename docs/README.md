@@ -99,7 +99,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`70`](70-ios-ux-redesign.md) | R68 — iOS app UX redesign: gawk's dark tokens in Liquid Glass, three tabs with one code box for broadcasts and rooms, a video-only player with controls on tap, the web room screen, a Live Activity, iPad layouts |
 | [`71`](71-content-flagging.md) | R40 — automatic content flagging: a `gawk-sampler` module scores cached keyframes with NudeNet, `gawk-admin` pages and tracks content flags, the operator judges live; ships observing, calibrated on real broadcasts before it flags |
 | [`72`](72-moderation-timeline.md) | R70 — the broadcast moderation timeline: a per-broadcast drill-down of scores, incidents and events with a decision panel per incident; flicker pages once, returns after review are marked, dismissals carry a reason and a scope |
-| [`73`](73-reliable-uplink.md) | R71 — Reliable broadcaster uplink, measured first: the per-GOP carrier on leg A, quinn's congestion controller, the Reliable · Lowest latency choice; the lab (shipping QUIC stacks, real-encoder traces, the shipping viewer replayed) and its tables |
+| [`73`](73-reliable-uplink.md) | R71 — Reliable broadcaster uplink, measured first: the per-GOP carrier on leg A, quinn's congestion controller, the Reliable · Lowest latency choice; the browser broadcaster on Chrome's own stack; the lab (shipping QUIC stacks, real-encoder traces, the shipping viewer replayed) and its tables |
 
 ## Audio
 
