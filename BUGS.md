@@ -886,8 +886,8 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   Chrome's per-datagram ceiling (the 1440p trace, reachable through the
   50 Mbps bitrate override).
 - **Symptom**: decode-ready latency at the relay grew without bound —
-  p50 15–38 s within a 100 s run, about 40 s at 1440p — where the native
-  engine on the same path stays under 2 s by dropping (quinn's 1 MiB
+  p50 15–38 s within a 100 s run, 40–45 s at 1440p — where the native
+  engine on the same path stays under 2.5 s by dropping (quinn's 1 MiB
   datagram buffer, oldest first). Viewers see nothing during the shortfall
   either way, but the backlog outlives it: the stream stays stale until
   the queue has drained.
@@ -904,11 +904,18 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   browser broadcaster. Within the default ladder (10 Mbps cap) it takes a
   lossy long path to trigger; with the bitrate override a fast enough
   stream triggers it on a clean one.
-- **Fix would start**: test-first, with a fake datagram writer that stalls:
-  a delta whose frame is older than a bound (one GOP, as the native
-  carrier's deadline) is dropped whole and counted in `droppedFrames`, and
-  a keyframe stream still writing 2 s on, with a newer keyframe waiting,
-  is aborted — the engine's F-12 rule (docs/38). docs/73 OD5.
+- **Where the backlog sits (measured)**: in `DatagramSender`'s chain —
+  frames handed to it but not yet written grew from 564 to 1 858 over a
+  100 s run (docs/73 table P7). Chrome's own knobs do not reach it:
+  `datagrams.outgoingMaxAge` (100 ms) changed nothing, and raising
+  `outgoingHighWaterMark` to 1000 only moved the backlog into the stream's
+  queue, where Chrome did not expire it either (decode-ready p50 32 s).
+- **Fix would start**: in `DatagramSender`, not in Chrome's settings —
+  test-first, with a fake datagram writer that stalls: a delta whose frame
+  is older than a bound (one GOP, as the native carrier's deadline) when
+  its turn comes is dropped whole and counted in `droppedFrames`, and a
+  keyframe stream still writing 2 s on, with a newer keyframe waiting, is
+  aborted — the engine's F-12 rule (docs/38). docs/73 OD5.
 
 ## The relay drops high-rung publisher datagrams that QUIC already acknowledged
 
