@@ -242,8 +242,9 @@ def opt_table(title, view, extra=None):
 
 
 print("\n#### Table L — what the cheap changes buy without the carrier (shown · stalled)\n")
-print("\"today\": datagrams, Cubic, quic-go's 32-deep queue. \"queue\": the receiver built with D7's 4096-deep")
-print("queue. \"carrier + BBR\" is OD1 + OD2 for comparison; its deltas never meet the queue.")
+print("\"today\": datagrams, Cubic, quic-go's 32-deep queue. \"queue\": the receiver built with a 4096-deep")
+print("queue (D7 ships 512, which lost the same on the real relay, table N). \"carrier + BBR\" is OD1 + OD2")
+print("for comparison; its deltas never meet the queue.")
 opt_table("Table L1 — Balanced (the default viewer)", "adaptive")
 opt_table("Table L2 — Lowest latency (stalled is the loss measure)", "off")
 opt_table("Table L3 — Smoother (no parity today; the last column adds OD6's parity)", "resilient",

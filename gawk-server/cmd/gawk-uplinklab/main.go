@@ -4,6 +4,7 @@
 //
 //	gawk-uplinklab recv  -addr 127.0.0.1:4500 -out recv.csv
 //	gawk-uplinklab proxy -listen 127.0.0.1:4600 -upstream 127.0.0.1:4500 -rtt 10ms -loss 0.01
+//	gawk-uplinklab sub   -url https://127.0.0.1:4433 -id-file id.txt -out sub.csv
 //
 // The sender is the Rust tool in gawk-broadcast-desktop/tools/uplinklab,
 // which dials with the engine's quinn configuration. Every timestamp is the
@@ -26,6 +27,8 @@ func main() {
 		err = runRecv(os.Args[2:])
 	case "proxy":
 		err = runProxy(os.Args[2:])
+	case "sub":
+		err = runSub(os.Args[2:])
 	default:
 		usage()
 	}
@@ -36,6 +39,6 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: gawk-uplinklab recv|proxy [flags]")
+	fmt.Fprintln(os.Stderr, "usage: gawk-uplinklab recv|proxy|sub [flags]")
 	os.Exit(2)
 }
