@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The shared-bottleneck matrix (docs/73 RU4, §11 table N): each delivery mode
+# The shared-bottleneck matrix (docs/73 RU4, §11 table O): each delivery mode
 # and controller alone on the uplink and with a household's bulk TCP upload,
 # plus the TCP flow alone, at 30 and 15 Mbps (1080p) and 80 Mbps (1440p),
 # three runs per 1080p cell and two per 1440p cell. Needs Docker with
@@ -18,7 +18,7 @@ one() { # name rate mode cc trace tcp
   timeout 300 docker run --rm --cap-add NET_ADMIN "${nix[@]}" -e OWNER="$(id -u):$(id -g)" \
     -v "$OUT:/lab" -v "$HERE/run.sh:/run.sh:ro" uplinklab-fair \
     sh /run.sh "/lab/fair/$name" "$2" "$3" "$4" "/lab/traces/$5" "$6" && touch "$OUT/fair/$name/done"
-  echo "done $name"
+  if [ -f "$OUT/fair/$name/done" ]; then echo "done $name"; else echo "FAILED $name"; fi
 }
 export -f one; export OUT HERE
 cells() { # rate trace seeds

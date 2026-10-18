@@ -127,8 +127,8 @@ delta is a burst of 52–84 datagrams, and 32 is about a millisecond of them
 at a 300 Mbps arrival rate: any scheduling gap in the reading goroutine
 drops the burst's tail, parity included. Measured on the **real relay**
 (§11 tables G and N), at 1440p on a clean 300 Mbps path where quinn counted
-no lost packet, with 2 viewers — a relay with CPU to spare, dropping nothing
-to its viewers — the relay's own `ingress_chunks_lost_total` read
+no lost packet, with 2 viewers and the lab's measuring viewer — a relay
+with CPU to spare, dropping nothing to its viewers — the relay's own `ingress_chunks_lost_total` read
 **1 871–2 251 chunks a minute (≈ 1 %)** over three runs, and a viewer
 could not decode **39–47 % of frames**: the lost chunks are burst tails,
 more than parity repairs, and each breaks the rest of its GOP. With 4
@@ -277,7 +277,8 @@ by depth on the real relay (§11 table N; three runs a cell unless noted):
   entries lost no chunk in any of six runs, 512 and 4096 lost 0–21, and at
   every depth from 128 up the viewer saw 0.0–1.8 % of frames undecodable
   (in the runs whose ingress lost nothing, all of it lost after the
-  relay), against 39–57 % at 32. With 2 viewers no depth moved the viewer's
+  relay), against 39–57 % at 32. (Each load also carries the lab's measuring
+  viewer.) With 2 viewers no depth moved the viewer's
   chunk latency (p99 22–24 ms). With 4 the tail grows with depth: chunk p99
   35 ms at 32, then 47 / 57 / 69 ms at 128 / 512 / 4096; decode-ready p99
   62 / 62 / 64 / 74 ms.
@@ -302,8 +303,8 @@ by depth on the real relay (§11 table N; three runs a cell unless noted):
 
 So D7 picks **512**, not the 4096 first measured: it lost the same as 128
 on every cell, holds a top-rung delta (p90 ≈ 82 datagrams) about six times
-over where 128 holds it one and a half times, and its tail stayed within
-128's spread. 4096 bought nothing over either, and once the relay was busy
+over where 128 holds it one and a half times, and its tail was comparable
+to 128's. 4096 bought nothing over either, and once the relay was busy
 its tail was the longest and the least predictable (chunk p99 69 ms against
 47–57 with 4 viewers; 54 and 149 ms in two runs on one core).
 
@@ -370,10 +371,10 @@ decisions.
 
 | # | Question | Options | Decision / recommendation |
 |---|---|---|---|
-| OD1 | What does a broadcaster get by default? | **Reliable** (the carrier, whenever the relay supports it) with *Lowest latency* (datagrams + parity) as a choice; or *Lowest latency* by default with Reliable as the choice. | **Decided 2026-10-18: Reliable by default** (D4), switched on with BBR once RU7's hardware pass holds. It costs nothing on a clean path (F1), fixes the bursts and outages that motivated R55 (F2), serves the default viewer at least as well on every lossy path measured — within half a point on random loss, far better on bursts and outages (F2, F3) — and is the only thing measured that protects *Smoother* and *Most stable* viewers from every kind of leg-A loss (F14). Beside a household's upload it is what keeps the picture (F17: 92–98 % of frames shown with BBR against today's 19–89 %, for 25–78 ms). *Lowest latency* stays a first-class choice, not a warned-against legacy mode: on a long path with random loss it is what keeps live-edge viewers from waiting (F3). |
-| OD2 | Which congestion controller does the engine run? | quinn's Cubic (today); quinn's BBR; a controller of our own. | **Decided 2026-10-18: BBR for both delivery modes, behind RU4's gates, shipped with the carrier and not ahead of it** (D5, §8). F4/F5 make it the larger reliability lever. It helps *Lowest latency* on every random-loss path too, and costs it a few points of frames under outages (F5). Beside a household's upload, the carrier with BBR is the only combination that stays watchable on every uplink measured (F17). Its measured costs are on an uplink the stream nearly fills: there it loses 7–10 % of its own packets, which costs the Balanced viewer 3 points and 33 ms on the carrier and 13 points on datagrams, and it leaves a household upload about half its share (F17). That cost is why it ships with the carrier: 3 points there against 13 on datagrams. **That cell is recorded, not gated** (G5): no controller that holds the stream's rate passes RU4's share gate there, and today's broadcast (datagrams, Cubic) is already broken on it (82 % shown alone, 19 % beside an upload). Instead RU4 requires the upload-bandwidth warning to fire on it, because a lower rung is the fix there, not a controller. It is the one decision here with a production risk (§10): RU4 ships it with the old controller one setting away, and reverts if the gates fail. Our own controller is out of scope (§9). |
+| OD1 | What does a broadcaster get by default? | **Reliable** (the carrier, whenever the relay supports it) with *Lowest latency* (datagrams + parity) as a choice; or *Lowest latency* by default with Reliable as the choice. | **Decided 2026-10-18: Reliable by default** (D4), switched on with BBR once RU7's hardware pass holds. It costs nothing on a clean path (F1), fixes the bursts and outages that motivated R55 (F2), serves the default viewer at least as well on every lossy path measured — within half a point on random loss, far better on bursts and outages (F2, F3) — and is the only thing measured that protects *Smoother* and *Most stable* viewers from every kind of leg-A loss (F14). Beside a household's upload it is what keeps the picture (F17: 92–98 % of frames shown with BBR at 117–283 ms on screen, against today's 19–89 % at 117–395 ms). *Lowest latency* stays a first-class choice, not a warned-against legacy mode: on a long path with random loss it is what keeps live-edge viewers from waiting (F3). |
+| OD2 | Which congestion controller does the engine run? | quinn's Cubic (today); quinn's BBR; a controller of our own. | **Decided 2026-10-18: BBR for both delivery modes, behind RU4's gates, shipped with the carrier and not ahead of it** (D5, §8). F4/F5 make it the larger reliability lever. It helps *Lowest latency* on every random-loss path too, and costs it a few points of frames under outages (F5). Beside a household's upload, the carrier with BBR is the only combination that stays watchable on every uplink measured (F17). Its measured costs are on an uplink the stream nearly fills: there it loses 7–10 % of its own packets, which costs the Balanced viewer 3 points and 33 ms on the carrier and 13 points on datagrams, and it leaves a household upload about half its share (F17). That cost is why it ships with the carrier: 3 points there against 13 on datagrams. **That cell is recorded, not gated** (G5): no controller that holds the stream's rate passes RU4's share gate there, and today's broadcast (datagrams, Cubic) is already broken on it (82 % shown alone, 19 % beside an upload). Instead RU4 requires the upload-bandwidth warning to fire on it, because a lower rung is the fix there, not a controller. It is the one decision here with a production risk (§10): RU4 ships it with the old controller one setting away, and it stays on Cubic if the gates fail. Our own controller is out of scope (§9). |
 | OD3 | Who can choose? | The broadcaster's app; the relay operator; viewers. | **Decided 2026-10-18: the broadcaster (Quality page) and the operator (`-uplink-carriers`)** (D4, §6). Viewers choose their own buffering (R32 presets) and cannot choose how leg A is carried — it is one stream for all of them. The iOS app follows the engine default with no setting until someone asks for one. |
-| OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Decided 2026-10-18: make the queue longer, to 512** (D7), first (§8): measured, it is the only one of the three that works (≈ 2 100 → 0 chunks a minute on a relay with CPU to spare; the drain: 2 099), and 512 rather than longer because past capacity a longer queue only adds delay (F16). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
+| OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Decided 2026-10-18: make the queue longer, to 512** (D7), first (§8): measured, it is the only one of the three that works (≈ 2 100 → 0–21 chunks a minute on a relay with CPU to spare, 0 in every 128 run; the drain: 2 099), and 512 rather than longer because past capacity a longer queue only adds delay (F16). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
 | OD6 | Does the relay serve parity to reliable delivery (*Smoother*, *Most stable*)? | Keep serving them none (docs/34 §3); serve them the fleet's parity like live-edge viewers. | **Decided 2026-10-18: serve it** (D11), first (§8). On any datagram uplink — *Lowest latency*, the browser broadcaster, an older app — it lifts those viewers from 32–89 % to 95.6–100 % of frames under 0.1–1 % loss (F14), for 2.5–10.4 % more egress to them, relay-side only. It does not replace the carrier: it cannot repair an outage. |
 | OD5 | Does the browser broadcaster follow? | Now; after measuring Chrome's QUIC stack; not at all. | **Recommendation (open): after a measurement**, as its own chunk outside this milestone. Chrome's controller and stream scheduling are not quinn's, nothing here measured them, and the browser broadcaster is not where the losing uplinks were found. |
 
@@ -581,9 +582,16 @@ one GOP):
   only separable after the fact. One rule, readable in telemetry, as docs/57
   OD2 argued.
 - **When the default flips** (OD1, 2026-10-18): Reliable becomes the
-  default in the same release as D5's BBR, once RU7's hardware pass holds.
-  Until then the setting ships with *Lowest latency* as its default, so
-  the carrier is opt-in while it is proven on real uplinks.
+  default once RU7's hardware pass holds for the carrier, and D5's BBR
+  flips in the same release if its own gates hold too. Until then the
+  setting ships with *Lowest latency* as its default, so the carrier is
+  opt-in while it is proven on real uplinks. The two gates are separate
+  because OD2 only orders them: BBR never ships ahead of the carrier, but
+  the carrier does not wait for BBR — if BBR's gates fail, Reliable still
+  becomes the default on Cubic, which beats today's path on every cell
+  measured (F2 at 10 ms; beside an upload 98 / 82.5 / 91 % of frames
+  against 89 / 19 / 30 %, table O). If the carrier fails RU7, neither
+  default flips.
 - **The operator's switch** stays: `-uplink-carriers=false` never sends the
   capability, so every broadcaster on that fleet uses datagrams.
 - **Not a warning dialog.** docs/57 put *Legacy* behind "makes viewers see
@@ -622,8 +630,8 @@ one GOP):
   and the thin 15 Mbps cell is recorded, not gated, by owner decision —
   holding the stream's rate there leaves the upload at most ~46 % of its
   share whichever controller does it, F17), and the hardware pass. If a
-  gate fails, Cubic stays and the carrier still ships: F2 holds under
-  Cubic at 10 ms, where the R55 Mac is.
+  gate fails, Cubic stays and the carrier still becomes the default on it
+  (D4): F2 holds under Cubic at 10 ms, where the R55 Mac is.
 
 ### D6 — Lowest latency stays today's datagram path
 
@@ -761,7 +769,7 @@ delivery switch lands there, beside Resolution, Frame rate and Upload cap):
   (D6).
 - **iOS**: no setting (OD3); the app runs the engine default.
 
-**Viewers** choose nothing new. With OD1, OD2 and OD6 as recommended, by
+**Viewers** choose nothing new. With OD1, OD2 and OD6 as decided, by
 preset (§11 tables I, J, K):
 
 - **On a clean path** nothing changes for anyone (F1).
@@ -808,8 +816,8 @@ preset (§11 tables I, J, K):
    not ahead of it (D5). Both reach broadcasters behind their settings,
    with today's behaviour as the default.
 3. **RU7, then the defaults flip** — Reliable and BBR in one release (D4,
-   D5). If RU7 or RU4's gates fail, the defaults stay where they are and
-   §2 gets the reason.
+   D5). If only BBR's gates (RU4) fail, Reliable flips on Cubic; if the
+   carrier fails RU7, neither flips. Either way §2 gets the reason.
 
 RU6, the lab, comes with this doc.
 
@@ -880,7 +888,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 |---|---|
 | `congestion: "bbr" \| "cubic"` in `broadcast.json`, reported as `uplinkCongestion`, shown in Diagnostics; `cubic` restores today's transport exactly | unit |
 | G5's lab gate, recorded in §11 (this pass meets it) | lab |
-| Shared uplink (`tools/uplinklab/fair`, table O): at 80 Mbps with a 50 ms queue and one competing TCP flow, the broadcast holds its rate and the TCP flow keeps ≥ 50 % of its fair share (this pass, carrier · BBR: 0 % undecodable, and the flow keeps 90–91 %); at 30 Mbps the same (0 %, 101–102 %); at 15 Mbps recorded, not gated (48–49 %, where any controller that holds the stream's rate leaves at most ~46 %, F17) | lab |
+| Shared uplink (`tools/uplinklab/fair`, table O): at 80 Mbps with a 50 ms queue and one competing TCP flow, the TCP flow keeps ≥ 50 % of its fair share and the broadcast holds up — on the carrier ≤ 0.5 % undecodable, on datagrams no fewer frames shown than Cubic's beyond table M's 3 points (this pass: carrier · BBR 0 %, the flow 90–91 %; datagrams 83.5 against 30.1 % shown); at 30 Mbps the same (0 %, 101–102 %; datagrams 86.2 against 88.9 %, within the spread); at 15 Mbps recorded, not gated (48–49 %, where any controller that holds the stream's rate leaves at most ~46 %, F17) | lab |
 | On table O's thin cell (15 Mbps, alone and beside the upload) the upload-bandwidth warning (docs/38's `uplink` monitor) shows in both delivery modes, within its 5 s hysteresis; if its signals miss BBR's own packet loss, the monitor gains one that does, red first | lab + unit |
 | The hardware pass (RU7) shows no regression against Cubic on either machine | hardware |
 | Default flips to `bbr` only when all three pass; otherwise this chunk records why and Cubic stays | review |
@@ -917,7 +925,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 |---|---|
 | G4 on the reference Mac; G1 on the gaming PC wired; one session over a long real path (≥ 40 ms to the fleet) in both delivery modes | manual |
 | §11 records each against the RU0 baseline | review |
-| Only then do the D4 and D5 defaults flip, in one release; a failed pass leaves both settings at today's defaults with the reason recorded in §2 | review |
+| Only then do the defaults flip, in one release (D4): Reliable if the carrier passes, BBR too if RU4's gates also pass; a carrier that fails leaves both at today's defaults. The reason for anything that does not flip is recorded in §2 | review |
 
 ## 9. Non-goals
 
@@ -1485,33 +1493,35 @@ for comparison; its deltas never meet the queue.
 
 `tools/uplinklab/queue.sh`: table G's setup with a lab viewer on the
 4096-deep build attached as well (its per-frame log gives latency through
-the relay); "1 core" pins the relay to one core instead of three.
-Mean of the runs, range in brackets.
+the relay); "1 core" pins the relay to one core instead of three. The
+viewer counts are `gawk-loadgen`'s; the lab viewer is one more. *Dropped to
+viewers* is `queue_full` as a share of the fan-out (datagrams relayed ×
+subscribers). Mean of the runs, range in brackets.
 
 | Load | Depth | Runs | Ingress chunks lost (60 s) | Dropped to viewers | Viewer: undecodable | Viewer: chunk latency p50 / p99 ms | Viewer: decode-ready p99 ms | Relay peak RSS |
 |---|---|---|---|---|---|---|---|---|
-| 1440p, 3 cores, 2 viewers | 32 | 3 | 2 120 (1 871–2 251) | 0 | 43.8 % (39.3–46.5) | 13 (13–13) / 22 (21–22) | 55 (54–57) | 40 MB (40–41) |
-| 1440p, 3 cores, 2 viewers | 128 | 3 | 0 | 0 | 0.6 % (0.0–0.9) | 13 (13–13) / 23 (22–23) | 50 (49–52) | 41 MB (40–41) |
-| 1440p, 3 cores, 2 viewers | 512 | 3 | 7 (0–21) | 0 | 0.7 % (0.2–0.9) | 13 (13–14) / 24 (22–27) | 51 (51–53) | 41 MB (40–41) |
-| 1440p, 3 cores, 2 viewers | 4096 | 3 | 0 | 0 | 0.3 % (0.0–0.9) | 13 (13–13) / 23 (22–25) | 50 (48–52) | 40 MB (40–41) |
-| 1440p, 3 cores, 2 viewers | 32, drained | 3 | 2 099 (1 684–2 497) | 0 | 45.2 % (38.3–50.3) | 13 (13–13) / 22 (22–22) | 56 (55–58) | 41 MB (40–41) |
-| 1440p, 3 cores, 4 viewers | 32 | 3 | 4 127 (3 205–5 337) | 1 665 (0–4 996) | 53.8 % (51.5–56.5) | 15 (15–15) / 35 (35–36) | 62 (59–67) | 44 MB (43–44) |
-| 1440p, 3 cores, 4 viewers | 128 | 3 | 0 | 0 | 0.9 % (0.0–1.8) | 15 (15–15) / 47 (38–63) | 62 (56–67) | 44 MB (43–44) |
-| 1440p, 3 cores, 4 viewers | 512 | 3 | 1 (0–3) | 1 (0–4) | 0.4 % (0.0–1.0) | 15 (15–15) / 57 (47–63) | 64 (61–67) | 43 MB (43–44) |
-| 1440p, 3 cores, 4 viewers | 4096 | 3 | 0 | 0 | 0.6 % (0.0–0.9) | 15 (15–15) / 69 (53–80) | 74 (66–79) | 45 MB (44–46) |
-| 1440p, 3 cores, 4 viewers | 32, drained | 3 | 3 981 (3 808–4 079) | 0 | 49.7 % (49.1–51.0) | 15 (15–15) / 37 (33–42) | 58 (57–60) | 43 MB (43–44) |
-| 1440p, 3 cores, 15 viewers (fan-out saturated) | 32 | 1 | 5 749 | 526 199 | 87.0 % | 75 / 488 | 443 | 66 MB |
-| 1440p, 3 cores, 15 viewers (fan-out saturated) | 128 | 1 | 0 | 628 533 | 34.9 % | 97 / 482 | 453 | 68 MB |
-| 1440p, 3 cores, 15 viewers (fan-out saturated) | 512 | 1 | 0 | 639 317 | 32.7 % | 90 / 463 | 450 | 64 MB |
-| 1440p, 3 cores, 15 viewers (fan-out saturated) | 4096 | 1 | 0 | 621 727 | 33.3 % | 124 / 488 | 461 | 65 MB |
-| 1080p, 1 core, 15 viewers (overloaded) | 32 | 2 | 510 (252–769) | 194 | 6.2 % (5.2–7.2) | 13 (13–13) / 61 (54–68) | 85 (77–92) | 47 MB (47–47) |
-| 1080p, 1 core, 15 viewers (overloaded) | 128 | 2 | 0 | 0 | 0.9 % (0.0–1.8) | 13 (13–14) / 74 (63–86) | 90 (74–107) | 46 MB (46–47) |
-| 1080p, 1 core, 15 viewers (overloaded) | 512 | 2 | 2 (0–3) | 0 | 0.0 % | 14 (14–14) / 83 (70–95) | 98 (88–108) | 47 MB (47–48) |
-| 1080p, 1 core, 15 viewers (overloaded) | 4096 | 2 | 7 (0–14) | 0 | 0.3 % (0.0–0.6) | 13 (12–13) / 101 (54–149) | 103 (72–134) | 46 MB (46–47) |
-| 1440p, 1 core, 15 viewers (saturated) | 32 | 1 | 60 229 | 0 | 92.9 % | 23 / 98 | 434 | 53 MB |
-| 1440p, 1 core, 15 viewers (saturated) | 128 | 1 | 36 056 | 195 061 | 93.6 % | 397 / 1 108 | 2 683 | 60 MB |
-| 1440p, 1 core, 15 viewers (saturated) | 512 | 1 | 35 544 | 329 280 | 91.5 % | 583 / 1 011 | 2 125 | 61 MB |
-| 1440p, 1 core, 15 viewers (saturated) | 4096 | 1 | 36 089 | 311 514 | 91.6 % | 547 / 964 | 2 164 | 59 MB |
+| 1440p, 3 cores, 2 viewers | 32 | 3 | 2 120 (1 871–2 251) | 0.0 % | 43.8 % (39.3–46.5) | 13 (13–13) / 22 (21–22) | 55 (54–57) | 40 MB (40–41) |
+| 1440p, 3 cores, 2 viewers | 128 | 3 | 0 | 0.0 % | 0.6 % (0.0–0.9) | 13 (13–13) / 23 (22–23) | 50 (49–52) | 41 MB (40–41) |
+| 1440p, 3 cores, 2 viewers | 512 | 3 | 7 (0–21) | 0.0 % | 0.7 % (0.2–0.9) | 13 (13–14) / 24 (22–27) | 51 (51–53) | 41 MB (40–41) |
+| 1440p, 3 cores, 2 viewers | 4096 | 3 | 0 | 0.0 % | 0.3 % (0.0–0.9) | 13 (13–13) / 23 (22–25) | 50 (48–52) | 40 MB (40–41) |
+| 1440p, 3 cores, 2 viewers | 32, drained | 3 | 2 099 (1 684–2 497) | 0.0 % | 45.2 % (38.3–50.3) | 13 (13–13) / 22 (22–22) | 56 (55–58) | 41 MB (40–41) |
+| 1440p, 3 cores, 4 viewers | 32 | 3 | 4 127 (3 205–5 337) | 0.2 % (0.0–0.5) | 53.8 % (51.5–56.5) | 15 (15–15) / 35 (35–36) | 62 (59–67) | 44 MB (43–44) |
+| 1440p, 3 cores, 4 viewers | 128 | 3 | 0 | 0.0 % | 0.9 % (0.0–1.8) | 15 (15–15) / 47 (38–63) | 62 (56–67) | 44 MB (43–44) |
+| 1440p, 3 cores, 4 viewers | 512 | 3 | 1 (0–3) | 0.0 % (0.0–0.0) | 0.4 % (0.0–1.0) | 15 (15–15) / 57 (47–63) | 64 (61–67) | 43 MB (43–44) |
+| 1440p, 3 cores, 4 viewers | 4096 | 3 | 0 | 0.0 % | 0.6 % (0.0–0.9) | 15 (15–15) / 69 (53–80) | 74 (66–79) | 45 MB (44–46) |
+| 1440p, 3 cores, 4 viewers | 32, drained | 3 | 3 981 (3 808–4 079) | 0.0 % | 49.7 % (49.1–51.0) | 15 (15–15) / 37 (33–42) | 58 (57–60) | 43 MB (43–44) |
+| 1440p, 3 cores, 15 viewers (fan-out saturated) | 32 | 1 | 5 749 | 16.4 % | 87.0 % | 75 / 488 | 443 | 66 MB |
+| 1440p, 3 cores, 15 viewers (fan-out saturated) | 128 | 1 | 0 | 18.8 % | 34.9 % | 97 / 482 | 453 | 68 MB |
+| 1440p, 3 cores, 15 viewers (fan-out saturated) | 512 | 1 | 0 | 19.2 % | 32.7 % | 90 / 463 | 450 | 64 MB |
+| 1440p, 3 cores, 15 viewers (fan-out saturated) | 4096 | 1 | 0 | 18.6 % | 33.3 % | 124 / 488 | 461 | 65 MB |
+| 1080p, 1 core, 15 viewers (overloaded) | 32 | 2 | 510 (252–769) | 0.0 % (0.0–0.0) | 6.2 % (5.2–7.2) | 13 (13–13) / 61 (54–68) | 85 (77–92) | 47 MB (47–47) |
+| 1080p, 1 core, 15 viewers (overloaded) | 128 | 2 | 0 | 0.0 % | 0.9 % (0.0–1.8) | 13 (13–14) / 74 (63–86) | 90 (74–107) | 46 MB (46–47) |
+| 1080p, 1 core, 15 viewers (overloaded) | 512 | 2 | 2 (0–3) | 0.0 % | 0.0 % | 14 (14–14) / 83 (70–95) | 98 (88–108) | 47 MB (47–48) |
+| 1080p, 1 core, 15 viewers (overloaded) | 4096 | 2 | 7 (0–14) | 0.0 % | 0.3 % (0.0–0.6) | 13 (12–13) / 101 (54–149) | 103 (72–134) | 46 MB (46–47) |
+| 1440p, 1 core, 15 viewers (saturated) | 32 | 1 | 60 229 | 0.0 % | 92.9 % | 23 / 98 | 434 | 53 MB |
+| 1440p, 1 core, 15 viewers (saturated) | 128 | 1 | 36 056 | 9.7 % | 93.6 % | 397 / 1 108 | 2 683 | 60 MB |
+| 1440p, 1 core, 15 viewers (saturated) | 512 | 1 | 35 544 | 15.6 % | 91.5 % | 583 / 1 011 | 2 125 | 61 MB |
+| 1440p, 1 core, 15 viewers (saturated) | 4096 | 1 | 36 089 | 15.2 % | 91.6 % | 547 / 964 | 2 164 | 59 MB |
 
 #### Table O — a shared uplink: the broadcast beside a household's TCP upload (F17, D5)
 

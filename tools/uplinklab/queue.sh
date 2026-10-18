@@ -16,7 +16,14 @@ run() { # name depth trace relaycpus viewers
   case $2 in 32) ;; drain) bin=gawk-server-drain ;; *) bin=gawk-server-q$2 ;; esac
   RELAY_BIN=$OUT/bin/$bin RELAY_CPUS=$4 VIEWER_CPUS=3-4 SENDER_CPUS=5-6 SUB=1 PROXY_ARGS="$P" \
     timeout 200 "$HERE/relay.sh" "$OUT/queue/$1" "$OUT/traces/$3" "$5" 60 > /dev/null 2>&1
-  echo "done $1"
+  # relay.sh leaves metrics.txt even when the sender died early: a run with
+  # an empty log on either side is discarded, not averaged into table N.
+  if [ -s "$OUT/queue/$1/send.csv" ] && [ -s "$OUT/queue/$1/recv.csv" ]; then
+    echo "done $1"
+  else
+    mv "$OUT/queue/$1" "$OUT/queue/$1.failed.$$"
+    echo "FAILED $1"
+  fi
 }
 for s in 1 2 3; do for v in 2 4; do for q in 32 128 512 4096 drain; do
   c=q$q; [ $q = drain ] && c=drain

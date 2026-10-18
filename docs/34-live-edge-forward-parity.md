@@ -122,7 +122,8 @@ per-frame code costs none.
 chunk lost on the broadcaster's uplink is missing at the relay, so the
 carrier cannot retransmit it and, with no parity, these viewers freeze where
 a live-edge viewer recovers: at 0.1 % uplink loss, ~88 % of frames against
-100 %. docs/73 OD6 proposes serving them parity.
+100 %. docs/73 OD6 (decided 2026-10-18) serves them parity too (D11,
+RU8), revising the suppression above.
 
 ---
 
