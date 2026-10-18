@@ -14,9 +14,16 @@ jobs:
     # without this they'd just fail noisily on every push; this skips them
     # cleanly. To review an outside contribution, comment "@claude review this"
     # on it — claude.yml handles that, gated the same way.
+    #
+    # tuhokuutio[bot] is the GitHub App the coding agent opens PRs as. It can
+    # push here, but GitHub reports an App's author_association as NONE, so it
+    # is named explicitly. A login cannot be spoofed, and the same-repo check
+    # still applies. allowed_bots below lets the action run for it too.
     if: |
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+      github.event.pull_request.head.repo.full_name == github.repository && (
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) ||
+        github.event.pull_request.user.login == 'tuhokuutio[bot]'
+      )
 
     runs-on: ubuntu-latest
     permissions:
@@ -31,16 +38,18 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Run Claude Code Review
-        id: claude-review
-        # Pinned to main for Claude Code 2.1.280: the v1 tag still installs 2.1.278,
-        # which the API rejects for --model claude-opus-5-5 (400
-        # claude_code_version_too_old). Return to @v1 once a release ships 2.1.280+.
-        uses: anthropics/claude-code-action@a26b07d8c778b0c43f64618e5fd29fd0f8af72e8
+      # Reports the session's tokens and equivalent cost to the ioio telemetry
+      # collector as device-gawk-ci. Turns itself off, without failing the
+      # run, if the secrets or Keycloak are unavailable. It writes the whole
+      # settings file, so the session's own env goes in `env` here: a second
+      # `env` passed to the Claude step would replace this one, not add to it.
+      - name: Claude telemetry settings
+        id: otel
+        uses: ./.github/actions/claude-otel
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
+          client-id: ${{ secrets.CLAUDE_OTEL_CLIENT_ID }}
+          client-secret: ${{ secrets.CLAUDE_OTEL_CLIENT_SECRET }}
+          device-name: gawk-ci
           # Keep every subagent in the foreground. Headless -p mode ends the
           # session when the main agent ends its turn, and it does not wait for
           # background agents. On #354 the bot started its four reviewers with
@@ -48,7 +57,22 @@ jobs:
           # the job exited before any reviewer reported back: no comment, green
           # check. Several foreground Agent calls in one turn still run in
           # parallel.
-          settings: '{"env": {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}}'
+          env: '{"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}'
+
+      - name: Run Claude Code Review
+        id: claude-review
+        # Pinned to main for Claude Code 2.1.280: the v1 tag still installs 2.1.278,
+        # which the API rejects for --model claude-opus-5-5 (400
+        # claude_code_version_too_old). Return to @v1 once a release ships 2.1.280+.
+        uses: anthropics/claude-code-action@f27be6b65a4652f08a2ba3cff79114829b588967
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The action refuses runs started by a bot unless it is listed; pushes
+          # to the agent's PRs come from tuhokuutio[bot].
+          allowed_bots: 'tuhokuutio[bot]'
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          settings: ${{ steps.otel.outputs.settings }}
           prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           # The allowlist is the code-review plugin's own `allowed-tools`
           # (plugins/code-review/commands/code-review.md), verbatim. Allowing the

@@ -111,8 +111,10 @@ model:
   # The model's square input, which must match the file: 320 for 320n, 640
   # for 640m. CF9's calibration decides between them (docs/71 §5).
   inputSize: 320
-  # For 640m (103,538,690 bytes; roughly ten times the inference cost — raise
-  # resources with it):
+  # For 640m (103,538,690 bytes). Inference costs about 35 times 320n's:
+  # measured single-threaded on a Xeon E5-2620, 3.2 s vs 92 ms per sample,
+  # which is also what the two models' FLOPs predict. At a 5 s interval one
+  # worker then screens about one broadcast, so raise resources with it:
   #   url: https://api.github.com/repos/notAI-tech/NudeNet/releases/assets/176832019
   #   sha256: 04fe3d77980780c1f8297dc6d7f942fd5b3abe6942a188f742a85241e4f634eb
   #   inputSize: 640

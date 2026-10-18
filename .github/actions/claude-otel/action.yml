@@ -1,0 +1,114 @@
+# Points the Claude Code run in this job at the ioio telemetry collector
+# (otlp.ext.ioio.fi; ioio repo, docs/claude-telemetry.md), so CI sessions show
+# up beside the owner's other devices: tokens, equivalent cost, and each API
+# request in Loki.
+#
+# The repository is one enrolled "device" with its own Keycloak client
+# (device-<repo>-ci). Its credentials are the CLAUDE_OTEL_CLIENT_ID and
+# CLAUDE_OTEL_CLIENT_SECRET secrets; the collector takes the device identity
+# from the token, so a leaked secret can only post as this repo's CI, and
+# deleting the client in Keycloak cuts it off without touching anything else.
+#
+# Output `settings` is a complete settings file for claude-code-action's
+# `settings` input. It has to be complete: the action merges its input into
+# ~/.claude/settings.json one top-level key at a time, so a second `env` block
+# passed separately would replace this one rather than add to it. Put the
+# job's own env vars in the `env` input instead.
+#
+# Without the secrets (a fork, or a repo not enrolled yet) the file carries
+# only `env` and telemetry stays off: missing telemetry must never fail a run.
+name: Claude telemetry
+description: Write Claude Code settings that report to the ioio OTel collector.
+
+inputs:
+  client-id:
+    description: Keycloak client ID (secrets.CLAUDE_OTEL_CLIENT_ID)
+    required: false
+    default: ''
+  client-secret:
+    description: Keycloak client secret (secrets.CLAUDE_OTEL_CLIENT_SECRET)
+    required: false
+    default: ''
+  device-name:
+    description: device.name resource attribute, for display (e.g. "gawk-ci")
+    required: true
+  env:
+    description: Extra env for the session, as a JSON object
+    required: false
+    default: '{}'
+
+outputs:
+  settings:
+    description: Path to the settings file for claude-code-action's `settings` input
+    value: ${{ steps.write.outputs.settings }}
+
+runs:
+  using: composite
+  steps:
+    - id: write
+      shell: bash
+      env:
+        CLIENT_ID: ${{ inputs.client-id }}
+        CLIENT_SECRET: ${{ inputs.client-secret }}
+        DEVICE_NAME: ${{ inputs.device-name }}
+        EXTRA_ENV: ${{ inputs.env }}
+        # Which run a session belongs to. Not promoted to Prometheus labels
+        # (they would mint a series per run); they land on target_info and as
+        # Loki structured metadata, enough to go from a costly session to its
+        # PR or issue.
+        CI_ATTRS: >-
+          github.repository=${{ github.repository }},github.job=${{ github.job }},github.event_name=${{ github.event_name }},github.run_id=${{ github.run_id }}
+        NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      run: |
+        set -euo pipefail
+        [ -n "$NUMBER" ] && CI_ATTRS="$CI_ATTRS,github.number=$NUMBER"
+        out="$RUNNER_TEMP/claude-otel-settings.json"
+        echo "settings=$out" >> "$GITHUB_OUTPUT"
+
+        if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
+          echo "::notice title=Claude telemetry off::CLAUDE_OTEL_CLIENT_ID/SECRET not available to this run"
+          jq -n --argjson env "$EXTRA_ENV" '{env: $env}' > "$out"
+          exit 0
+        fi
+
+        # The helper reads ~/.config/claude-otel/client.json, the same layout
+        # enroll.sh writes on a workstation. The runner VM is discarded after
+        # the job, and Claude's allowlisted tools cannot read files.
+        conf="$HOME/.config/claude-otel"
+        mkdir -p "$conf" && chmod 700 "$conf"
+        install -m 0755 "$GITHUB_ACTION_PATH/otel-headers" "$conf/otel-headers"
+        (umask 077; jq -nc --arg id "$CLIENT_ID" --arg secret "$CLIENT_SECRET" '{
+          client_id: $id,
+          client_secret: $secret,
+          token_url: "https://keycloak.ext.ioio.fi/realms/claude-telemetry/protocol/openid-connect/token"
+        }' > "$conf/client.json")
+
+        # Fail soft: a Keycloak or collector outage should cost the metrics
+        # of this run, not the run.
+        if ! "$conf/otel-headers" > /dev/null; then
+          echo "::warning title=Claude telemetry off::could not get a token from Keycloak"
+          jq -n --argjson env "$EXTRA_ENV" '{env: $env}' > "$out"
+          exit 0
+        fi
+
+        # Same env as enroll.sh merges on a workstation, plus a 10 s metric
+        # export interval (default 60 s): a CI session is a single short
+        # process, and a run that ends between exports should lose seconds of
+        # counters, not a minute.
+        jq -n --arg helper "$conf/otel-headers" \
+              --arg attrs "device.name=$DEVICE_NAME,$CI_ATTRS" \
+              --argjson extra "$EXTRA_ENV" '{
+          otelHeadersHelper: $helper,
+          env: ({
+            CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+            OTEL_METRICS_EXPORTER: "otlp",
+            OTEL_LOGS_EXPORTER: "otlp",
+            OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+            OTEL_EXPORTER_OTLP_ENDPOINT: "https://otlp.ext.ioio.fi",
+            OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: "cumulative",
+            CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS: "300000",
+            OTEL_METRIC_EXPORT_INTERVAL: "10000",
+            OTEL_METRICS_INCLUDE_ENTRYPOINT: "true",
+            OTEL_RESOURCE_ATTRIBUTES: $attrs
+          } + $extra)
+        }' > "$out"
