@@ -17,7 +17,7 @@ one() { # name rate mode trace tcp
   timeout 300 unshare -rn env LAB="$OUT" UPLINK_OUT="$OUT" IPERF3="$IPERF3" \
     SENDER="node $ROOT/tools/uplinklab/browser/sender.mjs" \
     sh "$HERE/run.sh" "$OUT/fair/$1" "$2" "$3" chrome "$OUT/traces/$4" "$5" && touch "$OUT/fair/$1/done"
-  echo "done $1"
+  if [ -f "$OUT/fair/$1/done" ]; then echo "done $1"; else echo "FAILED $1"; fi
 }
 for r in 30:1080 15:1080 80:1440; do
   rate=${r%:*} tr=r${r#*:}p60.csv

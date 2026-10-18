@@ -13,7 +13,7 @@
 // It logs the native lab sender's lines (F, K, O, C, W, D, G, E, S) to the
 // driver, timestamped on the host's wall clock so the receiver's log shares it.
 import { DatagramSender, webTransportInit } from '../src/transport/connection';
-import { packetizeFrameWithParity, packetizeStreamKeyframe } from '../src/transport/packetizer';
+import { packetizeDecoderConfig, packetizeFrameWithParity, packetizeStreamKeyframe } from '../src/transport/packetizer';
 import { TYPE_AUDIO_FRAME, WIRE_VERSION, encodeCarrierPrologue, encodeCarrierRecord } from '../src/transport/wire';
 
 const q = new URLSearchParams(location.search);
@@ -31,6 +31,11 @@ const NOWAIT = q.get('writes') === 'nowait';
 // (Chrome resolves close() on acknowledgement) — the browser's substitute for
 // the engine's keyframe-first priority.
 const KFORDER = q.get('kforder') ?? '';
+// maxage / hwm: the spec's own knobs on the outgoing datagram queue, which
+// the shipping page leaves at Chrome's defaults (null, 1). Probed for the
+// BUGS.md fix (docs/73 F18).
+const MAXAGE = q.get('maxage') ? Number(q.get('maxage')) : null;
+const HWM = q.get('hwm') ? Number(q.get('hwm')) : null;
 
 const pending: string[] = [];
 const log = (line: string): void => void pending.push(line);
@@ -81,10 +86,20 @@ async function main(): Promise<void> {
     });
   const wt = new WebTransport(q.get('url')!, { ...webTransportInit({ certHashHex: q.get('hash')! }), congestionControl: CC });
   await wt.ready;
+  if (MAXAGE !== null) wt.datagrams.outgoingMaxAge = MAXAGE;
+  if (HWM !== null) wt.datagrams.outgoingHighWaterMark = HWM;
   log(`I,${wt.datagrams.maxDatagramSize},${MODE},${CC}`);
+  log(`I,queue,${wt.datagrams.outgoingMaxAge},${wt.datagrams.outgoingHighWaterMark}`);
+  // What the shipping page embeds in every keyframe stream: the current
+  // decoder config (an H.264 avcC of typical size here).
+  const config = packetizeDecoderConfig('avc1.64002a', new Uint8Array(40));
   const sender = NOWAIT ? null! : new DatagramSender(wt);
   const rawWriter = NOWAIT ? wt.datagrams.writable.getWriter() : null!;
   let offered = 0;
+  // Where a backlog sits: frames handed to DatagramSender against frames
+  // whose writes have all resolved (Q lines, once a second).
+  let framesQueued = 0;
+  let framesResolved = 0;
 
   // broadcaster.ts sendKeyframeStream: one uni stream per keyframe, fire and
   // forget; a failure costs that keyframe only.
@@ -213,6 +228,7 @@ async function main(): Promise<void> {
     else void sender.send([audio]).catch(() => {});
   }, 20);
   const flushTimer = setInterval(() => void flush(), 500);
+  const queueTimer = setInterval(() => log(`Q,${nowNs()},${framesQueued},${framesResolved}`), 1000);
 
   const payload = new Uint8Array(Math.max(...trace.map((t) => t.size))).fill(0x5a);
   const n = Math.floor(SECONDS * FPS);
@@ -226,7 +242,7 @@ async function main(): Promise<void> {
     const data = payload.subarray(0, size);
     const t = nowNs();
     if (key) {
-      const msg = packetizeStreamKeyframe({ frameId, timestampUs }, new Uint8Array(0), data);
+      const msg = packetizeStreamKeyframe({ frameId, timestampUs }, config, data);
       let gate = (): void => {};
       const keyframeGate = new Promise<unknown>((r) => (gate = () => r(undefined)));
       if (MODE === 'carrier') rotate(frameId, KFORDER ? keyframeGate : Promise.resolve());
@@ -249,7 +265,11 @@ async function main(): Promise<void> {
       if (NOWAIT) {
         for (const d of all) void rawWriter.write(d).catch(() => {});
       } else {
-        sender.send(all).catch(() => log(`E,${frameId},failed`));
+        framesQueued++;
+        sender.send(all).then(
+          () => framesResolved++,
+          () => log(`E,${frameId},failed`),
+        );
       }
     }
     log(`F,${frameId},0,${size},${datagrams.length},${parity.length},${t},0`);
@@ -257,6 +277,7 @@ async function main(): Promise<void> {
   await sleep(1500);
   clearInterval(audioTimer);
   clearInterval(flushTimer);
+  clearInterval(queueTimer);
   // The driver completes this line from Chrome's net-log (sender.mjs).
   log(`S?,${offered}`);
   await flush();

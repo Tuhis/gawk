@@ -25,7 +25,7 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 const OUT = process.env.UPLINK_OUT ?? path.join(HERE, '..', 'out');
 const PAGE_DIR = process.env.UPLINK_SENDER_DIR ?? path.join(OUT, 'chrome-sender');
 
-const args = { mode: 'datagram', cc: 'low-latency', seconds: '100', fps: '60', parity: '2', writes: 'await', kforder: '' };
+const args = { mode: 'datagram', cc: 'low-latency', seconds: '100', fps: '60', parity: '2', writes: 'await', kforder: '', maxage: '', hwm: '' };
 for (let i = 2; i < process.argv.length; i += 2) {
   const k = process.argv[i].replace(/^--/, '');
   if (k === 'datagram-buffer' || k === 'id-file') continue; // native-sender knobs with no browser analogue
@@ -56,15 +56,27 @@ async function waitFor(file, ms) {
   throw new Error(`no ${file}`);
 }
 
-// Counts what the S line needs from a net-log, one event per line.
-async function netlogStats(file) {
+// Counts what the S line needs from a net-log, one event per line — the lab's
+// own WebTransport session only (its QUIC_SESSION_WEBTRANSPORT_CLIENT_ALIVE
+// event names the URL), because Chrome opens QUIC sessions of its own to
+// Google's update and variations hosts during a run. Also the spacing of the
+// session's packets within a burst (gaps under 5 ms).
+async function netlogStats(file, port) {
   const rl = readline.createInterface({ input: fs.createReadStream(file) });
   let ids = null;
-  const s = { sent: 0, retx: 0, bytes: 0, msg: 0, cc: '' };
+  const lab = new Set();
+  const s = { sent: 0, retx: 0, bytes: 0, msg: 0, cc: '', gaps: [], sessions: 0 };
+  let last = null;
   for await (const line of rl) {
     if (!ids) {
       const c = JSON.parse(line.replace(/,\s*$/, '') + '}').constants.logEventTypes;
-      ids = { sent: c.QUIC_SESSION_PACKET_SENT, msg: c.QUIC_SESSION_MESSAGE_FRAME_SENT, cc: c.QUIC_CONGESTION_CONTROL_CONFIGURED };
+      ids = {
+        session: c.QUIC_SESSION,
+        wt: c.QUIC_SESSION_WEBTRANSPORT_CLIENT_ALIVE,
+        sent: c.QUIC_SESSION_PACKET_SENT,
+        msg: c.QUIC_SESSION_MESSAGE_FRAME_SENT,
+        cc: c.QUIC_CONGESTION_CONTROL_CONFIGURED,
+      };
       continue;
     }
     if (!line.startsWith('{')) continue;
@@ -74,17 +86,68 @@ async function netlogStats(file) {
     } catch {
       continue; // the last line of a log cut at exit
     }
+    if (e.type === ids.session && e.params?.host) {
+      s.sessions++; // Chrome's own, never the lab's: WebTransport logs under its client
+      continue;
+    }
+    if (e.type === ids.wt && typeof e.params?.url === 'string' && e.params.url.includes(`//127.0.0.1:${port}/`)) {
+      lab.add(e.source.id);
+      continue;
+    }
+    if (!lab.has(e.source?.id)) continue;
     if (e.type === ids.sent && e.params) {
       s.sent++;
       s.bytes += e.params.size ?? 0;
       if (e.params.transmission_type && e.params.transmission_type !== 'NOT_RETRANSMISSION') s.retx++;
+      const t = Number(e.params.sent_time_us);
+      if (last !== null && t - last < 5000) s.gaps.push(t - last);
+      last = t;
     } else if (e.type === ids.msg) {
       s.msg++;
     } else if (e.type === ids.cc && e.params) {
       s.cc = e.params.congestion_control_type;
     }
   }
+  if (lab.size === 0) throw new Error(`no WebTransport session to 127.0.0.1:${port} in ${file}`);
   return s;
+}
+
+// CPU each kind of Chrome process used over the run, from /proc (Linux): the
+// browser, its network service, the busiest renderer (the lab page's).
+function chromeCpu(rootPid, wallS) {
+  const kids = new Map();
+  const info = new Map();
+  for (const d of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(d)) continue;
+    try {
+      const st = fs.readFileSync(`/proc/${d}/stat`, 'utf8');
+      const f = st.slice(st.lastIndexOf(')') + 2).split(' ');
+      const ppid = Number(f[1]);
+      const ticks = Number(f[11]) + Number(f[12]);
+      const cmd = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8');
+      info.set(Number(d), { ticks, cmd });
+      if (!kids.has(ppid)) kids.set(ppid, []);
+      kids.get(ppid).push(Number(d));
+    } catch {
+      // gone between readdir and read
+    }
+  }
+  const out = { browser: 0, network: 0, renderer: 0, gpu: 0 };
+  const walk = (pid) => {
+    const p = info.get(pid);
+    if (p) {
+      const pct = (100 * p.ticks) / 100 / wallS; // CLK_TCK is 100 on Linux
+      const kind = p.cmd.includes('network.mojom.NetworkService') ? 'network'
+        : p.cmd.includes('--type=renderer') ? 'renderer'
+        : p.cmd.includes('--type=gpu-process') ? 'gpu'
+        : p.cmd.includes('--type=') ? null : 'browser';
+      if (kind === 'renderer') out.renderer = Math.max(out.renderer, pct);
+      else if (kind) out[kind] += pct;
+    }
+    for (const k of kids.get(pid) ?? []) walk(k);
+  };
+  walk(rootPid);
+  return out;
 }
 
 const dir = path.dirname(path.resolve(args.out));
@@ -118,7 +181,7 @@ const server = http.createServer((req, res) => {
   res.end(fs.readFileSync(file));
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const qs = new URLSearchParams({ url: args.url, hash, mode: args.mode, cc: args.cc, seconds: args.seconds, fps: args.fps, parity: args.parity, writes: args.writes, kforder: args.kforder });
+const qs = new URLSearchParams({ url: args.url, hash, mode: args.mode, cc: args.cc, seconds: args.seconds, fps: args.fps, parity: args.parity, writes: args.writes, kforder: args.kforder, maxage: args.maxage, hwm: args.hwm });
 const netlog = path.join(dir, 'netlog.json');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'uplinklab-chrome-'));
 const chrome = spawn(
@@ -129,15 +192,19 @@ const chrome = spawn(
     '--no-sandbox',
     '--disable-background-timer-throttling',
     '--disable-renderer-backgrounding',
+    '--disable-background-networking',
+    '--disable-component-update',
     `--user-data-dir=${profile}`,
     `--log-net-log=${netlog}`,
     `http://127.0.0.1:${server.address().port}/lab/uplink-sender.html?${qs}`,
   ],
   { stdio: ['ignore', 'ignore', 'ignore'] },
 );
+const t0 = Date.now();
 const timeout = setTimeout(() => finish('error: timeout'), (Number(args.seconds) + 60) * 1000);
 const result = await finished;
 clearTimeout(timeout);
+const cpu = chromeCpu(chrome.pid, (Date.now() - t0) / 1000);
 await new Promise((r) => {
   chrome.once('exit', r);
   chrome.kill('SIGTERM');
@@ -153,14 +220,22 @@ if (result) {
 // S: rtt and cwnd are not logged by Chrome (0); "lost" is the packets Chrome
 // sent as retransmissions; datagram frames sent come from the net-log, the
 // datagrams offered from the page.
-const st = await netlogStats(netlog);
+const st = await netlogStats(netlog, Number(new URL(args.url).port));
 const lines = fs.readFileSync(args.out, 'utf8').split('\n');
 const i = lines.findIndex((l) => l.startsWith('S?,'));
 const offered = i >= 0 ? Number(lines[i].split(',')[1]) : 0;
 const s = `S,0,0,${st.sent},${st.retx},0,0,${st.msg},${offered},${st.bytes}`;
 if (i >= 0) lines[i] = s;
 else lines.push(s);
-lines.splice(lines.length - 1, 0, `I,cc,${st.cc}`);
+const pc = (xs, p) => (xs.length ? xs.sort((a, b) => a - b)[Math.floor((xs.length - 1) * p)] : 0);
+lines.splice(
+  lines.length - 1,
+  0,
+  `I,cc,${st.cc}`,
+  `I,gap_us,${pc(st.gaps, 0.1)},${pc(st.gaps, 0.5)},${pc(st.gaps, 0.9)},${st.gaps.length}`,
+  `I,cpu,${cpu.browser.toFixed(1)},${cpu.network.toFixed(1)},${cpu.renderer.toFixed(1)},${cpu.gpu.toFixed(1)}`,
+  `I,other_quic_sessions,${st.sessions}`,
+);
 fs.writeFileSync(args.out, lines.join('\n'));
 if (!process.env.KEEP_NETLOG) fs.rmSync(netlog, { force: true });
 console.error(`browser sender: done, ${st.cc}, ${st.sent} packets, ${st.msg} datagram frames of ${offered} offered`);

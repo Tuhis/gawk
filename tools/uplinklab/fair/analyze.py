@@ -116,7 +116,8 @@ print("#### Table O — a shared uplink: the broadcast beside a household's TCP 
 print("`tools/uplinklab/fair` (§4): one uplink at 30, 15 or 80 Mbps with a 50 ms\n"
       "drop-tail queue, the downlink unshaped; the broadcast for 80 s, a bulk TCP\n"
       "upload (kernel Cubic) from 20 s. Three runs a cell at 1080p, two at 1440p\n"
-      "(alone on the host); mean, range in brackets.\n")
+      "(alone on the host); the Chrome rows (`fair/chrome.sh`) two beside the\n"
+      "upload and one alone at every rate. Mean, range in brackets.\n")
 print("**O1 — what the household's upload gets.** *Of its fair share* is against its\n"
       "max-min fair share: what it gets alone, less the broadcast's own rate when\n"
       "that is under half the link, else half the link. Ping is the household's,\n"
@@ -141,6 +142,12 @@ for rate, label in RATES:
         print(f"| | {ml} | {agg(rs, 'tcp', d=1)} | {sh} | {agg(rs, 'retx')} | "
               f"{agg(rs, 'ping50')} / {agg(rs, 'ping95')} |")
 
+if "r80-datagram-chrome-alone" in cells:
+    alone = mean(cells["r80-datagram-chrome-alone"], "bmbps")
+    print(f"\nChrome's datagrams cannot carry the 1440p stream (F18: {alone:.0f} Mbps on the wire\n"
+          "alone, for a stream of 38.9 Mbps mean), so at 80 Mbps their share is computed\n"
+          "against a stream that never ran at its rate; the Chrome carrier's row is the\n"
+          "comparable one there.")
 print("\n**O2 — what the broadcast gets, alone on the uplink → beside the upload.**")
 print("Packets lost (quinn's count; Chrome exposes none), undecodable and\n"
       "decode-ready cover the upload (25–80 s); the viewer columns its last 40 s,\n"

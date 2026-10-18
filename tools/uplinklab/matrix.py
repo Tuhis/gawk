@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -42,6 +42,16 @@ MODES = {
     # stream priority to put the keyframe first.
     "chrome-carrier-kfw": ["--mode", "carrier", "--kforder", "write"],
     "chrome-carrier-kfa": ["--mode", "carrier", "--kforder", "ack"],
+    # The ceiling (table P6): the same sends again, the net-log filtered to
+    # the lab's session, Chrome's CPU and packet spacing recorded; and with
+    # every datagram of a frame handed over at once.
+    "chrome-dgram-ceil": ["--mode", "datagram"],
+    "chrome-dgram-nowait-ceil": ["--mode", "datagram", "--writes", "nowait"],
+    "chrome-carrier-ceil": ["--mode", "carrier"],
+    # Where the backlog sits, and the spec's knobs on Chrome's datagram queue
+    # (table P7, the BUGS.md fix): outgoingMaxAge, and a deeper high-water mark.
+    "chrome-dgram-maxage100": ["--mode", "datagram", "--maxage", "100"],
+    "chrome-dgram-maxage100-hwm1000": ["--mode", "datagram", "--maxage", "100", "--hwm", "1000"],
 }
 # Modes that change the receiver rather than the sender.
 MODE_ENV = {
@@ -52,6 +62,9 @@ MODE_ENV = {
     "chrome-carrier-kfw": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
     "chrome-carrier-kfa": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
 }
+for _m in ("chrome-dgram-ceil", "chrome-dgram-nowait-ceil", "chrome-carrier-ceil", "chrome-dgram-maxage100",
+           "chrome-dgram-maxage100-hwm1000"):
+    MODE_ENV[_m] = MODE_ENV["chrome-dgram"]
 
 
 def scen(name, proxy, trace="1080", modes=("dgram", "carrier"), extra=(), recv="", seed=7):
@@ -175,10 +188,20 @@ def sets():
                           "hi-rtt10-rate80M-out80drop"):
             chrome.append(dict(sc, modes=cm))
     s["chrome"] = chrome
-    kf = ("chrome-carrier-kfw", "chrome-carrier-kfa")
-    s["chrome-kf"] = [dict(sc, modes=kf) for sc in chrome
-                      if sc["name"] in ("rtt10-clean", "rtt10-loss0.005", "rtt10-out80drop", "rtt40-loss0.001",
-                                        "hi-rtt10-clean")]
+    # The keyframe gate: on acknowledgement on every Chrome cell, on the
+    # write on five.
+    five = ("rtt10-clean", "rtt10-loss0.005", "rtt10-out80drop", "rtt40-loss0.001", "hi-rtt10-clean")
+    s["chrome-kf"] = [dict(sc, modes=("chrome-carrier-kfa",) + (("chrome-carrier-kfw",) if sc["name"] in five else ()))
+                      for sc in chrome]
+    by = {sc["name"]: sc for sc in chrome}
+    ceil = [scen("rtt0-clean", ["-rtt", "0ms"], modes=("chrome-dgram-ceil", "chrome-dgram-nowait-ceil"))]
+    for n in ("rtt10-clean", "rtt100-clean"):
+        ceil.append(dict(by[n], modes=("chrome-dgram-ceil", "chrome-dgram-nowait-ceil")))
+    ceil.append(dict(by["hi-rtt10-clean"], modes=("chrome-dgram-ceil", "chrome-dgram-nowait-ceil", "chrome-carrier-ceil")))
+    s["chrome-ceiling"] = ceil
+    s["chrome-knobs"] = [dict(by["rtt40-loss0.005"], modes=("chrome-dgram-ceil", "chrome-dgram-maxage100",
+                                                            "chrome-dgram-maxage100-hwm1000")),
+                         dict(by["hi-rtt10-clean"], modes=("chrome-dgram-maxage100",))]
     s["all"] = core + cc + hi + jit + win + bigq + seeds
     return s
 

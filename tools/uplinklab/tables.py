@@ -267,9 +267,9 @@ for name, label in (("rtt40-loss0.005", "40 ms, 0.5 % loss"), ("rtt40-loss0.01",
         print(f"| {label} | {d} | {pick('adaptive', 'shownPct')} | {pick('resilient', 'shownPct')} | {pick('off', 'stallPct')} |")
 
 # OD5: Chrome's QUIC stack (browser/sender.mjs) against the native sender.
-CHROME = [("dgram", "native today (datagrams · Cubic)"), ("chrome-dgram", "Chrome today (datagrams)"),
-          ("chrome-carrier", "Chrome carrier (prototype)"), ("carrier", "native carrier · Cubic"),
-          ("carrier-bbr", "native carrier · BBR")]
+CHROME = [("dgram-bigq", "native datagrams · Cubic"), ("chrome-dgram", "Chrome datagrams (today)"),
+          ("chrome-carrier", "Chrome carrier"), ("chrome-carrier-kfa", "Chrome carrier + keyframe gate"),
+          ("carrier", "native carrier · Cubic"), ("carrier-bbr", "native carrier · BBR")]
 CP = [("clean", "clean"), ("loss0.001", "0.1 % loss"), ("loss0.005", "0.5 % loss"), ("loss0.01", "1 % loss"),
       ("ge1pct", "bursts (GE)"), ("out20drop", "radio away 20 ms"), ("out80drop", "radio away 80 ms")]
 CHP = [("clean", "1440p clean"), ("loss0.001", "1440p 0.1 % loss"), ("ge1pct", "1440p bursts"),
@@ -304,31 +304,119 @@ def chrome_table(title, cell):
     print("\n".join(rows))
 
 
+def n(x):
+    return f"{x:,.0f}".replace(",", " ")
+
+
+def send_info(name, mode):
+    """The browser sender's own lines: I (queue knobs, gaps, CPU), S, Q, F."""
+    p = f"{OUT}/results/{name}/{mode}/send.csv"
+    if not os.path.exists(p):
+        return None
+    r = {"q": []}
+    t0 = t1 = None
+    for line in open(p):
+        x = line.rstrip("\n").split(",")
+        if x[0] == "I" and x[1] in ("queue", "gap_us", "cpu"):
+            r[x[1]] = x[2:]
+        elif x[0] == "S":
+            r["S"] = [int(v) for v in x[1:]]
+        elif x[0] == "Q":
+            r["q"].append((int(x[1]), int(x[2]) - int(x[3])))
+        elif x[0] == "F":
+            t = int(x[6])
+            t0 = t if t0 is None else t0
+            t1 = t
+    r["dur"] = (t1 - t0) / 1e9 + 1.5 if t0 else None
+    return r
+
+
+def backlog_at(r, sec):
+    if not r["q"]:
+        return "–"
+    q0 = r["q"][0][0]
+    pts = [b for t, b in r["q"] if (t - q0) / 1e9 <= sec]
+    return str(pts[-1]) if pts else "–"
+
+
 if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
     print("\n#### Table P — the browser broadcaster: Chrome's QUIC stack against the native sender (OD5)\n")
     print("Chrome for Testing 151 replaying the same traces through gawk-app's shipping packetizer and")
     print("DatagramSender (browser/sender.mjs); its QUIC runs Cubic whatever the page asks. One 100 s run")
-    print("a cell, alone on the host. The receiver has the 4096-deep queue for the Chrome columns.")
+    print("a cell, alone on the host. Every datagram column, native and Chrome, has the 4096-deep receiver;")
+    print("the keyframe gate holds a GOP's records until its keyframe stream is acknowledged.")
     chrome_table("Table P1 — Balanced: shown · stalled", lambda s: sv(s, "adaptive"))
     chrome_table("Table P2 — Lowest latency: shown · stalled", lambda s: sv(s, "off"))
     chrome_table("Table P3 — Smoother: shown · stalled (no parity, as today)", lambda s: sv(s, "resilient"))
     chrome_table("Table P4 — decode-ready p50 / p99 ms · undecodable", ready)
-    KF = [("chrome-dgram", "Chrome datagrams"), ("chrome-carrier", "Chrome carrier"),
-          ("chrome-carrier-kfw", "carrier, records after the keyframe's write"),
-          ("chrome-carrier-kfa", "carrier, records after the keyframe's acknowledgement")]
+
+    KF = [("chrome-dgram", "Chrome datagrams"), ("chrome-carrier", "carrier, no gate"),
+          ("chrome-carrier-kfw", "carrier, gate on the keyframe's write"),
+          ("chrome-carrier-kfa", "carrier, gate on the keyframe's acknowledgement")]
     kf_rows = []
     for rtt, label, name in chrome_cells():
         if not get(name, "chrome-carrier-kfw"):
             continue
-        cellv = []
-        for m, _ in KF:
-            s = get(name, m)
-            cellv.append("–" if not s else f"{sv(s, 'adaptive')} · offset {f(s['view']['adaptive']['offsetMs']['mean'])} ms"
-                                          f" · keyframes {f(s['transport']['key_lat_ms']['p50'])} / "
-                                          f"{f(s['transport']['key_lat_ms']['p95'])} ms")
-        kf_rows.append(f"| {rtt} | {label} | " + " | ".join(cellv) + " |")
+        for m, d in KF:
+            s_ = get(name, m)
+            if not s_:
+                continue
+            k = s_["transport"]["key_lat_ms"]
+            kf_rows.append(f"| {rtt} | {label} | {d} | {sv(s_, 'adaptive')} | "
+                           f"{f(s_['view']['adaptive']['offsetMs']['mean'])} | {sv(s_, 'resilient')} | "
+                           f"{f(k['p50'])} / {f(k['p95'])} |")
     if kf_rows:
-        print("\n#### Table P5 — the keyframe gate: Balanced shown · stalled · offset · keyframe latency p50 / p95\n")
-        print("| RTT | Path | " + " | ".join(h for _, h in KF) + " |")
-        print("|---|---|" + "---|" * len(KF))
+        print("\n#### Table P5 — the keyframe gate, on the write and on the acknowledgement\n")
+        print("| RTT | Path | Sender | Balanced: shown · stalled | Balanced offset ms | Smoother: shown · stalled | "
+              "Keyframes p50 / p95 ms |")
+        print("|---|---|---|---|---|---|---|")
         print("\n".join(kf_rows))
+
+    ceil_rows = []
+    for name, rtt, rung in (("rtt0-clean", "0 ms", "1080p"), ("rtt10-clean", "10 ms", "1080p"),
+                            ("rtt100-clean", "100 ms", "1080p"), ("hi-rtt10-clean", "10 ms", "1440p")):
+        for m, d in (("chrome-dgram-ceil", "datagrams"), ("chrome-dgram-nowait-ceil", "datagrams, handed over at once"),
+                     ("chrome-carrier-ceil", "carrier")):
+            r = send_info(name, m)
+            if not r or "S" not in r:
+                continue
+            S = r["S"]
+            sent, offered, byts = S[6], S[7], S[8]
+            g = r.get("gap_us", ["–"] * 3)
+            c = r.get("cpu", ["–"] * 4)
+            dg = f"{n(sent)} / {n(offered)} ({100 * sent / offered:.0f} %)" if offered else "–"
+            ceil_rows.append(f"| {rtt} | {rung} | {d} | {dg} | {n(sent / r['dur'])} | {byts * 8 / r['dur'] / 1e6:.1f} | "
+                             f"{g[0]} / {g[1]} / {g[2]} | {c[1]} · {c[2]} · {c[0]} | {backlog_at(r, 1e9)} |")
+    if ceil_rows:
+        print("\n#### Table P6 — Chrome's per-datagram ceiling, clean paths\n")
+        print("From the browser sender's own counters: datagram frames Chrome sent (its net-log, the lab's session")
+        print("only) against those the page offered; the session's bytes on the wire; the spacing of its packets")
+        print("within a burst (gaps under 5 ms); CPU per Chrome process over the run (a core = 100 %); and the")
+        print("frames still waiting in DatagramSender at the end. The page runs only the send path: the shipping")
+        print("page also captures and encodes on the same renderer thread, so this is the most it can do here.\n")
+        print("| RTT | Rung | Sender | Datagram frames sent / offered | Datagrams/s | Mbps on the wire | "
+              "Packet gap p10 / p50 / p90 µs | CPU: network · renderer · browser % | Frames waiting at the end |")
+        print("|---|---|---|---|---|---|---|---|---|")
+        print("\n".join(ceil_rows))
+
+    knob_rows = []
+    for name, label in (("rtt40-loss0.005", "40 ms, 0.5 % loss"), ("hi-rtt10-clean", "1440p, 10 ms, clean")):
+        for m, d in (("chrome-dgram-ceil", "as shipped"), ("chrome-dgram-maxage100", "outgoingMaxAge 100 ms"),
+                     ("chrome-dgram-maxage100-hwm1000", "outgoingMaxAge 100 ms, high-water mark 1000")):
+            r, s_ = send_info(name, m), get(name, m)
+            if not r or not s_:
+                continue
+            qk = r.get("queue", ["–", "–"])
+            S = r["S"]
+            t = s_["transport"]["ready_lat_ms"]
+            knob_rows.append(f"| {label} | {d} | {qk[0]} · {qk[1]} | {backlog_at(r, 30)} · {backlog_at(r, 60)} · "
+                             f"{backlog_at(r, 95)} | {100 * S[6] / S[7]:.0f} % | {f(t['p50'])} / {f(t['p99'])} | "
+                             f"{sv(s_, 'adaptive')} |")
+    if knob_rows:
+        print("\n#### Table P7 — where the browser's backlog sits, and Chrome's own queue knobs\n")
+        print("Frames waiting: handed to DatagramSender but not yet resolved, after 30 · 60 · 95 s.")
+        print("Chrome reports the knobs back as set.\n")
+        print("| Path | Page | outgoingMaxAge · outgoingHighWaterMark | Frames waiting | Datagram frames sent "
+              "| Decode-ready p50 / p99 ms | Balanced: shown · stalled |")
+        print("|---|---|---|---|---|---|---|")
+        print("\n".join(knob_rows))
