@@ -829,6 +829,10 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   diagnosis sends the operator to the wrong machine. This is worst when there
   is no broadcaster telemetry session, because then the relay's ingress facts
   are the only testimony about leg A.
+- *2026-10-17*: the relay itself produces this signature on a clean path
+  at the high rung — see "The relay drops high-rung publisher datagrams that
+  QUIC already acknowledged" below. The playbook fix needs a row for that
+  case too (docs/73 D8).
 - **Fix would start**: test-first in `rules`. First, a broadcast whose relay
   facts carry heavy chunk loss and near-zero whole-frame loss must fire
   `leg-a-broadcaster-uplink`. Second, a viewer with the same relay facts must
@@ -854,6 +858,55 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Fix would start**: test-first in `ui/src/shell.rs`: stats with known
   audio and video bytes must give the video-plus-audio rate once; then drop
   the `+ st.audio_bytes_sent` in both places.
+
+## Smoother and Most stable viewers freeze on uplink loss that Balanced viewers never see
+
+- **Found**: 2026-10-17, docs/73 F14, by replaying lab traces through the
+  shipping viewer code in each preset (§11 table J). Not yet seen on the
+  fleet; the mechanism is read in code.
+- **Cause**: reliable delivery (R19 *Smoother*, R21 *Most stable*) is served
+  no parity — `hub.NegotiateParity` clamps carrier and DVR delivery to 0,
+  and the DVR ring keeps only video chunks — and its reorder buffer has no
+  loss allowance. Both assume leg A is clean. A chunk lost on the
+  broadcaster's uplink is missing at the relay, so the carrier cannot
+  retransmit it, and the viewer freezes to the next keyframe.
+- **Impact**: at 0.1 % random uplink loss (BBR uplink, 10–100 ms RTT)
+  *Balanced* shows 100 % of frames, these presets 87.5–89 % with ~15
+  freezes a minute; at 1 % loss, 32–39 %. The viewers who chose seconds of
+  delay for stability get the least of it.
+- **Fix would start**: docs/73 RU8 (serve them parity; fixes random loss,
+  not outages) and RU3 (the carrier uplink; fixes both).
+
+## The relay drops high-rung publisher datagrams that QUIC already acknowledged
+
+- **Found**: 2026-10-17, in docs/73's lab (F7), then on the real relay
+  (§11 tables G and N). A 1440p60 publisher (deltas of 52–84 datagrams) on
+  a clean path, 10 ms RTT and a 300 Mbps bottleneck, with 2 `gawk-loadgen`
+  viewers on a relay with CPU to spare: the relay's
+  `gawk_relay_ingress_chunks_lost_total` read 1 871–2 251 in 60 s (≈ 1 % of
+  chunks; 182 with no viewers) while the publisher's quinn counted **0 lost
+  packets** and the path dropped nothing, and a viewer could not decode
+  39–47 % of frames. At 1080p the same runs lost nothing. (The first figure
+  here, 4 252 with 15 viewers, came from a relay already past its fan-out
+  capacity on the lab host; corrected 2026-10-18.)
+- **Cause (measured)**: quic-go's HTTP/3 layer keeps at most
+  `streamDatagramQueueLen = 32` datagrams per WebTransport session and drops
+  new ones silently (`http3/state_tracking_stream.go`, quic-go 0.62.0).
+  Raising it to 128, 512 or 4096 in a test build took the loss to 0;
+  raising the connection-level queue (128) did nothing, and a relay
+  goroutine that only drains the queue did not help, with CPU to spare or
+  without (2 099 against 2 120 with 2 viewers): it gets the same scheduling
+  gaps as the loop it replaced. The edge's
+  pull session reads origin → edge datagrams through the same queue.
+- **Impact**: high-rung datagram publishers lose the tails of their largest
+  frames — parity included — at the relay, for every viewer, and the loss
+  is booked as leg-A loss. The signature (chunks lost, no whole frames) is
+  the one the 2026-09-27 incident below recorded; whether that incident was
+  this is not known (its rung is not on record). R71's carrier is immune.
+- **Fix would start**: docs/73 RU2 — red first with a burst of 200
+  datagrams against a relay loop blocked for 20 ms, then a 512-deep queue
+  (docs/73 D7, F16: deeper only adds delay on a busy relay), upstream or as
+  a pinned quic-go fork.
 
 (The "Telemetry SQL console: the `rollups` view rots after boot, and any
 unpruned `sessions` query OOMs" entry was resolved 2026-09-22: views

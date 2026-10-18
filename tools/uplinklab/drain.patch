@@ -1,0 +1,45 @@
+--- a/gawk-server/internal/transport/server.go
++++ b/gawk-server/internal/transport/server.go
+@@ -977,23 +977,32 @@
+ 	go s.acceptKeyframeStreams(r.Context(), sess, pub, log)
+ 
+ 	tsLimiter := newTimeSyncLimiter()
+-	for {
+-		dgram, err := sess.ReceiveDatagram(r.Context())
+-		if err != nil {
+-			log.Info("publisher session ended", "reason", sessionEndReason(r.Context(), err))
+-			return
++	// docs/73 table G R3 / table N "drain": a goroutine that only empties
++	// quic-go's 32-deep session queue into a 1024-deep channel the relay owns.
++	intake := make(chan []byte, 1024)
++	var readErr error
++	go func() {
++		defer close(intake)
++		for {
++			d, err := sess.ReceiveDatagram(r.Context())
++			if err != nil {
++				readErr = err
++				return
++			}
++			select {
++			case intake <- d:
++			default:
++			}
+ 		}
+-		// Any datagram at all is the page's loop running — the stall clock
+-		// is stamped here, before the TimeSync answer, because those pings
+-		// never reach the hub.
++	}()
++	for dgram := range intake {
+ 		pub.NoteSeen()
+-		// TimeSync is a transport-level concern (the reply needs this session
+-		// and the relay clock); everything else is the hub's.
+ 		if maybeAnswerTimeSync(sess, dgram, tsLimiter) {
+ 			continue
+ 		}
+ 		pub.HandleDatagram(dgram)
+ 	}
++	log.Info("publisher session ended", "reason", sessionEndReason(r.Context(), readErr))
+ }
+ 
+ // sendRelayCapabilities tells a client which optional features this fleet
