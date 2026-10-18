@@ -1515,12 +1515,14 @@ entries still describe code `gawk-pubsim` runs (now
 - **quic-go keeps 32 datagrams per WebTransport session and drops the
   newest.** `http3`'s `streamDatagramQueueLen = 32` is a tail drop, silent
   and not configurable, on server and client sessions alike. 32 is about a
-  millisecond of a 1440p delta's burst: on a clean path the real relay lost
-  ~2 % of a 1440p publisher's chunks with 15 viewers attached, all of them
-  acknowledged by QUIC first, and counted them as leg-A loss. A goroutine
-  that only drains the queue does not help (it is starved by the same CPU);
-  a longer queue does — 4096 took it to zero
-  ([docs/73](73-reliable-uplink.md) F7, D7).
+  millisecond of a 1440p delta's burst: on a clean path a real relay with
+  CPU to spare lost ~1 % of a 1440p publisher's chunks, all of them
+  acknowledged by QUIC first, counted them as leg-A loss, and left a viewer
+  unable to decode 39–47 % of frames. A goroutine that only drains the
+  queue does not help (it gets the same scheduling gaps). A longer queue does —
+  128 already took it to zero — but size it for a burst, not a backlog: on a
+  relay short of CPU every extra entry is delay, and 4096 had the worst tail
+  of the depths measured ([docs/73](73-reliable-uplink.md) F7, F16, D7).
 - **quinn's MTU black-hole detector reads random loss as a black hole.**
   More than three loss bursts of full-size packets, with no larger packet
   acknowledged since, reset the path MTU to 1200; `max_datagram_size` falls
@@ -1541,6 +1543,17 @@ entries still describe code `gawk-pubsim` runs (now
   loss already leaves 15–25 % of frames undecodable in either delivery
   mode, and at 100 ms it halves the throughput
   ([docs/73](73-reliable-uplink.md) F4).
+- **quinn's BBR overruns an uplink the stream nearly fills.** With the
+  stream's ceiling at 80 % of the link and nothing else on it, it lost
+  7–10 % of its own packets where Cubic lost 1 %: 43 % of frames
+  undecodable on datagrams. Where the uplink has room it keeps a household's
+  TCP upload at 90–102 % of its fair share; on such a link, about half
+  ([docs/73](73-reliable-uplink.md) F17).
+- **Shape only the upstream when you model a home uplink.** A `tbf` on a
+  loopback queues both directions in one FIFO, so acknowledgements and ping
+  replies wait behind the upload they report on. It overstated the
+  household's ping and the TCP flow's loss to BBR; steer the downlink around
+  the shaper (`tools/uplinklab/fair/run.sh`, [docs/73](73-reliable-uplink.md) §4).
 
 **Relay fleet (R17)**
 

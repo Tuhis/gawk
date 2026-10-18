@@ -1,6 +1,7 @@
 # R71 — Reliable broadcaster uplink: measured first (docs/73)
 
-**Status**: designed 2026-10-17 from a measurement pass (§4, §11); owner
+**Status**: designed 2026-10-17 from a measurement pass (§4, §11), extended
+2026-10-18 with the relay's queue by depth and a shared uplink (F16, F17); owner
 decisions OD1–OD6 open (§3); chunks **RU0–RU8** not started (`RU` =
 Reliable Uplink). **Split out of R55** ([docs/57](57-wifi-uplink.md)) on
 2026-10-17 by owner direction: how deltas cross the broadcaster → relay leg
@@ -52,7 +53,7 @@ the owner moved the transport into its own design with three instructions:
 So this doc starts from measurements (§4), states what they showed (§2), and
 only then decides (§3, §5).
 
-## 2. What the lab found (2026-10-17)
+## 2. What the lab found (2026-10-17; F16–F17 2026-10-18)
 
 Numbers are from §11's tables; "Balanced" is the default viewer, "live
 edge" the *Lowest latency* preset.
@@ -124,18 +125,32 @@ WebTransport session and silently discards new ones beyond that
 delta is a burst of 52–84 datagrams, and 32 is about a millisecond of them
 at a 300 Mbps arrival rate: any scheduling gap in the reading goroutine
 drops the burst's tail, parity included. Measured on the **real relay**
-(§11 table G), on a clean 300 Mbps path where quinn counted no lost packet:
-at 1440p with 15 viewers the relay's own `ingress_chunks_lost_total` read
-**4 252 chunks a minute (≈ 2 %)**, and 182 with no viewers. Raising that
-one constant to 4096 in a test build took both to **0**; raising quic-go's
-other queue (128, per connection) changed nothing, and a goroutine that
-does nothing but drain the queue did not help either (3 957), because it is
-starved by the same CPU as the loop it replaced. At 1080p (10–17 datagrams
-per delta) the stock relay lost nothing. The signature — chunks lost, no
-whole frames — is the one `BUGS.md` recorded in the 2026-09-27 incident
+(§11 tables G and N), at 1440p on a clean 300 Mbps path where quinn counted
+no lost packet, with 2 viewers — a relay with CPU to spare, dropping nothing
+to its viewers — the relay's own `ingress_chunks_lost_total` read
+**1 871–2 251 chunks a minute (≈ 1 %)** over three runs, and a viewer
+could not decode **39–47 % of frames**: the lost chunks are burst tails,
+more than parity repairs, and each breaks the rest of its GOP. With 4
+viewers, 3 205–5 337 chunks and 51.5–56.5 % of frames; with none, 182
+chunks. A 128-deep queue took every one of those runs to 0, 512 and 4096
+to 0–21 (F16); raising quic-go's other queue (128, per connection) changed
+nothing, and neither did a
+goroutine that does nothing but drain the queue, with CPU to spare or
+without (2 099 and 3 981 chunks against 2 120 and 4 127; 3 957 saturated):
+it gets the same scheduling gaps as the loop it replaced. At 1080p (10–17
+datagrams per delta) the stock relay lost nothing. The signature — chunks
+lost, no whole frames — is the one `BUGS.md` recorded in the 2026-09-27 incident
 (21–22 % of chunks, 0.01 % of frames); that broadcast's rung is not on
 record, so it is consistent with this, not proven to be it. The carrier is
 immune: streams are flow-controlled, never dropped.
+
+*Corrected 2026-10-18*: this finding first quoted 4 252 chunks a minute
+(≈ 2 %) from a run with 15 viewers. That relay was past its fan-out
+capacity on the lab host — it dropped 394 029 datagrams to its own viewers
+in the same minute (table G) — so the figure measured a saturated relay,
+not the queue alone. The unsaturated runs above replace it; the conclusion
+stands, and the damage to a viewer is larger than the chunk count
+suggested.
 
 **F8 — Two quinn facts the design must respect.** quinn's `SendStream` has
 no per-offset acknowledgement API (D3), and its MTU black-hole detector
@@ -251,7 +266,99 @@ for live-edge viewers and nothing else.** Measured as options of their own
 So the cheap path — BBR plus the queue, which together are one transport
 option and one constant — repairs what parity can repair, for viewers who get
 parity. Bursts, outages, and every viewer on reliable delivery need the
-carrier (or, for random loss only, OD6).
+carrier (or, for random loss only, OD6). On an uplink the stream nearly
+fills, with nothing else on it, the cheap path is worse than today's (F17).
+
+**F16 — The longer queue should cover a burst, not a backlog.** Measured
+by depth on the real relay (§11 table N; three runs a cell unless noted):
+
+- **Where the relay keeps up** (1440p, 2 or 4 viewers on 3 cores): 128
+  entries lost no chunk in any of six runs, 512 and 4096 lost 0–21, and at
+  every depth from 128 up the viewer saw 0.0–1.8 % of frames undecodable
+  (in the runs whose ingress lost nothing, all of it lost after the
+  relay), against 39–57 % at 32. With 2 viewers no depth moved the viewer's
+  chunk latency (p99 22–24 ms). With 4 the tail grows with depth: chunk p99
+  35 ms at 32, then 47 / 57 / 69 ms at 128 / 512 / 4096; decode-ready p99
+  62 / 62 / 64 / 74 ms.
+- **Where it is short of CPU** (1080p, 15 viewers on one core, two runs):
+  32 lost 252–769 chunks a minute and 5–7 % of frames; 128 and 512 lost
+  0–3 chunks and 0–1.8 % of frames. The queue turns the shortfall into
+  delay instead: chunk p99 61 ms at 32, then 74 / 83 / 101 ms at 128 / 512
+  / 4096; decode-ready p99 85 / 90 / 98 / 103 ms. One core is a noisy
+  place: 4096's two runs read 54 and 149 ms.
+- **Past capacity** (1440p, 15 viewers on 3 cores or on 1; one run each),
+  no depth helps. On 3 cores the relay drops 16–19 % of its fan-out to its
+  own viewers at every depth, and a longer queue only moves the loss from
+  ingress, where it hits every viewer (87 % undecodable), into the per-viewer
+  queues (33–35 %). On one core the broadcast is unwatchable at every depth
+  (92–94 %), and every depth above 32 adds 0.4–0.6 s at p50 to what does
+  arrive: what the ingress no longer sheds waits in the hub's 1024-deep
+  per-viewer queues instead, about 0.3 s of 1440p each.
+- **Memory**: wherever the relay kept up, peak RSS stayed within 2 MB
+  across depths; past capacity on one core it rose 6–8 MB. quic-go copies
+  each datagram into its own buffer, so the bound is depth × datagram size
+  per publisher session: ≈ 0.6 MB at 512, ≈ 5 MB at 4096.
+
+So D7 picks **512**, not the 4096 first measured: it lost the same as 128
+on every cell, holds a top-rung delta (p90 ≈ 82 datagrams) about six times
+over where 128 holds it one and a half times, and its tail stayed within
+128's spread. 4096 bought nothing over either, and once the relay was busy
+its tail was the longest and the least predictable (chunk p99 69 ms against
+47–57 with 4 viewers; 54 and 149 ms in two runs on one core).
+
+**F17 — On a shared uplink BBR holds the broadcast's rate; on a thin one it
+pays for that in its own lost packets.** Measured with a household's bulk
+TCP upload (the kernel's Cubic) beside the broadcast on one uplink, with a
+50 ms drop-tail queue and the downlink unshaped (§4; §11 table O; three
+runs a cell at 1080p, two at 1440p):
+
+- **The household keeps its share where the uplink has room.** At 30 Mbps
+  the upload got 17.7–17.8 Mbps beside every mode, its whole max-min share.
+  At 80 Mbps beside a 1440p broadcast it got 90–91 % of its share beside
+  BBR and 97–102 % beside Cubic. On a 15 Mbps uplink, where the stream's
+  12 Mbps ceiling is 80 % of the link, it got 63–74 % beside Cubic and 48–53
+  % beside BBR. BBR also raised the upload's retransmissions 1.8–3.6×.
+  The household's ping p95 (56–75 ms) is set by the upload's own standing
+  queue in every case; beside BBR its median was lower (23–53 against
+  44–65 ms).
+- **On the thin uplink BBR loses its own packets.** Alone at 15 Mbps,
+  quinn's BBR lost 7 % (datagrams) and 10 % (carrier) of its packets to the
+  bottleneck, Cubic 1 %; beside the upload, 15 %. On the carrier they are
+  re-sent, which is part of how it keeps its rate and part of what the
+  upload gives up. On
+  datagrams they are lost frames: 43 % undecodable alone against Cubic's
+  14 %, and the Balanced viewer shows 69 % of frames against 82 %. Even on
+  the carrier, BBR alone on that link costs the Balanced viewer 3 points
+  and 33 ms (94.5 vs 97.3 % shown, 211 vs 178 ms). At 30 and 80 Mbps alone
+  the four combinations are within a few points of each other (96–98 %
+  shown, 83–100 ms).
+- **Beside the upload, only the carrier keeps the picture, and BBR keeps
+  it closest to live.** The upload fills the queue, so every mode pays
+  latency.
+  - Today's path (datagrams, Cubic): the Balanced viewer sees 88.9 % of
+    frames at 30 Mbps (89 → 289 ms), 18.6 % at 15 Mbps and 30.1 % at
+    80 Mbps. At 80 Mbps Cubic yields until its window cannot carry the
+    stream: 2–6 % of datagrams are dropped at the sender against 0.2 % lost
+    on the link, and decode-ready p99 reaches 1.5 s.
+  - The carrier with BBR: 97.9 % at 30 Mbps (89 → 167 ms), 91.7 % at 15
+    (211 → 283 ms) and 96.3 % at 80 (92 → 117 ms). It is the only
+    combination that stays watchable in every cell.
+  - The carrier with Cubic: 98.0 / 82.5 / 91.1 % at 211 / 333 / 183 ms.
+  - Datagrams with BBR: 86.2 / 31.1 / 83.5 %, at the lowest latency of the
+    four (111 / 128 / 83 ms).
+
+  (A *Lowest latency* viewer stalls 10–13 % of the time at 30 and 80 Mbps
+  even alone: a keyframe takes 50–60 ms to cross either link.)
+
+So BBR's cost to the household is small where the uplink has headroom, and
+the case where it is largest — a broadcast at 80 % of its uplink — is also
+the one where a Cubic broadcast collapses beside any upload. RU4's
+pre-registered gate (80 Mbps: the upload keeps ≥ 50 % of its share) passes
+at 90–91 %. The 15 Mbps cell, added here, would fail it narrowly on the
+carrier (48–49 %), and no controller that holds the stream's rate can pass
+it there: the stream alone takes ≈ 11 Mbps on the wire (with Cubic) of the
+14.4 Mbps the upload gets alone, which leaves at most 3.3 Mbps, 46 % of
+the upload's share (D5).
 
 ## 3. Owner decisions (open)
 
@@ -262,9 +369,9 @@ those decisions and their chunks, nothing else.
 | # | Question | Options | Recommendation |
 |---|---|---|---|
 | OD1 | What does a broadcaster get by default? | **Reliable** (the carrier, whenever the relay supports it) with *Lowest latency* (datagrams + parity) as a choice; or *Lowest latency* by default with Reliable as the choice. | **Reliable by default** (D4). It costs nothing on a clean path (F1), fixes the bursts and outages that motivated R55 (F2), serves the default viewer at least as well on every lossy path measured — within half a point on random loss, far better on bursts and outages (F2, F3) — and is the only thing measured that protects *Smoother* and *Most stable* viewers from every kind of leg-A loss (F14). *Lowest latency* stays a first-class choice, not a warned-against legacy mode: on a long path with random loss it is what keeps live-edge viewers from waiting (F3). |
-| OD2 | Which congestion controller does the engine run? | quinn's Cubic (today); quinn's BBR; a controller of our own. | **BBR for both delivery modes, behind RU4's gates** (D5). F4/F5 make it the larger reliability lever. It helps *Lowest latency* on every random-loss path too, and costs it a few points of frames under outages (F5). It is the one decision here with a production risk (§10): RU4 ships it with the old controller one setting away, and reverts if the gates fail. Our own controller is out of scope (§9). |
+| OD2 | Which congestion controller does the engine run? | quinn's Cubic (today); quinn's BBR; a controller of our own. | **BBR for both delivery modes, behind RU4's gates** (D5). F4/F5 make it the larger reliability lever. It helps *Lowest latency* on every random-loss path too, and costs it a few points of frames under outages (F5). Beside a household's upload, the carrier with BBR is the only combination that stays watchable on every uplink measured (F17). Its measured costs are on an uplink the stream nearly fills: there it loses 7–10 % of its own packets, which costs the Balanced viewer 3 points and 33 ms on the carrier and 13 points on datagrams, and it leaves a household upload about half its share (F17). G5 records that cell rather than gating on it; whether it should gate is part of this decision. It is the one decision here with a production risk (§10): RU4 ships it with the old controller one setting away, and reverts if the gates fail. Our own controller is out of scope (§9). |
 | OD3 | Who can choose? | The broadcaster's app; the relay operator; viewers. | **The broadcaster (Quality page) and the operator (`-uplink-carriers`)** (D4, §6). Viewers choose their own buffering (R32 presets) and cannot choose how leg A is carried — it is one stream for all of them. The iOS app follows the engine default with no setting until someone asks for one. |
-| OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Make the queue longer** (D7): measured, it is the only one of the three that works (4 252 → 0 chunks a minute; the drain: 3 957). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
+| OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Make the queue longer, to 512** (D7): measured, it is the only one of the three that works (≈ 2 100 → 0 chunks a minute on a relay with CPU to spare; the drain: 2 099), and 512 rather than longer because past capacity a longer queue only adds delay (F16). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
 | OD6 | Does the relay serve parity to reliable delivery (*Smoother*, *Most stable*)? | Keep serving them none (docs/34 §3); serve them the fleet's parity like live-edge viewers. | **Serve it** (D11). On any datagram uplink — *Lowest latency*, the browser broadcaster, an older app — it lifts those viewers from 32–89 % to 95.6–100 % of frames under 0.1–1 % loss (F14), for 2.5–10.4 % more egress to them, relay-side only. It does not replace the carrier: it cannot repair an outage. |
 | OD5 | Does the browser broadcaster follow? | Now; after measuring Chrome's QUIC stack; not at all. | **After a measurement**, as its own chunk outside this milestone. Chrome's controller and stream scheduling are not quinn's, nothing here measured them, and the browser broadcaster is not where the losing uplinks were found. |
 
@@ -301,6 +408,18 @@ dropping what is offered or holding it (AWDL's published shapes, docs/57 §8);
 with a 50 ms queue. A second pass repeats the key cells with 3 ms of delay
 jitter.
 
+**A shared uplink** (F17, `tools/uplinklab/fair`). The proxy carries one
+client, so the household is modelled in a Docker network namespace
+instead: `tc` on its loopback adds 5 ms each way and puts everything
+travelling *up* — the broadcast to the receiver, a bulk TCP upload
+(`iperf3`, the kernel's Cubic) and ping's echo requests — through one `tbf`
+at 30, 15 or 80 Mbps with a 50 ms drop-tail queue, while acknowledgements
+and echo replies come back unshaped, as down a separate downlink. The
+broadcast runs for 80 s, the upload from 20 s on; each delivery mode and
+controller also runs alone for its baseline, and the upload alone for its
+capacity. The receiver is the lab's 4096-deep build, so its own queue drops
+nothing.
+
 **Metrics.** Per frame: when it became *complete* at the relay (all data, or
 any `n` of its `n + k` symbols) and *decode-ready* (its whole GOP prefix
 complete). Per viewer, after the controllers settle (the second half of each
@@ -333,17 +452,26 @@ up to ~5 points for *Balanced* and ~9 for *Smoother* — because a few
 half-second freezes dominate the 50 s window; table M measures that spread
 on four cells, and differences smaller than it are not findings.
 
-**The lab's own defects, found and fixed.** Three sender bugs surfaced
-during the pass; each was fixed and every run it could have touched was
-re-run, so no table mixes versions. (1) The first carrier queued instead of
+**The lab's own defects, found and fixed.** Three sender bugs and one
+harness bug surfaced during the pass; each was fixed and every run it could
+have touched was re-run, so no table mixes versions. (1) The first carrier queued instead of
 shedding (F10). (2) The second shed between writes but not during one
 (F10). (3) Datagram mode ignored `TooLarge` where the engine re-chunks, so
 quinn's black-hole detector (F8) silently ate every later frame; every
 datagram run whose offered count exceeded what quinn sent was re-run.
+(4) The shared-uplink harness first shaped both directions through the one
+queue, so acknowledgements and echo replies queued behind the upload; on a
+home uplink they come down a different link. It overstated the household's
+ping and the TCP flow's loss to BBR at 30 Mbps (17.3 against 18.0–19.4
+Mbps; with the downlink unshaped every mode leaves it 17.7–17.8), and every
+F17 figure is from the corrected harness.
 
 **Limits.** One host and loopback, so no NIC, driver or Wi-Fi MAC behaviour:
 the outage shapes are AWDL's published ones, not a capture. One receiver,
-not the relay's fan-out, except in F7's run. Leg B is clean in the replay.
+not the relay's fan-out, except in F7's and F16's runs. The shared uplink
+is a 50 ms drop-tail `tbf` with one TCP flow; a real modem's buffer can be
+deeper or managed (fq_codel, CAKE), and was not modelled. Leg B is clean in
+the replay.
 The browser broadcaster's QUIC stack (Chrome's) is not measured.
 
 **Reproducing**: §11 lists the commands.
@@ -461,8 +589,16 @@ one GOP):
 - The engine's QUIC connection uses quinn's `BbrConfig::default()` instead
   of the default Cubic, in both delivery modes: F4/F5 show the controller
   matters more than the mode. *Lowest latency* gains on random loss and
-  gives up a few points of frames under outages for a much lower tail (F5);
-  one controller for both keeps the support story to one row.
+  beside a household's upload, and gives up a few points of frames under
+  outages for a much lower tail (F5, F17); one controller for both keeps
+  the support story to one row.
+- **What it costs, measured** (F5, F17, §10): on an uplink the stream
+  nearly fills (12 Mbps on 15) it loses 7–10 % of its own packets where
+  Cubic loses 1 % — on datagrams that is 43 % of frames undecodable against
+  14 %, on the carrier 3 points of frames and 33 ms for the Balanced viewer
+  — and it leaves a household's upload on such a link about half its fair
+  share (Cubic: 63–74 %), because it holds the stream's rate. Where the
+  uplink has room (30 and 80 Mbps) the upload keeps 90–102 % of its share.
 - It is one transport option (`TransportConfig::congestion_controller_factory`),
   set in `crates/engine/src/transport.rs` beside the keep-alive — the engine
   sets nothing else today.
@@ -470,11 +606,13 @@ one GOP):
   controller one edit away. It is deliberately **not** on the Quality page:
   it is a support lever, shown in Diagnostics and reported as
   `uplinkCongestion`.
-- **Gates** (RU4) before BBR becomes the default: the §11 cells, a shared
-  bottleneck with a competing TCP flow (not measured here — the lab's proxy
-  carries one client), and the hardware pass. If a gate fails, Cubic stays
-  and the carrier still ships: F2 holds under Cubic at 10 ms, where the
-  R55 Mac is.
+- **Gates** (RU4) before BBR becomes the default: the §11 cells, the
+  shared uplink (table O; this pass meets the pre-registered 80 Mbps gate,
+  and the thin 15 Mbps cell is recorded, not gated — holding the stream's
+  rate there leaves the upload at most ~46 % of its share whichever
+  controller does it, F17), and the hardware pass. If a gate fails, Cubic
+  stays and the carrier still ships: F2 holds under Cubic at 10 ms, where
+  the R55 Mac is.
 
 ### D6 — Lowest latency stays today's datagram path
 
@@ -487,9 +625,14 @@ frames the uplink actually lost (RU5).
 ### D7 — quic-go's per-session datagram queue gets longer (OD4)
 
 - **What**: `streamDatagramQueueLen` in quic-go's `http3` package goes from
-  32 to a length that covers a scheduling gap at the highest rung's burst
-  rate — 4096 in the measured build (≈ 5 MB per session at worst, and only
-  a publisher's session ever fills it; viewers send almost no datagrams).
+  32 to **512**: enough to cover a scheduling gap at the highest rung's
+  burst rate, and no more, because past capacity a longer queue only turns
+  loss into delay (F16). 128, 512 and 4096 lost the same on the real relay;
+  512 holds a top-rung delta about six times over, and 4096 added tail
+  latency under load for nothing. ≈ 0.6 MB per session at worst, and only
+  a publisher's session ever fills it; viewers send almost no datagrams.
+  (The lab matrix's receiver ran at 4096, F15; at 1080p and at 1440p on an
+  unsaturated relay the depths lost the same, table N.)
 - **How**: an upstream change that makes the length configurable is the
   goal; until it lands, a one-line patch carried the way `wtransport` is
   vendored for the Rust side (a `replace` to a pinned fork, the patch
@@ -498,9 +641,15 @@ frames the uplink actually lost (RU5).
   pull sessions, which read origin → edge datagrams through the same
   queue, at pod-to-pod speed.
 - **Not a relay-side reader**: draining the queue on a dedicated goroutine
-  was measured and does not work (F7) — the goroutine is starved by the same
-  CPU the loop was. 32 entries are about a millisecond; the queue has to
-  hold more than any goroutine can promise.
+  was measured and does not work (F7), on a relay with CPU to spare as on a
+  saturated one — the goroutine gets the same scheduling gaps as the loop
+  it replaced. 32 entries are about a millisecond; the queue has to hold
+  more than any goroutine can promise.
+- **Not a fix for an overloaded relay**: when the relay is short of CPU,
+  the queue is where the shortfall waits (F16: decode-ready p99 85 → 98 ms
+  at 512 with one core for 15 viewers). Capacity is the operator's — more
+  pods (docs/22); the queue only has to stop dropping the bursts of a relay
+  that keeps up.
 - **Counting**: quic-go drops silently, so the relay cannot count these.
   D8's playbook row (ingress chunk loss while the broadcaster reports no
   lost packets) is how they show.
@@ -648,7 +797,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | G2 | **Bursts and outages stop breaking GOPs**: on the GE and outage cells at 10 and 40 ms, Reliable leaves ≤ 0.5 % of frames undecodable and the Balanced viewer shows ≥ 97 % of frames (with OD2's controller; at 10 ms with either) | lab |
 | G3 | **The latency it costs is bounded and visible**: on the same cells, the Balanced offset rises by ≤ 60 ms at 10–40 ms RTT; Diagnostics shows the mode and the counters that explain it | lab + unit |
 | G4 | **The R55 Mac is fixed**: the reference Mac on Wi-Fi with AWDL on, 10 min at the default rung: leg-A damaged frames (`ingressFrameLossRatio`) ≤ 0.1 %, viewer gap resyncs ≤ 2/min, no `keyframe-only-delivery` | hardware |
-| G5 | **The controller is not a regression** (if OD2 is taken): on the carrier, BBR is no worse than Cubic on any §11 cell beyond the run-to-run spread (Balanced frames shown − 3 points, table M; decode-ready p99 + 5 ms); on datagrams with D7's queue, the same on clean paths, random loss and bursts, and within 6 points of frames shown on outages at a lower p99 (F5, F15); and it passes RU4's shared-bottleneck gate | lab |
+| G5 | **The controller is not a regression** (if OD2 is taken): on the carrier, BBR is no worse than Cubic on any §11 cell beyond the run-to-run spread (Balanced frames shown − 3 points, table M; decode-ready p99 + 5 ms); on datagrams with D7's queue, the same on clean paths, random loss and bursts, and within 6 points of frames shown on outages at a lower p99 (F5, F15); and it passes RU4's shared-uplink gate. **One cell is recorded, not gated** (added 2026-10-18, owner call under OD2): table O's thin uplink alone, where this pass measured BBR's cost — on the carrier −2.8 points and +68 ms decode-ready p99, on datagrams 69 against 82 % shown (F17) | lab |
 | G6 | **Compatibility**: a new broadcaster on an old relay sends datagrams unchanged; an old broadcaster on a new relay is unchanged; `-uplink-carriers=false` leaves `/statusz`, metrics and wire byte-identical to before | integration (real `gawk-server`) + diff assertion |
 | G7 | **Wire parity**: `CapUplinkCarriers` in `gawk-server/wire`, `parity.ts` and `crates/wire`, golden vectors byte-identical in all three | unit (mirror tests) |
 | G8 | **Viewers untouched**: no `gawk-app` change beyond the capability constant | review |
@@ -682,7 +831,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 |---|---|
 | A test publisher sends a burst of 200 datagrams at loopback speed while the relay's datagram loop is blocked for 20 ms; all 200 reach the hub. Red first against stock quic-go (it keeps 32) | integration (real quic-go), red first |
 | The same for the edge's pull session | integration |
-| F7's relay run (1440p, 15 viewers, 300 Mbps, pinned CPUs) shows 0 ingress chunks lost, recorded in §11 | lab |
+| `queue.sh`'s unsaturated cells (1440p, 2 and 4 viewers, 3 pinned cores, 300 Mbps) show 0 ingress chunks lost at the shipped depth, and its one-core 1080p cell a decode-ready p99 within table N's 512 row; recorded in §11 | lab |
 | The quic-go change is upstream, or carried as a pinned fork with the patch recorded beside the `replace`, and `go mod tidy` stays clean in every module that reaches `gawk-server` | review + CI |
 
 ### RU3 — Engine: the carrier sender (docs/57 WU2, moved; D1, D3, D4)
@@ -704,7 +853,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 |---|---|
 | `congestion: "bbr" \| "cubic"` in `broadcast.json`, reported as `uplinkCongestion`, shown in Diagnostics; `cubic` restores today's transport exactly | unit |
 | G5's lab gate, recorded in §11 (this pass meets it) | lab |
-| Shared bottleneck: through an 80 Mbps bottleneck with a 50 ms queue and one competing TCP flow, the broadcast holds its rate and the TCP flow keeps ≥ 50 % of its fair share; recorded | lab (the proxy grows a second client) |
+| Shared uplink (`tools/uplinklab/fair`, table O): at 80 Mbps with a 50 ms queue and one competing TCP flow, the broadcast holds its rate and the TCP flow keeps ≥ 50 % of its fair share (this pass, carrier · BBR: 0 % undecodable, and the flow keeps 90–91 %); at 30 Mbps the same (0 %, 101–102 %); at 15 Mbps recorded, not gated (48–49 %, where any controller that holds the stream's rate leaves at most ~46 %, F17) | lab |
 | The hardware pass (RU7) shows no regression against Cubic on either machine | hardware |
 | Default flips to `bbr` only when all three pass; otherwise this chunk records why and Cubic stays | review |
 
@@ -772,10 +921,12 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
   bottleneck it overran the 50 ms queue more often than Cubic (175 against
   66 drops in 100 s on the carrier, and 4 400 against none after outages,
   where it re-sends what the outage lost without backing off) — harmless to
-  the broadcast (§11 table E), not obviously to anything sharing that queue.
-  BBRv1 is also known to be unfair to Cubic flows on a shared bottleneck —
-  a broadcaster's own upload competing with the household's. D5's gates are what stand between this and
-  production; a revert is one transport option.
+  the broadcast (§11 table E). What sharing that queue costs was then
+  measured (F17, table O): a household's TCP upload keeps 90–102 % of its
+  fair share at 30 and 80 Mbps but about half of it at 15 Mbps, with
+  1.8–3.6× the retransmissions; and on an uplink the stream nearly fills,
+  BBR loses 7–10 % of its own packets even alone. D5's gates are what stand
+  between this and production; a revert is one transport option.
 - **quinn's MTU black-hole detector misreads random loss** (`mtud.rs`,
   `BLACK_HOLE_THRESHOLD = 3`): more than three loss bursts of
   full-size packets with no larger packet acknowledged since reset the path
@@ -804,11 +955,14 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 
 ## 11. Measurements
 
-Every cell is one 100 s run (§4); transport figures cover seconds 5–99,
-viewer figures the second half, after the adaptive controller settled.
+Every cell of tables A–F and H–M is one 100 s run (§4); transport figures
+cover seconds 5–99, viewer figures the second half, after the adaptive
+controller settled. Tables G and N are 60 s runs against the real relay,
+table O 80 s runs on a shared uplink; each says what it covers.
 "Undecodable" counts frames a viewer could not decode for want of data —
 lost, or after a hole in their GOP. Tables are generated from the runs by
-`tools/uplinklab/tables.py`; nothing below is transcribed by hand.
+`tools/uplinklab/tables.py`, `relaytables.py` and `fair/analyze.py`;
+nothing below is transcribed by hand.
 
 **Reproducing** (8 vCPU; about 4 h — 1080p cells three at a time, 1440p
 cells alone, see §4):
@@ -823,7 +977,11 @@ python3 tools/uplinklab/matrix.py bigq --jobs 1 --only hi-
 python3 tools/uplinklab/tables.py             # the tables below
 # F7, against the real relay (§11 table G); RELAY_BIN=tools/uplinklab/out/bin/gawk-server-bigq for D7:
 RELAY_CPUS=0-2 VIEWER_CPUS=3-4 SENDER_CPUS=5-6 PROXY_ARGS="-rtt 10ms -rate 300e6 -queue 50ms" \
-  tools/uplinklab/relay.sh out/relay-1440 tools/uplinklab/out/traces/r1440p60.csv 15 60
+  tools/uplinklab/relay.sh tools/uplinklab/out/relay/R1 tools/uplinklab/out/traces/r1440p60.csv 15 60
+tools/uplinklab/queue.sh                      # F16, the queue by depth (~45 min, alone on the host)
+python3 tools/uplinklab/relaytables.py        # tables G and N
+tools/uplinklab/fair/matrix.sh                # F17, the shared uplink (Docker, NET_ADMIN; ~55 min)
+python3 tools/uplinklab/fair/analyze.py       # table O
 ```
 
 #### Table A — the clean path (F1)
@@ -1015,22 +1173,27 @@ RELAY_CPUS=0-2 VIEWER_CPUS=3-4 SENDER_CPUS=5-6 PROXY_ARGS="-rtt 10ms -rate 300e6
 proxy at 10 ms RTT and a 300 Mbps bottleneck, `gawk-loadgen` attached;
 the relay pinned to 3 cores, the viewers to 2, the sender and proxy to 2.
 In every run quinn counted **0 lost packets** and the proxy dropped
-nothing, so every lost chunk was delivered and acknowledged first.
+nothing, so every lost chunk was delivered and acknowledged first. The last
+column (added 2026-10-18) shows the 15-viewer 1440p runs were past the
+relay's fan-out capacity on this host: table N repeats the comparison on a
+relay that keeps up.
 
-| Run | Rung | Viewers | Relay build | Ingress chunks lost (60 s) |
-|---|---|---|---|---|
-| R1 | 1440p | 15 | stock | 4 252 (≈ 2 %) |
-| R2 | 1440p | 0 | stock | 182 |
-| R3 | 1440p | 15 | publisher loop drains into a 1024-deep channel on its own goroutine | 3 957 |
-| R-128 | 1440p | 15 | quic-go connection queue 128 → 4096 | 4 263 |
-| R-32 | 1440p | 15 | **`http3` session queue 32 → 4096** | **0** |
-| R7 | 1440p | 15 | both queues → 4096 | 0 |
-| R8 | 1440p | 0 | both queues → 4096 | 0 |
-| R4 | 1080p | 15 | stock | 0 |
-| R9 | 1080p | 0 | stock | 0 |
+| Run | Rung | Viewers | Relay build | Ingress chunks lost (60 s) | Dropped to viewers (`queue_full`) |
+|---|---|---|---|---|---|
+| R1 | 1440p | 15 | stock | 4 252 | 394 029 |
+| R2 | 1440p | 0 | stock | 182 | 0 |
+| R3 | 1440p | 15 | publisher loop drains into a 1024-deep channel on its own goroutine | 3 957 | 361 839 |
+| R-only128 | 1440p | 15 | quic-go connection queue 128 → 4096 | 4 263 | 377 687 |
+| R-only32 | 1440p | 15 | **`http3` session queue 32 → 4096** | 0 | 451 599 |
+| R7 | 1440p | 15 | both queues → 4096 | 0 | 432 609 |
+| R8 | 1440p | 0 | both queues → 4096 | 0 | 0 |
+| R4 | 1080p | 15 | stock | 0 | 0 |
+| R9 | 1080p | 0 | stock | 0 | 0 |
 
-The test builds came from scratch worktrees; no relay code changes with
-this doc.
+R3 is `tools/uplinklab/drain.patch` (`build.sh` builds it as
+`gawk-server-drain`) and R-only32 / R8 are `build.sh`'s `gawk-server-q4096`;
+the connection-queue builds (R-only128, R7) came from scratch worktrees. No
+relay code changes with this doc.
 
 #### Table H — receive windows at 1440p, carrier · BBR (D10)
 
@@ -1132,8 +1295,9 @@ two frames land in one vsync (the newer wins); its stalled time is the loss meas
 
 #### Table L — what the cheap changes buy without the carrier (shown · stalled)
 
-"today": datagrams, Cubic, quic-go's 32-deep queue. "queue": the receiver built with D7's 4096-deep
-queue. "carrier + BBR" is OD1 + OD2 for comparison; its deltas never meet the queue.
+"today": datagrams, Cubic, quic-go's 32-deep queue. "queue": the receiver built with a 4096-deep
+queue (D7 ships 512, which lost the same on the real relay, table N). "carrier + BBR" is OD1 + OD2
+for comparison; its deltas never meet the queue.
 
 #### Table L1 — Balanced (the default viewer)
 
@@ -1287,6 +1451,89 @@ queue. "carrier + BBR" is OD1 + OD2 for comparison; its deltas never meet the qu
 | 10 ms, radio away 80 ms | BBR only | 73.5 · 72.7 · 72.8 | 72.7 · 71.7 · 71.8 | 28.4 · 28.8 · 28.8 |
 | 10 ms, radio away 80 ms | BBR + queue | 73.1 · 73.2 · 73.3 | 72.1 · 72.2 · 72.3 | 28.4 · 28.5 · 28.8 |
 | 10 ms, radio away 80 ms | carrier + BBR | 97.2 · 97.2 · 97.1 | 99.9 · 99.9 · 99.8 | 10.2 · 10.3 · 10.2 |
+
+#### Table N — the relay's datagram queue by depth (F7, F16, D7)
+
+`tools/uplinklab/queue.sh`: table G's setup with a lab viewer on the
+4096-deep build attached as well (its per-frame log gives latency through
+the relay); "1 core" pins the relay to one core instead of three.
+Mean of the runs, range in brackets.
+
+| Load | Depth | Runs | Ingress chunks lost (60 s) | Dropped to viewers | Viewer: undecodable | Viewer: chunk latency p50 / p99 ms | Viewer: decode-ready p99 ms | Relay peak RSS |
+|---|---|---|---|---|---|---|---|---|
+| 1440p, 3 cores, 2 viewers | 32 | 3 | 2 120 (1 871–2 251) | 0 | 43.8 % (39.3–46.5) | 13 (13–13) / 22 (21–22) | 55 (54–57) | 40 MB (40–41) |
+| 1440p, 3 cores, 2 viewers | 128 | 3 | 0 | 0 | 0.6 % (0.0–0.9) | 13 (13–13) / 23 (22–23) | 50 (49–52) | 41 MB (40–41) |
+| 1440p, 3 cores, 2 viewers | 512 | 3 | 7 (0–21) | 0 | 0.7 % (0.2–0.9) | 13 (13–14) / 24 (22–27) | 51 (51–53) | 41 MB (40–41) |
+| 1440p, 3 cores, 2 viewers | 4096 | 3 | 0 | 0 | 0.3 % (0.0–0.9) | 13 (13–13) / 23 (22–25) | 50 (48–52) | 40 MB (40–41) |
+| 1440p, 3 cores, 2 viewers | 32, drained | 3 | 2 099 (1 684–2 497) | 0 | 45.2 % (38.3–50.3) | 13 (13–13) / 22 (22–22) | 56 (55–58) | 41 MB (40–41) |
+| 1440p, 3 cores, 4 viewers | 32 | 3 | 4 127 (3 205–5 337) | 1 665 (0–4 996) | 53.8 % (51.5–56.5) | 15 (15–15) / 35 (35–36) | 62 (59–67) | 44 MB (43–44) |
+| 1440p, 3 cores, 4 viewers | 128 | 3 | 0 | 0 | 0.9 % (0.0–1.8) | 15 (15–15) / 47 (38–63) | 62 (56–67) | 44 MB (43–44) |
+| 1440p, 3 cores, 4 viewers | 512 | 3 | 1 (0–3) | 1 (0–4) | 0.4 % (0.0–1.0) | 15 (15–15) / 57 (47–63) | 64 (61–67) | 43 MB (43–44) |
+| 1440p, 3 cores, 4 viewers | 4096 | 3 | 0 | 0 | 0.6 % (0.0–0.9) | 15 (15–15) / 69 (53–80) | 74 (66–79) | 45 MB (44–46) |
+| 1440p, 3 cores, 4 viewers | 32, drained | 3 | 3 981 (3 808–4 079) | 0 | 49.7 % (49.1–51.0) | 15 (15–15) / 37 (33–42) | 58 (57–60) | 43 MB (43–44) |
+| 1440p, 3 cores, 15 viewers (fan-out saturated) | 32 | 1 | 5 749 | 526 199 | 87.0 % | 75 / 488 | 443 | 66 MB |
+| 1440p, 3 cores, 15 viewers (fan-out saturated) | 128 | 1 | 0 | 628 533 | 34.9 % | 97 / 482 | 453 | 68 MB |
+| 1440p, 3 cores, 15 viewers (fan-out saturated) | 512 | 1 | 0 | 639 317 | 32.7 % | 90 / 463 | 450 | 64 MB |
+| 1440p, 3 cores, 15 viewers (fan-out saturated) | 4096 | 1 | 0 | 621 727 | 33.3 % | 124 / 488 | 461 | 65 MB |
+| 1080p, 1 core, 15 viewers (overloaded) | 32 | 2 | 510 (252–769) | 194 | 6.2 % (5.2–7.2) | 13 (13–13) / 61 (54–68) | 85 (77–92) | 47 MB (47–47) |
+| 1080p, 1 core, 15 viewers (overloaded) | 128 | 2 | 0 | 0 | 0.9 % (0.0–1.8) | 13 (13–14) / 74 (63–86) | 90 (74–107) | 46 MB (46–47) |
+| 1080p, 1 core, 15 viewers (overloaded) | 512 | 2 | 2 (0–3) | 0 | 0.0 % | 14 (14–14) / 83 (70–95) | 98 (88–108) | 47 MB (47–48) |
+| 1080p, 1 core, 15 viewers (overloaded) | 4096 | 2 | 7 (0–14) | 0 | 0.3 % (0.0–0.6) | 13 (12–13) / 101 (54–149) | 103 (72–134) | 46 MB (46–47) |
+| 1440p, 1 core, 15 viewers (saturated) | 32 | 1 | 60 229 | 0 | 92.9 % | 23 / 98 | 434 | 53 MB |
+| 1440p, 1 core, 15 viewers (saturated) | 128 | 1 | 36 056 | 195 061 | 93.6 % | 397 / 1 108 | 2 683 | 60 MB |
+| 1440p, 1 core, 15 viewers (saturated) | 512 | 1 | 35 544 | 329 280 | 91.5 % | 583 / 1 011 | 2 125 | 61 MB |
+| 1440p, 1 core, 15 viewers (saturated) | 4096 | 1 | 36 089 | 311 514 | 91.6 % | 547 / 964 | 2 164 | 59 MB |
+
+#### Table O — a shared uplink: the broadcast beside a household's TCP upload (F17, D5)
+
+`tools/uplinklab/fair` (§4): one uplink at 30, 15 or 80 Mbps with a 50 ms
+drop-tail queue, the downlink unshaped; the broadcast for 80 s, a bulk TCP
+upload (kernel Cubic) from 20 s. Three runs a cell at 1080p, two at 1440p
+(alone on the host); mean, range in brackets.
+
+**O1 — what the household's upload gets.** *Of its fair share* is against its
+max-min fair share: what it gets alone, less the broadcast's own rate when
+that is under half the link, else half the link. Ping is the household's,
+while the upload runs.
+
+| Uplink | Broadcast | TCP Mbps | Of its fair share | TCP retransmits | Ping p50 / p95 ms |
+|---|---|---|---|---|---|
+| 30 Mbps, 1080p (9.5 Mbps mean, 12 ceiling) | none | 28.7 | – | 160 (149–166) | 60 (60–61) / 67 (67–68) |
+| | datagram · Cubic (today) | 17.7 (17.7–17.8) | 100 % (100–101) | 339 (274–382) | 44 (41–48) / 63 (63–64) |
+| | datagram · BBR | 17.8 | 101 % (101–101) | 622 (542–691) | 25 (22–27) / 61 (58–63) |
+| | carrier · Cubic | 17.8 (17.7–17.8) | 100 % (100–101) | 330 (314–349) | 46 (45–47) / 63 (63–64) |
+| | carrier · BBR | 17.8 (17.7–17.8) | 102 % (101–102) | 622 (358–963) | 31 (21–42) / 60 (54–63) |
+| 15 Mbps, 1080p | none | 14.4 (14.3–14.4) | – | 96 (75–107) | 69 (68–69) / 75 |
+| | datagram · Cubic (today) | 5.3 (4.9–5.6) | 74 % (68–78) | 210 (181–245) | 65 (65–66) / 72 |
+| | datagram · BBR | 3.8 (3.7–3.9) | 53 % (52–54) | 763 (724–829) | 48 (46–49) / 72 |
+| | carrier · Cubic | 4.5 (4.0–5.0) | 63 % (56–70) | 272 (258–297) | 63 (62–65) / 69 (69–70) |
+| | carrier · BBR | 3.4 (3.4–3.5) | 48 % (48–49) | 670 (645–716) | 53 (53–54) / 72 (72–73) |
+| 80 Mbps, 1440p (38.9 Mbps mean, 50 ceiling) | none | 76.4 | – | 79 (70–88) | 53 / 61 |
+| | datagram · Cubic (today) | 39.1 (38.6–39.6) | 102 % (101–104) | 132 (132–133) | 52 (51–53) / 61 (60–61) |
+| | datagram · BBR | 34.7 (34.6–34.8) | 91 % (91–91) | 408 (392–423) | 23 (22–23) / 56 (54–58) |
+| | carrier · Cubic | 37.0 (36.0–38.1) | 97 % (94–100) | 160 (100–220) | 47 (46–48) / 61 |
+| | carrier · BBR | 34.5 (34.4–34.6) | 90 % (90–91) | 444 (441–448) | 23 (23–24) / 56 (54–58) |
+
+**O2 — what the broadcast gets, alone on the uplink → beside the upload.**
+Packets lost, undecodable and decode-ready cover the upload (25–80 s); the
+viewer columns its last 40 s, after the playout controller settled.
+*Undecodable* is strict (a frame after a hole in its GOP counts); the
+viewers skip one lost delta per GOP (R29), so they can show more.
+
+| Uplink | Broadcast | quinn: packets lost | Undecodable | Decode-ready p99 ms | Balanced: shown · stalled | Balanced: on-screen latency p50 ms | Lowest latency: stalled |
+|---|---|---|---|---|---|---|---|
+| 30 Mbps, 1080p (9.5 Mbps mean, 12 ceiling) | datagram · Cubic (today) | 0.4 % → 0.4 % | 1.5 % (0.9–1.8) → 7.1 % (5.9–7.7) | 90 (89–91) → 460 (323–710) | 96.3 (95.6–97.0) · 3.0 (2.8–3.3) → 88.9 (84.9–93.5) · 11.3 (6.5–14.4) % | 89 (83–100) → 289 (233–383) | 13.1 % (12.7–13.8) → 40.6 % (36.2–45.6) |
+|  | datagram · BBR | 1.3 % (0.0–2.2) → 5.0 % (2.6–7.1) | 1.2 % (0.0–2.7) → 25.8 % (12.1–42.5) | 94 (89–96) → 169 (154–197) | 97.1 (96.0–97.7) · 2.8 (2.3–3.6) → 86.2 (82.5–89.7) · 15.5 (11.2–19.5) % | 83 → 111 (100–133) | 12.7 % (12.4–13.0) → 28.7 % (24.1–33.3) |
+|  | carrier · Cubic | 0.4 % (0.3–0.4) → 0.4 % (0.4–0.5) | 0.0 % → 0.4 % (0.0–0.7) | 89 (89–90) → 223 (215–231) | 98.1 · 1.8 (1.8–1.9) → 98.0 (95.8–99.6) · 2.1 (0.3–4.7) % | 83 → 211 (183–234) | 12.3 % (12.3–12.4) → 25.3 % (25.3–25.4) |
+|  | carrier · BBR | 1.8 % (1.4–2.3) → 3.7 % (1.5–7.3) | 0.0 % → 0.0 % | 92 (90–95) → 172 (146–204) | 98.0 (96.9–99.1) · 1.8 (0.1–3.3) → 97.9 (96.8–98.7) · 1.6 (1.1–2.5) % | 89 (83–100) → 167 (133–200) | 12.7 % (12.6–12.7) → 22.2 % (19.3–25.0) |
+| 15 Mbps, 1080p | datagram · Cubic (today) | 1.0 % (1.0–1.1) → 0.6 % (0.5–0.7) | 13.5 % (9.8–15.3) → 50.9 % (44.4–57.9) | 287 (281–296) → 2049 (1929–2255) | 82.3 (81.2–83.3) · 19.3 (18.1–20.4) → 18.6 (16.8–21.1) · 82.4 (79.3–84.3) % | 200 (183–217) → 395 (384–400) | 38.3 % (37.7–38.7) → 90.3 % (89.2–91.8) |
+|  | datagram · BBR | 6.7 % (5.3–8.5) → 14.6 % (11.9–16.1) | 42.9 % (37.9–49.0) → 82.2 % (78.8–86.3) | 250 (243–260) → 367 (349–398) | 69.2 (65.5–73.0) · 33.3 (29.4–37.6) → 31.1 (24.6–39.9) · 72.6 (63.4–79.2) % | 139 (100–183) → 128 (117–133) | 45.6 % (43.7–48.5) → 78.4 % (72.6–82.7) |
+|  | carrier · Cubic | 1.1 % (1.0–1.2) → 0.7 % (0.6–0.8) | 0.1 % → 13.0 % (6.0–20.8) | 186 (183–189) → 374 (325–429) | 97.3 (97.1–97.6) · 2.7 (2.6–2.8) → 82.5 (75.5–87.6) · 18.9 (13.8–26.1) % | 178 (167–183) → 333 (300–350) | 25.9 % (25.7–25.9) → 39.7 % (36.9–43.2) |
+|  | carrier · BBR | 9.9 % (8.7–11.1) → 15.1 % (14.1–16.7) | 0.3 % (0.1–0.5) → 2.1 % (2.0–2.3) | 254 (249–263) → 358 (344–378) | 94.5 (92.9–95.7) · 6.0 (4.0–7.8) → 91.7 (89.8–92.7) · 9.2 (7.8–11.3) % | 211 (183–233) → 283 (267–300) | 32.1 % (31.2–32.8) → 52.2 % (51.0–53.3) |
+| 80 Mbps, 1440p (38.9 Mbps mean, 50 ceiling) | datagram · Cubic (today) | 0.1 % → 0.2 % | 0.0 % → 37.7 % (37.4–38.0) | 88 (87–88) → 1529 (1259–1799) | 97.1 · 3.0 → 30.1 (29.6–30.5) · 70.4 (68.8–72.0) % | 83 → 117 (100–134) | 10.9 % (10.8–11.1) → 79.2 % (78.2–80.2) |
+|  | datagram · BBR | 0.1 % → 1.1 % | 0.0 % → 31.2 % (26.2–36.1) | 91 (91–92) → 137 (134–140) | 97.0 · 3.1 → 83.5 (81.5–85.5) · 17.9 (16.1–19.8) % | 83 → 83 (83–84) | 11.2 % → 25.2 % (23.4–27.1) |
+|  | carrier · Cubic | 0.1 % → 0.2 % | 0.0 % → 3.9 % (1.9–6.0) | 87 (86–87) → 243 (221–265) | 97.5 (97.3–97.6) · 2.5 (2.3–2.8) → 91.1 (88.3–93.8) · 9.2 (6.5–11.9) % | 100 → 183 (183–184) | 10.9 % (10.8–11.0) → 17.9 % (17.3–18.5) |
+|  | carrier · BBR | 0.1 % (0.0–0.1) → 1.4 % | 0.0 % → 0.0 % | 89 (88–90) → 142 (141–142) | 97.9 (97.5–98.3) · 2.3 (1.9–2.8) → 96.3 (95.7–96.9) · 4.1 (3.7–4.5) % | 92 (83–100) → 117 | 10.4 % (10.0–10.8) → 16.4 % (15.6–17.1) |
 
 ## 12. References
 
