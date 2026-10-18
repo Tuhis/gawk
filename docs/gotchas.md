@@ -1540,7 +1540,7 @@ entries still describe code `gawk-pubsim` runs (now
   for them ([docs/73](73-reliable-uplink.md) F14).
 - **quinn's default Cubic cannot carry the default rung over a lossy long
   path.** It treats every random loss as congestion: at 40 ms RTT, 0.1 %
-  loss already leaves 15–25 % of frames undecodable in either delivery
+  loss already leaves 16–23 % of frames undecodable in either delivery
   mode, and at 100 ms it halves the throughput
   ([docs/73](73-reliable-uplink.md) F4).
 - **quinn's BBR overruns an uplink the stream nearly fills.** With the

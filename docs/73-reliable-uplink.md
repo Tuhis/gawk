@@ -1,9 +1,10 @@
 # R71 — Reliable broadcaster uplink: measured first (docs/73)
 
 **Status**: designed 2026-10-17 from a measurement pass (§4, §11), extended
-2026-10-18 with the relay's queue by depth and a shared uplink (F16, F17); owner
-decisions OD1–OD6 open (§3); chunks **RU0–RU8** not started (`RU` =
-Reliable Uplink). **Split out of R55** ([docs/57](57-wifi-uplink.md)) on
+2026-10-18 with the relay's queue by depth and a shared uplink (F16, F17).
+Owner decisions OD1, OD2, OD4 and OD6 taken 2026-10-18, OD3 and OD5 open
+(§3); chunks **RU0–RU8** not started, in §8's order (`RU` = Reliable
+Uplink). **Split out of R55** ([docs/57](57-wifi-uplink.md)) on
 2026-10-17 by owner direction: how deltas cross the broadcaster → relay leg
 is not a Wi-Fi feature. docs/57 keeps the Mac's Wi-Fi status line (WU3,
 built), Improve (WU4, deferred), QoS marking (WU5) and the Wi-Fi hardware pass
@@ -90,7 +91,8 @@ default controller treats every random loss as congestion: at 0.5 % loss and
 10 ms RTT it took 535 congestion events in 100 s and its window fell from
 ~446 KB to 15–50 KB. A 230 KB keyframe then needs ~10 round trips and both
 delivery modes queue behind it. Throughput falls below the stream's needs
-at **≥ 0.5 % loss at 10 ms, and already at 0.1 % at 40 or 100 ms** (5.2–5.6 of
+at **≥ 1 % loss at 10 ms** — 0.5 % already pushes decode-ready p99 to
+168–454 ms — **and already at 0.1 % at 40 or 100 ms** (5.2–5.6 of
 10.8 Mbps at 100 ms) — the loss-limited rate of a Reno-style controller,
 roughly MSS/RTT × 1.22/√p. At 40 ms a 0.1 % loss rate left 16–23 % of
 frames undecodable whichever mode carried them (§11 table D). 40 ms is an
@@ -360,20 +362,22 @@ it there: the stream alone takes ≈ 11 Mbps on the wire (with Cubic) of the
 14.4 Mbps the upload gets alone, which leaves at most 3.3 Mbps, 46 % of
 the upload's share (D5).
 
-## 3. Owner decisions (open)
+## 3. Owner decisions
 
-Each row states the recommendation and the finding behind it. D4–D7 and
-D11 are written as if the recommendation is taken; a different answer changes
-those decisions and their chunks, nothing else.
+The owner took OD1, OD2, OD4 and OD6 on 2026-10-18, as recommended and with
+the order in §8; OD3 and OD5 stay open. Each row states the decision or the
+recommendation and the finding behind it. D4–D7 and D11 record the
+decisions; D4's "who can choose" is written as if OD3's recommendation is
+taken, and a different answer there changes D4 and RU5, nothing else.
 
-| # | Question | Options | Recommendation |
+| # | Question | Options | Decision / recommendation |
 |---|---|---|---|
-| OD1 | What does a broadcaster get by default? | **Reliable** (the carrier, whenever the relay supports it) with *Lowest latency* (datagrams + parity) as a choice; or *Lowest latency* by default with Reliable as the choice. | **Reliable by default** (D4). It costs nothing on a clean path (F1), fixes the bursts and outages that motivated R55 (F2), serves the default viewer at least as well on every lossy path measured — within half a point on random loss, far better on bursts and outages (F2, F3) — and is the only thing measured that protects *Smoother* and *Most stable* viewers from every kind of leg-A loss (F14). *Lowest latency* stays a first-class choice, not a warned-against legacy mode: on a long path with random loss it is what keeps live-edge viewers from waiting (F3). |
-| OD2 | Which congestion controller does the engine run? | quinn's Cubic (today); quinn's BBR; a controller of our own. | **BBR for both delivery modes, behind RU4's gates** (D5). F4/F5 make it the larger reliability lever. It helps *Lowest latency* on every random-loss path too, and costs it a few points of frames under outages (F5). Beside a household's upload, the carrier with BBR is the only combination that stays watchable on every uplink measured (F17). Its measured costs are on an uplink the stream nearly fills: there it loses 7–10 % of its own packets, which costs the Balanced viewer 3 points and 33 ms on the carrier and 13 points on datagrams, and it leaves a household upload about half its share (F17). G5 records that cell rather than gating on it; whether it should gate is part of this decision. It is the one decision here with a production risk (§10): RU4 ships it with the old controller one setting away, and reverts if the gates fail. Our own controller is out of scope (§9). |
-| OD3 | Who can choose? | The broadcaster's app; the relay operator; viewers. | **The broadcaster (Quality page) and the operator (`-uplink-carriers`)** (D4, §6). Viewers choose their own buffering (R32 presets) and cannot choose how leg A is carried — it is one stream for all of them. The iOS app follows the engine default with no setting until someone asks for one. |
-| OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Make the queue longer, to 512** (D7): measured, it is the only one of the three that works (≈ 2 100 → 0 chunks a minute on a relay with CPU to spare; the drain: 2 099), and 512 rather than longer because past capacity a longer queue only adds delay (F16). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
-| OD6 | Does the relay serve parity to reliable delivery (*Smoother*, *Most stable*)? | Keep serving them none (docs/34 §3); serve them the fleet's parity like live-edge viewers. | **Serve it** (D11). On any datagram uplink — *Lowest latency*, the browser broadcaster, an older app — it lifts those viewers from 32–89 % to 95.6–100 % of frames under 0.1–1 % loss (F14), for 2.5–10.4 % more egress to them, relay-side only. It does not replace the carrier: it cannot repair an outage. |
-| OD5 | Does the browser broadcaster follow? | Now; after measuring Chrome's QUIC stack; not at all. | **After a measurement**, as its own chunk outside this milestone. Chrome's controller and stream scheduling are not quinn's, nothing here measured them, and the browser broadcaster is not where the losing uplinks were found. |
+| OD1 | What does a broadcaster get by default? | **Reliable** (the carrier, whenever the relay supports it) with *Lowest latency* (datagrams + parity) as a choice; or *Lowest latency* by default with Reliable as the choice. | **Decided 2026-10-18: Reliable by default** (D4), switched on with BBR once RU7's hardware pass holds. It costs nothing on a clean path (F1), fixes the bursts and outages that motivated R55 (F2), serves the default viewer at least as well on every lossy path measured — within half a point on random loss, far better on bursts and outages (F2, F3) — and is the only thing measured that protects *Smoother* and *Most stable* viewers from every kind of leg-A loss (F14). Beside a household's upload it is what keeps the picture (F17: 92–98 % of frames shown with BBR against today's 19–89 %, for 25–78 ms). *Lowest latency* stays a first-class choice, not a warned-against legacy mode: on a long path with random loss it is what keeps live-edge viewers from waiting (F3). |
+| OD2 | Which congestion controller does the engine run? | quinn's Cubic (today); quinn's BBR; a controller of our own. | **Decided 2026-10-18: BBR for both delivery modes, behind RU4's gates, shipped with the carrier and not ahead of it** (D5, §8). F4/F5 make it the larger reliability lever. It helps *Lowest latency* on every random-loss path too, and costs it a few points of frames under outages (F5). Beside a household's upload, the carrier with BBR is the only combination that stays watchable on every uplink measured (F17). Its measured costs are on an uplink the stream nearly fills: there it loses 7–10 % of its own packets, which costs the Balanced viewer 3 points and 33 ms on the carrier and 13 points on datagrams, and it leaves a household upload about half its share (F17). That cost is why it ships with the carrier: 3 points there against 13 on datagrams. **That cell is recorded, not gated** (G5): no controller that holds the stream's rate passes RU4's share gate there, and today's broadcast (datagrams, Cubic) is already broken on it (82 % shown alone, 19 % beside an upload). Instead RU4 requires the upload-bandwidth warning to fire on it, because a lower rung is the fix there, not a controller. It is the one decision here with a production risk (§10): RU4 ships it with the old controller one setting away, and reverts if the gates fail. Our own controller is out of scope (§9). |
+| OD3 | Who can choose? | The broadcaster's app; the relay operator; viewers. | **Recommendation (open): the broadcaster (Quality page) and the operator (`-uplink-carriers`)** (D4, §6). Viewers choose their own buffering (R32 presets) and cannot choose how leg A is carried — it is one stream for all of them. The iOS app follows the engine default with no setting until someone asks for one. |
+| OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Decided 2026-10-18: make the queue longer, to 512** (D7), first (§8): measured, it is the only one of the three that works (≈ 2 100 → 0 chunks a minute on a relay with CPU to spare; the drain: 2 099), and 512 rather than longer because past capacity a longer queue only adds delay (F16). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
+| OD6 | Does the relay serve parity to reliable delivery (*Smoother*, *Most stable*)? | Keep serving them none (docs/34 §3); serve them the fleet's parity like live-edge viewers. | **Decided 2026-10-18: serve it** (D11), first (§8). On any datagram uplink — *Lowest latency*, the browser broadcaster, an older app — it lifts those viewers from 32–89 % to 95.6–100 % of frames under 0.1–1 % loss (F14), for 2.5–10.4 % more egress to them, relay-side only. It does not replace the carrier: it cannot repair an outage. |
+| OD5 | Does the browser broadcaster follow? | Now; after measuring Chrome's QUIC stack; not at all. | **Recommendation (open): after a measurement**, as its own chunk outside this milestone. Chrome's controller and stream scheduling are not quinn's, nothing here measured them, and the browser broadcaster is not where the losing uplinks were found. |
 
 ## 4. How it was measured
 
@@ -578,6 +582,10 @@ one GOP):
   viewer, which is not the default, and the signal (random vs burst loss) is
   only separable after the fact. One rule, readable in telemetry, as docs/57
   OD2 argued.
+- **When the default flips** (OD1, 2026-10-18): Reliable becomes the
+  default in the same release as D5's BBR, once RU7's hardware pass holds.
+  Until then the setting ships with *Lowest latency* as its default, so
+  the carrier is opt-in while it is proven on real uplinks.
 - **The operator's switch** stays: `-uplink-carriers=false` never sends the
   capability, so every broadcaster on that fleet uses datagrams.
 - **Not a warning dialog.** docs/57 put *Legacy* behind "makes viewers see
@@ -599,6 +607,11 @@ one GOP):
   — and it leaves a household's upload on such a link about half its fair
   share (Cubic: 63–74 %), because it holds the stream's rate. Where the
   uplink has room (30 and 80 Mbps) the upload keeps 90–102 % of its share.
+- **It ships with the carrier, not ahead of it** (OD2, 2026-10-18): that
+  thin-uplink cost is 13 points of frames on datagrams but 3 on the
+  carrier, so BBR alone on today's datagram path would be the worst order.
+  On that link the remedy is a lower rung: RU4 requires the upload-bandwidth
+  warning (docs/38) to fire there.
 - It is one transport option (`TransportConfig::congestion_controller_factory`),
   set in `crates/engine/src/transport.rs` beside the keep-alive — the engine
   sets nothing else today.
@@ -608,11 +621,11 @@ one GOP):
   `uplinkCongestion`.
 - **Gates** (RU4) before BBR becomes the default: the §11 cells, the
   shared uplink (table O; this pass meets the pre-registered 80 Mbps gate,
-  and the thin 15 Mbps cell is recorded, not gated — holding the stream's
-  rate there leaves the upload at most ~46 % of its share whichever
-  controller does it, F17), and the hardware pass. If a gate fails, Cubic
-  stays and the carrier still ships: F2 holds under Cubic at 10 ms, where
-  the R55 Mac is.
+  and the thin 15 Mbps cell is recorded, not gated, by owner decision —
+  holding the stream's rate there leaves the upload at most ~46 % of its
+  share whichever controller does it, F17), and the hardware pass. If a
+  gate fails, Cubic stays and the carrier still ships: F2 holds under
+  Cubic at 10 ms, where the R55 Mac is.
 
 ### D6 — Lowest latency stays today's datagram path
 
@@ -786,6 +799,22 @@ preset (§11 tables I, J, K):
 
 ## 8. Chunks and acceptance criteria
 
+### Order (owner, 2026-10-18)
+
+1. **RU0, RU2 and RU8 first.** Relay and telemetry only, independent of
+   the carrier and of OD1/OD2. RU2 and RU8 fix today's two bugs for every
+   datagram publisher — *Lowest latency*, the browser broadcaster, every
+   older app (F7, F14) — and RU0 is what lets RU7 compare against a
+   baseline.
+2. **Then RU1, RU3, RU4 and RU5 together.** BBR ships with the carrier,
+   not ahead of it (D5). Both reach broadcasters behind their settings,
+   with today's behaviour as the default.
+3. **RU7, then the defaults flip** — Reliable and BBR in one release (D4,
+   D5). If RU7 or RU4's gates fail, the defaults stay where they are and
+   §2 gets the reason.
+
+RU6, the lab, comes with this doc.
+
 ### Milestone goals
 
 Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
@@ -797,7 +826,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | G2 | **Bursts and outages stop breaking GOPs**: on the GE and outage cells at 10 and 40 ms, Reliable leaves ≤ 0.5 % of frames undecodable and the Balanced viewer shows ≥ 97 % of frames (with OD2's controller; at 10 ms with either) | lab |
 | G3 | **The latency it costs is bounded and visible**: on the same cells, the Balanced offset rises by ≤ 60 ms at 10–40 ms RTT; Diagnostics shows the mode and the counters that explain it | lab + unit |
 | G4 | **The R55 Mac is fixed**: the reference Mac on Wi-Fi with AWDL on, 10 min at the default rung: leg-A damaged frames (`ingressFrameLossRatio`) ≤ 0.1 %, viewer gap resyncs ≤ 2/min, no `keyframe-only-delivery` | hardware |
-| G5 | **The controller is not a regression** (if OD2 is taken): on the carrier, BBR is no worse than Cubic on any §11 cell beyond the run-to-run spread (Balanced frames shown − 3 points, table M; decode-ready p99 + 5 ms); on datagrams with D7's queue, the same on clean paths, random loss and bursts, and within 6 points of frames shown on outages at a lower p99 (F5, F15); and it passes RU4's shared-uplink gate. **One cell is recorded, not gated** (added 2026-10-18, owner call under OD2): table O's thin uplink alone, where this pass measured BBR's cost — on the carrier −2.8 points and +68 ms decode-ready p99, on datagrams 69 against 82 % shown (F17) | lab |
+| G5 | **The controller is not a regression** (OD2): on the carrier, BBR is no worse than Cubic on any §11 cell beyond the run-to-run spread (Balanced frames shown − 3 points, table M; decode-ready p99 + 5 ms); on datagrams with D7's queue, the same on clean paths, random loss and bursts, and within 6 points of frames shown on outages at a lower p99 (F5, F15); and it passes RU4's shared-uplink gate. **One cell is recorded, not gated** (OD2, decided 2026-10-18): table O's thin uplink alone, where this pass measured BBR's cost — on the carrier −2.8 points and +68 ms decode-ready p99, on datagrams 69 against 82 % shown (F17). RU4's upload-warning criterion covers it instead | lab |
 | G6 | **Compatibility**: a new broadcaster on an old relay sends datagrams unchanged; an old broadcaster on a new relay is unchanged; `-uplink-carriers=false` leaves `/statusz`, metrics and wire byte-identical to before | integration (real `gawk-server`) + diff assertion |
 | G7 | **Wire parity**: `CapUplinkCarriers` in `gawk-server/wire`, `parity.ts` and `crates/wire`, golden vectors byte-identical in all three | unit (mirror tests) |
 | G8 | **Viewers untouched**: no `gawk-app` change beyond the capability constant | review |
@@ -854,6 +883,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | `congestion: "bbr" \| "cubic"` in `broadcast.json`, reported as `uplinkCongestion`, shown in Diagnostics; `cubic` restores today's transport exactly | unit |
 | G5's lab gate, recorded in §11 (this pass meets it) | lab |
 | Shared uplink (`tools/uplinklab/fair`, table O): at 80 Mbps with a 50 ms queue and one competing TCP flow, the broadcast holds its rate and the TCP flow keeps ≥ 50 % of its fair share (this pass, carrier · BBR: 0 % undecodable, and the flow keeps 90–91 %); at 30 Mbps the same (0 %, 101–102 %); at 15 Mbps recorded, not gated (48–49 %, where any controller that holds the stream's rate leaves at most ~46 %, F17) | lab |
+| On table O's thin cell (15 Mbps, alone and beside the upload) the upload-bandwidth warning (docs/38's `uplink` monitor) shows in both delivery modes, within its 5 s hysteresis; if its signals miss BBR's own packet loss, the monitor gains one that does, red first | lab + unit |
 | The hardware pass (RU7) shows no regression against Cubic on either machine | hardware |
 | Default flips to `bbr` only when all three pass; otherwise this chunk records why and Cubic stays | review |
 
@@ -889,6 +919,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 |---|---|
 | G4 on the reference Mac; G1 on the gaming PC wired; one session over a long real path (≥ 40 ms to the fleet) in both delivery modes | manual |
 | §11 records each against the RU0 baseline | review |
+| Only then do the D4 and D5 defaults flip, in one release; a failed pass leaves both settings at today's defaults with the reason recorded in §2 | review |
 
 ## 9. Non-goals
 
