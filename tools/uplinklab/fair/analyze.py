@@ -39,8 +39,11 @@ def one(d):
         out = subprocess.run(["python3", f"{LAB}/analyze.py", d, "--skip-s", str(TCP_FROM_S),
                               "--viewer-trace", f"{d}/vt.json"], capture_output=True, text=True, check=True)
         t = json.loads(out.stdout)
-        r.update(undec=t["undecodable_pct"], ready99=t["ready_lat_ms"]["p99"], bmbps=t["uplink_mbps"],
-                 pktloss=t["pkt_loss_pct"])
+        r.update(undec=t["undecodable_pct"], ready99=t["ready_lat_ms"]["p99"], bmbps=t["uplink_mbps"])
+        # quinn's own count; the browser sender's S line has none (Chrome
+        # exposes no loss counter, browser/sender.mjs).
+        if not any(l.startswith("I,cc,") for l in open(os.path.join(d, "send.csv"))):
+            r["pktloss"] = t["pkt_loss_pct"]
     return r
 
 
@@ -105,7 +108,9 @@ def mean(rs, *path):
 RATES = [("30", "30 Mbps, 1080p (9.5 Mbps mean, 12 ceiling)"), ("15", "15 Mbps, 1080p"),
          ("80", "80 Mbps, 1440p (38.9 Mbps mean, 50 ceiling)")]
 MODES = [("datagram", "cubic", "datagram · Cubic (today)"), ("datagram", "bbr", "datagram · BBR"),
-         ("carrier", "cubic", "carrier · Cubic"), ("carrier", "bbr", "carrier · BBR")]
+         ("carrier", "cubic", "carrier · Cubic"), ("carrier", "bbr", "carrier · BBR"),
+         # OD5: the browser sender (fair/chrome.sh); Chrome's QUIC runs Cubic.
+         ("datagram", "chrome", "Chrome datagrams (today's browser)"), ("carrier", "chrome", "Chrome carrier (prototype)")]
 
 print("#### Table O — a shared uplink: the broadcast beside a household's TCP upload (F17, D5)\n")
 print("`tools/uplinklab/fair` (§4): one uplink at 30, 15 or 80 Mbps with a 50 ms\n"
@@ -137,10 +142,11 @@ for rate, label in RATES:
               f"{agg(rs, 'ping50')} / {agg(rs, 'ping95')} |")
 
 print("\n**O2 — what the broadcast gets, alone on the uplink → beside the upload.**")
-print("Packets lost, undecodable and decode-ready cover the upload (25–80 s); the\n"
-      "viewer columns its last 40 s, after the playout controller settled.\n"
-      "*Undecodable* is strict (a frame after a hole in its GOP counts); the\n"
-      "viewers skip one lost delta per GOP (R29), so they can show more.\n")
+print("Packets lost (quinn's count; Chrome exposes none), undecodable and\n"
+      "decode-ready cover the upload (25–80 s); the viewer columns its last 40 s,\n"
+      "after the playout controller settled. *Undecodable* is strict (a frame after\n"
+      "a hole in its GOP counts); the viewers skip one lost delta per GOP (R29), so\n"
+      "they can show more.\n")
 print("| Uplink | Broadcast | quinn: packets lost | Undecodable | Decode-ready p99 ms | Balanced: shown · stalled | "
       "Balanced: on-screen latency p50 ms | Lowest latency: stalled |")
 print("|---|---|---|---|---|---|---|---|")

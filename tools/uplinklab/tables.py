@@ -265,3 +265,70 @@ for name, label in (("rtt40-loss0.005", "40 ms, 0.5 % loss"), ("rtt40-loss0.01",
         def pick(k, metric):
             return " · ".join(f(min(100, r["view"][k][metric]), 1) for r in runs)
         print(f"| {label} | {d} | {pick('adaptive', 'shownPct')} | {pick('resilient', 'shownPct')} | {pick('off', 'stallPct')} |")
+
+# OD5: Chrome's QUIC stack (browser/sender.mjs) against the native sender.
+CHROME = [("dgram", "native today (datagrams · Cubic)"), ("chrome-dgram", "Chrome today (datagrams)"),
+          ("chrome-carrier", "Chrome carrier (prototype)"), ("carrier", "native carrier · Cubic"),
+          ("carrier-bbr", "native carrier · BBR")]
+CP = [("clean", "clean"), ("loss0.001", "0.1 % loss"), ("loss0.005", "0.5 % loss"), ("loss0.01", "1 % loss"),
+      ("ge1pct", "bursts (GE)"), ("out20drop", "radio away 20 ms"), ("out80drop", "radio away 80 ms")]
+CHP = [("clean", "1440p clean"), ("loss0.001", "1440p 0.1 % loss"), ("ge1pct", "1440p bursts"),
+       ("rate80M", "1440p 80 Mbps"), ("rate80M-out80drop", "1440p 80 Mbps + outages")]
+
+
+def chrome_cells():
+    for rtt in (10, 40, 100):
+        for sc, label in CP:
+            yield f"{rtt} ms", label, f"rtt{rtt}-{sc}"
+    for sc, label in CHP:
+        yield "10 ms", label, f"hi-rtt10-{sc}"
+
+
+def ready(s):
+    t = s["transport"]
+    r = t["ready_lat_ms"]
+    return f"{f(r['p50'])} / {f(r['p99'])} · {f(t['undecodable_pct'], 1)} %"
+
+
+def chrome_table(title, cell):
+    rows = []
+    for rtt, label, name in chrome_cells():
+        if not get(name, "chrome-dgram"):
+            continue
+        rows.append(f"| {rtt} | {label} | " + " | ".join(cell(get(name, m)) if get(name, m) else "–" for m, _ in CHROME) + " |")
+    if not rows:
+        return
+    print(f"\n#### {title}\n")
+    print("| RTT | Path | " + " | ".join(h for _, h in CHROME) + " |")
+    print("|---|---|" + "---|" * len(CHROME))
+    print("\n".join(rows))
+
+
+if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
+    print("\n#### Table P — the browser broadcaster: Chrome's QUIC stack against the native sender (OD5)\n")
+    print("Chrome for Testing 151 replaying the same traces through gawk-app's shipping packetizer and")
+    print("DatagramSender (browser/sender.mjs); its QUIC runs Cubic whatever the page asks. One 100 s run")
+    print("a cell, alone on the host. The receiver has the 4096-deep queue for the Chrome columns.")
+    chrome_table("Table P1 — Balanced: shown · stalled", lambda s: sv(s, "adaptive"))
+    chrome_table("Table P2 — Lowest latency: shown · stalled", lambda s: sv(s, "off"))
+    chrome_table("Table P3 — Smoother: shown · stalled (no parity, as today)", lambda s: sv(s, "resilient"))
+    chrome_table("Table P4 — decode-ready p50 / p99 ms · undecodable", ready)
+    KF = [("chrome-dgram", "Chrome datagrams"), ("chrome-carrier", "Chrome carrier"),
+          ("chrome-carrier-kfw", "carrier, records after the keyframe's write"),
+          ("chrome-carrier-kfa", "carrier, records after the keyframe's acknowledgement")]
+    kf_rows = []
+    for rtt, label, name in chrome_cells():
+        if not get(name, "chrome-carrier-kfw"):
+            continue
+        cellv = []
+        for m, _ in KF:
+            s = get(name, m)
+            cellv.append("–" if not s else f"{sv(s, 'adaptive')} · offset {f(s['view']['adaptive']['offsetMs']['mean'])} ms"
+                                          f" · keyframes {f(s['transport']['key_lat_ms']['p50'])} / "
+                                          f"{f(s['transport']['key_lat_ms']['p95'])} ms")
+        kf_rows.append(f"| {rtt} | {label} | " + " | ".join(cellv) + " |")
+    if kf_rows:
+        print("\n#### Table P5 — the keyframe gate: Balanced shown · stalled · offset · keyframe latency p50 / p95\n")
+        print("| RTT | Path | " + " | ".join(h for _, h in KF) + " |")
+        print("|---|---|" + "---|" * len(KF))
+        print("\n".join(kf_rows))

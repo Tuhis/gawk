@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -33,11 +33,24 @@ MODES = {
     # relay change), datagrams kept — alone, and with BBR.
     "dgram-bigq": ["--mode", "datagram"],
     "dgram-bbr-bigq": ["--mode", "datagram", "--cc", "bbr"],
+    # OD5: the browser broadcaster's send path over Chrome's own QUIC stack
+    # (browser/sender.mjs), and a browser carrier prototype on it.
+    "chrome-dgram": ["--mode", "datagram"],
+    "chrome-carrier": ["--mode", "carrier"],
+    # The carrier prototype holding a GOP's records until its keyframe
+    # stream's write resolved, or its close (acknowledged): Chrome has no
+    # stream priority to put the keyframe first.
+    "chrome-carrier-kfw": ["--mode", "carrier", "--kforder", "write"],
+    "chrome-carrier-kfa": ["--mode", "carrier", "--kforder", "ack"],
 }
 # Modes that change the receiver rather than the sender.
 MODE_ENV = {
     "dgram-bigq": {"RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
     "dgram-bbr-bigq": {"RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
+    "chrome-dgram": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
+    "chrome-carrier": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
+    "chrome-carrier-kfw": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
+    "chrome-carrier-kfa": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
 }
 
 
@@ -143,6 +156,29 @@ def sets():
         for seed in (8, 9):
             seeds.append(scen(f"{name}-s{seed}", proxy, modes=sm, seed=seed))
     s["seeds"] = seeds
+    # OD5: Chrome (whose QUIC stack runs Cubic whatever the page asks), its
+    # datagrams and a carrier prototype, on the cells that separate them.
+    # Run --jobs 1: Chrome's datagram path is CPU-bound on the lab host.
+    chrome = []
+    cm = ("chrome-dgram", "chrome-carrier")
+    for rtt in (10, 40, 100):
+        r = f"{rtt}ms"
+        chrome.append(scen(f"rtt{rtt}-clean", ["-rtt", r], modes=cm))
+        for loss in ("0.001", "0.005", "0.01"):
+            chrome.append(scen(f"rtt{rtt}-loss{loss}", ["-rtt", r, "-loss", loss], modes=cm))
+        chrome.append(scen(f"rtt{rtt}-ge1pct", ["-rtt", r, "-ge-g2b", "0.0025", "-ge-b2g", "0.25"], modes=cm))
+        for ln in ("20ms", "80ms"):
+            chrome.append(scen(f"rtt{rtt}-out{ln[:-2]}drop", ["-rtt", r, "-outage-period", "1070ms",
+                                                             "-outage-len", ln], modes=cm))
+    for sc in hi:
+        if sc["name"] in ("hi-rtt10-clean", "hi-rtt10-loss0.001", "hi-rtt10-ge1pct", "hi-rtt10-rate80M",
+                          "hi-rtt10-rate80M-out80drop"):
+            chrome.append(dict(sc, modes=cm))
+    s["chrome"] = chrome
+    kf = ("chrome-carrier-kfw", "chrome-carrier-kfa")
+    s["chrome-kf"] = [dict(sc, modes=kf) for sc in chrome
+                      if sc["name"] in ("rtt10-clean", "rtt10-loss0.005", "rtt10-out80drop", "rtt40-loss0.001",
+                                        "hi-rtt10-clean")]
     s["all"] = core + cc + hi + jit + win + bigq + seeds
     return s
 

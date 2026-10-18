@@ -6,9 +6,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -62,6 +64,7 @@ func runRecv(args []string) error {
 	keepalive := fs.Duration("keepalive-period", 10*time.Second, "the relay's -keepalive-period default")
 	streamWin := fs.Uint64("stream-window", 0, "InitialStreamReceiveWindow (0 = quic-go default, as the relay)")
 	connWin := fs.Uint64("conn-window", 0, "InitialConnectionReceiveWindow (0 = quic-go default, as the relay)")
+	hashFile := fs.String("cert-hash-file", "", "write the certificate's SHA-256 here (hex), for a browser's serverCertificateHashes")
 	_ = fs.Parse(args)
 
 	f, err := os.Create(*out)
@@ -75,6 +78,12 @@ func runRecv(args []string) error {
 	cert, err := selfSigned()
 	if err != nil {
 		return err
+	}
+	if *hashFile != "" {
+		sum := sha256.Sum256(cert.Certificate[0])
+		if err := os.WriteFile(*hashFile, []byte(hex.EncodeToString(sum[:])), 0o644); err != nil {
+			return err
+		}
 	}
 	mux := http.NewServeMux()
 	// The same Server shape as internal/transport/server.go: webtransport
@@ -199,6 +208,16 @@ func readUni(st *webtransport.ReceiveStream, log *eventLog) {
 		}
 		body := int64(h.ConfigLen) + int64(h.PayloadLen)
 		if _, err := io.CopyN(io.Discard, br, body); err != nil {
+			log.add('X', h.FrameID, 0, 0, 0)
+			return
+		}
+		// As hub.IngestKeyframeStream does: the keyframe is the relay's only
+		// once the stream's FIN follows its declared length, and reading to
+		// it is also what lets quic-go retire the stream (a publisher that
+		// FINs in a frame of its own — Chrome — otherwise exhausts the
+		// connection's incoming-stream credit after 100 keyframes).
+		var extra [1]byte
+		if n, _ := br.Read(extra[:]); n > 0 {
 			log.add('X', h.FrameID, 0, 0, 0)
 			return
 		}
