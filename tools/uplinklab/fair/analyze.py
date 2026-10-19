@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""docs/73 §11 table O from matrix.sh's runs in $UPLINK_OUT/fair: what a
+"""docs/74 §11 table O from matrix.sh's runs in $UPLINK_OUT/fair: what a
 household's TCP upload and the broadcast each get from one shared uplink, per
 delivery mode and controller. Prints markdown to stdout."""
 import json

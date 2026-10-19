@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs uplink-lab scenarios (docs/73 §4): each scenario × delivery mode is
+"""Runs uplink-lab scenarios (docs/74 §4): each scenario × delivery mode is
 one real sender → impaired path → receiver run, then the transport analysis
 and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
@@ -224,7 +224,7 @@ PRESETS = {
     "adaptive": ("vt.json", "adaptive", "live"),  # Balanced (default)
     "resilient": ("vt-noparity.json", "adaptive", "resilient"),  # Smoother
     "deep": ("vt-noparity.json", "adaptive", "deep"),            # Most stable
-    # What-if (docs/73 F14): the relay serving parity to reliable delivery
+    # What-if (docs/74 F14): the relay serving parity to reliable delivery
     # too. Leg B is reliable and clean here, so such a viewer receives exactly
     # what a live-edge viewer can complete.
     "resilient-parity": ("vt.json", "adaptive", "resilient"),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""docs/73 §11 tables G and N, from the real-relay runs: relay.sh's runs in
+"""docs/74 §11 tables G and N, from the real-relay runs: relay.sh's runs in
 $UPLINK_OUT/relay/<run> (table G, F7) and queue.sh's in $UPLINK_OUT/queue
 (table N, F16). Prints markdown to stdout."""
 import json

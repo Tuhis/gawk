@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the uplink lab (docs/73 §4) into $UPLINK_OUT/bin: the Go receiver and
+# Builds the uplink lab (docs/74 §4) into $UPLINK_OUT/bin: the Go receiver and
 # proxy, the real relay and gawk-loadgen (for F7's runs) and the Rust sender;
 # and the browser sender's page into $UPLINK_OUT/chrome-sender.
 set -euo pipefail
@@ -38,7 +38,7 @@ done)
  patch -s -o "$OUT/drain/server.go" internal/transport/server.go "$ROOT/tools/uplinklab/drain.patch"
  printf '{"Replace":{"%s":"%s"}}\n' "$PWD/internal/transport/server.go" "$OUT/drain/server.go" > "$OUT/drain/overlay.json"
  go build -overlay "$OUT/drain/overlay.json" -o "$OUT/bin/gawk-server-drain" ./cmd/gawk-server)
-# docs/73 OD5: the browser sender's page (browser/sender.mjs serves it to a
+# docs/74 OD5: the browser sender's page (browser/sender.mjs serves it to a
 # headless Chrome), built from gawk-app's shipping transport modules.
 (cd "$ROOT/gawk-app"
  [ -d node_modules ] || npm ci --no-audit --no-fund

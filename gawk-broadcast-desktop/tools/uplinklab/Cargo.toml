@@ -1,4 +1,4 @@
-# The sender half of the uplink lab (docs/73): synthetic frames over the
+# The sender half of the uplink lab (docs/74): synthetic frames over the
 # engine's exact transport stack — the vendored wtransport, the quinn the
 # workspace pins (Cargo.lock is the workspace's) and gawk-wire's chunking and
 # parity. Its own workspace, so it never enters the shipped build.

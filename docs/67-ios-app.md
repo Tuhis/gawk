@@ -351,7 +351,7 @@ transport is whatever the engine negotiates (OD11): today datagrams, plus
 R29 parity when `RelayCapabilities` asks for it. **R55's per-GOP reliable
 carriers are not built yet**: `CapUplinkCarriers` exists only in docs/57,
 and the relay ingest (WU1) and engine carrier (WU2) are not started.
-(*2026-10-17*: the carrier moved to R71, docs/73, as RU1 and RU3.) When
+(*2026-10-17*: the carrier moved to R72, docs/74, as RU1 and RU3.) When
 they land the broadcast pipeline inherits them with no iOS change; until then **no
 R65 acceptance criterion assumes them**, and G2/G3 are measured on
 datagrams. **QUIC connection

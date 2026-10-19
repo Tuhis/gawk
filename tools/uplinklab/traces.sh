@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Frame-size traces from a real encoder (docs/73 §4), rate-controlled like the
+# Frame-size traces from a real encoder (docs/74 §4), rate-controlled like the
 # broadcaster: VBR target 75 % of the ceiling, GOP = fps/2, no B-frames, zero
 # latency. Needs ffmpeg with libx264; the 60 s Mandelbrot zoom renders at
 # ~0.16x real time, so expect 10-15 minutes.

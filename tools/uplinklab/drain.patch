@@ -9,7 +9,7 @@
 -		if err != nil {
 -			log.Info("publisher session ended", "reason", sessionEndReason(r.Context(), err))
 -			return
-+	// docs/73 table G R3 / table N "drain": a goroutine that only empties
++	// docs/74 table G R3 / table N "drain": a goroutine that only empties
 +	// quic-go's 32-deep session queue into a 1024-deep channel the relay owns.
 +	// intakeDropped counts what that channel itself had no room for; it is
 +	// written by the goroutine alone and read after it has closed intake.

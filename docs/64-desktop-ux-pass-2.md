@@ -171,7 +171,7 @@ probe result is not persisted, and a pause is not persisted (D9).
   Sharing row.
 - docs/57's planned **Video delivery** switch ("Settings → Advanced") has no
   Advanced page to land on: it goes on the Quality page when it is built.
-  (Since 2026-10-17 the switch is R71's, docs/73 §6.)
+  (Since 2026-10-17 the switch is R72's, docs/74 §6.)
 
 ## 7. Verification
 

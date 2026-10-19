@@ -8,9 +8,9 @@ it (OD4).
 
 **Split 2026-10-17** (owner direction): the uplink transport — the carrier,
 its relay ingest, its engage policy and its costs (D1–D6, D9, WU0–WU2 and
-the transport goals G1–G7, G10–G13) — moved to **R71,
-[docs/73](73-reliable-uplink.md)**, because it is not specific to Wi-Fi.
-docs/73 measured it before deciding and revises several of the decisions
+the transport goals G1–G7, G10–G13) — moved to **R72,
+[docs/74](74-reliable-uplink.md)**, because it is not specific to Wi-Fi.
+docs/74 measured it before deciding and revises several of the decisions
 below. This doc keeps the Mac's side: the status line (WU3), Improve (WU4),
 QoS marking (WU5) and the Wi-Fi hardware pass (WU6).
 
@@ -21,7 +21,7 @@ path by carrying deltas on reliable streams; its Decision 1 left the
 reading until now was clean (docs/34 records 0.00–0.03 %). The first macOS
 broadcast made leg A the problem. Wherever this doc says "the carrier", the
 mechanism is docs/24's, verbatim; since 2026-10-17 it is specified in
-docs/73.
+docs/74.
 
 ---
 
@@ -74,7 +74,7 @@ Wi-Fi with AWDL **on**, broadcasting to the production fleet, one Windows
 viewer, 10 minutes at the default rung.
 
 *Revised 2026-10-17*: G1–G7 and G10–G13 were the transport's goals and moved
-with it to docs/73 §8, rewritten there against the lab's measurements. G8
+with it to docs/74 §8, rewritten there against the lab's measurements. G8
 and G9 stay.
 
 | # | Goal | Verified by |
@@ -86,18 +86,18 @@ and G9 stay.
 
 | # | Decision | Choice |
 |---|---|---|
-| OD1 | Transport for leg-A deltas | *Moved 2026-10-17 to [docs/73](73-reliable-uplink.md) §3, which reopens it on measurements.* Was: **R19's carrier, reversed**: one reliable uni stream per GOP from the broadcaster, records of `uint16 len ‖ datagram`, reset at a deadline (D1–D3). Not per-frame streams, not NACK/ARQ over datagrams, not parity alone. |
-| OD2 | When it engages | *Moved 2026-10-17 to [docs/73](73-reliable-uplink.md) §3, which reopens it on measurements.* Was: **Always, whenever the relay advertises it** — no RTT gate (D4). The escape hatch is a user-facing **advanced setting with a warning**, plus the relay's flag, env var and Helm value. |
-| OD3 | The deadline | *Moved 2026-10-17 to [docs/73](73-reliable-uplink.md) §3, which reopens it on measurements.* Was: **150 ms** from a GOP's oldest unacknowledged record, capped by the GOP (D3). A knob, not a constant. |
+| OD1 | Transport for leg-A deltas | *Moved 2026-10-17 to [docs/74](74-reliable-uplink.md) §3, which reopens it on measurements.* Was: **R19's carrier, reversed**: one reliable uni stream per GOP from the broadcaster, records of `uint16 len ‖ datagram`, reset at a deadline (D1–D3). Not per-frame streams, not NACK/ARQ over datagrams, not parity alone. |
+| OD2 | When it engages | *Moved 2026-10-17 to [docs/74](74-reliable-uplink.md) §3, which reopens it on measurements.* Was: **Always, whenever the relay advertises it** — no RTT gate (D4). The escape hatch is a user-facing **advanced setting with a warning**, plus the relay's flag, env var and Helm value. |
+| OD3 | The deadline | *Moved 2026-10-17 to [docs/74](74-reliable-uplink.md) §3, which reopens it on measurements.* Was: **150 ms** from a GOP's oldest unacknowledged record, capped by the GOP (D3). A knob, not a constant. |
 | OD4 | "Improve" (pause AirDrop/Handoff via a helper) | **Deferred until after WU2.** The carrier ships first; WU6-style measurement then decides whether residual AWDL harm justifies a privileged helper. Until then the status line has **no button** and Help carries the remedies (D7). |
-| OD5 | Which broadcasters | *Moved 2026-10-17 to [docs/73](73-reliable-uplink.md) §3, which reopens it on measurements.* Was: **The Rust desktop engine first** (Windows + macOS share it). The relay side serves any producer; the Go Linux broadcaster and the browser follow as separate chunks if measurement justifies them. *Revised 2026-09-24:* the Go Linux app is frozen (docs/58 OD6); R56's Rust Linux shell inherits WU2 with the shared engine. |
+| OD5 | Which broadcasters | *Moved 2026-10-17 to [docs/74](74-reliable-uplink.md) §3, which reopens it on measurements.* Was: **The Rust desktop engine first** (Windows + macOS share it). The relay side serves any producer; the Go Linux broadcaster and the browser follow as separate chunks if measurement justifies them. *Revised 2026-09-24:* the Go Linux app is frozen (docs/58 OD6); R56's Rust Linux shell inherits WU2 with the shared engine. |
 | OD6 | QoS marking | **Ship it unconditionally** (D8) — no stop rule. WU5 still proves the marking actually reaches the wire. |
 | OD7 | *(2026-09-29)* The Mac app never noticed AWDL loss | **WU3 ships before WU2**, on QUIC's packet counters alone (D5's local loss, pulled forward as `uplinkPacketsSent`/`uplinkPacketsLost`). Without the carrier the line fires whenever datagram loss is sustained, which is exactly when viewers pause. **Help names the fix**: it carries `sudo ifconfig awdl0 down` and what it turns off, which revises principle 3 for Help only. The status line and Settings stay jargon-free. OD4 stands: no Improve button, nothing privileged. **No dismissal**: connection problems stay on screen until they stop, because a broadcaster must remain aware while viewers lose video. This revises principle 6 and G8's "at most once", and also takes Dismiss off the upload-bandwidth warning. |
 
 ## 3. Non-goals
 
-- **Transport settings in the main UI.** The delivery choice is R71's
-  (docs/73 D4); there is no deadline slider, no per-broadcast picker, and
+- **Transport settings in the main UI.** The delivery choice is R72's
+  (docs/74 D4); there is no deadline slider, no per-broadcast picker, and
   nothing on the Share card.
 - **Telling users what's wrong with their router** in the main flow — Help
   only (D7 principle 7).
@@ -122,27 +122,27 @@ and G9 stay.
 
 ### D1 — The uplink carrier: docs/24's stream, publisher → relay
 
-*Moved 2026-10-17 to [docs/73](73-reliable-uplink.md).* docs/73 D1, unchanged.
+*Moved 2026-10-17 to [docs/74](74-reliable-uplink.md).* docs/74 D1, unchanged.
 
 ### D2 — The relay: accept carriers from a publisher, behind a capability bit
 
-*Moved 2026-10-17 to [docs/73](73-reliable-uplink.md).* docs/73 D2, extended (the stale-record rule, the knob).
+*Moved 2026-10-17 to [docs/74](74-reliable-uplink.md).* docs/74 D2, extended (the stale-record rule, the knob).
 
 ### D3 — The broadcaster: carrier lifecycle and the deadline
 
-*Moved 2026-10-17 to [docs/73](73-reliable-uplink.md).* docs/73 D3, **revised**: quinn exposes no per-offset acknowledgement, so the "oldest unacknowledged record" deadline cannot be built; the deadlines the engine can enforce are at the GOP boundary, and superseded GOPs are shed at the sender.
+*Moved 2026-10-17 to [docs/74](74-reliable-uplink.md).* docs/74 D3, **revised**: quinn exposes no per-offset acknowledgement, so the "oldest unacknowledged record" deadline cannot be built; the deadlines the engine can enforce are at the GOP boundary, and superseded GOPs are shed at the sender.
 
 ### D4 — When the carrier engages: always, when the relay supports it
 
-*Moved 2026-10-17 to [docs/73](73-reliable-uplink.md).* docs/73 D4, reopened by the owner's 2026-10-17 direction (the broadcaster can choose the lowest latency) and decided there on measurements.
+*Moved 2026-10-17 to [docs/74](74-reliable-uplink.md).* docs/74 D4, reopened by the owner's 2026-10-17 direction (the broadcaster can choose the lowest latency) and decided there on measurements.
 
 ### D5 — Telemetry: say which uplink ran and what it cost
 
-*Moved 2026-10-17 to [docs/73](73-reliable-uplink.md).* docs/73 D8, extended.
+*Moved 2026-10-17 to [docs/74](74-reliable-uplink.md).* docs/74 D8, extended.
 
 ### D6 — Not a back-channel, and not docs/15 D6
 
-*Moved 2026-10-17 to [docs/73](73-reliable-uplink.md).* docs/73 D9, unchanged.
+*Moved 2026-10-17 to [docs/74](74-reliable-uplink.md).* docs/74 D9, unchanged.
 
 ### D7 — The experience: it just works, and speaks only when viewers are affected
 
@@ -194,7 +194,7 @@ actually suffering, names no protocol, and goes away by itself.
 | Approved | The amber line turns into a green check, **"Wi-Fi improved"**, for 3 s, then disappears. From now on this happens automatically whenever a broadcast is live on Wi-Fi. |
 | Viewers affected, on Ethernet (or mode already on) | Amber line: **"Your network is dropping some video. Viewers may see brief pauses."** No button — there's nothing to fix on this Mac. **?** opens Help. |
 | Settings (if WU4 ships) | One checkbox: **"Pause AirDrop and Handoff while live on Wi-Fi"**. Unchecking it stops the behaviour; the helper stays installed but idle. |
-| Quality page | The delivery choice, R71's (docs/73 §6). *Revised 2026-10-17*: it was "Settings → Advanced → Video delivery: Automatic · Legacy"; docs/64 found there is no Advanced page, and docs/73 renames the choice after what it trades. |
+| Quality page | The delivery choice, R72's (docs/74 §6). *Revised 2026-10-17*: it was "Settings → Advanced → Video delivery: Automatic · Legacy"; docs/64 found there is no Advanced page, and docs/74 renames the choice after what it trades. |
 | Help page | Why it happens in one paragraph; then, in order: use a cable if you can; turn off AirDrop while you stream (Control Center → AirDrop → Off — or, once WU4 ships, let gawk do it); if you manage your router, channel 149 (or 44) on 5 GHz avoids the problem without turning anything off. |
 | Diagnostics / stats panel only | The technical truth for us: uplink mode, loss %, carriers expired, AWDL state, Wi-Fi channel. |
 
@@ -251,25 +251,25 @@ and is standard for real-time media, so it ships without a stop rule.
 
 ### D9 — Cost, the tradeoff, and scaling to high bitrates
 
-*Moved 2026-10-17 to [docs/73](73-reliable-uplink.md).* docs/73 §2 (measured, replacing this section's estimates) and D10 (receive windows). Two statements here were wrong and are corrected there: the default viewer is *adaptive*, not live-edge (`playbackPresets.ts`: `balanced`), and Cubic's reaction to random loss is not a side effect to watch for but the dominant cost on any path longer than a LAN.
+*Moved 2026-10-17 to [docs/74](74-reliable-uplink.md).* docs/74 §2 (measured, replacing this section's estimates) and D10 (receive windows). Two statements here were wrong and are corrected there: the default viewer is *adaptive*, not live-edge (`playbackPresets.ts`: `balanced`), and Cubic's reaction to random loss is not a side effect to watch for but the dominant cost on any path longer than a LAN.
 
 ## 5. Architecture
 
-*Moved 2026-10-17 to [docs/73](73-reliable-uplink.md) §7.*
+*Moved 2026-10-17 to [docs/74](74-reliable-uplink.md) §7.*
 
 ## 6. Chunks and acceptance criteria
 
 ### WU0 — Baseline, and the telemetry that can see it
 
-*Moved 2026-10-17 to docs/73 as **RU0**.* Its first row (the `relayscrape.ScrapeOnce` double-append) was done 2026-10-08, test-first (`TestRoundCarriesEachObservationOnce`, `TestScrapedRoundsYieldWindowedRelayFacts`).
+*Moved 2026-10-17 to docs/74 as **RU0**.* Its first row (the `relayscrape.ScrapeOnce` double-append) was done 2026-10-08, test-first (`TestRoundCarriesEachObservationOnce`, `TestScrapedRoundsYieldWindowedRelayFacts`).
 
 ### WU1 — Relay: carrier ingest behind `CapUplinkCarriers`
 
-*Moved 2026-10-17 to docs/73 as **RU1**.*
+*Moved 2026-10-17 to docs/74 as **RU1**.*
 
 ### WU2 — Rust engine: carrier sender, deadline, engage policy
 
-*Moved 2026-10-17 to docs/73 as **RU3**.*
+*Moved 2026-10-17 to docs/74 as **RU3**.*
 
 ### WU3 — macOS: the quiet status line
 
@@ -315,7 +315,7 @@ QUIC's packet loss alone, with no carrier expiries yet:
   connection tile reads "Upload is struggling" while harm is measured.
 - *Not built*: the Wi-Fi channel in Diagnostics (CoreWLAN; not needed for
   the line), and the carrier rows, which wait for WU2.
-- *Revised 2026-10-17 (docs/73 RU5)*: once the carrier is engaged, QUIC's
+- *Revised 2026-10-17 (docs/74 RU5)*: once the carrier is engaged, QUIC's
   packet loss stops being harm — the carrier repairs it, and the line
   would warn about losses no viewer saw. The harm input becomes the frames
   the uplink actually lost (expired carriers, shed records); packet loss
@@ -327,8 +327,8 @@ QUIC's packet loss alone, with no carrier expiries yet:
 
 ### WU4 — macOS: Improve (deferred — OD4 is decided after WU2)
 
-Not started until the carrier (docs/73 RU3) has been measured on the
-reference setup. If residual AWDL harm with the carrier is within docs/73's
+Not started until the carrier (docs/74 RU3) has been measured on the
+reference setup. If residual AWDL harm with the carrier is within docs/74's
 goals, WU4 is dropped and D7's no-button line stays; otherwise it is built to
 these criteria.
 
@@ -352,14 +352,14 @@ these criteria.
 
 | Acceptance criterion | Verified by |
 |---|---|
-| G8 (and G9 if WU4 ships) pass on the reference setup, with the carrier engaged; the transport goals are docs/73's and run in its RU7 on the same Mac | manual |
-| §8 records every measured number against the docs/73 RU0 baseline | review |
+| G8 (and G9 if WU4 ships) pass on the reference setup, with the carrier engaged; the transport goals are docs/74's and run in its RU7 on the same Mac | manual |
+| §8 records every measured number against the docs/74 RU0 baseline | review |
 
 ## 7. Risks
 
 *Revised 2026-10-17*: the transport's risks — retransmit latency in
 playout, congestion control's reaction to loss, high rungs on thin links,
-quinn's scheduling — moved to docs/73 §10, most of them now measured.
+quinn's scheduling — moved to docs/74 §10, most of them now measured.
 
 - **Apple and AWDL.** The helper depends on bringing an interface down from
   root. Apple can change that in any release; the status line and the carrier do

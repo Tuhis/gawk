@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The compact tables docs/73 §11 prints, generated from the results so no
+"""The compact tables docs/74 §11 prints, generated from the results so no
 number is transcribed by hand. Prints markdown to stdout."""
 import glob
 import json

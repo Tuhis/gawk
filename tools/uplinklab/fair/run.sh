@@ -1,5 +1,5 @@
 #!/bin/sh
-# Inside the container (docs/73 RU4) — or any network namespace of its own,
+# Inside the container (docs/74 RU4) — or any network namespace of its own,
 # e.g. `unshare -rn` (fair/chrome.sh) — a home uplink with a household on it.
 #
 #   run.sh <out> <rate> <mode|none> <cc> <trace> <tcp: 1|0> [seconds]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The shared-bottleneck matrix (docs/73 RU4, §11 table O): each delivery mode
+# The shared-bottleneck matrix (docs/74 RU4, §11 table O): each delivery mode
 # and controller alone on the uplink and with a household's bulk TCP upload,
 # plus the TCP flow alone, at 30 and 15 Mbps (1080p) and 80 Mbps (1440p),
 # three runs per 1080p cell and two per 1440p cell. Needs Docker with

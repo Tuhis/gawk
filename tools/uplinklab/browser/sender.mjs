@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The uplink lab's browser sender (docs/73 OD5): the native lab sender's
+// The uplink lab's browser sender (docs/74 OD5): the native lab sender's
 // command line, run by a headless Chrome on gawk-app/lab/uplink-sender.lab.ts,
 // so run.sh and matrix.py drive it unchanged (SENDER_BIN).
 //
