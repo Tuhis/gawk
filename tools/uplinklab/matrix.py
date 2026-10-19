@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -199,6 +199,15 @@ def sets():
         ceil.append(dict(by[n], modes=("chrome-dgram-ceil", "chrome-dgram-nowait-ceil")))
     ceil.append(dict(by["hi-rtt10-clean"], modes=("chrome-dgram-ceil", "chrome-dgram-nowait-ceil", "chrome-carrier-ceil")))
     s["chrome-ceiling"] = ceil
+    # Run-to-run spread at 1440p, where one run once swung 25 points: two
+    # more loss-process seeds per cell (table P8).
+    s["chrome-seeds"] = [scen(f"{sc['name']}-s{seed}", sc["proxy"], trace="1440",
+                              modes=("chrome-dgram", "chrome-carrier", "chrome-carrier-kfa"), seed=seed)
+                         for sc in chrome if sc["name"].startswith("hi-") for seed in (8, 9)]
+    # The clean 10 ms ceiling cell twice more: one run fell behind mid-run
+    # with nothing on the path to explain it.
+    s["chrome-ceiling-repeat"] = [scen(f"rtt10-clean-r{i}", ["-rtt", "10ms"], modes=("chrome-dgram-ceil",))
+                                  for i in (2, 3)]
     s["chrome-knobs"] = [dict(by["rtt40-loss0.005"], modes=("chrome-dgram-ceil", "chrome-dgram-maxage100",
                                                             "chrome-dgram-maxage100-hwm1000")),
                          dict(by["hi-rtt10-clean"], modes=("chrome-dgram-maxage100",))]

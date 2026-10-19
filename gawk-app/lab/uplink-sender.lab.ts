@@ -268,7 +268,10 @@ async function main(): Promise<void> {
         framesQueued++;
         sender.send(all).then(
           () => framesResolved++,
-          () => log(`E,${frameId},failed`),
+          () => {
+            framesResolved++; // refused, not waiting: Q counts only what still waits
+            log(`E,${frameId},failed`);
+          },
         );
       }
     }

@@ -317,7 +317,7 @@ def send_info(name, mode):
     t0 = t1 = None
     for line in open(p):
         x = line.rstrip("\n").split(",")
-        if x[0] == "I" and x[1] in ("queue", "gap_us", "cpu"):
+        if x[0] == "I" and x[1] in ("queue", "gap_us", "cpu", "thread"):
             r[x[1]] = x[2:]
         elif x[0] == "S":
             r["S"] = [int(v) for v in x[1:]]
@@ -343,9 +343,11 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
     print("\n#### Table P — the browser broadcaster: Chrome's QUIC stack against the native sender (OD5)\n")
     print("Chrome for Testing 151 replaying the same traces through gawk-app's shipping packetizer and")
     print("DatagramSender (browser/sender.mjs); its QUIC runs Cubic whatever the page asks. One 100 s run")
-    print("a cell, alone on the host. Every datagram column, native and Chrome, has the 4096-deep receiver;")
+    print("a cell, alone on the host (three at 1440p: table P8 has the spread; P1–P4 show seed 7). Every")
+    print("datagram column, native and Chrome, has the 4096-deep receiver;")
     print("the keyframe gate holds a GOP's records until its keyframe stream is acknowledged.")
-    chrome_table("Table P1 — Balanced: shown · stalled", lambda s: sv(s, "adaptive"))
+    chrome_table("Table P1 — Balanced: shown · stalled · on-screen latency p50",
+                 lambda s: f"{sv(s, 'adaptive')} · {f(s['view']['adaptive']['latencyMs']['p50'])} ms")
     chrome_table("Table P2 — Lowest latency: shown · stalled", lambda s: sv(s, "off"))
     chrome_table("Table P3 — Smoother: shown · stalled (no parity, as today)", lambda s: sv(s, "resilient"))
     chrome_table("Table P4 — decode-ready p50 / p99 ms · undecodable", ready)
@@ -374,6 +376,7 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
 
     ceil_rows = []
     for name, rtt, rung in (("rtt0-clean", "0 ms", "1080p"), ("rtt10-clean", "10 ms", "1080p"),
+                            ("rtt10-clean-r2", "10 ms (run 2)", "1080p"), ("rtt10-clean-r3", "10 ms (run 3)", "1080p"),
                             ("rtt100-clean", "100 ms", "1080p"), ("hi-rtt10-clean", "10 ms", "1440p")):
         for m, d in (("chrome-dgram-ceil", "datagrams"), ("chrome-dgram-nowait-ceil", "datagrams, handed over at once"),
                      ("chrome-carrier-ceil", "carrier")):
@@ -384,19 +387,27 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
             sent, offered, byts = S[6], S[7], S[8]
             g = r.get("gap_us", ["–"] * 3)
             c = r.get("cpu", ["–"] * 4)
+            th = r.get("thread")
+            busiest = f"{th[0]} · {th[2]}" if th else "–"
             dg = f"{n(sent)} / {n(offered)} ({100 * sent / offered:.0f} %)" if offered else "–"
+            # The nowait page bypasses DatagramSender, so it has no backlog to count.
+            waiting = "–" if "nowait" in m else backlog_at(r, 1e9)
             ceil_rows.append(f"| {rtt} | {rung} | {d} | {dg} | {n(sent / r['dur'])} | {byts * 8 / r['dur'] / 1e6:.1f} | "
-                             f"{g[0]} / {g[1]} / {g[2]} | {c[1]} · {c[2]} · {c[0]} | {backlog_at(r, 1e9)} |")
+                             f"{g[0]} / {g[1]} / {g[2]} | {c[1]} · {c[2]} · {c[0]} | {busiest} | {waiting} |")
     if ceil_rows:
         print("\n#### Table P6 — Chrome's per-datagram ceiling, clean paths\n")
         print("From the browser sender's own counters: datagram frames Chrome sent (its net-log, the lab's session")
         print("only) against those the page offered; the session's bytes on the wire; the spacing of its packets")
-        print("within a burst (gaps under 5 ms); CPU per Chrome process over the run (a core = 100 %); and the")
-        print("frames still waiting in DatagramSender at the end. The page runs only the send path: the shipping")
-        print("page also captures and encodes on the same renderer thread, so this is the most it can do here.\n")
+        print("within a burst (gaps under 5 ms); CPU per Chrome process over the run (a core = 100 %) and the")
+        print("busiest thread of the network process (its I/O thread) and of the renderer (its main thread);")
+        print("the frames still waiting in DatagramSender at the end")
+        print("(none to count when the page hands datagrams over at once). The page runs only the send path:")
+        print("the shipping page also captures and encodes on the same renderer thread, so this is the most it")
+        print("can do here.\n")
         print("| RTT | Rung | Sender | Datagram frames sent / offered | Datagrams/s | Mbps on the wire | "
-              "Packet gap p10 / p50 / p90 µs | CPU: network · renderer · browser % | Frames waiting at the end |")
-        print("|---|---|---|---|---|---|---|---|---|")
+              "Packet gap p10 / p50 / p90 µs | CPU: network · renderer · browser % | Busiest thread: network · renderer % | "
+              "Frames waiting at the end |")
+        print("|---|---|---|---|---|---|---|---|---|---|")
         print("\n".join(ceil_rows))
 
     knob_rows = []
@@ -404,7 +415,7 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
         for m, d in (("chrome-dgram-ceil", "as shipped"), ("chrome-dgram-maxage100", "outgoingMaxAge 100 ms"),
                      ("chrome-dgram-maxage100-hwm1000", "outgoingMaxAge 100 ms, high-water mark 1000")):
             r, s_ = send_info(name, m), get(name, m)
-            if not r or not s_:
+            if not r or not s_ or "S" not in r or not r["S"][7]:
                 continue
             qk = r.get("queue", ["–", "–"])
             S = r["S"]
@@ -420,3 +431,26 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
               "| Decode-ready p50 / p99 ms | Balanced: shown · stalled |")
         print("|---|---|---|---|---|---|---|")
         print("\n".join(knob_rows))
+
+    spread_rows = []
+    for sc, label in CHP:
+        base = f"hi-rtt10-{sc}"
+        for m, d in (("chrome-dgram", "Chrome datagrams"), ("chrome-carrier", "Chrome carrier"),
+                     ("chrome-carrier-kfa", "Chrome carrier + keyframe gate")):
+            runs = [get(x, m) for x in (base, f"{base}-s8", f"{base}-s9")]
+            if not all(runs):
+                continue
+
+            def pick(view, key):
+                return " · ".join(f(min(100, r_["view"][view][key]), 1) for r_ in runs)
+            ready50 = " · ".join(f(r_["transport"]["ready_lat_ms"]["p50"]) for r_ in runs)
+            spread_rows.append(f"| {label} | {d} | {pick('adaptive', 'shownPct')} | {pick('resilient', 'shownPct')} | "
+                               f"{ready50} |")
+    if spread_rows:
+        print("\n#### Table P8 — run-to-run spread at 1440p: three loss-process seeds per cell\n")
+        print("Seed 7 is the run in P1–P4 (for the datagram and ungated carrier columns, the first pass, without")
+        print("the embedded decoder config); seeds 8 and 9 embed it.\n")
+        print("| Path | Sender | Balanced shown: seeds 7 · 8 · 9 | Smoother shown: seeds 7 · 8 · 9 | "
+              "Decode-ready p50 ms: seeds 7 · 8 · 9 |")
+        print("|---|---|---|---|---|")
+        print("\n".join(spread_rows))

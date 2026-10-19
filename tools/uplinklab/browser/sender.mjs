@@ -87,7 +87,7 @@ async function netlogStats(file, port) {
       continue; // the last line of a log cut at exit
     }
     if (e.type === ids.session && e.params?.host) {
-      s.sessions++; // Chrome's own, never the lab's: WebTransport logs under its client
+      if (e.params.host !== '127.0.0.1') s.sessions++; // Chrome's own sessions to other hosts
       continue;
     }
     if (e.type === ids.wt && typeof e.params?.url === 'string' && e.params.url.includes(`//127.0.0.1:${port}/`)) {
@@ -113,17 +113,20 @@ async function netlogStats(file, port) {
 }
 
 // CPU each kind of Chrome process used over the run, from /proc (Linux): the
-// browser, its network service, the busiest renderer (the lab page's).
+// browser, its network service, the busiest renderer (the lab page's) — and
+// the busiest thread of the network service and of that renderer, which says
+// whether a ceiling is one saturated thread.
 function chromeCpu(rootPid, wallS) {
   const kids = new Map();
   const info = new Map();
+  const ticksOf = (stat) => {
+    const f = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return { ppid: Number(f[1]), ticks: Number(f[11]) + Number(f[12]) };
+  };
   for (const d of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(d)) continue;
     try {
-      const st = fs.readFileSync(`/proc/${d}/stat`, 'utf8');
-      const f = st.slice(st.lastIndexOf(')') + 2).split(' ');
-      const ppid = Number(f[1]);
-      const ticks = Number(f[11]) + Number(f[12]);
+      const { ppid, ticks } = ticksOf(fs.readFileSync(`/proc/${d}/stat`, 'utf8'));
       const cmd = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8');
       info.set(Number(d), { ticks, cmd });
       if (!kids.has(ppid)) kids.set(ppid, []);
@@ -132,21 +135,42 @@ function chromeCpu(rootPid, wallS) {
       // gone between readdir and read
     }
   }
-  const out = { browser: 0, network: 0, renderer: 0, gpu: 0 };
+  const pct = (ticks) => ticks / wallS; // CLK_TCK is 100 on Linux: ticks / 100 / s × 100 %
+  const busiestThread = (pid) => {
+    let best = { pct: 0, name: '' };
+    try {
+      for (const t of fs.readdirSync(`/proc/${pid}/task`)) {
+        const st = fs.readFileSync(`/proc/${pid}/task/${t}/stat`, 'utf8');
+        const p = pct(ticksOf(st).ticks);
+        if (p > best.pct) best = { pct: p, name: st.slice(st.indexOf('(') + 1, st.lastIndexOf(')')).replace(/[ ,]/g, '_') };
+      }
+    } catch {
+      // gone
+    }
+    return best;
+  };
+  const out = { browser: 0, network: 0, renderer: 0, gpu: 0, rendererPid: 0, networkPid: 0 };
   const walk = (pid) => {
     const p = info.get(pid);
     if (p) {
-      const pct = (100 * p.ticks) / 100 / wallS; // CLK_TCK is 100 on Linux
       const kind = p.cmd.includes('network.mojom.NetworkService') ? 'network'
         : p.cmd.includes('--type=renderer') ? 'renderer'
         : p.cmd.includes('--type=gpu-process') ? 'gpu'
         : p.cmd.includes('--type=') ? null : 'browser';
-      if (kind === 'renderer') out.renderer = Math.max(out.renderer, pct);
-      else if (kind) out[kind] += pct;
+      if (kind === 'renderer') {
+        if (pct(p.ticks) > out.renderer) Object.assign(out, { renderer: pct(p.ticks), rendererPid: pid });
+      } else if (kind === 'network') {
+        out.network += pct(p.ticks);
+        out.networkPid = pid;
+      } else if (kind) {
+        out[kind] += pct(p.ticks);
+      }
     }
     for (const k of kids.get(pid) ?? []) walk(k);
   };
   walk(rootPid);
+  out.networkThread = busiestThread(out.networkPid);
+  out.rendererThread = busiestThread(out.rendererPid);
   return out;
 }
 
@@ -234,6 +258,7 @@ lines.splice(
   `I,cc,${st.cc}`,
   `I,gap_us,${pc(st.gaps, 0.1)},${pc(st.gaps, 0.5)},${pc(st.gaps, 0.9)},${st.gaps.length}`,
   `I,cpu,${cpu.browser.toFixed(1)},${cpu.network.toFixed(1)},${cpu.renderer.toFixed(1)},${cpu.gpu.toFixed(1)}`,
+  `I,thread,${cpu.networkThread.pct.toFixed(1)},${cpu.networkThread.name},${cpu.rendererThread.pct.toFixed(1)},${cpu.rendererThread.name}`,
   `I,other_quic_sessions,${st.sessions}`,
 );
 fs.writeFileSync(args.out, lines.join('\n'));
