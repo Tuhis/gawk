@@ -2,6 +2,9 @@
 
 **Status**: proposed 2026-10-19; owner decisions OD1–OD3 (§3) open. Chunks
 **NM1–NM5** (§6). Status lives in [`ROADMAP.md`](../ROADMAP.md).
+Drawn in Claude Design the same day: the canvas is
+<https://claude.ai/artifact/6WBE1QR8isbLitnFzGiRSd> (private: ask the
+maintainer); this doc wins where they differ.
 
 **Relationship to earlier work**: revises the name row of
 [docs/64](64-desktop-ux-pass-2.md) D16 (the room sheet) and the name strip
