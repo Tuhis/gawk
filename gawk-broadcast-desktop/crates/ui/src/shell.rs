@@ -5393,6 +5393,20 @@ mod tests {
         assert_eq!(ui.get_room_pending(), "lan-party");
     }
 
+    // Review of #530: the shell closes the sheet itself (an ending, a
+    // link's choose_room). An unanswered name step must not come back in
+    // place of the room list when the sheet next opens.
+    #[test]
+    fn closing_the_sheet_from_anywhere_drops_the_name_step() {
+        let (ui, _shell) = add_sheet(Config::default());
+        click(&ui, "Join");
+        settle_ui();
+        assert_eq!(ui.get_name_step(), 1);
+        ui.set_show_room_sheet(false);
+        settle_ui();
+        assert_eq!(ui.get_name_step(), 0);
+    }
+
     // D1, D9, OD3: "Join as a guest" joins with no name, and the next
     // blank-name join doesn't ask.
     #[test]

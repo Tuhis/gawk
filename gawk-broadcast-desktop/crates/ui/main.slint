@@ -2193,6 +2193,13 @@ export component MainWindow inherits Window {
     // code or link, 2 a recent room (`name-step-code`), 3 a new room.
     in-out property <int> name-step: 0;
     in-out property <string> name-step-code: "";
+    // However the sheet closes — its own buttons, an ending, a link — an
+    // unanswered step goes with it (review of #530).
+    changed show-room-sheet => {
+        if (!self.show-room-sheet) {
+            self.name-step = 0;
+        }
+    }
     property <string> name-step-draft: "";
 
     // ----- thumbnail -----
