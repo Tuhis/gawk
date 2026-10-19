@@ -887,7 +887,7 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   50 Mbps bitrate override).
 - **Symptom**: decode-ready latency at the relay grew without bound —
   p50 15–38 s within a 100 s run on random loss and bursts, 2.6–5.3 s
-  under outages, 40–45 s at 1440p — where the native
+  under outages, 26–49 s at 1440p — where the native
   engine on the same path stays under 2.5 s by dropping (quinn's 1 MiB
   datagram buffer, oldest first). Viewers see nothing during the shortfall
   either way, but the backlog outlives it: the stream stays stale until
@@ -921,7 +921,7 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   audio the same way (it shares the queue); send keyframes the engine's
   F-12 way (one in flight, the newest waiting, a write aborted only once
   it is 2 s old — a shorter limit livelocked natively); and tell the
-  broadcaster their connection can't keep up while it lasts.
+  broadcaster their upload can't keep up while it lasts.
 
 ## The relay drops high-rung publisher datagrams that QUIC already acknowledged
 

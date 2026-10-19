@@ -1557,7 +1557,7 @@ entries still describe code `gawk-pubsim` runs (now
   datagram per packet, and exposes neither `getStats()` nor stream
   `sendOrder` ([docs/74](74-reliable-uplink.md) F18).
 - **Chrome pays per datagram.** On the lab host its datagram packets left
-  375–470 µs apart (p50) at 0, 10 and 100 ms RTT alike, so a frame's chunks
+  375–480 µs apart (p50) at 0, 10 and 100 ms RTT alike, so a frame's chunks
   spread out and Chrome topped out near 1 800 datagrams a second with no
   thread saturated; stream data does not pay it. Measure a browser sender's datagram rate on the
   machine that matters. Its `outgoingMaxAge` does not bound a page's

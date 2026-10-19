@@ -386,7 +386,7 @@ table P; one 100 s run a cell, three at 1440p, alone on the host):
   and outages (native: 2–25 %).
 - **It pays per datagram.** Chrome caps `maxDatagramSize` at 1024 bytes
   and sends each datagram in a packet of its own; within a burst the lab
-  session's packets left 375–470 µs apart (p50) at 0, 10 and 100 ms RTT
+  session's packets left 375–480 µs apart (p50) at 0, 10 and 100 ms RTT
   alike, and handing Chrome a frame's datagrams all at once changed
   nothing (table P6), so the cost is inside Chrome. A frame's chunks spread
   out accordingly: decode-ready p50 13 ms against the native sender's 6 ms
@@ -410,7 +410,7 @@ table P; one 100 s run a cell, three at 1440p, alone on the host):
   one promise, and the auto-ladder reacts only to encoder backpressure, so
   whatever Chrome cannot send waits. Where Cubic collapses, decode-ready
   p50 reached 15–38 s within a 100 s run on random loss and bursts
-  (2.6–5.3 s under outages at 100 ms, 40–45 s at 1440p), against the
+  (2.6–5.3 s under outages at 100 ms, 26–49 s at 1440p, table P8), against the
   native sender's under 2.5 s, which drops instead (quinn's 1 MiB buffer,
   oldest first). The backlog is gawk's: frames waiting in `DatagramSender`
   grew from 569 to 1 933 over a run at 40 ms with 0.5 % loss (table P7).
@@ -501,7 +501,7 @@ finding behind it, and D4–D7 and D11 record the decisions.
 | OD3 | Who can choose? | The broadcaster's app; the relay operator; viewers. | **Decided 2026-10-18: the broadcaster (Quality page) and the operator (`-uplink-carriers`)** (D4, §6). Viewers choose their own buffering (R32 presets) and cannot choose how leg A is carried — it is one stream for all of them. The iOS app follows the engine default with no setting until someone asks for one. |
 | OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Decided 2026-10-18: make the queue longer, to 512** (D7), first (§8): measured, it is the only one of the three that works (≈ 2 100 → 0–21 chunks a minute on a relay with CPU to spare, 0 in every 128 run; the drain: 1 810), and 512 rather than longer because past capacity a longer queue only adds delay (F16). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
 | OD6 | Does the relay serve parity to reliable delivery (*Smoother*, *Most stable*)? | Keep serving them none (docs/34 §3); serve them the fleet's parity like live-edge viewers. | **Decided 2026-10-18: serve it** (D11), first (§8). On any datagram uplink — *Lowest latency*, the browser broadcaster, an older app — it lifts those viewers from 32–89 % to 95.6–100 % of frames under 0.1–1 % loss (F14), for 2.5–10.4 % more egress to them, relay-side only. It does not replace the carrier: it cannot repair an outage. |
-| OD5 | Does the browser broadcaster follow? | Now; after measuring Chrome's QUIC stack; not at all. | **Decided 2026-10-19: follow, in two steps.** (1) Now, as a bug fix in this milestone (RU9), beside the relay's fixes: bound the browser's send queue in `DatagramSender` itself — the backlog sits there, out of reach of Chrome's own queue knobs (table P7) — dropping a delta past a GOP's age, and abort a keyframe stream the F-12 way, so a slow uplink costs frames, not tens of seconds of backlog (`BUGS.md`). (2) Later, as a milestone of its own: a browser Reliable mode on RU1's relay ingest. The carrier with a keyframe gate gives the default viewer 97.9–99.9 % of frames on every 10 ms cell and 96.3–99.6 % at 40 ms where Chrome's Cubic holds (Chrome's datagrams: 74.6–100 %), 86.3–99.5 % at 1440p over three runs (3.3–3.4 %), and protects *Smoother* — but for an intermittent *Smoother* dip behind the gate at 1440p (73 % in one run of three), which that milestone has to explain. But the gate as measured costs about a round trip per GOP on a long clean path (on-screen latency 100 against 67 ms at 40 ms, 183 against 100 ms at 100 ms), which that milestone has to design away or accept. Measure it on a real Chrome on the gaming PC first, because the per-datagram step depends on the machine. Neither step reaches the long lossy paths: Chrome runs Cubic whatever the page asks, so the native app stays the answer there. |
+| OD5 | Does the browser broadcaster follow? | Now; after measuring Chrome's QUIC stack; not at all. | **Decided 2026-10-19: follow, in two steps.** (1) Now, as a bug fix in this milestone (RU9), beside the relay's fixes: bound the browser's send queue in `DatagramSender` itself — the backlog sits there, out of reach of Chrome's own queue knobs (table P7) — dropping video and audio past a GOP's age, sending keyframes the F-12 way and telling the broadcaster their upload can't keep up, so a slow uplink costs frames, not tens of seconds of backlog (`BUGS.md`). (2) Later, as a milestone of its own: a browser Reliable mode on RU1's relay ingest. The carrier with a keyframe gate gives the default viewer 97.9–99.9 % of frames on every 10 ms cell and 96.3–99.6 % at 40 ms where Chrome's Cubic holds (Chrome's datagrams: 74.6–100 %), 86.3–99.5 % at 1440p over three runs (3.3–3.4 %), and protects *Smoother* — but for an intermittent *Smoother* dip behind the gate at 1440p (73 % in one run of three), which that milestone has to explain. But the gate as measured costs about a round trip per GOP on a long clean path (on-screen latency 100 against 67 ms at 40 ms, 183 against 100 ms at 100 ms), which that milestone has to design away or accept. Measure it on a real Chrome on the gaming PC first, because the per-datagram step depends on the machine. Neither step reaches the long lossy paths: Chrome runs Cubic whatever the page asks, so the native app stays the answer there. |
 
 ## 4. How it was measured
 
@@ -908,10 +908,17 @@ delivery switch lands there, beside Resolution, Frame rate and Upload cap):
   (D6).
 - **iOS**: no setting (OD3); the app runs the engine default.
 - **The browser broadcaster** (RU9): no setting. While it is dropping
-  frames its connection cannot carry, a notice beside today's encoder
-  "Can't keep up at {quality}" badge: "Your connection can't keep up at
-  {quality} — try a lower quality." Diagnostics shows the stale-drop
-  counters.
+  frames its upload cannot carry, a pill worded as the native apps' —
+  **"Your upload can't keep up"** — with the sentence as its tooltip:
+  "Your upload can't keep up with the stream at {quality}, so people
+  watching may see frozen video. Choose a lower quality, or free up upload
+  bandwidth." {quality} is the rung being sent: in Auto that is the
+  applied rung, and lowering it means choosing a quality, since RU9 does
+  not step the ladder. Both broadcaster surfaces show it (`BroadcasterScreen`
+  and `BroadcastPage`), as they show encoder pressure today; the existing
+  encoder pill becomes "Encoder can't keep up at {quality}", as
+  `BroadcastPage` already words it, so the two read apart. Diagnostics
+  shows the counters.
 
 **Viewers** choose nothing new. With OD1, OD2 and OD6 as decided, by
 preset (§11 tables I, J, K):
@@ -1073,9 +1080,13 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 
 The bug in `BUGS.md` ("Browser broadcaster: a slow uplink becomes unbounded
 delay"), fixed in gawk-app where the backlog sits — Chrome's own queue
-knobs do not reach it (table P7). Today `DatagramSender` latches any
-rejection and fails every later send, and `handleEncoded` reads a
-rejection as the session dying, so a drop must not take that path.
+knobs do not reach it (table P7). Three facts about today's code shape the
+criteria: `DatagramSender.send` takes bare datagrams from five callers —
+deltas (`handleEncoded`), audio packets and the audio config (the audio
+lane), TimeSync pings and clock mappings — and never sees a keyframe
+(`sendKeyframeStream` has its own streams); it latches any rejection and
+fails every later send, which `handleEncoded` reads as the session dying;
+and both media callers count a resolved send as sent.
 
 What it bounds, and what it does not. Deltas and audio wait at most one
 GOP (500 ms) in gawk's queue, which is where the measured backlog was;
@@ -1084,20 +1095,23 @@ shipping high-water mark) it still sends late. Keyframes are bounded at
 2 s plus one GOP, by choice: the engine first cancelled a keyframe write
 that outlived its GOP and livelocked in the field — every write died at
 ~90 %, the relay's priming cache starved and joining viewers saw black
-(docs/38 F-12) — so a keyframe write younger than 2 s always finishes. A
-link that cannot carry the stream still cannot: RU9 turns "further and
-further behind" into "current, but dropping frames", and tells the
-broadcaster so.
+(docs/38 F-12) — so a keyframe write younger than 2 s always finishes.
+Until a late keyframe lands, its GOP's deltas are dropped, so viewers see
+the picture frozen (black when joining), not smooth video. A link that
+cannot carry the stream still cannot: RU9 turns "further and further
+behind" into "current, but dropping frames", and tells the broadcaster so.
 
 | Acceptance criterion | Verified by |
 |---|---|
-| **A drop is not a failure**: a frame dropped as stale resolves its `send()` with a result of its own (e.g. `'dropped'`); it never rejects, never latches `DatagramSender`'s failure, and the frames behind it still go out | unit, red first |
-| **Age is enqueue time**: a frame's age is the time since `DatagramSender.send` received it, read from an injectable `now()` (fake timers in the test). A delta more than one GOP (`keyframeIntervalMs`, 500 ms) old when its turn to be written comes is dropped whole, and the rest of its GOP's deltas with it until the next keyframe — the native carrier's rule (D3) | unit, red first |
-| **Audio too**: an audio frame more than 500 ms old when its turn comes is dropped, as a lost audio datagram already is; the audio lane shares the same `DatagramSender`, so stale audio would otherwise hold fresh video behind it | unit, red first |
+| **The sender knows what it carries**: `send()` takes a kind and, for deltas, the GOP — e.g. `send(datagrams, { kind: 'delta' \| 'audio' \| 'control', gop })`, the broadcaster numbering GOPs at each keyframe it produces. Control datagrams (the audio config, TimeSync, clock mappings) are never dropped for age: the config and the mapping must arrive, and a late TimeSync ping is only a slow sample, which its estimator (lowest RTT wins) ignores | unit |
+| **A drop is not a failure**: a frame dropped as stale resolves its `send()` with a result of its own (e.g. `'dropped'`); it never rejects, never latches `DatagramSender`'s failure, and the frames behind it still go out. Its callers count `'dropped'` in the stale counters, never as sent (`datagramsSent`, `bytesSent`, `parityChunksSent`, the funnel's `sentSinceStats`, the audio lane's `packetsSent`) | unit, red first |
+| **Age is enqueue time, decided once per frame**: a frame's age is the time since `send()` received it, read from an injectable `now()` (fake timers in the test), checked when the frame's first datagram comes up, so a frame is never half-sent. A delta more than one GOP (`keyframeIntervalMs`, 500 ms) old is dropped whole, and the rest of its GOP's deltas with it until the next keyframe — the native carrier's rule (D3) | unit, red first |
+| **Audio too**: an audio packet more than 500 ms old when its turn comes is dropped, as a lost audio datagram already is; it shares the queue, so stale audio would otherwise hold fresh video behind it | unit, red first |
 | **The boundary**: with a fake writer that stalls 400 ms nothing is dropped; stalled 600 ms, only the frames past the bound and the rest of their GOP are; on a link that keeps up the output is byte-identical to today's, in the same order | unit |
-| **Keyframes, the F-12 way**: at most one keyframe stream in flight; a newer keyframe waits in a single pending slot (newest wins among waiters, a replaced waiter counted); the in-flight write always finishes if it is younger than 2 s, and is aborted (`RST_STREAM`) and counted once it is older with a keyframe waiting. Today every keyframe opens its own stream at once and they share the link (Chrome has no `sendOrder`) | unit, red first |
-| **Counted on its own**: stale drops in `staleFramesDropped` and `staleAudioDropped`, and aborted or replaced keyframes in `keyframeStreamsAborted` / `keyframeStreamsSuperseded`, apart from `droppedFrames` (encoder rejections and send failures), wherever `droppedFrames` is reported today (the broadcaster's stats, Diagnostics, telemetry), so a too-slow uplink and a dead session stay apart | unit |
-| **Shown to the broadcaster**: while stale drops continue — raised after 5 s with drops, cleared after 15 s without, the native uplink monitor's hysteresis (docs/38) — the broadcaster sees a notice beside today's encoder "Can't keep up at {quality}" badge, worded like the native apps' ("Your connection can't keep up at {quality} — try a lower quality"), and Diagnostics shows the counters | unit (hysteresis, fake clock) + manual |
+| **Keyframes, the F-12 way**: `sendKeyframeStream` becomes a small state machine driven from `handleEncoded` — at most one keyframe stream in flight; a newer keyframe waits in a single pending slot (newest wins, a replaced waiter counted in `keyframeStreamsSuperseded`); the in-flight write always finishes if it is younger than 2 s, timed until its `close()` resolves (Chrome resolves it on acknowledgement), and is aborted (`RST_STREAM`) and counted in `keyframeStreamsAborted` once older with a keyframe waiting; its completion pulls the slot. Today every keyframe opens its own stream at once and they share the link (Chrome has no `sendOrder`) | unit, red first |
+| **A GOP without its keyframe goes too**: when a keyframe is replaced in the slot or aborted, its GOP's queued and later deltas are dropped and counted as stale — they are undecodable for every viewer (D3's superseded-GOP rule) | unit |
+| **Counted on its own**: `staleFramesDropped`, `staleAudioDropped`, `keyframeStreamsSuperseded` and `keyframeStreamsAborted`, apart from `droppedFrames` (encoder rejections and send failures), wherever `droppedFrames` is reported today (the broadcaster's stats, Diagnostics, telemetry), so a too-slow uplink and a dead session stay apart | unit |
+| **Shown to the broadcaster** (§6), on the native monitor's rule (`engine/src/uplink.rs`): a second is bad on any stale drop, two or more superseded or aborted keyframes, or a sent rate under 75 % of the encode rate (above 20 fps); five bad seconds raise the notice, fifteen good ones clear it | unit (fake clock) + manual |
 | **Not a ladder signal**: RU9 does not feed stale drops to `FallbackController`; the notice asks the broadcaster instead. No gawk sender's ladder reacts to the network today (docs/09, docs/38 D11); the browser Reliable milestone revisits it | review |
 | Table P7's cells re-run with the fix (the lab page counts a dropped frame as resolved): frames waiting stay under one GOP's worth and decode-ready p50 under 1 s, against today's 20–40 s; recorded in §11 | lab |
 | The `BUGS.md` entry deleted in the same PR, with a `fix` commit so release-please ships it | review |
@@ -1947,24 +1961,24 @@ From the browser sender's own counters: datagram frames Chrome sent (its net-log
 only) against those the page offered; the session's bytes on the wire; the spacing of its packets
 within a burst (gaps under 5 ms); CPU per Chrome process over the run (a core = 100 %) and the
 busiest thread of the network process (its I/O thread) and of the renderer (its main thread);
-the frames still waiting in DatagramSender at the end
+the frames still waiting in DatagramSender at the end, and at their peak
 (none to count when the page hands datagrams over at once). The page runs only the send path:
 the shipping page also captures and encodes on the same renderer thread, so this is the most it
 can do here.
 
-| RTT | Rung | Sender | Datagram frames sent / offered | Datagrams/s | Mbps on the wire | Packet gap p10 / p50 / p90 µs | CPU: network · renderer · browser % | Busiest thread: network · renderer % | Frames waiting at the end |
-|---|---|---|---|---|---|---|---|---|---|
-| 0 ms | 1080p | datagrams | 94 110 / 94 110 (100 %) | 927 | 10.7 | 87 / 469 / 972 | 46.1 · 28.2 · 3.0 | 36.6 · 20.9 | 0 |
-| 0 ms | 1080p | datagrams, handed over at once | 94 110 / 94 110 (100 %) | 927 | 10.7 | 97 / 436 / 799 | 49.4 · 29.0 · 3.3 | 38.7 · 21.1 | – |
-| 10 ms | 1080p | datagrams | 86 334 / 94 105 (92 %) | 851 | 10.1 | 118 / 442 / 1108 | 46.4 · 29.5 · 3.4 | 36.7 · 21.8 | 655 |
-| 10 ms | 1080p | datagrams, handed over at once | 94 108 / 94 108 (100 %) | 927 | 10.7 | 99 / 443 / 926 | 46.0 · 27.5 · 3.7 | 36.5 · 20.3 | – |
-| 10 ms (run 2) | 1080p | datagrams | 94 110 / 94 110 (100 %) | 927 | 10.7 | 114 / 479 / 780 | 49.2 · 29.7 · 4.3 | 38.4 · 22.0 | 0 |
-| 10 ms (run 3) | 1080p | datagrams | 94 110 / 94 110 (100 %) | 927 | 10.7 | 119 / 465 / 693 | 49.2 · 28.8 · 3.7 | 38.5 · 21.4 | 0 |
-| 100 ms | 1080p | datagrams | 94 110 / 94 110 (100 %) | 927 | 10.7 | 98 / 456 / 798 | 49.3 · 29.6 · 3.2 | 38.7 · 22.0 | 0 |
-| 100 ms | 1080p | datagrams, handed over at once | 94 110 / 94 110 (100 %) | 927 | 10.7 | 95 / 444 / 799 | 49.4 · 28.4 · 3.1 | 38.7 · 20.8 | – |
-| 10 ms | 1440p | datagrams | 179 539 / 415 161 (43 %) | 1 769 | 22.2 | 91 / 389 / 556 | 78.9 · 47.9 · 3.0 | 61.4 · 35.9 | 3379 |
-| 10 ms | 1440p | datagrams, handed over at once | 184 872 / 415 171 (45 %) | 1 822 | 22.7 | 89 / 375 / 525 | 79.6 · 50.1 · 3.1 | 61.6 · 36.3 | – |
-| 10 ms | 1440p | carrier | 5 079 / 5 079 (100 %) | 50 | 41.3 | 71 / 100 / 171 | 87.0 · 15.9 · 2.9 | 60.7 · 12.8 | 0 |
+| RTT | Rung | Sender | Datagram frames sent / offered | Datagrams/s | Mbps on the wire | Packet gap p10 / p50 / p90 µs | CPU: network · renderer · browser % | Busiest thread: network · renderer % | Frames waiting at the end (peak) | Decode-ready p50 ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0 ms | 1080p | datagrams | 94 110 / 94 110 (100 %) | 927 | 10.7 | 87 / 469 / 972 | 46.1 · 28.2 · 3.0 | 36.6 · 20.9 | 0 (peak 64) | 9 |
+| 0 ms | 1080p | datagrams, handed over at once | 94 110 / 94 110 (100 %) | 927 | 10.7 | 97 / 436 / 799 | 49.4 · 29.0 · 3.3 | 38.7 · 21.1 | – | 8 |
+| 10 ms | 1080p | datagrams | 86 334 / 94 105 (92 %) | 851 | 10.1 | 118 / 442 / 1108 | 46.4 · 29.5 · 3.4 | 36.7 · 21.8 | 655 (peak 1606) | 17112 |
+| 10 ms | 1080p | datagrams, handed over at once | 94 108 / 94 108 (100 %) | 927 | 10.7 | 99 / 443 / 926 | 46.0 · 27.5 · 3.7 | 36.5 · 20.3 | – | 17 |
+| 10 ms (run 2) | 1080p | datagrams | 94 110 / 94 110 (100 %) | 927 | 10.7 | 114 / 479 / 780 | 49.2 · 29.7 · 4.3 | 38.4 · 22.0 | 0 (peak 316) | 14 |
+| 10 ms (run 3) | 1080p | datagrams | 94 110 / 94 110 (100 %) | 927 | 10.7 | 119 / 465 / 693 | 49.2 · 28.8 · 3.7 | 38.5 · 21.4 | 0 (peak 16) | 12 |
+| 100 ms | 1080p | datagrams | 94 110 / 94 110 (100 %) | 927 | 10.7 | 98 / 456 / 798 | 49.3 · 29.6 · 3.2 | 38.7 · 22.0 | 0 (peak 22) | 58 |
+| 100 ms | 1080p | datagrams, handed over at once | 94 110 / 94 110 (100 %) | 927 | 10.7 | 95 / 444 / 799 | 49.4 · 28.4 · 3.1 | 38.7 · 20.8 | – | 57 |
+| 10 ms | 1440p | datagrams | 179 539 / 415 161 (43 %) | 1 769 | 22.2 | 91 / 389 / 556 | 78.9 · 47.9 · 3.0 | 61.4 · 35.9 | 3379 (peak 3407) | 43296 |
+| 10 ms | 1440p | datagrams, handed over at once | 184 872 / 415 171 (45 %) | 1 822 | 22.7 | 89 / 375 / 525 | 79.6 · 50.1 · 3.1 | 61.6 · 36.3 | – | 41282 |
+| 10 ms | 1440p | carrier | 5 079 / 5 079 (100 %) | 50 | 41.3 | 71 / 100 / 171 | 87.0 · 15.9 · 2.9 | 60.7 · 12.8 | 0 (peak 0) | 14 |
 
 #### Table P7 — where the browser's backlog sits, and Chrome's own queue knobs
 

@@ -391,23 +391,25 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
             busiest = f"{th[0]} · {th[2]}" if th else "–"
             dg = f"{n(sent)} / {n(offered)} ({100 * sent / offered:.0f} %)" if offered else "–"
             # The nowait page bypasses DatagramSender, so it has no backlog to count.
-            waiting = "–" if "nowait" in m else backlog_at(r, 1e9)
+            waiting = "–" if "nowait" in m else f"{backlog_at(r, 1e9)} (peak {max((b for _, b in r['q']), default=0)})"
+            s_ = get(name, m)
+            ready50 = f(s_["transport"]["ready_lat_ms"]["p50"]) if s_ else "–"
             ceil_rows.append(f"| {rtt} | {rung} | {d} | {dg} | {n(sent / r['dur'])} | {byts * 8 / r['dur'] / 1e6:.1f} | "
-                             f"{g[0]} / {g[1]} / {g[2]} | {c[1]} · {c[2]} · {c[0]} | {busiest} | {waiting} |")
+                             f"{g[0]} / {g[1]} / {g[2]} | {c[1]} · {c[2]} · {c[0]} | {busiest} | {waiting} | {ready50} |")
     if ceil_rows:
         print("\n#### Table P6 — Chrome's per-datagram ceiling, clean paths\n")
         print("From the browser sender's own counters: datagram frames Chrome sent (its net-log, the lab's session")
         print("only) against those the page offered; the session's bytes on the wire; the spacing of its packets")
         print("within a burst (gaps under 5 ms); CPU per Chrome process over the run (a core = 100 %) and the")
         print("busiest thread of the network process (its I/O thread) and of the renderer (its main thread);")
-        print("the frames still waiting in DatagramSender at the end")
+        print("the frames still waiting in DatagramSender at the end, and at their peak")
         print("(none to count when the page hands datagrams over at once). The page runs only the send path:")
         print("the shipping page also captures and encodes on the same renderer thread, so this is the most it")
         print("can do here.\n")
         print("| RTT | Rung | Sender | Datagram frames sent / offered | Datagrams/s | Mbps on the wire | "
               "Packet gap p10 / p50 / p90 µs | CPU: network · renderer · browser % | Busiest thread: network · renderer % | "
-              "Frames waiting at the end |")
-        print("|---|---|---|---|---|---|---|---|---|---|")
+              "Frames waiting at the end (peak) | Decode-ready p50 ms |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|")
         print("\n".join(ceil_rows))
 
     knob_rows = []
