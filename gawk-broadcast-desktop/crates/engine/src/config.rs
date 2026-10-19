@@ -120,6 +120,9 @@ pub struct Config {
     /// the tile. A pre-2026-09-14 profile's `roomLabel` key is ignored on
     /// load (serde default) and gone after the next save.
     pub nickname: String,
+    /// The user chose "Join as a guest" at the name step (R71, docs/73
+    /// D1, D9): a blank-name join stops asking. Any non-blank name clears it.
+    pub nickname_skipped: bool,
     /// The creator token (hex) of the room in `room`, when a pasted link
     /// carried one — a credential (DPAPI-wrapped on Windows, like the attach
     /// key). `room` itself only ever holds the code.
@@ -1276,10 +1279,12 @@ mod tests {
             room: "lan-party".into(),
             room_attach_secret: "k3y".into(),
             nickname: "Juho".into(),
+            nickname_skipped: true,
             ..Default::default()
         };
         save(&path, &cfg, &Reversing).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"nicknameSkipped\": true"), "{raw}");
         // The Linux profile's key names; the attach key is a credential.
         assert!(raw.contains("\"room\": \"lan-party\""), "{raw}");
         assert!(
@@ -1333,6 +1338,20 @@ mod tests {
         assert!(warn.is_none());
         assert_eq!(loaded, cfg);
         assert_eq!(loaded.room_attach_key(S, "LAN-PARTY"), Some("k3y"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // R71 (docs/73 D9): a profile from before the name step has never
+    // skipped it.
+    #[test]
+    fn a_profile_without_nickname_skipped_has_not_skipped() {
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-skip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broadcast.json");
+        std::fs::write(&path, br#"{"room": "lan-party"}"#).unwrap();
+        let (cfg, warn) = load(&path, &Reversing);
+        assert!(warn.is_none());
+        assert!(!cfg.nickname_skipped);
         std::fs::remove_dir_all(&dir).ok();
     }
 
