@@ -1,7 +1,9 @@
 # R71 — Your name in a room, up front (desktop broadcaster)
 
-**Status**: proposed 2026-10-19; owner decisions OD1–OD3 (§3) open. Chunks
-**NM1–NM5** (§6). Status lives in [`ROADMAP.md`](../ROADMAP.md).
+**Status**: proposed and drawn 2026-10-19; the owner approved the canvas the
+same day, taking the recommendation on OD1–OD3 (§3). **NM1–NM4 implemented
+2026-10-19** in one PR (§6a records how); NM5's Settings row too, the
+owner's pass on each OS open. Status lives in [`ROADMAP.md`](../ROADMAP.md).
 Drawn in Claude Design the same day: the canvas is
 <https://claude.ai/artifact/6WBE1QR8isbLitnFzGiRSd> (private: ask the
 maintainer); this doc wins where they differ.
@@ -13,7 +15,7 @@ sheet. The name itself is unchanged: one nickname per app
 (`engine::config::Config::nickname`), sent in `RoomHello` and by
 `SetNickname`, and the stream's label is always that nickname
 ([docs/44](44-rooms.md) §4.8 revision 2026-10-03 (b), §11.1 revision
-2026-09-14). **No wire, relay or engine change.** All of it is the shared
+2026-09-14). **No wire or relay change**, and one engine profile key (D9). All of it is the shared
 `crates/ui/main.slint` and `crates/ui/src/shell.rs`, so every platform gets
 it at once ([docs/54](54-macos-native-broadcaster.md) D11).
 
@@ -65,7 +67,7 @@ Two smaller problems found while looking:
 | D8 | **Links are answers.** A `gawk://` link with `nick=` (docs/68 D4) fills the name and D1 never asks. A link with a room and no `nick=` and a blank name is D2's open row on Ready: the link never starts anything (docs/68 G1), so nothing needs to ask modally. | docs/68 §8: a link prefills, never acts. |
 | D9 | **Rules on the field.** `engine::link::sanitize_nickname` on accept (the SPA's `sanitizeNickname`: whitespace collapsed, trimmed); input capped at `MAX_ROOM_NICKNAME_LEN` (32) bytes, the field refusing further input, not truncating on save. **Save** is disabled while the sanitized text is blank; becoming a guest again is clearing the field and pressing Enter, which asks nothing. `nickname_skipped` is a new `Config` bool, default false, set by **Join as a guest**, cleared by any non-blank name. | One rule set shared with links and the web, and a skip that stays skipped. |
 
-## 3. Owner decisions (open)
+## 3. Owner decisions (taken 2026-10-19: the recommendation on each)
 
 | # | Question | Options | Recommendation |
 |---|---|---|---|
@@ -188,6 +190,46 @@ A collision: "Juho (2) (you)" with sub "Someone here is already Juho".
 
 NM1 lands first: NM3 and NM4 put a field where a mid-typing rename would
 be seen.
+
+## 6a. How it was implemented (2026-10-19)
+
+All of it is the shared `crates/ui` — `main.slint` and `src/shell.rs` — plus
+the `nicknameSkipped` key in `engine::config`, so the Windows, macOS and
+Linux shells needed no change. Where the build differs from §2:
+
+- **One `NameRow` component** (D6) on Ready and Paused (D2), the room card
+  (D3, D4), the Add sheet's foot (D7) and Settings (OD2, a **YOU** section
+  above Server, shown closed when blank). The fields edit a draft;
+  `room-nickname` became an `in` property only the shell sets, and
+  `room-nickname-edited`/`-accepted` and their 600 ms debounce timer gave
+  way to `room-nickname-commit(string)` (Enter, Save, focus loss) and
+  `room-nickname-skip()`. `Field` grew `autofocus` (it also selects the
+  text, so typing replaces the name), `escapable` (a `capture-key-pressed`
+  FocusScope takes Esc before anything around the field) and `blurred`.
+- **Your own line is not a roster row.** The shell replaces the
+  `room-rows` model on every room update, which re-creates a repeater's
+  rows, so a field inside one would lose focus mid-typing. Your line comes
+  from `own_line()` as its own `room-you` value and note, first on the
+  card; `room-rows` carries everyone else, and the room sheet's Streams
+  list shows your stream from `room-you` too.
+- **D9's cap is applied on commit**, by `sanitize_nickname`, not by the
+  field refusing input: Slint's `TextInput` has no length limit. **Save**
+  is enabled for any non-empty draft that differs from the saved name; a
+  whitespace-only one commits as blank, which is becoming a guest.
+- D4's row uses the accent tint every open name row has; the warn colour
+  is on its note line.
+- The name step's join buttons go through one Slint function
+  (`begin-join`), which asks only when the name is blank and the step not
+  skipped; the shell's join handlers are unchanged. The step needs the
+  typed code, so the sheet gained `room-input-code`, set beside the echo.
+
+Tests (`crates/ui/src/shell.rs`, R71 section): typing sends nothing until
+Enter (written first; it failed on the debounce with `"Juho"` saved
+mid-typing), Esc and focus loss, sanitizing and the skip, the name step for
+a blank name, guest skip and a set name (the link's `nick=` included), the
+own line's notes, the Live card's open and closed row, and the room sheet
+without a name row; `engine::config` round-trips `nicknameSkipped` and an
+old profile loads it false.
 
 ## 7. Risks
 
