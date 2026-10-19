@@ -3,7 +3,8 @@
 **Status**: designed 2026-10-17 from a measurement pass (§4, §11), extended
 2026-10-18 with the relay's queue by depth, a shared uplink and the browser
 broadcaster on Chrome's own stack (F16–F18).
-Owner decisions OD1–OD4 and OD6 taken 2026-10-18, OD5 open (§3); chunks **RU0–RU8** not started, in §8's order (`RU` = Reliable
+Owner decisions OD1–OD4 and OD6 taken 2026-10-18, OD5 2026-10-19 (§3);
+chunks **RU0–RU9** not started, in §8's order (`RU` = Reliable
 Uplink). **Split out of R55** ([docs/57](57-wifi-uplink.md)) on
 2026-10-17 by owner direction: how deltas cross the broadcaster → relay leg
 is not a Wi-Fi feature. docs/57 keeps the Mac's Wi-Fi status line (WU3,
@@ -14,8 +15,9 @@ contradicted them (§5).
 Touches `gawk-server` (carrier ingest on the publish session, one capability
 bit, receive windows, and quic-go's per-session datagram queue),
 `gawk-broadcast-desktop` (the engine's delta sender, its congestion
-controller, one Quality-page setting, telemetry) and therefore `gawk-ios` (same engine, by path), `gawk-telemetry`
-(fields and playbook rows) and the wire mirrors.
+controller, one Quality-page setting, telemetry) and therefore `gawk-ios`
+(same engine, by path), `gawk-app` (the browser broadcaster's send queue,
+RU9), `gawk-telemetry` (fields and playbook rows) and the wire mirrors.
 
 ---
 
@@ -471,10 +473,9 @@ where the native app was before D5, and only Chrome can change that.
 
 ## 3. Owner decisions
 
-The owner took OD1–OD4 and OD6 on 2026-10-18, as recommended and with the
-order in §8; OD5 stays open. Each row states the decision or the
-recommendation and the finding behind it, and D4–D7 and D11 record the
-decisions.
+The owner took OD1–OD4 and OD6 on 2026-10-18 and OD5 on 2026-10-19, as
+recommended and with the order in §8. Each row states the decision and the
+finding behind it, and D4–D7 and D11 record the decisions.
 
 | # | Question | Options | Decision / recommendation |
 |---|---|---|---|
@@ -483,7 +484,7 @@ decisions.
 | OD3 | Who can choose? | The broadcaster's app; the relay operator; viewers. | **Decided 2026-10-18: the broadcaster (Quality page) and the operator (`-uplink-carriers`)** (D4, §6). Viewers choose their own buffering (R32 presets) and cannot choose how leg A is carried — it is one stream for all of them. The iOS app follows the engine default with no setting until someone asks for one. |
 | OD4 | How does the relay stop dropping delivered datagrams (F7)? | Leave it; drain quic-go's queue into the relay's own; make quic-go's per-session queue longer. | **Decided 2026-10-18: make the queue longer, to 512** (D7), first (§8): measured, it is the only one of the three that works (≈ 2 100 → 0–21 chunks a minute on a relay with CPU to spare, 0 in every 128 run; the drain: 1 810), and 512 rather than longer because past capacity a longer queue only adds delay (F16). The carrier needs nothing here; *Lowest latency*, the browser broadcaster and every older app do. |
 | OD6 | Does the relay serve parity to reliable delivery (*Smoother*, *Most stable*)? | Keep serving them none (docs/34 §3); serve them the fleet's parity like live-edge viewers. | **Decided 2026-10-18: serve it** (D11), first (§8). On any datagram uplink — *Lowest latency*, the browser broadcaster, an older app — it lifts those viewers from 32–89 % to 95.6–100 % of frames under 0.1–1 % loss (F14), for 2.5–10.4 % more egress to them, relay-side only. It does not replace the carrier: it cannot repair an outage. |
-| OD5 | Does the browser broadcaster follow? | Now; after measuring Chrome's QUIC stack; not at all. | **Recommendation (open, measured 2026-10-18, F18): follow, in two steps, outside this milestone.** (1) Now, as a bug fix: bound the browser's send queue in `DatagramSender` itself — the backlog sits there, out of reach of Chrome's own queue knobs (table P7) — dropping a delta past a GOP's age, and abort a keyframe stream the F-12 way, so a slow uplink costs frames, not tens of seconds of backlog (`BUGS.md`). (2) Then a browser Reliable mode on RU1's relay ingest. The carrier with a keyframe gate gives the default viewer 97.9–99.9 % of frames on every 10 ms cell and 96.3–99.6 % at 40 ms where Chrome's Cubic holds (Chrome's datagrams: 74.6–100 %), 91.4–99.3 % at 1440p (3.4 %), and protects *Smoother*. But the gate as measured costs about a round trip per GOP on a long clean path (on-screen latency 100 against 67 ms at 40 ms, 183 against 100 ms at 100 ms), which that milestone has to design away or accept. Measure it on a real Chrome on the gaming PC first, because the per-datagram ceiling is the host's. Neither step reaches the long lossy paths: Chrome runs Cubic whatever the page asks, so the native app stays the answer there. |
+| OD5 | Does the browser broadcaster follow? | Now; after measuring Chrome's QUIC stack; not at all. | **Decided 2026-10-19: follow, in two steps.** (1) Now, as a bug fix in this milestone (RU9), beside the relay's fixes: bound the browser's send queue in `DatagramSender` itself — the backlog sits there, out of reach of Chrome's own queue knobs (table P7) — dropping a delta past a GOP's age, and abort a keyframe stream the F-12 way, so a slow uplink costs frames, not tens of seconds of backlog (`BUGS.md`). (2) Later, as a milestone of its own: a browser Reliable mode on RU1's relay ingest. The carrier with a keyframe gate gives the default viewer 97.9–99.9 % of frames on every 10 ms cell and 96.3–99.6 % at 40 ms where Chrome's Cubic holds (Chrome's datagrams: 74.6–100 %), 91.4–99.3 % at 1440p (3.4 %), and protects *Smoother*. But the gate as measured costs about a round trip per GOP on a long clean path (on-screen latency 100 against 67 ms at 40 ms, 183 against 100 ms at 100 ms), which that milestone has to design away or accept. Measure it on a real Chrome on the gaming PC first, because the per-datagram ceiling is the host's. Neither step reaches the long lossy paths: Chrome runs Cubic whatever the page asks, so the native app stays the answer there. |
 
 ## 4. How it was measured
 
@@ -925,19 +926,25 @@ preset (§11 tables I, J, K):
 
 ## 8. Chunks and acceptance criteria
 
-### Order (owner, 2026-10-18)
+### Order (owner, 2026-10-18; RU9 and step 4 2026-10-19)
 
-1. **RU0, RU2 and RU8 first.** Relay and telemetry only, independent of
-   the carrier and of OD1/OD2. RU2 and RU8 fix today's two bugs for every
-   datagram publisher — *Lowest latency*, the browser broadcaster, every
-   older app (F7, F14) — and RU0 is what lets RU7 compare against a
-   baseline.
+1. **RU0, RU2, RU8 and RU9 first.** Relay, telemetry and the browser
+   broadcaster's send queue, independent of the carrier and of OD1/OD2.
+   RU2 and RU8 fix today's two bugs for every datagram publisher —
+   *Lowest latency*, the browser broadcaster, every older app (F7, F14);
+   RU9 fixes the browser's own (F18, OD5); and RU0 is what lets RU7
+   compare against a baseline.
 2. **Then RU1, RU3, RU4 and RU5 together.** BBR ships with the carrier,
    not ahead of it (D5). Both reach broadcasters behind their settings,
    with today's behaviour as the default.
 3. **RU7, then the defaults flip** — Reliable, and BBR in the same release
-   if its own gates pass (D4, D5). If only BBR's gates (RU4) fail, Reliable flips on Cubic; if the
-   carrier fails RU7, neither flips. Either way §2 gets the reason.
+   if its own gates pass (D4, D5). If only BBR's gates (RU4) fail,
+   Reliable flips on Cubic; if the carrier fails RU7, neither flips.
+   Either way §2 gets the reason.
+4. **Later, outside this milestone: a browser Reliable mode** (OD5) on
+   RU1's relay ingest — its own design, measured on Chrome on the gaming
+   PC first, with the keyframe gate's round trip on long clean paths
+   designed away or accepted there (F18).
 
 RU6, the lab, comes with this doc.
 
@@ -955,7 +962,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | G5 | **The controller is not a regression** (OD2): on the carrier, BBR is no worse than Cubic on any §11 cell beyond the run-to-run spread (Balanced frames shown − 3 points, table M; decode-ready p99 + 5 ms); on datagrams with D7's queue, the same on clean paths, random loss and bursts, and within 6 points of frames shown on outages at a lower p99 (F5, F15); and it passes RU4's shared-uplink gate. **One cell is recorded, not gated** (OD2, decided 2026-10-18): table O's thin uplink alone, where this pass measured BBR's cost — on the carrier −2.8 points and +68 ms decode-ready p99, on datagrams 69 against 82 % shown (F17). RU4's upload-warning criterion covers it instead | lab |
 | G6 | **Compatibility**: a new broadcaster on an old relay sends datagrams unchanged; an old broadcaster on a new relay is unchanged; `-uplink-carriers=false` leaves `/statusz`, metrics and wire byte-identical to before | integration (real `gawk-server`) + diff assertion |
 | G7 | **Wire parity**: `CapUplinkCarriers` in `gawk-server/wire`, `parity.ts` and `crates/wire`, golden vectors byte-identical in all three | unit (mirror tests) |
-| G8 | **Viewers untouched**: no `gawk-app` change beyond the capability constant | review |
+| G8 | **Viewers untouched**: no change to gawk-app's viewer beyond the capability constant (RU9 changes only its broadcaster's send queue) | review |
 | G9 | **Lowest latency is today's path**: with that setting the engine's wire output is byte-identical to today's for the same frames (D6) | unit |
 | G10 | **Stable presets are protected**: on the carrier uplink, *Smoother* and *Most stable* show ≥ 98 % of frames on every §11 path at 10–40 ms; on a datagram uplink with OD6's parity, ≥ 99 % at 0.1–1 % random loss and 10–40 ms (F14) | lab (replay) |
 
@@ -1039,6 +1046,20 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | `egress_parity_bytes_total` counts the new bytes; G10's datagram half holds in the replay | unit + lab |
 | `-parity-default 0` still turns parity off for everyone, byte-identically | unit (diff) |
 
+### RU9 — Browser: a send queue that drops (OD5, F18)
+
+The bug in `BUGS.md` ("Browser broadcaster: a slow uplink becomes unbounded
+delay"), fixed in gawk-app where the backlog sits — Chrome's own queue
+knobs do not reach it (table P7).
+
+| Acceptance criterion | Verified by |
+|---|---|
+| With a fake datagram writer that stalls, a delta whose frame is more than one GOP (`keyframeIntervalMs`, 500 ms) old when its turn to be written comes is dropped whole and counted in `droppedFrames`, and the frames behind it still go out; red first against today's `DatagramSender` | unit, red first |
+| A keyframe stream still writing 2 s after it opened, with a newer keyframe waiting, is aborted and counted (`keyframeStreamsFailed`), and the newer keyframe goes out — the engine's F-12 rule (docs/38) | unit, red first |
+| On a link that keeps up nothing is dropped: the same frames, byte-identical, in the same order as today | unit |
+| Table P7's two cells re-run with the fix (40 ms with 0.5 % loss; 1440p clean): frames waiting stay under one GOP's worth, decode-ready p50 under 1 s against today's 20–40 s; recorded in §11 | lab |
+| The `BUGS.md` entry deleted in the same PR, with a `fix` commit so release-please ships it | review |
+
 ### RU7 — The hardware pass
 
 | Acceptance criterion | Verified by |
@@ -1049,8 +1070,9 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 
 ## 9. Non-goals
 
-- **A viewer-side change.** Leg B has R19, R29 and R30; nothing in gawk-app
-  changes beyond the `wire.ts`/`parity.ts` capability constant. (F9's
+- **A viewer-side change.** Leg B has R19, R29 and R30; nothing in gawk-app's
+  viewer changes beyond the `wire.ts`/`parity.ts` capability constant (RU9
+  is the browser broadcaster's). (F9's
   finding about the adaptive offset's slow descent is recorded, not acted
   on here.)
 - **Pacing or frame-size capping** on leg A — rejected for leg B by owner
@@ -1064,9 +1086,9 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
   a milestone of its own if D5's gates fail.
 - **Changing the rung on loss.** No auto-ladder for the native apps (docs/38
   D11); this fixes delivery, not bitrate.
-- **The browser broadcaster.** Measured (F18), not changed: OD5 recommends
-  bounding its send queue as a bug fix and a browser Reliable mode as a
-  milestone of its own.
+- **A browser Reliable mode.** Measured (F18) and decided (OD5) as a
+  milestone of its own, after this one; this milestone fixes only the
+  browser's send queue (RU9).
 
 ## 10. Risks
 

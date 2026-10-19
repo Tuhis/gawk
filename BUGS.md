@@ -915,7 +915,8 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   is older than a bound (one GOP, as the native carrier's deadline) when
   its turn comes is dropped whole and counted in `droppedFrames`, and a
   keyframe stream still writing 2 s on, with a newer keyframe waiting, is
-  aborted — the engine's F-12 rule (docs/38). docs/73 OD5.
+  aborted — the engine's F-12 rule (docs/38). docs/73 RU9 (OD5, decided
+  2026-10-19: fixed beside the relay's RU2 and RU8).
 
 ## The relay drops high-rung publisher datagrams that QUIC already acknowledged
 
