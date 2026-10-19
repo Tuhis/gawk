@@ -2500,7 +2500,14 @@ export component MainWindow inherits Window {
         }
     }
 
+    // Lists the picker's sources again (Windows): as the picker page
+    // opens, then every second while it is open (the platform's timer).
     callback refresh-picker();
+    changed page => {
+        if (root.page == 1) {
+            root.refresh-picker();
+        }
+    }
     callback picker-view-changed(int);
     callback choose-content();
     callback source-picked();
@@ -2635,13 +2642,6 @@ export component MainWindow inherits Window {
             // changing something mid-stream sees it is still going.
             if (root.page == 1 || root.page == 4) && root.live && !root.paused: Badge {
                 kind: 0;
-            }
-            if root.page == 1: IconBtn {
-                icon: Icons.refresh;
-                label: "Refresh the list";
-                clicked => {
-                    root.refresh-picker();
-                }
             }
             if root.page == 0 && !root.on-air: StatusLine {
                 state: root.probe-state;
@@ -3584,7 +3584,7 @@ export component MainWindow inherits Window {
                         }
                     }
                     if root.draft-tab == 0 && root.windows.length == 0: Text {
-                        text: "No shareable windows found. Open the app you want to share, then refresh.";
+                        text: "No shareable windows found. Open the app you want to share and it shows up here.";
                         color: T.muted;
                         font-size: 12.5px;
                         wrap: word-wrap;
