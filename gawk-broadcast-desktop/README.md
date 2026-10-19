@@ -450,7 +450,9 @@ Two other things a license scan will not tell you: **libopus** is
 statically linked through `audiopus_sys` (ISC bindings over Xiph's
 BSD-3-Clause C library), and the **MSVC C runtime** it links is
 Microsoft's, governed by the Visual Studio license terms. Full inventory:
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and its `-macos` and
+`-linux` siblings. Each app embeds its own and shows it under Settings →
+Open-source licences (docs/74).
 
 `deny.toml` in this directory is what keeps the above true: CI runs
 `cargo-deny check licenses` against it, and a copyleft crate arriving
