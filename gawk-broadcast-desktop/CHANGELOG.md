@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.8.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.7.0...gawk-broadcast-desktop/v2.8.0) (2026-10-19)
+
+
+### Features
+
+* **broadcast-desktop:** ask for your room name and keep it in view (R71) ([#530](https://github.com/Tuhis/gawk/issues/530)) ([49488e4](https://github.com/Tuhis/gawk/commit/49488e4070293f06b63e6a2db0ca041ce548f4c6))
+
 ## [2.7.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.6.0...gawk-broadcast-desktop/v2.7.0) (2026-10-14)
 
 

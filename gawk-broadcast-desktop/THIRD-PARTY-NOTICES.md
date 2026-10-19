@@ -161,7 +161,7 @@ script for what counts as a dependency here and why.
 | `keyboard-types` | 0.7.0 | `MIT OR Apache-2.0` | Copyright (c) 2017 Pyfisch |
 | `kurbo` | 0.13.1 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Raph Levien |
 | `lazy_static` | 1.5.0 | `MIT OR Apache-2.0` | Copyright (c) 2010 The Rust Project Developers |
-| `libc` | 0.2.190 | `MIT OR Apache-2.0` | Copyright (c) The Rust Project Developers |
+| `libc` | 0.2.191 | `MIT OR Apache-2.0` | Copyright (c) The Rust Project Developers |
 | `libloading` | 0.8.9 | `ISC` | Copyright © 2015, Simonas Kazlauskas |
 | `libm` | 0.2.16 | `MIT` | Copyright (c) 2018 Jorge Aparicio<br>Copyright © 2005-2020 Rich Felker, et al<br>Copyright © 1993,2004 Sun Microsystems or<br>Copyright © 2003-2011 David Schultz or<br>Copyright © 2003-2009 Steven G. Kargl or<br>Copyright © 2003-2009 Bruce D. Evans or<br>Copyright © 2008 Stephen L. Moshier or<br>Copyright © 2017-2018 Arm Limited |
 | `linebender_resource_handle` | 0.1.1 | `Apache-2.0 OR MIT` | Copyright 2024 the Raw Resource Handle Authors |
@@ -236,7 +236,7 @@ script for what counts as a dependency here and why.
 | `serde` | 1.0.229 | `MIT OR Apache-2.0` | — |
 | `serde_core` | 1.0.229 | `MIT OR Apache-2.0` | — |
 | `serde_json` | 1.0.154 | `MIT OR Apache-2.0` | — |
-| `sha2` | 0.11.0 | `MIT OR Apache-2.0` | Copyright (c) 2016-2026 The RustCrypto Project Developers<br>Copyright (c) 2016 Artyom Pavlov<br>Copyright (c) 2009-2013 Mozilla Foundation<br>Copyright (c) 2006-2009 Graydon Hoare |
+| `sha2` | 0.11.1 | `MIT OR Apache-2.0` | Copyright (c) 2016-2026 The RustCrypto Project Developers<br>Copyright (c) 2016 Artyom Pavlov<br>Copyright (c) 2009-2013 Mozilla Foundation<br>Copyright (c) 2006-2009 Graydon Hoare |
 | `simd-adler32` | 0.3.10 | `MIT` | — |
 | `simplecss` | 0.2.2 | `Apache-2.0 OR MIT` | Copyright (c) 2018 Reizner Evgeniy |
 | `siphasher` | 1.0.3 | `MIT/Apache-2.0` | Copyright 2012-2016 The Rust Project Developers<br>Copyright 2016-2026 Frank Denis |

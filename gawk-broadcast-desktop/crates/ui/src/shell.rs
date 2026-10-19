@@ -364,13 +364,10 @@ pub struct Shell {
     /// Set when the user clicked Detach/Leave, so the RoomDetached that
     /// follows is read as "we left" rather than "the creator removed us".
     room_leaving: bool,
-    /// Debounces the live rename: `edited` fires per keystroke, and every
-    /// SetNickname costs the relay a re-Attach and every participant a
-    /// roster event, so the send waits until typing pauses (single-shot,
-    /// restarted per edit) or Enter is pressed. Persisting is not debounced.
-    nick_timer: slint::Timer,
     /// The last nickname sent to the relay for this session — a flush that
-    /// would repeat it is skipped.
+    /// would repeat it is skipped. A rename is sent only when committed
+    /// (Enter, Save or focus loss: docs/73 D5): every SetNickname costs the
+    /// relay a re-Attach and every participant a roster event.
     nick_sent: String,
     /// When the broadcast went live: the elapsed clock and the stopped
     /// summary (docs/60 D11).
@@ -472,7 +469,45 @@ struct LeftRoom {
 }
 
 /// Sends the current nickname to the running session unless it is the one
-/// already sent. Called from the debounce timer and from Enter.
+/// already sent. Called when a name is committed.
+/// The saved name everywhere it shows: the config, and the field
+/// `read_settings` reads back at Start (docs/68 §8), with its avatar. A
+/// name ends the name step's skip (docs/73 D9).
+fn set_nickname(ui: &MainWindow, sh: &mut Shell, nick: &str) {
+    sh.cfg.nickname = nick.to_owned();
+    if !nick.is_empty() {
+        sh.cfg.nickname_skipped = false;
+    }
+    show_nickname(ui, &sh.cfg);
+    save_config(sh);
+}
+
+fn show_nickname(ui: &MainWindow, cfg: &Config) {
+    let nick = cfg.nickname.as_str();
+    ui.set_room_nickname(nick.into());
+    ui.set_room_nickname_initial(if nick.is_empty() {
+        SharedString::new()
+    } else {
+        initial_of(nick).into()
+    });
+    ui.set_room_nickname_tint(tint_for(nick));
+    ui.set_nickname_skipped(cfg.nickname_skipped);
+}
+
+/// A name field committed (docs/73 D5): sanitized as a link's `nick=` is
+/// (D9), saved, and sent to the room if there is one. The field is reset
+/// to the result either way, so a name that sanitizes to the saved one
+/// still shows tidied.
+fn commit_nickname(ui: &MainWindow, sh: &mut Shell, raw: &str) {
+    let nick = gawk_engine::link::sanitize_nickname(raw);
+    if nick == sh.cfg.nickname {
+        show_nickname(ui, &sh.cfg);
+        return;
+    }
+    set_nickname(ui, sh, &nick);
+    flush_nickname(sh);
+}
+
 fn flush_nickname(sh: &mut Shell) {
     let nick = sh.cfg.nickname.clone();
     if nick == sh.nick_sent {
@@ -569,7 +604,6 @@ fn build_shell(
         network: None,
         room_grant: None,
         room_leaving: false,
-        nick_timer: slint::Timer::default(),
         nick_sent: String::new(),
         live_since: None,
         peak_viewers: 0,
@@ -998,7 +1032,7 @@ fn seed_settings(ui: &MainWindow, cfg: &Config) {
     // must say the same, or the first unrelated settings edit would write
     // the selected server's fields into the default's slot.
     seed_edit_fields(ui, cfg, DEFAULT_SERVER_NAME);
-    ui.set_room_nickname(cfg.nickname.clone().into());
+    show_nickname(ui, cfg);
     ui.set_picker_view(picker_view_tab(&cfg.picker_view));
     ui.set_set_app_url(cfg.app_url.clone().into());
     ui.set_set_telemetry(cfg.telemetry_url.clone().into());
@@ -1423,6 +1457,56 @@ fn roster_view(
         watcher_initials,
         streaming: s.attachments.len() as i32,
         watching: names.len() as i32,
+    }
+}
+
+/// Your own line on the room card (docs/73 D3, D4): your stream's row when
+/// you stream, else a watching line, titled with the relay's form of your
+/// name — and a note when that isn't the name you saved.
+fn own_line(s: &RoomSummary, rows: &[RoomRow], saved: &str) -> (RoomRow, String) {
+    let mut row = rows
+        .iter()
+        .find(|r| r.you)
+        .cloned()
+        .unwrap_or_else(|| RoomRow {
+            detail: "Watching".into(),
+            you: true,
+            ..Default::default()
+        });
+    let relay = s
+        .people
+        .iter()
+        .find(|p| p.id == s.your_id)
+        .map(|p| p.nickname.trim().to_string())
+        .filter(|n| !n.is_empty());
+    let name = relay
+        .or_else(|| (!row.broadcast_id.is_empty()).then(|| row.name.to_string()))
+        .or_else(|| (!saved.is_empty()).then(|| saved.to_string()))
+        .unwrap_or_else(|| "You".into());
+    row.initial = initial_of(&name).into();
+    row.tint = tint_for(&name);
+    let note = name_note(saved, &name);
+    row.name = name.into();
+    (row, note)
+}
+
+/// Why the room's name for you isn't the one you saved: none saved (the
+/// relay's `guest-<id>`), or taken (the relay's " (n)" suffix, the name cut
+/// to fit it). Blank when they agree, or while a rename is on its way.
+fn name_note(saved: &str, shown: &str) -> String {
+    if saved.is_empty() {
+        return "That's what everyone here sees. Set a name:".into();
+    }
+    let base = shown
+        .strip_suffix(')')
+        .and_then(|rest| rest.rsplit_once(" ("))
+        .filter(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .map(|(base, _)| base);
+    match base {
+        Some(base) if !base.is_empty() && shown != saved && saved.starts_with(base) => {
+            format!("Someone here is already {saved}")
+        }
+        _ => String::new(),
     }
 }
 
@@ -2151,32 +2235,29 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         });
     }
     {
-        // The nickname persists like every other setting and, while a
-        // session exists, renames on the relay too (the tile label follows
-        // — one name feeds both, as on the web broadcaster page).
+        // A committed name persists and, while a session exists, renames on
+        // the relay too (the tile label follows — one name feeds both, as
+        // on the web broadcaster page). Typing alone changes nothing.
         let shell = shell.clone();
         let ui_weak = ui_weak.clone();
-        ui.on_room_nickname_edited(move || {
+        ui.on_room_nickname_commit(move |raw| {
             if let Some(ui) = ui_weak.upgrade() {
-                let mut sh = shell.borrow_mut();
-                let edit = sh.edit_server.clone();
-                sh.edit_server = read_settings(&ui, &mut sh.cfg, &edit);
-                save_config(&mut sh);
-                let flush_shell = shell.clone();
-                sh.nick_timer.start(
-                    slint::TimerMode::SingleShot,
-                    std::time::Duration::from_millis(600),
-                    move || flush_nickname(&mut flush_shell.borrow_mut()),
-                );
+                commit_nickname(&ui, &mut shell.borrow_mut(), raw.as_str());
             }
         });
     }
     {
+        // "Join as a guest" (docs/73 D1): the next blank-name join doesn't
+        // ask. The join itself follows from the sheet.
         let shell = shell.clone();
-        ui.on_room_nickname_accepted(move || {
-            let mut sh = shell.borrow_mut();
-            sh.nick_timer.stop();
-            flush_nickname(&mut sh);
+        let ui_weak = ui_weak.clone();
+        ui.on_room_nickname_skip(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let mut sh = shell.borrow_mut();
+                sh.cfg.nickname_skipped = true;
+                show_nickname(&ui, &sh.cfg);
+                save_config(&mut sh);
+            }
         });
     }
     {
@@ -2296,9 +2377,12 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         let ui_weak = ui_weak.clone();
         ui.on_room_input_edited(move || {
             if let Some(ui) = ui_weak.upgrade() {
-                let (echo, ok) = room_input_echo(ui.get_room_input().as_str());
+                let raw = ui.get_room_input();
+                let (echo, ok) = room_input_echo(raw.as_str());
                 ui.set_room_input_echo(echo.into());
                 ui.set_room_input_ok(ok);
+                let code = parse_room_input(raw.as_str()).map(|i| i.code);
+                ui.set_room_input_code(code.unwrap_or_default().into());
             }
         });
     }
@@ -3248,7 +3332,6 @@ fn link_card_accepted(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             if let Some(n) = &nick {
                 let mut sh = shell.borrow_mut();
                 set_link_nickname(ui, &mut sh, n);
-                sh.nick_timer.stop();
                 flush_nickname(&mut sh);
             }
             if let Some(code) = room {
@@ -3282,9 +3365,7 @@ fn select_server(ui: &MainWindow, sh: &mut Shell, name: &str) {
 /// D4, §8: the nickname goes into the field as well as the config —
 /// `read_settings` reads the field back at Start.
 fn set_link_nickname(ui: &MainWindow, sh: &mut Shell, nick: &str) {
-    ui.set_room_nickname(nick.into());
-    sh.cfg.nickname = nick.to_owned();
-    save_config(sh);
+    set_nickname(ui, sh, nick);
 }
 
 /// The quiet line after a link (D4): what it filled in, then what it left
@@ -3649,7 +3730,12 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             ui.set_room_creator(s.creator);
             ui.set_room_streaming(roster.streaming);
             ui.set_room_watching(roster.watching);
-            ui.set_room_rows(ModelRc::new(VecModel::from(roster.rows)));
+            let (you, note) = own_line(&s, &roster.rows, &sh.cfg.nickname);
+            ui.set_room_you(you);
+            ui.set_room_you_note(note.into());
+            // Ours is the card's own line (docs/73 D3), not a roster row.
+            let others: Vec<RoomRow> = roster.rows.into_iter().filter(|r| !r.you).collect();
+            ui.set_room_rows(ModelRc::new(VecModel::from(others)));
             ui.set_room_watchers(roster.watchers.into());
             ui.set_room_watcher_initials(ModelRc::new(VecModel::from(roster.watcher_initials)));
             ui.set_room_needs_key(room_needs_key(&s, attached));
@@ -3854,6 +3940,7 @@ fn choose_room(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, input: RoomInput) {
     ui.set_room_input("".into());
     ui.set_room_input_echo("".into());
     ui.set_room_input_ok(false);
+    ui.set_room_input_code("".into());
     let Some(session) = sh.session.clone() else {
         return;
     };
@@ -3957,6 +4044,8 @@ fn reset_room_ui(ui: &MainWindow) {
     ui.set_room_streaming(0);
     ui.set_room_watching(0);
     ui.set_room_rows(ModelRc::default());
+    ui.set_room_you(RoomRow::default());
+    ui.set_room_you_note("".into());
     ui.set_room_watchers("".into());
     ui.set_room_watcher_initials(ModelRc::default());
     ui.set_room_needs_key(false);
@@ -5142,6 +5231,318 @@ mod tests {
         assert_eq!(shell.borrow().cfg.nickname, "");
         link_card_accepted(&ui, &shell);
         assert_eq!(shell.borrow().cfg.nickname, "Juho");
+    }
+
+    // --- R71: your name in a room (docs/73) ---------------------------------
+
+    const NAME_FIELD: &str = "Your name in the room";
+
+    /// Clicks the element labelled `label` (a field: it takes focus).
+    fn click(ui: &MainWindow, label: &str) {
+        target(ui, label).mock_single_click(PointerEventButton::Left);
+    }
+
+    /// Types into the focused field, one key at a time.
+    fn type_text(ui: &MainWindow, text: &str) {
+        for c in text.chars() {
+            let t: SharedString = c.to_string().into();
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: t.clone() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text: t });
+        }
+    }
+
+    fn press(ui: &MainWindow, key: slint::platform::Key) {
+        let t: SharedString = key.into();
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: t.clone() });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text: t });
+    }
+
+    /// Ready with a pending room and no name: the name row's field is open
+    /// (D2). Shown, so the field lays out and takes clicks.
+    fn ready_in_a_room(cfg: Config) -> (MainWindow, Rc<RefCell<Shell>>) {
+        let ui = window();
+        ui.window().set_size(slint::LogicalSize::new(520.0, 900.0));
+        let (shell, _) = shell_with(cfg);
+        seed_settings(&ui, &shell.borrow().cfg);
+        wire_callbacks(&ui, &shell);
+        ui.set_room_pending("lan-party".into());
+        ui.set_room_pending_detail("Joins when you go live".into());
+        ui.show().unwrap();
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(16));
+        (ui, shell)
+    }
+
+    // D5: every pause in typing renamed you to the whole room, "J", "Ju",
+    // "Juh"…; now nothing is saved or sent until Enter.
+    #[test]
+    fn typing_a_name_sends_nothing_until_enter() {
+        let (ui, shell) = ready_in_a_room(Config::default());
+        click(&ui, NAME_FIELD);
+        type_text(&ui, "Juho");
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(700));
+        assert_eq!(shell.borrow().cfg.nickname, "", "saved while typing");
+        assert_eq!(shell.borrow().nick_sent, "", "sent while typing");
+
+        press(&ui, slint::platform::Key::Return);
+        assert_eq!(shell.borrow().cfg.nickname, "Juho");
+        assert_eq!(shell.borrow().nick_sent, "Juho");
+        assert_eq!(ui.get_room_nickname(), "Juho");
+    }
+
+    // D5: Esc puts the saved name back and sends nothing; leaving the field
+    // commits what it holds.
+    #[test]
+    fn esc_keeps_the_saved_name_and_focus_loss_commits() {
+        let cfg = Config {
+            nickname: "Juho".into(),
+            ..Default::default()
+        };
+        let (ui, shell) = ready_in_a_room(cfg);
+        shell.borrow_mut().nick_sent = "Juho".into();
+        assert!(!shows(&ui, NAME_FIELD), "a set name shows closed");
+        click(&ui, "Change your name");
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(16));
+        type_text(&ui, "-x");
+        press(&ui, slint::platform::Key::Escape);
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(16));
+        assert!(!shows(&ui, NAME_FIELD), "Esc closes the field");
+        assert_eq!(shell.borrow().cfg.nickname, "Juho");
+        assert_eq!(shell.borrow().nick_sent, "Juho");
+
+        click(&ui, "Change your name");
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(16));
+        // The name opens selected: typing replaces it.
+        type_text(&ui, "Mika");
+        // Focus moves on, as a click elsewhere would move it.
+        ui.window()
+            .dispatch_event(WindowEvent::WindowActiveChanged(false));
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(16));
+        assert_eq!(shell.borrow().cfg.nickname, "Mika");
+        assert_eq!(shell.borrow().nick_sent, "Mika");
+    }
+
+    // D9: a committed name is the link's rule — whitespace collapsed and
+    // trimmed, cut to 32 bytes — and a name ends the skip.
+    #[test]
+    fn a_committed_name_is_sanitized_and_ends_the_skip() {
+        let ui = window();
+        let (shell, _) = shell_with(Config {
+            nickname_skipped: true,
+            ..Default::default()
+        });
+        let mut sh = shell.borrow_mut();
+        commit_nickname(&ui, &mut sh, "  Ju   ho ");
+        assert_eq!(sh.cfg.nickname, "Ju ho");
+        assert!(!sh.cfg.nickname_skipped);
+        assert_eq!(ui.get_room_nickname(), "Ju ho");
+        assert_eq!(ui.get_room_nickname_initial(), "J");
+        assert!(!ui.get_nickname_skipped());
+        commit_nickname(&ui, &mut sh, &"ä".repeat(20));
+        assert_eq!(
+            sh.cfg.nickname,
+            "ä".repeat(16),
+            "32 bytes, on a char boundary"
+        );
+        commit_nickname(&ui, &mut sh, "   ");
+        assert_eq!(sh.cfg.nickname, "", "clearing it is becoming a guest");
+        assert_eq!(ui.get_room_nickname_initial(), "");
+    }
+
+    /// The Add to a room sheet, open, with a code typed.
+    fn add_sheet(cfg: Config) -> (MainWindow, Rc<RefCell<Shell>>) {
+        let ui = window();
+        ui.window().set_size(slint::LogicalSize::new(520.0, 900.0));
+        let (shell, _) = shell_with(cfg);
+        seed_settings(&ui, &shell.borrow().cfg);
+        wire_callbacks(&ui, &shell);
+        ui.set_show_room_sheet(true);
+        ui.set_room_input("lan-party".into());
+        ui.invoke_room_input_edited();
+        ui.show().unwrap();
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(16));
+        (ui, shell)
+    }
+
+    fn settle_ui() {
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(16));
+    }
+
+    // D1: a blank-name join asks first; the name is saved and the join
+    // goes on.
+    #[test]
+    fn a_blank_name_join_asks_for_a_name_first() {
+        let (ui, shell) = add_sheet(Config::default());
+        click(&ui, "Join");
+        settle_ui();
+        assert_eq!(ui.get_name_step(), 1);
+        assert_eq!(shell.borrow().cfg.room, "", "nothing joined yet");
+        assert!(shows(&ui, "Join lan-party"));
+
+        click(&ui, "Your name");
+        type_text(&ui, "Juho");
+        click(&ui, "Join lan-party");
+        settle_ui();
+        let sh = shell.borrow();
+        assert_eq!(sh.cfg.nickname, "Juho");
+        assert_eq!(sh.cfg.room, "lan-party");
+        assert_eq!(ui.get_name_step(), 0);
+        assert_eq!(ui.get_room_pending(), "lan-party");
+    }
+
+    // Review of #530: the shell closes the sheet itself (an ending, a
+    // link's choose_room). An unanswered name step must not come back in
+    // place of the room list when the sheet next opens.
+    #[test]
+    fn closing_the_sheet_from_anywhere_drops_the_name_step() {
+        let (ui, _shell) = add_sheet(Config::default());
+        click(&ui, "Join");
+        settle_ui();
+        assert_eq!(ui.get_name_step(), 1);
+        ui.set_show_room_sheet(false);
+        settle_ui();
+        assert_eq!(ui.get_name_step(), 0);
+    }
+
+    // D1, D9, OD3: "Join as a guest" joins with no name, and the next
+    // blank-name join doesn't ask.
+    #[test]
+    fn join_as_a_guest_joins_and_stops_asking() {
+        let (ui, shell) = add_sheet(Config::default());
+        click(&ui, "Create a new room");
+        settle_ui();
+        assert_eq!(ui.get_name_step(), 3);
+        assert!(shows(&ui, "Create room"));
+        click(&ui, "Join as a guest");
+        settle_ui();
+        {
+            let sh = shell.borrow();
+            assert!(sh.cfg.nickname_skipped);
+            assert_eq!(sh.cfg.nickname, "");
+            assert!(sh.pending_create, "the create went on");
+        }
+        assert_eq!(ui.get_name_step(), 0);
+
+        ui.set_show_room_sheet(true);
+        settle_ui();
+        click(&ui, "Join");
+        settle_ui();
+        assert_eq!(ui.get_name_step(), 0, "asked once");
+        assert_eq!(shell.borrow().cfg.room, "lan-party");
+    }
+
+    // D1, D8: a name already set — typed or from a link's nick= — goes
+    // straight through.
+    #[test]
+    fn a_set_name_joins_without_asking() {
+        let (ui, shell) = add_sheet(Config::default());
+        warm(&ui, &shell, "gawk://broadcast?nick=Juho");
+        ui.set_show_room_sheet(true);
+        settle_ui();
+        click(&ui, "Join");
+        settle_ui();
+        assert_eq!(ui.get_name_step(), 0);
+        assert_eq!(shell.borrow().cfg.room, "lan-party");
+    }
+
+    // D3, D4: your own line carries the relay's form of the name and says
+    // why it isn't the one you saved.
+    #[test]
+    fn your_own_line_explains_a_guest_name_and_a_taken_one() {
+        let mut s = room_with_people();
+        let rows = roster_view(&s, "K7XQ2M", "x", false, false).rows;
+        let (you, note) = own_line(&s, &rows, "tuhis");
+        assert_eq!(
+            (you.name.as_str(), you.detail.as_str(), note.as_str()),
+            ("tuhis", "Streaming · 5 watching", "")
+        );
+        assert_eq!(you.broadcast_id, "K7XQ2M");
+
+        s.people[0].nickname = "tuhis (2)".into();
+        let (you, note) = own_line(&s, &rows, "tuhis");
+        assert_eq!(you.name, "tuhis (2)");
+        assert_eq!(note, "Someone here is already tuhis");
+
+        s.people[0].nickname = "guest-1".into();
+        let (you, note) = own_line(&s, &rows, "");
+        assert_eq!((you.name.as_str(), you.initial.as_str()), ("guest-1", "G"));
+        assert_eq!(note, "That's what everyone here sees. Set a name:");
+
+        // Watching only (a gated room before its key): a line all the same.
+        let (you, _) = own_line(&s, &[], "");
+        assert_eq!(
+            (you.detail.as_str(), you.broadcast_id.as_str()),
+            ("Watching", "")
+        );
+    }
+
+    #[test]
+    fn a_name_note_reads_only_the_relays_suffix() {
+        assert_eq!(name_note("Juho", "Juho"), "");
+        assert_eq!(
+            name_note("Juho", "Juho (12)"),
+            "Someone here is already Juho"
+        );
+        assert_eq!(name_note("Juho", "Old name"), "", "a rename on its way");
+        assert_eq!(name_note("Juho (x)", "Juho (x)"), "");
+        // The relay cuts a long name to fit the suffix.
+        let long = "a".repeat(32);
+        let shown = format!("{} (2)", "a".repeat(28));
+        assert_eq!(
+            name_note(&long, &shown),
+            format!("Someone here is already {long}")
+        );
+    }
+
+    // D3, D4: on Live, a guest's own line is the open field; a name shows
+    // closed with Rename.
+    #[test]
+    fn the_live_card_renames_from_your_own_line() {
+        let ui = window();
+        ui.window().set_size(slint::LogicalSize::new(480.0, 900.0));
+        ui.set_live(true);
+        ui.set_busy(true);
+        ui.set_room_active(true);
+        ui.set_room_you(RoomRow {
+            name: "guest-4".into(),
+            initial: "G".into(),
+            detail: "Streaming".into(),
+            you: true,
+            broadcast_id: "ABC123".into(),
+            ..Default::default()
+        });
+        ui.set_room_you_note("That's what everyone here sees. Set a name:".into());
+        ui.show().unwrap();
+        settle_ui();
+        assert!(shows(&ui, NAME_FIELD), "a guest's line is open");
+        assert!(shows(&ui, "guest-4 (you)"));
+
+        ui.set_room_nickname("Juho".into());
+        ui.set_room_you_note("".into());
+        settle_ui();
+        assert!(!shows(&ui, NAME_FIELD));
+        assert!(shows(&ui, "Rename your name"));
+    }
+
+    // D7: the active room's sheet no longer carries the name; the card's
+    // own line does.
+    #[test]
+    fn the_room_sheet_has_no_name_row() {
+        let ui = window();
+        ui.window().set_size(slint::LogicalSize::new(520.0, 900.0));
+        ui.set_room_nickname("Juho".into());
+        ui.set_room_active(true);
+        ui.set_show_room_sheet(true);
+        ui.show().unwrap();
+        settle_ui();
+        assert!(
+            !shows(&ui, "Change your name"),
+            "no name row on the room sheet"
+        );
+        assert!(!shows(&ui, NAME_FIELD));
     }
 
     // D4: a live broadcast's server never changes; a link for another server

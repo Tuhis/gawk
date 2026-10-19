@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.1.0...gawk-ios/v1.1.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **ios:** the content screening mark is static text to the accessibility audit ([#512](https://github.com/Tuhis/gawk/issues/512)) ([f857ed6](https://github.com/Tuhis/gawk/commit/f857ed6c93fe4acfc5685a69e99a857d0b1234db))
+
 ## [1.1.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.0.0...gawk-ios/v1.1.0) (2026-10-14)
 
 
