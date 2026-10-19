@@ -15,7 +15,11 @@ gets linked into the shipped artifact — not what appears in a manifest:
   * Rust      `cargo tree -e normal --target x86_64-pc-windows-msvc`. `-e
               normal` drops build- and dev-dependencies (proc macros run at
               compile time and are not in the EXE); the target filter drops
-              the Linux/macOS halves of every cfg-gated crate.
+              the Linux/macOS halves of every cfg-gated crate. The C
+              libraries a `-sys` crate compiles in (libopus, libvpx) are
+              added from NATIVE_LIBRARIES, since Cargo doesn't know them.
+              The desktop shells and the iOS app embed their file and show
+              it in Settings (R72, docs/74), so it ships inside the binary.
   * npm       the lockfile minus `dev: true` — i.e. what Vite puts in the
               bundle. lightningcss and friends are build tools that never
               reach a browser.
@@ -224,12 +228,22 @@ def normalize(text: str) -> str:
 
 
 class Package:
-    def __init__(self, name: str, version: str, declared: str | None, root: Path | None):
+    def __init__(
+        self,
+        name: str,
+        version: str,
+        declared: str | None,
+        root: Path | None,
+        files: list[tuple[str, str]] | None = None,
+    ):
         self.name = name
         self.version = version
-        self.files = read_license_files(root) if root else []
+        self.files = files if files is not None else (read_license_files(root) if root else [])
         self.copyrights = copyright_lines(self.files) or copyright_from_sources(root)
         self.root = root
+        # Where a copyleft package's source can be had (MPL-2.0 §3.2(a)): set
+        # by the collector for the ecosystems that have a canonical address.
+        self.source: str | None = None
         if declared:
             self.spdx = declared
         elif self.files:
@@ -273,13 +287,76 @@ def collect_go(module: str, tags: str = "", cgo: bool = False) -> list[Package]:
     return sorted(seen.values(), key=lambda p: p.name.lower())
 
 
-def collect_cargo(workspace: str, target: str) -> list[Package]:
+TOOLS = REPO / "tools" / "licenses"
+
+# Licence texts for packages that declare a licence and ship no text for it.
+# The uniffi crates are the case: `license = "MPL-2.0"` in every manifest and
+# no LICENSE file in any of them. The text is the one Mozilla publishes,
+# fetched once and committed.
+LICENSE_TEXT_FALLBACK = {
+    "MPL-2.0": TOOLS / "texts" / "MPL-2.0.txt",
+}
+
+# C libraries that a `-sys` crate compiles into the binary. They are not Cargo
+# packages, so nothing above lists them, and a crate's own licence covers its
+# bindings, not the library: libopus is Xiph's BSD-3-Clause, libvpx is
+# Google's BSD-3-Clause plus its patent grant. Each entry is keyed by the
+# crate that builds it and listed whenever that crate is in the graph.
+#
+#   files    (where, path): "crate" for a file inside the crate's own
+#            source (audiopus_sys ships the opus tree), "repo" for one
+#            committed under tools/licenses/native/ (shiguredo_libvpx clones
+#            libvpx at build time, so there is nothing in the crate to read).
+#   pin      a key in the crate's [package.metadata] that names the library
+#            version it builds; the run fails if it disagrees with `version`,
+#            so a bump that moves the library can't leave a stale notice.
+NATIVE_LIBRARIES = {
+    "audiopus_sys": dict(
+        name="libopus",
+        version="1.3",
+        spdx="BSD-3-Clause",
+        files=[("crate", "opus/COPYING")],
+    ),
+    "shiguredo_libvpx": dict(
+        name="libvpx",
+        version="v1.17.0",
+        spdx="BSD-3-Clause",
+        files=[
+            ("repo", "tools/licenses/native/libvpx/LICENSE"),
+            ("repo", "tools/licenses/native/libvpx/PATENTS"),
+        ],
+        pin=("external-dependencies", "libvpx", "version"),
+    ),
+}
+
+
+def native_library(crate: dict, root: Path) -> Package:
+    spec = NATIVE_LIBRARIES[crate["name"]]
+    if "pin" in spec:
+        pinned = crate.get("metadata") or {}
+        for part in spec["pin"]:
+            pinned = (pinned or {}).get(part)
+        if pinned != spec["version"]:
+            sys.exit(
+                f"! {crate['name']} {crate['version']} builds {spec['name']} {pinned}, "
+                f"but NATIVE_LIBRARIES says {spec['version']}: refresh its licence "
+                "files and the version in tools/licenses/gen-notices.py"
+            )
+    files = []
+    for where, rel in spec["files"]:
+        path = (root if where == "crate" else REPO) / rel
+        files.append((rel, path.read_text(encoding="utf-8").strip()))
+    return Package(spec["name"], spec["version"], spec["spdx"], root, files)
+
+
+def collect_cargo(workspace: str, target: str, package: str | None = None) -> list[Package]:
     cwd = REPO / workspace
     meta = json.loads(run(["cargo", "metadata", "--format-version", "1"], cwd))
-    declared, roots = {}, {}
+    declared, roots, crates = {}, {}, {}
     for pkg in meta["packages"]:
         declared[(pkg["name"].lower(), pkg["version"])] = pkg.get("license")
         roots[(pkg["name"].lower(), pkg["version"])] = Path(pkg["manifest_path"]).parent
+        crates[(pkg["name"].lower(), pkg["version"])] = pkg
     workspace_members = {
         m.split()[0].lower() for m in meta["workspace_members"] if " " in m
     } | {
@@ -295,6 +372,8 @@ def collect_cargo(workspace: str, target: str) -> list[Package]:
     # walking it made the output depend on where this script ran (a Mac added
     # objc2 to the Windows EXE's list, Linux added dlib). Excluding it is both
     # what "build-dependencies are excluded" meant and host-independent.
+    # `package` narrows the graph to what one crate links: the iOS workspace
+    # also holds the UniFFI bindgen and a dev publisher, which ship nothing.
     tree = run(
         [
             "cargo", "tree",
@@ -302,7 +381,8 @@ def collect_cargo(workspace: str, target: str) -> list[Package]:
             "--target", target,
             "--prefix", "none",
             "--no-dedupe",
-        ],
+        ]
+        + (["-p", package] if package else []),
         cwd,
     )
     seen: dict[tuple[str, str], Package] = {}
@@ -311,15 +391,27 @@ def collect_cargo(workspace: str, target: str) -> list[Package]:
         if len(parts) < 2 or not parts[1].startswith("v"):
             continue
         name, version = parts[0], parts[1][1:]
+        key = (name.lower(), version)
         if name.lower() in workspace_members and "(proc-macro)" not in line:
             # First-party crates AND the vendored path deps: the vendored ones
-            # are re-added below with their real upstream licences.
-            if not (REPO / workspace / "vendor" / name).is_dir():
+            # stay, with their real upstream licences. By path, not by this
+            # workspace's own vendor/: the iOS workspace patches in the
+            # desktop's vendored wtransport (gawk-ios/rust/Cargo.toml).
+            root = roots.get(key)
+            if not (root and root.parent.name == "vendor"):
                 continue
-        key = (name.lower(), version)
         if key in seen:
             continue
-        seen[key] = Package(name, version, declared.get(key), roots.get(key))
+        pkg = Package(name, version, declared.get(key), roots.get(key))
+        if not pkg.files and pkg.spdx in LICENSE_TEXT_FALLBACK:
+            text = LICENSE_TEXT_FALLBACK[pkg.spdx].read_text(encoding="utf-8").strip()
+            pkg.files = [(LICENSE_TEXT_FALLBACK[pkg.spdx].name, text)]
+        if pkg.spdx.startswith("MPL-"):
+            pkg.source = f"https://crates.io/crates/{name}/{version}"
+        seen[key] = pkg
+        if name in NATIVE_LIBRARIES:
+            native = native_library(crates[key], roots[key])
+            seen.setdefault(native.key, native)
     return sorted(seen.values(), key=lambda p: p.name.lower())
 
 
@@ -414,6 +506,23 @@ def render(component: str, blurb: str, sources: str, packages: list[Package]) ->
         version = pkg.version or "—"
         lines.append(f"| `{pkg.name}` | {version} | `{pkg.spdx}` | {holders} |")
     lines.append("")
+
+    # MPL-2.0 §3.2(a): whoever distributes the executable must say where its
+    # MPL-covered source can be had. The crates are unmodified, so their
+    # published source is that source.
+    sourced = [pkg for pkg in packages if pkg.source]
+    if sourced:
+        lines += [
+            "## Source code",
+            "",
+            "These packages are distributed under the Mozilla Public License 2.0.",
+            "Their source code is available at the addresses below, unmodified.",
+            "",
+            "| Package | Source |",
+            "|---|---|",
+        ]
+        lines += [f"| `{pkg.name}` {pkg.version} | <{pkg.source}> |" for pkg in sourced]
+        lines.append("")
 
     # Group the distinct licence texts. Identical boilerplate collapses; the
     # copyright lines that differ are already in the table above.
@@ -561,8 +670,8 @@ COMPONENTS = {
             "version 2.0**, whose attribution condition is met by the \"Made with\n"
             "Slint\" badge on the project README and release pages. **libopus** is\n"
             "compiled in statically through `audiopus_sys`; the ISC license below\n"
-            "covers the Rust bindings, and Xiph's BSD-3-Clause license covers the C\n"
-            "library itself.\n"
+            "covers the Rust bindings, and Xiph's BSD-3-Clause license, listed as\n"
+            "`libopus`, covers the C library itself.\n"
             "\n"
             "The MSVC C runtime the binary links against is Microsoft's and is\n"
             "governed by the Visual Studio license terms, not by anything here."
@@ -590,7 +699,7 @@ COMPONENTS = {
             "condition is met by the \"Made with Slint\" badge on the project README\n"
             "and release pages, and **libopus** is compiled in statically through\n"
             "`audiopus_sys` (ISC for the bindings, Xiph's BSD-3-Clause for the C\n"
-            "library). The Apple frameworks it links — ScreenCaptureKit,\n"
+            "library, listed as `libopus`). The Apple frameworks it links — ScreenCaptureKit,\n"
             "VideoToolbox, CoreMedia and the rest — are part of macOS and are\n"
             "governed by Apple's terms, not by anything here."
         ),
@@ -617,7 +726,7 @@ COMPONENTS = {
             "whose attribution condition is met by the \"Made with Slint\" badge on\n"
             "the project README and release pages, and **libopus** is compiled in\n"
             "statically through `audiopus_sys` (ISC for the bindings, Xiph's\n"
-            "BSD-3-Clause for the C library).\n"
+            "BSD-3-Clause for the C library, listed as `libopus`).\n"
             "\n"
             "The binary **dynamically links** libraries it does not ship, which the\n"
             "user's distribution provides: **GStreamer** and its plugins (LGPL-2.1 or\n"
@@ -633,6 +742,35 @@ COMPONENTS = {
         collect=lambda: collect_cargo(
             "gawk-broadcast-desktop", "x86_64-unknown-linux-gnu"
         ),
+    ),
+    # The iOS app (R65, docs/67): the Rust core is the only third-party code
+    # in it. The SwiftUI app and its Live Activity use Apple's frameworks and
+    # no Swift packages. Shown in the app under Settings (R72, docs/74).
+    "ios": dict(
+        path="gawk-ios",
+        title="gawk-ios",
+        blurb=(
+            "The gawk iOS app. Everything listed here is in its Rust core\n"
+            "(`gawk-core`), the one static library the app links; the app and its\n"
+            "Live Activity add no third-party code of their own.\n"
+            "\n"
+            "**libopus** is compiled in statically through `audiopus_sys` (ISC for\n"
+            "the bindings, Xiph's BSD-3-Clause for the C library, listed as\n"
+            "`libopus`), and **libvpx** through `shiguredo_libvpx`, which builds it\n"
+            "from upstream source (Apache-2.0 for the bindings, the WebM Project's\n"
+            "BSD-3-Clause and patent grant for the library, listed as `libvpx`).\n"
+            "The **uniffi** crates are under the Mozilla Public License 2.0; where\n"
+            "to get their source is under *Source code* below. The Apple\n"
+            "frameworks the app links (ScreenCaptureKit, VideoToolbox, SwiftUI and\n"
+            "the rest) are part of iOS and are governed by Apple's terms, not by\n"
+            "anything here."
+        ),
+        sources=(
+            "`cargo tree -e normal --target aarch64-apple-ios -p gawk-core` — "
+            "build- and dev-dependencies (proc macros, the UniFFI bindgen, test "
+            "harnesses) are excluded because they are not part of the shipped app."
+        ),
+        collect=lambda: collect_cargo("gawk-ios/rust", "aarch64-apple-ios", "gawk-core"),
     ),
 }
 
