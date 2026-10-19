@@ -907,6 +907,11 @@ delivery switch lands there, beside Resolution, Frame rate and Upload cap):
   copy and rules; RU5 changes only what counts as harm in Reliable mode
   (D6).
 - **iOS**: no setting (OD3); the app runs the engine default.
+- **The browser broadcaster** (RU9): no setting. While it is dropping
+  frames its connection cannot carry, a notice beside today's encoder
+  "Can't keep up at {quality}" badge: "Your connection can't keep up at
+  {quality} — try a lower quality." Diagnostics shows the stale-drop
+  counters.
 
 **Viewers** choose nothing new. With OD1, OD2 and OD6 as decided, by
 preset (§11 tables I, J, K):
@@ -1072,14 +1077,28 @@ knobs do not reach it (table P7). Today `DatagramSender` latches any
 rejection and fails every later send, and `handleEncoded` reads a
 rejection as the session dying, so a drop must not take that path.
 
+What it bounds, and what it does not. Deltas and audio wait at most one
+GOP (500 ms) in gawk's queue, which is where the measured backlog was;
+whatever Chrome has already accepted (one datagram at a time, with the
+shipping high-water mark) it still sends late. Keyframes are bounded at
+2 s plus one GOP, by choice: the engine first cancelled a keyframe write
+that outlived its GOP and livelocked in the field — every write died at
+~90 %, the relay's priming cache starved and joining viewers saw black
+(docs/38 F-12) — so a keyframe write younger than 2 s always finishes. A
+link that cannot carry the stream still cannot: RU9 turns "further and
+further behind" into "current, but dropping frames", and tells the
+broadcaster so.
+
 | Acceptance criterion | Verified by |
 |---|---|
 | **A drop is not a failure**: a frame dropped as stale resolves its `send()` with a result of its own (e.g. `'dropped'`); it never rejects, never latches `DatagramSender`'s failure, and the frames behind it still go out | unit, red first |
 | **Age is enqueue time**: a frame's age is the time since `DatagramSender.send` received it, read from an injectable `now()` (fake timers in the test). A delta more than one GOP (`keyframeIntervalMs`, 500 ms) old when its turn to be written comes is dropped whole, and the rest of its GOP's deltas with it until the next keyframe — the native carrier's rule (D3) | unit, red first |
+| **Audio too**: an audio frame more than 500 ms old when its turn comes is dropped, as a lost audio datagram already is; the audio lane shares the same `DatagramSender`, so stale audio would otherwise hold fresh video behind it | unit, red first |
 | **The boundary**: with a fake writer that stalls 400 ms nothing is dropped; stalled 600 ms, only the frames past the bound and the rest of their GOP are; on a link that keeps up the output is byte-identical to today's, in the same order | unit |
-| **The browser's F-12**: keyframe streams never wait on each other in the browser (each opens its own at once), so docs/38's "a newer keyframe waiting" becomes: when a keyframe is produced, any keyframe stream opened 2 s or more earlier whose `close()` has not resolved (Chrome resolves it on acknowledgement) is aborted and counted (`keyframeStreamsAborted`) | unit, red first |
-| **Counted on its own**: stale drops in `staleFramesDropped`, apart from `droppedFrames` (encoder rejections and send failures), wherever `droppedFrames` is reported today (the broadcaster's stats, Diagnostics, telemetry), so a too-slow uplink and a dead session stay apart | unit |
-| **Not a ladder signal**: RU9 does not feed stale drops to `FallbackController`. No gawk sender's ladder reacts to the network today (docs/09, docs/38 D11); the browser Reliable milestone revisits it | review |
+| **Keyframes, the F-12 way**: at most one keyframe stream in flight; a newer keyframe waits in a single pending slot (newest wins among waiters, a replaced waiter counted); the in-flight write always finishes if it is younger than 2 s, and is aborted (`RST_STREAM`) and counted once it is older with a keyframe waiting. Today every keyframe opens its own stream at once and they share the link (Chrome has no `sendOrder`) | unit, red first |
+| **Counted on its own**: stale drops in `staleFramesDropped` and `staleAudioDropped`, and aborted or replaced keyframes in `keyframeStreamsAborted` / `keyframeStreamsSuperseded`, apart from `droppedFrames` (encoder rejections and send failures), wherever `droppedFrames` is reported today (the broadcaster's stats, Diagnostics, telemetry), so a too-slow uplink and a dead session stay apart | unit |
+| **Shown to the broadcaster**: while stale drops continue — raised after 5 s with drops, cleared after 15 s without, the native uplink monitor's hysteresis (docs/38) — the broadcaster sees a notice beside today's encoder "Can't keep up at {quality}" badge, worded like the native apps' ("Your connection can't keep up at {quality} — try a lower quality"), and Diagnostics shows the counters | unit (hysteresis, fake clock) + manual |
+| **Not a ladder signal**: RU9 does not feed stale drops to `FallbackController`; the notice asks the broadcaster instead. No gawk sender's ladder reacts to the network today (docs/09, docs/38 D11); the browser Reliable milestone revisits it | review |
 | Table P7's cells re-run with the fix (the lab page counts a dropped frame as resolved): frames waiting stay under one GOP's worth and decode-ready p50 under 1 s, against today's 20–40 s; recorded in §11 | lab |
 | The `BUGS.md` entry deleted in the same PR, with a `fix` commit so release-please ships it | review |
 

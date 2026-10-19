@@ -917,9 +917,11 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   rejection and fails every later send, and `handleEncoded` reads a
   rejection as the session dying, so a stale frame must be dropped with a
   result of its own, never a rejection. Drop a delta older than one GOP
-  (500 ms since `send()` received it) and the rest of its GOP; abort a
-  keyframe stream 2 s old that is not yet acknowledged when a newer
-  keyframe is produced (the browser's form of the engine's F-12 rule).
+  (500 ms since `send()` received it) and the rest of its GOP, and stale
+  audio the same way (it shares the queue); send keyframes the engine's
+  F-12 way (one in flight, the newest waiting, a write aborted only once
+  it is 2 s old — a shorter limit livelocked natively); and tell the
+  broadcaster their connection can't keep up while it lasts.
 
 ## The relay drops high-rung publisher datagrams that QUIC already acknowledged
 

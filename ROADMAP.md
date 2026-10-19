@@ -5220,9 +5220,11 @@ problem on any lossy path longer than a LAN.
 - **RU8** — relay: parity for *Smoother* and *Most stable* viewers too
   (revises docs/34 §3): their reliable leg B repairs leg-B loss but not a
   chunk the broadcaster's uplink lost.
-- **RU9** — the browser broadcaster's send queue drops a frame past one GOP
-  and aborts a keyframe stream the F-12 way, instead of queueing without
-  bound (OD5; a slow uplink cost tens of seconds of backlog).
+- **RU9** — the browser broadcaster's send queue drops video and audio
+  past one GOP, sends keyframes the F-12 way (one in flight, 2 s before an
+  abort), and tells the broadcaster their connection can't keep up,
+  instead of queueing without bound (OD5; a slow uplink cost tens of
+  seconds of backlog).
 
 **Non-goals**: a viewer-side change; pacing or frame-size capping; a
 home-grown congestion controller; a browser Reliable mode (measured in
