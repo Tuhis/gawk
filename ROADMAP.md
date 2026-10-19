@@ -88,6 +88,7 @@ feature set exists).
 | R67 | [Open a broadcast in the desktop app from `gawk-app`](#r67--open-a-broadcast-in-the-desktop-app-from-gawk-app) | 🔧 **implemented 2026-10-06** (HO1–HO3 in one PR; proposed 2026-10-03, owner decision OD3; the owner's UX review and `?desktop=1` (D9) on 2026-10-06), the owner's per-browser pass (HO4, V-1) open — on Windows, macOS and Linux the broadcaster's start card and a room's "Start streaming here" offer **Open in the desktop app** (a `gawk://broadcast` link with room, nickname and a non-default relay, never a secret); no install detection, the browser flow stays underneath an **Opening** modal with "Get the app" and "Continue in the browser"; an opt-in "always" makes broadcast links from outside launch the app once per room in a tab, behind an **Opened** modal; `#/broadcast?…&desktop=1` asks for the app from the link itself; operator switch `config.desktopHandoff` ([docs/69](docs/69-app-desktop-handoff.md)) |
 | R68 | [iOS app UX redesign](#r68--ios-app-ux-redesign) | ✅ done — designed 2026-10-05 in a Claude Design pass (owner decisions OD1–OD12 from canvas comments and chat), **IX1–IX9 implemented 2026-10-06** (Simulator-verified; deviations in docs/70 §10), IX10 (the owner's device pass) closed by the owner 2026-10-12 — the R65 screens rebuilt on the web app's dark tokens and the desktop's primitives in iOS 26+ Liquid Glass: three tabs (Watch, Broadcast, Settings; rooms join from the one code box, as on the web); a player that is only the video until a tap shows glass controls (LIVE chip, a code pill that copies the link as the room's does, PiP, a settings menu, a two-height stats drawer); Broadcast as one button then one code, with quality changeable while live on the same code; the room player as the web room screen with Grid / Focus and a People sheet; a Live Activity in the Dynamic Island; iPad layouts. Whatever the design needs that the app or core lacks (room roster, creator controls, upload rate, link handling) is built here. no wire or relay change ([docs/70](docs/70-ios-ux-redesign.md)) |
 | R70 | [Broadcast moderation timeline](#r70--broadcast-moderation-timeline) | 🔧 **implemented 2026-10-15** (MT1–MT6 in one PR; designed the same day in a Claude Design pass, owner decisions OD1–OD9), the owner's pass on the reference deployment (MT7) open — `#/broadcasts/<key>` in `gawk-admin` draws one broadcast's screening history on one time axis (sessions, a score bar per bucket against each session's reported threshold and the configurable critical level, per-label strips, incidents, mutes and events) with a server-computed pattern and suggestion, and a decision panel per incident: Look (Watch & acknowledge), then Decide (Not a violation with a reason and a mute scope, or Violation with the ban length in one form); a bottom bar on a phone. The flag lifecycle gains a rejoin window (`-content-flag-rejoin`, 10m: flicker is one incident and pages once), `returnedAfterReview` on raises, dismissal reasons and `episode` / `duration` / `session` mutes, and a ban that resolves its flag; the sampler reports its window rule in every batch. Revises docs/71 D9, D10 ([docs/72](docs/72-moderation-timeline.md)) |
+| R71 | [Your name in a room, up front (desktop)](#r71--your-name-in-a-room-up-front-desktop) | 📝 **proposed 2026-10-19**, owner decisions OD1–OD3 open — a blank-name join asks for a name first, the name becomes a top-level row under a chosen room, and on Live your own roster row renames in place; renames are sent on Enter or focus loss, not per keystroke ([docs/73](docs/73-desktop-room-name.md)) |
 
 ---
 
@@ -5177,6 +5178,24 @@ beyond R40's off-by-default policies; changing the detector or its
 thresholds (CF9 does that).
 
 **Status**: 🔧 implemented 2026-10-15; MT7 open.
+
+## R71 — Your name in a room, up front (desktop)
+
+**Goal**: a first-time desktop broadcaster joins a room under their own
+name, not the relay's `guest-<id>`, and can see and change it wherever the
+room is on screen.
+
+**Why**: the name lives only at the foot of the Add to a room sheet and
+behind **Manage ›**; the web app asks on first join, the desktop app never
+does.
+
+**Scope** (chunks NM1–NM5 in [docs/73](docs/73-desktop-room-name.md)):
+rename on accept only; the name step on a blank-name join; the name row on
+Ready and Paused; the card's own row on Live with the relay's form and a
+guest nudge; optionally a Settings row (OD2) and the owner's pass. No wire,
+relay or engine change.
+
+---
 
 ## Explicitly out of scope (unchanged from CLAUDE.md)
 
