@@ -58,6 +58,23 @@ final class SettingsUITests: XCTestCase {
         shot("settings-edit-saved", app)
     }
 
+    /// R72 (docs/74 D3): Settings lists the open-source licences, and a
+    /// licence text opens whole.
+    func testSettingsShowsTheOpenSourceLicences() {
+        let app = launchApp(relay: false)
+        app.tabBars.buttons["Settings"].tap()
+        let row = app.buttons["settings.licences"]
+        for _ in 0..<4 where !row.isHittable { app.swipeUp() }
+        row.tap()
+        XCTAssertTrue(app.navigationBars["Open-source licences"].waitForExistence(timeout: UIWait.step))
+        shot("settings-licences", app)
+        let text = app.buttons["licences.text.0"]
+        for _ in 0..<40 where !text.exists { app.swipeUp() }
+        text.tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH 'Applies to: '")).firstMatch.waitForExistence(timeout: UIWait.step))
+        shot("settings-licence-text", app)
+    }
+
     /// D24: an unreachable server shows the banner at the top, and Go live
     /// stays enabled.
     func testAnUnreachableServerShowsTheBannerAndGoLiveStaysEnabled() {

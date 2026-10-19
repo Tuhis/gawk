@@ -87,6 +87,15 @@ struct SettingsScreen: View {
                         }
                     }
                     .gawkRow()
+                    // R72 (docs/74 D3): the third-party notices, which the
+                    // licences require to travel with the app.
+                    NavigationLink {
+                        LicencesScreen()
+                    } label: {
+                        ListRow(systemImage: "text.book.closed", title: "Open-source licences")
+                    }
+                    .accessibilityIdentifier("settings.licences")
+                    .gawkRow()
                 } header: {
                     SectionHeader("About")
                 }
