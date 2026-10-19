@@ -106,6 +106,14 @@ struct LiveView {
     room-pending: string,
     room-pending-detail: string,
     room-left: string,
+    // R71 (docs/73): your saved name, and your own roster line — the
+    // relay's form of the name, kept out of `room-rows` so the field in it
+    // survives a roster update.
+    nickname: string,
+    nickname-initial: string,
+    nickname-tint: int,
+    room-you: RoomRow,
+    room-you-note: string,
 }
 
 // gawk-app/src/styles/global.css, verbatim where a value exists there.
@@ -167,6 +175,8 @@ global Icons {
     out property <string> settings: "M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1M13 7a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M7 12a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M15 17a2 2 0 1 0 4 0a2 2 0 1 0 -4 0";
     out property <string> chevron-right: "M10 7l5 5-5 5";
     out property <string> back: "M15 6l-6 6 6 6";
+    out property <string> user: "M12 12a4 4 0 1 0 0-8a4 4 0 1 0 0 8M5 20a7 7 0 0 1 14 0";
+    out property <string> edit: "M4 20h4L19 9l-4-4L4 16z";
     out property <string> close: "M6 6l12 12M18 6L6 18";
     out property <string> plus: "M12 5v14M5 12h14";
     out property <string> check: "M5 12.5l4.5 4.5L19 7";
@@ -409,6 +419,8 @@ component IconBtn inherits Rectangle {
 // control with a chevron, and it always opens a page or a sheet.
 component RowLink inherits Rectangle {
     in property <string> text;
+    // What a screen reader says, when the text alone is ambiguous.
+    in property <string> label;
     in property <bool> chevron: true;
     in property <string> icon;
     in property <bool> enabled: true;
@@ -420,7 +432,7 @@ component RowLink inherits Rectangle {
     opacity: self.enabled ? 1 : 0.45;
     background: ta.has-hover && self.enabled ? #ffffff0d : transparent;
     accessible-role: button;
-    accessible-label: self.text;
+    accessible-label: self.label != "" ? self.label : self.text;
     accessible-enabled: self.enabled;
     accessible-action-default => {
         if (root.enabled) {
@@ -745,33 +757,65 @@ component Field inherits Rectangle {
     in property <bool> password;
     in property <bool> enabled: true;
     in property <string> font-family;
+    // Takes focus when it appears, its text selected (a field opened by a
+    // click on Change: typing replaces the name).
+    in property <bool> autofocus;
+    // Esc is the field's (R71, docs/73 D5): without this it reaches
+    // whatever handles Esc around the field.
+    in property <bool> escapable;
     callback edited(string);
     callback accepted(string);
+    callback escaped();
+    callback blurred(string);
     height: 40px;
     border-radius: 8px;
     border-width: 1px;
     border-color: ti.has-focus ? T.accent : T.border;
     background: T.s2;
     opacity: self.enabled ? 1 : 0.5;
-    ti := TextInput {
-        x: 12px;
-        width: parent.width - 24px;
-        height: 100%;
-        vertical-alignment: center;
-        single-line: true;
-        text <=> root.text;
-        enabled: root.enabled;
-        color: T.text;
-        font-size: 14px;
-        font-family: root.font-family;
-        selection-background-color: #6b8afe66;
-        input-type: root.password ? InputType.password : InputType.text;
-        accessible-label: root.label != "" ? root.label : root.placeholder;
-        edited => {
-            root.edited(self.text);
+    init => {
+        if (self.autofocus) {
+            ti.focus();
+            ti.select-all();
         }
-        accepted => {
-            root.accepted(self.text);
+    }
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        capture-key-pressed(event) => {
+            if (root.escapable && event.text == Key.Escape) {
+                root.escaped();
+                return accept;
+            }
+            return reject;
+        }
+        ti := TextInput {
+            x: 12px;
+            width: parent.width - 24px;
+            height: 100%;
+            vertical-alignment: center;
+            single-line: true;
+            text <=> root.text;
+            enabled: root.enabled;
+            color: T.text;
+            font-size: 14px;
+            font-family: root.font-family;
+            selection-background-color: #6b8afe66;
+            input-type: root.password ? InputType.password : InputType.text;
+            accessible-label: root.label != "" ? root.label : root.placeholder;
+            edited => {
+                root.edited(self.text);
+            }
+            accepted => {
+                root.accepted(self.text);
+            }
+            changed has-focus => {
+                if (!self.has-focus) {
+                    root.blurred(self.text);
+                }
+            }
         }
     }
     if root.text == "": Text {
@@ -1501,6 +1545,116 @@ component StatTile inherits Rectangle {
 
 // The room card (docs/64 D6): what a room adds to Live, in place of the Room
 // list's one row. Nothing else on the page changes.
+// Your name in a room (R71, docs/73 D2–D6), one row wherever it shows: the
+// name with Change, or the field in its place — open by itself while there
+// is no name. Typing changes nothing: Enter, Save or leaving the field
+// commits; Esc puts the saved name back (D5).
+component NameRow inherits Row {
+    // The saved name; "" means none yet.
+    in property <string> name;
+    in property <string> initial;
+    in property <int> tint;
+    in property <bool> ring;
+    in property <bool> speaking;
+    // Closed: the row's lines. Blank, they are the header over the open
+    // field (the guest's "guest-4 (you)", docs/73 D4), if there is a title.
+    in property <string> title;
+    in property <string> sub;
+    in property <color> sub-color: T.muted;
+    // Under the open field while there is no name.
+    in property <string> blank-hint;
+    in property <string> change-text: "Change";
+    // Settings shows a blank name closed, as any other setting (OD2).
+    in property <bool> open-when-blank: true;
+    callback commit(string);
+    property <bool> editing;
+    property <bool> open: self.editing || (self.open-when-blank && self.name == "");
+    property <string> draft;
+    tinted: self.open;
+
+    if root.initial != "": Avatar {
+        initial: root.initial;
+        tint: root.tint;
+        ring: root.ring;
+        speaking: root.speaking;
+    }
+    if root.initial == "": RowIco {
+        icon: Icons.user;
+    }
+    if !root.open: RowText {
+        title: root.title;
+        sub: root.sub;
+        sub-color: root.sub-color;
+    }
+    if !root.open: RowLink {
+        text: root.change-text;
+        label: root.change-text + " your name";
+        icon: Icons.edit;
+        chevron: false;
+        clicked => {
+            root.draft = root.name;
+            root.editing = true;
+        }
+    }
+    if root.open: VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 6px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        if root.name == "" && root.title != "": RowText {
+            title: root.title;
+            sub: root.sub;
+            sub-color: root.sub-color;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Field {
+                horizontal-stretch: 1;
+                label: "Your name in the room";
+                placeholder: "Your name";
+                text <=> root.draft;
+                autofocus: root.editing;
+                escapable: true;
+                accepted => {
+                    root.editing = false;
+                    root.commit(root.draft);
+                }
+                escaped => {
+                    root.draft = root.name;
+                    root.editing = false;
+                }
+                blurred => {
+                    root.editing = false;
+                    if (root.draft != root.name) {
+                        root.commit(root.draft);
+                    }
+                }
+            }
+            Btn {
+                small: true;
+                text: "Save";
+                enabled: root.draft != "" && root.draft != root.name;
+                clicked => {
+                    root.editing = false;
+                    root.commit(root.draft);
+                }
+            }
+        }
+        if root.name != "": Text {
+            text: "Enter saves · Esc keeps " + root.name;
+            color: T.faint;
+            font-size: 12px;
+            overflow: elide;
+        }
+        if root.name == "" && root.blank-hint != "": Text {
+            text: root.blank-hint;
+            color: T.muted;
+            font-size: 12.5px;
+            wrap: word-wrap;
+        }
+    }
+}
+
 component RoomCard inherits List {
     in property <LiveView> v;
     in-out property <string> room-key-input;
@@ -1509,6 +1663,7 @@ component RoomCard inherits List {
     callback manage();
     callback leave();
     callback key-submit();
+    callback nickname-commit(string);
     // Near the window's minimum width and in the wide layout's column the
     // three actions don't fit one row: Leave room gets its own, still in
     // view (docs/64 OD6). The window decides — the card can't measure
@@ -1572,6 +1727,22 @@ component RoomCard inherits List {
                     }
                 }
             }
+        }
+    }
+    // R71 (docs/73 D3, D4): your own line is where you rename. The
+    // relay's form of the name is the title; the note says why it differs.
+    NameRow {
+        name: root.v.nickname;
+        initial: root.v.room-you.initial;
+        tint: root.v.room-you.tint;
+        ring: true;
+        speaking: root.v.room-you.speaking;
+        title: root.v.room-you.name + " (you)";
+        sub: root.v.room-you-note != "" ? root.v.room-you-note : root.v.room-you.detail;
+        sub-color: root.v.nickname == "" || root.v.room-you.away ? T.warn-text : T.muted;
+        change-text: "Rename";
+        commit(n) => {
+            root.nickname-commit(n);
         }
     }
     for r in root.v.room-rows: Row {
@@ -1706,6 +1877,7 @@ component LiveSide inherits VerticalLayout {
     callback leave-room();
     callback rejoin-room();
     callback dismiss-pending();
+    callback nickname-commit(string);
     spacing: 14px;
     alignment: start;
 
@@ -1848,6 +2020,18 @@ component LiveSide inherits VerticalLayout {
                 }
             }
         }
+        // R71 (docs/73 D2): the name the room will know you by.
+        if root.v.room-pending != "": NameRow {
+            name: root.v.nickname;
+            initial: root.v.nickname-initial;
+            tint: root.v.nickname-tint;
+            title: root.v.nickname;
+            sub: "Your name · everyone in the room sees this";
+            blank-hint: "Blank joins as a guest";
+            commit(n) => {
+                root.nickname-commit(n);
+            }
+        }
     }
     if root.v.room-active: RoomCard {
         v: root.v;
@@ -1867,6 +2051,9 @@ component LiveSide inherits VerticalLayout {
         }
         key-submit => {
             root.room-key-submit();
+        }
+        nickname-commit(n) => {
+            root.nickname-commit(n);
         }
     }
 }
@@ -1964,7 +2151,17 @@ export component MainWindow inherits Window {
     in-out property <string> room-input: "";       // the sheet's code-or-link field
     in property <string> room-input-echo: "";      // what the field was read as
     in property <bool> room-input-ok: false;
-    in-out property <string> room-nickname: "";
+    in property <string> room-input-code: "";      // the code it was read as
+    // R71 (docs/73): the saved name, set by the shell only — fields edit a
+    // draft and commit it (D5) — with its avatar, and whether the name
+    // step was skipped (D9).
+    in property <string> room-nickname: "";
+    in property <string> room-nickname-initial: "";
+    in property <int> room-nickname-tint: 0;
+    in property <bool> nickname-skipped: false;
+    // Your own roster line in an active room and why its name differs.
+    in property <RoomRow> room-you;
+    in property <string> room-you-note: "";
     in property <string> room-pending: "";         // joins/creates when live
     in property <string> room-pending-detail: "";
     in property <bool> room-active: false;         // a room control session exists
@@ -1992,7 +2189,18 @@ export component MainWindow inherits Window {
     in property <string> link-card-accept: "";
     in property <string> link-card-decline: "";
     in-out property <bool> show-room-sheet: false;
-    in-out property <bool> editing-name: false;
+    // The Add to a room sheet's name step (docs/73 D1): 0 none, 1 the typed
+    // code or link, 2 a recent room (`name-step-code`), 3 a new room.
+    in-out property <int> name-step: 0;
+    in-out property <string> name-step-code: "";
+    // However the sheet closes — its own buttons, an ending, a link — an
+    // unanswered step goes with it (review of #530).
+    changed show-room-sheet => {
+        if (!self.show-room-sheet) {
+            self.name-step = 0;
+        }
+    }
+    property <string> name-step-draft: "";
 
     // ----- thumbnail -----
     in property <image> thumbnail;
@@ -2193,10 +2401,50 @@ export component MainWindow inherits Window {
         room-pending: root.room-pending,
         room-pending-detail: root.room-pending-detail,
         room-left: root.room-left,
+        nickname: root.room-nickname,
+        nickname-initial: root.room-nickname-initial,
+        nickname-tint: root.room-nickname-tint,
+        room-you: root.room-you,
+        room-you-note: root.room-you-note,
     };
 
     // The picker page, opened from Ready's card or Live's Sharing row: on
     // the tab last looked at, the draft starting from the chosen source.
+    // The Add to a room sheet's three ways in (docs/73 D1): with no name,
+    // and the step not skipped, the name step first.
+    function begin-join(kind: int, code: string) {
+        if (kind == 1 && !root.room-input-ok) {
+            return;
+        }
+        if (root.room-nickname == "" && !root.nickname-skipped) {
+            root.name-step-draft = "";
+            root.name-step-code = code;
+            root.name-step = kind;
+        } else {
+            root.run-join(kind, code);
+        }
+    }
+
+    function run-join(kind: int, code: string) {
+        if (kind == 1) {
+            root.room-join();
+        } else if (kind == 2) {
+            root.room-join-recent(code);
+        } else {
+            root.room-create();
+        }
+    }
+
+    function finish-name-step(skip: bool) {
+        if (skip) {
+            root.room-nickname-skip();
+        } else {
+            root.room-nickname-commit(root.name-step-draft);
+        }
+        root.run-join(root.name-step, root.name-step-code);
+        root.name-step = 0;
+    }
+
     public function open-picker() {
         root.draft-tab = root.picker-view;
         root.draft-window = root.selected-window;
@@ -2289,8 +2537,8 @@ export component MainWindow inherits Window {
     callback link-notice-dismiss();
     callback link-card-accepted();
     callback link-card-declined();
-    callback room-nickname-edited();
-    callback room-nickname-accepted();   // Enter or Save: rename now, no debounce
+    callback room-nickname-commit(string);  // Enter, Save or focus loss (docs/73 D5)
+    callback room-nickname-skip();          // "Join as a guest" (D1)
     callback summary-dismiss();
     callback resume-dismiss();
     callback open-link(string);
@@ -2795,6 +3043,19 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                 }
+                                // R71 (docs/73 D2): the name the room will
+                                // know you by, next to the room.
+                                if root.room-pending != "": NameRow {
+                                    name: root.room-nickname;
+                                    initial: root.room-nickname-initial;
+                                    tint: root.room-nickname-tint;
+                                    title: root.room-nickname;
+                                    sub: "Your name · everyone in the room sees this";
+                                    blank-hint: "Blank joins as a guest";
+                                    commit(n) => {
+                                        root.room-nickname-commit(n);
+                                    }
+                                }
                             }
 
                             HorizontalLayout {
@@ -3093,6 +3354,9 @@ export component MainWindow inherits Window {
                                     dismiss-pending => {
                                         root.room-pending-dismiss();
                                     }
+                                    nickname-commit(n) => {
+                                        root.room-nickname-commit(n);
+                                    }
                                 }
                             }
                         }
@@ -3146,6 +3410,9 @@ export component MainWindow inherits Window {
                             }
                             dismiss-pending => {
                                 root.room-pending-dismiss();
+                            }
+                            nickname-commit(n) => {
+                                root.room-nickname-commit(n);
                             }
                         }
                     }
@@ -3416,6 +3683,31 @@ export component MainWindow inherits Window {
                 padding-bottom: 20px;
                 spacing: 22px;
                 alignment: start;
+
+                // R71 (docs/73 OD2): the name rooms know you by, the one
+                // setting the room surfaces change too.
+                VerticalLayout {
+                    spacing: 10px;
+                    alignment: start;
+                    Kicker {
+                        text: "YOU";
+                    }
+                    List {
+                        NameRow {
+                            first: true;
+                            open-when-blank: false;
+                            name: root.room-nickname;
+                            initial: root.room-nickname-initial;
+                            tint: root.room-nickname-tint;
+                            title: root.room-nickname != "" ? root.room-nickname : "No name yet";
+                            sub: root.room-nickname != "" ? "Your name in rooms · it also labels your stream" : "Rooms call you a guest until you set one";
+                            change-text: root.room-nickname != "" ? "Change" : "Set";
+                            commit(n) => {
+                                root.room-nickname-commit(n);
+                            }
+                        }
+                    }
+                }
 
                 VerticalLayout {
                     spacing: 10px;
@@ -3984,13 +4276,12 @@ export component MainWindow inherits Window {
 
     // Add to a room (docs/60 D8). Idle, the choice becomes the pending room;
     // live, it joins now.
-    if root.show-room-sheet && !root.room-active: Sheet {
+    if root.show-room-sheet && !root.room-active && root.name-step == 0: Sheet {
         title: "Add to a room";
         subtitle: "Stream alongside friends. Viewers see everyone's screen in one place.";
         sheet-height: 640px;
         close => {
             root.show-room-sheet = false;
-            root.editing-name = false;
         }
         HorizontalLayout {
             spacing: 8px;
@@ -4003,9 +4294,7 @@ export component MainWindow inherits Window {
                     root.room-input-edited();
                 }
                 accepted => {
-                    if (root.room-input-ok) {
-                        root.room-join();
-                    }
+                    root.begin-join(1, root.room-input-code);
                 }
             }
             Btn {
@@ -4013,7 +4302,7 @@ export component MainWindow inherits Window {
                 text: "Join";
                 enabled: root.room-input-ok;
                 clicked => {
-                    root.room-join();
+                    root.begin-join(1, root.room-input-code);
                 }
             }
         }
@@ -4035,7 +4324,7 @@ export component MainWindow inherits Window {
                 icon: Icons.plus;
                 text: "Create a new room";
                 clicked => {
-                    root.room-create();
+                    root.begin-join(3, "");
                 }
             }
             Text {
@@ -4075,7 +4364,7 @@ export component MainWindow inherits Window {
                             small: true;
                             text: "Join";
                             clicked => {
-                                root.room-join-recent(r.code);
+                                root.begin-join(2, r.code);
                             }
                         }
                     }
@@ -4085,52 +4374,82 @@ export component MainWindow inherits Window {
         if root.recent-rooms.length == 0: Rectangle {
             vertical-stretch: 1;
         }
-        // The name: one line, "Joining as name · Change name".
-        Rectangle {
-            border-radius: 12px;
-            background: T.s2;
-            HorizontalLayout {
-                padding: 10px;
-                padding-left: 14px;
-                spacing: 10px;
-                cross-axis-alignment: center;
-                if !root.editing-name: Text {
-                    text: root.room-nickname == "" ? "No name yet: the room picks one for you." : "Joining as " + root.room-nickname;
-                    color: T.text;
-                    font-size: 13px;
-                    horizontal-stretch: 1;
-                    overflow: elide;
-                }
-                if !root.editing-name: RowLink {
-                    text: "Change name";
-                    chevron: false;
-                    clicked => {
-                        root.editing-name = true;
-                    }
-                }
-                if root.editing-name: Field {
-                    horizontal-stretch: 1;
-                    label: "Your name in the room";
-                    placeholder: "Your name";
-                    text <=> root.room-nickname;
-                    edited => {
-                        root.room-nickname-edited();
-                    }
-                    accepted => {
-                        root.room-nickname-accepted();
-                        root.editing-name = false;
-                    }
-                }
-                if root.editing-name: Btn {
-                    small: true;
-                    text: "Save";
-                    enabled: root.room-nickname != "";
-                    clicked => {
-                        root.room-nickname-accepted();
-                        root.editing-name = false;
-                    }
+        // The name, once there is one (docs/73 D7); without one, joining
+        // asks (D1).
+        if root.room-nickname != "": List {
+            NameRow {
+                first: true;
+                name: root.room-nickname;
+                initial: root.room-nickname-initial;
+                tint: root.room-nickname-tint;
+                title: "Joining as " + root.room-nickname;
+                sub: "Everyone in the room sees this";
+                commit(n) => {
+                    root.room-nickname-commit(n);
                 }
             }
+        }
+    }
+
+    // The name step (docs/73 D1): a blank name is asked for on the way in,
+    // once — "Join as a guest" stops it asking.
+    if root.show-room-sheet && !root.room-active && root.name-step != 0: Sheet {
+        title: "What should the room call you?";
+        subtitle: root.name-step == 3 ? "Everyone in your new room sees this, and it labels your stream."
+            : "Everyone in " + (root.name-step-code != "" ? root.name-step-code : "the room") + " sees this, and it labels your stream.";
+        sheet-height: 330px;
+        close => {
+            root.show-room-sheet = false;
+            root.name-step = 0;
+        }
+        Field {
+            label: "Your name";
+            placeholder: "Your name";
+            text <=> root.name-step-draft;
+            autofocus: true;
+            accepted => {
+                if (root.name-step-draft != "") {
+                    root.finish-name-step(false);
+                }
+            }
+        }
+        Btn {
+            kind: 0;
+            large: true;
+            text: root.name-step == 3 ? "Create room" : root.name-step-code != "" ? "Join " + root.name-step-code : "Join room";
+            enabled: root.name-step-draft != "";
+            clicked => {
+                root.finish-name-step(false);
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Btn {
+                kind: 2;
+                small: true;
+                icon: Icons.back;
+                text: "Back";
+                clicked => {
+                    root.name-step = 0;
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            Btn {
+                kind: 2;
+                small: true;
+                text: "Join as a guest";
+                clicked => {
+                    root.finish-name-step(true);
+                }
+            }
+        }
+        Text {
+            text: "You can change it any time from the room card.";
+            color: T.muted;
+            font-size: 12.5px;
+            wrap: word-wrap;
         }
     }
 
@@ -4142,7 +4461,6 @@ export component MainWindow inherits Window {
         sheet-height: 640px;
         close => {
             root.show-room-sheet = false;
-            root.editing-name = false;
         }
         HorizontalLayout {
             spacing: 10px;
@@ -4166,44 +4484,6 @@ export component MainWindow inherits Window {
                 }
             }
         }
-        List {
-            Row {
-                first: true;
-                if !root.editing-name: RowText {
-                    title: root.room-nickname == "" ? "No name yet" : "In the room as " + root.room-nickname;
-                    sub: "Everyone in the room sees this name";
-                }
-                if !root.editing-name: RowLink {
-                    text: "Change name";
-                    chevron: false;
-                    clicked => {
-                        root.editing-name = true;
-                    }
-                }
-                if root.editing-name: Field {
-                    horizontal-stretch: 1;
-                    label: "Your name in the room";
-                    placeholder: "Your name";
-                    text <=> root.room-nickname;
-                    edited => {
-                        root.room-nickname-edited();
-                    }
-                    accepted => {
-                        root.room-nickname-accepted();
-                        root.editing-name = false;
-                    }
-                }
-                if root.editing-name: Btn {
-                    small: true;
-                    text: "Save";
-                    enabled: root.room-nickname != "";
-                    clicked => {
-                        root.room-nickname-accepted();
-                        root.editing-name = false;
-                    }
-                }
-            }
-        }
         Kicker {
             text: "STREAMS";
         }
@@ -4213,8 +4493,22 @@ export component MainWindow inherits Window {
             VerticalLayout {
                 alignment: start;
                 List {
+                    // Your own stream (R71: kept out of room-rows).
+                    if root.room-you.broadcast-id != "": Row {
+                        first: true;
+                        Avatar {
+                            initial: root.room-you.initial;
+                            tint: root.room-you.tint;
+                            ring: true;
+                        }
+                        RowText {
+                            title: root.room-you.name + " (you)";
+                            sub: root.room-you.detail;
+                            sub-color: root.room-you.away ? T.warn-text : T.muted;
+                        }
+                    }
                     for r[i] in root.room-rows: Row {
-                        first: i == 0;
+                        first: i == 0 && root.room-you.broadcast-id == "";
                         Avatar {
                             initial: r.initial;
                             tint: r.tint;
