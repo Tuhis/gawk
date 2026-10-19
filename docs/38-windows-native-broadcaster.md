@@ -515,7 +515,7 @@ shared with `gawk-app` so the two broadcasters read as one product.
    send, sent vs encode fps — the F-12 signals) with hysteresis (5
    consecutive bad seconds to raise, 15 clean to clear), and the shell shows
    "Your upload can't keep up with the stream…" naming the active bitrate
-   (*2026-10-20*: the wording the shell ships, `shell.rs`
+   (*2026-10-19*: the wording the shell ships, `shell.rs`
    `uplink_warning_text`; the Live pill reads "Your upload can't keep
    up"); transitions also land in debug.log.
 2. **Capture picker** (idle only) — two tabs: **Share an app** (alt-tab

@@ -5243,9 +5243,9 @@ problem on any lossy path longer than a LAN.
   chunk the broadcaster's uplink lost.
 - **RU9** — the browser broadcaster's send queue drops video and audio
   past one GOP, sends keyframes the F-12 way (one in flight, 2 s before an
-  abort), and tells the broadcaster their upload can't keep up,
-  instead of queueing without bound (OD5; a slow uplink cost tens of
-  seconds of backlog).
+  abort, never dropped for age, deltas giving way to a late one), and
+  tells the broadcaster their upload can't keep up, instead of queueing
+  without bound (OD5; a slow uplink cost tens of seconds of backlog).
 
 **Non-goals**: a viewer-side change; pacing or frame-size capping; a
 home-grown congestion controller; a browser Reliable mode (measured in

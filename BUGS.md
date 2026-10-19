@@ -920,8 +920,10 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   (500 ms since `send()` received it) and the rest of its GOP, and stale
   audio the same way (it shares the queue); send keyframes the engine's
   F-12 way (one in flight, the newest waiting, a write aborted only once
-  it is 2 s old — a shorter limit livelocked natively); and tell the
-  broadcaster their upload can't keep up while it lasts.
+  it is 2 s old with a newer keyframe waiting — a shorter limit livelocked
+  natively), never dropping one for age; let a late keyframe's deltas give
+  way to it; and tell the broadcaster their upload can't keep up while it
+  lasts.
 
 ## The relay drops high-rung publisher datagrams that QUIC already acknowledged
 
