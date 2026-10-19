@@ -1229,7 +1229,7 @@ $ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8088/api/v1/rooms |
 ```
 
 A room the bot creates there is a `Room` CR with no relay behind it: the
-compose relay takes its static rooms from `dev/rooms.json`
+compose relay takes its static rooms from `dev/rooms/rooms.json`
 ([docs/41](41-local-dev-stack.md)), so the room lists and deletes but cannot
 be joined.
 
