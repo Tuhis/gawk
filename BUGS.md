@@ -886,7 +886,8 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   Chrome's per-datagram ceiling (the 1440p trace, reachable through the
   50 Mbps bitrate override).
 - **Symptom**: decode-ready latency at the relay grew without bound —
-  p50 15–38 s within a 100 s run, 40–45 s at 1440p — where the native
+  p50 15–38 s within a 100 s run on random loss and bursts, 2.6–5.3 s
+  under outages, 40–45 s at 1440p — where the native
   engine on the same path stays under 2.5 s by dropping (quinn's 1 MiB
   datagram buffer, oldest first). Viewers see nothing during the shortfall
   either way, but the backlog outlives it: the stream stays stale until
@@ -905,18 +906,20 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   lossy long path to trigger; with the bitrate override a fast enough
   stream triggers it on a clean one.
 - **Where the backlog sits (measured)**: in `DatagramSender`'s chain —
-  frames handed to it but not yet written grew from 564 to 1 858 over a
+  frames handed to it but not yet written grew from 569 to 1 933 over a
   100 s run (docs/73 table P7). Chrome's own knobs do not reach it:
   `datagrams.outgoingMaxAge` (100 ms) changed nothing, and raising
-  `outgoingHighWaterMark` to 1000 only moved the backlog into the stream's
-  queue, where Chrome did not expire it either (decode-ready p50 32 s).
-- **Fix would start**: in `DatagramSender`, not in Chrome's settings —
-  test-first, with a fake datagram writer that stalls: a delta whose frame
-  is older than a bound (one GOP, as the native carrier's deadline) when
-  its turn comes is dropped whole and counted in `droppedFrames`, and a
-  keyframe stream still writing 2 s on, with a newer keyframe waiting, is
-  aborted — the engine's F-12 rule (docs/38). docs/73 RU9 (OD5, decided
-  2026-10-19: fixed beside the relay's RU2 and RU8).
+  `outgoingHighWaterMark` to 1000 only moved the backlog out of the page
+  into Chrome, where it was not expired either (decode-ready p50 32 s).
+- **Fix would start**: in `DatagramSender`, not in Chrome's settings, and
+  test-first, as docs/73 RU9 specifies (OD5, decided 2026-10-19: fixed
+  beside the relay's RU2 and RU8). One trap: `DatagramSender` latches any
+  rejection and fails every later send, and `handleEncoded` reads a
+  rejection as the session dying, so a stale frame must be dropped with a
+  result of its own, never a rejection. Drop a delta older than one GOP
+  (500 ms since `send()` received it) and the rest of its GOP; abort a
+  keyframe stream 2 s old that is not yet acknowledged when a newer
+  keyframe is produced (the browser's form of the engine's F-12 rule).
 
 ## The relay drops high-rung publisher datagrams that QUIC already acknowledged
 
