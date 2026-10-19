@@ -236,7 +236,8 @@ at a pool you control.
 
 Dependencies are held to gawk's license policy, and CI enforces it: the
 `licenses` job fails on anything outside the permissive, notice-only set
-(`tools/licenses/gen-notices.py` for Go and npm, `deny.toml` for Rust).
+(`tools/licenses/gen-notices.py` for Go and npm; for Rust, `deny.toml` in
+`gawk-broadcast-desktop/` and in `gawk-ios/rust/`).
 Copyleft dependencies — GPL, LGPL, AGPL — cannot be linked into what this
 project redistributes. If you believe an exception is warranted, raise it in
 the issue *before* writing the code; it is a licensing decision, not a build
@@ -253,6 +254,13 @@ CI job regenerates them itself and fails if your commit does not match, so
 this is not something you can forget — but it is quicker to run it than to
 learn about it from a red check. It needs Go, Node, Python and cargo on your
 PATH, and it goes to the network.
+
+The native apps **embed** their file (`gawk-broadcast-desktop/THIRD-PARTY-NOTICES*.md`,
+`gawk-ios/THIRD-PARTY-NOTICES.md`) and show it under Settings → Open-source
+licences ([docs/74](docs/74-open-source-licences-in-app.md)), so a stale file
+ships inside the binary. A new `-sys` crate that compiles a C library in
+needs an entry in the generator's `NATIVE_LIBRARIES`, because `cargo tree`
+only sees its bindings.
 
 For **Renovate PRs this happens automatically**: `postUpgradeTasks` in
 `renovate.json5` runs the generator on the bump branch, so the notices land in

@@ -2161,3 +2161,13 @@ entries still describe code `gawk-pubsim` runs (now
   nobody had set. `| int64 | quote`, and assert the rendered value is digits:
   a chart test that greps for the variable's *name* passes right through this.
   ([docs/51](51-relay-event-bus.md) EB4)
+- **A `-sys` crate's C library is invisible to the notices generator, and a
+  crate can declare a licence without shipping its text.** `cargo tree`
+  lists the bindings, so libopus (built by `audiopus_sys`) and libvpx
+  (cloned at build time by `shiguredo_libvpx`) were attributed only by the
+  bindings' licence, and the uniffi crates declare `MPL-2.0` with no LICENSE
+  file in any of them. Both are handled in `gen-notices.py`:
+  `NATIVE_LIBRARIES` (libvpx's text vendored under `tools/licenses/native/`
+  and pinned to the version the crate builds) and `LICENSE_TEXT_FALLBACK`.
+  A new `-sys` crate that compiles C in needs an entry.
+  ([docs/74](74-open-source-licences-in-app.md) D1)

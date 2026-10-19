@@ -859,6 +859,10 @@ dated.
   prefixing), which `rust/rust-toolchain.toml` now lists. Move to the stable
   2026.2.0 when it ships. libvpx is BSD-3; its notice belongs to the
   distribution milestone (§5), since R65 publishes nothing (OD3).
+  *Revised 2026-10-20 (R72, [docs/74](74-open-source-licences-in-app.md)):
+  the notice landed ahead of distribution, in
+  `gawk-ios/THIRD-PARTY-NOTICES.md` and on Settings → Open-source
+  licences, pinned to the libvpx version this crate builds.*
 - **2026-10-04 — IO2: what the iOS 27 SDK and the Simulator answered.**
   - **V-12: no.** The iOS 27 *Simulator* SDK has no ScreenCaptureKit at all
     (only the device SDK does), so capture compiles for devices only and
