@@ -242,7 +242,7 @@ func TestDVRSubscriberLosesNothingAcrossAStall(t *testing.T) {
 	f := &fakeSender{}
 	block := make(chan struct{})
 	f.setCarBlock(block) // the link is down: every carrier write parks
-	sub, err := r.SubscribeDVR(id, f, 3000)
+	sub, err := r.SubscribeDVR(id, f, 3000, 0)
 	if err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestDVRSubscriberLosesNothingAcrossAStall(t *testing.T) {
 	control := &fakeSender{}
 	controlBlock := make(chan struct{})
 	control.setCarBlock(controlBlock)
-	if _, err := r.SubscribeReliable(id, control); err != nil {
+	if _, err := r.SubscribeReliable(id, control, 0); err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
 
@@ -315,7 +315,7 @@ func TestDVRSubscriberResyncsWhenItFallsOffTheTail(t *testing.T) {
 	f := &fakeSender{}
 	block := make(chan struct{})
 	f.setCarBlock(block)
-	sub, err := r.SubscribeDVR(id, f, 3000)
+	sub, err := r.SubscribeDVR(id, f, 3000, 0)
 	if err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestDVRLaggingButAdvancingSubscriberIsNotEvicted(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	sub, err := r.SubscribeDVR(id, f, 30000)
+	sub, err := r.SubscribeDVR(id, f, 30000, 0)
 	if err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestDVRStuckSubscriberIsEvicted(t *testing.T) {
 	}
 	f := &fakeSender{}
 	f.setCarBlock(make(chan struct{})) // writes park forever: no progress, ever
-	if _, err := r.SubscribeDVR(id, f, 30000); err != nil {
+	if _, err := r.SubscribeDVR(id, f, 30000, 0); err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
 
@@ -463,7 +463,7 @@ func TestDVRDefaultProgressTimeoutBracketsSixSeconds(t *testing.T) {
 	}
 	f := &fakeSender{}
 	f.setCarBlock(make(chan struct{})) // every record write parks: no progress, ever
-	if _, err := r.SubscribeDVR(id, f, 30000); err != nil {
+	if _, err := r.SubscribeDVR(id, f, 30000, 0); err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
 
@@ -510,7 +510,7 @@ func TestDVRSubscriberSurvivesAnAwayBroadcaster(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	if _, err := r.SubscribeDVR(id, f, 30000); err != nil {
+	if _, err := r.SubscribeDVR(id, f, 30000, 0); err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
 
@@ -553,7 +553,7 @@ func TestDVRKeyframeOpenFailuresEvict(t *testing.T) {
 	}
 	f := &fakeSender{}
 	f.setKfOpenErr(errors.New("no stream credit"))
-	if _, err := r.SubscribeDVR(id, f, 30000); err != nil {
+	if _, err := r.SubscribeDVR(id, f, 30000, 0); err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
 
@@ -584,7 +584,7 @@ func TestDVRDoesNotDisturbOtherModesEviction(t *testing.T) {
 	// A stuck DVR subscriber alongside healthy viewers on the other two modes.
 	stuck := &fakeSender{}
 	stuck.setCarBlock(make(chan struct{}))
-	if _, err := r.SubscribeDVR(id, stuck, 30000); err != nil {
+	if _, err := r.SubscribeDVR(id, stuck, 30000, 0); err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
 	plain := &fakeSender{}
@@ -592,7 +592,7 @@ func TestDVRDoesNotDisturbOtherModesEviction(t *testing.T) {
 		t.Fatalf("Subscribe: %v", err)
 	}
 	reliable := &fakeSender{}
-	if _, err := r.SubscribeReliable(id, reliable); err != nil {
+	if _, err := r.SubscribeReliable(id, reliable, 0); err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
 
@@ -636,7 +636,7 @@ func TestDVRSubscriberGetsKeyframesOnlyFromItsCursor(t *testing.T) {
 	ingestKeyframe(t, p, keyframeMsg(t, 1, "vp8", "PRIME"))
 
 	f := &fakeSender{}
-	if _, err := r.SubscribeDVR(id, f, 3000); err != nil {
+	if _, err := r.SubscribeDVR(id, f, 3000, 0); err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
 
@@ -673,7 +673,7 @@ func TestDVRResyncsSurviveSubscriberAndBroadcastEnd(t *testing.T) {
 	f := &fakeSender{}
 	block := make(chan struct{})
 	f.setCarBlock(block)
-	sub, err := r.SubscribeDVR(id, f, 3000)
+	sub, err := r.SubscribeDVR(id, f, 3000, 0)
 	if err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}

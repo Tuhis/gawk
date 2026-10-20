@@ -354,11 +354,11 @@ func TestApplyStripeStateInertOnWrongSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	rel, err := r.SubscribeReliable(id, &fakeSender{})
+	rel, err := r.SubscribeReliable(id, &fakeSender{}, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
-	dvr, err := r.SubscribeDVR(id, &fakeSender{}, 3000)
+	dvr, err := r.SubscribeDVR(id, &fakeSender{}, 3000, 0)
 	if err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}

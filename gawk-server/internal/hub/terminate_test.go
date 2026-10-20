@@ -127,7 +127,7 @@ func TestTerminateBroadcastPurgesPrimesRingsAndGraceTimer(t *testing.T) {
 	// Fill every cache the kill has to clear: a keyframe prime (+ embedded
 	// config), a clock mapping, an audio config, and a DVR ring with content.
 	dvr := &fakeSender{}
-	if _, err := lb.r.SubscribeDVR(lb.id, dvr, 1000); err != nil {
+	if _, err := lb.r.SubscribeDVR(lb.id, dvr, 1000, 0); err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
 	ingestKeyframe(t, lb.pub, keyframeMsg(t, 1, "avc1.42E01F", "keyframe-payload"))

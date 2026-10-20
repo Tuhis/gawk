@@ -14,16 +14,20 @@ import (
 // forwarder: symbols are shared across the fan-out like data chunks, so only
 // egress varies per subscriber, never CPU.
 
-// NegotiateParity resolves the ?parity= query param against the fleet default
-// and the subscriber's delivery mode.
+// NegotiateParity resolves the ?parity= query param against the fleet default.
 //
 // Returns (requested, served). They differ whenever a viewer asks for more
-// than the fleet emits, or asks at all on a reliable/DVR subscription; both
-// are surfaced because one number cannot distinguish "this viewer chose less"
-// from "this viewer was refused".
+// than the fleet emits; both are surfaced because one number cannot
+// distinguish "this viewer chose less" from "this viewer was refused".
+//
+// Every delivery mode negotiates the same way (docs/75 D11, revising docs/34
+// §3): carrier retransmission repairs loss between the relay and the viewer,
+// but a chunk lost on the broadcaster's uplink never reached the relay, and
+// only parity brings it back — for a reliable or DVR viewer as for a
+// live-edge one.
 //
 // No value can reject a session: every unusable one degrades to a working mode.
-func NegotiateParity(param string, fleetDefault int, reliable bool) (requested, served int) {
+func NegotiateParity(param string, fleetDefault int) (requested, served int) {
 	requested = fleetDefault
 	if param != "" {
 		// Garbage and out-of-range both fall back to the fleet default rather
@@ -38,11 +42,6 @@ func NegotiateParity(param string, fleetDefault int, reliable bool) (requested, 
 		// A viewer cannot conjure symbols the producer never emitted.
 		served = fleetDefault
 	}
-	if reliable {
-		// Carrier delivery already recovers loss via QUIC retransmission, so
-		// parity would be pure egress waste.
-		served = 0
-	}
 	if served < 0 {
 		served = 0
 	}
@@ -50,12 +49,22 @@ func NegotiateParity(param string, fleetDefault int, reliable bool) (requested, 
 }
 
 // isParityDatagram reports whether a fanned-out datagram is a parity symbol.
-// Deliberately separate from isVideoChunkDatagram: parity must NOT enter the
-// DVR ring (its consumers are reliable and cannot use it) and must not be
-// counted as a relayed frame by the ingress-loss window.
+// Deliberately separate from isVideoChunkDatagram: parity must not be counted
+// as a relayed frame by the ingress-loss window. Where parity travels WITH the
+// video chunks — the DVR ring, the carrier's dead-GOP shed — the check is
+// isCarrierMediaDatagram.
 func isParityDatagram(dgram []byte) bool {
 	_, typ, err := wire.PeekType(dgram)
 	return err == nil && typ == wire.TypeParityChunk
+}
+
+// isCarrierMediaDatagram reports whether a datagram belongs to a GOP's
+// carrier: a video delta chunk, or a parity symbol protecting one. Both enter
+// the DVR ring, a DVR subscriber reads both from the ring rather than its
+// queue, and both are shed with a dead GOP (docs/75 D11).
+func isCarrierMediaDatagram(dgram []byte) bool {
+	_, typ, err := wire.PeekType(dgram)
+	return err == nil && (typ == wire.TypeVideoChunk || typ == wire.TypeParityChunk)
 }
 
 // parityIndexOf returns the symbol index of a parity datagram, or -1 if it is

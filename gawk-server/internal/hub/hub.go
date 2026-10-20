@@ -424,8 +424,9 @@ type Stats struct {
 	// broadcast. Omitted when zero.
 	ParityDatagramsForwarded uint64 `json:"parityDatagramsForwarded,omitempty"`
 	ParitySuppressed         uint64 `json:"paritySuppressed,omitempty"`
-	// EgressParityBytes is parity's share of EgressDatagramBytes — a SLICE of
-	// that total, not a sibling; summing the two would double-count.
+	// EgressParityBytes is parity's share of EgressDatagramBytes and, for
+	// carrier delivery (docs/75 D11), of EgressCarrierBytes — a SLICE of those
+	// totals, not a sibling; summing them would double-count.
 	EgressParityBytes uint64 `json:"egressParityBytes,omitempty"`
 
 	// Striped delivery. StripeLegs (also counted in Subscribers) are live leg
@@ -506,7 +507,7 @@ type TotalStats struct {
 	CarrierQueueOverflow  uint64 `json:"carrierQueueOverflow"`
 	EgressCarrierBytes    uint64 `json:"egressCarrierBytes"`
 	// Fleet-wide parity forwarding, omitted when zero. EgressParityBytes is a
-	// SLICE of EgressDatagramBytes (see Stats).
+	// SLICE of EgressDatagramBytes + EgressCarrierBytes (see Stats).
 	ParityDatagramsForwarded uint64 `json:"parityDatagramsForwarded,omitempty"`
 	ParitySuppressed         uint64 `json:"paritySuppressed,omitempty"`
 	EgressParityBytes        uint64 `json:"egressParityBytes,omitempty"`
@@ -1439,9 +1440,12 @@ func (r *Registry) Subscribe(id string, conn Conn) (*Subscriber, error) {
 
 // SubscribeReliable registers a resilient subscriber (docs/24): its deltas
 // are delivered as length-prefixed records on per-GOP reliable carrier
-// streams instead of datagrams. Everything else is identical to Subscribe.
-func (r *Registry) SubscribeReliable(id string, conn Conn) (*Subscriber, error) {
-	return r.subscribe(id, conn, false, true)
+// streams instead of datagrams. parityK is the already-negotiated SERVED
+// parity level (see NegotiateParity): its symbols ride the carrier as records
+// beside the deltas they protect (docs/75 D11). Everything else is identical
+// to Subscribe.
+func (r *Registry) SubscribeReliable(id string, conn Conn, parityK int) (*Subscriber, error) {
+	return r.subscribeOpts(id, conn, subscribeOpts{reliable: true, parityK: parityK, parityRequested: parityK})
 }
 
 // SubscribeInternal registers a downstream EDGE session (docs/22): exempt
@@ -1455,9 +1459,13 @@ func (r *Registry) SubscribeInternal(id string, conn Conn) (*Subscriber, error) 
 // delivery served from the broadcast's ring at this subscriber's own cursor,
 // so a stalled link loses nothing until the stall outlives the ring.
 // bufferMs is the viewer's *guaranteed minimum* playout offset (its profile
-// floor) and bounds how far behind the cursor may fall.
-func (r *Registry) SubscribeDVR(id string, conn Conn, bufferMs int) (*Subscriber, error) {
-	return r.subscribeOpts(id, conn, subscribeOpts{reliable: true, dvr: true, bufferMs: bufferMs})
+// floor) and bounds how far behind the cursor may fall. parityK is the
+// already-negotiated SERVED parity level: the ring holds every symbol the
+// producer emitted, and this cursor replays its prefix (docs/75 D11).
+func (r *Registry) SubscribeDVR(id string, conn Conn, bufferMs, parityK int) (*Subscriber, error) {
+	return r.subscribeOpts(id, conn, subscribeOpts{
+		reliable: true, dvr: true, bufferMs: bufferMs, parityK: parityK, parityRequested: parityK,
+	})
 }
 
 type subscribeOpts struct {
@@ -2567,8 +2575,10 @@ func (b *broadcastHub) fanOutLocked(dgram []byte) {
 	// The DVR ring is fed ONCE per broadcast, not per subscriber (docs/26).
 	// Only media is retained: control traffic is live-edge by nature and goes
 	// straight out through the sideband, so a DVR subscriber's keepalive is
-	// never delayed by the depth of its video cursor.
-	if b.dvr != nil && isVideoChunkDatagram(dgram) {
+	// never delayed by the depth of its video cursor. Parity is media: the
+	// ring keeps every symbol beside the chunks it protects, and each cursor
+	// replays its own prefix (docs/75 D11).
+	if b.dvr != nil && isCarrierMediaDatagram(dgram) {
 		b.dvr.AppendRecord(dgram, time.Now())
 	}
 	if b.dvrAudio != nil && isAudioDatagram(dgram) {
@@ -2677,8 +2687,8 @@ type Subscriber struct {
 	// reliable marks a resilient subscriber: drain writes records on per-GOP
 	// carrier streams and never calls SendDatagram. Fixed at subscribe time.
 	reliable bool
-	// parityK is how many parity symbols this subscriber is SERVED: 0 for
-	// reliable/DVR subscribers (QUIC retransmits) and when the fleet is off.
+	// parityK is how many parity symbols this subscriber is SERVED, in every
+	// delivery mode (docs/75 D11): 0 when it opted out or the fleet is off.
 	// parityRequested is what the viewer ASKED for, for /statusz. Both stay 0
 	// on an INTERNAL subscriber, which fanOutLocked exempts from the prefix.
 	parityK         int
@@ -2720,8 +2730,8 @@ type Subscriber struct {
 	dropped             atomic.Uint64
 	sendErrors          atomic.Uint64
 	egressDatagramBytes atomic.Uint64
-	// Parity's share of egressDatagramBytes above — a slice of that total,
-	// never a sibling of it.
+	// Parity's share of egressDatagramBytes above, or of egressCarrierBytes on
+	// carrier delivery — a slice of those totals, never a sibling of them.
 	egressParityBytes   atomic.Uint64
 	egressKeyframeBytes atomic.Uint64
 
@@ -2801,9 +2811,10 @@ func (s *Subscriber) keyframeDrops() KeyframeDrops {
 func (s *Subscriber) enqueueLocked(dgram []byte) {
 	// Audio takes its own lane on a reliable subscriber: sharing the video
 	// queue would freeze every audio packet behind a parked carrier write.
-	// A DVR subscriber reads its video from the ring at its own cursor, so the
-	// queue would only duplicate it. Everything else still rides the queue.
-	if s.dvr != nil && isVideoChunkDatagram(dgram) {
+	// A DVR subscriber reads its video and parity from the ring at its own
+	// cursor, so the queue — which it drains as sideband datagrams — would
+	// only duplicate them. Everything else still rides the queue.
+	if s.dvr != nil && isCarrierMediaDatagram(dgram) {
 		return
 	}
 	if s.dvrAudio != nil && isAudioDatagram(dgram) {
@@ -2822,8 +2833,9 @@ func (s *Subscriber) enqueueLocked(dgram []byte) {
 	}
 	// A holed GOP is beyond saving, so shed its tail at the door until the
 	// next rotation (bumped by the fan-out, so this clears even while the
-	// drain is parked). Video-only: control traffic must still get through.
-	if s.reliable && isVideoChunkDatagram(dgram) {
+	// drain is parked). Media only — the deltas and their parity: control
+	// traffic must still get through.
+	if s.reliable && isCarrierMediaDatagram(dgram) {
 		if s.carDeadRotation.Load() == s.carRotations.Load()+1 {
 			s.carrierRecordsDropped.Add(1)
 			return
@@ -2856,8 +2868,8 @@ func (s *Subscriber) enqueueLocked(dgram []byte) {
 	s.carrierQueueOverflow.Add(1)
 }
 
-// purgeQueuedDeltasLocked empties the already-queued video deltas of a GOP that
-// has just been declared dead, returning how many it discarded, so the drain
+// purgeQueuedDeltasLocked empties the already-queued video deltas (and their
+// parity) of a GOP that has just been declared dead, returning how many it discarded, so the drain
 // doesn't work through a full queue of records the viewer will discard.
 // Control datagrams are put back in order: above all the ViewerCount
 // keepalive must survive, since a viewer's dead-session watchdog reads it as
@@ -2877,7 +2889,7 @@ drain:
 	for range queued {
 		select {
 		case d := <-s.queue:
-			if isVideoChunkDatagram(d) {
+			if isCarrierMediaDatagram(d) {
 				purged++
 				continue
 			}
@@ -2998,6 +3010,17 @@ func (s *Subscriber) drainReliable() {
 		}
 		s.carrierRecords.Add(1)
 		s.egressCarrierBytes.Add(uint64(len(scratch)))
+		s.noteCarrierParity(dgram, len(scratch))
+	}
+}
+
+// noteCarrierParity counts a parity record written to a carrier into
+// egressParityBytes, framed as it went out (docs/75 D11): there it is a share
+// of egressCarrierBytes, as on the datagram path it is a share of
+// egressDatagramBytes.
+func (s *Subscriber) noteCarrierParity(dgram []byte, framed int) {
+	if isParityDatagram(dgram) {
+		s.egressParityBytes.Add(uint64(framed))
 	}
 }
 
@@ -3109,8 +3132,8 @@ func (s *Subscriber) retireAudioCarrier(car *KeyframeStream) {
 }
 
 // isVideoChunkDatagram reports whether a fanned-out datagram is a video delta
-// chunk — the only kind the dead-GOP shed may drop (see
-// purgeQueuedDeltasLocked for why control traffic must survive).
+// chunk. The dead-GOP shed drops these and their parity, never control
+// traffic (isCarrierMediaDatagram; purgeQueuedDeltasLocked says why).
 func isVideoChunkDatagram(dgram []byte) bool {
 	_, typ, err := wire.PeekType(dgram)
 	return err == nil && typ == wire.TypeVideoChunk

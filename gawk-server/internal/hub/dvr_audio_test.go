@@ -105,7 +105,7 @@ func TestDVRAudioSurvivesAStall(t *testing.T) {
 	f := &fakeSender{}
 	block := make(chan struct{})
 	f.setCarBlock(block)
-	if _, err := r.SubscribeDVR(id, f, 3000); err != nil {
+	if _, err := r.SubscribeDVR(id, f, 3000, 0); err != nil {
 		t.Fatalf("SubscribeDVR: %v", err)
 	}
 

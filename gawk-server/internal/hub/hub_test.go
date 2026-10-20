@@ -2028,7 +2028,7 @@ func TestReliableSubscriberCarrierDelivery(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	sub, err := r.SubscribeReliable(id, f)
+	sub, err := r.SubscribeReliable(id, f, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2127,7 +2127,7 @@ func TestMixedAudienceIndependentDelivery(t *testing.T) {
 	}
 	reliable := &fakeSender{}
 	normal := &fakeSender{}
-	subR, err := r.SubscribeReliable(id, reliable)
+	subR, err := r.SubscribeReliable(id, reliable, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2179,7 +2179,7 @@ func TestStalledCarrierCancelledAfterDeadline(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	sub, err := r.SubscribeReliable(id, f)
+	sub, err := r.SubscribeReliable(id, f, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2240,7 +2240,7 @@ func TestStalledCarrierAbandonedOnItsOwnDeadline(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	sub, err := r.SubscribeReliable(id, f)
+	sub, err := r.SubscribeReliable(id, f, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2314,7 +2314,7 @@ func TestCarrierOpenFailuresFeedEvictionStreak(t *testing.T) {
 	}
 	openErr := errors.New("stream credit exhausted")
 	f := &fakeSender{kfOpenErr: openErr, carOpenErr: openErr}
-	if _, err := r.SubscribeReliable(id, f); err != nil {
+	if _, err := r.SubscribeReliable(id, f, 0); err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
 
@@ -2377,7 +2377,7 @@ func TestReliableQueueOverflowCountedApartFromDatagramDrops(t *testing.T) {
 
 	reliable := &fakeSender{}
 	reliable.setCarBlock(make(chan struct{})) // the carrier write parks
-	subR, err := r.SubscribeReliable(id, reliable)
+	subR, err := r.SubscribeReliable(id, reliable, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2489,7 +2489,7 @@ func TestReliableQueueOverflowPurgesGopAndKeepsKeepalive(t *testing.T) {
 
 	f := &fakeSender{}
 	f.setCarBlock(make(chan struct{})) // every carrier write parks
-	sub, err := r.SubscribeReliable(id, f)
+	sub, err := r.SubscribeReliable(id, f, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2549,7 +2549,7 @@ func TestCarrierBandwidthCapDropsRecords(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	sub, err := r.SubscribeReliable(id, f)
+	sub, err := r.SubscribeReliable(id, f, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2634,7 +2634,7 @@ func TestDeadCarrierRecordsDoNotDebitEgressCap(t *testing.T) {
 	// Every carrier open fails, so the GOP dies on its first record and the
 	// whole tail behind it is dropped without a stream ever existing.
 	f := &fakeSender{carOpenErr: errors.New("stream credit exhausted")}
-	sub, err := r.SubscribeReliable(id, f)
+	sub, err := r.SubscribeReliable(id, f, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2692,7 +2692,7 @@ func TestCarrierPrologueChargedOncePerGOP(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	sub, err := r.SubscribeReliable(id, f)
+	sub, err := r.SubscribeReliable(id, f, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2755,7 +2755,7 @@ func TestCarrierOpenFailuresEvictWhenKeyframeOpensSucceed(t *testing.T) {
 	}
 	// Keyframe opens succeed (kfOpenErr nil); only the carrier cannot open.
 	f := &fakeSender{carOpenErr: errors.New("stream credit exhausted")}
-	if _, err := r.SubscribeReliable(id, f); err != nil {
+	if _, err := r.SubscribeReliable(id, f, 0); err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
 
@@ -2782,7 +2782,7 @@ func TestCarrierOpenFailureStreakResetsOnSuccess(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{carOpenErr: errors.New("transient")}
-	if _, err := r.SubscribeReliable(id, f); err != nil {
+	if _, err := r.SubscribeReliable(id, f, 0); err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
 
@@ -2824,7 +2824,7 @@ func TestReliableOverflowShedsGopTailUntilRotation(t *testing.T) {
 	}
 	f := &fakeSender{}
 	f.setCarBlock(make(chan struct{})) // the carrier write parks: nothing drains
-	sub, err := r.SubscribeReliable(id, f)
+	sub, err := r.SubscribeReliable(id, f, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -2873,7 +2873,7 @@ func TestAudioSidebandFlowsWhileCarrierWriteIsParked(t *testing.T) {
 	}
 	f := &fakeSender{}
 	f.blockVideoCarriersOnly(make(chan struct{})) // the video drain parks forever
-	if _, err := r.SubscribeReliable(id, f); err != nil {
+	if _, err := r.SubscribeReliable(id, f, 0); err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
 

@@ -49,15 +49,13 @@ func TestNegotiateParityClamps(t *testing.T) {
 		{"out of range is treated as garbage", "9", 2, 2, 2},
 		{"fleet off means nobody gets it", "2", 0, 2, 0},
 	} {
-		for _, reliable := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/reliable=%v", tc.name, reliable), func(t *testing.T) {
-				req, served := NegotiateParity(tc.param, tc.fleet, reliable)
-				if req != tc.wantRequest || served != tc.wantServed {
-					t.Fatalf("NegotiateParity(%q, fleet=%d, reliable=%v) = (%d, %d), want (%d, %d)",
-						tc.param, tc.fleet, reliable, req, served, tc.wantRequest, tc.wantServed)
-				}
-			})
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			req, served := NegotiateParity(tc.param, tc.fleet)
+			if req != tc.wantRequest || served != tc.wantServed {
+				t.Fatalf("NegotiateParity(%q, fleet=%d) = (%d, %d), want (%d, %d)",
+					tc.param, tc.fleet, req, served, tc.wantRequest, tc.wantServed)
+			}
+		})
 	}
 }
 
@@ -145,11 +143,13 @@ func TestParityPrefixServesPNotQ(t *testing.T) {
 // viewer served k parity symbols.
 func subscribeCarrier(t *testing.T, r *Registry, id string, f *fakeSender, dvr bool, k int) *Subscriber {
 	t.Helper()
-	so := subscribeOpts{reliable: true, parityK: k, parityRequested: k}
+	var s *Subscriber
+	var err error
 	if dvr {
-		so.dvr, so.bufferMs = true, 3000
+		s, err = r.SubscribeDVR(id, f, 3000, k)
+	} else {
+		s, err = r.SubscribeReliable(id, f, k)
 	}
-	s, err := r.subscribeOpts(id, f, so)
 	if err != nil {
 		t.Fatalf("subscribe (dvr=%v, k=%d): %v", dvr, k, err)
 	}
@@ -473,7 +473,7 @@ func TestParityFleetOffSuppressesEverything(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	req, served := NegotiateParity("2", 0, false)
+	req, served := NegotiateParity("2", 0)
 	if served != 0 {
 		t.Fatalf("served = %d with the fleet off, want 0 (requested %d)", served, req)
 	}
@@ -485,5 +485,78 @@ func TestParityFleetOffSuppressesEverything(t *testing.T) {
 	s.Close()
 	if got := countType(f, wire.TypeParityChunk); got != 0 {
 		t.Errorf("subscriber received %d parity chunks with the fleet off, want 0", got)
+	}
+}
+
+// -parity-default 0 turns parity off for everyone, byte-identically, now that
+// carrier and DVR viewers are served it too (docs/75 D11): with the fleet off,
+// what each delivery mode puts on the wire is the same whether or not parity
+// datagrams reach the relay. (A producer told the fleet is off emits none;
+// this is the stray one that arrives anyway.)
+func TestParityFleetOffIsByteIdenticalInEveryMode(t *testing.T) {
+	type wireOut struct{ datagrams, reliable, dvr [][]byte }
+	run := func(withParity bool) wireOut {
+		r := NewRegistry(discardLog, Options{
+			ParityDefault: 0,
+			DVR:           DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+		})
+		id, p, err := r.StartPublish("")
+		if err != nil {
+			t.Fatalf("StartPublish: %v", err)
+		}
+		// Each mode as the transport negotiates it: no ?parity=, fleet off.
+		_, k := NegotiateParity("", 0)
+		fd, fr, fv := &fakeSender{}, &fakeSender{}, &fakeSender{}
+		sd, err := r.SubscribeParity(id, fd, k, "")
+		if err != nil {
+			t.Fatalf("SubscribeParity: %v", err)
+		}
+		sr := subscribeCarrier(t, r, id, fr, false, k)
+		sv := subscribeCarrier(t, r, id, fv, true, k)
+
+		ingestKeyframe(t, p, keyframeMsg(t, 0, "vp8", "KEY0"))
+		for f := uint32(1); f <= 4; f++ {
+			p.HandleDatagram(chunkDgram(t, false, f, 0, 2, "c0"))
+			p.HandleDatagram(chunkDgram(t, false, f, 1, 2, "c1"))
+			if withParity {
+				p.HandleDatagram(parityDgram(t, f, 0))
+				p.HandleDatagram(parityDgram(t, f, 1))
+			}
+		}
+		// Eight chunks per subscriber, so all three have drained.
+		waitFor(t, 5*time.Second, func() bool { return len(fd.received()) >= 8 }, "datagram delivery")
+		waitCarrierRecords(t, fr, 8)
+		waitCarrierRecords(t, fv, 8)
+		out := wireOut{datagrams: fd.received(), reliable: fr.carrierRecords(t), dvr: fv.carrierRecords(t)}
+
+		bst := r.Stats().Broadcasts[r.ObfuscateID(id)]
+		if bst.ParityDatagramsForwarded != 0 || bst.EgressParityBytes != 0 {
+			t.Errorf("fleet off (withParity=%v): forwarded %d parity datagrams, %d parity bytes out; want 0, 0",
+				withParity, bst.ParityDatagramsForwarded, bst.EgressParityBytes)
+		}
+		sd.Close()
+		sr.Close()
+		sv.Close()
+		return out
+	}
+
+	without, with := run(false), run(true)
+	for _, m := range []struct {
+		name      string
+		want, got [][]byte
+	}{
+		{"datagram", without.datagrams, with.datagrams},
+		{"reliable", without.reliable, with.reliable},
+		{"dvr", without.dvr, with.dvr},
+	} {
+		if len(m.got) != len(m.want) {
+			t.Errorf("%s: %d messages out with stray parity, %d without", m.name, len(m.got), len(m.want))
+			continue
+		}
+		for i := range m.want {
+			if !bytes.Equal(m.got[i], m.want[i]) {
+				t.Errorf("%s: message %d differs with stray parity: %x, want %x", m.name, i, m.got[i], m.want[i])
+			}
+		}
 	}
 }

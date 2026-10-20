@@ -330,7 +330,7 @@ func TestAudioToReliableSubscriberRidesItsOwnCarrier(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	sub, err := r.SubscribeReliable(id, f)
+	sub, err := r.SubscribeReliable(id, f, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestReliableAudioCarrierSurvivesVideoGOPRotation(t *testing.T) {
 		t.Fatalf("StartPublish: %v", err)
 	}
 	f := &fakeSender{}
-	sub, err := r.SubscribeReliable(id, f)
+	sub, err := r.SubscribeReliable(id, f, 0)
 	if err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
