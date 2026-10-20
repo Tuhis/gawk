@@ -1134,7 +1134,9 @@ window. The window, not the number of carriers, is the bound.
   opening one mid-GOP was not worth a second rule.
 - **Two open carriers, enforced at the sender.** Before a third opens, the
   oldest one still inside its 150 ms deadline is reset and counted as
-  expired. Only GOPs shorter than the deadline (forced IDRs) reach this.
+  expired, and the open waits until that reset has been handed to the
+  transport. The relay keeps a third slot for a reset still in flight (D2).
+  Only GOPs shorter than the deadline (forced IDRs) reach this.
 - **`cubic` touches nothing**: the dial installs a transport config only
   for `bbr` (quinn's defaults, the keepalive, `BbrConfig::default()`), so
   Cubic is the builder's config exactly as before. Room and subscribe
