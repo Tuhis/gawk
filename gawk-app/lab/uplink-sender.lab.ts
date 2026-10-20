@@ -12,7 +12,14 @@
 //
 // It logs the native lab sender's lines (F, K, O, C, W, D, G, E, S) to the
 // driver, timestamped on the host's wall clock so the receiver's log shares it.
+//
+// Since docs/75 RU9 the datagram mode is the shipping send queue: deltas and
+// audio more than a GOP old are dropped (a D line for a delta), deltas give
+// way to a late keyframe, and keyframes go through the shipping
+// KeyframeSender (KQ: it had to wait; K's outcome may also be aborted,
+// replaced or discarded). A dropped frame counts as resolved in the Q lines.
 import { DatagramSender, webTransportInit } from '../src/transport/connection';
+import { KeyframeSender } from '../src/transport/keyframe-sender';
 import { packetizeDecoderConfig, packetizeFrameWithParity, packetizeStreamKeyframe } from '../src/transport/packetizer';
 import { TYPE_AUDIO_FRAME, WIRE_VERSION, encodeCarrierPrologue, encodeCarrierRecord } from '../src/transport/wire';
 
@@ -93,7 +100,21 @@ async function main(): Promise<void> {
   // What the shipping page embeds in every keyframe stream: the current
   // decoder config (an H.264 avcC of typical size here).
   const config = packetizeDecoderConfig('avc1.64002a', new Uint8Array(40));
-  const sender = NOWAIT ? null! : new DatagramSender(wt);
+  // The shipping keyframe state machine (datagram mode): keyed by the
+  // keyframe's frameId, which doubles as its GOP number.
+  const kfProduced = new Map<number, bigint>();
+  const keyframes = new KeyframeSender({
+    now: () => performance.now(),
+    gopMs: 500,
+    events: {
+      waiting: (id) => log(`KQ,${id},${nowNs()}`),
+      handedOver: (id) => log(`KW,${id},${nowNs()}`),
+      ended: (id, outcome) => log(`K,${id},${kfProduced.get(id) ?? 0n},${nowNs()},${outcome}`),
+    },
+  });
+  keyframes.attach(() => wt.createUnidirectionalStream());
+  let gop = 0;
+  const sender = NOWAIT ? null! : new DatagramSender(wt, { gopBlocked: (g) => keyframes.deltasBlocked(g) });
   const rawWriter = NOWAIT ? wt.datagrams.writable.getWriter() : null!;
   let offered = 0;
   // Where a backlog sits: frames handed to DatagramSender against frames
@@ -101,8 +122,9 @@ async function main(): Promise<void> {
   let framesQueued = 0;
   let framesResolved = 0;
 
-  // broadcaster.ts sendKeyframeStream: one uni stream per keyframe, fire and
-  // forget; a failure costs that keyframe only.
+  // The carrier prototype's keyframes: one uni stream per keyframe, fire and
+  // forget, as the shipping page sent them before RU9 (the datagram mode uses
+  // the shipping KeyframeSender instead).
   const sendKeyframe = (id: number, msg: Uint8Array<ArrayBuffer>): { written: Promise<unknown>; acked: Promise<unknown> } => {
     const t0 = nowNs();
     let written = (): void => {};
@@ -228,7 +250,7 @@ async function main(): Promise<void> {
   const audioTimer = setInterval(() => {
     offered++;
     if (NOWAIT) void rawWriter.write(audio).catch(() => {});
-    else void sender.send([audio]).catch(() => {});
+    else void sender.send([audio], { kind: 'audio' }).catch(() => {});
   }, 20);
   const flushTimer = setInterval(() => void flush(), 500);
   const queueTimer = setInterval(() => log(`Q,${nowNs()},${framesQueued},${framesResolved}`), 1000);
@@ -246,9 +268,16 @@ async function main(): Promise<void> {
     const t = nowNs();
     if (key) {
       const msg = packetizeStreamKeyframe({ frameId, timestampUs }, config, data);
+      if (MODE !== 'carrier') {
+        gop = frameId;
+        kfProduced.set(frameId, t);
+        keyframes.produce(frameId, msg);
+        log(`F,${frameId},1,${size},0,0,${t},0`);
+        continue;
+      }
       let gate = (): void => {};
       const keyframeGate = new Promise<unknown>((r) => (gate = () => r(undefined)));
-      if (MODE === 'carrier') rotate(frameId, KFORDER ? keyframeGate : Promise.resolve());
+      rotate(frameId, KFORDER ? keyframeGate : Promise.resolve());
       const kf = sendKeyframe(frameId, msg);
       void (KFORDER === 'ack' ? kf.acked : kf.written).then(gate);
       log(`F,${frameId},1,${size},0,0,${t},0`);
@@ -269,8 +298,11 @@ async function main(): Promise<void> {
         for (const d of all) void rawWriter.write(d).catch(() => {});
       } else {
         framesQueued++;
-        sender.send(all).then(
-          () => framesResolved++,
+        sender.send(all, { kind: 'delta', gop }).then(
+          (result) => {
+            framesResolved++; // a dropped frame is resolved: it no longer waits
+            if (result === 'dropped') log(`D,${frameId}`);
+          },
           () => {
             framesResolved++; // refused, not waiting: Q counts only what still waits
             log(`E,${frameId},failed`);

@@ -459,38 +459,134 @@ export function openDatagramWriter(
   return null;
 }
 
+// What a send carries, which decides whether it may be dropped for age
+// (docs/75 RU9). Deltas carry the GOP they belong to: the broadcaster
+// numbers GOPs at each keyframe it produces. Keyframes never come through
+// here — they ride their own streams (keyframe-sender.ts).
+//  - 'delta': dropped once more than one GOP old, with the rest of its GOP.
+//  - 'audio': dropped once more than one GOP old, alone (a lost audio
+//    datagram is already survivable).
+//  - 'control': never dropped for age — the audio config and the clock
+//    mapping must arrive, and a late TimeSync ping is only a slow sample,
+//    which its estimator (lowest RTT wins) ignores.
+export type SendKind = 'delta' | 'audio' | 'control';
+
+export interface SendTag {
+  kind: SendKind;
+  gop?: number;
+}
+
+// 'dropped' is a frame the sender refused as stale. It is not a failure:
+// the session is fine and the frames behind it still go out. Callers count
+// it apart and never as sent.
+export type SendResult = 'sent' | 'dropped';
+
+// The default age bound: one GOP (DEFAULT_CAPTURE_CONFIG.keyframeIntervalMs).
+export const DEFAULT_SEND_MAX_AGE_MS = 500;
+
+export interface DatagramSenderOptions {
+  // The clock a frame's age is read from (performance.now by default).
+  now?: () => number;
+  // How old a delta or audio packet may be when its turn comes.
+  maxAgeMs?: number;
+  // Whether a GOP's deltas must give way to its keyframe: it waits behind a
+  // late one, or did not go out at all (KeyframeSender.deltasBlocked).
+  gopBlocked?: (gop: number) => boolean;
+}
+
+interface QueuedSend {
+  datagrams: Uint8Array<ArrayBuffer>[];
+  tag: SendTag;
+  enqueuedAt: number;
+  resolve: (r: SendResult) => void;
+  reject: (e: Error) => void;
+}
+
 // Serializes datagram writes so frames leave in encode order (datagram
 // delivery is unordered anyway, but bursting writes out of order would
-// guarantee reordering instead of merely permitting it).
+// guarantee reordering instead of merely permitting it), and bounds how long
+// a frame may wait for its turn (docs/75 RU9). The backlog of a link slower
+// than the stream sits here — Chrome takes one datagram at a time — so this
+// is where it is cut: whatever Chrome has already accepted it still sends.
 export class DatagramSender {
   private writer: WritableStreamDefaultWriter<BufferSource>;
-  private chain: Promise<void> = Promise.resolve();
+  private queue: QueuedSend[] = [];
+  private pumping = false;
   private failed: Error | null = null;
+  private now: () => number;
+  private maxAgeMs: number;
+  private gopBlocked: ((gop: number) => boolean) | null;
+  // The GOP whose deltas are being dropped: once one delta of a GOP is, the
+  // rest of that GOP follows it until the next keyframe's GOP.
+  private droppingGop: number | null = null;
 
-  constructor(wt: WebTransport) {
+  constructor(wt: WebTransport, opts: DatagramSenderOptions = {}) {
     const writer = openDatagramWriter(wt);
     if (!writer) throw new Error('WebTransport session has no writable datagram stream');
     this.writer = writer;
+    this.now = opts.now ?? (() => performance.now());
+    this.maxAgeMs = opts.maxAgeMs ?? DEFAULT_SEND_MAX_AGE_MS;
+    this.gopBlocked = opts.gopBlocked ?? null;
   }
 
-  // Queues datagrams for sending. Returns a promise that settles when they
-  // have been handed to the browser's datagram queue; rejects (and latches
-  // the failure) if the session is gone.
-  send(datagrams: Uint8Array<ArrayBuffer>[]): Promise<void> {
+  // Queues one frame's datagrams. Resolves 'sent' once they have all been
+  // handed to the browser's datagram queue, or 'dropped' if the frame was
+  // stale when its turn came; rejects (and latches the failure) only if the
+  // session is gone.
+  send(datagrams: Uint8Array<ArrayBuffer>[], tag: SendTag): Promise<SendResult> {
     if (this.failed) return Promise.reject(this.failed);
-    this.chain = this.chain.then(async () => {
-      for (const d of datagrams) {
-        await this.writer.write(d);
-      }
+    return new Promise<SendResult>((resolve, reject) => {
+      this.queue.push({ datagrams, tag, enqueuedAt: this.now(), resolve, reject });
+      void this.pump();
     });
-    this.chain = this.chain.catch((e) => {
-      this.failed = e instanceof Error ? e : new Error(String(e));
-      throw this.failed;
-    });
-    return this.chain;
   }
 
+  private async pump(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      for (let next = this.queue.shift(); next; next = this.queue.shift()) {
+        if (this.failed) {
+          next.reject(this.failed);
+          continue;
+        }
+        // Decided once, when the frame's first datagram comes up, so a frame
+        // is never half-sent.
+        if (this.isStale(next)) {
+          next.resolve('dropped');
+          continue;
+        }
+        try {
+          for (const d of next.datagrams) await this.writer.write(d);
+          next.resolve('sent');
+        } catch (e) {
+          this.failed ??= e instanceof Error ? e : new Error(String(e));
+          next.reject(this.failed);
+        }
+      }
+    } finally {
+      this.pumping = false;
+    }
+  }
+
+  private isStale(q: QueuedSend): boolean {
+    const { kind, gop } = q.tag;
+    if (kind === 'control') return false;
+    const old = this.now() - q.enqueuedAt > this.maxAgeMs;
+    if (kind === 'audio' || gop === undefined) return old;
+    if (gop === this.droppingGop) return true;
+    if (old || this.gopBlocked?.(gop)) {
+      this.droppingGop = gop;
+      return true;
+    }
+    return false;
+  }
+
+  // Releases the writer. Nothing still queued is sent: those sends reject,
+  // as any send on a dead session does (a resume builds a new sender).
   close(): void {
+    this.failed ??= new Error('datagram sender closed');
+    for (const q of this.queue.splice(0)) q.reject(this.failed);
     this.writer.releaseLock();
   }
 }

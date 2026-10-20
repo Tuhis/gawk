@@ -12,6 +12,7 @@ import { DEFAULT_CAPTURE_CONFIG } from '../../media/types';
 import { useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 import { useTransportStore } from '../../state/transportStore';
 import { log } from '../../lib/logger';
+import { sentQuality, uplinkNoticeSentence } from '../broadcaster/uplinkNotice';
 
 type Status = 'idle' | 'connecting' | 'broadcasting' | 'stopping' | 'error';
 
@@ -219,6 +220,13 @@ export function BroadcastPage() {
         </div>
       )}
 
+      {/* docs/75 RU9: the upload is dropping frames it cannot carry. */}
+      {stats?.uplinkWarning && (
+        <div className={styles.warning}>
+          {uplinkNoticeSentence(selectionLabel(sentQuality(stats, resolutionSelection)))}
+        </div>
+      )}
+
       <SourcePreview stream={sourceStream} />
 
       <StatsGrid
@@ -236,6 +244,8 @@ export function BroadcastPage() {
           ['Encoded frames', String(stats?.encodedFrames ?? '—')],
           ['Keyframes', String(stats?.keyframes ?? '—')],
           ['Dropped (source)', String(stats?.droppedFrames ?? '—')],
+          ['Stale frames dropped', String(stats?.staleFramesDropped ?? '—')],
+          ['Stale audio dropped', String(stats?.staleAudioDropped ?? '—')],
           ['Dropped (fps gate)', String(stats?.fpsGateDropped ?? '—')],
           [
             'Auto rung',
@@ -249,6 +259,7 @@ export function BroadcastPage() {
           ['Datagrams sent', String(stats?.datagramsSent ?? '—')],
           ['Keyframe streams', String(stats?.keyframeStreamsSent ?? '—')],
           ['Keyframe streams failed', String(stats?.keyframeStreamsFailed ?? '—')],
+          ['Keyframes superseded', String(stats?.keyframeStreamsSuperseded ?? '—')],
           ['Sent', `${fmt((stats?.bytesSent ?? 0) / 1_000_000, 1)} MB`],
           ['Configs sent', String(stats?.configsSent ?? '—')],
           ['Encoder queue', String(stats?.encoderQueueDepth ?? '—')],

@@ -66,6 +66,7 @@ import { BroadcasterScreen } from './BroadcasterScreen';
 import { BroadcastStartError, type BroadcastStats } from '../../transport/broadcaster';
 import { acceptCurrentTerms } from '../terms/acceptance';
 import { useTransportStore } from '../../state/transportStore';
+import { useBroadcastSettingsStore } from '../../state/broadcastSettingsStore';
 import { BUNDLED_TERMS_VERSION, SITE_DOWNLOAD_URL } from '../../config';
 import {
   AUDIO_NOTE,
@@ -666,5 +667,55 @@ describe('BroadcasterScreen screen-share prompt (user gesture)', () => {
     render(<BroadcasterScreen />);
     startBroadcast();
     await waitFor(() => expect(stop).toHaveBeenCalled());
+  });
+});
+
+// docs/75 RU9, §6: while the browser broadcaster is dropping frames its
+// upload cannot carry, a pill reads as the native apps' does, and its
+// sentence is reachable from it — announced and keyboard-focusable, not a
+// hover-only title. The encoder pill is renamed so the two read apart.
+describe('BroadcasterScreen upload notice (RU9)', () => {
+  const PILL = "Your upload can't keep up";
+  const sentence = (quality: string) =>
+    `Your upload can't keep up with the stream at ${quality}, so people watching may see frozen video. Choose a lower quality, or free up upload bandwidth.`;
+
+  function goLiveWith(stats: Partial<BroadcastStats>) {
+    scripts.push(async (cbs) => {
+      cbs.onSourceStream(fakeStream);
+      cbs.onStats({ audioState: 'off', ...stats } as BroadcastStats);
+    });
+    render(<BroadcasterScreen />);
+    startBroadcast();
+  }
+
+  it('shows a focusable pill described by the sentence, naming the rung being sent', async () => {
+    useBroadcastSettingsStore.getState().setResolutionSelection('auto');
+    goLiveWith({ uplinkWarning: true, autoRung: 720 });
+    const pill = await waitFor(() => screen.getByText(PILL));
+    expect(pill.getAttribute('tabindex')).toBe('0');
+    const describedBy = pill.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toBe(sentence('720p'));
+  });
+
+  it('names the explicit rung outside Auto', async () => {
+    useBroadcastSettingsStore.getState().setResolutionSelection(1080);
+    goLiveWith({ uplinkWarning: true, autoRung: null });
+    const pill = await waitFor(() => screen.getByText(PILL));
+    expect(document.getElementById(pill.getAttribute('aria-describedby')!)?.textContent).toBe(
+      sentence('1080p'),
+    );
+  });
+
+  it('shows no pill while the upload keeps up', async () => {
+    goLiveWith({ uplinkWarning: false });
+    await waitFor(() => expect(screen.getByText('LIVE')).toBeTruthy());
+    expect(screen.queryByText(PILL)).toBeNull();
+  });
+
+  it('the encoder pill reads "Encoder can\'t keep up at {quality}"', async () => {
+    useBroadcastSettingsStore.getState().setResolutionSelection(1080);
+    goLiveWith({ encoderPressure: true });
+    await waitFor(() => expect(screen.getByText("Encoder can't keep up at 1080p")).toBeTruthy());
   });
 });

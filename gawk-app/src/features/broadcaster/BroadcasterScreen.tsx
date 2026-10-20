@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import styles from './broadcaster.module.css';
 import { LadderPicker } from '../stream/LadderPicker';
 import { EncoderSettingsPanel } from '../stream/EncoderSettingsPanel';
@@ -58,6 +58,7 @@ import type { RoomTarget } from '../../transport/room-session';
 import { parseGrant, readGrant, type RoomGrant } from '../room/grantHandoff';
 import { takeRoomReturn } from '../room/roomReturn';
 import { BACKGROUND_STOP_NOTE, BackgroundWatchdog } from './backgroundWatchdog';
+import { sentQuality, UPLINK_NOTICE_PILL, uplinkNoticeSentence } from './uplinkNotice';
 import { loadNickname, sanitizeNickname } from '../room/roomPrefs';
 import { parseRoomLink } from '../../lib/roomCode';
 import { MAX_ROOM_LABEL_LEN } from '../../transport/wire';
@@ -278,6 +279,8 @@ export function BroadcasterScreen({
   const telemetry = useTelemetryCollector<BroadcastStats>('broadcaster');
 
   const resolutionSelection = useBroadcastSettingsStore((s) => s.resolutionSelection);
+  // The upload notice's sentence, which describes its pill (docs/75 §6).
+  const uplinkNoteId = useId();
 
   // Probe matrices for picker + codec-pin annotations — advisory only; the
   // overlay's Encode mode row shows the runtime truth. The per-codec set is
@@ -978,7 +981,24 @@ export function BroadcasterScreen({
         {renderAutoBadge(stats)}
         {stats?.encoderPressure && (
           <span className={`${styles.badge} ${styles.warnBadge}`}>
-            Can’t keep up at {selectionLabel(resolutionSelection)}
+            Encoder can't keep up at {selectionLabel(resolutionSelection)}
+          </span>
+        )}
+        {/* docs/75 RU9: frames the upload cannot carry are being dropped.
+            The pill is focusable and described by its sentence, which also
+            shows on hover and focus — never a hover-only title. */}
+        {stats?.uplinkWarning && (
+          <span className={styles.uplinkNotice}>
+            <span
+              className={`${styles.badge} ${styles.warnBadge}`}
+              tabIndex={0}
+              aria-describedby={uplinkNoteId}
+            >
+              {UPLINK_NOTICE_PILL}
+            </span>
+            <span id={uplinkNoteId} role="tooltip" className={styles.uplinkNote}>
+              {uplinkNoticeSentence(selectionLabel(sentQuality(stats, resolutionSelection)))}
+            </span>
           </span>
         )}
         {!room && pendingRoomChip}
@@ -1331,7 +1351,7 @@ function renderAutoBadge(stats: BroadcastStats | null) {
   if (stats.autoAtFloor) {
     return (
       <span className={`${styles.badge} ${styles.warnBadge}`}>
-        Can’t keep up even at {selectionLabel(stats.autoRung)}
+        Encoder can't keep up even at {selectionLabel(stats.autoRung)}
       </span>
     );
   }

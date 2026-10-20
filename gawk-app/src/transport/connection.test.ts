@@ -487,7 +487,7 @@ describe('openDatagramWriter', () => {
     const wt = { datagrams: { createWritable } } as unknown as WebTransport;
 
     const sender = new DatagramSender(wt);
-    await sender.send([new Uint8Array([1, 2, 3])]);
+    await sender.send([new Uint8Array([1, 2, 3])], { kind: 'control' });
 
     expect(createWritable).toHaveBeenCalledTimes(1);
     expect(written).toEqual([new Uint8Array([1, 2, 3])]);
