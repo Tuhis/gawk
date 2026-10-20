@@ -1,0 +1,15 @@
+--- a/http3/state_tracking_stream.go
++++ b/http3/state_tracking_stream.go
+@@ -9,7 +9,11 @@
+ 	"github.com/quic-go/quic-go"
+ )
+
+-const streamDatagramQueueLen = 32
++// GAWK PATCH (docs/75 D7): upstream keeps 32 datagrams per session and drops
++// the rest, about a millisecond of a top-rung burst; the relay lost burst
++// tails a clean path had delivered. 512 holds a top-rung delta about six
++// times over. See third_party/quic-go/GAWK-PATCH.md.
++const streamDatagramQueueLen = 512
+
+ // stateTrackingStream is an implementation of quic.Stream that delegates
+ // to an underlying stream

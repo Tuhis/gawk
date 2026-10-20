@@ -37,6 +37,9 @@
 FROM golang:1.26-trixie AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+# go.mod replaces quic-go with the vendored, patched copy (docs/75 D7); its
+# manifest is part of the module graph, so `go mod download` needs it.
+COPY third_party/quic-go/go.mod third_party/quic-go/go.sum ./third_party/quic-go/
 RUN go mod download
 COPY . .
 # VERSION is stamped into the binary (main.version); CI passes the release
