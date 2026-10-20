@@ -104,6 +104,16 @@ export function SpeakerIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+// One wave: the level is set but below half.
+export function SpeakerLowIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4Z" />
+      <path d="M15.5 9a4 4 0 0 1 0 6" />
+    </svg>
+  );
+}
+
 export function SpeakerMutedIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg {...base} {...props}>

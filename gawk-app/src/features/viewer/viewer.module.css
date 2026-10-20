@@ -208,16 +208,7 @@
 /* Audio controls — rendered only when the stream actually carries audio. The
    slider stays compact so the control bar keeps its cinematic restraint. */
 .audioControls {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
   margin-right: 0.35rem;
-}
-
-.volume {
-  width: 5.5rem;
-  accent-color: var(--text);
-  cursor: pointer;
 }
 
 @keyframes overlayIn {

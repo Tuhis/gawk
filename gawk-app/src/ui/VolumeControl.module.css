@@ -1,0 +1,179 @@
+/* Mute + volume. Wide: the mute button beside an inline slider. Compact
+   (below the narrow breakpoint): one button that shows the level as a ring
+   and opens a vertical slider above itself. */
+.root {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.inline {
+  width: 5.5rem;
+  accent-color: var(--text);
+  cursor: pointer;
+}
+
+/* The button: round, so the level ring hugs it. touch-action keeps a
+   press-and-drag on it from scrolling or zooming the page. */
+.trigger {
+  position: relative;
+  border-radius: 50%;
+  touch-action: none;
+}
+
+.trigger[aria-expanded='true'] {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+  pointer-events: none;
+}
+
+.ringTrack,
+.ringLevel {
+  fill: none;
+  stroke-width: 2;
+}
+
+.ringTrack {
+  stroke: rgba(255, 255, 255, 0.14);
+}
+
+.ringLevel {
+  stroke: var(--text);
+  stroke-linecap: round;
+}
+
+.popover {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: 50%;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  width: 3.25rem;
+  box-sizing: border-box;
+  padding: 0.7rem 0.4rem 0.4rem;
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  transform: translateX(-50%);
+  animation: popoverIn var(--dur-fast) var(--ease);
+}
+
+@keyframes popoverIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popover {
+    animation: none;
+  }
+}
+
+.readout {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The vertical slider. The input is a finger-wide hit area; the 6 px track
+   is its background, inset by the thumb's radius at both ends so the fill
+   meets the thumb's centre at every level. Its height is DRAG_RANGE_PX in
+   VolumeControl.tsx. */
+.vertical {
+  --thumb: 18px;
+  -webkit-appearance: none;
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 2.25rem;
+  height: 8rem;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  background: linear-gradient(to top, var(--text) var(--level), rgba(255, 255, 255, 0.18) var(--level)) center /
+    6px calc(100% - var(--thumb)) no-repeat;
+  border-radius: 999px;
+}
+
+.vertical:focus {
+  outline: none;
+}
+
+.vertical:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.vertical::-webkit-slider-runnable-track {
+  background: transparent;
+}
+
+.vertical::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--thumb);
+  height: var(--thumb);
+  border: none;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+}
+
+.vertical::-moz-range-track {
+  background: transparent;
+}
+
+.vertical::-moz-range-thumb {
+  width: var(--thumb);
+  height: var(--thumb);
+  border: none;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
+}
+
+.vertical:active::-webkit-slider-thumb {
+  box-shadow: 0 0 0 6px rgba(232, 234, 237, 0.16);
+}
+
+.vertical:active::-moz-range-thumb {
+  box-shadow: 0 0 0 6px rgba(232, 234, 237, 0.16);
+}
+
+.divider {
+  width: 1.5rem;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.muteToggle {
+  border-radius: 50%;
+}
+
+.muteToggle[aria-pressed='true'] {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.14);
+}

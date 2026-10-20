@@ -12,10 +12,10 @@ import {
   LeaveIcon,
   MoreIcon,
   SpeakerIcon,
-  SpeakerMutedIcon,
   StatsIcon,
 } from '../../ui/Icons';
 import { ContextMenu, type MenuItem } from '../../ui/ContextMenu';
+import { VolumeControl } from '../../ui/VolumeControl';
 import { Toast } from '../../ui/Toast';
 import { allowCustomRelays } from '../../config';
 import { StatsOverlay } from './StatsOverlay';
@@ -36,6 +36,7 @@ import { DiagnosticsBuffer } from '../../lib/diagnostics';
 import type { FeatureGate, PresentationSurfaceStats } from '../../lib/featureGates';
 import { MsePresenter } from './msePresentation';
 import { useAutoHide } from '../../lib/useAutoHide';
+import { NARROW_QUERY, useMediaMatch } from '../../lib/useMediaMatch';
 import { elementFullscreenAvailable, useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
@@ -608,7 +609,9 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
   // the idle countdown.
   useWakeLock(status === 'watching' || status === 'reconnecting');
 
-  const anyOverlayOpen = !!menu || !!presetMenu || showSettings;
+  const narrow = useMediaMatch(NARROW_QUERY);
+  const [volumeOpen, setVolumeOpen] = useState(false);
+  const anyOverlayOpen = !!menu || !!presetMenu || showSettings || volumeOpen;
   const controlsVisible = useAutoHide(CONTROL_IDLE_MS, status === 'watching' && !anyOverlayOpen);
   const showControls = controlsVisible || status !== 'watching' || showStats || anyOverlayOpen;
 
@@ -850,28 +853,18 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
           {/* Mute + volume, rendered only when the stream actually carries
               audio. */}
           {audio.present && (
-            <div className={styles.audioControls}>
-              <IconButton
-                label={audio.muted ? 'Unmute' : 'Mute'}
-                onClick={() => audio.setMuted(!audio.muted)}
-              >
-                {audio.muted ? <SpeakerMutedIcon /> : <SpeakerIcon />}
-              </IconButton>
-              <input
-                className={styles.volume}
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={audio.muted ? 0 : audio.volume}
-                aria-label="Volume"
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  if (audio.muted && v > 0) audio.setMuted(false);
-                  audio.setVolume(v);
-                }}
-              />
-            </div>
+            <VolumeControl
+              className={styles.audioControls}
+              compact={narrow}
+              label="Volume"
+              muteLabel="Mute"
+              unmuteLabel="Unmute"
+              volume={audio.volume}
+              muted={audio.muted}
+              onVolume={audio.setVolume}
+              onMutedChange={audio.setMuted}
+              onOpenChange={setVolumeOpen}
+            />
           )}
           <IconButton
             ref={menuButtonRef}
