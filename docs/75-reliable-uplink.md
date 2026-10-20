@@ -1115,6 +1115,43 @@ window. The window, not the number of carriers, is the bound.
 | Diagnostics rows per §6 | unit |
 | `lossnotice`'s harm input per mode: Reliable → expired carriers and shed records; Lowest latency → QUIC packet loss as today (table tests) | unit |
 
+**As built (RU3–RU5, 2026-10-20; lab and hardware halves pending).**
+
+- **Where.** The carrier lane is `crates/engine/src/carrier.rs` (queue,
+  one writer task, retiring tasks); the sender engages it per GOP with
+  `carrier::engage` and frames a delta's datagrams as records with the
+  same `chunk_with_parity` it sends as datagrams, so G9 holds by
+  construction and by test. The defaults live in one place each:
+  `carrier::DEFAULT_DELIVERY` (*Lowest latency*) and
+  `transport::DEFAULT_CONGESTION` (Cubic). Blank `uplinkDelivery` /
+  `congestion` in `broadcast.json` follow them, so RU7's flip reaches
+  everyone who never chose; the Quality page stores a word only once the
+  user picks something other than what a blank file shows.
+- **The first GOP of a session goes as datagrams** when its keyframe is
+  produced before the relay's `RelayCapabilities` arrives — usual at a
+  start and after a resume's forced IDR. The capability is per session
+  (cleared on every reclaim), a carrier opens only at a keyframe (D4), and
+  opening one mid-GOP was not worth a second rule.
+- **Two open carriers, enforced at the sender.** Before a third opens, the
+  oldest one still inside its 150 ms deadline is reset and counted as
+  expired. Only GOPs shorter than the deadline (forced IDRs) reach this.
+- **`cubic` touches nothing**: the dial installs a transport config only
+  for `bbr` (quinn's defaults, the keepalive, `BbrConfig::default()`), so
+  Cubic is the builder's config exactly as before. Room and subscribe
+  dials stay on Cubic.
+- **The upload-bandwidth warning gains two signals** (RU4, red first): a
+  second with at least 100 packets sent and ≥ 5 % of them declared lost
+  (BBR's 7–10 % on a nearly full uplink; Cubic's ~1 % there and Wi-Fi's
+  packet or two stay quiet), and any carrier record shed or carrier
+  expired. On datagrams nothing else moved under BBR's own loss: quinn
+  takes every datagram into its buffer, so sent fps keeps up. Whether it
+  fires on table O's thin cell within its hysteresis is the lab half.
+- **Real relay.** `relay_integration`'s
+  `a_burst_that_breaks_a_gop_on_datagrams_loses_no_frame_on_the_carrier`
+  drops every uplink packet for ~100 ms mid-GOP through
+  `tests/support/udp_gate.rs`: on datagrams 26 of 30 deltas reached a
+  live-edge subscriber decodable, on the carrier 30 of 30.
+
 ### RU6 — The lab
 
 | Acceptance criterion | Verified by |
