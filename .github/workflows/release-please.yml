@@ -21,8 +21,10 @@
 # result. See .github/actions/attach-release-assets.
 #
 # The publish jobs MUST live in this workflow, gated on release-please
-# outputs: tags created with GITHUB_TOKEN do not trigger other workflows,
-# so an `on: push: tags` publish workflow would silently never run.
+# outputs. Originally because tags created with GITHUB_TOKEN do not trigger
+# other workflows; release-please now runs as a GitHub App (below), whose tags
+# DO trigger, so an `on: push: tags` publish workflow would double-publish
+# rather than never run. Either way: no tag- or release-triggered workflows.
 #
 # GHCR refs hardcode lowercase "tuhis" — GHCR rejects uppercase and
 # github.repository_owner returns "Tuhis".
@@ -54,9 +56,21 @@ jobs:
       sampler_release: ${{ steps.rp.outputs['gawk-sampler--release_created'] }}
       sampler_version: ${{ steps.rp.outputs['gawk-sampler--version'] }}
     steps:
+      # The release PR is opened and updated as the release GitHub App, not
+      # GITHUB_TOKEN: GitHub parks the pull_request runs of a GITHUB_TOKEN-
+      # authored PR as `action_required`, so every push to the release branch
+      # needed a manual "Approve and run". Falls back to GITHUB_TOKEN in a
+      # fork without the App (variable unset): the old behaviour, still works.
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        if: vars.RELEASE_APP_CLIENT_ID != ''
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: googleapis/release-please-action@v5
         id: rp
         with:
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 

@@ -2112,7 +2112,11 @@ entries still describe code `gawk-pubsim` runs (now
 
 - **Tags created with `GITHUB_TOKEN` don't trigger workflows** — publish
   jobs must chain off release-please outputs in the same workflow, never
-  `on: push: tags`. ([docs/05](05-resilience-deploy.md))
+  `on: push: tags` (with the release App's token tags now *do* trigger, so it
+  would double-publish). ([docs/05](05-resilience-deploy.md))
+- **A `GITHUB_TOKEN`-authored PR's CI runs wait for manual approval**
+  (`action_required`) — release-please therefore runs as a GitHub App.
+  ([docs/05](05-resilience-deploy.md))
 - **release-please separate PRs self-conflict in a monorepo** (all release
   PRs edit the shared manifest, and the bot doesn't refresh the stranded
   one) — use one combined release PR (`"separate-pull-requests": false`);

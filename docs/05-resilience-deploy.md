@@ -287,8 +287,16 @@ delta for `replicas: 2+`:
   Actions to create and approve pull requests" is enabled (off by default).
 - **Tags created with `GITHUB_TOKEN` do not trigger workflows** — publish
   jobs must chain off release-please outputs in the *same* workflow. Never
-  "simplify" to an `on: push: tags` publish workflow; it will silently never
-  run.
+  "simplify" to an `on: push: tags` publish workflow. (Since 2026-10-20
+  release-please runs as a GitHub App, whose tags *do* trigger — so such a
+  workflow would now double-publish instead of silently never running.)
+- **A `GITHUB_TOKEN`-authored release PR needs manual approval for every CI
+  run** — GitHub parks its `pull_request` runs as `action_required` (older
+  GitHub created no runs at all). Fixed 2026-10-20 by minting the
+  release-please token from a dedicated GitHub App:
+  `vars.RELEASE_APP_CLIENT_ID` + `secrets.RELEASE_APP_PRIVATE_KEY`, App
+  permissions Contents and Pull requests read/write, installed on this
+  repository only. Unset variable falls back to `GITHUB_TOKEN`.
 - **release-please `extra-files` paths are package-relative** — if the first
   release PR doesn't touch Chart.yaml, this is why. Both `version:` and
   `appVersion:` need their own `# x-release-please-version` marker.
