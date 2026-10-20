@@ -87,6 +87,9 @@ var viewerDipCounters = []string{
 
 var broadcasterDipCounters = []string{
 	"droppedFrames", "fpsGateDropped", "keyframeStreamsFailed",
+	// docs/75 RU9: a sent-rate dip on a browser broadcaster whose upload
+	// cannot keep up shows here.
+	"staleFramesDropped",
 	"FramesDroppedAtSend", "KeyframeStreamsFailed",
 }
 

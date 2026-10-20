@@ -177,6 +177,16 @@ var BroadcasterFields = map[string]Kind{
 	"encoderQueueDepth":     KindNumber,
 	"lastEncodeLatencyMs":   KindNumber,
 
+	// docs/75 RU9: the browser's send queue drops a frame or an audio packet
+	// more than a GOP old instead of queueing a slow uplink without bound.
+	// Counted apart from droppedFrames (encoder rejections and send failures)
+	// so a too-slow uplink and a dead session stay apart; the browser now
+	// also reports keyframeStreamsSuperseded (typed below, with the native
+	// fields), and the upload notice it derives from them.
+	"staleFramesDropped": KindNumber,
+	"staleAudioDropped":  KindNumber,
+	"uplinkWarning":      KindBool,
+
 	"connection":    KindObject,
 	"timeSyncRttMs": KindNumber,
 
