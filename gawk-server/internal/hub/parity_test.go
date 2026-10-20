@@ -1,7 +1,10 @@
 package hub
 
 import (
+	"bytes"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -22,37 +25,39 @@ func parityDgram(t *testing.T, frameID uint32, index uint8) []byte {
 }
 
 // TestNegotiateParityClamps pins the rules that stop a viewer asking for
-// protection the fleet is not producing.
+// protection the fleet is not producing. They are the same for every delivery
+// mode (docs/75 D11): a chunk the broadcaster's uplink lost is missing at the
+// relay, so carrier retransmission cannot bring it back, and a reliable or DVR
+// viewer needs the same prefix a live-edge viewer gets.
 func TestNegotiateParityClamps(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		param       string
 		fleet       int
-		reliable    bool
 		wantRequest int
 		wantServed  int
 	}{
-		{"absent means the fleet default", "", 2, false, 2, 2},
-		{"explicit down", "1", 2, false, 1, 1},
-		{"explicit off", "0", 2, false, 0, 0},
+		{"absent means the fleet default", "", 2, 2, 2},
+		{"explicit down", "1", 2, 1, 1},
+		{"explicit off", "0", 2, 0, 0},
 		// A viewer cannot conjure parity the producer never emitted, so a
 		// request above the fleet level is recorded but served lower — which
 		// is what makes parityActive < parityRequested legible on the overlay.
-		{"above the fleet level is clamped", "2", 1, false, 2, 1},
-		{"garbage falls back to the fleet default", "banana", 2, false, 2, 2},
-		{"negative is treated as garbage", "-1", 2, false, 2, 2},
-		{"out of range is treated as garbage", "9", 2, false, 2, 2},
-		// Reliable/DVR ride QUIC retransmission, so parity is pure waste.
-		{"reliable delivery suppresses parity", "2", 2, true, 2, 0},
-		{"fleet off means nobody gets it", "2", 0, false, 2, 0},
+		{"above the fleet level is clamped", "2", 1, 2, 1},
+		{"garbage falls back to the fleet default", "banana", 2, 2, 2},
+		{"negative is treated as garbage", "-1", 2, 2, 2},
+		{"out of range is treated as garbage", "9", 2, 2, 2},
+		{"fleet off means nobody gets it", "2", 0, 2, 0},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			req, served := NegotiateParity(tc.param, tc.fleet, tc.reliable)
-			if req != tc.wantRequest || served != tc.wantServed {
-				t.Fatalf("NegotiateParity(%q, fleet=%d, reliable=%v) = (%d, %d), want (%d, %d)",
-					tc.param, tc.fleet, tc.reliable, req, served, tc.wantRequest, tc.wantServed)
-			}
-		})
+		for _, reliable := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reliable=%v", tc.name, reliable), func(t *testing.T) {
+				req, served := NegotiateParity(tc.param, tc.fleet, reliable)
+				if req != tc.wantRequest || served != tc.wantServed {
+					t.Fatalf("NegotiateParity(%q, fleet=%d, reliable=%v) = (%d, %d), want (%d, %d)",
+						tc.param, tc.fleet, reliable, req, served, tc.wantRequest, tc.wantServed)
+				}
+			})
+		}
 	}
 }
 
@@ -136,46 +141,181 @@ func TestParityPrefixServesPNotQ(t *testing.T) {
 	}
 }
 
-// A reliable subscriber must never see parity: its deltas ride QUIC
-// retransmission already, so parity is pure egress waste.
-func TestParityNeverReachesReliableSubscriber(t *testing.T) {
-	r := NewRegistry(discardLog, Options{ParityDefault: 2})
+// subscribeCarrier subscribes a reliable (dvr=false) or DVR (dvr=true)
+// viewer served k parity symbols.
+func subscribeCarrier(t *testing.T, r *Registry, id string, f *fakeSender, dvr bool, k int) *Subscriber {
+	t.Helper()
+	so := subscribeOpts{reliable: true, parityK: k, parityRequested: k}
+	if dvr {
+		so.dvr, so.bufferMs = true, 3000
+	}
+	s, err := r.subscribeOpts(id, f, so)
+	if err != nil {
+		t.Fatalf("subscribe (dvr=%v, k=%d): %v", dvr, k, err)
+	}
+	return s
+}
+
+// carrierTypes is the message type of every carrier record, in order.
+func carrierTypes(t *testing.T, f *fakeSender) []uint8 {
+	t.Helper()
+	var types []uint8
+	for _, rec := range f.carrierRecords(t) {
+		types = append(types, rec[1])
+	}
+	return types
+}
+
+// Reliable and DVR delivery get parity too (docs/75 D11). Carrier
+// retransmission repairs loss between the relay and the viewer, but a chunk the
+// broadcaster's uplink lost never reached the relay: only parity brings it
+// back. Each carrier subscriber gets its own PREFIX, as a datagram viewer does,
+// as carrier records in fan-out order — and nothing on the datagram path.
+func TestParityRidesTheCarrier(t *testing.T) {
+	for _, dvr := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dvr=%v", dvr), func(t *testing.T) {
+			r := NewRegistry(discardLog, Options{
+				ParityDefault: 2,
+				DVR:           DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+			})
+			id, p, err := r.StartPublish("")
+			if err != nil {
+				t.Fatalf("StartPublish: %v", err)
+			}
+			f2, f1, f0 := &fakeSender{}, &fakeSender{}, &fakeSender{}
+			subs := []*Subscriber{
+				subscribeCarrier(t, r, id, f2, dvr, 2),
+				subscribeCarrier(t, r, id, f1, dvr, 1),
+				subscribeCarrier(t, r, id, f0, dvr, 0),
+			}
+			ingestKeyframe(t, p, keyframeMsg(t, 6, "vp8", "KEY6"))
+			chunk := chunkDgram(t, false, 7, 0, 1, "aa")
+			p0, p1 := parityDgram(t, 7, 0), parityDgram(t, 7, 1)
+			p.HandleDatagram(chunk)
+			p.HandleDatagram(p0)
+			p.HandleDatagram(p1)
+			// A marker after the parity, so a subscriber served fewer symbols is
+			// known to have caught up rather than to be still on its way.
+			marker := chunkDgram(t, false, 8, 0, 1, "bb")
+			p.HandleDatagram(marker)
+
+			for _, tc := range []struct {
+				name string
+				f    *fakeSender
+				want [][]byte
+			}{
+				{"k=2", f2, [][]byte{chunk, p0, p1, marker}},
+				{"k=1", f1, [][]byte{chunk, p0, marker}},
+				{"k=0", f0, [][]byte{chunk, marker}},
+			} {
+				waitCarrierRecords(t, tc.f, len(tc.want))
+				got := tc.f.carrierRecords(t)
+				if len(got) != len(tc.want) {
+					t.Fatalf("%s: carrier record types %x, want %d records", tc.name, carrierTypes(t, tc.f), len(tc.want))
+				}
+				for i := range tc.want {
+					if !bytes.Equal(got[i], tc.want[i]) {
+						t.Errorf("%s: record %d = %x, want %x", tc.name, i, got[i], tc.want[i])
+					}
+				}
+				if n := countType(tc.f, wire.TypeParityChunk); n != 0 {
+					t.Errorf("%s: %d parity chunks on the datagram path, want 0 — carrier viewers get them as records", tc.name, n)
+				}
+			}
+			for _, s := range subs {
+				s.Close()
+			}
+		})
+	}
+}
+
+// The DVR ring keeps parity beside the video records it protects (docs/75
+// D11), so a replayed GOP carries its symbols, and its byte bound counts them:
+// the ring is shared by every DVR viewer and holds every symbol the producer
+// emitted, whatever each cursor is served.
+func TestDVRRingRetainsParity(t *testing.T) {
+	r := NewRegistry(discardLog, Options{
+		ParityDefault: 2,
+		DVR:           DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+	})
 	id, p, err := r.StartPublish("")
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	f := &fakeSender{}
-	s, err := r.SubscribeReliable(id, f)
-	if err != nil {
-		t.Fatalf("SubscribeReliable: %v", err)
-	}
-	p.HandleDatagram(chunkDgram(t, false, 7, 0, 1, "aa"))
-	p.HandleDatagram(parityDgram(t, 7, 0))
-	s.Close()
+	// A k=0 cursor still makes the ring keep every symbol: the ring is the
+	// broadcast's, and the next joiner may want them.
+	s := subscribeCarrier(t, r, id, &fakeSender{}, true, 0)
+	defer s.Close()
 
-	if got := countType(f, wire.TypeParityChunk); got != 0 {
-		t.Errorf("reliable subscriber received %d parity chunks, want 0", got)
+	kf := keyframeMsg(t, 6, "vp8", "KEY6")
+	ingestKeyframe(t, p, kf)
+	chunk := chunkDgram(t, false, 7, 0, 1, "aa")
+	p0, p1 := parityDgram(t, 7, 0), parityDgram(t, 7, 1)
+	for _, d := range [][]byte{chunk, p0, p1} {
+		p.HandleDatagram(d)
 	}
-	// And it must not have been framed into a carrier record either.
-	for _, cs := range f.carrierStreams() {
-		for _, b := range cs.bytes() {
-			if b == wire.TypeParityChunk {
-				// Not conclusive on its own (payload bytes can collide), but a
-				// carrier carrying a parity TYPE byte at a record boundary is
-				// what we are guarding against; the count check above is the
-				// primary assertion.
-				continue
-			}
+
+	ring := s.dvr
+	c := ring.NewCursor().AtFirstRecord()
+	var got [][]byte
+	for {
+		rec, ok := ring.Record(c)
+		if !ok {
+			break
 		}
+		got = append(got, rec)
+		c = c.Next()
+	}
+	want := [][]byte{chunk, p0, p1}
+	if len(got) != len(want) {
+		t.Fatalf("ring holds %d records, want %d (the video chunk and both parity symbols)", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Errorf("ring record %d = %x, want %x", i, got[i], want[i])
+		}
+	}
+	if wantBytes := len(kf) + len(chunk) + len(p0) + len(p1); ring.Bytes() != wantBytes {
+		t.Errorf("ring.Bytes() = %d, want %d: the byte bound must count parity", ring.Bytes(), wantBytes)
 	}
 }
 
-// Parity must not enter the DVR ring: replayed GOPs serve deep-buffer viewers,
-// which are reliable and cannot use parity. The ring's admission test is
-// isVideoChunkDatagram, so parity must not satisfy it.
-func TestParityIsNotAVideoChunkForTheRing(t *testing.T) {
-	if isVideoChunkDatagram(parityDgram(t, 1, 0)) {
-		t.Fatal("a parity datagram classifies as a video chunk — it would be retained in the DVR ring")
+// egress_parity_bytes_total counts parity wherever it leaves (docs/75 D11):
+// on a carrier, the framed record that was written, so the fleet cost of
+// serving reliable and DVR viewers parity is measured, not modelled.
+func TestParityEgressCountedOnTheCarrier(t *testing.T) {
+	for _, dvr := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dvr=%v", dvr), func(t *testing.T) {
+			r := NewRegistry(discardLog, Options{
+				ParityDefault: 2,
+				DVR:           DVROptions{Window: 30 * time.Second, MaxBytes: 1 << 20},
+			})
+			id, p, err := r.StartPublish("")
+			if err != nil {
+				t.Fatalf("StartPublish: %v", err)
+			}
+			f := &fakeSender{}
+			s := subscribeCarrier(t, r, id, f, dvr, 2)
+			ingestKeyframe(t, p, keyframeMsg(t, 6, "vp8", "KEY6"))
+			p0, p1 := parityDgram(t, 7, 0), parityDgram(t, 7, 1)
+			for _, d := range [][]byte{chunkDgram(t, false, 7, 0, 1, "aa"), p0, p1} {
+				p.HandleDatagram(d)
+			}
+			waitCarrierRecords(t, f, 3)
+
+			// Each record is the datagram behind a two-byte length prefix.
+			want := uint64(len(p0) + 2 + len(p1) + 2)
+			key := r.ObfuscateID(id)
+			if got := r.Stats().Broadcasts[key].EgressParityBytes; got != want {
+				t.Errorf("live EgressParityBytes = %d, want %d", got, want)
+			}
+			// And it survives its subscriber (CODE-REVIEW: counters survive
+			// their owner's deletion).
+			s.Close()
+			if got := r.Stats().Broadcasts[key].EgressParityBytes; got != want {
+				t.Errorf("EgressParityBytes after the subscriber left = %d, want %d", got, want)
+			}
+		})
 	}
 }
 
