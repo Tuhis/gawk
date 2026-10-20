@@ -477,6 +477,7 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
         # RU9's trigger: keyframe n+1 would wait in the slot because keyframe n
         # was not handed over before n+1 was produced (never handed over counts).
         trips = sum(1 for i, j in zip(ids, ids[1:]) if i not in written or written[i] > prod[j])
+        trips += 1 if ids and ids[-1] not in written else 0  # a run can end during a stall
         return w, a, tail, len(ids), trips
 
     def pq(xs, q):
