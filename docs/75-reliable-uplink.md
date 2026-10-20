@@ -1,4 +1,4 @@
-# R72 — Reliable broadcaster uplink: measured first (docs/74)
+# R73 — Reliable broadcaster uplink: measured first (docs/75)
 
 **Status**: designed 2026-10-17 from a measurement pass (§4, §11), extended
 2026-10-18 with the relay's queue by depth, a shared uplink and the browser

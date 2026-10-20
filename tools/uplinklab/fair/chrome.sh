@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The shared uplink with the browser sender (docs/74 OD5, §11 table O): run.sh
+# The shared uplink with the browser sender (docs/75 OD5, §11 table O): run.sh
 # in a rootless network namespace (`unshare -rn`) on the host, because the
 # sender is the host's Chrome. Each mode beside the TCP upload twice and alone
 # once, at 30 and 15 Mbps (1080p) and 80 Mbps (1440p). Needs build.sh (it

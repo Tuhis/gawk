@@ -41,11 +41,21 @@ struct Windows {
     /// Ready's preview of the chosen target (docs/65 D3).
     #[cfg(windows)]
     preview: gawk_ui::preview::PreviewSlot<gawk_capture::wgc::CaptureTarget>,
+    /// Lists windows and screens again every second while the picker page
+    /// is open, so nobody has to press a refresh button.
+    poll: slint::Timer,
 }
+
+/// How often the open picker lists windows and screens again.
+const PICKER_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Platform for Windows {
     fn hooks(&self) -> Hooks {
         Hooks { notify, creds }
+    }
+
+    fn notices(&self) -> &'static str {
+        include_str!("../../../THIRD-PARTY-NOTICES.md")
     }
 
     fn launch_log(&self) {
@@ -195,13 +205,41 @@ impl Windows {
         }
     }
 
-    fn refresh_picker(&mut self, ui: &MainWindow) {
+    /// Lists windows and screens again. An unchanged listing touches
+    /// nothing, so the 1 s poll never rebuilds rows under the pointer. A
+    /// changed one keeps the chosen source by its handle — titles change
+    /// and indices move — and returns `true` when that source is gone or
+    /// nothing was chosen, for the caller to select as at launch.
+    fn refresh_picker(&mut self, ui: &MainWindow) -> bool {
         #[cfg(windows)]
         {
             use gawk_ui::{MonitorRow, WindowRow};
             use slint::{ModelRc, VecModel};
-            self.picked_windows = gawk_capture::wgc::enumerate_windows();
-            self.picked_monitors = gawk_capture::wgc::enumerate_monitors();
+            let windows = gawk_capture::wgc::enumerate_windows(&self.picked_windows);
+            let monitors = gawk_capture::wgc::enumerate_monitors();
+            if gawk_capture::picker::same_windows(&windows, &self.picked_windows)
+                && monitors == self.picked_monitors
+            {
+                return false;
+            }
+            let window_keys = |v: &[gawk_capture::picker::WindowCandidate]| {
+                v.iter().map(|w| (w.hwnd, w.pid)).collect::<Vec<_>>()
+            };
+            let monitor_keys = |v: &[gawk_capture::picker::MonitorCandidate]| {
+                v.iter().map(|m| m.hmonitor).collect::<Vec<_>>()
+            };
+            let window = follow(
+                &window_keys(&self.picked_windows),
+                &window_keys(&windows),
+                ui.get_selected_window(),
+            );
+            let monitor = follow(
+                &monitor_keys(&self.picked_monitors),
+                &monitor_keys(&monitors),
+                ui.get_selected_monitor(),
+            );
+            self.picked_windows = windows;
+            self.picked_monitors = monitors;
             let rows: Vec<WindowRow> = self
                 .picked_windows
                 .iter()
@@ -229,11 +267,47 @@ impl Windows {
                 })
                 .collect();
             ui.set_monitors(ModelRc::new(VecModel::from(monitors)));
+            let kept = if ui.get_picker_tab() == 0 {
+                window.map(|w| (w, -1))
+            } else {
+                monitor.map(|m| (-1, m))
+            };
+            let Some((w, m)) = kept else {
+                return true;
+            };
+            ui.set_selected_window(w);
+            ui.set_selected_monitor(m);
+            // The picker page shows the choice too (docs/60 D5).
+            ui.set_draft_window(w);
+            ui.set_draft_monitor(m);
+            false
         }
         #[cfg(not(windows))]
         {
             let _ = ui;
+            false
         }
+    }
+}
+
+/// Where the chosen row went when the list changed: the index of the same
+/// key (window handle and PID, or monitor handle) in the new list. `None`
+/// when nothing was chosen or it is no longer listed.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn follow<K: PartialEq>(old: &[K], new: &[K], chosen: i32) -> Option<i32> {
+    let key = old.get(usize::try_from(chosen).ok()?)?;
+    new.iter().position(|k| k == key).map(|i| i as i32)
+}
+
+/// Lists the picker's sources again; when the chosen one is gone, selects
+/// as at launch (docs/60 D5).
+fn relist(ui: &MainWindow, shell: &std::rc::Rc<std::cell::RefCell<shell::Shell>>) {
+    let lost = shell
+        .borrow_mut()
+        .platform_mut::<Windows>()
+        .refresh_picker(ui);
+    if lost {
+        shell::reselect_source(ui, shell);
     }
 }
 
@@ -275,19 +349,26 @@ fn main() {
     shell::run(
         Box::new(Windows::default()),
         |ui, shell| {
-            let shell = shell.clone();
-            let ui_weak = ui.as_weak();
+            // Opening the picker lists at once; while it stays open, every
+            // second.
+            let (sh, ui_weak) = (shell.clone(), ui.as_weak());
             ui.on_refresh_picker(move || {
                 if let Some(ui) = ui_weak.upgrade() {
-                    shell
-                        .borrow_mut()
-                        .platform_mut::<Windows>()
-                        .refresh_picker(&ui);
-                    // The list's indices moved: select the remembered source
-                    // again (docs/60 D5).
-                    shell::reselect_source(&ui, &shell);
+                    relist(&ui, &sh);
                 }
             });
+            let (sh, ui_weak) = (shell.clone(), ui.as_weak());
+            shell.borrow_mut().platform_mut::<Windows>().poll.start(
+                slint::TimerMode::Repeated,
+                PICKER_POLL,
+                move || {
+                    if let Some(ui) = ui_weak.upgrade()
+                        && ui.get_page() == 1
+                    {
+                        relist(&ui, &sh);
+                    }
+                },
+            );
         },
         launch,
     );
@@ -311,5 +392,25 @@ fn launch() -> gawk_ui::instance::Launch {
     Launch {
         note,
         ..Launch::new(Request::from_args(&args), None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::follow;
+
+    #[test]
+    fn the_chosen_row_follows_its_key_when_the_list_changes() {
+        let old = [(10, 1), (20, 2), (30, 3)];
+        // A window above it closed and a new one opened below it.
+        assert_eq!(follow(&old, &[(20, 2), (30, 3), (40, 4)], 1), Some(0));
+        assert_eq!(follow(&old, &[(10, 1), (30, 3)], 1), None, "it closed");
+        assert_eq!(
+            follow(&old, &[(10, 1), (20, 9)], 1),
+            None,
+            "a reused handle"
+        );
+        assert_eq!(follow(&old, &old, -1), None, "nothing was chosen");
+        assert_eq!(follow(&old, &old, 7), None, "out of range");
     }
 }

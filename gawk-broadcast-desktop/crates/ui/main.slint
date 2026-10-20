@@ -21,7 +21,7 @@
 // gives up height first (D5). The page publishes what it needs for the
 // shell's window fit (D8).
 
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, ListView } from "std-widgets.slint";
 
 export struct WindowRow {
     hwnd: int,
@@ -60,6 +60,18 @@ export struct RoomRow {
     broadcast-id: string,
     watch-link: string,
     removable: bool,
+}
+
+// One entry of the Open-source licences page (R72, docs/74 D3).
+// kind: 0 a section heading, 1 a paragraph, 2 a package (title name and
+// version, sub its licence, body its copyright), 3 a licence text (title the
+// licence, sub what it applies to, body the text), 4 an MPL source (title the
+// package, sub the address, opened on click).
+export struct NoticeRow {
+    kind: int,
+    title: string,
+    sub: string,
+    body: string,
 }
 
 // One line of "Your rooms" (docs/60 D8).
@@ -2265,7 +2277,8 @@ export component MainWindow inherits Window {
     in property <bool> summary-visible: false;
     in property <[StatRow]> summary-rows: [];
 
-    // ----- pages: 0 main, 1 picker, 2 settings, 3 edit server, 4 quality -----
+    // ----- pages: 0 main, 1 picker, 2 settings, 3 edit server, 4 quality,
+    // 5 open-source licences -----
     in-out property <int> page: 0;
 
     // ----- settings -----
@@ -2297,6 +2310,9 @@ export component MainWindow inherits Window {
     in property <string> caption-broadcast: "";
     in property <string> caption-diag: "";
     in property <string> terms-link: "";
+    // R72 (docs/74 D3): the third-party notices this binary embeds, filled
+    // by open-licences the first time the page opens.
+    in property <[NoticeRow]> licences: [];
     in-out property <bool> show-links-sheet: false;
     in-out property <bool> show-diag-sheet: false;
 
@@ -2500,7 +2516,14 @@ export component MainWindow inherits Window {
         }
     }
 
+    // Lists the picker's sources again (Windows): as the picker page
+    // opens, then every second while it is open (the platform's timer).
     callback refresh-picker();
+    changed page => {
+        if (root.page == 1) {
+            root.refresh-picker();
+        }
+    }
     callback picker-view-changed(int);
     callback choose-content();
     callback source-picked();
@@ -2545,6 +2568,7 @@ export component MainWindow inherits Window {
     callback dismiss-update();
     callback install-update();
     callback check-for-updates();
+    callback open-licences();
     callback quit-confirmed();
 
     // macOS (docs/54 D11): Slint already gives the app menu About and Quit
@@ -2587,13 +2611,14 @@ export component MainWindow inherits Window {
                 icon: Icons.back;
                 label: "Back";
                 clicked => {
-                    root.page = root.page == 3 ? 2 : 0;
+                    root.page = root.page == 3 || root.page == 5 ? 2 : 0;
                 }
             }
             if root.page != 0: Text {
                 text: root.page == 1 ? (root.live ? "Change what you share" : "Choose what to share")
                     : root.page == 2 ? "Settings"
                     : root.page == 3 ? (root.server-is-custom ? (root.set-server-name != "" ? root.set-server-name : "Server") : "Official server")
+                    : root.page == 5 ? "Open-source licences"
                     : "Quality";
                 color: T.text;
                 font-size: 17px;
@@ -2635,13 +2660,6 @@ export component MainWindow inherits Window {
             // changing something mid-stream sees it is still going.
             if (root.page == 1 || root.page == 4) && root.live && !root.paused: Badge {
                 kind: 0;
-            }
-            if root.page == 1: IconBtn {
-                icon: Icons.refresh;
-                label: "Refresh the list";
-                clicked => {
-                    root.refresh-picker();
-                }
             }
             if root.page == 0 && !root.on-air: StatusLine {
                 state: root.probe-state;
@@ -3584,7 +3602,7 @@ export component MainWindow inherits Window {
                         }
                     }
                     if root.draft-tab == 0 && root.windows.length == 0: Text {
-                        text: "No shareable windows found. Open the app you want to share, then refresh.";
+                        text: "No shareable windows found. Open the app you want to share and it shows up here.";
                         color: T.muted;
                         font-size: 12.5px;
                         wrap: word-wrap;
@@ -3855,6 +3873,21 @@ export component MainWindow inherits Window {
                                 }
                             }
                         }
+                        // R72 (docs/74 D3): the notices travel inside the
+                        // binary, so a single-file download and a
+                        // self-update carry them too.
+                        Row {
+                            RowText {
+                                title: "Open-source licences";
+                                sub: "The third-party software in this app.";
+                            }
+                            RowLink {
+                                text: "View";
+                                clicked => {
+                                    root.open-licences();
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -3890,6 +3923,131 @@ export component MainWindow inherits Window {
                         }
                         Rectangle {
                             horizontal-stretch: 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ================= open-source licences (R72, docs/74 D3) =================
+        // A ListView, not a ScrollView: a few hundred packages and their
+        // licence texts, and only what is on screen is instantiated.
+        if root.page == 5: ListView {
+            vertical-stretch: 1;
+            for row in root.licences: VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: row.kind == 0 ? 18px : 0px;
+                padding-bottom: row.kind == 0 ? 8px : row.kind == 1 ? 10px : 0px;
+                if row.kind == 0: Kicker {
+                    text: row.title;
+                }
+                if row.kind == 1: Text {
+                    text: row.title;
+                    color: T.muted;
+                    font-size: 12.5px;
+                    wrap: word-wrap;
+                }
+                if row.kind == 2: Rectangle {
+                    background: T.s1;
+                    VerticalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        padding-top: 7px;
+                        padding-bottom: 7px;
+                        spacing: 1px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: row.title;
+                                color: T.text;
+                                font-size: 13.5px;
+                                font-weight: 500;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: row.sub;
+                                color: T.accent-text;
+                                font-size: 12px;
+                                horizontal-alignment: right;
+                            }
+                        }
+                        if row.body != "": Text {
+                            text: row.body;
+                            color: T.muted;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                        }
+                    }
+                    Rectangle {
+                        y: 0;
+                        height: 1px;
+                        background: T.border-soft;
+                    }
+                }
+                if row.kind == 3: VerticalLayout {
+                    padding-top: 10px;
+                    padding-bottom: 6px;
+                    spacing: 4px;
+                    Text {
+                        text: row.title;
+                        color: T.text;
+                        font-size: 14px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Applies to: " + row.sub;
+                        color: T.muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    Rectangle {
+                        background: T.s1;
+                        border-width: 1px;
+                        border-color: T.border;
+                        border-radius: 10px;
+                        VerticalLayout {
+                            padding: 12px;
+                            Text {
+                                text: row.body;
+                                color: T.muted;
+                                font-size: 11.5px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+                if row.kind == 4: Rectangle {
+                    background: T.s1;
+                    accessible-role: button;
+                    accessible-label: row.title + ", " + row.sub;
+                    accessible-action-default => {
+                        root.open-link(row.sub);
+                    }
+                    VerticalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        padding-top: 7px;
+                        padding-bottom: 7px;
+                        Text {
+                            text: row.title;
+                            color: T.text;
+                            font-size: 13.5px;
+                            font-weight: 500;
+                        }
+                        Text {
+                            text: row.sub;
+                            color: T.accent;
+                            font-size: 12px;
+                            overflow: elide;
+                        }
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.open-link(row.sub);
                         }
                     }
                 }

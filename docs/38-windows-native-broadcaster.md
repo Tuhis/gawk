@@ -519,8 +519,9 @@ shared with `gawk-app` so the two broadcasters read as one product.
    `uplink_warning_text`; the Live pill reads "Your upload can't keep
    up"); transitions also land in debug.log.
 2. **Capture picker** (idle only) — two tabs: **Share an app** (alt-tab
-   window list, icon + title, refresh) / **Share a screen** (monitors with
-   name and resolution). Selection is remembered per mode for the session;
+   window list, icon + title, re-listed every second while the picker is
+   open — no refresh button) / **Share a screen** (monitors with name and
+   resolution). Selection is remembered per mode for the session;
    the picker re-appears on every start like the Linux portal does — no
    silent re-use of a stale grant.
 3. **Controls** — `Start broadcast` (+ `Resume <CODE>` when a previous ID is

@@ -73,6 +73,40 @@ pub struct WindowCandidate {
     pub icon: Option<IconRgba>,
 }
 
+impl WindowCandidate {
+    /// The same row as `other` as the picker draws it: the same window
+    /// under the same title, with or without an icon. The pixels are not
+    /// compared — an icon is read once per row (see [`known_icon`]).
+    pub fn same_row(&self, other: &Self) -> bool {
+        self.hwnd == other.hwnd
+            && self.pid == other.pid
+            && self.title == other.title
+            && self.icon.is_some() == other.icon.is_some()
+    }
+}
+
+/// Whether two enumerations would draw the same list. The picker polls
+/// every second while open and replaces its rows only when this is false,
+/// so an unchanged list is never rebuilt under the pointer.
+pub fn same_windows(a: &[WindowCandidate], b: &[WindowCandidate]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.same_row(y))
+}
+
+/// The icon an earlier enumeration already read for this window under
+/// this title, so a poll does not read every icon again. A window that had
+/// none is asked again: an app's first window often sets its icon a moment
+/// after it appears, and a 1 s poll sees it in that moment.
+pub fn known_icon<'a>(
+    prev: &'a [WindowCandidate],
+    hwnd: isize,
+    pid: u32,
+    title: &str,
+) -> Option<&'a IconRgba> {
+    prev.iter()
+        .find(|w| w.hwnd == hwnd && w.pid == pid && w.title == title)
+        .and_then(|w| w.icon.as_ref())
+}
+
 /// One pickable monitor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorCandidate {
@@ -106,6 +140,59 @@ mod tests {
             visible: true,
             ..Default::default()
         }
+    }
+
+    fn win(hwnd: isize, title: &str, icon: bool) -> WindowCandidate {
+        WindowCandidate {
+            hwnd,
+            pid: 7,
+            title: title.into(),
+            icon: icon.then(|| IconRgba {
+                width: 1,
+                height: 1,
+                rgba: vec![hwnd as u8, 0, 0, 0xff],
+            }),
+        }
+    }
+
+    // The 1 s poll leaves the list alone unless a row would draw differently.
+    #[test]
+    fn a_poll_changes_the_list_only_when_a_row_would_draw_differently() {
+        let a = vec![win(1, "Steam", true), win(2, "Elden Ring", false)];
+        let mut b = a.clone();
+        b[0].icon.as_mut().unwrap().rgba[0] = 99;
+        assert!(same_windows(&a, &b), "icon pixels are not compared");
+        assert!(!same_windows(&a, &a[..1]), "a window closed");
+        assert!(
+            !same_windows(&a, &[a[1].clone(), a[0].clone()]),
+            "reordered"
+        );
+        assert!(!same_windows(
+            &a,
+            &[win(1, "Steam — Library", true), a[1].clone()]
+        ));
+        assert!(
+            !same_windows(&a, &[a[0].clone(), win(2, "Elden Ring", true)]),
+            "icon arrived"
+        );
+        assert!(
+            !same_windows(&a, &[win(3, "Steam", true), a[1].clone()]),
+            "new window"
+        );
+    }
+
+    #[test]
+    fn a_known_icon_is_reused_for_the_same_window_and_title_only() {
+        let prev = vec![win(1, "Steam", true), win(2, "Elden Ring", false)];
+        assert_eq!(known_icon(&prev, 1, 7, "Steam"), prev[0].icon.as_ref());
+        assert_eq!(known_icon(&prev, 1, 7, "Steam — Library"), None, "retitled");
+        assert_eq!(known_icon(&prev, 1, 8, "Steam"), None, "a reused handle");
+        assert_eq!(
+            known_icon(&prev, 2, 7, "Elden Ring"),
+            None,
+            "had none: ask again"
+        );
+        assert_eq!(known_icon(&prev, 3, 7, "Steam"), None);
     }
 
     #[test]

@@ -18,7 +18,9 @@
   // simply stay stale and CI says so. See CONTRIBUTING.md.
   postUpgradeTasks: {
     commands: ["python3 tools/licenses/gen-notices.py"],
-    fileFilters: ["**/THIRD-PARTY-NOTICES.md"],
+    // -*: the desktop's -macos and -linux files too, which the apps embed
+    // (docs/74), so a stale one ships inside the binary.
+    fileFilters: ["**/THIRD-PARTY-NOTICES*.md"],
     executionMode: "branch",
   },
 

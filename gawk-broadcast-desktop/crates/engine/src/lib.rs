@@ -19,6 +19,7 @@ pub mod install;
 pub mod link;
 pub mod lossnotice;
 pub mod media;
+pub mod notices;
 pub mod probe;
 pub mod relay;
 pub mod resume;

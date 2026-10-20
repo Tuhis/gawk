@@ -1,4 +1,4 @@
-# The shared-bottleneck lab (docs/74 RU4): tc, a bulk TCP flow and ping, in a
+# The shared-bottleneck lab (docs/75 RU4): tc, a bulk TCP flow and ping, in a
 # network namespace of its own so the bottleneck sits on the container's lo.
 # glibc, so the host-built lab binaries run as they are.
 FROM debian:stable-slim

@@ -1,4 +1,4 @@
-// The browser broadcaster's uplink, over Chrome's own QUIC stack (docs/74
+// The browser broadcaster's uplink, over Chrome's own QUIC stack (docs/75
 // OD5). Not part of the app: tools/uplinklab/browser/sender.mjs builds this
 // page, serves it and drives a headless Chrome at it, and the page replays a
 // frame-size trace exactly as BroadcastPipeline.handleEncoded sends encoded
@@ -6,7 +6,7 @@
 // so what differs from the native lab sender is only the QUIC stack.
 //
 // `mode=carrier` is a prototype of what a browser Reliable mode would be: the
-// native carrier's rules (docs/74 D3) as far as Chrome's API reaches. Chrome
+// native carrier's rules (docs/75 D3) as far as Chrome's API reaches. Chrome
 // 151 has no stream priority (`sendOrder`), so the keyframe stream cannot be
 // put ahead of the carrier as the engine does.
 //
@@ -33,7 +33,7 @@ const NOWAIT = q.get('writes') === 'nowait';
 const KFORDER = q.get('kforder') ?? '';
 // maxage / hwm: the spec's own knobs on the outgoing datagram queue, which
 // the shipping page leaves at Chrome's defaults (null, 1). Probed for the
-// BUGS.md fix (docs/74 F18).
+// BUGS.md fix (docs/75 F18).
 const MAXAGE = q.get('maxage') ? Number(q.get('maxage')) : null;
 const HWM = q.get('hwm') ? Number(q.get('hwm')) : null;
 
@@ -127,7 +127,7 @@ async function main(): Promise<void> {
     return { written: writtenP, acked };
   };
 
-  // The carrier prototype (docs/74 D3): one uni stream per GOP; nothing of a
+  // The carrier prototype (docs/75 D3): one uni stream per GOP; nothing of a
   // superseded GOP survives — queued records are shed, a carrier superseded
   // before it opened is never opened, a blocked write is abandoned and its
   // stream reset — and a retired carrier gets RETIRE_GRACE_MS after its FIN

@@ -1,4 +1,4 @@
-// The uplink lab's viewer half (docs/74). Replays a frame-arrival trace
+// The uplink lab's viewer half (docs/75). Replays a frame-arrival trace
 // measured at the relay through the SHIPPING reorder buffer and adaptive
 // playout controller under a fake clock, then through a model of
 // PacedPresentationSink on a 60 Hz vsync, and reports what the viewer sees.

@@ -1,4 +1,4 @@
-//! The uplink lab's sender (docs/74). Replays a frame-size trace from a real
+//! The uplink lab's sender (docs/75). Replays a frame-size trace from a real
 //! encoder at the broadcaster's cadence over the engine's transport stack, in
 //! one of two delta deliveries:
 //!
@@ -203,7 +203,7 @@ enum CarrierMsg {
 /// never blocks on the stream. On rotation the previous carrier finishes and
 /// gets `CARRIER_RETIRE_GRACE` to be fully acknowledged, else it is reset —
 /// quinn exposes no per-offset acknowledgement, so "fully acknowledged after
-/// FIN" is the only deadline the sender can observe (docs/74 D3). Nothing for
+/// FIN" is the only deadline the sender can observe (docs/75 D3). Nothing for
 /// a GOP that a newer keyframe has superseded (`latest`, the newest keyframe's
 /// frameId) survives: queued records are shed unwritten, a carrier is never
 /// opened for it, and a write still blocked on its carrier is abandoned and

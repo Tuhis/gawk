@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# F7's runs (docs/74): a publish to the REAL relay with gawk-loadgen viewers
+# F7's runs (docs/75): a publish to the REAL relay with gawk-loadgen viewers
 # attached, reading the relay's own ingress-loss counters afterwards.
 #   relay.sh <out-dir> <trace.csv> <viewers> <seconds> [sender args...]
 # RELAY_CPUS, VIEWER_CPUS and SENDER_CPUS pin each side to its own cores

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The relay's datagram queue by depth (docs/74 F16, §11 table N), and the
+# The relay's datagram queue by depth (docs/75 F16, §11 table N), and the
 # stock depth drained on its own goroutine (drain.patch): 1440p through
 # the real relay on 3 pinned cores with 2 and 4 viewers (fan-out not
 # saturated), three runs a cell; then 1080p with 15 viewers squeezed onto one

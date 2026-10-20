@@ -3,7 +3,7 @@
 #   run.sh <out-dir> <sender args...> -- <proxy args...>
 # RECV_ARGS adds receiver flags (e.g. -stream-window); RECV_BIN swaps the
 # receiver binary (e.g. gawk-uplinklab-bigq, D7's longer datagram queue);
-# SENDER_BIN the sender (browser/sender.mjs: Chrome, docs/74 OD5), which
+# SENDER_BIN the sender (browser/sender.mjs: Chrome, docs/75 OD5), which
 # finds the receiver's certificate hash in <out-dir>/cert.hash.
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)

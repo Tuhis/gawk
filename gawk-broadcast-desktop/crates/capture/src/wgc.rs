@@ -9,7 +9,9 @@
 //! live.
 
 use crate::d3d::GpuDevice;
-use crate::picker::{IconRgba, MonitorCandidate, WindowCandidate, WindowProps, alt_tab_eligible};
+use crate::picker::{
+    IconRgba, MonitorCandidate, WindowCandidate, WindowProps, alt_tab_eligible, known_icon,
+};
 use windows::Foundation::Metadata::ApiInformation;
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
@@ -56,14 +58,17 @@ unsafe impl Send for CapturedFrame {}
 
 /// Enumerates the alt-tab-eligible top-level windows (docs/38 D6): raw
 /// properties from the Win32 APIs, judgment from the portable filter.
-pub fn enumerate_windows() -> Vec<WindowCandidate> {
-    struct EnumState {
+/// Icons already read in `prev` (the last enumeration) are reused, so the
+/// picker's 1 s poll costs `EnumWindows` and a few property reads.
+pub fn enumerate_windows(prev: &[WindowCandidate]) -> Vec<WindowCandidate> {
+    struct EnumState<'a> {
         out: Vec<WindowCandidate>,
         own_pid: u32,
+        prev: &'a [WindowCandidate],
     }
 
     unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let state = unsafe { &mut *(lparam.0 as *mut EnumState) };
+        let state = unsafe { &mut *(lparam.0 as *mut EnumState<'_>) };
 
         let mut title_buf = [0u16; 512];
         let len = unsafe { GetWindowTextW(hwnd, &mut title_buf) };
@@ -94,11 +99,15 @@ pub fn enumerate_windows() -> Vec<WindowCandidate> {
             own_process: pid == state.own_pid,
         };
         if alt_tab_eligible(&props) {
+            let icon = match known_icon(state.prev, hwnd.0 as isize, pid, &title) {
+                Some(icon) => Some(icon.clone()),
+                None => window_icon(hwnd),
+            };
             state.out.push(WindowCandidate {
                 hwnd: hwnd.0 as isize,
                 pid,
                 title,
-                icon: window_icon(hwnd),
+                icon,
             });
         }
         true.into()
@@ -107,11 +116,12 @@ pub fn enumerate_windows() -> Vec<WindowCandidate> {
     let mut state = EnumState {
         out: Vec::new(),
         own_pid: std::process::id(),
+        prev,
     };
     unsafe {
         let _ = EnumWindows(
             Some(enum_proc),
-            LPARAM(&mut state as *mut EnumState as isize),
+            LPARAM(&mut state as *mut EnumState<'_> as isize),
         );
     }
     state.out

@@ -1,4 +1,4 @@
-// Command gawk-uplinklab measures the broadcaster → relay leg (docs/74):
+// Command gawk-uplinklab measures the broadcaster → relay leg (docs/75):
 // a receiver built on the relay's own QUIC stack and configuration, and a
 // deterministic UDP impairment proxy to put in front of it.
 //

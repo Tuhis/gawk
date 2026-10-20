@@ -118,11 +118,11 @@ FEC is the right tool here and was the wrong one for R19 — R19 weighed FEC and
 chose carriers because it could afford latency. Live-edge cannot, and a
 per-frame code costs none.
 
-*2026-10-17 (docs/74 F14)*: "redundant" holds for loss on **leg B** only. A
+*2026-10-17 (docs/75 F14)*: "redundant" holds for loss on **leg B** only. A
 chunk lost on the broadcaster's uplink is missing at the relay, so the
 carrier cannot retransmit it and, with no parity, these viewers freeze where
 a live-edge viewer recovers: at 0.1 % uplink loss, ~88 % of frames against
-100 %. docs/74 OD6 (decided 2026-10-18) serves them parity too (D11,
+100 %. docs/75 OD6 (decided 2026-10-18) serves them parity too (D11,
 RU8), revising the suppression above.
 
 ---

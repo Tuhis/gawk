@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Uplink lab analysis (docs/74 §4): joins a sender log and a receiver log on
+"""Uplink lab analysis (docs/75 §4): joins a sender log and a receiver log on
 frameId and reports, per run, what the relay would have had and when.
 
 Usage: analyze.py <run-dir> [--skip-s 5] [--json out.json] [--viewer-trace out.json]
