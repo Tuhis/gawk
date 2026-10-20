@@ -919,12 +919,13 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   result of its own, never a rejection. Drop a delta older than one GOP
   (500 ms since `send()` received it) and the rest of its GOP, and stale
   audio the same way (it shares the queue); send keyframes the engine's
-  F-12 way (one written at a time, the newest waiting, a stream aborted
-  only when a newer keyframe arrives while it is 2 s old and still
-  unacknowledged — a shorter limit livelocked natively), never dropping
-  one for age; let a late keyframe's deltas give way to it, "late" timed
-  to the handover, not the acknowledgement, so long links never trip it;
-  and tell the broadcaster their upload can't keep up while it lasts.
+  F-12 way (one written at a time and at most two in Chrome, the newest
+  waiting, a stream aborted only when a newer keyframe arrives while it is
+  2 s old and still unacknowledged — a shorter limit livelocked natively),
+  never dropping one for age; drop a GOP's deltas while its keyframe waits
+  behind a late one, timed to the handover, not the acknowledgement, so
+  long links never trip it; and tell the broadcaster their upload can't
+  keep up while it lasts.
 
 ## The relay drops high-rung publisher datagrams that QUIC already acknowledged
 

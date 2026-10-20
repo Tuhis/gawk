@@ -1105,27 +1105,37 @@ keyframe arrives while it is 2 s old and still unacknowledged — the engine
 first cancelled a keyframe write that outlived its GOP and livelocked in
 the field, every write dying at ~90 % while joining viewers saw black
 (docs/38 F-12). Deltas give way to keyframes instead: while a GOP's
-keyframe is late, that GOP's deltas are dropped, since no viewer can
-decode them before it lands and they would take the link it needs.
+keyframe has to wait behind a late one, that GOP's deltas are dropped,
+since no viewer can decode them before it lands and they would take the
+link it needs.
 
 **Long links must work as naturally as short ones** (owner, 2026-10-20),
-so both clocks are chosen for them. *Late* means not handed over to Chrome
-(its `write()` resolved) within one GOP (500 ms) of production, waiting or
-writing; and the next keyframe starts as soon as the previous one's data
-is handed over, not when Chrome has it acknowledged, so a long path's
-round trip never holds it back — only the 2 s abort runs on the
-acknowledgement. On clean paths at 0–300 ms RTT no keyframe of 1 200 was
-late (the slowest handed over at 391 ms); the acknowledgement clock would
-have tripped at 100–300 ms (602–728 ms at worst), and stays far under
-the 2 s abort (table P9).
+so the clocks are chosen for them. The next keyframe starts as soon as the
+previous one's data is handed over to Chrome (its `write()` resolved), not
+when Chrome has it acknowledged, so a long path's round trip never holds
+it back; at most two keyframe streams are in Chrome at once, one being
+written and one draining. A keyframe therefore waits — and its GOP's
+deltas give way — only when the previous one was not handed over within
+one GOP. Across 2 400 keyframes on twelve paths — clean at 0–300 ms RTT
+(twice at 40 and 100 ms), 0.1 % loss at 40 ms, and 1440p at 10–100 ms —
+none would have waited (table P9). The slowest 1080p handover took
+391 ms; the slowest of all, 493 ms, was at 1440p, which the browser
+reaches only through its bitrate override, on runs past Chrome's datagram
+ceiling. The acknowledgement clock would have tripped at 100–300 ms
+(602–728 ms). The threshold stays one GOP rather than scaling with
+RTT, because the handover is not driven by RTT (its p95 was 74 ms at
+300 ms RTT). Only the 2 s abort runs on the acknowledgement, far above
+anything a healthy path showed. A rare false trip costs one GOP's deltas
+from the late handover on: one bad second, where the notice needs five.
 
 On a link that cannot carry the stream, the browser falls back to
 keyframes and whatever deltas fit after them: the picture moves whenever
-a keyframe lands — at worst about every 2.5 s — and stays frozen between,
-rather than falling further behind; below about one keyframe per 2 s of
-link (0.7–0.9 Mbps for the lab's 230 KB 1080p keyframe) none lands, as
-natively. RU9 turns "further and further behind" into "current, but
-dropping frames", and tells the broadcaster so.
+a keyframe lands and stays frozen between, rather than falling further
+behind — how often it lands there is the P7 re-run's to measure; below
+about one keyframe per 2 s of link (0.7–0.9 Mbps for the lab's 230 KB
+1080p keyframe) none lands, as natively. RU9 turns "further and further
+behind" into "current, but dropping frames", and tells the broadcaster
+so.
 
 | Acceptance criterion | Verified by |
 |---|---|
@@ -1134,15 +1144,15 @@ dropping frames", and tells the broadcaster so.
 | **Age is enqueue time, decided once per frame**: a frame's age is the time since `send()` received it, read from an injectable `now()` (fake timers in the test), checked when the frame's first datagram comes up, so a frame is never half-sent. A delta more than one GOP (`keyframeIntervalMs`, 500 ms) old is dropped whole, and the rest of its GOP's deltas with it until the next keyframe — the native carrier's rule (D3) | unit, red first |
 | **Audio too**: an audio packet more than 500 ms old when its turn comes is dropped, as a lost audio datagram already is; it shares the queue, so stale audio would otherwise hold fresh video behind it | unit, red first |
 | **The boundary**: with a fake datagram writer that stalls 400 ms nothing is dropped; stalled 600 ms, only the frames past the bound and the rest of their GOP are — in both, the keyframe streams complete at once, so only the datagram queue is under test; on a link that keeps up the output is byte-identical to today's, in the same order | unit |
-| **Keyframes, the engine's F-12 rule** (`engine/src/sender.rs`), with the browser's two clocks: `sendKeyframeStream` becomes a small state machine driven from `handleEncoded`, checked only when a keyframe is produced, never on a timer. At most one keyframe stream is being written; a keyframe produced while one is waits in a single pending slot, replacing any older waiter. The waiter starts as soon as the stream being written has its data handed over (its `write()` resolved) — not when its `close()` resolves on acknowledgement, which on a long path is a round trip later. Any keyframe stream still unacknowledged 2 s after it started is aborted (`RST_STREAM`) when the next keyframe is produced, any waiter discarded, and the new keyframe starts at once. A keyframe is never dropped for age. Today every keyframe opens its own stream at once and they share the link (Chrome has no `sendOrder`) | unit, red first |
-| **Deltas give way to keyframes**: a delta whose GOP's keyframe is late — not handed over within one GOP (500 ms) of its production, whether waiting or being written — is dropped as stale when its turn comes, and so is every delta of a GOP whose keyframe was replaced or aborted (D3's superseded-GOP rule): no viewer can decode them, and they would take the link the keyframe needs. The keyframe's boundary: handed over 400 ms after production, nothing is dropped; 600 ms, its GOP's deltas are dropped from 500 ms on, and those already sent stay sent | unit, red first |
-| **Keyframe counts as the engine's**: a replaced waiter and an aborted write each count once in `keyframeStreamsSuperseded`, never also in `keyframeStreamsFailed` (today any rejection in `sendKeyframeStream`'s catch counts as failed, and an aborted write rejects there); `keyframeStreamsFailed` keeps meaning a stream that could not be written | unit |
+| **Keyframes, the engine's F-12 rule** (`engine/src/sender.rs`), with the browser's two clocks: `sendKeyframeStream` becomes a small state machine driven from `handleEncoded` by events — a keyframe produced, a stream handed over (`write()` resolved), a stream acknowledged (`close()` resolved) — never by a timer. At most two keyframe streams are in Chrome at once: one being written, one draining (handed over, not yet acknowledged). A keyframe produced while one is being written waits in a single pending slot, replacing any older waiter; the waiter starts when the stream being written is handed over and no older stream is still unacknowledged, otherwise when that older one is acknowledged. When a keyframe is produced, the oldest unacknowledged stream, if 2 s or more since it started, is aborted (`RST_STREAM`) and any waiter discarded; the new keyframe then starts at once if nothing is left being written, and otherwise waits in the slot. A keyframe is never dropped for age. Today every keyframe opens its own stream at once and they share the link (Chrome has no `sendOrder`) | unit, red first |
+| **Deltas give way to keyframes**: a delta is dropped as stale when its turn comes while its GOP's keyframe waits in the slot — which, with the handover clock, happens only when the previous keyframe was not handed over within one GOP of its production — or is being written and not handed over within one GOP of its production; and so is every delta of a GOP whose keyframe was replaced or aborted (D3's superseded-GOP rule): no viewer can decode them, and they would take the link the keyframe needs. The boundary, with a datagram writer that keeps up: keyframe *n* handed over 400 ms after production — keyframe *n*+1 does not wait and nothing is dropped; handed over at 600 ms — GOP *n*+1's deltas produced between 500 and 600 ms are dropped, GOP *n*'s are not | unit, red first |
+| **Keyframe counts as the engine's**: a replaced waiter and an aborted stream each count once in `keyframeStreamsSuperseded`, never also in `keyframeStreamsFailed` (today any rejection in `sendKeyframeStream`'s catch counts as failed, and an aborted write rejects there); `keyframeStreamsFailed` keeps meaning a stream that could not be written | unit |
 | **Resume**: a transport resume builds a new `DatagramSender` and keeps the encoder. The GOP counter carries on; nothing queued on the old sender is sent on the new one; the in-flight keyframe dies with the old session and counts as failed; the waiting keyframe is discarded without being counted, because the resume forces a fresh keyframe (`forceNextKeyframe`), which starts at once — so a resume alone is never a bad second | unit |
 | **Counted on its own**: `staleFramesDropped` and `staleAudioDropped` (new) and `keyframeStreamsSuperseded` (new in the browser, the engine's counter), apart from `droppedFrames` (encoder rejections and send failures), wherever `droppedFrames` is reported today (the broadcaster's stats, Diagnostics, telemetry), so a too-slow uplink and a dead session stay apart | unit |
 | **Shown to the broadcaster** (§6), on the native monitor's rule exactly (`engine/src/uplink.rs`): a second is bad on any stale drop, video or audio (the engine's "frames dropped at send"), on two or more keyframe streams superseded or failed, or on a sent rate under 75 % of the encode rate (above 20 fps); five bad seconds raise the notice, fifteen good ones clear it | unit (fake clock) + manual |
 | **Reachable**: the notice's sentence is announced to screen readers and reachable by keyboard (`aria-describedby` on a focusable pill, or the sentence shown), not only on hover | unit (role / label query) |
 | **Not a ladder signal**: RU9 does not feed stale drops to `FallbackController`; the notice asks the broadcaster instead. No gawk sender's ladder reacts to the network today (docs/09, docs/38 D11); the browser Reliable milestone revisits it | review |
-| Table P7's cells re-run with the fix (the lab page counts a dropped frame as resolved): frames waiting stay under one GOP's worth and decode-ready p50 under 1 s, against today's 20–43 s; how often a keyframe lands there is recorded (a measured outcome, not a bound); and table P9's clean cells at 0–300 ms RTT, re-run, show no late keyframe and nothing dropped. Recorded in §11 | lab |
+| Table P7's cells re-run with the fix (the lab page counts a dropped frame as resolved): frames waiting stay under one GOP's worth and decode-ready p50 under 1 s, against today's 20–43 s; how often a keyframe lands there, and the handover → acknowledgement tail (the `KW` lines), are recorded (measured outcomes, not bounds); and table P9's clean cells at 0–300 ms RTT, re-run, show no keyframe waiting and nothing dropped. Recorded in §11 | lab |
 | The `BUGS.md` entry deleted in the same PR, with a `fix` commit so release-please ships it | review |
 
 ### RU7 — The hardware pass
@@ -1249,7 +1259,7 @@ tools/uplinklab/fair/matrix.sh                # F17, the shared uplink (Docker, 
 # F18, Chrome (Chrome for Testing in ~/.cache/ms-playwright, or CHROME=…), alone on the host:
 python3 tools/uplinklab/matrix.py chrome --jobs 1      # ~1 h 45
 python3 tools/uplinklab/matrix.py chrome-kf --jobs 1   # the keyframe gate (OD5), ~1 h
-for set in chrome-ceiling chrome-ceiling-repeat chrome-knobs chrome-seeds chrome-kftiming; do
+for set in chrome-ceiling chrome-ceiling-repeat chrome-knobs chrome-seeds chrome-kftiming chrome-kftiming2; do
   python3 tools/uplinklab/matrix.py $set --jobs 1      # tables P6–P9, ~1 h 40
 done
 IPERF3=$(command -v iperf3) tools/uplinklab/fair/chrome.sh   # rootless netns (unshare -rn), ~30 min
@@ -2047,21 +2057,29 @@ the embedded decoder config); seeds 8 and 9 embed it.
 | 1440p 80 Mbps + outages | Chrome carrier | 86.2 · 85.4 · 69.1 | 88.6 · 88.9 · 71.7 | 20 · 21 · 47 |
 | 1440p 80 Mbps + outages | Chrome carrier + keyframe gate | 92.2 · 91.3 · 86.3 | 92.0 · 91.7 · 86.7 | 22 · 23 · 40 |
 
-#### Table P9 — Chrome's keyframes on clean paths, by RTT: the clocks RU9's late-keyframe rule uses
+#### Table P9 — Chrome's keyframes, by path: the clocks RU9's keyframe rules use
 
-1080p, Chrome's datagrams with the shipping page (each keyframe on a stream of its own), every
-keyframe of the 100 s run, the first one included. *Handed over*: production until the stream's
-`write()` resolved; *acknowledged*: until its `close()` resolved. *Late*: handed over more than
-one GOP (500 ms) after production — what would drop that GOP's deltas under RU9.
+Chrome's datagrams with the shipping page (each keyframe on a stream of its own), every keyframe
+of the 100 s run, the first one included. *Handed over*: production until the stream's `write()`
+resolved; *acknowledged*: until its `close()` resolved; the tail is what Chrome still held after
+the handover. *Would trip*: keyframes RU9 would make wait in the slot — the previous one not
+handed over before this one was produced, or never — which is what drops a GOP's deltas. The
+1440p rows are past Chrome's datagram ceiling (table P6), so a trip there is real, not false.
 
-| RTT | Keyframes | Produced → handed over p50 / p95 / max ms | Produced → acknowledged p50 / p95 / max ms | Late (> 500 ms) |
-|---|---|---|---|---|
-| 0 ms | 200 of 200 | 29 / 52 / 77 | 44 / 80 / 122 | 0 |
-| 10 ms | 200 of 200 | 26 / 41 / 57 | 43 / 68 / 82 | 0 |
-| 40 ms | 200 of 200 | 86 / 197 / 377 | 171 / 293 / 454 | 0 |
-| 100 ms | 200 of 200 | 76 / 269 / 391 | 223 / 414 / 602 | 0 |
-| 200 ms | 200 of 200 | 51 / 112 / 216 | 283 / 353 / 525 | 0 |
-| 300 ms | 200 of 200 | 30 / 74 / 102 | 341 / 391 / 728 | 0 |
+| Path | Keyframes handed over | Produced → handed over p50 / p95 / max ms | Produced → acknowledged p50 / p95 / max ms | Handover → acknowledged p50 / p95 ms | Would trip |
+|---|---|---|---|---|---|
+| 0 ms · 1080p · clean | 200 of 200 | 29 / 52 / 77 | 44 / 80 / 122 | 14 / 32 | 0 |
+| 10 ms · 1080p · clean | 200 of 200 | 26 / 41 / 57 | 43 / 68 / 82 | 18 / 31 | 0 |
+| 40 ms · 1080p · clean | 200 of 200 | 86 / 197 / 377 | 171 / 293 / 454 | 78 / 121 | 0 |
+| 40 ms · 1080p · clean (run 2) | 200 of 200 | 35 / 85 / 133 | 85 / 148 / 181 | 51 / 64 | 0 |
+| 40 ms · 1080p · 0.1 % loss | 200 of 200 | 111 / 277 / 365 | 253 / 443 / 538 | 135 / 198 | 0 |
+| 100 ms · 1080p · clean | 200 of 200 | 76 / 269 / 391 | 223 / 414 / 602 | 143 / 215 | 0 |
+| 100 ms · 1080p · clean (run 2) | 200 of 200 | 57 / 142 / 298 | 181 / 280 / 472 | 122 / 159 | 0 |
+| 200 ms · 1080p · clean | 200 of 200 | 51 / 112 / 216 | 283 / 353 / 525 | 230 / 280 | 0 |
+| 300 ms · 1080p · clean | 200 of 200 | 30 / 74 / 102 | 341 / 391 / 728 | 309 / 328 | 0 |
+| 10 ms · 1440p · clean | 200 of 200 | 100 / 223 / 493 | 133 / 262 / 543 | 28 / 55 | 0 |
+| 40 ms · 1440p · clean | 200 of 200 | 106 / 233 / 361 | 172 / 304 / 423 | 62 / 84 | 0 |
+| 100 ms · 1440p · clean | 200 of 200 | 62 / 166 / 220 | 187 / 277 / 347 | 110 / 164 | 0 |
 
 ## 12. References
 
