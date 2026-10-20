@@ -125,6 +125,12 @@ a live-edge viewer recovers: at 0.1 % uplink loss, ~88 % of frames against
 100 %. docs/75 OD6 (decided 2026-10-18) serves them parity too (D11,
 RU8), revising the suppression above.
 
+*2026-10-20 (docs/75 RU8, revised by
+[D11](75-reliable-uplink.md#d11--reliable-delivery-gets-parity-too-od6-revises-docs34-3-and-51))*:
+the suppression is gone. Reliable and DVR delivery get the same parity prefix
+as live-edge delivery, as carrier records, and the DVR ring keeps the symbols
+beside the chunks they protect. Their loss allowance stays 0.
+
 ---
 
 ## 4. Mechanism
@@ -276,6 +282,13 @@ Negotiation follows the R19/`?delivery=` precedent: `?parity=0|1|2` on
 `/subscribe/{id}`, acked in-band, **mode change = deliberate reconnect**. The
 relay clamps to 0 for any subscriber not on datagram delivery (§3) and for
 any broadcast whose publisher is not emitting parity.
+
+*Revised 2026-10-20 by [docs/75 D11](75-reliable-uplink.md#d11--reliable-delivery-gets-parity-too-od6-revises-docs34-3-and-51)
+(RU8)*: the delivery-mode clamp is removed. `NegotiateParity` takes no
+delivery mode; a reliable subscriber's symbols ride its carrier as records,
+and the DVR ring retains every symbol (its byte bound counts them) while each
+cursor replays its own prefix. `-parity-default 0` still turns parity off for
+everyone, byte-identically.
 
 ### 5.2 The default level — settled
 
