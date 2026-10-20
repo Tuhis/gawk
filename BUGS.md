@@ -829,6 +829,10 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   diagnosis sends the operator to the wrong machine. This is worst when there
   is no broadcaster telemetry session, because then the relay's ingress facts
   are the only testimony about leg A.
+- *2026-10-17*: the relay itself produces this signature on a clean path
+  at the high rung — see "The relay drops high-rung publisher datagrams that
+  QUIC already acknowledged" below. The playbook fix needs a row for that
+  case too (docs/75 D8).
 - **Fix would start**: test-first in `rules`. First, a broadcast whose relay
   facts carry heavy chunk loss and near-zero whole-frame loss must fire
   `leg-a-broadcaster-uplink`. Second, a viewer with the same relay facts must
@@ -854,6 +858,107 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Fix would start**: test-first in `ui/src/shell.rs`: stats with known
   audio and video bytes must give the video-plus-audio rate once; then drop
   the `+ st.audio_bytes_sent` in both places.
+
+## Smoother and Most stable viewers freeze on uplink loss that Balanced viewers never see
+
+- **Found**: 2026-10-17, docs/75 F14, by replaying lab traces through the
+  shipping viewer code in each preset (§11 table J). Not yet seen on the
+  fleet; the mechanism is read in code.
+- **Cause**: reliable delivery (R19 *Smoother*, R21 *Most stable*) is served
+  no parity — `hub.NegotiateParity` clamps carrier and DVR delivery to 0,
+  and the DVR ring keeps only video chunks — and its reorder buffer has no
+  loss allowance. Both assume leg A is clean. A chunk lost on the
+  broadcaster's uplink is missing at the relay, so the carrier cannot
+  retransmit it, and the viewer freezes to the next keyframe.
+- **Impact**: at 0.1 % random uplink loss (BBR uplink, 10–100 ms RTT)
+  *Balanced* shows 100 % of frames, these presets 87.5–89 % with ~15
+  freezes a minute; at 1 % loss, 32–39 %. The viewers who chose seconds of
+  delay for stability get the least of it.
+- **Fix would start**: docs/75 RU8 (serve them parity; fixes random loss,
+  not outages) and RU3 (the carrier uplink; fixes both).
+
+## Browser broadcaster: a slow uplink becomes unbounded delay, not dropped frames
+
+- **Found**: 2026-10-18, in docs/75's lab (F18): Chrome for Testing 151
+  replaying frame-size traces through the shipping packetizer and
+  `DatagramSender`, on paths where Chrome's Cubic carries less than the
+  stream (40 ms RTT with 0.5–1 % loss, 100 ms with any loss), or past
+  Chrome's per-datagram ceiling (the 1440p trace, reachable through the
+  50 Mbps bitrate override).
+- **Symptom**: decode-ready latency at the relay grew without bound —
+  p50 15–38 s within a 100 s run on random loss and bursts, 2.6–5.3 s
+  under outages, 26–49 s at 1440p — where the native
+  engine on the same path stays under 2.5 s by dropping (quinn's 1 MiB
+  datagram buffer, oldest first). Viewers see nothing during the shortfall
+  either way, but the backlog outlives it: the stream stays stale until
+  the queue has drained.
+- **Cause (read from source)**: `DatagramSender.send`
+  (`transport/connection.ts`) chains every frame's writes onto one promise
+  and never refuses one; `BroadcastPipeline.handleEncoded` sends every
+  delta; `FallbackController` counts only encoder backpressure
+  (`encoder.encode` rejected), so a send backlog never steps the ladder
+  down. Keyframe streams have the same shape: `sendKeyframeStream` opens
+  one per keyframe and never cancels it, so where even keyframes outrun
+  the link they queue too (13 s at 100 ms with 1 % loss, docs/75 F18) —
+  the engine's F-12 rule has no browser counterpart.
+- **Impact**: violates "favor dropped frames over stalled playback" on the
+  browser broadcaster. Within the default ladder (10 Mbps cap) it takes a
+  lossy long path to trigger; with the bitrate override a fast enough
+  stream triggers it on a clean one.
+- **Where the backlog sits (measured)**: in `DatagramSender`'s chain —
+  frames handed to it but not yet written grew from 569 to 1 933 over a
+  100 s run (docs/75 table P7). Chrome's own knobs do not reach it:
+  `datagrams.outgoingMaxAge` (100 ms) changed nothing, and raising
+  `outgoingHighWaterMark` to 1000 only moved the backlog out of the page
+  into Chrome, where it was not expired either (decode-ready p50 32 s).
+- **Fix would start**: in `DatagramSender`, not in Chrome's settings, and
+  test-first, as docs/75 RU9 specifies (OD5, decided 2026-10-19: fixed
+  beside the relay's RU2 and RU8). One trap: `DatagramSender` latches any
+  rejection and fails every later send, and `handleEncoded` reads a
+  rejection as the session dying, so a stale frame must be dropped with a
+  result of its own, never a rejection. Drop a delta older than one GOP
+  (500 ms since `send()` received it) and the rest of its GOP, and stale
+  audio the same way (it shares the queue); send keyframes the engine's
+  F-12 way (one written at a time and at most two in Chrome, the newest
+  waiting, a stream aborted only when a newer keyframe arrives while it is
+  2 s old and still unacknowledged — a shorter limit livelocked natively),
+  never dropping one for age; drop a GOP's deltas — the whole rest of that
+  GOP — while its keyframe waits behind a late one, "late" timed to the
+  handover, not the acknowledgement, so long links never trip it; and tell
+  the broadcaster their upload can't keep up while it lasts.
+
+## The relay drops high-rung publisher datagrams that QUIC already acknowledged
+
+- **Found**: 2026-10-17, in docs/75's lab (F7), then on the real relay
+  (§11 tables G and N). A 1440p60 publisher (deltas of 52–84 datagrams) on
+  a clean path, 10 ms RTT and a 300 Mbps bottleneck, with 2 `gawk-loadgen`
+  viewers and the lab's measuring viewer on a relay with CPU to spare: the relay's
+  `gawk_relay_ingress_chunks_lost_total` read 1 871–2 251 in 60 s (≈ 1 % of
+  chunks; 182 with no viewers) while the publisher's quinn counted **0 lost
+  packets** and the path dropped nothing, and a viewer could not decode
+  39–47 % of frames. At 1080p the same runs lost nothing. (The first figure
+  here, 4 252 with 15 viewers, came from a relay already past its fan-out
+  capacity on the lab host; corrected 2026-10-18.)
+- **Cause (measured)**: quic-go's HTTP/3 layer keeps at most
+  `streamDatagramQueueLen = 32` datagrams per WebTransport session and drops
+  new ones silently (`http3/state_tracking_stream.go`, quic-go 0.62.0).
+  Raising it to 128 in a test build took the loss to 0 in every run, and
+  512 or 4096 to 0–21;
+  raising the connection-level queue (128) did nothing, and a relay
+  goroutine that only drains the queue did not help, with CPU to spare or
+  without (1 810 against 2 120 with 2 viewers) — its own channel never
+  overflowed, so the datagrams were lost in quic-go's 32 before any reader
+  took them. The edge's
+  pull session reads origin → edge datagrams through the same queue.
+- **Impact**: high-rung datagram publishers lose the tails of their largest
+  frames — parity included — at the relay, for every viewer, and the loss
+  is booked as leg-A loss. The signature (chunks lost, no whole frames) is
+  the one the 2026-09-27 incident below recorded; whether that incident was
+  this is not known (its rung is not on record). R73's carrier is immune.
+- **Fix would start**: docs/75 RU2 — red first with a burst of 200
+  datagrams against a relay loop blocked for 20 ms, then a 512-deep queue
+  (docs/75 D7, F16: deeper only adds delay on a busy relay), upstream or as
+  a pinned quic-go fork.
 
 (The "Telemetry SQL console: the `rollups` view rots after boot, and any
 unpruned `sessions` query OOMs" entry was resolved 2026-09-22: views

@@ -514,8 +514,10 @@ shared with `gawk-app` so the two broadcasters read as one product.
    send-side counters (keyframe streams superseded/failed, frames dropped at
    send, sent vs encode fps — the F-12 signals) with hysteresis (5
    consecutive bad seconds to raise, 15 clean to clear), and the shell shows
-   "Your connection can't keep up…" naming the active bitrate; transitions
-   also land in debug.log.
+   "Your upload can't keep up with the stream…" naming the active bitrate
+   (*2026-10-19*: the wording the shell ships, `shell.rs`
+   `uplink_warning_text`; the Live pill reads "Your upload can't keep
+   up"); transitions also land in debug.log.
 2. **Capture picker** (idle only) — two tabs: **Share an app** (alt-tab
    window list, icon + title, re-listed every second while the picker is
    open — no refresh button) / **Share a screen** (monitors with name and

@@ -73,7 +73,7 @@ feature set exists).
 | R52 | [Native macOS broadcaster](#r52--native-macos-broadcaster) | 🔧 designed 2026-09-18 (owner decisions OD1–OD10); MB0 (the rename) implemented 2026-09-22, MB1 (workspace split + macOS CI job + shell) 2026-09-23, MB2 (capture) 2026-09-23 with its manual pass owner-pending, MB3 (encode) 2026-09-23, MB4 (audio) 2026-09-23, MB5 (shell) 2026-09-23, MB6 telemetry only (update rows blocked on R45/R47), MB7 (release path) 2026-09-23 awaiting the Apple secrets, MB8 owner-pending — Rust in a shared desktop workspace (`gawk-broadcast-windows` → `gawk-broadcast-desktop`, MB0 is the rename and lands alone), ScreenCaptureKit video + per-app audio via the system picker, VideoToolbox low-latency H.264 with an app-forced 500 ms GOP, macOS 14+ Apple Silicon, Developer ID + notarization from CI secrets, built on `macos-latest`; per-distribution release manifests keep R45 and the site card untouched ([docs/54](docs/54-macos-native-broadcaster.md)) |
 | R53 | [OIDC for the telemetry read surface](#r53--oidc-for-the-telemetry-read-surface) | 🔶 designed 2026-09-20 (owner decisions OD1–OD10); **TO1–TO5 implemented 2026-10-03 in one PR** (automated gates green); §10 manual pass (V-1–V-7) and the reference-deployment switch in the GitOps repo pending — the `gawk-telemetry` read listener (dashboard, `/v1`, `/live`, `/mcp`) adopts R39's auth boundary: OIDC public client + PKCE in the SPA, bearer JWT + a client-scoped `telemetry-reader` role on a separate Keycloak client, same IdP and recipe as `gawk-admin`, SSO across the portal's deep links. TO1 lifts the JWT verifier the relay and the portal each carry today into one public `gawk-server/oidcauth` package, and the SPA flow into `common-ts/oidc-session`, the first package under a new root for shared TypeScript, consumed by both operator UIs (third consumer ⇒ no third copy); per-consumer lock files plus a required CI check make any `common-ts` change release every consumer. Basic auth stays as the no-IdP mode; ClusterIP default is unchanged; ingest is untouched and the pod's probes stay on ingest ([docs/55](docs/55-telemetry-oidc.md)) |
 | R54 | [MCP server for the `gawk-admin` API](#r54--mcp-server-for-the-gawk-admin-api) | 🔧 designed 2026-09-22 (owner decisions OD1–OD10), not started (MC1–MC5) — **lands after R53**: a remote MCP endpoint `/mcp` on `gawk-admin` so Claude Code acts **as the signed-in operator**, authorized by the MCP spec's OAuth flow against the deployment's own Keycloak (RFC 9728 challenge + metadata; a pre-registered public client `gawk-admin-mcp`, no dynamic registration). Tools are generated from the served OpenAPI document and dispatched through the same route table, so auth, roles and audit are the API's own; mutations on by default behind `-mcp-mutations`; every authenticated operation exposed, secret-bearing ones included; publisher IPs redacted unless `-mcp-reveal-ips`; events record the OAuth client beside the actor. One MCP transport lifted from telemetry into `gawk-server/mcphttp`. Default off ([docs/56](docs/56-admin-mcp.md)) |
-| R55 | [Broadcasting over Wi-Fi](#r55--broadcasting-over-wi-fi) | 🔧 designed 2026-09-23 (owner decisions OD1–OD6 taken 2026-09-24); **WU3 implemented 2026-09-29 ahead of WU2** (OD7: the Mac app now notices sustained QUIC packet loss on Wi-Fi and Help names `ifconfig awdl0 down`; hardware pass 2026-09-29 through a VPN: raised with AWDL up, cleared with it down), WU0–WU2/WU5/WU6 not started, WU4 deferred — leg-A loss from a Mac on Wi-Fi (AWDL) freezes viewers; deltas ride one 150 ms-deadline reliable stream per GOP from the Rust desktop broadcaster (R19's carrier, reversed) behind a new `CapUplinkCarriers` relay capability, always on when supported, with a warned Advanced → Legacy escape hatch; QoS marking shipped; silent by default, a plain status line on measured harm; the AirDrop-pausing **Improve** helper decided after WU2 ([docs/57](docs/57-wifi-uplink.md)) |
+| R55 | [Broadcasting over Wi-Fi](#r55--broadcasting-over-wi-fi) | **transport split out to R73 ([docs/75](docs/75-reliable-uplink.md)) 2026-10-17**; 🔧 designed 2026-09-23 (owner decisions OD1–OD6 taken 2026-09-24); **WU3 implemented 2026-09-29 ahead of WU2** (OD7: the Mac app now notices sustained QUIC packet loss on Wi-Fi and Help names `ifconfig awdl0 down`; hardware pass 2026-09-29 through a VPN: raised with AWDL up, cleared with it down), WU5/WU6 not started (WU0–WU2 moved to R73 as RU0, RU1 and RU3), WU4 deferred — leg-A loss from a Mac on Wi-Fi (AWDL) freezes viewers; the per-GOP reliable stream it designed for deltas moved to R73, which revised its deadline, default and escape hatch on measurements; QoS marking shipped; silent by default, a plain status line on measured harm; the AirDrop-pausing **Improve** helper decided after WU2 ([docs/57](docs/57-wifi-uplink.md)) |
 | R56 | [Linux in the desktop workspace, and retiring the Go broadcaster](#r56--linux-in-the-desktop-workspace-and-retiring-the-go-broadcaster) | ✅ LX1–LX6 built 2026-09-29 (LX0's spike skipped by owner decision, its questions moved to LX7); **LX7 accepted 2026-10-08** on the owner's AMD + Wayland machine, which the owner judged enough (the NVIDIA half not run); **LX8 dropped** by owner decision the same day (no deprecation release); **LX9 removal done 2026-10-08** — a third shell `crates/app-linux` in `gawk-broadcast-desktop/` sharing the engine, wire, `main.slint` and audio lane; the Linux layer rebuilt, not ported: `ashpd` portal, **in-process** `gstreamer-rs` with R14's hardware-only cascade, the docs/39 app-audio tee on an in-process `pipewire-rs` connection, one monotonic clock, no MPEG-TS pipe; new identity `gawk-broadcast-linux` / `gawk-broadcast://linux`; tarball, x86_64, Ubuntu 24.04-class floor; desktop workspace to 2.0.0. The Go app was frozen from 2026-09-24 and removed on 2026-10-08, leaving `gawk-pubsim` as test tooling inside `gawk-server` (OD11 reversed the same day: the `gawk-broadcast` module is gone); its last release is `gawk-broadcast/v1.15.3` ([docs/58](docs/58-linux-desktop-broadcaster.md)) |
 | R57 | [Close codes Chrome can read](#r57--close-codes-chrome-can-read) | ✅ shipped 2026-09-24 (CN1–CN4) — Chrome never read a relay close code (webtransport-go sends STOP_SENDING ahead of the close capsule; 1 of 84 arrived), so 4000/4004/4006 now travel in-band first as `SessionClosing` (0x17) and a room ends on its `RoomEnding`; the broadcaster's room view returns to the live stage when the room ends or its stream is removed ([docs/59](docs/59-close-notice.md)) |
 | R58 | [Desktop broadcaster redesign](#r58--desktop-broadcaster-redesign) | ✅ shipped 2026-09-29 (DR1–DR6) — designed 2026-09-28 in a Claude Design pass and owner-approved the same day; DR1–DR5 implemented 2026-09-28, the DR6 hardware pass done by the owner on Windows and macOS 2026-09-29 — the shared `main.slint` window becomes pages (Ready, Live, Settings, Advanced, the Windows picker) in the web app's tokens with one primary action each; Windows picks and remembers a source; saved and recent rooms, one room field with no attach-key field, an in-app roster with Watch links, and creator controls (remove a stream, end the room) revising docs/44 D13 with no wire change; a stopped summary with Go live again, a crash-resume question, banners for notices; and the room-view grant fixed to the SPA's `c:`/`a:` format ([docs/60](docs/60-desktop-redesign.md)) |
@@ -90,6 +90,7 @@ feature set exists).
 | R70 | [Broadcast moderation timeline](#r70--broadcast-moderation-timeline) | 🔧 **implemented 2026-10-15** (MT1–MT6 in one PR; designed the same day in a Claude Design pass, owner decisions OD1–OD9), the owner's pass on the reference deployment (MT7) open — `#/broadcasts/<key>` in `gawk-admin` draws one broadcast's screening history on one time axis (sessions, a score bar per bucket against each session's reported threshold and the configurable critical level, per-label strips, incidents, mutes and events) with a server-computed pattern and suggestion, and a decision panel per incident: Look (Watch & acknowledge), then Decide (Not a violation with a reason and a mute scope, or Violation with the ban length in one form); a bottom bar on a phone. The flag lifecycle gains a rejoin window (`-content-flag-rejoin`, 10m: flicker is one incident and pages once), `returnedAfterReview` on raises, dismissal reasons and `episode` / `duration` / `session` mutes, and a ban that resolves its flag; the sampler reports its window rule in every batch. Revises docs/71 D9, D10 ([docs/72](docs/72-moderation-timeline.md)) |
 | R71 | [Your name in a room, up front (desktop)](#r71--your-name-in-a-room-up-front-desktop) | 🔧 **implemented 2026-10-19** (NM1–NM4 and NM5's Settings row in one PR; proposed and drawn the same day, owner decisions OD1–OD3), the owner's pass on each OS (NM5) open — a blank-name join asks for a name first, the name becomes a top-level row under a chosen room, and on Live your own roster row renames in place; renames are sent on Enter or focus loss, not per keystroke ([docs/73](docs/73-desktop-room-name.md)) |
 | R72 | [Open-source licences inside the native apps](#r72--open-source-licences-inside-the-native-apps) | 🔧 **implemented 2026-10-20** (OL1–OL5 in one PR, at the owner's request), the owner's look on each platform (OL6) open — every native app embeds its generated third-party notices and shows them under Settings → Open-source licences, so they survive a single-file download and a self-update; the generator adds the iOS app and the C libraries `-sys` crates compile in (libopus, libvpx), and the iOS Rust graph gets its own `cargo-deny` gate, with UniFFI's MPL-2.0 a scoped exception and its source linked ([docs/74](docs/74-open-source-licences-in-app.md)) |
+| R73 | [Reliable broadcaster uplink](#r73--reliable-broadcaster-uplink) | 🔧 **designed 2026-10-17** from a lab measurement pass (the shipping quinn and quic-go stacks, real-encoder frame sizes, the shipping viewer replayed), split out of R55, extended 2026-10-18; **owner decisions OD1–OD6 taken 2026-10-18/19**, RU0–RU9 not started — the per-GOP carrier costs nothing on a clean path and keeps GOPs whole through bursts and outages; quinn's Cubic, not the delivery mode, is what breaks a lossy path longer than a LAN, and its BBR fixes that; the relay itself drops ~1 % of a 1440p publisher's chunks in quic-go's 32-deep datagram queue, leaving 39–47 % of frames undecodable, and 512 entries fix it where 4096 only adds delay on a busy relay; viewers on *Smoother* and *Most stable* get no parity, so today 0.1 % uplink loss costs them one frame in eight while *Balanced* loses none, and only the carrier protects them from outages; BBR plus a longer relay queue without the carrier fixes random loss for live-edge viewers and nothing else; beside a household's upload only the carrier with BBR stays watchable, and BBR's cost is on an uplink the stream nearly fills (7–10 % of its own packets lost, the household's upload left about half its share); the browser broadcaster runs Chrome's Cubic whatever it asks, pays per datagram, and queues instead of dropping (tens of seconds of backlog on a lossy long path, `BUGS.md`), while a browser carrier with a keyframe gate gives the default viewer 97.9–99.9 % of frames at 10 ms and 96–99.6 % at 40 ms where Chrome's Cubic holds, at about a round trip per GOP on long clean paths (OD5, decided 2026-10-19: the queue fixed now as RU9, a browser Reliable mode later as its own milestone); decided: the relay's queue to 512, parity for *Smoother*/*Most stable* and the browser's send-queue bug first, then the carrier with BBR, Reliable becoming the default after the hardware pass and BBR with it if its own gates pass, *Lowest latency* a real choice ([docs/75](docs/75-reliable-uplink.md)) |
 
 ---
 
@@ -4653,17 +4654,21 @@ roughly tenfold. One lost chunk costs the rest of a 500 ms GOP. R19 fixed the
 same failure for leg B and left leg A alone because leg A had always been
 clean.
 
+*Split 2026-10-17*: the transport (WU0–WU2 below, the carrier's decisions
+and its goals) moved to **R73** ([docs/75](docs/75-reliable-uplink.md)),
+which measured it first and revises it. R55 keeps WU3–WU6.
+
 **Scope sketch** (chunks WU0–WU6 in [docs/57](docs/57-wifi-uplink.md)):
 
-- **WU0** — fix the live view's zeroed relay facts (BUGS.md), report leg-A
+- **WU0** — *moved to R73 as RU0* — fix the live view's zeroed relay facts (BUGS.md), report leg-A
   loss in frames including partly received ones (`ingressFrameLossRatio`),
   record a baseline.
-- **WU1** — relay: accept `0x0A` carriers from a publisher behind
+- **WU1** — *moved to R73 as RU1* — relay: accept `0x0A` carriers from a publisher behind
   `CapUplinkCarriers`; each record ingested exactly as the same datagram;
   `-uplink-carriers` plumbed through `registryOptions`; flow-control windows
   sized from time and `-uplink-max-bitrate` (default 50 Mbps) instead of
   quic-go's 512 KB / 768 KB initial stream and connection windows (D9).
-- **WU2** — Rust engine: carrier per GOP, 150 ms deadline reset, always on
+- **WU2** — *moved to R73 as RU3* — Rust engine: carrier per GOP, 150 ms deadline reset, always on
   when the relay supports it, Settings → Advanced → Video delivery
   (Automatic · Legacy, behind a warning), keyframe stream prioritised,
   telemetry incl. local QUIC loss;
@@ -4684,7 +4689,7 @@ clean.
 **Status**: 🔧 designed 2026-09-23; owner decisions OD1–OD6 taken
 2026-09-24 (per-GOP carrier; always on when supported; 150 ms deadline;
 Improve deferred until after WU2; Rust desktop first; QoS marking shipped);
-not started.
+WU3 implemented 2026-09-29; the transport split out to R73 on 2026-10-17.
 
 ---
 
@@ -5218,6 +5223,70 @@ Settings row and licences page; the iOS About row and licences screen; the
 owner's look on each platform. No wire or relay change.
 
 **Status**: 🔧 implemented 2026-10-20; OL6 open.
+
+---
+
+## R73 — Reliable broadcaster uplink
+
+**Goal**: a broadcast survives the broadcaster's own connection dropping
+data — a burst on Wi-Fi, the radio away for AirDrop, a lossy long path —
+without viewers freezing to the next keyframe, at a latency cost that is
+measured, small, and the broadcaster's to refuse.
+
+**Why**: R55 found leg A failing on a Mac on Wi-Fi and designed a per-GOP
+reliable stream for deltas. The owner split the transport out on
+2026-10-17 — it is not a Wi-Fi feature — with the instruction to measure
+latency and user experience before deciding, to keep the lowest latency a
+choice, and to reconsider the default if reliability is nearly free. The
+lab (docs/75 §4) found it is free on a clean path, decisive on bursts and
+outages, and that quinn's default congestion controller is the bigger
+problem on any lossy path longer than a LAN.
+
+**Scope** (chunks RU0–RU9 in [docs/75](docs/75-reliable-uplink.md)):
+
+- **RU0** — telemetry that sees leg A in frames, and tells the uplink's
+  loss from the relay's own (docs/57 WU0, moved).
+- **RU1** — relay: carrier ingest behind `CapUplinkCarriers` (WU1, moved).
+- **RU2** — relay: quic-go's 32-deep per-session datagram queue made 512
+  deep, so a high-rung frame's burst survives a scheduling gap (today it
+  drops ~1 % of a 1440p publisher's chunks after QUIC acknowledged them,
+  and a viewer cannot decode 39–47 % of frames), and no deeper, because on
+  a busy relay a longer queue is only delay.
+- **RU3** — engine: the carrier sender — per GOP, keyframe first, superseded
+  GOPs shed at the sender (WU2, moved and revised).
+- **RU4** — engine: quinn's BBR instead of Cubic, behind gates, with the
+  upload warning required to fire where BBR's own loss is worst.
+- **RU5** — the Quality page's Delivery choice (Reliable · Lowest latency),
+  Diagnostics, and the R55 line's harm input per mode.
+- **RU6** — the lab, landed so the numbers can be re-measured.
+- **RU7** — the hardware pass.
+- **RU8** — relay: parity for *Smoother* and *Most stable* viewers too
+  (revises docs/34 §3): their reliable leg B repairs leg-B loss but not a
+  chunk the broadcaster's uplink lost.
+- **RU9** — the browser broadcaster's send queue drops video and audio
+  past one GOP, sends keyframes the F-12 way (one written at a time, 2 s
+  unacknowledged before an abort, never dropped for age, the rest of a
+  GOP's deltas giving way while its keyframe waits behind a late one), and
+  tells the broadcaster their upload can't keep up, instead of queueing
+  without bound (OD5; a slow uplink cost tens of seconds of backlog).
+
+**Non-goals**: a viewer-side change; pacing or frame-size capping; a
+home-grown congestion controller; a browser Reliable mode (measured in
+docs/75 F18; OD5 makes it a milestone of its own, after this one).
+
+**Order** (owner, 2026-10-18/19): RU0, RU2, RU8 and RU9 first — relay,
+telemetry and the browser's send queue, fixing today's bugs; then RU1,
+RU3, RU4 and RU5 together, BBR shipping with the carrier and not ahead of
+it; after RU7, Reliable becomes the default, and BBR in the same release if
+its own gates pass. A browser Reliable mode follows as a milestone of its
+own (OD5).
+
+**Status**: 🔧 designed 2026-10-17, extended 2026-10-18; owner decisions
+OD1 (Reliable by default), OD2 (BBR in both modes, with the carrier), OD4
+(a 512-deep queue), OD3 (the broadcaster and the operator choose) and OD6
+(parity for reliable delivery) taken 2026-10-18, OD5 (fix the browser's
+send queue now as RU9, a browser Reliable mode later) 2026-10-19; not
+started.
 
 ---
 

@@ -1498,6 +1498,84 @@ entries still describe code `gawk-pubsim` runs (now
   config with the linking half and no hardware monitors.
   ([docs/39](39-linux-app-sharing.md) F6)
 
+**The broadcaster uplink (R73)**
+
+- **quinn writes DATAGRAM frames into every packet ahead of stream data**
+  (`populate_packet`). With deltas as datagrams, a keyframe stream gets only
+  what is left: at full rate it livelocked F-12's supersede rule
+  ([docs/38](38-windows-native-broadcaster.md) F-12), and under a window
+  that loss has shrunk it starves keyframes while deltas stay fast — and no
+  delta decodes before its keyframe ([docs/75](75-reliable-uplink.md) F6).
+- **quinn cannot tell you which bytes of a stream were acknowledged.**
+  `SendStream` has no per-offset acknowledgement; `stopped()` (and
+  wtransport's `finish()`) resolve only once a finished stream is fully
+  acknowledged. A deadline like "reset when the oldest unacknowledged
+  record is 150 ms old" cannot be built on it — enforce deadlines where a
+  stream ends ([docs/75](75-reliable-uplink.md) D3).
+- **quic-go keeps 32 datagrams per WebTransport session and drops the
+  newest.** `http3`'s `streamDatagramQueueLen = 32` is a tail drop, silent
+  and not configurable, on server and client sessions alike. 32 is about a
+  millisecond of a 1440p delta's burst: on a clean path a real relay with
+  CPU to spare lost ~1 % of a 1440p publisher's chunks, all of them
+  acknowledged by QUIC first, counted them as leg-A loss, and left a viewer
+  unable to decode 39–47 % of frames. A goroutine that only drains the
+  queue does not help: its own channel never overflowed, the loss was in
+  quic-go's 32 before any reader took the datagrams. A longer queue does —
+  128 already took it to zero — but size it for a burst, not a backlog: on a
+  relay short of CPU every extra entry is delay, and 4096 had the worst tail
+  of the depths measured ([docs/75](75-reliable-uplink.md) F7, F16, D7).
+- **quinn's MTU black-hole detector reads random loss as a black hole.**
+  More than three loss bursts of full-size packets, with no larger packet
+  acknowledged since, reset the path MTU to 1200; `max_datagram_size` falls
+  to 1165 and a 1200-byte chunk fails `TooLarge`. At 2 % random loss it
+  fired within 17 s. The engine re-chunks once and carries on; anything
+  else that sends datagrams over quinn must handle `TooLarge` too, or it
+  silently loses every frame from then on
+  ([docs/75](75-reliable-uplink.md) F8).
+- **Reliable delivery repairs leg B, not leg A.** *Smoother* and *Most
+  stable* viewers get no parity (`hub.NegotiateParity` serves carrier and
+  DVR delivery 0), the DVR ring keeps none, and their loss allowance is 0 —
+  so a chunk the broadcaster's uplink lost, which a *Balanced* viewer's
+  parity repairs unseen, is a freeze to the next keyframe for them, whatever
+  their buffer. At 0.1 % uplink loss: 100 % of frames for *Balanced*, ~88 %
+  for them ([docs/75](75-reliable-uplink.md) F14).
+- **quinn's default Cubic cannot carry the default rung over a lossy long
+  path.** It treats every random loss as congestion: at 40 ms RTT, 0.1 %
+  loss already leaves 16–23 % of frames undecodable in either delivery
+  mode, and at 100 ms it halves the throughput
+  ([docs/75](75-reliable-uplink.md) F4).
+- **quinn's BBR overruns an uplink the stream nearly fills.** With the
+  stream's ceiling at 80 % of the link and nothing else on it, it lost
+  7–10 % of its own packets where Cubic lost 1 %: 43 % of frames
+  undecodable on datagrams. Where the uplink has room it keeps a household's
+  TCP upload at 90–102 % of its fair share; on such a link, about half
+  ([docs/75](75-reliable-uplink.md) F17).
+- **Chrome's WebTransport runs Cubic whatever `congestionControl` says.**
+  Chrome 151's net-log (`QUIC_CONGESTION_CONTROL_CONFIGURED`) shows
+  `CUBIC_BYTES` for `low-latency`, `default` and `throughput` alike; a page
+  cannot choose BBR. It also caps `maxDatagramSize` at 1024, sends one
+  datagram per packet, and exposes neither `getStats()` nor stream
+  `sendOrder` ([docs/75](75-reliable-uplink.md) F18).
+- **Chrome pays per datagram.** On the lab host its datagram packets left
+  375–480 µs apart (p50) at 0, 10 and 100 ms RTT alike, so a frame's chunks
+  spread out and Chrome topped out near 1 800 datagrams a second with no
+  thread saturated; stream data does not pay it. Measure a browser sender's datagram rate on the
+  machine that matters. Its `outgoingMaxAge` does not bound a page's
+  backlog either: that queue is the page's own
+  ([docs/75](75-reliable-uplink.md) F18, tables P6–P7).
+- **Chrome resolves a send stream's `close()` on acknowledgement**, and
+  `abort()` still sends `RST_STREAM` while that close is in flight — the
+  two pieces a per-GOP deadline needs. It FINs in a frame of its own, so a
+  reader that stops at the declared length never retires the stream, and
+  quic-go's 100-stream credit runs out after 100 keyframes (the relay
+  reads to the FIN; the lab's receiver did not)
+  ([docs/75](75-reliable-uplink.md) §4).
+- **Shape only the upstream when you model a home uplink.** A `tbf` on a
+  loopback queues both directions in one FIFO, so acknowledgements and ping
+  replies wait behind the upload they report on. It overstated the
+  household's ping and the TCP flow's loss to BBR; steer the downlink around
+  the shaper (`tools/uplinklab/fair/run.sh`, [docs/75](75-reliable-uplink.md) §4).
+
 **Relay fleet (R17)**
 
 - **Sessions created as a group must carry their group identity from

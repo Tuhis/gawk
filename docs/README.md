@@ -58,7 +58,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`24`](24-viewer-network-resilience.md) | R19 — Resilient viewer mode for lossy networks |
 | [`34`](34-live-edge-forward-parity.md) | R29 — Forward parity for live-edge delivery |
 | [`35`](35-connection-interleaving.md) | R30 — Connection interleaving (striped delivery) |
-| [`57`](57-wifi-uplink.md) | R55 — Broadcasting over Wi-Fi: a deadline-reliable uplink, silent by default, one Improve button on the Mac |
+| [`57`](57-wifi-uplink.md) | R55 — Broadcasting over Wi-Fi: the Mac's quiet status line, one deferred Improve button, QoS marking; the uplink transport moved to docs/75 on 2026-10-17 |
 
 ## The viewer
 
@@ -101,6 +101,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`72`](72-moderation-timeline.md) | R70 — the broadcast moderation timeline: a per-broadcast drill-down of scores, incidents and events with a decision panel per incident; flicker pages once, returns after review are marked, dismissals carry a reason and a scope |
 | [`73`](73-desktop-room-name.md) | R71 — your name in a room on the desktop broadcaster: asked on a blank-name join, a top-level row under the chosen room, renamed in place from your roster row while live |
 | [`74`](74-open-source-licences-in-app.md) | R72 — open-source licences inside the native apps: each app embeds its generated notices and shows them in Settings; the generator adds iOS and the bundled C libraries; the iOS Rust graph gets its own licence gate |
+| [`75`](75-reliable-uplink.md) | R73 — Reliable broadcaster uplink, measured first: the per-GOP carrier on leg A, quinn's congestion controller, the Reliable · Lowest latency choice; the browser broadcaster on Chrome's own stack; the lab (shipping QUIC stacks, real-encoder traces, the shipping viewer replayed) and its tables |
 
 ## Audio
 
