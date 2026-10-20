@@ -99,6 +99,12 @@ func (p *packetTap) err() error {
 	return p.misfit
 }
 
+func (p *packetTap) droppedCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dropped
+}
+
 // record is the tracer side: called on quic-go's connection goroutine.
 func (p *packetTap) record(ev qlog.PacketSent) {
 	sp := sentPacket{short: ev.Header.PacketType == qlog.PacketType1RTT, length: ev.Raw.Length}
@@ -467,7 +473,7 @@ func TestUplinkHostilePublisherHoleIsBounded(t *testing.T) {
 
 	st := r.Stats().Broadcasts[r.ObfuscateID(id)]
 	t.Logf("hostile publisher: %d bytes held behind two holes (stream window %d, connection window %d, connection maximum %d); process heap grew %d bytes; %d datagrams dropped to keep the holes; %d records ingested before them",
-		held, 2_000_000, 3_000_000, quicDefaultMaxConnectionWindow, heapGrowth, tap.dropped, st.UplinkRecords)
+		held, 2_000_000, 3_000_000, quicDefaultMaxConnectionWindow, heapGrowth, tap.droppedCount(), st.UplinkRecords)
 
 	if held == 0 {
 		t.Fatal("no data reached the relay past the holes; the test measured nothing")
