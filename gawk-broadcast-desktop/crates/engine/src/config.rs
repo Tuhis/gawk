@@ -17,7 +17,9 @@
 //!   PARSED address, never the raw string — a malformed URL can only ever
 //!   fail to match.
 
+use crate::carrier::Delivery;
 use crate::defaults;
+use crate::transport::Congestion;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -103,6 +105,14 @@ pub struct Config {
     pub height: u32,
     pub fps: u32,
     pub bitrate_bps: u32,
+    /// The Quality page's Delivery (R73, docs/75 D4): `"reliable"` or
+    /// `"lowest-latency"`; blank (or anything else) follows the engine's
+    /// default, so the RU7 flip reaches everyone who never chose.
+    pub uplink_delivery: String,
+    /// The publish connection's congestion controller (docs/75 D5):
+    /// `"bbr"` or `"cubic"`, blank for the engine's default. A support
+    /// lever kept one edit away, deliberately not on the Quality page.
+    pub congestion: String,
     /// Saved relay servers (R37 SP9). The legacy flat `relay_url` /
     /// `publish_secret` pair migrates into this list once ([`migrate`]).
     pub servers: Vec<ServerProfile>,
@@ -484,6 +494,16 @@ impl Config {
                 self.bitrate_bps
             },
         )
+    }
+
+    /// The Delivery setting, blank meaning the engine's default (D4).
+    pub fn resolve_uplink_delivery(&self) -> Delivery {
+        Delivery::parse(&self.uplink_delivery).unwrap_or_default()
+    }
+
+    /// The congestion controller, blank meaning the engine's default (D5).
+    pub fn resolve_congestion(&self) -> Congestion {
+        Congestion::parse(&self.congestion).unwrap_or_default()
     }
 }
 
@@ -1419,6 +1439,44 @@ mod tests {
         assert!(raw.contains("\"windowHeight\": 720"), "{raw}");
         let (loaded, _) = load(&path, &Plaintext);
         assert_eq!(loaded, cfg);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // R73 (docs/75 D4/D5): `uplinkDelivery` and `congestion` round-trip
+    // under their camelCase names; a file without them, or with a word the
+    // engine does not know, runs the engine's defaults — today's path.
+    #[test]
+    fn uplink_keys_round_trip_and_blank_follows_the_engine_default() {
+        let dir = std::env::temp_dir().join(format!("gawk-cfg-uplink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("broadcast.json");
+        std::fs::write(&path, br#"{"nickname": "Juho"}"#).unwrap();
+        let (old, warn) = load(&path, &Plaintext);
+        assert!(warn.is_none());
+        assert_eq!(old.resolve_uplink_delivery(), Delivery::LowestLatency);
+        assert_eq!(old.resolve_congestion(), Congestion::Cubic);
+
+        let cfg = Config {
+            uplink_delivery: "reliable".into(),
+            congestion: "bbr".into(),
+            ..Default::default()
+        };
+        save(&path, &cfg, &Plaintext).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"uplinkDelivery\": \"reliable\""), "{raw}");
+        assert!(raw.contains("\"congestion\": \"bbr\""), "{raw}");
+        let (loaded, _) = load(&path, &Plaintext);
+        assert_eq!(loaded, cfg);
+        assert_eq!(loaded.resolve_uplink_delivery(), Delivery::Reliable);
+        assert_eq!(loaded.resolve_congestion(), Congestion::Bbr);
+
+        let odd = Config {
+            uplink_delivery: "auto".into(),
+            congestion: "reno".into(),
+            ..Default::default()
+        };
+        assert_eq!(odd.resolve_uplink_delivery(), Delivery::default());
+        assert_eq!(odd.resolve_congestion(), Congestion::default());
         std::fs::remove_dir_all(&dir).ok();
     }
 

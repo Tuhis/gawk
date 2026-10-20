@@ -51,6 +51,29 @@ pub trait KeyframeWriter: Send {
     /// Resets the stream without writing (used when the sender is already
     /// closed by teardown when the stream comes back from open).
     fn abort(self: Box<Self>, code: u32);
+    /// Sets the stream's send priority, before anything is written: the
+    /// keyframe stream goes ahead of an uplink carrier (docs/75 D3). A
+    /// no-op for a transport without priorities.
+    fn set_priority(&self, _priority: i32) {}
+}
+
+/// One uplink carrier (R73, docs/75 D1): a publisher-opened uni stream
+/// carrying one GOP's delta records. The policy — what to write, when to
+/// give up on it — is the carrier lane's (`crate::carrier`); this is only
+/// the stream.
+pub trait CarrierStream: Send {
+    /// Sets the stream's send priority, before anything is written.
+    fn set_priority(&mut self, priority: i32);
+    /// Writes all of `buf`, resolving once the transport has taken it (QUIC
+    /// flow control may hold it). Dropping the future abandons the write;
+    /// the caller then resets the stream.
+    fn write<'a>(&'a mut self, buf: &'a [u8]) -> BoxFuture<'a, Result<(), String>>;
+    /// Finishes the stream (FIN) and resolves once the peer has
+    /// acknowledged every byte — the only acknowledgement quinn exposes
+    /// (docs/75 D3) — or with an error if the stream or connection failed.
+    fn finish(&mut self) -> BoxFuture<'_, Result<(), String>>;
+    /// Resets the stream with an application error code.
+    fn reset(&mut self, code: u32);
 }
 
 /// A server-initiated uni stream (announce, resume token, capabilities,
@@ -103,6 +126,13 @@ pub trait RelaySession: Send + Sync + 'static {
     /// the broadcast (Wi-Fi or not, docs/57 D7). `None` when unknown.
     fn remote_address(&self) -> Option<std::net::SocketAddr> {
         None
+    }
+    /// Opens a uni stream for an uplink carrier (R73, docs/75 D1); the
+    /// caller writes the prologue. Only ever called after the relay
+    /// advertised `CAP_UPLINK_CARRIERS` on this session — an older relay
+    /// resets a publisher's 0x0A stream as bad input (D2).
+    fn open_uplink_carrier(&self) -> BoxFuture<'_, Result<Box<dyn CarrierStream>, String>> {
+        Box::pin(async { Err("this transport has no uplink carriers".to_owned()) })
     }
 }
 

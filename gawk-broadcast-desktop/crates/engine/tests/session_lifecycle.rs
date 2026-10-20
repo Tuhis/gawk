@@ -61,6 +61,41 @@ fn config() -> SessionConfig {
     }
 }
 
+// R73 (docs/75 D4, D5, D8): the session reports the Delivery it was started
+// with and the controller its connection runs; a live Delivery change is a
+// call, not a restart. The engine's defaults are today's path — what the iOS
+// app, which has no setting (OD3), runs.
+#[tokio::test]
+async fn the_session_reports_its_delivery_and_controller_and_takes_a_live_change() {
+    use gawk_engine::carrier::Delivery;
+    use gawk_engine::transport::Congestion;
+
+    let (session, _rx) = Session::start_with_session(
+        config(),
+        Arc::new(IdleRelay),
+        Arc::new(MonotonicClock::new()),
+    );
+    let st = session.stats();
+    assert_eq!(st.uplink_mode_requested, "lowest-latency");
+    assert_eq!(st.uplink_congestion, "cubic");
+    assert_eq!(st.uplink_mode, "datagram");
+    session.stop().await;
+
+    let cfg = SessionConfig {
+        uplink_delivery: Delivery::Reliable,
+        congestion: Congestion::Bbr,
+        ..config()
+    };
+    let (session, _rx) =
+        Session::start_with_session(cfg, Arc::new(IdleRelay), Arc::new(MonotonicClock::new()));
+    let st = session.stats();
+    assert_eq!(st.uplink_mode_requested, "reliable");
+    assert_eq!(st.uplink_congestion, "bbr");
+    session.set_uplink_delivery(Delivery::LowestLatency);
+    assert_eq!(session.stats().uplink_mode_requested, "lowest-latency");
+    session.stop().await;
+}
+
 // The shell can drop its `Arc<Session>` without a completed `stop()` (the
 // quit path's bounded stop timeout does exactly that). The dropped stop
 // watch must END the run loop — reading it as "no stop yet" busy-loops

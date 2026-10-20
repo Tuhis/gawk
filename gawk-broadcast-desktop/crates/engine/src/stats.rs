@@ -100,6 +100,24 @@ pub struct Stats {
     /// both come from the same QUIC stack.
     pub uplink_datagrams_dropped: u64,
 
+    /// R73 (docs/75 D8): how the current GOP's deltas leave — "datagram" or
+    /// "carrier" — and the Delivery setting asked for ("reliable" |
+    /// "lowest-latency"); they differ when the relay offers no carriers.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub uplink_mode: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub uplink_mode_requested: String,
+    /// The QUIC congestion controller this connection runs: "cubic" | "bbr"
+    /// (docs/75 D5).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub uplink_congestion: String,
+    /// Carriers opened, and reset before they were fully acknowledged; and
+    /// delta records that never reached a carrier (docs/75 D3). In Reliable
+    /// delivery these, not lost packets, are what viewers lose.
+    pub uplink_carriers_opened: u64,
+    pub uplink_carriers_expired: u64,
+    pub uplink_records_shed: u64,
+
     pub time_sync_available: bool,
     pub time_sync_rtt_ms: f64,
     pub time_sync_offset_us: i64,
@@ -171,6 +189,9 @@ mod tests {
             capture_restarts: 2,
             share_mode: "window".into(),
             audio_app: "hl2_linux".into(),
+            uplink_mode: "carrier".into(),
+            uplink_mode_requested: "reliable".into(),
+            uplink_congestion: "bbr".into(),
             ..Default::default()
         };
         let v = serde_json::to_value(&full).unwrap();
@@ -207,6 +228,12 @@ mod tests {
             "uplinkPacketsSent",
             "uplinkPacketsLost",
             "uplinkDatagramsDropped",
+            "uplinkMode",
+            "uplinkModeRequested",
+            "uplinkCongestion",
+            "uplinkCarriersOpened",
+            "uplinkCarriersExpired",
+            "uplinkRecordsShed",
             "timeSyncAvailable",
             "timeSyncRttMs",
             "timeSyncOffsetUs",
@@ -249,6 +276,9 @@ mod tests {
             "captureRestarts",
             "shareMode",
             "audioApp",
+            "uplinkMode",
+            "uplinkModeRequested",
+            "uplinkCongestion",
         ] {
             assert!(!obj.contains_key(absent), "{absent} should be absent");
         }

@@ -602,3 +602,151 @@ async fn a_refused_connect_is_not_retried() {
     assert_eq!((err.phase, err.status), (StartPhase::Connect, 401), "{err}");
     assert_eq!(gate.clients(), 1, "one attempt, one endpoint");
 }
+
+/// What one publish run delivered to a live-edge subscriber: the delta
+/// frames it could decode (all data chunks, or enough parity to repair the
+/// rest), out of those sent.
+struct Delivered {
+    decodable: usize,
+    sent: usize,
+    burst_dropped: u64,
+    stats: gawk_engine::stats::Stats,
+}
+
+/// Publishes one GOP through a gate in front of the real relay — a
+/// keyframe, then 30 deltas at 60 fps with every uplink packet of deltas
+/// 10–15 dropped (~100 ms) — while a subscriber, straight to the relay,
+/// counts the deltas that reach it.
+async fn publish_through_a_burst(
+    relay: &Relay,
+    delivery: gawk_engine::carrier::Delivery,
+) -> Delivered {
+    use std::collections::HashMap;
+    let gate = udp_gate::UdpGate::open(relay_addr(relay));
+    let mut cfg = config(relay, "", "");
+    cfg.relay_url = gate.url();
+    cfg.uplink_delivery = delivery;
+    let (session, mut rx) = Session::start(cfg, Arc::new(MonotonicClock::new()))
+        .await
+        .unwrap();
+    let (id, _) = collect_identity(&mut rx).await;
+    // The capability rides its own stream (RU1: in no guaranteed order);
+    // parity arrives in the same message, so its level says it landed.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while session.stats().parity_level == 0 {
+        assert!(tokio::time::Instant::now() < deadline, "no capabilities");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let url = format!("{}/subscribe/{id}", relay.url);
+    let sub = gawk_engine::transport::dial_subscribe(&url, gawk_engine::defaults::origin(), true)
+        .await
+        .unwrap();
+    // frame → (data chunks seen, chunk count, parity symbols seen)
+    let frames = Arc::new(std::sync::Mutex::new(
+        HashMap::<u32, (Vec<bool>, u32)>::new(),
+    ));
+    let collector = {
+        let frames = frames.clone();
+        tokio::spawn(async move {
+            use gawk_engine::relay::RelaySession as _;
+            while let Ok(d) = sub.receive_datagram().await {
+                let mut f = frames.lock().unwrap();
+                if let Ok((h, _)) = gawk_wire::parse_video_chunk(&d) {
+                    let e = f
+                        .entry(h.frame_id)
+                        .or_insert_with(|| (vec![false; h.chunk_count as usize], 0));
+                    e.0[h.chunk_index as usize] = true;
+                } else if let Ok((h, _)) = gawk_wire::parse_parity_chunk(&d) {
+                    let e = f
+                        .entry(h.frame_id)
+                        .or_insert_with(|| (vec![false; h.chunk_count as usize], 0));
+                    e.1 += 1;
+                }
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let sender = session.sender();
+    sender.set_codec("avc1.42E02A");
+    sender.send_video(keyframe(20_000, 1_000)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    const DELTAS: u32 = 30;
+    for i in 1..=DELTAS {
+        if i == 10 {
+            gate.burst(true);
+        }
+        if i == 16 {
+            gate.burst(false);
+        }
+        sender
+            .send_video(delta(3_000, 1_000 + u64::from(i) * 16_667))
+            .await;
+        tokio::time::sleep(Duration::from_millis(16)).await;
+    }
+    gate.burst(false);
+    // Time for QUIC to notice the burst and repair what it can.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    let stats = session.stats();
+    session.stop().await;
+    collector.abort();
+
+    let f = frames.lock().unwrap();
+    let decodable = (1..=DELTAS)
+        .filter(|id| {
+            f.get(id).is_some_and(|(data, parity)| {
+                let missing = data.iter().filter(|seen| !**seen).count() as u32;
+                missing <= *parity
+            })
+        })
+        .count();
+    Delivered {
+        decodable,
+        sent: DELTAS as usize,
+        burst_dropped: gate.burst_dropped(),
+        stats,
+    }
+}
+
+// R73 RU3 (docs/75 D1–D3), against the real relay with RU1's carrier ingest:
+// a ~100 ms loss burst on the uplink breaks the GOP when deltas travel as
+// datagrams — every chunk of those frames is gone for every viewer — and
+// loses no frame when they ride a carrier, which QUIC repairs.
+#[tokio::test]
+#[ignore = "builds and runs the real gawk-server (cargo test -- --ignored)"]
+async fn a_burst_that_breaks_a_gop_on_datagrams_loses_no_frame_on_the_carrier() {
+    use gawk_engine::carrier::Delivery;
+    let relay = Relay::start(&["-publish-secret", SECRET]);
+
+    let datagrams = publish_through_a_burst(&relay, Delivery::LowestLatency).await;
+    assert!(datagrams.burst_dropped > 0, "the burst dropped nothing");
+    assert_eq!(datagrams.stats.uplink_mode, "datagram");
+    assert!(
+        datagrams.decodable < datagrams.sent,
+        "the burst should break the GOP on datagrams: {}/{} decodable",
+        datagrams.decodable,
+        datagrams.sent
+    );
+
+    let carrier = publish_through_a_burst(&relay, Delivery::Reliable).await;
+    eprintln!(
+        "burst: datagrams {}/{} decodable ({} packets dropped), carrier {}/{} ({} dropped)",
+        datagrams.decodable,
+        datagrams.sent,
+        datagrams.burst_dropped,
+        carrier.decodable,
+        carrier.sent,
+        carrier.burst_dropped
+    );
+    assert!(carrier.burst_dropped > 0, "the burst dropped nothing");
+    let st = &carrier.stats;
+    assert_eq!(st.uplink_mode, "carrier", "{st:?}");
+    assert_eq!(st.uplink_carriers_opened, 1, "{st:?}");
+    assert_eq!((st.uplink_records_shed, st.uplink_carriers_expired), (0, 0));
+    assert_eq!(
+        carrier.decodable, carrier.sent,
+        "the carrier loses no frame to the burst ({} dropped packets): {st:?}",
+        carrier.burst_dropped
+    );
+}

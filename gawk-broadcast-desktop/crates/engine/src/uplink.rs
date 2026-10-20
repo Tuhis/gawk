@@ -8,7 +8,13 @@
 //! - keyframe streams superseded/failed climbing means keyframe writes are
 //!   outliving whole GOPs (delivery taking too long — the direct symptom);
 //! - frames dropped at send means delta datagram sends are failing;
-//! - sent fps far below encode fps means most frames never leave the box.
+//! - sent fps far below encode fps means most frames never leave the box;
+//! - (R73 RU4, docs/75 D5) a large share of the connection's own packets
+//!   declared lost: BBR holds the stream's rate on an uplink the stream
+//!   nearly fills and loses 7–10 % of its packets (F17), and on datagrams
+//!   nothing above moves — quinn takes every datagram into its buffer;
+//! - (R73) carrier records shed or carriers expired: in Reliable delivery
+//!   the uplink not keeping up shows as GOPs it could not carry in time.
 //!
 //! Hysteresis on both edges: several consecutive bad seconds raise the
 //! warning (one slow keyframe is weather, not climate), and it takes a
@@ -22,11 +28,23 @@ pub const WARN_AFTER_BAD_SECONDS: u32 = 5;
 /// Consecutive clean seconds before it clears.
 pub const CLEAR_AFTER_GOOD_SECONDS: u32 = 15;
 
+/// The share of a second's packets declared lost that makes it a bad
+/// second. Between Cubic's ~1 % on a nearly full uplink and BBR's 7–10 %
+/// there (docs/75 F17), and far above Wi-Fi's packet or two a second — that
+/// is the loss notice's case (`lossnotice`), not a bandwidth one.
+pub const BAD_SECOND_LOSS_RATIO: f64 = 0.05;
+
+/// Fewer packets than this in a second judge no ratio (a paused stream).
+pub const MIN_PACKETS_FOR_A_RATIO: u64 = 100;
+
 #[derive(Debug, Clone, Copy, Default)]
 struct Counters {
     superseded: u64,
     failed: u64,
     dropped: u64,
+    packets_sent: Option<u64>,
+    packets_lost: u64,
+    carrier_losses: u64,
 }
 
 /// Feed [`UplinkMonitor::observe`] one stats snapshot per second; it
@@ -51,6 +69,11 @@ impl UplinkMonitor {
             superseded: st.keyframe_streams_superseded,
             failed: st.keyframe_streams_failed,
             dropped: st.frames_dropped_at_send,
+            packets_sent: st
+                .uplink_packets_available
+                .then_some(st.uplink_packets_sent),
+            packets_lost: st.uplink_packets_lost,
+            carrier_losses: st.uplink_carriers_expired + st.uplink_records_shed,
         };
         let Some(prev) = self.last.replace(now) else {
             return self.warned; // first sample: no deltas yet
@@ -61,9 +84,21 @@ impl UplinkMonitor {
         let dropped = now.dropped.saturating_sub(prev.dropped);
         // Keyframe cadence is ~2/s: ≥2 displaced writes in one second means
         // essentially every keyframe is running late.
+        let lossy = match (now.packets_sent, prev.packets_sent) {
+            (Some(n), Some(p)) => {
+                let sent = n.saturating_sub(p);
+                let lost = now.packets_lost.saturating_sub(prev.packets_lost);
+                sent >= MIN_PACKETS_FOR_A_RATIO
+                    && lost as f64 >= sent as f64 * BAD_SECOND_LOSS_RATIO
+            }
+            _ => false,
+        };
+        let shed = now.carrier_losses.saturating_sub(prev.carrier_losses) > 0;
         let bad = kf_pressure >= 2
             || dropped > 0
-            || (st.encoder_fps > 20.0 && st.sent_fps < st.encoder_fps * 0.75);
+            || (st.encoder_fps > 20.0 && st.sent_fps < st.encoder_fps * 0.75)
+            || lossy
+            || shed;
 
         if bad {
             self.bad_streak += 1;
@@ -151,6 +186,55 @@ mod tests {
             warned = m.observe(&starved);
         }
         assert!(warned);
+    }
+
+    /// One second of a stream whose every frame "leaves" (quinn takes each
+    /// datagram into its buffer), with QUIC's packet counters and the
+    /// carrier lane's counters advancing by the given amounts.
+    fn second(st: &mut Stats, sent: u64, lost: u64, expired: u64, shed: u64) -> Stats {
+        st.encoder_fps = 60.0;
+        st.sent_fps = 60.0;
+        st.uplink_packets_available = true;
+        st.uplink_packets_sent += sent;
+        st.uplink_packets_lost += lost;
+        st.uplink_carriers_expired += expired;
+        st.uplink_records_shed += shed;
+        st.clone()
+    }
+
+    fn warns_within_the_streak(per_second: impl Fn(&mut Stats) -> Stats) -> bool {
+        let mut m = UplinkMonitor::new();
+        let mut st = Stats::default();
+        m.observe(&per_second(&mut st));
+        let mut warned = false;
+        for _ in 0..WARN_AFTER_BAD_SECONDS {
+            warned = m.observe(&per_second(&mut st));
+        }
+        warned
+    }
+
+    // RU4 (docs/75 D5, F17): on an uplink the stream nearly fills, BBR holds
+    // the stream's rate and loses 7–10 % of its own packets. On datagrams
+    // nothing else moves — quinn takes every datagram, so sent fps keeps up
+    // and no send fails — yet viewers lose 43 % of frames. The warning (its
+    // remedy, a lower rung, is the fix there) must see the loss itself.
+    #[test]
+    fn bbrs_own_packet_loss_on_a_thin_uplink_warns() {
+        assert!(warns_within_the_streak(|st| second(st, 1300, 110, 0, 0)));
+        // Cubic's 1 % on the same link, and Wi-Fi's packet or two, do not.
+        assert!(!warns_within_the_streak(|st| second(st, 1300, 13, 0, 0)));
+        assert!(!warns_within_the_streak(|st| second(st, 1300, 2, 0, 0)));
+        // Too few packets to judge a ratio: a paused or tiny stream.
+        assert!(!warns_within_the_streak(|st| second(st, 20, 5, 0, 0)));
+    }
+
+    // RU4: on the carrier BBR's loss is repaired, at the cost of the GOPs
+    // the uplink cannot carry in time — those are what show.
+    #[test]
+    fn a_carrier_shedding_or_expiring_every_second_warns() {
+        assert!(warns_within_the_streak(|st| second(st, 1300, 0, 0, 12)));
+        assert!(warns_within_the_streak(|st| second(st, 1300, 0, 1, 0)));
+        assert!(!warns_within_the_streak(|st| second(st, 1300, 0, 0, 0)));
     }
 
     #[test]

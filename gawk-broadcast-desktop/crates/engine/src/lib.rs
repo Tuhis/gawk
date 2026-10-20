@@ -10,6 +10,7 @@
 //! That is also what keeps a future CLI or pubsim-style shell possible
 //! without redesign (docs/38 OD12).
 
+pub mod carrier;
 pub mod clock;
 pub mod config;
 pub mod dispatch;
