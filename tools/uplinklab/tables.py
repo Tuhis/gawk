@@ -470,29 +470,42 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
                 written[int(x[1])] = int(x[2])
             elif x[0] == "K" and x[4] == "sent":
                 acked[int(x[1])] = int(x[3])
-        w = sorted((written[i] - prod[i]) / 1e6 for i in prod if i in written)
-        a = sorted((acked[i] - prod[i]) / 1e6 for i in prod if i in acked)
-        return w, a, len(prod)
+        ids = sorted(prod)
+        w = sorted((written[i] - prod[i]) / 1e6 for i in ids if i in written)
+        a = sorted((acked[i] - prod[i]) / 1e6 for i in ids if i in acked)
+        tail = sorted((acked[i] - written[i]) / 1e6 for i in ids if i in acked and i in written)
+        # RU9's trigger: keyframe n+1 would wait in the slot because keyframe n
+        # was not handed over before n+1 was produced (never handed over counts).
+        trips = sum(1 for i, j in zip(ids, ids[1:]) if i not in written or written[i] > prod[j])
+        return w, a, tail, len(ids), trips
 
     def pq(xs, q):
         return xs[min(len(xs) - 1, int((len(xs) - 1) * q))] if xs else None
 
     kt_rows = []
-    for r in (0, 10, 40, 100, 200, 300):
-        t = kf_timing(f"rtt{r}-clean", "chrome-dgram-kt")
+    for name, label in (("rtt0-clean", "0 ms · 1080p · clean"), ("rtt10-clean", "10 ms · 1080p · clean"),
+                        ("rtt40-clean", "40 ms · 1080p · clean"), ("rtt40-clean-r2", "40 ms · 1080p · clean (run 2)"),
+                        ("rtt40-loss0.001", "40 ms · 1080p · 0.1 % loss"),
+                        ("rtt100-clean", "100 ms · 1080p · clean"), ("rtt100-clean-r2", "100 ms · 1080p · clean (run 2)"),
+                        ("rtt200-clean", "200 ms · 1080p · clean"), ("rtt300-clean", "300 ms · 1080p · clean"),
+                        ("hi-rtt10-clean", "10 ms · 1440p · clean"), ("hi-rtt40-clean", "40 ms · 1440p · clean"),
+                        ("hi-rtt100-clean", "100 ms · 1440p · clean")):
+        t = kf_timing(name, "chrome-dgram-kt")
         if not t:
             continue
-        w, a, total = t
-        late = sum(1 for x in w if x > 500)
-        kt_rows.append(f"| {r} ms | {len(w)} of {total} | {f(pq(w, .5))} / {f(pq(w, .95))} / {f(w[-1])} | "
-                       f"{f(pq(a, .5))} / {f(pq(a, .95))} / {f(a[-1])} | {late} |")
+        w, a, tail, total, trips = t
+        kt_rows.append(f"| {label} | {len(w)} of {total} | {f(pq(w, .5))} / {f(pq(w, .95))} / {f(w[-1] if w else None)} | "
+                       f"{f(pq(a, .5))} / {f(pq(a, .95))} / {f(a[-1] if a else None)} | "
+                       f"{f(pq(tail, .5))} / {f(pq(tail, .95))} | {trips} |")
     if kt_rows:
-        print("\n#### Table P9 — Chrome's keyframes on clean paths, by RTT: the clocks RU9's late-keyframe rule uses\n")
-        print("1080p, Chrome's datagrams with the shipping page (each keyframe on a stream of its own), every")
-        print("keyframe of the 100 s run, the first one included. *Handed over*: production until the stream's")
-        print("`write()` resolved; *acknowledged*: until its `close()` resolved. *Late*: handed over more than")
-        print("one GOP (500 ms) after production — what would drop that GOP's deltas under RU9.\n")
-        print("| RTT | Keyframes | Produced → handed over p50 / p95 / max ms | Produced → acknowledged p50 / p95 / max ms "
-              "| Late (> 500 ms) |")
-        print("|---|---|---|---|---|")
+        print("\n#### Table P9 — Chrome's keyframes, by path: the clocks RU9's keyframe rules use\n")
+        print("Chrome's datagrams with the shipping page (each keyframe on a stream of its own), every keyframe")
+        print("of the 100 s run, the first one included. *Handed over*: production until the stream's `write()`")
+        print("resolved; *acknowledged*: until its `close()` resolved; the tail is what Chrome still held after")
+        print("the handover. *Would trip*: keyframes RU9 would make wait in the slot — the previous one not")
+        print("handed over before this one was produced, or never — which is what drops a GOP's deltas. The")
+        print("1440p rows are past Chrome's datagram ceiling (table P6), so a trip there is real, not false.\n")
+        print("| Path | Keyframes handed over | Produced → handed over p50 / p95 / max ms | "
+              "Produced → acknowledged p50 / p95 / max ms | Handover → acknowledged p50 / p95 ms | Would trip |")
+        print("|---|---|---|---|---|---|")
         print("\n".join(kt_rows))

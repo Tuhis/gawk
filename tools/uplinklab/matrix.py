@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -214,6 +214,13 @@ def sets():
     # "late keyframe" rule runs on.
     s["chrome-kftiming"] = [scen(f"rtt{r}-clean", ["-rtt", f"{r}ms"], modes=("chrome-dgram-kt",))
                             for r in (0, 10, 40, 100, 200, 300)]
+    # More of P9: a second run at 40 and 100 ms, light loss, and the 1440p
+    # keyframe (495 KB) at 10 / 40 / 100 ms.
+    s["chrome-kftiming2"] = [scen("rtt40-clean-r2", ["-rtt", "40ms"], modes=("chrome-dgram-kt",), seed=8),
+                             scen("rtt100-clean-r2", ["-rtt", "100ms"], modes=("chrome-dgram-kt",), seed=8),
+                             scen("rtt40-loss0.001", ["-rtt", "40ms", "-loss", "0.001"], modes=("chrome-dgram-kt",))]
+    s["chrome-kftiming2"] += [scen(f"hi-rtt{r}-clean", ["-rtt", f"{r}ms"], trace="1440", modes=("chrome-dgram-kt",))
+                              for r in (10, 40, 100)]
     s["chrome-knobs"] = [dict(by["rtt40-loss0.005"], modes=("chrome-dgram-ceil", "chrome-dgram-maxage100",
                                                             "chrome-dgram-maxage100-hwm1000")),
                          dict(by["hi-rtt10-clean"], modes=("chrome-dgram-maxage100",))]
