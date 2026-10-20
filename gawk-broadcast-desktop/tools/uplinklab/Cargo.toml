@@ -1,7 +1,8 @@
 # The sender half of the uplink lab (docs/75): synthetic frames over the
 # engine's exact transport stack — the vendored wtransport, the quinn the
-# workspace pins (Cargo.lock is the workspace's) and gawk-wire's chunking and
-# parity. Its own workspace, so it never enters the shipped build.
+# workspace pins (tools/uplinklab/build.sh builds it from a copy of the
+# workspace's Cargo.lock; it keeps none of its own) and gawk-wire's chunking
+# and parity. Its own workspace, so it never enters the shipped build.
 [package]
 name = "gawk-uplinklab"
 version = "0.0.0"

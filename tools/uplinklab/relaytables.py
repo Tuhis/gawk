@@ -41,7 +41,6 @@ def n(x):
 
 # Table G: which build each of F7's runs used.
 G = [("R1", "1440p", 15, "stock"), ("R2", "1440p", 0, "stock"),
-     ("R3", "1440p", 15, "publisher loop drains into a 1024-deep channel on its own goroutine"),
      ("R-only128", "1440p", 15, "quic-go connection queue 128 → 4096"),
      ("R-only32", "1440p", 15, "**`http3` session queue 32 → 4096**"),
      ("R7", "1440p", 15, "both queues → 4096"), ("R8", "1440p", 0, "both queues → 4096"),
@@ -88,12 +87,12 @@ print("| Load | Depth | Runs | Ingress chunks lost (60 s) | Dropped to viewers |
       "Viewer: chunk latency p50 / p99 ms | Viewer: decode-ready p99 ms | Relay peak RSS |")
 print("|---|---|---|---|---|---|---|---|---|")
 for key, label, subs in LOADS:
-    for q in ("32", "128", "512", "4096", "drain"):
-        rs = cells.get(f"{key}-{'drain' if q == 'drain' else 'q' + q}")
+    for q in ("32", "128", "512", "4096"):
+        rs = cells.get(f"{key}-q{q}")
         if not rs:
             continue
         for r in rs:
             r["fanout"] = 100 * r["qfull"] / (r["relayed"] * subs) if r["relayed"] else 0
-        print(f"| {label} | {'32, drained' if q == 'drain' else q} | {len(rs)} | {agg(rs, 'lost')} | "
+        print(f"| {label} | {q} | {len(rs)} | {agg(rs, 'lost')} | "
               f"{agg(rs, 'fanout', 1, ' %')} | {agg(rs, 'undec', 1, ' %')} | "
               f"{agg(rs, 'p50')} / {agg(rs, 'p99')} | {agg(rs, 'ready99')} | {agg(rs, 'rss', 0, ' MB')} |")

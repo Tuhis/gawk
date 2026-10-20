@@ -58,5 +58,10 @@
       matchPackageNames: ["github.com/Tuhis/gawk/gawk-server"],
       enabled: false,
     },
+    {
+      description: "The uplink lab's Rust sender (docs/75) is its own Cargo workspace but keeps no versions of its own: tools/uplinklab/build.sh builds it from a copy of the desktop workspace's Cargo.lock, and CI never builds it, so a bump here would only drift it off the stack it measures.",
+      matchFileNames: ["gawk-broadcast-desktop/tools/uplinklab/**"],
+      enabled: false,
+    },
   ],
 }

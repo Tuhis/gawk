@@ -30,31 +30,26 @@ done)
  done
  go build -modfile "$OUT/q4096.mod" -o "$OUT/bin/gawk-uplinklab-bigq" ./cmd/gawk-uplinklab
  cp "$OUT/bin/gawk-server-q4096" "$OUT/bin/gawk-server-bigq")
-# Table G's R3 and table N's "drain" row: the stock relay with drain.patch
-# (the publisher loop drains quic-go's queue on its own goroutine) applied
-# through a build overlay, so the tree is never modified.
-(cd "$ROOT/gawk-server"
- mkdir -p "$OUT/drain"
- patch -s -o "$OUT/drain/server.go" internal/transport/server.go "$ROOT/tools/uplinklab/drain.patch"
- printf '{"Replace":{"%s":"%s"}}\n' "$PWD/internal/transport/server.go" "$OUT/drain/server.go" > "$OUT/drain/overlay.json"
- go build -overlay "$OUT/drain/overlay.json" -o "$OUT/bin/gawk-server-drain" ./cmd/gawk-server)
 # docs/75 OD5: the browser sender's page (browser/sender.mjs serves it to a
 # headless Chrome), built from gawk-app's shipping transport modules.
 (cd "$ROOT/gawk-app"
  [ -d node_modules ] || npm ci --no-audit --no-fund
  UPLINK_SENDER_OUT="$OUT/chrome-sender" npx vite build --config lab/uplink-sender.vite.config.ts --logLevel warn)
-# The sender is only faithful while it runs the engine's exact QUIC stack: its
-# own lockfile must pin what the desktop workspace pins.
+# The sender is only faithful while it runs the engine's exact QUIC stack, so
+# it has no lockfile of its own: it builds from a copy of the desktop
+# workspace's (git-ignored), which cargo only trims and extends; then the stack
+# it resolved is checked against the workspace's.
+LAB="$ROOT/gawk-broadcast-desktop/tools/uplinklab"
+cp "$ROOT/gawk-broadcast-desktop/Cargo.lock" "$LAB/Cargo.lock"
+cargo build --release --manifest-path "$LAB/Cargo.toml" --target-dir "$OUT/target"
 lockver() { awk -v n="$2" '$0 == "name = \"" n "\"" {getline; print; exit}' "$1"; }
 for crate in quinn quinn-proto quinn-udp wtransport; do
   ws=$(lockver "$ROOT/gawk-broadcast-desktop/Cargo.lock" "$crate")
-  lab=$(lockver "$ROOT/gawk-broadcast-desktop/tools/uplinklab/Cargo.lock" "$crate")
+  lab=$(lockver "$LAB/Cargo.lock" "$crate")
   if [ "$ws" != "$lab" ]; then
-    echo "uplinklab: $crate is $lab in the lab but $ws in the workspace; update tools/uplinklab/Cargo.lock" >&2
+    echo "uplinklab: the sender resolved $crate $lab but the workspace pins $ws" >&2
     exit 1
   fi
 done
-cargo build --release --manifest-path "$ROOT/gawk-broadcast-desktop/tools/uplinklab/Cargo.toml" \
-  --target-dir "$OUT/target"
 cp "$OUT/target/release/gawk-uplinklab" "$OUT/bin/sender"
 echo "built into $OUT/bin"

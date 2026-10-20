@@ -1067,8 +1067,8 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 
 | Acceptance criterion | Verified by |
 |---|---|
-| `gawk-server/cmd/gawk-uplinklab`, `gawk-broadcast-desktop/tools/uplinklab`, `gawk-app/lab/uplink-replay.lab.test.ts` and `tools/uplinklab/` reproduce §11's tables within noise from §11's commands | manual, recorded |
-| None of them enters a shipped binary, image or bundle: the Rust sender is its own workspace (its lockfile checked against the desktop workspace's quinn and wtransport by `build.sh`), the replay sits outside `tsc -b`'s `src` and is skipped unless its environment is set | review + CI |
+| `gawk-server/cmd/gawk-uplinklab`, `gawk-broadcast-desktop/tools/uplinklab`, `gawk-app/lab/uplink-replay.lab.test.ts` and `tools/uplinklab/` reproduce §11's tables within noise from §11's commands, but for the relay builds table G says came from outside the tree | manual, recorded |
+| None of them enters a shipped binary, image or bundle: the Rust sender is its own workspace (`build.sh` builds it from a copy of the desktop workspace's lockfile and checks the quinn and wtransport it resolved; Renovate leaves it alone), the replay sits outside `tsc -b`'s `src` and is skipped unless its environment is set | review + CI |
 
 ### RU8 — Relay: parity for reliable delivery (D11, OD6)
 
@@ -1260,7 +1260,7 @@ python3 tools/uplinklab/tables.py             # the tables below
 # F7, against the real relay (§11 table G); RELAY_BIN=tools/uplinklab/out/bin/gawk-server-bigq for D7:
 RELAY_CPUS=0-2 VIEWER_CPUS=3-4 SENDER_CPUS=5-6 PROXY_ARGS="-rtt 10ms -rate 300e6 -queue 50ms" \
   tools/uplinklab/relay.sh tools/uplinklab/out/relay/R1 tools/uplinklab/out/traces/r1440p60.csv 15 60
-tools/uplinklab/queue.sh                      # F16, the queue by depth (~45 min, alone on the host)
+tools/uplinklab/queue.sh                      # F16, the queue by depth (~40 min, alone on the host)
 python3 tools/uplinklab/relaytables.py        # tables G and N
 tools/uplinklab/fair/matrix.sh                # F17, the shared uplink (Docker, NET_ADMIN; ~55 min)
 # F18, Chrome (Chrome for Testing in ~/.cache/ms-playwright, or CHROME=…), alone on the host:
@@ -1480,10 +1480,13 @@ relay that keeps up.
 | R4 | 1080p | 15 | stock | 0 | 0 |
 | R9 | 1080p | 0 | stock | 0 | 0 |
 
-R3 is `tools/uplinklab/drain.patch` (`build.sh` builds it as
-`gawk-server-drain`) and R-only32 / R8 are `build.sh`'s `gawk-server-q4096`;
-the connection-queue builds (R-only128, R7) came from scratch worktrees. No
-relay code changes with this doc.
+R-only32 / R8 are `build.sh`'s `gawk-server-q4096`. R3 (and table N's
+"32, drained" rows) ran `drain.patch`, a patch to the relay's publisher loop
+that left the tree once measured: it did not help, and a patch against
+`server.go` stops applying when that file changes. It is in PR #522's history
+(commit 59b3bfd, `tools/uplinklab/drain.patch`). The connection-queue builds
+(R-only128, R7) came from scratch worktrees. No relay code changes with this
+doc.
 
 #### Table H — receive windows at 1440p, carrier · BBR (D10)
 
@@ -1749,7 +1752,8 @@ for comparison; its deltas never meet the queue.
 the relay); "1 core" pins the relay to one core instead of three. The
 viewer counts are `gawk-loadgen`'s; the lab viewer is one more. *Dropped to
 viewers* is `queue_full` as a share of the fan-out (datagrams relayed ×
-subscribers). Mean of the runs, range in brackets.
+subscribers). Mean of the runs, range in brackets. The "32, drained" rows
+are table G's R3 build, which `queue.sh` no longer runs.
 
 | Load | Depth | Runs | Ingress chunks lost (60 s) | Dropped to viewers | Viewer: undecodable | Viewer: chunk latency p50 / p99 ms | Viewer: decode-ready p99 ms | Relay peak RSS |
 |---|---|---|---|---|---|---|---|---|
