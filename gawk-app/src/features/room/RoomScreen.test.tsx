@@ -98,6 +98,7 @@ vi.mock('../../lib/desktopLink', async (importActual) => ({
 }));
 
 import { LEAVE_DETACH_TIMEOUT_MS, RoomScreen, RoomView } from './RoomScreen';
+import { NARROW_QUERY } from '../../lib/useMediaMatch';
 import { useRoomStore } from '../../state/roomStore';
 import { useTransportStore } from '../../state/transportStore';
 import {
@@ -306,6 +307,28 @@ describe('RoomScreen modes', () => {
     await joinAs();
     await new Promise((r) => setTimeout(r, 20));
     expect(viewerSessions).toHaveLength(0);
+  });
+});
+
+// Below the narrow breakpoint the footer used to hide the master slider
+// outright (display: none), leaving only Mute all.
+describe('RoomScreen master volume on a narrow window', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('keeps the master volume adjustable from the footer', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === NARROW_QUERY,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    await joinAs();
+    const btn = screen.getByRole('button', { name: 'Master volume: 100%' });
+    fireEvent.click(btn);
+    const slider = screen.getByRole('slider', { name: 'Master volume' });
+    fireEvent.change(slider, { target: { value: '0.4' } });
+    expect(btn.getAttribute('aria-label')).toBe('Master volume: 40%');
+    fireEvent.click(screen.getByRole('button', { name: 'Mute all' }));
+    expect(btn.getAttribute('aria-label')).toBe('Master volume: muted');
   });
 });
 

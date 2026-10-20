@@ -5,6 +5,7 @@ import { GlassPanel } from '../../ui/GlassPanel';
 import { IconButton } from '../../ui/IconButton';
 import { ContextMenu, type MenuItem } from '../../ui/ContextMenu';
 import { Toast } from '../../ui/Toast';
+import { VolumeControl } from '../../ui/VolumeControl';
 import {
   CopyIcon,
   FocusIcon,
@@ -16,12 +17,12 @@ import {
   PeopleIcon,
   ScreenIcon,
   SpeakerIcon,
-  SpeakerMutedIcon,
   VideoOffIcon,
   CloseIcon,
 } from '../../ui/Icons';
 import { PRESETS, presetConfig, presetLabel, type PresetId } from '../viewer/playbackPresets';
 import { useAutoHide } from '../../lib/useAutoHide';
+import { NARROW_QUERY, useMediaMatch } from '../../lib/useMediaMatch';
 import { useFullscreen } from '../../lib/useFullscreen';
 import { useHotkey } from '../../lib/useHotkey';
 import { useWakeLock } from '../../lib/useWakeLock';
@@ -90,10 +91,6 @@ const TOAST_MS = 4000;
 // before closing the session anyway: a silent relay must not keep them in.
 export const LEAVE_DETACH_TIMEOUT_MS = 2000;
 const NO_ATTACHMENTS: RoomAttachment[] = [];
-// Below this width the grid degrades to focus; the
-// same breakpoint room.module.css uses for the bottom-sheet panel.
-export const NARROW_QUERY = '(max-width: 719px)';
-
 // What the web broadcaster brings into the room: its
 // running broadcast (attached with the resume token as proof), the local
 // preview for its own tile, and the controls that ride on that tile.
@@ -154,22 +151,6 @@ export interface RoomViewProps {
   // the stage's coordinate space; the panel offset and the fade are the
   // caller's to apply from the context.
   header?: (ctx: RoomHeaderContext) => ReactNode;
-}
-
-function useMediaMatch(query: string): boolean {
-  const [matches, setMatches] = useState(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
-    return window.matchMedia(query).matches;
-  });
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-    const mq = window.matchMedia(query);
-    const onChange = () => setMatches(mq.matches);
-    onChange();
-    mq.addEventListener?.('change', onChange);
-    return () => mq.removeEventListener?.('change', onChange);
-  }, [query]);
-  return matches;
 }
 
 // The cinematic dock. Video edge to edge, a header and a footer overlay that
@@ -338,16 +319,13 @@ export function RoomView({
   const [masterVolume, setMasterVolume] = useState(1);
   const setMaster = useCallback((v: number) => {
     setMasterVolume(v);
-    setMasterMuted(false);
     mixerRef.current?.setMasterVolume(v);
-    mixerRef.current?.setMasterMuted(false);
   }, []);
-  const toggleMasterMute = useCallback(() => {
-    setMasterMuted((m) => {
-      mixerRef.current?.setMasterMuted(!m);
-      return !m;
-    });
+  const muteMaster = useCallback((m: boolean) => {
+    setMasterMuted(m);
+    mixerRef.current?.setMasterMuted(m);
   }, []);
+  const [masterOpen, setMasterOpen] = useState(false);
   // The shared context is gesture-gated once for every tile; the mixer's
   // state is not reactive, so it is sampled while tiles are shown.
   const [needsGesture, setNeedsGesture] = useState(false);
@@ -422,7 +400,7 @@ export function RoomView({
   // The creator guard keeps a help left open by a creator who lost the
   // flag (a reconnect without the token) from pinning the chrome forever.
   const anyOverlayOpen =
-    !!menu || !!presetMenu || editingNick || (creatorHelpOpen && isRoomCreator(snapshot));
+    !!menu || !!presetMenu || masterOpen || editingNick || (creatorHelpOpen && isRoomCreator(snapshot));
   const stageLive = tilesShown || previewOnly;
   const chromeVisible = useAutoHide(CONTROL_IDLE_MS, stageLive && !anyOverlayOpen);
   const showChrome = chromeVisible || !stageLive || anyOverlayOpen;
@@ -985,21 +963,18 @@ export function RoomView({
           </button>
         </div>
         <div className={styles.footerRight}>
-          <span className={styles.master}>
-            <IconButton label={masterMuted ? 'Unmute all' : 'Mute all'} onClick={toggleMasterMute}>
-              {masterMuted ? <SpeakerMutedIcon /> : <SpeakerIcon />}
-            </IconButton>
-            <input
-              className={styles.masterVolume}
-              type="range"
-              min={0}
-              max={1}
-              step={0.01}
-              value={masterMuted ? 0 : masterVolume}
-              aria-label="Master volume"
-              onChange={(e) => setMaster(Number(e.target.value))}
-            />
-          </span>
+          <VolumeControl
+            className={styles.master}
+            compact={narrow}
+            label="Master volume"
+            muteLabel="Mute all"
+            unmuteLabel="Unmute all"
+            volume={masterVolume}
+            muted={masterMuted}
+            onVolume={setMaster}
+            onMutedChange={muteMaster}
+            onOpenChange={setMasterOpen}
+          />
           <IconButton
             ref={menuButtonRef}
             label="More options"

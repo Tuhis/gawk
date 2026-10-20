@@ -3,7 +3,7 @@
    viewer's idle period; an optional people-and-chat panel that pins.
 
    Breakpoint: 720 px (--room-narrow, mirrored by NARROW_QUERY in
-   RoomScreen.tsx). Below it the grid degrades to focus, the panel becomes a
+   lib/useMediaMatch.ts). Below it the grid degrades to focus, the panel becomes a
    bottom sheet, and the focus strip shrinks. */
 
 .root {
@@ -451,16 +451,7 @@
 }
 
 .master {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
   margin-right: 0.35rem;
-}
-
-.masterVolume {
-  width: 5.5rem;
-  accent-color: var(--text);
-  cursor: pointer;
 }
 
 .leaveBtn {
@@ -1037,10 +1028,6 @@
 
   .code {
     max-width: 7.5rem;
-  }
-
-  .masterVolume {
-    display: none;
   }
 }
 
