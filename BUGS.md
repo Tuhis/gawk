@@ -922,10 +922,10 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   F-12 way (one written at a time and at most two in Chrome, the newest
   waiting, a stream aborted only when a newer keyframe arrives while it is
   2 s old and still unacknowledged — a shorter limit livelocked natively),
-  never dropping one for age; drop a GOP's deltas while its keyframe waits
-  behind a late one, timed to the handover, not the acknowledgement, so
-  long links never trip it; and tell the broadcaster their upload can't
-  keep up while it lasts.
+  never dropping one for age; drop a GOP's deltas — the whole rest of that
+  GOP — while its keyframe waits behind a late one, "late" timed to the
+  handover, not the acknowledgement, so long links never trip it; and tell
+  the broadcaster their upload can't keep up while it lasts.
 
 ## The relay drops high-rung publisher datagrams that QUIC already acknowledged
 

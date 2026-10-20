@@ -476,15 +476,18 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
         w = sorted((written[i] - prod[i]) / 1e6 for i in ids if i in written)
         a = sorted((acked[i] - prod[i]) / 1e6 for i in ids if i in acked)
         tail = sorted((acked[i] - written[i]) / 1e6 for i in ids if i in acked and i in written)
-        # RU9's triggers: keyframe j would wait in the slot because the one
-        # before it (i) was not handed over before j was produced, or the one
-        # before that (h) was still in Chrome — not yet acknowledged or failed
-        # — so two were (never finished counts as still there).
+        # RU9's triggers: keyframe j's GOP gives way when j waits behind a late
+        # keyframe i — not handed over within one GOP (500 ms) of its own
+        # production, never handed over included — or behind the two-stream
+        # limit: i and the one before it (h) both still in Chrome when j is
+        # produced (never finished counts as still there).
         def waits(k):
             j, i = ids[k], ids[k - 1]
             h = ids[k - 2] if k >= 2 else None
-            return (i not in written or written[i] > prod[j]
-                    or (h is not None and (h not in ended or ended[h] > prod[j])))
+            late = i not in written or (written[i] - prod[i] > 500e6 and written[i] > prod[j])
+            def in_chrome(x):
+                return x not in ended or ended[x] > prod[j]
+            return late or (h is not None and in_chrome(h) and in_chrome(i))
         trips = sum(1 for k in range(1, len(ids)) if waits(k))
         trips += 1 if ids and ids[-1] not in written else 0  # a run can end during a stall
         return w, a, tail, len(ids), trips
@@ -512,9 +515,9 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
         print("Chrome's datagrams with the shipping page (each keyframe on a stream of its own), every keyframe")
         print("of the 100 s run, the first one included. *Handed over*: production until the stream's `write()`")
         print("resolved; *acknowledged*: until its `close()` resolved; the tail is what Chrome still held after")
-        print("the handover. *Would trip*: keyframes RU9 would make wait in the slot — the previous one not")
-        print("handed over before this one was produced, or the one before that still in Chrome then (never")
-        print("finished counts) — which is what drops a GOP's deltas. The")
+        print("the handover. *Would trip*: keyframes whose GOP RU9 would make give way — waiting behind a")
+        print("late one (not handed over within one GOP of its own production), or behind two still in Chrome")
+        print("(never finished counts). The")
         print("1440p rows are past Chrome's datagram ceiling (table P6), so a trip there is real, not false.\n")
         print("| Path | Keyframes handed over | Produced → handed over p50 / p95 / max ms | "
               "Produced → acknowledged p50 / p95 / max ms | Handover → acknowledged p50 / p95 ms | Would trip |")

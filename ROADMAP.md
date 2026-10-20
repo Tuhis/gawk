@@ -5243,8 +5243,8 @@ problem on any lossy path longer than a LAN.
   chunk the broadcaster's uplink lost.
 - **RU9** — the browser broadcaster's send queue drops video and audio
   past one GOP, sends keyframes the F-12 way (one written at a time, 2 s
-  unacknowledged before an abort, never dropped for age, a GOP's deltas
-  giving way while its keyframe waits behind a late one), and
+  unacknowledged before an abort, never dropped for age, the rest of a
+  GOP's deltas giving way while its keyframe waits behind a late one), and
   tells the broadcaster their upload can't keep up, instead of queueing
   without bound (OD5; a slow uplink cost tens of seconds of backlog).
 
