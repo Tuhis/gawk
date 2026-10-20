@@ -27,6 +27,7 @@ use crate::preview::PreviewFrame;
 use crate::{
     MainWindow, RecentRow, RoomRow, StatRow, debuglog, diagnostics, fit, refresh_captions, version,
 };
+use gawk_engine::carrier::{DELIVERY_LABEL, Delivery};
 use gawk_engine::clock::{Clock, MonotonicClock};
 use gawk_engine::config::{self, Config, DEFAULT_SERVER_NAME, ServerProfile};
 use gawk_engine::install::{self, Layout, Plan};
@@ -1064,7 +1065,47 @@ fn seed_settings(ui: &MainWindow, cfg: &Config) {
         5 => 3,
         _ => 1,
     });
+    seed_delivery(ui, cfg);
     refresh_ready(ui, cfg, false);
+}
+
+/// The Quality page's Delivery control (R73, docs/75 §6): the engine's copy
+/// and the stored choice, blank showing the engine's default.
+fn seed_delivery(ui: &MainWindow, cfg: &Config) {
+    let strings = |f: fn(Delivery) -> &'static str| -> ModelRc<SharedString> {
+        ModelRc::new(VecModel::from(
+            Delivery::ALL
+                .iter()
+                .map(|d| SharedString::from(f(*d)))
+                .collect::<Vec<_>>(),
+        ))
+    };
+    ui.set_delivery_title(DELIVERY_LABEL.into());
+    ui.set_delivery_labels(strings(Delivery::label));
+    ui.set_delivery_hints(strings(Delivery::hint));
+    ui.set_set_delivery(delivery_index(cfg.resolve_uplink_delivery()));
+}
+
+fn delivery_index(d: Delivery) -> i32 {
+    Delivery::ALL.iter().position(|x| *x == d).unwrap_or(0) as i32
+}
+
+/// The Delivery a control index stands for; out of range is the default.
+fn delivery_at(i: i32) -> Delivery {
+    usize::try_from(i)
+        .ok()
+        .and_then(|i| Delivery::ALL.get(i).copied())
+        .unwrap_or_default()
+}
+
+/// Stores the Delivery the page shows. Blank stays blank while the page
+/// shows the default, so the engine's default (and its RU7 flip) keeps
+/// applying to anyone who never chose; a choice is stored as its word.
+fn store_delivery(cfg: &mut Config, chosen: Delivery) {
+    if cfg.uplink_delivery.trim().is_empty() && chosen == Delivery::default() {
+        return;
+    }
+    cfg.uplink_delivery = chosen.as_str().to_owned();
 }
 
 /// Reads the settings widgets back into the config: verbatim including
@@ -1129,6 +1170,7 @@ fn read_settings(ui: &MainWindow, cfg: &mut Config, edit: &str) -> String {
         3 => 5,
         _ => 0,
     };
+    store_delivery(cfg, delivery_at(ui.get_set_delivery()));
     edited
 }
 
@@ -2195,6 +2237,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             if let Some(ui) = ui_weak.upgrade() {
                 let mut sh = shell.borrow_mut();
                 let rung_before = sh.cfg.resolve_rung();
+                let delivery_before = sh.cfg.resolve_uplink_delivery();
                 let relay_before = sh.cfg.resolve_relay_url();
                 let edit = sh.edit_server.clone();
                 let tested_before = edit_relay_url(&sh.cfg, &edit);
@@ -2216,6 +2259,15 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 if sh.cfg.resolve_relay_url() != relay_before {
                     // The selected server's own address changed: look again.
                     restart_probe(&ui, &mut sh);
+                }
+                // docs/75 D4: Delivery applies at the next keyframe, live or
+                // not — no restart, no new dial.
+                let delivery = sh.cfg.resolve_uplink_delivery();
+                if delivery != delivery_before
+                    && let Some(session) = &sh.session
+                {
+                    log::info!("delivery changed to {}", delivery.as_str());
+                    session.set_uplink_delivery(delivery);
                 }
                 // docs/64 D13: a quality change while live applies itself,
                 // once typing and dragging settle.
@@ -2978,6 +3030,8 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         room_attach_secret: attach,
         room_create_secret: String::new(),
         nickname: sh.cfg.nickname.clone(),
+        uplink_delivery: sh.cfg.resolve_uplink_delivery(),
+        congestion: sh.cfg.resolve_congestion(),
     };
     sh.nick_sent = sh.cfg.nickname.clone();
     let clock: Arc<dyn gawk_engine::clock::Clock> = sh.clock.clone();
@@ -4846,6 +4900,14 @@ fn merged_stats(sh: &Shell) -> gawk_engine::stats::Stats {
     st
 }
 
+fn or_dash(s: &str) -> String {
+    if s.is_empty() {
+        "—".into()
+    } else {
+        s.to_owned()
+    }
+}
+
 fn percent(part: u64, whole: u64) -> f64 {
     if whole == 0 {
         0.0
@@ -4972,6 +5034,23 @@ fn base_stat_rows(
             },
         ),
         row("Dropped at send", format!("{}", st.frames_dropped_at_send)),
+        // R73 (docs/75 §6): the technical truth behind the Delivery setting.
+        row(
+            "Delivery",
+            format!(
+                "{} requested · {} in use",
+                or_dash(&st.uplink_mode_requested),
+                or_dash(&st.uplink_mode)
+            ),
+        ),
+        row("Congestion control", or_dash(&st.uplink_congestion)),
+        row(
+            "Carriers",
+            format!(
+                "{} opened · {} expired · {} records shed",
+                st.uplink_carriers_opened, st.uplink_carriers_expired, st.uplink_records_shed
+            ),
+        ),
         row(
             "Packets lost",
             if st.uplink_packets_available {
@@ -6653,6 +6732,131 @@ mod tests {
         read_settings(&ui, &mut cfg, DEFAULT_SERVER_NAME);
         assert_eq!(cfg.default_secret(), "default-secret", "the default's own");
         assert_eq!(cfg.resolve_publish_secret(), "homelab-secret");
+    }
+
+    // R73 RU5 (docs/75 §6): the Quality page's Delivery control shows the
+    // engine's copy, opens on the engine's default for a blank file, and
+    // persists a choice as its broadcast.json word — while a page that was
+    // never touched keeps the file blank, so the default's flip reaches it.
+    #[test]
+    fn the_delivery_control_shows_its_copy_and_persists_a_choice() {
+        let ui = window();
+        let mut cfg = Config::default();
+        seed_settings(&ui, &cfg);
+        assert_eq!(ui.get_delivery_title(), "Delivery");
+        let labels: Vec<String> = ui.get_delivery_labels().iter().map(|s| s.into()).collect();
+        assert_eq!(labels, ["Reliable", "Lowest latency"]);
+        let hints: Vec<String> = ui.get_delivery_hints().iter().map(|s| s.into()).collect();
+        assert_eq!(hints, Delivery::ALL.map(|d| d.hint().to_owned()));
+        assert_eq!(ui.get_set_delivery(), delivery_index(Delivery::default()));
+
+        read_settings(&ui, &mut cfg, DEFAULT_SERVER_NAME);
+        assert_eq!(cfg.uplink_delivery, "", "untouched stays blank");
+
+        ui.set_set_delivery(delivery_index(Delivery::Reliable));
+        read_settings(&ui, &mut cfg, DEFAULT_SERVER_NAME);
+        assert_eq!(cfg.uplink_delivery, "reliable");
+        ui.set_set_delivery(delivery_index(Delivery::LowestLatency));
+        read_settings(&ui, &mut cfg, DEFAULT_SERVER_NAME);
+        assert_eq!(cfg.uplink_delivery, "lowest-latency", "a choice is kept");
+
+        let next = MainWindow::new().unwrap();
+        cfg.uplink_delivery = "reliable".into();
+        seed_settings(&next, &cfg);
+        assert_eq!(next.get_set_delivery(), delivery_index(Delivery::Reliable));
+    }
+
+    /// A relay where nothing happens: enough for a live session's stats.
+    struct QuietRelay;
+
+    impl gawk_engine::relay::RelaySession for QuietRelay {
+        fn send_datagram(&self, _: &[u8]) -> Result<(), gawk_engine::relay::SendDatagramError> {
+            Ok(())
+        }
+        fn open_keyframe_stream(
+            &self,
+        ) -> gawk_engine::relay::BoxFuture<
+            '_,
+            Result<Box<dyn gawk_engine::relay::KeyframeWriter>, String>,
+        > {
+            Box::pin(std::future::pending())
+        }
+        fn accept_uni(
+            &self,
+        ) -> gawk_engine::relay::BoxFuture<
+            '_,
+            Result<Box<dyn gawk_engine::relay::ServerStream>, String>,
+        > {
+            Box::pin(std::future::pending())
+        }
+        fn receive_datagram(&self) -> gawk_engine::relay::BoxFuture<'_, Result<Vec<u8>, String>> {
+            Box::pin(std::future::pending())
+        }
+        fn closed(&self) -> gawk_engine::relay::BoxFuture<'_, gawk_engine::relay::SessionClose> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    // RU5 (docs/75 D4): a Delivery change while live reaches the session —
+    // which applies it at the next keyframe — with no quality restart.
+    #[test]
+    fn a_live_delivery_change_reaches_the_session_without_a_restart() {
+        let ui = window();
+        let (shell, _) = test_shell();
+        wire_callbacks(&ui, &shell);
+        seed_settings(&ui, &shell.borrow().cfg);
+        let session = {
+            let sh = shell.borrow();
+            let _rt = sh.rt.enter();
+            Session::start_with_session(
+                SessionConfig::default(),
+                Arc::new(QuietRelay),
+                Arc::new(MonotonicClock::new()),
+            )
+            .0
+        };
+        {
+            let mut sh = shell.borrow_mut();
+            sh.session = Some(session.clone());
+            sh.state = UiState::Live;
+        }
+        assert_eq!(session.stats().uplink_mode_requested, "lowest-latency");
+
+        ui.set_set_delivery(delivery_index(Delivery::Reliable));
+        ui.invoke_settings_edited();
+        assert_eq!(session.stats().uplink_mode_requested, "reliable");
+        assert_eq!(shell.borrow().cfg.uplink_delivery, "reliable");
+        assert!(
+            !shell.borrow().quality_timer.running(),
+            "Delivery is not a quality change: no restart"
+        );
+        shell.borrow_mut().session = None;
+    }
+
+    // RU5 (docs/75 §6): Diagnostics carries the technical truth — the mode
+    // asked for and in use, the controller, the carrier counters.
+    #[test]
+    fn diagnostics_rows_show_the_uplink_delivery() {
+        let st = gawk_engine::stats::Stats {
+            uplink_mode_requested: "reliable".into(),
+            uplink_mode: "datagram".into(),
+            uplink_congestion: "cubic".into(),
+            uplink_carriers_opened: 4,
+            uplink_carriers_expired: 1,
+            uplink_records_shed: 9,
+            ..Default::default()
+        };
+        let rows = stat_rows(&st, &LossMonitor::new(), None);
+        let get = |label: &str| {
+            rows.iter()
+                .find(|r| r.label == label)
+                .map(|r| r.value.to_string())
+                .unwrap_or_else(|| panic!("no {label} row"))
+        };
+        assert_eq!(get("Delivery"), "reliable requested · datagram in use");
+        assert_eq!(get("Congestion control"), "cubic");
+        assert_eq!(get("Carriers"), "4 opened · 1 expired · 9 records shed");
+        assert!(rows.iter().any(|r| r.label == "Packets lost"));
     }
 
     #[test]

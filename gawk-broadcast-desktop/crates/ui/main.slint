@@ -2307,6 +2307,13 @@ export component MainWindow inherits Window {
     in-out property <string> set-custom-height: "";
     in-out property <bool> set-update-check: true;
     in property <[string]> framerate-labels: ["120 fps", "60 fps", "30 fps", "5 fps"];
+    // R73 (docs/75 §6): the Delivery control. The copy is the engine's
+    // (`gawk_engine::carrier`), set by the shell, so its string test covers
+    // what this page shows; the index is into those labels.
+    in-out property <int> set-delivery: 1;
+    in property <string> delivery-title: "";
+    in property <[string]> delivery-labels: [];
+    in property <[string]> delivery-hints: [];
     in property <string> caption-broadcast: "";
     in property <string> caption-diag: "";
     in property <string> terms-link: "";
@@ -4349,6 +4356,30 @@ export component MainWindow inherits Window {
                             root.settings-edited();
                         }
                     }
+                }
+                // R73 (docs/75 §6): how video crosses the upload. No dialog,
+                // no restart: the shell applies it at the next keyframe.
+                Rectangle {
+                    height: 6px;
+                }
+                Text {
+                    text: root.delivery-title;
+                    color: T.muted;
+                    font-size: 12.5px;
+                }
+                Seg {
+                    options: root.delivery-labels;
+                    current: root.set-delivery;
+                    changed(i) => {
+                        root.set-delivery = i;
+                        root.settings-edited();
+                    }
+                }
+                Text {
+                    text: root.delivery-hints[root.set-delivery];
+                    color: T.muted;
+                    font-size: 12.5px;
+                    wrap: word-wrap;
                 }
             }
         }
