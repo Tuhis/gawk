@@ -461,22 +461,31 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
         p = f"{OUT}/results/{name}/{mode}/send.csv"
         if not os.path.exists(p):
             return None
-        prod, written, acked = {}, {}, {}
+        prod, written, acked, ended = {}, {}, {}, {}
         for line in open(p):
             x = line.rstrip("\n").split(",")
             if x[0] == "F" and x[2] == "1":
                 prod[int(x[1])] = int(x[6])
             elif x[0] == "KW":
                 written[int(x[1])] = int(x[2])
-            elif x[0] == "K" and x[4] == "sent":
-                acked[int(x[1])] = int(x[3])
+            elif x[0] == "K":
+                ended[int(x[1])] = int(x[3])  # acknowledged or failed: out of Chrome
+                if x[4] == "sent":
+                    acked[int(x[1])] = int(x[3])
         ids = sorted(prod)
         w = sorted((written[i] - prod[i]) / 1e6 for i in ids if i in written)
         a = sorted((acked[i] - prod[i]) / 1e6 for i in ids if i in acked)
         tail = sorted((acked[i] - written[i]) / 1e6 for i in ids if i in acked and i in written)
-        # RU9's trigger: keyframe n+1 would wait in the slot because keyframe n
-        # was not handed over before n+1 was produced (never handed over counts).
-        trips = sum(1 for i, j in zip(ids, ids[1:]) if i not in written or written[i] > prod[j])
+        # RU9's triggers: keyframe j would wait in the slot because the one
+        # before it (i) was not handed over before j was produced, or the one
+        # before that (h) was still in Chrome — not yet acknowledged or failed
+        # — so two were (never finished counts as still there).
+        def waits(k):
+            j, i = ids[k], ids[k - 1]
+            h = ids[k - 2] if k >= 2 else None
+            return (i not in written or written[i] > prod[j]
+                    or (h is not None and (h not in ended or ended[h] > prod[j])))
+        trips = sum(1 for k in range(1, len(ids)) if waits(k))
         trips += 1 if ids and ids[-1] not in written else 0  # a run can end during a stall
         return w, a, tail, len(ids), trips
 
@@ -504,7 +513,8 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
         print("of the 100 s run, the first one included. *Handed over*: production until the stream's `write()`")
         print("resolved; *acknowledged*: until its `close()` resolved; the tail is what Chrome still held after")
         print("the handover. *Would trip*: keyframes RU9 would make wait in the slot — the previous one not")
-        print("handed over before this one was produced, or never — which is what drops a GOP's deltas. The")
+        print("handed over before this one was produced, or the one before that still in Chrome then (never")
+        print("finished counts) — which is what drops a GOP's deltas. The")
         print("1440p rows are past Chrome's datagram ceiling (table P6), so a trip there is real, not false.\n")
         print("| Path | Keyframes handed over | Produced → handed over p50 / p95 / max ms | "
               "Produced → acknowledged p50 / p95 / max ms | Handover → acknowledged p50 / p95 ms | Would trip |")
