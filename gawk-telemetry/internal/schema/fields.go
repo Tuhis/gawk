@@ -238,11 +238,22 @@ var BroadcasterFields = map[string]Kind{
 	// docs/75 D8: datagrams offered to quinn minus the DATAGRAM frames it
 	// wrote — drops inside the broadcaster's own send buffer.
 	"uplinkDatagramsDropped": KindNumber,
-	"timeSyncAvailable":      KindBool,
-	"timeSyncOffsetUs":       KindNumber,
-	"viewerCountAvailable":   KindBool,
-	"resumes":                KindNumber,
-	"resuming":               KindBool,
+	// R73 (docs/75 D8): which uplink ran — the Delivery setting asked for,
+	// the mode in use (datagram | carrier; they differ on a relay without
+	// carriers), the congestion controller — and what the carrier lane
+	// could not deliver. In Reliable delivery those counters, not lost
+	// packets, are leg-A loss.
+	"uplinkMode":            KindString,
+	"uplinkModeRequested":   KindString,
+	"uplinkCongestion":      KindString,
+	"uplinkCarriersOpened":  KindNumber,
+	"uplinkCarriersExpired": KindNumber,
+	"uplinkRecordsShed":     KindNumber,
+	"timeSyncAvailable":     KindBool,
+	"timeSyncOffsetUs":      KindNumber,
+	"viewerCountAvailable":  KindBool,
+	"resumes":               KindNumber,
+	"resuming":              KindBool,
 	// The capture-side counterpart of resumes: the native broadcaster rebuilt
 	// a capture pipeline that died mid-session instead of ending the
 	// broadcast. Typed because the recovery is silent by design — a stream

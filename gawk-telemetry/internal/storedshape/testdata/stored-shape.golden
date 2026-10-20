@@ -348,10 +348,16 @@ sessions.stats.timeSyncAvailable boolean
 sessions.stats.timeSyncOffsetUs number
 sessions.stats.timeSyncRttMs number
 sessions.stats.transport string
+sessions.stats.uplinkCarriersExpired number
+sessions.stats.uplinkCarriersOpened number
+sessions.stats.uplinkCongestion string
 sessions.stats.uplinkDatagramsDropped number
+sessions.stats.uplinkMode string
+sessions.stats.uplinkModeRequested string
 sessions.stats.uplinkPacketsAvailable boolean
 sessions.stats.uplinkPacketsLost number
 sessions.stats.uplinkPacketsSent number
+sessions.stats.uplinkRecordsShed number
 sessions.stats.uplinkWarning boolean
 sessions.stats.videoBytesReceived number
 sessions.stats.videoScheduleBaseEpochMs number
