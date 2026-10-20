@@ -781,69 +781,6 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   once, so this needs the tile body keyed on an attempt counter (a new
   canvas per attempt), not a re-run of the connection effect.
 
-## Telemetry blames leg B for broadcaster-uplink loss — partial-frame ingress loss is invisible to the playbook
-
-- **Found**: 2026-09-27, troubleshooting keyframe-only stutter on a live
-  broadcast (key `68615225a328`, one Firefox 157/Windows viewer, no
-  broadcaster telemetry session). The viewer diagnosis fired
-  `keyframe-only-delivery` (confidence 0.8) with the action "This is leg B for
-  this viewer". The broadcast diagnosis
-  (`/v1/broadcasts/{key}/diagnose`) reported **`healthy: true`**, with
-  `leg-a-broadcaster-uplink` in `passed`. At the same moment the origin pod's
-  `gawk_broadcast_ingress_chunks_lost_total` was rising at ~200–235 chunks/s,
-  **21–22 % of relayed datagrams** (up from 0.1–0.4 % before the onset).
-  The relay dropped nothing downstream: `datagrams_dropped_total` was 0 for
-  `queue_full`, `bandwidth` and `carrier_queue_full`, and `send_errors_total`
-  was 0. The edge's `edge_ingress_chunks_lost_total` tracked the origin's
-  ingress loss one for one. So the loss was leg A, on the broadcaster→relay
-  path.
-- **Cause (read in code, not yet test-reproduced)**: every producer of the
-  `ingressLossRatio` fact computes it from **whole frames only**:
-  `IngressFramesLost / (IngressFramesLost + FramesRelayed)`. The three
-  producers are `readapi/broadcast.go` (`setBroadcastRelayFacts`),
-  `readapi/readapi.go` (`factsFor`) and `live/live.go`. `IngressFramesLost` counts
-  frames of which *no* chunk arrived (`hub.go`: "frames the publisher sent
-  that never arrived"). Uplink loss mostly shows up as frames that arrive
-  missing chunks (`IngressChunksLost`, "missing chunks of frames that did
-  arrive"). The relay exports that counter and `relayscrape.Broadcast`
-  decodes it, but no fact reads it. In this incident that meant 4 lost frames
-  against ~29k relayed (0.01 %, far under `ingressLossWarn` = 0.005),
-  while about a fifth of all chunks never reached the relay. Two more things
-  make it worse:
-  - `keyframeOnlyDelivery`'s `Action` hardcodes "leg B" and never consults
-    the ingress facts. Its confidence goes up to 0.8 whenever
-    `subscriber.keyframesDropped` is *present*, even when it is 3 against 230
-    keyframes, as here.
-  - `legBSingleViewer`'s "ingress is clean" gate reads the same frames-only
-    ratio, so it would also wave leg-A chunk loss through as a single-viewer
-    problem. It went `unavailable` here only for lack of
-    `peerMedianDropped`.
-
-  The two `readapi` producers also divide *lifetime* counters, the same
-  dilution `live.go` already fixed with its windowed ratio. So even a
-  chunk-based ratio would hide a loss episode that starts late in a long
-  broadcast.
-- **Impact**: the playbook tells the operator to check the viewer's network
-  when the broadcaster's uplink is failing, and the broadcast card says
-  healthy. Every viewer of the broadcast sees the same stutter, but the
-  diagnosis sends the operator to the wrong machine. This is worst when there
-  is no broadcaster telemetry session, because then the relay's ingress facts
-  are the only testimony about leg A.
-- *2026-10-17*: the relay itself produces this signature on a clean path
-  at the high rung — see "The relay drops high-rung publisher datagrams that
-  QUIC already acknowledged" below. The playbook fix needs a row for that
-  case too (docs/75 D8).
-- **Fix would start**: test-first in `rules`. First, a broadcast whose relay
-  facts carry heavy chunk loss and near-zero whole-frame loss must fire
-  `leg-a-broadcaster-uplink`. Second, a viewer with the same relay facts must
-  not get a leg-B action from `keyframe-only-delivery`. Then add an ingress
-  chunk-loss fact beside `ingressLossRatio`: windowed like `live.go`, and
-  normalised against datagrams or chunks rather than frames. Have leg-A fire
-  on either fact. Make `keyframe-only-delivery`'s action and
-  `leg-b-single-viewer`'s clean-ingress gate read both facts. Its thresholds
-  need their own calibration: parity recovers some chunk loss, so a chunk
-  ratio is not interchangeable with a frame ratio.
-
 ## Desktop broadcaster counts audio twice in its upload rate and summary
 
 - **Found**: 2026-10-06, building R68's upload row for the iOS core
@@ -954,8 +891,10 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Impact**: high-rung datagram publishers lose the tails of their largest
   frames — parity included — at the relay, for every viewer, and the loss
   is booked as leg-A loss. The signature (chunks lost, no whole frames) is
-  the one the 2026-09-27 incident below recorded; whether that incident was
-  this is not known (its rung is not on record). R73's carrier is immune.
+  the one a 2026-09-27 incident recorded; whether that incident was this is
+  not known (its rung is not on record). R73's carrier is immune. Since
+  docs/75 RU0 telemetry's `relay-intake-drops` rule names it when a native
+  broadcaster's QUIC reports no matching packet loss.
 - **Fix would start**: docs/75 RU2 — red first with a burst of 200
   datagrams against a relay loop blocked for 20 ms, then a 512-deep queue
   (docs/75 D7, F16: deeper only adds delay on a busy relay), upstream or as

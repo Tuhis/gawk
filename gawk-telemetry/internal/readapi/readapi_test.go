@@ -659,6 +659,8 @@ func (f *fixture) maximalBroadcasterFacts(t *testing.T) *rules.Facts {
 		"codec": "avc1.640028", "acceleration": "hardware",
 		// The native engine's capitalized spellings, so one row covers both.
 		"Encoder": "nvh264enc", "Codec": "avc1.42E02A", "CapturePath": "portal",
+		// docs/75 D8: the native engine's QUIC packet counters.
+		"uplinkPacketsSent": 12000.0, "uplinkPacketsLost": 3.0,
 	}
 	samples := []rollup.Sample{
 		{TMs: 0, Stats: stats},
@@ -1027,11 +1029,15 @@ func maximalRelayLines(t *testing.T, sessionID string) [][]byte {
 			"broadcastKey": bkey,
 			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 100,
 				"ingressFramesLost": 2, "subscribers": 3, "viewersGlobal": 3,
+				"ingressFramesDamaged": 1, "ingressFramesExpected": 90,
+				"ingressChunksLost": 2, "ingressChunksExpected": 800,
 				"datagramsDropped": 4, "bandwidthDroppedDatagrams": 1, "keyframeStreamsIn": 5}}),
 		line(map[string]any{"kind": "broadcast", "atMs": 12000, "pod": "pod-a", "role": "origin",
 			"broadcastKey": bkey,
 			"broadcast": map[string]any{"publisherActive": true, "framesRelayed": 400,
 				"ingressFramesLost": 3, "subscribers": 3, "viewersGlobal": 3,
+				"ingressFramesDamaged": 4, "ingressFramesExpected": 390,
+				"ingressChunksLost": 9, "ingressChunksExpected": 3500,
 				"datagramsDropped": 6, "bandwidthDroppedDatagrams": 2, "keyframeStreamsIn": 9,
 				"subscriberDetails": []map[string]any{
 					{"sessionId": sessionID, "dropped": 3},

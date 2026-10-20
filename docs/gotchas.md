@@ -81,6 +81,16 @@ Add to it when a new gotcha lands in `docs/`.
   `GAWK_UPDATE_GOLDEN=1 go test ./internal/storedshape/`, and a changed or
   removed one fails CI. Never edit a recorded line to make it pass: add a
   new field. ([docs/33](33-telemetry-and-diagnostics.md) D4)
+- **Leg-A loss has three units and none of them is a substitute for
+  another.** `ingressFramesLost` counts only frames of which *no* chunk
+  arrived, so uplink loss — frames arriving a chunk short — read 0.01 %
+  while a fifth of all chunks were gone. The relay's damaged-frame ratio
+  (`ingressFrameLossRatio`) is counted *before* parity, so a healthy
+  baseline of 0.1–0.4 % chunk loss already damages a few percent of frames
+  that no viewer misses. Each ratio has its own thresholds in
+  `rules/playbook.go`; never sum them, and never divide lifetime counters —
+  a late episode in a long broadcast vanishes into the history.
+  ([docs/75](75-reliable-uplink.md) RU0)
 - **A cgo image that BUILDS is not an image that runs**, and nothing catches
   the difference at build time. The telemetry image shipped twice-broken —
   `distroless/base` has no libstdc++ for a C++ dependency, and a builder whose

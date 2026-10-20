@@ -674,6 +674,9 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 	if st := row.Series["playoutOffsetMs"]; st != nil {
 		f.SetClient("playoutOffsetMs", st.P95)
 	}
+	if row.Role == "broadcaster" {
+		setUplinkLoss(f, row.Counters)
+	}
 	if row.LongestStallMs > 0 {
 		f.SetClient("timeSinceLastFrameMs", row.LongestStallMs)
 	}
@@ -691,7 +694,7 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 	// all, so the rule was dead on both paths). Only the ORIGIN's observations
 	// are used: an edge's counter is a different leg, and a re-home would make
 	// the pair a comparison between two unrelated counters.
-	var first, last *relayObservation
+	var first, last, anyLast *relayObservation
 	for _, ln := range relayLines {
 		var o relayObservation
 		if err := json.Unmarshal(ln, &o); err != nil {
@@ -721,11 +724,19 @@ func (a *API) factsFor(row rollup.Row, in rollup.Input, relayLines [][]byte) *ru
 		}
 		if o.BroadcastKey == row.BroadcastKey && o.Broadcast != nil {
 			f.SetRelay("publisherActive", boolF(o.Broadcast.PublisherActive))
-			total := float64(o.Broadcast.IngressFramesLost + o.Broadcast.FramesRelayed)
-			if total > 0 {
-				f.SetRelay("ingressLossRatio", float64(o.Broadcast.IngressFramesLost)/total)
+			if o.Role != "edge" && (anyLast == nil || o.AtMs > anyLast.AtMs) {
+				a := o
+				anyLast = &a
 			}
 		}
+	}
+	// Leg A over THIS session's span, not the broadcast's lifetime. A session
+	// with no observation inside its span falls back to the broadcast's
+	// latest, lifetime, as before.
+	if last != nil {
+		setIngressRatios(f, first, last)
+	} else {
+		setIngressRatios(f, nil, anyLast)
 	}
 
 	// The broadcast-level facts the LIVE path has always had and this one
@@ -817,28 +828,86 @@ func setEpisodeFacts(f *rules.Facts, episodes map[string]*rollup.Episodes, role 
 	}
 }
 
+// relayBroadcast is the slice of a stored broadcast observation the read
+// path reads.
+type relayBroadcast struct {
+	PublisherActive           bool   `json:"publisherActive"`
+	FramesRelayed             uint64 `json:"framesRelayed"`
+	IngressFramesLost         uint64 `json:"ingressFramesLost"`
+	IngressChunksLost         uint64 `json:"ingressChunksLost"`
+	IngressFramesDamaged      uint64 `json:"ingressFramesDamaged"`
+	IngressFramesExpected     uint64 `json:"ingressFramesExpected"`
+	IngressChunksExpected     uint64 `json:"ingressChunksExpected"`
+	ViewersGlobal             uint32 `json:"viewersGlobal"`
+	DatagramsDropped          uint64 `json:"datagramsDropped"`
+	BandwidthDroppedDatagrams uint64 `json:"bandwidthDroppedDatagrams"`
+	KeyframeStreamsIn         uint64 `json:"keyframeStreamsIn"`
+	SubscriberDetails         []struct {
+		SessionID string `json:"sessionId"`
+		Dropped   uint64 `json:"dropped"`
+		Internal  bool   `json:"internal"`
+	} `json:"subscriberDetails"`
+}
+
+func (b *relayBroadcast) ingressLoss() relayscrape.IngressLoss {
+	return relayscrape.IngressLoss{
+		FramesLost: b.IngressFramesLost, FramesDamaged: b.IngressFramesDamaged,
+		FramesExpected: b.IngressFramesExpected,
+		ChunksLost:     b.IngressChunksLost, ChunksExpected: b.IngressChunksExpected,
+	}
+}
+
+// setUplinkLoss publishes the native broadcaster's QUIC packet loss over its
+// session (docs/75 D8): the rollup keeps the cumulative counters' final
+// values, so this is the session's ratio. relay-intake-drops reads it against
+// the relay's ingress loss.
+func setUplinkLoss(f *rules.Facts, counters map[string]float64) {
+	if sent := counters["uplinkPacketsSent"]; sent > 0 {
+		f.SetClient("uplinkPacketLossRatio", counters["uplinkPacketsLost"]/sent)
+	}
+}
+
+// setIngressRatios publishes the leg-A ratios over the window base → last:
+// the whole-frame ingressLossRatio and docs/75 RU0's frame and chunk units.
+// A lifetime ratio hides an episode that starts late in a long broadcast
+// (BUGS.md 2026-09-27), so a base on the same pod is used whenever there is
+// one; with none, the last observation's lifetime is the only testimony.
+func setIngressRatios(f *rules.Facts, base, last *relayObservation) {
+	if last == nil || last.Broadcast == nil {
+		return
+	}
+	cur := last.Broadcast
+	var prev relayBroadcast
+	windowed := base != nil && base != last && base.Broadcast != nil && base.Pod == last.Pod &&
+		base.AtMs < last.AtMs && cur.FramesRelayed >= base.Broadcast.FramesRelayed &&
+		cur.IngressFramesLost >= base.Broadcast.IngressFramesLost
+	if windowed {
+		prev = *base.Broadcast
+	}
+	lost := float64(cur.IngressFramesLost - prev.IngressFramesLost)
+	if total := lost + float64(cur.FramesRelayed-prev.FramesRelayed); total > 0 {
+		f.SetRelay("ingressLossRatio", lost/total)
+	} else if windowed {
+		f.SetRelay("ingressLossRatio", 0)
+	}
+	frame, frameOK, chunk, chunkOK := cur.ingressLoss().RatiosSince(prev.ingressLoss())
+	if frameOK {
+		f.SetRelay("ingressFrameLossRatio", frame)
+	}
+	if chunkOK {
+		f.SetRelay("ingressChunkLossRatio", chunk)
+	}
+}
+
 type relayObservation struct {
-	Kind         string `json:"kind"`
-	AtMs         int64  `json:"atMs"`
-	Pod          string `json:"pod"`
-	Role         string `json:"role"`
-	BroadcastKey string `json:"broadcastKey"`
-	SessionID    string `json:"sessionId"`
-	Broadcast    *struct {
-		PublisherActive           bool   `json:"publisherActive"`
-		FramesRelayed             uint64 `json:"framesRelayed"`
-		IngressFramesLost         uint64 `json:"ingressFramesLost"`
-		ViewersGlobal             uint32 `json:"viewersGlobal"`
-		DatagramsDropped          uint64 `json:"datagramsDropped"`
-		BandwidthDroppedDatagrams uint64 `json:"bandwidthDroppedDatagrams"`
-		KeyframeStreamsIn         uint64 `json:"keyframeStreamsIn"`
-		SubscriberDetails         []struct {
-			SessionID string `json:"sessionId"`
-			Dropped   uint64 `json:"dropped"`
-			Internal  bool   `json:"internal"`
-		} `json:"subscriberDetails"`
-	} `json:"broadcast"`
-	Subscriber *struct {
+	Kind         string          `json:"kind"`
+	AtMs         int64           `json:"atMs"`
+	Pod          string          `json:"pod"`
+	Role         string          `json:"role"`
+	BroadcastKey string          `json:"broadcastKey"`
+	SessionID    string          `json:"sessionId"`
+	Broadcast    *relayBroadcast `json:"broadcast"`
+	Subscriber   *struct {
 		Dropped               uint64 `json:"dropped"`
 		QueueDepth            int    `json:"queueDepth"`
 		KeyframesDropped      uint64 `json:"keyframesDropped"`

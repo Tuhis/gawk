@@ -155,6 +155,10 @@ type sessionState struct {
 	// can only ratchet upward.
 	prevSub     relayscrape.Subscriber
 	havePrevSub bool
+	// The native broadcaster's cumulative QUIC packet counters at the end of
+	// the previous batch, so uplinkPacketLossRatio is this window's.
+	prevUplinkSent, prevUplinkLost float64
+	havePrevUplink                 bool
 	// dipWindow is the rolling sample history the D16 detector runs over,
 	// capped at DipWindowSamples. Every sample of every batch lands here — the
 	// gauges above still come from the last one, but a dip that happened in
@@ -373,6 +377,35 @@ func (p *Projection) ObserveClient(a ingest.Accepted, browser, os, appVersion st
 				s.textFacts[f] = v
 			}
 		}
+		s.foldUplinkLocked(a.Samples)
+	}
+}
+
+// foldUplinkLocked derives uplinkPacketLossRatio (docs/75 D8) over the window
+// since the previous batch: the native broadcaster's QUIC lost/sent packets,
+// which relay-intake-drops sets against the relay's ingress loss. Cumulative
+// counters, so a lifetime ratio would keep one bad minute in every later
+// verdict. No packets sent in the window, or counters that went backwards (a
+// new process), is no measurement.
+func (s *sessionState) foldUplinkLocked(samples []ingest.Sample) {
+	last := samples[len(samples)-1].Stats
+	sent, okS := schema.Number(last, "uplinkPacketsSent")
+	lost, okL := schema.Number(last, "uplinkPacketsLost")
+	if !okS || !okL {
+		return
+	}
+	baseSent, baseLost, have := s.prevUplinkSent, s.prevUplinkLost, s.havePrevUplink
+	if !have && len(samples) > 1 {
+		first := samples[0].Stats
+		fs, okFS := schema.Number(first, "uplinkPacketsSent")
+		fl, okFL := schema.Number(first, "uplinkPacketsLost")
+		baseSent, baseLost, have = fs, fl, okFS && okFL
+	}
+	s.prevUplinkSent, s.prevUplinkLost, s.havePrevUplink = sent, lost, true
+	if have && sent > baseSent && lost >= baseLost {
+		s.clientFacts["uplinkPacketLossRatio"] = (lost - baseLost) / (sent - baseSent)
+	} else {
+		delete(s.clientFacts, "uplinkPacketLossRatio")
 	}
 }
 
@@ -491,6 +524,14 @@ func (p *Projection) ObserveRelay(r relayscrape.Round) {
 		for _, s := range b.sessions {
 			s.relayFacts["peerMedianDropped"] = med
 			s.relayFacts["ingressLossRatio"] = b.relayFacts["ingressLossRatio"]
+			// The leg-A units a viewer's rules read to tell leg A from leg B.
+			for _, k := range []string{"ingressFrameLossRatio", "ingressChunkLossRatio"} {
+				if v, ok := b.relayFacts[k]; ok {
+					s.relayFacts[k] = v
+				} else {
+					delete(s.relayFacts, k)
+				}
+			}
 			s.relayFacts["publisherActive"] = b.relayFacts["publisherActive"]
 		}
 	}
@@ -673,6 +714,18 @@ func (b *broadcastState) aggregateLocked() {
 				f["ingressLossRatio"] = 0
 			}
 		}
+		// docs/75 RU0: the same window in the units that see uplink loss —
+		// frames lost or damaged, and chunks. A whole-frame ratio alone read
+		// a fifth of all chunks lost as 0.01 % (BUGS.md, 2026-09-27).
+		if origin.have {
+			frame, frameOK, chunk, chunkOK := origin.cur.IngressLoss().RatiosSince(origin.prev.IngressLoss())
+			if frameOK {
+				f["ingressFrameLossRatio"] = frame
+			}
+			if chunkOK {
+				f["ingressChunkLossRatio"] = chunk
+			}
+		}
 		b.pod, b.role = origin.pod, origin.role
 	}
 	b.relayFacts = f
@@ -818,6 +871,29 @@ func (p *Projection) Snapshot() Snapshot {
 	return out
 }
 
+// factsLocked assembles the broadcast-scope fact set: the relay's broadcast
+// facts, plus the one broadcaster fact a broadcast rule reads — its uplink's
+// own packet loss, which tells the uplink's loss from the relay intake's
+// (docs/75 D8, relay-intake-drops).
+func (b *broadcastState) factsLocked() *rules.Facts {
+	bf := rules.NewFacts(b.key, "broadcast", "")
+	for k, v := range b.relayFacts {
+		bf.SetRelay(k, v)
+	}
+	// The broadcaster heard from most recently, if a restart left two.
+	var latest *sessionState
+	for _, s := range b.sessions {
+		if _, ok := s.clientFacts["uplinkPacketLossRatio"]; ok && s.view.Role == "broadcaster" &&
+			(latest == nil || s.lastClient.After(latest.lastClient)) {
+			latest = s
+		}
+	}
+	if latest != nil {
+		bf.SetClient("uplinkPacketLossRatio", latest.clientFacts["uplinkPacketLossRatio"])
+	}
+	return bf
+}
+
 // renderBroadcastLocked builds one card. Shared by the live group and by the
 // end path, so an ended broadcast's stored card is the same computation an
 // operator was looking at a second earlier.
@@ -839,11 +915,7 @@ func (p *Projection) renderBroadcastLocked(b *broadcastState, now time.Time) Bro
 		bv.Lifecycle = "away"
 	}
 
-	bf := rules.NewFacts(b.key, "broadcast", "")
-	for k, v := range b.relayFacts {
-		bf.SetRelay(k, v)
-	}
-	rep := rules.Evaluate(bf, p.rs)
+	rep := rules.Evaluate(b.factsLocked(), p.rs)
 	bv.Severity = rep.Severity()
 	bv.Findings = rep.Findings
 

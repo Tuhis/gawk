@@ -1529,6 +1529,14 @@ correctly, and a stream broken *continuously* should fire it. The new rule is
 the same physics measured inside the window where it is legible. Both may fire;
 ranking puts the more severe first, and their evidence differs.
 
+Which leg is the relay's call, not the viewer's (docs/75 RU0): when the
+relay's ingress facts show leg-A loss (`ingressLossRatio`,
+`ingressFrameLossRatio` or `ingressChunkLossRatio` over its threshold),
+`keyframe-only-delivery`'s action names leg A and points at the broadcast
+diagnosis instead of this viewer's network. The leg-B action, and its
+relay-anchored confidence, need a clean ingress and dropped keyframes, not
+merely a reported `keyframesDropped`.
+
 Relay corroboration lifts confidence where present (`subscriberDropped`,
 `keyframesDropped`) — a dip the relay also saw is anchored testimony, a dip
 only the client reports stays capped at the D7 client-only ceiling.
