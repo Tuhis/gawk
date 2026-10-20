@@ -5065,6 +5065,16 @@ fn base_stat_rows(
                 na()
             },
         ),
+        // docs/75 D8: datagrams quinn accepted and dropped from its own
+        // send buffer — the loss no packet counter sees.
+        row(
+            "Dropped in send buffer",
+            if st.uplink_packets_available {
+                format!("{} datagrams", st.uplink_datagrams_dropped)
+            } else {
+                na()
+            },
+        ),
         row(
             "Network",
             match network {
@@ -6844,6 +6854,8 @@ mod tests {
             uplink_carriers_opened: 4,
             uplink_carriers_expired: 1,
             uplink_records_shed: 9,
+            uplink_packets_available: true,
+            uplink_datagrams_dropped: 3,
             ..Default::default()
         };
         let rows = stat_rows(&st, &LossMonitor::new(), None);
@@ -6857,6 +6869,7 @@ mod tests {
         assert_eq!(get("Congestion control"), "cubic");
         assert_eq!(get("Carriers"), "4 opened · 1 expired · 9 records shed");
         assert!(rows.iter().any(|r| r.label == "Packets lost"));
+        assert_eq!(get("Dropped in send buffer"), "3 datagrams");
     }
 
     #[test]
