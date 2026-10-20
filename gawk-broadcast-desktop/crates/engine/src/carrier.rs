@@ -176,7 +176,9 @@ pub struct LaneCounters {
     pub records_shed: u64,
     /// Frames whose records were all written to a carrier.
     pub frames_sent: u64,
-    /// Bytes of records written (length prefixes included).
+    /// Data-chunk datagram bytes written — what datagram mode counts in
+    /// `bytesSent`: no parity (that is `parity_bytes_sent`), no record
+    /// prefixes, so the counter means the same in both delivery modes.
     pub bytes_sent: u64,
     /// Parity records written, and their datagram bytes.
     pub parity_chunks_sent: u64,
@@ -189,6 +191,8 @@ pub struct LaneCounters {
 pub(crate) struct FrameRecords {
     pub bytes: Vec<u8>,
     pub records: u64,
+    /// The data chunks' datagram bytes, prefixes excluded.
+    pub data_bytes: u64,
     pub parity_records: u64,
     pub parity_bytes: u64,
 }
@@ -204,6 +208,7 @@ impl FrameRecords {
         for d in chunks {
             wire::append_carrier_record(&mut f.bytes, d)?;
             f.records += 1;
+            f.data_bytes += d.len() as u64;
         }
         for d in parity {
             wire::append_carrier_record(&mut f.bytes, d)?;
@@ -482,7 +487,7 @@ async fn run(shared: Arc<Shared>, relay: Arc<Mutex<Arc<dyn RelaySession>>>) {
                 match written {
                     Some(true) => shared.count(|c| {
                         c.frames_sent += 1;
-                        c.bytes_sent += frame.bytes.len() as u64;
+                        c.bytes_sent += frame.data_bytes;
                         c.parity_chunks_sent += frame.parity_records;
                         c.parity_bytes_sent += frame.parity_bytes;
                     }),
@@ -820,6 +825,15 @@ mod tests {
         assert_eq!((st.uplink_carriers_expired, st.uplink_records_shed), (0, 0));
         assert_eq!(st.sent_frames, dst.sent_frames, "every frame sent");
         assert_eq!(st.parity_chunks_sent, dst.parity_chunks_sent);
+        // Review of #541: the byte counters mean the same in both modes —
+        // data chunks in bytesSent, parity only in parityBytesSent, no
+        // record prefixes — or a Delivery switch skews every rate built on
+        // them and bytesSent + parityBytesSent counts parity twice.
+        assert_eq!(st.bytes_sent, dst.bytes_sent, "bytesSent");
+        assert_eq!(
+            st.parity_bytes_sent, dst.parity_bytes_sent,
+            "parityBytesSent"
+        );
         assert_eq!(st.datagrams_sent, 0);
     }
 
