@@ -70,6 +70,16 @@ const (
 	// word, never new bytes — the R29 broadcaster parses this message
 	// strictly by size, and extending it would break that parser mid-skew.
 	CapStripedDelivery uint16 = 1 << 1
+
+	// CapUplinkCarriers means the relay ingests reliable carrier streams from
+	// a publisher (R73, docs/75 D1/D2): a unidirectional stream opened by the
+	// broadcaster, starting with the R19 prologue Version‖TypeReliableCarrier,
+	// then records of uint16 len ‖ datagram, each byte for byte the VideoChunk
+	// or ParityChunk datagram it replaces. Sent only on publish sessions. A
+	// broadcaster that does not see this bit opens no carrier — a relay
+	// without it rejects a publisher's 0x0A stream as bad input — so a new
+	// broadcaster against an old relay stays byte-identical to pre-R73.
+	CapUplinkCarriers uint16 = 1 << 2
 )
 
 var (

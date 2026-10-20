@@ -40,6 +40,8 @@ deployment must not be able to turn TLS verification off by setting one
 | `-live-edge-audio-on-reliable-stream` | `GAWK_LIVE_EDGE_AUDIO_ON_RELIABLE_STREAM` | `false` |
 | `-parity-default` | `GAWK_PARITY_DEFAULT` | `2` (forward-parity symbols per delta frame; `0` disables fleet-wide) |
 | `-striped-delivery` | `GAWK_STRIPED_DELIVERY` | `true` (off is byte-identical to the pre-interleaving relay) |
+| `-uplink-carriers` | `GAWK_UPLINK_CARRIERS` | `true` (accept broadcasters' reliable uplink carriers, [docs/75](../../docs/75-reliable-uplink.md) D2; off is byte-identical to the pre-R73 relay) |
+| `-uplink-max-bitrate` | `GAWK_UPLINK_MAX_BITRATE` | `50mbps` (sizes the initial QUIC receive windows, 2 MB per stream / 3 MB per connection at the default, docs/75 D10; `0` keeps quic-go's defaults) |
 | `-stateless-reset-key` | `GAWK_STATELESS_RESET_KEY` | (empty = disabled; 64 hex chars, shared fleet-wide) |
 | `-resume-token-key` | `GAWK_RESUME_TOKEN_KEY` | (empty; wins over the publish-secret derivation — recommended for fleets) |
 | `-stats-key` | `GAWK_STATS_KEY` | (empty = per-process random; 64 hex chars) |

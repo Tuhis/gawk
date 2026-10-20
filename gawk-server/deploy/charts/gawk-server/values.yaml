@@ -401,6 +401,21 @@ config:
   # so size that cap accordingly on fleets expecting striping. Off: leg dials
   # get 400, the capability is not advertised, byte-identical to pre-R30.
   stripedDelivery: "true"
+  # R73 reliable uplink (docs/75 D2): accept a broadcaster's reliable carrier
+  # streams, so its deltas can ride one QUIC stream per GOP instead of
+  # datagrams and a loss on the broadcaster's uplink is retransmitted rather
+  # than lost for every viewer. On by default: a broadcaster opens carriers
+  # only after seeing the capability bit, so older broadcasters and datagram
+  # broadcasters are unaffected. Off: the bit is never advertised, a carrier
+  # stream is rejected as bad input, and /statusz, /metrics and the wire are
+  # byte-identical to pre-R73.
+  uplinkCarriers: "true"
+  # The highest broadcaster bitrate the relay's initial QUIC receive windows
+  # are sized for (docs/75 D10): 2 MB per stream and 3 MB per connection at
+  # 50mbps, so a 1440p GOP fits one carrier from a session's first keyframe.
+  # A window is an allowance, not an allocation; viewer connections share the
+  # config and pay nothing. "0" keeps quic-go's defaults (512 KiB / 768 KiB).
+  uplinkMaxBitrate: "50mbps"
   logLevel: info
   logFormat: json
   # QUIC session tuning. The keepalive is what keeps idle viewers

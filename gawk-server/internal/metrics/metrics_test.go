@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -636,5 +637,59 @@ func TestRelayDVRResyncsTotalIsEmitted(t *testing.T) {
 	}
 	if _, err := testutil.CollectAndLint(collector); err != nil {
 		t.Errorf("CollectAndLint: %v", err)
+	}
+}
+
+// R73 (docs/75 D8, G6): the uplink-carrier series exist only on a relay with
+// -uplink-carriers on, per broadcast and relay-wide, and count what the hub
+// counted.
+func TestUplinkCarrierSeries(t *testing.T) {
+	carrier := wire.AppendCarrierPrologue(nil)
+	carrier, _ = wire.AppendCarrierRecord(carrier, deltaDgram(t, 4))
+	carrier, _ = wire.AppendCarrierRecord(carrier, deltaDgram(t, 9))
+
+	run := func(on bool) []*dto.MetricFamily {
+		r := hub.NewRegistry(discardLog, hub.Options{UplinkCarriers: on})
+		_, p, err := r.StartPublish("")
+		if err != nil {
+			t.Fatalf("StartPublish: %v", err)
+		}
+		if err := p.IngestKeyframeStream(bytesReader(keyframeMsg(t, 5))); err != nil {
+			t.Fatalf("IngestKeyframeStream: %v", err)
+		}
+		if on {
+			if err := p.IngestUplinkCarrier(bytesReader(carrier)); err != nil {
+				t.Fatalf("IngestUplinkCarrier: %v", err)
+			}
+		}
+		reg := prometheus.NewPedanticRegistry()
+		reg.MustRegister(NewRegistryCollector(r))
+		mfs, err := reg.Gather()
+		if err != nil {
+			t.Fatalf("Gather: %v", err)
+		}
+		return mfs
+	}
+
+	on := run(true)
+	for name, want := range map[string]float64{
+		"gawk_broadcast_uplink_carriers_total":          1,
+		"gawk_broadcast_uplink_records_total":           1,
+		"gawk_broadcast_uplink_records_stale_total":     1,
+		"gawk_broadcast_uplink_carriers_rejected_total": 0,
+		"gawk_relay_uplink_carriers_total":              1,
+		"gawk_relay_uplink_records_total":               1,
+		"gawk_relay_uplink_records_stale_total":         1,
+		"gawk_relay_uplink_carriers_rejected_total":     0,
+	} {
+		if got := value(on, name, map[string]string{}); got != want {
+			t.Errorf("%s = %v, want %v", name, got, want)
+		}
+	}
+
+	for _, mf := range run(false) {
+		if strings.Contains(mf.GetName(), "uplink") {
+			t.Errorf("-uplink-carriers=false exposes %s", mf.GetName())
+		}
 	}
 }
