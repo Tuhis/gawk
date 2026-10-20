@@ -22,7 +22,11 @@ scripts/room-fixtures.sh the rooms the UI tests watch and join
 scripts/fixtures-streaming.sh  whether every fixture still delivers video
 scripts/settle.sh        CI: waits for the runner to go quiet after the Simulator boots
 scripts/quiet-simulator.sh  CI: stops the Simulator's push daemon
+THIRD-PARTY-NOTICES.md   generated; the app shows it under Settings (docs/74)
 ```
+
+The core's dependencies are held to the repository's licence allowlist by
+`rust/deny.toml`; UniFFI's MPL-2.0 is its one scoped exception (docs/74 D4).
 
 ## Requirements
 

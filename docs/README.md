@@ -100,6 +100,7 @@ Reading all of them is not the point. Three give you the shape of the system:
 | [`71`](71-content-flagging.md) | R40 — automatic content flagging: a `gawk-sampler` module scores cached keyframes with NudeNet, `gawk-admin` pages and tracks content flags, the operator judges live; ships observing, calibrated on real broadcasts before it flags |
 | [`72`](72-moderation-timeline.md) | R70 — the broadcast moderation timeline: a per-broadcast drill-down of scores, incidents and events with a decision panel per incident; flicker pages once, returns after review are marked, dismissals carry a reason and a scope |
 | [`73`](73-desktop-room-name.md) | R71 — your name in a room on the desktop broadcaster: asked on a blank-name join, a top-level row under the chosen room, renamed in place from your roster row while live |
+| [`74`](74-open-source-licences-in-app.md) | R72 — open-source licences inside the native apps: each app embeds its generated notices and shows them in Settings; the generator adds iOS and the bundled C libraries; the iOS Rust graph gets its own licence gate |
 
 ## Audio
 

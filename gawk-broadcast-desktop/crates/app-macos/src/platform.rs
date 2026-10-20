@@ -106,6 +106,10 @@ impl Platform for Mac {
         }
     }
 
+    fn notices(&self) -> &'static str {
+        include_str!("../../../THIRD-PARTY-NOTICES-macos.md")
+    }
+
     fn init_window(&mut self, ui: &MainWindow) {
         ui.set_system_picker(true);
         ui.set_native_menu(true);

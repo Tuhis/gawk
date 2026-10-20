@@ -165,6 +165,10 @@ fn hooks() -> Hooks {
 /// What a platform supplies to the shared shell.
 pub trait Platform: 'static {
     fn hooks(&self) -> Hooks;
+    /// This distribution's generated third-party notices, embedded with
+    /// `include_str!` (R72, docs/74 D2): the shell picks the file the way it
+    /// picks its identity, never the target OS. Settings shows them.
+    fn notices(&self) -> &'static str;
     /// After the logger is up: platform facts worth a debug.log line.
     fn launch_log(&self) {}
     /// Before the window shows: the platform's card and initial picker.
@@ -2705,6 +2709,22 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
     }
     {
         ui.on_open_link(move |link| open_in_browser(link.as_str()));
+    }
+    {
+        // Parsed on the first open, not at launch: few users look, and the
+        // file is a few hundred kilobytes.
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_open_licences(move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if ui.get_licences().row_count() == 0 {
+                let notices = gawk_engine::notices::parse(shell.borrow().platform.notices());
+                ui.set_licences(ModelRc::new(VecModel::from(crate::licences::rows(
+                    &notices,
+                ))));
+            }
+            ui.set_page(5);
+        });
     }
     {
         // Dismissing hides the notice until the app restarts; nothing is
@@ -6412,6 +6432,9 @@ mod tests {
                 creds: || Box::new(config::Plaintext),
             }
         }
+        fn notices(&self) -> &'static str {
+            include_str!("../../../THIRD-PARTY-NOTICES.md")
+        }
         fn init_window(&mut self, _ui: &MainWindow) {}
         fn prepare_start(&mut self, _ui: &MainWindow, _cfg: &Config) -> Result<Prepared, String> {
             self.calls.borrow_mut().push("prepare".into());
@@ -6474,6 +6497,22 @@ mod tests {
         tick(&ui, &shell);
         assert!(!ui.get_has_preview());
         assert_eq!(*calls.borrow(), ["preview(true)", "preview(false)"]);
+    }
+
+    // R72 (docs/74 D3): Settings' View opens page 5 with the platform's
+    // own notices, parsed on that first open; Back returns to Settings.
+    #[test]
+    fn open_licences_lists_the_platforms_notices() {
+        let ui = window();
+        let (shell, _, _) = counting_shell();
+        wire_callbacks(&ui, &shell);
+        ui.set_page(2);
+        assert_eq!(ui.get_licences().row_count(), 0, "nothing parsed at launch");
+        ui.invoke_open_licences();
+        assert_eq!(ui.get_page(), 5);
+        let rows = ui.get_licences();
+        assert!(rows.iter().any(|r| r.kind == 2 && r.title == "libopus 1.3"));
+        assert!(rows.iter().filter(|r| r.kind == 3).count() > 10);
     }
 
     // docs/65 D5: a start stops the preview before the platform resolves

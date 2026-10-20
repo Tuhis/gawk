@@ -54,6 +54,10 @@ impl Platform for Windows {
         Hooks { notify, creds }
     }
 
+    fn notices(&self) -> &'static str {
+        include_str!("../../../THIRD-PARTY-NOTICES.md")
+    }
+
     fn launch_log(&self) {
         #[cfg(windows)]
         log::info!(

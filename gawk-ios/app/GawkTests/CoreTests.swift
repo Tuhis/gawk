@@ -13,6 +13,18 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(info.defaultAppUrl, "https://gawk.ioio.fi")
     }
 
+    /// R72 (docs/74 D2): the app carries its own notices across the
+    /// boundary, the C libraries and the MPL sources included.
+    func testTheCoreCarriesTheAppsNotices() {
+        let notices = thirdPartyNotices()
+        XCTAssertGreaterThan(notices.packages.count, 100)
+        for native in ["libopus", "libvpx"] {
+            XCTAssertTrue(notices.packages.contains { $0.name == native }, native)
+        }
+        XCTAssertTrue(notices.sources.contains { $0.package.hasPrefix("uniffi ") })
+        XCTAssertFalse(notices.texts.isEmpty)
+    }
+
     func testTheBundleIdMatchesDocs67D28() {
         XCTAssertEqual(Bundle.main.bundleIdentifier, "fi.ioio.gawk")
     }

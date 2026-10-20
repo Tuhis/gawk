@@ -276,6 +276,10 @@ impl Platform for Linux {
         }
     }
 
+    fn notices(&self) -> &'static str {
+        include_str!("../../../THIRD-PARTY-NOTICES-linux.md")
+    }
+
     fn launch_log(&self) {
         log::info!(
             "session: {} on {}",

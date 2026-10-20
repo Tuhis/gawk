@@ -1199,10 +1199,11 @@ jobs:
   #     declare nothing); npm licences are read from the lockfile, and only
   #     packages without `dev: true` count, since build tooling is never
   #     redistributed.
-  #   * Rust — cargo-deny against gawk-broadcast-desktop/deny.toml, because
-  #     Cargo manifests declare SPDX *expressions* and evaluating those is
-  #     what it exists for. It is also where Slint's royalty-free exception
-  #     is written down (docs/38 D12).
+  #   * Rust — cargo-deny against gawk-broadcast-desktop/deny.toml and
+  #     gawk-ios/rust/deny.toml, because Cargo manifests declare SPDX
+  #     *expressions* and evaluating those is what it exists for. They are
+  #     also where Slint's royalty-free exception (docs/38 D12) and UniFFI's
+  #     MPL-2.0 one (docs/74 D4) are written down.
   #
   # What this job deliberately does NOT do is re-generate THIRD-PARTY-NOTICES.md
   # and diff it. That needs a full npm install per frontend plus the whole
@@ -1248,6 +1249,13 @@ jobs:
           "${RUNNER_TEMP}/bin/cargo-deny" --version
       - name: Rust dependencies are on the license allowlist
         working-directory: gawk-broadcast-desktop
+        run: cargo-deny check licenses
+      # R72 (docs/74 OL2): the iOS core is a workspace of its own, with what
+      # only it links (uniffi, libvpx's bindings) and its own deny.toml.
+      # Resolving for aarch64-apple-ios needs no Apple toolchain, only the
+      # crate graph, the way `licenses-fresh` reads it.
+      - name: iOS Rust dependencies are on the license allowlist
+        working-directory: gawk-ios/rust
         run: cargo-deny check licenses
 
   # The other half of the licence story: the allowlist above says the terms are
