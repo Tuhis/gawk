@@ -37,6 +37,7 @@ const GOLDEN_TELEMETRY_HELLO_DISABLED: &str =
 const GOLDEN_PARITY_CHUNK: &str = "010e01020304010009000021c0deadbeef";
 const GOLDEN_RELAY_CAPABILITIES: &str = "010f000102";
 const GOLDEN_CAPABILITIES_BOTH_BITS: &str = "010f000302";
+const GOLDEN_CAPABILITIES_UPLINK_CARRIERS: &str = "010f000702";
 const GOLDEN_STRIPE_STATE_STRIPED: &str = "0110010300";
 const GOLDEN_STRIPE_STATE_UNSTRIPED: &str = "0110000000";
 // R37 (docs/40 SP4): ServerVersion "1.42.0", Name "gawk home".
@@ -526,6 +527,24 @@ fn capabilities_survive_the_striped_bit() {
     assert_eq!(to_hex(&got), GOLDEN_CAPABILITIES_BOTH_BITS);
     let back = parse_relay_capabilities(&got).unwrap();
     assert_ne!(back.flags & CAP_PARITY_CHUNKS, 0);
+}
+
+// R73 (docs/75 G7): the bit this producer will gate its uplink carriers on,
+// in the same 5 bytes.
+#[test]
+fn capabilities_carry_the_uplink_carriers_bit() {
+    let mut got = Vec::new();
+    append_relay_capabilities(
+        &mut got,
+        &RelayCapabilities {
+            flags: CAP_PARITY_CHUNKS | CAP_STRIPED_DELIVERY | CAP_UPLINK_CARRIERS,
+            parity_level: 2,
+        },
+    )
+    .unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_CAPABILITIES_UPLINK_CARRIERS);
+    let back = parse_relay_capabilities(&got).unwrap();
+    assert_ne!(back.flags & CAP_UPLINK_CARRIERS, 0);
 }
 
 #[test]
@@ -1121,6 +1140,7 @@ fn wire_constants_are_pinned() {
     assert_eq!(MAX_STRIPE_LEGS, 4);
     assert_eq!(CAP_PARITY_CHUNKS, 1 << 0);
     assert_eq!(CAP_STRIPED_DELIVERY, 1 << 1);
+    assert_eq!(CAP_UPLINK_CARRIERS, 1 << 2);
     assert_eq!(ROOM_PROTOCOL_VERSION, 1);
     assert_eq!(ROOM_RECORD_HEADER_SIZE, 2);
     assert_eq!(MAX_ROOM_RECORD_SIZE, 16384);
