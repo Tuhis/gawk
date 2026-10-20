@@ -879,8 +879,12 @@ the carrier uplink) brings it back.
   so parity rides the carrier with no new path; the DVR ring retains
   `ParityChunk` records beside `VideoChunk` ones (`fanOutLocked` keeps only
   video chunks today).
-- The viewer needs nothing: a carrier record enters the same handler as a
-  datagram, and the reassembler already repairs from `ParityChunk` records.
+- The viewer's media path needs nothing: a carrier record enters the same
+  handler as a datagram, and the reassembler already repairs from
+  `ParityChunk` records. Its settings did need one change (found in review,
+  2026-10-20): *Loss protection* was grayed on those presets as "not used",
+  and their `?parity=` opt-down was never sent; both now apply in every
+  delivery mode (docs/37's `notApplicable` table).
 - The loss allowance stays 0 in those modes (unmeasured here; it trades a
   freeze for artifacts, which is the opposite of what those presets
   promise).

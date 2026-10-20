@@ -620,10 +620,6 @@ export function useViewerConnection(
     };
   }, [useWorker, applyEvent, canvasRef, presentationMux]);
 
-  // Parity is served only on live edge, so off it a parity change must not
-  // re-dial for nothing.
-  const negotiatedParity = deliveryMode === 'live' ? parityLevel : undefined;
-
   // Session start/stop per broadcast id — and per delivery-mode flip, which
   // is a deliberate reconnect with the delivery negotiation in the URL. The
   // mode command goes first: worker messages process in order, so the
@@ -638,13 +634,13 @@ export function useViewerConnection(
       connectOpts: {
         certHashHex,
         ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}),
-        ...(negotiatedParity != null ? { parityLevel: negotiatedParity } : {}),
+        ...(parityLevel != null ? { parityLevel: parityLevel } : {}),
       },
     });
     return () => {
       controllerRef.current?.stop();
     };
-  }, [useWorker, broadcastId, deliveryMode, negotiatedParity, serverUrl, certHashHex, resetState]);
+  }, [useWorker, broadcastId, deliveryMode, parityLevel, serverUrl, certHashHex, resetState]);
 
   // The playout mode, applied on mount and on every toggle.
   // Worker path: cross into the worker's context; main-thread path: set the
@@ -685,7 +681,7 @@ export function useViewerConnection(
       {
         certHashHex,
         ...(deliveryMode !== 'live' ? { deliveryMode: 'reliable' as const } : {}),
-        ...(negotiatedParity != null ? { parityLevel: negotiatedParity } : {}),
+        ...(parityLevel != null ? { parityLevel: parityLevel } : {}),
       },
       {
         onDecodedFrame: ({ frame }) => {
@@ -766,7 +762,7 @@ export function useViewerConnection(
     useWorker,
     broadcastId,
     deliveryMode,
-    negotiatedParity,
+    parityLevel,
     serverUrl,
     certHashHex,
     applyEvent,

@@ -622,12 +622,12 @@ export function ViewerScreen({ broadcastId }: { broadcastId: string }) {
     ...PRESETS.map((preset) => ({
       label: preset.label,
       checked: currentPreset === preset.id,
-      // Delivery and live-edge parity re-dial (they are negotiated at
-      // subscribe time, and a preset resets parity); pacing, striping and
-      // interpolation cross into the live pipeline. So the step between
-      // Lowest latency and Balanced is silent unless parity was changed.
+      // Delivery and parity re-dial (they are negotiated at subscribe time,
+      // and a preset resets parity); pacing, striping and interpolation
+      // cross into the live pipeline. So the step between Lowest latency and
+      // Balanced is silent unless parity was changed.
       note:
-        preset.delivery !== deliveryMode || (deliveryMode === 'live' && parityChoice !== 'auto')
+        preset.delivery !== deliveryMode || parityChoice !== 'auto'
           ? `${preset.sub} ${RECONNECT_NOTE}`
           : preset.sub,
       onSelect: () => applyPreset(preset.id),

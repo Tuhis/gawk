@@ -93,21 +93,16 @@ describe('playbackPresets — advancedChanges', () => {
 });
 
 describe('playbackPresets — notApplicable', () => {
-  // All six (field, delivery) pairs.
-  it('grays parity and striping under the carrier delivery modes only', () => {
-    for (const field of ['parity', 'striping'] as const) {
-      expect(notApplicable(field, { ...DEFAULT_CONFIG, delivery: 'live' })).toBeNull();
-      for (const delivery of ['resilient', 'deep'] as const) {
-        const reason = notApplicable(field, { ...DEFAULT_CONFIG, delivery });
-        expect(reason).toBeTruthy();
-        expect(reason).toMatch(/not used in this mode/i);
-      }
+  // All six (field, delivery) pairs. Parity is served in every delivery
+  // mode since R73 RU8 (docs/75 D11); striping stays live-edge only.
+  it('offers parity in every delivery mode and grays striping off live edge', () => {
+    for (const delivery of ['live', 'resilient', 'deep'] as const) {
+      expect(notApplicable('parity', { ...DEFAULT_CONFIG, delivery })).toBeNull();
     }
-  });
-
-  it('gives parity and striping different reasons — they are not interchangeable', () => {
-    const carrier = { ...DEFAULT_CONFIG, delivery: 'resilient' as const };
-    expect(notApplicable('parity', carrier)).not.toBe(notApplicable('striping', carrier));
+    expect(notApplicable('striping', { ...DEFAULT_CONFIG, delivery: 'live' })).toBeNull();
+    for (const delivery of ['resilient', 'deep'] as const) {
+      expect(notApplicable('striping', { ...DEFAULT_CONFIG, delivery })).toMatch(/not used in this mode/i);
+    }
   });
 
   // A resilient viewer whose *stored* pacing is 'off' still has interpolation

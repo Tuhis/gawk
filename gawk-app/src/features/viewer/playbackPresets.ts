@@ -152,10 +152,13 @@ export type AdvancedField = 'parity' | 'striping' | 'interpolation';
  * function, so a surface cannot gray something out without saying why.
  * `null` means applicable.
  *
- * Both delivery rules restate what the pipeline already does: parity is served
- * only to live-edge subscribers and only datagram delivery is striped, because
- * the carrier modes recover loss by retransmission. The controls are disabled
- * with a reason rather than removed, so they stay findable in every mode.
+ * The delivery rule restates what the pipeline already does: only datagram
+ * delivery is striped, because the carrier modes recover leg-B loss by
+ * retransmission. Parity applies in every mode: the relay serves it to the
+ * carrier modes too, since a chunk the broadcaster's uplink lost is lost for
+ * every viewer and only parity brings it back (docs/75 D11). A control that
+ * does not apply is disabled with a reason rather than removed, so it stays
+ * findable in every mode.
  */
 export function notApplicable(field: AdvancedField, config: PlaybackConfig): string | null {
   if (field === 'interpolation') {
@@ -167,10 +170,8 @@ export function notApplicable(field: AdvancedField, config: PlaybackConfig): str
       ? null
       : 'Needs paced playback — available on Balanced and smoother.';
   }
-  if (config.delivery === 'live') return null;
-  return field === 'parity'
-    ? 'Not used in this mode — it already recovers lost packets by resending them.'
-    : 'Not used in this mode — reliable delivery already handles bursts.';
+  if (field === 'parity' || config.delivery === 'live') return null;
+  return 'Not used in this mode — reliable delivery already handles bursts.';
 }
 
 /**

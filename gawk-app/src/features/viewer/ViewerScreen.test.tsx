@@ -583,10 +583,10 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(sessions).toHaveLength(1);
   });
 
-  // Off live-edge, parity and striping stay on screen, disabled, each
-  // carrying its own reason: removed, a viewer who had seen "Loss protection"
-  // once could not find it again.
-  it('grays parity and striping with reasons under a carrier delivery mode', async () => {
+  // Off live-edge, striping stays on screen, disabled, with its reason:
+  // removed, a viewer who had seen it once could not find it again. Parity
+  // is served to the carrier modes too (docs/75 D11), so it stays enabled.
+  it('keeps parity and grays striping with a reason under a carrier delivery mode', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
     act(() => sessions[0].cbs.onConnected());
@@ -597,9 +597,9 @@ describe('ViewerScreen menu button (touch reachability)', () => {
 
     openSettings();
     openAdvanced();
-    expect((advancedSelect(/Loss protection/) as HTMLSelectElement).disabled).toBe(true);
+    expect((advancedSelect(/Loss protection/) as HTMLSelectElement).disabled).toBe(false);
     expect((advancedSelect(/Striping/) as HTMLSelectElement).disabled).toBe(true);
-    expect(screen.getByText(/already recovers lost packets/)).toBeTruthy();
+    expect(screen.queryByText(/already recovers lost packets/)).toBeNull();
     expect(screen.getByText(/already handles bursts/)).toBeTruthy();
   });
 
@@ -625,19 +625,35 @@ describe('ViewerScreen menu button (touch reachability)', () => {
     expect(screen.getByLabelText('Playback quality: Balanced')).toBeTruthy();
   });
 
-  // Parity is negotiated only on live edge; off it, a parity change has
-  // nothing to renegotiate.
-  it('does not reconnect for a parity reset under a carrier delivery mode', async () => {
+  // Parity is negotiated in every delivery mode (docs/75 D11): a carrier
+  // viewer's opt-down travels on the dial, and resetting it re-dials.
+  it('negotiates and reconnects for parity under a carrier delivery mode', async () => {
     localStorage.setItem('gawk:viewer-delivery', 'resilient');
     localStorage.setItem('gawk:parity-level', '0');
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));
+    expect(sessions[0].opts).toMatchObject({ deliveryMode: 'reliable', parityLevel: 0 });
     act(() => sessions[0].cbs.onConnected());
     openSettings();
     openAdvanced();
     fireEvent.click(screen.getByRole('button', { name: 'Reset advanced' }));
     expect(localStorage.getItem('gawk:parity-level')).toBeNull();
-    expect(sessions).toHaveLength(1);
+    await waitFor(() => expect(sessions).toHaveLength(2));
+    expect(sessions[1].opts).not.toHaveProperty('parityLevel');
+    localStorage.removeItem('gawk:viewer-delivery');
+  });
+
+  // A preset resets parity, so off live edge too a changed parity marks
+  // every preset as reconnecting.
+  it('marks a preset as reconnecting for a parity reset under a carrier delivery mode', async () => {
+    localStorage.setItem('gawk:viewer-delivery', 'resilient');
+    localStorage.setItem('gawk:parity-level', '1');
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    tap(screen.getByLabelText(/^Playback quality:/));
+    expect(screen.getByRole('menuitemradio', { name: 'Smoother' }).textContent).toContain('reconnects');
+    localStorage.removeItem('gawk:parity-level');
     localStorage.removeItem('gawk:viewer-delivery');
   });
 
