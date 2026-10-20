@@ -2359,12 +2359,15 @@ async function main() {
         link.setLoss(0);
         if (!uplinkPubsim.exited) uplinkPubsim.child.kill('SIGTERM');
         if (opsUrl) {
+          // Up to the relay's 30 s idle timeout and then some: pubsim can exit
+          // before its WebTransport close capsule leaves, and then the relay
+          // only learns of it when the session idles out.
           await pollFor(
             async () => {
               const st = await (await fetch(`${opsUrl}/statusz`)).json();
               return Object.values(st.broadcasts ?? {}).filter((b) => b.publisherActive).length === 1;
             },
-            20_000,
+            40_000,
             250,
             'the uplink-loss publisher to leave',
           );
