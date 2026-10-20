@@ -11,6 +11,7 @@ use crate::relay::{
 };
 use crate::room::{RoomConn, RoomDialer};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use wtransport::endpoint::endpoint_side::Client;
 use wtransport::error::{ConnectingError, ConnectionError};
@@ -43,6 +44,10 @@ pub const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct WtSession {
     _endpoint: Endpoint<Client>,
     conn: wtransport::Connection,
+    /// Datagrams `send_datagram` accepted on this connection — every one,
+    /// best-effort time sync included, because quinn's `frame_tx.datagram`
+    /// counts them all (docs/75 D8).
+    datagrams_offered: AtomicU64,
 }
 
 /// Dials the relay's publish endpoint. `insecure` skips server certificate
@@ -55,6 +60,7 @@ pub async fn dial(url: &str, origin: &str, insecure: bool) -> Result<WtSession, 
     Ok(WtSession {
         _endpoint: endpoint,
         conn,
+        datagrams_offered: AtomicU64::new(0),
     })
 }
 
@@ -71,6 +77,7 @@ pub async fn dial_subscribe(
     Ok(WtSession {
         _endpoint: endpoint,
         conn,
+        datagrams_offered: AtomicU64::new(0),
     })
 }
 
@@ -293,7 +300,11 @@ impl RelaySession for WtSession {
                 max_datagram_size: self.conn.max_datagram_size(),
             },
             E::NotConnected | E::UnsupportedByPeer => SendDatagramError::Failed(e.to_string()),
-        })
+        })?;
+        // quinn's Ok means "queued", not "sent": a full send buffer
+        // silently evicts its oldest datagram to make room.
+        self.datagrams_offered.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn open_keyframe_stream(&self) -> BoxFuture<'_, Result<Box<dyn KeyframeWriter>, String>> {
@@ -336,10 +347,12 @@ impl RelaySession for WtSession {
     }
 
     fn path_counters(&self) -> Option<PathCounters> {
-        let path = self.conn.quic_connection().stats().path;
+        let stats = self.conn.quic_connection().stats();
         Some(PathCounters {
-            sent: path.sent_packets,
-            lost: path.lost_packets,
+            sent: stats.path.sent_packets,
+            lost: stats.path.lost_packets,
+            datagrams_offered: self.datagrams_offered.load(Ordering::Relaxed),
+            datagrams_sent: stats.frame_tx.datagram,
         })
     }
 

@@ -116,11 +116,19 @@ pub trait PublishDialer: Send + Sync + 'static {
     ) -> BoxFuture<'_, Result<std::sync::Arc<dyn RelaySession>, StartError>>;
 }
 
-/// Cumulative packets sent and declared lost on one connection.
+/// Cumulative counters of one connection: QUIC packets sent and declared
+/// lost, and datagrams offered to the stack against the DATAGRAM frames it
+/// actually wrote (docs/75 D8).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PathCounters {
     pub sent: u64,
     pub lost: u64,
+    /// Datagrams the session accepted (`send_datagram` returned `Ok`).
+    pub datagrams_offered: u64,
+    /// DATAGRAM frames the QUIC stack wrote into packets (quinn's
+    /// `frame_tx.datagram`). Offered minus this is what the stack dropped
+    /// from its own send buffer, plus whatever is still queued in it.
+    pub datagrams_sent: u64,
 }
 
 /// Which phase a start failure happened in. The shells' "Start a new

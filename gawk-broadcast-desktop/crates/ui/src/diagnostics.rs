@@ -53,6 +53,8 @@ struct Diagnostics<'a> {
     /// QUIC's packet counters (docs/57 D5): the local view of leg-A loss.
     uplink_packets_sent: Option<u64>,
     uplink_packets_lost: Option<u64>,
+    /// Datagrams QUIC accepted and never sent (docs/75 D8).
+    uplink_datagrams_dropped: Option<u64>,
     /// What the broadcast leaves on (docs/57 D7); null where the platform
     /// does not probe it (Windows).
     network: Option<NetworkFacts>,
@@ -148,6 +150,9 @@ pub fn render(
         uplink_packets_lost: st
             .uplink_packets_available
             .then_some(st.uplink_packets_lost),
+        uplink_datagrams_dropped: st
+            .uplink_packets_available
+            .then_some(st.uplink_datagrams_dropped),
         network,
         keyframe_interval_ms: st
             .keyframe_interval_available
@@ -207,6 +212,7 @@ mod tests {
             "viewerCount",
             "uplinkPacketsSent",
             "uplinkPacketsLost",
+            "uplinkDatagramsDropped",
             "network",
         ] {
             assert!(v.get(key).is_some(), "{key} must be present");
@@ -262,6 +268,7 @@ mod tests {
             uplink_packets_available: true,
             uplink_packets_sent: 12_000,
             uplink_packets_lost: 31,
+            uplink_datagrams_dropped: 4,
             ..Default::default()
         };
         let net = Some(NetworkFacts {
@@ -274,6 +281,7 @@ mod tests {
                 .unwrap();
         assert_eq!(v["uplinkPacketsSent"], 12_000);
         assert_eq!(v["uplinkPacketsLost"], 31);
+        assert_eq!(v["uplinkDatagramsDropped"], 4);
         assert_eq!(v["network"]["wifi"], true);
         assert_eq!(v["network"]["awdlUp"], true);
         assert_eq!(v["network"]["vpn"], true);
