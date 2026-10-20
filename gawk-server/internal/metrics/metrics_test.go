@@ -467,6 +467,61 @@ func TestLossAttributionByLeg(t *testing.T) {
 	}
 }
 
+// docs/75 RU0: leg-A loss in frames reaches Prometheus — damaged frames and
+// both ratios' populations, per leg, per broadcast and relay-wide.
+func TestIngressFrameLossFamilies(t *testing.T) {
+	r := hub.NewRegistry(discardLog, hub.Options{})
+	id, pub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	defer pub.Close()
+	chunk := func(fid uint32, idx, count uint16) []byte {
+		d, err := wire.AppendVideoChunk(nil, wire.VideoChunkHeader{
+			FrameID: fid, ChunkIndex: idx, ChunkCount: count, TimestampUs: uint64(fid),
+		}, []byte("payload"))
+		if err != nil {
+			t.Fatalf("AppendVideoChunk: %v", err)
+		}
+		return d
+	}
+	// Frame 1: chunk 1 of 3 missing. Frame 2: never arrives. Frame 3 whole.
+	pub.HandleDatagram(chunk(1, 0, 3))
+	pub.HandleDatagram(chunk(1, 2, 3))
+	pub.HandleDatagram(deltaDgram(t, 3))
+	pub.HandleDatagram(deltaDgram(t, 3+1024)) // slides 1..3 out
+
+	promReg := prometheus.NewPedanticRegistry()
+	promReg.MustRegister(NewRegistryCollector(r))
+	mfs, err := promReg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	b := map[string]string{"broadcast": r.ObfuscateID(id)}
+	for _, tc := range []struct {
+		family string
+		labels map[string]string
+		want   float64
+	}{
+		{"gawk_broadcast_ingress_frames_damaged_total", b, 1},
+		{"gawk_broadcast_ingress_frames_expected_total", b, 3},
+		{"gawk_broadcast_ingress_chunks_expected_total", b, 4},
+		{"gawk_relay_ingress_frames_damaged_total", nil, 1},
+		{"gawk_relay_ingress_frames_expected_total", nil, 3},
+		{"gawk_relay_ingress_chunks_expected_total", nil, 4},
+		{"gawk_relay_edge_ingress_frames_damaged_total", nil, 0},
+		{"gawk_relay_edge_ingress_frames_expected_total", nil, 0},
+		{"gawk_relay_edge_ingress_chunks_expected_total", nil, 0},
+	} {
+		if got := metricValue(mfs, tc.family, tc.labels); got != tc.want {
+			t.Errorf("%s = %v, want %v", tc.family, got, tc.want)
+		}
+	}
+	if got := metricValue(mfs, "gawk_broadcast_edge_ingress_frames_damaged_total", b); got != -1 {
+		t.Errorf("an origin hub leaked into the edge-leg family: %v", got)
+	}
+}
+
 // metricValue finds one counter/gauge value in gathered families; -1 when
 // no metric matches all the given labels.
 func metricValue(mfs []*dto.MetricFamily, family string, labels map[string]string) float64 {

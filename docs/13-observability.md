@@ -345,6 +345,8 @@ dimensions — the two-prefix split is the clean expression of the same idea.
 | `…_frames_relayed_total` | counter | `kind=delta\|keyframe` | relay throughput in frames; `rate()` ≈ relay-side fps |
 | `…_ingress_frames_lost_total` | counter | — | **leg-A loss**: frames the broadcaster sent that never reached the relay (window-aged, M3) |
 | `…_ingress_chunks_lost_total` | counter | — | leg-A partial loss (missing chunks of seen frames) |
+| `…_ingress_frames_damaged_total` | counter | — | frames that arrived with ≥ 1 chunk missing (docs/75 RU0); lost + damaged are the frames no viewer can decode |
+| `…_ingress_frames_expected_total` / `…_ingress_chunks_expected_total` | counter | — | the populations of the two leg-A ratios, counted as frames leave the window: `ingressFrameLossRatio = (frames_lost + frames_damaged) / frames_expected`, `ingressChunkLossRatio = chunks_lost / chunks_expected` (chunks of frames that arrived) |
 | `…_ingress_bytes_total` | counter | `kind` | broadcaster→relay volume |
 | `…_egress_bytes_total` | counter | `kind` | relay→viewers volume actually written; graph against the cap |
 | `…_datagrams_relayed_total` | counter | — | fan-out datagram volume (pre-drop) |
@@ -377,7 +379,10 @@ Per-broadcast gauges and server-wide metrics:
 `/statusz` additions (JSON, additive): `keyframeDrops`
 (`superseded`/`slow`/`bandwidth`/`openFailed`), `sendErrors`,
 `ingressDatagramBytes`, `egressDatagramBytes`, `egressKeyframeBytes`,
-`ingressFramesLost`, `ingressChunksLost`, and a `subscriberDetails` array
+`ingressFramesLost`, `ingressChunksLost` (since docs/75 RU0 also
+`ingressFramesDamaged`, `ingressFramesExpected`, `ingressChunksExpected`;
+the `edge_*` metric families and `edgeIngress*` totals carry the same five
+for the origin→edge leg), and a `subscriberDetails` array
 per broadcast (`key` — random per-session, `queueDepth`, `dropped`,
 `sendErrors`, `keyframesSent`, `keyframesDropped`). One sharpened semantic:
 `bandwidthDroppedDatagrams` now counts *datagram* bandwidth drops only

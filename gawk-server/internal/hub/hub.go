@@ -411,14 +411,23 @@ type Stats struct {
 
 	// Ingress = publisher→relay, egress = relay→subscribers (docs/13); the
 	// lost counters come from the ingress window (ingress.go).
-	KeyframeDrops        KeyframeDrops     `json:"keyframeDrops"`
-	SendErrors           uint64            `json:"sendErrors"`           // datagram write failures to subscribers
-	IngressDatagramBytes uint64            `json:"ingressDatagramBytes"` // valid delta/config datagram bytes from the publisher
-	EgressDatagramBytes  uint64            `json:"egressDatagramBytes"`  // datagram bytes actually written to subscribers
-	EgressKeyframeBytes  uint64            `json:"egressKeyframeBytes"`  // keyframe stream bytes fully delivered
-	IngressFramesLost    uint64            `json:"ingressFramesLost"`    // frames the publisher sent that never arrived
-	IngressChunksLost    uint64            `json:"ingressChunksLost"`    // missing chunks of frames that did arrive
-	SubscriberDetails    []SubscriberStats `json:"subscriberDetails"`
+	KeyframeDrops        KeyframeDrops `json:"keyframeDrops"`
+	SendErrors           uint64        `json:"sendErrors"`           // datagram write failures to subscribers
+	IngressDatagramBytes uint64        `json:"ingressDatagramBytes"` // valid delta/config datagram bytes from the publisher
+	EgressDatagramBytes  uint64        `json:"egressDatagramBytes"`  // datagram bytes actually written to subscribers
+	EgressKeyframeBytes  uint64        `json:"egressKeyframeBytes"`  // keyframe stream bytes fully delivered
+	IngressFramesLost    uint64        `json:"ingressFramesLost"`    // frames the publisher sent that never arrived
+	IngressChunksLost    uint64        `json:"ingressChunksLost"`    // missing chunks of frames that did arrive
+	// Leg-A loss in frames (docs/75 RU0): a frame that arrived with a chunk
+	// missing is as lost to a viewer as one that never came. Expected counts
+	// are the populations the losses are a share of, counted when the same
+	// frames leave the window: ingressFrameLossRatio = (FramesLost +
+	// FramesDamaged) / FramesExpected, ingressChunkLossRatio = ChunksLost /
+	// ChunksExpected. One unit per ratio, never summed across them.
+	IngressFramesDamaged  uint64            `json:"ingressFramesDamaged"`  // frames that arrived with >= 1 chunk missing
+	IngressFramesExpected uint64            `json:"ingressFramesExpected"` // the window's frameID span, as finalized
+	IngressChunksExpected uint64            `json:"ingressChunksExpected"` // chunks of the frames that arrived
+	SubscriberDetails     []SubscriberStats `json:"subscriberDetails"`
 
 	// Forward parity (docs/34): symbols forwarded vs. suppressed for this
 	// broadcast. Omitted when zero.
@@ -485,19 +494,25 @@ type TotalStats struct {
 	KeyframeStreamsOversize   uint64 `json:"keyframeStreamsOversize"`
 
 	// See the Stats field comments.
-	KeyframeDrops        KeyframeDrops `json:"keyframeDrops"`
-	SendErrors           uint64        `json:"sendErrors"`
-	IngressDatagramBytes uint64        `json:"ingressDatagramBytes"`
-	EgressDatagramBytes  uint64        `json:"egressDatagramBytes"`
-	EgressKeyframeBytes  uint64        `json:"egressKeyframeBytes"`
-	IngressFramesLost    uint64        `json:"ingressFramesLost"`
-	IngressChunksLost    uint64        `json:"ingressChunksLost"`
+	KeyframeDrops         KeyframeDrops `json:"keyframeDrops"`
+	SendErrors            uint64        `json:"sendErrors"`
+	IngressDatagramBytes  uint64        `json:"ingressDatagramBytes"`
+	EgressDatagramBytes   uint64        `json:"egressDatagramBytes"`
+	EgressKeyframeBytes   uint64        `json:"egressKeyframeBytes"`
+	IngressFramesLost     uint64        `json:"ingressFramesLost"`
+	IngressChunksLost     uint64        `json:"ingressChunksLost"`
+	IngressFramesDamaged  uint64        `json:"ingressFramesDamaged"`
+	IngressFramesExpected uint64        `json:"ingressFramesExpected"`
+	IngressChunksExpected uint64        `json:"ingressChunksExpected"`
 
 	// The edge-leg (origin→edge) loss windows, from EDGE hubs only — never
 	// mixed with the broadcaster-leg numbers above: the two legs have
 	// different owners and different fixes.
-	EdgeIngressFramesLost uint64 `json:"edgeIngressFramesLost"`
-	EdgeIngressChunksLost uint64 `json:"edgeIngressChunksLost"`
+	EdgeIngressFramesLost     uint64 `json:"edgeIngressFramesLost"`
+	EdgeIngressChunksLost     uint64 `json:"edgeIngressChunksLost"`
+	EdgeIngressFramesDamaged  uint64 `json:"edgeIngressFramesDamaged"`
+	EdgeIngressFramesExpected uint64 `json:"edgeIngressFramesExpected"`
+	EdgeIngressChunksExpected uint64 `json:"edgeIngressChunksExpected"`
 
 	// Reliable delivery — see the Stats field comments.
 	ReliableSubscribers   int    `json:"reliableSubscribers"`
@@ -550,10 +565,8 @@ type Registry struct {
 	totalIngressDatagramBytes      uint64
 	totalEgressDatagramBytes       uint64
 	totalEgressKeyframeBytes       uint64
-	totalIngressFramesLost         uint64
-	totalIngressChunksLost         uint64
-	totalEdgeIngressFramesLost     uint64
-	totalEdgeIngressChunksLost     uint64
+	totalIngress                   ingressTally
+	totalEdgeIngress               ingressTally
 	totalCarrierStreams            uint64
 	totalCarrierRecords            uint64
 	totalCarrierRecordsDropped     uint64
@@ -678,9 +691,8 @@ type broadcastHub struct {
 	ingressDatagramBytes      uint64
 	// Ingress-loss window: cumulative counters live here — not on the
 	// window — so a publisher-restart window reset can't lose them.
-	ingress           ingressWindow
-	ingressFramesLost uint64
-	ingressChunksLost uint64
+	ingress     ingressWindow
+	ingressLoss ingressTally
 	// Folded from subscribers that closed while this hub was still alive
 	// (mirrors datagramsDropped); live subscribers are summed on demand.
 	keyframeStreamsSent uint64
@@ -1209,6 +1221,35 @@ func (r *Registry) claimPublisherLocked(b *broadcastHub) (*Publisher, error) {
 	return p, nil
 }
 
+// foldIngressLocked folds a hub's ingress-loss tally into the registry total
+// of the leg its CURRENT role measures. Caller holds r.mu.
+func (r *Registry) foldIngressLocked(b *broadcastHub) {
+	if b.edge {
+		r.totalEdgeIngress.add(b.ingressLoss)
+	} else {
+		r.totalIngress.add(b.ingressLoss)
+	}
+}
+
+// addIngress adds one leg's ingress tally to the totals: an edge hub's window
+// measures origin→edge loss, an origin hub's broadcaster→relay loss. Never
+// mixed.
+func (t *TotalStats) addIngress(edge bool, x ingressTally) {
+	if edge {
+		t.EdgeIngressFramesLost += x.framesLost
+		t.EdgeIngressChunksLost += x.chunksLost
+		t.EdgeIngressFramesDamaged += x.framesDamaged
+		t.EdgeIngressFramesExpected += x.framesExpected
+		t.EdgeIngressChunksExpected += x.chunksExpected
+		return
+	}
+	t.IngressFramesLost += x.framesLost
+	t.IngressChunksLost += x.chunksLost
+	t.IngressFramesDamaged += x.framesDamaged
+	t.IngressFramesExpected += x.framesExpected
+	t.IngressChunksExpected += x.chunksExpected
+}
+
 // setRoleLocked flips the hub's federation role. Per-hub ingress-loss
 // counters are attributed to the hub's CURRENT role at scrape time, so counts
 // accumulated under the old role are folded into that leg's totals before
@@ -1217,15 +1258,8 @@ func (r *Registry) setRoleLocked(b *broadcastHub, edge bool) {
 	if b.edge == edge {
 		return
 	}
-	if b.edge {
-		r.totalEdgeIngressFramesLost += b.ingressFramesLost
-		r.totalEdgeIngressChunksLost += b.ingressChunksLost
-	} else {
-		r.totalIngressFramesLost += b.ingressFramesLost
-		r.totalIngressChunksLost += b.ingressChunksLost
-	}
-	b.ingressFramesLost = 0
-	b.ingressChunksLost = 0
+	r.foldIngressLocked(b)
+	b.ingressLoss = ingressTally{}
 	b.edge = edge
 }
 
@@ -1651,13 +1685,7 @@ func (r *Registry) Stats() RegistryStats {
 		// Loss attribution by leg: an edge hub's ingress window
 		// measures origin→edge loss; an origin hub's measures
 		// broadcaster→relay loss. Never mixed.
-		if b.edge {
-			totals.EdgeIngressFramesLost += b.ingressFramesLost
-			totals.EdgeIngressChunksLost += b.ingressChunksLost
-		} else {
-			totals.IngressFramesLost += b.ingressFramesLost
-			totals.IngressChunksLost += b.ingressChunksLost
-		}
+		totals.addIngress(b.edge, b.ingressLoss)
 
 		// Per-subscriber counters are folded into the hub only when the
 		// subscriber closes; sum the live ones here for a current view.
@@ -1836,8 +1864,11 @@ func (r *Registry) Stats() RegistryStats {
 			EgressDatagramBytes:       egressDgram,
 			EgressParityBytes:         egressParity,
 			EgressKeyframeBytes:       egressKf,
-			IngressFramesLost:         b.ingressFramesLost,
-			IngressChunksLost:         b.ingressChunksLost,
+			IngressFramesLost:         b.ingressLoss.framesLost,
+			IngressChunksLost:         b.ingressLoss.chunksLost,
+			IngressFramesDamaged:      b.ingressLoss.framesDamaged,
+			IngressFramesExpected:     b.ingressLoss.framesExpected,
+			IngressChunksExpected:     b.ingressLoss.chunksExpected,
 			SubscriberDetails:         details,
 		}
 	}
@@ -1858,10 +1889,8 @@ func (r *Registry) Stats() RegistryStats {
 	totals.IngressDatagramBytes += r.totalIngressDatagramBytes
 	totals.EgressDatagramBytes += r.totalEgressDatagramBytes
 	totals.EgressKeyframeBytes += r.totalEgressKeyframeBytes
-	totals.IngressFramesLost += r.totalIngressFramesLost
-	totals.IngressChunksLost += r.totalIngressChunksLost
-	totals.EdgeIngressFramesLost += r.totalEdgeIngressFramesLost
-	totals.EdgeIngressChunksLost += r.totalEdgeIngressChunksLost
+	totals.addIngress(false, r.totalIngress)
+	totals.addIngress(true, r.totalEdgeIngress)
 	totals.CarrierStreams += r.totalCarrierStreams
 	totals.CarrierRecords += r.totalCarrierRecords
 	totals.CarrierRecordsDropped += r.totalCarrierRecordsDropped
@@ -2017,13 +2046,7 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 	r.totalStripeSuppressedDatagrams += b.stripeSuppressedDatagrams
 	r.totalStripeTransitions += b.stripeTransitions
 	r.totalStripeLegsReaped += b.stripeLegsReaped
-	if b.edge {
-		r.totalEdgeIngressFramesLost += b.ingressFramesLost
-		r.totalEdgeIngressChunksLost += b.ingressChunksLost
-	} else {
-		r.totalIngressFramesLost += b.ingressFramesLost
-		r.totalIngressChunksLost += b.ingressChunksLost
-	}
+	r.foldIngressLocked(b)
 
 	// A pending grace timer must not fire against the next hub registered
 	// under this ID (EndBroadcast can expire ahead of the timer).
@@ -2378,9 +2401,7 @@ func (p *Publisher) onKeyframe(msg []byte, hdr wire.StreamFrameHeader) {
 	b.keyframeStreamsIn++
 	b.keyframeBytesIn += uint64(len(msg))
 	b.framesRelayed++
-	fl, cl := b.ingress.observeFrame(hdr.FrameID)
-	b.ingressFramesLost += fl
-	b.ingressChunksLost += cl
+	b.ingressLoss.add(b.ingress.observeFrame(hdr.FrameID))
 	subs := make([]*Subscriber, 0, len(b.subs))
 	for s := range b.subs {
 		// A DVR subscriber's keyframes come from the ring at ITS cursor,
@@ -2564,9 +2585,7 @@ func (p *Publisher) relayVideoChunk(hdr wire.VideoChunkHeader, dgram []byte) {
 		b.framesRelayed++
 	}
 	b.ingressDatagramBytes += uint64(len(dgram))
-	fl, cl := b.ingress.observeChunk(hdr.FrameID, int(hdr.ChunkIndex), int(hdr.ChunkCount))
-	b.ingressFramesLost += fl
-	b.ingressChunksLost += cl
+	b.ingressLoss.add(b.ingress.observeChunk(hdr.FrameID, int(hdr.ChunkIndex), int(hdr.ChunkCount)))
 	b.fanOutLocked(dgram)
 }
 
