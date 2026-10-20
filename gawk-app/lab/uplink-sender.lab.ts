@@ -113,6 +113,9 @@ async function main(): Promise<void> {
         const stream = await wt.createUnidirectionalStream();
         const writer = stream.getWriter();
         await writer.write(msg);
+        // KW: the keyframe's data is handed over (the write resolved), before
+        // its close() waits for the acknowledgement (K's second time).
+        log(`KW,${id},${nowNs()}`);
         written();
         await writer.close();
       } catch {

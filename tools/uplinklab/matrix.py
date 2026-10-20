@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -50,6 +50,7 @@ MODES = {
     "chrome-carrier-ceil": ["--mode", "carrier"],
     # Where the backlog sits, and the spec's knobs on Chrome's datagram queue
     # (table P7, the BUGS.md fix): outgoingMaxAge, and a deeper high-water mark.
+    "chrome-dgram-kt": ["--mode", "datagram"],
     "chrome-dgram-maxage100": ["--mode", "datagram", "--maxage", "100"],
     "chrome-dgram-maxage100-hwm1000": ["--mode", "datagram", "--maxage", "100", "--hwm", "1000"],
 }
@@ -62,7 +63,7 @@ MODE_ENV = {
     "chrome-carrier-kfw": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
     "chrome-carrier-kfa": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
 }
-for _m in ("chrome-dgram-ceil", "chrome-dgram-nowait-ceil", "chrome-carrier-ceil", "chrome-dgram-maxage100",
+for _m in ("chrome-dgram-ceil", "chrome-dgram-nowait-ceil", "chrome-carrier-ceil", "chrome-dgram-kt", "chrome-dgram-maxage100",
            "chrome-dgram-maxage100-hwm1000"):
     MODE_ENV[_m] = MODE_ENV["chrome-dgram"]
 
@@ -208,6 +209,11 @@ def sets():
     # with nothing on the path to explain it.
     s["chrome-ceiling-repeat"] = [scen(f"rtt10-clean-r{i}", ["-rtt", "10ms"], modes=("chrome-dgram-ceil",))
                                   for i in (2, 3)]
+    # Keyframe timing on clean paths by RTT, long ones included (table P9):
+    # production → handed over (KW) and → acknowledged (K), the clocks RU9's
+    # "late keyframe" rule runs on.
+    s["chrome-kftiming"] = [scen(f"rtt{r}-clean", ["-rtt", f"{r}ms"], modes=("chrome-dgram-kt",))
+                            for r in (0, 10, 40, 100, 200, 300)]
     s["chrome-knobs"] = [dict(by["rtt40-loss0.005"], modes=("chrome-dgram-ceil", "chrome-dgram-maxage100",
                                                             "chrome-dgram-maxage100-hwm1000")),
                          dict(by["hi-rtt10-clean"], modes=("chrome-dgram-maxage100",))]

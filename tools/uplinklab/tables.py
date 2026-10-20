@@ -456,3 +456,43 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
               "Decode-ready p50 ms: seeds 7 · 8 · 9 |")
         print("|---|---|---|---|---|")
         print("\n".join(spread_rows))
+
+    def kf_timing(name, mode):
+        p = f"{OUT}/results/{name}/{mode}/send.csv"
+        if not os.path.exists(p):
+            return None
+        prod, written, acked = {}, {}, {}
+        for line in open(p):
+            x = line.rstrip("\n").split(",")
+            if x[0] == "F" and x[2] == "1":
+                prod[int(x[1])] = int(x[6])
+            elif x[0] == "KW":
+                written[int(x[1])] = int(x[2])
+            elif x[0] == "K" and x[4] == "sent":
+                acked[int(x[1])] = int(x[3])
+        w = sorted((written[i] - prod[i]) / 1e6 for i in prod if i in written)
+        a = sorted((acked[i] - prod[i]) / 1e6 for i in prod if i in acked)
+        return w, a, len(prod)
+
+    def pq(xs, q):
+        return xs[min(len(xs) - 1, int((len(xs) - 1) * q))] if xs else None
+
+    kt_rows = []
+    for r in (0, 10, 40, 100, 200, 300):
+        t = kf_timing(f"rtt{r}-clean", "chrome-dgram-kt")
+        if not t:
+            continue
+        w, a, total = t
+        late = sum(1 for x in w if x > 500)
+        kt_rows.append(f"| {r} ms | {len(w)} of {total} | {f(pq(w, .5))} / {f(pq(w, .95))} / {f(w[-1])} | "
+                       f"{f(pq(a, .5))} / {f(pq(a, .95))} / {f(a[-1])} | {late} |")
+    if kt_rows:
+        print("\n#### Table P9 — Chrome's keyframes on clean paths, by RTT: the clocks RU9's late-keyframe rule uses\n")
+        print("1080p, Chrome's datagrams with the shipping page (each keyframe on a stream of its own), every")
+        print("keyframe of the 100 s run, the first one included. *Handed over*: production until the stream's")
+        print("`write()` resolved; *acknowledged*: until its `close()` resolved. *Late*: handed over more than")
+        print("one GOP (500 ms) after production — what would drop that GOP's deltas under RU9.\n")
+        print("| RTT | Keyframes | Produced → handed over p50 / p95 / max ms | Produced → acknowledged p50 / p95 / max ms "
+              "| Late (> 500 ms) |")
+        print("|---|---|---|---|---|")
+        print("\n".join(kt_rows))
