@@ -1810,6 +1810,30 @@ mod live_tests {
         h.stop().await;
     }
 
+    // --- R73: the uplink follows the engine's defaults (docs/75 OD3) -------
+
+    // The iOS app has no Delivery setting and no congestion lever: its
+    // publish session runs whatever the shared engine defaults to — today's
+    // datagram path on Cubic until docs/75's RU7 flips them for everyone.
+    #[tokio::test(start_paused = true)]
+    async fn the_uplink_runs_the_engine_defaults() {
+        use gawk_engine::carrier::Delivery;
+        use gawk_engine::transport::Congestion;
+
+        let mut h = Harness::start(
+            options(),
+            Leg::announcing(),
+            Arc::new(Reclaims::default()),
+            Arc::new(Rooms::default()),
+        );
+        h.live().await;
+        let st = h.session().stats();
+        assert_eq!(st.uplink_mode_requested, Delivery::default().as_str());
+        assert_eq!(st.uplink_congestion, Congestion::default().as_str());
+        assert_eq!(st.uplink_mode, "datagram");
+        h.stop().await;
+    }
+
     // --- K3: quality while live (docs/70 D12) ------------------------------
 
     #[tokio::test(start_paused = true)]
