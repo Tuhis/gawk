@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.1.1...gawk-ios/v1.2.0) (2026-10-20)
+
+
+### Features
+
+* show open-source licences in the desktop and iOS apps (R72) ([#533](https://github.com/Tuhis/gawk/issues/533)) ([9d8837e](https://github.com/Tuhis/gawk/commit/9d8837e95356ade8643ffae9c3658d4d745eccc9))
+
 ## [1.1.1](https://github.com/Tuhis/gawk/compare/gawk-ios/v1.1.0...gawk-ios/v1.1.1) (2026-10-19)
 
 

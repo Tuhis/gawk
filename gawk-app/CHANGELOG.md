@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.53.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.53.0...gawk-app/v0.53.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* **app:** keep the volume adjustable on narrow windows ([#540](https://github.com/Tuhis/gawk/issues/540)) ([83d12d6](https://github.com/Tuhis/gawk/commit/83d12d61c1f2f891c2766e08a4053dcf6b1bb487))
+
 ## [0.53.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.52.0...gawk-app/v0.53.0) (2026-10-14)
 
 
