@@ -162,7 +162,10 @@ func TestUplinkCarrierOverRealSession(t *testing.T) {
 	sendKeyframeStream(t, pub, buildStreamKeyframe(t, 10, "avc1.42E02A", 2000))
 	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.KeyframeStreamsIn == 1 }, "keyframe ingested")
 
-	recs := uplinkRecords(t, 11, 40)
+	// Fewer records than the test viewer's quic-go keeps in its own
+	// 32-deep datagram queue (docs/75 D7): a burst past it drops on the
+	// viewer's side, which is not what this test is about.
+	recs := uplinkRecords(t, 11, 16)
 	car, err := pub.OpenUniStream()
 	if err != nil {
 		t.Fatalf("OpenUniStream: %v", err)
