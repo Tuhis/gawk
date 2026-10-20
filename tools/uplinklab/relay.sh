@@ -4,9 +4,11 @@
 #   relay.sh <out-dir> <trace.csv> <viewers> <seconds> [sender args...]
 # RELAY_CPUS, VIEWER_CPUS and SENDER_CPUS pin each side to its own cores
 # (taskset), so the viewers' CPU does not count against the relay.
-# RELAY_BIN overrides the relay binary; PROXY_ARGS, when set, puts the lab's
-# proxy (with those arguments) between the sender and the relay; SUB=1 adds a
-# lab viewer whose log gives per-frame latency through the relay (analyze.py).
+# RELAY_BIN overrides the relay binary (default gawk-server-q32, the stock
+# datagram queue depth §11 measured; D7 ships 512); PROXY_ARGS, when set,
+# puts the lab's proxy (with those arguments) between the sender and the
+# relay; SUB=1 adds a lab viewer whose log gives per-frame latency through
+# the relay (analyze.py).
 set -u
 pin() { local cpus=$1; shift; if [ -n "$cpus" ]; then exec taskset -c "$cpus" "$@"; else exec "$@"; fi; }
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -16,7 +18,7 @@ out=$1 trace=$2 viewers=$3 secs=$4; shift 4
 mkdir -p "$out"
 [ -f "$OUT/cert/cert.pem" ] || "$B/gawk-devcert" -out "$OUT/cert" >/dev/null
 port=$(( 20000 + RANDOM % 20000 )); mport=$(( port + 1 )); pport=$(( port + 2 ))
-pin "${RELAY_CPUS:-}" "${RELAY_BIN:-$B/gawk-server}" -addr 127.0.0.1:$port -metrics-addr 127.0.0.1:$mport \
+pin "${RELAY_CPUS:-}" "${RELAY_BIN:-$B/gawk-server-q32}" -addr 127.0.0.1:$port -metrics-addr 127.0.0.1:$mport \
   -cert-file "$OUT/cert/cert.pem" -key-file "$OUT/cert/key.pem" > "$out/relay.log" 2>&1 &
 rp=$!
 until curl -sf http://127.0.0.1:$mport/healthz >/dev/null; do sleep 0.1; done

@@ -11,9 +11,7 @@ OUT=${UPLINK_OUT:-$HERE/out}
 P="-rtt 10ms -rate 300e6 -queue 50ms"
 run() { # name depth trace relaycpus viewers
   [ -f "$OUT/queue/$1/metrics.txt" ] && return
-  local bin=gawk-server
-  [ "$2" = 32 ] || bin=gawk-server-q$2
-  RELAY_BIN=$OUT/bin/$bin RELAY_CPUS=$4 VIEWER_CPUS=3-4 SENDER_CPUS=5-6 SUB=1 PROXY_ARGS="$P" \
+  RELAY_BIN=$OUT/bin/gawk-server-q$2 RELAY_CPUS=$4 VIEWER_CPUS=3-4 SENDER_CPUS=5-6 SUB=1 PROXY_ARGS="$P" \
     timeout 200 "$HERE/relay.sh" "$OUT/queue/$1" "$OUT/traces/$3" "$5" 60 > /dev/null 2>&1
   # relay.sh leaves metrics.txt even when the sender died early: a run with
   # an empty log on either side is discarded, not averaged into table N.

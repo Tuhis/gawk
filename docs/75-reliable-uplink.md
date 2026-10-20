@@ -796,6 +796,10 @@ frames the uplink actually lost (RU5).
   goal; until it lands, a one-line patch carried the way `wtransport` is
   vendored for the Rust side (a `replace` to a pinned fork, the patch
   recorded beside it). RU2 decides which once upstream has answered.
+  *RU2, 2026-10-20*: carried as the vendored copy
+  `gawk-server/third_party/quic-go` (quic-go v0.62.0 + `gawk.patch`, its
+  `GAWK-PATCH.md` says how to re-derive and when to drop it), checked by
+  CI's `tidy` job. Upstream's latest release, v0.64.1, still hardcodes 32.
 - **Where it matters**: the origin's publisher sessions and the edge's
   pull sessions, which read origin → edge datagrams through the same
   queue, at pod-to-pod speed.
@@ -1273,6 +1277,11 @@ IPERF3=$(command -v iperf3) tools/uplinklab/fair/chrome.sh   # rootless netns (u
 python3 tools/uplinklab/fair/analyze.py       # table O
 python3 tools/uplinklab/tables.py             # table P with the rest
 ```
+
+Since RU2 the tree's relay ships D7's 512, so `build.sh` builds every
+depth from the vendored quic-go, and the lab's "today" defaults — `run.sh`'s
+receiver and `relay.sh`'s relay — are its `-q32` builds: the commands above
+still measure the stock depth the tables did.
 
 #### Table A — the clean path (F1)
 

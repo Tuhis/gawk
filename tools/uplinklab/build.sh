@@ -9,25 +9,30 @@ mkdir -p "$OUT/bin"
 (cd "$ROOT/gawk-server" && for c in gawk-uplinklab gawk-server gawk-loadgen gawk-devcert; do
   go build -o "$OUT/bin/$c" "./cmd/$c"
 done)
-# D7's measured fix: the receiver and the relay against copies of the pinned
-# quic-go whose per-session datagram queue (http3 streamDatagramQueueLen) holds
-# more than 32 — 4096 for the "-bigq" builds the matrix uses, and 128 / 512 /
-# 4096 for the relay's depth sweep (queue.sh, §11 table N). Built through
-# separate modfiles, so the repository's go.mod is never touched.
+# D7: the receiver and the relay by the depth of quic-go's per-session datagram
+# queue (http3 streamDatagramQueueLen). The tree builds against the vendored
+# quic-go at D7's 512 (gawk-server/third_party/quic-go); §11 measured stock
+# quic-go's 32 as "today", 4096 for the matrix's "-bigq" builds and 32 / 128 /
+# 512 / 4096 for the relay's depth sweep (queue.sh, table N). Each is a copy of
+# the vendored source with the constant rewritten, built through its own
+# modfile, so the repository's go.mod is never touched. The lab's "today"
+# defaults (run.sh's receiver, relay.sh's relay) are the -q32 builds, so §11's
+# commands keep measuring what they measured; gawk-server and gawk-server-q512
+# are the shipping depth.
 (cd "$ROOT/gawk-server"
- qv=$(go list -m -f '{{.Version}}' github.com/quic-go/quic-go)
  src=$(go list -m -f '{{.Dir}}' github.com/quic-go/quic-go)
- for depth in 128 512 4096; do
+ for depth in 32 128 512 4096; do
    q="$OUT/quic-go-q$depth"
    rm -rf "$q" && cp -r "$src" "$q" && chmod -R u+w "$q"
-   sed -i "s/^const streamDatagramQueueLen = 32\$/const streamDatagramQueueLen = $depth/" \
+   sed -i "s/^const streamDatagramQueueLen = [0-9]*\$/const streamDatagramQueueLen = $depth/" \
      "$q/http3/state_tracking_stream.go"
    grep -q "^const streamDatagramQueueLen = $depth\$" "$q/http3/state_tracking_stream.go" ||
-     { echo "uplinklab: quic-go $qv no longer has streamDatagramQueueLen = 32" >&2; exit 1; }
+     { echo "uplinklab: $src has no streamDatagramQueueLen constant to rewrite" >&2; exit 1; }
    cp go.mod "$OUT/q$depth.mod" && cp go.sum "$OUT/q$depth.sum"
    go mod edit -modfile "$OUT/q$depth.mod" -replace "github.com/quic-go/quic-go=$q"
    go build -modfile "$OUT/q$depth.mod" -o "$OUT/bin/gawk-server-q$depth" ./cmd/gawk-server
  done
+ go build -modfile "$OUT/q32.mod" -o "$OUT/bin/gawk-uplinklab-q32" ./cmd/gawk-uplinklab
  go build -modfile "$OUT/q4096.mod" -o "$OUT/bin/gawk-uplinklab-bigq" ./cmd/gawk-uplinklab
  cp "$OUT/bin/gawk-server-q4096" "$OUT/bin/gawk-server-bigq")
 # docs/75 OD5: the browser sender's page (browser/sender.mjs serves it to a

@@ -2,7 +2,8 @@
 # One lab run: receiver, proxy and sender on loopback.
 #   run.sh <out-dir> <sender args...> -- <proxy args...>
 # RECV_ARGS adds receiver flags (e.g. -stream-window); RECV_BIN swaps the
-# receiver binary (e.g. gawk-uplinklab-bigq, D7's longer datagram queue);
+# receiver binary (e.g. gawk-uplinklab-bigq, D7's longer datagram queue; the
+# default is gawk-uplinklab-q32, the stock depth §11 measured as today's);
 # SENDER_BIN the sender (browser/sender.mjs: Chrome, docs/75 OD5), which
 # finds the receiver's certificate hash in <out-dir>/cert.hash.
 set -u
@@ -19,7 +20,7 @@ mkdir -p "$dir"
 port=$(( 20000 + RANDOM % 20000 ))
 pport=$(( port + 1 ))
 # shellcheck disable=SC2086
-"${RECV_BIN:-$LAB}" recv -addr 127.0.0.1:$port -out "$dir/recv.csv" -cert-hash-file "$dir/cert.hash" ${RECV_ARGS:-} \
+"${RECV_BIN:-$LAB-q32}" recv -addr 127.0.0.1:$port -out "$dir/recv.csv" -cert-hash-file "$dir/cert.hash" ${RECV_ARGS:-} \
   2> "$dir/recv.log" &
 rp=$!
 $LAB proxy -listen 127.0.0.1:$pport -upstream 127.0.0.1:$port -stats "$dir/proxy.txt" "${p_args[@]}" 2> "$dir/proxy.log" &
