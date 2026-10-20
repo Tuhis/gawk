@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.9.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.8.0...gawk-broadcast-desktop/v2.9.0) (2026-10-20)
+
+
+### Features
+
+* **broadcast-desktop:** keep the Windows share picker's window list current ([#531](https://github.com/Tuhis/gawk/issues/531)) ([a2d92d0](https://github.com/Tuhis/gawk/commit/a2d92d0f0684ad40ea16eba533736433982909f4))
+* show open-source licences in the desktop and iOS apps (R72) ([#533](https://github.com/Tuhis/gawk/issues/533)) ([9d8837e](https://github.com/Tuhis/gawk/commit/9d8837e95356ade8643ffae9c3658d4d745eccc9))
+
 ## [2.8.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.7.0...gawk-broadcast-desktop/v2.8.0) (2026-10-19)
 
 
