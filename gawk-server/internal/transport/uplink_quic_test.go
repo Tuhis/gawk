@@ -386,8 +386,8 @@ func TestUplinkFirstGopIsNotFlowControlBlocked(t *testing.T) {
 
 // docs/75 §10: a publisher can hold relay memory by leaving a hole on
 // purpose — out-of-order data the relay's QUIC stack must buffer and can
-// neither read nor drop. Both carriers a publisher may open get a hole a
-// little way in, and the publisher keeps writing until flow control stops
+// neither read nor drop. Every carrier a publisher may open
+// (hub.MaxUplinkCarriers) gets a hole a little way in, and the publisher keeps writing until flow control stops
 // it. What the relay holds must stay within its connection receive window;
 // the measured number is recorded in docs/75 §8 RU1.
 func TestUplinkHostilePublisherHoleIsBounded(t *testing.T) {
@@ -472,8 +472,8 @@ func TestUplinkHostilePublisherHoleIsBounded(t *testing.T) {
 	heapGrowth := int64(during.HeapAlloc) - int64(before.HeapAlloc)
 
 	st := r.Stats().Broadcasts[r.ObfuscateID(id)]
-	t.Logf("hostile publisher: %d bytes held behind two holes (stream window %d, connection window %d, connection maximum %d); process heap grew %d bytes; %d datagrams dropped to keep the holes; %d records ingested before them",
-		held, 2_000_000, 3_000_000, quicDefaultMaxConnectionWindow, heapGrowth, tap.droppedCount(), st.UplinkRecords)
+	t.Logf("hostile publisher: %d bytes held behind %d holes (stream window %d, connection window %d, connection maximum %d); process heap grew %d bytes; %d datagrams dropped to keep the holes; %d records ingested before them",
+		held, hub.MaxUplinkCarriers, 2_000_000, 3_000_000, quicDefaultMaxConnectionWindow, heapGrowth, tap.droppedCount(), st.UplinkRecords)
 
 	if held == 0 {
 		t.Fatal("no data reached the relay past the holes; the test measured nothing")

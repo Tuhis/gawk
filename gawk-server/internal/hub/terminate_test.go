@@ -198,11 +198,15 @@ func TestTerminateBroadcastFoldsEveryCounter(t *testing.T) {
 		lb.pub.HandleDatagram(chunkDgram(t, false, uint32(2+i), 0, 1, "delta"))
 	}
 	lb.pub.HandleDatagram([]byte{0xff, 0xff, 0xff})
-	// R73 uplink carriers: records, a stale one, and a refused third carrier.
-	held := []*heldCarrier{holdCarrier(t, lb.pub), holdCarrier(t, lb.pub)}
-	waitFor(t, 5*time.Second, func() bool { return lb.r.Stats().Totals.UplinkCarriers == 2 }, "two carriers open")
+	// R73 uplink carriers: records, a stale one, and a refused carrier past
+	// MaxUplinkCarriers.
+	var held []*heldCarrier
+	for range MaxUplinkCarriers {
+		held = append(held, holdCarrier(t, lb.pub))
+	}
+	waitFor(t, 5*time.Second, func() bool { return lb.r.Stats().Totals.UplinkCarriers == MaxUplinkCarriers }, "carriers open")
 	if err := lb.pub.IngestUplinkCarrier(bytes.NewReader(carrierBytes(t))); err == nil {
-		t.Fatal("third carrier accepted")
+		t.Fatal("a carrier past MaxUplinkCarriers was accepted")
 	}
 	for _, h := range held {
 		h.finish(t)

@@ -147,8 +147,8 @@ func carrierStreamBytes(t *testing.T, records [][]byte) []byte {
 }
 
 // A carrier's records reach a datagram viewer as the very datagrams they
-// replace, over a real session; a third concurrent carrier is reset and
-// counted.
+// replace, over a real session; a carrier beyond MaxUplinkCarriers (the
+// sender's two plus one for a reset in flight) is reset and counted.
 func TestUplinkCarrierOverRealSession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -196,33 +196,40 @@ func TestUplinkCarrierOverRealSession(t *testing.T) {
 		t.Fatalf("carriers %d records %d bad %d, want 1 / %d / 0", st.UplinkCarriers, st.UplinkRecords, st.BadDatagrams, len(recs))
 	}
 
-	// A second carrier held open, then a third: refused and reset.
-	second, err := pub.OpenUniStream()
+	// Two more held open (the slack for a reset in flight included), then a
+	// fourth: refused and reset.
+	var held []*webtransport.SendStream
+	for n := 2; n <= hub.MaxUplinkCarriers; n++ {
+		more, err := pub.OpenUniStream()
+		if err != nil {
+			t.Fatalf("OpenUniStream: %v", err)
+		}
+		if _, err := more.Write(wire.AppendCarrierPrologue(nil)); err != nil {
+			t.Fatalf("write carrier %d prologue: %v", n, err)
+		}
+		waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.UplinkCarriers == uint64(n) }, "carrier open")
+		held = append(held, more)
+	}
+	fourth, err := pub.OpenUniStream()
 	if err != nil {
 		t.Fatalf("OpenUniStream: %v", err)
 	}
-	if _, err := second.Write(wire.AppendCarrierPrologue(nil)); err != nil {
-		t.Fatalf("write second prologue: %v", err)
+	if _, err := fourth.Write(wire.AppendCarrierPrologue(nil)); err != nil {
+		t.Fatalf("write fourth prologue: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.UplinkCarriers == 2 }, "second carrier open")
-	third, err := pub.OpenUniStream()
-	if err != nil {
-		t.Fatalf("OpenUniStream: %v", err)
-	}
-	if _, err := third.Write(wire.AppendCarrierPrologue(nil)); err != nil {
-		t.Fatalf("write third prologue: %v", err)
-	}
-	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.UplinkCarriersRejected == 1 }, "third carrier rejected")
-	// The relay's STOP_SENDING surfaces as a write error on the third.
+	waitFor(t, 5*time.Second, func() bool { return r.Stats().Totals.UplinkCarriersRejected == 1 }, "fourth carrier rejected")
+	// The relay's STOP_SENDING surfaces as a write error on the fourth.
 	waitFor(t, 5*time.Second, func() bool {
-		_, err := third.Write([]byte{0})
+		_, err := fourth.Write([]byte{0})
 		return err != nil
-	}, "third carrier reset by the relay")
-	if st := r.Stats().Totals; st.UplinkCarriers != 2 {
-		t.Fatalf("carriers = %d after the rejection, want 2", st.UplinkCarriers)
+	}, "fourth carrier reset by the relay")
+	if st := r.Stats().Totals; st.UplinkCarriers != uint64(hub.MaxUplinkCarriers) {
+		t.Fatalf("carriers = %d after the rejection, want %d", st.UplinkCarriers, hub.MaxUplinkCarriers)
 	}
 	car.Close()
-	second.Close()
+	for _, h := range held {
+		h.Close()
+	}
 }
 
 // statuszKeys flattens a /statusz document into its set of key paths, with

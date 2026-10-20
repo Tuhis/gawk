@@ -655,8 +655,14 @@ is untouched.
   read in code 2026-10-17), so the gate is not optional.
 - **Accept**: the publisher's uni-stream loop peeks the prologue and hands a
   `0x0A` stream to a carrier reader, outside `acceptKeyframeStreams`'
-  four-slot semaphore. At most **2** open carriers per publisher (the
-  current GOP and one draining); a third is `CancelRead` and counted.
+  four-slot semaphore. The sender keeps at most **2** carriers live (the
+  current GOP and one draining) and resets the older one before it opens a
+  third. The relay accepts **3** (`MaxUplinkCarriers` =
+  `UplinkSenderCarriers` + 1), so a reset still in flight never costs a GOP:
+  RESET_STREAM and the next carrier's first STREAM frame travel
+  independently, and the relay frees a slot only when the old reader sees
+  the reset (review of #541). A fourth is `CancelRead` and counted. Memory
+  stays bounded by the connection receive window, as below.
 - **Ingest**: each record is validated as a datagram is (type, version,
   `MaxDatagramSize`) and passed to `Publisher.HandleDatagram`. A malformed
   record ends that carrier (`CancelRead`); records before it were already
@@ -1045,7 +1051,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | `CapUplinkCarriers = 1 << 2` allocated beside `CapStripedDelivery` and mirrored (G7) | unit |
 | Records are ingested exactly as the same bytes sent as datagrams: same fan-out, accounting and DVR contents (property test over random frames) | unit, test-first |
 | Without the capability a publisher `0x0A` stream is rejected as today; `-uplink-carriers=false` is byte-identical (G6) | unit (diff) |
-| A third concurrent carrier is rejected and counted; a malformed record ends its carrier with earlier records forwarded; a record behind the newest ingested keyframe is dropped and counted | unit |
+| A carrier past the sender's two plus one for a reset in flight (the fourth) is rejected and counted; a malformed record ends its carrier with earlier records forwarded; a record behind the newest ingested keyframe is dropped and counted | unit |
 | `-uplink-max-bitrate` derives both initial receive windows per D10 (≈ 2 MB / 3 MB at the default); a full 1440p GOP passes one carrier on loopback with no write blocked by flow control from the first GOP of a session | unit (real quic-go loopback) |
 | A hostile publisher holding a hole keeps at most its connection receive window of relay memory — measured and recorded | unit |
 | `-uplink-carriers` / `GAWK_UPLINK_CARRIERS` / `config.uplinkCarriers` through `registryOptions`; `TestRegistryOptionsCarryAllLimits` grows; README flags table updated | unit + review |
@@ -1062,6 +1068,10 @@ publisher in one process) was 2.4–4.2 MB. A quic-go publisher only gets
 there with ack-eliciting traffic beside the hole (a 1 kHz datagram trickle in
 the test): alone, its probe timeout backs off once every packet in flight
 carries the hole, and it stalls at ~0.14 MB.
+
+*Re-measured with three holes* after the relay's cap became 3 (review of
+#541): **2.80 MB** held (2 803 308 bytes), still inside the 3 MB connection
+window. The window, not the number of carriers, is the bound.
 
 ### RU2 — Relay: a datagram queue that does not drop bursts (D7, OD4)
 
@@ -1272,8 +1282,8 @@ so.
   to its connection receive window (15 MiB, quic-go's maximum). That is the
   same ceiling every stream already has; RU1 measures it with a
   hostile-publisher test.
-- **Stream limits**: a publisher holds at most two carriers and one or two
-  keyframe streams; quic-go's default 100 incoming uni streams leaves room,
+- **Stream limits**: a publisher holds at most two live carriers (three at
+  the relay while a reset is in flight, D2) and one or two keyframe streams; quic-go's default 100 incoming uni streams leaves room,
   and stream IDs are not reused, so ~4 streams/s for a 24 h broadcast
   (~350 k) is inside QUIC's 2⁶⁰.
 

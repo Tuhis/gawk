@@ -312,23 +312,27 @@ func uplinkStats(t *testing.T, r *Registry, id string) Stats {
 	return st
 }
 
-// At most MaxUplinkCarriers are open per publisher: a third is refused and
-// counted, and a slot freed by a finished carrier is reusable.
-func TestUplinkCarrierThirdConcurrentIsRejected(t *testing.T) {
+// At most MaxUplinkCarriers are open per publisher — the sender's two plus one
+// for a reset in flight: a fourth is refused and counted, and a slot freed by
+// a finished carrier is reusable.
+func TestUplinkCarrierFourthConcurrentIsRejected(t *testing.T) {
 	r := NewRegistry(discardLog, Options{UplinkCarriers: true})
 	id, p, err := r.StartPublish("")
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	a, b := holdCarrier(t, p), holdCarrier(t, p)
-	waitFor(t, 5*time.Second, func() bool { return uplinkStats(t, r, id).UplinkCarriers == 2 }, "two carriers open")
+	if MaxUplinkCarriers != UplinkSenderCarriers+1 {
+		t.Fatalf("MaxUplinkCarriers = %d, want the sender's %d plus one", MaxUplinkCarriers, UplinkSenderCarriers)
+	}
+	a, b, c := holdCarrier(t, p), holdCarrier(t, p), holdCarrier(t, p)
+	waitFor(t, 5*time.Second, func() bool { return uplinkStats(t, r, id).UplinkCarriers == 3 }, "three carriers open")
 
 	if err := p.IngestUplinkCarrier(bytes.NewReader(carrierBytes(t, chunkDgram(t, false, 5, 0, 1, "x")))); !errors.Is(err, ErrUplinkCarrierLimit) {
-		t.Fatalf("third carrier: err = %v, want ErrUplinkCarrierLimit", err)
+		t.Fatalf("fourth carrier: err = %v, want ErrUplinkCarrierLimit", err)
 	}
 	st := uplinkStats(t, r, id)
-	if st.UplinkCarriersRejected != 1 || st.UplinkCarriers != 2 || st.UplinkRecords != 0 {
-		t.Fatalf("after the third: rejected %d carriers %d records %d, want 1 / 2 / 0",
+	if st.UplinkCarriersRejected != 1 || st.UplinkCarriers != 3 || st.UplinkRecords != 0 {
+		t.Fatalf("after the fourth: rejected %d carriers %d records %d, want 1 / 3 / 0",
 			st.UplinkCarriersRejected, st.UplinkCarriers, st.UplinkRecords)
 	}
 
@@ -337,9 +341,10 @@ func TestUplinkCarrierThirdConcurrentIsRejected(t *testing.T) {
 		t.Fatalf("carrier after a slot freed: %v", err)
 	}
 	b.finish(t)
+	c.finish(t)
 	st = uplinkStats(t, r, id)
-	if st.UplinkCarriers != 3 || st.UplinkCarriersRejected != 1 || st.UplinkRecords != 1 {
-		t.Fatalf("end: carriers %d rejected %d records %d, want 3 / 1 / 1", st.UplinkCarriers, st.UplinkCarriersRejected, st.UplinkRecords)
+	if st.UplinkCarriers != 4 || st.UplinkCarriersRejected != 1 || st.UplinkRecords != 1 {
+		t.Fatalf("end: carriers %d rejected %d records %d, want 4 / 1 / 1", st.UplinkCarriers, st.UplinkCarriersRejected, st.UplinkRecords)
 	}
 }
 

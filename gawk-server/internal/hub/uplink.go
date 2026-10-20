@@ -10,10 +10,24 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// MaxUplinkCarriers bounds a publisher's concurrently open uplink carriers
-// (R73, docs/75 D2): the current GOP's and one still draining. A third is
-// refused (ErrUplinkCarrierLimit) and counted; the transport resets it.
-const MaxUplinkCarriers = 2
+// UplinkSenderCarriers is the most uplink carriers a broadcaster keeps live
+// at once (R73, docs/75 D2): the current GOP's and one still draining. The
+// broadcaster resets the oldest before it opens a third.
+const UplinkSenderCarriers = 2
+
+// uplinkResetSlack is room for a carrier the broadcaster has already reset
+// but whose RESET_STREAM has not been processed here yet. The reset and the
+// next carrier's first STREAM frame travel independently, and this side frees
+// a slot only when the old carrier's reader sees the reset, so without the
+// slack a conforming sender's current GOP could be refused (review of #541).
+const uplinkResetSlack = 1
+
+// MaxUplinkCarriers bounds a publisher's concurrently open uplink carriers:
+// the sender's limit plus one for a reset in flight. One more is refused
+// (ErrUplinkCarrierLimit) and counted; the transport resets it. The memory a
+// publisher can hold behind its carriers stays bounded by the connection
+// receive window, however many there are.
+const MaxUplinkCarriers = UplinkSenderCarriers + uplinkResetSlack
 
 // uplinkCarrierReadBuffer sizes the carrier reader's buffer: a dozen records,
 // so a GOP's records are not read two bytes at a time from the stream. It is
