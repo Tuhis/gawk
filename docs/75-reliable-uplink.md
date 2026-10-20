@@ -1050,6 +1050,19 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | A hostile publisher holding a hole keeps at most its connection receive window of relay memory — measured and recorded | unit |
 | `-uplink-carriers` / `GAWK_UPLINK_CARRIERS` / `config.uplinkCarriers` through `registryOptions`; `TestRegistryOptionsCarryAllLimits` grows; README flags table updated | unit + review |
 
+**Measured (2026-10-20, `TestUplinkHostilePublisherHoleIsBounded`).** A
+publisher on loopback opened both carriers it may hold, left a hole 64 KiB
+into each (every packet carrying that byte dropped on the way out, its
+retransmissions included) and wrote until flow control stopped it. The
+relay held **2.87 MB** past the two holes (2 868 844 bytes, identical across
+runs), inside D10's 3 MB initial connection window: the window never
+auto-tuned, because the relay cannot read past a hole, so the 15 MiB maximum
+was never approached. Process heap growth over the same interval (relay and
+publisher in one process) was 2.4–4.2 MB. A quic-go publisher only gets
+there with ack-eliciting traffic beside the hole (a 1 kHz datagram trickle in
+the test): alone, its probe timeout backs off once every packet in flight
+carries the hole, and it stalls at ~0.14 MB.
+
 ### RU2 — Relay: a datagram queue that does not drop bursts (D7, OD4)
 
 | Acceptance criterion | Verified by |
