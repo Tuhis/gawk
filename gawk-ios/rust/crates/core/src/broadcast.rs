@@ -1043,6 +1043,30 @@ mod stats_tests {
         assert_eq!(st.capture_restarts, 2);
     }
 
+    /// The engine's QUIC uplink counters reach iOS telemetry untouched
+    /// (docs/75 D8): the sample is the engine's `Stats`, whose serde names
+    /// (`uplinkDatagramsDropped`, …) the engine's key-set test pins.
+    #[test]
+    fn the_sample_keeps_the_engines_uplink_counters() {
+        let engine = Stats {
+            uplink_packets_available: true,
+            uplink_packets_sent: 9_000,
+            uplink_packets_lost: 12,
+            uplink_datagrams_dropped: 5,
+            ..Default::default()
+        };
+        let st = merged_stats(engine, &PipelineCounters::default(), None, None, "", "off");
+        assert!(st.uplink_packets_available);
+        assert_eq!(
+            (
+                st.uplink_packets_sent,
+                st.uplink_packets_lost,
+                st.uplink_datagrams_dropped
+            ),
+            (9_000, 12, 5)
+        );
+    }
+
     #[test]
     fn before_the_first_frame_nothing_is_invented() {
         let st = merged_stats(
