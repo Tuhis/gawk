@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   CAP_PARITY_CHUNKS,
+  CAP_STRIPED_DELIVERY,
+  CAP_UPLINK_CARRIERS,
   MAX_PARITY_DATA_CHUNKS,
   MAX_PARITY_SYMBOLS,
   PARITY_CHUNK_HEADER_SIZE,
@@ -210,6 +212,14 @@ describe('RelayCapabilities wire format', () => {
     const buf = encodeRelayCapabilities(caps);
     expect(buf.length).toBe(RELAY_CAPABILITIES_SIZE);
     expect(hex(buf)).toBe('010f000102');
+    expect(parseRelayCapabilities(buf)).toEqual(caps);
+  });
+
+  it('carries the uplink-carriers bit in the same 5 bytes (Go golden vector)', () => {
+    expect(CAP_UPLINK_CARRIERS).toBe(1 << 2);
+    const caps = { flags: CAP_PARITY_CHUNKS | CAP_STRIPED_DELIVERY | CAP_UPLINK_CARRIERS, parityLevel: 2 };
+    const buf = encodeRelayCapabilities(caps);
+    expect(hex(buf)).toBe('010f000702');
     expect(parseRelayCapabilities(buf)).toEqual(caps);
   });
 

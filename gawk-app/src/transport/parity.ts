@@ -57,6 +57,13 @@ export const CAP_PARITY_CHUNKS = 1 << 0;
  */
 export const CAP_STRIPED_DELIVERY = 1 << 1;
 
+/**
+ * The relay ingests reliable carrier streams from a publisher (R73, docs/75
+ * D2). Constant only: the browser broadcaster does not open carriers (a
+ * browser Reliable mode is its own later design) and viewers ignore it.
+ */
+export const CAP_UPLINK_CARRIERS = 1 << 2;
+
 // --- GF(2^8), primitive polynomial 0x11D, generator 2 ----------------------
 
 const GF_EXP = new Uint8Array(512);
