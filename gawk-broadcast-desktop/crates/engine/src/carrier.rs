@@ -24,9 +24,12 @@
 //!   acknowledged [`CARRIER_RETIRE_DEADLINE`] later — quinn reports no
 //!   per-offset acknowledgement, so the GOP boundary is where a deadline can
 //!   be enforced at all.
-//! - **At most [`MAX_OPEN_CARRIERS`]** carriers are open (the relay's cap,
-//!   D2): the current GOP's and one draining. A third would be refused by the
-//!   relay, so the oldest draining one is reset first.
+//! - **At most [`MAX_OPEN_CARRIERS`]** carriers are live (D2): the current
+//!   GOP's and one draining. Before a third opens, the oldest draining one is
+//!   reset, and the open waits until that reset has been handed to the
+//!   transport. The relay accepts one more than this, because a reset can
+//!   still be in flight when the next carrier's first frame arrives (review
+//!   of #541).
 
 use crate::relay::{CarrierStream, RelaySession};
 use gawk_wire as wire;
@@ -47,7 +50,9 @@ pub const UPLINK_CARRIER_EXPIRED_CODE: u32 = 2;
 /// figure, D10).
 pub const CARRIER_RETIRE_DEADLINE: Duration = Duration::from_millis(150);
 
-/// The relay's cap on a publisher's concurrently open carriers (docs/75 D2).
+/// The most carriers the sender keeps live at once (docs/75 D2): the current
+/// GOP's and one draining. The relay's cap is one higher, as slack for a
+/// reset that is still in flight.
 pub const MAX_OPEN_CARRIERS: usize = 2;
 
 /// Send priority of a keyframe stream: ahead of a carrier, because a GOP's
@@ -368,10 +373,15 @@ struct Retiring {
 }
 
 impl Retiring {
-    fn force_reset(mut self) {
+    /// Resets the carrier now and returns once the reset has been handed to
+    /// the transport: the caller opens the next carrier only after it, so
+    /// RESET_STREAM is queued ahead of the new stream (review of #541). The
+    /// relay keeps one slot of slack for a reset still in flight (D2).
+    async fn force_reset(mut self) {
         if let Some(tx) = self.reset_now.take() {
             let _ = tx.send(());
         }
+        let _ = self.task.await;
     }
 }
 
@@ -448,11 +458,12 @@ async fn run(shared: Arc<Shared>, relay: Arc<Mutex<Arc<dyn RelaySession>>>) {
                 if !carrier || *shared.newest.borrow() > gop {
                     continue;
                 }
-                // Room for the new carrier: the relay refuses a third.
+                // Room for the new carrier. The reset is handed to the
+                // transport before the open, so RESET_STREAM is queued first.
                 retiring.retain(|r| !r.task.is_finished());
                 while retiring.len() >= MAX_OPEN_CARRIERS {
                     if let Some(r) = retiring.pop_front() {
-                        r.force_reset();
+                        r.force_reset().await;
                     }
                 }
                 current = open(&shared, &relay, gop).await.map(|c| (gop, c));
@@ -533,6 +544,8 @@ mod tests {
         keyframes: Mutex<Vec<(Option<i32>, Vec<u8>)>>,
         carriers: Mutex<Vec<Arc<Mutex<CarrierLog>>>>,
         opens: AtomicUsize,
+        /// Opens and resets, in the order the transport saw them.
+        events: Arc<Mutex<Vec<String>>>,
         /// Carrier writes park while true.
         writes_block: watch::Sender<bool>,
         /// A finished carrier is fully acknowledged once this is true.
@@ -551,6 +564,7 @@ mod tests {
                 keyframes: Mutex::default(),
                 carriers: Mutex::default(),
                 opens: AtomicUsize::new(0),
+                events: Arc::default(),
                 writes_block: watch::Sender::new(false),
                 acked: watch::Sender::new(true),
                 opens_stall: watch::Sender::new(false),
@@ -623,6 +637,8 @@ mod tests {
     }
 
     struct FakeCarrier {
+        index: usize,
+        events: Arc<Mutex<Vec<String>>>,
         log: Arc<Mutex<CarrierLog>>,
         writes_block: watch::Receiver<bool>,
         acked: watch::Receiver<bool>,
@@ -647,6 +663,10 @@ mod tests {
             })
         }
         fn reset(&mut self, code: u32) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("reset {}", self.index));
             self.log.lock().unwrap().reset = Some(code);
         }
     }
@@ -673,13 +693,20 @@ mod tests {
             Box::pin(std::future::pending())
         }
         fn open_uplink_carrier(&self) -> BoxFuture<'_, Result<Box<dyn CarrierStream>, String>> {
-            self.0.opens.fetch_add(1, Ordering::SeqCst);
+            let n = self.0.opens.fetch_add(1, Ordering::SeqCst);
+            self.0.events.lock().unwrap().push(format!("open {n}"));
             let mut stall = self.0.opens_stall.subscribe();
             Box::pin(async move {
                 let _ = stall.wait_for(|s| !*s).await;
                 let log = Arc::new(Mutex::new(CarrierLog::default()));
-                self.0.carriers.lock().unwrap().push(log.clone());
+                let index = {
+                    let mut c = self.0.carriers.lock().unwrap();
+                    c.push(log.clone());
+                    c.len() - 1
+                };
                 Ok(Box::new(FakeCarrier {
+                    index,
+                    events: self.0.events.clone(),
                     log,
                     writes_block: self.0.writes_block.subscribe(),
                     acked: self.0.acked.subscribe(),
@@ -1032,6 +1059,20 @@ mod tests {
         assert!(open <= MAX_OPEN_CARRIERS, "{open} open");
         assert_eq!(relay.reset(0), Some(UPLINK_CARRIER_EXPIRED_CODE));
         assert_eq!(relay.reset(1), None, "still inside its deadline");
+    }
+
+    // Review of #541: the relay frees a carrier slot only when it sees the
+    // reset, so the reset that makes room must reach the transport BEFORE
+    // the next carrier is opened — not whenever the retiring task next runs.
+    #[tokio::test(start_paused = true)]
+    async fn the_reset_that_makes_room_is_sent_before_the_next_open() {
+        let relay = FakeRelay::new();
+        let s = reliable(&relay, 0);
+        relay.0.acked.send_replace(false);
+        send_all(&s, vec![kf(1), delta(100, 2), kf(3), delta(100, 4)]).await;
+        send_all(&s, vec![kf(5)]).await;
+        let events = relay.0.events.lock().unwrap().clone();
+        assert_eq!(events, ["open 0", "open 1", "reset 0", "open 2"]);
     }
 
     // D3: a new publisher session starts with no carrier, and opens one only
