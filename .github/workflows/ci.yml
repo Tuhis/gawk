@@ -111,24 +111,26 @@ jobs:
           # repo is ~12 MB, so a full clone is cheaper than reasoning about how
           # deep is deep enough.
           fetch-depth: 0
+      # The filter below is only as right as the base it diffs against.
+      - name: Test the diff base
+        run: ./.github/scripts/diff-base_test.sh
       - name: What moved?
         id: filter
         run: |
           set -euo pipefail
-          case "${{ github.event_name }}" in
-            pull_request) base="${{ github.event.pull_request.base.sha }}" ;;
-            push)         base="${{ github.event.before }}" ;;
-            *)            base="" ;;
-          esac
+          # On a pull_request, the base the merge ref was built on, not the
+          # event's base.sha, which can be older (diff-base.sh says why).
+          base=$(./.github/scripts/diff-base.sh "${{ github.event_name }}" \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" \
+            "${{ github.event.before }}")
 
           all=false
           changed="$RUNNER_TEMP/changed.txt"
           # No usable base — a first push on a branch, a force-push, or a
           # workflow_dispatch. We cannot prove nothing moved, so nothing is
           # skipped.
-          if [ -z "$base" ] \
-            || [ "$base" = "0000000000000000000000000000000000000000" ] \
-            || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+          if [ -z "$base" ]; then
             echo "No usable base commit — running everything."
             all=true
             : > "$changed"
@@ -138,10 +140,11 @@ jobs:
             sed 's/^/  /' "$changed"
           fi
 
-          # A change to this file, or to a composite action it runs, runs
-          # everything: the filter cannot reason about edits to itself, and the
-          # run that proves a CI change works is the one that runs all of it.
-          if grep -qE '^\.github/(workflows/ci\.yml|actions/)' "$changed"; then
+          # A change to this file, or to a composite action or script it runs,
+          # runs everything: the filter cannot reason about edits to itself,
+          # and the run that proves a CI change works is the one that runs all
+          # of it.
+          if grep -qE '^\.github/(workflows/ci\.yml|actions/|scripts/)' "$changed"; then
             echo "A CI definition moved — running everything."
             all=true
           fi
@@ -887,14 +890,11 @@ jobs:
       - name: a merged migration is immutable
         run: |
           set -euo pipefail
-          case "${{ github.event_name }}" in
-            pull_request) base="${{ github.event.pull_request.base.sha }}" ;;
-            push)         base="${{ github.event.before }}" ;;
-            *)            base="" ;;
-          esac
-          if [ -z "$base" ] \
-            || [ "$base" = "0000000000000000000000000000000000000000" ] \
-            || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+          base=$(./.github/scripts/diff-base.sh "${{ github.event_name }}" \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" \
+            "${{ github.event.before }}")
+          if [ -z "$base" ]; then
             echo "no usable base commit — the immutability half of this gate cannot run"
             exit 0
           fi
