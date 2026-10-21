@@ -795,10 +795,13 @@ if eng_cells:
     print("everywhere, and on datagrams on clean, random-loss and burst paths: BBR's shown ≥ Cubic's − 3 points and")
     print("its p99 ≤ Cubic's + 5 ms. On datagrams under outages: shown within 6 points at a lower p99. The prototype")
     print("column is the same Δ from the design pass's sender, its datagram rows on the 4096-deep receiver.")
-    print("*Warning*: seconds the upload-bandwidth warning showed in the analysis window, Cubic · BBR.)\n")
-    print("| Cell | Delivery | Cubic: shown · p99 | BBR: shown · p99 | Δ shown · Δ p99 | Prototype Δ | G5 | Warning, s "
-          "| Steal |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("*Warning raised*: the upload-bandwidth warning, Cubic · BBR — when it first raised (s after the first")
+    print("frame) and the seconds it showed, or *no*. RU4 as amended 2026-10-21: it must not raise where the")
+    print("uplink carries the stream: lossless cells with either controller, lossy ones with BBR, and the")
+    print("1080p outage cells at 10 ms with Cubic too; *Warning* judges those and records the rest.)\n")
+    print("| Cell | Delivery | Cubic: shown · p99 | BBR: shown · p99 | Δ shown · Δ p99 | Prototype Δ | G5 "
+          "| Warning raised | Warning | Steal |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
     rows = [(f"rtt{rtt}-{sc}", f"{rtt} ms, {lab}", sc) for rtt in (10, 40, 100) for sc, lab in ENG_SC.items()]
     rows += [(f"hi-rtt10-{sc}", f"1440p, {lab}", sc) for sc, lab in HI]
     for name, label, sc in rows:
@@ -827,8 +830,19 @@ if eng_cells:
             def sp(s):
                 return f"{f(eng_shown(s), 1)} · {f(eng_rd(s)[2])}"
 
+            def raised(s):
+                return s["transport"].get("warn_first_s") is not None
+
             def wn(s):
-                return f(s["transport"].get("warn_raised_s"))
+                t = s["transport"]
+                return f"at {f(t['warn_first_s'])} s, {f(t['warn_raised_s'])} s" if raised(s) else "no"
+            # Judged where the link has room for the stream and only packets
+            # are lost (RU4, amended): BBR off the clean path, and the 10 ms
+            # outages with Cubic too. Cubic's collapse elsewhere is recorded.
+            judged = [cu, bb] if sc in ("clean", "rate300M", "rate80M") else [bb]
+            if sc.startswith("out") and name.startswith("rtt10-"):
+                judged.append(cu)
+            wok = None if not judged else not any(raised(x) for x in judged)
             dps = "–" if dp is None else f"{dp:+.0f}"
             print(f"| {label} | {d} | {sp(cu)} | {sp(bb)} | {ds:+.1f} · {dps} | {proto} | {eng_mark(ok)} | "
-                  f"{wn(cu)} · {wn(bb)} | {eng_steal(name, m, m + '-bbr')} |")
+                  f"{wn(cu)} · {wn(bb)} | {eng_mark(wok)} | {eng_steal(name, m, m + '-bbr')} |")

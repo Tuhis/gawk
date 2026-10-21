@@ -10,7 +10,8 @@
 # the TCP-alone baseline. Each cell records the host's CPU steal (% of CPU
 # time) for 1 s before it (steal-pre.txt) and over it (steal.txt); a cell
 # over FAIR_STEAL_MAX (default 5) is moved aside (.steal<n>) and run again,
-# twice at most.
+# twice at most. FAIR_R30_CARRIER_SEEDS adds runs of the 30 Mbps carrier
+# cells (seeds 4 and up).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../../.." && pwd)
@@ -47,10 +48,10 @@ one() { # name rate mode cc trace tcp
   if [ -f "$OUT/fair/$name/done" ]; then echo "done $name (steal $(cat "$OUT/fair/$name/steal.txt") %)"; else echo "FAILED $name"; fi
 }
 export -f attempt one cpu steal; export OUT HERE STEAL_MAX
-cells() { # rate trace seeds
-  for s in $(seq 1 "$3"); do
-    [ "${FAIR_NONE:-1}" = 0 ] || echo "r$1-none-s$s ${1}mbit none cubic $2 1"
-    for m in datagram carrier; do for c in $CCS; do
+cells() { # rate trace seeds [modes first-seed]
+  for s in $(seq "${5:-1}" "$3"); do
+    [ "${FAIR_NONE:-1}" = 0 ] || [ -n "${4:-}" ] || echo "r$1-none-s$s ${1}mbit none cubic $2 1"
+    for m in ${4:-datagram carrier}; do for c in $CCS; do
       echo "r$1-$m-$c-tcp-s$s ${1}mbit $m $c $2 1"
       echo "r$1-$m-$c-alone-s$s ${1}mbit $m $c $2 0"
     done; done
@@ -59,6 +60,10 @@ cells() { # rate trace seeds
 run_cells() { # jobs
   while read -r line; do echo "$line"; done | xargs -P "$1" -L 1 bash -c 'one "$@"' _
 }
-{ cells 30 r1080p60.csv 3; cells 15 r1080p60.csv 3; } | run_cells "$JOBS"
+# The 30 Mbps carrier cell is heavy-tailed (§11 table O3: 0 to 58 % undecodable
+# across runs of one sender), so RU4's gate there reads FAIR_R30_CARRIER_SEEDS
+# runs of it (default 3, as every other cell; RU6 uses 6).
+{ cells 30 r1080p60.csv 3; cells 15 r1080p60.csv 3
+  cells 30 r1080p60.csv "${FAIR_R30_CARRIER_SEEDS:-3}" carrier 4; } | run_cells "$JOBS"
 cells 80 r1440p60.csv 2 | run_cells 1   # alone on the host, as §4 requires at 1440p
 echo fair-finished
