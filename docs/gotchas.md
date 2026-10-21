@@ -1635,6 +1635,16 @@ entries still describe code `gawk-pubsim` runs (now
   replies wait behind the upload they report on. It overstated the
   household's ping and the TCP flow's loss to BBR; steer the downlink around
   the shaper (`tools/uplinklab/fair/run.sh`, [docs/75](75-reliable-uplink.md) §4).
+- **The relay's R19 carrier writer and R73's carrier reader don't pair.**
+  `drainReliable` puts audio on a carrier of its own and only closes a
+  superseded carrier. `IngestUplinkCarrier` takes video and parity records
+  only and holds three carriers per publisher, so after a stall on a lossy
+  line the next GOP's carrier can be refused. A Go sender feeding it needs
+  R73's sender rules (two carriers live, the superseded one reset 150 ms
+  after it finished), and must time that reset itself: quic-go's `Close`
+  returns before anything is acknowledged. webtransport-go v0.13 also hides
+  quic-go's `SetPriority`, so a Go sender cannot put a keyframe stream
+  ahead of a carrier ([docs/76](76-pop-relays.md) item 18).
 
 **Relay fleet (R17)**
 
