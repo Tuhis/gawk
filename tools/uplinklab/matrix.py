@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -33,6 +33,9 @@ MODES = {
     # relay change), datagrams kept — alone, and with BBR.
     "dgram-bigq": ["--mode", "datagram"],
     "dgram-bbr-bigq": ["--mode", "datagram", "--cc", "bbr"],
+    # The receiver at the depth the relay ships since RU2 (D7's 512: the
+    # tree's own build, from the vendored quic-go), datagrams and BBR.
+    "dgram-bbr-q512": ["--mode", "datagram", "--cc", "bbr"],
     # OD5: the browser broadcaster's send path over Chrome's own QUIC stack
     # (browser/sender.mjs), and a browser carrier prototype on it.
     "chrome-dgram": ["--mode", "datagram"],
@@ -58,6 +61,7 @@ MODES = {
 MODE_ENV = {
     "dgram-bigq": {"RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
     "dgram-bbr-bigq": {"RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
+    "dgram-bbr-q512": {"RECV_BIN": f"{OUT}/bin/gawk-uplinklab"},
     "chrome-dgram": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
     "chrome-carrier": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
     "chrome-carrier-kfw": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
@@ -224,22 +228,38 @@ def sets():
     s["chrome-knobs"] = [dict(by["rtt40-loss0.005"], modes=("chrome-dgram-ceil", "chrome-dgram-maxage100",
                                                             "chrome-dgram-maxage100-hwm1000")),
                          dict(by["hi-rtt10-clean"], modes=("chrome-dgram-maxage100",))]
+    # G10's datagram half after RU8 (table K2): datagrams + BBR at 0.1-1 %
+    # random loss, 10 and 40 ms, by receiver depth; the shipped 512 with
+    # three loss-process seeds, the others with seed 7 (and three seeds on
+    # the cell nearest the bound).
+    g10 = []
+    for rtt in (10, 40):
+        for loss in ("0.001", "0.005", "0.01"):
+            p = ["-rtt", f"{rtt}ms", "-loss", loss]
+            g10.append(scen(f"rtt{rtt}-loss{loss}", p, modes=("dgram-bbr", "dgram-bbr-bigq", "dgram-bbr-q512")))
+            for seed in (8, 9):
+                modes = ("dgram-bbr", "dgram-bbr-bigq", "dgram-bbr-q512") if (rtt, loss) == (10, "0.01") \
+                    else ("dgram-bbr-q512",)
+                g10.append(scen(f"rtt{rtt}-loss{loss}-s{seed}", p, modes=modes, seed=seed))
+    s["ru8-g10"] = g10
     s["all"] = core + cc + hi + jit + win + bigq + seeds
     return s
 
 
 # The four viewer presets (gawk-app playbackPresets.ts): name → the trace it
 # is sent, its playout mode, its delivery mode. Live-edge delivery gets parity;
-# reliable delivery (resilient, deep) is served none, so it replays the trace
-# of frames complete without it.
+# reliable delivery (resilient, deep) was served none before RU8, so these
+# replay the trace of frames complete without it.
 PRESETS = {
     "off": ("vt.json", "off", "live"),            # Lowest latency
     "adaptive": ("vt.json", "adaptive", "live"),  # Balanced (default)
     "resilient": ("vt-noparity.json", "adaptive", "resilient"),  # Smoother
     "deep": ("vt-noparity.json", "adaptive", "deep"),            # Most stable
-    # What-if (docs/75 F14): the relay serving parity to reliable delivery
-    # too. Leg B is reliable and clean here, so such a viewer receives exactly
-    # what a live-edge viewer can complete.
+    # The relay serving parity to reliable delivery too: docs/75 F14's
+    # what-if, and since RU8 (D11) the relay as shipped — the plain
+    # "resilient" / "deep" above stay the relay before RU8, so tables J-L
+    # still reproduce. Leg B is reliable and clean here, so such a viewer
+    # receives exactly what a live-edge viewer can complete.
     "resilient-parity": ("vt.json", "adaptive", "resilient"),
     "deep-parity": ("vt.json", "adaptive", "deep"),
 }
@@ -264,11 +284,18 @@ def replay(runs, skip_ms):
                   open(f"{r}/summary.json", "w"), indent=1)
 
 
+def cpu():
+    """/proc/stat's cpu line: user nice system idle iowait irq softirq steal guest guest_nice."""
+    with open("/proc/stat") as fh:
+        return [int(x) for x in fh.readline().split()[1:11]]
+
+
 def run_one(sc, mode, seconds):
     out = f"{OUT}/results/{sc['name']}/{mode}"
     os.makedirs(out, exist_ok=True)
     if os.path.exists(f"{out}/summary.json"):
         return out
+    c0 = cpu()
     args = [f"{HERE}/run.sh", out, "--trace", TRACES[sc["trace"]], "--seconds", str(seconds)]
     args += MODES[mode] + sc["extra"] + ["--"] + sc["proxy"] + ["-seed", str(sc.get("seed", 7))]
     env = dict(os.environ, RECV_ARGS=sc["recv"], **MODE_ENV.get(mode, {}))
@@ -278,6 +305,11 @@ def run_one(sc, mode, seconds):
                    check=True, stdout=subprocess.DEVNULL)
     # The second half of the run: the adaptive controller has settled.
     replay([out], seconds * 1000 / 2)
+    # The host's CPU steal over the cell: a hypervisor taking the cores makes
+    # every latency and loss figure meaningless (docs/75 §11, table N1).
+    d = [b - a for a, b in zip(c0, cpu())]
+    with open(f"{out}/steal.txt", "w") as fh:
+        fh.write(f"{100 * d[7] / sum(d):.1f}\n")
     return out
 
 

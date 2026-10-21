@@ -523,3 +523,48 @@ if any(get(n, "chrome-dgram") for _, _, n in chrome_cells()):
               "Produced → acknowledged p50 / p95 / max ms | Handover → acknowledged p50 / p95 ms | Would trip |")
         print("|---|---|---|---|---|---|")
         print("\n".join(kt_rows))
+
+# RU8 (D11): the relay serves parity to reliable delivery, so on a datagram
+# uplink Smoother and Most stable now see what Table K's "with parity" column
+# modelled: the "-parity" presets are the shipped relay, the plain ones the
+# relay before RU8. G10's datagram half: >= 99 % shown at 0.1-1 % loss, 10-40 ms.
+def shown(s, k):
+    return f(min(100, s["view"][k]["shownPct"]), 1)
+
+
+g10 = []
+for rtt in (10, 40):
+    for sc, label in (("loss0.001", "0.1 % loss"), ("loss0.005", "0.5 % loss"), ("loss0.01", "1 % loss")):
+        for m, d in (("dgram-bbr-q512", "512 (shipped)"), ("dgram-bbr", "32 (stock)"), ("dgram-bbr-bigq", "4096")):
+            runs = [(seed, get(name, m)) for seed, name in
+                    ((7, f"rtt{rtt}-{sc}"), (8, f"rtt{rtt}-{sc}-s8"), (9, f"rtt{rtt}-{sc}-s9"))]
+            runs = [(seed, x) for seed, x in runs if x and "resilient-parity" in x["view"]]
+            if not runs:
+                continue
+            ok = all(x["view"][k]["shownPct"] >= 99 for _, x in runs for k in ("resilient-parity", "deep-parity"))
+            st = []
+            for seed, _ in runs:
+                p = f"{OUT}/results/rtt{rtt}-{sc}{'' if seed == 7 else f'-s{seed}'}/{m}/steal.txt"
+                if os.path.exists(p):
+                    st.append(float(open(p).read().split()[0]))
+
+            def col(fn):
+                return " · ".join(fn(x) for _, x in runs)
+            g10.append(f"| {rtt} ms | {label} | {d} | {' · '.join(str(sd) for sd, _ in runs)} | "
+                       f"{col(lambda x: shown(x, 'adaptive'))} | {col(lambda x: shown(x, 'resilient'))} | "
+                       f"{col(lambda x: shown(x, 'resilient-parity'))} | {col(lambda x: shown(x, 'deep'))} | "
+                       f"{col(lambda x: shown(x, 'deep-parity'))} | {'yes' if ok else '**no**'} | "
+                       f"{f'{max(st):.1f} %' if st else '–'} |")
+if g10:
+    print("\n#### Table K2 — G10's datagram half with RU8's relay (D11, OD6)\n")
+    print("`matrix.py ru8-g10`: datagrams + BBR at 0.1–1 % random loss, by the depth of the receiver's")
+    print("datagram queue (the relay ships 512 since RU2), each run's seeds in order. Shown, % of frames.")
+    print("Since RU8 the relay serves reliable delivery the same parity as live-edge delivery, so a")
+    print("Smoother or Most stable viewer is sent every frame the relay could complete with parity")
+    print("(the replay's `resilient-parity` / `deep-parity` presets); *before RU8* is the old relay,")
+    print("which sent them only frames that reached it whole. *Host CPU steal*: the highest of the")
+    print("cell's runs.\n")
+    print("| RTT | Path | Receiver queue | Seeds | Balanced | Smoother before RU8 | Smoother | "
+          "Most stable before RU8 | Most stable | ≥ 99 % shown in every run (G10) | Host CPU steal |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
+    print("\n".join(g10))
