@@ -271,7 +271,8 @@ frame for an outside viewer over a real WAN.
 ### 6.2 Pairing
 
 7. **The operator creates the PoP in `gawk-admin`**: a name (the CR name and
-   default wall code, e.g. `assembly-2026`), a display name, an optional end
+   default wall code, e.g. `assembly-2026`; at most 63 characters, because it
+   is also a label value, item 14), a display name, an optional end
    date, the budget and the guest options (§7.2). `gawk-admin` writes the
    `Pop` CR and shows **one pairing string, once**:
    `gawk-pair:api.gawk.ioio.fi:4433/K7M2Q-9XDA4-…` (the home relay endpoint,
@@ -369,7 +370,10 @@ frame for an outside viewer over a real WAN.
 14. **A PoP broadcast's ID is reserved at home before the broadcaster sees
     it.** A local `/publish` mint on a linked PoP sends `reserve{id}`. The
     link-home pod creates the broadcast's Lease (`gawk-bc-<id>`, the docs/22
-    registry) with **no holder** and the annotation `gawk/pop=<name>`.
+    registry) with **no holder** and the **label** `gawk/pop=<name>`, beside
+    the registry's own `gawk/lease=broadcast` (`cluster.go` selects Leases by
+    label and keeps per-broadcast data in annotations; a selector cannot
+    match an annotation).
     Creation is the atomic reservation, so home mints and PoP mints can never
     collide. The PoP announces the ID to its broadcaster after the reply,
     which costs one WAN round trip on the mint. Dormant reservations are
