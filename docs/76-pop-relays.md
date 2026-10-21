@@ -61,7 +61,7 @@ rather than pulling them itself.
 | OD2 | What the host runs | **A standalone binary** (`gawk-relay`, Windows/macOS/Linux) plus a multi-arch container, with a status console on `localhost`. A "Host a relay" switch inside the desktop broadcaster is deferred (§13). |
 | OD3 | How a guest ends up on the PoP, once home can suggest it | **Switch automatically.** Native apps switch silently. A browser switches silently once the site has the local-network permission; the first time, the browser's own prompt is the only click (§3, §6.12). |
 | OD4 | Which party streams outsiders can watch | **Any code, on demand.** As everywhere in gawk, the code is the access. A party stream crosses the uplink only while at least one outside viewer watches it, exactly once, within the budget. |
-| OD5 | Certificates | **Both tiers.** A pinned self-signed certificate (always), and a named certificate `p-<label>.pop.<zone>` issued through the home fleet's ACME issuer, with the PoP's private key never leaving the PoP (§6.11). |
+| OD5 | Certificates | **Both tiers.** A pinned self-signed certificate (always), and a named certificate `p-<label>.<zone>` (e.g. `p-7k2m9x.pop.gawk.ioio.fi`) issued through the home fleet's ACME issuer, with the PoP's private key never leaving the PoP (§6.11). |
 | OD6 | Pairing | **A token from `gawk-admin`.** The operator creates the PoP and gets a one-time pairing string; the first link exchanges it for a long-lived credential. |
 | OD7 | Moderation | **Home reaches the party.** A kill or ban in `gawk-admin` ends a party broadcast at the party too; revoking a PoP stops forwarding and suggestions at once. |
 | OD8 | The party wall | **Part of federation v1** (phase B), not a later phase. |
@@ -514,13 +514,25 @@ frame for an outside viewer over a real WAN.
 
 33. **A static room at home, created with the PoP.** When the operator
     enables the wall (the home fleet must run `-rooms`), `gawk-admin`
-    creates a `Room` CR (R42 D4) with
-    `spec.pop: <name>`, the wall code (default: the PoP name) and an
-    optional `spec.maxParticipants` override. The R42 default of 50 is small
-    for a wall, and the override is a new optional field in the public
-    `rooms` package, so it needs a `gawk-admin` commit. The wall is an
-    ordinary static room in every other respect: home pod, proxying,
-    adoption, `4007` on deletion.
+    creates a `Room` CR (R42 D4) with `spec.pop: <name>` and the wall code
+    (default: the PoP name). It also sets two caps:
+    - `spec.maxBroadcasts`, the existing R42 override, copied from the
+      Pop's `limits.maxBroadcasts`. The fleet's `-max-room-broadcasts`
+      default of 4 would refuse the fifth party broadcast
+      (`roomsrv/registry.go:937-943`).
+    - An optional `spec.maxParticipants`. The R42 default of 50 is small for
+      a wall, and this override is a new optional field in the public
+      `rooms` package, so it needs a `gawk-admin` commit.
+
+    **A room with `spec.pop` accepts vouched attaches only** (item 34). An
+    ordinary `Attach` is refused as a wrong attach secret would be, whoever
+    sends it. Without that rule the wall would be a static room with no
+    attach secret, which under R42 D8 means anyone may attach
+    (`rooms/rooms.go:158-159`). Its code is shown to every outside viewer
+    and defaults to the guessable PoP name, so any outsider could fill its
+    slots with their own home broadcasts. In every other respect the wall is
+    an ordinary static room: home pod, proxying, adoption, and `4007` on
+    deletion.
 
 34. **Every party broadcast joins it, with an opt-out** (OD11). At publish
     time the PoP attaches the broadcast through its link: a **vouched
@@ -612,8 +624,9 @@ frame for an outside viewer over a real WAN.
     the /64. This needs **real client addresses at the relay**: under
     `externalTrafficPolicy: Cluster` with SNAT, home sees node addresses and
     no offer is ever sent. The homelab runs `Local` (docs/22 finding 10); the
-    self-hosting doc states it, as it already does for IP bans (docs/42
-    §9.4). A PoP with `spec.guests.autoSwitch: false` never offers.
+    self-hosting doc states it, as it already does for IP bans
+    (`docs/self-hosting.md` §9.4). A PoP with `spec.guests.autoSwitch: false`
+    never offers.
 
 42. **`LocalRelayOffer` (`0x19`)**, home → client, on a server-opened uni
     stream right after the upgrade on `/echo`, `/publish`, `/subscribe` and
@@ -957,7 +970,7 @@ needs A. Phase C needs B's link (PP7) and offers nothing without it.
 | **PP8** — reservations and uplink | Reserve-before-announce, unlinked mints, `/internal/pop`, `/pop/publish`, admission and `4012` (+ notice), linger and `4013`, counts both ways, the clock rewrite, `lr=1` deferral, broadcast events with `pop` | In-process: an outside viewer on pod B receives a byte-identical prime and deltas; **zero bytes on the uplink without demand** (counter); linger closes with `4013` and the Lease is back to a reservation; the fourth stream is refused and Chrome reads `4012` (tier-1 e2e); the count is right on both sides; **time to first frame measured at 40 ms netem RTT and recorded here** (target ≤ 1.5 s); event schemas and vectors updated, no address field |
 | **PP9** — downlink | `/pop/subscribe`, the PoP edge dialer, upward count reports, the downlink budget, `maxDownlinkStreams` at home | Ten party viewers of one home broadcast → one leg (counter); `G` at home includes them; the leg cap refuses the 21st distinct broadcast |
 | **PP10** — moderation reach | Ban forwarding and local enforcement, revoke, IP-ban and limiter exemption, the admin badge and party-only rows, the screening-notice relay | A kill in `gawk-admin` ends a party-only broadcast at the PoP with `4006` for its viewers and broadcaster; a banned ID cannot be reclaimed at the PoP; an IP ban on the PoP's public address does not cut a leg; the PoP's `0x11` carries the screening bit while home's does |
-| **PP11** — the party wall | Wall room creation with the PoP, `spec.pop` / `spec.maxParticipants`, vouched attach and detach, Hide/Show and `wall=hidden`, link-proxied room control, the local read-only wall | Extended `rooms-assert`: party broadcasts appear on the wall; Hide removes and Show restores; a hidden-remembered broadcaster never appears; an outside participant's tile past the budget shows "Party-only right now" and joins when a slot frees; a protocol-1 client parses every snapshot; unlinked, party guests see the local wall |
+| **PP11** — the party wall | Wall room creation with the PoP, `spec.pop` / `spec.maxBroadcasts` / `spec.maxParticipants`, vouched-only attach and detach, Hide/Show and `wall=hidden`, link-proxied room control, the local read-only wall | Extended `rooms-assert`: party broadcasts appear on the wall, **a fifth and later party broadcast included**; **an ordinary `Attach` to the wall (an outsider's home broadcast) is refused**; Hide removes and Show restores; a hidden-remembered broadcaster never appears; an outside participant's tile past the budget shows "Party-only right now" and joins when a slot frees; a protocol-1 client parses every snapshot; unlinked, party guests see the local wall |
 | **PP12** — the named tier | CSR on the link, the `gawk-admin` reconciler (`CertificateRequest`, `DNSEndpoint`), random labels, the PoP's HTTPS UI and generated `config.js`, renewal at half-life, the rebinding self-check, QR selection | Reconciler unit tests against fake cert-manager and external-dns objects (CSR with a wrong SAN refused); one staging issuance on the reference deployment; a phone on the LAN loads the PoP UI with no prompt (PP15) |
 | **PP13** — offers at home | Address matching (v4 exact, v6 /64), `0x19` on the four session kinds, `0x18` on the PoP, mirrors and vectors, metrics | Go tests: a matching client gets the offer, a non-matching one never does, `autoSwitch: false` suppresses it; vectors byte-identical in all three copies |
 | **PP14** — the switch | Web (permission query, parallel probes, reconnect, chip, opt-out, denied note), desktop (Ready page), iOS (broadcaster + player, usage string, first-deny retry) | Web unit tests for every permission state; tier-1 e2e with a CDP-granted permission: a viewer switches with one freeze ≤ 1 s, and with the permission denied stays on home; native tests for offer parsing and pinning; the Apple prompts on device (PP15) |
