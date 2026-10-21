@@ -34,6 +34,7 @@ your laptop in about five minutes with a self-signed certificate.
 | **`gawk-app`** (the web app) | Static SPA: landing/join, broadcaster, viewer | Ordinary HTTPS Ingress |
 | `gawk-telemetry` *(optional)* | Per-session diagnostics. **Off by default; skip it on a first install.** | Internal only, plus one same-origin ingest path |
 | `gawk-admin` *(optional)* | The moderation portal: fleet-wide kill, durable ID/IP bans, signed webhooks. **Off by default; skip it on a first install.** | ClusterIP by default; an OIDC-gated Ingress is a deliberate opt-in ([§9](#9-gawk-admin--the-moderation-portal-r39)) |
+| `gawk-sampler` *(optional)* | Automatic content screening: scores each live broadcast's keyframe for explicit content and raises content flags in `gawk-admin`. **Off by default; ships observing, not paging.** | Internal only; reads the relay's screening route and posts flags to `gawk-admin` ([§13](#13-automatic-content-screening-r40)) |
 
 The native broadcasters (`gawk-broadcast-linux`, `gawk-broadcast-windows` and
 `gawk-broadcast-macos`) are
