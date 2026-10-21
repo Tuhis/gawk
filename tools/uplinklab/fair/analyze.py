@@ -212,14 +212,16 @@ def warned(rs):
 
 
 if any(cells.get(f"r{rate}-{m}-{c}-tcp") for rate, _ in RATES for m, c, _ in ENG):
-    print("\n**O3 — the shipped engine (RU6) on RU4's gate.** `FAIR_CCS=\"engine-cubic engine-bbr\" FAIR_NONE=0\n"
-          "fair/matrix.sh`: `bin/sender-engine` in the same harness, beside the TCP-alone baselines above. The gate\n"
-          "(30 and 80 Mbps): the upload keeps ≥ 50 % of its fair share, and beside it the carrier leaves ≤ 0.5 %\n"
-          "undecodable and BBR's datagrams show no fewer frames than the engine's Cubic datagrams beyond 3 points.\n"
-          "15 Mbps is recorded, not gated: there the criterion is the upload-bandwidth warning, which must show\n"
-          "in both delivery modes within its 5 s hysteresis (5 bad seconds) — alone from the start, beside the\n"
-          "upload from its start at 20 s. *Warning*: the runs it fired in, when it first raised (s after the\n"
-          "broadcast's first frame) and its share of 25–80 s. *Steal*: the host's, over each run (max).\n")
+    print("\n#### Table O3 — the shipped engine on RU4's shared-uplink gate (RU6)\n")
+    print("`FAIR_CCS=\"engine-cubic engine-bbr\" FAIR_NONE=0 fair/matrix.sh`: `bin/sender-engine` in the same\n"
+          "harness, beside table O's TCP-alone runs. The gate (30 and 80 Mbps, BBR's rows): the upload keeps\n"
+          "≥ 50 % of its fair share, and beside it the carrier leaves ≤ 0.5 % undecodable and BBR's datagrams\n"
+          "show no fewer frames than the engine's Cubic datagrams beyond 3 points. 15 Mbps is recorded, not\n"
+          "gated: there the criterion is the upload-bandwidth warning, which must show in both delivery modes\n"
+          "within its 5 s hysteresis — beside the upload, of its start at 20 s; alone, where the trace outgrows\n"
+          "the uplink only partway in and not in every run, in every run whose broadcast was damaged (≥ 1 %\n"
+          "undecodable). *Warning*: the runs it raised in, when it first raised (s after the broadcast's first\n"
+          "frame) and its share of 25–80 s. *Steal*: the host's, over each run (max).\n")
     print("| Uplink | Engine | Upload's fair share | Beside the upload: undecodable · Balanced shown | "
           "Warning, alone | Warning, beside the upload | RU4 | Steal |")
     print("|---|---|---|---|---|---|---|---|")
@@ -233,12 +235,17 @@ if any(cells.get(f"r{rate}-{m}-{c}-tcp") for rate, _ in RATES for m, c, _ in ENG
             share = (f"{sum(sh) / len(sh):.0f} %" + (f" ({min(sh):.0f}–{max(sh):.0f})" if len(sh) > 1 else "")) \
                 if sh else "–"
             if rate == "15":
-                # Within the hysteresis: by 5 bad seconds (+ the first sample
-                # and a second of slack) after what makes the uplink short.
-                ok = bool(a) and all(r.get("warn_first") is not None and r["warn_first"] <= 8 for r in a) \
-                    and all(r.get("warn_first") is not None and r["warn_first"] <= 28 for r in t)
+                # Beside the upload: raised within the hysteresis (5 bad
+                # seconds, the first sample and a second of slack) of the
+                # upload's start at 20 s. Alone the trace only outgrows the
+                # uplink partway in, and not in every run, so: raised in
+                # every run whose broadcast was damaged (≥ 1 % undecodable).
+                ok = bool(a) and all(r.get("warn_first") is not None for r in a if r.get("undec", 0) >= 1) \
+                    and all(r.get("warn_first") is not None and r["warn_first"] <= 27 for r in t)
                 # RU4's criterion is BBR's own loss; Cubic's rows are recorded.
                 verdict = "warning " + ("shown" if ok else ("**missed**" if c == "engine-bbr" else "missed"))
+            elif c != "engine-bbr":
+                verdict = "baseline" if m == "datagram" else "recorded"
             else:
                 ok = bool(sh) and min(sh) >= 50
                 if m == "carrier":
