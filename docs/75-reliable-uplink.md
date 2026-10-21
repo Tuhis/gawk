@@ -1017,6 +1017,27 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | The broadcaster reports `uplinkDatagramsDropped` (datagrams offered minus quinn's `frame_tx.datagram`) and the other D8 fields; field registry and stored-shape golden updated | unit |
 | A playbook row: relay ingress chunk loss while the broadcaster's QUIC reports no lost packets names the relay's intake, not the uplink (F7) | unit (`rules`) |
 
+**As built (2026-10-20).** Choices the criteria left open:
+
+- *Denominators*: the relay exports them — `IngressFramesExpected` (the
+  window's frameID span) and `IngressChunksExpected` (chunks of the frames
+  that arrived; a wholly lost frame's count is unknown) — counted at
+  `finalize` with the losses, so each ratio describes one population.
+  Prometheus: `…_ingress_frames_damaged_total`,
+  `…_ingress_frames_expected_total`, `…_ingress_chunks_expected_total`, and
+  the `edge_` family for the origin→edge leg.
+- *Windows*: live, one scrape; a stored session, its own span; a stored
+  broadcast, the trailing 60 s. `ingressLossRatio` (whole frames) stays,
+  windowed the same way, for relays without the new counters.
+- *Thresholds* (provisional until RU7's baseline): whole frames 0.5 / 2 %
+  as before; damaged frames 5 / 20 % (counted before parity — the
+  2026-09-27 baseline of 0.1–0.4 % of chunks already damages a few
+  percent); chunks 1 / 5 %.
+- *Whose loss*: `relay-intake-drops` fires when the broadcaster's QUIC
+  packet loss (`uplinkPacketLossRatio`, lost/sent: per batch live, over the
+  session stored) is under a tenth of the relay's chunk loss ratio, not
+  only at exactly zero; `leg-a-broadcaster-uplink` then stays quiet.
+
 ### RU1 — Relay: carrier ingest (docs/57 WU1, moved; D2, D10)
 
 | Acceptance criterion | Verified by |

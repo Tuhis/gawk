@@ -69,17 +69,66 @@ type Broadcast struct {
 	BandwidthDroppedDatagrams uint64 `json:"bandwidthDroppedDatagrams"`
 	IngressFramesLost         uint64 `json:"ingressFramesLost"`
 	IngressChunksLost         uint64 `json:"ingressChunksLost"`
-	KeyframeStreamsIn         uint64 `json:"keyframeStreamsIn"`
-	KeyframeStreamsSent       uint64 `json:"keyframeStreamsSent"`
-	KeyframeStreamsDropped    uint64 `json:"keyframeStreamsDropped"`
-	SendErrors                uint64 `json:"sendErrors"`
-	ReliableSubscribers       int    `json:"reliableSubscribers"`
-	CarrierRecordsDropped     uint64 `json:"carrierRecordsDropped"`
-	CarrierQueueOverflow      uint64 `json:"carrierQueueOverflow"`
-	DVRSubscribers            int    `json:"dvrSubscribers"`
-	DVRResyncs                uint64 `json:"dvrResyncs"`
+	// docs/75 RU0: leg-A loss in frames. Zero from a relay that predates
+	// them, which IngressLoss.RatiosSince reads as "unit not reported".
+	IngressFramesDamaged   uint64 `json:"ingressFramesDamaged"`
+	IngressFramesExpected  uint64 `json:"ingressFramesExpected"`
+	IngressChunksExpected  uint64 `json:"ingressChunksExpected"`
+	KeyframeStreamsIn      uint64 `json:"keyframeStreamsIn"`
+	KeyframeStreamsSent    uint64 `json:"keyframeStreamsSent"`
+	KeyframeStreamsDropped uint64 `json:"keyframeStreamsDropped"`
+	SendErrors             uint64 `json:"sendErrors"`
+	ReliableSubscribers    int    `json:"reliableSubscribers"`
+	CarrierRecordsDropped  uint64 `json:"carrierRecordsDropped"`
+	CarrierQueueOverflow   uint64 `json:"carrierQueueOverflow"`
+	DVRSubscribers         int    `json:"dvrSubscribers"`
+	DVRResyncs             uint64 `json:"dvrResyncs"`
 
 	SubscriberDetails []Subscriber `json:"subscriberDetails"`
+}
+
+// IngressLoss is the relay's leg-A counter set (docs/75 RU0), the input to
+// both leg-A ratios. Every field is cumulative.
+type IngressLoss struct {
+	FramesLost, FramesDamaged, FramesExpected uint64
+	ChunksLost, ChunksExpected                uint64
+}
+
+// IngressLoss returns this observation's leg-A counters.
+func (b Broadcast) IngressLoss() IngressLoss {
+	return IngressLoss{
+		FramesLost: b.IngressFramesLost, FramesDamaged: b.IngressFramesDamaged,
+		FramesExpected: b.IngressFramesExpected,
+		ChunksLost:     b.IngressChunksLost, ChunksExpected: b.IngressChunksExpected,
+	}
+}
+
+// RatiosSince returns the two leg-A ratios over the window prev → cur, one
+// unit each and never summed: ingressFrameLossRatio = frames lost or
+// damaged per frame expected, ingressChunkLossRatio = chunks lost per chunk
+// expected. Pass a zero prev for the lifetime ratios.
+//
+// ok is false when the relay does not report the unit (its expected counter
+// is zero: it predates RU0) or when a counter went backwards (a restart or a
+// re-home, across which a delta is a fiction). A window in which nothing
+// left the relay's ingress window is measured, and is 0.
+func (cur IngressLoss) RatiosSince(prev IngressLoss) (frame float64, frameOK bool, chunk float64, chunkOK bool) {
+	if cur.FramesExpected > 0 && cur.FramesExpected >= prev.FramesExpected &&
+		cur.FramesLost >= prev.FramesLost && cur.FramesDamaged >= prev.FramesDamaged {
+		frameOK = true
+		if exp := cur.FramesExpected - prev.FramesExpected; exp > 0 {
+			lost := (cur.FramesLost - prev.FramesLost) + (cur.FramesDamaged - prev.FramesDamaged)
+			frame = float64(lost) / float64(exp)
+		}
+	}
+	if cur.ChunksExpected > 0 && cur.ChunksExpected >= prev.ChunksExpected &&
+		cur.ChunksLost >= prev.ChunksLost {
+		chunkOK = true
+		if exp := cur.ChunksExpected - prev.ChunksExpected; exp > 0 {
+			chunk = float64(cur.ChunksLost-prev.ChunksLost) / float64(exp)
+		}
+	}
+	return frame, frameOK, chunk, chunkOK
 }
 
 // Subscriber is one subscriber's relay-side view. `SessionID` is TM1's join

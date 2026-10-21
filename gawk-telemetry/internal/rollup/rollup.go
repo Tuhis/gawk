@@ -187,6 +187,9 @@ var broadcasterCounters = []string{
 	"autoStepDowns", "autoStepUps", "audioPacketsSent",
 	"EncodedFrames", "Keyframes", "SentFrames", "DatagramsSent", "BytesSent",
 	"KeyframeStreamsSent", "KeyframeStreamsFailed", "FramesDroppedAtSend",
+	// docs/75 D8: the native broadcaster's QUIC packet counters, so a stored
+	// verdict can tell the uplink's loss from the relay intake's.
+	"uplinkPacketsSent", "uplinkPacketsLost",
 	// Recorded for a broadcaster too, but for the opposite purpose: here it
 	// EXPLAINS a real collapse rather than excusing one. A hidden broadcaster
 	// tab is throttled by the browser, so it genuinely sends fewer frames and

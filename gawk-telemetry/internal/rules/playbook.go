@@ -28,6 +28,25 @@ const (
 	// (R9 M3) is already smoothed, so a small nonzero value is real.
 	ingressLossWarn = 0.005
 	ingressLossBad  = 0.02
+	// docs/75 RU0's two leg-A ratios, each in its own unit and with its own
+	// thresholds (BUGS.md 2026-09-27: a chunk ratio is not interchangeable
+	// with a frame ratio). Both are counted at the relay BEFORE parity, which
+	// repairs isolated chunk loss: the 2026-09-27 incident's healthy baseline
+	// was 0.1–0.4 % of chunks, which at ~10 chunks a frame damages a few
+	// percent of frames that no viewer ever misses. Provisional until RU7's
+	// baseline records the fleet's numbers.
+	//
+	// Damaged frames (lost or arrived with a chunk missing) per frame expected.
+	ingressFrameLossWarn = 0.05
+	ingressFrameLossBad  = 0.2
+	// Chunks missing per chunk expected. F7's relay intake drops read about
+	// 1 % here while viewers could not decode 39–47 % of frames.
+	ingressChunkLossWarn = 0.01
+	ingressChunkLossBad  = 0.05
+	// docs/75 F7/D8: relay ingress loss the broadcaster's QUIC accounts for
+	// less than this share of is not the uplink's. A QUIC packet carries
+	// about one datagram at gawk's sizes, so the two ratios share a unit.
+	uplinkExplainsShare = 0.1
 	// docs/20 finding 8: overflow drops at this share of arrivals with
 	// concealment climbing alongside is the latch, not ordinary loss.
 	audioOverflowLatchRatio = 0.25
@@ -62,6 +81,7 @@ func Playbook() []Rule {
 		bandwidthCap(),
 		relayEgressSaturation(),
 		legABroadcasterUplink(),
+		relayIntakeDrops(),
 		encoderOverload(),
 		sendPathGap(),
 		decoderChoking(),
@@ -278,10 +298,26 @@ func keyframeOnlyDelivery() Rule {
 					Comparison: "gap resyncs during the dips, vs keyframes received"},
 				{Signal: "fpsDipKeyframes", Value: keyframes, From: FromClient},
 			}
+			// The relay's ingress decides WHICH leg, not this viewer's own
+			// numbers: chunks the relay never received are missing for every
+			// viewer, and sending the operator to this viewer's network is
+			// the 2026-09-27 misdiagnosis (BUGS.md).
+			if legA := legALoss(f); legA.dirty() {
+				ev = append(ev, legA.evidence()...)
+				return &Finding{
+					Severity: SeverityBad, Confidence: 0.85, Evidence: ev,
+					Action: "This is leg A, not this viewer: the relay is missing chunks before it sends " +
+						"them to anyone, so every viewer of this broadcast sees it. Diagnose the " +
+						"broadcast — leg-a-broadcaster-uplink or relay-intake-drops says whose loss it is.",
+				}
+			}
 			conf := 0.6
 			if dropped, ok := f.Relay("keyframesDropped"); ok {
 				ev = append(ev, Evidence{Signal: "subscriber.keyframesDropped", Value: dropped, From: FromRelay})
-				conf = 0.8
+				// Present is not evidence; dropped keyframes are.
+				if dropped > 0 {
+					conf = 0.8
+				}
 			}
 			return &Finding{Severity: SeverityBad, Confidence: conf, Evidence: ev}
 		},
@@ -305,6 +341,7 @@ func legBSingleViewer() Rule {
 		Thresholds: []Threshold{
 			{Name: "outlierDropRatio", Value: outlierDropRatio, Unit: "x peer median", Note: "how far above its peers a subscriber must drop to be an outlier"},
 			{Name: "ingressLossWarn", Value: ingressLossWarn, Unit: "ratio", Note: "ingress loss above which this is not a single-viewer problem"},
+			{Name: "ingressChunkLossWarn", Value: ingressChunkLossWarn, Unit: "ratio", Note: "ingress chunk loss above which this is not a single-viewer problem"},
 		},
 		Eval: func(f *Facts) *Finding {
 			dropped, _ := f.Relay("subscriberDropped")
@@ -313,7 +350,7 @@ func legBSingleViewer() Rule {
 			// The discriminator is the CONTRAST: this subscriber's drops far
 			// above its peers' while the relay's own ingress is clean. Either
 			// half alone means something else entirely.
-			if ingress >= ingressLossWarn || dropped == 0 {
+			if legALoss(f).dirty() || dropped == 0 {
 				return nil
 			}
 			if peer > 0 && dropped < peer*outlierDropRatio {
@@ -353,7 +390,7 @@ func bandwidthCap() Rule {
 		Eval: func(f *Facts) *Finding {
 			dropped, _ := f.Relay("bandwidthDroppedDatagrams")
 			ingress, _ := f.Relay("ingressLossRatio")
-			if dropped == 0 || ingress >= ingressLossWarn {
+			if dropped == 0 || legALoss(f).dirty() {
 				return nil
 			}
 			return &Finding{
@@ -386,10 +423,9 @@ func relayEgressSaturation() Rule {
 		Eval: func(f *Facts) *Finding {
 			dropping, _ := f.Relay("subscribersDropping")
 			total, _ := f.Relay("subscribers")
-			ingress, _ := f.Relay("ingressLossRatio")
 			// "All of them", not "several": the whole point of this row is
 			// distinguishing a shared bottleneck from a set of unlucky viewers.
-			if total < 2 || dropping < total || ingress >= ingressLossWarn {
+			if total < 2 || dropping < total || legALoss(f).dirty() {
 				return nil
 			}
 			return &Finding{
@@ -412,29 +448,132 @@ func legABroadcasterUplink() Rule {
 		Verdict:  "Leg A — the broadcaster's uplink is losing frames before the relay sees them",
 		Action:   "Drop a ladder rung or the bitrate on the broadcaster.",
 		Why: "The relay is losing frames BEFORE it ever sees a complete one — the broadcaster's " +
-			"uplink, not anything downstream. R9 M3's ingress loss is already windowed and " +
-			"smoothed, so a small nonzero value here is real rather than noise.",
+			"uplink, not anything downstream. Read in three units: whole frames never seen, frames " +
+			"damaged (never seen or missing a chunk) and chunks, because uplink loss mostly arrives " +
+			"as frames missing a chunk and a whole-frame count alone read a fifth of all chunks " +
+			"lost as 0.01 % (BUGS.md, 2026-09-27). When the broadcaster's own QUIC reports losing " +
+			"almost none of it, the loss is the relay's intake instead (relay-intake-drops).",
 		Thresholds: []Threshold{
-			{Name: "ingressLossWarn", Value: ingressLossWarn, Unit: "ratio", Note: "above this, ingress loss is real rather than noise"},
-			{Name: "ingressLossBad", Value: ingressLossBad, Unit: "ratio", Note: "above this it is broken rather than degraded"},
+			{Name: "ingressLossWarn", Value: ingressLossWarn, Unit: "ratio", Note: "whole frames lost above which ingress loss is real rather than noise"},
+			{Name: "ingressLossBad", Value: ingressLossBad, Unit: "ratio", Note: "whole frames lost above which it is broken rather than degraded"},
+			{Name: "ingressFrameLossWarn", Value: ingressFrameLossWarn, Unit: "ratio", Note: "damaged frames (before parity) above which it is real"},
+			{Name: "ingressFrameLossBad", Value: ingressFrameLossBad, Unit: "ratio", Note: "damaged frames above which it is broken"},
+			{Name: "ingressChunkLossWarn", Value: ingressChunkLossWarn, Unit: "ratio", Note: "chunks lost above which it is real"},
+			{Name: "ingressChunkLossBad", Value: ingressChunkLossBad, Unit: "ratio", Note: "chunks lost above which it is broken"},
 		},
 		Eval: func(f *Facts) *Finding {
-			loss, _ := f.Relay("ingressLossRatio")
-			if loss < ingressLossWarn {
+			legA := legALoss(f)
+			if !legA.dirty() || intakeNotUplink(f, legA) {
 				return nil
 			}
 			sev := SeverityWarn
-			if loss >= ingressLossBad {
+			if legA.bad() {
 				sev = SeverityBad
 			}
-			return &Finding{
-				Severity: sev, Confidence: 0.9,
-				Evidence: []Evidence{
-					{Signal: "ingressLossRatio", Value: loss, Unit: "ratio", From: FromRelay},
-				},
+			ev := legA.evidence()
+			if up, ok := f.Client("uplinkPacketLossRatio"); ok {
+				ev = append(ev, Evidence{Signal: "uplinkPacketLossRatio", Value: up, Unit: "ratio", From: FromClient,
+					Comparison: "the broadcaster's QUIC agrees the uplink is losing packets"})
 			}
+			return &Finding{Severity: sev, Confidence: 0.9, Evidence: ev}
 		},
 	}
+}
+
+// docs/75 F7/D8: relay ingress loss the uplink did not cause. quic-go keeps 32
+// datagrams per WebTransport session and drops the rest silently, so a
+// high-rung burst loses its tail INSIDE the relay; the ingress window counts
+// those chunks exactly as it counts the network's. The broadcaster's QUIC
+// packet counters tell the two apart.
+func relayIntakeDrops() Rule {
+	return Rule{
+		ID:       "relay-intake-drops",
+		Scope:    "broadcast",
+		Requires: []string{"relay.ingressChunkLossRatio", "client.uplinkPacketLossRatio"},
+		Verdict:  "The relay's own intake is dropping the broadcaster's datagrams — the uplink delivered them",
+		Action: "Not the broadcaster's network: no rung or cable change fixes this. Check the relay pod's " +
+			"CPU first (an overloaded relay drops here too — add pods, docs/22); on a relay with CPU to " +
+			"spare it is quic-go's 32-datagram per-session queue overflowing on high-rung bursts, which " +
+			"docs/75 D7 (RU2) lengthens.",
+		Why: "The relay's ingress window cannot tell a chunk the network lost from one quic-go dropped " +
+			"before the relay read it (docs/75 F7): both are simply missing. The broadcaster's QUIC " +
+			"can — it counts the packets it had to declare lost. Chunk loss at the relay that the " +
+			"uplink's own packet loss explains less than a tenth of happened after the packets " +
+			"arrived. Without this row leg-a-broadcaster-uplink sends the operator to a clean uplink.",
+		Thresholds: []Threshold{
+			{Name: "ingressChunkLossWarn", Value: ingressChunkLossWarn, Unit: "ratio", Note: "chunks lost above which there is something to attribute"},
+			{Name: "uplinkExplainsShare", Value: uplinkExplainsShare, Unit: "ratio", Note: "the share of the relay's chunk loss the uplink's packet loss must reach to be the cause"},
+		},
+		Eval: func(f *Facts) *Finding {
+			legA := legALoss(f)
+			if !legA.dirty() || !intakeNotUplink(f, legA) {
+				return nil
+			}
+			up, _ := f.Client("uplinkPacketLossRatio")
+			ev := append(legA.evidence(), Evidence{
+				Signal: "uplinkPacketLossRatio", Value: up, Unit: "ratio", From: FromClient,
+				Comparison: "the broadcaster's QUIC lost almost none of what the relay is missing",
+			})
+			sev := SeverityWarn
+			if legA.bad() {
+				sev = SeverityBad
+			}
+			return &Finding{Severity: sev, Confidence: 0.8, Evidence: ev}
+		},
+	}
+}
+
+// legA is the relay's testimony about leg A in each unit it reports. A ratio
+// a relay does not report (the frame and chunk units arrived with docs/75
+// RU0) is absent rather than zero.
+type legA struct {
+	whole, frames, chunks             float64
+	haveWhole, haveFrames, haveChunks bool
+}
+
+func legALoss(f *Facts) legA {
+	var l legA
+	l.whole, l.haveWhole = f.Relay("ingressLossRatio")
+	l.frames, l.haveFrames = f.Relay("ingressFrameLossRatio")
+	l.chunks, l.haveChunks = f.Relay("ingressChunkLossRatio")
+	return l
+}
+
+// dirty: any one unit over its own threshold. Never summed across units.
+func (l legA) dirty() bool {
+	return l.whole >= ingressLossWarn || l.frames >= ingressFrameLossWarn || l.chunks >= ingressChunkLossWarn
+}
+
+func (l legA) bad() bool {
+	return l.whole >= ingressLossBad || l.frames >= ingressFrameLossBad || l.chunks >= ingressChunkLossBad
+}
+
+func (l legA) evidence() []Evidence {
+	var ev []Evidence
+	if l.haveWhole {
+		ev = append(ev, Evidence{Signal: "ingressLossRatio", Value: l.whole, Unit: "ratio", From: FromRelay,
+			Comparison: "whole frames that never reached the relay"})
+	}
+	if l.haveFrames {
+		ev = append(ev, Evidence{Signal: "ingressFrameLossRatio", Value: l.frames, Unit: "ratio", From: FromRelay,
+			Comparison: "frames lost or missing a chunk, before parity"})
+	}
+	if l.haveChunks {
+		ev = append(ev, Evidence{Signal: "ingressChunkLossRatio", Value: l.chunks, Unit: "ratio", From: FromRelay,
+			Comparison: "chunks of arrived frames that never reached the relay"})
+	}
+	return ev
+}
+
+// intakeNotUplink: the relay is missing chunks and the broadcaster's QUIC
+// lost under a tenth as large a share of its packets. Needs both sides; a
+// broadcast without a native broadcaster's counters stays leg A.
+func intakeNotUplink(f *Facts, l legA) bool {
+	up, ok := f.Client("uplinkPacketLossRatio")
+	if !ok || !l.haveChunks || l.chunks < ingressChunkLossWarn {
+		return false
+	}
+	return up < l.chunks*uplinkExplainsShare
 }
 
 // Row 5: broadcaster's source is choppy, no network signals.

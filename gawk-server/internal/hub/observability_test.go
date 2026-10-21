@@ -27,9 +27,9 @@ func TestIngressWindowSequentialNoLoss(t *testing.T) {
 	var w ingressWindow
 	var fl, cl uint64
 	for id := uint32(1); id <= 3000; id++ {
-		f, c := w.observeChunk(id, 0, 1)
-		fl += f
-		cl += c
+		got := w.observeChunk(id, 0, 1)
+		fl += got.framesLost
+		cl += got.chunksLost
 	}
 	if fl != 0 || cl != 0 {
 		t.Errorf("losses = %d frames / %d chunks, want 0/0", fl, cl)
@@ -40,9 +40,9 @@ func TestIngressWindowReorderWithinWindowNotLost(t *testing.T) {
 	var w ingressWindow
 	var fl, cl uint64
 	observe := func(id uint32) {
-		f, c := w.observeChunk(id, 0, 1)
-		fl += f
-		cl += c
+		got := w.observeChunk(id, 0, 1)
+		fl += got.framesLost
+		cl += got.chunksLost
 	}
 	// Frame 4 arrives late (after 5..8) but well inside the window.
 	for _, id := range []uint32{1, 2, 3, 5, 6, 7, 8, 4} {
@@ -61,8 +61,7 @@ func TestIngressWindowGapAgesOutAsLost(t *testing.T) {
 	var w ingressWindow
 	var fl uint64
 	observe := func(id uint32) {
-		f, _ := w.observeChunk(id, 0, 1)
-		fl += f
+		fl += w.observeChunk(id, 0, 1).framesLost
 	}
 	observe(1)
 	observe(2)
@@ -84,9 +83,9 @@ func TestIngressWindowMissingAndDuplicateChunks(t *testing.T) {
 	var w ingressWindow
 	var fl, cl uint64
 	observe := func(id uint32, idx, count int) {
-		f, c := w.observeChunk(id, idx, count)
-		fl += f
-		cl += c
+		got := w.observeChunk(id, idx, count)
+		fl += got.framesLost
+		cl += got.chunksLost
 	}
 	// Frame 1: chunks 0 and 2 of 3, chunk 0 duplicated (dupes must not
 	// masquerade as coverage). Frame 2 complete.
@@ -109,8 +108,7 @@ func TestIngressWindowWraparound(t *testing.T) {
 	var w ingressWindow
 	var fl uint64
 	observe := func(id uint32) {
-		f, _ := w.observeChunk(id, 0, 1)
-		fl += f
+		fl += w.observeChunk(id, 0, 1).framesLost
 	}
 	var start uint32 = ^uint32(0) - 99 // 100 frames before the uint32 wrap
 	id := start
@@ -133,8 +131,7 @@ func TestIngressWindowJumpBeyondWindowDoesNotInventLosses(t *testing.T) {
 	var w ingressWindow
 	var fl uint64
 	observe := func(id uint32) {
-		f, _ := w.observeChunk(id, 0, 1)
-		fl += f
+		fl += w.observeChunk(id, 0, 1).framesLost
 	}
 	observe(1)
 	observe(2)
@@ -373,5 +370,73 @@ func TestSubscriberDetailsInStats(t *testing.T) {
 	}
 	if !got[k1] || !got[k2] {
 		t.Errorf("keys changed across polls: first %q/%q, then %v", k1, k2, got)
+	}
+}
+
+// docs/75 RU0 (docs/57 WU0): leg-A loss in frames. One frame that never
+// arrived and one that arrived missing two of its chunks are two frames a
+// viewer cannot decode — not "1 lost frame + 2 lost chunks" summed into a
+// number of no unit. Each ratio's population is counted from the same
+// finalized frames as its losses.
+func TestIngressWindowCountsDamagedFramesAndTheirPopulation(t *testing.T) {
+	var w ingressWindow
+	var got ingressTally
+	// Frame 1 complete (4 chunks), frame 2 never arrives, frame 3 arrives
+	// with chunks 1 and 3 of 4 missing, frame 4 is a one-chunk frame.
+	for idx := 0; idx < 4; idx++ {
+		got.add(w.observeChunk(1, idx, 4))
+	}
+	got.add(w.observeChunk(3, 0, 4))
+	got.add(w.observeChunk(3, 2, 4))
+	got.add(w.observeChunk(4, 0, 1))
+	// Slide frames 1..4 out of the window with complete one-chunk frames.
+	for id := uint32(5); id <= 4+ingressWindowFrames; id++ {
+		got.add(w.observeChunk(id, 0, 1))
+	}
+	// Frames 1..4 have been finalized; the rest are still in the window.
+	want := ingressTally{
+		framesLost:     1, // frame 2
+		framesDamaged:  1, // frame 3
+		framesExpected: 4, // frames 1..4: the frameID span
+		chunksLost:     2, // frame 3's chunks 1 and 3
+		chunksExpected: 9, // 4 + 4 + 1: chunks of the frames that arrived
+	}
+	if got != want {
+		t.Errorf("tally = %+v, want %+v", got, want)
+	}
+	if lost := got.framesLost + got.framesDamaged; lost != 2 {
+		t.Errorf("frames a viewer lost = %d, want 2 (one missing, one damaged)", lost)
+	}
+}
+
+func TestIngressDamagedFramesReachBroadcastAndTotalStats(t *testing.T) {
+	r := NewRegistry(discardLog, Options{})
+	_, pub, err := r.StartPublish("")
+	if err != nil {
+		t.Fatalf("StartPublish: %v", err)
+	}
+	// Frame 1 arrives with chunk 1 of 3 missing; frame 2 never arrives;
+	// frame 3 is a keyframe stream (one chunk); then slide them out.
+	pub.HandleDatagram(chunkDgram(t, false, 1, 0, 3, "d"))
+	pub.HandleDatagram(chunkDgram(t, false, 1, 2, 3, "d"))
+	ingestKeyframe(t, pub, keyframeMsg(t, 3, "vp8", "kf"))
+	for fid := uint32(4); fid <= 3+ingressWindowFrames; fid++ {
+		pub.HandleDatagram(chunkDgram(t, false, fid, 0, 1, "d"))
+	}
+	st := singleBroadcastStats(t, r)
+	if st.IngressFramesLost != 1 || st.IngressFramesDamaged != 1 || st.IngressFramesExpected != 3 {
+		t.Errorf("frames lost/damaged/expected = %d/%d/%d, want 1/1/3",
+			st.IngressFramesLost, st.IngressFramesDamaged, st.IngressFramesExpected)
+	}
+	if st.IngressChunksLost != 1 || st.IngressChunksExpected != 4 {
+		t.Errorf("chunks lost/expected = %d/%d, want 1/4", st.IngressChunksLost, st.IngressChunksExpected)
+	}
+	tot := r.Stats().Totals
+	if tot.IngressFramesDamaged != 1 || tot.IngressFramesExpected != 3 || tot.IngressChunksExpected != 4 {
+		t.Errorf("totals damaged/expected/chunksExpected = %d/%d/%d, want 1/3/4",
+			tot.IngressFramesDamaged, tot.IngressFramesExpected, tot.IngressChunksExpected)
+	}
+	if tot.EdgeIngressFramesDamaged != 0 || tot.EdgeIngressFramesExpected != 0 {
+		t.Errorf("an origin hub's loss leaked into the edge leg: %+v", tot)
 	}
 }

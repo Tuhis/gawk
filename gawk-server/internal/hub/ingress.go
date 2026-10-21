@@ -24,6 +24,25 @@ const ingressWindowFrames = 1024
 // is ignored rather than allocated for.
 const maxIngressChunkWords = 16
 
+// ingressTally is what slides out of the window: losses and the population
+// they are a share of. Every field is counted at finalize, so a ratio of any
+// two describes the same frames.
+type ingressTally struct {
+	framesLost     uint64 // expected, never seen
+	framesDamaged  uint64 // seen with >= 1 chunk missing
+	framesExpected uint64 // every frameID the window tracked (the frameID span)
+	chunksLost     uint64 // missing chunks of frames that did arrive
+	chunksExpected uint64 // chunks of frames that did arrive (a lost frame's count is unknown)
+}
+
+func (t *ingressTally) add(o ingressTally) {
+	t.framesLost += o.framesLost
+	t.framesDamaged += o.framesDamaged
+	t.framesExpected += o.framesExpected
+	t.chunksLost += o.chunksLost
+	t.chunksExpected += o.chunksExpected
+}
+
 type ingressFrame struct {
 	frameID    uint32
 	active     bool // slot holds a tracked frameID (zero-value slots are junk)
@@ -54,20 +73,20 @@ func (w *ingressWindow) reset() {
 }
 
 // observeFrame records a whole frame arriving in one piece (keyframe stream).
-func (w *ingressWindow) observeFrame(frameID uint32) (framesLost, chunksLost uint64) {
+func (w *ingressWindow) observeFrame(frameID uint32) ingressTally {
 	return w.observeChunk(frameID, 0, 1)
 }
 
 // observeChunk records one chunk of a frame. Returns the losses *finalized*
 // by this observation (frames/chunks that just slid out of the window).
-func (w *ingressWindow) observeChunk(frameID uint32, chunkIndex, chunkCount int) (framesLost, chunksLost uint64) {
+func (w *ingressWindow) observeChunk(frameID uint32, chunkIndex, chunkCount int) (out ingressTally) {
 	if !w.started {
 		w.started = true
 		w.maxSeen = frameID
 		slot := &w.slots[frameID%ingressWindowFrames]
 		*slot = ingressFrame{frameID: frameID, active: true}
 		slot.markChunk(chunkIndex, chunkCount)
-		return 0, 0
+		return out
 	}
 
 	// Serial arithmetic: frameIDs are uint32 and may wrap.
@@ -78,20 +97,18 @@ func (w *ingressWindow) observeChunk(frameID uint32, chunkIndex, chunkCount int)
 			// A jump beyond the whole window: finalize everything tracked and
 			// restart. Counting the untracked span as lost from a single
 			// (possibly corrupt) header would be noise.
-			framesLost, chunksLost = w.finalizeAll()
+			out = w.finalizeAll()
 			w.maxSeen = frameID
 			slot := &w.slots[frameID%ingressWindowFrames]
 			*slot = ingressFrame{frameID: frameID, active: true}
 			slot.markChunk(chunkIndex, chunkCount)
-			return framesLost, chunksLost
+			return out
 		}
 		// Advance: each new ID evicts the slot of (id - window size); an
 		// evicted frame that was expected but never seen is a loss.
 		for id := w.maxSeen + 1; ; id++ {
 			slot := &w.slots[id%ingressWindowFrames]
-			fl, cl := slot.finalize()
-			framesLost += fl
-			chunksLost += cl
+			out.add(slot.finalize())
 			*slot = ingressFrame{frameID: id, active: true}
 			if id == frameID {
 				break
@@ -101,7 +118,7 @@ func (w *ingressWindow) observeChunk(frameID uint32, chunkIndex, chunkCount int)
 	case d <= -ingressWindowFrames:
 		// Older than the window: already finalized (and possibly counted
 		// lost). Too late to matter for playback; ignore.
-		return 0, 0
+		return out
 	}
 
 	slot := &w.slots[frameID%ingressWindowFrames]
@@ -112,33 +129,37 @@ func (w *ingressWindow) observeChunk(frameID uint32, chunkIndex, chunkCount int)
 		*slot = ingressFrame{frameID: frameID, active: true}
 	}
 	slot.markChunk(chunkIndex, chunkCount)
-	return framesLost, chunksLost
+	return out
 }
 
 // finalizeAll finalizes every tracked slot (window jump or teardown).
-func (w *ingressWindow) finalizeAll() (framesLost, chunksLost uint64) {
+func (w *ingressWindow) finalizeAll() (out ingressTally) {
 	for i := range w.slots {
-		fl, cl := w.slots[i].finalize()
-		framesLost += fl
-		chunksLost += cl
+		out.add(w.slots[i].finalize())
 		w.slots[i] = ingressFrame{}
 	}
-	return framesLost, chunksLost
+	return out
 }
 
 // finalize scores a slot leaving the window: an expected-but-unseen frame is
 // one lost frame; a seen-but-incomplete frame contributes its missing chunks.
-func (f *ingressFrame) finalize() (framesLost, chunksLost uint64) {
+func (f *ingressFrame) finalize() ingressTally {
 	if !f.active {
-		return 0, 0
+		return ingressTally{}
 	}
+	t := ingressTally{framesExpected: 1}
 	if !f.seen {
-		return 1, 0
+		t.framesLost = 1
+		return t
 	}
-	if f.chunkCount > 0 && f.chunksSeen < f.chunkCount {
-		return 0, uint64(f.chunkCount - f.chunksSeen)
+	// A malformed chunkCount leaves it 0: the frame counts as arrived
+	// whole, with no chunks expected of it.
+	t.chunksExpected = uint64(f.chunkCount)
+	if f.chunksSeen < f.chunkCount {
+		t.framesDamaged = 1
+		t.chunksLost = uint64(f.chunkCount - f.chunksSeen)
 	}
-	return 0, 0
+	return t
 }
 
 func (f *ingressFrame) markChunk(chunkIndex, chunkCount int) {

@@ -30,7 +30,10 @@ relay.broadcast.dvrResyncs number
 relay.broadcast.dvrSubscribers number
 relay.broadcast.edgeSessions number
 relay.broadcast.framesRelayed number
+relay.broadcast.ingressChunksExpected number
 relay.broadcast.ingressChunksLost number
+relay.broadcast.ingressFramesDamaged number
+relay.broadcast.ingressFramesExpected number
 relay.broadcast.ingressFramesLost number
 relay.broadcast.keyframeStreamsDropped number
 relay.broadcast.keyframeStreamsIn number
@@ -343,6 +346,7 @@ sessions.stats.timeSyncAvailable boolean
 sessions.stats.timeSyncOffsetUs number
 sessions.stats.timeSyncRttMs number
 sessions.stats.transport string
+sessions.stats.uplinkDatagramsDropped number
 sessions.stats.uplinkPacketsAvailable boolean
 sessions.stats.uplinkPacketsLost number
 sessions.stats.uplinkPacketsSent number

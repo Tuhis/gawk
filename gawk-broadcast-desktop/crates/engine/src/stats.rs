@@ -89,6 +89,16 @@ pub struct Stats {
     pub uplink_packets_available: bool,
     pub uplink_packets_sent: u64,
     pub uplink_packets_lost: u64,
+    /// Datagrams the engine handed to QUIC that never left in a packet:
+    /// offered minus quinn's `frame_tx.datagram`, per connection, summed
+    /// over the broadcast (docs/75 D8). quinn drops the oldest datagram
+    /// when its send buffer is full and says nothing, so this is the only
+    /// count of those drops. It includes, momentarily, the datagrams still
+    /// queued in that buffer when the stats were read — at most a buffer's
+    /// worth, and they drain into `sent` by the next read; the stack does
+    /// not expose the queue's length. Shares `uplinkPacketsAvailable`:
+    /// both come from the same QUIC stack.
+    pub uplink_datagrams_dropped: u64,
 
     pub time_sync_available: bool,
     pub time_sync_rtt_ms: f64,
@@ -196,6 +206,7 @@ mod tests {
             "uplinkPacketsAvailable",
             "uplinkPacketsSent",
             "uplinkPacketsLost",
+            "uplinkDatagramsDropped",
             "timeSyncAvailable",
             "timeSyncRttMs",
             "timeSyncOffsetUs",

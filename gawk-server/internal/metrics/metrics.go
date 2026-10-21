@@ -85,20 +85,28 @@ type RegistryCollector struct {
 	ingressLostC     desc
 	edgeIngressLostF desc
 	edgeIngressLostC desc
-	ingressBytes     desc
-	egressBytes      desc
-	bwDroppedBytes   desc
-	kfIn             desc
-	kfSent           desc
-	kfDropped        desc
-	kfOversize       desc
-	carrierStreams   desc
-	carrierRecords   desc
-	dvrResyncs       desc
-	carrierDropped   desc
-	parityDatagrams  desc
-	paritySuppressed desc
-	egressParity     desc
+	// Leg-A loss in frames (docs/75 RU0) and the populations its ratios
+	// divide by, per leg.
+	ingressDamagedF      desc
+	ingressExpectedF     desc
+	ingressExpectedC     desc
+	edgeIngressDamagedF  desc
+	edgeIngressExpectedF desc
+	edgeIngressExpectedC desc
+	ingressBytes         desc
+	egressBytes          desc
+	bwDroppedBytes       desc
+	kfIn                 desc
+	kfSent               desc
+	kfDropped            desc
+	kfOversize           desc
+	carrierStreams       desc
+	carrierRecords       desc
+	dvrResyncs           desc
+	carrierDropped       desc
+	parityDatagrams      desc
+	paritySuppressed     desc
+	egressParity         desc
 }
 
 // NewRegistryCollector builds the collector over a hub registry.
@@ -160,6 +168,18 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"Frames lost on the origin-to-edge leg (R17; edge hubs only — a separate family from the broadcaster-leg window, never mixed)."),
 		edgeIngressLostC: newDesc("edge_ingress_chunks_lost_total",
 			"Chunks lost on the origin-to-edge leg (R17; edge hubs only)."),
+		ingressDamagedF: newDesc("ingress_frames_damaged_total",
+			"Frames that reached the relay with at least one chunk missing; with frames_lost, the frames no viewer can decode (docs/75 RU0; origin hubs only)."),
+		ingressExpectedF: newDesc("ingress_frames_expected_total",
+			"Frames the ingress window has accounted for (its frameID span): the denominator of the leg-A frame-loss ratio (origin hubs only)."),
+		ingressExpectedC: newDesc("ingress_chunks_expected_total",
+			"Chunks of the frames that reached the relay: the denominator of the leg-A chunk-loss ratio (origin hubs only)."),
+		edgeIngressDamagedF: newDesc("edge_ingress_frames_damaged_total",
+			"Frames that reached the edge with at least one chunk missing (edge hubs only)."),
+		edgeIngressExpectedF: newDesc("edge_ingress_frames_expected_total",
+			"Frames the edge's ingress window has accounted for (edge hubs only)."),
+		edgeIngressExpectedC: newDesc("edge_ingress_chunks_expected_total",
+			"Chunks of the frames that reached the edge (edge hubs only)."),
 		ingressBytes: newDesc("ingress_bytes_total",
 			"Bytes received from the publisher.", "kind"),
 		egressBytes: newDesc("egress_bytes_total",
@@ -224,7 +244,8 @@ func (c *RegistryCollector) counterDescs() []desc {
 	return []desc{
 		c.framesRelayed, c.datagramsRelayed, c.datagramsDropped, c.badDatagrams,
 		c.sendErrors, c.ingressLostF, c.ingressLostC, c.edgeIngressLostF,
-		c.edgeIngressLostC, c.ingressBytes,
+		c.edgeIngressLostC, c.ingressDamagedF, c.ingressExpectedF, c.ingressExpectedC,
+		c.edgeIngressDamagedF, c.edgeIngressExpectedF, c.edgeIngressExpectedC, c.ingressBytes,
 		c.egressBytes, c.bwDroppedBytes, c.kfIn, c.kfSent, c.kfDropped, c.kfOversize,
 		c.carrierStreams, c.carrierRecords, c.carrierDropped, c.dvrResyncs,
 		c.parityDatagrams, c.paritySuppressed, c.egressParity,
@@ -298,9 +319,15 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		if s.Role == "edge" {
 			counter(c.edgeIngressLostF.broadcast, s.IngressFramesLost, id)
 			counter(c.edgeIngressLostC.broadcast, s.IngressChunksLost, id)
+			counter(c.edgeIngressDamagedF.broadcast, s.IngressFramesDamaged, id)
+			counter(c.edgeIngressExpectedF.broadcast, s.IngressFramesExpected, id)
+			counter(c.edgeIngressExpectedC.broadcast, s.IngressChunksExpected, id)
 		} else {
 			counter(c.ingressLostF.broadcast, s.IngressFramesLost, id)
 			counter(c.ingressLostC.broadcast, s.IngressChunksLost, id)
+			counter(c.ingressDamagedF.broadcast, s.IngressFramesDamaged, id)
+			counter(c.ingressExpectedF.broadcast, s.IngressFramesExpected, id)
+			counter(c.ingressExpectedC.broadcast, s.IngressChunksExpected, id)
 		}
 		counter(c.ingressBytes.broadcast, s.IngressDatagramBytes, id, "delta")
 		counter(c.ingressBytes.broadcast, s.KeyframeBytesIn, id, "keyframe")
@@ -346,6 +373,12 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.ingressLostC.relay, t.IngressChunksLost)
 	counter(c.edgeIngressLostF.relay, t.EdgeIngressFramesLost)
 	counter(c.edgeIngressLostC.relay, t.EdgeIngressChunksLost)
+	counter(c.ingressDamagedF.relay, t.IngressFramesDamaged)
+	counter(c.ingressExpectedF.relay, t.IngressFramesExpected)
+	counter(c.ingressExpectedC.relay, t.IngressChunksExpected)
+	counter(c.edgeIngressDamagedF.relay, t.EdgeIngressFramesDamaged)
+	counter(c.edgeIngressExpectedF.relay, t.EdgeIngressFramesExpected)
+	counter(c.edgeIngressExpectedC.relay, t.EdgeIngressChunksExpected)
 	counter(c.ingressBytes.relay, t.IngressDatagramBytes, "delta")
 	counter(c.ingressBytes.relay, t.KeyframeBytesIn, "keyframe")
 	counter(c.egressBytes.relay, t.EgressDatagramBytes, "delta")

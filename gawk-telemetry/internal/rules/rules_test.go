@@ -92,6 +92,11 @@ func TestEveryPlaybookRowFiresAndDoesNot(t *testing.T) {
 			},
 		},
 		{
+			id:    "relay-intake-drops",
+			fires: func() *Facts { return f7Facts(0) },
+			quiet: func() *Facts { return f7Facts(0.012) },
+		},
+		{
 			id: "encoder-overload",
 			fires: func() *Facts {
 				f := castFacts()

@@ -94,6 +94,7 @@ func relayObs(subs ...relayscrape.Subscriber) []relayscrape.Observation {
 	bc := relayscrape.Broadcast{
 		PublisherActive: true, Role: "origin", Subscribers: len(subs),
 		FramesRelayed: 10000, SubscriberDetails: subs,
+		IngressFramesExpected: 10000, IngressChunksExpected: 90000,
 	}
 	out := []relayscrape.Observation{{
 		Kind: "broadcast", Pod: "pod-a", Role: "origin",
@@ -1072,6 +1073,9 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 			full.Dropped += 3
 			full.CarrierQueueOverflow++
 		}
+		// The native broadcaster's cumulative QUIC counters (docs/75 D8).
+		stats["uplinkPacketsSent"] = float64(1000 * (i + 1))
+		stats["uplinkPacketsLost"] = float64(i)
 		b := batch("e0e0e0e0e0e0e0e0e0e0e0e0", "viewer", stats)
 		// The D16 facts need a window with a baseline to dip FROM, which a
 		// single all-ones sample cannot provide. This is the maximal-fixture
@@ -1088,11 +1092,7 @@ func TestLiveEmitsExactlyItsShareOfTheInventory(t *testing.T) {
 	emitted := map[string]bool{}
 	p.mu.Lock()
 	for _, b := range p.bcasts {
-		bf := rules.NewFacts(b.key, "broadcast", "")
-		for k, v := range b.relayFacts {
-			bf.SetRelay(k, v)
-		}
-		for _, n := range bf.Names() {
+		for _, n := range b.factsLocked().Names() {
 			emitted[n] = true
 		}
 		for _, s := range b.sessions {

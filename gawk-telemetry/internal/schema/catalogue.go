@@ -175,6 +175,8 @@ var fieldMeta = map[string]meta{
 	"uplinkPacketsSent": counter("packets", "QUIC packets the native broadcaster sent to the relay, summed across resumes."),
 	"uplinkPacketsLost": counter("packets",
 		"QUIC packets the native broadcaster's stack declared lost on the way to the relay. The only local view of leg-A loss: Wi-Fi drops (AWDL on a Mac) move no other counter."),
+	"uplinkDatagramsDropped": counter("datagrams",
+		"Datagrams the native broadcaster handed to QUIC that never left in a packet: dropped from quinn's own send buffer when it was full. Includes, for a moment, datagrams still queued at the instant of the sample."),
 	"encoderQueueDepth":   gauge("frames", "Frames waiting inside the encoder. A rising depth is the encoder losing the race."),
 	"lastEncodeLatencyMs": gauge("ms", "Wall time the last frame spent inside the encoder."),
 	"keyframeIntervalMs":  gauge("ms", "Interval between keyframes."),

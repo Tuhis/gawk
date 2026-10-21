@@ -29,7 +29,12 @@ var ProducibleFacts = map[string]string{
 	"relay.bandwidthDroppedDatagrams": both,
 	"relay.ingressFramesLost":         both,
 	"relay.ingressLossRatio":          both,
-	"relay.keyframeStreamsIn":         both,
+	// docs/75 RU0: leg A in frames (lost or damaged, per frame expected) and
+	// in chunks (per chunk expected), windowed. Absent for relays that
+	// predate the expected counters.
+	"relay.ingressFrameLossRatio": both,
+	"relay.ingressChunkLossRatio": both,
+	"relay.keyframeStreamsIn":     both,
 
 	// --- relay, per subscriber ---------------------------------------------
 	"relay.subscriberDropped":     both,
@@ -110,8 +115,12 @@ var ProducibleFacts = map[string]string{
 	"client.encoderFps":        both,
 	"client.sentFps":           both,
 	"client.encoderQueueDepth": both,
-	"client.EncoderFps":        live,
-	"client.SentFps":           live,
+	// docs/75 D8: the native broadcaster's QUIC lost/sent packets — windowed
+	// on the live path, over the session on the stored one — so the relay's
+	// ingress loss can be split into the uplink's and the relay intake's.
+	"client.uplinkPacketLossRatio": both,
+	"client.EncoderFps":            live,
+	"client.SentFps":               live,
 
 	// --- client, the configured target (D17) ---------------------------------
 	// What the broadcast was ASKED to be. Every other client fact is an

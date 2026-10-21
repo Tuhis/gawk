@@ -522,6 +522,7 @@ func (a *API) DiagnoseBroadcast(key string, since time.Time) (*rules.Report, err
 			for name, v := range r.Config {
 				f.SetText(name, v)
 			}
+			setUplinkLoss(f, r.Counters)
 		}
 	}
 	if viewers == 0 {
@@ -544,6 +545,11 @@ func (a *API) DiagnoseBroadcast(key string, since time.Time) (*rules.Report, err
 	return &rep, nil
 }
 
+// ingressWindowMs is the trailing window a stored broadcast verdict reads leg
+// A over: long enough to span several scrapes, short enough that "is leg A
+// losing now" is not diluted by the broadcast's history.
+const ingressWindowMs = 60_000
+
 // setBroadcastRelayFacts publishes the broadcast-scope relay anchors from the
 // stored observations — the same names the live path derives, so a rule that
 // fires live also fires here.
@@ -564,6 +570,21 @@ func setBroadcastRelayFacts(f *rules.Facts, lines [][]byte, key string) {
 			"no relay-side observation of this broadcast — every verdict below rests on client testimony alone (docs/33 D5/D7)")
 		return
 	}
+	// Leg A over the trailing window, like the live path: the earliest
+	// observation on the same pod within ingressWindowMs of the last.
+	var base *relayObservation
+	for _, ln := range lines {
+		var o relayObservation
+		if err := json.Unmarshal(ln, &o); err != nil || o.BroadcastKey != key || o.Broadcast == nil ||
+			o.Role == "edge" || o.Pod != last.Pod || o.AtMs >= last.AtMs || o.AtMs < last.AtMs-ingressWindowMs {
+			continue
+		}
+		if base == nil || o.AtMs < base.AtMs {
+			b := o
+			base = &b
+		}
+	}
+	setIngressRatios(f, base, last)
 	bc := last.Broadcast
 	f.SetRelay("publisherActive", boolF(bc.PublisherActive))
 	f.SetRelay("framesRelayed", float64(bc.FramesRelayed))
@@ -572,9 +593,6 @@ func setBroadcastRelayFacts(f *rules.Facts, lines [][]byte, key string) {
 	f.SetRelay("datagramsDropped", float64(bc.DatagramsDropped))
 	f.SetRelay("bandwidthDroppedDatagrams", float64(bc.BandwidthDroppedDatagrams))
 	f.SetRelay("keyframeStreamsIn", float64(bc.KeyframeStreamsIn))
-	if total := float64(bc.IngressFramesLost + bc.FramesRelayed); total > 0 {
-		f.SetRelay("ingressLossRatio", float64(bc.IngressFramesLost)/total)
-	}
 	var drops []float64
 	dropping := 0
 	for _, sub := range bc.SubscriberDetails {

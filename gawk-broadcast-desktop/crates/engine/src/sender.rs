@@ -105,6 +105,17 @@ struct State {
     /// Packet counters of the connections this broadcast already left
     /// behind (resumes), so the totals never go backwards.
     uplink_base: PathCounters,
+    /// Datagram drops of those connections (docs/75 D8), each clamped on
+    /// its own: one connection's counters say nothing about another's.
+    uplink_dropped_base: u64,
+}
+
+/// Datagrams one connection accepted but never wrote into a packet: the
+/// drops inside quinn's send buffer, plus (momentarily) what still sits
+/// in it. Clamped, so a frame the session did not count can never make
+/// the total go backwards.
+fn datagrams_dropped(c: &PathCounters) -> u64 {
+    c.datagrams_offered.saturating_sub(c.datagrams_sent)
 }
 
 /// Verifies the first audio packet's bitstream against the advertised config
@@ -157,6 +168,7 @@ impl Sender {
                 last_rate_encoded: 0,
                 last_rate_sent: 0,
                 uplink_base: PathCounters::default(),
+                uplink_dropped_base: 0,
             })),
             kf: Arc::new(Mutex::new(KfSlot {
                 cancel: None,
@@ -198,6 +210,7 @@ impl Sender {
             if let Some(c) = old.path_counters() {
                 st.uplink_base.sent += c.sent;
                 st.uplink_base.lost += c.lost;
+                st.uplink_dropped_base += datagrams_dropped(&c);
             }
         }
         let (cancel, had_pending) = {
@@ -745,6 +758,7 @@ impl Sender {
             st.uplink_packets_available = true;
             st.uplink_packets_sent = s.uplink_base.sent + c.sent;
             st.uplink_packets_lost = s.uplink_base.lost + c.lost;
+            st.uplink_datagrams_dropped = s.uplink_dropped_base + datagrams_dropped(&c);
         }
         st
     }
@@ -1090,15 +1104,55 @@ mod tests {
         let first = CountingRelay(PathCounters {
             sent: 1000,
             lost: 7,
+            ..Default::default()
         });
         let sender = Sender::new(Arc::new(first), Arc::new(FakeClock::default()));
         let st = sender.stats();
         assert!(st.uplink_packets_available);
         assert_eq!((st.uplink_packets_sent, st.uplink_packets_lost), (1000, 7));
 
-        sender.set_relay(Arc::new(CountingRelay(PathCounters { sent: 50, lost: 1 })));
+        sender.set_relay(Arc::new(CountingRelay(PathCounters {
+            sent: 50,
+            lost: 1,
+            ..Default::default()
+        })));
         let st = sender.stats();
         assert_eq!((st.uplink_packets_sent, st.uplink_packets_lost), (1050, 8));
+    }
+
+    // docs/75 D8: datagrams quinn accepted but never wrote into a packet
+    // are drops inside its own send buffer. Counted per connection, so a
+    // resume's fresh counters neither lose the old connection's drops nor
+    // net one connection's surplus against another's shortfall.
+    #[tokio::test]
+    async fn uplink_datagram_drops_are_offered_minus_written_across_a_resume() {
+        let first = CountingRelay(PathCounters {
+            datagrams_offered: 500,
+            datagrams_sent: 480,
+            ..Default::default()
+        });
+        let sender = Sender::new(Arc::new(first), Arc::new(FakeClock::default()));
+        assert_eq!(sender.stats().uplink_datagrams_dropped, 20);
+
+        sender.set_relay(Arc::new(CountingRelay(PathCounters {
+            datagrams_offered: 100,
+            datagrams_sent: 97,
+            ..Default::default()
+        })));
+        assert_eq!(sender.stats().uplink_datagrams_dropped, 23);
+    }
+
+    // The stack can count a DATAGRAM frame the session did not offer (none
+    // today, but never a negative drop count): clamp per connection.
+    #[tokio::test]
+    async fn uplink_datagram_drops_never_go_negative() {
+        let relay = CountingRelay(PathCounters {
+            datagrams_offered: 10,
+            datagrams_sent: 12,
+            ..Default::default()
+        });
+        let sender = Sender::new(Arc::new(relay), Arc::new(FakeClock::default()));
+        assert_eq!(sender.stats().uplink_datagrams_dropped, 0);
     }
 
     // A transport without counters reports them unavailable, not zero.

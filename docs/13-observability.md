@@ -345,6 +345,8 @@ dimensions — the two-prefix split is the clean expression of the same idea.
 | `…_frames_relayed_total` | counter | `kind=delta\|keyframe` | relay throughput in frames; `rate()` ≈ relay-side fps |
 | `…_ingress_frames_lost_total` | counter | — | **leg-A loss**: frames the broadcaster sent that never reached the relay (window-aged, M3) |
 | `…_ingress_chunks_lost_total` | counter | — | leg-A partial loss (missing chunks of seen frames) |
+| `…_ingress_frames_damaged_total` | counter | — | frames that arrived with ≥ 1 chunk missing (docs/75 RU0); lost + damaged are the frames no viewer can decode |
+| `…_ingress_frames_expected_total` / `…_ingress_chunks_expected_total` | counter | — | the populations of the two leg-A ratios, counted as frames leave the window: `ingressFrameLossRatio = (frames_lost + frames_damaged) / frames_expected`, `ingressChunkLossRatio = chunks_lost / chunks_expected` (chunks of frames that arrived) |
 | `…_ingress_bytes_total` | counter | `kind` | broadcaster→relay volume |
 | `…_egress_bytes_total` | counter | `kind` | relay→viewers volume actually written; graph against the cap |
 | `…_datagrams_relayed_total` | counter | — | fan-out datagram volume (pre-drop) |
@@ -377,7 +379,10 @@ Per-broadcast gauges and server-wide metrics:
 `/statusz` additions (JSON, additive): `keyframeDrops`
 (`superseded`/`slow`/`bandwidth`/`openFailed`), `sendErrors`,
 `ingressDatagramBytes`, `egressDatagramBytes`, `egressKeyframeBytes`,
-`ingressFramesLost`, `ingressChunksLost`, and a `subscriberDetails` array
+`ingressFramesLost`, `ingressChunksLost` (since docs/75 RU0 also
+`ingressFramesDamaged`, `ingressFramesExpected`, `ingressChunksExpected`;
+the `edge_*` metric families and `edgeIngress*` totals carry the same five
+for the origin→edge leg), and a `subscriberDetails` array
 per broadcast (`key` — random per-session, `queueDepth`, `dropped`,
 `sendErrors`, `keyframesSent`, `keyframesDropped`). One sharpened semantic:
 `bandwidthDroppedDatagrams` now counts *datagram* bandwidth drops only
@@ -418,7 +423,8 @@ The point of the whole design: symptom → discriminating signals → verdict.
 | One viewer stutters, others fine | That subscriber's `queueDepth`/`dropped`/keyframe `slow` drops high in `/statusz` while others ≈ 0; viewer overlay shows rising RTT / `packetsLost` / `datagramsDroppedIncoming`; relay ingress loss ≈ 0 | **Leg B for that viewer** (their downlink or machine's network) |
 | All viewers stutter; relay ingress loss ≈ 0; egress drops `reason="bandwidth"` climbing | `gawk_relay_datagrams_dropped_total{reason="bandwidth"}` / keyframe `bandwidth` drops > 0 | **Configured bandwidth cap** — raise `-max-bandwidth` or lower the ladder rung |
 | All viewers stutter; relay ingress loss ≈ 0; `queue_full` drops on *all* subscribers | Uniform per-subscriber drops; node/egress saturation (check node network metrics) | **Relay egress / homelab uplink** |
-| All viewers stutter; relay ingress loss **rising** | `rate(gawk_relay_ingress_frames_lost_total)` > 0; broadcaster overlay: `atSendCapacity`, `estimatedSendRate` < configured bitrate, `datagramsLostOutgoing`/`expiredOutgoing` rising | **Leg A** — broadcaster uplink; drop a rung or bitrate |
+| All viewers stutter; relay ingress loss **rising** | Leg A in three units, each against its own threshold and never summed: whole frames (`rate(…_ingress_frames_lost_total)`), frames lost or damaged per frame expected (`…_ingress_frames_damaged_total`, `…_frames_expected_total`) and chunks lost per chunk expected (`…_ingress_chunks_lost_total`, `…_chunks_expected_total`) — uplink loss mostly arrives as frames missing a chunk, so whole frames alone can read ≈ 0 while a fifth of all chunks are gone (docs/75 RU0). Broadcaster overlay: `atSendCapacity`, `estimatedSendRate` < configured bitrate, `datagramsLostOutgoing`/`expiredOutgoing` rising; native broadcaster: `uplinkPacketsLost` rising | **Leg A** — broadcaster uplink; drop a rung or bitrate |
+| All viewers stutter; relay ingress chunk loss rising while the native broadcaster's QUIC reports (almost) no lost packets | `…_ingress_chunks_lost_total` rising against `uplinkPacketsLost` flat (under a tenth of the relay's chunk loss ratio); relay pod CPU | **The relay's own intake, not the uplink** (docs/75 F7, D8) — quic-go's 32-datagram per-session queue overflows on high-rung bursts, or the pod is short of CPU. No change on the broadcaster fixes it; `diagnose()`'s `relay-intake-drops` rule names it |
 | Broadcaster: choppy source, no network signals | Overlay funnel: post-gate fps healthy but `encoderFps` below it; `encoderQueueDepth` growing; `droppedFrames` rising; (R4 `encoderPressure` badge in explicit mode) | **Encoder overload** — the R4 auto ladder's territory; on HW encode paths watch the funnel gap, since `encodeQueueSize` under-fires there (docs/09 finding) |
 | Broadcaster: encodes fine, viewers see low fps | `encoderFps` healthy, `sentFps` below it — or `sentFps` healthy but relay `rate(frames_relayed)` below it (→ leg A) | **Send path vs leg A** — the funnel splits it |
 | Viewer: fps low, network clean | `receivedFps` healthy but `decoderFps` below it; `decoderQueueDepth` high; `reorderGapResyncs` climbing; `isHardwareAccelerated: false` | **Decoder choking** (likely SW-decode fallback) — lower the rung/fps |

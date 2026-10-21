@@ -225,6 +225,9 @@ var BroadcasterFields = map[string]Kind{
 	"uplinkPacketsAvailable": KindBool,
 	"uplinkPacketsSent":      KindNumber,
 	"uplinkPacketsLost":      KindNumber,
+	// docs/75 D8: datagrams offered to quinn minus the DATAGRAM frames it
+	// wrote — drops inside the broadcaster's own send buffer.
+	"uplinkDatagramsDropped": KindNumber,
 	"timeSyncAvailable":      KindBool,
 	"timeSyncOffsetUs":       KindNumber,
 	"viewerCountAvailable":   KindBool,
