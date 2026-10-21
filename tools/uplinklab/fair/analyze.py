@@ -220,9 +220,9 @@ if any(cells.get(f"r{rate}-{m}-{c}-tcp") for rate, _ in RATES for m, c, _ in ENG
           "gated: there the criterion is the upload-bandwidth warning, which must show in both delivery modes\n"
           "within its 5 s hysteresis — beside the upload, of its start at 20 s; alone, where the trace outgrows\n"
           "the uplink only partway in and not in every run, in every run whose broadcast was damaged (≥ 1 %\n"
-          "undecodable). Amended 2026-10-21: the warning is a capacity signal and never reads packet loss, so\n"
-          "where BBR holds the stream's rate and only its own loss moves, the loss notice speaks instead; the\n"
-          "15 Mbps verdicts say whether the warning showed, and none is a gate. *Warning*: the runs it raised\n"
+          "undecodable). Since 2026-10-21 the warning is a capacity signal and never reads packet loss, so\n"
+          "where BBR holds the stream's rate and only its own loss moves it can miss the link; that half is\n"
+          "open and moved to R75 by owner decision. The 15 Mbps verdicts say whether it showed. *Warning*: the runs it raised\n"
           "in, when it first raised (s after the broadcast's first\n"
           "frame) and its share of 25–80 s. *Steal*: the host's, over each run (max).\n")
     print("| Uplink | Engine | Upload's fair share | Beside the upload: undecodable · Balanced shown | "

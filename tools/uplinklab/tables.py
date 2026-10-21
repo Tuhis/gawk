@@ -796,7 +796,7 @@ if eng_cells:
     print("its p99 ≤ Cubic's + 5 ms. On datagrams under outages: shown within 6 points at a lower p99. The prototype")
     print("column is the same Δ from the design pass's sender, its datagram rows on the 4096-deep receiver.")
     print("*Warning raised*: the upload-bandwidth warning, Cubic · BBR — when it first raised (s after the first")
-    print("frame) and the seconds it showed, or *no*. RU4 as amended 2026-10-21: it must not raise where the")
+    print("frame) and the seconds it showed, or *no*. RU4 since 2026-10-21: it must not raise where the")
     print("uplink carries the stream: lossless cells with either controller, lossy ones with BBR, and the")
     print("1080p outage cells at 10 ms with Cubic too; *Warning* judges those and records the rest.)\n")
     print("| Cell | Delivery | Cubic: shown · p99 | BBR: shown · p99 | Δ shown · Δ p99 | Prototype Δ | G5 "
