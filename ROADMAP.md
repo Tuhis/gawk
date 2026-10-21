@@ -5312,15 +5312,15 @@ out and the home fleet asks it for streams.
   PP1 is the design pass; PP2 the zero-config profile with a persisted,
   rolling pinned certificate; PP3 the localhost console; PP4 binaries for
   three OSes and a multi-arch image; PP5 pinned relay links in every client
-  (revises docs/40 D3 for private IP literals).
+  (revises docs/40 D3 for private IP literals) and the PoP's own notice
+  (`0x18`).
 - **Phase B, federation**: PP6 the `Pop` CRD and the `gawk-admin` PoPs view;
   PP7 the link and pairing; PP8 reserved IDs and the on-demand uplink with
   its budget (`4012`, `4013`); PP9 the on-demand downlink; PP10 moderation
   that reaches the party; PP11 the party wall; PP12 the named certificate
   and the PoP-served web app.
-- **Phase C, the switch**: PP13 offers from home (`0x19`) and the PoP's own
-  notice (`0x18`); PP14 clients switching by themselves on web, desktop and
-  iOS. PP15 is the party pass.
+- **Phase C, the switch**: PP13 offers from home (`0x19`); PP14 clients
+  switching by themselves on web, desktop and iOS. PP15 is the party pass.
 
 **Non-goals**: a multi-process PoP or PoP-to-PoP links, geo routing, any
 change to the media wire, new stateful infrastructure.
