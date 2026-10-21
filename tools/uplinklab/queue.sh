@@ -15,9 +15,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${UPLINK_OUT:-$HERE/out}
 P="-rtt 10ms -rate 300e6 -queue 50ms"
 DEPTHS=${QUEUE_DEPTHS:-32 128 512 4096}
-cpu() { head -1 /proc/stat; }
-steal() { echo "$1|$2" | awk -F'|' '{split($1,a," "); split($2,b," "); t = 0
-  for (i = 2; i <= 11; i++) t += b[i] - a[i]; printf "%.1f\n", 100 * (b[9] - a[9]) / t}'; }
+. "$HERE/steal.sh"   # cpu, steal
 run() { # name depth trace relaycpus viewers
   [ -f "$OUT/queue/$1/metrics.txt" ] && return
   local c0; c0=$(cpu)

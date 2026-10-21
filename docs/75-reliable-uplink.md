@@ -1104,6 +1104,25 @@ window. The window, not the number of carriers, is the bound.
 | Against a real `gawk-server` behind a burst-dropping forwarder (`tests/support/udp_gate.rs` extended): a burst that breaks a GOP in datagram mode loses no frame on the carrier | integration (the relay suite CI already runs with `--ignored`) |
 | A commit touching `gawk-ios/` in the same PR (CONTRIBUTING: engine semantics) | review |
 
+**Engine run (2026-10-21, RU6; §11 table R).** G1–G3 were met in the
+design pass by the lab's own sender; this run measures them on the engine
+as #541 ships it (`bin/sender-engine`: the engine's transport, `Sender` and
+upload monitor). Host CPU steal ≤ 0.3 % in every run; nothing re-run.
+
+- **G1 — pass**, all six rows (10/40/100 ms × Cubic/BBR): Reliable and
+  Lowest latency within 1.6 ms at p50/p95/p99 and 0.33 % in bytes on the
+  wire (table R1).
+- **G2 — pass**, all eight judged rows (bursts, radio away 20 and 80 ms;
+  BBR at 10 and 40 ms, Cubic at 10 ms): 0.0 % undecodable, Balanced 97.2–
+  100 % shown, within 0.4 points of the prototype on every row (table R2).
+- **G3, lab half — pass**: the Balanced offset rises 0 to +57 ms over
+  Lowest latency's (the largest, +57 ms, at 40 ms with 80 ms outages and
+  BBR, as the prototype measured). The Diagnostics half is unit-tested, not
+  this run.
+- **A second run** (after the warning's revision; same transport) kept G2
+  and G3, and put three G1 rows over 2 ms at p99 only (+3.2, −3.3 and
+  +4.2 ms; RU4's note).
+
 ### RU4 — Engine: the congestion controller (D5, OD2)
 
 | Acceptance criterion | Verified by |
@@ -1114,6 +1133,46 @@ window. The window, not the number of carriers, is the bound.
 | On table O's thin cell (15 Mbps, alone and beside the upload) the upload-bandwidth warning (docs/38's `uplink` monitor) shows in both delivery modes, within its 5 s hysteresis; if its signals miss BBR's own packet loss, the monitor gains one that does, red first. *Revised 2026-10-21:* the warning is a capacity signal, judged per delivery mode, and packet loss alone is never one of its inputs — that is the loss notice's (D6, RU5). It must stay quiet on the 80 ms radio-outage cells at 10 ms RTT in both modes and with both controllers. **With BBR the thin-cell half is not met** (table O3), and the owner moved it to a follow-up, R75, on 2026-10-21 | lab + unit |
 | The hardware pass (RU7) shows no regression against Cubic on either machine | hardware |
 | Default flips to `bbr` only when all three pass; otherwise this chunk records why and Cubic stays. **Overridden by owner decision 2026-10-21: `bbr` is the default now** (D5), with the 30 Mbps carrier cell and the thin-cell warning open (R75) | review |
+
+**Engine runs (2026-10-21, RU6; §11 tables R and O3).** The engine as
+#541 ships it (`bin/sender-engine`), host CPU steal ≤ 0.4 % in every run.
+The first run measured the warning with RU4's packet-loss signal; the
+warning was then revised (a capacity signal, never packet loss) and the
+matrix run again. The tables below are the second run; the transport is
+the same code in both, so where they differ it is run-to-run spread.
+
+- **G5's lab gate — pass on the first run** (all 31 cells × both
+  deliveries; BBR at most 1.1 points below Cubic, datagram outage cells up
+  to 4.4, p99 at most +4 ms). **The second run fails one row**: 1440p
+  behind 80 Mbps with outages, datagrams, −6.5 points against a bound of
+  6 (−3.7 on the first run, −5.0 on the prototype).
+- **G1 on the second run**: three of six rows are over the 2 ms bound at
+  p99 only (+3.2, −3.3 and +4.2 ms; p50/p95 within 0.5 ms, bytes within
+  0.33 %), where the first run had all six within 1.6 ms — single-run
+  p99s on this host, recorded as they came.
+- **Shared uplink, 80 Mbps — pass**: carrier · BBR 0.2 % undecodable
+  beside the upload, the upload 90 % of its fair share; datagrams BBR
+  81.1 % shown against Cubic's 62.9 %.
+- **Shared uplink, 30 Mbps — datagrams pass, carrier fails.** Datagrams:
+  BBR 92.4 % shown against Cubic's 84.4 %, the upload 101 %. Carrier ·
+  BBR over six runs: 7.0 % undecodable on average (0.0–26.6; bound 0.5 %),
+  the upload 105 %; GOP tails lost when a carrier expires at its 150 ms
+  deadline. The cell is heavy-tailed for both senders (three extra
+  prototype runs: 57.8, 0.0 and 0.0 %). A fail on the record.
+- **15 Mbps, recorded**: carrier · BBR 2.3 % undecodable beside the
+  upload, 91.2 % shown, the upload 48 % of its share; datagrams BBR
+  72.4 % undecodable (38–98) beside it.
+- **The warning, revised** (a capacity signal; see RU3–RU5's note):
+  - *Radio outages*: it no longer raises on any outage cell with BBR, nor
+    on the 10 ms ones with Cubic (the G4 Mac's path).
+  - *Cubic at 40–100 ms* with loss or outages: it raises within 8–15 s and
+    holds — Cubic cannot carry the stream there, so it reads as capacity.
+  - *One false raise with BBR*: carrier at 100 ms with 2 % loss (31 s in,
+    for 68 s) while the Balanced viewer saw 92.9 %.
+  - *The thin cell (15 Mbps), BBR*: beside the upload it raised in 1 of 3
+    datagram runs and in none of 3 carrier runs; alone in none. **RU4's
+    thin-cell criterion is not met with BBR**; the owner moved it to R75
+    on 2026-10-21. With Cubic beside the upload it raised in every run.
 
 ### RU5 — What users see (§6)
 
@@ -1407,6 +1466,13 @@ python3 tools/uplinklab/matrix.py chrome-ru9-p9 --jobs 1   # and on P9's paths, 
 IPERF3=$(command -v iperf3) tools/uplinklab/fair/chrome.sh   # rootless netns (unshare -rn), ~30 min
 python3 tools/uplinklab/fair/analyze.py       # table O
 python3 tools/uplinklab/tables.py             # table P with the rest
+# RU6, the engine as shipped (bin/sender-engine; build.sh builds it). Check the host first:
+tools/uplinklab/steal.sh                      # steal under 4 busy loops; above ~5 % only engine-check, then a night run
+python3 tools/uplinklab/matrix.py engine --jobs 3      # G1/G2/G3/G5 at 1080p, ~1 h
+python3 tools/uplinklab/matrix.py engine-hi --jobs 1   # the 1440p cells alone, ~55 min
+FAIR_CCS="engine-cubic engine-bbr" FAIR_NONE=0 tools/uplinklab/fair/matrix.sh   # table O3 beside table O's TCP-alone runs, ~1 h
+python3 tools/uplinklab/tables.py             # table R
+python3 tools/uplinklab/fair/analyze.py       # table O3
 ```
 
 Since RU2 the tree's relay ships D7's 512, so `build.sh` builds every
@@ -2405,6 +2471,157 @@ The 1440p rows are past Chrome's datagram ceiling (table P6): there RU9 is meant
   Balanced viewer saw 70–78 % of frames at 60–113 ms decode-ready p50,
   against 3.4 % at 40 s before the fix. At 40 ms with 0.5 % loss the
   Balanced viewer saw 37.5 % (3.3 % before).
+
+#### Table R — the shipped engine against the prototype sender (RU6)
+
+`matrix.py engine` and `engine-hi`: `bin/sender-engine` drives gawk-engine as #541 ships it —
+`dial_publish` with the `congestion` setting, `Sender` with `uplinkDelivery` (*Lowest latency* =
+datagram, *Reliable* = carrier) and the relay's capabilities applied as the session applies them,
+the audio lane, and the shell's 1 Hz upload monitor — into the receiver at the depth the relay
+ships (D7's 512). *Prototype* is the design pass's sender on the same cell (tables A–E; its
+receiver the stock 32-deep queue, or 4096 where marked). *Steal*: the host's CPU steal over
+the cell (the worse of a pair). Over all 124 engine runs: median 0.2 %, max 0.3 %.
+
+**R1 — G1, the clean path: Reliable against Lowest latency** (bound: ≤ 2 ms at each percentile,
+≤ 1 % in bytes on the wire).
+
+| RTT | Controller | Lowest latency: decode-ready p50 / p95 / p99 ms · Mbps | Reliable: p50 / p95 / p99 ms · Mbps | Δ ms · Δ bytes | Prototype Δ ms · Δ bytes | G1 | Steal |
+|---|---|---|---|---|---|---|---|
+| 10 ms | Cubic | 6 / 6 / 13 · 10.91 | 6 / 7 / 14 · 10.91 | +0.0 / +0.0 / +1.2 · +0.03 % | -0.1 / -2.2 / -1.6 · +0.03 % | pass | 0.3 % |
+| 10 ms | BBR | 6 / 7 / 9 · 10.91 | 6 / 7 / 12 · 10.91 | +0.0 / +0.2 / +3.2 · +0.04 % | -0.1 / -0.1 / -0.6 · +0.03 % | **fail** | 0.3 % |
+| 40 ms | Cubic | 21 / 22 / 31 · 10.91 | 21 / 22 / 31 · 10.91 | -0.1 / -0.0 / -0.7 · +0.03 % | -0.0 / -0.1 / +0.2 · +0.03 % | pass | 0.2 % |
+| 40 ms | BBR | 21 / 22 / 29 · 10.91 | 21 / 22 / 26 · 10.91 | -0.0 / -0.5 / -3.3 · +0.03 % | -0.0 / -0.1 / +0.5 · +0.03 % | **fail** | 0.2 % |
+| 100 ms | Cubic | 51 / 52 / 60 · 10.91 | 51 / 52 / 64 · 10.87 | -0.0 / -0.3 / +4.2 · -0.33 % | +0.0 / +0.6 / +1.1 · +0.03 % | **fail** | 0.2 % |
+| 100 ms | BBR | 51 / 52 / 56 · 10.91 | 51 / 52 / 57 · 10.91 | -0.0 / -0.2 / +0.5 · +0.03 % | -0.0 / -0.2 / -1.2 · +0.04 % | pass | 0.1 % |
+
+**R2 — G2 and G3, bursts and outages** (G2: Reliable ≤ 0.5 % undecodable and the Balanced viewer
+≥ 97 % shown, with BBR at 10 and 40 ms and with Cubic at 10 ms; G3: the Balanced offset ≤ 60 ms
+above *Lowest latency*'s on the same cell. Rows outside G2's controllers are recorded, not
+judged.)
+
+| RTT | Path | Controller | Reliable: undecodable · Balanced shown | Balanced offset: Lowest latency → Reliable (rise) | Prototype Reliable: undecodable · shown · rise | G2 | G3 | Steal |
+|---|---|---|---|---|---|---|---|---|
+| 10 ms | bursts (GE) | BBR | 0.0 % · 100.0 % | 50 → 50 ms (+0) | 0.0 % · 100.0 % · +0 ms | pass | pass | 0.2 % |
+| 10 ms | bursts (GE) | Cubic | 0.0 % · 98.4 % | 74 → 87 ms (+14) | 0.0 % · 97.9 % · +5 ms | pass | pass | 0.2 % |
+| 10 ms | radio away 20 ms | BBR | 0.0 % · 99.8 % | 50 → 50 ms (+0) | 0.0 % · 99.8 % · +0 ms | pass | pass | 0.1 % |
+| 10 ms | radio away 20 ms | Cubic | 0.0 % · 99.6 % | 50 → 50 ms (+0) | 0.0 % · 99.7 % · +0 ms | pass | pass | 0.1 % |
+| 10 ms | radio away 80 ms | BBR | 0.0 % · 97.5 % | 50 → 77 ms (+27) | 0.0 % · 97.2 % · +28 ms | pass | pass | 0.2 % |
+| 10 ms | radio away 80 ms | Cubic | 0.0 % · 97.4 % | 50 → 98 ms (+48) | 0.1 % · 97.5 % · +45 ms | pass | pass | 0.2 % |
+| 40 ms | bursts (GE) | BBR | 0.0 % · 99.6 % | 50 → 69 ms (+19) | 0.0 % · 98.5 % · +24 ms | pass | pass | 0.1 % |
+| 40 ms | bursts (GE) | Cubic | 53.6 % · 39.3 % | 350 → 350 ms (+0) | 59.4 % · 27.7 % · +0 ms | – | – | 0.2 % |
+| 40 ms | radio away 20 ms | BBR | 0.0 % · 97.7 % | 50 → 50 ms (+0) | 0.0 % · 98.0 % · +0 ms | pass | pass | 0.2 % |
+| 40 ms | radio away 20 ms | Cubic | 18.1 % · 77.3 % | 350 → 315 ms (-35) | 17.0 % · 79.0 % · -32 ms | – | – | 0.1 % |
+| 40 ms | radio away 80 ms | BBR | 0.0 % · 97.6 % | 50 → 107 ms (+57) | 0.0 % · 97.6 % · +57 ms | pass | pass | 0.2 % |
+| 40 ms | radio away 80 ms | Cubic | 23.4 % · 70.9 % | 348 → 338 ms (-10) | 24.2 % · 71.6 % · -3 ms | – | – | 0.2 % |
+
+**R3 — G5, BBR against Cubic on every cell** (Balanced shown · decode-ready p99 ms. On the carrier,
+everywhere, and on datagrams on clean, random-loss and burst paths: BBR's shown ≥ Cubic's − 3 points and
+its p99 ≤ Cubic's + 5 ms. On datagrams under outages: shown within 6 points at a lower p99. The prototype
+column is the same Δ from the design pass's sender, its datagram rows on the 4096-deep receiver.
+*Warning raised*: the upload-bandwidth warning, Cubic · BBR — when it first raised (s after the first
+frame) and the seconds it showed, or *no*. RU4 since 2026-10-21: it must not raise where the
+uplink carries the stream: lossless cells with either controller, lossy ones with BBR, and the
+1080p outage cells at 10 ms with Cubic too; *Warning* judges those and records the rest.)
+
+| Cell | Delivery | Cubic: shown · p99 | BBR: shown · p99 | Δ shown · Δ p99 | Prototype Δ | G5 | Warning raised | Warning | Steal |
+|---|---|---|---|---|---|---|---|---|---|
+| 10 ms, clean | datagram | 100.0 · 13 | 100.0 · 9 | +0.0 · -4 | +0.0 · -4 | pass | no · no | pass | 0.3 % |
+| 10 ms, clean | carrier | 100.0 · 14 | 99.7 · 12 | -0.3 · -2 | +0.0 · -4 | pass | no · no | pass | 0.3 % |
+| 10 ms, 0.1 % loss | datagram | 100.0 · 38 | 100.0 · 11 | +0.0 · -27 | +0.0 · -24 | pass | no · no | pass | 0.2 % |
+| 10 ms, 0.1 % loss | carrier | 99.9 · 33 | 100.0 · 16 | +0.1 · -16 | +0.3 · -20 | pass | no · no | pass | 0.2 % |
+| 10 ms, 0.5 % loss | datagram | 94.8 · 368 | 100.0 · 19 | +5.1 · -349 | +5.3 · -389 | pass | no · no | pass | 0.2 % |
+| 10 ms, 0.5 % loss | carrier | 98.1 · 185 | 100.0 · 19 | +1.9 · -166 | +2.0 · -149 | pass | no · no | pass | 0.2 % |
+| 10 ms, 1 % loss | datagram | 50.0 · 1075 | 100.0 · 19 | +50.0 · -1056 | +23.5 · -679 | pass | at 65 s, 34 s · no | pass | 0.2 % |
+| 10 ms, 1 % loss | carrier | 93.7 · 278 | 100.0 · 21 | +6.3 · -257 | +5.5 · -253 | pass | no · no | pass | 0.2 % |
+| 10 ms, 2 % loss | datagram | 14.7 · 2211 | 99.1 · 23 | +84.4 · -2188 | +67.5 · -1657 | pass | at 13 s, 86 s · no | pass | 0.2 % |
+| 10 ms, 2 % loss | carrier | 75.7 · 382 | 99.9 · 28 | +24.2 · -354 | +23.6 · -362 | pass | at 14 s, 85 s · no | pass | 0.2 % |
+| 10 ms, bursts (GE) | datagram | 88.8 · 211 | 93.1 · 18 | +4.3 · -192 | +6.6 · -148 | pass | no · no | pass | 0.2 % |
+| 10 ms, bursts (GE) | carrier | 98.4 · 109 | 100.0 · 20 | +1.6 · -89 | +2.0 · -90 | pass | no · no | pass | 0.2 % |
+| 10 ms, radio away 20 ms | datagram | 91.0 · 33 | 91.0 · 14 | -0.0 · -19 | -0.9 · -23 | pass | no · no | pass | 0.1 % |
+| 10 ms, radio away 20 ms | carrier | 99.6 · 36 | 99.8 · 34 | +0.1 · -2 | +0.1 · -4 | pass | no · no | pass | 0.1 % |
+| 10 ms, radio away 80 ms | datagram | 77.1 · 102 | 73.3 · 16 | -3.7 · -86 | -4.1 · -90 | pass | no · no | pass | 0.2 % |
+| 10 ms, radio away 80 ms | carrier | 97.4 · 124 | 97.5 · 90 | +0.1 · -34 | -0.3 · -21 | pass | no · no | pass | 0.2 % |
+| 40 ms, clean | datagram | 100.0 · 31 | 100.0 · 29 | +0.0 · -2 | +0.0 · -5 | pass | no · no | pass | 0.2 % |
+| 40 ms, clean | carrier | 100.0 · 31 | 100.0 · 26 | -0.0 · -5 | +0.0 · -5 | pass | no · no | pass | 0.2 % |
+| 40 ms, 0.1 % loss | datagram | 62.6 · 1675 | 100.0 · 34 | +37.4 · -1640 | +37.6 · -1854 | pass | at 14 s, 85 s · no | pass | 0.1 % |
+| 40 ms, 0.1 % loss | carrier | 89.0 · 421 | 99.7 · 61 | +10.6 · -359 | +10.5 · -370 | pass | at 15 s, 84 s · no | pass | 0.1 % |
+| 40 ms, 0.5 % loss | datagram | 1.6 · 2421 | 94.1 · 68 | +92.5 · -2353 | +93.7 · -2072 | pass | at 9 s, 90 s · no | pass | 0.2 % |
+| 40 ms, 0.5 % loss | carrier | 13.5 · 1097 | 99.5 · 68 | +86.0 · -1029 | +86.4 · -1002 | pass | at 12 s, 87 s · no | pass | 0.2 % |
+| 40 ms, 1 % loss | datagram | 0.6 · 3009 | 94.8 · 90 | +94.2 · -2919 | +88.6 · -2145 | pass | at 8 s, 91 s · no | pass | 0.2 % |
+| 40 ms, 1 % loss | carrier | 8.2 · 1553 | 99.5 · 89 | +91.3 · -1464 | +90.7 · -1367 | pass | at 9 s, 90 s · no | pass | 0.2 % |
+| 40 ms, 2 % loss | datagram | 0.3 · 2303 | 88.4 · 111 | +88.1 · -2192 | +80.7 · -2213 | pass | at 8 s, 91 s · no | pass | 0.1 % |
+| 40 ms, 2 % loss | carrier | 3.5 · 1918 | 97.2 · 114 | +93.7 · -1804 | +93.4 · -1828 | pass | at 9 s, 90 s · no | pass | 0.2 % |
+| 40 ms, bursts (GE) | datagram | 4.7 · 2187 | 93.8 · 64 | +89.1 · -2123 | +90.5 · -2270 | pass | at 13 s, 86 s · no | pass | 0.2 % |
+| 40 ms, bursts (GE) | carrier | 39.3 · 954 | 99.6 · 70 | +60.3 · -884 | +70.8 · -913 | pass | at 14 s, 85 s · no | pass | 0.2 % |
+| 40 ms, radio away 20 ms | datagram | 21.0 · 1340 | 89.7 · 34 | +68.7 · -1307 | +67.1 · -1481 | pass | at 14 s, 85 s · no | pass | 0.1 % |
+| 40 ms, radio away 20 ms | carrier | 77.3 · 364 | 97.7 · 78 | +20.4 · -286 | +19.0 · -290 | pass | at 15 s, 84 s · no | pass | 0.2 % |
+| 40 ms, radio away 80 ms | datagram | 15.7 · 1647 | 73.0 · 34 | +57.3 · -1613 | +54.4 · -1524 | pass | at 14 s, 85 s · no | pass | 0.2 % |
+| 40 ms, radio away 80 ms | carrier | 70.9 · 386 | 97.6 · 136 | +26.7 · -251 | +26.0 · -278 | pass | at 15 s, 84 s · no | pass | 0.2 % |
+| 100 ms, clean | datagram | 99.9 · 60 | 100.0 · 56 | +0.1 · -3 | +0.0 · -3 | pass | no · no | pass | 0.2 % |
+| 100 ms, clean | carrier | 100.0 · 64 | 100.0 · 57 | +0.0 · -7 | +0.2 · -6 | pass | no · no | pass | 0.2 % |
+| 100 ms, 0.1 % loss | datagram | 6.5 · 2418 | 93.9 · 136 | +87.3 · -2282 | +90.3 · -2092 | pass | at 15 s, 84 s · no | pass | 0.1 % |
+| 100 ms, 0.1 % loss | carrier | 19.9 · 1250 | 97.1 · 152 | +77.3 · -1099 | +76.8 · -998 | pass | at 15 s, 84 s · no | pass | 0.1 % |
+| 100 ms, 0.5 % loss | datagram | 0.1 · 1859 | 95.8 · 235 | +95.7 · -1624 | +97.0 · -1524 | pass | at 11 s, 88 s · no | pass | 0.2 % |
+| 100 ms, 0.5 % loss | carrier | 2.3 · 2436 | 95.6 · 235 | +93.3 · -2200 | +93.5 · -2011 | pass | at 12 s, 87 s · no | pass | 0.2 % |
+| 100 ms, 1 % loss | datagram | 0.1 · 2435 | 94.7 · 269 | +94.6 · -2166 | +96.7 · -2212 | pass | at 9 s, 90 s · no | pass | 0.2 % |
+| 100 ms, 1 % loss | carrier | 1.6 · 2403 | 96.3 · 265 | +94.7 · -2138 | +94.1 · -2177 | pass | at 8 s, 91 s · no | pass | 0.2 % |
+| 100 ms, 2 % loss | datagram | 0.0 · 2372 | 95.2 · 332 | +95.2 · -2040 | +94.7 · -1856 | pass | at 9 s, 90 s · no | pass | 0.2 % |
+| 100 ms, 2 % loss | carrier | 0.6 · 2635 | 92.9 · 303 | +92.3 · -2332 | +96.3 · -1910 | pass | at 8 s, 91 s · at 31 s, 68 s | **fail** | 0.1 % |
+| 100 ms, bursts (GE) | datagram | 0.5 · 2264 | 80.0 · 205 | +79.5 · -2059 | +81.9 · -1661 | pass | at 13 s, 86 s · no | pass | 0.2 % |
+| 100 ms, bursts (GE) | carrier | 7.3 · 1879 | 98.0 · 170 | +90.7 · -1708 | +91.0 · -1780 | pass | at 13 s, 86 s · no | pass | 0.2 % |
+| 100 ms, radio away 20 ms | datagram | 0.3 · 1784 | 81.5 · 104 | +81.2 · -1680 | +89.8 · -1728 | pass | at 14 s, 85 s · no | pass | 0.2 % |
+| 100 ms, radio away 20 ms | carrier | 3.6 · 2102 | 97.2 · 174 | +93.6 · -1928 | +94.8 · -1774 | pass | at 15 s, 84 s · no | pass | 0.2 % |
+| 100 ms, radio away 80 ms | datagram | 0.1 · 1926 | 70.2 · 136 | +70.1 · -1790 | +70.7 · -1006 | pass | at 14 s, 85 s · no | pass | 0.2 % |
+| 100 ms, radio away 80 ms | carrier | 1.1 · 2464 | 95.3 · 236 | +94.2 · -2227 | +92.3 · -2092 | pass | at 15 s, 84 s · no | pass | 0.2 % |
+| 1440p, clean | datagram | 100.0 · 23 | 99.9 · 22 | -0.1 · -1 | +0.0 · -0 | pass | no · no | pass | 0.2 % |
+| 1440p, clean | carrier | 100.0 · 22 | 99.9 · 26 | -0.0 · +4 | -0.1 · -3 | pass | no · no | pass | 0.1 % |
+| 1440p, 0.1 % loss | datagram | 48.3 · 1141 | 100.0 · 25 | +51.6 · -1116 | +57.9 · -1393 | pass | at 39 s, 60 s · no | pass | 0.2 % |
+| 1440p, 0.1 % loss | carrier | 87.1 · 245 | 99.9 · 25 | +12.9 · -220 | +13.2 · -218 | pass | at 13 s, 86 s · no | pass | 0.2 % |
+| 1440p, bursts (GE) | datagram | 0.1 · 1982 | 56.4 · 41 | +56.3 · -1942 | +53.1 · -1902 | pass | at 8 s, 91 s · no | pass | 0.2 % |
+| 1440p, bursts (GE) | carrier | 40.9 · 405 | 99.7 · 34 | +58.8 · -371 | +58.5 · -377 | pass | at 10 s, 89 s · no | pass | 0.2 % |
+| 1440p, 300 Mbps bottleneck | datagram | 100.0 · 27 | 100.0 · 25 | +0.0 · -2 | -1.0 · -30 | pass | no · no | pass | 0.1 % |
+| 1440p, 300 Mbps bottleneck | carrier | 100.0 · 25 | 100.0 · 26 | +0.0 · +1 | +0.0 · -1 | pass | no · no | pass | 0.2 % |
+| 1440p, 300 Mbps + outages | datagram | 75.8 · 207 | 73.0 · 28 | -2.8 · -179 | -2.6 · -170 | pass | no · no | pass | 0.2 % |
+| 1440p, 300 Mbps + outages | carrier | 95.1 · 166 | 96.7 · 102 | +1.6 · -64 | -0.7 · -66 | pass | no · no | pass | 0.1 % |
+| 1440p, 80 Mbps bottleneck | datagram | 97.5 · 83 | 96.5 · 87 | -1.0 · +4 | -0.7 · +2 | pass | no · no | pass | 0.1 % |
+| 1440p, 80 Mbps bottleneck | carrier | 97.5 · 83 | 95.5 · 86 | -2.0 · +3 | -0.2 · +2 | pass | no · no | pass | 0.2 % |
+| 1440p, 80 Mbps + outages | datagram | 76.3 · 298 | 69.8 · 99 | -6.5 · -199 | -5.0 · -202 | **fail** | no · no | pass | 0.1 % |
+| 1440p, 80 Mbps + outages | carrier | 95.7 · 187 | 98.4 · 140 | +2.7 · -47 | +2.5 · -40 | pass | no · no | pass | 0.2 % |
+
+#### Table O3 — the shipped engine on RU4's shared-uplink gate (RU6)
+
+`FAIR_CCS="engine-cubic engine-bbr" FAIR_NONE=0 fair/matrix.sh`: `bin/sender-engine` in the same
+harness, beside table O's TCP-alone runs. The gate (30 and 80 Mbps, BBR's rows): the upload keeps
+≥ 50 % of its fair share, and beside it the carrier leaves ≤ 0.5 % undecodable and BBR's datagrams
+show no fewer frames than the engine's Cubic datagrams beyond 3 points. 15 Mbps is recorded, not
+gated: there the criterion is the upload-bandwidth warning, which must show in both delivery modes
+within its 5 s hysteresis — beside the upload, of its start at 20 s; alone, where the trace outgrows
+the uplink only partway in and not in every run, in every run whose broadcast was damaged (≥ 1 %
+undecodable). Since 2026-10-21 the warning is a capacity signal and never reads packet loss, so
+where BBR holds the stream's rate and only its own loss moves it can miss the link; that half is
+open and moved to R75 by owner decision. The 15 Mbps verdicts say whether it showed. *Warning*: the runs it raised
+in, when it first raised (s after the broadcast's first
+frame) and its share of 25–80 s. *Steal*: the host's, over each run (max).
+
+| Uplink | Engine | Upload's fair share | Beside the upload: undecodable · Balanced shown | Warning, alone | Warning, beside the upload | RU4 | Steal |
+|---|---|---|---|---|---|---|---|
+| 30 Mbps, 1080p (9.5 Mbps mean, 12 ceiling) | engine: datagram · Cubic | 101 % (100–101) | 8.5 % (6.0–11.3) · 84.4 % (80.8–89.5) | never (0/3) | 1/3 runs, first at 75.0 s · shown 2 (0–7) % of 25–80 s | baseline | 0.2 % |
+|  | engine: datagram · BBR | 101 % (101–101) | 13.8 % (8.5–21.6) · 92.4 % (84.6–97.0) | never (0/3) | never (0/3) | pass | 0.2 % |
+|  | engine: carrier · Cubic | 101 % (100–102) | 0.5 % (0.2–1.0) · 97.1 % (94.4–98.4) | never (0/6) | never (0/6) | recorded | 0.3 % |
+|  | engine: carrier · BBR | 105 % (102–114) | 7.0 % (0.0–26.6) · 90.8 % (69.6–99.4) | never (0/6) | 2/6 runs, first at 36.5 (30.0–43.0) s · shown 26 (0–91) % of 25–80 s | **fail** | 0.3 % |
+| 15 Mbps, 1080p | engine: datagram · Cubic | 76 % (75–79) | 54.5 % (50.6–59.4) · 16.3 % (9.3–23.6) | never (0/3) | 3/3 runs, first at 34.7 (25.0–54.0) s · shown 82 (46–100) % of 25–80 s | warning not shown | 0.3 % |
+|  | engine: datagram · BBR | 76 % (50–124) | 72.4 % (38.4–97.5) · 26.1 % (1.4–47.7) | never (0/3) | 1/3 runs, first at 25.0 s · shown 33 (0–100) % of 25–80 s | warning not shown | 0.2 % |
+|  | engine: carrier · Cubic | 64 % (62–69) | 14.6 % (12.1–19.6) · 83.4 % (80.1–85.6) | never (0/3) | 3/3 runs, first at 42.0 (26.0–74.0) s · shown 68 (9–98) % of 25–80 s | warning not shown | 0.2 % |
+|  | engine: carrier · BBR | 48 % (47–48) | 2.3 % (2.2–2.4) · 91.2 % (90.1–92.0) | never (0/3) | never (0/3) | warning not shown | 0.3 % |
+| 80 Mbps, 1440p (38.9 Mbps mean, 50 ceiling) | engine: datagram · Cubic | 95 % (95–96) | 17.5 % (17.2–17.8) · 62.9 % (55.4–70.4) | never (0/2) | 2/2 runs, first at 73.5 (73.0–74.0) s · shown 10 (9–11) % of 25–80 s | baseline | 0.2 % |
+|  | engine: datagram · BBR | 91 % (91–91) | 28.6 % (27.8–29.5) · 81.1 % (81.1–81.2) | never (0/2) | never (0/2) | pass | 0.2 % |
+|  | engine: carrier · Cubic | 93 % (93–93) | 0.9 % (0.9–1.0) · 94.9 % (94.3–95.5) | never (0/2) | 2/2 runs, first at 75.0 s · shown 7 % of 25–80 s | recorded | 0.1 % |
+|  | engine: carrier · BBR | 90 % (90–91) | 0.2 % (0.0–0.3) · 95.6 % (95.2–96.1) | never (0/2) | never (0/2) | pass | 0.2 % |
+
+The 30 Mbps carrier rows have six runs (`FAIR_R30_CARRIER_SEEDS=6`). Three
+extra runs of the prototype sender on the carrier · BBR cell (`fair/run.sh`
+as matrix.sh drives it) gave 57.8, 0.0 and 0.0 % undecodable, against
+table O's 0.0 % in all three of its.
 
 ## 12. References
 

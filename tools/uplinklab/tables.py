@@ -675,3 +675,175 @@ if p11:
           "Host CPU steal |")
     print("|---|---|---|---|---|---|---|---|")
     print("\n".join(p11))
+
+
+# RU6: the engine as shipped (#541) — `matrix.py engine` / `engine-hi`, the
+# sender bin/sender-engine (gawk-engine's transport, Sender and upload
+# monitor) against the receiver at the shipped depth — beside the prototype
+# sender's runs of the same cells. Each row judges its criterion.
+def eng_steal_v(name, *modes):
+    xs = []
+    for m in modes:
+        p = f"{OUT}/results/{name}/{m}/steal.txt"
+        if os.path.exists(p):
+            xs.append(float(open(p).read().split()[0]))
+    return max(xs) if xs else None
+
+
+def eng_steal(name, *modes):
+    v = eng_steal_v(name, *modes)
+    return "–" if v is None else f"{v:.1f} %"
+
+
+def eng_rd(s):
+    r = s["transport"]["ready_lat_ms"]
+    return r["p50"], r["p95"], r["p99"]
+
+
+def eng_shown(s):
+    return min(100, s["view"]["adaptive"]["shownPct"])
+
+
+def eng_off(s):
+    return s["view"]["adaptive"]["offsetMs"]["mean"]
+
+
+def eng_mark(ok):
+    return "–" if ok is None else ("pass" if ok else "**fail**")
+
+
+ENG_SC = {"clean": "clean", "loss0.001": "0.1 % loss", "loss0.005": "0.5 % loss", "loss0.01": "1 % loss",
+          "loss0.02": "2 % loss", "ge1pct": "bursts (GE)", "out20drop": "radio away 20 ms",
+          "out80drop": "radio away 80 ms"}
+ENG_HI = dict(HI)
+ENG_CC = (("Cubic", ""), ("BBR", "-bbr"))
+eng_cells = sorted(n for n, ms in R.items() if any(m.startswith("eng-") for m in ms))
+if eng_cells:
+    allst = sorted(v for n in eng_cells for v in [eng_steal_v(n, m) for m in R[n]
+                                                         if m.startswith("eng-") and ".steal" not in m]
+                   if v is not None)
+    print("\n#### Table R — the shipped engine against the prototype sender (RU6)\n")
+    print("`matrix.py engine` and `engine-hi`: `bin/sender-engine` drives gawk-engine as #541 ships it —")
+    print("`dial_publish` with the `congestion` setting, `Sender` with `uplinkDelivery` (*Lowest latency* =")
+    print("datagram, *Reliable* = carrier) and the relay's capabilities applied as the session applies them,")
+    print("the audio lane, and the shell's 1 Hz upload monitor — into the receiver at the depth the relay")
+    print("ships (D7's 512). *Prototype* is the design pass's sender on the same cell (tables A–E; its")
+    print("receiver the stock 32-deep queue, or 4096 where marked). *Steal*: the host's CPU steal over")
+    print(f"the cell (the worse of a pair). Over all {len(allst)} engine runs: median "
+          f"{allst[len(allst) // 2]:.1f} %, max {allst[-1]:.1f} %.\n")
+
+    print("**R1 — G1, the clean path: Reliable against Lowest latency** (bound: ≤ 2 ms at each percentile,")
+    print("≤ 1 % in bytes on the wire).\n")
+    print("| RTT | Controller | Lowest latency: decode-ready p50 / p95 / p99 ms · Mbps | Reliable: p50 / p95 / p99 ms · Mbps "
+          "| Δ ms · Δ bytes | Prototype Δ ms · Δ bytes | G1 | Steal |")
+    print("|---|---|---|---|---|---|---|---|")
+
+    def g1_delta(d, c):
+        a, b = eng_rd(d), eng_rd(c)
+        dl = [None if x is None or y is None else y - x for x, y in zip(a, b)]
+        by = 100 * (c["transport"]["uplink_mbps"] / d["transport"]["uplink_mbps"] - 1)
+        return dl, by
+
+    for rtt in (10, 40, 100):
+        for cc, sfx in ENG_CC:
+            name = f"rtt{rtt}-clean"
+            d, c = get(name, "eng-dgram" + sfx), get(name, "eng-carrier" + sfx)
+            if not d or not c:
+                continue
+            dl, by = g1_delta(d, c)
+            ok = all(x is not None and abs(x) <= 2 for x in dl) and abs(by) <= 1
+            pd, pc = get(name, "dgram" + sfx), get(name, "carrier" + sfx)
+            proto = "–"
+            if pd and pc:
+                pdl, pby = g1_delta(pd, pc)
+                proto = f"{' / '.join(f'{x:+.1f}' for x in pdl)} · {pby:+.2f} %"
+
+            def side(s):
+                p50, p95, p99 = eng_rd(s)
+                return f"{f(p50)} / {f(p95)} / {f(p99)} · {f(s['transport']['uplink_mbps'], 2)}"
+            print(f"| {rtt} ms | {cc} | {side(d)} | {side(c)} | {' / '.join(f'{x:+.1f}' for x in dl)} · {by:+.2f} % "
+                  f"| {proto} | {eng_mark(ok)} | {eng_steal(name, 'eng-dgram' + sfx, 'eng-carrier' + sfx)} |")
+
+    print("\n**R2 — G2 and G3, bursts and outages** (G2: Reliable ≤ 0.5 % undecodable and the Balanced viewer")
+    print("≥ 97 % shown, with BBR at 10 and 40 ms and with Cubic at 10 ms; G3: the Balanced offset ≤ 60 ms")
+    print("above *Lowest latency*'s on the same cell. Rows outside G2's controllers are recorded, not")
+    print("judged.)\n")
+    print("| RTT | Path | Controller | Reliable: undecodable · Balanced shown | Balanced offset: Lowest latency → "
+          "Reliable (rise) | Prototype Reliable: undecodable · shown · rise | G2 | G3 | Steal |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for rtt in (10, 40):
+        for sc in ("ge1pct", "out20drop", "out80drop"):
+            for cc, sfx in (("BBR", "-bbr"), ("Cubic", "")):
+                name = f"rtt{rtt}-{sc}"
+                d, c = get(name, "eng-dgram" + sfx), get(name, "eng-carrier" + sfx)
+                if not d or not c:
+                    continue
+                judged = sfx == "-bbr" or rtt == 10
+                und, sh = c["transport"]["undecodable_pct"], eng_shown(c)
+                rise = eng_off(c) - eng_off(d)
+                g2 = (und <= 0.5 and sh >= 97) if judged else None
+                g3 = rise <= 60 if judged else None
+                pd, pc = get(name, "dgram" + sfx), get(name, "carrier" + sfx)
+                proto = "–"
+                if pd and pc:
+                    proto = (f"{f(pc['transport']['undecodable_pct'], 1)} % · {f(eng_shown(pc), 1)} % · "
+                             f"{eng_off(pc) - eng_off(pd):+.0f} ms")
+                print(f"| {rtt} ms | {ENG_SC[sc]} | {cc} | {f(und, 1)} % · {f(sh, 1)} % | "
+                      f"{f(eng_off(d))} → {f(eng_off(c))} ms ({rise:+.0f}) | {proto} | {eng_mark(g2)} | "
+                      f"{eng_mark(g3)} | {eng_steal(name, 'eng-dgram' + sfx, 'eng-carrier' + sfx)} |")
+
+    print("\n**R3 — G5, BBR against Cubic on every cell** (Balanced shown · decode-ready p99 ms. On the carrier,")
+    print("everywhere, and on datagrams on clean, random-loss and burst paths: BBR's shown ≥ Cubic's − 3 points and")
+    print("its p99 ≤ Cubic's + 5 ms. On datagrams under outages: shown within 6 points at a lower p99. The prototype")
+    print("column is the same Δ from the design pass's sender, its datagram rows on the 4096-deep receiver.")
+    print("*Warning raised*: the upload-bandwidth warning, Cubic · BBR — when it first raised (s after the first")
+    print("frame) and the seconds it showed, or *no*. RU4 since 2026-10-21: it must not raise where the")
+    print("uplink carries the stream: lossless cells with either controller, lossy ones with BBR, and the")
+    print("1080p outage cells at 10 ms with Cubic too; *Warning* judges those and records the rest.)\n")
+    print("| Cell | Delivery | Cubic: shown · p99 | BBR: shown · p99 | Δ shown · Δ p99 | Prototype Δ | G5 "
+          "| Warning raised | Warning | Steal |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
+    rows = [(f"rtt{rtt}-{sc}", f"{rtt} ms, {lab}", sc) for rtt in (10, 40, 100) for sc, lab in ENG_SC.items()]
+    rows += [(f"hi-rtt10-{sc}", f"1440p, {lab}", sc) for sc, lab in HI]
+    for name, label, sc in rows:
+        for d, m, pm in (("datagram", "eng-dgram", "dgram-bigq"), ("carrier", "eng-carrier", "carrier")):
+            cu, bb = get(name, m), get(name, m + "-bbr")
+            if not cu or not bb:
+                continue
+            outage = "out" in sc
+            ds = eng_shown(bb) - eng_shown(cu)
+            p99c, p99b = eng_rd(cu)[2], eng_rd(bb)[2]
+            if p99b is None:
+                dp, ok = None, False
+            elif p99c is None:
+                dp, ok = None, ds >= (-6 if outage and d == "datagram" else -3)
+            else:
+                dp = p99b - p99c
+                if d == "datagram" and outage:
+                    ok = ds >= -6 and dp < 0
+                else:
+                    ok = ds >= -3 and dp <= 5
+            pc, pb = get(name, pm), get(name, pm.replace("dgram", "dgram-bbr") if d == "datagram" else pm + "-bbr")
+            proto = "–"
+            if pc and pb and eng_rd(pc)[2] is not None and eng_rd(pb)[2] is not None:
+                proto = f"{eng_shown(pb) - eng_shown(pc):+.1f} · {eng_rd(pb)[2] - eng_rd(pc)[2]:+.0f}"
+
+            def sp(s):
+                return f"{f(eng_shown(s), 1)} · {f(eng_rd(s)[2])}"
+
+            def raised(s):
+                return s["transport"].get("warn_first_s") is not None
+
+            def wn(s):
+                t = s["transport"]
+                return f"at {f(t['warn_first_s'])} s, {f(t['warn_raised_s'])} s" if raised(s) else "no"
+            # Judged where the link has room for the stream and only packets
+            # are lost (RU4, amended): BBR off the clean path, and the 10 ms
+            # outages with Cubic too. Cubic's collapse elsewhere is recorded.
+            judged = [cu, bb] if sc in ("clean", "rate300M", "rate80M") else [bb]
+            if sc.startswith("out") and name.startswith("rtt10-"):
+                judged.append(cu)
+            wok = None if not judged else not any(raised(x) for x in judged)
+            dps = "–" if dp is None else f"{dp:+.0f}"
+            print(f"| {label} | {d} | {sp(cu)} | {sp(bb)} | {ds:+.1f} · {dps} | {proto} | {eng_mark(ok)} | "
+                  f"{wn(cu)} · {wn(bb)} | {eng_mark(wok)} | {eng_steal(name, m, m + '-bbr')} |")

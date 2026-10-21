@@ -3,6 +3,12 @@
 # workspace pins (tools/uplinklab/build.sh builds it from a copy of the
 # workspace's Cargo.lock; it keeps none of its own) and gawk-wire's chunking
 # and parity. Its own workspace, so it never enters the shipped build.
+#
+# Two binaries: `gawk-uplinklab`, the prototype sender the design pass
+# measured, which re-implements the carrier rules; and `gawk-uplinklab-engine`
+# (docs/75 RU6), which drives the engine crate itself — its transport, Sender
+# and upload monitor — so the same cells measure the engine as shipped. Only
+# this workspace depends on the engine that way.
 [package]
 name = "gawk-uplinklab"
 version = "0.0.0"
@@ -12,8 +18,18 @@ license = "Apache-2.0"
 
 [workspace]
 
+[[bin]]
+name = "gawk-uplinklab"
+path = "src/main.rs"
+
+[[bin]]
+name = "gawk-uplinklab-engine"
+path = "src/engine.rs"
+
 [dependencies]
 gawk-wire = { path = "../../crates/wire" }
+# Without `self-update`: the lab installs nothing.
+gawk-engine = { path = "../../crates/engine", default-features = false }
 wtransport = { version = "0.7.1", features = ["dangerous-configuration", "quinn"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 

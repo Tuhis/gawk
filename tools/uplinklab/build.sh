@@ -56,5 +56,16 @@ for crate in quinn quinn-proto quinn-udp wtransport; do
     exit 1
   fi
 done
+# The engine sender (RU6) pulls the whole engine crate's graph in: every
+# package it resolved must be one the workspace pins, at the workspace's
+# version, so what it measures is the dependency set that ships.
+pkgs() { awk '/^name = /{n=$3} /^version = /{print n, $3}' "$1" | sort -u; }
+extra=$(comm -23 <(pkgs "$LAB/Cargo.lock") <(pkgs "$ROOT/gawk-broadcast-desktop/Cargo.lock") | grep -v '^"gawk-uplinklab" ' || true)
+if [ -n "$extra" ]; then
+  echo "uplinklab: the sender resolved packages the workspace does not pin:" >&2
+  echo "$extra" >&2
+  exit 1
+fi
 cp "$OUT/target/release/gawk-uplinklab" "$OUT/bin/sender"
+cp "$OUT/target/release/gawk-uplinklab-engine" "$OUT/bin/sender-engine"
 echo "built into $OUT/bin"

@@ -115,6 +115,18 @@ pub struct WtSession {
     datagrams_offered: AtomicU64,
 }
 
+impl WtSession {
+    /// quinn's own statistics for this connection — bytes on the wire, RTT,
+    /// congestion window — which the [`RelaySession`] seam narrows to packet
+    /// counters on purpose. Read-only; nothing in the engine calls it. It
+    /// exists for the uplink lab's engine sender (docs/75 RU6), which drives
+    /// this transport and the real [`crate::sender::Sender`] and must log what
+    /// the prototype sender logged from the same stack.
+    pub fn quic_stats(&self) -> wtransport::quinn::ConnectionStats {
+        self.conn.quic_connection().stats()
+    }
+}
+
 /// Dials the relay's publish endpoint. `insecure` skips server certificate
 /// verification — dev certs only, the runtime mirror of the Go `-insecure`
 /// flag. On a refused CONNECT the returned [`StartError`] carries the HTTP
