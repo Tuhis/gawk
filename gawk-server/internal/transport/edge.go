@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -164,6 +165,12 @@ type EdgeManager struct {
 
 	mu    sync.Mutex
 	edges map[string]*edgeSession
+
+	// testHookDatagramLoop runs at the top of every iteration of a pull
+	// session's datagram loop, so a test can hold the loop still while a
+	// burst arrives from the origin (docs/75 D7). Nil in production; atomic
+	// because tests install it while the pump runs.
+	testHookDatagramLoop atomic.Pointer[func()]
 }
 
 func newEdgeManager(registry *hub.Registry, resolver originResolver, dial edgeDialer, podName string, log *slog.Logger) *EdgeManager {
@@ -506,6 +513,9 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool,
 		defer wg.Done()
 		defer cancel()
 		for {
+			if hook := es.m.testHookDatagramLoop.Load(); hook != nil {
+				(*hook)()
+			}
 			dgram, err := up.ReceiveDatagram(ctx)
 			if err != nil {
 				recordEnd(err)

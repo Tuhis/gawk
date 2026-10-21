@@ -796,6 +796,10 @@ frames the uplink actually lost (RU5).
   goal; until it lands, a one-line patch carried the way `wtransport` is
   vendored for the Rust side (a `replace` to a pinned fork, the patch
   recorded beside it). RU2 decides which once upstream has answered.
+  *RU2, 2026-10-20*: carried as the vendored copy
+  `gawk-server/third_party/quic-go` (quic-go v0.62.0 + `gawk.patch`, its
+  `GAWK-PATCH.md` says how to re-derive and when to drop it), checked by
+  CI's `tidy` job. Upstream's latest release, v0.64.1, still hardcodes 32.
 - **Where it matters**: the origin's publisher sessions and the edge's
   pull sessions, which read origin → edge datagrams through the same
   queue, at pod-to-pod speed.
@@ -1261,6 +1265,7 @@ python3 tools/uplinklab/tables.py             # the tables below
 RELAY_CPUS=0-2 VIEWER_CPUS=3-4 SENDER_CPUS=5-6 PROXY_ARGS="-rtt 10ms -rate 300e6 -queue 50ms" \
   tools/uplinklab/relay.sh tools/uplinklab/out/relay/R1 tools/uplinklab/out/traces/r1440p60.csv 15 60
 tools/uplinklab/queue.sh                      # F16, the queue by depth (~40 min, alone on the host)
+QUEUE_DEPTHS=512 QUEUE_PAST=0 tools/uplinklab/queue.sh   # RU2's criterion, table N1 (~9 min)
 python3 tools/uplinklab/relaytables.py        # tables G and N
 tools/uplinklab/fair/matrix.sh                # F17, the shared uplink (Docker, NET_ADMIN; ~55 min)
 # F18, Chrome (Chrome for Testing in ~/.cache/ms-playwright, or CHROME=…), alone on the host:
@@ -1273,6 +1278,11 @@ IPERF3=$(command -v iperf3) tools/uplinklab/fair/chrome.sh   # rootless netns (u
 python3 tools/uplinklab/fair/analyze.py       # table O
 python3 tools/uplinklab/tables.py             # table P with the rest
 ```
+
+Since RU2 the tree's relay ships D7's 512, so `build.sh` builds every
+depth from the vendored quic-go, and the lab's "today" defaults — `run.sh`'s
+receiver and `relay.sh`'s relay — are its `-q32` builds: the commands above
+still measure the stock depth the tables did.
 
 #### Table A — the clean path (F1)
 
@@ -1779,6 +1789,33 @@ are table G's R3 build, which `queue.sh` no longer runs.
 | 1440p, 1 core, 15 viewers (saturated) | 128 | 1 | 36 056 | 9.7 % | 93.6 % | 397 / 1 108 | 2 683 | 60 MB |
 | 1440p, 1 core, 15 viewers (saturated) | 512 | 1 | 35 544 | 15.6 % | 91.5 % | 583 / 1 011 | 2 125 | 61 MB |
 | 1440p, 1 core, 15 viewers (saturated) | 4096 | 1 | 36 089 | 15.2 % | 91.6 % | 547 / 964 | 2 164 | 59 MB |
+
+#### Table N1 — RU2's acceptance run: the shipped depth (RU2, D7)
+
+RU2's lab criterion, run on 2026-10-21 (03:01–03:10) at the PR's head:
+`QUEUE_DEPTHS=512 QUEUE_PAST=0 tools/uplinklab/queue.sh`, which runs table N's
+unsaturated and one-core cells at the vendored relay's 512 only, then
+`relaytables.py`. The rows are its table N output with the column it adds when
+the runs recorded the host's CPU steal (`steal.txt`; mean, range in brackets).
+A first attempt three hours earlier ran at 40–55 % steal. Its two 1440p cells
+lost 37 771 and 16 123 chunks, and in the first the relay also dropped 80 693
+datagrams to its own viewers. The
+hypervisor was taking the cores, so those runs were discarded rather than
+counted. This host also measured lower latency than when table N was taken:
+the 2-viewer chunk p50 is 10 ms here against 13 ms there, at every depth.
+Compare the decode-ready figures with table N's as an upper bound, not as a
+like-for-like delta.
+
+| Load | Depth | Runs | Ingress chunks lost (60 s) | Dropped to viewers | Viewer: undecodable | Viewer: chunk latency p50 / p99 ms | Viewer: decode-ready p99 ms | Relay peak RSS | Host CPU steal |
+|---|---|---|---|---|---|---|---|---|---|
+| 1440p, 3 cores, 2 viewers | 512 | 3 | 0 | 0.0 % | 0.0 % | 10 (10–10) / 17 (17–18) | 40 (39–40) | 40 MB (40–41) | 0.2 % (0.1–0.2) |
+| 1440p, 3 cores, 4 viewers | 512 | 3 | 0 | 0.0 % | 0.0 % | 12 (12–12) / 20 (19–20) | 42 (40–44) | 43 MB (43–44) | 0.1 % |
+| 1080p, 1 core, 15 viewers (overloaded) | 512 | 2 | 0 | 0.0 % | 0.0 % | 10 (9–10) / 35 (35–35) | 50 (50–50) | 46 MB (45–46) | 0.1 % |
+
+**RU2's criterion holds.** No run lost an ingress chunk: 0 in each of the six
+unsaturated runs (table N's 512 row read 0–21) and in both one-core runs. The
+one-core 1080p cell's decode-ready p99 was 50 ms in both runs, inside table
+N's 512 row (98 ms, 88–108). Steal stayed at 0.1–0.2 % throughout.
 
 #### Table O — a shared uplink: the broadcast beside a household's TCP upload (F17, D5)
 

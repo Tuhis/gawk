@@ -147,6 +147,12 @@ type Server struct {
 	// trackPublisher (see postUpgradePublishHook). Atomic, as above.
 	testHookPostUpgradePublish atomic.Pointer[func(id string)]
 
+	// testHookPublishDatagramLoop runs at the top of every iteration of the
+	// publisher's datagram loop, so a test can hold the loop still while a
+	// burst arrives (docs/75 D7: quic-go's per-session queue must absorb it).
+	// Atomic, as above.
+	testHookPublishDatagramLoop atomic.Pointer[func()]
+
 	// testHookRateLimitLoopback disables the limiter's loopback bypass so
 	// tests (dialing from 127.0.0.1) can hit the 429 path. Atomic, as above.
 	testHookRateLimitLoopback atomic.Bool
@@ -978,6 +984,9 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	tsLimiter := newTimeSyncLimiter()
 	for {
+		if hook := s.testHookPublishDatagramLoop.Load(); hook != nil {
+			(*hook)()
+		}
 		dgram, err := sess.ReceiveDatagram(r.Context())
 		if err != nil {
 			log.Info("publisher session ended", "reason", sessionEndReason(r.Context(), err))

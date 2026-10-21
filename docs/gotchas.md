@@ -1524,6 +1524,18 @@ entries still describe code `gawk-pubsim` runs (now
   128 already took it to zero — but size it for a burst, not a backlog: on a
   relay short of CPU every extra entry is delay, and 4096 had the worst tail
   of the depths measured ([docs/75](75-reliable-uplink.md) F7, F16, D7).
+- **gawk-server's quic-go is a vendored, patched copy, so bumping quic-go
+  means re-deriving it.** `gawk-server/go.mod` replaces quic-go with
+  `third_party/quic-go` (upstream at the required version, 512-deep
+  session queue, D7). Moving the `require` line alone changes nothing that
+  is built; Renovate leaves quic-go alone, and CI's `tidy` job fails until
+  `third_party/quic-go/gawk-derive.sh` has re-derived the copy (its
+  `GAWK-PATCH.md` has the steps). A `replace` only applies in the main
+  module: anything that builds gawk-server packages from *another* module
+  (gawk-admin, -telemetry, -sampler, none of which reaches quic-go today)
+  gets stock quic-go and its 32. Build the relay from `gawk-server/`, and
+  copy `third_party/quic-go/go.mod` before a Dockerfile's
+  `go mod download` ([docs/75](75-reliable-uplink.md) D7).
 - **quinn's MTU black-hole detector reads random loss as a black hole.**
   More than three loss bursts of full-size packets, with no larger packet
   acknowledged since, reset the path MTU to 1200; `max_datagram_size` falls
