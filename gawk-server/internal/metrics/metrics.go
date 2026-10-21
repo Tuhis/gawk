@@ -107,6 +107,13 @@ type RegistryCollector struct {
 	parityDatagrams      desc
 	paritySuppressed     desc
 	egressParity         desc
+
+	// R73 uplink carriers. Described and collected only on a relay with
+	// -uplink-carriers on, so turning it off leaves /metrics as before (G6).
+	uplinkCarriers         desc
+	uplinkRecords          desc
+	uplinkRecordsStale     desc
+	uplinkCarriersRejected desc
 }
 
 // NewRegistryCollector builds the collector over a hub registry.
@@ -212,6 +219,14 @@ func NewRegistryCollector(r *hub.Registry) *RegistryCollector {
 			"R30 delta datagrams withheld from striped primaries because their legs carry them (docs/35 §7). A leg's non-matching share is routing, not suppression, and is not counted."),
 		stripeTransitions: newDesc("stripe_transitions_total",
 			"R30 stripe suppression level flips observed (engage or release; the 1 Hz refresh does not count). Churning against a flat stripe_legs gauge is the flapping signature."),
+		uplinkCarriers: newDesc("uplink_carriers_total",
+			"R73 reliable carrier streams accepted from the publisher (docs/75 D2): one per GOP while the broadcaster's Reliable delivery is engaged, 0 for a datagram broadcaster."),
+		uplinkRecords: newDesc("uplink_records_total",
+			"Records ingested from R73 uplink carriers, each byte for byte the delta or parity datagram it replaces and counted in the datagram series too."),
+		uplinkRecordsStale: newDesc("uplink_records_stale_total",
+			"R73 uplink carrier records dropped because a newer keyframe had already been ingested: viewers jump to that keyframe and would discard them anyway."),
+		uplinkCarriersRejected: newDesc("uplink_carriers_rejected_total",
+			"R73 uplink carriers refused over the per-publisher limit of two open. Zero from a well-behaved broadcaster."),
 		stripeLegsReaped: newDesc("stripe_legs_reaped_total",
 			"R30 stripe-leg sessions the relay ended as orphaned (docs/35 \u00a714): owner-reaped when their primary session closed, or lease-reaped after inbound silence. Zero on a healthy fleet \u2014 rising means viewers are losing primaries without tearing their legs down."),
 	}
@@ -238,6 +253,16 @@ func (c *RegistryCollector) Describe(ch chan<- *prometheus.Desc) {
 		ch <- d.broadcast
 		ch <- d.relay
 	}
+	if c.registry.UplinkCarriersEnabled() {
+		for _, d := range c.uplinkDescs() {
+			ch <- d.broadcast
+			ch <- d.relay
+		}
+	}
+}
+
+func (c *RegistryCollector) uplinkDescs() []desc {
+	return []desc{c.uplinkCarriers, c.uplinkRecords, c.uplinkRecordsStale, c.uplinkCarriersRejected}
 }
 
 func (c *RegistryCollector) counterDescs() []desc {
@@ -278,6 +303,8 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter := func(d *prometheus.Desc, v uint64, labels ...string) {
 		ch <- prometheus.MustNewConstMetric(d, prometheus.CounterValue, float64(v), labels...)
 	}
+
+	uplink := c.registry.UplinkCarriersEnabled()
 
 	gauge(c.broadcastsActive, float64(snap.Totals.Broadcasts))
 	gauge(c.subscribersActive, float64(snap.Totals.Subscribers))
@@ -358,6 +385,12 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 		// not a counter: what matters is what it holds now.
 		gauge(c.dvrSubscribers, float64(s.DVRSubscribers), id)
 		gauge(c.dvrRingBytes, float64(s.DVRRingBytes), id)
+		if uplink {
+			counter(c.uplinkCarriers.broadcast, s.UplinkCarriers, id)
+			counter(c.uplinkRecords.broadcast, s.UplinkRecords, id)
+			counter(c.uplinkRecordsStale.broadcast, s.UplinkRecordsStale, id)
+			counter(c.uplinkCarriersRejected.broadcast, s.UplinkCarriersRejected, id)
+		}
 	}
 
 	t := snap.Totals
@@ -402,6 +435,12 @@ func (c *RegistryCollector) Collect(ch chan<- prometheus.Metric) {
 	counter(c.stripeSuppressed.relay, t.StripeSuppressedDatagrams)
 	counter(c.stripeTransitions.relay, t.StripeTransitions)
 	counter(c.stripeLegsReaped.relay, t.StripeLegsReaped)
+	if uplink {
+		counter(c.uplinkCarriers.relay, t.UplinkCarriers)
+		counter(c.uplinkRecords.relay, t.UplinkRecords)
+		counter(c.uplinkRecordsStale.relay, t.UplinkRecordsStale)
+		counter(c.uplinkCarriersRejected.relay, t.UplinkCarriersRejected)
+	}
 }
 
 // ServerMetrics are the transport-layer connection counters (R9 M4). All

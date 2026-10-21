@@ -4,6 +4,7 @@ package hub
 // point that may kill a live broadcast.
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 	"time"
@@ -197,6 +198,23 @@ func TestTerminateBroadcastFoldsEveryCounter(t *testing.T) {
 		lb.pub.HandleDatagram(chunkDgram(t, false, uint32(2+i), 0, 1, "delta"))
 	}
 	lb.pub.HandleDatagram([]byte{0xff, 0xff, 0xff})
+	// R73 uplink carriers: records, a stale one, and a refused carrier past
+	// MaxUplinkCarriers.
+	var held []*heldCarrier
+	for range MaxUplinkCarriers {
+		held = append(held, holdCarrier(t, lb.pub))
+	}
+	waitFor(t, 5*time.Second, func() bool { return lb.r.Stats().Totals.UplinkCarriers == MaxUplinkCarriers }, "carriers open")
+	if err := lb.pub.IngestUplinkCarrier(bytes.NewReader(carrierBytes(t))); err == nil {
+		t.Fatal("a carrier past MaxUplinkCarriers was accepted")
+	}
+	for _, h := range held {
+		h.finish(t)
+	}
+	if err := lb.pub.IngestUplinkCarrier(bytes.NewReader(carrierBytes(t,
+		chunkDgram(t, false, 0, 0, 1, "stale"), chunkDgram(t, false, 9, 0, 1, "fresh")))); err != nil {
+		t.Fatalf("IngestUplinkCarrier: %v", err)
+	}
 
 	before := lb.r.Stats().Totals
 	nonZero := 0

@@ -50,6 +50,12 @@ pub const CAP_PARITY_CHUNKS: u16 = 1 << 0;
 /// never new bytes").
 pub const CAP_STRIPED_DELIVERY: u16 = 1 << 1;
 
+/// The relay ingests reliable carrier streams from a publisher (R73, docs/75
+/// D1/D2): a uni stream with the R19 prologue `0x01 0x0A`, then records of
+/// `u16 len ‖ datagram`. A producer opens carriers only after seeing this
+/// bit; a relay without it rejects the stream as bad input.
+pub const CAP_UPLINK_CARRIERS: u16 = 1 << 2;
+
 // --- GF(2^8), primitive polynomial 0x11D, generator 2 ------------------------
 
 /// Exp/log tables built at compile time; the exp cycle is duplicated so

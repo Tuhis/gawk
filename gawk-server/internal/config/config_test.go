@@ -49,7 +49,11 @@ func TestDefaults(t *testing.T) {
 		// R30 (docs/35 §6): on by default — zero relay cost until a viewer
 		// engages, and off is the byte-identical escape hatch.
 		StripedDelivery: true,
-		MetricsAddr:     ":2112",
+		// R73 (docs/75 D2, D10): carriers accepted by default; windows sized
+		// for a 50 Mbps broadcaster.
+		UplinkCarriers:        true,
+		UplinkMaxBitrateBytes: 50_000_000 / 8,
+		MetricsAddr:           ":2112",
 		// R28: telemetry is off by default (no key), but the cadence it would
 		// ask for still has a default so enabling it is one value, not two.
 		TelemetryReportInterval: 2 * time.Second,
@@ -778,5 +782,33 @@ func TestAdminOIDCWhitespaceIsRefusedNotSilentlyDropped(t *testing.T) {
 	}
 	if cfg.AdminAPIToken != "tok en" {
 		t.Errorf("AdminAPIToken = %q, want %q", cfg.AdminAPIToken, "tok en")
+	}
+}
+
+// R73 (docs/75 D2, D10): both uplink knobs parse from the env and the flag
+// wins; a malformed bitrate is a startup error, not a silent default.
+func TestUplinkKnobs(t *testing.T) {
+	cfg, err := ParseFlags(nil, envMap(map[string]string{
+		"GAWK_UPLINK_CARRIERS":    "false",
+		"GAWK_UPLINK_MAX_BITRATE": "80mbps",
+	}))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if cfg.UplinkCarriers || cfg.UplinkMaxBitrateBytes != 10_000_000 {
+		t.Errorf("env: UplinkCarriers=%v UplinkMaxBitrateBytes=%d, want false / 10000000", cfg.UplinkCarriers, cfg.UplinkMaxBitrateBytes)
+	}
+
+	cfg, err = ParseFlags([]string{"-uplink-carriers=true", "-uplink-max-bitrate", "0"},
+		envMap(map[string]string{"GAWK_UPLINK_CARRIERS": "false", "GAWK_UPLINK_MAX_BITRATE": "80mbps"}))
+	if err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if !cfg.UplinkCarriers || cfg.UplinkMaxBitrateBytes != 0 {
+		t.Errorf("flags: UplinkCarriers=%v UplinkMaxBitrateBytes=%d, want true / 0", cfg.UplinkCarriers, cfg.UplinkMaxBitrateBytes)
+	}
+
+	if _, err := ParseFlags([]string{"-uplink-max-bitrate", "fast"}, noEnv); err == nil {
+		t.Error("-uplink-max-bitrate=fast accepted, want an error")
 	}
 }

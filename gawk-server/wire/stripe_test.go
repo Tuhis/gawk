@@ -112,6 +112,33 @@ func TestRelayCapabilitiesAcceptsStripedFlag(t *testing.T) {
 	}
 }
 
+// TestRelayCapabilitiesUplinkCarriersGoldenVector pins R73's bit (docs/75
+// G7): the same 5-byte shape with bit 2 set. The TS and Rust mirrors assert
+// the identical hex.
+func TestRelayCapabilitiesUplinkCarriersGoldenVector(t *testing.T) {
+	if CapUplinkCarriers != 1<<2 {
+		t.Fatalf("CapUplinkCarriers = %#x, want 1<<2", CapUplinkCarriers)
+	}
+	dgram, err := AppendRelayCapabilities(nil, RelayCapabilities{
+		Flags:       CapParityChunks | CapStripedDelivery | CapUplinkCarriers,
+		ParityLevel: 2,
+	})
+	if err != nil {
+		t.Fatalf("AppendRelayCapabilities: %v", err)
+	}
+	const want = "010f000702"
+	if got := hex.EncodeToString(dgram); got != want {
+		t.Fatalf("golden vector mismatch:\n got %s\nwant %s", got, want)
+	}
+	c, err := ParseRelayCapabilities(dgram)
+	if err != nil {
+		t.Fatalf("ParseRelayCapabilities: %v", err)
+	}
+	if c.Flags&CapUplinkCarriers == 0 {
+		t.Fatalf("flags = %#04x, want the uplink-carriers bit", c.Flags)
+	}
+}
+
 func TestStripeOrdinal(t *testing.T) {
 	// Data chunks keep their index; parity follows the data, so on every leg
 	// of any stripe the parity ordinals are the highest the frame emits —

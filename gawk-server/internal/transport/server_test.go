@@ -83,6 +83,7 @@ func startTestServerCfgLogSrv(t *testing.T, ctx context.Context, cfg config.Conf
 		MaxBandwidthBytes:    cfg.MaxBandwidthBytes,
 		MaxKeyframeBytes:     cfg.MaxKeyframeBytes,
 		KeyframeWriteTimeout: cfg.KeyframeWriteTimeout,
+		UplinkCarriers:       cfg.UplinkCarriers,
 	})
 	srv = New(cfg, r, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil }, log,
 		metrics.NewServerMetrics(prometheus.NewRegistry()))

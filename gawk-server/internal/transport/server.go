@@ -4,10 +4,12 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -306,6 +308,8 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 		drainSleep: time.Sleep,
 	}
 
+	streamWindow, connWindow := uplinkReceiveWindows(cfg.UplinkMaxBitrateBytes)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
@@ -362,6 +366,11 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 				KeepAlivePeriod: cfg.KeepAlivePeriod,
 				// Required by webtransport-go v0.11+.
 				EnableStreamResetPartialDelivery: true,
+				// Sized so a GOP at -uplink-max-bitrate fits one carrier
+				// without waiting for auto-tuning (docs/75 D10). 0 leaves
+				// quic-go's defaults; the maxima always stay quic-go's.
+				InitialStreamReceiveWindow:     streamWindow,
+				InitialConnectionReceiveWindow: connWindow,
 			},
 		},
 	}
@@ -957,9 +966,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	pub.SetClient(client)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "publish", "broadcast_id", id)
 
-	// Tell the producer whether to emit parity and at what level.
-	// Best-effort: without it the producer emits none.
-	s.sendRelayCapabilities(sess, log)
+	// Tell the producer whether to emit parity and at what level, and
+	// whether it may open uplink carriers. Best-effort: without it the
+	// producer emits no parity and sends its deltas as datagrams.
+	s.sendRelayCapabilities(sess, log, true)
 
 	// Telemetry identity, also recorded on the hub so /statusz's
 	// publisherSessionId joins the broadcaster's reports. Sent last: a
@@ -1009,8 +1019,9 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 // supports (docs/34 §4.4). Best-effort: without it a client emits and
 // requests no parity. Nothing is sent when there is nothing to advertise.
 // Growth is new bits in the flags word, never new bytes: both producer
-// mirrors parse it strictly by size.
-func (s *Server) sendRelayCapabilities(sess *webtransport.Session, log *slog.Logger) {
+// mirrors parse it strictly by size. CapUplinkCarriers is a publisher's
+// business only (docs/75 D2), so a subscriber's message is unchanged by it.
+func (s *Server) sendRelayCapabilities(sess *webtransport.Session, log *slog.Logger, publish bool) {
 	caps := wire.RelayCapabilities{}
 	if s.cfg.ParityDefault > 0 {
 		caps.Flags |= wire.CapParityChunks
@@ -1018,6 +1029,9 @@ func (s *Server) sendRelayCapabilities(sess *webtransport.Session, log *slog.Log
 	}
 	if s.cfg.StripedDelivery {
 		caps.Flags |= wire.CapStripedDelivery
+	}
+	if publish && s.cfg.UplinkCarriers {
+		caps.Flags |= wire.CapUplinkCarriers
 	}
 	if caps.Flags == 0 {
 		return
@@ -1110,9 +1124,10 @@ func maybeAnswerTimeSync(sess *webtransport.Session, dgram []byte, lim *timeSync
 // streams.
 const maxConcurrentKeyframeStreams = 4
 
-// acceptKeyframeStreams reads keyframe streams from the publisher and hands
-// each to the hub for ingestion + fan-out. It returns when the session's
-// context is cancelled (AcceptUniStream errors).
+// acceptKeyframeStreams reads the publisher's uni streams and hands each to
+// the hub: keyframe streams for ingestion + fan-out and, with
+// -uplink-carriers on, R73 uplink carriers to the carrier reader. It returns
+// when the session's context is cancelled (AcceptUniStream errors).
 func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.Session, pub *hub.Publisher, log *slog.Logger) {
 	sem := make(chan struct{}, maxConcurrentKeyframeStreams)
 	for {
@@ -1130,12 +1145,50 @@ func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.S
 			continue
 		}
 		go func(st *webtransport.ReceiveStream) {
-			defer func() { <-sem }()
-			if err := pub.IngestKeyframeStream(st); err != nil {
+			release := sync.OnceFunc(func() { <-sem })
+			defer release()
+			var rd io.Reader = st
+			if s.cfg.UplinkCarriers {
+				// Peek the stream kind (docs/75 D2): a carrier's first two
+				// bytes are Version‖TypeReliableCarrier, a keyframe stream's
+				// Version‖TypeStreamFrame. The peeked bytes are replayed to
+				// the keyframe reader, so its behaviour is unchanged.
+				var head [wire.CarrierPrologueSize]byte
+				n, _ := io.ReadFull(st, head[:])
+				if n == len(head) && wire.ParseCarrierPrologue(head[:]) == nil {
+					// A carrier lives for a GOP: it must not hold one of the
+					// keyframe slots it was classified in. The hub bounds
+					// carriers per publisher (hub.MaxUplinkCarriers).
+					release()
+					s.ingestUplinkCarrier(st, head[:], pub, log)
+					return
+				}
+				rd = io.MultiReader(bytes.NewReader(head[:n]), st)
+			}
+			if err := pub.IngestKeyframeStream(rd); err != nil {
 				st.CancelRead(0)
 				log.Debug("keyframe stream ingest failed", "err", err)
 			}
 		}(stream)
+	}
+}
+
+// ingestUplinkCarrier runs one publisher uplink carrier to its end. Any
+// error — over the per-publisher limit, a malformed record, a reset by the
+// broadcaster — resets the stream; records already read were forwarded.
+func (s *Server) ingestUplinkCarrier(st *webtransport.ReceiveStream, prologue []byte, pub *hub.Publisher, log *slog.Logger) {
+	err := pub.IngestUplinkCarrier(io.MultiReader(bytes.NewReader(prologue), st))
+	if err == nil {
+		return
+	}
+	st.CancelRead(0)
+	switch {
+	case errors.Is(err, hub.ErrUplinkCarrierLimit):
+		log.Warn("uplink carrier rejected: too many concurrent", "max", hub.MaxUplinkCarriers)
+	case errors.Is(err, hub.ErrBadUplinkRecord):
+		log.Warn("uplink carrier ended: malformed record", "err", err)
+	default:
+		log.Debug("uplink carrier ended", "err", err)
 	}
 }
 
@@ -1338,7 +1391,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	}()
 	// The viewer is told the fleet level too, so its overlay can show
 	// "requested 2 / active 1" rather than leaving a refusal invisible.
-	s.sendRelayCapabilities(sess, log)
+	s.sendRelayCapabilities(sess, log, false)
 
 	// The viewer half of the correlation ID; a failed hello means a viewer
 	// that never reports, shown as unknown rather than ok.

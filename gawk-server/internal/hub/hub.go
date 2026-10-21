@@ -200,6 +200,16 @@ type Options struct {
 	// (guarded by the carry-all-limits test).
 	StripedDelivery bool
 
+	// UplinkCarriers accepts reliable carrier streams from publishers (R73,
+	// docs/75 D2). The transport owns the capability bit and the stream
+	// routing; the hub reads it only to keep the uplink series off /metrics
+	// when it is off (G6), and the mirror keeps registryOptions complete.
+	UplinkCarriers bool
+	// UplinkMaxBitrateBytes is -uplink-max-bitrate in bytes/s, from which the
+	// transport derives its initial QUIC receive windows (docs/75 D10). A
+	// transport knob; mirrored here for the carry-all-limits test.
+	UplinkMaxBitrateBytes int64
+
 	// StripeLegLease is how long a stripe leg may go without any inbound
 	// datagram before it is reaped as orphaned. Defaults to
 	// DefaultStripeLegLease; for tests only, deliberately no flag.
@@ -450,6 +460,17 @@ type Stats struct {
 	// without tearing their legs down.
 	StripeLegsReaped uint64 `json:"stripeLegsReaped,omitempty"`
 
+	// Uplink carriers (R73, docs/75 D2/D8): publisher→relay reliable
+	// carriers. UplinkCarriers counts carriers accepted, UplinkRecords the
+	// records ingested from them, UplinkRecordsStale records dropped because
+	// a newer keyframe had already been ingested, UplinkCarriersRejected
+	// carriers refused over the per-publisher limit. Omitted when zero, so a
+	// relay with -uplink-carriers=false renders /statusz as before.
+	UplinkCarriers         uint64 `json:"uplinkCarriers,omitempty"`
+	UplinkRecords          uint64 `json:"uplinkRecords,omitempty"`
+	UplinkRecordsStale     uint64 `json:"uplinkRecordsStale,omitempty"`
+	UplinkCarriersRejected uint64 `json:"uplinkCarriersRejected,omitempty"`
+
 	// Reliable delivery (docs/24).
 	ReliableSubscribers   int    `json:"reliableSubscribers"`   // live local subscribers in reliable mode
 	CarrierStreams        uint64 `json:"carrierStreams"`        // carrier streams opened
@@ -532,6 +553,11 @@ type TotalStats struct {
 	StripeSuppressedDatagrams uint64 `json:"stripeSuppressedDatagrams,omitempty"`
 	StripeTransitions         uint64 `json:"stripeTransitions,omitempty"`
 	StripeLegsReaped          uint64 `json:"stripeLegsReaped,omitempty"`
+	// Uplink carriers — see the Stats field comments. Omitted when zero.
+	UplinkCarriers         uint64 `json:"uplinkCarriers,omitempty"`
+	UplinkRecords          uint64 `json:"uplinkRecords,omitempty"`
+	UplinkRecordsStale     uint64 `json:"uplinkRecordsStale,omitempty"`
+	UplinkCarriersRejected uint64 `json:"uplinkCarriersRejected,omitempty"`
 	// DVR — see the Stats field comment. Omitted when zero.
 	DVRResyncs uint64 `json:"dvrResyncs,omitempty"`
 }
@@ -582,6 +608,10 @@ type Registry struct {
 	totalStripeSuppressedDatagrams uint64
 	totalStripeTransitions         uint64
 	totalStripeLegsReaped          uint64
+	totalUplinkCarriers            uint64
+	totalUplinkRecords             uint64
+	totalUplinkRecordsStale        uint64
+	totalUplinkCarriersRejected    uint64
 
 	limiter *bandwidthLimiter
 
@@ -720,6 +750,12 @@ type broadcastHub struct {
 	stripeTransitions         uint64
 	// Leg sessions the relay reaped as orphaned.
 	stripeLegsReaped uint64
+	// Uplink carriers (R73): accepted, records ingested, records dropped as
+	// stale, carriers refused over MaxUplinkCarriers.
+	uplinkCarriers         uint64
+	uplinkRecords          uint64
+	uplinkRecordsStale     uint64
+	uplinkCarriersRejected uint64
 }
 
 type bandwidthLimiter struct {
@@ -1653,6 +1689,10 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 	return s, nil
 }
 
+// UplinkCarriersEnabled reports Options.UplinkCarriers, which the metrics
+// collector reads to keep the uplink series off a relay with the feature off.
+func (r *Registry) UplinkCarriersEnabled() bool { return r.opts.UplinkCarriers }
+
 // ObfuscateID returns the key under which a broadcast appears in this
 // registry's Stats. It is keyed: broadcast IDs are only ~31^6 strong, so any
 // unkeyed hash of them can be brute-forced offline from a /statusz scrape.
@@ -1788,6 +1828,10 @@ func (r *Registry) Stats() RegistryStats {
 		totals.StripeSuppressedDatagrams += b.stripeSuppressedDatagrams
 		totals.StripeTransitions += stripeTransitions
 		totals.StripeLegsReaped += b.stripeLegsReaped
+		totals.UplinkCarriers += b.uplinkCarriers
+		totals.UplinkRecords += b.uplinkRecords
+		totals.UplinkRecordsStale += b.uplinkRecordsStale
+		totals.UplinkCarriersRejected += b.uplinkCarriersRejected
 
 		stalled := b.stalledLocked(time.Now())
 		stalledFor := 0
@@ -1832,6 +1876,10 @@ func (r *Registry) Stats() RegistryStats {
 			StripeSuppressedDatagrams: b.stripeSuppressedDatagrams,
 			StripeTransitions:         stripeTransitions,
 			StripeLegsReaped:          b.stripeLegsReaped,
+			UplinkCarriers:            b.uplinkCarriers,
+			UplinkRecords:             b.uplinkRecords,
+			UplinkRecordsStale:        b.uplinkRecordsStale,
+			UplinkCarriersRejected:    b.uplinkCarriersRejected,
 			DVRSubscribers:            dvrSubs,
 			DVRRingBytes:              ringBytes,
 			DVRRingGops:               ringGops,
@@ -1903,6 +1951,10 @@ func (r *Registry) Stats() RegistryStats {
 	totals.StripeSuppressedDatagrams += r.totalStripeSuppressedDatagrams
 	totals.StripeTransitions += r.totalStripeTransitions
 	totals.StripeLegsReaped += r.totalStripeLegsReaped
+	totals.UplinkCarriers += r.totalUplinkCarriers
+	totals.UplinkRecords += r.totalUplinkRecords
+	totals.UplinkRecordsStale += r.totalUplinkRecordsStale
+	totals.UplinkCarriersRejected += r.totalUplinkCarriersRejected
 	totals.KeyframeStreamsDropped = totals.KeyframeDrops.Total()
 
 	return RegistryStats{
@@ -2046,6 +2098,10 @@ func (r *Registry) removeBroadcast(id string, ok func(*broadcastHub) bool, force
 	r.totalStripeSuppressedDatagrams += b.stripeSuppressedDatagrams
 	r.totalStripeTransitions += b.stripeTransitions
 	r.totalStripeLegsReaped += b.stripeLegsReaped
+	r.totalUplinkCarriers += b.uplinkCarriers
+	r.totalUplinkRecords += b.uplinkRecords
+	r.totalUplinkRecordsStale += b.uplinkRecordsStale
+	r.totalUplinkCarriersRejected += b.uplinkCarriersRejected
 	r.foldIngressLocked(b)
 
 	// A pending grace timer must not fire against the next hub registered
@@ -2139,6 +2195,9 @@ type Publisher struct {
 	// Atomic because the transport stamps it for every datagram outside r.mu.
 	// Per Publisher, so a deposed session never freshens its successor.
 	lastSeen atomic.Int64
+	// uplinkCarriersOpen counts this session's open uplink carriers (R73),
+	// bounded by MaxUplinkCarriers. Guarded by the registry lock.
+	uplinkCarriersOpen int
 }
 
 // NoteSeen stamps the stall clock. The transport calls it for every datagram,

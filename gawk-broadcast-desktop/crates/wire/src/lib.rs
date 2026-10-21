@@ -32,10 +32,10 @@ pub use chunking::{ChunkBudget, split_frame};
 pub use error::WireError;
 pub use messages::*;
 pub use parity::{
-    CAP_PARITY_CHUNKS, CAP_STRIPED_DELIVERY, MAX_PARITY_DATA_CHUNKS, MAX_PARITY_SYMBOLS,
-    PARITY_CHUNK_HEADER_SIZE, ParityChunkHeader, RELAY_CAPABILITIES_SIZE, RelayCapabilities,
-    append_parity_chunk, append_relay_capabilities, compute_parity, parse_parity_chunk,
-    parse_relay_capabilities, recover_chunks,
+    CAP_PARITY_CHUNKS, CAP_STRIPED_DELIVERY, CAP_UPLINK_CARRIERS, MAX_PARITY_DATA_CHUNKS,
+    MAX_PARITY_SYMBOLS, PARITY_CHUNK_HEADER_SIZE, ParityChunkHeader, RELAY_CAPABILITIES_SIZE,
+    RelayCapabilities, append_parity_chunk, append_relay_capabilities, compute_parity,
+    parse_parity_chunk, parse_relay_capabilities, recover_chunks,
 };
 pub use room::*;
 pub use stripe::{

@@ -544,7 +544,12 @@ func registryOptions(cfg config.Config) hub.Options {
 		// bit; this mirror keeps the hub's options honest and the
 		// carry-all-limits test complete.
 		StripedDelivery: cfg.StripedDelivery,
-		StatsKey:        cfg.StatsKey,
+		// The same for R73's uplink knobs: the transport advertises the
+		// capability, routes carriers and sizes the receive windows from cfg;
+		// the hub reads UplinkCarriers to gate the uplink /metrics series.
+		UplinkCarriers:        cfg.UplinkCarriers,
+		UplinkMaxBitrateBytes: cfg.UplinkMaxBitrateBytes,
+		StatsKey:              cfg.StatsKey,
 	}
 }
 
