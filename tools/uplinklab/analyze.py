@@ -60,7 +60,7 @@ def load(run):
                                n=int(p[4]), k=int(p[5]), t_send=int(p[6]))
         elif p[0] == "K":
             kf_out[int(p[1])] = (int(p[2]), int(p[3]), p[4])
-        elif p[0] == "C":
+        elif p[0] == "C" and p[1] != "-":  # "-": a carrier that never carried a frame
             carriers.append((int(p[1]), int(p[2]), int(p[3]), p[4]))
         elif p[0] == "S":
             stats = dict(rtt_us=int(p[1]), cwnd=int(p[2]), sent_pkts=int(p[3]),

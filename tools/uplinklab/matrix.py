@@ -332,6 +332,8 @@ def run_one(sc, mode, seconds):
     """One cell; re-run while the host's steal over it exceeds STEAL_MAX
     (the over-steal attempts are kept beside it as <mode>.steal<n>)."""
     out = f"{OUT}/results/{sc['name']}/{mode}"
+    if os.path.exists(f"{out}/summary.json"):  # finished: a resume skips it, steal and all
+        return out
     for attempt in range(STEAL_RETRIES + 1):
         run_cell(sc, mode, seconds, out)
         if not os.path.exists(f"{out}/steal.txt"):  # finished before steal was recorded

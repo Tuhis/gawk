@@ -46,13 +46,13 @@ def one(d):
             # analysis window (the upload's 25-80 s).
             r["warn_first"] = t["warn_first_s"]
             r["warn_pct"] = 100 * t["warn_raised_s"] / t["window_s"] if t["window_s"] else 0
-    st = os.path.join(d, "steal.txt")
-    if os.path.exists(st):
-        r["steal"] = float(open(st).read())
         # quinn's own count; the browser sender's S line has none (Chrome
         # exposes no loss counter, browser/sender.mjs).
         if not any(l.startswith("I,cc,") for l in open(os.path.join(d, "send.csv"))):
             r["pktloss"] = t["pkt_loss_pct"]
+    st = os.path.join(d, "steal.txt")
+    if os.path.exists(st):
+        r["steal"] = float(open(st).read())
     return r
 
 

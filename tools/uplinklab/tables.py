@@ -719,7 +719,8 @@ ENG_HI = dict(HI)
 ENG_CC = (("Cubic", ""), ("BBR", "-bbr"))
 eng_cells = sorted(n for n, ms in R.items() if any(m.startswith("eng-") for m in ms))
 if eng_cells:
-    allst = sorted(v for n in eng_cells for v in [eng_steal_v(n, m) for m in R[n] if m.startswith("eng-")]
+    allst = sorted(v for n in eng_cells for v in [eng_steal_v(n, m) for m in R[n]
+                                                         if m.startswith("eng-") and ".steal" not in m]
                    if v is not None)
     print("\n#### Table R — the shipped engine against the prototype sender (RU6)\n")
     print("`matrix.py engine` and `engine-hi`: `bin/sender-engine` drives gawk-engine as #541 ships it —")
