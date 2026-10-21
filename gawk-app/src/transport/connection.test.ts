@@ -129,8 +129,9 @@ function stubHandDialedWebTransport(): HandDialed[] {
           reject = rej;
         });
         // A real session's `closed` rejects when its handshake fails.
+        // Deliberately not pre-caught: a refused session's `closed` rejection
+        // must be handled by the dial, which is the only holder of it.
         this.closed = this.ready.then(() => new Promise(() => {}));
-        this.closed.catch(() => {});
         this.handle = { url, resolve, reject, closeCalls: 0 };
         dialed.push(this.handle);
       }

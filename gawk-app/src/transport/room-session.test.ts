@@ -127,7 +127,7 @@ function installFakeWebTransport() {
           refuseNext = false;
           this.ready = Promise.reject(new Error('WebTransport connection rejected'));
           this.ready.catch(() => {});
-          this.closed.catch(() => {});
+          // `closed` deliberately not pre-caught: the dial must handle it.
           this.rejectClosed(new Error('rejected'));
         } else {
           this.ready = Promise.resolve();

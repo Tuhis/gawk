@@ -106,10 +106,15 @@ function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new DOMException('dial aborted', 'AbortError');
 }
 
-function abandon(wt: WebTransport): void {
-  // Nobody else holds an abandoned session, so nobody else would observe its
-  // `closed` rejecting.
+// For a session the dial never hands back (abandoned or refused): nobody else
+// holds it, so nobody else would observe its `closed` rejecting, and a refused
+// handshake rejects `closed` along with `ready`.
+function silenceClosed(wt: WebTransport): void {
   void (wt.closed as Promise<unknown> | undefined)?.catch(() => {});
+}
+
+function abandon(wt: WebTransport): void {
+  silenceClosed(wt);
   try {
     wt.close();
   } catch {
@@ -146,7 +151,10 @@ export async function dialWebTransport(
       signal?.addEventListener('abort', onAbort, { once: true });
       wt.ready.then(
         () => finish(() => resolve('ready')),
-        (e: unknown) => finish(() => reject(e instanceof Error ? e : new Error(String(e)))),
+        (e: unknown) => {
+          silenceClosed(wt);
+          finish(() => reject(e instanceof Error ? e : new Error(String(e))));
+        },
       );
     });
     if (outcome === 'ready') return wt;
