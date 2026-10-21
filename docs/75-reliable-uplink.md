@@ -763,9 +763,9 @@ one GOP):
   thin-uplink cost is 13 points of frames on datagrams but 3 on the
   carrier, so BBR alone on today's datagram path would be the worst order.
   On that link the remedy is a lower rung: RU4 requires the upload-bandwidth
-  warning (docs/38) to fire there. (Amended 2026-10-21: the warning is a
-  capacity signal and never reads packet loss; where BBR's own loss is all
-  that moves, the loss notice speaks — RU4.)
+  warning (docs/38) to fire there. (Since 2026-10-21 the warning is a
+  capacity signal and never reads packet loss, so with BBR it misses this
+  link; seeing it is R75's, by owner decision — RU4.)
 - It is one transport option (`TransportConfig::congestion_controller_factory`),
   set in `crates/engine/src/transport.rs` beside the keep-alive — the engine
   sets nothing else today.
@@ -1111,7 +1111,7 @@ window. The window, not the number of carriers, is the bound.
 | `congestion: "bbr" \| "cubic"` in `broadcast.json`, reported as `uplinkCongestion`, shown in Diagnostics; `cubic` restores today's transport exactly | unit |
 | G5's lab gate, recorded in §11 (this pass meets it) | lab |
 | Shared uplink (`tools/uplinklab/fair`, table O): at 80 Mbps with a 50 ms queue and one competing TCP flow, the TCP flow keeps ≥ 50 % of its fair share and the broadcast holds up — on the carrier ≤ 0.5 % undecodable, on datagrams no fewer frames shown than Cubic's beyond table M's 3 points (this pass: carrier · BBR 0 %, the flow 90–91 %; datagrams 83.5 against 30.1 % shown); at 30 Mbps the same (0 %, 101–102 %; datagrams 86.2 against 88.9 %, within the spread); at 15 Mbps recorded, not gated (48–49 %, where any controller that holds the stream's rate leaves at most ~46 %, F17) | lab |
-| On table O's thin cell (15 Mbps, alone and beside the upload) the upload-bandwidth warning (docs/38's `uplink` monitor) shows in both delivery modes, within its 5 s hysteresis; if its signals miss BBR's own packet loss, the monitor gains one that does, red first. *Amended 2026-10-21 (owner):* the warning is a capacity signal, judged per delivery mode, and packet loss alone is never one of its inputs — that is the loss notice's (D6, RU5). It must stay quiet on the 80 ms radio-outage cells at 10 ms RTT in both modes and with both controllers; where BBR's own loss is the only thing that moves, the loss notice speaks, and §11 records it | lab + unit |
+| On table O's thin cell (15 Mbps, alone and beside the upload) the upload-bandwidth warning (docs/38's `uplink` monitor) shows in both delivery modes, within its 5 s hysteresis; if its signals miss BBR's own packet loss, the monitor gains one that does, red first. *Revised 2026-10-21:* the warning is a capacity signal, judged per delivery mode, and packet loss alone is never one of its inputs — that is the loss notice's (D6, RU5). It must stay quiet on the 80 ms radio-outage cells at 10 ms RTT in both modes and with both controllers. **With BBR the thin-cell half is not met** (table O3), and the owner moved it to a follow-up, R75, on 2026-10-21 | lab + unit |
 | The hardware pass (RU7) shows no regression against Cubic on either machine | hardware |
 | Default flips to `bbr` only when all three pass; otherwise this chunk records why and Cubic stays. **Overridden by owner decision 2026-10-21: `bbr` is the default now** (D5), with the 30 Mbps carrier cell and the thin-cell warning open (R75) | review |
 
