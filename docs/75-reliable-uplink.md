@@ -780,6 +780,13 @@ one GOP):
   share whichever controller does it, F17), and the hardware pass. If a
   gate fails, Cubic stays and the carrier still becomes the default on it
   (D4): F2 holds under Cubic at 10 ms, where the R55 Mac is.
+- **Owner decision, 2026-10-21: BBR is the default now**, ahead of RU7
+  and with RU4's gates as the engine run measured them (§8 RU4's engine
+  run): G5 and the 80 Mbps shared-uplink gate pass on the engine, the
+  30 Mbps carrier cell does not (table O3), and the upload warning misses
+  BBR's own loss on the thin uplink (R75 is the follow-up). Lowest latency
+  stays the default delivery; `congestion: "cubic"` in `broadcast.json` is
+  the way back.
 
 ### D6 — Lowest latency stays today's datagram path
 
@@ -1106,7 +1113,7 @@ window. The window, not the number of carriers, is the bound.
 | Shared uplink (`tools/uplinklab/fair`, table O): at 80 Mbps with a 50 ms queue and one competing TCP flow, the TCP flow keeps ≥ 50 % of its fair share and the broadcast holds up — on the carrier ≤ 0.5 % undecodable, on datagrams no fewer frames shown than Cubic's beyond table M's 3 points (this pass: carrier · BBR 0 %, the flow 90–91 %; datagrams 83.5 against 30.1 % shown); at 30 Mbps the same (0 %, 101–102 %; datagrams 86.2 against 88.9 %, within the spread); at 15 Mbps recorded, not gated (48–49 %, where any controller that holds the stream's rate leaves at most ~46 %, F17) | lab |
 | On table O's thin cell (15 Mbps, alone and beside the upload) the upload-bandwidth warning (docs/38's `uplink` monitor) shows in both delivery modes, within its 5 s hysteresis; if its signals miss BBR's own packet loss, the monitor gains one that does, red first. *Amended 2026-10-21 (owner):* the warning is a capacity signal, judged per delivery mode, and packet loss alone is never one of its inputs — that is the loss notice's (D6, RU5). It must stay quiet on the 80 ms radio-outage cells at 10 ms RTT in both modes and with both controllers; where BBR's own loss is the only thing that moves, the loss notice speaks, and §11 records it | lab + unit |
 | The hardware pass (RU7) shows no regression against Cubic on either machine | hardware |
-| Default flips to `bbr` only when all three pass; otherwise this chunk records why and Cubic stays | review |
+| Default flips to `bbr` only when all three pass; otherwise this chunk records why and Cubic stays. **Overridden by owner decision 2026-10-21: `bbr` is the default now** (D5), with the 30 Mbps carrier cell and the thin-cell warning open (R75) | review |
 
 ### RU5 — What users see (§6)
 
@@ -1169,8 +1176,13 @@ window. The window, not the number of carriers, is the bound.
 
   Packet loss is not an input. Where BBR's own loss on a thin uplink is
   the only thing that moves (it holds the stream's rate and the network
-  drops the excess), no send-side counter tells it from a radio's, so the
-  loss notice speaks there, not this warning. Cubic's collapse under
+  drops the excess), no send-side counter tells it from a radio's, so
+  this warning stays silent there — table O3: datagrams on BBR alone on
+  the thin cell raised it in 1 run of 3 at up to 72 % undecodable, the
+  carrier on BBR in none. That misses RU4's thin-cell criterion; the owner
+  made a capacity signal that sees it (the stream's bitrate against the
+  connection's own bandwidth estimate) a follow-up, R75, on 2026-10-21.
+  Whether the loss notice speaks there instead is unmeasured. Cubic's collapse under
   random loss at 40–100 ms (and at 10 ms with 2 %) does raise it: there the
   connection's achievable rate fell below the stream's — the send buffer
   drops, carriers shed — and a lower rung is the remedy. The table tests

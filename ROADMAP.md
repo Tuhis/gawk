@@ -91,6 +91,7 @@ feature set exists).
 | R71 | [Your name in a room, up front (desktop)](#r71--your-name-in-a-room-up-front-desktop) | 🔧 **implemented 2026-10-19** (NM1–NM4 and NM5's Settings row in one PR; proposed and drawn the same day, owner decisions OD1–OD3), the owner's pass on each OS (NM5) open — a blank-name join asks for a name first, the name becomes a top-level row under a chosen room, and on Live your own roster row renames in place; renames are sent on Enter or focus loss, not per keystroke ([docs/73](docs/73-desktop-room-name.md)) |
 | R72 | [Open-source licences inside the native apps](#r72--open-source-licences-inside-the-native-apps) | 🔧 **implemented 2026-10-20** (OL1–OL5 in one PR, at the owner's request), the owner's look on each platform (OL6) open — every native app embeds its generated third-party notices and shows them under Settings → Open-source licences, so they survive a single-file download and a self-update; the generator adds the iOS app and the C libraries `-sys` crates compile in (libopus, libvpx), and the iOS Rust graph gets its own `cargo-deny` gate, with UniFFI's MPL-2.0 a scoped exception and its source linked ([docs/74](docs/74-open-source-licences-in-app.md)) |
 | R73 | [Reliable broadcaster uplink](#r73--reliable-broadcaster-uplink) | 🔧 **designed 2026-10-17** from a lab measurement pass (the shipping quinn and quic-go stacks, real-encoder frame sizes, the shipping viewer replayed), split out of R55, extended 2026-10-18; **owner decisions OD1–OD6 taken 2026-10-18/19**, RU0–RU9 not started — the per-GOP carrier costs nothing on a clean path and keeps GOPs whole through bursts and outages; quinn's Cubic, not the delivery mode, is what breaks a lossy path longer than a LAN, and its BBR fixes that; the relay itself drops ~1 % of a 1440p publisher's chunks in quic-go's 32-deep datagram queue, leaving 39–47 % of frames undecodable, and 512 entries fix it where 4096 only adds delay on a busy relay; viewers on *Smoother* and *Most stable* get no parity, so today 0.1 % uplink loss costs them one frame in eight while *Balanced* loses none, and only the carrier protects them from outages; BBR plus a longer relay queue without the carrier fixes random loss for live-edge viewers and nothing else; beside a household's upload only the carrier with BBR stays watchable, and BBR's cost is on an uplink the stream nearly fills (7–10 % of its own packets lost, the household's upload left about half its share); the browser broadcaster runs Chrome's Cubic whatever it asks, pays per datagram, and queues instead of dropping (tens of seconds of backlog on a lossy long path, `BUGS.md`), while a browser carrier with a keyframe gate gives the default viewer 97.9–99.9 % of frames at 10 ms and 96–99.6 % at 40 ms where Chrome's Cubic holds, at about a round trip per GOP on long clean paths (OD5, decided 2026-10-19: the queue fixed now as RU9, a browser Reliable mode later as its own milestone); decided: the relay's queue to 512, parity for *Smoother*/*Most stable* and the browser's send-queue bug first, then the carrier with BBR, Reliable becoming the default after the hardware pass and BBR with it if its own gates pass, *Lowest latency* a real choice ([docs/75](docs/75-reliable-uplink.md)) |
+| R75 | [An upload warning that sees a full uplink](#r75--an-upload-warning-that-sees-a-full-uplink) | 💡 **proposed 2026-10-21** (follow-up to R73's engine lab run), not designed — the native broadcaster's "upload can't keep up" warning keys on send-side capacity signals since R73 and never on packet loss (radio outages misled it), so on an uplink the stream nearly fills with BBR, where BBR's own loss is the only symptom, it stays silent; compare the stream's bitrate with the connection's own bandwidth estimate instead |
 
 ---
 
@@ -5287,6 +5288,37 @@ OD1 (Reliable by default), OD2 (BBR in both modes, with the carrier), OD4
 (parity for reliable delivery) taken 2026-10-18, OD5 (fix the browser's
 send queue now as RU9, a browser Reliable mode later) 2026-10-19; not
 started.
+
+---
+
+## R75 — An upload warning that sees a full uplink
+
+**Goal**: the native broadcaster's "upload can't keep up" warning shows
+when the uplink cannot carry the stream at its rung, whichever congestion
+controller runs, and stays silent when the link merely loses packets.
+
+**Why**: R73's engine lab run (docs/75 §8 RU4, §11 table O3) found the
+warning wrong both ways while it read packet loss: radio outages held it
+for whole runs while viewers saw 97 % of frames. R73 made it a capacity
+signal judged on send-side counters, which fixed the outages, but with BBR
+(the default since 2026-10-21) a thin uplink shows no send-side symptom:
+BBR holds the stream's rate and the network drops the excess. There
+datagrams left up to 72 % of frames undecodable with the warning raised
+in 1 run of 3, and the carrier never raised it. Owner decision
+2026-10-21: a follow-up, not a blocker for R73.
+
+**Direction** (to design): compare the stream's bitrate with the
+connection's own bandwidth estimate (quinn's path stats: congestion
+window over RTT, or BBR's bottleneck-bandwidth estimate where it is
+reachable), so a full link and a lossy one read apart.
+
+**Acceptance** (to refine in its design doc): on docs/75 table O's 15 Mbps
+cell the warning shows within its 5 s hysteresis in both delivery modes
+with BBR and with Cubic; on every radio-outage and random-loss cell where
+the uplink carries the stream it does not; measured with the engine-backed
+lab (`sender-engine`, R73 RU6) and replayed as table tests.
+
+**Status**: 💡 proposed 2026-10-21; not designed.
 
 ---
 
