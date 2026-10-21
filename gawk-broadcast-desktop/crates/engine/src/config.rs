@@ -1444,7 +1444,7 @@ mod tests {
 
     // R73 (docs/75 D4/D5): `uplinkDelivery` and `congestion` round-trip
     // under their camelCase names; a file without them, or with a word the
-    // engine does not know, runs the engine's defaults — today's path.
+    // engine does not know, runs the engine's defaults; `cubic` is kept.
     #[test]
     fn uplink_keys_round_trip_and_blank_follows_the_engine_default() {
         let dir = std::env::temp_dir().join(format!("gawk-cfg-uplink-{}", std::process::id()));
@@ -1454,21 +1454,21 @@ mod tests {
         let (old, warn) = load(&path, &Plaintext);
         assert!(warn.is_none());
         assert_eq!(old.resolve_uplink_delivery(), Delivery::LowestLatency);
-        assert_eq!(old.resolve_congestion(), Congestion::Cubic);
+        assert_eq!(old.resolve_congestion(), Congestion::Bbr);
 
         let cfg = Config {
             uplink_delivery: "reliable".into(),
-            congestion: "bbr".into(),
+            congestion: "cubic".into(),
             ..Default::default()
         };
         save(&path, &cfg, &Plaintext).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("\"uplinkDelivery\": \"reliable\""), "{raw}");
-        assert!(raw.contains("\"congestion\": \"bbr\""), "{raw}");
+        assert!(raw.contains("\"congestion\": \"cubic\""), "{raw}");
         let (loaded, _) = load(&path, &Plaintext);
         assert_eq!(loaded, cfg);
         assert_eq!(loaded.resolve_uplink_delivery(), Delivery::Reliable);
-        assert_eq!(loaded.resolve_congestion(), Congestion::Bbr);
+        assert_eq!(loaded.resolve_congestion(), Congestion::Cubic);
 
         let odd = Config {
             uplink_delivery: "auto".into(),

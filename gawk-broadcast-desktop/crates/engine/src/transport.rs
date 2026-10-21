@@ -52,10 +52,10 @@ pub enum Congestion {
     Bbr,
 }
 
-/// The engine's default controller: Cubic until RU4's gates and RU7's
-/// hardware pass hold (docs/75 D5, §8 step 3) — the one place that flip
-/// happens; a blank `congestion` follows it.
-pub const DEFAULT_CONGESTION: Congestion = Congestion::Cubic;
+/// The engine's default controller: BBR, by owner decision 2026-10-21
+/// (docs/75 D5), ahead of RU7's hardware pass; `congestion: "cubic"` is the
+/// way back. The one place the default lives; a blank `congestion` follows it.
+pub const DEFAULT_CONGESTION: Congestion = Congestion::Bbr;
 
 impl Default for Congestion {
     fn default() -> Self {
@@ -604,8 +604,8 @@ mod tests {
         assert_eq!(Congestion::parse(""), None);
         assert_eq!(Congestion::parse("reno"), None);
         assert_eq!(Congestion::default(), DEFAULT_CONGESTION);
-        // docs/75 D5, §8 step 2: today's controller stays the default until
-        // RU4's gates and RU7 pass.
-        assert_eq!(DEFAULT_CONGESTION, Congestion::Cubic);
+        // docs/75 D5: BBR by default, by owner decision 2026-10-21 (ahead
+        // of RU7; `congestion: "cubic"` is the way back).
+        assert_eq!(DEFAULT_CONGESTION, Congestion::Bbr);
     }
 }
