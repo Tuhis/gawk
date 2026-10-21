@@ -1639,10 +1639,13 @@ entries still describe code `gawk-pubsim` runs (now
   `drainReliable` puts audio on a carrier of its own and only closes a
   superseded carrier. `IngestUplinkCarrier` takes video and parity records
   only and holds three carriers per publisher, so after a stall on a lossy
-  line the next GOP's carrier can be refused. A Go sender feeding it needs
-  R73's sender rules (two carriers live, the superseded one reset 150 ms
-  after it finished), and must time that reset itself: quic-go's `Close`
-  returns before anything is acknowledged. webtransport-go v0.13 also hides
+  line the next GOP's carrier can be refused. The drain also resets a
+  carrier whose record waits 500 ms (`CarrierWriteTimeout`) and drops the
+  rest of that GOP, where R73 never resets within a GOP. A Go sender
+  feeding the reader needs R73's sender rules (two carriers live, the
+  superseded one reset 150 ms after it finished, a write blocked on an old
+  GOP abandoned at the next keyframe), and must time that reset itself:
+  quic-go's `Close` returns before anything is acknowledged. webtransport-go v0.13 also hides
   quic-go's `SetPriority`, so a Go sender cannot put a keyframe stream
   ahead of a carrier ([docs/76](76-pop-relays.md) item 18).
 

@@ -461,18 +461,34 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
     (docs/75 F2). Without the bit, or with `-pop-leg-delivery=datagram`, the
     leg forwards deltas and parity as datagrams, verbatim.
 
-    **The writer follows R73's sender rules** (docs/75 D2, D3): at most two
-    carriers live, so C's three slots (`hub.MaxUplinkCarriers`) never
-    refuse a GOP; a superseded carrier is finished at rotation and reset
-    150 ms later; nothing queued for an older GOP is written once a newer
-    keyframe has gone. The hub's reliable-delivery drain (`drainReliable`,
-    `hub.go:3029`) already writes per-GOP carriers from a hub. But it only
-    closes a superseded carrier (`retireCarrier`, `hub.go:3355`), and it
-    puts audio on a carrier of its own (docs/20). Both are right for a
-    viewer and wrong for R73's reader, which holds three carriers and takes
-    only video and parity records. So the legs get that drain with R73's
-    rules and audio as datagrams, as an option; viewers keep today's. The
-    downlink uses the same writer (item 23).
+    **The writer follows R73's sender rules** (docs/75 D2, D3):
+    - at most two carriers live, so C's three slots
+      (`hub.MaxUplinkCarriers`) never refuse a GOP;
+    - a superseded carrier is finished at rotation and reset 150 ms later;
+    - **no reset within a GOP**: a slow write waits, and only the next
+      keyframe ends it;
+    - a write still blocked on an older GOP's carrier is abandoned when the
+      next keyframe fans out (its write deadline set to now), and that
+      carrier is reset at once (F10);
+    - nothing queued for an older GOP is written once a newer keyframe has
+      gone, and a GOP superseded before its carrier opened never gets one.
+
+    The hub's reliable-delivery drain (`drainReliable`, `hub.go:3029`)
+    already writes per-GOP carriers from a hub, but it breaks three of
+    those rules, each right for a viewer. It only closes a superseded
+    carrier (`retireCarrier`, `hub.go:3355`). It gives every record a
+    500 ms deadline (`CarrierWriteTimeout`) and on a timeout resets the
+    carrier and drops the rest of its GOP (`writeCarrier`), so a congested
+    line cuts GOPs short. And it notices a rotation only between writes. It
+    also puts audio on a carrier of its own (docs/20), which R73's reader,
+    taking only video and parity records, refuses. So the legs get that
+    drain with R73's rules and audio as datagrams, as an option; viewers
+    keep today's. The downlink uses the same writer (item 23).
+
+    **Timers.** Both legs dial with the link's QUIC timers (idle 15 s,
+    keepalive 5 s, item 10), so an outage shorter than 15 s does not end a
+    leg. The uplink's effective idle timeout is the lower of the PoP's and
+    home's (`-max-idle-timeout`, 30 s by default).
 
     Three differences from the engine come from Go's stack. quic-go gives
     no signal that a finished stream was fully acknowledged (the engine
@@ -531,21 +547,40 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
     `404` to the viewer. One leg per broadcast, whatever the number of party
     viewers.
 
-    **The leg is a carrier too (OD16).** Home writes `/pop/subscribe` with
-    the uplink leg's writer (item 18): keyframes on their own streams,
-    deltas and parity on per-GOP carriers under R73's sender rules, audio
-    and the clock messages as datagrams. It is not R19's
-    `?delivery=reliable`: R73's reader refuses its audio carrier, and its
-    close-only retire can fill the reader's three slots (§13). On the
-    PoP, the edge pump hands a `0x0A` stream to
+    **The leg is a carrier too (OD16).** The PoP asks for it with
+    `?delivery=carrier`, and home then writes `/pop/subscribe` with the
+    uplink leg's writer (item 18): keyframes on their own streams, deltas
+    and parity on per-GOP carriers under R73's sender rules, audio and the
+    clock messages as datagrams. Without the parameter home serves an
+    edge's datagrams, as before R73. The carrier is opt-in so that home,
+    which deploys itself, can keep serving a PoP that updates late, should
+    the reader ever change; `-pop-leg-delivery=datagram` just leaves the
+    parameter off. It is not R19's `?delivery=reliable`: R73's reader
+    refuses its audio carrier, and the drain's close-only retire and
+    in-GOP resets break the rules above (§13).
+
+    On the PoP, the edge pump hands a `0x0A` stream to
     `Publisher.IngestUplinkCarrier` and any other stream to the keyframe
-    reader, as a publish session does (`server.go:1131`; the pump accepts
-    streams at `edge.go:561`). The dialer sizes its receive windows from
-    `-uplink-max-bitrate` by R73's rule (`transport/uplink.go`), or a 1440p
-    GOP blocks on flow control (docs/75 D10, table H). The PoP never opts
-    parity down, because its own viewers' leg B needs the symbols (docs/75
-    D1). With `-pop-leg-delivery=datagram` it asks for
-    `?delivery=datagram` and gets an edge's datagrams, as before R73.
+    reader, as a publish session does (`server.go:1131`). As there, a
+    carrier gives back its keyframe slot once classified
+    (`server.go:1162`); otherwise two live carriers and the keyframe
+    streams fill the pump's four slots. A stream refused for want of a slot
+    is reset (`CancelRead`, as `server.go:1143` does), not dropped unread
+    as the pump does today (`edge.go:566-571`), because an unread stream
+    keeps holding the session's flow-control credit. The PoP never opts
+    parity down: its own viewers' leg B needs the symbols (docs/75 D1).
+
+    The dialer is not the edge dialer's in-cluster setup. It uses the link's
+    timers (item 18) rather than `edgeIdleTimeout` / `edgeKeepAlive`
+    (4 s / 1 s, `edge.go:45-46`), which would end the leg, and invalidate
+    the PoP's prime, on any outage over 4 s. It sizes its receive windows
+    with R73's function (`uplinkReceiveWindows`, `transport/uplink.go`),
+    or a 1440p GOP blocks on flow control (docs/75 D10, table H). The
+    function's 10 ms RTT term is kept on purpose. At 50 Mbps the 2 MB
+    stream window is 320 ms of the stream at its ceiling: it holds a 1440p
+    GOP's deltas (~1.8 MB), and auto-tuning grows it from there. Home's
+    listener applies the same windows to the uplink leg. PP9 checks this
+    under a 40 ms RTT.
 
 24. **Downlink budget**, optional, enforced at the PoP. Separately, the
     home fleet caps a PoP's concurrent downlink legs
@@ -581,7 +616,10 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
     effective budget. First come, first served; a pinned "featured" stream
     is deferred (§13). The budget counts stream rate, not wire bytes: the
     carrier's retransmissions (OD15) ride on top, as many as the venue's
-    line loses.
+    line loses. The leg's writer also charges the relay's pod-wide
+    `-max-bandwidth` bucket, as every subscriber drain does. That flag caps
+    the host's NIC as a whole and is off (`0`) in the profile; the venue's
+    line is limited by this budget alone.
 
 28. **Refusal is visible and temporary.** A refused `want` returns to B,
     which closes the waiting viewer with **`4012 PopUplinkFull`**, sent
@@ -830,7 +868,7 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
 | The PoP host restarts | Persisted keys and certificate: broadcasters auto-resume (R17 W2) on the same codes, and the link re-establishes. |
 | The link-home pod drains | `4002` on the link, an immediate relink, and the new holder force-takes and adopts the reservations. Forwarded legs are unaffected: they are separate sessions on other pods. |
 | An uplink leg dies | The origin's ordinary grace; the PoP redials while still wanted; Lease force-take; docs/22 origin move. |
-| A burst or a short outage on the venue's line | On the carrier a GOP arrives late instead of cut short. A carrier older than the current GOP is reset, so nothing stale is resent when the line recovers (docs/75 D3, F10). The same holds on a downlink leg. With `-pop-leg-delivery=datagram`, parity repairs random loss and an outage costs every viewer on the far side the rest of the GOP. |
+| A burst, or an outage shorter than the legs' 15 s idle timeout, on the venue's line | On the carrier a GOP arrives late instead of cut short. A carrier older than the current GOP is reset, so nothing stale is resent when the line recovers (docs/75 D3, F10). The same holds on a downlink leg. With `-pop-leg-delivery=datagram`, parity repairs random loss and an outage costs every viewer on the far side the rest of the GOP. |
 | Venue Wi-Fi isolates clients | Probes fail and guests stay on home. The console shows "offers sent N · guests here M"; a large gap is the hint. |
 | Venue DNS filters private answers | The named host fails at the venue. The self-check (item 40) moves the QR code to the home link, and offers still carry the pinned candidate. |
 | Permission denied in the browser | The guest stays on home with a note; streams cost the venue's internet as today. |
@@ -979,8 +1017,8 @@ they use R73's carrier (`TypeReliableCarrier`, `0x0A`) and its
 - `CONNECT /pop/link`
 - `CONNECT /pop/addr`
 - `CONNECT /pop/publish/{id}`
-- `CONNECT /pop/subscribe/{id}` (`?delivery=datagram` for an edge's
-  datagrams instead of the carrier leg)
+- `CONNECT /pop/subscribe/{id}` (`?delivery=carrier` for the carrier leg;
+  without it, an edge's datagrams)
 - `CONNECT /internal/pop/{name}` (pod → link-home pod)
 
 On the home fleet's **ops listener**, beside the existing `/internal/admin/*`
@@ -1092,9 +1130,11 @@ CRUD.
   `retireCarrier`, the writer that gains R73's rules as an option),
   `internal/transport/uplink.go` (the receive windows the PoP's dialer
   copies).
-- `internal/transport/edge.go:201` `EnsureEdge`, `:722-752` the dialer,
-  `:57-122` TimeSync + `rewriteClockMapping`, `:561` the pump's stream
-  accept (where the downlink's carriers go), `:605-620` the count report.
+- `internal/transport/edge.go:201` `EnsureEdge`, `:722-752` the dialer
+  and `:45-46` its in-cluster timers (which the PoP's must not inherit),
+  `:57-122` TimeSync + `rewriteClockMapping`, `:561-571` the pump's stream
+  accept and its four slots (where the downlink's carriers go), `:605-620`
+  the count report.
 - `internal/cluster/cluster.go:223` `Claim`, `:568` `Lookup`, `:720` the
   janitor (dormant reservations must survive it); `internal/hub/hub.go:945`
   `EdgePublish`, `:1406-1455` the count fan-out.
@@ -1136,8 +1176,8 @@ needs A. Phase C needs B's link (PP7) and offers nothing without it.
 | **PP5** — pinned links in clients | `gawk-app`: `certHash=` (private literal rule), landing-page "Save and use this server", share links on a standalone PoP; desktop + iOS: per-server hash pinning, the `gawk://server` form; **`LocalRelayInfo` (`0x18`) allocated with its full layout** (item 45), mirrors and vectors, sent by every `gawk-relay` | `0x18` vectors byte-identical in all three copies, and a standalone relay sends it on every session kind; routing vectors accept and reject per the rule; tier-1 e2e: headless Chrome with a CDP-granted `local-network` permission joins a relay at a non-loopback address by a hash link; Rust dial test against a pinned relay; link vectors |
 | **PP6** — `Pop` resources | CRD + `gawk-server/pops` package + chart RBAC; `-pops-file`; `gawk-admin` `/api/v1/pops` CRUD + pairing string, OpenAPI, the PoPs list, wizard and detail | The chart renders the CRD gated on `pops.enabled`; the pairing string is shown once and only its hash is stored; `gawk-server/pops` reaches no quic-go (a `go list -deps` check in CI: `gawk-admin` builds it, and the `replace` does not cross modules); OpenAPI drift check green; UI tests |
 | **PP7** — the link | `/pop/link`, pairing exchange, credential, status lease and force-take, `hello`/`config`/`stats`/`health`/`bye`, reconnect, `/pop/addr`; console pairing; `0x18`'s `linked` flag and home origin; `GET /internal/admin/pops` (link state; PP8, PP9 and PP13 add their counts) and the PoP cards reading it; local rooms when home runs `-rooms` off | In-process test (3 home pods, fake clientset with the docs/22 finding-11 reactors) + one PoP: pair; relink after a drain lands on another pod, which force-takes; used, expired and wrong tokens refused with legible statuses; a credential paired in time outlives `spec.pairing.expiresAt`; Re-pair refuses the old credential at once, also when two Re-pairs land in the same second; the console tells `bye{repair}` from `bye{revoked}`, and recovers the reason from `401`/`403` when the `bye` is lost; `-pops-file` credentials work with no pairing; a `proto` major mismatch → `426`; a paired PoP's `0x18` has `linked` set and the home origin, and an unpaired or revoked one has it clear; `/internal/admin/pops` answers on the ops listener behind the admin gate and is absent from the public mux (test); with home `-rooms` off, `/room/new` on a linked PoP mints a local room |
-| **PP8** — reservations and uplink | Reserve-before-announce, unlinked mints, `/internal/pop`, `/pop/publish`, admission and `4012` (+ notice), linger and `4013`, counts both ways, the clock rewrite, broadcast events with `pop`; the leg writer (R73's sender rules and audio as datagrams, an option on the hub's reliable drain), the uplink carrier, `-pop-leg-delivery`, and a `tools/uplinklab` sender driven by the leg writer | In-process: an outside viewer on pod B receives a byte-identical prime and deltas; **zero bytes on the uplink without demand** (counter); linger closes with `4013` and the Lease is back to a reservation; the fourth stream is refused and Chrome reads `4012` (tier-1 e2e); a mint past `limits.maxBroadcasts` gets `reserved{limit}` and stays party-only; the count is right on both sides; **time to first frame measured at 40 ms netem RTT and recorded here** (target ≤ 1.5 s); event schemas and vectors updated, no address field; against a pod advertising `CapUplinkCarriers`, deltas and parity leave only as carrier records, no more than two carriers are ever live, and a superseded one is reset 150 ms after it finished (fake clock); with home's `-uplink-carriers=false` or `-pop-leg-delivery=datagram` the leg is datagrams, byte-identical to before; **the PoP's sender measured in the uplink lab**, carrier against datagrams, on docs/75 table O's 30 and 15 Mbps cells beside a TCP upload and on table B's bursts and outages, three runs a cell, recorded here together with whether the missing keyframe priority costs a GOP's first frames. The carrier stays the default unless datagrams show the Balanced viewer more frames in one of those cells by more than the cell's run-to-run spread; if they do, datagrams become the default and item 18 says so |
-| **PP9** — downlink | `/pop/subscribe`, the PoP edge dialer, upward count reports, the downlink budget, `maxDownlinkStreams` at home; the downlink carrier: the leg writer on `/pop/subscribe`, R73's reader in the PoP's edge pump, R73's receive windows on the PoP's dialer, `?delivery=datagram` | Ten party viewers of one home broadcast → one leg (counter); `G` at home includes them; the leg cap refuses the 21st distinct broadcast; a 1440p home stream's GOPs cross without blocking on flow control (in-process, as docs/75 table H); audio reaches the PoP as datagrams and never as a carrier record; **the downlink measured in the uplink lab beside a saturating TCP download** (a game update's shape), carrier against datagrams, three runs a cell, recorded here |
+| **PP8** — reservations and uplink | Reserve-before-announce, unlinked mints, `/internal/pop`, `/pop/publish`, admission and `4012` (+ notice), linger and `4013`, counts both ways, the clock rewrite, broadcast events with `pop`; the leg writer (R73's sender rules and audio as datagrams, an option on the hub's reliable drain), the uplink carrier, `-pop-leg-delivery`, and a `tools/uplinklab` sender driven by the leg writer | In-process: an outside viewer on pod B receives a byte-identical prime and deltas; **zero bytes on the uplink without demand** (counter); linger closes with `4013` and the Lease is back to a reservation; the fourth stream is refused and Chrome reads `4012` (tier-1 e2e); a mint past `limits.maxBroadcasts` gets `reserved{limit}` and stays party-only; the count is right on both sides; **time to first frame measured at 40 ms netem RTT and recorded here** (target ≤ 1.5 s); event schemas and vectors updated, no address field; against a pod advertising `CapUplinkCarriers`, deltas and parity leave only as carrier records, no more than two carriers are ever live, and a superseded one is reset 150 ms after it finished (fake clock); a 400 ms write stall within a GOP does not reset its carrier, and a write blocked across a rotation is abandoned when the new keyframe fans out and its carrier reset (fake clock); a 10 s outage (netem) does not end the leg; with home's `-uplink-carriers=false` or `-pop-leg-delivery=datagram` the leg is datagrams, byte-identical to before; **the PoP's sender measured in the uplink lab**, carrier against datagrams, on docs/75 table O's 30 and 15 Mbps cells beside a TCP upload and on table B's bursts and outages, three runs a cell, recorded here together with whether the missing keyframe priority costs a GOP's first frames. The carrier stays the default unless datagrams show the Balanced viewer more frames in one of those cells by more than the cell's run-to-run spread; if they do, datagrams become the default and item 18 says so |
+| **PP9** — downlink | `/pop/subscribe`, the PoP edge dialer, upward count reports, the downlink budget, `maxDownlinkStreams` at home; the downlink carrier: `?delivery=carrier` and the leg writer on `/pop/subscribe`, R73's reader in the PoP's edge pump (a carrier frees its keyframe slot, a refused stream is reset), the link's timers and R73's receive windows on the PoP's dialer | Ten party viewers of one home broadcast → one leg (counter); `G` at home includes them; the leg cap refuses the 21st distinct broadcast; a 1440p home stream's GOPs cross without blocking on flow control under a 40 ms RTT (the in-process UDP proxy, as docs/75 table H); audio reaches the PoP as datagrams and never as a carrier record; without `?delivery=carrier` home serves datagrams (test); a stream the pump refuses is reset, not left unread (test); a 10 s outage does not end the leg, and the PoP's prime survives it; **the downlink measured in the uplink lab beside a saturating TCP download** (a game update's shape), carrier against datagrams, three runs a cell, recorded here |
 | **PP10** — moderation reach | Ban forwarding and local enforcement, revoke, IP-ban and limiter exemption, the admin badge and party-only rows, the screening-notice relay | A kill in `gawk-admin` ends a party-only broadcast at the PoP with `4006` for its viewers and broadcaster; a banned ID cannot be reclaimed at the PoP; an IP ban on the PoP's public address does not cut a leg; **after a revoke**, the PoP's reservations are gone, an outside viewer of a party code gets `4000` (attached) or `404` (new dial), no offer is sent, the `DNSEndpoint` is deleted, and the PoP keeps serving the LAN as a standalone relay; the PoP's `0x11` carries the screening bit while home's does |
 | **PP11** — the party wall | Wall room creation with the PoP, `spec.pop` / `spec.maxBroadcasts` / `spec.maxParticipants`, vouched-only attach and detach, Hide/Show and `wall=hidden`, `0x18`'s wall code and on-wall state, link-proxied room control, the local read-only wall | Extended `rooms-assert`: party broadcasts appear on the wall, **a fifth and later party broadcast included**; **an ordinary `Attach` to the wall (an outsider's home broadcast) is refused**; Hide removes and Show restores; a hidden-remembered broadcaster never appears; an outside participant's tile past the budget shows "Party-only right now" and joins when a slot frees; a protocol-1 client parses every snapshot; unlinked, party guests see the local wall; a broadcaster's `0x18` carries the wall code and an on-wall state that follows Hide, Show and `wall=hidden` |
 | **PP12** — the named tier | CSR on the link, the `gawk-admin` reconciler (`CertificateRequest`, `DNSEndpoint`), random labels, the PoP's HTTPS UI and generated `config.js`, renewal at half-life, the rebinding self-check, QR selection | Reconciler unit tests against fake cert-manager and external-dns objects: a CSR with a wrong SAN is refused; the PoP's CSR names the host it got in `config`; a renewal CSR is issued exactly once (`issuedForCSR`), and the PoP never receives the previous chain for it; one staging issuance on the reference deployment; a phone on the LAN loads the PoP UI with no prompt (PP15) |
@@ -1204,9 +1244,11 @@ uplink (25 Mbps up):
   multi-region *backbone*; a PoP is one edge, and the WebTransport cascade
   covers it with its existing datagrams and R73's carrier.
 - **R19's reliable delivery (`?delivery=reliable`) as the downlink.** It
-  puts audio on a carrier of its own, which R73's reader refuses, and only
-  closes a superseded carrier, which fills the reader's three slots on a
-  lossy line. The legs share one writer with R73's rules instead (item 18).
+  puts audio on a carrier of its own, which R73's reader refuses. It only
+  closes a superseded carrier, which can fill the reader's three slots on a
+  lossy line. And it resets a carrier whose record waits 500 ms, cutting
+  the GOP short. The legs share one writer with R73's rules instead
+  (item 18).
 - **A budget measured at link-up** (OD13): a noisy burst test on a busy line.
 
 ### Deferred (wanted, not now)
