@@ -254,6 +254,29 @@ Add to it when a new gotcha lands in `docs/`.
   in both engines on 2026-08-17; it is why R38 has no mkcert lane.
   ([docs/41](41-local-dev-stack.md) §6)
 
+**Local network access (R74)**
+
+- **Chrome blocks WebTransport from a public page to a LAN address until the
+  site has the local-network permission** (Chrome 147+, measured on 151 on
+  2026-10-21). Script sees only `WebTransportError: Opening handshake
+  failed`; the reason, `net::ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`, is
+  in the console alone, so it reads like a dead relay. "Local" is judged by
+  the address the connection uses: a public DNS name that resolves to a LAN
+  address is blocked the same way. A page served from a LAN or loopback
+  address is not restricted when it dials a LAN address.
+  ([docs/76](76-pop-relays.md) §3)
+- **Headless Chrome never shows that prompt; it denies.** To test with the
+  permission granted, use CDP `Browser.setPermission({permission: {name:
+  'local-network'}, setting: 'granted', origin, browserContextId})`. Without
+  `browserContextId` the grant lands in the default context, and a
+  Playwright context keeps reporting `prompt` (measured).
+  `--ip-address-space-overrides=<ip>:<port>=public` makes a local test page
+  count as public. ([docs/76](76-pop-relays.md) §3)
+- **A hash-pinned certificate's names are not checked.** Chrome accepted a
+  pinned relay at `https://10.0.2.2:4434` whose certificate named only
+  `localhost`: the hash, the validity span and the key type are what count.
+  ([docs/76](76-pop-relays.md) §3 M5)
+
 **webtransport-go (v0.11.x) — all fail at runtime, not compile time**
 
 - ALPN must be added manually: wrap your TLS config in
