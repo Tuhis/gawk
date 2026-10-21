@@ -15,7 +15,7 @@
 //
 // Since docs/75 RU9 the datagram mode is the shipping send queue: deltas and
 // audio more than a GOP old are dropped (a D line for a delta), deltas give
-// way to a late keyframe, and keyframes go through the shipping
+// way to a late keyframe (a DA line for stale audio), and keyframes go through the shipping
 // KeyframeSender (KQ: it had to wait; K's outcome may also be aborted,
 // replaced or discarded). A dropped frame counts as resolved in the Q lines.
 import { DatagramSender, webTransportInit } from '../src/transport/connection';
@@ -250,7 +250,11 @@ async function main(): Promise<void> {
   const audioTimer = setInterval(() => {
     offered++;
     if (NOWAIT) void rawWriter.write(audio).catch(() => {});
-    else void sender.send([audio], { kind: 'audio' }).catch(() => {});
+    else
+      void sender.send([audio], { kind: 'audio' }).then(
+        (result) => result === 'dropped' && log(`DA,${nowNs()}`), // stale audio, dropped
+        () => {},
+      );
   }, 20);
   const flushTimer = setInterval(() => void flush(), 500);
   const queueTimer = setInterval(() => log(`Q,${nowNs()},${framesQueued},${framesResolved}`), 1000);

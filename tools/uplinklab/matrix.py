@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|chrome-ru9-p7|chrome-ru9-p9|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -56,6 +56,12 @@ MODES = {
     "chrome-dgram-kt": ["--mode", "datagram"],
     "chrome-dgram-maxage100": ["--mode", "datagram", "--maxage", "100"],
     "chrome-dgram-maxage100-hwm1000": ["--mode", "datagram", "--maxage", "100", "--hwm", "1000"],
+    # RU9: the same sends through the fixed page (its send queue drops stale
+    # frames, KeyframeSender holds the keyframes), so P7's and P9's cells
+    # re-run beside the runs they measured before the fix (tables P10, P11).
+    "chrome-ru9": ["--mode", "datagram"],
+    "chrome-ru9-maxage100": ["--mode", "datagram", "--maxage", "100"],
+    "chrome-ru9-maxage100-hwm1000": ["--mode", "datagram", "--maxage", "100", "--hwm", "1000"],
 }
 # Modes that change the receiver rather than the sender.
 MODE_ENV = {
@@ -68,7 +74,7 @@ MODE_ENV = {
     "chrome-carrier-kfa": {"SENDER_BIN": f"{HERE}/browser/sender.mjs", "RECV_BIN": f"{OUT}/bin/gawk-uplinklab-bigq"},
 }
 for _m in ("chrome-dgram-ceil", "chrome-dgram-nowait-ceil", "chrome-carrier-ceil", "chrome-dgram-kt", "chrome-dgram-maxage100",
-           "chrome-dgram-maxage100-hwm1000"):
+           "chrome-dgram-maxage100-hwm1000", "chrome-ru9", "chrome-ru9-maxage100", "chrome-ru9-maxage100-hwm1000"):
     MODE_ENV[_m] = MODE_ENV["chrome-dgram"]
 
 
@@ -242,6 +248,11 @@ def sets():
                     else ("dgram-bbr-q512",)
                 g10.append(scen(f"rtt{rtt}-loss{loss}-s{seed}", p, modes=modes, seed=seed))
     s["ru8-g10"] = g10
+    # RU9's lab criterion: table P7's cells and table P9's, through the fixed page.
+    s["chrome-ru9-p7"] = [dict(by["rtt40-loss0.005"], modes=("chrome-ru9", "chrome-ru9-maxage100",
+                                                             "chrome-ru9-maxage100-hwm1000")),
+                          dict(by["hi-rtt10-clean"], modes=("chrome-ru9", "chrome-ru9-maxage100"))]
+    s["chrome-ru9-p9"] = [dict(sc, modes=("chrome-ru9",)) for sc in s["chrome-kftiming"] + s["chrome-kftiming2"]]
     s["all"] = core + cc + hi + jit + win + bigq + seeds
     return s
 

@@ -1300,6 +1300,8 @@ python3 tools/uplinklab/matrix.py chrome-kf --jobs 1   # the keyframe gate (OD5)
 for set in chrome-ceiling chrome-ceiling-repeat chrome-knobs chrome-seeds chrome-kftiming chrome-kftiming2; do
   python3 tools/uplinklab/matrix.py $set --jobs 1      # tables P6–P9, ~1 h 40
 done
+python3 tools/uplinklab/matrix.py chrome-ru9-p7 --jobs 1   # RU9's page on P7's cells, table P10 (~10 min)
+python3 tools/uplinklab/matrix.py chrome-ru9-p9 --jobs 1   # and on P9's paths, table P11 (~20 min)
 IPERF3=$(command -v iperf3) tools/uplinklab/fair/chrome.sh   # rootless netns (unshare -rn), ~30 min
 python3 tools/uplinklab/fair/analyze.py       # table O
 python3 tools/uplinklab/tables.py             # table P with the rest
@@ -2214,6 +2216,89 @@ late one (not handed over within one GOP of its own production), or behind two s
 | 10 ms · 1440p · clean | 200 of 200 | 100 / 223 / 493 | 133 / 262 / 543 | 28 / 55 | 0 |
 | 40 ms · 1440p · clean | 200 of 200 | 106 / 233 / 361 | 172 / 304 / 423 | 62 / 84 | 0 |
 | 100 ms · 1440p · clean | 200 of 200 | 62 / 166 / 220 | 187 / 277 / 347 | 110 / 164 | 0 |
+
+#### RU9's acceptance run (tables P10, P11)
+
+Run on 2026-10-21 (03:10–03:42) at RU9's head, alone on the host at 0.1–0.3 %
+CPU steal (the last column). The commands were
+`matrix.py chrome-ru9-p7 --jobs 1`, `matrix.py chrome-ru9-p9 --jobs 1` and
+`tables.py`. The page was rebuilt from the branch. It runs the shipping
+`DatagramSender` and `KeyframeSender`, logs a stale delta as `D` and stale
+audio as `DA`, and counts a dropped frame as resolved. The 40 ms, 0.5 % loss
+cell was re-run because a table script ran beside its first pass. Table P10's
+first 1440p row and table P11's 10 ms 1440p row are the same run.
+
+#### Table P10 — table P7's cells with RU9's send queue
+
+The fixed page (`matrix.py chrome-ru9-p7`): a stale frame resolves as dropped, so *frames waiting*
+(handed to DatagramSender, not yet resolved, after 30 · 60 · 95 s) counts only what still waits.
+*Stale drops*: deltas · audio packets the queue dropped for age or behind a late keyframe.
+*Keyframes sent*: acknowledged, of those produced (the rest by outcome); *waited*: keyframes that
+had to wait in KeyframeSender's slot. *Landed*: acknowledged keyframes per second of the run, and
+the gap between successive acknowledgements. *Handover → acknowledged*: the `KW` → `K` tail of the
+keyframes acknowledged. *Host CPU steal*: over the cell, from /proc/stat.
+
+| Path | Page | outgoingMaxAge · outgoingHighWaterMark | Frames waiting | Stale drops: deltas · audio | Datagram frames sent | Keyframes sent | Keyframes waited | Keyframes landed /s | Between landings p50 / p95 / max ms | Handover → acknowledged p50 / p95 / max ms | Decode-ready p50 / p99 ms | Balanced: shown · stalled | Host CPU steal |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 40 ms, 0.5 % loss | RU9 | null · 1 | 28 · 29 · 29 (peak 31) | 1 882 · 178 | 68 % | 200 of 200 | 30 | 1.97 | 500 / 714 / 867 | 211 / 431 / 554 | 382 / 1108 | 37.5 % · 61.6 % | 0.1 % |
+| 40 ms, 0.5 % loss | RU9, outgoingMaxAge 100 ms | 100 · 1 | 19 · 12 · 23 (peak 30) | 1 848 · 185 | 69 % | 200 of 200 | 26 | 1.97 | 502 / 738 / 983 | 214 / 463 / 549 | 374 / 1028 | 42.1 % · 58.7 % | 0.1 % |
+| 40 ms, 0.5 % loss | RU9, outgoingMaxAge 100 ms, high-water mark 1000 | 100 · 1000 | 0 · 0 · 0 (peak 0) | 2 233 · 0 | 62 % | 200 of 200 | 88 | 1.97 | 414 / 1315 / 1545 | 284 / 1146 / 1333 | 630 / 1231 | 16.3 % · 86.5 % | 0.2 % |
+| 1440p, 10 ms, clean | RU9 | null · 1 | 3 · 18 · 1 (peak 30) | 572 · 100 | 86 % | 200 of 200 | 0 | 1.97 | 500 / 516 / 552 | 13 / 18 / 34 | 60 / 519 | 75.5 % · 24.9 % | 0.1 % |
+| 1440p, 10 ms, clean | RU9, outgoingMaxAge 100 ms | 100 · 1 | 8 · 19 · 1 (peak 31) | 499 · 89 | 88 % | 200 of 200 | 0 | 1.97 | 501 / 512 / 524 | 13 / 16 / 25 | 48 / 518 | 72.5 % · 27.8 % | 0.1 % |
+
+#### Table P11 — table P9's paths with RU9's send queue
+
+The fixed page (`matrix.py chrome-ru9-p9`), every keyframe of the 100 s run. Columns as table P10.
+The 1440p rows are past Chrome's datagram ceiling (table P6): there RU9 is meant to drop.
+
+| Path | Keyframes sent | Keyframes waited | Stale drops: deltas · audio | Handover → acknowledged p50 / p95 / max ms | Decode-ready p50 / p99 ms | Balanced: shown · stalled | Host CPU steal |
+|---|---|---|---|---|---|---|---|
+| 0 ms · 1080p · clean | 200 of 200 | 0 | 0 · 0 | 5 / 17 / 26 | 6 / 31 | 99.8 % · 0.0 % | 0.2 % |
+| 10 ms · 1080p · clean | 200 of 200 | 0 | 0 · 0 | 13 / 17 / 26 | 9 / 28 | 100.0 % · 0.0 % | 0.2 % |
+| 40 ms · 1080p · clean | 200 of 200 | 0 | 0 · 0 | 43 / 47 / 87 | 24 / 48 | 99.9 % · 0.0 % | 0.1 % |
+| 40 ms · 1080p · clean (run 2) | 200 of 200 | 0 | 0 · 0 | 43 / 46 / 90 | 25 / 41 | 100.0 % · 0.0 % | 0.1 % |
+| 40 ms · 1080p · 0.1 % loss | 200 of 200 | 0 | 0 · 0 | 112 / 165 / 225 | 29 / 264 | 92.9 % · 6.7 % | 0.2 % |
+| 100 ms · 1080p · clean | 200 of 200 | 0 | 0 · 0 | 104 / 109 / 227 | 55 / 79 | 99.8 % · 0.2 % | 0.3 % |
+| 100 ms · 1080p · clean (run 2) | 200 of 200 | 0 | 0 · 0 | 104 / 108 / 229 | 55 / 75 | 100.0 % · 0.0 % | 0.1 % |
+| 200 ms · 1080p · clean | 200 of 200 | 0 | 0 · 0 | 205 / 209 / 468 | 105 / 127 | 99.6 % · 0.0 % | 0.1 % |
+| 300 ms · 1080p · clean | 200 of 200 | 0 | 22 · 4 | 306 / 311 / 706 | 155 / 177 | 99.8 % · 0.0 % | 0.2 % |
+| 10 ms · 1440p · clean | 200 of 200 | 0 | 572 · 100 | 13 / 18 / 34 | 60 / 519 | 75.5 % · 24.9 % | 0.1 % |
+| 40 ms · 1440p · clean | 200 of 200 | 0 | 536 · 108 | 44 / 64 / 81 | 63 / 534 | 69.7 % · 30.8 % | 0.1 % |
+| 100 ms · 1440p · clean | 200 of 200 | 0 | 578 · 97 | 103 / 185 / 205 | 113 / 562 | 77.7 % · 22.7 % | 0.1 % |
+
+**Against RU9's criterion:**
+
+- **Frames waiting stay under one GOP's worth: holds on P7's measure.** At
+  30 · 60 · 95 s every cell had 0–29 frames waiting, against 569–3 305 before
+  the fix. A GOP at 60 fps is 30 frames. The 1 s samples peaked at 30–31:
+  about one GOP (500 ms) of deltas at the moment the oldest is dropped, and
+  never more.
+- **Decode-ready p50 under 1 s: holds.** It was 374–630 ms at 40 ms with
+  0.5 % loss and 48–60 ms at 1440p, against 20–43 s before the fix. The p99
+  was 1.0–1.2 s and 0.5 s.
+- **How often a keyframe lands** (a measured outcome): every keyframe was
+  acknowledged, 200 of 200 in every cell, at 1.97 a second. At 40 ms with
+  0.5 % loss, as shipped or with `outgoingMaxAge`, the gap between
+  acknowledgements was 500–502 ms at p50, 714–738 ms at p95 and at most
+  867–983 ms, and 26–30 keyframes waited in the slot. With the 1 000-deep
+  high-water mark the p95 gap was 1 315 ms and 88 keyframes waited. At 1440p none
+  waited and the gaps held 500–552 ms.
+- **Handover → acknowledgement tail** (the `KW` lines): 211 / 431 / 554 ms
+  (p50 / p95 / max) at 40 ms with 0.5 % loss. Chrome's 1 000-deep queue
+  stretched it to 284 / 1 146 / 1 333 ms, and that cell was the worst on
+  every column. At 1440p, 10 ms, it was 13 / 18 / 34 ms.
+- **P9's clean cells at 0–300 ms: no keyframe waited in any of them. Nothing
+  was dropped at 0–200 ms. At 300 ms 22 deltas and 4 audio packets were
+  dropped, so "nothing dropped" fails there.** All 26 fell in the first
+  0.7 s of the session: frames 8–29 of the opening GOP, then four audio
+  packets at 0.68 s. Nothing was dropped after that, and the run showed
+  99.8 % of frames to the Balanced viewer. The 0.1 % loss row at 40 ms
+  (not a clean cell) dropped nothing either.
+- Not part of the criterion: the 1440p rows drop by design (P6's ceiling).
+  They dropped 536–578 deltas and 97–108 audio packets in 100 s, and the
+  Balanced viewer saw 70–78 % of frames at 60–113 ms decode-ready p50,
+  against 3.4 % at 40 s before the fix. At 40 ms with 0.5 % loss the
+  Balanced viewer saw 37.5 % (3.3 % before).
 
 ## 12. References
 
