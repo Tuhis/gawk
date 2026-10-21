@@ -175,6 +175,11 @@ pub struct BroadcastCounters {
     pub upload_bps: u64,
     /// The engine's uplink watchdog (`UplinkMonitor`): the upload isn't
     /// keeping up. Raised after 5 bad seconds, cleared after 15 good ones.
+    /// A capacity signal, judged in the delivery mode in use: keyframes
+    /// outliving their GOP, failed sends, the send buffer falling behind
+    /// (or, on carriers, GOPs shed or every carrier expiring) — never
+    /// packet loss alone, which a radio going off-channel also causes
+    /// (docs/75 RU4, 2026-10-21).
     pub uplink_warning: bool,
 }
 
