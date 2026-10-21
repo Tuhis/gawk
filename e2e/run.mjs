@@ -192,6 +192,13 @@ const PARITY_VIEWER_PASS = !EXTERNAL && !BROWSER_BROADCAST;
 // per frame means fewer chances to lose one), low enough to stay far from the
 // congestion collapse that would turn recovery into a timeout.
 const PARITY_LOSS_PERCENT = 5;
+// R73 RU8 (docs/75 D11): the uplink-parity pass. The loss moves to leg A —
+// publisher → relay — where carrier retransmission cannot reach it, and the
+// viewer is a Smoother (reliable carrier) one, so the only repair is the
+// parity the relay now writes onto its carrier. Its own publisher, because the
+// broadcast it loses on must not be the one assertRelaySide checks for zero
+// ingress loss. Same loss rate as the R29 pass, for the same reasons.
+const UPLINK_PARITY_PASS = !EXTERNAL && !BROWSER_BROADCAST;
 // R30 (docs/35 §12): the striped pass, on its own broadcast — the default
 // fixture's ~2–4-chunk deltas sit under one stripe share, so the controller
 // correctly engages nothing against it (the designed §5.4 hold). A second
@@ -502,7 +509,12 @@ function launchBrowser(extraArgs = []) {
 //
 // tc/netem is not an option — CI runners are unprivileged containers with no
 // NET_ADMIN — and this is a few dozen lines in-process.
-function startLossyLink(relayPort, lossPercent) {
+//
+// R73 RU8: `uplink: true` turns it around for a PUBLISHER behind the link —
+// client → relay is the lossy direction, which is where a broadcaster's
+// uplink loses chunks — and setLoss() lets the pass arm it after the
+// handshake and disarm it before the publisher says goodbye.
+function startLossyLink(relayPort, lossPercent, { uplink = false } = {}) {
   const front = dgram.createSocket('udp4');
   const peers = new Map(); // "ip:port" of the client → its upstream socket
   let seed = 0x2545f491;
@@ -523,11 +535,12 @@ function startLossyLink(relayPort, lossPercent) {
       // The lossy direction. Dropping here rather than on the uplink is what
       // makes every absence at the viewer attributable to this link.
       up.on('message', (reply) => {
-        if (rnd() * 100 < lossPercent) return;
+        if (!uplink && rnd() * 100 < lossPercent) return;
         front.send(reply, rinfo.port, rinfo.address);
       });
       peers.set(key, up);
     }
+    if (uplink && rnd() * 100 < lossPercent) return;
     up.send(msg, relayPort, '127.0.0.1');
   });
 
@@ -535,6 +548,9 @@ function startLossyLink(relayPort, lossPercent) {
     front.bind(0, '127.0.0.1', () => {
       resolveLink({
         port: front.address().port,
+        setLoss: (percent) => {
+          lossPercent = percent;
+        },
         close: () => {
           for (const up of peers.values()) up.close();
           peers.clear();
@@ -2306,6 +2322,56 @@ async function main() {
           expectParity: false,
         });
       } finally {
+        link.close();
+      }
+    }
+
+    // R73 RU8 (docs/75 D11): parity for a reliable viewer, against loss on
+    // the PUBLISHER's leg. The R29 pass above loses on the viewer's leg,
+    // which a carrier would repair by itself; here the chunks never reach the
+    // relay, so retransmission has nothing to resend and the frame comes back
+    // only if the relay put the producer's parity on this viewer's carrier and
+    // the shipped reassembler, in its worker, repairs from those records.
+    if (UPLINK_PARITY_PASS) {
+      log(`running the uplink-parity pass: a Smoother viewer, ${PARITY_LOSS_PERCENT}% loss publisher → relay (R73 RU8)`);
+      const link = await startLossyLink(RELAY_PORT, 0, { uplink: true });
+      const uplinkPubsim = launch('pubsim-uplink', PUBSIM_BIN, [
+        '-url', `https://127.0.0.1:${link.port}`,
+        '-insecure',
+        '-duration', '180s',
+      ]);
+      try {
+        const uplinkId = await waitForLine(
+          uplinkPubsim, /GAWK_PUBSIM_ID=([A-Z0-9]{6})/, 20_000, 'the uplink-loss broadcast code');
+        // Armed after the handshake, so the loss lands on media: the
+        // producer has its RelayCapabilities and is emitting parity by now.
+        link.setLoss(PARITY_LOSS_PERCENT);
+        log(`pubsim publishing as ${uplinkId} behind a ${PARITY_LOSS_PERCENT}% lossy uplink`);
+        await runViewer('uplink-parity', MAX_RESILIENT_RETRIES, {
+          id: uplinkId,
+          delivery: 'resilient',
+          expectParity: true,
+        });
+      } finally {
+        // Disarmed first, so the publisher's goodbye is not what gets lost:
+        // its broadcast must read inactive before assertRelaySide, which
+        // holds every ACTIVE publisher to zero ingress loss.
+        link.setLoss(0);
+        if (!uplinkPubsim.exited) uplinkPubsim.child.kill('SIGTERM');
+        if (opsUrl) {
+          // Up to the relay's 30 s idle timeout and then some: pubsim can exit
+          // before its WebTransport close capsule leaves, and then the relay
+          // only learns of it when the session idles out.
+          await pollFor(
+            async () => {
+              const st = await (await fetch(`${opsUrl}/statusz`)).json();
+              return Object.values(st.broadcasts ?? {}).filter((b) => b.publisherActive).length === 1;
+            },
+            40_000,
+            250,
+            'the uplink-loss publisher to leave',
+          );
+        }
         link.close();
       }
     }

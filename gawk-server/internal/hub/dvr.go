@@ -42,7 +42,8 @@ type DVROptions struct {
 }
 
 // dvrGop is one GOP's retained bytes: the keyframe message as it would be
-// written to a keyframe stream, then the delta records in fan-out order.
+// written to a keyframe stream, then the delta records — video chunks and their
+// parity symbols (docs/75 D11) — in fan-out order.
 type dvrGop struct {
 	seq      int64
 	at       time.Time
@@ -400,6 +401,13 @@ func (s *Subscriber) drainDVR() {
 		}
 		rec, ok := s.dvr.Record(s.dvrCursor)
 		if ok {
+			// The ring holds every parity symbol the producer emitted; this
+			// cursor is served its own prefix, as the live fan-out serves a
+			// queue (docs/75 D11).
+			if idx := parityIndexIfParity(rec); idx >= s.parityK {
+				s.dvrCursor = s.dvrCursor.Next()
+				continue
+			}
 			if s.dvrWriteRecord(rec, &scratch) {
 				continue
 			}
@@ -562,6 +570,7 @@ func (s *Subscriber) dvrWriteRecord(rec []byte, scratch *[]byte) bool {
 	}
 	s.carrierRecords.Add(1)
 	s.egressCarrierBytes.Add(uint64(len(framed)))
+	s.noteCarrierParity(rec, len(framed))
 	s.dvrCursor = s.dvrCursor.Next()
 	s.dvrNoteProgress()
 	return true

@@ -1225,11 +1225,11 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	// working mode.
 	reliable := r.URL.Query().Get("delivery") == "reliable"
 	mode, bufferMs := hub.NegotiateDelivery(reliable, r.URL.Query().Get("buffer"), s.cfg.DVRWindow)
-	// ?parity=0|1|2 opts a live-edge viewer down from the
-	// fleet default. Carrier modes are served 0 regardless — their deltas ride
-	// QUIC retransmission, so parity would be pure egress waste.
-	parityRequested, parityServed := hub.NegotiateParity(
-		r.URL.Query().Get("parity"), s.cfg.ParityDefault, mode != wire.DeliveryDatagrams)
+	// ?parity=0|1|2 opts a viewer down from the fleet default, in every
+	// delivery mode: carrier retransmission repairs this leg, but a chunk the
+	// broadcaster's uplink lost reaches no viewer except through parity
+	// (docs/75 D11).
+	parityRequested, parityServed := hub.NegotiateParity(r.URL.Query().Get("parity"), s.cfg.ParityDefault)
 	// A stripe leg gets no close notice: the viewer reads no streams on a
 	// leg (the relay sends legs none), and a leg's death is handled by the
 	// primary's fallback whatever its code.
@@ -1242,9 +1242,9 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		// share composes unchanged.
 		sub, err = s.registry.SubscribeStripeLeg(id, adapter, stripeLeg, parityServed)
 	case mode == wire.DeliveryDVR:
-		sub, err = s.registry.SubscribeDVR(id, adapter, bufferMs)
+		sub, err = s.registry.SubscribeDVR(id, adapter, bufferMs, parityServed)
 	case mode == wire.DeliveryReliable:
-		sub, err = s.registry.SubscribeReliable(id, adapter)
+		sub, err = s.registry.SubscribeReliable(id, adapter, parityServed)
 	default:
 		owner := ""
 		if hub.ValidOwnerToken(ownerParam) {

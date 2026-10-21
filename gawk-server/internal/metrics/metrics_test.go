@@ -223,7 +223,7 @@ func TestReliableQueueOverflowHasItsOwnDropReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartPublish: %v", err)
 	}
-	if _, err := r.SubscribeReliable(reliableID, &stalledConn{release: release}); err != nil {
+	if _, err := r.SubscribeReliable(reliableID, &stalledConn{release: release}, 0); err != nil {
 		t.Fatalf("SubscribeReliable: %v", err)
 	}
 

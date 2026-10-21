@@ -224,11 +224,13 @@ The module exports exactly four things beyond the table:
   its reason, one function so the panel cannot gray something without saying
   why (decision 4).
 
-`notApplicable` encodes exactly two rules, both already true of the pipeline:
+`notApplicable` encodes rules already true of the pipeline. Parity had a row
+of its own (gray off live edge) until R73 RU8 made the relay serve parity to
+reliable and DVR delivery too ([docs/75](75-reliable-uplink.md) D11); since
+then it applies, and is negotiated, in every mode.
 
 | Field | Not applicable when | Reason shown |
 |---|---|---|
-| `parity` | `delivery !== 'live'` | "Not used in this mode — it already recovers lost packets by resending them." |
 | `striping` | `delivery !== 'live'` | "Not used in this mode — reliable delivery already handles bursts." |
 | `interpolation` | effective playout is not `adaptive` | "Needs paced playback — available on Balanced and smoother." |
 

@@ -864,18 +864,19 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
 - **Found**: 2026-10-17, docs/75 F14, by replaying lab traces through the
   shipping viewer code in each preset (§11 table J). Not yet seen on the
   fleet; the mechanism is read in code.
-- **Cause**: reliable delivery (R19 *Smoother*, R21 *Most stable*) is served
-  no parity — `hub.NegotiateParity` clamps carrier and DVR delivery to 0,
-  and the DVR ring keeps only video chunks — and its reorder buffer has no
-  loss allowance. Both assume leg A is clean. A chunk lost on the
-  broadcaster's uplink is missing at the relay, so the carrier cannot
-  retransmit it, and the viewer freezes to the next keyframe.
-- **Impact**: at 0.1 % random uplink loss (BBR uplink, 10–100 ms RTT)
-  *Balanced* shows 100 % of frames, these presets 87.5–89 % with ~15
-  freezes a minute; at 1 % loss, 32–39 %. The viewers who chose seconds of
-  delay for stability get the least of it.
-- **Fix would start**: docs/75 RU8 (serve them parity; fixes random loss,
-  not outages) and RU3 (the carrier uplink; fixes both).
+- **Cause**: reliable delivery (R19 *Smoother*, R21 *Most stable*) has no
+  loss allowance in its reorder buffer, and was served no parity. A chunk
+  lost on the broadcaster's uplink is missing at the relay, so the carrier
+  cannot retransmit it, and the viewer freezes to the next keyframe.
+- **Partly fixed** (2026-10-20, docs/75 RU8, D11): the relay now serves
+  these viewers parity on the carrier and keeps it in the DVR ring, which
+  repairs the random-loss half (§11 table K: 32–89 % → 95.6–100 % at
+  0.1–1 % loss). Still open: bursts (70–72 % → 81–84 % with parity, where
+  *Balanced* shows 90–93 %) and outages (70–77 %, unchanged), where a burst
+  or outage takes more of a frame than parity covers.
+- **Impact**: under bursts and outages on a datagram uplink, these presets
+  freeze where the carrier uplink would show them 94–100 % (F14).
+- **Fix would start**: docs/75 RU3 (the carrier uplink).
 
 ## Browser broadcaster: a slow uplink becomes unbounded delay, not dropped frames
 
