@@ -396,17 +396,30 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
     the registry's own `gawk/lease=broadcast` (`cluster.go` selects Leases by
     label and keeps per-broadcast data in annotations; a selector cannot
     match an annotation).
-    Creation is the atomic reservation, so home mints and PoP mints can never
-    collide. The PoP announces the ID to its broadcaster after the reply,
-    which costs one WAN round trip on the mint. Dormant reservations are
-    renewed by the link-home pod, which takes them over on a link move by
-    listing the label. A reservation counts against the PoP's
-    `spec.limits.maxBroadcasts` (default 40, set in the wizard), not against
-    the fleet's `-max-broadcasts`. A mint past that limit gets
-    `reserved{limit}` and stays **local-only**, as an unlinked collision does
-    (item 15). The console says "Over this PoP's limit at gawk.ioio.fi:
-    party-only". The PoP's own `-max-broadcasts` (50) still caps the party
-    itself. In single-pod home mode a reservation is an in-memory entry.
+    Creation is the atomic reservation. Two changes at home keep a home
+    mint off it. Today `Claim` (`cluster.go:223`) takes any Lease with no
+    holder (`cluster.go:244-246`), so a home `/publish` mint that drew a
+    reserved ID would silently become its origin (`server.go:878-889`).
+    So `Claim` refuses a Lease labelled `gawk/pop` to every claimant except
+    that PoP's `/pop/publish` (item 18), with or without `force`. And a home
+    mint that meets a reservation draws another ID, where a collision today
+    ends the mint with a `500`. The PoP announces the ID to its broadcaster
+    after the reply, which costs one WAN round trip on the mint. Dormant
+    reservations are renewed by the link-home pod, which takes them over on
+    a link move by listing the label. A reservation counts against the
+    PoP's `spec.limits.maxBroadcasts` (default 40, set in the wizard), not
+    against the fleet's `-max-broadcasts`. That takes a third change:
+    `createLease` enforces the fleet cap by counting every
+    `gawk/lease=broadcast` Lease (`cluster.go:282-291`), so it counts with
+    `gawk/lease=broadcast,!gawk/pop` instead. A mint past the PoP's limit
+    gets `reserved{limit}` and stays **local-only**, as an unlinked
+    collision does (item 15). The console says "Over this PoP's limit at
+    gawk.ioio.fi: party-only". The PoP's own `-max-broadcasts` (50) still
+    caps the party itself. In single-pod home mode a reservation is an
+    in-memory entry. The registry's `IDReserved` hook (`hub.go:280-284`,
+    set today only with `-rooms`) is also set with `-pops` and reports it,
+    so a home mint never draws it, and it stays out of the registry's own
+    broadcast count.
 
 15. **Unlinked mints stay local.** With no link, the PoP mints locally and
     reserves on relink. A collision (a 1-in-31⁶ chance against the live set)
@@ -437,6 +450,22 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
     leg (item 18). With no answer inside `-pop-demand-timeout` (5 s), the
     viewer waits in the ordinary "broadcaster away" state.
 
+    **B upgrades the viewer before it asks.** Today a Lease with no holder
+    is a miss. `EnsureEdge` answers it with `ErrNotFound`
+    (`edge.go:209-211`), and `handleSubscribe` turns that into a `404`
+    before the upgrade (`server.go:1233-1248`). That would leave no session
+    to wait in or to close with `4012`, and the browser would see only
+    "Opening handshake failed". So for a Lease labelled `gawk/pop`,
+    `EnsureEdge` instead creates the local edge hub in the state an edge hub
+    is in after losing its upstream: no prime, viewers attached and waiting.
+    The viewer upgrades onto it, and B sends `want{X}`. When C claims the
+    Lease, B's informer starts the edge pull into that hub. A refusal ends
+    the hub's viewers with `4012`, after `SessionClosing` (item 28). With no
+    answer, or while the PoP's broadcaster is away, they wait as for any
+    absent broadcaster, for the relay's grace period (5 min by default),
+    and then get `4000`. Viewers on other pods do the same, and A forwards
+    one `want` per broadcast however many pods ask.
+
 18. **The uplink leg**, `CONNECT /pop/publish/{id}`, lands on any pod C. C
     checks the credential and that X is reserved for *this* PoP. That check
     stands in for the resume token as the proof of ownership; an ordinary
@@ -446,9 +475,10 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
     leg is a publisher fed from the local hub. It starts with the hub's
     **join-prime** (cached keyframe with embedded config, and the clock
     mapping, rewritten per §6.7), then forwards keyframe streams
-    byte-identical and audio, `TimeSync` and `ClockMapping` as datagrams:
-    the docs/22 D9 edge rules, pointed the other way. The first outside
-    viewer starts from the prime, not from the next GOP.
+    byte-identical and every other datagram type (audio, `TimeSync`,
+    `ClockMapping`, `ViewerCount`, `DecoderConfig`) as a datagram: the
+    docs/22 D9 edge rules, pointed the other way. The first outside viewer
+    starts from the prime, not from the next GOP.
 
     **Deltas ride R73's carrier (OD15).** `/pop/publish` is a publish
     session, so C advertises `CapUplinkCarriers` on it as on any other
@@ -480,10 +510,17 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
     500 ms deadline (`CarrierWriteTimeout`) and on a timeout resets the
     carrier and drops the rest of its GOP (`writeCarrier`), so a congested
     line cuts GOPs short. And it notices a rotation only between writes. It
-    also puts audio on a carrier of its own (docs/20), which R73's reader,
-    taking only video and parity records, refuses. So the legs get that
-    drain with R73's rules and audio as datagrams, as an option; viewers
-    keep today's. The downlink uses the same writer (item 23).
+    also puts audio on a carrier of its own (docs/20), and every other
+    type it diverts nowhere: `ViewerCount`, which the count pump fans to
+    every subscriber, internal legs included, at least every 5 s
+    (`hub.go:1442-1445`), and a live `DecoderConfig` go onto the video
+    carrier as records. R73's reader takes only `VideoChunk` and
+    `ParityChunk` records and ends the carrier on anything else
+    (`hub/uplink.go:117-134`), so home's count would cut the leg's GOP
+    every few seconds. So the legs get that drain with R73's rules, and
+    with **only `VideoChunk` and `ParityChunk` on the carrier**: every
+    other type goes as a datagram. This is an option; viewers keep today's
+    drain. The downlink uses the same writer (item 23).
 
     **Timers.** Both legs dial with the link's QUIC timers (idle 15 s,
     keepalive 5 s, item 10), so an outage shorter than 15 s does not end a
@@ -550,8 +587,8 @@ on a shared uplink is PP8's to measure, and the downlink's PP9's.
     **The leg is a carrier too (OD16).** The PoP asks for it with
     `?delivery=carrier`, and home then writes `/pop/subscribe` with the
     uplink leg's writer (item 18): keyframes on their own streams, deltas
-    and parity on per-GOP carriers under R73's sender rules, audio and the
-    clock messages as datagrams. Without the parameter home serves an
+    and parity on per-GOP carriers under R73's sender rules, every other
+    datagram type as a datagram. Without the parameter home serves an
     edge's datagrams, as before R73. The carrier is opt-in so that home,
     which deploys itself, can keep serving a PoP that updates late, should
     the reader ever change; `-pop-leg-delivery=datagram` just leaves the
@@ -1135,9 +1172,15 @@ CRUD.
   `:57-122` TimeSync + `rewriteClockMapping`, `:561-571` the pump's stream
   accept and its four slots (where the downlink's carriers go), `:605-620`
   the count report.
-- `internal/cluster/cluster.go:223` `Claim`, `:568` `Lookup`, `:720` the
-  janitor (dormant reservations must survive it); `internal/hub/hub.go:945`
-  `EdgePublish`, `:1406-1455` the count fan-out.
+- `internal/cluster/cluster.go:223` `Claim` and `:244-246` its "no holder
+  is takeable" rule (which must refuse `gawk/pop` Leases to anyone but
+  their PoP), `:282-291` `createLease`'s fleet-cap count (which must skip
+  them), `:568` `Lookup`, `:720` the janitor (dormant reservations must
+  survive it); `internal/transport/server.go:878-889` the home mint's
+  claim (which redraws on a reservation); `internal/hub/hub.go:280-284`
+  the `IDReserved` hook, `:945` `EdgePublish`, `:1406-1455` the count
+  fan-out; `edge.go:209-211` `EnsureEdge`'s "no holder is a miss" (which
+  a reservation is not, item 17).
 - `internal/transport/roomcluster.go:75,124,186` (room proxying),
   `room.go:129,205`; `wire/room.go:607` (the strict `RoomHello` check that
   item 35 avoids).
@@ -1176,8 +1219,8 @@ needs A. Phase C needs B's link (PP7) and offers nothing without it.
 | **PP5** — pinned links in clients | `gawk-app`: `certHash=` (private literal rule), landing-page "Save and use this server", share links on a standalone PoP; desktop + iOS: per-server hash pinning, the `gawk://server` form; **`LocalRelayInfo` (`0x18`) allocated with its full layout** (item 45), mirrors and vectors, sent by every `gawk-relay` | `0x18` vectors byte-identical in all three copies, and a standalone relay sends it on every session kind; routing vectors accept and reject per the rule; tier-1 e2e: headless Chrome with a CDP-granted `local-network` permission joins a relay at a non-loopback address by a hash link; Rust dial test against a pinned relay; link vectors |
 | **PP6** — `Pop` resources | CRD + `gawk-server/pops` package + chart RBAC; `-pops-file`; `gawk-admin` `/api/v1/pops` CRUD + pairing string, OpenAPI, the PoPs list, wizard and detail | The chart renders the CRD gated on `pops.enabled`; the pairing string is shown once and only its hash is stored; `gawk-server/pops` reaches no quic-go (a `go list -deps` check in CI: `gawk-admin` builds it, and the `replace` does not cross modules); OpenAPI drift check green; UI tests |
 | **PP7** — the link | `/pop/link`, pairing exchange, credential, status lease and force-take, `hello`/`config`/`stats`/`health`/`bye`, reconnect, `/pop/addr`; console pairing; `0x18`'s `linked` flag and home origin; `GET /internal/admin/pops` (link state; PP8, PP9 and PP13 add their counts) and the PoP cards reading it; local rooms when home runs `-rooms` off | In-process test (3 home pods, fake clientset with the docs/22 finding-11 reactors) + one PoP: pair; relink after a drain lands on another pod, which force-takes; used, expired and wrong tokens refused with legible statuses; a credential paired in time outlives `spec.pairing.expiresAt`; Re-pair refuses the old credential at once, also when two Re-pairs land in the same second; the console tells `bye{repair}` from `bye{revoked}`, and recovers the reason from `401`/`403` when the `bye` is lost; `-pops-file` credentials work with no pairing; a `proto` major mismatch → `426`; a paired PoP's `0x18` has `linked` set and the home origin, and an unpaired or revoked one has it clear; `/internal/admin/pops` answers on the ops listener behind the admin gate and is absent from the public mux (test); with home `-rooms` off, `/room/new` on a linked PoP mints a local room |
-| **PP8** — reservations and uplink | Reserve-before-announce, unlinked mints, `/internal/pop`, `/pop/publish`, admission and `4012` (+ notice), linger and `4013`, counts both ways, the clock rewrite, broadcast events with `pop`; the leg writer (R73's sender rules and audio as datagrams, an option on the hub's reliable drain), the uplink carrier, `-pop-leg-delivery`, and a `tools/uplinklab` sender driven by the leg writer | In-process: an outside viewer on pod B receives a byte-identical prime and deltas; **zero bytes on the uplink without demand** (counter); linger closes with `4013` and the Lease is back to a reservation; the fourth stream is refused and Chrome reads `4012` (tier-1 e2e); a mint past `limits.maxBroadcasts` gets `reserved{limit}` and stays party-only; the count is right on both sides; **time to first frame measured at 40 ms netem RTT and recorded here** (target ≤ 1.5 s); event schemas and vectors updated, no address field; against a pod advertising `CapUplinkCarriers`, deltas and parity leave only as carrier records, no more than two carriers are ever live, and a superseded one is reset 150 ms after it finished (fake clock); a 400 ms write stall within a GOP does not reset its carrier, and a write blocked across a rotation is abandoned when the new keyframe fans out and its carrier reset (fake clock); a 10 s outage (netem) does not end the leg; with home's `-uplink-carriers=false` or `-pop-leg-delivery=datagram` the leg is datagrams, byte-identical to before; **the PoP's sender measured in the uplink lab**, carrier against datagrams, on docs/75 table O's 30 and 15 Mbps cells beside a TCP upload and on table B's bursts and outages, three runs a cell, recorded here together with whether the missing keyframe priority costs a GOP's first frames. The carrier stays the default unless datagrams show the Balanced viewer more frames in one of those cells by more than the cell's run-to-run spread; if they do, datagrams become the default and item 18 says so |
-| **PP9** — downlink | `/pop/subscribe`, the PoP edge dialer, upward count reports, the downlink budget, `maxDownlinkStreams` at home; the downlink carrier: `?delivery=carrier` and the leg writer on `/pop/subscribe`, R73's reader in the PoP's edge pump (a carrier frees its keyframe slot, a refused stream is reset), the link's timers and R73's receive windows on the PoP's dialer | Ten party viewers of one home broadcast → one leg (counter); `G` at home includes them; the leg cap refuses the 21st distinct broadcast; a 1440p home stream's GOPs cross without blocking on flow control under a 40 ms RTT (the in-process UDP proxy, as docs/75 table H); audio reaches the PoP as datagrams and never as a carrier record; without `?delivery=carrier` home serves datagrams (test); a stream the pump refuses is reset, not left unread (test); a 10 s outage does not end the leg, and the PoP's prime survives it; **the downlink measured in the uplink lab beside a saturating TCP download** (a game update's shape), carrier against datagrams, three runs a cell, recorded here |
+| **PP8** — reservations and uplink | Reserve-before-announce, unlinked mints, `/internal/pop`, `/pop/publish`, admission and `4012` (+ notice), linger and `4013`, counts both ways, the clock rewrite, broadcast events with `pop`; the leg writer (R73's sender rules, only video and parity chunks on the carrier, an option on the hub's reliable drain); the upgrade-first demand path (item 17); `Claim` refusing `gawk/pop` Leases to anyone but their PoP, the home mint redrawing on a reservation, and the fleet cap skipping them (item 14), the uplink carrier, `-pop-leg-delivery`, and a `tools/uplinklab` sender driven by the leg writer | In-process: an outside viewer on pod B receives a byte-identical prime and deltas; **zero bytes on the uplink without demand** (counter); linger closes with `4013` and the Lease is back to a reservation; the fourth stream is refused and Chrome reads `4012` (tier-1 e2e); a mint past `limits.maxBroadcasts` gets `reserved{limit}` and stays party-only; a home mint that draws a reserved ID redraws and never claims it, and a resume-token reclaim on `/publish/{id}` cannot force it either (fake clientset); 40 dormant reservations do not count against the fleet's `-max-broadcasts`; an outside viewer of a reservation is upgraded and waits, rather than getting a pre-upgrade `404`; the count is right on both sides; **time to first frame measured at 40 ms netem RTT and recorded here** (target ≤ 1.5 s); event schemas and vectors updated, no address field; against a pod advertising `CapUplinkCarriers`, deltas and parity leave only as carrier records, no more than two carriers are ever live, and a superseded one is reset 150 ms after it finished (fake clock); a `ViewerCount` or `DecoderConfig` arriving mid-GOP goes as a datagram and does not end the carrier; a 400 ms write stall within a GOP does not reset its carrier, and a write blocked across a rotation is abandoned when the new keyframe fans out and its carrier reset (fake clock); a 10 s outage (netem) does not end the leg; with home's `-uplink-carriers=false` or `-pop-leg-delivery=datagram` the leg is datagrams, byte-identical to before; **the PoP's sender measured in the uplink lab**, carrier against datagrams, on docs/75 table O's 30 and 15 Mbps cells beside a TCP upload and on table B's bursts and outages, three runs a cell, recorded here together with whether the missing keyframe priority costs a GOP's first frames. The carrier stays the default unless datagrams show the Balanced viewer more frames in one of those cells by more than the cell's run-to-run spread; if they do, datagrams become the default and item 18 says so |
+| **PP9** — downlink | `/pop/subscribe`, the PoP edge dialer, upward count reports, the downlink budget, `maxDownlinkStreams` at home; the downlink carrier: `?delivery=carrier` and the leg writer on `/pop/subscribe`, R73's reader in the PoP's edge pump (a carrier frees its keyframe slot, a refused stream is reset), the link's timers and R73's receive windows on the PoP's dialer | Ten party viewers of one home broadcast → one leg (counter); `G` at home includes them; the leg cap refuses the 21st distinct broadcast; a 1440p home stream's GOPs cross without blocking on flow control under a 40 ms RTT (the in-process UDP proxy, as docs/75 table H); audio, `ViewerCount` and `DecoderConfig` reach the PoP as datagrams, never as carrier records, and a count mid-GOP does not end the carrier; without `?delivery=carrier` home serves datagrams (test); a stream the pump refuses is reset, not left unread (test); a 10 s outage does not end the leg, and the PoP's prime survives it; **the downlink measured in the uplink lab beside a saturating TCP download** (a game update's shape), carrier against datagrams, three runs a cell, recorded here |
 | **PP10** — moderation reach | Ban forwarding and local enforcement, revoke, IP-ban and limiter exemption, the admin badge and party-only rows, the screening-notice relay | A kill in `gawk-admin` ends a party-only broadcast at the PoP with `4006` for its viewers and broadcaster; a banned ID cannot be reclaimed at the PoP; an IP ban on the PoP's public address does not cut a leg; **after a revoke**, the PoP's reservations are gone, an outside viewer of a party code gets `4000` (attached) or `404` (new dial), no offer is sent, the `DNSEndpoint` is deleted, and the PoP keeps serving the LAN as a standalone relay; the PoP's `0x11` carries the screening bit while home's does |
 | **PP11** — the party wall | Wall room creation with the PoP, `spec.pop` / `spec.maxBroadcasts` / `spec.maxParticipants`, vouched-only attach and detach, Hide/Show and `wall=hidden`, `0x18`'s wall code and on-wall state, link-proxied room control, the local read-only wall | Extended `rooms-assert`: party broadcasts appear on the wall, **a fifth and later party broadcast included**; **an ordinary `Attach` to the wall (an outsider's home broadcast) is refused**; Hide removes and Show restores; a hidden-remembered broadcaster never appears; an outside participant's tile past the budget shows "Party-only right now" and joins when a slot frees; a protocol-1 client parses every snapshot; unlinked, party guests see the local wall; a broadcaster's `0x18` carries the wall code and an on-wall state that follows Hide, Show and `wall=hidden` |
 | **PP12** — the named tier | CSR on the link, the `gawk-admin` reconciler (`CertificateRequest`, `DNSEndpoint`), random labels, the PoP's HTTPS UI and generated `config.js`, renewal at half-life, the rebinding self-check, QR selection | Reconciler unit tests against fake cert-manager and external-dns objects: a CSR with a wrong SAN is refused; the PoP's CSR names the host it got in `config`; a renewal CSR is issued exactly once (`issuedForCSR`), and the PoP never receives the previous chain for it; one staging issuance on the reference deployment; a phone on the LAN loads the PoP UI with no prompt (PP15) |

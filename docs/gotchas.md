@@ -1636,10 +1636,14 @@ entries still describe code `gawk-pubsim` runs (now
   household's ping and the TCP flow's loss to BBR; steer the downlink around
   the shaper (`tools/uplinklab/fair/run.sh`, [docs/75](75-reliable-uplink.md) §4).
 - **The relay's R19 carrier writer and R73's carrier reader don't pair.**
-  `drainReliable` puts audio on a carrier of its own and only closes a
-  superseded carrier. `IngestUplinkCarrier` takes video and parity records
-  only and holds three carriers per publisher, so after a stall on a lossy
-  line the next GOP's carrier can be refused. The drain also resets a
+  `drainReliable` diverts only audio (to a carrier of its own) and writes
+  every other queued type onto the video carrier: `ViewerCount`, which the
+  count pump fans to every subscriber at least every 5 s, `DecoderConfig`
+  and `ClockMapping` too. `IngestUplinkCarrier` takes only `VideoChunk` and
+  `ParityChunk` records and ends the carrier on anything else, so a count
+  would cut a GOP every few seconds. The drain also only closes a
+  superseded carrier, and the reader holds three per publisher, so after a
+  stall on a lossy line the next GOP's carrier can be refused. The drain also resets a
   carrier whose record waits 500 ms (`CarrierWriteTimeout`) and drops the
   rest of that GOP, where R73 never resets within a GOP. A Go sender
   feeding the reader needs R73's sender rules (two carriers live, the
