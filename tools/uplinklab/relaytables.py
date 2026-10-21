@@ -26,6 +26,8 @@ def run(d):
     if os.path.exists(f"{d}/relay-mem.txt"):
         m = re.search(r"VmHWM:\s+(\d+)", open(f"{d}/relay-mem.txt").read())
         r["rss"] = int(m.group(1)) / 1024 if m else None
+    if os.path.exists(f"{d}/steal.txt"):  # queue.sh since RU2's run
+        r["steal"] = float(open(f"{d}/steal.txt").read().split()[0])
     if os.path.exists(f"{d}/recv.csv"):
         out = subprocess.run(["python3", f"{HERE}/analyze.py", d, "--skip-s", "5"],
                              capture_output=True, text=True, check=True)
@@ -83,9 +85,12 @@ print("`tools/uplinklab/queue.sh`: table G's setup with a lab viewer on the\n"
       "viewer counts are `gawk-loadgen`'s; the lab viewer is one more. *Dropped to\n"
       "viewers* is `queue_full` as a share of the fan-out (datagrams relayed ×\n"
       "subscribers). Mean of the runs, range in brackets.\n")
+# Runs that recorded the host's CPU steal (queue.sh since RU2) get a column for it.
+STEAL = any(r.get("steal") is not None for rs in cells.values() for r in rs)
 print("| Load | Depth | Runs | Ingress chunks lost (60 s) | Dropped to viewers | Viewer: undecodable | "
-      "Viewer: chunk latency p50 / p99 ms | Viewer: decode-ready p99 ms | Relay peak RSS |")
-print("|---|---|---|---|---|---|---|---|---|")
+      "Viewer: chunk latency p50 / p99 ms | Viewer: decode-ready p99 ms | Relay peak RSS |"
+      + (" Host CPU steal |" if STEAL else ""))
+print("|---|---|---|---|---|---|---|---|---|" + ("---|" if STEAL else ""))
 for key, label, subs in LOADS:
     for q in ("32", "128", "512", "4096"):
         rs = cells.get(f"{key}-q{q}")
@@ -95,4 +100,5 @@ for key, label, subs in LOADS:
             r["fanout"] = 100 * r["qfull"] / (r["relayed"] * subs) if r["relayed"] else 0
         print(f"| {label} | {q} | {len(rs)} | {agg(rs, 'lost')} | "
               f"{agg(rs, 'fanout', 1, ' %')} | {agg(rs, 'undec', 1, ' %')} | "
-              f"{agg(rs, 'p50')} / {agg(rs, 'p99')} | {agg(rs, 'ready99')} | {agg(rs, 'rss', 0, ' MB')} |")
+              f"{agg(rs, 'p50')} / {agg(rs, 'p99')} | {agg(rs, 'ready99')} | {agg(rs, 'rss', 0, ' MB')} |"
+              + (f" {agg(rs, 'steal', 1, ' %')} |" if STEAL else ""))
