@@ -27,7 +27,7 @@
 // which IS visible and maps to a specific failure.
 
 import { log } from '../lib/logger';
-import { bytesToHex, hexToBytes, webTransportInit } from './connection';
+import { DialTimeoutError, bytesToHex, dialWebTransport, hexToBytes, webTransportInit } from './connection';
 import {
   RECONNECT_MAX_ATTEMPTS,
   isTerminalRoomClose,
@@ -87,10 +87,12 @@ export interface RoomSessionOptions {
 // How a session failed for good. Structural, never sniffed from messages.
 // - 'refused': the first dial never completed — the relay answered a status
 //   the browser hides (unknown code, wrong grant, full, banned, rooms off).
+// - 'unreachable': the first dial was never answered at all, through every
+//   retry dialWebTransport makes (DIAL_TIMEOUT_MS).
 // - 'notFound' / 'full' / 'forbidden': the relay upgraded and then closed
 //   with the status as the close code before sending any RoomState.
 // - 'lost': the reconnect budget ran out.
-export type RoomFailureKind = 'refused' | 'notFound' | 'full' | 'forbidden' | 'lost';
+export type RoomFailureKind = 'refused' | 'unreachable' | 'notFound' | 'full' | 'forbidden' | 'lost';
 
 export class RoomConnectError extends Error {
   readonly kind: RoomFailureKind;
@@ -130,6 +132,7 @@ const CLOSE_FULL = 429;
 const CLOSE_INFO_GRACE_MS = 250;
 
 export const REFUSED_MESSAGE = 'Room not found or refused';
+export const UNREACHABLE_MESSAGE = 'The server did not answer';
 
 function failureForClose(code: number | null): RoomConnectError {
   switch (code) {
@@ -158,6 +161,9 @@ export class RoomSession {
   private grant: RoomSessionGrant | null;
   private nickname: string;
   private attempt: Attempt | null = null;
+  // The dial in flight, if any: stop() aborts it so a pending handshake is
+  // closed rather than left to open after the session was abandoned.
+  private dialAbort: AbortController | null = null;
   private stopped = false;
   private everJoined = false;
   private attemptNo = 0;
@@ -204,6 +210,7 @@ export class RoomSession {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    this.dialAbort?.abort();
     this.closeAttempt();
   }
 
@@ -260,7 +267,21 @@ export class RoomSession {
   }
 
   private async dial(): Promise<void> {
-    const wt = new WebTransport(this.url(), webTransportInit({ certHashHex: this.opts.certHashHex }));
+    const dialAbort = new AbortController();
+    this.dialAbort = dialAbort;
+    let wt: WebTransport;
+    try {
+      wt = await dialWebTransport(this.url(), webTransportInit({ certHashHex: this.opts.certHashHex }), dialAbort.signal);
+    } catch (e) {
+      if (this.stopped) return; // stop() aborted the dial
+      const msg = e instanceof Error ? e.message : String(e);
+      log.info(`room dial failed: ${msg}`);
+      if (e instanceof DialTimeoutError) throw new RoomConnectError('unreachable', UNREACHABLE_MESSAGE);
+      // Pre-upgrade refusal or an unreachable relay — the status is hidden.
+      throw new RoomConnectError('refused', REFUSED_MESSAGE);
+    } finally {
+      if (this.dialAbort === dialAbort) this.dialAbort = null;
+    }
     // Capture the close info from the one signal that carries it, whichever
     // order it settles in relative to the read loop.
     const closeInfo: Promise<{ code: number | null; reason: string }> = wt.closed.then(
@@ -276,14 +297,6 @@ export class RoomSession {
         };
       },
     );
-    try {
-      await wt.ready;
-    } catch (e) {
-      // Pre-upgrade refusal or an unreachable relay — the status is hidden.
-      const msg = e instanceof Error ? e.message : String(e);
-      log.info(`room dial failed: ${msg}`);
-      throw new RoomConnectError('refused', REFUSED_MESSAGE);
-    }
     if (this.stopped) {
       try {
         wt.close();

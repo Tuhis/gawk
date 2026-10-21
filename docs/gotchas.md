@@ -409,6 +409,17 @@ Add to it when a new gotcha lands in `docs/`.
   toward it whenever a `window` capture surface is detected
   (`displaySurface`, an advisory category only — never pipeline config).
   ([docs/30](30-broadcaster-capture-audio-guidance.md))
+- **A WebTransport `ready` can stay pending forever, and nothing in the
+  browser times it out.** A Firefox viewer opening a room link sometimes sat
+  on a tile's "Connecting…" until a reload, while the relay logged nothing:
+  no CONNECT ever reached it, so no handler ran and no telemetry hello was
+  sent. A room opens about 1 + 5N sessions at once (control, then a
+  primary and four stripe legs per tile), which is the likely trigger. Every
+  web dial now goes through `dialWebTransport` (`transport/connection.ts`):
+  5 s per attempt, then the attempt is closed and the dial starts over on a
+  fresh session, for up to 30 s. These are the desktop engine's
+  `DIAL_ATTEMPT_TIMEOUT` / `DIAL_TIMEOUT` (R65 IO5). Never `await wt.ready`
+  bare on a new code path.
 
 **Cross-browser (Safari / WebKit)**
 

@@ -205,6 +205,33 @@ describe('LocalViewerTransport striping (R30)', () => {
     expect(stripeChanges).toEqual([2, 3]);
   });
 
+  // A tile stopped while its handshakes were still pending used to leave
+  // them to open later on the shared connection, unowned.
+  it('close() closes a primary handshake that has not been answered yet', async () => {
+    FakeWT.autoReady = false;
+    transport = new LocalViewerTransport('https://relay.test:4433/subscribe/ABC123', {});
+    const connecting = transport.connect({ onDatagram: () => {}, onKeyframe: () => {}, onClosed: () => {} }).catch(
+      (e: unknown) => e,
+    );
+    await flush();
+    transport.close();
+    const err = await connecting;
+    expect((err as Error).name).toBe('AbortError');
+    expect(FakeWT.instances).toHaveLength(1);
+    expect(FakeWT.primary().closeCalled).toBe(true);
+  });
+
+  it('close() closes stripe-leg handshakes that have not been answered yet', async () => {
+    await connectTransport();
+    FakeWT.autoReady = false;
+    transport.setStripe(2);
+    await flush();
+    expect(FakeWT.legs()).toHaveLength(2);
+    transport.close();
+    await flush();
+    expect(FakeWT.legs().every((l) => l.closeCalled)).toBe(true);
+  });
+
   it('a failed dial abandons the transition and keeps the current state', async () => {
     await connectTransport();
     transport.setStripe(2);
