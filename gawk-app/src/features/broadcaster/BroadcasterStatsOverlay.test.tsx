@@ -74,6 +74,10 @@ function fullStats(): BroadcastStats {
     parityLevel: 2,
     parityChunksSent: 60,
     parityBytesSent: 48000,
+    staleFramesDropped: 41,
+    staleAudioDropped: 7,
+    keyframeStreamsSuperseded: 3,
+    uplinkWarning: true,
   };
 }
 
@@ -112,6 +116,25 @@ describe('BroadcasterStatsOverlay', () => {
     expect(screen.getByText('Encode mode').nextSibling?.textContent).toBe('hardware');
     // The relay's live audience push.
     expect(screen.getByText('Watching').nextSibling?.textContent).toBe('4');
+  });
+
+  // docs/75 RU9: a too-slow uplink (stale drops, superseded keyframes) is
+  // counted apart from a dead session (droppedFrames).
+  it('shows the stale-drop and superseded-keyframe counters apart from droppedFrames', () => {
+    render(
+      <BroadcasterStatsOverlay
+        stats={fullStats()}
+        encoderInfo={encoderInfo}
+        bitrateBps={null}
+        onClose={() => {}}
+        onCopy={() => {}}
+        copied={false}
+      />,
+    );
+    expect(screen.getByText('Dropped (encoder)').nextSibling?.textContent).toBe('2');
+    expect(screen.getByText('Stale frames dropped').nextSibling?.textContent).toBe('41');
+    expect(screen.getByText('Stale audio dropped').nextSibling?.textContent).toBe('7');
+    expect(screen.getByText('Keyframes superseded').nextSibling?.textContent).toBe('3');
   });
 
   it('renders the R13 auto ceiling + auto fps rows when in auto mode', () => {

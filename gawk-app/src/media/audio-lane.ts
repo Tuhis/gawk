@@ -1,6 +1,6 @@
 // The broadcaster's audio lane — audio MediaStreamTrackProcessor → timestamp
 // anchor → AudioEncoder (Opus) → one AudioFrame datagram per packet, with the
-// AudioConfig re-sent at 1 Hz piggybacked on the packet flow (audio has no
+// AudioConfig re-sent at 1 Hz, scheduled by the packet flow (audio has no
 // keyframe to anchor re-emits to). The lane is strictly subordinate to the
 // broadcast: an audio failure tears down the lane only, never the video
 // pipeline.
@@ -11,6 +11,7 @@
 
 import { bufferSourceBytes } from '../lib/bytes';
 import { log } from '../lib/logger';
+import type { SendResult, SendTag } from '../transport/connection';
 import { encodeAudioConfig, encodeAudioFrame, nextFrameId } from '../transport/wire';
 
 // Opus, 48 kHz stereo, 20 ms frames (the WebCodecs defaults), DTX off — a
@@ -66,8 +67,8 @@ export class AudioTimestampAnchor {
 }
 
 // Turns encoded Opus packets into wire datagrams: seq stamping (own uint32
-// space, wrap-aware successor) and the 1 Hz AudioConfig piggyback. Pure —
-// time comes in as an argument.
+// space, wrap-aware successor) and the 1 Hz AudioConfig cadence. Pure — time
+// comes in as an argument.
 export class AudioPacketizer {
   private seq: number;
   private configDatagram: Uint8Array<ArrayBuffer> | null = null;
@@ -84,23 +85,29 @@ export class AudioPacketizer {
     this.lastConfigSentAtMs = null;
   }
 
-  // Returns the datagrams for one packet: [config?] + the AudioFrame. The
-  // config rides along on the first packet and then at most once per
-  // AUDIO_CONFIG_RESEND_MS — no separate timer, the 50/s packet flow is the
-  // scheduler.
-  packetize(payload: Uint8Array, timestampUs: number, nowMs: number): Uint8Array<ArrayBuffer>[] {
-    const out: Uint8Array<ArrayBuffer>[] = [];
+  // Returns the datagrams for one packet: the AudioFrame, and the config when
+  // it is due — with the first packet and then at most once per
+  // AUDIO_CONFIG_RESEND_MS; no separate timer, the 50/s packet flow is the
+  // scheduler. The two are returned apart because they are sent apart
+  // (docs/75 RU9): the config must arrive and is never dropped for age, while
+  // a stale packet is.
+  packetize(
+    payload: Uint8Array,
+    timestampUs: number,
+    nowMs: number,
+  ): { config: Uint8Array<ArrayBuffer> | null; frame: Uint8Array<ArrayBuffer> } {
+    let config: Uint8Array<ArrayBuffer> | null = null;
     if (
       this.configDatagram &&
       (this.lastConfigSentAtMs === null || nowMs - this.lastConfigSentAtMs >= AUDIO_CONFIG_RESEND_MS)
     ) {
-      out.push(this.configDatagram);
+      config = this.configDatagram;
       this.lastConfigSentAtMs = nowMs;
       this.configsSent++;
     }
-    out.push(encodeAudioFrame({ seq: this.seq, timestampUs: BigInt(Math.round(timestampUs)) }, payload));
+    const frame = encodeAudioFrame({ seq: this.seq, timestampUs: BigInt(Math.round(timestampUs)) }, payload);
     this.seq = nextFrameId(this.seq);
-    return out;
+    return { config, frame };
   }
 }
 
@@ -140,9 +147,10 @@ export type AudioEncoderFactory = (
 ) => AudioEncoderLike;
 
 export interface AudioLaneCallbacks {
-  // Hands datagrams to the transport. Resolution = counted as sent;
-  // rejection is swallowed (the session is dying — wt.closed owns that).
-  send(datagrams: Uint8Array<ArrayBuffer>[]): Promise<void>;
+  // Hands datagrams to the transport (DatagramSender.send). 'sent' is
+  // counted as sent, 'dropped' (stale when its turn came) as a stale drop;
+  // a rejection is swallowed (the session is dying — wt.closed owns that).
+  send(datagrams: Uint8Array<ArrayBuffer>[], tag: SendTag): Promise<SendResult>;
   // The lane is dead (encoder error, config failure). Fired at most once;
   // the broadcast continues video-only.
   onError(err: Error): void;
@@ -153,6 +161,9 @@ export interface AudioLaneStats {
   packetsSent: number;
   bytesSent: number;
   configsSent: number;
+  // Packets the sender dropped as stale (more than a GOP old when their turn
+  // came, docs/75 RU9) — an uplink that cannot keep up, not a dead session.
+  staleDropped: number;
   sampleRate: number | null;
   channels: number | null;
   codec: string;
@@ -203,6 +214,7 @@ export class AudioLaneCore {
     packetsSent: 0,
     bytesSent: 0,
     configsSent: 0,
+    staleDropped: 0,
     sampleRate: null,
     channels: null,
     codec: 'opus',
@@ -294,9 +306,9 @@ export class AudioLaneCore {
     // whose input was never observed.
     const stampedUs = this.anchor.stamped(chunk.timestamp) ?? this.anchor.stamp(chunk.timestamp, nowMs * 1000);
     this.stats.encodeLagMs = nowMs - stampedUs / 1000;
-    let datagrams: Uint8Array<ArrayBuffer>[];
+    let packet: ReturnType<AudioPacketizer['packetize']>;
     try {
-      datagrams = this.packetizer.packetize(payload, stampedUs, nowMs);
+      packet = this.packetizer.packetize(payload, stampedUs, nowMs);
     } catch (e) {
       // An unencodable packet (empty/oversize) breaks the wire invariant —
       // treat it as a lane failure, not a silent drop streak.
@@ -305,18 +317,30 @@ export class AudioLaneCore {
     }
     this.stats.encodedPackets++;
     this.stats.configsSent = this.packetizer.configsSent;
-    let bytes = 0;
-    for (const d of datagrams) bytes += d.length;
+    // Session dying/resuming — wt.closed owns that story. Audio packets are
+    // droppable by design; the lane keeps going.
+    const ignore = () => {};
+    const { config, frame } = packet;
+    if (config) {
+      // Its own send, ahead of the packet: control is never dropped for age.
+      this.cb
+        .send([config], { kind: 'control' })
+        .then((r) => {
+          if (r === 'sent') this.stats.bytesSent += config.length;
+        })
+        .catch(ignore);
+    }
     this.cb
-      .send(datagrams)
-      .then(() => {
+      .send([frame], { kind: 'audio' })
+      .then((r) => {
+        if (r === 'dropped') {
+          this.stats.staleDropped++;
+          return;
+        }
         this.stats.packetsSent++;
-        this.stats.bytesSent += bytes;
+        this.stats.bytesSent += frame.length;
       })
-      .catch(() => {
-        // Session dying/resuming — wt.closed owns that story. Audio
-        // packets are droppable by design; the lane keeps going.
-      });
+      .catch(ignore);
   }
 
   private fail(err: Error): void {

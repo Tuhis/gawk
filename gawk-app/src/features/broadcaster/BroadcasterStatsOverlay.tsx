@@ -43,6 +43,9 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, audioS
         ['Sent fps', fmt(stats?.sentFps ?? NaN)],
         ['Gate dropped', String(stats?.fpsGateDropped ?? '—')],
         ['Dropped (encoder)', String(stats?.droppedFrames ?? '—')],
+        // docs/75 RU9: dropped by the send queue as stale — an upload that
+        // cannot keep up, apart from the failures counted above.
+        ['Stale frames dropped', String(stats?.staleFramesDropped ?? '—')],
         ['Encoder queue', String(stats?.encoderQueueDepth ?? '—')],
         ['Encode latency', `${fmt(stats?.lastEncodeLatencyMs ?? NaN)} ms`],
       ],
@@ -57,6 +60,7 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, audioS
         ['Datagrams sent', String(stats?.datagramsSent ?? '—')],
         ['Keyframe streams', String(stats?.keyframeStreamsSent ?? '—')],
         ['Keyframe fails', String(stats?.keyframeStreamsFailed ?? '—')],
+        ['Keyframes superseded', String(stats?.keyframeStreamsSuperseded ?? '—')],
         ['Video bitrate (sent)', fmtBits(bitrateBps)],
       ],
     },
@@ -111,6 +115,7 @@ export function BroadcasterStatsOverlay({ stats, encoderInfo, bitrateBps, audioS
               ['Encoded/s', fmt(stats.audioEncodedPerSec)],
               ['Sent/s', fmt(stats.audioSentPerSec)],
               ['Packets sent', String(stats.audioPacketsSent)],
+              ['Stale audio dropped', String(stats.staleAudioDropped)],
               ['Configs sent', String(stats.audioConfigsSent)],
               // The encoder's own delay. It costs no lip sync as long as it
               // stays out of the audio timestamps — this row is what says

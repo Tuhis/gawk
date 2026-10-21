@@ -326,7 +326,9 @@ sessions.stats.resuming boolean
 sessions.stats.sentFps number
 sessions.stats.sentFrames number
 sessions.stats.shareMode string
+sessions.stats.staleAudioDropped number
 sessions.stats.staleChunks number
+sessions.stats.staleFramesDropped number
 sessions.stats.stripeActive number
 sessions.stats.stripeCapable boolean
 sessions.stats.stripeLargeChunks number
@@ -350,6 +352,7 @@ sessions.stats.uplinkDatagramsDropped number
 sessions.stats.uplinkPacketsAvailable boolean
 sessions.stats.uplinkPacketsLost number
 sessions.stats.uplinkPacketsSent number
+sessions.stats.uplinkWarning boolean
 sessions.stats.videoBytesReceived number
 sessions.stats.videoScheduleBaseEpochMs number
 sessions.stats.viewerCount number

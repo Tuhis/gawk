@@ -185,6 +185,9 @@ var broadcasterCounters = []string{
 	"encodedFrames", "keyframes", "droppedFrames", "fpsGateDropped",
 	"datagramsSent", "bytesSent", "keyframeStreamsSent", "keyframeStreamsFailed",
 	"autoStepDowns", "autoStepUps", "audioPacketsSent",
+	// docs/75 RU9: the browser send queue's stale drops, and the keyframe
+	// streams it gave up on.
+	"staleFramesDropped", "staleAudioDropped", "keyframeStreamsSuperseded",
 	"EncodedFrames", "Keyframes", "SentFrames", "DatagramsSent", "BytesSent",
 	"KeyframeStreamsSent", "KeyframeStreamsFailed", "FramesDroppedAtSend",
 	// docs/75 D8: the native broadcaster's QUIC packet counters, so a stored

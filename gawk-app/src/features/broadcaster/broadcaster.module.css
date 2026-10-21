@@ -103,6 +103,44 @@
   background: color-mix(in srgb, var(--warning) 12%, transparent);
 }
 
+/* docs/75 RU9: the upload notice. Its sentence describes the pill
+   (aria-describedby) and shows below it on hover and on keyboard focus. */
+.uplinkNotice {
+  position: relative;
+  display: inline-flex;
+}
+
+.uplinkNotice > .warnBadge:focus-visible {
+  outline: 2px solid var(--warning);
+  outline-offset: 2px;
+}
+
+.uplinkNote {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  z-index: 5;
+  width: max-content;
+  max-width: min(22rem, 80vw);
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  background: rgba(0, 0, 0, 0.85);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  white-space: normal;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.uplinkNotice:hover .uplinkNote,
+.uplinkNotice:focus-within .uplinkNote {
+  visibility: visible;
+  opacity: 1;
+}
+
 /* The "N watching" figure — quiet monochrome, like the sending readout. */
 .watchingBadge {
   display: inline-flex;

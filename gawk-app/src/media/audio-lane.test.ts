@@ -16,6 +16,7 @@ import {
   type AudioEncoderInit,
   type EncodedAudioChunkLike,
 } from './audio-lane';
+import type { SendResult, SendTag } from '../transport/connection';
 import {
   MAX_DATAGRAM_SIZE,
   TYPE_AUDIO_CONFIG,
@@ -70,27 +71,31 @@ describe('AudioPacketizer', () => {
 
   it('increments seq with uint32 wrap', () => {
     const packetizer = new AudioPacketizer(0xffffffff);
-    const [frame1] = packetizer.packetize(new Uint8Array([1]), 1000, 0);
-    const [frame2] = packetizer.packetize(new Uint8Array([2]), 2000, 0);
+    const { frame: frame1 } = packetizer.packetize(new Uint8Array([1]), 1000, 0);
+    const { frame: frame2 } = packetizer.packetize(new Uint8Array([2]), 2000, 0);
     expect(parseAudioFrame(frame1).header.seq).toBe(0xffffffff);
     expect(parseAudioFrame(frame2).header.seq).toBe(0);
   });
 
-  it('re-sends the config at 1 Hz, piggybacked on the packet flow', () => {
+  // The config is returned apart from the packet (docs/75 RU9): it goes out
+  // in a send of its own, tagged control, which is never dropped for age.
+  it('re-sends the config at 1 Hz, scheduled by the packet flow', () => {
     const packetizer = new AudioPacketizer();
     packetizer.setConfig(config);
+    const types = (out: { config: Uint8Array | null; frame: Uint8Array }) =>
+      [out.config, out.frame].filter((d) => d !== null).map((d) => d[1]);
 
-    // First packet carries the config.
+    // First packet brings the config.
     let out = packetizer.packetize(new Uint8Array([1]), 0, 0);
-    expect(out.map((d) => d[1])).toEqual([TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME]);
+    expect(types(out)).toEqual([TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME]);
 
     // Inside the cadence window: frame only.
     out = packetizer.packetize(new Uint8Array([2]), 20_000, AUDIO_CONFIG_RESEND_MS - 1);
-    expect(out.map((d) => d[1])).toEqual([TYPE_AUDIO_FRAME]);
+    expect(types(out)).toEqual([TYPE_AUDIO_FRAME]);
 
-    // Cadence elapsed: config rides again.
+    // Cadence elapsed: config again.
     out = packetizer.packetize(new Uint8Array([3]), 40_000, AUDIO_CONFIG_RESEND_MS);
-    expect(out.map((d) => d[1])).toEqual([TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME]);
+    expect(types(out)).toEqual([TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME]);
     expect(packetizer.configsSent).toBe(2);
   });
 
@@ -100,15 +105,15 @@ describe('AudioPacketizer', () => {
     packetizer.packetize(new Uint8Array([1]), 0, 0);
     packetizer.setConfig({ ...config, sampleRate: 44100 });
     const out = packetizer.packetize(new Uint8Array([2]), 20_000, 1);
-    expect(out.map((d) => d[1])).toEqual([TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME]);
-    expect(parseAudioConfig(out[0]).sampleRate).toBe(44100);
+    expect(out.config).not.toBeNull();
+    expect(parseAudioConfig(out.config!).sampleRate).toBe(44100);
   });
 
   it('produces datagrams within MAX_DATAGRAM_SIZE for max-size packets', () => {
     const packetizer = new AudioPacketizer();
     packetizer.setConfig(config);
     const out = packetizer.packetize(new Uint8Array(MAX_DATAGRAM_SIZE - 16).fill(7), 0, 0);
-    for (const d of out) expect(d.length).toBeLessThanOrEqual(MAX_DATAGRAM_SIZE);
+    for (const d of [out.config!, out.frame]) expect(d.length).toBeLessThanOrEqual(MAX_DATAGRAM_SIZE);
   });
 });
 
@@ -174,13 +179,20 @@ function fakeEncoderFactory(): { factory: AudioEncoderFactory; encoders: FakeEnc
   return { factory, encoders };
 }
 
-function collectingSender() {
+// Records every send with its tag; resolves each with `result` ('sent'
+// unless a test says otherwise).
+function collectingSender(result: (tag: SendTag) => SendResult = () => 'sent') {
   const sent: Uint8Array[][] = [];
+  const tags: SendTag[] = [];
   return {
     sent,
-    send: (datagrams: Uint8Array<ArrayBuffer>[]) => {
+    tags,
+    // The AudioFrame datagrams only, in send order.
+    frames: () => sent.filter((d) => d[0][1] === TYPE_AUDIO_FRAME).map((d) => d[0]),
+    send: (datagrams: Uint8Array<ArrayBuffer>[], tag: SendTag) => {
       sent.push(datagrams);
-      return Promise.resolve();
+      tags.push(tag);
+      return Promise.resolve(result(tag));
     },
   };
 }
@@ -207,7 +219,7 @@ describe('AudioLaneCore', () => {
   it('closes every AudioData it is fed', () => {
     const { factory } = fakeEncoderFactory();
     const core = new AudioLaneCore(
-      { send: () => Promise.resolve(), onError: () => {} },
+      { send: () => Promise.resolve<SendResult>('sent'), onError: () => {} },
       factory,
       () => 0,
     );
@@ -223,7 +235,7 @@ describe('AudioLaneCore', () => {
     expect(late.closed).toBe(true);
   });
 
-  it('sends config + frame datagrams for encoded packets and counts sends', async () => {
+  it('sends the config in a control send of its own, then the frame tagged audio, and counts sends', async () => {
     const { factory, encoders } = fakeEncoderFactory();
     const sender = collectingSender();
     let nowMs = 0;
@@ -235,14 +247,18 @@ describe('AudioLaneCore', () => {
     encoders[0].emit(chunkOf(20_000, [4, 5]));
     await Promise.resolve();
 
-    expect(sender.sent).toHaveLength(2);
-    // First send: config + frame; second: frame only (cadence not elapsed).
-    expect(sender.sent[0].map((d) => d[1])).toEqual([TYPE_AUDIO_CONFIG, TYPE_AUDIO_FRAME]);
-    expect(sender.sent[1].map((d) => d[1])).toEqual([TYPE_AUDIO_FRAME]);
-    const frame = parseAudioFrame(sender.sent[0][1]);
+    // config (control), frame (audio), frame (audio): the cadence has not
+    // elapsed for the second packet. One datagram per send.
+    expect(sender.sent.map((d) => d.map((x) => x[1]))).toEqual([
+      [TYPE_AUDIO_CONFIG],
+      [TYPE_AUDIO_FRAME],
+      [TYPE_AUDIO_FRAME],
+    ]);
+    expect(sender.tags).toEqual([{ kind: 'control' }, { kind: 'audio' }, { kind: 'audio' }]);
+    const frame = parseAudioFrame(sender.frames()[0]);
     expect(frame.header.seq).toBe(0);
     expect(Array.from(frame.payload)).toEqual([1, 2, 3]);
-    expect(parseAudioFrame(sender.sent[1][0]).header.seq).toBe(1);
+    expect(parseAudioFrame(sender.frames()[1]).header.seq).toBe(1);
 
     const stats = core.getStats();
     expect(stats.encodedPackets).toBe(2);
@@ -254,7 +270,7 @@ describe('AudioLaneCore', () => {
   it('an encoder error kills only the lane: onError once, encoder closed, later data ignored', () => {
     const { factory, encoders } = fakeEncoderFactory();
     const onError = vi.fn();
-    const core = new AudioLaneCore({ send: () => Promise.resolve(), onError }, factory, () => 0);
+    const core = new AudioLaneCore({ send: () => Promise.resolve<SendResult>('sent'), onError }, factory, () => 0);
 
     core.pushAudioData(audioData(0));
     encoders[0].emitError(new Error('encoder exploded'));
@@ -288,6 +304,27 @@ describe('AudioLaneCore', () => {
     expect(onError).not.toHaveBeenCalled();
     expect(core.getStats().packetsSent).toBe(0);
     expect(core.getStats().encodedPackets).toBe(1);
+  });
+
+  // docs/75 RU9: a packet the sender dropped as stale is counted apart, never
+  // as sent.
+  it("counts a 'dropped' packet in staleDropped, never in packetsSent or bytesSent", async () => {
+    const { factory, encoders } = fakeEncoderFactory();
+    const sender = collectingSender((tag) => (tag.kind === 'audio' ? 'dropped' : 'sent'));
+    const core = new AudioLaneCore({ send: sender.send, onError: () => {} }, factory, () => 0);
+
+    core.pushAudioData(audioData(0));
+    encoders[0].emit(chunkOf(0, [1, 2, 3]));
+    encoders[0].emit(chunkOf(20_000, [4]));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const stats = core.getStats();
+    expect(stats.encodedPackets).toBe(2);
+    expect(stats.packetsSent).toBe(0);
+    expect(stats.staleDropped).toBe(2);
+    // The config went (control is never dropped); only its bytes count.
+    expect(stats.bytesSent).toBe(sender.sent[0][0].length);
   });
 
   it('a late description from the encoder updates the config datagram', async () => {
@@ -328,7 +365,7 @@ describe('AudioLaneCore timestamp reference point', () => {
     encoders[0].emit(chunkOf(0, [1]));
     await Promise.resolve();
 
-    const frame = parseAudioFrame(sender.sent[0][1]);
+    const frame = parseAudioFrame(sender.frames()[0]);
     expect(Number(frame.header.timestampUs)).toBe(1_000_000);
     // The lag is measured instead of baked in — the number to read when
     // lip sync is off and the viewer's own metrics look clean.
@@ -352,9 +389,7 @@ describe('AudioLaneCore timestamp reference point', () => {
     }
     await Promise.resolve();
 
-    const stamps = sender.sent.map((d) =>
-      Number(parseAudioFrame(d[d.length - 1]!).header.timestampUs),
-    );
+    const stamps = sender.frames().map((d) => Number(parseAudioFrame(d).header.timestampUs));
     expect(stamps).toEqual([1_000_000, 1_020_000, 1_040_000, 1_060_000]);
     expect(core.getStats().anchorReanchors).toBe(0);
   });

@@ -568,3 +568,110 @@ if g10:
           "Most stable before RU8 | Most stable | ≥ 99 % shown in every run (G10) | Host CPU steal |")
     print("|---|---|---|---|---|---|---|---|---|---|---|")
     print("\n".join(g10))
+
+def ru9_info(name, mode):
+    """RU9's page (chrome-ru9 modes): its queue (Q), stale drops (D deltas, DA
+    audio) and keyframes (F, KQ waited, KW handed over, K outcome)."""
+    r = send_info(name, mode)
+    if not r:
+        return None
+    prod, kq, kw, kend = {}, set(), {}, {}
+    drops = adrops = 0
+    for line in open(f"{OUT}/results/{name}/{mode}/send.csv"):
+        x = line.rstrip("\n").split(",")
+        if x[0] == "F" and x[2] == "1":
+            prod[int(x[1])] = int(x[6])
+        elif x[0] == "KQ":
+            kq.add(int(x[1]))
+        elif x[0] == "KW":
+            kw[int(x[1])] = int(x[2])
+        elif x[0] == "K":
+            kend[int(x[1])] = (int(x[3]), x[4])
+        elif x[0] == "D":
+            drops += 1
+        elif x[0] == "DA":
+            adrops += 1
+    sent = sorted(t for t, o in kend.values() if o == "sent")
+    outcomes = {}
+    for _, o in kend.values():
+        outcomes[o] = outcomes.get(o, 0) + 1
+    tail = sorted((kend[i][0] - kw[i]) / 1e6 for i in kw if i in kend and kend[i][1] == "sent")
+    gaps = sorted((b - a) / 1e6 for a, b in zip(sent, sent[1:]))
+    return dict(r=r, prod=len(prod), waited=len(kq), outcomes=outcomes, drops=drops, adrops=adrops,
+                tail=tail, gaps=gaps, landed_per_s=len(sent) / r["dur"] if r["dur"] else None)
+
+
+def steal(name, mode):
+    """The host's CPU steal over the cell, when its runner recorded it."""
+    p = f"{OUT}/results/{name}/{mode}/steal.txt"
+    return f"{float(open(p).read().split()[0]):.1f} %" if os.path.exists(p) else "–"
+
+
+def ru9_pq(xs, q):
+    return xs[min(len(xs) - 1, int((len(xs) - 1) * q))] if xs else None
+
+
+def ru9_kf(i):
+    o = i["outcomes"]
+    other = " · ".join(f"{v} {k}" for k, v in sorted(o.items()) if k != "sent")
+    return f"{o.get('sent', 0)} of {i['prod']}" + (f" ({other})" if other else "")
+
+
+p10 = []
+for name, label in (("rtt40-loss0.005", "40 ms, 0.5 % loss"), ("hi-rtt10-clean", "1440p, 10 ms, clean")):
+    for m, d in (("chrome-ru9", "RU9"), ("chrome-ru9-maxage100", "RU9, outgoingMaxAge 100 ms"),
+                 ("chrome-ru9-maxage100-hwm1000", "RU9, outgoingMaxAge 100 ms, high-water mark 1000")):
+        i, s_ = ru9_info(name, m), get(name, m)
+        if not i or not s_ or "S" not in i["r"] or not i["r"]["S"][7]:
+            continue
+        r, t = i["r"], s_["transport"]["ready_lat_ms"]
+        qk = r.get("queue", ["–", "–"])
+        peak = max((b for _, b in r["q"]), default=0)
+        p10.append(f"| {label} | {d} | {qk[0]} · {qk[1]} | {backlog_at(r, 30)} · {backlog_at(r, 60)} · "
+                   f"{backlog_at(r, 95)} (peak {peak}) | {n(i['drops'])} · {n(i['adrops'])} | "
+                   f"{100 * r['S'][6] / r['S'][7]:.0f} % | {ru9_kf(i)} | {i['waited']} | "
+                   f"{f(i['landed_per_s'], 2)} | {f(ru9_pq(i['gaps'], .5))} / {f(ru9_pq(i['gaps'], .95))} / "
+                   f"{f(i['gaps'][-1] if i['gaps'] else None)} | {f(ru9_pq(i['tail'], .5))} / "
+                   f"{f(ru9_pq(i['tail'], .95))} / {f(i['tail'][-1] if i['tail'] else None)} | "
+                   f"{f(t['p50'])} / {f(t['p99'])} | {sv(s_, 'adaptive')} | {steal(name, m)} |")
+if p10:
+    print("\n#### Table P10 — table P7's cells with RU9's send queue\n")
+    print("The fixed page (`matrix.py chrome-ru9-p7`): a stale frame resolves as dropped, so *frames waiting*")
+    print("(handed to DatagramSender, not yet resolved, after 30 · 60 · 95 s) counts only what still waits.")
+    print("*Stale drops*: deltas · audio packets the queue dropped for age or behind a late keyframe.")
+    print("*Keyframes sent*: acknowledged, of those produced (the rest by outcome); *waited*: keyframes that")
+    print("had to wait in KeyframeSender's slot. *Landed*: acknowledged keyframes per second of the run, and")
+    print("the gap between successive acknowledgements. *Handover → acknowledged*: the `KW` → `K` tail of the")
+    print("keyframes acknowledged. *Host CPU steal*: over the cell, from /proc/stat.\n")
+    print("| Path | Page | outgoingMaxAge · outgoingHighWaterMark | Frames waiting | Stale drops: deltas · audio | "
+          "Datagram frames sent | Keyframes sent | Keyframes waited | Keyframes landed /s | "
+          "Between landings p50 / p95 / max ms | Handover → acknowledged p50 / p95 / max ms | "
+          "Decode-ready p50 / p99 ms | Balanced: shown · stalled | Host CPU steal |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("\n".join(p10))
+
+p11 = []
+for name, label in (("rtt0-clean", "0 ms · 1080p · clean"), ("rtt10-clean", "10 ms · 1080p · clean"),
+                    ("rtt40-clean", "40 ms · 1080p · clean"), ("rtt40-clean-r2", "40 ms · 1080p · clean (run 2)"),
+                    ("rtt40-loss0.001", "40 ms · 1080p · 0.1 % loss"),
+                    ("rtt100-clean", "100 ms · 1080p · clean"), ("rtt100-clean-r2", "100 ms · 1080p · clean (run 2)"),
+                    ("rtt200-clean", "200 ms · 1080p · clean"), ("rtt300-clean", "300 ms · 1080p · clean"),
+                    ("hi-rtt10-clean", "10 ms · 1440p · clean"), ("hi-rtt40-clean", "40 ms · 1440p · clean"),
+                    ("hi-rtt100-clean", "100 ms · 1440p · clean")):
+    i, s_ = ru9_info(name, "chrome-ru9"), get(name, "chrome-ru9")
+    if not i or not s_:
+        continue
+    t = s_["transport"]["ready_lat_ms"]
+    p11.append(f"| {label} | {ru9_kf(i)} | {i['waited']} | {n(i['drops'])} · {n(i['adrops'])} | "
+               f"{f(ru9_pq(i['tail'], .5))} / {f(ru9_pq(i['tail'], .95))} / "
+               f"{f(i['tail'][-1] if i['tail'] else None)} | {f(t['p50'])} / {f(t['p99'])} | {sv(s_, 'adaptive')} | "
+               f"{steal(name, 'chrome-ru9')} |")
+if p11:
+    print("\n#### Table P11 — table P9's paths with RU9's send queue\n")
+    print("The fixed page (`matrix.py chrome-ru9-p9`), every keyframe of the 100 s run. Columns as table P10.")
+    print("The 1440p rows are past Chrome's datagram ceiling (table P6): there RU9 is meant to drop.\n")
+    print("| Path | Keyframes sent | Keyframes waited | Stale drops: deltas · audio | "
+          "Handover → acknowledged p50 / p95 / max ms | Decode-ready p50 / p99 ms | Balanced: shown · stalled | "
+          "Host CPU steal |")
+    print("|---|---|---|---|---|---|---|---|")
+    print("\n".join(p11))

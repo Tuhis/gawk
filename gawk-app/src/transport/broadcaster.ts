@@ -47,6 +47,8 @@ import {
   readDatagrams,
   type ConnectOptions,
 } from './connection';
+import { KeyframeSender } from './keyframe-sender';
+import { UplinkMonitor } from './uplink-monitor';
 import { ConnectionStatsSampler, type TransportConnectionStats } from './net-stats';
 import {
   packetizeDecoderConfig,
@@ -89,14 +91,24 @@ import {
 export interface BroadcastStats {
   encodedFrames: number;
   keyframes: number;
+  // Encoder rejections and send failures (the session dying). A too-slow
+  // uplink is counted apart, below, so the two stay distinguishable.
   droppedFrames: number;
   fpsGateDropped: number;
+  // docs/75 RU9: frames and audio packets the send queue dropped because
+  // they were more than a GOP old when their turn came (or, for deltas,
+  // because their GOP's keyframe waited behind a late one or never went out).
+  staleFramesDropped: number;
+  staleAudioDropped: number;
   datagramsSent: number;
   bytesSent: number;
   configsSent: number;
   // Keyframes travel over reliable uni streams, deltas over datagrams.
   keyframeStreamsSent: number;
   keyframeStreamsFailed: number;
+  // Keyframes replaced or discarded while waiting, or aborted 2 s after they
+  // opened (an aborted one also counts as failed) — the engine's counter.
+  keyframeStreamsSuperseded: number;
   keyframeBytesSent: number;
   encoderQueueDepth: number;
   encoderFps: number;
@@ -123,6 +135,9 @@ export interface BroadcastStats {
   autoStepDowns: number;
   autoStepUps: number;
   encoderPressure: boolean;
+  // "Your upload can't keep up" (docs/75 §6): the native monitor's rule over
+  // the counts above. Not a ladder signal — it asks the broadcaster instead.
+  uplinkWarning: boolean;
   // The HW-aware auto ceiling (null in explicit resolution
   // mode) and the resolved 'auto' framerate (null when the fps selection is
   // an explicit rung).
@@ -205,11 +220,14 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   keyframes: 0,
   droppedFrames: 0,
   fpsGateDropped: 0,
+  staleFramesDropped: 0,
+  staleAudioDropped: 0,
   datagramsSent: 0,
   bytesSent: 0,
   configsSent: 0,
   keyframeStreamsSent: 0,
   keyframeStreamsFailed: 0,
+  keyframeStreamsSuperseded: 0,
   keyframeBytesSent: 0,
   encoderQueueDepth: 0,
   encoderFps: 0,
@@ -223,6 +241,7 @@ const EMPTY_BROADCAST_STATS: BroadcastStats = {
   autoStepDowns: 0,
   autoStepUps: 0,
   encoderPressure: false,
+  uplinkWarning: false,
   autoCeiling: null,
   autoFps: null,
   pipelineContext: 'main-thread',
@@ -425,6 +444,12 @@ export class BroadcastPipeline {
   private now: () => number;
 
   private nextFrameId = 0;
+  // The GOP each delta belongs to, numbered at every keyframe produced
+  // (docs/75 RU9). Like frameIds it carries on across resumes.
+  private gop = 0;
+  // Keyframe streams on the F-12 rule; lives as long as the pipeline, so its
+  // counts survive resumes. Built in the constructor (it needs the clock).
+  private keyframes: KeyframeSender;
   // Latest DecoderConfig datagram; re-sent immediately before every
   // keyframe so a viewer that missed it can always recover at the next
   // keyframe (the relay additionally caches and re-emits it).
@@ -453,6 +478,12 @@ export class BroadcastPipeline {
   private encodedSinceStats = 0;
   private capturedSinceStats = 0;
   private sentSinceStats = 0;
+  // "Your upload can't keep up": one sample a second, rates over that second.
+  private uplink = new UplinkMonitor();
+  private uplinkSampledAt = 0;
+  private uplinkEncoded = 0;
+  private uplinkSent = 0;
+  private sentFrames = 0;
   // Audio lane: strictly subordinate — its errors annotate, never fail the
   // broadcast.
   private audioLane: RunningAudioLane | null = null;
@@ -495,6 +526,17 @@ export class BroadcastPipeline {
     this.mediaSource = mediaSource;
     this.prober = prober ?? (probeSupported() ? new EncoderSupportProber() : null);
     this.stats.pipelineContext = typeof window === 'undefined' ? 'worker' : 'main-thread';
+    this.keyframes = new KeyframeSender({
+      now: () => this.now(),
+      gopMs: config.keyframeIntervalMs,
+      events: {
+        ended: (_gop, outcome, bytes) => {
+          if (outcome !== 'sent') return;
+          this.stats.bytesSent += bytes;
+          this.countSent();
+        },
+      },
+    });
   }
 
   async start(): Promise<void> {
@@ -571,7 +613,14 @@ export class BroadcastPipeline {
     const wt = await connectWebTransport(this.publishUrl(), this.connectOpts);
     const gen = ++this.connGeneration;
     this.wt = wt;
-    this.sender = new DatagramSender(wt);
+    // docs/75 RU9: a delta or audio packet more than a GOP old when its turn
+    // comes is dropped, and deltas give way to their GOP's keyframe.
+    this.sender = new DatagramSender(wt, {
+      now: () => this.now(),
+      maxAgeMs: this.config.keyframeIntervalMs,
+      gopBlocked: (gop) => this.keyframes.deltasBlocked(gop),
+    });
+    this.keyframes.attach(() => wt.createUnidirectionalStream());
     this.connSampler = new ConnectionStatsSampler(wt);
     void wt.closed
       .then((info) => {
@@ -592,7 +641,7 @@ export class BroadcastPipeline {
     // nothing else as datagrams). Failures are the session's problem, not the
     // ping loop's. Fresh estimator per session — the new pod has a new clock.
     const sender = this.sender;
-    this.timeSync = new TimeSyncClient((d) => void sender.send([d]).catch(() => {}));
+    this.timeSync = new TimeSyncClient((d) => void sender.send([d], { kind: 'control' }).catch(() => {}));
     this.timeSync.start();
     void readDatagrams(wt, (dgram) => {
       // The relay pushes the live viewer count on this session; everything
@@ -943,6 +992,7 @@ export class BroadcastPipeline {
     this.startAudioLane(media);
 
     this.lastStatsAt = this.now();
+    this.uplinkSampledAt = this.lastStatsAt;
     this.statsTimer = setInterval(() => this.publishStats(), 500);
 
     await media.startFrames((frame) => {
@@ -1025,10 +1075,10 @@ export class BroadcastPipeline {
       this.audioLane = startAudioLane(track, {
         // Reads the live sender so the lane survives transport resumes
         // (packets during the gap reject and drop — live-edge, no buffering).
-        send: (datagrams) => {
+        send: (datagrams, tag) => {
           const sender = this.sender;
           if (!sender) return Promise.reject(new Error('no transport'));
-          return sender.send(datagrams);
+          return sender.send(datagrams, tag);
         },
         onError: (err) => {
           // Audio-lane-only teardown: annotate and keep broadcasting video.
@@ -1194,8 +1244,16 @@ export class BroadcastPipeline {
   }
 
   private handleEncoded(encoded: EncodedFrame): void {
-    if (this.stopping || !this.sender) return;
+    if (this.stopping) return;
     const chunk = encoded.chunk;
+    // Every keyframe opens a GOP, sent or not: a delta of a GOP whose
+    // keyframe was produced while the session was down must not ride the
+    // next session as if it were decodable.
+    if (chunk.type === 'key') this.gop++;
+    if (!this.sender) {
+      if (chunk.type === 'key') this.keyframes.missed(this.gop);
+      return;
+    }
     this.stats.encodedFrames++;
     this.encodedSinceStats++;
     if (chunk.type === 'key') this.stats.keyframes++;
@@ -1238,7 +1296,8 @@ export class BroadcastPipeline {
         return;
       }
       if (this.configDatagram) this.stats.configsSent++;
-      void this.sendKeyframeStream(msg);
+      // Started now, or waiting its turn — see keyframe-sender.ts.
+      this.keyframes.produce(this.gop, msg);
       return;
     }
 
@@ -1268,14 +1327,18 @@ export class BroadcastPipeline {
     // put it ahead of the frame in the queue for no benefit.
     const all = parity.length > 0 ? [...datagrams, ...parity] : datagrams;
     this.sender
-      .send(all)
-      .then(() => {
+      .send(all, { kind: 'delta', gop: this.gop })
+      .then((result) => {
+        // Stale: dropped by the send queue, not sent and not a failure.
+        if (result === 'dropped') {
+          this.stats.staleFramesDropped++;
+          return;
+        }
         this.stats.datagramsSent += datagrams.length;
         this.stats.bytesSent += bytes;
         this.stats.parityChunksSent += parity.length;
         this.stats.parityBytesSent += parityBytes;
-        // Funnel stage 4: the whole frame actually left, without error.
-        this.sentSinceStats++;
+        this.countSent();
       })
       .catch(() => {
         // A send failure means the session is dying (or dead): drop the
@@ -1286,28 +1349,10 @@ export class BroadcastPipeline {
       });
   }
 
-  // Sends one keyframe over a fresh unidirectional stream. A single stream
-  // failure is not fatal — the next keyframe recovers, and genuine session
-  // death is surfaced by the wt.closed handler — so it is logged and counted,
-  // not propagated to fail().
-  private async sendKeyframeStream(msg: Uint8Array<ArrayBuffer>): Promise<void> {
-    const wt = this.wt;
-    if (!wt || this.stopping) return;
-    try {
-      const stream = await wt.createUnidirectionalStream();
-      const writer = stream.getWriter();
-      await writer.write(msg);
-      await writer.close();
-      this.stats.keyframeStreamsSent++;
-      this.stats.bytesSent += msg.length;
-      this.stats.keyframeBytesSent += msg.length;
-      this.sentSinceStats++;
-    } catch (e) {
-      if (!this.stopping) {
-        this.stats.keyframeStreamsFailed++;
-        log.warn('Keyframe stream send failed:', e);
-      }
-    }
+  // Funnel stage 4: a whole frame actually left, without error.
+  private countSent(): void {
+    this.sentSinceStats++;
+    this.sentFrames++;
   }
 
   // A mid-stream encoder error. In explicit mode it stays fatal (never
@@ -1348,7 +1393,7 @@ export class BroadcastPipeline {
       return;
     }
     this.lastMappingSentAt = now;
-    this.sender.send([encodeClockMapping(sync.offsetUs)]).catch(() => {});
+    this.sender.send([encodeClockMapping(sync.offsetUs)], { kind: 'control' }).catch(() => {});
   }
 
   // The one authoritative session-death signal (wt.closed — datagram send
@@ -1389,6 +1434,10 @@ export class BroadcastPipeline {
     this.timeSync = null;
     this.sender?.close();
     this.sender = null;
+    // A resume: every keyframe stream still in Chrome dies with this session
+    // and counts as failed, the waiting one as superseded (the resume forces
+    // a fresh keyframe). A stop counts nothing.
+    this.keyframes.detach(!this.stopping);
     this.connSampler = null;
     try {
       this.wt?.close();
@@ -1464,8 +1513,14 @@ export class BroadcastPipeline {
     this.sentSinceStats = 0;
     this.lastStatsAt = now;
     this.stats.fpsGateDropped = this.preprocessor.getStats().gateDropped;
+    const kf = this.keyframes.counters;
+    this.stats.keyframeStreamsSent = kf.sent;
+    this.stats.keyframeStreamsFailed = kf.failed;
+    this.stats.keyframeStreamsSuperseded = kf.superseded;
+    this.stats.keyframeBytesSent = kf.bytesSent;
     const audio = this.audioLane?.getStats();
     if (audio) {
+      this.stats.staleAudioDropped = audio.staleDropped;
       this.stats.audioEncodedPackets = audio.encodedPackets;
       this.stats.audioPacketsSent = audio.packetsSent;
       this.stats.audioBytesSent = audio.bytesSent;
@@ -1490,7 +1545,27 @@ export class BroadcastPipeline {
     this.connSampler?.tick();
     this.stats.connection = this.connSampler?.latest() ?? null;
     this.stats.timeSyncRttMs = this.timeSync?.sample()?.rttMs ?? null;
+    this.sampleUplink(now);
     this.cb.onStats({ ...this.stats });
+  }
+
+  // Feeds the upload monitor once a second (stats publish twice a second;
+  // the slack absorbs timer jitter), with the encode and sent rates over the
+  // second just ended.
+  private sampleUplink(now: number): void {
+    const dt = (now - this.uplinkSampledAt) / 1000;
+    if (dt < 0.95) return;
+    const encoded = this.stats.encodedFrames;
+    this.stats.uplinkWarning = this.uplink.observe({
+      staleDropped: this.stats.staleFramesDropped + this.stats.staleAudioDropped,
+      keyframeStreamsSuperseded: this.stats.keyframeStreamsSuperseded,
+      keyframeStreamsFailed: this.stats.keyframeStreamsFailed,
+      encoderFps: (encoded - this.uplinkEncoded) / dt,
+      sentFps: (this.sentFrames - this.uplinkSent) / dt,
+    });
+    this.uplinkSampledAt = now;
+    this.uplinkEncoded = encoded;
+    this.uplinkSent = this.sentFrames;
   }
 
   private fail(err: Error): void {
@@ -1527,6 +1602,7 @@ export class BroadcastPipeline {
 
     this.audioLane?.stop();
     this.audioLane = null;
+    this.keyframes.detach(false);
     // Dispose, not a flushing close: output is discarded once stopping, and a
     // wedged hardware encoder's flush would hold the publisher session open.
     this.encoder?.dispose();
