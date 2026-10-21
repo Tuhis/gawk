@@ -2294,6 +2294,10 @@ The 1440p rows are past Chrome's datagram ceiling (table P6): there RU9 is meant
   packets at 0.68 s. Nothing was dropped after that, and the run showed
   99.8 % of frames to the Balanced viewer. The 0.1 % loss row at 40 ms
   (not a clean cell) dropped nothing either.
+  **Owner decision, 2026-10-21: accepted.** A session's opening GOP on a
+  300 ms path can lose some deltas while the connection ramps up; it is one
+  bad second, the notice needs five, and exempting the first GOP from the
+  age bound is not pursued.
 - Not part of the criterion: the 1440p rows drop by design (P6's ceiling).
   They dropped 536–578 deltas and 97–108 audio packets in 100 s, and the
   Balanced viewer saw 70–78 % of frames at 60–113 ms decode-ready p50,
