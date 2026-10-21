@@ -2,6 +2,7 @@
 //! `supervise` (gawk-server/internal/pubsim/engine/engine.go + resume.go).
 //! Callbacks become an event channel — same information, Rust-shaped.
 
+use crate::carrier::Delivery;
 use crate::clock::Clock;
 use crate::dispatch::{
     SERVER_STREAM_READ_LIMIT, SERVER_STREAM_READ_TIMEOUT_MS, ServerMessage, dispatch_server_message,
@@ -16,7 +17,7 @@ use crate::room::{self, Identity, RoomConfig, RoomDialer, RoomRequest, RoomSumma
 use crate::sender::Sender;
 use crate::stats::Stats;
 use crate::timesync::{ClockMappingPublisher, TIME_SYNC_INTERVAL_MS, TimeSyncClient};
-use crate::transport;
+use crate::transport::{self, Congestion};
 use gawk_wire as wire;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -50,6 +51,13 @@ pub struct SessionConfig {
     /// the tile (one name feeds both, as on the web broadcaster page) and
     /// can change while live through [`Session::room_set_nickname`].
     pub nickname: String,
+    /// R73 (docs/75 D4): how deltas cross the uplink when the relay offers
+    /// carriers. Changeable while live ([`Session::set_uplink_delivery`]).
+    /// The default is the engine's — what the iOS app runs (OD3).
+    pub uplink_delivery: Delivery,
+    /// R73 (docs/75 D5): the publish connection's congestion controller,
+    /// for the first leg and every reclaim.
+    pub congestion: Congestion,
 }
 
 /// What the session tells its shell. The Go engine's `Callbacks`, as events.
@@ -208,8 +216,9 @@ impl Session {
             message: e,
         })?;
 
-        let relay: Arc<dyn RelaySession> =
-            Arc::new(transport::dial(&url, &cfg.origin, cfg.insecure).await?);
+        let relay: Arc<dyn RelaySession> = Arc::new(
+            transport::dial_publish(&url, &cfg.origin, cfg.insecure, cfg.congestion).await?,
+        );
 
         Ok(Self::start_with_session(cfg, relay, clock))
     }
@@ -242,6 +251,7 @@ impl Session {
         let publish_dialer: Arc<dyn PublishDialer> = Arc::new(transport::WtPublishDialer {
             origin: cfg.origin.clone(),
             insecure: cfg.insecure,
+            congestion: cfg.congestion,
         });
         Self::start_with_seams(cfg, relay, clock, room_dialer, publish_dialer)
     }
@@ -260,6 +270,7 @@ impl Session {
         let (publish_tx, publish_rx) = watch::channel(PublishWant::default());
         let (identity_tx, _) = watch::channel(None);
         let sender = Arc::new(Sender::new(relay.clone(), clock.clone()));
+        sender.set_uplink_delivery(cfg.uplink_delivery);
         let ts = {
             let sender = sender.clone();
             Arc::new(TimeSyncClient::new(
@@ -449,6 +460,12 @@ impl Session {
         });
     }
 
+    /// Changes the Delivery setting while live (docs/75 D4): it applies at
+    /// the next keyframe, with no restart and no new dial.
+    pub fn set_uplink_delivery(&self, delivery: Delivery) {
+        self.sender.set_uplink_delivery(delivery);
+    }
+
     /// The send surface for the media pumps.
     pub fn sender(&self) -> Arc<Sender> {
         self.sender.clone()
@@ -474,6 +491,7 @@ impl Session {
         }
         st.resumes = sh.resumes;
         st.resuming = sh.resuming;
+        st.uplink_congestion = self.cfg.congestion.as_str().to_owned();
         if let Some(s) = self.ts.sample() {
             st.time_sync_available = true;
             st.time_sync_rtt_ms = s.rtt_ms;

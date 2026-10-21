@@ -13,6 +13,9 @@
 //!   older (the browser's unbounded fire-and-forget is a known-weak spot we
 //!   do not reproduce in fresh code).
 
+use crate::carrier::{
+    CarrierLane, Delivery, FrameRecords, KEYFRAME_STREAM_PRIORITY, UplinkMode, engage,
+};
 use crate::clock::Clock;
 use crate::media::{AUDIO_CONFIG_RESEND_MS, AccessUnit, AudioFormat, AudioPacket};
 use crate::relay::{KeyframeOutcome, PathCounters, RelaySession, SendDatagramError};
@@ -108,6 +111,15 @@ struct State {
     /// Datagram drops of those connections (docs/75 D8), each clamped on
     /// its own: one connection's counters say nothing about another's.
     uplink_dropped_base: u64,
+
+    /// R73 (docs/75 D2/D4): the CURRENT session's relay advertised
+    /// `CAP_UPLINK_CARRIERS`. Per session — a reclaim may land on a relay
+    /// configured otherwise, so it is cleared on every `set_relay`.
+    relay_offers_carriers: bool,
+    /// The broadcaster's Delivery setting; read at each keyframe.
+    delivery: Delivery,
+    /// How the current GOP's deltas leave, decided at its keyframe.
+    gop_mode: UplinkMode,
 }
 
 /// Datagrams one connection accepted but never wrote into a packet: the
@@ -133,6 +145,8 @@ pub struct Sender {
     state: Arc<Mutex<State>>,
     kf: Arc<Mutex<KfSlot>>,
     audio_check: Option<AudioBitstreamCheck>,
+    /// R73's carrier lane (docs/75 D3): idle until a GOP engages it.
+    lane: CarrierLane,
 }
 
 impl Sender {
@@ -145,8 +159,10 @@ impl Sender {
         clock: Arc<dyn Clock>,
         audio_check: Option<AudioBitstreamCheck>,
     ) -> Self {
+        let relay = Arc::new(Mutex::new(relay));
         Self {
-            relay: Arc::new(Mutex::new(relay)),
+            lane: CarrierLane::new(relay.clone()),
+            relay,
             clock,
             state: Arc::new(Mutex::new(State {
                 next_frame_id: 0,
@@ -169,6 +185,9 @@ impl Sender {
                 last_rate_sent: 0,
                 uplink_base: PathCounters::default(),
                 uplink_dropped_base: 0,
+                relay_offers_carriers: false,
+                delivery: Delivery::default(),
+                gop_mode: UplinkMode::Datagram,
             })),
             kf: Arc::new(Mutex::new(KfSlot {
                 cancel: None,
@@ -212,7 +231,13 @@ impl Sender {
                 st.uplink_base.lost += c.lost;
                 st.uplink_dropped_base += datagrams_dropped(&c);
             }
+            // docs/75 D3: a new publisher session starts with no carrier,
+            // and opens none until ITS relay advertises them; the first
+            // keyframe after that (the shell forces one on resume) opens it.
+            st.relay_offers_carriers = false;
+            st.gop_mode = UplinkMode::Datagram;
         }
+        self.lane.new_gop(false);
         let (cancel, had_pending) = {
             let mut kf = self.kf.lock().unwrap();
             kf.generation += 1;
@@ -300,6 +325,14 @@ impl Sender {
         let mut st = self.state.lock().unwrap();
         st.parity_level = level;
         st.st.parity_level = level;
+        st.relay_offers_carriers = c.flags & wire::CAP_UPLINK_CARRIERS != 0;
+    }
+
+    /// The broadcaster's Delivery setting (docs/75 D4). Takes effect at the
+    /// next keyframe — a carrier opens at a keyframe and datagrams need no
+    /// setup — so a live change needs no restart.
+    pub fn set_uplink_delivery(&self, delivery: Delivery) {
+        self.state.lock().unwrap().delivery = delivery;
     }
 
     /// Routes one access unit.
@@ -323,6 +356,12 @@ impl Sender {
                     }
                 }
                 s.last_keyframe_us = au.timestamp_us;
+                // D4: the engage rule runs once per GOP, at its keyframe.
+                s.gop_mode = engage(s.relay_offers_carriers, s.delivery);
+                let carrier = s.gop_mode == UplinkMode::Carrier;
+                drop(s);
+                // Sheds what is still queued for the GOP this one replaces.
+                self.lane.new_gop(carrier);
             }
             (id, au.keyframe)
         };
@@ -429,7 +468,11 @@ impl Sender {
                         }
                     };
                     let stream = match opened {
-                        Ok(s) => s,
+                        Ok(s) => {
+                            // Ahead of any carrier (docs/75 D3).
+                            s.set_priority(KEYFRAME_STREAM_PRIORITY);
+                            s
+                        }
                         Err(_) => {
                             state.lock().unwrap().st.keyframe_streams_failed += 1;
                             return;
@@ -499,6 +542,10 @@ impl Sender {
     /// Chunks a non-keyframe AU into datagrams and applies the failure
     /// policy.
     fn send_delta(&self, frame_id: u32, au: AccessUnit) {
+        if self.state.lock().unwrap().gop_mode == UplinkMode::Carrier {
+            self.send_delta_on_carrier(frame_id, &au);
+            return;
+        }
         let relay = self.current_relay();
         for _attempt in 0..2 {
             let (dgrams, parity) = match self.chunk_with_parity(frame_id, &au) {
@@ -563,6 +610,19 @@ impl Sender {
         }
         // Re-chunked and still failing: drop rather than loop.
         self.count_frame_dropped();
+    }
+
+    /// Reliable delivery (docs/75 D1): the same datagrams, chunks then
+    /// parity, framed as records on the GOP's carrier. Queued, never awaited
+    /// — the lane's writer drains it and sheds what a newer GOP supersedes.
+    fn send_delta_on_carrier(&self, frame_id: u32, au: &AccessUnit) {
+        let records = self
+            .chunk_with_parity(frame_id, au)
+            .and_then(|(chunks, parity)| FrameRecords::new(&chunks, &parity));
+        match records {
+            Ok(f) => self.lane.enqueue(f),
+            Err(_) => self.count_frame_dropped(),
+        }
     }
 
     fn chunk_with_parity(
@@ -739,8 +799,19 @@ impl Sender {
     /// consecutive snapshots mean the same thing across all three
     /// broadcasters when read side by side.
     pub fn stats(&self) -> Stats {
+        let lane = self.lane.counters();
         let mut s = self.state.lock().unwrap();
         let mut st = s.st.clone();
+        // Frames that left on a carrier are sent frames like any other.
+        st.sent_frames += lane.frames_sent;
+        st.bytes_sent += lane.bytes_sent;
+        st.parity_chunks_sent += lane.parity_chunks_sent;
+        st.parity_bytes_sent += lane.parity_bytes_sent;
+        st.uplink_mode = s.gop_mode.as_str().to_owned();
+        st.uplink_mode_requested = s.delivery.as_str().to_owned();
+        st.uplink_carriers_opened = lane.carriers_opened;
+        st.uplink_carriers_expired = lane.carriers_expired;
+        st.uplink_records_shed = lane.records_shed;
         st.keyframe_interval_available = s.kf_interval_ok;
         st.keyframe_interval_ms = s.kf_interval_ms;
         let now_us = self.clock.now_us();
@@ -790,6 +861,9 @@ impl Sender {
         }
         for h in handles {
             let _ = h.await;
+        }
+        if let Some(writer) = self.lane.close() {
+            let _ = writer.await;
         }
     }
 

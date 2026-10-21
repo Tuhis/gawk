@@ -1575,6 +1575,18 @@ entries still describe code `gawk-pubsim` runs (now
   undecodable on datagrams. Where the uplink has room it keeps a household's
   TCP upload at 90–102 % of its fair share; on such a link, about half
   ([docs/75](75-reliable-uplink.md) F17).
+- **Packet loss does not tell a thin uplink from a radio.** An 80 ms
+  outage every second or so (AWDL's shape) loses 5–20 % of a second's
+  packets on a link with room; BBR on a link the stream nearly fills loses
+  2–30 % of its own. A ≥ 5 % loss signal held the upload warning through
+  every outage cell while the Reliable viewer saw 97 %. A thin uplink shows
+  as work backing up on the sender — quinn's send buffer, shed carrier
+  records, keyframes outliving their GOP — so the warning reads only those,
+  and loss is the Wi-Fi/network notice's input. Where BBR holds the rate
+  and the network drops the excess, nothing backs up: loss is all there
+  is, and only the loss notice speaks. `uplinkDatagramsDropped` counts
+  what is still queued too, so it can go down
+  ([docs/75](75-reliable-uplink.md) RU4).
 - **Chrome's WebTransport runs Cubic whatever `congestionControl` says.**
   Chrome 151's net-log (`QUIC_CONGESTION_CONTROL_CONFIGURED`) shows
   `CUBIC_BYTES` for `low-latency`, `default` and `throughput` alike; a page

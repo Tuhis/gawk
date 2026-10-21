@@ -175,6 +175,11 @@ pub struct BroadcastCounters {
     pub upload_bps: u64,
     /// The engine's uplink watchdog (`UplinkMonitor`): the upload isn't
     /// keeping up. Raised after 5 bad seconds, cleared after 15 good ones.
+    /// A capacity signal, judged in the delivery mode in use: keyframes
+    /// outliving their GOP, failed sends, the send buffer falling behind
+    /// (or, on carriers, GOPs shed or every carrier expiring) — never
+    /// packet loss alone, which a radio going off-channel also causes
+    /// (docs/75 RU4, 2026-10-21).
     pub uplink_warning: bool,
 }
 
@@ -1807,6 +1812,30 @@ mod live_tests {
                 .any(|s| matches!(s, BroadcastStatus::Ended { .. })),
             "the notice ends nothing: {heard:?}"
         );
+        h.stop().await;
+    }
+
+    // --- R73: the uplink follows the engine's defaults (docs/75 OD3) -------
+
+    // The iOS app has no Delivery setting and no congestion lever: its
+    // publish session runs whatever the shared engine defaults to — the
+    // datagram path, on BBR since docs/75 D5's owner decision (2026-10-21).
+    #[tokio::test(start_paused = true)]
+    async fn the_uplink_runs_the_engine_defaults() {
+        use gawk_engine::carrier::Delivery;
+        use gawk_engine::transport::Congestion;
+
+        let mut h = Harness::start(
+            options(),
+            Leg::announcing(),
+            Arc::new(Reclaims::default()),
+            Arc::new(Rooms::default()),
+        );
+        h.live().await;
+        let st = h.session().stats();
+        assert_eq!(st.uplink_mode_requested, Delivery::default().as_str());
+        assert_eq!(st.uplink_congestion, Congestion::default().as_str());
+        assert_eq!(st.uplink_mode, "datagram");
         h.stop().await;
     }
 

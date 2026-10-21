@@ -4,7 +4,10 @@
 //! off-channel, interference, roaming — "sent" fine, so every local send
 //! counter stays clean while viewers freeze on each lost chunk (one lost
 //! chunk costs the rest of the GOP). QUIC's own loss detection sees it, and
-//! [`Stats::uplink_packets_lost`] carries that count.
+//! [`Stats::uplink_packets_lost`] carries that count. In *Reliable*
+//! delivery (R73, docs/75 D6) the carrier repairs those packets, so the harm
+//! there is what the uplink still could not deliver: carriers expired and
+//! records shed.
 //!
 //! Pure counter arithmetic over 1 Hz stats snapshots plus the platform's
 //! network facts, so the whole policy is table tests:
@@ -79,13 +82,25 @@ impl Notice {
 /// One second's worth of the window.
 #[derive(Debug, Clone, Copy)]
 struct Second {
+    /// QUIC packets declared lost this second (Diagnostics).
     lost: u64,
+    /// What viewers lost this second, by the mode's harm input (RU5).
+    harm: u64,
+}
+
+/// The cumulative counters one sample is differenced against.
+#[derive(Debug, Clone, Copy)]
+struct Counters {
+    /// `None` without QUIC packet counters.
+    lost: Option<u64>,
+    /// Carriers expired plus records shed.
+    carrier: u64,
 }
 
 /// Feed [`LossMonitor::observe`] one stats snapshot per second.
 #[derive(Debug, Default)]
 pub struct LossMonitor {
-    last: Option<(u64, u64)>,
+    last: Option<Counters>,
     window: VecDeque<Second>,
     clean_streak: u32,
     raised: bool,
@@ -107,19 +122,47 @@ impl LossMonitor {
         (self.window.iter().map(|s| s.lost).sum(), self.window.len())
     }
 
+    /// What the policy counts as harm over the current window — packets
+    /// lost in *Lowest latency*, carriers expired plus records shed in
+    /// *Reliable* — and the window's length in seconds.
+    pub fn window_harm(&self) -> (u64, usize) {
+        (self.window.iter().map(|s| s.harm).sum(), self.window.len())
+    }
+
     /// One 1 Hz sample; returns the notice to show.
+    ///
+    /// The harm input follows the uplink mode in use (R73 RU5, docs/75 D6):
+    /// on a carrier QUIC repairs a lost packet, so viewers lose video only
+    /// when a carrier expires or records are shed; on datagrams every lost
+    /// packet can be a viewer's freeze, as WU3 shipped it.
     pub fn observe(&mut self, st: &Stats, facts: Option<NetworkFacts>) -> Notice {
-        if st.uplink_packets_available {
-            let now = (st.uplink_packets_sent, st.uplink_packets_lost);
-            if let Some(prev) = self.last.replace(now) {
-                // Counters only go backwards if the transport restarted
-                // them; that second carries no evidence either way.
-                let lost = now.1.saturating_sub(prev.1);
-                self.push(Second { lost });
-            }
+        let carrier_mode = st.uplink_mode == crate::carrier::UplinkMode::Carrier.as_str();
+        let now = Counters {
+            lost: st
+                .uplink_packets_available
+                .then_some(st.uplink_packets_lost),
+            carrier: st.uplink_carriers_expired + st.uplink_records_shed,
+        };
+        // Datagrams without packet counters carry no evidence: the notice
+        // stays off there, as before.
+        if (carrier_mode || now.lost.is_some())
+            && let Some(prev) = self.last.replace(now)
+        {
+            // Counters only go backwards if the transport restarted them;
+            // that second carries no evidence either way.
+            let lost = match (now.lost, prev.lost) {
+                (Some(n), Some(p)) => n.saturating_sub(p),
+                _ => 0,
+            };
+            let harm = if carrier_mode {
+                now.carrier.saturating_sub(prev.carrier)
+            } else {
+                lost
+            };
+            self.push(Second { lost, harm });
         }
 
-        let lossy = self.window.iter().filter(|s| s.lost > 0).count();
+        let lossy = self.window.iter().filter(|s| s.harm > 0).count();
         // An old relay without viewer counts cannot tell us; don't hide
         // real harm behind a missing number.
         let watched = !st.viewer_count_available || st.viewer_count > 0;
@@ -137,7 +180,7 @@ impl LossMonitor {
     }
 
     fn push(&mut self, s: Second) {
-        if s.lost > 0 {
+        if s.harm > 0 {
             self.clean_streak = 0;
         } else {
             self.clean_streak = self.clean_streak.saturating_add(1);
@@ -290,14 +333,136 @@ mod tests {
         const BANNED: [&str; 9] = [
             "awdl", "channel", "packet", "uplink", "quic", "carrier", "dscp", "ghz", "band",
         ];
-        for n in [Notice::Wifi, Notice::Network] {
-            for text in [n.text(), n.short_text()] {
-                let t = text.to_lowercase();
-                for b in BANNED {
-                    assert!(!t.contains(b), "{text:?} says {b:?}");
-                }
+        let mut main_flow: Vec<&str> = [Notice::Wifi, Notice::Network]
+            .into_iter()
+            .flat_map(|n| [n.text(), n.short_text()])
+            .collect();
+        // R73 RU5 (docs/75 §6): the Quality page's Delivery control.
+        main_flow.push(crate::carrier::DELIVERY_LABEL);
+        for d in crate::carrier::Delivery::ALL {
+            main_flow.extend([d.label(), d.hint()]);
+        }
+        for text in main_flow {
+            let t = text.to_lowercase();
+            for b in BANNED {
+                assert!(!t.contains(b), "{text:?} says {b:?}");
             }
         }
+    }
+
+    /// One second of a broadcast in either uplink mode: packets lost, and
+    /// carriers expired plus records shed, both cumulative.
+    #[derive(Clone, Copy)]
+    struct Tick {
+        carrier: bool,
+        lost: u64,
+        expired: u64,
+        shed: u64,
+    }
+
+    fn run_mode(m: &mut LossMonitor, ticks: &[Tick]) -> Vec<Notice> {
+        let (mut sent, mut lost, mut expired, mut shed) = (0, 0, 0, 0);
+        ticks
+            .iter()
+            .map(|t| {
+                sent += 1200;
+                lost += t.lost;
+                expired += t.expired;
+                shed += t.shed;
+                let st = Stats {
+                    uplink_packets_available: true,
+                    uplink_packets_sent: sent,
+                    uplink_packets_lost: lost,
+                    uplink_mode: if t.carrier { "carrier" } else { "datagram" }.into(),
+                    uplink_carriers_expired: expired,
+                    uplink_records_shed: shed,
+                    viewer_count_available: true,
+                    viewer_count: 1,
+                    ..Default::default()
+                };
+                m.observe(&st, WIFI)
+            })
+            .collect()
+    }
+
+    fn ticks(carrier: bool, n: usize, lost: u64, expired: u64, shed: u64) -> Vec<Tick> {
+        vec![
+            Tick {
+                carrier,
+                lost,
+                expired,
+                shed
+            };
+            n
+        ]
+    }
+
+    // RU5 (docs/75 D6): the harm input per delivery mode, as a table. In
+    // Reliable delivery QUIC repairs a lost packet, so packet loss is not
+    // what viewers lose — expired carriers and shed records are. In Lowest
+    // latency every lost packet can be a freeze, as today.
+    #[test]
+    fn the_harm_input_follows_the_uplink_mode() {
+        struct Case {
+            name: &'static str,
+            ticks: Vec<Tick>,
+            raised: bool,
+        }
+        let cases = [
+            Case {
+                name: "datagrams, packets lost every second",
+                ticks: ticks(false, 12, 2, 0, 0),
+                raised: true,
+            },
+            Case {
+                name: "carrier, packets lost every second but all repaired",
+                ticks: ticks(true, 12, 2, 0, 0),
+                raised: false,
+            },
+            Case {
+                name: "carrier, records shed every second",
+                ticks: ticks(true, 12, 0, 0, 3),
+                raised: true,
+            },
+            Case {
+                name: "carrier, a carrier expiring every second",
+                ticks: ticks(true, 12, 0, 1, 0),
+                raised: true,
+            },
+            Case {
+                name: "datagrams, shed counters moving (a carrier retiring) but no loss",
+                ticks: ticks(false, 12, 0, 1, 1),
+                raised: false,
+            },
+            Case {
+                name: "carrier, one shed burst is weather",
+                ticks: [
+                    ticks(true, 5, 0, 0, 0),
+                    ticks(true, 1, 0, 1, 20),
+                    ticks(true, 10, 0, 0, 0),
+                ]
+                .concat(),
+                raised: false,
+            },
+        ];
+        for c in cases {
+            let mut m = LossMonitor::new();
+            let out = run_mode(&mut m, &c.ticks);
+            assert_eq!(m.raised(), c.raised, "{}", c.name);
+            assert_eq!(*out.last().unwrap() == Notice::Wifi, c.raised, "{}", c.name);
+        }
+    }
+
+    // A mode change mid-broadcast (the Delivery setting applies at the
+    // next keyframe) never reads the other mode's counter jump as harm.
+    #[test]
+    fn switching_modes_carries_no_phantom_harm() {
+        let mut m = LossMonitor::new();
+        let mut t = ticks(false, 3, 5, 0, 0); // lossy datagram seconds
+        t.extend(ticks(true, 20, 5, 0, 0)); // carrier repairs the same loss
+        run_mode(&mut m, &t);
+        assert_eq!(m.window_harm().0, 0, "repaired loss is not harm");
+        assert!(!m.raised());
     }
 
     // docs/66 D4: the strip's line is the full text's first sentence, so

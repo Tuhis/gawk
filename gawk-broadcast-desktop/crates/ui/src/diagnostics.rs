@@ -55,6 +55,17 @@ struct Diagnostics<'a> {
     uplink_packets_lost: Option<u64>,
     /// Datagrams QUIC accepted and never sent (docs/75 D8).
     uplink_datagrams_dropped: Option<u64>,
+    /// R73 (docs/75 D8, §6): the delivery mode asked for and in use, the
+    /// congestion controller, and the carrier lane's counters.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    uplink_mode_requested: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    uplink_mode: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    uplink_congestion: String,
+    uplink_carriers_opened: u64,
+    uplink_carriers_expired: u64,
+    uplink_records_shed: u64,
     /// What the broadcast leaves on (docs/57 D7); null where the platform
     /// does not probe it (Windows).
     network: Option<NetworkFacts>,
@@ -153,6 +164,12 @@ pub fn render(
         uplink_datagrams_dropped: st
             .uplink_packets_available
             .then_some(st.uplink_datagrams_dropped),
+        uplink_mode_requested: st.uplink_mode_requested.clone(),
+        uplink_mode: st.uplink_mode.clone(),
+        uplink_congestion: st.uplink_congestion.clone(),
+        uplink_carriers_opened: st.uplink_carriers_opened,
+        uplink_carriers_expired: st.uplink_carriers_expired,
+        uplink_records_shed: st.uplink_records_shed,
         network,
         keyframe_interval_ms: st
             .keyframe_interval_available
@@ -285,5 +302,28 @@ mod tests {
         assert_eq!(v["network"]["wifi"], true);
         assert_eq!(v["network"]["awdlUp"], true);
         assert_eq!(v["network"]["vpn"], true);
+    }
+
+    // R73 (docs/75 §6, D8): the dump says which uplink ran and why it lost
+    // what it lost.
+    #[test]
+    fn carries_the_uplink_delivery_and_the_carrier_counters() {
+        let st = Stats {
+            uplink_mode_requested: "reliable".into(),
+            uplink_mode: "carrier".into(),
+            uplink_congestion: "bbr".into(),
+            uplink_carriers_opened: 120,
+            uplink_carriers_expired: 2,
+            uplink_records_shed: 37,
+            ..Default::default()
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&render(&st, None, "", "Live", "", "", String::new())).unwrap();
+        assert_eq!(v["uplinkModeRequested"], "reliable");
+        assert_eq!(v["uplinkMode"], "carrier");
+        assert_eq!(v["uplinkCongestion"], "bbr");
+        assert_eq!(v["uplinkCarriersOpened"], 120);
+        assert_eq!(v["uplinkCarriersExpired"], 2);
+        assert_eq!(v["uplinkRecordsShed"], 37);
     }
 }

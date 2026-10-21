@@ -6,8 +6,9 @@
 //! CLOSE_WEBTRANSPORT_SESSION capsule as `ApplicationClosed` (gate 2b).
 
 use crate::relay::{
-    BoxFuture, CancelSignal, KeyframeOutcome, KeyframeWriter, PathCounters, PublishDialer,
-    RelaySession, SendDatagramError, ServerStream, SessionClose, StartError, StartPhase,
+    BoxFuture, CancelSignal, CarrierStream, KeyframeOutcome, KeyframeWriter, PathCounters,
+    PublishDialer, RelaySession, SendDatagramError, ServerStream, SessionClose, StartError,
+    StartPhase,
 };
 use crate::room::{RoomConn, RoomDialer};
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use wtransport::endpoint::endpoint_side::Client;
 use wtransport::error::{ConnectingError, ConnectionError};
+use wtransport::quinn::congestion::{BbrConfig, ControllerFactory};
 use wtransport::{ClientConfig, Endpoint, VarInt};
 
 /// QUIC keepalive. Browsers advertise ~30 s idle timeouts and the effective
@@ -39,6 +41,69 @@ pub const DIAL_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 /// before attempts were cut short.
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The publish connection's QUIC congestion controller (R73 RU4, docs/75
+/// D5): `congestion` in `broadcast.json`, reported as `uplinkCongestion`.
+/// A support lever, not a Quality-page setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Congestion {
+    /// quinn's default, and the transport as it was before R73.
+    Cubic,
+    /// quinn's BBR (`BbrConfig::default()`), in both delivery modes.
+    Bbr,
+}
+
+/// The engine's default controller: BBR, by owner decision 2026-10-21
+/// (docs/75 D5), ahead of RU7's hardware pass; `congestion: "cubic"` is the
+/// way back. The one place the default lives; a blank `congestion` follows it.
+pub const DEFAULT_CONGESTION: Congestion = Congestion::Bbr;
+
+impl Default for Congestion {
+    fn default() -> Self {
+        DEFAULT_CONGESTION
+    }
+}
+
+impl Congestion {
+    /// The `broadcast.json` value and the telemetry/diagnostics word.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Congestion::Cubic => "cubic",
+            Congestion::Bbr => "bbr",
+        }
+    }
+
+    /// Parses a stored value; anything else (blank included) is `None`,
+    /// which the config layer resolves to [`DEFAULT_CONGESTION`].
+    pub fn parse(s: &str) -> Option<Congestion> {
+        match s.trim() {
+            "cubic" => Some(Congestion::Cubic),
+            "bbr" => Some(Congestion::Bbr),
+            _ => None,
+        }
+    }
+
+    /// The controller to install, or `None` to leave quinn's transport
+    /// exactly as it is (Cubic): `cubic` must restore today's transport,
+    /// so it touches nothing rather than re-stating quinn's default.
+    fn controller_factory(self) -> Option<Arc<dyn ControllerFactory + Send + Sync>> {
+        match self {
+            Congestion::Cubic => None,
+            Congestion::Bbr => Some(Arc::new(BbrConfig::default())),
+        }
+    }
+}
+
+/// The transport config a publish dial with `congestion` installs over the
+/// builder's, or `None` to keep the builder's untouched. Everything but the
+/// controller is what the builder sets: quinn's defaults plus the keepalive.
+fn publish_transport(congestion: Congestion) -> Option<wtransport::config::QuicTransportConfig> {
+    let factory = congestion.controller_factory()?;
+    let mut t = wtransport::config::QuicTransportConfig::default();
+    t.keep_alive_interval(Some(KEEP_ALIVE_PERIOD));
+    t.congestion_controller_factory(factory);
+    Some(t)
+}
+
 /// A live publisher session. Owns the endpoint too: the endpoint drives the
 /// connection's I/O and must outlive it.
 pub struct WtSession {
@@ -56,7 +121,18 @@ pub struct WtSession {
 /// status (401/403/404/409/429); a dial that never got an HTTP answer
 /// carries status 0.
 pub async fn dial(url: &str, origin: &str, insecure: bool) -> Result<WtSession, StartError> {
-    let (endpoint, conn) = connect(url, origin, insecure, "publish").await?;
+    dial_publish(url, origin, insecure, Congestion::default()).await
+}
+
+/// [`dial`] with the congestion controller chosen (docs/75 D5): what every
+/// publish leg — the first and each reclaim — dials through.
+pub async fn dial_publish(
+    url: &str,
+    origin: &str,
+    insecure: bool,
+    congestion: Congestion,
+) -> Result<WtSession, StartError> {
+    let (endpoint, conn) = connect(url, origin, insecure, "publish", congestion).await?;
     Ok(WtSession {
         _endpoint: endpoint,
         conn,
@@ -73,7 +149,7 @@ pub async fn dial_subscribe(
     origin: &str,
     insecure: bool,
 ) -> Result<WtSession, StartError> {
-    let (endpoint, conn) = connect(url, origin, insecure, "subscribe").await?;
+    let (endpoint, conn) = connect(url, origin, insecure, "subscribe", Congestion::Cubic).await?;
     Ok(WtSession {
         _endpoint: endpoint,
         conn,
@@ -98,6 +174,7 @@ async fn connect(
     origin: &str,
     insecure: bool,
     what: &str,
+    congestion: Congestion,
 ) -> Result<(Endpoint<Client>, wtransport::Connection), StartError> {
     let deadline = tokio::time::Instant::now() + DIAL_TIMEOUT;
     loop {
@@ -111,7 +188,7 @@ async fn connect(
                 ),
             ));
         }
-        let attempt = connect_once(url, origin, insecure, what);
+        let attempt = connect_once(url, origin, insecure, what, congestion);
         if let Ok(done) = tokio::time::timeout(left.min(DIAL_ATTEMPT_TIMEOUT), attempt).await {
             return done;
         }
@@ -126,6 +203,7 @@ async fn connect_once(
     origin: &str,
     insecure: bool,
     what: &str,
+    congestion: Congestion,
 ) -> Result<(Endpoint<Client>, wtransport::Connection), StartError> {
     let builder = ClientConfig::builder().with_bind_default();
     let builder = if insecure {
@@ -140,7 +218,12 @@ async fn connect_once(
             builder.with_native_certs()
         }
     };
-    let config = builder.keep_alive_interval(Some(KEEP_ALIVE_PERIOD)).build();
+    let mut config = builder.keep_alive_interval(Some(KEEP_ALIVE_PERIOD)).build();
+    if let Some(transport) = publish_transport(congestion) {
+        config
+            .quic_config_mut()
+            .transport_config(Arc::new(transport));
+    }
 
     let endpoint = Endpoint::client(config)
         .map_err(|e| connect_err(0, format!("could not create a QUIC endpoint: {e}")))?;
@@ -197,7 +280,7 @@ pub struct WtRoomConn {
 /// Dials a room route (`/room/new` or `/room/{code}`) and opens the control
 /// stream. Statuses surface exactly as for [`dial`].
 pub async fn dial_room(url: &str, origin: &str, insecure: bool) -> Result<WtRoomConn, StartError> {
-    let (endpoint, conn) = connect(url, origin, insecure, "room").await?;
+    let (endpoint, conn) = connect(url, origin, insecure, "room", Congestion::Cubic).await?;
     let stream_err = |e: String| StartError {
         phase: StartPhase::Connect,
         status: 0,
@@ -269,13 +352,15 @@ impl RoomDialer for WtRoomDialer {
 pub struct WtPublishDialer {
     pub origin: String,
     pub insecure: bool,
+    /// Every reclaim runs the controller the first leg did.
+    pub congestion: Congestion,
 }
 
 impl PublishDialer for WtPublishDialer {
     fn dial(&self, url: &str) -> BoxFuture<'_, Result<Arc<dyn RelaySession>, StartError>> {
         let url = url.to_owned();
         Box::pin(async move {
-            let session = dial(&url, &self.origin, self.insecure).await?;
+            let session = dial_publish(&url, &self.origin, self.insecure, self.congestion).await?;
             Ok(Arc::new(session) as Arc<dyn RelaySession>)
         })
     }
@@ -359,6 +444,44 @@ impl RelaySession for WtSession {
     fn remote_address(&self) -> Option<std::net::SocketAddr> {
         Some(self.conn.remote_address())
     }
+
+    fn open_uplink_carrier(&self) -> BoxFuture<'_, Result<Box<dyn CarrierStream>, String>> {
+        Box::pin(async {
+            let stream = self
+                .conn
+                .open_uni()
+                .await
+                .map_err(|e| e.to_string())?
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(Box::new(WtCarrier { stream }) as Box<dyn CarrierStream>)
+        })
+    }
+}
+
+/// An uplink carrier on a wtransport uni stream (docs/75 D1).
+struct WtCarrier {
+    stream: wtransport::SendStream,
+}
+
+impl CarrierStream for WtCarrier {
+    fn set_priority(&mut self, priority: i32) {
+        self.stream.set_priority(priority);
+    }
+
+    fn write<'a>(&'a mut self, buf: &'a [u8]) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.stream.write_all(buf).await.map_err(|e| e.to_string()) })
+    }
+
+    fn finish(&mut self) -> BoxFuture<'_, Result<(), String>> {
+        // wtransport's finish() is quinn's finish() then stopped(): it
+        // resolves once every byte is acknowledged (docs/75 D3).
+        Box::pin(async move { self.stream.finish().await.map_err(|e| e.to_string()) })
+    }
+
+    fn reset(&mut self, code: u32) {
+        let _ = self.stream.reset(VarInt::from_u32(code));
+    }
 }
 
 struct WtKeyframeWriter {
@@ -402,6 +525,10 @@ impl KeyframeWriter for WtKeyframeWriter {
     fn abort(mut self: Box<Self>, code: u32) {
         let _ = self.stream.reset(VarInt::from_u32(code));
     }
+
+    fn set_priority(&self, priority: i32) {
+        self.stream.set_priority(priority);
+    }
 }
 
 struct WtServerStream {
@@ -426,5 +553,59 @@ impl ServerStream for WtServerStream {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wtransport::quinn::congestion::{Bbr, Cubic};
+
+    /// What the builder produced before R73, and still produces for Cubic:
+    /// quinn's defaults plus the keepalive.
+    fn todays_transport() -> wtransport::config::QuicTransportConfig {
+        let mut t = wtransport::config::QuicTransportConfig::default();
+        t.keep_alive_interval(Some(KEEP_ALIVE_PERIOD));
+        t
+    }
+
+    // RU4: `cubic` restores today's transport exactly — the dial installs
+    // nothing over the builder's config, so quinn's own default (Cubic)
+    // runs, as it did before the setting existed.
+    #[test]
+    fn cubic_leaves_todays_transport_untouched() {
+        assert!(publish_transport(Congestion::Cubic).is_none());
+        assert!(Congestion::Cubic.controller_factory().is_none());
+        // quinn's default factory is Cubic's.
+        let built = Arc::new(wtransport::quinn::congestion::CubicConfig::default())
+            .build(std::time::Instant::now(), 1200);
+        assert!(built.into_any().downcast::<Cubic>().is_ok());
+    }
+
+    // RU4: `bbr` changes the controller and nothing else.
+    #[test]
+    fn bbr_installs_quinns_bbr_and_changes_nothing_else() {
+        let factory = Congestion::Bbr.controller_factory().expect("a factory");
+        let built = factory.build(std::time::Instant::now(), 1200);
+        assert!(
+            built.into_any().downcast::<Bbr>().is_ok(),
+            "BbrConfig::default()"
+        );
+        // TransportConfig's Debug lists every field but the controller.
+        let bbr = publish_transport(Congestion::Bbr).unwrap();
+        assert_eq!(format!("{bbr:?}"), format!("{:?}", todays_transport()));
+    }
+
+    #[test]
+    fn congestion_words_round_trip_and_blank_is_the_default() {
+        for c in [Congestion::Cubic, Congestion::Bbr] {
+            assert_eq!(Congestion::parse(c.as_str()), Some(c));
+        }
+        assert_eq!(Congestion::parse(""), None);
+        assert_eq!(Congestion::parse("reno"), None);
+        assert_eq!(Congestion::default(), DEFAULT_CONGESTION);
+        // docs/75 D5: BBR by default, by owner decision 2026-10-21 (ahead
+        // of RU7; `congestion: "cubic"` is the way back).
+        assert_eq!(DEFAULT_CONGESTION, Congestion::Bbr);
     }
 }

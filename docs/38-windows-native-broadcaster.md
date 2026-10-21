@@ -517,7 +517,13 @@ shared with `gawk-app` so the two broadcasters read as one product.
    "Your upload can't keep up with the stream…" naming the active bitrate
    (*2026-10-19*: the wording the shell ships, `shell.rs`
    `uplink_warning_text`; the Live pill reads "Your upload can't keep
-   up"); transitions also land in debug.log.
+   up"); transitions also land in debug.log. (*2026-10-21*, R73 RU4,
+   docs/75: one late keyframe a second now counts, not two, and each
+   delivery mode adds its own capacity signal — *Lowest latency* quinn's
+   send buffer falling ≥ 10 datagrams further behind in a second,
+   *Reliable* records shed or every retiring carrier expiring. Packet loss
+   is never an input: that is the Wi-Fi line's, docs/57 D7. The hysteresis
+   is unchanged.)
 2. **Capture picker** (idle only) — two tabs: **Share an app** (alt-tab
    window list, icon + title, re-listed every second while the picker is
    open — no refresh button) / **Share a screen** (monitors with name and
