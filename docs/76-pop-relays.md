@@ -334,8 +334,9 @@ frame for an outside viewer over a real WAN.
     with label), `refuse` (a want it can't meet, with a reason), `csr`,
     `stats` and `health`. Home → PoP:
     - `config`: display name, home app origin, budget ceilings, wall code,
-      auto-switch, the R40 screening notice, end date, and the **assigned
-      named host** once `status.tls.host` is set (item 38).
+      auto-switch, the R40 screening notice, end date, whether home runs
+      `-rooms` (item 16), and the **assigned named host** once
+      `status.tls.host` is set (item 38).
     - `reserved`: `ok`, `conflict` or `limit` (item 14).
     - `want`, `ban` and `certificate`.
     - `bye{reason}`: the last record before home closes the link with
@@ -393,10 +394,14 @@ frame for an outside viewer over a real WAN.
     in every client. R42 D3 rejected the same idea for rooms.
 
 16. **Codes typed on the PoP resolve upwards.** A local miss on a linked PoP
-    tries the home fleet (§6.6). Rooms resolve the same way: while linked, all
-    room control is proxied to home (§6.10), so a dynamic room minted at the
-    party lives at home and is joinable from anywhere. Unlinked, rooms are
-    local to the PoP.
+    tries the home fleet (§6.6). Rooms resolve the same way **when the home
+    fleet runs rooms**: while linked, all room control is proxied to home
+    (§6.10), so a dynamic room minted at the party lives at home and is
+    joinable from anywhere. `config` says whether home runs `-rooms`
+    (item 11). When it doesn't, rooms stay local to the PoP while linked,
+    exactly as when unlinked, because home registers no room routes then
+    (`server.go:315-324`). The wizard offers no wall in that case (item 33).
+    Unlinked, rooms are always local to the PoP.
 
 ### 6.5 Uplink on demand
 
@@ -443,7 +448,9 @@ frame for an outside viewer over a real WAN.
     that matches a PoP's public address and carries `lr=1`, B holds the demand
     for up to `-pop-offer-defer` (default 2 s). A guest who leaves for the PoP
     within that window costs the venue nothing. A guest who stays (an isolated
-    Wi-Fi client, a denied permission) is served after the delay.
+    Wi-Fi client, a denied permission) is served after the delay. The
+    deferral needs address matching and clients that send `lr=1`, so it is
+    built with them, in PP13.
 
 22. **Time to first frame** for the first outside viewer is the miss, two
     in-cluster hops to A, one WAN trip down the link, a fresh QUIC + HTTP/3 +
@@ -755,6 +762,7 @@ frame for an outside viewer over a real WAN.
 | Permission denied in the browser | The guest stays on home with a note; streams cost the venue's internet as today. |
 | Budget full | `4012` to the next outside viewer; wall tiles show "Party-only right now". |
 | PoP and home on different link majors | `426`; the console shows "Update gawk-relay"; the PoP runs standalone meanwhile. |
+| Home runs with `-rooms` off | `config` says so; the PoP keeps rooms local while linked, and there is no wall. Party rooms work, but outsiders can't join them (item 16). |
 | A credential leaks | The holder can publish under that PoP's reservations, reserve up to its `maxBroadcasts` and pull up to `maxDownlinkStreams`. It learns no fleet secret. Re-pair revokes it at once. |
 
 ## 7. UX
@@ -898,6 +906,16 @@ The room protocol does not change (item 35).
 - `CONNECT /pop/subscribe/{id}`
 - `CONNECT /internal/pop/{name}` (pod → link-home pod)
 
+On the home fleet's **ops listener**, beside the existing `/internal/admin/*`
+routes and under the same admin token or OIDC gate, **never routed
+publicly** (CLAUDE.md):
+- `GET /internal/admin/pops`: per PoP, the link state, live and forwarded
+  counts, outside viewers, budget use and offers sent, from the pod that
+  holds the link. `gawk-admin` merges it into the relay scrape
+  (`internal/relayscan`) for the §7.2 cards. It may carry the PoP's public
+  and LAN addresses, which the admin routes are allowed to carry and events
+  never are (§8).
+
 On a PoP, the ordinary relay routes, plus the TCP UI listener in the named
 tier and the loopback console.
 
@@ -1001,7 +1019,7 @@ CRUD.
   `Pop` + wall room), `kube/reconcile.go` and `kube/leader.go:104` (the
   leader that runs the cert/DNS reconciler), `internal/api/api.go:363-444`
   (routes), `ui/src/App.tsx:25` (nav), `internal/relayscan` (the relay
-  scrape).
+  scrape that gains `/internal/admin/pops`, §9).
 - `gawk-app/src/routing.ts:47-66` (`parseQuery`: `certHash`),
   `features/servers/relayOverride.ts`, `state/transportStore.ts:48-59,286-345`
   (resolution precedence; the offer becomes a session override that ranks
@@ -1030,13 +1048,13 @@ needs A. Phase C needs B's link (PP7) and offers nothing without it.
 | **PP4** — packaging | Binaries for windows/amd64, macOS universal (signed + notarized), linux amd64/arm64; multi-arch image `ghcr.io/tuhis/gawk-relay`; release attach; `releases/gawk-relay/latest.json`; a downloads card on the site | Release dry-run produces every artifact; the manifest test passes; the arm64 image starts under emulation in CI |
 | **PP5** — pinned links in clients | `gawk-app`: `certHash=` (private literal rule), landing-page "Save and use this server", share links on a standalone PoP; desktop + iOS: per-server hash pinning, the `gawk://server` form; **`LocalRelayInfo` (`0x18`) allocated with its full layout** (item 45), mirrors and vectors, sent by every `gawk-relay` | `0x18` vectors byte-identical in all three copies, and a standalone relay sends it on every session kind; routing vectors accept and reject per the rule; tier-1 e2e: headless Chrome with a CDP-granted `local-network` permission joins a relay at a non-loopback address by a hash link; Rust dial test against a pinned relay; link vectors |
 | **PP6** — `Pop` resources | CRD + `gawk-server/pops` package + chart RBAC; `-pops-file`; `gawk-admin` `/api/v1/pops` CRUD + pairing string, OpenAPI, the PoPs list, wizard and detail | The chart renders the CRD gated on `pops.enabled`; the pairing string is shown once and only its hash is stored; OpenAPI drift check green; UI tests |
-| **PP7** — the link | `/pop/link`, pairing exchange, credential, status lease and force-take, `hello`/`config`/`stats`/`health`, reconnect, `/pop/addr`; console pairing | In-process test (3 home pods, fake clientset with the docs/22 finding-11 reactors) + one PoP: pair; relink after a drain lands on another pod, which force-takes; used, expired and wrong tokens refused with legible statuses; a credential paired in time outlives `spec.pairing.expiresAt`; Re-pair refuses the old credential at once, also when two Re-pairs land in the same second; the console tells `bye{repair}` from `bye{revoked}`, and recovers the reason from `401`/`403` when the `bye` is lost; `-pops-file` credentials work with no pairing; a `proto` major mismatch → `426` |
-| **PP8** — reservations and uplink | Reserve-before-announce, unlinked mints, `/internal/pop`, `/pop/publish`, admission and `4012` (+ notice), linger and `4013`, counts both ways, the clock rewrite, `lr=1` deferral, broadcast events with `pop` | In-process: an outside viewer on pod B receives a byte-identical prime and deltas; **zero bytes on the uplink without demand** (counter); linger closes with `4013` and the Lease is back to a reservation; the fourth stream is refused and Chrome reads `4012` (tier-1 e2e); a mint past `limits.maxBroadcasts` gets `reserved{limit}` and stays party-only; the count is right on both sides; **time to first frame measured at 40 ms netem RTT and recorded here** (target ≤ 1.5 s); event schemas and vectors updated, no address field |
+| **PP7** — the link | `/pop/link`, pairing exchange, credential, status lease and force-take, `hello`/`config`/`stats`/`health`/`bye`, reconnect, `/pop/addr`; console pairing; `0x18`'s `linked` flag and home origin; `GET /internal/admin/pops` (link state; PP8, PP9 and PP13 add their counts) and the PoP cards reading it; local rooms when home runs `-rooms` off | In-process test (3 home pods, fake clientset with the docs/22 finding-11 reactors) + one PoP: pair; relink after a drain lands on another pod, which force-takes; used, expired and wrong tokens refused with legible statuses; a credential paired in time outlives `spec.pairing.expiresAt`; Re-pair refuses the old credential at once, also when two Re-pairs land in the same second; the console tells `bye{repair}` from `bye{revoked}`, and recovers the reason from `401`/`403` when the `bye` is lost; `-pops-file` credentials work with no pairing; a `proto` major mismatch → `426`; a paired PoP's `0x18` has `linked` set and the home origin, and an unpaired or revoked one has it clear; `/internal/admin/pops` answers on the ops listener behind the admin gate and is absent from the public mux (test); with home `-rooms` off, `/room/new` on a linked PoP mints a local room |
+| **PP8** — reservations and uplink | Reserve-before-announce, unlinked mints, `/internal/pop`, `/pop/publish`, admission and `4012` (+ notice), linger and `4013`, counts both ways, the clock rewrite, broadcast events with `pop` | In-process: an outside viewer on pod B receives a byte-identical prime and deltas; **zero bytes on the uplink without demand** (counter); linger closes with `4013` and the Lease is back to a reservation; the fourth stream is refused and Chrome reads `4012` (tier-1 e2e); a mint past `limits.maxBroadcasts` gets `reserved{limit}` and stays party-only; the count is right on both sides; **time to first frame measured at 40 ms netem RTT and recorded here** (target ≤ 1.5 s); event schemas and vectors updated, no address field |
 | **PP9** — downlink | `/pop/subscribe`, the PoP edge dialer, upward count reports, the downlink budget, `maxDownlinkStreams` at home | Ten party viewers of one home broadcast → one leg (counter); `G` at home includes them; the leg cap refuses the 21st distinct broadcast |
 | **PP10** — moderation reach | Ban forwarding and local enforcement, revoke, IP-ban and limiter exemption, the admin badge and party-only rows, the screening-notice relay | A kill in `gawk-admin` ends a party-only broadcast at the PoP with `4006` for its viewers and broadcaster; a banned ID cannot be reclaimed at the PoP; an IP ban on the PoP's public address does not cut a leg; **after a revoke**, the PoP's reservations are gone, an outside viewer of a party code gets `4000` (attached) or `404` (new dial), no offer is sent, the `DNSEndpoint` is deleted, and the PoP keeps serving the LAN as a standalone relay; the PoP's `0x11` carries the screening bit while home's does |
-| **PP11** — the party wall | Wall room creation with the PoP, `spec.pop` / `spec.maxBroadcasts` / `spec.maxParticipants`, vouched-only attach and detach, Hide/Show and `wall=hidden`, link-proxied room control, the local read-only wall | Extended `rooms-assert`: party broadcasts appear on the wall, **a fifth and later party broadcast included**; **an ordinary `Attach` to the wall (an outsider's home broadcast) is refused**; Hide removes and Show restores; a hidden-remembered broadcaster never appears; an outside participant's tile past the budget shows "Party-only right now" and joins when a slot frees; a protocol-1 client parses every snapshot; unlinked, party guests see the local wall |
+| **PP11** — the party wall | Wall room creation with the PoP, `spec.pop` / `spec.maxBroadcasts` / `spec.maxParticipants`, vouched-only attach and detach, Hide/Show and `wall=hidden`, `0x18`'s wall code and on-wall state, link-proxied room control, the local read-only wall | Extended `rooms-assert`: party broadcasts appear on the wall, **a fifth and later party broadcast included**; **an ordinary `Attach` to the wall (an outsider's home broadcast) is refused**; Hide removes and Show restores; a hidden-remembered broadcaster never appears; an outside participant's tile past the budget shows "Party-only right now" and joins when a slot frees; a protocol-1 client parses every snapshot; unlinked, party guests see the local wall; a broadcaster's `0x18` carries the wall code and an on-wall state that follows Hide, Show and `wall=hidden` |
 | **PP12** — the named tier | CSR on the link, the `gawk-admin` reconciler (`CertificateRequest`, `DNSEndpoint`), random labels, the PoP's HTTPS UI and generated `config.js`, renewal at half-life, the rebinding self-check, QR selection | Reconciler unit tests against fake cert-manager and external-dns objects: a CSR with a wrong SAN is refused; the PoP's CSR names the host it got in `config`; a renewal CSR is issued exactly once (`issuedForCSR`), and the PoP never receives the previous chain for it; one staging issuance on the reference deployment; a phone on the LAN loads the PoP UI with no prompt (PP15) |
-| **PP13** — offers at home | Address matching (v4 exact, v6 /64), `0x19` on the four session kinds, mirrors and vectors, metrics | Go tests: a matching client gets the offer, a non-matching one never does, `autoSwitch: false` suppresses it; **the handle is identical across pods and across a home restart with no `-stats-key` set**; vectors byte-identical in all three copies |
+| **PP13** — offers at home | Address matching (v4 exact, v6 /64), `0x19` on the four session kinds, mirrors and vectors, the `lr=1` demand deferral (item 21, `-pop-offer-defer`), offer counts on `/internal/admin/pops`, metrics | Go tests: a matching client gets the offer, a non-matching one never does, `autoSwitch: false` suppresses it; **the handle is identical across pods and across a home restart with no `-stats-key` set**; a matching `lr=1` session's demand is held for at most `-pop-offer-defer`, and a non-matching or `lr`-less session's is not held; vectors byte-identical in all three copies |
 | **PP14** — the switch | Web (permission query, parallel probes, reconnect, chip, opt-out, denied note), desktop (Ready page), iOS (broadcaster + player, usage string, first-deny retry) | Web unit tests for every permission state; tier-1 e2e with a CDP-granted permission: a viewer switches with one freeze ≤ 1 s, and with the permission denied stays on home; native tests for offer parsing and pinning; the Apple prompts on device (PP15) |
 | **PP15** — the party pass | A real or staged LAN party against the reference deployment | §12's list, recorded here with dates and builds |
 
