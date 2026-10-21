@@ -1006,7 +1006,7 @@ Pre-registered, rewritten from docs/57 G1–G7 and G10–G13 against §2.
 | G7 | **Wire parity**: `CapUplinkCarriers` in `gawk-server/wire`, `parity.ts` and `crates/wire`, golden vectors byte-identical in all three | unit (mirror tests) |
 | G8 | **Viewers untouched**: no change to gawk-app's viewer beyond the capability constant (RU9 changes only its broadcaster's send queue) | review |
 | G9 | **Lowest latency is today's path**: with that setting the engine's wire output is byte-identical to today's for the same frames (D6) | unit |
-| G10 | **Stable presets are protected**: on the carrier uplink, *Smoother* and *Most stable* show ≥ 98 % of frames on every §11 path at 10–40 ms; on a datagram uplink with OD6's parity, ≥ 99 % at 0.1–1 % random loss and 10–40 ms (F14) | lab (replay) |
+| G10 | **Stable presets are protected**: on the carrier uplink, *Smoother* and *Most stable* show ≥ 98 % of frames on every §11 path at 10–40 ms; on a datagram uplink with OD6's parity, ≥ 99 % at 0.1–0.5 % random loss and ≥ 98.5 % at 1 %, at 10–40 ms (F14; the 1 % bound relaxed from 99 % by owner decision 2026-10-21 on table K2) | lab (replay) |
 
 ### RU0 — Telemetry that can see leg A (docs/57 WU0, moved)
 
@@ -1654,6 +1654,11 @@ allowance, waits them out to the next keyframe. Against the relay before
 RU8 (31–57 % at 0.5–1 %) the
 change is the one F14 predicted. The bound at 1 % holds for one run in
 three on the shipped depth.
+
+**Owner decision, 2026-10-21: accepted.** G10's datagram half is relaxed to
+≥ 98.5 % at 1 % loss (≥ 99 % at 0.1–0.5 % stands), which every run on the
+shipped depth meets. More parity for these presets is not pursued here; the
+carrier uplink, not parity, is what protects them from heavier loss.
 
 #### Table L — what the cheap changes buy without the carrier (shown · stalled)
 
