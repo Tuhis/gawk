@@ -254,6 +254,29 @@ Add to it when a new gotcha lands in `docs/`.
   in both engines on 2026-08-17; it is why R38 has no mkcert lane.
   ([docs/41](41-local-dev-stack.md) §6)
 
+**Local network access (R74)**
+
+- **Chrome blocks WebTransport from a public page to a LAN address until the
+  site has the local-network permission** (Chrome 147+, measured on 151 on
+  2026-10-21). Script sees only `WebTransportError: Opening handshake
+  failed`; the reason, `net::ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`, is
+  in the console alone, so it reads like a dead relay. "Local" is judged by
+  the address the connection uses: a public DNS name that resolves to a LAN
+  address is blocked the same way. A page served from a LAN or loopback
+  address is not restricted when it dials a LAN address.
+  ([docs/76](76-pop-relays.md) §3)
+- **Headless Chrome never shows that prompt; it denies.** To test with the
+  permission granted, use CDP `Browser.setPermission({permission: {name:
+  'local-network'}, setting: 'granted', origin, browserContextId})`. Without
+  `browserContextId` the grant lands in the default context, and a
+  Playwright context keeps reporting `prompt` (measured).
+  `--ip-address-space-overrides=<ip>:<port>=public` makes a local test page
+  count as public. ([docs/76](76-pop-relays.md) §3)
+- **A hash-pinned certificate's names are not checked.** Chrome accepted a
+  pinned relay at `https://10.0.2.2:4434` whose certificate named only
+  `localhost`: the hash, the validity span and the key type are what count.
+  ([docs/76](76-pop-relays.md) §3 M5)
+
 **webtransport-go (v0.11.x) — all fail at runtime, not compile time**
 
 - ALPN must be added manually: wrap your TLS config in
@@ -1623,6 +1646,23 @@ entries still describe code `gawk-pubsim` runs (now
   replies wait behind the upload they report on. It overstated the
   household's ping and the TCP flow's loss to BBR; steer the downlink around
   the shaper (`tools/uplinklab/fair/run.sh`, [docs/75](75-reliable-uplink.md) §4).
+- **The relay's R19 carrier writer and R73's carrier reader don't pair.**
+  `drainReliable` diverts only audio (to a carrier of its own) and writes
+  every other queued type onto the video carrier: `ViewerCount`, which the
+  count pump fans to every subscriber at least every 5 s, `DecoderConfig`
+  and `ClockMapping` too. `IngestUplinkCarrier` takes only `VideoChunk` and
+  `ParityChunk` records and ends the carrier on anything else, so a count
+  would cut a GOP every few seconds. The drain also only closes a
+  superseded carrier, and the reader holds three per publisher, so after a
+  stall on a lossy line the next GOP's carrier can be refused. The drain also resets a
+  carrier whose record waits 500 ms (`CarrierWriteTimeout`) and drops the
+  rest of that GOP, where R73 never resets within a GOP. A Go sender
+  feeding the reader needs R73's sender rules (two carriers live, the
+  superseded one reset 150 ms after it finished, a write blocked on an old
+  GOP abandoned at the next keyframe), and must time that reset itself:
+  quic-go's `Close` returns before anything is acknowledged. webtransport-go v0.13 also hides
+  quic-go's `SetPriority`, so a Go sender cannot put a keyframe stream
+  ahead of a carrier ([docs/76](76-pop-relays.md) item 18).
 
 **Relay fleet (R17)**
 

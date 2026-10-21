@@ -20,6 +20,7 @@ prompt becomes per-resolved-server (F3), the default entry's credential
 storage and rotation are specified (F4/F9), and the identity handshake
 gains timing, robustness, and display-sanitization rules (F5–F7), plus the
 F8/F10/F11 clarifications. The D1–D13 decision set is unchanged.
+*(D3 revised 2026-10-21 by [docs/76](76-pop-relays.md) OD12: `certHash=` is accepted beside a private-range IP literal in `relay=`.)*
 
 **Extended 2026-08-13** (owner decision, same session): cross-relay
 telemetry is **in scope**, not deferred — a picker that lets users roam
@@ -126,7 +127,7 @@ What R37 adds:
 |---|----------|-----------|
 | D1 | **`?relay=` is accepted on both `#/view/{id}` and `#/broadcast`.** | Viewer links are the core "share and it just works" case. Broadcast links compose with R26's quick-start grammar (one bookmark per relay). The crafted-link risk on the broadcast route — pointing someone's broadcaster at a foreign relay — is defused by D4: secrets are per-server, so a foreign relay never receives a stored credential. |
 | D2 | **A link's relay is a session-only override with an explicit save affordance.** It never silently joins the saved list and never changes the selected default. | Extends R26 D2 (links never persist settings). A link is pasted, forwarded, and long-lived; opening one must not rewrite what the user's own next session does. The save affordance is how the list grows deliberately. |
-| D3 | **Credentials never travel in links or the directory.** `?relay=` carries an https origin only — no publish secret, no cert hash, no path/query on the embedded value. | Extends R26 D1 verbatim. A cert hash is also useless cross-device (it names a dev cert only the operator's own machine trusts), so nothing of value is lost. |
+| D3 | *(Revised 2026-10-21, [docs/76](76-pop-relays.md) OD12: `certHash=` is accepted beside a `relay=` whose host is a private-range IP literal (RFC 1918, `fc00::/7`). For a LAN relay a hash is the only way in, and it is pinning data, not a credential; docs/76 §6.1 item 5 has the reasoning.)* **Credentials never travel in links or the directory.** `?relay=` carries an https origin only — no publish secret, no cert hash, no path/query on the embedded value. | Extends R26 D1 verbatim. A cert hash is also useless cross-device (it names a dev cert only the operator's own machine trusts), so nothing of value is lost. |
 | D4 | **A saved server entry is `{label, url, publishSecret, certHashHex}` — secret and cert hash are per-server.** The legacy global keys migrate into entries on first load (§4.1.2). | Per-server secrets are the security property D1 leans on, not just tidiness: the stored secret for server A can never be presented to server B, whatever a link says. Labels because a URL is a poor display name; cert hash per-server because two dev relays have two certs. |
 | D5 | **The deployment's own relay is a pinned, non-removable first entry** ("This deployment"), selected by default. | Reset-to-known-good is always one click, and a user cannot delete their way into a broken install. Its URL is `defaultServerUrl()`'s answer (config.js → hostname check → localhost) recomputed at load, never persisted — so a chart-side `relayUrl` change reaches users who have saved entries. |
 | D6 | **Operator gate: `allowCustomRelays` in `config.js`, default `true`.** When `false`: the picker UI is hidden and `?relay=` is ignored with a quiet note (R26 D7 degrade — never fatal, the link still joins via the deployment relay). | "Any gawk UI that has enabled support" — enabled is the out-of-the-box state so shared links work across installs by default, and a locked-down deployment can opt out with one chart value. |
@@ -607,7 +608,9 @@ derivable from the relay URL.
 ## 5. Security considerations
 
 - **Credentials stay home.** Never in links or directories (D3, schema-level
-  in §4.5); per-server storage (D4) means no link, saved or not, can cause a
+  in §4.5; *revised 2026-10-21 by [docs/76](76-pop-relays.md) OD12: a
+  certificate hash, which is not a credential, may travel beside a
+  private-range IP literal*); per-server storage (D4) means no link, saved or not, can cause a
   stored secret to be presented to a different origin than the user saved it
   for. This is the load-bearing property that makes D1's broadcast-route
   links acceptable.
