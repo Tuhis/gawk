@@ -9,7 +9,7 @@ documented fallbacks. Safari (and every iOS browser, all WebKit) can watch, and
 desktop Safari can broadcast video only: its screen share carries no system
 audio. The WebKit specifics (the datagram writer, the in-gesture screen
 prompt, worker-only `MediaStreamTrackProcessor`) are in `docs/gotchas.md`. A
-browser without `WebTransport` is warned on load (`lib/browserSupport.ts`).
+browser without `WebTransport` is warned on load (`src/lib/browserSupport.ts`).
 Project overview and quickstart: [root README](../README.md); gotchas:
 [`docs/gotchas.md`](../docs/gotchas.md).
 
