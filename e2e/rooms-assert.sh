@@ -300,6 +300,13 @@ echo "PASS: dynamic room $DYN minted by pubsim — CR kind dynamic, attachment $
 # force-take-on-stale, not release-on-drain (the transport suite covers that
 # one). Joins during the stale window are proxied to a dead address and come
 # back 503 — that is expected, and why this is a retry loop.
+#
+# --force removes the Pod object at once, but the kubelet kills the container
+# on its own schedule: for a second or two the "dead" pod still serves through
+# the load balancer, and a re-dial can land in the room it still homes (PR
+# #547's run did, 1.4s after the delete, before the pod's port-forward even
+# dropped). Such a join proves nothing about adoption, so a re-dial only counts
+# once the lease has also left the killed pod.
 kubectl -n "$NS" delete pod "$DYN_HOME" --grace-period=0 --force --wait=false >/dev/null
 echo "killed the dynamic room's home pod $DYN_HOME; re-dialling until the room is whole"
 SURVIVOR=""
@@ -313,9 +320,11 @@ while true; do
   "$ROOMSIM" -url "$RELAY_URL" -insecure -code "$CODE" -nick rejoin -duration 4s > "$LOG" 2> "$LOG.err" || true
   st=$(first_state "$LOG")
   if [ -n "$st" ] && jq -e --arg b "$BID" '.attachments | map(.broadcastID) | index($b) != null' <<<"$st" >/dev/null; then
-    break
+    holder=$(room_field "$DYN" '.status.lease.holder')
+    if [ -n "$holder" ] && [ "$holder" != "$DYN_HOME" ]; then break; fi
+    echo "re-dial $attempt joined $DYN whole but the lease still names $DYN_HOME (the killed pod is still dying); re-dialling"
   fi
-  [ "$SECONDS" -ge "$end" ] && fail "after ${DEADLINE}s and $attempt re-dials no joiner landed in $DYN with attachment $BID (last: $(cat "$LOG.err" "$LOG" 2>/dev/null | tail -n 3 | tr '\n' ' '))"
+  [ "$SECONDS" -ge "$end" ] && fail "after ${DEADLINE}s and $attempt re-dials no joiner landed in $DYN with attachment $BID and the lease moved off $DYN_HOME (lease holder '$(room_field "$DYN" '.status.lease.holder')'; last: $(cat "$LOG.err" "$LOG" 2>/dev/null | tail -n 3 | tr '\n' ' '))"
   sleep 2
 done
 NEW_HOME=$(room_field "$DYN" '.status.lease.holder')
