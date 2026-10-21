@@ -5,7 +5,7 @@ and the viewer replay (live edge and adaptive). Results land in
 $UPLINK_OUT/results/<scenario>/<mode>/; a cell with a summary.json is skipped,
 so a set resumes where it stopped.
 
-Usage: matrix.py core|cc|hi|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|chrome-ru9-p7|chrome-ru9-p9|all [--jobs 3] [--seconds 100] [--only name-prefix]
+Usage: matrix.py core|cc|hi|engine|engine-hi|engine-check|jit|win|bigq|seeds|chrome|chrome-kf|chrome-ceiling|chrome-knobs|chrome-seeds|chrome-ceiling-repeat|chrome-kftiming|chrome-kftiming2|ru8-g10|chrome-ru9-p7|chrome-ru9-p9|all [--jobs 3] [--seconds 100] [--only name-prefix]
        matrix.py rescore [substr] [--jobs N]   # analyse and replay every finished run again
 """
 import concurrent.futures as cf
@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -76,6 +77,19 @@ MODE_ENV = {
 for _m in ("chrome-dgram-ceil", "chrome-dgram-nowait-ceil", "chrome-carrier-ceil", "chrome-dgram-kt", "chrome-dgram-maxage100",
            "chrome-dgram-maxage100-hwm1000", "chrome-ru9", "chrome-ru9-maxage100", "chrome-ru9-maxage100-hwm1000"):
     MODE_ENV[_m] = MODE_ENV["chrome-dgram"]
+# RU6: the shipped engine (bin/sender-engine: gawk-engine's transport, Sender
+# and upload monitor) in each delivery mode and controller, against the
+# receiver at the depth the relay ships (D7's 512).
+for _d, _w in (("dgram", "datagram"), ("carrier", "carrier")):
+    for _c, _s in (("cubic", ""), ("bbr", "-bbr")):
+        MODES[f"eng-{_d}{_s}"] = ["--mode", _w, "--cc", _c]
+        MODE_ENV[f"eng-{_d}{_s}"] = {"SENDER_BIN": f"{OUT}/bin/sender-engine",
+                                    "RECV_BIN": f"{OUT}/bin/gawk-uplinklab"}
+ENGINE_MODES = ("eng-dgram", "eng-carrier", "eng-dgram-bbr", "eng-carrier-bbr")
+# A cell whose CPU steal (% of the host's CPU time, sampled over the run)
+# exceeds this is moved aside and run again, at most STEAL_RETRIES times.
+STEAL_MAX = float(os.environ.get("UPLINK_STEAL_MAX", "5"))
+STEAL_RETRIES = 2
 
 
 def scen(name, proxy, trace="1080", modes=("dgram", "carrier"), extra=(), recv="", seed=7):
@@ -254,6 +268,14 @@ def sets():
                           dict(by["hi-rtt10-clean"], modes=("chrome-ru9", "chrome-ru9-maxage100"))]
     s["chrome-ru9-p9"] = [dict(sc, modes=("chrome-ru9",)) for sc in s["chrome-kftiming"] + s["chrome-kftiming2"]]
     s["all"] = core + cc + hi + jit + win + bigq + seeds
+    # RU6: the engine as shipped (#541) on the cells G1, G2, G3 and G5 are
+    # judged on — "cc"'s at 10/40/100 ms (clean, random loss, bursts,
+    # outages), then the 1440p ones alone on the host (--jobs 1).
+    s["engine"] = [dict(sc, modes=ENGINE_MODES) for sc in cc]
+    s["engine-hi"] = [dict(sc, modes=ENGINE_MODES) for sc in hi]
+    # One representative cell (G1 at 10 ms, both deliveries, both
+    # controllers): the tooling check for a host too noisy for the rest.
+    s["engine-check"] = [scen("rtt10-clean", ["-rtt", "10ms"], modes=ENGINE_MODES)]
     return s
 
 
@@ -301,11 +323,36 @@ def cpu():
         return [int(x) for x in fh.readline().split()[1:11]]
 
 
+def steal_pct(a, b):
+    d = [y - x for x, y in zip(a, b)]
+    return 100 * d[7] / max(1, sum(d))
+
+
 def run_one(sc, mode, seconds):
+    """One cell; re-run while the host's steal over it exceeds STEAL_MAX
+    (the over-steal attempts are kept beside it as <mode>.steal<n>)."""
     out = f"{OUT}/results/{sc['name']}/{mode}"
+    for attempt in range(STEAL_RETRIES + 1):
+        run_cell(sc, mode, seconds, out)
+        if not os.path.exists(f"{out}/steal.txt"):  # finished before steal was recorded
+            return out
+        st = float(open(f"{out}/steal.txt").read())
+        if st <= STEAL_MAX or attempt == STEAL_RETRIES:
+            return out
+        print(f"steal {st:.1f} % on {sc['name']} {mode}: re-running", flush=True)
+        os.rename(out, f"{out}.steal{attempt + 1}")
+    return out
+
+
+def run_cell(sc, mode, seconds, out):
     os.makedirs(out, exist_ok=True)
     if os.path.exists(f"{out}/summary.json"):
         return out
+    # The steal just before the cell (1 s), beside the steal over it.
+    p0 = cpu()
+    time.sleep(1)
+    with open(f"{out}/steal-pre.txt", "w") as fh:
+        fh.write(f"{steal_pct(p0, cpu()):.1f}\n")
     c0 = cpu()
     args = [f"{HERE}/run.sh", out, "--trace", TRACES[sc["trace"]], "--seconds", str(seconds)]
     args += MODES[mode] + sc["extra"] + ["--"] + sc["proxy"] + ["-seed", str(sc.get("seed", 7))]
@@ -318,9 +365,8 @@ def run_one(sc, mode, seconds):
     replay([out], seconds * 1000 / 2)
     # The host's CPU steal over the cell: a hypervisor taking the cores makes
     # every latency and loss figure meaningless (docs/75 §11, table N1).
-    d = [b - a for a, b in zip(c0, cpu())]
     with open(f"{out}/steal.txt", "w") as fh:
-        fh.write(f"{100 * d[7] / sum(d):.1f}\n")
+        fh.write(f"{steal_pct(c0, cpu()):.1f}\n")
     return out
 
 

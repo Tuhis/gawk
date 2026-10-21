@@ -12,7 +12,12 @@ so a delta reaches them complete only if every data chunk reached the relay.
 Sender log lines (gawk-broadcast-desktop/tools/uplinklab): F frame, K keyframe
 stream outcome, C carrier retired, O carrier opened, W a write that blocked
 over 1 ms, D a record shed, G a carrier never opened, M the chunk budget
-shrunk, E a frame dropped at send, T/S path stats. Receiver lines
+shrunk, E a frame dropped at send, T/S path stats. The engine sender
+(RU6, src/engine.rs) adds N when the upload-bandwidth warning raises or
+clears, Y each second and U at the end with the engine's own counters
+(warned, encoder/sent fps, keyframe streams superseded/failed, frames
+dropped at send, packets sent/lost, carriers opened/expired, records shed,
+datagrams dropped). Receiver lines
 (gawk-server/cmd/gawk-uplinklab recv): see recv.go.
 
 A delta frame is *complete* at the relay when its data chunks are all there
@@ -45,6 +50,8 @@ def load(run):
     tstats = []
     writes = []
     shed = 0
+    warn = []
+    engine = None
     for line in open(f"{run}/send.csv"):
         p = line.rstrip("\n").split(",")
         if p[0] == "F":
@@ -67,6 +74,12 @@ def load(run):
             writes.append((int(p[1]), int(p[2]), int(p[3])))
         elif p[0] == "D":
             shed += 1
+        elif p[0] == "N":
+            warn.append((int(p[1]), p[2]))
+        elif p[0] == "U":
+            engine = dict(zip(("kf_superseded", "kf_failed", "frames_dropped", "pkts_sent", "pkts_lost",
+                               "carriers_opened", "carriers_expired", "records_shed", "dgrams_dropped"),
+                              (int(x) for x in p[5:14])))
     data = defaultdict(dict)    # fid -> idx -> t
     parity = defaultdict(dict)  # fid -> pidx -> t
     kdone = {}
@@ -80,6 +93,8 @@ def load(run):
         elif kind == "K":
             kdone[fid] = t
     frames["_shed"] = shed
+    frames["_warn"] = warn
+    frames["_engine"] = engine
     return frames, kf_out, carriers, stats, tstats, writes, data, parity, kdone
 
 
@@ -102,6 +117,8 @@ def complete_time(f, data, parity, use_parity=True):
 def analyze(run, skip_s=5.0, tail_s=1.0):
     frames, kf_out, carriers, stats, tstats, writes, data, parity, kdone = load(run)
     shed = frames.pop("_shed")
+    warn = frames.pop("_warn")
+    engine = frames.pop("_engine")
     ids = sorted(frames)
     t0 = frames[ids[0]]["t_send"]
     t_end = frames[ids[-1]]["t_send"]
@@ -175,6 +192,22 @@ def analyze(run, skip_s=5.0, tail_s=1.0):
         shed_records=shed,
         stats=stats,
     )
+    if engine is not None:
+        # The engine's own counters, and its upload-bandwidth warning: when it
+        # first raised (s after the first frame) and how long it showed in
+        # the analysis window.
+        out["engine"] = engine
+        first = next((t for t, w in warn if w == "raised"), None)
+        out["warn_first_s"] = None if first is None else (first - t0) / 1e9
+        up, state, last = 0, False, lo
+        for t, w in warn:
+            t = min(max(t, lo), hi)
+            if state:
+                up += t - last
+            state, last = w == "raised", t
+        if state:
+            up += hi - last
+        out["warn_raised_s"] = up / 1e9
     if stats and secs > 0:
         dur = (t_end - t0) / 1e9 + 1.5
         out["uplink_mbps"] = stats["udp_tx_bytes"] * 8 / dur / 1e6
