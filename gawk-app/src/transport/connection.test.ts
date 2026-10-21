@@ -9,6 +9,9 @@ import { log } from '../lib/logger';
 import {
   connectWebTransport,
   DatagramSender,
+  DialTimeoutError,
+  DIAL_ATTEMPT_TIMEOUT_MS,
+  DIAL_TIMEOUT_MS,
   newCarrierCounters,
   openDatagramWriter,
   readServerStreams,
@@ -99,6 +102,116 @@ function wtWithStreams(streams: Uint8Array[][]): WebTransport {
   });
   return { incomingUnidirectionalStreams: incoming } as unknown as WebTransport;
 }
+
+// A WebTransport whose handshake the test settles by hand, one per
+// construction, so a dial that never hears back can be scripted.
+interface HandDialed {
+  url: string;
+  resolve: () => void;
+  reject: (e: Error) => void;
+  closeCalls: number;
+}
+
+function stubHandDialedWebTransport(): HandDialed[] {
+  const dialed: HandDialed[] = [];
+  vi.stubGlobal(
+    'WebTransport',
+    class {
+      ready: Promise<void>;
+      closed: Promise<unknown>;
+      datagrams = { maxDatagramSize: 1200 };
+      private handle: HandDialed;
+      constructor(url: string, _init?: WebTransportOptions) {
+        let resolve!: () => void;
+        let reject!: (e: Error) => void;
+        this.ready = new Promise<void>((res, rej) => {
+          resolve = res;
+          reject = rej;
+        });
+        // A real session's `closed` rejects when its handshake fails.
+        this.closed = this.ready.then(() => new Promise(() => {}));
+        this.closed.catch(() => {});
+        this.handle = { url, resolve, reject, closeCalls: 0 };
+        dialed.push(this.handle);
+      }
+      close() {
+        this.handle.closeCalls++;
+      }
+    },
+  );
+  return dialed;
+}
+
+// The Firefox "Connecting… until reload" bug: a handshake that never settles
+// held the session (and the tile) in connecting forever. The dial now gives
+// each attempt DIAL_ATTEMPT_TIMEOUT_MS and starts over on a fresh session,
+// like the desktop engine's DIAL_ATTEMPT_TIMEOUT.
+describe('connectWebTransport unanswered handshakes', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('abandons an unanswered attempt and connects on a fresh session', async () => {
+    const dialed = stubHandDialedWebTransport();
+    let connected: WebTransport | null = null;
+    void connectWebTransport('https://relay.test:4433/subscribe/ABCDEF').then((wt) => (connected = wt));
+
+    await vi.advanceTimersByTimeAsync(DIAL_ATTEMPT_TIMEOUT_MS - 1);
+    expect(dialed).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(dialed).toHaveLength(2);
+    expect(dialed[0].closeCalls).toBe(1);
+    expect(dialed[1].url).toBe(dialed[0].url);
+
+    dialed[1].resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connected).not.toBeNull();
+    expect(dialed[1].closeCalls).toBe(0);
+  });
+
+  it('gives up with a DialTimeoutError once the whole budget is spent', async () => {
+    const dialed = stubHandDialedWebTransport();
+    const result = connectWebTransport('https://relay.test:4433/subscribe/ABCDEF').catch((e: unknown) => e);
+
+    await vi.advanceTimersByTimeAsync(DIAL_TIMEOUT_MS);
+    const err = await result;
+    expect(err).toBeInstanceOf(DialTimeoutError);
+    expect(dialed).toHaveLength(DIAL_TIMEOUT_MS / DIAL_ATTEMPT_TIMEOUT_MS);
+    expect(dialed.every((d) => d.closeCalls === 1)).toBe(true);
+  });
+
+  it('does not retry a handshake the relay refused', async () => {
+    const dialed = stubHandDialedWebTransport();
+    const result = connectWebTransport('https://relay.test:4433/publish').catch((e: unknown) => e);
+    dialed[0].reject(new Error('WebTransport connection rejected'));
+
+    const err = await result;
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(DialTimeoutError);
+    await vi.advanceTimersByTimeAsync(DIAL_TIMEOUT_MS);
+    expect(dialed).toHaveLength(1);
+  });
+
+  it('an abort closes the pending handshake and dials nothing more', async () => {
+    const dialed = stubHandDialedWebTransport();
+    const abort = new AbortController();
+    const result = connectWebTransport('https://relay.test:4433/subscribe/ABCDEF', {}, abort.signal).catch(
+      (e: unknown) => e,
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    abort.abort();
+
+    const err = await result;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).name).toBe('AbortError');
+    expect(dialed[0].closeCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(DIAL_TIMEOUT_MS);
+    expect(dialed).toHaveLength(1);
+  });
+});
 
 describe('readServerStreams — keyframes', () => {
   it('reports the whole StreamFrame message size as streamBytes', async () => {

@@ -72,6 +72,11 @@ export function errorCard(kind: RoomFailureKind): Card {
         title: 'Room not found or refused',
         body: 'The server didn’t let this session in. The code may be wrong, the room may have ended, or rooms may be off on this server.',
       };
+    case 'unreachable':
+      return {
+        title: 'Couldn’t reach the server',
+        body: 'The server didn’t answer. Check your connection and try again in a moment.',
+      };
     case 'lost':
       return {
         title: 'Lost the room',

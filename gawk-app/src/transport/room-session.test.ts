@@ -34,6 +34,7 @@ import {
   type RoomState,
 } from './wire';
 import { ABRUPT_DROP_RETRY_DELAY_MS } from './reconnect';
+import { DIAL_ATTEMPT_TIMEOUT_MS, DIAL_TIMEOUT_MS } from './connection';
 
 // ---- A scripted WebTransport --------------------------------------------
 
@@ -58,6 +59,9 @@ const fakes: FakeWt[] = [];
 let refuseNext = false;
 // When set, every constructed session's `ready` rejects (a dead relay).
 let refuseAll = false;
+// How many of the next constructed sessions never hear back: `ready` stays
+// pending (a handshake whose packets were lost).
+let hangNext = 0;
 // When set, createBidirectionalStream() waits for releaseStream().
 let holdStream = false;
 let releaseStream: () => void = () => {};
@@ -116,7 +120,10 @@ function installFakeWebTransport() {
           },
         });
         fakes.push(fake);
-        if (refuseNext || refuseAll) {
+        if (hangNext > 0) {
+          hangNext--;
+          this.ready = new Promise<void>(() => {});
+        } else if (refuseNext || refuseAll) {
           refuseNext = false;
           this.ready = Promise.reject(new Error('WebTransport connection rejected'));
           this.ready.catch(() => {});
@@ -189,6 +196,7 @@ beforeEach(() => {
   fakes.length = 0;
   refuseNext = false;
   refuseAll = false;
+  hangNext = 0;
   holdStream = false;
   installFakeWebTransport();
   vi.useFakeTimers();
@@ -285,6 +293,67 @@ describe('RoomSession dial + hello', () => {
     const err = await s.start().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(RoomConnectError);
     expect(err).toMatchObject({ kind: 'refused' });
+    expect(cb.onError).not.toHaveBeenCalled();
+  });
+
+  // The Firefox "stuck until reload" bug: a room dial whose handshake never
+  // settled held the screen in "Joining the room…" forever.
+  it('an unanswered first dial is abandoned and retried on a fresh session', async () => {
+    hangNext = 1;
+    const { cb } = makeCallbacks();
+    const s = new RoomSession(
+      { serverUrl: 'https://relay.test:4433', target: { kind: 'join', code: 'TuhisRoom' }, nickname: 'me', clientKind: ROOM_CLIENT_WEB_VIEWER },
+      cb,
+    );
+    let started = false;
+    void s.start().then(() => (started = true));
+    await vi.advanceTimersByTimeAsync(DIAL_ATTEMPT_TIMEOUT_MS);
+    expect(fakes).toHaveLength(2);
+    expect(fakes[0].closeCalls).toBe(1);
+    expect(fakes[1].url).toBe(fakes[0].url);
+    await flush();
+    expect(started).toBe(true);
+    expect(cb.onConnected).toHaveBeenCalledTimes(1);
+    expect(fakes[0].written).toHaveLength(0);
+    expect(fakes[1].written[0][1]).toBe(TYPE_ROOM_HELLO);
+    s.stop();
+  });
+
+  it('a first dial nobody answers rejects start() as "unreachable", not "refused"', async () => {
+    hangNext = Infinity;
+    const { cb } = makeCallbacks();
+    const s = new RoomSession(
+      { serverUrl: 'https://relay.test:4433', target: { kind: 'join', code: 'TuhisRoom' }, nickname: '', clientKind: ROOM_CLIENT_WEB_VIEWER },
+      cb,
+    );
+    const result = s.start().catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(DIAL_TIMEOUT_MS);
+    const err = await result;
+    expect(err).toBeInstanceOf(RoomConnectError);
+    expect(err).toMatchObject({ kind: 'unreachable' });
+    expect(fakes.every((f) => f.closeCalls === 1)).toBe(true);
+    expect(cb.onError).not.toHaveBeenCalled();
+  });
+
+  it('stop() during an unanswered dial closes it and dials nothing more', async () => {
+    hangNext = Infinity;
+    const { cb } = makeCallbacks();
+    const s = new RoomSession(
+      { serverUrl: 'https://relay.test:4433', target: { kind: 'join', code: 'TuhisRoom' }, nickname: '', clientKind: ROOM_CLIENT_WEB_VIEWER },
+      cb,
+    );
+    const result = s.start().then(
+      () => 'resolved',
+      (e: unknown) => e,
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    s.stop();
+    expect(await result).toBe('resolved');
+    expect(fakes).toHaveLength(1);
+    expect(fakes[0].closeCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(DIAL_TIMEOUT_MS);
+    expect(fakes).toHaveLength(1);
+    expect(cb.onConnected).not.toHaveBeenCalled();
     expect(cb.onError).not.toHaveBeenCalled();
   });
 

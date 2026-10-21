@@ -167,7 +167,9 @@ export class LocalViewerTransport implements ViewerTransport {
   }
 
   async connect(cb: ViewerTransportCallbacks): Promise<void> {
-    const wt = await connectWebTransport(this.url, this.opts);
+    // close() aborts a handshake still in flight, so a viewer torn down
+    // before the relay answered leaves no session to open later unowned.
+    const wt = await connectWebTransport(this.url, this.opts, this.abort.signal);
     this.wt = wt;
     this.cb = cb;
     this.sampler = new ConnectionStatsSampler(wt);
@@ -347,7 +349,7 @@ export class LocalViewerTransport implements ViewerTransport {
     u.searchParams.set('stripe', String(stripeN));
     u.searchParams.set('leg', String(member));
     const generation = this.stripeGeneration;
-    const wt = await connectWebTransport(u.toString(), this.opts);
+    const wt = await connectWebTransport(u.toString(), this.opts, this.abort.signal);
     const leg = new StripeLegSession(wt, member);
     // A leg carries this viewer's delta share and nothing else: same datagram
     // handler, same receive-queue raise (the buffer is the whole point), no

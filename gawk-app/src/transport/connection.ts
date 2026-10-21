@@ -79,9 +79,91 @@ export function webTransportInit(opts: ConnectOptions = {}): WebTransportOptions
   return init;
 }
 
-export async function connectWebTransport(url: string, opts: ConnectOptions = {}): Promise<WebTransport> {
-  const wt = new WebTransport(url, webTransportInit(opts));
-  await wt.ready;
+// How long one WebTransport handshake may go unanswered before the dial
+// abandons it and starts over on a fresh session, and how long it keeps
+// starting over before giving up. The same budgets as the desktop engine's
+// DIAL_ATTEMPT_TIMEOUT / DIAL_TIMEOUT (gawk-broadcast-desktop
+// crates/engine/src/transport.rs), for the same failure: a QUIC connection
+// whose first packets were lost recovers slowly or never, while a fresh one
+// is answered at once. In the browser `ready` then never settles: a Firefox
+// viewer opening a room link sat on "Connecting…" until a reload, and the
+// relay logged nothing because no CONNECT ever reached it. A healthy dial
+// takes a couple of round trips, so this only ever cuts short a stuck one.
+export const DIAL_ATTEMPT_TIMEOUT_MS = 5_000;
+export const DIAL_TIMEOUT_MS = 30_000;
+
+// No attempt was answered within DIAL_TIMEOUT_MS. Distinct from a rejected
+// `ready` (the relay, or the browser, refused the session), which is never
+// retried here: a refusal is an answer.
+export class DialTimeoutError extends Error {
+  constructor(url: string) {
+    super(`no answer from the relay in ${DIAL_TIMEOUT_MS / 1000} s: ${url}`);
+    this.name = 'DialTimeoutError';
+  }
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException('dial aborted', 'AbortError');
+}
+
+function abandon(wt: WebTransport): void {
+  // Nobody else holds an abandoned session, so nobody else would observe its
+  // `closed` rejecting.
+  void (wt.closed as Promise<unknown> | undefined)?.catch(() => {});
+  try {
+    wt.close();
+  } catch {
+    // a session that never opened may refuse close(); there is nothing to free
+  }
+}
+
+// Opens a WebTransport session, retrying unanswered handshakes on a fresh
+// session (see DIAL_ATTEMPT_TIMEOUT_MS). Resolves with the first session
+// whose `ready` resolves; rejects with the error of a `ready` that rejects,
+// with DialTimeoutError once the budget is spent, or with an AbortError when
+// `signal` aborts. Every abandoned session is closed before the next dial,
+// so a retried CONNECT that did reach the relay ends there rather than
+// lingering. A retried CONNECT can still reach the relay twice (see
+// docs/gotchas.md, "The native dial can send a CONNECT twice").
+export async function dialWebTransport(
+  url: string,
+  init: WebTransportOptions,
+  signal?: AbortSignal,
+): Promise<WebTransport> {
+  let left = DIAL_TIMEOUT_MS;
+  for (let attempt = 1; ; attempt++) {
+    if (signal?.aborted) throw abortError(signal);
+    const wt = new WebTransport(url, init);
+    const slice = Math.min(left, DIAL_ATTEMPT_TIMEOUT_MS);
+    const outcome = await new Promise<'ready' | 'timeout' | 'aborted'>((resolve, reject) => {
+      const onAbort = () => finish(() => resolve('aborted'));
+      const timer = setTimeout(() => finish(() => resolve('timeout')), slice);
+      const finish = (settle: () => void) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        settle();
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      wt.ready.then(
+        () => finish(() => resolve('ready')),
+        (e: unknown) => finish(() => reject(e instanceof Error ? e : new Error(String(e)))),
+      );
+    });
+    if (outcome === 'ready') return wt;
+    abandon(wt);
+    if (outcome === 'aborted') throw abortError(signal!);
+    left -= slice;
+    if (left <= 0) throw new DialTimeoutError(url);
+    log.info(`WebTransport dial attempt ${attempt} unanswered after ${slice} ms; retrying on a fresh session: ${url}`);
+  }
+}
+
+export async function connectWebTransport(
+  url: string,
+  opts: ConnectOptions = {},
+  signal?: AbortSignal,
+): Promise<WebTransport> {
+  const wt = await dialWebTransport(url, webTransportInit(opts), signal);
   if (wt.datagrams.maxDatagramSize < MAX_DATAGRAM_SIZE) {
     // Handled condition, not a fault: packetizeFrame sizes chunks to the
     // actual path limit (Firefox negotiates 1024), so nothing is
