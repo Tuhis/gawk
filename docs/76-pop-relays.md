@@ -281,26 +281,36 @@ frame for an outside viewer over a real WAN.
 
 8. **The host pastes it** into the console, or starts the container with
    `GAWK_PAIR=<string>`. The PoP opens `CONNECT /pop/link?proto=1&pair=<token>`.
-   The pod that receives it checks the hash, the expiry and that it is
-   unused: no credential yet records this pairing's `issuedAt`. It mints a
-   256-bit credential and writes its SHA-256, `pairedAt` and the pairing's
-   `issuedAt` into `status.credential`, with a CAS on the CR's
-   `resourceVersion`, so a string pairs exactly one PoP. It then returns the credential once in the
-   first link record. The PoP stores it in the state directory (DPAPI on
-   Windows, `0600` elsewhere), and from then on authenticates every link and
-   leg with `Authorization: Bearer <credential>`. Status carries the
+   The pod that receives it checks the string's hash and expiry, and that
+   it is unused: no credential yet records this string
+   (`status.credential.pairingTokenSHA256` ≠ `spec.pairing.tokenSHA256`).
+   It mints a 256-bit credential and writes its SHA-256, `pairedAt` and
+   `pairingTokenSHA256` into `status.credential`, with a CAS on the CR's
+   `resourceVersion`, so a string pairs exactly one PoP.
+   `spec.pairing.expiresAt` only limits how long an unused string can be
+   redeemed; it never ends a credential that was paired in time. The pod
+   then returns the credential once in the first link record. The PoP
+   stores it in the state directory (DPAPI on Windows, `0600` elsewhere),
+   and from then on authenticates every link and leg with
+   `Authorization: Bearer <credential>`. Status carries the
    credential's fingerprint, never the credential itself: the R42 precedent
    (`status.creatorTokenFingerprint`).
 
 9. **Re-pair and revoke.** *Re-pair* writes a new `spec.pairing` and
-   nothing else. A credential is honoured only while the `issuedAt` it was
-   paired against is the current `spec.pairing.issuedAt`, so the old
-   credential stops working at once. Every pod checks that on each link and
-   leg, and the link-home pod closes the live link with `4006`. The console
-   says "Re-pair needed". `gawk-admin` never writes `status.credential`: the
-   relays own it (§9). *Revoke* sets `spec.revoked` (or deletes the CR):
-   see §6.9. A pairing string that has been used, or has expired, is refused
-   with a status the console can show (Go reads the HTTP status, docs/22 D9).
+   nothing else. A credential is honoured only while the string it was
+   paired with is the current one
+   (`status.credential.pairingTokenSHA256` = `spec.pairing.tokenSHA256`),
+   so the old credential stops working at once. Every string is random, so
+   two Re-pairs in the same second still differ, which a whole-second
+   `metav1.Time` would not. Every pod checks this on each link and leg. The
+   link-home pod sends `bye{repair}` and closes the live link with `4006`,
+   and the console says "Re-pair needed". `gawk-admin` never writes
+   `status.credential`: the relays own it (§9). *Revoke* sets
+   `spec.revoked` (or deletes the CR): see §6.9. A pairing string that has
+   been used, or has expired, is refused with a status the console can show
+   (Go reads the HTTP status, docs/22 D9). In `-pops-file` mode there is no
+   pairing: the entry's credential hash is the credential, the check above
+   is skipped, and rotating means editing the file.
 
 ### 6.3 The link
 
@@ -321,9 +331,21 @@ frame for an outside viewer over a real WAN.
     address, pinned hashes, named host, health), `reserve`/`release`
     (broadcast IDs), `state` (live/away per broadcast), `wall` (attach/detach
     with label), `refuse` (a want it can't meet, with a reason), `csr`,
-    `stats` and `health`. Home → PoP: `config` (display name, home app
-    origin, budget ceilings, wall code, auto-switch, the R40 screening notice,
-    end date), `reserved` (ok or conflict), `want`, `ban`, `certificate`.
+    `stats` and `health`. Home → PoP:
+    - `config`: display name, home app origin, budget ceilings, wall code,
+      auto-switch, the R40 screening notice, end date, and the **assigned
+      named host** once `status.tls.host` is set (item 38).
+    - `reserved`: `ok`, `conflict` or `limit` (item 14).
+    - `want`, `ban` and `certificate`.
+    - `bye{reason}`: the last record before home closes the link with
+      `4006`. The reasons are `repair`, `revoked` and `expired`. `4006`
+      alone cannot tell them apart, and the console needs to. If the `bye` is
+      lost, the PoP re-dials and reads the HTTP status: `401` for a
+      credential that is not current (re-pair), `403` for a revoked or
+      expired PoP.
+
+    `hello`'s named host is the name the PoP already holds a certificate
+    for, so home can tell a fresh install from a restart.
 
 12. **One holder.** The link-home pod records itself in `status.lease`
     (holder, pod address, generation, renewedAt). These are the R42
@@ -353,8 +375,12 @@ frame for an outside viewer over a real WAN.
     which costs one WAN round trip on the mint. Dormant reservations are
     renewed by the link-home pod, which takes them over on a link move by
     listing the label. A reservation counts against the PoP's
-    `spec.limits.maxBroadcasts`, not against the fleet's `-max-broadcasts`.
-    In single-pod home mode it is an in-memory entry.
+    `spec.limits.maxBroadcasts` (default 40, set in the wizard), not against
+    the fleet's `-max-broadcasts`. A mint past that limit gets
+    `reserved{limit}` and stays **local-only**, as an unlinked collision does
+    (item 15). The console says "Over this PoP's limit at gawk.ioio.fi:
+    party-only". The PoP's own `-max-broadcasts` (50) still caps the party
+    itself. In single-pod home mode a reservation is an in-memory entry.
 
 15. **Unlinked mints stay local.** With no link, the PoP mints locally and
     reserves on relink. A collision (a 1-in-31⁶ chance against the live set)
@@ -503,7 +529,7 @@ frame for an outside viewer over a real WAN.
     Bans scoped to one device at a PoP are deferred (§13).
 
 31. **Revocation** (`spec.revoked`, CR deletion or `spec.notAfter` passing)
-    closes the link with `4006`. It deletes the PoP's reservations, which
+    closes the link with `bye{revoked}` (or `bye{expired}`) and `4006`. It deletes the PoP's reservations, which
     ends outside copies fleet-wide through the informers, stops offers,
     deletes the `DNSEndpoint` and stops renewing the named certificate. The
     PoP keeps running as a standalone relay for the people in the room: it
@@ -590,14 +616,19 @@ frame for an outside viewer over a real WAN.
       the PoP's name**. Certificate
       Transparency logs publish every issued name, and the PoP name is the
       default wall code, which R42 treats as a joinable secret.
-    - The PoP generates a P-256 key in its state directory and sends a CSR on
-      the link. The link-home pod writes it to `status.tls.csr`. The
+    - The PoP learns its assigned name from `config` (item 11). It generates
+      a P-256 key in its state directory and sends a CSR for that name on
+      the link, and the link-home pod writes it to `status.tls.csr`. The
       `gawk-admin` leader validates it (exactly one SAN, the assigned name;
       P-256) and creates a cert-manager `CertificateRequest` against the
-      issuer. cert-manager's ACME issuer solves DNS-01 as it does today. On
-      `Ready`, `gawk-admin` writes the chain to `status.tls.certificate`
-      (certificates are public) and the link-home pod sends it down. **The
-      private key never leaves the PoP.**
+      issuer. cert-manager's ACME issuer solves DNS-01 as it does today.
+    - **One issuance per CSR.** On `Ready`, `gawk-admin` writes the chain
+      to `status.tls.certificate` (certificates are public) and the CSR's
+      SHA-256 to `status.tls.issuedForCSR`. It issues only for a CSR whose
+      hash is not already there. The link-home pod sends a chain down only
+      when `issuedForCSR` matches the current `tls.csr`. So a renewal CSR
+      written over the old one is never issued twice and never answered
+      with the previous chain. **The private key never leaves the PoP.**
     - The issuer should use Let's Encrypt's **`shortlived` (6-day)
       profile**. The PoP renews at half-life while linked, which stays inside
       the 5-duplicates-per-week limit, and a revoked PoP's certificate dies
@@ -772,7 +803,8 @@ detail are PP1's design pass.
   - guests here, and offers sent against guests connected.
 - **New PoP**, in four steps:
   1. Name, display name, optional end date.
-  2. Party internet: uplink Mbps and streams; downlink.
+  2. Party internet: uplink Mbps and streams; downlink; how many party
+     broadcasts home will carry (`limits.maxBroadcasts`, default 40).
   3. Guests: auto-switch on or off, the wall on or off with its code, and
      the named address (offered only when configured, otherwise "needs
      `-pop-dns-zone` and `-pop-cert-issuer`").
@@ -907,12 +939,12 @@ spec:                                  # written by gawk-admin (or kubectl)
     expiresAt: 2026-10-24T18:00:00Z
   uplink:   {maxMbps: 25, maxStreams: 3}
   downlink: {maxMbps: 0,  maxStreams: 0}   # 0 = unlimited at the PoP
-  limits:   {maxBroadcasts: 40, maxDownlinkStreams: 20}   # enforced at home
+  limits:   {maxBroadcasts: 40, maxDownlinkStreams: 20}   # defaults; enforced at home
   guests:   {autoSwitch: true}
   wall:     {roomCode: assembly-2026}  # absent = no wall
   namedAddress: {enabled: true}
 status:                                # two writers on disjoint paths, see below
-  credential: {sha256: "…", pairedAt: 2026-10-21T18:04:11Z, pairingIssuedAt: 2026-10-21T18:00:00Z}
+  credential: {sha256: "…", pairedAt: 2026-10-21T18:04:11Z, pairingTokenSHA256: "…"}
   lease: {holder: gawk-server-7c9f, addr: 10.42.0.17:4433, generation: 4, renewedAt: …}
   link:
     connected: true
@@ -922,13 +954,14 @@ status:                                # two writers on disjoint paths, see belo
     publicAddrs: ["203.0.113.7", "2001:db8:1:2::/64"]
     lanAddr: 192.168.1.20
     pinnedHashes: ["…", "…"]
-  tls: {host: p-7k2m9x.pop.gawk.ioio.fi, csr: "…", certificate: "…", notAfter: …}
+  tls: {host: p-7k2m9x.pop.gawk.ioio.fi, csr: "…", certificate: "…", issuedForCSR: "<sha256>", notAfter: …}
 ```
 
 The two status writers patch disjoint paths, so their merge patches never
 collide:
 - the link-home pod owns `credential`, `lease`, `link` and `tls.csr`;
-- `gawk-admin` owns `tls.host`, `tls.certificate` and `tls.notAfter`.
+- `gawk-admin` owns `tls.host`, `tls.certificate`, `tls.issuedForCSR` and
+  `tls.notAfter`.
 
 Credential invalidation goes through `spec` (item 9), so `gawk-admin` never
 touches the relays' fields. Live counts are not in status (API write
@@ -988,17 +1021,17 @@ needs A. Phase C needs B's link (PP7) and offers nothing without it.
 |---|---|---|
 | **PP0** — measure first | Safari 26.x (macOS, iOS) pinned dial to the relay by IP literal; headful Chrome: prompt copy, grant persistence across reload and restart, denied behaviour; Firefox 153+ today; Windows Firewall vs an unsigned `gawk-relay.exe` on a Public-profile network and the scoped rule; the macOS desktop app dialing a LAN relay; the measuring harness landed under `tools/` | A measured table appended to §3, each row with method and build. A "no" changes the decision it names before PP2: Safari fails pinning → Safari guests use the named tier only, and §6.12 says so; a Firewall rule that can't be scoped → §7.1's button changes |
 | **PP1** — design pass | Canvases for the console, the admin PoP pages, the guest switch surfaces, the wall tile states | Owner sign-off; §7 updated to match, dated |
-| **PP2** — the profile | `cmd/gawk-relay`, state directory, persisted keys, pinned certificate with rolling rotation, LAN address detection, §6.1 defaults; every knob a flag + env through `registryOptions` | Zero-flag start in CI on Linux; Windows and macOS builds and unit tests; a restart test resumes a broadcast with its resume token; a fake-clock rotation test handshakes with either pinned hash across the overlap; **`gawk-server` with zero flags still exits non-zero** (regression test) |
+| **PP2** — the profile | `cmd/gawk-relay`, state directory, persisted keys, pinned certificate with rolling rotation, LAN address detection, §6.1 defaults; every knob a flag + env through `registryOptions` | Zero-flag start in CI on Linux; Windows and macOS builds and unit tests; a restart test resumes a broadcast with its resume token; a fake-clock rotation test handshakes with either pinned hash across the overlap; **after a `kill -9` and a restart, a connected client gets a stateless reset within about one RTT** instead of waiting out the idle timeout (the docs/22 W1 in-test UDP proxy); **`gawk-server` with zero flags still exits non-zero** (regression test) |
 | **PP3** — the console | Loopback-only listener; join, live, party-internet, health and pairing sections; the Windows Firewall helper; `/app/` for the host | The console refuses non-loopback connections (test); QR payloads golden-tested per tier; the firewall helper's command construction unit-tested and run once on Windows (PP15) |
 | **PP4** — packaging | Binaries for windows/amd64, macOS universal (signed + notarized), linux amd64/arm64; multi-arch image `ghcr.io/tuhis/gawk-relay`; release attach; `releases/gawk-relay/latest.json`; a downloads card on the site | Release dry-run produces every artifact; the manifest test passes; the arm64 image starts under emulation in CI |
 | **PP5** — pinned links in clients | `gawk-app`: `certHash=` (private literal rule), landing-page "Save and use this server", share links on a standalone PoP; desktop + iOS: per-server hash pinning, the `gawk://server` form; **`LocalRelayInfo` (`0x18`) allocated with its full layout** (item 45), mirrors and vectors, sent by every `gawk-relay` | `0x18` vectors byte-identical in all three copies, and a standalone relay sends it on every session kind; routing vectors accept and reject per the rule; tier-1 e2e: headless Chrome with a CDP-granted `local-network` permission joins a relay at a non-loopback address by a hash link; Rust dial test against a pinned relay; link vectors |
 | **PP6** — `Pop` resources | CRD + `gawk-server/pops` package + chart RBAC; `-pops-file`; `gawk-admin` `/api/v1/pops` CRUD + pairing string, OpenAPI, the PoPs list, wizard and detail | The chart renders the CRD gated on `pops.enabled`; the pairing string is shown once and only its hash is stored; OpenAPI drift check green; UI tests |
-| **PP7** — the link | `/pop/link`, pairing exchange, credential, status lease and force-take, `hello`/`config`/`stats`/`health`, reconnect, `/pop/addr`; console pairing | In-process test (3 home pods, fake clientset with the docs/22 finding-11 reactors) + one PoP: pair; relink after a drain lands on another pod, which force-takes; used, expired and wrong tokens refused with legible statuses; revoked → `4006`; a `proto` major mismatch → `426` |
-| **PP8** — reservations and uplink | Reserve-before-announce, unlinked mints, `/internal/pop`, `/pop/publish`, admission and `4012` (+ notice), linger and `4013`, counts both ways, the clock rewrite, `lr=1` deferral, broadcast events with `pop` | In-process: an outside viewer on pod B receives a byte-identical prime and deltas; **zero bytes on the uplink without demand** (counter); linger closes with `4013` and the Lease is back to a reservation; the fourth stream is refused and Chrome reads `4012` (tier-1 e2e); the count is right on both sides; **time to first frame measured at 40 ms netem RTT and recorded here** (target ≤ 1.5 s); event schemas and vectors updated, no address field |
+| **PP7** — the link | `/pop/link`, pairing exchange, credential, status lease and force-take, `hello`/`config`/`stats`/`health`, reconnect, `/pop/addr`; console pairing | In-process test (3 home pods, fake clientset with the docs/22 finding-11 reactors) + one PoP: pair; relink after a drain lands on another pod, which force-takes; used, expired and wrong tokens refused with legible statuses; a credential paired in time outlives `spec.pairing.expiresAt`; Re-pair refuses the old credential at once, also when two Re-pairs land in the same second; the console tells `bye{repair}` from `bye{revoked}`, and recovers the reason from `401`/`403` when the `bye` is lost; `-pops-file` credentials work with no pairing; a `proto` major mismatch → `426` |
+| **PP8** — reservations and uplink | Reserve-before-announce, unlinked mints, `/internal/pop`, `/pop/publish`, admission and `4012` (+ notice), linger and `4013`, counts both ways, the clock rewrite, `lr=1` deferral, broadcast events with `pop` | In-process: an outside viewer on pod B receives a byte-identical prime and deltas; **zero bytes on the uplink without demand** (counter); linger closes with `4013` and the Lease is back to a reservation; the fourth stream is refused and Chrome reads `4012` (tier-1 e2e); a mint past `limits.maxBroadcasts` gets `reserved{limit}` and stays party-only; the count is right on both sides; **time to first frame measured at 40 ms netem RTT and recorded here** (target ≤ 1.5 s); event schemas and vectors updated, no address field |
 | **PP9** — downlink | `/pop/subscribe`, the PoP edge dialer, upward count reports, the downlink budget, `maxDownlinkStreams` at home | Ten party viewers of one home broadcast → one leg (counter); `G` at home includes them; the leg cap refuses the 21st distinct broadcast |
-| **PP10** — moderation reach | Ban forwarding and local enforcement, revoke, IP-ban and limiter exemption, the admin badge and party-only rows, the screening-notice relay | A kill in `gawk-admin` ends a party-only broadcast at the PoP with `4006` for its viewers and broadcaster; a banned ID cannot be reclaimed at the PoP; an IP ban on the PoP's public address does not cut a leg; the PoP's `0x11` carries the screening bit while home's does |
+| **PP10** — moderation reach | Ban forwarding and local enforcement, revoke, IP-ban and limiter exemption, the admin badge and party-only rows, the screening-notice relay | A kill in `gawk-admin` ends a party-only broadcast at the PoP with `4006` for its viewers and broadcaster; a banned ID cannot be reclaimed at the PoP; an IP ban on the PoP's public address does not cut a leg; **after a revoke**, the PoP's reservations are gone, an outside viewer of a party code gets `4000` (attached) or `404` (new dial), no offer is sent, the `DNSEndpoint` is deleted, and the PoP keeps serving the LAN as a standalone relay; the PoP's `0x11` carries the screening bit while home's does |
 | **PP11** — the party wall | Wall room creation with the PoP, `spec.pop` / `spec.maxBroadcasts` / `spec.maxParticipants`, vouched-only attach and detach, Hide/Show and `wall=hidden`, link-proxied room control, the local read-only wall | Extended `rooms-assert`: party broadcasts appear on the wall, **a fifth and later party broadcast included**; **an ordinary `Attach` to the wall (an outsider's home broadcast) is refused**; Hide removes and Show restores; a hidden-remembered broadcaster never appears; an outside participant's tile past the budget shows "Party-only right now" and joins when a slot frees; a protocol-1 client parses every snapshot; unlinked, party guests see the local wall |
-| **PP12** — the named tier | CSR on the link, the `gawk-admin` reconciler (`CertificateRequest`, `DNSEndpoint`), random labels, the PoP's HTTPS UI and generated `config.js`, renewal at half-life, the rebinding self-check, QR selection | Reconciler unit tests against fake cert-manager and external-dns objects (CSR with a wrong SAN refused); one staging issuance on the reference deployment; a phone on the LAN loads the PoP UI with no prompt (PP15) |
+| **PP12** — the named tier | CSR on the link, the `gawk-admin` reconciler (`CertificateRequest`, `DNSEndpoint`), random labels, the PoP's HTTPS UI and generated `config.js`, renewal at half-life, the rebinding self-check, QR selection | Reconciler unit tests against fake cert-manager and external-dns objects: a CSR with a wrong SAN is refused; the PoP's CSR names the host it got in `config`; a renewal CSR is issued exactly once (`issuedForCSR`), and the PoP never receives the previous chain for it; one staging issuance on the reference deployment; a phone on the LAN loads the PoP UI with no prompt (PP15) |
 | **PP13** — offers at home | Address matching (v4 exact, v6 /64), `0x19` on the four session kinds, mirrors and vectors, metrics | Go tests: a matching client gets the offer, a non-matching one never does, `autoSwitch: false` suppresses it; **the handle is identical across pods and across a home restart with no `-stats-key` set**; vectors byte-identical in all three copies |
 | **PP14** — the switch | Web (permission query, parallel probes, reconnect, chip, opt-out, denied note), desktop (Ready page), iOS (broadcaster + player, usage string, first-deny retry) | Web unit tests for every permission state; tier-1 e2e with a CDP-granted permission: a viewer switches with one freeze ≤ 1 s, and with the permission denied stays on home; native tests for offer parsing and pinning; the Apple prompts on device (PP15) |
 | **PP15** — the party pass | A real or staged LAN party against the reference deployment | §12's list, recorded here with dates and builds |
