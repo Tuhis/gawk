@@ -763,7 +763,9 @@ one GOP):
   thin-uplink cost is 13 points of frames on datagrams but 3 on the
   carrier, so BBR alone on today's datagram path would be the worst order.
   On that link the remedy is a lower rung: RU4 requires the upload-bandwidth
-  warning (docs/38) to fire there.
+  warning (docs/38) to fire there. (Amended 2026-10-21: the warning is a
+  capacity signal and never reads packet loss; where BBR's own loss is all
+  that moves, the loss notice speaks — RU4.)
 - It is one transport option (`TransportConfig::congestion_controller_factory`),
   set in `crates/engine/src/transport.rs` beside the keep-alive — the engine
   sets nothing else today.
@@ -1102,7 +1104,7 @@ window. The window, not the number of carriers, is the bound.
 | `congestion: "bbr" \| "cubic"` in `broadcast.json`, reported as `uplinkCongestion`, shown in Diagnostics; `cubic` restores today's transport exactly | unit |
 | G5's lab gate, recorded in §11 (this pass meets it) | lab |
 | Shared uplink (`tools/uplinklab/fair`, table O): at 80 Mbps with a 50 ms queue and one competing TCP flow, the TCP flow keeps ≥ 50 % of its fair share and the broadcast holds up — on the carrier ≤ 0.5 % undecodable, on datagrams no fewer frames shown than Cubic's beyond table M's 3 points (this pass: carrier · BBR 0 %, the flow 90–91 %; datagrams 83.5 against 30.1 % shown); at 30 Mbps the same (0 %, 101–102 %; datagrams 86.2 against 88.9 %, within the spread); at 15 Mbps recorded, not gated (48–49 %, where any controller that holds the stream's rate leaves at most ~46 %, F17) | lab |
-| On table O's thin cell (15 Mbps, alone and beside the upload) the upload-bandwidth warning (docs/38's `uplink` monitor) shows in both delivery modes, within its 5 s hysteresis; if its signals miss BBR's own packet loss, the monitor gains one that does, red first | lab + unit |
+| On table O's thin cell (15 Mbps, alone and beside the upload) the upload-bandwidth warning (docs/38's `uplink` monitor) shows in both delivery modes, within its 5 s hysteresis; if its signals miss BBR's own packet loss, the monitor gains one that does, red first. *Amended 2026-10-21 (owner):* the warning is a capacity signal, judged per delivery mode, and packet loss alone is never one of its inputs — that is the loss notice's (D6, RU5). It must stay quiet on the 80 ms radio-outage cells at 10 ms RTT in both modes and with both controllers; where BBR's own loss is the only thing that moves, the loss notice speaks, and §11 records it | lab + unit |
 | The hardware pass (RU7) shows no regression against Cubic on either machine | hardware |
 | Default flips to `bbr` only when all three pass; otherwise this chunk records why and Cubic stays | review |
 
@@ -1141,13 +1143,38 @@ window. The window, not the number of carriers, is the bound.
   for `bbr` (quinn's defaults, the keepalive, `BbrConfig::default()`), so
   Cubic is the builder's config exactly as before. Room and subscribe
   dials stay on Cubic.
-- **The upload-bandwidth warning gains two signals** (RU4, red first): a
-  second with at least 100 packets sent and ≥ 5 % of them declared lost
-  (BBR's 7–10 % on a nearly full uplink; Cubic's ~1 % there and Wi-Fi's
-  packet or two stay quiet), and any carrier record shed or carrier
-  expired. On datagrams nothing else moved under BBR's own loss: quinn
-  takes every datagram into its buffer, so sent fps keeps up. Whether it
-  fires on table O's thin cell within its hysteresis is the lab half.
+- **The upload-bandwidth warning is a capacity signal** (RU4; revised
+  2026-10-21, red first). RU4 first gave it a second with ≥ 5 % of ≥ 100
+  packets declared lost, for BBR's own loss on a nearly full uplink. The
+  engine run (RU6) found that wrong both ways: every 80 ms radio-outage
+  cell lost ~6 % of its packets and held the warning for the whole run, in
+  both modes and with both controllers, while the Reliable viewer saw
+  97 % — the G4 Mac's AWDL case, which is the loss notice's — and Cubic on
+  datagrams beside an upload on the thin cell (58 % undecodable) never
+  raised it. A second is now bad when the sender could not hand the
+  stream to the network as fast as the encoder made it, in the delivery
+  mode in use:
+  - both modes: a keyframe stream superseded or failed in the second (one
+    a second, not docs/38's two: beside an upload on the thin cell it was
+    one in two keyframes, most seconds), frames dropped at send, or sent
+    fps under 75 % of encode fps;
+  - *Lowest latency*: `uplinkDatagramsDropped` — quinn's send-buffer drops
+    plus what still sits in it — grew by ≥ 10 in the second
+    (`BAD_SECOND_DATAGRAMS_BEHIND`): the buffer fell further behind. A
+    buffer that absorbs a burst and drains reads as one bad second;
+  - *Reliable*: records shed (a GOP still queued when the next began), or
+    every carrier that retired in the second expired. One GOP in a few
+    missing the 150 ms deadline is round-trip time — the upload's full
+    queue at 30 Mbps, a 100 ms path — not capacity.
+
+  Packet loss is not an input. Where BBR's own loss on a thin uplink is
+  the only thing that moves (it holds the stream's rate and the network
+  drops the excess), no send-side counter tells it from a radio's, so the
+  loss notice speaks there, not this warning. Cubic's collapse under
+  random loss at 40–100 ms (and at 10 ms with 2 %) does raise it: there the
+  connection's achievable rate fell below the stream's — the send buffer
+  drops, carriers shed — and a lower rung is the remedy. The table tests
+  replay the lab's own per-second counters (`uplink.rs`).
 - **Real relay.** `relay_integration`'s
   `a_burst_that_breaks_a_gop_on_datagrams_loses_no_frame_on_the_carrier`
   drops every uplink packet for ~100 ms mid-GOP through
