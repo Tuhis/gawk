@@ -1132,9 +1132,10 @@ window. The window, not the number of carriers, is the bound.
   same `chunk_with_parity` it sends as datagrams, so G9 holds by
   construction and by test. The defaults live in one place each:
   `carrier::DEFAULT_DELIVERY` (*Lowest latency*) and
-  `transport::DEFAULT_CONGESTION` (Cubic). Blank `uplinkDelivery` /
-  `congestion` in `broadcast.json` follow them, so RU7's flip reaches
-  everyone who never chose; the Quality page stores a word only once the
+  `transport::DEFAULT_CONGESTION` (BBR since the owner's 2026-10-21
+  decision, D5). Blank `uplinkDelivery` / `congestion` in
+  `broadcast.json` follow them, so a flip reaches everyone who never
+  chose; the Quality page stores a word only once the
   user picks something other than what a blank file shows.
 - **The first GOP of a session goes as datagrams** when its keyframe is
   produced before the relay's `RelayCapabilities` arrives — usual at a
