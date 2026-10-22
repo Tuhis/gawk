@@ -18,6 +18,12 @@ import (
 // ErrTooManyFailures: the source address failed authentication too often
 // (429). The /pop/* routes are exempt from the per-IP connection limiter
 // and IP bans (docs/76 item 30), so this limiter is their only brake.
+//
+// It brakes failing attempts only. The PoP shares the venue's public
+// address with every guest, so a valid credential or pairing string is
+// let through a source over the limit; what the limiter saves is the
+// fresh API read a miss costs (both secrets are 128 bits or more, so
+// guessing was never the threat).
 var ErrTooManyFailures = errors.New("popsrv: too many failed PoP authentications")
 
 // Failure limiter: failLimit failures per failWindow per source address.
@@ -34,23 +40,26 @@ const (
 //
 // Statuses: 401 for a credential that is not current (unknown, or
 // superseded by a Re-pair), 403 for a revoked or expired PoP, 429 for a
-// source over the failure limit.
+// failing request from a source over the failure limit.
 func (m *Manager) Authenticate(r *http.Request) (*pops.Pop, int, error) {
 	src := sourceAddr(r.RemoteAddr)
-	if m.limiter.blocked(src) {
-		return nil, http.StatusTooManyRequests, ErrTooManyFailures
-	}
+	blocked := m.limiter.blocked(src)
 	cred := poplink.BearerToken(r.Header.Get("Authorization"))
 	name := r.URL.Query().Get("pop")
-	p, err := m.checkCredential(r.Context(), cred, name)
+	p, err := m.checkCredential(r.Context(), cred, name, !blocked)
 	if err != nil {
+		if blocked && errors.Is(err, pops.ErrCredentialNotCurrent) {
+			return nil, http.StatusTooManyRequests, ErrTooManyFailures
+		}
 		m.limiter.fail(src)
 		return nil, credentialStatus(err), err
 	}
 	return p, http.StatusOK, nil
 }
 
-func (m *Manager) checkCredential(ctx context.Context, cred, name string) (*pops.Pop, error) {
+// checkCredential checks cred against the informer cache and, when fresh
+// is set, re-reads a named Pop from the API on a miss.
+func (m *Manager) checkCredential(ctx context.Context, cred, name string, fresh bool) (*pops.Pop, error) {
 	if cred == "" {
 		return nil, pops.ErrCredentialNotCurrent
 	}
@@ -65,7 +74,7 @@ func (m *Manager) checkCredential(ctx context.Context, cred, name string) (*pops
 	if p != nil {
 		err = p.CheckCredential(cred, now)
 	}
-	if errors.Is(err, pops.ErrCredentialNotCurrent) && name != "" && m.opts.Status != nil {
+	if fresh && errors.Is(err, pops.ErrCredentialNotCurrent) && name != "" && m.opts.Status != nil {
 		if fresh, ferr := m.opts.Status.Get(ctx, name); ferr == nil {
 			p, err = fresh, fresh.CheckCredential(cred, now)
 		}
@@ -96,9 +105,6 @@ func (m *Manager) findByCredential(cred string) *pops.Pop {
 // upgrade that fails never burns the string.
 func (m *Manager) CheckPairing(r *http.Request) (*pops.Pop, int, error) {
 	src := sourceAddr(r.RemoteAddr)
-	if m.limiter.blocked(src) {
-		return nil, http.StatusTooManyRequests, ErrTooManyFailures
-	}
 	tokenSHA := pops.TokenSHA256(r.URL.Query().Get("pair"))
 	p := m.findByPairing(tokenSHA)
 	err := pops.ErrPairingUnknown
@@ -106,6 +112,9 @@ func (m *Manager) CheckPairing(r *http.Request) (*pops.Pop, int, error) {
 		err = p.Redeemable(tokenSHA, m.now())
 	}
 	if err != nil {
+		if m.limiter.blocked(src) {
+			return nil, http.StatusTooManyRequests, ErrTooManyFailures
+		}
 		m.limiter.fail(src)
 		return nil, pairingStatus(err), err
 	}

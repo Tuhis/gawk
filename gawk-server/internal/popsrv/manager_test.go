@@ -174,8 +174,16 @@ func TestAuthenticateFailureLimiter(t *testing.T) {
 			t.Fatalf("failure %d: status %d", i, status)
 		}
 	}
-	if _, status, err := m.Authenticate(req(cred, "198.51.100.2:6000")); status != http.StatusTooManyRequests || !errors.Is(err, ErrTooManyFailures) {
+	if _, status, err := m.Authenticate(req("wrong", "198.51.100.2:6000")); status != http.StatusTooManyRequests || !errors.Is(err, ErrTooManyFailures) {
 		t.Fatalf("over the limit: %d %v", status, err)
+	}
+	// The PoP shares the venue's public address with every guest: a guest
+	// spraying junk from it must not lock the PoP's valid credential out.
+	if got, status, err := m.Authenticate(req(cred, "198.51.100.2:6000")); err != nil || status != 200 || got.Name != "lan" {
+		t.Fatalf("valid credential from a source over the limit: %v %d %v", got, status, err)
+	}
+	if _, status, _ := m.Authenticate(req("", "198.51.100.2:6000")); status != http.StatusTooManyRequests {
+		t.Fatalf("no credential from a source over the limit: %d", status)
 	}
 	// Other sources are unaffected; the window passes.
 	if _, status, _ := m.Authenticate(req(cred, "198.51.100.3:5000")); status != 200 {
@@ -195,6 +203,32 @@ func TestAuthenticateFailureLimiter(t *testing.T) {
 	p.Spec.NotAfter = &end
 	if _, status, err := m.Authenticate(req(cred, "198.51.100.4:5000")); status != http.StatusForbidden || !errors.Is(err, pops.ErrExpired) {
 		t.Fatalf("expired: %d %v", status, err)
+	}
+}
+
+// A pairing dial with a live string is not refused because others failed
+// from the same (shared venue) address; junk from it still is.
+func TestCheckPairingLetsAValidStringThroughASourceOverTheLimit(t *testing.T) {
+	token, _ := pops.NewPairingToken()
+	p := pops.FilePop{Name: "lan", UID: fileUID}.ToPop()
+	p.Spec.Pairing.TokenSHA256 = pops.TokenSHA256(token)
+	exp := metav1.NewTime(time.Now().Add(time.Hour))
+	p.Spec.Pairing.ExpiresAt = &exp
+	src := &fakeSource{pops: map[string]*pops.Pop{"lan": &p}}
+	m := New(Options{Source: src, Status: popsrc.NewMemStatus(src), Log: harnessLog(t)})
+	req := func(pair string) *http.Request {
+		r := httptest.NewRequest(http.MethodConnect, "/pop/link?proto=1&pair="+pair, nil)
+		r.RemoteAddr = "198.51.100.2:5000"
+		return r
+	}
+	for range failLimit {
+		m.CheckPairing(req("junk"))
+	}
+	if _, status, err := m.CheckPairing(req("junk")); status != http.StatusTooManyRequests || !errors.Is(err, ErrTooManyFailures) {
+		t.Fatalf("junk over the limit: %d %v", status, err)
+	}
+	if got, status, err := m.CheckPairing(req(token)); err != nil || status != 200 || got.Name != "lan" {
+		t.Fatalf("live string over the limit: %v %d %v", got, status, err)
 	}
 }
 
