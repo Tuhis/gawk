@@ -1,0 +1,230 @@
+{{- if .Values.pops.enabled }}
+# R74 (docs/76 §9): the Pop custom resource. One per PoP relay this fleet
+# accepts links from — a LAN relay at a party that federates with home.
+# gawk-admin (or kubectl) writes spec; status has two writers on DISJOINT
+# paths, so their merge patches never collide:
+#   * the relay pod holding the PoP's link owns credential, lease, link and
+#     tls.csr;
+#   * gawk-admin owns tls.host, tls.certificate, tls.issuedForCSR and
+#     tls.notAfter.
+# Credential invalidation goes through spec (a Re-pair writes spec.pairing),
+# so gawk-admin never writes status.credential. The credential itself and
+# the pairing string are never stored: only their SHA-256.
+#
+# Ships in the RELAY chart beside crd-room.yaml for the same reason: the relay
+# serves PoPs and works without gawk-admin installed. Templated (not crds/)
+# so schema changes in later releases apply; kept on uninstall so a chart
+# removal never unlinks every PoP and loses its pairing.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: pops.gawk.ioio.fi
+  labels:
+    {{- include "gawk-server.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": keep
+spec:
+  group: gawk.ioio.fi
+  scope: Namespaced
+  names:
+    plural: pops
+    singular: pop
+    kind: Pop
+    listKind: PopList
+    shortNames: [pop]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      # A status subresource, like Room: with it the API server ignores
+      # status written through the main resource, so a spec edit in
+      # gawk-admin can never clobber a relay's lease or credential. Both
+      # writers therefore hold pops/status patch (rbac.yaml, and the
+      # gawk-admin chart's).
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            One PoP relay (docs/76). metadata.name is the PoP's name: a
+            DNS-1123 label of at most 63 characters, because it is also the
+            gawk/pop label value on the broadcast Leases reserved for it, and
+            the default party-wall code.
+          required: [spec]
+          x-kubernetes-validations:
+            - rule: "size(self.metadata.name) <= 63 && self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')"
+              message: "a Pop name must be a DNS-1123 label (it is a label value)"
+          properties:
+            spec:
+              type: object
+              properties:
+                displayName:
+                  type: string
+                  maxLength: 64
+                notAfter:
+                  type: string
+                  format: date-time
+                  description: Optional end date; links and legs are refused after it.
+                revoked:
+                  type: boolean
+                  description: Refuses every link and leg (docs/76 §6.9).
+                pairing:
+                  type: object
+                  description: >-
+                    The current pairing string, by hash. A Re-pair writes a
+                    new one and nothing else; a credential is honoured only
+                    while the string it was paired with is the current one.
+                    expiresAt limits only how long an unused string can be
+                    redeemed, never a credential paired in time.
+                  properties:
+                    tokenSHA256:
+                      type: string
+                      pattern: "^[0-9a-f]{64}$"
+                    issuedAt:
+                      type: string
+                      format: date-time
+                    expiresAt:
+                      type: string
+                      format: date-time
+                uplink:
+                  type: object
+                  description: PoP → home budget; 0 = the default (25 Mbps, 3 streams).
+                  properties:
+                    maxMbps:
+                      type: integer
+                      minimum: 0
+                    maxStreams:
+                      type: integer
+                      minimum: 0
+                downlink:
+                  type: object
+                  description: Home → PoP budget; 0 = unlimited at the PoP.
+                  properties:
+                    maxMbps:
+                      type: integer
+                      minimum: 0
+                    maxStreams:
+                      type: integer
+                      minimum: 0
+                limits:
+                  type: object
+                  description: Enforced at home; 0 = the default (40 broadcasts, 20 downlink streams).
+                  properties:
+                    maxBroadcasts:
+                      type: integer
+                      minimum: 0
+                    maxDownlinkStreams:
+                      type: integer
+                      minimum: 0
+                guests:
+                  type: object
+                  properties:
+                    autoSwitch:
+                      type: boolean
+                      description: Offer this PoP to matching guests (default true).
+                wall:
+                  type: object
+                  description: The party wall room; absent = no wall.
+                  required: [roomCode]
+                  properties:
+                    roomCode:
+                      type: string
+                      minLength: 3
+                      maxLength: 32
+                namedAddress:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+            status:
+              type: object
+              properties:
+                credential:
+                  type: object
+                  description: Relay-owned. The credential's SHA-256, never the credential.
+                  properties:
+                    sha256:
+                      type: string
+                    pairingTokenSHA256:
+                      type: string
+                    pairedAt:
+                      type: string
+                      format: date-time
+                lease:
+                  type: object
+                  description: >-
+                    Relay-owned. The link-home pod, with R17's generation-CAS
+                    semantics: a fresh link force-takes it and bumps
+                    generation.
+                  properties:
+                    holder:
+                      type: string
+                    addr:
+                      type: string
+                    generation:
+                      type: integer
+                      format: int64
+                    renewedAt:
+                      type: string
+                      format: date-time
+                link:
+                  type: object
+                  description: >-
+                    Relay-owned. What the PoP reported on its live link. Carries
+                    addresses: the Kubernetes API is internal, and no event ever
+                    copies them (docs/76 §8).
+                  properties:
+                    connected:
+                      type: boolean
+                    since:
+                      type: string
+                      format: date-time
+                    version:
+                      type: string
+                    proto:
+                      type: integer
+                    publicAddrs:
+                      type: array
+                      items:
+                        type: string
+                    lanAddr:
+                      type: string
+                    pinnedHashes:
+                      type: array
+                      items:
+                        type: string
+                tls:
+                  type: object
+                  description: >-
+                    The named tier. csr is relay-owned; host, certificate,
+                    issuedForCSR and notAfter are gawk-admin's.
+                  properties:
+                    host:
+                      type: string
+                    csr:
+                      type: string
+                    certificate:
+                      type: string
+                    issuedForCSR:
+                      type: string
+                    notAfter:
+                      type: string
+                      format: date-time
+      additionalPrinterColumns:
+        - name: Display
+          type: string
+          jsonPath: .spec.displayName
+        - name: Linked
+          type: boolean
+          jsonPath: .status.link.connected
+        - name: Home
+          type: string
+          jsonPath: .status.lease.holder
+        - name: Revoked
+          type: boolean
+          jsonPath: .spec.revoked
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+{{- end }}
