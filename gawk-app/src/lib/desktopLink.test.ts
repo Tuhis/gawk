@@ -195,3 +195,93 @@ describe('applyRouteDesktop (D9)', () => {
     }
   });
 });
+
+// R74's gawk://server vectors (same file, the server/ and certhash/ groups;
+// docs/76 §6.1 item 5), restated in their `https` form, never imported. The
+// web app never opens a gawk://server link, but the https form is a landing
+// link it parses, and it must land on that relay with exactly those pins.
+// Distinct https forms only. The certhash/reject rows keep the relay and
+// drop nothing, because their https form already carries no certHash.
+const A1 = 'a1'.repeat(32);
+const B2 = 'b2'.repeat(32);
+const SERVER_HTTPS_VECTORS: Array<{ name: string; https: string; relay: string; certHashes: string[] }> = [
+  {
+    name: 'server/accept: a LAN relay with both hashes',
+    https: `https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=${A1},${B2}`,
+    relay: 'https://192.168.1.20:4433',
+    certHashes: [A1, B2],
+  },
+  {
+    name: 'server/accept: both hashes on 10/8',
+    https: `https://gawk.ioio.fi/#/?relay=https%3A%2F%2F10.0.0.5%3A4433&certHash=${A1},${B2}`,
+    relay: 'https://10.0.0.5:4433',
+    certHashes: [A1, B2],
+  },
+  {
+    name: 'server/accept: a named relay needs no hash',
+    https: 'https://gawk.ioio.fi/#/?relay=https%3A%2F%2Fp-7k2m9x.pop.gawk.ioio.fi%3A4433',
+    relay: 'https://p-7k2m9x.pop.gawk.ioio.fi:4433',
+    certHashes: [],
+  },
+  {
+    name: 'certhash/accept: one hash, default port',
+    https: `https://gawk.ioio.fi/#/?relay=https%3A%2F%2F10.1.2.3&certHash=${A1}`,
+    relay: 'https://10.1.2.3',
+    certHashes: [A1],
+  },
+  {
+    name: 'certhash/accept: the top of 172.16/12',
+    https: `https://gawk.ioio.fi/#/?relay=https%3A%2F%2F172.31.255.1%3A4433&certHash=${B2}`,
+    relay: 'https://172.31.255.1:4433',
+    certHashes: [B2],
+  },
+  {
+    name: 'certhash/accept: an IPv6 unique local literal',
+    https: `https://gawk.ioio.fi/#/?relay=https%3A%2F%2F%5Bfd12%3A3456%3A%3A1%5D%3A4433&certHash=${A1}`,
+    relay: 'https://[fd12:3456::1]:4433',
+    certHashes: [A1],
+  },
+  {
+    name: 'certhash/reject: beside a public address',
+    https: 'https://gawk.ioio.fi/#/?relay=https%3A%2F%2F203.0.113.7%3A4433',
+    relay: 'https://203.0.113.7:4433',
+    certHashes: [],
+  },
+  {
+    name: 'certhash/reject: beside a hostname',
+    https: 'https://gawk.ioio.fi/#/?relay=https%3A%2F%2Frelay.friend.example',
+    relay: 'https://relay.friend.example',
+    certHashes: [],
+  },
+  {
+    name: 'certhash/reject: 172.32/16 is not private',
+    https: 'https://gawk.ioio.fi/#/?relay=https%3A%2F%2F172.32.0.1',
+    relay: 'https://172.32.0.1',
+    certHashes: [],
+  },
+  {
+    name: 'certhash/reject: loopback is not a LAN address',
+    https: 'https://gawk.ioio.fi/#/?relay=https%3A%2F%2F127.0.0.1%3A4433',
+    relay: 'https://127.0.0.1:4433',
+    certHashes: [],
+  },
+];
+
+describe('gawk://server vectors in their https form (R74, docs/76 §6.1 item 5)', () => {
+  it.each(SERVER_HTTPS_VECTORS)('lands on the relay with exactly its pins: $name', ({ https, relay, certHashes }) => {
+    const route = parseRoute(new URL(https).hash);
+    expect(route.view).toBe('landing');
+    if (route.view !== 'landing') return;
+    expect(route.relay).toBe(relay);
+    expect(route.certHashes).toEqual(certHashes);
+    expect(route.droppedParams).toEqual([]);
+  });
+
+  it('a pin from a reject vector is dropped, never applied (beside a public address)', () => {
+    const route = parseRoute(`#/?relay=https%3A%2F%2F203.0.113.7%3A4433&certHash=${A1}`);
+    expect(route.view).toBe('landing');
+    if (route.view !== 'landing') return;
+    expect(route.certHashes).toEqual([]);
+    expect(route.droppedParams).toEqual(['certHash']);
+  });
+});
