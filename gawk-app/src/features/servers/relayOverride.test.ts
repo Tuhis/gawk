@@ -80,3 +80,52 @@ describe('applyRouteRelay', () => {
     expect(store.getState().publishSecret).toBe('savedsec');
   });
 });
+
+// R74 (docs/76 §6.1 item 5): a standalone PoP's join link is the LANDING
+// route with `?relay=<lan-ip>&certHash=`. The hashes ride the override.
+describe('applyRouteRelay certHash (R74)', () => {
+  const H1 = '11'.repeat(32);
+  const H2 = '22'.repeat(32);
+  const POP = 'https://192.168.1.20:4433';
+
+  it('applies a landing-route relay and its pins as the session override', async () => {
+    const { store, applyRouteRelay, parseRoute } = await load();
+    applyRouteRelay(parseRoute(`#/?relay=${encodeURIComponent(POP)}&certHash=${H1},${H2}`));
+    expect(store.getState().serverUrl).toBe(POP);
+    expect(store.getState().resolvedSource).toBe('override');
+    expect(store.getState().certHashes).toEqual([H1, H2]);
+    expect(store.getState().relayLinkNote).toBe(null);
+  });
+
+  it('a plain landing route still clears the override', async () => {
+    const { store, applyRouteRelay, parseRoute } = await load();
+    applyRouteRelay(parseRoute(`#/?relay=${encodeURIComponent(POP)}&certHash=${H1}`));
+    applyRouteRelay(parseRoute('#/'));
+    expect(store.getState().sessionOverrideUrl).toBe(null);
+    expect(store.getState().certHashes).toEqual([]);
+  });
+
+  it('a dropped certHash keeps the relay and shows the pin note', async () => {
+    const { store, applyRouteRelay, parseRoute, NOTE_CERT_HASH_DROPPED } = await load();
+    applyRouteRelay(parseRoute(`#/view/AB2CD3?relay=https://relay.example.com:4433&certHash=${H1}`));
+    expect(store.getState().serverUrl).toBe('https://relay.example.com:4433');
+    expect(store.getState().certHashes).toEqual([]);
+    expect(store.getState().relayLinkNote).toBe(NOTE_CERT_HASH_DROPPED);
+  });
+
+  it('an invalid relay wins the note over a dropped certHash', async () => {
+    const { store, applyRouteRelay, parseRoute, NOTE_RELAY_INVALID } = await load();
+    applyRouteRelay(parseRoute(`#/?relay=http://192.168.1.20&certHash=${H1}`));
+    expect(store.getState().sessionOverrideUrl).toBe(null);
+    expect(store.getState().relayLinkNote).toBe(NOTE_RELAY_INVALID);
+  });
+
+  it('gated deployment: pins are ignored with the relay', async () => {
+    window.__GAWK_CONFIG__ = { allowCustomRelays: false };
+    const { store, applyRouteRelay, parseRoute, NOTE_RELAY_NOT_ALLOWED } = await load();
+    applyRouteRelay(parseRoute(`#/?relay=${encodeURIComponent(POP)}&certHash=${H1}`));
+    expect(store.getState().sessionOverrideUrl).toBe(null);
+    expect(store.getState().certHashes).toEqual([]);
+    expect(store.getState().relayLinkNote).toBe(NOTE_RELAY_NOT_ALLOWED);
+  });
+});

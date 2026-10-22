@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { RoomSession, type RoomSessionGrant, type RoomTarget } from '../../transport/room-session';
 import { CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
-import { useTransportStore } from '../../state/transportStore';
+import { selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { useRoomStore } from '../../state/roomStore';
 import { log } from '../../lib/logger';
 import { DRAINING_NOTE, RECONNECTING_NOTE } from './roomCopy';
@@ -36,7 +36,7 @@ export function useRoomSession({ target, nickname, clientKind, grant, dialNonce 
   // Same subscription discipline as useViewerConnection: a server change is
   // a deliberate re-dial, and the room's tiles re-dial with it.
   const serverUrl = useTransportStore((s) => s.serverUrl);
-  const certHashHex = useTransportStore((s) => s.certHashHex);
+  const certHashHex = useTransportStore(selectCertHashList);
   const sessionRef = useRef<RoomSession | null>(null);
   const nicknameRef = useRef(nickname);
   nicknameRef.current = nickname;

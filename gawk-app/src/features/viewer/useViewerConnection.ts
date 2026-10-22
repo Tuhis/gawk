@@ -39,7 +39,7 @@ import {
   audioProfileForDeliveryMode,
   type AudioBufferProfile,
 } from '../../transport/audio-buffer';
-import { resolvedUrlIsDefault, useTransportStore } from '../../state/transportStore';
+import { resolvedUrlIsDefault, selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { useTelemetryCollector } from '../../lib/useTelemetry';
 import { readVisibility } from '../../lib/visibility';
 import { log } from '../../lib/logger';
@@ -187,7 +187,7 @@ export function useViewerConnection(
   // than not applying at all — the viewer would look connected to a relay it is
   // not talking to.
   const serverUrl = useTransportStore((s) => s.serverUrl);
-  const certHashHex = useTransportStore((s) => s.certHashHex);
+  const certHashHex = useTransportStore(selectCertHashList);
   const [status, setStatus] = useState<ViewerStatus>('connecting');
   const [stats, setStats] = useState<ViewerStats | null>(null);
   const [codec, setCodec] = useState<string | null>(null);

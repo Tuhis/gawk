@@ -15,6 +15,9 @@ function fakeTransport(opts: {
   dropPings?: number[];
   identity?: Uint8Array;
   identityDelayMs?: number;
+  // Uni streams the relay opens before the identity one (R74: a PoP also
+  // sends 0x18 LocalRelayInfo on /echo, in no promised order).
+  before?: Uint8Array[];
   failReady?: boolean;
   // WebKit shape: no `datagrams.writable`, only `createWritable()`.
   webkit?: boolean;
@@ -45,6 +48,16 @@ function fakeTransport(opts: {
 
   const uniStreams = new ReadableStream<ReadableStream<Uint8Array>>({
     start(c) {
+      for (const payload of opts.before ?? []) {
+        c.enqueue(
+          new ReadableStream<Uint8Array>({
+            start(sc) {
+              sc.enqueue(payload);
+              sc.close();
+            },
+          }),
+        );
+      }
       if (opts.identity) {
         const payload = opts.identity;
         setTimeout(() => {
@@ -168,5 +181,41 @@ describe('sanitizeIdentityName', () => {
 
   it('keeps ordinary unicode', () => {
     expect(sanitizeIdentityName('Süd-Homelab 🎥')).toBe('Süd-Homelab 🎥');
+  });
+});
+
+// R74: a relay may open other uni streams on /echo before its identity, so
+// the probe picks the RelayIdentity out by its type byte, not by order.
+describe('probeRelay stream order (R74)', () => {
+  it('finds the identity behind other server streams', async () => {
+    const identity = encodeRelayIdentity({ serverVersion: '9.9.9', name: 'PoP' });
+    // A 0x18-typed message (LocalRelayInfo vector B) and an unknown kind.
+    const localRelayInfo = Uint8Array.from([1, 0x18, 0, 0, 0, 0, 0]);
+    const unknown = Uint8Array.from([1, 0x7f, 0]);
+    const result = await probeRelay('https://192.168.1.20:4433', '', undefined, () =>
+      fakeTransport({ identity, before: [localRelayInfo, unknown], echoDelayMs: 5 }),
+    );
+    expect(result.state).toBe('ok');
+    if (result.state !== 'ok') return;
+    expect(result.identity).toMatchObject({ name: 'PoP' });
+  });
+
+  it('degrades to no identity when none of the streams is one', async () => {
+    const result = await probeRelay('https://192.168.1.20:4433', '', undefined, () =>
+      fakeTransport({ before: [Uint8Array.from([1, 0x18, 0, 0, 0, 0, 0])], echoDelayMs: 5 }),
+    );
+    expect(result.state).toBe('ok');
+    if (result.state !== 'ok') return;
+    expect(result.identity).toBe(null);
+  });
+
+  it('hands the whole hash list to the transport', async () => {
+    const seen: string[] = [];
+    const h = `${'11'.repeat(32)},${'22'.repeat(32)}`;
+    await probeRelay('https://192.168.1.20:4433', h, undefined, (url, hashes) => {
+      seen.push(url, hashes);
+      return fakeTransport({ echoDelayMs: 1 });
+    });
+    expect(seen).toEqual(['https://192.168.1.20:4433/echo', h]);
   });
 });

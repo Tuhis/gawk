@@ -3,7 +3,7 @@ import styles from './room.module.css';
 import { GlassPanel } from '../../ui/GlassPanel';
 import { RoomSession } from '../../transport/room-session';
 import { ROOM_CLIENT_WEB_VIEWER } from '../../transport/wire';
-import { useTransportStore } from '../../state/transportStore';
+import { selectCertHashList, useTransportStore } from '../../state/transportStore';
 import { relayQuerySuffix } from '../../lib/shareLink';
 import { log } from '../../lib/logger';
 
@@ -19,7 +19,7 @@ import { log } from '../../lib/logger';
 // (with the remembered nickname); the empty grace covers the gap.
 export function JoinResolver({ code }: { code: string }) {
   const serverUrl = useTransportStore((s) => s.serverUrl);
-  const certHashHex = useTransportStore((s) => s.certHashHex);
+  const certHashHex = useTransportStore(selectCertHashList);
   const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {

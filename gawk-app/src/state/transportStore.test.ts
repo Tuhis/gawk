@@ -442,3 +442,159 @@ describe('per-resolved-server credential writes', () => {
     expect(store.getState().publishSecret).toBe('');
   });
 });
+
+// R74 (docs/76 §6.1 items 5–6): a PoP publishes two pinned hashes (current +
+// next, across the rolling rotation's overlap), so every resolution carries a
+// LIST. The legacy `certHashHex` stays the first one.
+describe('certificate hash lists (R74)', () => {
+  const H1 = '11'.repeat(32);
+  const H2 = '22'.repeat(32);
+  const H3 = '33'.repeat(32);
+  const POP = 'https://192.168.1.20:4433';
+
+  it('an unsaved link override resolves to the link’s hashes', async () => {
+    setHostname('localhost');
+    const store = (await freshModule()).useTransportStore;
+    store.getState().setSessionOverride(POP, [H1, H2]);
+    expect(store.getState().serverUrl).toBe(POP);
+    expect(store.getState().certHashes).toEqual([H1, H2]);
+    expect(store.getState().certHashHex).toBe(H1);
+    expect(store.getState().resolvedEntryId).toBe(null);
+    // Clearing drops them with the override.
+    store.getState().setSessionOverride(null);
+    expect(store.getState().certHashes).toEqual([]);
+  });
+
+  it('a new link for the same relay with different hashes re-resolves', async () => {
+    setHostname('localhost');
+    const store = (await freshModule()).useTransportStore;
+    store.getState().setSessionOverride(POP, [H1]);
+    store.getState().setSessionOverride(POP, [H2, H3]);
+    expect(store.getState().certHashes).toEqual([H2, H3]);
+    store.getState().setSessionOverride(POP);
+    expect(store.getState().certHashes).toEqual([]);
+  });
+
+  it('keeps the resolved list referentially stable across unrelated writes', async () => {
+    setHostname('localhost');
+    const store = (await freshModule()).useTransportStore;
+    store.getState().setSessionOverride(POP, [H1, H2]);
+    const before = store.getState().certHashes;
+    store.getState().setPublishSecret('x');
+    store.getState().addServer({ label: 'other', url: 'https://other.example:4433' });
+    store.getState().setSessionOverride(POP, [H1, H2]);
+    expect(store.getState().certHashes).toBe(before);
+  });
+
+  it('a link’s hashes outrank a saved entry’s for the same relay, the secret still attaches', async () => {
+    setHostname('localhost');
+    const store = (await freshModule()).useTransportStore;
+    store.getState().addServer({ label: 'PoP', url: POP, publishSecret: 'sec', certHashes: [H3] });
+    store.getState().setSessionOverride(POP, [H1, H2]);
+    expect(store.getState().certHashes).toEqual([H1, H2]);
+    expect(store.getState().publishSecret).toBe('sec');
+    // A link without hashes uses the entry's.
+    store.getState().setSessionOverride(POP);
+    expect(store.getState().certHashes).toEqual([H3]);
+  });
+
+  it('saves and restores an entry’s list, keeping certHashHex as the first hash on disk', async () => {
+    setHostname('localhost');
+    let store = (await freshModule()).useTransportStore;
+    const id = store.getState().addServer({ label: 'PoP', url: POP, certHashes: [H1, H2] })!;
+    store.getState().selectServer(id);
+    const stored = JSON.parse(localStorage.getItem('gawk.servers')!);
+    expect(stored[0].certHashHex).toBe(H1);
+    expect(stored[0].certHashes).toEqual([H1, H2]);
+
+    store = (await freshModule()).useTransportStore;
+    expect(store.getState().certHashes).toEqual([H1, H2]);
+    expect(store.getState().certHashHex).toBe(H1);
+  });
+
+  it('a legacy single-hash entry resolves to a one-element list', async () => {
+    setHostname('localhost');
+    localStorage.setItem(
+      'gawk.servers',
+      JSON.stringify([{ id: 'srv-1', label: 'Old', url: POP, publishSecret: '', certHashHex: H1 }]),
+    );
+    localStorage.setItem('gawk.selectedServer', 'srv-1');
+    const s = await freshStore();
+    expect(s.certHashes).toEqual([H1]);
+  });
+
+  it('a typed comma-separated hash is stored as a list', async () => {
+    setHostname('localhost');
+    const store = (await freshModule()).useTransportStore;
+    const id = store.getState().addServer({ label: 'PoP', url: POP })!;
+    store.getState().selectServer(id);
+    store.getState().updateServer(id, { certHashHex: ` ${H1.toUpperCase()} , ${H2} ` });
+    expect(store.getState().certHashes).toEqual([H1, H2]);
+    expect(store.getState().certHashHex).toBe(H1);
+    // Replacing the text replaces the list.
+    store.getState().setCertHashHex(H3);
+    expect(store.getState().certHashes).toEqual([H3]);
+    store.getState().setCertHashHex('');
+    expect(store.getState().certHashes).toEqual([]);
+  });
+
+  it('a session-typed hash on an unsaved override wins over the link’s', async () => {
+    setHostname('localhost');
+    const store = (await freshModule()).useTransportStore;
+    store.getState().setSessionOverride(POP, [H1]);
+    store.getState().setCertHashHex(H2);
+    expect(store.getState().certHashes).toEqual([H2]);
+  });
+
+  it('certHashList joins the resolved list for a dial', async () => {
+    setHostname('localhost');
+    const mod = await freshModule();
+    mod.useTransportStore.getState().setSessionOverride(POP, [H1, H2]);
+    expect(mod.selectCertHashList(mod.useTransportStore.getState())).toBe(`${H1},${H2}`);
+  });
+});
+
+// config.relayCertHashes (docs/76 §6.1 item 6): the PoP's own /app/ names its
+// LAN relay with both hashes. Scoped to the default URL like devCertHashHex,
+// but NOT dev-gated: the named tier serves /app/ from a real hostname.
+describe('relayCertHashes config (R74)', () => {
+  const H1 = '11'.repeat(32);
+  const H2 = '22'.repeat(32);
+
+  it('pins the deployment’s own relay, even on a non-dev origin', async () => {
+    vi.stubEnv('DEV', false);
+    setHostname('p-7k2m9x.pop.gawk.ioio.fi');
+    window.__GAWK_CONFIG__ = { relayUrl: 'https://192.168.1.20:4433', relayCertHashes: [H1, H2] };
+    const s = await freshStore();
+    expect(s.serverUrl).toBe('https://192.168.1.20:4433');
+    expect(s.certHashes).toEqual([H1, H2]);
+    expect(s.certHashHex).toBe(H1);
+  });
+
+  it('outranks devCertHashHex, and is never handed to another relay', async () => {
+    setHostname('127.0.0.1');
+    window.__GAWK_CONFIG__ = {
+      relayUrl: 'https://192.168.1.20:4433',
+      relayCertHashes: [H1, H2],
+      devCertHashHex: 'beef00',
+    };
+    const store = (await freshModule()).useTransportStore;
+    expect(store.getState().certHashes).toEqual([H1, H2]);
+    store.getState().setSessionOverride('https://192.168.1.99:4433');
+    expect(store.getState().certHashes).toEqual([]);
+  });
+
+  it('a stored hash for the default still wins', async () => {
+    setHostname('127.0.0.1');
+    window.__GAWK_CONFIG__ = { relayUrl: 'https://192.168.1.20:4433', relayCertHashes: [H1] };
+    const store = (await freshModule()).useTransportStore;
+    store.getState().setCertHashHex(H2);
+    expect(store.getState().certHashes).toEqual([H2]);
+  });
+
+  it('ignores junk values', async () => {
+    window.__GAWK_CONFIG__ = { relayCertHashes: ['', 42, ' AA '] as unknown as string[] };
+    const mod = await freshModule();
+    expect(mod.useTransportStore.getState().certHashes).toEqual(['aa']);
+  });
+});

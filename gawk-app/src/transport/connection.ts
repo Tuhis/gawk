@@ -38,8 +38,12 @@ export interface ConnectOptions {
   // hex(SHA-256(cert DER)) as logged by gawk-server at startup
   // ("cert_hash_hex"). Required for the self-signed dev cert unless Chrome
   // was launched with the --ignore-certificate-errors-spki-list flag; leave
-  // empty for a real (publicly trusted) certificate.
+  // empty for a real (publicly trusted) certificate. May hold several
+  // comma-separated hashes (the store's selectCertHashList form).
   certHashHex?: string;
+  // R74: every pinned hash, e.g. a PoP's current + next across a rolling
+  // rotation (docs/76 §6.1 item 3). Merged with certHashHex.
+  certHashes?: string[];
   publishSecret?: string;
   // The hex resume token from a previous session of this broadcast
   // (wire 0x09). Required for every /publish/{id} claim; travels as the
@@ -72,9 +76,15 @@ export function webTransportInit(opts: ConnectOptions = {}): WebTransportOptions
     requireUnreliable: true,
     congestionControl: 'low-latency',
   };
-  const hash = opts.certHashHex?.trim();
-  if (hash) {
-    init.serverCertificateHashes = [{ algorithm: 'sha-256', value: hexToBytes(hash) }];
+  const hashes: string[] = [];
+  for (const h of [...(opts.certHashHex ?? '').split(','), ...(opts.certHashes ?? [])]) {
+    const clean = h.trim().toLowerCase();
+    if (clean !== '' && !hashes.includes(clean)) hashes.push(clean);
+  }
+  if (hashes.length > 0) {
+    // The browser accepts the session if the presented certificate matches
+    // ANY listed hash.
+    init.serverCertificateHashes = hashes.map((h) => ({ algorithm: 'sha-256', value: hexToBytes(h) }));
   }
   return init;
 }

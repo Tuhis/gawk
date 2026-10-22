@@ -14,7 +14,7 @@
 // "origin not allowed" are indistinguishable from JS. The UI copy names all
 // causes once rather than pretending to diagnose.
 
-import { parseRelayIdentity, type RelayIdentityMessage } from '../../transport/wire';
+import { TYPE_RELAY_IDENTITY, parseRelayIdentity, type RelayIdentityMessage } from '../../transport/wire';
 import { openDatagramWriter, webTransportInit } from '../../transport/connection';
 
 export const PROBE_SAMPLES = 5;
@@ -23,6 +23,10 @@ export const PROBE_CONNECT_TIMEOUT_MS = 4000;
 // Measured from session ready: long enough for one RTT plus relay
 // scheduling, short enough that the panel never feels stuck.
 export const PROBE_IDENTITY_DEADLINE_MS = 1500;
+// How many server uni streams the probe reads looking for the identity. A
+// relay opens a handful at session start (identity, telemetry hello, R74's
+// 0x18 LocalRelayInfo), in no promised order.
+export const PROBE_MAX_STREAMS = 8;
 
 export interface ProbeSuccess {
   state: 'ok';
@@ -51,6 +55,8 @@ export interface ProbeTransport {
   close(): void;
 }
 
+// `certHashHex` is the pinned hash list, comma-separated (one hash, or a
+// PoP's current + next); webTransportInit splits it.
 export type ProbeTransportFactory = (url: string, certHashHex: string) => ProbeTransport;
 
 function defaultTransportFactory(url: string, certHashHex: string): ProbeTransport {
@@ -75,6 +81,31 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
       },
     );
   });
+}
+
+// A whole uni stream, or null past `limit` bytes (cancelled: no legitimate
+// session-start message is that large).
+async function readStreamBounded(stream: ReadableStream<Uint8Array>, limit: number): Promise<Uint8Array | null> {
+  const reader = stream.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    total += value.length;
+    if (total > limit) {
+      void reader.cancel().catch(() => {});
+      return null;
+    }
+  }
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    buf.set(p, off);
+    off += p.length;
+  }
+  return buf;
 }
 
 // One echo session: connect, round-trip PROBE_SAMPLES datagrams, read the
@@ -104,31 +135,24 @@ export async function probeRelay(
 
   const readyAt = now();
 
-  // Identity: first uni stream, read fully, parsed leniently: a malformed
-  // message degrades to "no identity", never to a failed probe.
+  // Identity: the first uni stream whose type byte is RelayIdentity (0x11),
+  // read fully, parsed leniently: a malformed message degrades to "no
+  // identity", never to a failed probe. Other streams are read (bounded) and
+  // skipped: R74's PoP sends 0x18 on /echo too, and stream order is not part
+  // of the contract.
   const identityPromise: Promise<RelayIdentityMessage | null> = (async () => {
     try {
       const streams = wt.incomingUnidirectionalStreams.getReader();
-      const { value: stream, done } = await streams.read();
+      for (let n = 0; n < PROBE_MAX_STREAMS; n++) {
+        const { value: stream, done } = await streams.read();
+        if (done || !stream) break;
+        const buf = await readStreamBounded(stream, 4096);
+        if (buf === null || buf.length < 2 || buf[1] !== TYPE_RELAY_IDENTITY) continue;
+        streams.releaseLock();
+        return parseRelayIdentity(buf);
+      }
       streams.releaseLock();
-      if (done || !stream) return null;
-      const reader = stream.getReader();
-      const parts: Uint8Array[] = [];
-      let total = 0;
-      for (;;) {
-        const { value, done: streamDone } = await reader.read();
-        if (streamDone) break;
-        parts.push(value);
-        total += value.length;
-        if (total > 4096) return null; // no legitimate identity is this large
-      }
-      const buf = new Uint8Array(total);
-      let off = 0;
-      for (const p of parts) {
-        buf.set(p, off);
-        off += p.length;
-      }
-      return parseRelayIdentity(buf);
+      return null;
     } catch {
       return null;
     }

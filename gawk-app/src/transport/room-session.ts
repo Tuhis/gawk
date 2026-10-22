@@ -77,7 +77,10 @@ export type RoomSessionGrant = { kind: 'creator'; tokenHex: string } | { kind: '
 
 export interface RoomSessionOptions {
   serverUrl: string;
+  // One or more comma-separated pinned hashes (ConnectOptions.certHashHex).
   certHashHex?: string;
+  // R74: a pinned relay's hash list, merged with certHashHex.
+  certHashes?: string[];
   target: RoomTarget;
   nickname: string;
   clientKind: number; // ROOM_CLIENT_*
@@ -271,7 +274,7 @@ export class RoomSession {
     this.dialAbort = dialAbort;
     let wt: WebTransport;
     try {
-      wt = await dialWebTransport(this.url(), webTransportInit({ certHashHex: this.opts.certHashHex }), dialAbort.signal);
+      wt = await dialWebTransport(this.url(), webTransportInit({ certHashHex: this.opts.certHashHex, certHashes: this.opts.certHashes }), dialAbort.signal);
     } catch (e) {
       if (this.stopped) return; // stop() aborted the dial
       const msg = e instanceof Error ? e.message : String(e);
