@@ -190,6 +190,18 @@ func (s *Server) popWaitSinglePod(ctx context.Context, id string) bool {
 	return true
 }
 
+// popLegEnded is a /pop/publish leg's end without 4013 (the leg died, or
+// the PoP host restarted and with it forgot the want, docs/76 §6.13). Its
+// viewers stay on this pod's graced hub, and edge pulls on other pods stay
+// on it too, so no subscribe miss will fire a want again: while anyone is
+// downstream, the demand loop asks the PoP again until a leg is back.
+func (s *Server) popLegEnded(id, pop string) {
+	if s.popDemand() == nil || s.registry.DownstreamSessions(id) == 0 {
+		return
+	}
+	s.startDemand(context.Background(), id, pop)
+}
+
 // startDemand starts (or nudges) id's demand loop on this pod.
 func (s *Server) startDemand(ctx context.Context, id, pop string) {
 	req, hasReq := demandRequestFrom(ctx)
@@ -305,8 +317,20 @@ func (l *demandLoop) run() {
 func (l *demandLoop) stillWaiting(first bool) bool {
 	if coord := l.s.clusterCoord(); coord != nil {
 		origin, _, _, ok := coord.Lookup(l.id)
-		if !ok || origin.Pop == "" || origin.Holder != "" {
+		if !ok || origin.Pop == "" {
 			return false
+		}
+		switch em := l.s.edgeManager(); {
+		case origin.Holder == "":
+			// A dormant reservation.
+		case em != nil && origin.Holder == em.podName:
+			// This pod's own claim, graced by a leg that ended without
+			// 4013 (popLegEnded): waiting until a leg publishes again.
+			if live, _, known := l.s.registry.BroadcastState(l.id); !known || live {
+				return false
+			}
+		default:
+			return false // a leg holds it on another pod
 		}
 	} else {
 		// Single-pod: the waiting hub is there and no leg publishes yet.

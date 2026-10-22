@@ -189,6 +189,9 @@ func (s *Server) handlePopPublish(w http.ResponseWriter, r *http.Request) {
 		// drop before it removes the hub, which a live publisher would keep.
 		pub.Close()
 		claim.live.Store(false)
+		if !claim.handedBack.Load() {
+			s.popLegEnded(id, pop.Name)
+		}
 	}()
 
 	go s.acceptKeyframeStreams(r.Context(), sess, pub, log)

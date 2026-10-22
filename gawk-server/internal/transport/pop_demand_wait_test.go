@@ -1,7 +1,10 @@
 package transport
 
 import (
+	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -36,5 +39,64 @@ func TestTheDemandLoopKeepsAskingForAWaitingPoPLeg(t *testing.T) {
 	defer leg.Close()
 	if !l.stillWaiting(false) {
 		t.Fatal("a waiting PoP downlink leg does not keep the demand loop asking")
+	}
+}
+
+// fakeDemandHome is a PopDemandHome that holds every link and records the
+// wants it is asked to forward.
+type fakeDemandHome struct {
+	mu    sync.Mutex
+	wants []string
+}
+
+func (f *fakeDemandHome) LinkHolder(string) (string, int64, bool) { return "", 0, false }
+func (f *fakeDemandHome) HoldsLink(string) (int64, bool)          { return 1, true }
+func (f *fakeDemandHome) ReservedFor(string) (string, bool)       { return testPop, true }
+func (f *fakeDemandHome) Want(_ context.Context, _, id string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wants = append(f.wants, id)
+	return "", nil
+}
+
+func (f *fakeDemandHome) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.wants)
+}
+
+// A leg that ended without 4013 (the PoP host restarted, and with it the
+// PoP's memory of the want) leaves its viewers on this pod's graced hub,
+// where no subscribe miss will ever fire a want again. The leg's end asks
+// the PoP again, and keeps asking while they wait and no leg is back.
+func TestAnEndedLegsWaitingViewersAskThePoPAgain(t *testing.T) {
+	reg := hub.NewRegistry(discardLog, hub.Options{})
+	srv := New(config.Config{Addr: "127.0.0.1:0", PopDemandTimeout: 50 * time.Millisecond}, reg, nil, discardLog,
+		metrics.NewServerMetrics(prometheus.NewRegistry()))
+	coord := &fakeCoordinator{leases: map[string]fakeLease{
+		"K7XQ2M": {origin: cluster.Origin{Holder: "pod-self", Generation: 1, Pop: testPop}, inGrace: true},
+	}}
+	srv.SetCluster(coord, "pod-self")
+	home := &fakeDemandHome{}
+	srv.SetPopDemand(home)
+
+	_, pub, err := reg.ResumePublish("K7XQ2M")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := reg.Subscribe("K7XQ2M", &edgeConn{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	pub.Close()
+
+	srv.popLegEnded("K7XQ2M", testPop)
+	waitFor(t, 5*time.Second, func() bool { return home.count() >= 2 }, "the want, then a second one")
+
+	l := &demandLoop{s: srv, id: "K7XQ2M", pop: testPop}
+	coord.leases["K7XQ2M"] = fakeLease{origin: cluster.Origin{Holder: "pod-other", Generation: 2, Pop: testPop}}
+	if l.stillWaiting(false) {
+		t.Error("still waiting once another pod's leg holds the Lease")
 	}
 }
