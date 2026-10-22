@@ -1995,7 +1995,8 @@ func (r *Registry) EndBroadcast(id string) {
 }
 
 // ExpireEdgeIfViewerless deletes an EDGE hub that has no local viewers — the
-// linger-out path. Left in grace, the hub would keep satisfying
+// linger-out path. An R74 PoP downlink leg (an internal subscriber, the only
+// kind an edge hub ever has) counts as a viewer here: it is demand. Left in grace, the hub would keep satisfying
 // CheckSubscribe, so a joiner would attach with no upstream pull behind it
 // (EnsureEdge runs only on ErrNotFound) and later get a wrong terminal 4000.
 // Atomic with Subscribe: returns true when the hub is gone, false when a
@@ -2007,7 +2008,7 @@ func (r *Registry) ExpireEdgeIfViewerless(id string) bool {
 		return true
 	}
 	if r.expireBroadcast(normID, func(b *broadcastHub) bool {
-		return b.edge && b.externalSubsLocked() == 0
+		return b.edge && len(b.subs) == 0
 	}) {
 		return true
 	}
