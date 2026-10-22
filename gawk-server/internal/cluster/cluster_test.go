@@ -8,6 +8,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -24,6 +25,8 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+
+	"github.com/Tuhis/gawk/gawk-server/pops"
 )
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -823,5 +826,359 @@ func TestResolveSurfacesPopLabel(t *testing.T) {
 	}
 	if PopLabelKey != "gawk/pop" {
 		t.Errorf("PopLabelKey = %q, want gawk/pop", PopLabelKey)
+	}
+	// The Pop CR package names the same label (W1-pops hand-off).
+	if PopLabelKey != pops.LabelKey {
+		t.Errorf("PopLabelKey = %q, pops.LabelKey = %q: they must be equal", PopLabelKey, pops.LabelKey)
+	}
+}
+
+// ---- R74 PoP reservations (docs/76 item 14) --------------------------------
+
+func leaseOf(t *testing.T, cs *fake.Clientset, id string) *coordv1.Lease {
+	t.Helper()
+	l, err := cs.CoordinationV1().Leases("gawk").Get(context.Background(), leaseName(id), metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get lease %s: %v", id, err)
+	}
+	return l
+}
+
+// A reservation is a broadcast Lease with the gawk/pop label, no holder and
+// generation 0, so the PoP's first claim is generation 1. A second Reserve
+// of the same ID is a conflict, whoever asks.
+func TestReserveCreatesAHolderlessPopLease(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	ctx := context.Background()
+
+	if err := a.Reserve(ctx, "K7XQ2M", "lan-party"); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	l := leaseOf(t, cs, "K7XQ2M")
+	if l.Labels[LeaseLabelKey] != LeaseLabelValue || l.Labels[PopLabelKey] != "lan-party" {
+		t.Errorf("labels = %v, want broadcast + gawk/pop=lan-party", l.Labels)
+	}
+	o := parseOrigin(l)
+	if o.Holder != "" || o.Generation != 0 || o.Pop != "lan-party" {
+		t.Errorf("origin = %+v, want no holder, generation 0, Pop lan-party", o)
+	}
+	if l.Spec.RenewTime == nil || !l.Spec.RenewTime.Time.Equal(clock.Now()) {
+		t.Errorf("renewTime = %v, want now", l.Spec.RenewTime)
+	}
+	for _, pop := range []string{"lan-party", "other"} {
+		if err := a.Reserve(ctx, "K7XQ2M", pop); !errors.Is(err, ErrConflict) {
+			t.Errorf("second Reserve by %s = %v, want ErrConflict", pop, err)
+		}
+	}
+	// A live home broadcast is a conflict too.
+	if _, err := a.Claim(ctx, "AAA234", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Reserve(ctx, "AAA234", "lan-party"); !errors.Is(err, ErrConflict) {
+		t.Errorf("Reserve over a home broadcast = %v, want ErrConflict", err)
+	}
+}
+
+// 40 dormant reservations do not count against the fleet's -max-broadcasts:
+// the cap counts gawk/lease=broadcast,!gawk/pop. Reserve itself applies no
+// fleet cap (the PoP's own limit is enforced by the link-home pod).
+func TestDormantReservationsDoNotCountAgainstTheFleetCap(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, func(o *Options) { o.MaxBroadcasts = 1 })
+	ctx := context.Background()
+
+	for i := range 40 {
+		if err := a.Reserve(ctx, fmt.Sprintf("R%05d", i), "lan-party"); err != nil {
+			t.Fatalf("Reserve %d: %v", i, err)
+		}
+	}
+	if n, err := a.CountReservations(ctx, "lan-party"); err != nil || n != 40 {
+		t.Fatalf("CountReservations = %d, %v; want 40", n, err)
+	}
+	if _, err := a.Claim(ctx, "AAA234", false); err != nil {
+		t.Fatalf("home mint beside 40 reservations: %v", err)
+	}
+	if _, err := a.Claim(ctx, "BBB234", false); !errors.Is(err, ErrMaxBroadcasts) {
+		t.Fatalf("second home mint = %v, want ErrMaxBroadcasts", err)
+	}
+	// A forwarded (held) reservation does not count either.
+	if _, err := a.ClaimForPop(ctx, "R00000", "lan-party", false); err != nil {
+		t.Fatalf("ClaimForPop: %v", err)
+	}
+	if err := a.Delete(ctx, "AAA234"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Claim(ctx, "CCC234", false); err != nil {
+		t.Fatalf("home mint beside a forwarded reservation: %v", err)
+	}
+}
+
+// Claim refuses a gawk/pop Lease to every claimant, with or without force,
+// and leaves it untouched; only ClaimForPop with the matching PoP takes it.
+func TestClaimRefusesAReservation(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	ctx := context.Background()
+
+	if err := a.Reserve(ctx, "K7XQ2M", "lan-party"); err != nil {
+		t.Fatal(err)
+	}
+	before := leaseOf(t, cs, "K7XQ2M").ResourceVersion
+	for _, force := range []bool{false, true} {
+		if _, err := a.Claim(ctx, "K7XQ2M", force); !errors.Is(err, ErrReserved) {
+			t.Errorf("Claim(force=%v) = %v, want ErrReserved", force, err)
+		}
+	}
+	if _, err := a.ClaimForPop(ctx, "K7XQ2M", "other-pop", true); !errors.Is(err, ErrReserved) {
+		t.Errorf("ClaimForPop by another PoP = %v, want ErrReserved", err)
+	}
+	if got := leaseOf(t, cs, "K7XQ2M").ResourceVersion; got != before {
+		t.Errorf("a refused claim wrote the lease (rv %s -> %s)", before, got)
+	}
+	if _, held := a.OriginGeneration("K7XQ2M"); held {
+		t.Error("a refused claim started a renew loop")
+	}
+
+	gen, err := a.ClaimForPop(ctx, "K7XQ2M", "lan-party", false)
+	if err != nil || gen != 1 {
+		t.Fatalf("ClaimForPop = %d, %v; want generation 1", gen, err)
+	}
+	o := parseOrigin(leaseOf(t, cs, "K7XQ2M"))
+	if o.Holder != "pod-a" || o.Pop != "lan-party" || o.Addr != "pod-a:4433" {
+		t.Errorf("claimed reservation = %+v, want pod-a holding for lan-party", o)
+	}
+	// Still refused to an ordinary claimant while held.
+	if _, err := a.Claim(ctx, "K7XQ2M", true); !errors.Is(err, ErrReserved) {
+		t.Errorf("Claim of a held reservation = %v, want ErrReserved", err)
+	}
+
+	// ClaimForPop never creates and never takes an ordinary broadcast.
+	if _, err := a.ClaimForPop(ctx, "NOPE23", "lan-party", true); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ClaimForPop of no lease = %v, want ErrNotFound", err)
+	}
+	if _, err := a.Claim(ctx, "AAA234", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ClaimForPop(ctx, "AAA234", "lan-party", true); !errors.Is(err, ErrReserved) {
+		t.Errorf("ClaimForPop of a home broadcast = %v, want ErrReserved", err)
+	}
+}
+
+// The 4013 path: the leg's origin Releases the Lease and it is a dormant
+// reservation again. Delete (the hub's grace expiry) is a no-op on it, and
+// Release clears a grace stamp so the janitor does not reap it at the
+// deadline. DeleteReservation is the explicit end.
+func TestReleaseReturnsALeaseToAReservationThatDeleteKeeps(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	b := newTestCoordinator(t, cs, "pod-b", clock, nil)
+	ctx := context.Background()
+
+	if err := a.Reserve(ctx, "K7XQ2M", "lan-party"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.ClaimForPop(ctx, "K7XQ2M", "lan-party", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.EnterGrace(ctx, "K7XQ2M"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := leaseOf(t, cs, "K7XQ2M").Annotations[annotationGraceDeadline]; !ok {
+		t.Fatal("EnterGrace stamped no deadline")
+	}
+	if err := a.Release(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	l := leaseOf(t, cs, "K7XQ2M")
+	if o := parseOrigin(l); o.Holder != "" || o.Pop != "lan-party" || o.Generation != 1 {
+		t.Errorf("released = %+v, want a reservation at generation 1", o)
+	}
+	if d, ok := l.Annotations[annotationGraceDeadline]; ok {
+		t.Errorf("Release kept the grace deadline %q", d)
+	}
+
+	if err := a.Delete(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	leaseOf(t, cs, "K7XQ2M") // still there
+	if err := b.Delete(ctx, "K7XQ2M"); err != nil {
+		t.Fatalf("Delete from another pod: %v", err)
+	}
+	leaseOf(t, cs, "K7XQ2M")
+
+	if err := a.DeleteReservation(ctx, "K7XQ2M", "other-pop"); !errors.Is(err, ErrReserved) {
+		t.Errorf("DeleteReservation by another PoP = %v, want ErrReserved", err)
+	}
+	leaseOf(t, cs, "K7XQ2M")
+	if err := a.DeleteReservation(ctx, "K7XQ2M", "lan-party"); err != nil {
+		t.Fatalf("DeleteReservation: %v", err)
+	}
+	if _, err := a.Resolve(ctx, "K7XQ2M"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Resolve after DeleteReservation = %v, want ErrNotFound", err)
+	}
+	if err := a.DeleteReservation(ctx, "K7XQ2M", "lan-party"); err != nil {
+		t.Fatalf("DeleteReservation is idempotent: %v", err)
+	}
+	// It never deletes a home broadcast.
+	if _, err := a.Claim(ctx, "AAA234", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DeleteReservation(ctx, "AAA234", "lan-party"); !errors.Is(err, ErrReserved) {
+		t.Errorf("DeleteReservation of a home broadcast = %v, want ErrReserved", err)
+	}
+	leaseOf(t, cs, "AAA234")
+}
+
+// The janitor keeps a renewed dormant reservation however old it is, and
+// reaps one whose renewals stopped past grace+duration (the orphan sweep:
+// a link-home pod that died with nobody taking the link over). Only the
+// named PoP's holder-less reservations are renewed.
+func TestJanitorKeepsRenewedReservations(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	ctx := context.Background()
+
+	for _, r := range []struct{ id, pop string }{{"AAAAA2", "lan-party"}, {"BBBBB2", "lan-party"}, {"CCCCC2", "other-pop"}} {
+		if err := a.Reserve(ctx, r.id, r.pop); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// BBBBB2 is forwarded: its origin renews it, RenewReservations must not.
+	if _, err := a.ClaimForPop(ctx, "BBBBB2", "lan-party", false); err != nil {
+		t.Fatal(err)
+	}
+	a.stopRenew("BBBBB2")
+	heldRenew := leaseOf(t, cs, "BBBBB2").Spec.RenewTime.Time
+
+	for range 4 {
+		clock.Advance(2 * time.Minute)
+		if err := a.RenewReservations(ctx, "lan-party"); err != nil {
+			t.Fatalf("RenewReservations: %v", err)
+		}
+		a.JanitorSweep(ctx)
+	}
+	if got := leaseOf(t, cs, "AAAAA2").Spec.RenewTime.Time; !got.Equal(clock.Now()) {
+		t.Errorf("renewed reservation renewTime = %v, want %v", got, clock.Now())
+	}
+	list, err := cs.CoordinationV1().Leases("gawk").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, l := range list.Items {
+		got[l.Name] = true
+	}
+	if !got[leaseName("AAAAA2")] {
+		t.Error("janitor reaped a renewed reservation")
+	}
+	// 8 minutes without renewal: past grace (5m) + duration. Reaped, the
+	// held-but-silent one too (its origin crashed; RenewReservations never
+	// renewed it, which is what this checks).
+	if got[leaseName("CCCCC2")] || got[leaseName("BBBBB2")] {
+		t.Errorf("janitor kept stale leases (RenewReservations renewed a held one?): %v; held renewTime was %v", got, heldRenew)
+	}
+}
+
+// A dormant reservation is never reaped for a grace stamp it carries from
+// an earlier leg: only a stale renewal ends it.
+func TestJanitorExemptsHolderlessReservationsFromTheGraceDeadline(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	ctx := context.Background()
+	if err := a.Reserve(ctx, "K7XQ2M", "lan-party"); err != nil {
+		t.Fatal(err)
+	}
+	l := leaseOf(t, cs, "K7XQ2M")
+	l.Annotations[annotationGraceDeadline] = clock.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	if _, err := cs.CoordinationV1().Leases("gawk").Update(ctx, l, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	a.JanitorSweep(ctx)
+	leaseOf(t, cs, "K7XQ2M")
+}
+
+// The informer cache answers ListReservations, and OnOriginClaimed fires on
+// every pod when a reservation gains a holder (the PoP's leg landed): not
+// for an ordinary broadcast's claim after a drain release, and not for a
+// force-take of a reservation that already had a holder.
+func TestOnOriginClaimedAndListReservations(t *testing.T) {
+	cs := fake.NewClientset()
+	clock := newFakeClock()
+	var mu sync.Mutex
+	var claimed []string
+	a := newTestCoordinator(t, cs, "pod-a", clock, nil)
+	b := newTestCoordinator(t, cs, "pod-b", clock, func(o *Options) {
+		o.OnOriginClaimed = func(id string, o Origin) {
+			mu.Lock()
+			claimed = append(claimed, id+"@"+o.Holder+"/"+o.Pop)
+			mu.Unlock()
+		}
+	})
+	// Built up front: newTestCoordinator adds a reactor, which races the
+	// renew loops of claims made later.
+	c := newTestCoordinator(t, cs, "pod-c", clock, nil)
+	seen := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), claimed...)
+	}
+	watching := leaseWatchRegistered(cs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.Run(ctx)
+	<-watching
+	if !b.WaitLeaseSync(ctx) {
+		t.Fatal("WaitLeaseSync")
+	}
+
+	// An ordinary broadcast released by a drain and re-claimed: no event.
+	if _, err := a.Claim(ctx, "AAA234", false); err != nil {
+		t.Fatal(err)
+	}
+	a.ReleaseAll(ctx)
+	if _, err := a.Claim(ctx, "AAA234", false); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{"K7XQ2M", "M2QX7K"} {
+		if err := a.Reserve(ctx, id, "lan-party"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, 15*time.Second, func() bool { return len(b.ListReservations("lan-party")) == 2 }, "pod-b to list both reservations")
+	if got := b.ListReservations("lan-party"); got[0] != "K7XQ2M" || got[1] != "M2QX7K" {
+		t.Errorf("ListReservations = %v, want [K7XQ2M M2QX7K]", got)
+	}
+	if got := b.ListReservations("other-pop"); len(got) != 0 {
+		t.Errorf("ListReservations(other-pop) = %v", got)
+	}
+
+	if _, err := a.ClaimForPop(ctx, "K7XQ2M", "lan-party", false); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 15*time.Second, func() bool { return len(seen()) == 1 }, "OnOriginClaimed")
+	if got := seen(); got[0] != "K7XQ2M@pod-a/lan-party" {
+		t.Errorf("OnOriginClaimed = %v, want K7XQ2M@pod-a/lan-party", got)
+	}
+	// A force-take of the held reservation by another pod is a re-home, not
+	// a claim out of a reservation.
+	if _, err := c.ClaimForPop(ctx, "K7XQ2M", "lan-party", true); err != nil {
+		t.Fatal(err)
+	}
+	// Fence: a later, observable event proves the informer got past the
+	// force-take.
+	if _, err := a.ClaimForPop(ctx, "M2QX7K", "lan-party", false); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 15*time.Second, func() bool { return len(seen()) == 2 }, "second OnOriginClaimed")
+	if got := seen(); got[1] != "M2QX7K@pod-a/lan-party" {
+		t.Errorf("events = %v, want the second to be M2QX7K's", got)
 	}
 }

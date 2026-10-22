@@ -25,6 +25,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
+	"github.com/Tuhis/gawk/gawk-server/internal/popsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomcluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrc"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
@@ -47,6 +48,9 @@ type Wired struct {
 	Prom     *prometheus.Registry
 	Bans     *moderation.Set
 	Cfg      config.Config
+	// Reservations is the R74 PoP reservation set the hub's mint consults
+	// (docs/76 item 14); nil with -pops off.
+	Reservations popsrv.Reservations
 }
 
 // Options is what differs between the binaries.
@@ -166,6 +170,12 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 			return (roomReg != nil && roomReg.Has(id)) || (roomStore != nil && roomStore.Known(id))
 		}
 	}
+	// popRes: R74's reservation set, built here single-pod and with the
+	// coordinator in cluster mode; the mint never draws a reserved ID.
+	popRes := popReservationsFor(cfg, nil)
+	if cfg.Pops {
+		hubOpts.IDReserved = popIDReserved(hubOpts.IDReserved, func() popsrv.Reservations { return popRes })
+	}
 
 	r := hub.NewRegistry(log, hubOpts)
 
@@ -229,11 +239,18 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 	// Publishing `coord` happens inside the ordered wiring step, not at the
 	// call site: wireSubsystems only guarantees the ORDER of what it calls.
 	buildCoord := func() (transport.ClusterCoordinator, string, error) {
-		c, podName, cerr := buildCoordinator(cfg, srv.HandleLeaseDeleted, srv.HandleLeaseLost, log)
+		c, podName, cerr := buildCoordinator(cfg, coordinatorHooks{
+			OnLeaseDeleted:  srv.HandleLeaseDeleted,
+			OnLeaseLost:     srv.HandleLeaseLost,
+			OnOriginClaimed: srv.HandleOriginClaimed,
+		}, log)
 		if cerr != nil {
 			return nil, "", cerr
 		}
 		coord = c
+		if cfg.Pops {
+			popRes = popReservationsFor(cfg, c)
+		}
 		go coord.Run(runCtx)
 		return c, podName, nil
 	}
@@ -261,6 +278,8 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 		Prom:     promReg,
 		Bans:     bans,
 		Cfg:      cfg,
+
+		Reservations: popRes,
 	}
 	// R74 (docs/76): the home side of PoP relays, after the cluster and ban
 	// wiring it builds on.

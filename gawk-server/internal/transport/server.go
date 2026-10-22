@@ -767,6 +767,15 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
+		// R74 (docs/76 item 14): a PoP's broadcast is claimable only by that
+		// PoP's uplink leg, never by a resume token. Refused here, from the
+		// lease cache, before the come-home below can stop an edge pull that
+		// serves the PoP broadcast's viewers; the claims below refuse the
+		// same way when the cache has not seen the reservation yet.
+		if reservedInCache(s.clusterCoord(), normID) {
+			s.rejectReservedResume(w, r, normID)
+			return
+		}
 		// Come-home: if this pod is edge for the ID, its upstream pull holds
 		// the hub's publisher slot — stop it (and wait) so the claim below
 		// succeeds. The hub and its viewers survive.
@@ -801,6 +810,13 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		if coord := s.clusterCoord(); pub != nil && coord != nil {
 			if _, err := coord.Claim(r.Context(), id, true); err != nil {
 				pub.Close()
+				if isReserved(err) {
+					// Not ours to resume: drop the hub the attempt made (a
+					// no-op when one has viewers, e.g. an edge hub).
+					s.registry.EndBroadcast(id)
+					s.rejectReservedResume(w, r, id)
+					return
+				}
 				s.metrics.Connection("publish", metrics.OutcomeError)
 				s.log.Warn("origin lease claim failed", "id", id, "err", err)
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -849,6 +865,13 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 			if coord := s.clusterCoord(); coord != nil {
 				if _, cerr := coord.Claim(r.Context(), id, true); cerr != nil {
 					pub.Close()
+					if isReserved(cerr) {
+						s.metrics.Connection("publish", metrics.OutcomeConflict)
+						s.log.Warn("publish takeover refused: broadcast is reserved for a PoP",
+							"broadcast_key", s.broadcastKey(id), "remote", r.RemoteAddr)
+						sess.CloseWithError(webtransport.SessionErrorCode(http.StatusConflict), "broadcast is reserved for a PoP relay")
+						return
+					}
 					s.metrics.Connection("publish", metrics.OutcomeError)
 					s.log.Warn("origin lease claim failed", "id", id, "err", cerr)
 					sess.CloseWithError(webtransport.SessionErrorCode(http.StatusServiceUnavailable), "failed to claim origin lease")
@@ -895,7 +918,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// Cluster mode: create the fresh ID's origin Lease — where the
 		// cluster-wide MaxBroadcasts binds (the registry limit is per-pod). On
 		// rejection the hub goes into grace and is GC'd; nobody knows the ID.
-		if !s.claimMint(r.Context(), sess, id, pub, s.log) {
+		var ok bool
+		if id, pub, ok = s.claimMint(r.Context(), sess, id, pub, s.log); !ok {
 			return
 		}
 		if !s.gateMint(r.Context(), sess, id, pub, s.log) {

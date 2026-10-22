@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -78,6 +79,14 @@ var (
 	ErrMaxBroadcasts = errors.New("cluster: cluster-wide broadcast limit reached")
 	// ErrNotFound: no lease exists for the broadcast.
 	ErrNotFound = errors.New("cluster: no lease for broadcast")
+	// ErrReserved: the lease carries the gawk/pop label (an R74 PoP
+	// reservation, docs/76 item 14) and the claimant is not that PoP's
+	// uplink leg — or, from ClaimForPop/DeleteReservation, the lease is not
+	// that PoP's reservation. Force does not override it.
+	ErrReserved = errors.New("cluster: broadcast reserved for a PoP")
+	// ErrConflict: Reserve found a lease already there (a live broadcast or
+	// a reservation, this PoP's own included).
+	ErrConflict = errors.New("cluster: lease exists")
 )
 
 // Origin describes the current holder of a broadcast lease.
@@ -112,6 +121,13 @@ type Options struct {
 	// out to be held by someone else — it was force-taken (NAT rebind /
 	// re-home). W5's demote path hangs off this.
 	OnLeaseLost func(broadcastID string, newOrigin Origin)
+	// OnOriginClaimed fires (from the informer, on every pod) when a PoP
+	// reservation gains a holder: the PoP's uplink leg landed on some pod
+	// and claimed the Lease out of a reservation (docs/76 item 17). A pod
+	// with viewers waiting on the reservation starts its edge pull at once
+	// instead of on its next poll. Not fired for a re-home of an already
+	// held reservation, nor for any ordinary broadcast.
+	OnOriginClaimed func(broadcastID string, o Origin)
 
 	// Test seams. Zero values mean production defaults.
 	LeaseDuration time.Duration
@@ -195,6 +211,20 @@ func (c *Coordinator) leases() interface {
 
 func labelSelector() string { return LeaseLabelKey + "=" + LeaseLabelValue }
 
+// fleetCapSelector selects the leases the cluster-wide MaxBroadcasts
+// counts: every broadcast lease except PoP reservations, which count against
+// their PoP's own limit instead (docs/76 item 14). Only createLease uses it;
+// the informer and the janitor keep the plain selector so every pod still
+// sees reservations.
+func fleetCapSelector() string { return labelSelector() + ",!" + PopLabelKey }
+
+// popSelector selects one PoP's leases, reserved or held.
+func popSelector(pop string) string { return labelSelector() + "," + PopLabelKey + "=" + pop }
+
+// isPopLease reports whether the lease is (or was claimed out of) a PoP
+// reservation.
+func isPopLease(l *coordv1.Lease) bool { return l.Labels[PopLabelKey] != "" }
+
 // parseOrigin extracts the Origin view of a lease.
 func parseOrigin(l *coordv1.Lease) Origin {
 	o := Origin{Addr: l.Annotations[annotationAddr], Pop: l.Labels[PopLabelKey]}
@@ -225,12 +255,36 @@ func (c *Coordinator) renewStale(l *coordv1.Lease) bool {
 // proof of ownership that beats even a live holder (docs/22 Decision 8).
 // Without force, a live holder wins (ErrHeldElsewhere). Returns the new
 // originGeneration.
+//
+// A PoP reservation (a gawk/pop Lease, docs/76 item 14) is refused with
+// ErrReserved, force or not: only ClaimForPop, for that PoP, may take it.
 func (c *Coordinator) Claim(ctx context.Context, broadcastID string, force bool) (int64, error) {
+	return c.claim(ctx, broadcastID, "", force)
+}
+
+// ClaimForPop is Claim for an R74 PoP's uplink leg (/pop/publish/{id},
+// whose credential check stands in for the resume token): it takes only a
+// Lease reserved for pop, with Claim's takeable rule, generation bump and
+// annotation clearing. It never creates one (ErrNotFound) and refuses any
+// other Lease with ErrReserved.
+func (c *Coordinator) ClaimForPop(ctx context.Context, broadcastID, pop string, force bool) (int64, error) {
+	if pop == "" {
+		return 0, fmt.Errorf("%w: no PoP named", ErrReserved)
+	}
+	return c.claim(ctx, broadcastID, pop, force)
+}
+
+// claim is Claim's body; pop is the label value the Lease must carry ("" =
+// an ordinary broadcast).
+func (c *Coordinator) claim(ctx context.Context, broadcastID, pop string, force bool) (int64, error) {
 	name := leaseName(broadcastID)
 	var lastErr error
 	for range claimRetries {
 		existing, err := c.leases().Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
+			if pop != "" {
+				return 0, ErrNotFound
+			}
 			gen, err := c.createLease(ctx, broadcastID, name)
 			if apierrors.IsAlreadyExists(err) {
 				lastErr = err
@@ -247,6 +301,12 @@ func (c *Coordinator) Claim(ctx context.Context, broadcastID string, force bool)
 		}
 
 		origin := parseOrigin(existing)
+		if origin.Pop != pop {
+			if origin.Pop == "" {
+				return 0, fmt.Errorf("%w: %s is not a PoP reservation", ErrReserved, broadcastID)
+			}
+			return 0, fmt.Errorf("%w: %s", ErrReserved, origin.Pop)
+		}
 		takeable := origin.Holder == "" || origin.Holder == c.opts.PodName || c.renewStale(existing) || force
 		if !takeable {
 			return 0, fmt.Errorf("%w: %s", ErrHeldElsewhere, origin.Holder)
@@ -283,10 +343,11 @@ func (c *Coordinator) Claim(ctx context.Context, broadcastID string, force bool)
 }
 
 // createLease is the create-if-absent path; this is also where the
-// cluster-wide MaxBroadcasts is enforced (≈ count of gawk leases).
+// cluster-wide MaxBroadcasts is enforced (≈ count of gawk leases, PoP
+// reservations excepted).
 func (c *Coordinator) createLease(ctx context.Context, broadcastID, name string) (int64, error) {
 	if c.opts.MaxBroadcasts > 0 {
-		list, err := c.leases().List(ctx, metav1.ListOptions{LabelSelector: labelSelector()})
+		list, err := c.leases().List(ctx, metav1.ListOptions{LabelSelector: fleetCapSelector()})
 		if err != nil {
 			return 0, err
 		}
@@ -489,6 +550,7 @@ func (c *Coordinator) SetStalled(ctx context.Context, broadcastID string, stalle
 // opinion, and deleting here would end the LIVE broadcast cluster-wide under
 // the new origin. The delete is additionally CAS-fenced on resourceVersion
 // so a claim racing between the Get and the Delete wins over the deletion.
+// A no-op on a PoP reservation (see DeleteReservation).
 func (c *Coordinator) Delete(ctx context.Context, broadcastID string) error {
 	c.stopRenew(broadcastID)
 	lease, err := c.leases().Get(ctx, leaseName(broadcastID), metav1.GetOptions{})
@@ -497,6 +559,12 @@ func (c *Coordinator) Delete(ctx context.Context, broadcastID string) error {
 			return nil
 		}
 		return err
+	}
+	if isPopLease(lease) {
+		// A PoP broadcast's Lease is its reservation: a hub's grace expiry
+		// (the leg went, 4013 handed it back) must not end it. Only
+		// DeleteReservation does.
+		return nil
 	}
 	if h := parseOrigin(lease).Holder; h != "" && h != c.opts.PodName {
 		return nil // not ours to end — the broadcast lives on elsewhere
@@ -529,8 +597,158 @@ func (c *Coordinator) Release(ctx context.Context, broadcastID string) error {
 	empty := ""
 	updated := lease.DeepCopy()
 	updated.Spec.HolderIdentity = &empty
+	if isPopLease(updated) {
+		// Back to a dormant reservation (the 4013 linger, docs/76 item 17):
+		// the janitor exempts those from the grace deadline only while the
+		// link-home pod renews them, so start that clock now and drop the
+		// stamp the leg's grace left.
+		delete(updated.Annotations, annotationGraceDeadline)
+		now := metav1.NewMicroTime(c.opts.Now())
+		updated.Spec.RenewTime = &now
+	}
 	_, err = c.leases().Update(ctx, updated, metav1.UpdateOptions{})
 	return err
+}
+
+// Reserve creates the broadcast's Lease as a dormant reservation for an R74
+// PoP relay (docs/76 item 14): labels gawk/lease=broadcast and
+// gawk/pop=<pop>, no holder, generation 0 (the PoP's first claim is 1),
+// renewTime now. Creation is the atomic reservation: an existing Lease — a
+// live broadcast, or a reservation, this PoP's own included — is
+// ErrConflict. The fleet's MaxBroadcasts does not apply; the PoP's own limit
+// is the caller's to enforce (CountReservations).
+func (c *Coordinator) Reserve(ctx context.Context, broadcastID, pop string) error {
+	if pop == "" {
+		return errors.New("cluster: Reserve needs a PoP name")
+	}
+	now := metav1.NewMicroTime(c.opts.Now())
+	secs := int32(c.opts.LeaseDuration / time.Second)
+	lease := &coordv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        leaseName(broadcastID),
+			Labels:      map[string]string{LeaseLabelKey: LeaseLabelValue, PopLabelKey: pop},
+			Annotations: map[string]string{annotationGeneration: "0"},
+		},
+		Spec: coordv1.LeaseSpec{
+			LeaseDurationSeconds: &secs,
+			RenewTime:            &now,
+		},
+	}
+	_, err := c.leases().Create(ctx, lease, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("%w: %s", ErrConflict, broadcastID)
+	}
+	return err
+}
+
+// DeleteReservation removes a PoP's reservation, held or dormant (the PoP
+// released the broadcast, or the PoP was revoked). Every pod's informer
+// sees it as the broadcast ending. A missing Lease is a no-op; a Lease that
+// is not pop's reservation is ErrReserved and is left alone. CAS-fenced on
+// resourceVersion like Delete.
+func (c *Coordinator) DeleteReservation(ctx context.Context, broadcastID, pop string) error {
+	name := leaseName(broadcastID)
+	var lastErr error
+	for range claimRetries {
+		lease, err := c.leases().Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if pop == "" || lease.Labels[PopLabelKey] != pop {
+			return fmt.Errorf("%w: %s is not %q's reservation", ErrReserved, broadcastID, pop)
+		}
+		c.stopRenew(broadcastID)
+		err = c.leases().Delete(ctx, name, metav1.DeleteOptions{
+			Preconditions: &metav1.Preconditions{ResourceVersion: &lease.ResourceVersion},
+		})
+		if err == nil || apierrors.IsNotFound(err) {
+			return nil
+		}
+		if apierrors.IsConflict(err) {
+			lastErr = err
+			continue // the leg's origin renewed in between; re-read
+		}
+		return err
+	}
+	return fmt.Errorf("cluster: reservation delete retries exhausted for %s: %w", broadcastID, lastErr)
+}
+
+// RenewReservations bumps renewTime on every dormant (holder-less)
+// reservation of pop: the link-home pod's duty every poplink.LeaseRenew, and
+// what keeps the janitor off them. Held ones are renewed by their origin. A
+// CAS loss skips that lease until the next round; the first other error is
+// returned after the rest were tried.
+func (c *Coordinator) RenewReservations(ctx context.Context, pop string) error {
+	list, err := c.leases().List(ctx, metav1.ListOptions{LabelSelector: popSelector(pop)})
+	if err != nil {
+		return err
+	}
+	var first error
+	for i := range list.Items {
+		lease := &list.Items[i]
+		if parseOrigin(lease).Holder != "" {
+			continue
+		}
+		now := metav1.NewMicroTime(c.opts.Now())
+		updated := lease.DeepCopy()
+		updated.Spec.RenewTime = &now
+		if _, err := c.leases().Update(ctx, updated, metav1.UpdateOptions{}); err != nil &&
+			!apierrors.IsConflict(err) && !apierrors.IsNotFound(err) && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// ReservedIDs lists pop's reservations, held or dormant, from the API (not
+// the cache): what a link-home pod adopts on a link move, and what a revoke
+// deletes. Sorted.
+func (c *Coordinator) ReservedIDs(ctx context.Context, pop string) ([]string, error) {
+	list, err := c.leases().List(ctx, metav1.ListOptions{LabelSelector: popSelector(pop)})
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		if id, ok := broadcastIDFromLease(list.Items[i].Name); ok {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids, nil
+}
+
+// CountReservations is the count the PoP's spec.limits.maxBroadcasts binds
+// on, from the API.
+func (c *Coordinator) CountReservations(ctx context.Context, pop string) (int, error) {
+	ids, err := c.ReservedIDs(ctx, pop)
+	return len(ids), err
+}
+
+// ListReservations is ReservedIDs from the informer cache: non-blocking,
+// empty before Run, possibly a moment stale. Sorted.
+func (c *Coordinator) ListReservations(pop string) []string {
+	c.mu.Lock()
+	store := c.leaseStore
+	c.mu.Unlock()
+	if store == nil || pop == "" {
+		return nil
+	}
+	var ids []string
+	for _, obj := range store.List() {
+		lease, ok := obj.(*coordv1.Lease)
+		if !ok || lease.Labels[PopLabelKey] != pop {
+			continue
+		}
+		if id, ok := broadcastIDFromLease(lease.Name); ok {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // ReleaseAll releases every lease this pod currently holds (drain).
@@ -689,7 +907,7 @@ func (c *Coordinator) runInformer(ctx context.Context) {
 				c.opts.OnLeaseDeleted(id)
 			}
 		},
-		UpdateFunc: func(_, newObj any) {
+		UpdateFunc: func(oldObj, newObj any) {
 			lease, ok := newObj.(*coordv1.Lease)
 			if !ok {
 				return
@@ -699,6 +917,10 @@ func (c *Coordinator) runInformer(ctx context.Context) {
 				return
 			}
 			origin := parseOrigin(lease)
+			if prev, isLease := oldObj.(*coordv1.Lease); isLease && c.opts.OnOriginClaimed != nil &&
+				origin.Pop != "" && origin.Holder != "" && parseOrigin(prev).Holder == "" {
+				c.opts.OnOriginClaimed(id, origin)
+			}
 			c.mu.Lock()
 			h, held := c.held[id]
 			lost := held && (origin.Holder != c.opts.PodName || origin.Generation != h.generation)
@@ -764,7 +986,18 @@ func (c *Coordinator) JanitorSweep(ctx context.Context) {
 
 // janitorExpired: the grace deadline passed, or (crash case: no deadline was
 // ever stamped) the renewTime is stale past the whole grace period.
+//
+// A dormant PoP reservation (gawk/pop, no holder) is exempt from the grace
+// deadline: the link-home pod renews it (RenewReservations), and only a
+// renewal stale past the same grace+duration ends it, the orphan sweep for
+// a PoP whose link never came back.
 func (c *Coordinator) janitorExpired(lease *coordv1.Lease, now time.Time) bool {
+	if isPopLease(lease) && parseOrigin(lease).Holder == "" {
+		if lease.Spec.RenewTime == nil {
+			return true
+		}
+		return now.Sub(lease.Spec.RenewTime.Time) > c.opts.BroadcastGrace+c.opts.LeaseDuration
+	}
 	if d := lease.Annotations[annotationGraceDeadline]; d != "" {
 		deadline, err := time.Parse(time.RFC3339, d)
 		if err == nil {

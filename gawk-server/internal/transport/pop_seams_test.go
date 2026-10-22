@@ -148,12 +148,14 @@ func TestMintGateErrorRefusesTheMint(t *testing.T) {
 }
 
 // EnsureEdge on a reservation (a gawk/pop lease with no holder) is handed
-// to the installed onReserved hook; without the hook it is today's 404.
+// to the installed onReserved hook, whose error is the viewer's answer;
+// without the hook the waiting hub is made all the same (R74 W2, the
+// waiting pull: edge_test.go).
 func TestEnsureEdgeHandsReservationsToOnReserved(t *testing.T) {
 	h := newEdgeHarness(t)
 	h.resolver.set(cluster.Origin{Pop: "lan-party"}, nil)
-	if err := h.manager.EnsureEdge(context.Background(), "AAAAAA"); !errors.Is(err, hub.ErrNotFound) {
-		t.Fatalf("no hook: EnsureEdge = %v, want hub.ErrNotFound", err)
+	if err := h.manager.EnsureEdge(context.Background(), "AAAAAA"); err != nil {
+		t.Fatalf("no hook: EnsureEdge = %v, want nil (the waiting hub)", err)
 	}
 
 	var got cluster.Origin

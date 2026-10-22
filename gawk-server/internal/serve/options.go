@@ -3,10 +3,12 @@ package serve
 import (
 	"log/slog"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/ops"
+	"github.com/Tuhis/gawk/gawk-server/internal/popsrv"
 	"github.com/Tuhis/gawk/gawk-server/internal/roomsrv"
 )
 
@@ -41,6 +43,43 @@ func registryOptions(cfg config.Config) hub.Options {
 		UplinkCarriers:        cfg.UplinkCarriers,
 		UplinkMaxBitrateBytes: cfg.UplinkMaxBitrateBytes,
 		StatsKey:              cfg.StatsKey,
+	}
+}
+
+// popIDReserved chains the R74 PoP reservation check onto the mint's
+// IDReserved (docs/76 item 14): prev(id) || a PoP owns id, so a home mint
+// never draws a reserved ID (the claim's ErrReserved redraw is the backstop
+// for a reservation the cache has not seen). res is late-bound — cluster
+// mode builds the set with the coordinator, after the hub — and nil answers
+// false. Owner is non-blocking, as IDReserved runs under the hub's lock.
+func popIDReserved(prev func(string) bool, res func() popsrv.Reservations) func(string) bool {
+	return func(id string) bool {
+		if prev != nil && prev(id) {
+			return true
+		}
+		r := res()
+		if r == nil {
+			return false
+		}
+		_, owned := r.Owner(id)
+		return owned
+	}
+}
+
+// popReservationsFor is the reservation set a -pops home runs: the gawk/pop
+// Leases in cluster mode (nil until coord exists), an in-memory set on a
+// single pod, and none with -pops off.
+func popReservationsFor(cfg config.Config, coord *cluster.Coordinator) popsrv.Reservations {
+	switch {
+	case !cfg.Pops:
+		return nil
+	case cfg.ClusterMode:
+		if coord == nil {
+			return nil
+		}
+		return popsrv.NewClusterReservations(coord)
+	default:
+		return popsrv.NewMemReservations()
 	}
 }
 
