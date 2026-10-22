@@ -137,3 +137,77 @@ type RoomsResponse struct {
 	Pod    string `json:"pod"`
 	Rooms  []Room `json:"rooms"`
 }
+
+// SchemaPops names GET /internal/admin/pops (R74, docs/76 §9).
+const SchemaPops = "gawk.admin.pops.v1"
+
+// PopsResponse is the body of GET /internal/admin/pops: the PoPs whose link
+// THIS POD holds, so gawk-admin merges one row per PoP from the fleet scrape.
+type PopsResponse struct {
+	Schema string     `json:"schema"`
+	Pod    string     `json:"pod"`
+	Pops   []PopState `json:"pops"`
+}
+
+// PopState is one PoP as its link-home pod sees it. It carries the PoP's
+// public and LAN addresses and raw broadcast IDs, which the admin routes may
+// carry (ClusterIP-only, credential-gated) and events never do (docs/76 §8).
+type PopState struct {
+	Name string `json:"name,omitempty"`
+	// UID is the Pop CR's metadata.uid (the -pops-file uid): the handle
+	// offers carry.
+	UID     string     `json:"uid,omitempty"`
+	Linked  bool       `json:"linked,omitempty"`
+	Since   *time.Time `json:"since,omitempty"`
+	Version string     `json:"version,omitempty"`
+	Proto   int        `json:"proto,omitempty"`
+	// PublicAddrs are the addresses (v4) and /64 prefixes (v6) the PoP's
+	// link and /pop/addr dials came from.
+	PublicAddrs []string `json:"publicAddrs,omitempty"`
+	LanAddr     string   `json:"lanAddr,omitempty"`
+	NamedHost   string   `json:"namedHost,omitempty"`
+	// Live is the PoP's live broadcasts, Forwarded how many of them have an
+	// uplink leg now, OutsideViewers the home-side viewers of those.
+	Live           int `json:"live,omitempty"`
+	Forwarded      int `json:"forwarded,omitempty"`
+	OutsideViewers int `json:"outsideViewers,omitempty"`
+	// UplinkMbps / UplinkStreams are the PoP's reported use; Uplink and
+	// Downlink the effective ceilings (the CR's, lowered by the host).
+	UplinkMbps      float64   `json:"uplinkMbps,omitempty"`
+	UplinkStreams   int       `json:"uplinkStreams,omitempty"`
+	Uplink          BudgetUse `json:"uplink,omitempty"`
+	Downlink        BudgetUse `json:"downlink,omitempty"`
+	DownlinkStreams int       `json:"downlinkStreams,omitempty"`
+	GuestsConnected int       `json:"guestsConnected,omitempty"`
+	OffersSent      int       `json:"offersSent,omitempty"`
+
+	Broadcasts []PopBroadcast `json:"broadcasts,omitempty"`
+	Health     []HealthLine   `json:"health,omitempty"`
+}
+
+// BudgetUse is an effective Mbps / stream ceiling; 0 is unlimited.
+type BudgetUse struct {
+	MaxMbps    int `json:"maxMbps,omitempty"`
+	MaxStreams int `json:"maxStreams,omitempty"`
+}
+
+// PopBroadcast is one broadcast live at a PoP.
+type PopBroadcast struct {
+	// ID is the RAW broadcast ID, on docs/42 D8's terms.
+	ID               string `json:"id,omitempty"`
+	Label            string `json:"label,omitempty"`
+	PublisherLanAddr string `json:"publisherLanAddr,omitempty"`
+	LocalViewers     int    `json:"localViewers,omitempty"`
+	OutsideViewers   int    `json:"outsideViewers,omitempty"`
+	Forwarded        bool   `json:"forwarded,omitempty"`
+	// Wall is "on", "hidden", or "" when the PoP has no wall.
+	Wall string `json:"wall,omitempty"`
+}
+
+// HealthLine is one line of a PoP's self-check (the console's health
+// section, docs/76 §7.1).
+type HealthLine struct {
+	Key    string `json:"key,omitempty"`
+	OK     bool   `json:"ok,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
