@@ -3,9 +3,14 @@
 // NON-loopback address by a pinned-hash link, the way a guest joins a
 // standalone PoP: `#/view/<id>?relay=https://<lan-ip>:<port>&certHash=<hex>`.
 //
-// It owns its stack, like run.mjs tier 1: gawk-server (-dev-cert, listening
-// on the host's private address), gawk-pubsim, and `vite preview` of the
-// built app. The app's own relay is left at its localhost default, so the
+// It owns its stack, like run.mjs tier 1: the relay listening on the
+// host's private address, gawk-pubsim, and `vite preview` of the built app.
+// The relay is gawk-relay, the standalone PoP binary, serving its rolling
+// certificate: the link's relay and its two hashes are read from the join
+// link its console publishes (/api/state, the QR's link), so a relay that
+// serves a certificate it does not publish, or one the browser refuses,
+// fails here. Without a gawk-relay build (GAWK_RELAY_BIN, default
+// bin/gawk-relay) a gawk-server -dev-cert stands in, and the run says so. The app's own relay is left at its localhost default, so the
 // LAN relay reaches the session only through the link: the parser's
 // private-literal rule, the session override, the store's hash list and
 // webTransportInit's serverCertificateHashes are all on the path.
@@ -29,7 +34,8 @@
 //   3. the landing link `#/?relay=…&certHash=…`: "Save and use this server"
 //      stores the relay with its hashes and selects it.
 //
-// Environment: GAWK_E2E_SERVER_BIN, GAWK_E2E_PUBSIM_BIN, GAWK_E2E_CHROME,
+// Environment: GAWK_RELAY_BIN, GAWK_E2E_SERVER_BIN, GAWK_E2E_PUBSIM_BIN,
+// GAWK_E2E_CHROME, GAWK_E2E_CONSOLE_PORT,
 // GAWK_E2E_APP_DIR, GAWK_E2E_PREVIEW_PORT, GAWK_E2E_RELAY_PORT,
 // GAWK_E2E_OPS_PORT (as in run.mjs), and GAWK_E2E_LAN_IP to pick the
 // address (default: the first private-range IPv4 on a non-internal
@@ -38,7 +44,7 @@
 // a container or VM address.
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -53,6 +59,8 @@ const OPS_PORT = Number(process.env.GAWK_E2E_OPS_PORT ?? 2122);
 const PREVIEW_PORT = Number(process.env.GAWK_E2E_PREVIEW_PORT ?? 4183);
 const APP_DIR = resolve(HERE, process.env.GAWK_E2E_APP_DIR ?? '../gawk-app');
 const SERVER_BIN = resolve(HERE, process.env.GAWK_E2E_SERVER_BIN ?? 'bin/gawk-server');
+const RELAY_BIN = resolve(HERE, process.env.GAWK_RELAY_BIN ?? 'bin/gawk-relay');
+const CONSOLE_PORT = Number(process.env.GAWK_E2E_CONSOLE_PORT ?? 4481);
 const PUBSIM_BIN = resolve(HERE, process.env.GAWK_E2E_PUBSIM_BIN ?? 'bin/gawk-pubsim');
 const APP_URL = `http://127.0.0.1:${PREVIEW_PORT}`;
 const WATCHDOG_MS = 180_000;
@@ -293,12 +301,42 @@ async function landingPass(browser, { relayUrl, certHash }) {
   }));
   const entry = stored.servers.find((s) => s.url === relayUrl);
   if (!entry) fail(`no saved entry for ${relayUrl}: ${JSON.stringify(stored)}`);
-  if (JSON.stringify(entry.certHashes) !== JSON.stringify([certHash]) || entry.certHashHex !== certHash) {
-    fail(`saved entry's hashes are ${JSON.stringify(entry)}, want [${certHash}]`);
+  const want = certHash.split(',');
+  if (JSON.stringify(entry.certHashes) !== JSON.stringify(want) || entry.certHashHex !== want[0]) {
+    fail(`saved entry's hashes are ${JSON.stringify(entry)}, want ${JSON.stringify(want)}`);
   }
   if (stored.selected !== entry.id) fail(`selected ${stored.selected}, want ${entry.id}`);
   log('landing pass ok: the relay was saved with its pin and selected');
   await context.close();
+}
+
+// The join link gawk-relay's console publishes (the QR's), as a guest gets
+// it: its relay and its comma-separated pins, which must be the serving and
+// the next rolling certificate's.
+async function consoleJoinLink() {
+  let join = '';
+  await pollFor(
+    async () => {
+      try {
+        const r = await fetch(`http://127.0.0.1:${CONSOLE_PORT}/api/state`);
+        join = r.ok ? ((await r.json()).join?.url ?? '') : '';
+      } catch {
+        join = '';
+      }
+      return join !== '';
+    },
+    15_000,
+    250,
+    'the console join link',
+  );
+  const q = new URLSearchParams(new URL(join).hash.replace(/^#\/\?/, ''));
+  const relayUrl = q.get('relay');
+  const certHash = q.get('certHash') ?? '';
+  if (!relayUrl || !/^[0-9a-f]{64},[0-9a-f]{64}$/.test(certHash)) {
+    fail(`the console's join link ${join} does not name a relay with two pins`);
+  }
+  log(`console join link: ${join}`);
+  return { relayUrl, certHash };
 }
 
 async function main() {
@@ -313,20 +351,38 @@ async function main() {
     fail(msg);
   }
   if (!isPrivateV4(ip)) fail(`GAWK_E2E_LAN_IP=${ip} is not a private-range IPv4; the app would drop the pin`);
-  for (const bin of [SERVER_BIN, PUBSIM_BIN]) {
+  const useRelay = existsSync(RELAY_BIN);
+  for (const bin of [useRelay ? RELAY_BIN : SERVER_BIN, PUBSIM_BIN]) {
     if (!existsSync(bin)) fail(`${bin} not found; build it from gawk-server (see e2e/README.md)`);
   }
   if (!existsSync(join(APP_DIR, 'dist', 'index.html'))) fail(`${APP_DIR}/dist missing; run npm run build there`);
 
-  const relayUrl = `https://${ip}:${RELAY_PORT}`;
-  log(`LAN relay at ${relayUrl}`);
-  const relay = launch('relay', SERVER_BIN, [
-    '-dev-cert',
-    '-addr', `${ip}:${RELAY_PORT}`,
-    '-metrics-addr', `127.0.0.1:${OPS_PORT}`,
-  ]);
-  const certHash = await waitForLine(relay, /cert_hash_hex\W*"?([0-9a-f]{64})/, 15_000, 'the dev cert hash');
-  await waitForHttp(`http://127.0.0.1:${OPS_PORT}/healthz`, 15_000, 'the relay ops endpoint');
+  let relayUrl = `https://${ip}:${RELAY_PORT}`;
+  let certHash;
+  if (useRelay) {
+    log(`gawk-relay (${RELAY_BIN}) at ${relayUrl}`);
+    const stateDir = join(OUT, 'relay-state');
+    rmSync(stateDir, { recursive: true, force: true });
+    launch('relay', RELAY_BIN, [
+      '-state-dir', stateDir,
+      '-addr', `${ip}:${RELAY_PORT}`,
+      '-metrics-addr', `127.0.0.1:${OPS_PORT}`,
+      '-console-addr', `127.0.0.1:${CONSOLE_PORT}`,
+      '-ui-addr', '127.0.0.1:0',
+      '-lan-address', ip,
+    ]);
+    await waitForHttp(`http://127.0.0.1:${OPS_PORT}/healthz`, 15_000, 'the relay ops endpoint');
+    ({ relayUrl, certHash } = await consoleJoinLink());
+  } else {
+    log(`no gawk-relay build; gawk-server -dev-cert stands in at ${relayUrl}`);
+    const relay = launch('relay', SERVER_BIN, [
+      '-dev-cert',
+      '-addr', `${ip}:${RELAY_PORT}`,
+      '-metrics-addr', `127.0.0.1:${OPS_PORT}`,
+    ]);
+    certHash = await waitForLine(relay, /cert_hash_hex\W*"?([0-9a-f]{64})/, 15_000, 'the dev cert hash');
+    await waitForHttp(`http://127.0.0.1:${OPS_PORT}/healthz`, 15_000, 'the relay ops endpoint');
+  }
 
   const pubsim = launch('pubsim', PUBSIM_BIN, ['-url', relayUrl, '-insecure', '-duration', '300s']);
   const id = await waitForLine(pubsim, /GAWK_PUBSIM_ID=([A-Z0-9]{6})/, 20_000, 'the broadcast code');

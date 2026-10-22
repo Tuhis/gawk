@@ -2827,7 +2827,8 @@ jobs:
       # permission granted over CDP, joins a gawk-relay at a NON-loopback
       # address by a certHash link — the pinned path a party guest takes.
       # The script finds this runner's own non-loopback address; the relay
-      # is the zero-flag binary, built here. Keyed on the script so the hook
+      # is gawk-relay, built here, on its rolling certificate, and the link
+      # is the one its console publishes (both hashes). Keyed on the script so the hook
       # lands before it does (it is gawk-app's R74 test, e2e/pop-pinned.mjs).
       # gawk-devcert is pop-uplink-full.mjs's: it mints home's certificate,
       # which the PoP trusts through SSL_CERT_FILE.
