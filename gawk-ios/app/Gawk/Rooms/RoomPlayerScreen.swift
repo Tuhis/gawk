@@ -57,7 +57,8 @@ struct RoomPlayerScreen: View {
         let relay = linkRelay ?? settings.relayURL
         let m = RoomPlayerModel(
             code: code, relayUrl: relay, insecure: settings.insecure,
-            nickname: linkNick ?? settings.nickname)
+            nickname: linkNick ?? settings.nickname,
+            certHashes: settings.certHashes(for: relay))
         // Your rooms (K12): the room moves to the front once, then keeps
         // the name the relay gives it.
         m.onRoom = { [settings] room, first in

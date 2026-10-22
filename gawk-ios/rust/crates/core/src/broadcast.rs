@@ -124,6 +124,15 @@ pub struct BroadcastOptions {
     /// system store.
     #[uniffi(default)]
     pub cert_hashes: Vec<String>,
+    /// R74 (docs/76 item 43.7): this broadcaster follows a home relay's
+    /// local-relay offer, so its publish legs and room session carry
+    /// `lr=1`. Set it on home; leave it off on the PoP it switched to.
+    #[uniffi(default)]
+    pub follow_offers: bool,
+    /// R74 (docs/76 item 34): the broadcaster hid from this PoP's party
+    /// wall; every publish leg carries `wall=hidden`.
+    #[uniffi(default)]
+    pub wall_hidden: bool,
 }
 
 /// One audio buffer's `AudioStreamBasicDescription` fields (D11).
@@ -252,6 +261,12 @@ struct Live {
     /// (docs/60 D10): what that room session still says is not forwarded.
     /// The next `room_join` or `room_create` clears it.
     room_left: bool,
+    /// R74 (docs/76 item 45): the PoP this broadcast is on, as its latest
+    /// `0x18` says (the party wall's state follows it).
+    local_relay: Option<crate::localrelay::LocalRelayInfo>,
+    /// R74 (docs/76 item 43.3): a fresh offer home sent while live, until
+    /// Swift takes it. A live broadcast is never moved: it is for the next.
+    local_relay_offer: Option<crate::localrelay::LocalRelayOffer>,
 }
 
 impl Live {
@@ -399,6 +414,19 @@ impl Broadcaster {
             width: p.width,
             height: p.height,
         }
+    }
+
+    /// R74 (docs/76 item 45): what the PoP this broadcast is on says about
+    /// itself, its party-wall state included; `None` on home.
+    pub fn local_relay(&self) -> Option<crate::localrelay::LocalRelayInfo> {
+        self.live.lock().unwrap().as_ref()?.local_relay.clone()
+    }
+
+    /// R74 (docs/76 item 43.3): a fresh offer home sent while live, taken
+    /// once. The broadcast is never moved: the app probes it and says "Your
+    /// next broadcast will use it."
+    pub fn take_local_relay_offer(&self) -> Option<crate::localrelay::LocalRelayOffer> {
+        self.live.lock().unwrap().as_mut()?.local_relay_offer.take()
     }
 
     /// One upright `420v` frame (`pixel_buffer`: a `CVPixelBuffer`'s
@@ -611,6 +639,8 @@ async fn run<C, F>(
         room_new: options.room_new,
         room_attach_secret: options.room_attach_secret.clone(),
         nickname: options.nickname.clone(),
+        follow_offers: options.follow_offers,
+        wall_hidden: options.wall_hidden,
         ..SessionConfig::default()
     };
     // A stop while the dial is still out (a slow relay, a lost handshake:
@@ -647,6 +677,8 @@ async fn run<C, F>(
         retired: PipelineCounters::default(),
         upload: Upload::default(),
         room_left: false,
+        local_relay: None,
+        local_relay_offer: None,
     });
     let mut code = String::new();
     let mut identity = Identity::default();
@@ -749,6 +781,16 @@ async fn run<C, F>(
                     }
                     EngineEvent::ViewerCount(n) => listener.on_viewer_count(n),
                     EngineEvent::RelayNotices { screening } => listener.on_relay_notices(screening),
+                    EngineEvent::LocalRelay(info) => {
+                        if let Some(l) = live.lock().unwrap().as_mut() {
+                            l.local_relay = Some((&info).into());
+                        }
+                    }
+                    EngineEvent::LocalRelayOffer(offer) => {
+                        if let Some(l) = live.lock().unwrap().as_mut() {
+                            l.local_relay_offer = Some((&offer).into());
+                        }
+                    }
                     EngineEvent::Resuming { attempt } => {
                         reporter.event("resuming", "");
                         // docs/64 OD4: the restart's own reclaim is not
@@ -1373,6 +1415,8 @@ mod stop_tests {
             room_new: false,
             room_creator_token_hex: String::new(),
             cert_hashes: Vec::new(),
+            follow_offers: false,
+            wall_hidden: false,
         }
     }
 

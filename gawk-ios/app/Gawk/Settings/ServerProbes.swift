@@ -18,10 +18,16 @@ final class ServerProbes {
     /// content (R40, docs/71 D13): Settings marks them "Content screening".
     private(set) var screening: Set<String> = []
     @ObservationIgnored private var running: Set<String> = []
-    /// Tests replace the probe.
-    @ObservationIgnored var probe: @Sendable (_ url: String, _ insecure: Bool) async -> ServerProbe = { url, insecure in
-        await Task.detached { probeServer(relayUrl: url, insecure: insecure) }.value
+    /// Tests replace the probe. It is the core's probe of home (R74): with
+    /// the server's pins, `lr=1`, and home's local-relay offer when it
+    /// has one for this device (docs/76 §6.12).
+    @ObservationIgnored var probe: @Sendable (_ url: String, _ insecure: Bool, _ certHashes: [String]) async -> HomeProbe = {
+        url, insecure, certHashes in
+        await Task.detached { probeHome(relayUrl: url, insecure: insecure, certHashes: certHashes) }.value
     }
+    /// R74: a fresh offer a probe brought back, for the switch (the app
+    /// root sets it to `LocalRelaySwitcher.consider`).
+    @ObservationIgnored var onOffer: (@MainActor (_ url: String, _ offer: LocalRelayOffer) -> Void)?
 
     func state(_ url: String) -> State? { states[url] }
 
@@ -30,14 +36,15 @@ final class ServerProbes {
 
     /// Probes `url` unless a probe of it is already out. A new result
     /// replaces the old one; until then the old one stays on screen.
-    func refresh(_ url: String, insecure: Bool) {
+    func refresh(_ url: String, insecure: Bool, certHashes: [String] = []) {
         guard !running.contains(url) else { return }
         running.insert(url)
         if states[url] == nil || states[url] == .unreachable { states[url] = .checking }
         Task {
-            let result = await probe(url, insecure)
+            let home = await probe(url, insecure, certHashes)
             running.remove(url)
-            switch result {
+            if let offer = home.offer { onOffer?(url, offer) }
+            switch home.probe {
             case .reachable(let rtt, let name, let screens):
                 states[url] = .reachable(rttMs: rtt, operatorName: name)
                 if screens { screening.insert(url) } else { screening.remove(url) }

@@ -7,9 +7,33 @@ import Observation
 @Observable
 final class WatchModel {
     let code: String
-    /// The relay dialed: the server picked in Settings, or a link's.
-    let relayUrl: String
-    let insecure: Bool
+    /// The relay dialed: the server picked in Settings, or a link's, or
+    /// the party's local relay the player switched to (R74).
+    private(set) var relayUrl: String
+    private(set) var insecure: Bool
+    /// The relay's pins (R74; empty: the system store).
+    private(set) var certHashes: [String]
+    /// `lr=1` on the subscribe: watching on home, following offers.
+    private(set) var followOffers: Bool
+    /// The party's local relay this player watches on, when it switched.
+    private(set) var localRelay: LocalRelaySwitcher.Held?
+    /// R74: a fresh offer home sent on this player's session.
+    @ObservationIgnored var onOffer: (@MainActor (LocalRelayOffer) -> Void)?
+    /// R74 (docs/76 item 43.5): the PoP never played the stream, so the
+    /// player went back to home; the switch leaves that PoP for the app
+    /// session.
+    @ObservationIgnored var onLocalRelayFailed: (@MainActor () -> Void)?
+
+    /// Where a player dials: home, kept while it watches on a PoP so a
+    /// PoP that never plays falls back there.
+    struct Endpoint: Equatable {
+        var url: String
+        var insecure: Bool
+        var certHashes: [String]
+    }
+
+    @ObservationIgnored private var home: Endpoint?
+    @ObservationIgnored private var liveOnLocalRelay = false
 
     var preset: Preset = .balanced {
         didSet { engine?.setPreset(preset) }
@@ -22,10 +46,32 @@ final class WatchModel {
     private(set) var unsupportedCodec: String?
     private var isForeground = true
 
-    init(code: String, relayUrl: String, insecure: Bool) {
+    init(
+        code: String, relayUrl: String, insecure: Bool,
+        certHashes: [String] = [], followOffers: Bool = false,
+        localRelay: LocalRelaySwitcher.Held? = nil, home: Endpoint? = nil
+    ) {
         self.code = code
         self.relayUrl = relayUrl
         self.insecure = insecure
+        self.certHashes = certHashes
+        self.followOffers = followOffers
+        self.localRelay = localRelay
+        self.home = home
+    }
+
+    /// R74 (docs/76 item 43.3): a party's local relay answered, so the
+    /// player watches the same code there: one reconnect, once.
+    func switchTo(_ pop: LocalRelaySwitcher.Held) {
+        guard localRelay == nil, engine != nil else { return }
+        home = Endpoint(url: relayUrl, insecure: insecure, certHashes: certHashes)
+        liveOnLocalRelay = false
+        relayUrl = pop.url
+        certHashes = pop.certHashes
+        insecure = false
+        followOffers = false
+        localRelay = pop
+        watch()
     }
 
     /// Starts (or restarts, for Try again) the player.
@@ -41,7 +87,10 @@ final class WatchModel {
         self.engine = engine
         self.pip = pip
         status = .connecting
-        engine.start(ViewerOptions(relayUrl: relayUrl, broadcastId: code, preset: preset, insecure: insecure))
+        engine.start(
+            ViewerOptions(
+                relayUrl: relayUrl, broadcastId: code, preset: preset, insecure: insecure,
+                certHashes: certHashes, followOffers: followOffers))
     }
 
     /// Leaves: the player and its session stop (the player's X).
@@ -71,10 +120,40 @@ final class WatchModel {
     func apply(_ event: PlayerEvent, from sender: PlayerEngine?) {
         guard let engine, sender === engine else { return }
         switch event {
-        case .status(let s): status = s
-        case .stats(let s): stats = s
+        case .status(let s):
+            if localRelay != nil {
+                if s == .live { liveOnLocalRelay = true }
+                if let home, Self.fallsBackHome(s, wasLive: liveOnLocalRelay) {
+                    fallBack(to: home)
+                    return
+                }
+            }
+            status = s
+        case .stats(let s):
+            stats = s
+            // R74: the offer rides the session; the stats tick reads it.
+            if followOffers, let offer = engine.takeLocalRelayOffer() { onOffer?(offer) }
         case .unsupportedCodec(let c): unsupportedCodec = c
         }
+    }
+
+    /// R74 (docs/76 item 43.5): a PoP that ended the session before it ever
+    /// played (it lost the stream, or it stopped answering) sends the
+    /// player back to home, once. An end after it played is the stream's.
+    nonisolated static func fallsBackHome(_ s: ViewerStatus, wasLive: Bool) -> Bool {
+        guard !wasLive, case .ended(let reason) = s else { return false }
+        return reason == .notFound || reason == .gaveUp
+    }
+
+    private func fallBack(to home: Endpoint) {
+        localRelay = nil
+        self.home = nil
+        relayUrl = home.url
+        insecure = home.insecure
+        certHashes = home.certHashes
+        followOffers = true
+        onLocalRelayFailed?()
+        watch()
     }
 
     /// Live and playing: the controls may hide (docs/70 D5).
@@ -92,8 +171,11 @@ private final class WeakEngine: @unchecked Sendable {
 enum WatchStatusText {
     /// The amber chip's words while reconnecting (docs/70 D5): a 4002 drain
     /// is a planned relay rollout with an instant retry.
-    static func reconnecting(draining: Bool) -> String {
-        draining ? "Stream server is updating" : "RECONNECTING"
+    /// R74 4012 (docs/76 item 28): a LAN party's outside viewing is full,
+    /// and the player keeps trying every 20 s with the shared copy.
+    static func reconnecting(draining: Bool, partyFull: Bool = false) -> String {
+        if partyFull { return popUplinkFullMessage() }
+        return draining ? "Stream server is updating" : "RECONNECTING"
     }
 
     static func connecting(_ code: String) -> String {

@@ -194,6 +194,15 @@ pub struct Config {
     /// Heights that window fit chose are never stored here.
     pub window_width: u32,
     pub window_height: u32,
+    /// R74 (docs/76 item 43.6): the party local relays whose offers this
+    /// app ignores, by the offer's opaque PoP handle — the chip's "Use …
+    /// instead". Consent only: nothing here ever starts a switch.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub local_relay_opt_outs: Vec<String>,
+    /// R74 (docs/76 item 34): the PoPs whose party wall the broadcaster hid
+    /// from, by handle: the next publish there carries `wall=hidden`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub local_relay_wall_hidden: Vec<String>,
 }
 
 impl Config {
@@ -277,7 +286,13 @@ impl Config {
     /// (review of #452). A token presented to another relay would let its
     /// operator supersede the broadcast on its own server (close 4004).
     pub fn resume_identity(&self) -> (String, String) {
-        let here = self.server_key();
+        self.resume_identity_on(&self.server_key())
+    }
+
+    /// [`Config::resume_identity`] for the server keyed `here`: the party
+    /// local relay a broadcast switched to (R74), whose key is not the
+    /// selected server's.
+    pub fn resume_identity_on(&self, here: &str) -> (String, String) {
         if here.is_empty() || self.last_broadcast_server != here {
             return (String::new(), String::new());
         }
@@ -1195,6 +1210,21 @@ mod tests {
     fn a_profile_from_before_r74_loads_with_no_pins() {
         let old = r#"{"name":"Friend","url":"https://relay.friend.example","publishSecret":"s"}"#;
         let p: ServerProfile = serde_json::from_str(old).unwrap();
+        // R74: a file from before the local-relay memory loads with none,
+        // and an empty memory is not written.
+        let cfg: Config = serde_json::from_str("{\"relayUrl\":\"\"}").unwrap();
+        assert!(cfg.local_relay_opt_outs.is_empty() && cfg.local_relay_wall_hidden.is_empty());
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(!json.contains("localRelay"), "{json}");
+        let cfg = Config {
+            local_relay_opt_outs: vec!["h".into()],
+            ..Config::default()
+        };
+        assert!(
+            serde_json::to_string(&cfg)
+                .unwrap()
+                .contains("\"localRelayOptOuts\":[\"h\"]")
+        );
         assert_eq!(p.name, "Friend");
         assert!(p.cert_hashes.is_empty());
         // A profile with no pins saves exactly as it did: no new key.

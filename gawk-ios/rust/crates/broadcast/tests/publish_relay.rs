@@ -152,6 +152,7 @@ async fn the_ios_pipeline_rotates_and_resumes_on_the_same_code() {
             relay_url: relay.url.clone(),
             broadcast_id: id.clone(),
             preset: PlayoutPreset::LowestLatency,
+            follow_offers: false,
         },
         Arc::new(WtSubscribeDialer {
             origin: "gawk://ios".into(),
@@ -246,6 +247,7 @@ async fn an_invalidated_encoder_session_is_rebuilt_not_fatal() {
             relay_url: relay.url.clone(),
             broadcast_id: id.clone(),
             preset: PlayoutPreset::LowestLatency,
+            follow_offers: false,
         },
         Arc::new(WtSubscribeDialer {
             origin: "gawk://ios".into(),

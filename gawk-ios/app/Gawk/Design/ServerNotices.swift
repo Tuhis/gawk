@@ -60,7 +60,7 @@ struct ServerNotices: View {
                     title: "Can't reach \(hostOf(url)).",
                     message: "You may be offline, or UDP to port \(Self.port(url)) may be blocked."
                 ) {
-                    Button("Try again") { probes.refresh(url, insecure: settings.insecure) }
+                    Button("Try again") { probes.refresh(url, insecure: settings.insecure, certHashes: settings.relayCertHashes) }
                         .buttonStyle(.gawkGlass)
                 }
                 .accessibilityIdentifier("server.unreachable")
@@ -70,7 +70,7 @@ struct ServerNotices: View {
                     .accessibilityIdentifier("server.strip")
             }
         }
-        .task(id: url) { probes.refresh(url, insecure: settings.insecure) }
+        .task(id: url) { probes.refresh(url, insecure: settings.insecure, certHashes: settings.relayCertHashes) }
     }
 
     static func port(_ url: String) -> Int {

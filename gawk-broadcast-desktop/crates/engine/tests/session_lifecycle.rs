@@ -488,3 +488,92 @@ async fn a_relay_identity_stream_does_not_disturb_publishing() {
     session.stop().await;
     expect(&mut rx, EngineEvent::Ended { error: None }).await;
 }
+
+// --- R74 PoP relays (docs/76 §6.12) ------------------------------------------
+
+// A home relay's offer on the publish session reaches the shell, which says
+// "your next broadcast will use it" (item 43.3); a PoP's info, which carries
+// the party-wall state, reaches it too. Neither disturbs publishing.
+#[tokio::test(start_paused = true)]
+async fn an_offer_and_a_pops_info_on_the_publish_session_reach_the_shell() {
+    let h = [4u8; 32];
+    let mut offer = Vec::new();
+    gawk_wire::append_local_relay_offer(
+        &mut offer,
+        &gawk_wire::LocalRelayOffer {
+            handle: "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab",
+            name: "Assembly 2026",
+            validity: 3600,
+            candidates: vec![gawk_wire::LocalRelayCandidate {
+                url: "https://192.168.1.20:4433",
+                hashes: vec![&h],
+            }],
+        },
+    )
+    .unwrap();
+    let mut info = Vec::new();
+    gawk_wire::append_local_relay_info(
+        &mut info,
+        &gawk_wire::LocalRelayInfo {
+            linked: true,
+            on_wall: true,
+            name: "Assembly 2026",
+            home_origin: "https://gawk.ioio.fi",
+            wall_code: "assembly-2026",
+        },
+    )
+    .unwrap();
+    for (msg, want_offer) in [(offer, true), (info, false)] {
+        let leg = Arc::new(NoticeLeg {
+            stream: Mutex::new(Some(msg)),
+            ..NoticeLeg::default()
+        });
+        let (session, mut rx) =
+            Session::start_with_session(config(), leg.clone(), Arc::new(MonotonicClock::new()));
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let mut got = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            assert!(!matches!(ev, EngineEvent::Ended { .. }), "ended: {ev:?}");
+            match ev {
+                EngineEvent::LocalRelayOffer(o) => got.push(format!("offer {}", o.name)),
+                EngineEvent::LocalRelay(l) => {
+                    assert!(l.on_wall);
+                    got.push(format!("info {}", l.wall_code));
+                }
+                _ => {}
+            }
+        }
+        let want = if want_offer {
+            "offer Assembly 2026"
+        } else {
+            "info assembly-2026"
+        };
+        assert_eq!(got, vec![want.to_owned()]);
+        session.stop().await;
+        expect(&mut rx, EngineEvent::Ended { error: None }).await;
+    }
+}
+
+// Every CONNECT to home from a client that follows offers carries `lr=1`
+// (item 43.7), and a hidden broadcaster's every publish leg carries
+// `wall=hidden` (item 34); neither is added when not asked for.
+#[test]
+fn publish_and_room_urls_carry_the_r74_parameters_when_asked() {
+    let url = "https://api.gawk.ioio.fi:4433/publish?app=desktop&os=linux";
+    let mut cfg = SessionConfig {
+        relay_url: "https://api.gawk.ioio.fi:4433".into(),
+        ..SessionConfig::default()
+    };
+    assert_eq!(cfg.decorate_publish_url(url), url);
+    assert_eq!(cfg.room_relay_url(), "https://api.gawk.ioio.fi:4433");
+    cfg.follow_offers = true;
+    assert_eq!(cfg.decorate_publish_url(url), format!("{url}&lr=1"));
+    let room = gawk_engine::room::room_url(&cfg.room_relay_url(), "K7XQ2M", "", "c0ffee").unwrap();
+    assert_eq!(
+        room,
+        "https://api.gawk.ioio.fi:4433/room/K7XQ2M?lr=1&creator=c0ffee"
+    );
+    cfg.follow_offers = false;
+    cfg.wall_hidden = true;
+    assert_eq!(cfg.decorate_publish_url(url), format!("{url}&wall=hidden"));
+}

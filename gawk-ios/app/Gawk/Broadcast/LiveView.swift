@@ -6,6 +6,8 @@ import UIKit
 struct LiveView: View {
     @Environment(BroadcastSession.self) private var session
     @Environment(Capture.self) private var capture
+    @Environment(LocalRelaySwitcher.self) private var switcher
+    @Environment(AppSettings.self) private var settings
     @Binding var showRoomPicker: Bool
     @Binding var showRoomManager: Bool
     @State private var copier = Copier()
@@ -24,6 +26,7 @@ struct LiveView: View {
                     }
                     status
                     code
+                    localRelay
                 }
                 .readableWidth()
                 .listRowBackground(Color.clear)
@@ -56,6 +59,29 @@ struct LiveView: View {
         }
         .gawkList()
         .safeAreaInset(edge: .bottom) { end }
+    }
+
+    /// R74 (docs/76 §7.3): "Live on Assembly 2026's local relay" with the
+    /// party wall's Hide or Show, or, live on home, the offer that will
+    /// take the next broadcast. A live broadcast is never moved.
+    @ViewBuilder private var localRelay: some View {
+        if let line = session.localRelayLine {
+            Banner(kind: .info, systemImage: "wifi", title: line,
+                   message: session.onPartyWall.map { $0 ? "On the party wall." : "Hidden from the party wall." }) {
+                if let on = session.onPartyWall, let pop = session.localRelay {
+                    Button(on ? "Hide" : "Show") {
+                        switcher.setWallHidden(on, handle: pop.handle)
+                        session.setOnPartyWall(!on, label: settings.nickname)
+                    }
+                    .buttonStyle(.gawkTintedCompact)
+                    .accessibilityIdentifier("localRelay.wall")
+                }
+            }
+            .accessibilityIdentifier("localRelay.live")
+        } else if switcher.nextBroadcast, let pop = switcher.current(), pop.home == session.relay {
+            Banner(kind: .info, systemImage: "wifi", title: LocalRelayCopy.nextBroadcast(pop.name))
+                .accessibilityIdentifier("localRelay.next")
+        }
     }
 
     /// LIVE with its clock and the viewer count; amber while reconnecting.

@@ -388,7 +388,7 @@ fn frame(msg: &[u8]) -> Result<Vec<u8>, String> {
     Ok(rec)
 }
 
-fn hello_record(nickname: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn hello_record(nickname: &str) -> Result<Vec<u8>, String> {
     let mut msg = Vec::new();
     wire::append_room_hello(
         &mut msg,
@@ -403,7 +403,7 @@ fn hello_record(nickname: &str) -> Result<Vec<u8>, String> {
     frame(&msg)
 }
 
-fn command_record(c: &wire::RoomCommand<'_>) -> Result<Vec<u8>, String> {
+pub(crate) fn command_record(c: &wire::RoomCommand<'_>) -> Result<Vec<u8>, String> {
     let mut msg = Vec::new();
     wire::append_room_command(&mut msg, c).map_err(|e| e.to_string())?;
     frame(&msg)
@@ -411,7 +411,7 @@ fn command_record(c: &wire::RoomCommand<'_>) -> Result<Vec<u8>, String> {
 
 /// Reads one framed message (Version ‖ Type ‖ payload) from the stream. The
 /// length prefix is validated before anything is allocated.
-async fn read_record(conn: &dyn RoomConn) -> Result<Vec<u8>, String> {
+pub(crate) async fn read_record(conn: &dyn RoomConn) -> Result<Vec<u8>, String> {
     let hdr = conn.read(wire::ROOM_RECORD_HEADER_SIZE).await?;
     let n = wire::parse_room_record_length(&hdr).map_err(|e| e.to_string())?;
     conn.read(n).await

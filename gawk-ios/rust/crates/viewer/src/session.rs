@@ -145,6 +145,10 @@ pub struct ViewerConfig {
     pub relay_url: String,
     pub broadcast_id: String,
     pub preset: PlayoutPreset,
+    /// R74 (docs/76 items 21, 43.7): this viewer follows a home relay's
+    /// local-relay offer, so every subscribe carries `lr=1`. Cleared when
+    /// it watches on the PoP it switched to.
+    pub follow_offers: bool,
 }
 
 /// Milliseconds on the viewer's monotonic clock, the one every
@@ -222,6 +226,7 @@ pub async fn run(
             }
         }
         let url = match subscribe_url(&cfg.relay_url, &cfg.broadcast_id, &mint_owner(), rejoin) {
+            Ok(u) if cfg.follow_offers => gawk_engine::localrelay::with_follow_offers(&u),
             Ok(u) => u,
             // A malformed relay URL never heals.
             Err(_) => return end(&*sink, EndReason::GaveUp),

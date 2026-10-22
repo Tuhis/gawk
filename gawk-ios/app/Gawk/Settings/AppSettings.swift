@@ -125,7 +125,12 @@ final class AppSettings {
     /// The selection's pins (R74): empty for the default fleet and for an
     /// unpinned server, which the system store decides.
     var relayCertHashes: [String] {
-        servers.first { $0.url == selectedURL }?.certHashes ?? []
+        certHashes(for: selectedURL)
+    }
+
+    /// A saved server's pins (R74); empty for any other URL.
+    func certHashes(for url: String) -> [String] {
+        servers.first { $0.url == url }?.certHashes ?? []
     }
 
     /// The display name of the selection.

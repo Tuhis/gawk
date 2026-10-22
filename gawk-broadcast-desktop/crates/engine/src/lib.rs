@@ -18,6 +18,7 @@ pub mod gate;
 #[cfg(feature = "self-update")]
 pub mod install;
 pub mod link;
+pub mod localrelay;
 pub mod lossnotice;
 pub mod media;
 pub mod notices;

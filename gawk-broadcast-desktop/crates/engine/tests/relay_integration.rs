@@ -816,3 +816,50 @@ async fn a_session_pinned_to_the_real_relays_certificate_publishes() {
     assert_eq!(refused.phase, StartPhase::Connect);
     assert_eq!(refused.status, 0);
 }
+
+// R74 PP14 (docs/76 item 43.2): the switch's candidate probe against the
+// real relay, pinned with verification on. A candidate that never answers
+// does not hold up the one that does, and a candidate pinned to the wrong
+// hash is not a switch.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "builds and runs the real gawk-server (cargo test -- --ignored)"]
+async fn a_switch_probes_the_offers_candidates_pinned_against_the_real_relay() {
+    use gawk_engine::localrelay::{Candidate, Offer, probe_candidates};
+
+    let r = Relay::start(&["-publish-secret", SECRET]);
+    let hash = served_hash(&r.url).await;
+    let origin = gawk_engine::defaults::origin();
+    let offer = |hashes: Vec<gawk_engine::transport::CertHash>| Offer {
+        handle: "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab".into(),
+        name: "Assembly 2026".into(),
+        validity: Duration::from_secs(3600),
+        candidates: vec![
+            // Nothing listens there: the probe's dial times out.
+            Candidate {
+                url: "https://127.0.0.1:9".into(),
+                hashes: vec![[0x11; 32]],
+            },
+            Candidate {
+                url: r.url.clone(),
+                hashes,
+            },
+        ],
+    };
+
+    let started = std::time::Instant::now();
+    let found = probe_candidates(&offer(vec![[0x5a; 32], hash]), origin)
+        .await
+        .expect("the pinned candidate answers");
+    assert_eq!(found.url, r.url);
+    assert_eq!(found.hashes, vec![[0x5a; 32], hash]);
+    assert!(
+        started.elapsed() < gawk_engine::probe::PROBE_CONNECT_TIMEOUT,
+        "not serialised behind the dead candidate: {:?}",
+        started.elapsed()
+    );
+
+    assert_eq!(
+        probe_candidates(&offer(vec![[0x5a; 32]]), origin).await,
+        None
+    );
+}

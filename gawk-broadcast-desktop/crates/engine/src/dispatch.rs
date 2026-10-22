@@ -15,7 +15,26 @@ use gawk_wire as wire;
 /// able to grow our heap; the one thing the cap can clip is reserved
 /// extension bytes past a maximal payload — which parsers ignore anyway
 /// (docs/40 §4.9).
-pub const SERVER_STREAM_READ_LIMIT: usize = 5 + wire::MAX_TELEMETRY_ENDPOINT_URL_LEN;
+///
+/// R74 (docs/76 §9): a home relay's LocalRelayOffer (0x19) can be larger:
+/// four candidates of maximal URLs with two pins each, about 1.4 KB. The
+/// bound is the larger of the two.
+pub const SERVER_STREAM_READ_LIMIT: usize = {
+    let telemetry = 5 + wire::MAX_TELEMETRY_ENDPOINT_URL_LEN;
+    let offer = MAX_LOCAL_RELAY_OFFER_LEN;
+    if offer > telemetry { offer } else { telemetry }
+};
+
+/// The largest LocalRelayOffer (0x19) the wire allows.
+pub const MAX_LOCAL_RELAY_OFFER_LEN: usize = 3
+    + 1
+    + wire::MAX_LOCAL_RELAY_HANDLE_LEN
+    + 1
+    + wire::MAX_RELAY_IDENTITY_NAME_LEN
+    + 4
+    + 1
+    + wire::MAX_LOCAL_RELAY_CANDIDATES
+        * (2 + wire::MAX_LOCAL_RELAY_URL_LEN + 1 + wire::MAX_LOCAL_RELAY_HASHES * 32);
 // A screening relay's RelayIdentity (R40, docs/71 D13) — header, maximal
 // version and name, the notices byte — fits the bound with room to spare.
 const _: () = assert!(
@@ -49,6 +68,13 @@ pub enum ServerMessage {
     /// notice to give. Builds before R40 dispatch this as `Unknown(0x11)`
     /// and carry on — the CF1 compatibility claim.
     RelayNotices(u8),
+    /// R74 (docs/76 item 45): a PoP's LocalRelayInfo (0x18) — the name, the
+    /// link, and on a publish session whether this broadcast is on the
+    /// party wall. Sent again when that changes.
+    LocalRelayInfo(crate::localrelay::LocalRelay),
+    /// R74 (docs/76 item 42): a home relay suggests a party's local relay
+    /// to this client (0x19). An offer with no usable candidate is dropped.
+    LocalRelayOffer(crate::localrelay::Offer),
     /// A type this build does not know — ignored, never an error.
     Unknown(u8),
 }
@@ -87,6 +113,16 @@ pub fn dispatch_server_message(msg: &[u8]) -> Result<ServerMessage, wire::WireEr
         wire::TYPE_RELAY_IDENTITY => Ok(ServerMessage::RelayNotices(
             wire::parse_relay_identity(msg)?.notices,
         )),
+        wire::TYPE_LOCAL_RELAY_INFO => Ok(ServerMessage::LocalRelayInfo(
+            crate::localrelay::LocalRelay::from_wire(&wire::parse_local_relay_info(msg)?),
+        )),
+        wire::TYPE_LOCAL_RELAY_OFFER => {
+            let m = wire::parse_local_relay_offer(msg)?;
+            Ok(match crate::localrelay::Offer::from_wire(&m) {
+                Some(o) => ServerMessage::LocalRelayOffer(o),
+                None => ServerMessage::Unknown(wire::TYPE_LOCAL_RELAY_OFFER),
+            })
+        }
         other => Ok(ServerMessage::Unknown(other)),
     }
 }
@@ -179,6 +215,86 @@ mod tests {
         let mut flagged = msg.clone();
         flagged[2] = 0x80;
         assert!(dispatch_server_message(&flagged).is_err());
+    }
+
+    // R74 (docs/76 §6.12): a PoP's 0x18 and a home relay's 0x19 reach the
+    // publish session too, owned and sanitized; a malformed one errors.
+    #[test]
+    fn local_relay_info_and_offer_dispatch_owned() {
+        let mut info = Vec::new();
+        wire::append_local_relay_info(
+            &mut info,
+            &wire::LocalRelayInfo {
+                linked: true,
+                on_wall: true,
+                name: "Assembly 2026",
+                home_origin: "https://gawk.ioio.fi",
+                wall_code: "assembly-2026",
+            },
+        )
+        .unwrap();
+        let ServerMessage::LocalRelayInfo(got) = dispatch_server_message(&info).unwrap() else {
+            panic!("info");
+        };
+        assert!(got.linked && got.on_wall);
+        assert_eq!(got.name.as_deref(), Some("Assembly 2026"));
+        assert_eq!(got.wall_code, "assembly-2026");
+
+        let h = [3u8; 32];
+        let mut offer = Vec::new();
+        wire::append_local_relay_offer(
+            &mut offer,
+            &wire::LocalRelayOffer {
+                handle: "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab",
+                name: "Assembly 2026",
+                validity: 3600,
+                candidates: vec![wire::LocalRelayCandidate {
+                    url: "https://192.168.1.20:4433",
+                    hashes: vec![&h],
+                }],
+            },
+        )
+        .unwrap();
+        let ServerMessage::LocalRelayOffer(got) = dispatch_server_message(&offer).unwrap() else {
+            panic!("offer");
+        };
+        assert_eq!(got.handle, "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab");
+        assert_eq!(got.candidates[0].hashes, vec![h]);
+
+        let mut bad = offer.clone();
+        bad[2] = 1;
+        assert!(dispatch_server_message(&bad).is_err());
+        let mut bad = info.clone();
+        bad[2] = 1;
+        assert!(dispatch_server_message(&bad).is_err());
+    }
+
+    // A maximal offer (four candidates of 256-byte URLs and two pins each)
+    // must not be clipped by the read bound.
+    #[test]
+    fn read_limit_covers_a_maximal_offer() {
+        let h = [1u8; 32];
+        let url = format!("https://{}", "a".repeat(wire::MAX_LOCAL_RELAY_URL_LEN - 8));
+        let handle = "h".repeat(wire::MAX_LOCAL_RELAY_HANDLE_LEN);
+        let name = "n".repeat(wire::MAX_RELAY_IDENTITY_NAME_LEN);
+        let cands: Vec<_> = (0..wire::MAX_LOCAL_RELAY_CANDIDATES)
+            .map(|_| wire::LocalRelayCandidate {
+                url: &url,
+                hashes: vec![&h, &h],
+            })
+            .collect();
+        let mut msg = Vec::new();
+        wire::append_local_relay_offer(
+            &mut msg,
+            &wire::LocalRelayOffer {
+                handle: &handle,
+                name: &name,
+                validity: 1,
+                candidates: cands,
+            },
+        )
+        .unwrap();
+        assert!(msg.len() <= SERVER_STREAM_READ_LIMIT, "{}", msg.len());
     }
 
     // The read bound must fit the largest legitimate message or a current

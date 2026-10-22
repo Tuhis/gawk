@@ -144,7 +144,9 @@ struct WatchView: View {
         guard BroadcastCode.isValid(code) else { return }
         codeFocused = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        router.join(code: code, relay: settings.relayURL, insecure: settings.insecure)
+        router.join(
+            code: code, relay: settings.relayURL, insecure: settings.insecure,
+            certHashes: settings.relayCertHashes)
     }
 }
 
