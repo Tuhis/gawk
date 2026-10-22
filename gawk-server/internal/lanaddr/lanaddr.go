@@ -1,7 +1,8 @@
 // Package lanaddr finds the address a LAN relay advertises (R74 PP2,
 // docs/76 §6.1 item 4): the IPv4 address of the interface that holds the
 // default route, with loopback, link-local, container and virtual bridges,
-// VPN tunnels and CGNAT (100.64/10) excluded. The host can pick another
+// VPN tunnels and every non-private address (CGNAT and public ones
+// included) excluded. The host can pick another
 // candidate in the console; a DHCP change is picked up by the Watcher.
 package lanaddr
 
@@ -33,18 +34,26 @@ type Iface struct {
 // address on them is not one a guest on the venue's network can reach.
 // Case-sensitive on purpose: "veth" is Linux's pair device, while Windows'
 // "vEthernet (…)" can be the host's real uplink behind a Hyper-V switch.
-var excludedIfacePrefixes = []string{"docker", "veth", "br-", "virbr", "vmnet", "utun", "tailscale"}
-
-// cgnat is RFC 6598 shared address space, which VPN overlays (Tailscale)
-// and carrier NAT use; never a venue LAN.
-var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+//
+//   - containers and VM bridges: docker, veth, br- (Docker's bridges, not a
+//     user's br0), virbr (libvirt), vmnet and vboxnet (VMware and
+//     VirtualBox on Linux and macOS), "VMware" and "VirtualBox" (their
+//     Windows adapters' names), bridge1 (macOS bridge100 and up: UTM,
+//     Parallels, Internet Sharing; bridge0 is the Thunderbolt bridge);
+//   - VPN tunnels: utun (macOS), tailscale, wg (WireGuard), tun and tap
+//     (OpenVPN and others), zt (ZeroTier).
+var excludedIfacePrefixes = []string{
+	"docker", "veth", "br-", "virbr", "vmnet", "vboxnet", "VMware", "VirtualBox", "bridge1",
+	"utun", "tailscale", "wg", "tun", "tap", "zt",
+}
 
 // ula is fc00::/7, the IPv6 private range the certHash rule accepts.
 var ula = netip.MustParsePrefix("fc00::/7")
 
 // Filter is the pure half of Detect: the candidates among ifs, primary
-// first. IPv6 is kept only for unique-local addresses, because the pinned
-// join link is accepted only for private literals (docs/76 §6.1 item 5).
+// first. Only private addresses are kept (RFC 1918, and unique-local
+// IPv6), because the pinned join link is accepted only for private
+// literals (docs/76 §6.1 item 5).
 // The primary is the first IPv4 address on defaultRouteIface; without one
 // (no default route, as at a LAN party with no internet, or a route over a
 // VPN), the first IPv4 candidate in interface-name order.
@@ -106,7 +115,10 @@ func usable(a netip.Addr) bool {
 		a.IsLinkLocalUnicast(), a.IsLinkLocalMulticast():
 		return false
 	case a.Is4():
-		return !cgnat.Contains(a)
+		// RFC 1918 only, the IPv4 half of the certHash rule: every client
+		// drops the hashes for any other literal (public or CGNAT), so a
+		// join link naming it could not connect.
+		return a.IsPrivate()
 	default:
 		return ula.Contains(a)
 	}

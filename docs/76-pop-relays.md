@@ -296,13 +296,21 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
    console lists the candidates and lets the host pick another. A DHCP change
    is picked up and republished (offers, console, DNS record).
 
-   *Built:* only IPv4 and IPv6 ULA (`fc00::/7`) are candidates, since
-   pinned links are accepted only for private literals. With no default
-   route (a LAN party with no internet) the first IPv4 candidate in
-   interface-name order is primary. Interface-name exclusions are
-   case-sensitive (`veth`, not Windows' `vEthernet`, which can be the real
-   uplink behind a Hyper-V switch). The console's override lasts until
-   restart; `-lan-address` is the persistent form.
+   *Built:* only RFC 1918 IPv4 and IPv6 ULA (`fc00::/7`) are candidates,
+   since pinned links are accepted only for private literals; a public or
+   CGNAT address is never one. With no default route (a LAN party with no
+   internet) the first IPv4 candidate in interface-name order is primary.
+   The excluded interfaces are container and VM bridges and host-only
+   adapters (Docker, libvirt, VMware, VirtualBox, macOS `bridge100`+) and
+   VPN tunnels (`utun`, Tailscale, WireGuard `wg*`, `tun*`/`tap*`,
+   ZeroTier); the full list is `excludedIfacePrefixes` in
+   `internal/lanaddr`. Interface-name exclusions are case-sensitive
+   (`veth`, not Windows' `vEthernet`, which can be the real uplink behind a
+   Hyper-V switch). The console's override lasts until restart;
+   `-lan-address` is the persistent form. A linked PoP re-sends its hello
+   when the address or the pinned hashes change, so offers, `status.link`
+   and the DNS record follow without a relink; a relay off port 4433
+   reports `ip:port`.
 
 5. **Standalone guests.** With no home fleet there is no named certificate,
    so browsers reach the relay by IP literal and hash. The console's join QR

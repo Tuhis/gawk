@@ -64,6 +64,45 @@ func TestFilter(t *testing.T) {
 	}
 }
 
+// A public IPv4 address is no candidate: every client drops a certHash
+// for a non-private literal, so a join link naming it could not connect.
+// The private address on another interface is primary instead.
+func TestFilterKeepsOnlyPrivateIPv4(t *testing.T) {
+	ifs := []Iface{
+		{Name: "eth0", Flags: up, Addrs: pfx("203.0.113.7/24")},
+		{Name: "eth1", Flags: up, Addrs: pfx("192.168.1.20/24")},
+	}
+	got := Filter(ifs, "eth0")
+	want := []Candidate{{Addr: netip.MustParseAddr("192.168.1.20"), Iface: "eth1", Primary: true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Filter = %v, want %v", got, want)
+	}
+}
+
+// Common VPN tunnels and VM host-only adapters are excluded too, on every
+// OS gawk-relay ships for: a full-tunnel WireGuard or OpenVPN holds the
+// default route, and with no default route the name order would pick a
+// host-only adapter ahead of the real NIC.
+func TestFilterExcludesVPNAndVMAdapters(t *testing.T) {
+	ifs := []Iface{
+		{Name: "wg0", Flags: up, Addrs: pfx("10.13.13.2/24")},
+		{Name: "tun0", Flags: up, Addrs: pfx("10.8.0.6/24")},
+		{Name: "tap0", Flags: up, Addrs: pfx("10.9.0.6/24")},
+		{Name: "zt5u4abc", Flags: up, Addrs: pfx("10.147.17.5/24")},
+		{Name: "vboxnet0", Flags: up, Addrs: pfx("192.168.56.1/24")},
+		{Name: "VirtualBox Host-Only Network", Flags: up, Addrs: pfx("192.168.56.1/24")},
+		{Name: "VMware Network Adapter VMnet8", Flags: up, Addrs: pfx("192.168.200.1/24")},
+		{Name: "bridge100", Flags: up, Addrs: pfx("192.168.64.1/24")},
+		{Name: "Wi-Fi", Flags: up, Addrs: pfx("192.168.1.20/24")},
+	}
+	want := []Candidate{{Addr: netip.MustParseAddr("192.168.1.20"), Iface: "Wi-Fi", Primary: true}}
+	for _, route := range []string{"wg0", "tun0", ""} {
+		if got := Filter(ifs, route); !reflect.DeepEqual(got, want) {
+			t.Errorf("Filter(default route %q) = %v, want %v", route, got, want)
+		}
+	}
+}
+
 type fakeDetector struct {
 	mu    sync.Mutex
 	cands []Candidate
@@ -166,7 +205,7 @@ func TestDetectNeverReturnsExcluded(t *testing.T) {
 		t.Skipf("Detect: %v", err)
 	}
 	for _, c := range cands {
-		if c.Addr.IsLoopback() || c.Addr.IsLinkLocalUnicast() || cgnat.Contains(c.Addr) {
+		if c.Addr.IsLoopback() || c.Addr.IsLinkLocalUnicast() || !c.Addr.IsPrivate() || excludedIface(c.Iface) {
 			t.Errorf("Detect returned an excluded address %v", c)
 		}
 	}
