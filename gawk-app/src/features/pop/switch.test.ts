@@ -236,6 +236,30 @@ describe('the broadcaster', () => {
     expect(useTransportStore.getState().serverUrl).toBe(LAN);
   });
 
+  it.each(['room', 'viewer'] as const)(
+    'live: an offer on the tab’s %s session does not move it either (its publish stays on home)',
+    async (role) => {
+      const h = harness('granted');
+      setBroadcasterLive(true);
+      await considerOffer(offer(), role);
+      expect(h.probes).toHaveLength(0);
+      expect(usePopStore.getState().phase).toBe('deferred');
+      expect(useTransportStore.getState().resolvedSource).not.toBe('pop');
+    },
+  );
+
+  it('going live while the probe runs (the prompt is still open) defers the switch instead', async () => {
+    const h = harness('prompt');
+    const done = considerOffer(offer({ candidates: [{ url: LAN, hashes: [] }] }), 'broadcaster');
+    await flush();
+    setBroadcasterLive(true);
+    h.probes[0].settle(OK);
+    await done;
+    expect(useTransportStore.getState().resolvedSource).not.toBe('pop');
+    expect(usePopStore.getState().phase).toBe('deferred');
+    expect(usePopStore.getState().note).toBe('Assembly 2026 has a local relay. Your next broadcast will use it.');
+  });
+
   it('a viewer offer is followed even while this tab is not broadcasting', async () => {
     const h = harness('granted');
     await Promise.race([considerOffer(offer(), 'viewer'), flush()]);

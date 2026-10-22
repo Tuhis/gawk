@@ -183,8 +183,12 @@ export async function considerOffer(offer: LocalRelayOfferMessage, role: Session
     usePopStore.setState({ declined: { handle: offer.handle, name }, offer, offerAt: at });
     return;
   }
-  if (role === 'broadcaster' && store.broadcasterLive) {
-    // A live broadcast is never moved (it would need cross-fleet resume).
+  if (store.broadcasterLive) {
+    // A live broadcast is never moved (it would need cross-fleet resume),
+    // whichever of the tab's sessions the offer came on: a live tab's room
+    // session and room tiles get offers too, and switching the tab would
+    // move them off the publish's server.
+    log.info(`local relay ${name}: offered on the ${role} session of a live broadcast; deferred`);
     usePopStore.setState({ phase: 'deferred', offer, offerAt: at, note: nextBroadcastNote(name) });
     return;
   }
@@ -230,6 +234,12 @@ export async function considerOffer(offer: LocalRelayOfferMessage, role: Session
   }
   if (expired(offer, at) || useTransportStore.getState().resolvedSource === 'pop') {
     usePopStore.setState({ phase: 'idle' });
+    return;
+  }
+  if (usePopStore.getState().broadcasterLive) {
+    // Went live while the probe ran (the prompt can stay open for a
+    // minute): the broadcast stays where it started, the next one moves.
+    usePopStore.setState({ phase: 'deferred', note: nextBroadcastNote(name) });
     return;
   }
   log.info(`local relay ${name}: switching to ${winner.url}`);
