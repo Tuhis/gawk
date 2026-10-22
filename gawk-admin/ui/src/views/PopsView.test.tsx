@@ -283,3 +283,101 @@ describe('the PoP detail', () => {
     expect(bodyOf(patch)).toEqual({ uplink: { maxMbps: 40, maxStreams: 3 } });
   });
 });
+
+describe('the PoPs view: other states, errors and cancels', () => {
+  it('shows an offline PoP with when it went offline', async () => {
+    mount([{ ...LINKED, state: 'offline', stateSince: '2026-10-21T21:04:00Z', live: undefined }]);
+    expect(await screen.findByText('Assembly 2026')).toBeTruthy();
+    expect(within(cardFor('Assembly 2026')).getByText(/^Offline since/)).toBeTruthy();
+  });
+
+  it('sends every optional wizard field, and says when the name is taken', async () => {
+    const session = mount([], (path, init) => {
+      if (path === 'api/v1/pops' && init.method === 'POST') {
+        return json({ error: { code: 'pop_exists', message: 'exists' } }, 409);
+      }
+      return new Response(null, { status: 204 });
+    }, { namedAddress: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'New PoP' }));
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: 'party' } });
+    fireEvent.change(screen.getByLabelText(/^End date/), { target: { value: '2026-11-09T00:00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.change(screen.getByLabelText(/^Downlink Mbps/), { target: { value: '100' } });
+    fireEvent.change(screen.getByLabelText(/^Downlink streams/), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByLabelText(/Auto-switch/));
+    fireEvent.click(screen.getByLabelText(/Party wall/));
+    fireEvent.change(screen.getByLabelText(/^Wall code/), { target: { value: 'the-wall' } });
+    fireEvent.click(screen.getByLabelText(/Named address/));
+    fireEvent.click(screen.getByRole('button', { name: 'Create and pair' }));
+    expect(await screen.findByText('A PoP with that name already exists.')).toBeTruthy();
+
+    const post = session.calls.find((c) => c.path === 'api/v1/pops' && c.init.method === 'POST')!;
+    expect(bodyOf(post)).toEqual({
+      name: 'party',
+      notAfter: new Date('2026-11-09T00:00').toISOString(),
+      downlink: { maxMbps: 100, maxStreams: 5 },
+      guests: { autoSwitch: false },
+      wall: { roomCode: 'the-wall' },
+      namedAddress: true,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByLabelText(/^Name/)).toBeNull());
+  });
+
+  it('says why a re-pair failed, and cancels the confirmation', async () => {
+    mount(
+      [],
+      (path, init) => {
+        if (path === 'api/v1/pops/assembly-2026') return json(DETAIL);
+        if (path === 'api/v1/pops/assembly-2026/repair' && init.method === 'POST') {
+          return json({ error: { code: 'pop_revoked', message: 'revoked' } }, 409);
+        }
+        return new Response(null, { status: 204 });
+      },
+      { detail: 'assembly-2026' },
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Re-pair' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-pair now' }));
+    expect(await screen.findByText(/revoked: a new pairing string would pair nothing/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Re-pair now' })).toBeNull());
+  });
+
+  it('patches every edited field, shows a failed save, and cancels', async () => {
+    let fail = true;
+    const session = mount(
+      [],
+      (path, init) => {
+        if (path === 'api/v1/pops/assembly-2026' && (init.method ?? 'GET') === 'GET') return json(DETAIL);
+        if (path === 'api/v1/pops/assembly-2026' && init.method === 'PATCH') {
+          return fail ? json({ error: { code: '', message: 'the API is down' } }, 500) : json(DETAIL);
+        }
+        return new Response(null, { status: 204 });
+      },
+      { detail: 'assembly-2026', namedAddress: true },
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText(/^Display name/), { target: { value: 'Assembly 26' } });
+    fireEvent.change(screen.getByLabelText(/^Downlink Mbps/), { target: { value: '50' } });
+    fireEvent.change(screen.getByLabelText(/^Party broadcasts home carries/), { target: { value: '' } });
+    fireEvent.click(screen.getByLabelText(/Auto-switch/));
+    fireEvent.click(screen.getByLabelText(/Named address/));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('the API is down')).toBeTruthy();
+    const patch = session.calls.find((c) => c.init.method === 'PATCH')!;
+    expect(bodyOf(patch)).toEqual({
+      displayName: 'Assembly 26',
+      downlink: { maxMbps: 50 },
+      limits: {},
+      guests: { autoSwitch: false },
+      namedAddress: true,
+    });
+    fail = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
+  });
+});
