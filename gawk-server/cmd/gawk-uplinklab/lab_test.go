@@ -34,6 +34,19 @@ func freeUDPPort(t *testing.T) int {
 	return c.LocalAddr().(*net.UDPAddr).Port
 }
 
+// boundUDP binds a loopback UDP socket for an in-test server to Serve on.
+// Unlike freeUDPPort it keeps the socket, so a busy runner cannot hand the
+// port to another process between the probe and the bind.
+func boundUDP(t *testing.T) (net.PacketConn, int) {
+	t.Helper()
+	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c, c.LocalAddr().(*net.UDPAddr).Port
+}
+
 // waitBound waits until something holds the UDP port, so a dial does not
 // race the listener.
 func waitBound(t *testing.T, port int) {
@@ -54,12 +67,35 @@ func waitBound(t *testing.T, port int) {
 // channel its result arrives on (it returns once its one session ends).
 func startRecv(t *testing.T, out string, extra ...string) (string, <-chan error) {
 	t.Helper()
-	port := freeUDPPort(t)
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	done := make(chan error, 1)
-	go func() { done <- runRecv(append([]string{"-addr", addr, "-out", out}, extra...)) }()
-	waitBound(t, port)
-	return addr, done
+	return startOnFreePort(t, func(addr string) error {
+		return runRecv(append([]string{"-addr", addr, "-out", out}, extra...))
+	})
+}
+
+// startOnFreePort runs a command that binds the -addr it is given. The port
+// comes from freeUDPPort, so on a busy runner another process can take it
+// between the probe and the command's own bind: a command that fails to
+// bind is started again on a fresh port.
+func startOnFreePort(t *testing.T, run func(addr string) error) (string, <-chan error) {
+	t.Helper()
+	for attempt := 0; ; attempt++ {
+		port := freeUDPPort(t)
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		done := make(chan error, 1)
+		go func() { done <- run(addr) }()
+		waitBound(t, port)
+		select {
+		case err := <-done:
+			if attempt < 5 && err != nil && strings.Contains(err.Error(), "address already in use") {
+				continue
+			}
+			ch := make(chan error, 1)
+			ch <- err
+			return addr, ch
+		case <-time.After(200 * time.Millisecond):
+			return addr, done
+		}
+	}
 }
 
 func waitErr(t *testing.T, ch <-chan error, what string) error {
@@ -356,14 +392,10 @@ func TestProxyForwardsAndReports(t *testing.T) {
 	dir := t.TempDir()
 	recvOut, sendOut, stats := filepath.Join(dir, "recv.csv"), filepath.Join(dir, "send.csv"), filepath.Join(dir, "stats.txt")
 	addr, recvDone := startRecv(t, recvOut)
-	pport := freeUDPPort(t)
-	paddr := fmt.Sprintf("127.0.0.1:%d", pport)
-	proxyDone := make(chan error, 1)
-	go func() {
-		proxyDone <- runProxy([]string{"-listen", paddr, "-upstream", addr, "-rtt", "2ms", "-jitter", "1ms",
+	paddr, proxyDone := startOnFreePort(t, func(paddr string) error {
+		return runProxy([]string{"-listen", paddr, "-upstream", addr, "-rtt", "2ms", "-jitter", "1ms",
 			"-rate", "100000000", "-arm-after", "0s", "-stats", stats})
-	}()
-	waitBound(t, pport)
+	})
 
 	if err := runLegSend(labArgs("https://"+paddr+"/lab", sendOut)); err != nil {
 		t.Fatalf("legsend via proxy: %v", err)
@@ -413,11 +445,10 @@ func subRelay(t *testing.T, wantID string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := freeUDPPort(t)
+	conn, port := boundUDP(t)
 	mux := http.NewServeMux()
 	srv := &webtransport.Server{
 		H3: &http3.Server{
-			Addr:            fmt.Sprintf("127.0.0.1:%d", port),
 			TLSConfig:       http3.ConfigureTLSConfig(&tls.Config{Certificates: []tls.Certificate{cert}}),
 			Handler:         mux,
 			EnableDatagrams: true,
@@ -468,12 +499,11 @@ func subRelay(t *testing.T, wantID string) string {
 		_ = sess.CloseWithError(4001, "bye")
 	})
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(conn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			t.Log("sub relay:", err)
 		}
 	}()
 	t.Cleanup(func() { _ = srv.Close() })
-	waitBound(t, port)
 	return fmt.Sprintf("https://127.0.0.1:%d", port)
 }
 
@@ -539,11 +569,10 @@ func subRelayQuiet(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := freeUDPPort(t)
+	conn, port := boundUDP(t)
 	mux := http.NewServeMux()
 	srv := &webtransport.Server{
 		H3: &http3.Server{
-			Addr:            fmt.Sprintf("127.0.0.1:%d", port),
 			TLSConfig:       http3.ConfigureTLSConfig(&tls.Config{Certificates: []tls.Certificate{cert}}),
 			Handler:         mux,
 			EnableDatagrams: true,
@@ -559,8 +588,7 @@ func subRelayQuiet(t *testing.T) string {
 		}
 		<-sess.Context().Done()
 	})
-	go func() { _ = srv.ListenAndServe() }()
+	go func() { _ = srv.Serve(conn) }()
 	t.Cleanup(func() { _ = srv.Close() })
-	waitBound(t, port)
 	return fmt.Sprintf("https://127.0.0.1:%d", port)
 }
