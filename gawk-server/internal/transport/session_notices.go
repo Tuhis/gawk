@@ -114,6 +114,12 @@ func (s *Server) sendNotices(sess *webtransport.Session, r *http.Request, k sess
 	if p := r.URL.Path; strings.HasPrefix(p, "/internal/") || strings.HasPrefix(p, "/pop/") {
 		return
 	}
+	if k == kindPublish && !s.cfg.ScreeningNotice && s.screeningNoticeOn() {
+		// Home's screening notice mirrored by a linked PoP (docs/76 item
+		// 32). With the relay's own -screening-notice the publish route
+		// sends it already.
+		go s.sendRelayIdentity(sess, s.log.With("remote", r.RemoteAddr, "route", k.String()))
+	}
 	lr := s.localRelay.Load()
 	of := s.offerer.Load()
 	if lr == nil && of == nil {

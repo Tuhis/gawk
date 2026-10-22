@@ -398,6 +398,24 @@ export interface Broadcast {
    * there is none — or when screening is off.
    */
   contentFlag?: ContentFlag | null;
+  /**
+   * The PoP a party broadcast started at (R74, docs/76 §7.2). Absent on every
+   * other broadcast. A party-only row (home does not carry it) has an empty
+   * `key`, no pods and no publisher IP.
+   */
+  pop?: BroadcastPop;
+}
+
+/** A party broadcast's PoP badge. */
+export interface BroadcastPop {
+  name: string;
+  /** Home carries it now; false is party-only. */
+  forwarded: boolean;
+  label?: string;
+  /** The broadcaster's address on the party LAN, as the PoP reports it. */
+  publisherLanAddr?: string;
+  localViewers: number;
+  outsideViewers: number;
 }
 
 // ---------------------------------------------------------------------------

@@ -118,7 +118,7 @@ func (s *Server) sendRelayIdentity(sess *webtransport.Session, log *slog.Logger)
 		version = "dev"
 	}
 	var notices uint8
-	if s.cfg.ScreeningNotice {
+	if s.screeningNoticeOn() {
 		notices |= wire.RelayNoticeScreening
 	}
 	msg, err := wire.AppendRelayIdentity(nil, wire.RelayIdentity{
@@ -135,4 +135,18 @@ func (s *Server) sendRelayIdentity(sess *webtransport.Session, log *slog.Logger)
 	if err := sendUniMessage(sess, msg); err != nil {
 		log.Debug("relay identity not sent", "err", err)
 	}
+}
+
+// SetScreeningNotice sets the dynamic half of the R40 screening notice: a
+// linked PoP turns it on while home's is on (docs/76 item 32), so its party
+// broadcasters see the disclosure anyone streaming to home sees. It only
+// ever adds the notice: a relay started with -screening-notice keeps it
+// whatever this says. Safe while serving; it applies to sessions that start
+// afterwards.
+func (s *Server) SetScreeningNotice(on bool) { s.popMod.screening.Store(on) }
+
+// screeningNoticeOn is the effective notice: the relay's own flag, or the
+// override home set.
+func (s *Server) screeningNoticeOn() bool {
+	return s.cfg.ScreeningNotice || s.popMod.screening.Load()
 }

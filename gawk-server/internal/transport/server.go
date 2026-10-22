@@ -191,6 +191,8 @@ type Server struct {
 	// testHookPopLegTransport adjusts the downlink's leg dialer before each
 	// dial (a test's packet tap and tracer). Atomic, as above.
 	testHookPopLegTransport atomic.Pointer[func(*webtransport.Transport)]
+	// popMod is the R74 moderation reach (pop_moderation.go, telemetry.go).
+	popMod popModeration
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun,
