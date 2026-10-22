@@ -321,6 +321,28 @@ func (w *wall) fill(info *wire.LocalRelayInfo, publishID string) {
 	}
 }
 
+// WallRow is the console's Live-table wall column for a broadcast
+// (relayconsole.LiveRow Wall and Label): wall is "on" or "hidden" for a
+// party broadcast while the PoP has a wall and "" otherwise, and label is
+// its tile label ("" for an ID the wall never saw).
+func (c *Client) WallRow(id string) (wall, label string) {
+	w := c.wall
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	e := w.entries[id]
+	if e == nil {
+		return "", ""
+	}
+	switch {
+	case w.code == "":
+	case e.hidden:
+		wall = "hidden"
+	default:
+		wall = "on"
+	}
+	return wall, e.label
+}
+
 // WatchLocalRelayInfo is transport's LocalRelayWatcher: changed runs when a
 // publish session's 0x18 may have changed (Hide, Show, the wall or the link
 // changing), and the transport re-sends it if it did.

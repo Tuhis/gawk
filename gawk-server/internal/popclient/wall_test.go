@@ -100,3 +100,27 @@ func TestWallFillsLocalRelayInfo(t *testing.T) {
 		t.Fatalf("0x18 without a wall = %+v", got)
 	}
 }
+
+// WallRow is the console's Live-table wall column (relayconsole.LiveRow
+// Wall/Label): "on" or "hidden" with the tile's label for a party
+// broadcast, "" for an ID the wall never saw; with no wall the column is
+// empty but the label stays.
+func TestWallRow(t *testing.T) {
+	c := linkedWithWall(t, true)
+	c.wall.PublisherLive(httptest.NewRequest("CONNECT", "https://pop/publish?name=tuhis", nil), "ABC234")
+	c.wall.PublisherLive(httptest.NewRequest("CONNECT", "https://pop/publish?wall=hidden", nil), "DEF567")
+	for _, tc := range []struct{ id, wall, label string }{
+		{"ABC234", "on", "tuhis"},
+		{"DEF567", "hidden", "Stream 2"},
+		{"GHJ892", "", ""},
+	} {
+		if wall, label := c.WallRow(tc.id); wall != tc.wall || label != tc.label {
+			t.Errorf("WallRow(%s) = %q %q, want %q %q", tc.id, wall, label, tc.wall, tc.label)
+		}
+	}
+	none := New(Options{})
+	none.wall.PublisherLive(httptest.NewRequest("CONNECT", "https://pop/publish?name=tuhis", nil), "ABC234")
+	if wall, label := none.WallRow("ABC234"); wall != "" || label != "tuhis" {
+		t.Errorf("WallRow with no wall = %q %q, want \"\" tuhis", wall, label)
+	}
+}
