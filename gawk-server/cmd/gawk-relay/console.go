@@ -258,6 +258,9 @@ func (c *console) State() relayconsole.State {
 		}
 	}
 	s.Health = c.health(s, fwOK)
+	if h, ok := link.(interface{ Health() []adminapi.HealthLine }); ok {
+		s.Health = append(s.Health, h.Health()...) // the named tier's lines (pop_named.go)
+	}
 	return s
 }
 

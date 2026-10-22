@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -140,6 +141,8 @@ type Client struct {
 	up *uplink
 	// wall is the party wall (wall.go).
 	wall *wall
+	// named is the named tier (named.go), nil without one.
+	named atomic.Pointer[Named]
 }
 
 // New builds a Client from the state directory's stored credential.
@@ -548,6 +551,9 @@ func (c *Client) hasCredential() bool {
 // hello is the first record on every link.
 func (c *Client) hello() poplink.Hello {
 	h := poplink.Hello{Version: c.opts.Version, Proto: poplink.ProtoMajor}
+	if n := c.named.Load(); n != nil {
+		h.NamedHost = n.Host()
+	}
 	if c.opts.LAN != nil {
 		if a := c.opts.LAN.Current(); a.IsValid() {
 			h.LanAddr = a.String()
