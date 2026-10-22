@@ -151,7 +151,10 @@ final class WatchModel {
         relayUrl = home.url
         insecure = home.insecure
         certHashes = home.certHashes
-        followOffers = true
+        // No lr=1 back home: this player just gave up on the PoP home
+        // offered, and home would hold its demand for an offer it will not
+        // follow (item 43.7).
+        followOffers = false
         onLocalRelayFailed?()
         watch()
     }

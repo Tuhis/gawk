@@ -88,6 +88,11 @@ final class LocalRelayTests: XCTestCase {
         s.consider(offer, live: false, home: home)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(calls.n, 2, "unreachable for this app session")
+        // item 43.7: home holds an lr=1 session's demand for an offer, so
+        // an app that gave up on the PoP it was offered stops saying lr=1.
+        XCTAssertFalse(s.target(home: home, homeCertHashes: []).followOffers)
+        XCTAssertTrue(s.target(home: "https://relay.example.net:4433", homeCertHashes: []).followOffers,
+                      "another home offered nothing it gave up on")
 
         let o = make()
         let answer = found
@@ -97,6 +102,7 @@ final class LocalRelayTests: XCTestCase {
         o.optOut()
         XCTAssertNil(o.chip(home: home))
         XCTAssertEqual(o.optOuts, [offer.handle])
+        XCTAssertFalse(o.target(home: home, homeCertHashes: []).followOffers, "opted out: no lr=1")
         o.consider(offer, live: false, home: home)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertNil(o.chip(home: home), "opted out")
@@ -156,7 +162,7 @@ final class LocalRelayTests: XCTestCase {
         XCTAssertNil(s.chip(home: home))
         let next = s.target(home: home, homeCertHashes: [])
         XCTAssertNil(next.pop)
-        XCTAssertTrue(next.followOffers)
+        XCTAssertFalse(next.followOffers, "item 43.7: no lr=1 for a PoP this app gave up on")
         s.consider(offer, live: false, home: home)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertNil(s.chip(home: home), "unreachable for this app session")

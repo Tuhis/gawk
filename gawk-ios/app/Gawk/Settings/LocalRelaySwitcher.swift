@@ -48,6 +48,9 @@ final class LocalRelaySwitcher {
     private(set) var nextBroadcast = false
 
     @ObservationIgnored private var unreachable: Set<String> = []
+    /// The PoP handle each home last offered (item 43.7: `lr=1` stops once
+    /// the app gave up on it).
+    @ObservationIgnored private var lastOffered: [String: String] = [:]
     @ObservationIgnored private var probing: (offer: LocalRelayOffer, home: String)?
     @ObservationIgnored private var prompt: LocalRelayPrompt?
     @ObservationIgnored private var active = true
@@ -85,6 +88,7 @@ final class LocalRelaySwitcher {
 
     /// A fresh offer from `home`, from a probe or a live session.
     func consider(_ offer: LocalRelayOffer, live: Bool, home: String) {
+        lastOffered[home] = offer.handle
         guard !optOuts.contains(offer.handle), !unreachable.contains(offer.handle) else { return }
         if var h = held, h.handle == offer.handle, h.home == home, h.until > .now {
             h.until = .now.addingTimeInterval(TimeInterval(offer.validitySecs))
@@ -127,19 +131,32 @@ final class LocalRelaySwitcher {
 
     /// The PoP refused the session: home for the rest of the app session.
     func refused() {
-        if let h = held { unreachable.insert(h.handle) }
+        if let h = held {
+            unreachable.insert(h.handle)
+            lastOffered[h.home] = h.handle
+        }
         held = nil
     }
 
     /// Where the next broadcast (or a new player) dials: the held PoP, or
-    /// home with `lr=1`.
+    /// home, with `lr=1` unless the app gave up on the PoP that home last
+    /// offered (opted out, or unreachable): only clients that will follow
+    /// an offer say it, since home holds their demand for one (item 43.7).
     func target(home: String, homeCertHashes: [String]) -> Target {
         if let pop = current(), pop.home == home {
             return Target(
                 url: pop.url, certHashes: pop.certHashes, followOffers: false,
                 wallHidden: wallHidden.contains(pop.handle), pop: pop)
         }
-        return Target(url: home, certHashes: homeCertHashes, followOffers: true, wallHidden: false, pop: nil)
+        return Target(
+            url: home, certHashes: homeCertHashes, followOffers: followsOffers(home: home),
+            wallHidden: false, pop: nil)
+    }
+
+    /// Whether a session toward `home` would follow an offer (`lr=1`).
+    func followsOffers(home: String) -> Bool {
+        guard let last = lastOffered[home] else { return true }
+        return !unreachable.contains(last) && !optOuts.contains(last)
     }
 
     /// A broadcast started: what was said about the next one is spent.
