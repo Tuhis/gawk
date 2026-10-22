@@ -52,6 +52,9 @@ type roomClusterWiring struct {
 	store   RoomCluster
 	podName string
 	dial    roomProxyDialer
+	// vouch sends a PoP's vouched wall op to the wall's home pod (R74,
+	// room_link.go).
+	vouch roomVoucher
 }
 
 // roomProxyUpstream is one internal session to a room's home.
@@ -103,6 +106,7 @@ func (s *Server) SetRoomCluster(rc RoomCluster, podName string) {
 		store:   rc,
 		podName: podName,
 		dial:    newRoomProxyDialer(s.cfg.InternalServerName, s.cfg.InternalPSK, nil),
+		vouch:   newRoomVoucher(s.cfg.InternalServerName, s.cfg.InternalPSK, nil),
 	})
 	prev := s.onDrain
 	s.onDrain = func() {
