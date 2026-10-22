@@ -18,6 +18,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/moderation"
@@ -158,5 +159,32 @@ func TestPopRoutesIgnoreIPBans(t *testing.T) {
 	rsp, _, err := d.Dial(ctx, fmt.Sprintf("https://127.0.0.1:%d/publish", port), http.Header{"Origin": {"https://gawk.example"}})
 	if err == nil || rsp == nil || rsp.StatusCode != http.StatusUnavailableForLegalReasons {
 		t.Fatalf("an ordinary /publish from the banned address: %v %+v, want 451", err, rsp)
+	}
+}
+
+// The leg routes skip the per-IP limiter too (docs/76 item 30): whatever
+// W3-uplink/-downlink's handlers answer, it is never the limiter's 429,
+// however fast the PoP dials. TestPopRoutesSkipThePerIPLimiter covers
+// /pop/link; /echo proves the limiter is live.
+func TestPopLegRoutesSkipThePerIPLimiter(t *testing.T) {
+	port, clientTLS, srv, _ := startPopHome(t, func(c *config.Config) { c.ConnRateLimit = 0.001; c.ConnBurstLimit = 1 })
+	srv.testHookRateLimitLoopback.Store(true)
+	auth := http.Header{"Authorization": {"Bearer good"}}
+	for i := range 3 {
+		for _, path := range []string{"/pop/publish/ABC234?proto=1", "/pop/subscribe/ABC234?proto=1", "/pop/addr?proto=1"} {
+			_, rsp, _ := popDial(t, port, clientTLS, path, auth)
+			if rsp != nil && rsp.StatusCode == http.StatusTooManyRequests {
+				t.Errorf("dial %d of %s answered 429", i, path)
+			}
+		}
+	}
+	var limited bool
+	for range 3 {
+		if _, rsp, err := popDial(t, port, clientTLS, "/echo", nil); err != nil && rsp != nil && rsp.StatusCode == http.StatusTooManyRequests {
+			limited = true
+		}
+	}
+	if !limited {
+		t.Fatal("the limiter never refused /echo; the exemption test proves nothing")
 	}
 }
