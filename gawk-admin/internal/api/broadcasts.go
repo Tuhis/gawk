@@ -83,6 +83,7 @@ func (a *API) handleListBroadcasts(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, row)
 	}
+	out = mergePopBroadcasts(out, snap.Pops, cfg, active, banStateKnown, now)
 	// The coverage counters ride along so partial coverage is VISIBLE: relayscan
 	// treats a pod-level scrape failure as data rather than an error, and
 	// without these an empty answer from an unreachable fleet would render as a

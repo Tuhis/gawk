@@ -837,6 +837,9 @@ func schemaFixtures() map[string]any {
 		StartedAt: ts, ViewersGlobal: 41, Pods: []podPlacementJSON{placement},
 		Links: &links, BanState: &banState,
 	}
+	bpop := broadcastPopJSON{Name: "assembly-2026", Forwarded: true, Label: "main pc", PublisherLanAddr: "192.168.1.41",
+		LocalViewers: 5, OutsideViewers: 4}
+	broadcast.Pop = &bpop
 	relay := relayJSON{
 		Pod: "gawk-server-7c9f8b6d5-2xk4p", Reachable: true, Version: "2.4.1",
 		Config: map[string]any{"maxIdleTimeout": "30s"}, Error: "the config endpoint did not answer",
@@ -914,6 +917,7 @@ func schemaFixtures() map[string]any {
 		"BroadcastLinks":    links,
 		"BanState":          banState,
 		"Broadcast":         broadcast,
+		"BroadcastPop":      bpop,
 		"BroadcastsPage":    broadcastsPageJSON{Broadcasts: []broadcastJSON{broadcast}, PodsResolved: 3, PodsAnswered: 3},
 		"Delivery":          delivery,
 		"Event":             event,

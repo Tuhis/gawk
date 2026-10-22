@@ -2721,6 +2721,31 @@ components:
             The broadcast's unresolved `flag`-mode content flag (R40), which
             a client pins to the top of the list. Absent when there is none,
             and always absent when screening is off.
+        pop:
+          allOf:
+            - $ref: '#/components/schemas/BroadcastPop'
+          description: |
+            The PoP a party broadcast started at (R74). Absent on every other
+            broadcast. A party-only row (home does not carry it) has an empty
+            `key`, no `pods` and no `publisherRemoteIp`; it can be killed like
+            any other, and the kill reaches the PoP.
+
+    BroadcastPop:
+      type: object
+      required: [name, forwarded, localViewers, outsideViewers]
+      properties:
+        name:
+          type: string
+          description: The PoP's name.
+        forwarded:
+          type: boolean
+          description: Whether home is carrying it now; false is party-only.
+        label: { type: string }
+        publisherLanAddr:
+          type: string
+          description: The broadcaster's LAN address at the party, as the PoP reports it.
+        localViewers: { type: integer, format: int32 }
+        outsideViewers: { type: integer, format: int32 }
 
     BroadcastsPage:
       type: object
