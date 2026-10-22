@@ -115,6 +115,25 @@ type Config struct {
 	// OFF: with it off every one of those paths answers 404, exactly as R39's
 	// reserved POST /content-flags did.
 	Screening bool
+
+	// Pops enables R74's PoP pages (docs/76 §7.2): the /api/v1/pops routes,
+	// the PoPs view and the named tier's reconciler. Default OFF, rendered
+	// from the chart's pops.enabled, the value that grants the Role its Pop
+	// verbs.
+	Pops bool
+	// PopHomeEndpoint is the home relay's host:port a pairing string names
+	// (`gawk-pair:<endpoint>/<token>`), e.g. api.gawk.ioio.fi:4433. Required
+	// with Pops.
+	PopHomeEndpoint string
+	// PopPairingTTL is how long an unused pairing string can be redeemed
+	// (docs/76 item 7). It never ends a credential paired in time.
+	PopPairingTTL time.Duration
+	// PopDNSZone and PopCertIssuer ("Kind/name") enable the named tier
+	// (docs/76 §6.11); both empty is pinned-only. They are set together.
+	PopDNSZone    string
+	PopCertIssuer string
+	// PopDNSTTL is the TTL of a named PoP's DNSEndpoint record.
+	PopDNSTTL time.Duration
 	// ContentFlagRepage is how often an open flag re-pages (D9).
 	ContentFlagRepage time.Duration
 	// ContentFlagMute is how long a dismissal mutes re-flagging (D10, OD11).
@@ -315,6 +334,18 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"how long a run above the threshold lasts before the moderation timeline calls it sustained")
 	contentFlagRejoin := fs.String("content-flag-rejoin", env("GAWK_ADMIN_CONTENT_FLAG_REJOIN", "10m"),
 		"hold a clear of an unacknowledged flag this long, so a re-trip is the same incident and does not page again: off, or a duration")
+	popsOn := fs.String("pops", env("GAWK_ADMIN_POPS", "false"),
+		"enable R74 PoP management (docs/76 §7.2): /api/v1/pops, the PoPs view and the named-tier reconciler; needs the chart's pops.enabled RBAC")
+	popHomeEndpoint := fs.String("pop-home-endpoint", env("GAWK_ADMIN_POP_HOME_ENDPOINT", ""),
+		"host:port of the home relay a pairing string names, e.g. api.gawk.ioio.fi:4433; required with -pops")
+	popPairingTTL := fs.String("pop-pairing-ttl", env("GAWK_ADMIN_POP_PAIRING_TTL", "72h"),
+		"how long an unused PoP pairing string can be redeemed")
+	popDNSZone := fs.String("pop-dns-zone", env("GAWK_ADMIN_POP_DNS_ZONE", ""),
+		"DNS zone named PoP hosts get a random label in; empty is pinned-only (set with -pop-cert-issuer)")
+	popCertIssuer := fs.String("pop-cert-issuer", env("GAWK_ADMIN_POP_CERT_ISSUER", ""),
+		"cert-manager issuer for named PoP certificates, as Issuer/<name> or ClusterIssuer/<name> (set with -pop-dns-zone)")
+	popDNSTTL := fs.String("pop-dns-ttl", env("GAWK_ADMIN_POP_DNS_TTL", "60s"),
+		"TTL of a named PoP's DNS record")
 	logLevel := fs.String("log-level", env("GAWK_ADMIN_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
 	logFormat := fs.String("log-format", env("GAWK_ADMIN_LOG_FORMAT", "text"), "log format: text|json")
 	devOIDCProxy := fs.String("dev-oidc-proxy", env("GAWK_ADMIN_DEV_OIDC_PROXY", ""),
@@ -364,6 +395,10 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid -rooms %q (want true|false)", *roomsOn)
 	}
 	cfg.Rooms = rooms
+
+	if err := parsePops(&cfg, *popsOn, *popHomeEndpoint, *popPairingTTL, *popDNSZone, *popCertIssuer, *popDNSTTL); err != nil {
+		return Config{}, err
+	}
 
 	if err := parseScreening(&cfg, *screeningOn, *contentFlagRepage, *contentFlagMute, *contentFlagStaleAfter,
 		*contentFlagAutoKill, *contentFlagDeadline, *sampleRetention); err != nil {
@@ -664,6 +699,12 @@ func (c Config) LogAttrs() []any {
 		"telemetryBaseUrl", c.TelemetryBaseURL,
 		"rooms", c.Rooms,
 		"screening", c.Screening,
+		"pops", c.Pops,
+		"popHomeEndpoint", c.PopHomeEndpoint,
+		"popPairingTtl", c.PopPairingTTL.String(),
+		"popDnsZone", c.PopDNSZone,
+		"popCertIssuer", c.PopCertIssuer,
+		"popDnsTtl", c.PopDNSTTL.String(),
 		"contentFlagRepage", c.ContentFlagRepage.String(),
 		"contentFlagMute", c.ContentFlagMute.String(),
 		"contentFlagStaleAfter", c.ContentFlagStaleAfter.String(),

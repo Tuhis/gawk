@@ -29,7 +29,11 @@ type fakePod struct {
 	// absent (404), the shape of a relay that predates R49.
 	rooms   []relayscan.Room
 	noRooms bool
-	hits    atomic.Int64
+	// pops is what /internal/admin/pops serves (R74); noPops makes the route
+	// absent (404), the shape of a relay that predates R74.
+	pops   []relayscan.PopState
+	noPops bool
+	hits   atomic.Int64
 }
 
 func (p *fakePod) start(t *testing.T) string {
@@ -81,6 +85,20 @@ func (p *fakePod) start(t *testing.T) string {
 			rooms = []relayscan.Room{}
 		}
 		_ = json.NewEncoder(w).Encode(relayscan.RoomsResponse{Schema: relayscan.SchemaRooms, Pod: p.name, Rooms: rooms})
+	})
+	mux.HandleFunc("GET /internal/admin/pops", func(w http.ResponseWriter, r *http.Request) {
+		if !auth(w, r) {
+			return
+		}
+		if p.noPops {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		pops := p.pops
+		if pops == nil {
+			pops = []relayscan.PopState{}
+		}
+		_ = json.NewEncoder(w).Encode(relayscan.PopsResponse{Schema: relayscan.SchemaPops, Pod: p.name, Pops: pops})
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

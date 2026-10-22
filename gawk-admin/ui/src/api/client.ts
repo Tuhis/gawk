@@ -34,6 +34,10 @@ import type {
   RoomScreening,
   RoomWithSecret,
   CreateRoomRequest,
+  CreatePopRequest,
+  Pop,
+  PopPatchRequest,
+  PopWithPairing,
   Webhook,
   WebhookTestResult,
   EventCategory,
@@ -267,6 +271,44 @@ export class ApiClient {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ screening }),
     });
+  }
+
+  // R74 PoPs (docs/76 §7.2). Every route 404s when the deployment has PoPs
+  // off; the shell consults `me.features.pops` before offering the view.
+
+  async pops(): Promise<Pop[]> {
+    return (await this.json<{ pops: Pop[] }>('pops')).pops ?? [];
+  }
+
+  /** One PoP with its live broadcasts and health lines. */
+  pop(name: string): Promise<Pop> {
+    return this.json<Pop>(`pops/${encodeURIComponent(name)}`);
+  }
+
+  /** `201 {pop, pairingString, expiresAt}` — the string is shown once. */
+  createPop(req: CreatePopRequest): Promise<PopWithPairing> {
+    return this.post<PopWithPairing>('pops', req);
+  }
+
+  updatePop(name: string, req: PopPatchRequest): Promise<Pop> {
+    return this.json<Pop>(`pops/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+  }
+
+  /** A new pairing string, shown once; the old credential stops working at once. */
+  repairPop(name: string): Promise<PopWithPairing> {
+    return this.post<PopWithPairing>(`pops/${encodeURIComponent(name)}/repair`, {});
+  }
+
+  revokePop(name: string): Promise<Pop> {
+    return this.post<Pop>(`pops/${encodeURIComponent(name)}/revoke`, {});
+  }
+
+  async deletePop(name: string): Promise<void> {
+    await this.request(`pops/${encodeURIComponent(name)}`, { method: 'DELETE' });
   }
 
   // R40 content flags (docs/71 §9.4). Every route 404s when the deployment has

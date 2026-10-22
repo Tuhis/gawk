@@ -374,7 +374,7 @@ func TestObservedFlags(t *testing.T) {
 // flagger routes and is 403 everywhere else — the R49 loop, so a route added
 // later is covered the day it lands.
 func TestFlaggerReachesExactlyTheFlaggerRoutes(t *testing.T) {
-	h := newHarnessWithoutPostgres(t, withRoomsEnabled(), withScreening())
+	h := newHarnessWithoutPostgres(t, withRoomsEnabled(), withScreening(), withPopsEnabled())
 	h.identity.Roles = []string{"flagger"}
 	allowed := map[string]bool{
 		"POST /api/v1/content-flags":     true,

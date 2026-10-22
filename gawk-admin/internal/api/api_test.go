@@ -155,7 +155,7 @@ func TestRoutesAreBehindTheInjectedRoleCheck(t *testing.T) {
 	// check. The second pass below is where they are actually covered — and it
 	// is the reason this test does not simply expect 404 for them and call the
 	// table "walked".
-	withRooms := newHarnessWithoutPostgres(t, withRoomsEnabled(), withScreening())
+	withRooms := newHarnessWithoutPostgres(t, withRoomsEnabled(), withScreening(), withPopsEnabled())
 	withRooms.identity.Roles = []string{"someone-else"}
 
 	checked := 0
@@ -174,7 +174,7 @@ func TestRoutesAreBehindTheInjectedRoleCheck(t *testing.T) {
 		// Every route that declares a role answers 403 without it — on the
 		// harness that actually registers it.
 		harness := h
-		if r.Requires == api.RequiresRooms || r.Requires == api.RequiresScreening {
+		if r.Requires == api.RequiresRooms || r.Requires == api.RequiresScreening || r.Requires == api.RequiresPops {
 			harness = withRooms
 		}
 		if status, body := harness.raw(r.Method, path, nil); status != http.StatusForbidden {

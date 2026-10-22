@@ -135,7 +135,7 @@ info:
     | `403` | `room_not_owned` | A `rooms-manager` caller without `operator` tried to delete a room it did not create. |
     | `400` | `screening_not_allowed` | Only a static room with an attach secret can be exempt from content screening. |
     | `404` | `not_found` | No such object, or a route for a feature this deployment has disabled. |
-    | `409` | `duplicate_active`, `duplicate_name`, `source_immutable`, `ban_not_active`, `room_exists`, `room_not_static`, `room_not_dynamic`, `content_flag_state` | The current state of the object refuses the request. |
+    | `409` | `duplicate_active`, `duplicate_name`, `source_immutable`, `ban_not_active`, `room_exists`, `room_not_static`, `room_not_dynamic`, `content_flag_state`, `pop_exists`, `pop_revoked`, `wall_code_taken` | The current state of the object refuses the request. |
     | `429` | `rate_limited` | Too many rejected tokens from your address. Honour `Retry-After` and obtain a fresh token before retrying. Valid tokens never count against this limit. |
     | `500` | `internal` | An unexpected server error. |
     | `503` | `unavailable` | A dependency (usually Postgres) is unreachable. Retry later. Existing bans stay enforced. |
@@ -171,6 +171,8 @@ tags:
     description: Room custom resources. Only served when the deployment enables rooms.
   - name: screening
     description: Automatic content flagging (R40). Only served when the deployment enables screening.
+  - name: pops
+    description: PoP relays (R74) and their pairing. Only served when the deployment enables PoPs.
 
 paths:
   /api/v1/openapi.json:
@@ -280,6 +282,8 @@ paths:
                 features:
                   rooms: true
                   screening: true
+                  pops: true
+                  popNamedAddress: false
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
@@ -1268,6 +1272,424 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/Internal' }
 
+  /api/v1/pops:
+    get:
+      operationId: listPops
+      tags: [pops]
+      summary: List PoPs
+      description: |
+        Returns every PoP (R74), sorted by name. Only served when the
+        deployment enables PoPs (`features.pops` in `GET /api/v1/me`);
+        otherwise the path returns `404`.
+
+        A row merges the `Pop` custom resource with the live view of the
+        relay pod that holds the PoP's link. `live` is absent when no
+        reachable pod holds it. `state` is `waiting-for-pairing` until a
+        PoP has paired with its current pairing string, including right
+        after a re-pair. Use `getPop` for the live broadcasts and the health
+        lines.
+
+        A `Pop` whose custom resource could not be decoded is listed by name
+        with `state: invalid`, so that it can be deleted.
+      x-gawk-roles: [operator]
+      x-gawk-requires: pops
+      responses:
+        '200':
+          description: All PoPs.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: '`link` carries the PoP public and LAN addresses.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PopsPage' }
+              example:
+                pops:
+                  - name: assembly-2026
+                    displayName: Assembly 2026
+                    state: linked
+                    stateSince: '2026-10-21T18:04:11Z'
+                    notAfter: '2026-11-09T00:00:00Z'
+                    createdAt: '2026-10-21T18:00:00Z'
+                    managed: true
+                    revoked: false
+                    pairing:
+                      issuedAt: '2026-10-21T18:00:00Z'
+                      expiresAt: '2026-10-24T18:00:00Z'
+                      paired: true
+                      pairedAt: '2026-10-21T18:04:11Z'
+                    uplink: { maxMbps: 25, maxStreams: 3 }
+                    downlink: { maxMbps: 0, maxStreams: 0 }
+                    limits: { maxBroadcasts: 40, maxDownlinkStreams: 20 }
+                    guests: { autoSwitch: true }
+                    wall: { roomCode: assembly-2026 }
+                    namedAddress: { enabled: false }
+                    link:
+                      connected: true
+                      since: '2026-10-21T18:04:11Z'
+                      version: 0.44.0
+                      proto: 1
+                      publicAddrs: ['203.0.113.7', '2001:db8:1:2::/64']
+                      lanAddr: 192.168.1.20
+                      pod: gawk-server-7c9f8b6d5-2xk4p
+                    live:
+                      pod: gawk-server-7c9f8b6d5-2xk4p
+                      live: 7
+                      forwarded: 2
+                      outsideViewers: 11
+                      uplinkMbps: 14.5
+                      uplinkStreams: 2
+                      uplink: { maxMbps: 25, maxStreams: 3 }
+                      downlink: { maxMbps: 0, maxStreams: 0 }
+                      downlinkStreams: 1
+                      guestsConnected: 23
+                      offersSent: 19
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+    post:
+      operationId: createPop
+      tags: [pops]
+      summary: Create a PoP
+      description: |
+        Creates a `Pop` custom resource and returns its pairing string. The
+        string is returned only in this response and cannot be read again;
+        only its SHA-256 is stored. It can be redeemed once, until
+        `expiresAt` (`-pop-pairing-ttl`). Use `repairPop` if it is lost.
+
+        With `wall`, the PoP's party wall is created too: a static room with
+        no attach secret that only the PoP can attach to, owned by the `Pop`
+        so deleting the PoP deletes it. The wall needs rooms enabled. Its
+        code defaults to the PoP name; a name longer than a room code allows,
+        or with the six-character shape of a dynamic code, needs an explicit
+        `wall.roomCode`. A code that is already a room returns `409` with
+        code `wall_code_taken`, and the PoP is not created.
+
+        `namedAddress` needs the named tier configured (`features.popNamedAddress`).
+        A name that is already a PoP returns `409` with code `pop_exists`.
+      x-gawk-roles: [operator]
+      x-gawk-requires: pops
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePopRequest' }
+            example:
+              name: assembly-2026
+              displayName: Assembly 2026
+              notAfter: '2026-11-09T00:00:00Z'
+              uplink: { maxMbps: 25, maxStreams: 3 }
+              downlink: { maxMbps: 0, maxStreams: 0 }
+              limits: { maxBroadcasts: 40, maxDownlinkStreams: 20 }
+              guests: { autoSwitch: true }
+              wall: { roomCode: assembly-2026, maxParticipants: 200 }
+              namedAddress: false
+      responses:
+        '201':
+          description: The PoP was created.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: Contains the one-time pairing string.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PopWithPairing' }
+              example:
+                pop:
+                  name: assembly-2026
+                  displayName: Assembly 2026
+                  state: waiting-for-pairing
+                  stateSince: '2026-10-21T18:00:00Z'
+                  notAfter: '2026-11-09T00:00:00Z'
+                  createdAt: '2026-10-21T18:00:00Z'
+                  managed: true
+                  revoked: false
+                  pairing:
+                    issuedAt: '2026-10-21T18:00:00Z'
+                    expiresAt: '2026-10-24T18:00:00Z'
+                    paired: false
+                  uplink: { maxMbps: 25, maxStreams: 3 }
+                  downlink: { maxMbps: 0, maxStreams: 0 }
+                  limits: { maxBroadcasts: 40, maxDownlinkStreams: 20 }
+                  guests: { autoSwitch: true }
+                  wall: { roomCode: assembly-2026 }
+                  namedAddress: { enabled: false }
+                pairingString: gawk-pair:api.gawk.ioio.fi:4433/K7M2Q-9XDA4-RT3VB-6NWPE-HJ5LC-Y
+                expiresAt: '2026-10-24T18:00:00Z'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /api/v1/pops/{name}:
+    get:
+      operationId: getPop
+      tags: [pops]
+      summary: Get a PoP with its broadcasts and health
+      description: |
+        Returns the `listPops` row for one PoP plus `broadcasts` and
+        `health`, from the relay pod that holds its link. Both are empty
+        when no reachable pod holds it.
+      x-gawk-roles: [operator]
+      x-gawk-requires: pops
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The PoP name.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The PoP.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: Contains PoP addresses, publisher LAN addresses and raw broadcast IDs.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pop' }
+              example:
+                name: assembly-2026
+                displayName: Assembly 2026
+                state: linked
+                stateSince: '2026-10-21T18:04:11Z'
+                createdAt: '2026-10-21T18:00:00Z'
+                managed: true
+                revoked: false
+                pairing:
+                  issuedAt: '2026-10-21T18:00:00Z'
+                  expiresAt: '2026-10-24T18:00:00Z'
+                  paired: true
+                  pairedAt: '2026-10-21T18:04:11Z'
+                uplink: { maxMbps: 25, maxStreams: 3 }
+                downlink: { maxMbps: 0, maxStreams: 0 }
+                limits: { maxBroadcasts: 40, maxDownlinkStreams: 20 }
+                guests: { autoSwitch: true }
+                wall: { roomCode: assembly-2026 }
+                namedAddress:
+                  enabled: true
+                  host: p-7k2m9x.pop.gawk.ioio.fi
+                  certificateNotAfter: '2026-10-28T18:05:00Z'
+                link:
+                  connected: true
+                  since: '2026-10-21T18:04:11Z'
+                  version: 0.44.0
+                  proto: 1
+                  publicAddrs: ['203.0.113.7']
+                  lanAddr: 192.168.1.20
+                  pod: gawk-server-7c9f8b6d5-2xk4p
+                live:
+                  pod: gawk-server-7c9f8b6d5-2xk4p
+                  live: 2
+                  forwarded: 1
+                  outsideViewers: 4
+                  uplinkMbps: 6.2
+                  uplinkStreams: 1
+                  uplink: { maxMbps: 25, maxStreams: 3 }
+                  downlink: { maxMbps: 0, maxStreams: 0 }
+                  downlinkStreams: 0
+                  guestsConnected: 9
+                  offersSent: 7
+                broadcasts:
+                  - id: ABC234
+                    label: main pc
+                    publisherLanAddr: 192.168.1.41
+                    localViewers: 5
+                    outsideViewers: 4
+                    forwarded: true
+                    wall: 'on'
+                    links:
+                      watch: https://gawk.example/#/view/ABC234
+                  - id: DEF567
+                    label: Stream 2
+                    publisherLanAddr: 192.168.1.57
+                    localViewers: 2
+                    outsideViewers: 0
+                    forwarded: false
+                    wall: hidden
+                    links:
+                      watch: https://gawk.example/#/view/DEF567
+                health:
+                  - { key: link, ok: true, detail: linked to gawk-server-7c9f8b6d5-2xk4p }
+                  - { key: firewall, ok: false, detail: UDP 4433 is blocked on the Public profile }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+    patch:
+      operationId: patchPop
+      tags: [pops]
+      summary: Edit a PoP
+      description: |
+        Edits a PoP's display name, end date, budget and guest options. An
+        absent field is left unchanged; `notAfter: ""` clears the end date.
+        The pairing is never changed here (use `repairPop`), and the wall is
+        set when the PoP is created.
+      x-gawk-roles: [operator]
+      x-gawk-requires: pops
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The PoP name.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PopPatchRequest' }
+            example:
+              displayName: Assembly 2026
+              notAfter: ''
+              uplink: { maxMbps: 40, maxStreams: 4 }
+              guests: { autoSwitch: false }
+      responses:
+        '200':
+          description: The PoP after the change.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: '`link` carries the PoP public and LAN addresses.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pop' }
+              example:
+                name: assembly-2026
+                displayName: Assembly 2026
+                state: offline
+                stateSince: '2026-10-21T21:04:00Z'
+                createdAt: '2026-10-21T18:00:00Z'
+                managed: true
+                revoked: false
+                pairing: { issuedAt: '2026-10-21T18:00:00Z', expiresAt: '2026-10-24T18:00:00Z', paired: true, pairedAt: '2026-10-21T18:04:11Z' }
+                uplink: { maxMbps: 40, maxStreams: 4 }
+                downlink: { maxMbps: 0, maxStreams: 0 }
+                limits: { maxBroadcasts: 40, maxDownlinkStreams: 20 }
+                guests: { autoSwitch: false }
+                namedAddress: { enabled: false }
+                link: { connected: false, since: '2026-10-21T21:04:00Z', lanAddr: 192.168.1.20 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+    delete:
+      operationId: deletePop
+      tags: [pops]
+      summary: Delete a PoP
+      description: |
+        Deletes the `Pop` custom resource. Its wall room is deleted with it.
+        The PoP's links are refused from then on, as after a revoke.
+      x-gawk-roles: [operator]
+      x-gawk-requires: pops
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The PoP name.
+          schema: { type: string }
+      responses:
+        '204':
+          description: The PoP was deleted.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /api/v1/pops/{name}/repair:
+    post:
+      operationId: repairPop
+      tags: [pops]
+      summary: Re-pair a PoP
+      description: |
+        Replaces the PoP's pairing string. The credential the PoP paired
+        with is refused from this moment, and its link is closed; the new
+        string is returned only in this response. A revoked PoP returns
+        `409` with code `pop_revoked`.
+      x-gawk-roles: [operator]
+      x-gawk-requires: pops
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The PoP name.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The PoP was re-paired.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: Contains the one-time pairing string.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PopWithPairing' }
+              example:
+                pop:
+                  name: assembly-2026
+                  displayName: Assembly 2026
+                  state: waiting-for-pairing
+                  stateSince: '2026-10-22T09:00:00Z'
+                  createdAt: '2026-10-21T18:00:00Z'
+                  managed: true
+                  revoked: false
+                  pairing: { issuedAt: '2026-10-22T09:00:00Z', expiresAt: '2026-10-25T09:00:00Z', paired: false }
+                  uplink: { maxMbps: 25, maxStreams: 3 }
+                  downlink: { maxMbps: 0, maxStreams: 0 }
+                  limits: { maxBroadcasts: 40, maxDownlinkStreams: 20 }
+                  guests: { autoSwitch: true }
+                  namedAddress: { enabled: false }
+                pairingString: gawk-pair:api.gawk.ioio.fi:4433/QW3ER-T5YUI-8OPAS-DF2GH-JK4LZ-X
+                expiresAt: '2026-10-25T09:00:00Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/Internal' }
+
+  /api/v1/pops/{name}/revoke:
+    post:
+      operationId: revokePop
+      tags: [pops]
+      summary: Revoke a PoP
+      description: |
+        Sets `spec.revoked`. Every link and leg of the PoP is refused, its
+        reservations are released, and the PoP keeps serving its LAN as a
+        standalone relay. Idempotent.
+      x-gawk-roles: [operator]
+      x-gawk-requires: pops
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The PoP name.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The PoP after the revoke.
+          x-gawk-sensitive: true
+          x-gawk-sensitive-reason: '`link` carries the PoP public and LAN addresses.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pop' }
+              example:
+                name: assembly-2026
+                displayName: Assembly 2026
+                state: revoked
+                createdAt: '2026-10-21T18:00:00Z'
+                managed: true
+                revoked: true
+                pairing: { issuedAt: '2026-10-21T18:00:00Z', expiresAt: '2026-10-24T18:00:00Z', paired: true, pairedAt: '2026-10-21T18:04:11Z' }
+                uplink: { maxMbps: 25, maxStreams: 3 }
+                downlink: { maxMbps: 0, maxStreams: 0 }
+                limits: { maxBroadcasts: 40, maxDownlinkStreams: 20 }
+                guests: { autoSwitch: true }
+                namedAddress: { enabled: false }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/Internal' }
+
   /api/v1/content-flags:
     post:
       operationId: postContentFlag
@@ -1953,6 +2375,9 @@ components:
         - no_flag_route
         - screening_not_allowed
         - content_flag_state
+        - pop_exists
+        - pop_revoked
+        - wall_code_taken
 
     ErrorBody:
       type: object
@@ -2061,7 +2486,7 @@ components:
         features:
           type: object
           description: Optional features this deployment serves. Routes of a disabled feature return `404`.
-          required: [rooms, screening]
+          required: [rooms, screening, pops, popNamedAddress]
           properties:
             rooms:
               type: boolean
@@ -2069,6 +2494,12 @@ components:
             screening:
               type: boolean
               description: Whether the content-flagging routes (R40) are served.
+            pops:
+              type: boolean
+              description: Whether the `/api/v1/pops` routes (R74) are served.
+            popNamedAddress:
+              type: boolean
+              description: Whether a PoP can be given a named address on this deployment.
 
     BanTarget:
       type: object
@@ -2732,6 +3163,319 @@ components:
           type: string
           enum: ['', exempt]
           description: '`exempt` to exempt the room from content screening, `""` to screen it again.'
+
+    Pop:
+      type: object
+      description: |
+        One PoP (R74): its `Pop` custom resource merged with the live view of
+        the relay pod that holds its link. `broadcasts` and `health` are
+        present only in `getPop`. The pairing string and the credential are
+        never part of it.
+      required: [name, state, managed, revoked, pairing, uplink, downlink, limits, guests, namedAddress]
+      properties:
+        name:
+          type: string
+          description: The custom resource name, a DNS label of at most 63 characters.
+        displayName: { type: string }
+        state:
+          type: string
+          enum: [waiting-for-pairing, linked, offline, revoked, ended, invalid]
+          description: |
+            `waiting-for-pairing` until the PoP pairs with its current string;
+            `ended` once `notAfter` has passed; `invalid` when the custom
+            resource could not be decoded.
+        stateSince:
+          type: string
+          format: date-time
+          description: When the state began, when known.
+        notAfter:
+          type: string
+          format: date-time
+          description: Links are refused after this time. Absent for no end date.
+        createdAt: { type: string, format: date-time }
+        managed:
+          type: boolean
+          description: '`true` for PoPs created through this API.'
+        revoked: { type: boolean }
+        pairing: { $ref: '#/components/schemas/PopPairing' }
+        uplink:
+          $ref: '#/components/schemas/PopBudget'
+          description: The effective uplink budget, defaults applied.
+        downlink:
+          $ref: '#/components/schemas/PopBudget'
+          description: The downlink budget. `0` means unlimited at the PoP.
+        limits: { $ref: '#/components/schemas/PopLimits' }
+        guests:
+          type: object
+          required: [autoSwitch]
+          properties:
+            autoSwitch:
+              type: boolean
+              description: Whether home suggests the PoP to guests on its network.
+        wall:
+          type: object
+          description: The party wall. Absent when the PoP has none.
+          required: [roomCode]
+          properties:
+            roomCode:
+              type: string
+              description: The wall's room code. Raw and joinable.
+        namedAddress:
+          type: object
+          required: [enabled]
+          properties:
+            enabled: { type: boolean }
+            host:
+              type: string
+              description: The random host name assigned to the PoP.
+            certificateNotAfter:
+              type: string
+              format: date-time
+              description: Expiry of the PoP's issued certificate.
+        link: { $ref: '#/components/schemas/PopLink' }
+        live: { $ref: '#/components/schemas/PopLive' }
+        broadcasts:
+          type: array
+          description: Broadcasts live at the PoP. Only in `getPop`.
+          items: { $ref: '#/components/schemas/PopBroadcast' }
+        health:
+          type: array
+          description: The PoP's own health lines. Only in `getPop`.
+          items: { $ref: '#/components/schemas/PopHealthLine' }
+
+    PopPairing:
+      type: object
+      description: When the current pairing string was issued and expires. The string itself is never returned here.
+      required: [paired]
+      properties:
+        issuedAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: An unused string cannot be redeemed after this. It never ends a credential paired in time.
+        paired:
+          type: boolean
+          description: Whether the PoP holds a credential from the current string.
+        pairedAt: { type: string, format: date-time }
+
+    PopBudget:
+      type: object
+      required: [maxMbps, maxStreams]
+      properties:
+        maxMbps: { type: integer, format: int32 }
+        maxStreams: { type: integer, format: int32 }
+
+    PopLimits:
+      type: object
+      required: [maxBroadcasts, maxDownlinkStreams]
+      properties:
+        maxBroadcasts:
+          type: integer
+          format: int32
+          description: How many of the PoP's broadcasts home carries at once.
+        maxDownlinkStreams:
+          type: integer
+          format: int32
+          description: How many distinct home broadcasts the PoP may pull at once.
+
+    PopLink:
+      type: object
+      description: The PoP's link as the relays last saw it.
+      required: [connected]
+      properties:
+        connected: { type: boolean }
+        since: { type: string, format: date-time }
+        version:
+          type: string
+          description: The PoP's build.
+        proto:
+          type: integer
+          format: int32
+          description: The link protocol's minor version.
+        publicAddrs:
+          type: array
+          description: The PoP's public IPv4 addresses and IPv6 /64 prefixes.
+          items: { type: string }
+        lanAddr:
+          type: string
+          description: The PoP's LAN address.
+        pod:
+          type: string
+          description: The relay pod holding the link.
+
+    PopLive:
+      type: object
+      description: The link-home pod's live counts. Absent when no reachable pod holds the link.
+      required: [pod, live, forwarded, outsideViewers, uplinkMbps, uplinkStreams, uplink, downlink, downlinkStreams, guestsConnected, offersSent]
+      properties:
+        pod: { type: string }
+        live:
+          type: integer
+          format: int32
+          description: Broadcasts live at the PoP.
+        forwarded:
+          type: integer
+          format: int32
+          description: Of those, the ones home is carrying now.
+        outsideViewers:
+          type: integer
+          format: int32
+          description: Viewers of the PoP's broadcasts outside the party.
+        uplinkMbps: { type: number }
+        uplinkStreams: { type: integer, format: int32 }
+        uplink:
+          $ref: '#/components/schemas/PopBudget'
+          description: The effective uplink ceiling, lowered by the host if set.
+        downlink:
+          $ref: '#/components/schemas/PopBudget'
+          description: The effective downlink ceiling.
+        downlinkStreams: { type: integer, format: int32 }
+        guestsConnected: { type: integer, format: int32 }
+        offersSent:
+          type: integer
+          format: int32
+          description: Times home suggested this PoP to a guest.
+
+    PopBroadcast:
+      type: object
+      required: [id, localViewers, outsideViewers, forwarded]
+      properties:
+        id:
+          type: string
+          description: The raw broadcast ID. Joinable.
+        label: { type: string }
+        publisherLanAddr:
+          type: string
+          description: The broadcaster's LAN address at the party.
+        localViewers: { type: integer, format: int32 }
+        outsideViewers: { type: integer, format: int32 }
+        forwarded:
+          type: boolean
+          description: Whether home is carrying it now.
+        wall:
+          type: string
+          enum: ['on', hidden]
+          description: Its state on the party wall. Absent when the PoP has no wall.
+        links: { $ref: '#/components/schemas/AttachmentLinks' }
+
+    PopHealthLine:
+      type: object
+      required: [key, ok]
+      properties:
+        key: { type: string }
+        ok: { type: boolean }
+        detail: { type: string }
+
+    PopsPage:
+      type: object
+      required: [pops]
+      properties:
+        pops:
+          type: array
+          items: { $ref: '#/components/schemas/Pop' }
+
+    PopWithPairing:
+      type: object
+      description: The only response shape that carries a pairing string.
+      required: [pop, pairingString, expiresAt]
+      properties:
+        pop: { $ref: '#/components/schemas/Pop' }
+        pairingString:
+          type: string
+          description: '`gawk-pair:<home endpoint>/<token>`. Returned once; only its SHA-256 is stored. Re-pair if lost.'
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the string can no longer be redeemed.
+
+    PopBudgetRequest:
+      type: object
+      properties:
+        maxMbps:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 10000
+          description: '`0` means the default.'
+        maxStreams:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 64
+          description: '`0` means the default.'
+
+    PopLimitsRequest:
+      type: object
+      properties:
+        maxBroadcasts:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 1000
+          description: '`0` means the default, 40.'
+        maxDownlinkStreams:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 64
+          description: '`0` means the default, 20.'
+
+    PopGuestsRequest:
+      type: object
+      properties:
+        autoSwitch:
+          type: boolean
+          description: Absent means the default, on.
+
+    CreatePopRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 63
+          description: A DNS label. Also the default wall code.
+        displayName:
+          type: string
+          maxLength: 64
+          description: Defaults to the name.
+        notAfter:
+          type: string
+          format: date-time
+          description: Optional end date; must be in the future.
+        uplink: { $ref: '#/components/schemas/PopBudgetRequest' }
+        downlink: { $ref: '#/components/schemas/PopBudgetRequest' }
+        limits: { $ref: '#/components/schemas/PopLimitsRequest' }
+        guests: { $ref: '#/components/schemas/PopGuestsRequest' }
+        wall:
+          type: object
+          description: Create the party wall. Needs rooms enabled.
+          properties:
+            roomCode:
+              type: string
+              description: Defaults to the PoP name.
+            maxParticipants:
+              type: integer
+              format: int32
+              minimum: 0
+              maximum: 1000
+              description: '`0` means the fleet default.'
+        namedAddress:
+          type: boolean
+          description: Give the PoP a named address. Needs the named tier configured.
+
+    PopPatchRequest:
+      type: object
+      properties:
+        displayName: { type: string, maxLength: 64 }
+        notAfter:
+          type: string
+          description: An RFC 3339 time in the future, or `""` to clear the end date.
+        uplink: { $ref: '#/components/schemas/PopBudgetRequest' }
+        downlink: { $ref: '#/components/schemas/PopBudgetRequest' }
+        limits: { $ref: '#/components/schemas/PopLimitsRequest' }
+        guests: { $ref: '#/components/schemas/PopGuestsRequest' }
+        namedAddress: { type: boolean }
 
     EmptyRequest:
       type: object

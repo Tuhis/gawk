@@ -2,7 +2,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { href, parseHash, timelineHref, useRoute } from './router.ts';
+import { href, parseHash, popHref, timelineHref, useRoute } from './router.ts';
 
 describe('portal routes (§4.9)', () => {
   it('lands on broadcasts for an empty hash', () => {
@@ -33,11 +33,19 @@ describe('portal routes (§4.9)', () => {
       'relays',
       'webhooks',
       'rooms',
+      'pops',
       'calibration',
       'api',
     ] as const) {
       expect(parseHash(href(view)).view).toBe(view);
     }
+  });
+
+  it('resolves one PoP by name as the pops detail (R74)', () => {
+    const route = parseHash(popHref('assembly-2026'));
+    expect(route.view).toBe('pops');
+    expect(route.detail).toBe('assembly-2026');
+    expect(parseHash('#/pops').detail).toBe('');
   });
 
   it('resolves the route a room webhook points at, key included (R42)', () => {
