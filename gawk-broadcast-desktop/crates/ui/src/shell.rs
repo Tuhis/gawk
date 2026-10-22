@@ -267,6 +267,18 @@ enum ShellMsg {
         url: String,
         result: ProbeResult,
     },
+    /// R74: the probe of a local-relay offer's candidates came back: the
+    /// first that answered, or none.
+    Switched {
+        found: Option<gawk_engine::localrelay::Switch>,
+    },
+    /// R74: the delay before the one retry of an offer's probe passed.
+    SwitchRetry,
+    /// R74: a party-wall Hide (`show == false`) or Show came back.
+    WallDone {
+        show: bool,
+        result: Result<(), String>,
+    },
     Engine(EngineEvent),
     /// An update check came back: the launch one, or one the Settings button
     /// asked for (`manual`), which also reports its result in Settings.
@@ -450,6 +462,15 @@ pub struct Shell {
     cold_until: Option<std::time::Instant>,
     /// What the link card on screen asks.
     link_card: Option<LinkCard>,
+    /// R74 PP14 (docs/76 §6.12): a party's local relay home offered, the
+    /// one the next broadcast publishes on, and this broadcast's on it.
+    local: crate::localswitch::LocalSwitch,
+    /// The server key this broadcast publishes on: the selected server's,
+    /// or the switched-to PoP's.
+    target_key: String,
+    /// The broadcast's resume token, hex, as the session last said: the
+    /// proof a party-wall Hide or Show presents to the PoP.
+    resume_token_hex: String,
 }
 
 /// The header probe's state: what was found for which relay, and when to
@@ -581,6 +602,10 @@ fn build_shell(
 
     let (msg_tx, msg_rx) = mpsc::channel();
     let fit = fit::FitState::new((cfg.window_width, cfg.window_height));
+    let local = crate::localswitch::LocalSwitch::new(
+        cfg.local_relay_opt_outs.clone(),
+        cfg!(target_os = "macos"),
+    );
     Shell {
         platform,
         cfg,
@@ -643,6 +668,9 @@ fn build_shell(
         pending_link: None,
         link_card: None,
         cold_until: None,
+        local,
+        target_key: String::new(),
+        resume_token_hex: String::new(),
     }
 }
 
@@ -2429,6 +2457,26 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
         });
     }
     {
+        // R74: the chip's "Use gawk.ioio.fi instead" (docs/76 item 43.6).
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_local_relay_opt_out(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                local_relay_opt_out(&ui, &shell);
+            }
+        });
+    }
+    {
+        // R74: "On the party wall · Hide" and its Show (docs/76 item 34).
+        let shell = shell.clone();
+        let ui_weak = ui_weak.clone();
+        ui.on_wall_toggle(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                wall_toggle(&ui, &shell);
+            }
+        });
+    }
+    {
         let shell = shell.clone();
         ui.on_switch_to_system_audio(move || {
             if let Some(m) = shell.borrow().media() {
@@ -2882,8 +2930,19 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     // The reclaim identity: only on the Resume button, the persisted token
     // only with the ID it was minted for, and both only to the server they
     // were minted on (review of #452).
+    //
+    // R74 (docs/76 item 43.3): the broadcast publishes on the party's local
+    // relay when a fresh offer's candidate answered, else on the selected
+    // server; it is decided here, before going live, and never moved after.
+    let target = sh.local.target(
+        &sh.cfg.resolve_relay_url(),
+        sh.cfg.resolve_cert_hashes(),
+        &sh.cfg.local_relay_wall_hidden,
+        std::time::Instant::now(),
+    );
+    let target_key = config::server_key(&target.relay_url);
     let (broadcast_id, resume_token) = if resume {
-        let (id, token) = sh.cfg.resume_identity();
+        let (id, token) = sh.cfg.resume_identity_on(&target_key);
         if id.is_empty() && !sh.cfg.last_broadcast_id.is_empty() {
             log::info!("the last broadcast was on another server; starting a new one");
         }
@@ -2922,7 +2981,7 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         "start requested: mode {}, resume {resume} (id {:?}), relay {}",
         sh.capture_mode,
         broadcast_id,
-        sh.cfg.resolve_relay_url()
+        target.relay_url
     );
     sh.state = UiState::Starting;
     sh.identity.on_start(!broadcast_id.is_empty());
@@ -2964,7 +3023,6 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     // A build still finishing for an earlier broadcast is not this one's.
     sh.build_gen += 1;
     show_sharing(ui, &prepared.source, prepared.source_is_window);
-    ui.set_upload_host(host_of(&sh.cfg.resolve_relay_url()).into());
     ui.set_live_quality("".into());
     ui.set_live_quality_detail("".into());
     if !resume {
@@ -3022,14 +3080,17 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
     // through room_join once the session exists.
     let late_join = (!creator.is_empty()).then(|| (room_code.clone(), attach.clone(), creator));
 
+    adopt_target(ui, &mut sh, &target, target_key, &resume_token);
     let scfg = SessionConfig {
-        relay_url: sh.cfg.resolve_relay_url(),
+        relay_url: target.relay_url.clone(),
         broadcast_id,
         resume_token_hex: resume_token,
-        publish_secret: sh.cfg.resolve_publish_secret(),
+        publish_secret: target_publish_secret(&sh.cfg, &target),
         origin: sh.cfg.resolve_origin(),
         insecure: false,
-        cert_hashes: sh.cfg.resolve_cert_hashes(),
+        cert_hashes: target.pins.clone(),
+        follow_offers: target.follow_offers,
+        wall_hidden: target.wall_hidden,
         room_code: if late_join.is_some() {
             String::new()
         } else {
@@ -3666,7 +3727,20 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
             sh.state = UiState::Idle;
             sh.session = None;
             let app_url = sh.cfg.resolve_app_url();
-            let text = message(&f, &app_url);
+            let mut text = message(&f, &app_url);
+            // R74 (docs/76 item 43.5): a party's local relay that would not
+            // take the broadcast is left for this app session; the next
+            // start goes home.
+            if let (Some(pop), StartFailure::Relay(_)) = (sh.local.live_on.clone(), &f) {
+                sh.local.on_pop_refused();
+                text = format!(
+                    "{}'s local relay didn't take the broadcast. Go live again to use {}.\n\n{text}",
+                    pop.name,
+                    home_host(&sh.cfg)
+                );
+            }
+            sh.local.on_end();
+            render_local(ui, &sh);
             log::error!("start failed: {}", first_line(&text));
             sh.last_error = text.clone();
             // The error card points at the debug log: the curated sentence
@@ -3739,9 +3813,41 @@ fn handle_message(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, msg: ShellMsg) {
             if sh.probe.result.as_ref() != Some(&result) {
                 log::info!("probe of the relay: {result:?}");
             }
+            let offer = match &result {
+                ProbeResult::Ok { offer: Some(o), .. } => Some(o.clone()),
+                _ => None,
+            };
             sh.probe.url = url;
             sh.probe.result = Some(result);
             render_probe(ui, &sh);
+            // R74 (docs/76 item 43.3): the Ready page's probe of home is
+            // where a broadcaster's offer arrives, in time to switch.
+            if let Some(o) = offer {
+                on_local_offer(ui, &mut sh, o);
+            }
+        }
+        ShellMsg::Switched { found } => {
+            let mut sh = shell.borrow_mut();
+            on_switched(ui, &mut sh, found);
+        }
+        ShellMsg::SwitchRetry => {
+            let mut sh = shell.borrow_mut();
+            if let Some(o) = sh.local.retry_due() {
+                spawn_switch_probe(&sh, o);
+            }
+        }
+        ShellMsg::WallDone { show, result } => {
+            let mut sh = shell.borrow_mut();
+            sh.local.wall_busy = false;
+            match result {
+                // The PoP's next 0x18 carries the new state.
+                Ok(()) => log::info!("party wall: {}", if show { "shown" } else { "hidden" }),
+                Err(e) => {
+                    log::warn!("party wall {}: {e}", if show { "show" } else { "hide" });
+                    ui.set_status_line(format!("Couldn't reach the party wall: {e}").into());
+                }
+            }
+            render_local(ui, &sh);
         }
         ShellMsg::Tested { url, result } => {
             let sh = shell.borrow();
@@ -3804,8 +3910,13 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
             let mut sh = shell.borrow_mut();
             sh.broadcast_id = broadcast_id.clone();
             sh.cfg.last_broadcast_id = broadcast_id.clone();
-            // A broadcast's server never changes while it runs.
-            sh.cfg.last_broadcast_server = sh.cfg.server_key();
+            // A broadcast's server never changes while it runs: the
+            // selected one, or the party's local relay it switched to.
+            sh.cfg.last_broadcast_server = if sh.target_key.is_empty() {
+                sh.cfg.server_key()
+            } else {
+                sh.target_key.clone()
+            };
             // A token that beat this announce persists with it, atomically
             // paired with the id it was minted for.
             if let Some(token) = sh.identity.on_announce() {
@@ -3821,6 +3932,7 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
         }
         EngineEvent::ResumeToken { token_hex } => {
             let mut sh = shell.borrow_mut();
+            sh.resume_token_hex = token_hex.clone();
             if let Some(token) = sh.identity.on_token(token_hex) {
                 sh.cfg.last_resume_token = token;
                 save_config(&mut sh);
@@ -4075,7 +4187,165 @@ fn handle_engine_event(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, ev: EngineEv
                 .into(),
             );
         }
+        // R74 (docs/76 item 45): the PoP this broadcast is on says its
+        // name, link and party-wall state; the wall line follows it.
+        EngineEvent::LocalRelay(info) => {
+            let mut sh = shell.borrow_mut();
+            log::info!(
+                "local relay info: linked {}, on wall {}, wall {:?}",
+                info.linked,
+                info.on_wall,
+                info.wall_code
+            );
+            sh.local.info = Some(info);
+            render_local(ui, &sh);
+        }
+        // R74 (docs/76 item 43.3): an offer on a live broadcast's session
+        // is for the next broadcast; this one is never moved.
+        EngineEvent::LocalRelayOffer(offer) => {
+            let mut sh = shell.borrow_mut();
+            on_local_offer(ui, &mut sh, offer);
+        }
     }
+}
+
+// --- R74 PP14: the switch to a party's local relay (docs/76 §6.12) ---------
+
+/// The home server's host as the chip names it: "Use gawk.ioio.fi instead".
+fn home_host(cfg: &Config) -> String {
+    match cfg.selected_profile() {
+        Some(p) => host_of(&p.url),
+        None => host_of(&cfg.resolve_app_url()),
+    }
+}
+
+/// The broadcast starting now publishes on `target` (decided before going
+/// live, never moved after): the window and the wall's proof follow it.
+fn adopt_target(
+    ui: &MainWindow,
+    sh: &mut Shell,
+    target: &crate::localswitch::Target,
+    target_key: String,
+    resume_token_hex: &str,
+) {
+    sh.local.on_start(target);
+    sh.target_key = target_key;
+    sh.resume_token_hex = resume_token_hex.to_owned();
+    ui.set_upload_host(host_of(&target.relay_url).into());
+    render_local(ui, sh);
+}
+
+/// The publish secret a broadcast on `target` presents. The home fleet's
+/// is home's credential and never goes to a party's relay, whose host is
+/// not home's operator; a gawk-relay runs with none (docs/76 §6.1).
+fn target_publish_secret(cfg: &Config, target: &crate::localswitch::Target) -> String {
+    if target.pop.is_some() {
+        String::new()
+    } else {
+        cfg.resolve_publish_secret()
+    }
+}
+
+/// A fresh offer, from home's probe or a live publish session.
+fn on_local_offer(ui: &MainWindow, sh: &mut Shell, offer: gawk_engine::localrelay::Offer) {
+    let live = sh.state != UiState::Idle;
+    match sh.local.on_offer(offer, live, std::time::Instant::now()) {
+        crate::localswitch::OfferStep::Probe(o) => {
+            log::info!(
+                "home offers a local relay ({} candidates); probing",
+                o.candidates.len()
+            );
+            spawn_switch_probe(sh, o);
+        }
+        crate::localswitch::OfferStep::Renewed => render_local(ui, sh),
+        crate::localswitch::OfferStep::Ignore => {}
+    }
+}
+
+/// Probes an offer's candidates in parallel, pinned (item 43.2).
+fn spawn_switch_probe(sh: &Shell, offer: gawk_engine::localrelay::Offer) {
+    let origin = sh.cfg.resolve_origin();
+    let tx = sh.msg_tx.clone();
+    sh.rt.spawn(async move {
+        let found = gawk_engine::localrelay::probe_candidates(&offer, &origin).await;
+        let _ = tx.send(ShellMsg::Switched { found });
+    });
+}
+
+fn on_switched(ui: &MainWindow, sh: &mut Shell, found: Option<gawk_engine::localrelay::Switch>) {
+    let live = sh.state != UiState::Idle;
+    let name = found.as_ref().map(|s| s.url.clone());
+    match sh.local.on_probed(found, live, std::time::Instant::now()) {
+        crate::localswitch::ProbedStep::Switched => {
+            log::info!("the local relay answered at {name:?}; the next broadcast uses it");
+        }
+        crate::localswitch::ProbedStep::RetryAfter(d) => {
+            log::info!("the local relay did not answer; retrying once in {d:?}");
+            let tx = sh.msg_tx.clone();
+            sh.rt.spawn(async move {
+                tokio::time::sleep(d).await;
+                let _ = tx.send(ShellMsg::SwitchRetry);
+            });
+        }
+        crate::localswitch::ProbedStep::StayHome => {
+            log::info!("the local relay did not answer; staying on home");
+        }
+    }
+    render_local(ui, sh);
+}
+
+/// The chip, the live line and the wall line, from the switch state.
+fn render_local(ui: &MainWindow, sh: &Shell) {
+    let now = std::time::Instant::now();
+    let live = sh.state != UiState::Idle;
+    ui.set_local_relay_chip(sh.local.chip(live, now).into());
+    ui.set_local_relay_home(home_host(&sh.cfg).into());
+    ui.set_local_relay_line(sh.local.live_line(now).into());
+    ui.set_wall_state(sh.local.wall_state());
+    ui.set_wall_busy(sh.local.wall_busy);
+}
+
+/// The chip's "Use … instead": remembered against the PoP's handle.
+fn local_relay_opt_out(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
+    let mut sh = shell.borrow_mut();
+    if let Some(handle) = sh.local.opt_out(std::time::Instant::now())
+        && crate::localswitch::remember(&mut sh.cfg.local_relay_opt_outs, &handle, true)
+    {
+        save_config(&mut sh);
+    }
+    render_local(ui, &sh);
+}
+
+/// "On the party wall · Hide" / Show (docs/76 item 34): a Detach or Attach
+/// of this broadcast on the PoP's wall, remembered for the next publish.
+fn wall_toggle(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
+    let mut sh = shell.borrow_mut();
+    let (Some(pop), Some(info)) = (sh.local.live_on.clone(), sh.local.info.clone()) else {
+        return;
+    };
+    if sh.local.wall_busy || info.wall_code.is_empty() {
+        return;
+    }
+    let show = !info.on_wall;
+    let target = gawk_engine::localrelay::WallTarget {
+        pop_url: pop.url.clone(),
+        origin: sh.cfg.resolve_origin(),
+        pins: pop.hashes.clone(),
+        wall_code: info.wall_code.clone(),
+        broadcast_id: sh.broadcast_id.clone(),
+        resume_token_hex: sh.resume_token_hex.clone(),
+        label: sh.cfg.nickname.clone(),
+    };
+    if crate::localswitch::remember(&mut sh.cfg.local_relay_wall_hidden, &pop.handle, !show) {
+        save_config(&mut sh);
+    }
+    sh.local.wall_busy = true;
+    render_local(ui, &sh);
+    let tx = sh.msg_tx.clone();
+    sh.rt.spawn(async move {
+        let result = gawk_engine::localrelay::wall_command(&target, show).await;
+        let _ = tx.send(ShellMsg::WallDone { show, result });
+    });
 }
 
 /// Clears the pending room when it is `code`: the room is gone for us.
@@ -4313,6 +4583,7 @@ fn ending_error(
 fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<String>) {
     let mut sh = shell.borrow_mut();
     let was_live = matches!(sh.state, UiState::Live | UiState::Paused);
+    sh.local.on_end();
     // A resume from pause the relay refused: the paused code is gone
     // (docs/64 D9). Said as that, with a new code one click away.
     let pending = sh.pending_error.take();
@@ -4362,6 +4633,7 @@ fn end_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, error: Option<Stri
     sh.cfg.was_live = false;
     save_config(&mut sh);
     sh.state = UiState::Idle;
+    render_local(ui, &sh);
     sh.session = None;
     sh.media_info = None;
     if let Some(m) = sh.media.take() {
@@ -4713,7 +4985,9 @@ fn run_probe(ui: &MainWindow, sh: &mut Shell) {
     let pins = sh.cfg.resolve_cert_hashes();
     let tx = sh.msg_tx.clone();
     sh.rt.spawn(async move {
-        let result = gawk_engine::probe::probe_pinned(&url, &origin, false, &pins).await;
+        // R74 (docs/76 item 43.7): this app follows offers, so its /echo to
+        // the selected server says so with lr=1.
+        let result = gawk_engine::probe::probe_home(&url, &origin, false, &pins, true).await;
         let _ = tx.send(ShellMsg::Probed { url, result });
     });
 }
@@ -6759,6 +7033,8 @@ mod tests {
             rtt_ms: 24,
             name: None,
             screens: false,
+            local: None,
+            offer: None,
         });
         assert_eq!(probe_note(&probe), "24 ms");
     }
@@ -6774,12 +7050,16 @@ mod tests {
             rtt_ms: 24,
             name: None,
             screens: true,
+            local: None,
+            offer: None,
         });
         assert!(server_screens(&probe, false), "the probe said so");
         probe.result = Some(ProbeResult::Ok {
             rtt_ms: 24,
             name: None,
             screens: false,
+            local: None,
+            offer: None,
         });
         assert!(!server_screens(&probe, false));
         probe.result = Some(ProbeResult::Failed);
@@ -6824,6 +7104,8 @@ mod tests {
                 rtt_ms: 41,
                 name: Some("Homelab relay".into()),
                 screens: false,
+                local: None,
+                offer: None,
             }),
             (2, "Reachable · 41 ms · calls itself “Homelab relay”".into())
         );
@@ -6832,6 +7114,8 @@ mod tests {
                 rtt_ms: 41,
                 name: None,
                 screens: true,
+                local: None,
+                offer: None,
             }),
             (2, "Reachable · 41 ms".into())
         );
@@ -6977,6 +7261,151 @@ mod tests {
         start_broadcast(&ui, &shell, false);
         assert_eq!(*calls.borrow(), ["preview(false)", "prepare"]);
         assert!(!ui.get_has_preview());
+    }
+
+    fn pop_offer() -> gawk_engine::localrelay::Offer {
+        gawk_engine::localrelay::Offer {
+            handle: "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab".into(),
+            name: "Assembly 2026".into(),
+            validity: std::time::Duration::from_secs(3600),
+            candidates: vec![gawk_engine::localrelay::Candidate {
+                url: "https://127.0.0.1:9".into(),
+                hashes: vec![[7; 32]],
+            }],
+        }
+    }
+
+    fn pop_switch() -> gawk_engine::localrelay::Switch {
+        gawk_engine::localrelay::Switch {
+            handle: "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab".into(),
+            name: "Assembly 2026".into(),
+            url: "https://127.0.0.1:9".into(),
+            hashes: vec![[7; 32]],
+            rtt_ms: 2,
+        }
+    }
+
+    // R74 PP14 (docs/76 item 43.3, §7.3): a candidate that answered on the
+    // Ready page shows the chip, and the next Go live publishes on the PoP
+    // and says so; the home fleet's publish secret never goes there.
+    #[test]
+    fn a_switch_found_on_ready_shows_the_chip_and_the_broadcast_goes_there() {
+        let ui = window();
+        let (shell, _) = test_shell();
+        shell.borrow_mut().cfg.publish_secret = "home-only".into();
+        let now = std::time::Instant::now();
+        assert!(matches!(
+            shell.borrow_mut().local.on_offer(pop_offer(), false, now),
+            crate::localswitch::OfferStep::Probe(_)
+        ));
+        handle_message(
+            &ui,
+            &shell,
+            ShellMsg::Switched {
+                found: Some(pop_switch()),
+            },
+        );
+        assert_eq!(ui.get_local_relay_chip(), "Assembly 2026 · local relay");
+        assert_eq!(ui.get_local_relay_home(), "gawk.ioio.fi");
+
+        let target = start_on_held(&ui, &shell);
+        assert_eq!(ui.get_upload_host(), "127.0.0.1:9");
+        assert_eq!(ui.get_local_relay_chip(), "", "no chip while live");
+        assert_eq!(
+            ui.get_local_relay_line(),
+            "Live on Assembly 2026's local relay"
+        );
+        let sh = shell.borrow();
+        assert_eq!(sh.target_key, config::server_key("https://127.0.0.1:9"));
+        assert_eq!(sh.local.live_on.as_ref().map(|s| s.rtt_ms), Some(2));
+        assert_eq!(target.pins, vec![[7; 32]]);
+        assert!(!target.follow_offers, "no lr=1 to the PoP");
+        assert_eq!(target_publish_secret(&sh.cfg, &target), "");
+        let home = sh.local.target(
+            &sh.cfg.resolve_relay_url(),
+            vec![],
+            &[],
+            now + std::time::Duration::from_secs(7200),
+        );
+        assert!(home.follow_offers, "lr=1 to home");
+        assert_eq!(target_publish_secret(&sh.cfg, &home), "home-only");
+    }
+
+    /// What `start_broadcast` does with the target once the platform has
+    /// prepared (the test platform never does).
+    fn start_on_held(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) -> crate::localswitch::Target {
+        let mut sh = shell.borrow_mut();
+        sh.state = UiState::Starting;
+        let wall_hidden = sh.cfg.local_relay_wall_hidden.clone();
+        let target = sh.local.target(
+            &sh.cfg.resolve_relay_url(),
+            sh.cfg.resolve_cert_hashes(),
+            &wall_hidden,
+            std::time::Instant::now(),
+        );
+        let key = config::server_key(&target.relay_url);
+        adopt_target(ui, &mut sh, &target, key, "c0ffee");
+        target
+    }
+
+    // docs/76 item 43.6: "Use gawk.ioio.fi instead" is remembered against
+    // the PoP's handle and the next broadcast goes home.
+    #[test]
+    fn the_chips_opt_out_is_remembered_and_goes_home() {
+        let ui = window();
+        let (shell, _) = test_shell();
+        wire_callbacks(&ui, &shell);
+        let now = std::time::Instant::now();
+        shell.borrow_mut().local.on_offer(pop_offer(), false, now);
+        handle_message(
+            &ui,
+            &shell,
+            ShellMsg::Switched {
+                found: Some(pop_switch()),
+            },
+        );
+        ui.invoke_local_relay_opt_out();
+        assert_eq!(ui.get_local_relay_chip(), "");
+        let sh = shell.borrow();
+        assert_eq!(
+            sh.cfg.local_relay_opt_outs,
+            vec!["6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab".to_owned()]
+        );
+        assert_eq!(
+            sh.local
+                .target(&sh.cfg.resolve_relay_url(), vec![], &[], now)
+                .pop,
+            None
+        );
+    }
+
+    // docs/76 item 34: on a PoP with a wall, the live line offers Hide,
+    // and after the PoP's 0x18 says hidden, Show.
+    #[test]
+    fn the_wall_line_follows_the_pops_info() {
+        let ui = window();
+        let (shell, _) = test_shell();
+        let now = std::time::Instant::now();
+        shell.borrow_mut().local.on_offer(pop_offer(), false, now);
+        handle_message(
+            &ui,
+            &shell,
+            ShellMsg::Switched {
+                found: Some(pop_switch()),
+            },
+        );
+        start_on_held(&ui, &shell);
+        let info = |on_wall| gawk_engine::localrelay::LocalRelay {
+            linked: true,
+            on_wall,
+            name: Some("Assembly 2026".into()),
+            home_origin: "https://gawk.ioio.fi".into(),
+            wall_code: "assembly-2026".into(),
+        };
+        handle_engine_event(&ui, &shell, EngineEvent::LocalRelay(info(true)));
+        assert_eq!(ui.get_wall_state(), 1);
+        handle_engine_event(&ui, &shell, EngineEvent::LocalRelay(info(false)));
+        assert_eq!(ui.get_wall_state(), 2);
     }
 
     // Review of #423: a media build carries its generation, and one that

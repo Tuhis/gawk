@@ -20,6 +20,7 @@ pub mod instance;
 #[cfg(test)]
 mod layout_tests;
 pub mod licences;
+pub mod localswitch;
 pub mod messages;
 pub mod preview;
 pub mod shell;
