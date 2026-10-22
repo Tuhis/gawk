@@ -81,9 +81,12 @@ func (s *Server) handlePopSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only a missing broadcast refuses: a leg is exempt from the viewer
 	// caps CheckSubscribe also reports.
+	// A miss on a reservation asks its PoP for the broadcast once the leg
+	// is on the waiting hub, as for a viewer (handleSubscribe).
+	demandCtx, demand := withDeferredDemand(r.Context())
 	err = s.registry.CheckSubscribe(id)
 	if edges := s.edgeManager(); errors.Is(err, hub.ErrNotFound) && edges != nil {
-		if edgeErr := edges.EnsureEdge(r.Context(), id); edgeErr == nil {
+		if edgeErr := edges.EnsureEdge(demandCtx, id); edgeErr == nil {
 			err = s.registry.CheckSubscribe(id)
 		}
 	}
@@ -132,6 +135,9 @@ func (s *Server) handlePopSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.trackSession(sess)()
+	if hook := s.testHookPostUpgradeSubscribe.Load(); hook != nil {
+		(*hook)(id)
+	}
 	if slot != nil {
 		kctx, kcancel := context.WithCancel(r.Context())
 		kept := make(chan struct{})
@@ -157,6 +163,7 @@ func (s *Server) handlePopSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer sub.Close()
+	demand.fire(s, demandCtx)
 
 	s.metrics.Connection(route, metrics.OutcomeAccepted)
 	delivery := "datagrams"

@@ -138,7 +138,7 @@ type Server struct {
 	drainSleep func(time.Duration)
 
 	// testHookPostUpgradeSubscribe runs between the session upgrade and the
-	// authoritative Subscribe, widening the CheckSubscribe→Subscribe race
+	// authoritative Subscribe (a viewer's, or a PoP downlink leg's), widening the CheckSubscribe→Subscribe race
 	// window for tests. Atomic because tests install it while handlers are
 	// serving, and in-process UDP loopback gives no happens-before edge.
 	testHookPostUpgradeSubscribe atomic.Pointer[func(id string)]
@@ -1268,15 +1268,18 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A miss on an R74 PoP reservation asks the PoP for the broadcast only
+	// once this session is on the waiting hub (demand.fire, below).
+	demandCtx, demand := withDeferredDemand(withDemandRequest(r))
 	err := s.registry.CheckSubscribe(id)
 	if edges := s.edgeManager(); errors.Is(err, hub.ErrNotFound) && edges != nil {
 		// Cluster mode: we don't host this broadcast, but its
 		// origin may be another pod — demand-create the edge pull, then
 		// re-check (the pull creates the local hub on attach).
-		if edgeErr := edges.EnsureEdge(withDemandRequest(r), id); edgeErr == nil {
+		if edgeErr := edges.EnsureEdge(demandCtx, id); edgeErr == nil {
 			err = s.registry.CheckSubscribe(id)
 		}
-	} else if errors.Is(err, hub.ErrNotFound) && s.popWaitSinglePod(withDemandRequest(r), id) {
+	} else if errors.Is(err, hub.ErrNotFound) && s.popWaitSinglePod(demandCtx, id) {
 		// A single-pod home's PoP reservation (docs/76 item 17).
 		err = s.registry.CheckSubscribe(id)
 	} else if errors.Is(err, hub.ErrNotFound) {
@@ -1373,6 +1376,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer sub.Close()
+	demand.fire(s, demandCtx)
 
 	s.metrics.Connection("subscribe", metrics.OutcomeAccepted)
 	log := s.log.With("remote", sess.RemoteAddr(), "route", "subscribe", "broadcast_id", id)

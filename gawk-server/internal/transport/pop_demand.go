@@ -153,8 +153,9 @@ func demandRequestFrom(ctx context.Context) (demandRequest, bool) {
 
 // onReservedMiss is EdgeManager.onReserved: a subscribe miss on pop's
 // dormant reservation. The waiting hub already exists; this starts (or
-// nudges) the broadcast's demand loop and returns at once — the viewer
-// upgrades and waits whatever the PoP answers.
+// nudges) the broadcast's demand loop — once the handler's session is on
+// the hub (deferredDemand) — and returns at once: the viewer upgrades and
+// waits whatever the PoP answers.
 func (s *Server) onReservedMiss(ctx context.Context, id string, o cluster.Origin) error {
 	if s.popDemand() == nil {
 		return nil
@@ -206,8 +207,46 @@ func (s *Server) popLegEnded(id, pop string) {
 	s.startDemand(context.Background(), id, pop)
 }
 
-// startDemand starts (or nudges) id's demand loop on this pod.
+// deferredDemand holds the want a subscribe miss asks for until the
+// handler's session is on the waiting hub (docs/76 item 17: upgrade, then
+// ask). Asked from the miss itself, a quick refusal could end the hub before
+// the session subscribed, and the viewer would read 4000 "broadcast ended"
+// for 4012. Touched only by the handler's goroutine: EnsureEdge calls
+// onReserved synchronously.
+type deferredDemand struct {
+	id, pop string
+	asked   bool
+}
+
+type deferredDemandKey struct{}
+
+// withDeferredDemand makes ctx's demand wait for fire.
+func withDeferredDemand(ctx context.Context) (context.Context, *deferredDemand) {
+	d := &deferredDemand{}
+	return context.WithValue(ctx, deferredDemandKey{}, d), d
+}
+
+// fire starts the demand a miss under ctx asked for, if any. The handler
+// calls it once its session is subscribed; a session that never got there
+// leaves the waiting hub to linger out unasked.
+func (d *deferredDemand) fire(s *Server, ctx context.Context) {
+	if d.asked {
+		d.asked = false
+		s.startDemandNow(ctx, d.id, d.pop)
+	}
+}
+
+// startDemand starts (or nudges) id's demand loop on this pod, or, under a
+// subscribe handler's withDeferredDemand, records it for the handler's fire.
 func (s *Server) startDemand(ctx context.Context, id, pop string) {
+	if d, ok := ctx.Value(deferredDemandKey{}).(*deferredDemand); ok {
+		d.id, d.pop, d.asked = id, pop, true
+		return
+	}
+	s.startDemandNow(ctx, id, pop)
+}
+
+func (s *Server) startDemandNow(ctx context.Context, id, pop string) {
 	req, hasReq := demandRequestFrom(ctx)
 	var hold time.Duration
 	if b := s.uplink.deferrer.Load(); b != nil && hasReq {
@@ -316,8 +355,8 @@ func (l *demandLoop) run() {
 }
 
 // stillWaiting: the reservation still has no leg, and (after the first
-// want, which goes before the viewer has upgraded) somebody here waits: a
-// viewer, or another PoP's downlink leg.
+// want, which a subscribe miss asks for its own session) somebody here
+// waits: a viewer, or another PoP's downlink leg.
 func (l *demandLoop) stillWaiting(first bool) bool {
 	if coord := l.s.clusterCoord(); coord != nil {
 		origin, _, _, ok := coord.Lookup(l.id)

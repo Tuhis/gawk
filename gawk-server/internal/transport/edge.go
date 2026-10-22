@@ -298,8 +298,9 @@ func (m *EdgeManager) Active() int {
 // edge publisher claim with nothing primed, so the viewer attaches and waits
 // for the first keyframe), starts the edge session in waiting mode — it
 // re-resolves until a holder appears, on each OnOriginClaimed kick or poll —
-// and fires onReserved, the want. A second viewer's miss joins the same
-// pull and fires the want again (it is idempotent at the PoP).
+// and fires onReserved, the want (which the transport's handlers send only
+// once their session is on the hub: deferredDemand). A second viewer's miss
+// joins the same pull and fires the want again (it is idempotent at the PoP).
 func (m *EdgeManager) ensureReservationWait(ctx context.Context, id string, origin cluster.Origin) error {
 	m.mu.Lock()
 	es := m.edges[id]
