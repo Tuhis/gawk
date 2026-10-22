@@ -858,5 +858,8 @@ async fn a_switch_probes_the_offers_candidates_pinned_against_the_real_relay() {
         started.elapsed()
     );
 
-    assert_eq!(probe_candidates(&offer(vec![[0x5a; 32]]), origin).await, None);
+    assert_eq!(
+        probe_candidates(&offer(vec![[0x5a; 32]]), origin).await,
+        None
+    );
 }
