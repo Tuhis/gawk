@@ -23,6 +23,7 @@ your laptop in about five minutes with a self-signed certificate.
 11. [Troubleshooting](#11-troubleshooting)
 12. [The event bus (NATS)](#12-the-event-bus-nats--r50)
 13. [Automatic content screening](#13-automatic-content-screening-r40)
+14. [PoP relays](#14-pop-relays-r74)
 
 ---
 
@@ -40,7 +41,9 @@ The native broadcasters (`gawk-broadcast-linux`, `gawk-broadcast-windows` and
 `gawk-broadcast-macos`) are
 **not** deployed — they are binaries a
 broadcaster downloads and runs against your relay. Nothing here installs
-them.
+them. The same goes for `gawk-relay`, the PoP relay a host runs on a LAN and
+pairs with your fleet ([§14](#14-pop-relays-r74)); the fleet's side of it is
+off by default.
 
 Charts and images are published to GHCR on every release, with chart
 `version` == `appVersion` == image tag always in lockstep:
@@ -1302,7 +1305,7 @@ chart's `rbac.yaml` first.
 **Without Kubernetes** (`docker compose`, a bare binary) static rooms come
 from `-rooms-file` / `GAWK_ROOMS_FILE`: a JSON array of
 `{"code": "TuhisRoom", "displayName": "…", "attachSecret": "…",
-"maxBroadcasts": 4}`, reloaded on change and on SIGHUP exactly like
+"maxBroadcasts": 4, "maxParticipants": 50}`, reloaded on change and on SIGHUP exactly like
 `-moderation-source=file`. Dynamic rooms are in-memory there and do not
 survive a restart.
 
@@ -1345,6 +1348,8 @@ view uses) behind a 2-second cache.
 | An IP ban blocked everybody | `service.externalTrafficPolicy: Cluster` — every publisher shared a node IP. [§9.4](#94-ip-bans-need-externaltrafficpolicy-local) |
 | `kubectl get bans` says the resource type is unknown | The relay chart's `moderation.enabled` is off, so the CRD was never installed |
 | A killed broadcaster came straight back | The kill cooldown elapsed, or the ban was on the ID and they minted a new one — [§9.4](#94-ip-bans-need-externaltrafficpolicy-local) |
+| Guests on a paired PoP's LAN are never offered the switch | `service.externalTrafficPolicy: Cluster` — home sees node IPs, not the venue's address ([§14.1](#141-what-it-needs)); or the PoP's `guests.autoSwitch` is off |
+| `helm` refuses the relay chart naming `pops.enabled` | It needs `config.clusterMode: true` ([§14](#14-pop-relays-r74)) |
 
 Two starting points when something is stranger than the table:
 [`docs/gotchas.md`](gotchas.md) is the consolidated list of things that have
@@ -1773,3 +1778,120 @@ A room you trust — a **static room with an attach secret** — can be exempted
 from screening in the portal's Rooms view. Open and dynamic rooms cannot be:
 anyone could join them, so exempting one would hand an abuser an unscreened
 lane.
+
+## 14. PoP relays (R74)
+
+Optional and **off by default** in both charts. A PoP is a `gawk-relay` a
+host runs on a LAN (a party, a venue) and pairs with your fleet: the
+party's streams stay on the LAN and cross the venue's uplink only while
+someone outside watches, and your fleet's streams cross its downlink once.
+The design, and what is still unverified, is
+[`docs/76`](76-pop-relays.md) (status in §11.1).
+
+### 14.1 What it needs
+
+- **Cluster mode** on the relay. The chart refuses `pops.enabled` without
+  `config.clusterMode: true`: the `Pop` CRs are the chart's only PoP
+  source, and a PoP's reserved broadcast IDs are origin Leases.
+- **`service.externalTrafficPolicy: Local`** on the relay, if guests'
+  clients are to switch to the PoP by themselves. Home recognises a guest
+  by comparing the session's remote address with the PoP's public address
+  (IPv4 exactly, IPv6 on the /64); under `Cluster` the relay sees node IPs
+  and never sends an offer. This is the same requirement as IP bans,
+  [§9.4](#94-ip-bans-need-externaltrafficpolicy-local). Everything else
+  works without it.
+- **`gawk-admin`** ([§9](#9-gawk-admin--the-moderation-portal-r39)) to
+  create PoPs and their pairing strings. A party wall is a static room, so
+  it also needs `rooms.enabled` in both charts ([§10](#10-rooms-r42)).
+- For the **named tier** (a publicly trusted `https://p-xxxxxx.<zone>:4433`
+  that guests' phones open with no app and no prompt): cert-manager with an
+  issuer for that zone, and external-dns running with **`--source=crd`**
+  (the `DNSEndpoint` CRD installed) and allowed to write the zone. Without
+  it, PoPs are pinned-only: guests join by an IP-literal link carrying the
+  certificate hash.
+
+### 14.2 Install, relay chart first
+
+The relay chart renders the `Pop` CRD (kept on uninstall, like `Ban` and
+`Room`) and the relays' Role on it; `gawk-admin` only writes `Pop` CRs.
+So upgrade the relay chart first, then turn the portal's half on.
+
+```yaml
+# gawk-server values
+config:
+  clusterMode: true
+service:
+  externalTrafficPolicy: Local
+pops:
+  enabled: true
+  uplinkLinger: "30s"    # an uplink leg's life after its last outside viewer
+  offerDefer: "2s"       # how long a guest's session waits for the switch before home pulls the stream anyway
+  demandTimeout: "5s"    # how long an outside viewer waits for a PoP to start forwarding
+```
+
+```yaml
+# gawk-admin values
+pops:
+  enabled: true
+  homeEndpoint: "api.gawk.example:4433"   # the relay's public host:port; a pairing string names it. Required
+  pairingTtl: "72h"
+  # The named tier. Both empty = pinned links only; set both or neither.
+  dnsZone: ""                              # e.g. pop.gawk.example
+  certIssuer: ""                           # Issuer/<name> or ClusterIssuer/<name>
+  dnsTtl: "60s"
+```
+
+The portal's RBAC for `certificaterequests` and `dnsendpoints` rides
+`pops.enabled`, so turning the named tier on later is a values change. The
+issuer should use Let's Encrypt's 6-day `shortlived` profile: a revoked
+PoP's certificate then expires on its own (docs/76 item 38).
+
+A portal with `pops.enabled` against a relay that predates R74 still works;
+its PoPs scrape answers 404 and the relay stays reachable.
+
+### 14.3 Without Kubernetes
+
+`-pops` with `-pops-file` / `GAWK_POPS_FILE` (not a chart value, like
+`-rooms-file`) takes a YAML or JSON list:
+
+```yaml
+- name: lanparty                    # DNS-1123 label
+  uid: 0b6f6c1e-3d9a-4c37-9a51-2b8f0f6d7e10   # a UUID; the PoP's offer handle
+  displayName: "LAN party"
+  credentialSHA256: "<64 hex: sha256 of the credential the PoP presents>"
+  # optional: notAfter, revoked, uplink {maxMbps, maxStreams},
+  # downlink {maxMbps, maxStreams}, limits {maxBroadcasts, maxDownlinkStreams},
+  # guests {autoSwitch}, wall {roomCode}
+```
+
+The file is validated all or nothing, and unknown keys are refused. It
+reloads on change and on SIGHUP and keeps the previous set on a bad
+rewrite; a bad file at startup refuses to start, and a missing one means no
+PoPs. There is no pairing string: the host gives the relay
+`gawk-cred:<host:port>/<credential>` instead (`-pair` or its console).
+Editing an entry's `credentialSHA256` ends that PoP's link. Reservations
+on a single-pod home are in memory and are rebuilt when the PoP relinks.
+Pairing tokens and the named tier need the Kubernetes path.
+
+### 14.4 The host's side: `gawk-relay`
+
+`gawk-relay` is a single binary for Windows, macOS and Linux, attached to
+each `gawk-server/vX.Y.Z` release, and an image,
+`ghcr.io/tuhis/gawk-relay`. It runs with no flags: it keeps its keys and a
+rolling self-signed certificate in a state directory and opens a console at
+`http://127.0.0.1:4480` (loopback only), which shows the join QR code and
+link, what is live, health and pairing. `http://127.0.0.1:4480/app/` is the
+web app for the host's own machine and needs no internet. The host pastes
+the pairing string there, or passes it as `-pair`.
+
+In a container, use host networking and keep the state directory:
+
+```sh
+docker run -d --network host -v gawk-relay:/data ghcr.io/tuhis/gawk-relay
+```
+
+Without `--network host`, LAN detection finds the container's bridge
+address and the console is unreachable; without the volume, every restart
+mints new keys and certificate hashes, and printed join links stop working.
+Pass `-lan-address` when detection picks the wrong interface. The relay's
+own flags are in [`gawk-server/docs/flags.md`](../gawk-server/docs/flags.md#gawk-relay).

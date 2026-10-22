@@ -522,6 +522,10 @@ broadcast.)*
   **four tiles play at once**: in a larger room the rest show their last
   frame, with a tap to swap. Focus plays one tile at full rate and pauses
   the others' decode (the sessions stay up). *Provisional on IO8 thermals.*
+- *R74 ([docs/76](76-pop-relays.md) item 43):* the broadcaster and the
+  single-stream player follow a local-relay offer from the selected server
+  only; a held PoP never applies to another server. The room viewer does
+  not follow offers yet.
 
 ### D22 — PiP and background audio
 

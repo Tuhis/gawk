@@ -15,6 +15,10 @@ Add to it when a new gotcha lands in `docs/`.
 
 **Environment**
 
+- **In a linked worktree, Go's embedded `vcs.revision` can name an unrelated
+  commit.** Every build in the R74 lab worktree stamped `d0da1e64`. Check a
+  lab binary's provenance by rebuilding it and comparing with `cmp`, not
+  with `go version -m`. ([docs/76](76-pop-relays.md) §11.2)
 - **WSL2: Chrome must run *inside* WSL2** alongside the server. Windows
   Chrome cannot complete a QUIC handshake to a server in WSL2 NAT mode
   (localhost forwarding is TCP-only; via the NAT IP Chrome idle-times-out
@@ -276,6 +280,17 @@ Add to it when a new gotcha lands in `docs/`.
   pinned relay at `https://10.0.2.2:4434` whose certificate named only
   `localhost`: the hash, the validity span and the key type are what count.
   ([docs/76](76-pop-relays.md) §3 M5)
+- **CDP `Browser.grantPermissions` replaces an origin's granted set on every
+  call.** Granting the Local Network Access names (`localNetworkAccess`,
+  `localNetwork`, `loopbackNetwork`) one call at a time leaves only the last
+  one granted, and the WebTransport dial still fails with
+  `ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`. Grant them in one call, which
+  Playwright's `context.grantPermissions(['local-network-access'], {origin})`
+  does. An app served from loopback is not gated when it dials a private
+  address (loopback is the more private space), so a test of the gate marks
+  the origin public with `--ip-address-space-overrides=<host:port>=public`
+  (headless Chromium 151.0.7922.34, 2026-10-22; `e2e/pop-pinned.mjs`).
+  ([docs/76](76-pop-relays.md) §11.1 PP5)
 
 **webtransport-go (v0.11.x) — all fail at runtime, not compile time**
 
@@ -328,6 +343,16 @@ Add to it when a new gotcha lands in `docs/`.
   parameter, fixed in v0.62.0 by sending both codepoints — quic-go#5782). CI
   has no WebKit client, so a bump of that pair is the one dependency update
   that needs a Safari pass before it rolls to the fleet.
+- **quic-go sends a stateless reset only in answer to a packet longer than
+  its smallest reset** (42 bytes, `MinStatelessResetSize` in quic-go's
+  `transport.go`). A test that probes a dead connection with tiny datagrams
+  draws no reset and flakes; probe with large packets
+  (`cmd/gawk-relay/kill_test.go`). ([docs/76](76-pop-relays.md) §11 PP2)
+- **quic-go gives no signal that a FIN'd stream was fully acknowledged.**
+  The PoP leg writer therefore resets a finished carrier on a plain 150 ms
+  timer (`LegResetDelay`). Fake carrier streams in tests must wake a blocked
+  `Write` when `SetWriteDeadline` is called, or abandoning a write at a
+  rotation cannot be tested. ([docs/76](76-pop-relays.md) item 18)
 - **Session close code hiding on datagram reads**: In both Go and JS, when a session is closed with a custom error code, reading from the datagram queue/channel returns only a generic `EOF` or channel-closed status. To retrieve the actual close code (e.g. `4000`), the client must listen to `wt.closed` (JS) or block on `AcceptStream` / `AcceptUniStream` (Go). ([docs/06](06-multi-broadcaster.md))
 - **…and `wt.closed` can lose the settle-order race**: on a server close, the
   datagram read loop and the `wt.closed` promise settle in unspecified,
@@ -1253,6 +1278,11 @@ entries still describe code `gawk-pubsim` runs (now
 
 **iOS app (R65)**
 
+- **`gawk-ios/rust` needs `nasm` or `yasm` on `PATH` and
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` to build on a Linux host**
+  (shiguredo_libvpx's source build). And `gawk-core`'s `broadcast` module is
+  `cfg(macos|ios)`, so a Linux `cargo test` there does not compile it:
+  only `ios.yml` checks those edits. ([docs/76](76-pop-relays.md) §11.1)
 - **The iOS 27 SDK deprecates the ReplayKit broadcast extension.**
   `RPBroadcastSampleHandler` is "No longer supported" and `RPSampleBufferType`
   points at `SCStreamOutputType`: iOS 27 brings `SCStream` and
@@ -1931,8 +1961,8 @@ entries still describe code `gawk-pubsim` runs (now
   coordinator. Started earlier, that is a data race, and a kill in the
   window tears the broadcast down locally but never deletes its origin
   Lease, so the rest of the fleet keeps routing viewers to a dead origin.
-  `wireSubsystems` in `cmd/gawk-server/main.go` fixes the order, and a test
-  asserts it. ([docs/42](42-admin-moderation-portal.md))
+  `wireSubsystems` (`internal/serve/wiring.go` since R74, shared by
+  `gawk-server` and `gawk-relay`) fixes the order, and a test asserts it. ([docs/42](42-admin-moderation-portal.md))
 
 **Rooms (R42)**
 
@@ -2093,6 +2123,58 @@ entries still describe code `gawk-pubsim` runs (now
   answer that repeat instead, as the mint now does with the minter's room.
   ([docs/44](44-rooms.md) §11.1)
 
+**PoP relays (R74)**
+
+- **Room control sessions receive server-opened uni streams since R74.**
+  The `0x18`/`0x19` notices ride `/room` sessions as well as `/echo`,
+  `/publish` and `/subscribe`, so a room client must ignore a uni stream
+  type it does not know. The web viewer's uni-stream allowlist
+  (`connection.ts`) cancels unknown types and counts them as
+  `carrier.malformed`. ([docs/76](76-pop-relays.md) §9)
+- **Each notice on the `/echo` probe has its own uni stream, and home's
+  `0x19` offer can arrive after the `0x10` identity.** A probe that stops
+  reading after the identity misses the offer.
+  ([docs/76](76-pop-relays.md) item 43)
+- **`cluster.Delete` is a no-op on a `gawk/pop` Lease**, so a hub's grace
+  expiry never ends a PoP reservation. Only `DeleteReservation` (release or
+  revoke) or the janitor's sweep of reservations whose renewal went stale
+  removes one, and dormant reservations stay alive only while the
+  link-home pod renews them every `poplink.LeaseRenew`.
+  ([docs/76](76-pop-relays.md) item 14)
+- **An edge hub's only internal subscribers are PoP downlink legs, and they
+  are demand.** Linger-out (`ExpireEdgeIfViewerless`, the reservation wait)
+  counts every subscriber, and the upward `ViewerCount` includes the legs'
+  party viewers. Counting only external subscribers would let an edge pod
+  that serves just a PoP linger out under it and drop the party's viewers
+  from `G`. ([docs/76](76-pop-relays.md) item 23)
+- **A `/pop/*` handler never calls `rateLimited` or the IP-ban check.** PoP
+  traffic is exempt from both by design, and
+  `transport/pop_moderation_test.go` and `pop_routes_test.go` pin it.
+  `/pop/*` has its own failure limiter instead.
+  ([docs/76](76-pop-relays.md) §6.9)
+- **`popsrv` imports `transport`, never the reverse**, so a test in package
+  `transport` cannot use `popsrv.StartHomeAndPop`; put it in an external
+  `transport_test` file. ([docs/76](76-pop-relays.md) §10)
+- **The `Pop` and `Room` CRDs are structural: a field missing from the
+  chart's schema is silently pruned on write.** A new spec field needs its
+  schema entry and an envtest row in
+  `gawk-admin/internal/kube/envtest_test.go`. ([docs/76](76-pop-relays.md) §9)
+- **A PoP's card says `waiting-for-pairing` whenever
+  `status.credential.pairingTokenSHA256` differs from
+  `spec.pairing.tokenSHA256`**, including right after a Re-pair while
+  `status.link.connected` is still true from before. That credential is
+  already refused, and the link-home pod closes the link with `bye{repair}`.
+  ([docs/76](76-pop-relays.md) §7.2)
+- **A Host-header check alone does not stop CSRF against the loopback
+  console.** A cross-site page can POST to `127.0.0.1` with `Host:
+  127.0.0.1`. The `Origin`, `Sec-Fetch-Site` and `application/json` checks
+  are what refuse it; keep all three. ([docs/76](76-pop-relays.md) §7.1)
+- **The named tier's DNS check compares the answer with the PoP's own LAN
+  address, from the system resolver and a public one.** A venue router
+  with DNS-rebinding protection drops private answers for public names, so
+  the join QR must not move to the named URL just because a certificate
+  exists. ([docs/76](76-pop-relays.md) item 38)
+
 **Content screening (R40)**
 
 - **The relay's `publisherSessionId` is empty whenever telemetry is off** —
@@ -2153,6 +2235,18 @@ entries still describe code `gawk-pubsim` runs (now
 
 **CI / deployment**
 
+- **`gawk-relay` ships the `gawk-app` that was current when `gawk-server`
+  was released.** release-please attributes by path, so a `gawk-app`-only
+  change cuts no `gawk-server` release and the relay's embedded app lags
+  until the next one. CI still builds the relay on app changes, but a fix
+  that must reach PoPs needs a commit touching `gawk-server/` in the same PR.
+  ([docs/76](76-pop-relays.md) §6.1 item 6)
+- **`go vet` per GOOS for `gawk-relay` covers only the portable packages**
+  (`cmd/gawk-relay`, `internal/{serve,relaystate,lanaddr,relayconsole,popclient,poplink,tlsutil,config}`).
+  Some test files elsewhere in the module are Linux-only by design
+  (`moderationsrc/file_test.go` uses `syscall.Kill`), so
+  `GOOS=windows go vet ./...` cannot compile. Keep the relay packages'
+  tests portable. ([docs/76](76-pop-relays.md) §11 PP4)
 - **A loss-injection test that sends faster than real time measures the
   runner, not the code.** R29's parity loss test paced 120 frames at 2 ms
   (500 fps, 5,500 datagrams/s per subscriber). On a CPU-throttled runner pod

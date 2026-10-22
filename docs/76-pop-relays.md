@@ -1676,9 +1676,10 @@ changes no Go). Go's embedded VCS stamp reads `d0da1e64` for every build in
 that worktree, which is wrong (`docs/gotchas.md`). Every cell's CPU steal
 was at or below 0.3 %. Table B ran three runs a cell (seeds 7–9), three
 runs at a time, 100 s each. Table O ran three runs a cell at 1080p and two
-at 1440p; its 80 Mbps second runs were the only cells run on the final
-build, and the rest were reused from an earlier attempt on the same Go
-tree. The leg writer exposes no byte or loss counter, so an alone cell's
+at 1440p. Only table O's 80 Mbps second runs were run after the last
+commit; every table B cell and the other table O cells were reused from an
+earlier, interrupted attempt on the same branch, from the same lab
+directory. The leg writer exposes no byte or loss counter, so an alone cell's
 wire rate comes from that run's `tc` class counters, less pings and IP/UDP
 headers (within 1 % of quinn's `udp_tx_bytes` on existing quinn cells),
 and the packets-lost column reads "–".

@@ -210,6 +210,28 @@ with the server picker never opened — no `/echo` probe runs in this pass. The
 `--browser-broadcast` pass is the control: its relay has no flag, and it
 asserts the line is absent. Artifact: `console-broadcaster-screening.log`.
 
+## PoP relays (R74)
+
+Three standalone scripts, each owning its stack. All need
+`bin/gawk-server`, `bin/gawk-pubsim` and `npm ci` here; the last two need
+`bin/gawk-relay` too. `pop-pinned.mjs` and `pop-switch.mjs` serve a built
+`gawk-app/dist`, while `pop-uplink-full.mjs` dials from a blank page and
+needs `bin/gawk-devcert` instead.
+
+```sh
+cd e2e && node pop-pinned.mjs        # PP5: a pinned-hash link to a relay on a private address
+cd e2e && node run.mjs --pop-switch  # PP14: runs pop-switch.mjs, a guest following home's offer to a PoP
+cd e2e && node pop-uplink-full.mjs   # PP8: the fourth outside stream reads 4012
+```
+
+`pop-pinned.mjs` and `pop-switch.mjs` need a private, non-loopback IPv4 on
+the host (`GAWK_E2E_LAN_IP` picks one); without it they fail, or log SKIP
+with `--allow-skip`. `pop-switch.mjs` also needs UDP `:4433` free, because
+that is the port an offer names. Both grant or deny Local Network Access
+through CDP; what a person sees at the headful prompt is not their claim.
+Only `pop-pinned.mjs` runs in CI so far ([`docs/76`](../docs/76-pop-relays.md)
+§11.1).
+
 ## Content flagging, end to end (R40)
 
 ```sh
