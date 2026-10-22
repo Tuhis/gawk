@@ -507,6 +507,52 @@ func TestLingerClosesTheLegWith4013AndHandsBackTheReservation(t *testing.T) {
 	}
 }
 
+// TestAnEndedLegsLingerHandsTheLeaseBack: a leg that ends without 4013
+// (here the PoP host goes away) leaves the hub in grace with the Lease held
+// on the leg's pod; once nobody is downstream for -pop-uplink-linger, the
+// linger hands the Lease back to a dormant reservation instead of leaving
+// it to the grace deadline, where the janitor would delete it.
+func TestAnEndedLegsLingerHandsTheLeaseBack(t *testing.T) {
+	u := startUplinkFleet(t, 2, fleetOpts{home: func(c *config.Config) { c.PopUplinkLinger = 2 * time.Second }})
+	u.f.Route(0)
+	u.pair(t)
+	u.f.Route(1)
+	p := publishOnPoP(t, u)
+	u.reserved(t, p.id)
+	kf := keyframeMsg(t, 1)
+	p.sendKeyframe(t, kf)
+	v, err := subscribe(t, u.f.ClientTLS, u.f.Pods[1].Addr(), p.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.nextKeyframe(t, 15*time.Second); !bytes.Equal(got, kf) {
+		t.Fatal("prime differs")
+	}
+	popsrv.WaitFor(t, "home-1 holds the lease", func() bool {
+		o, _, _, _ := u.f.Pods[0].Coord.Lookup(p.id)
+		return o.Holder == u.f.Pods[1].Name
+	})
+	gen0, _ := u.f.Pods[1].Coord.OriginGeneration(p.id)
+
+	// The PoP host goes: its leg ends with no 4013, and the hub on home-1
+	// enters its ordinary grace with the Lease still held there.
+	u.pop.Stop(t)
+	popsrv.WaitFor(t, "the lease is graced on home-1", func() bool {
+		o, inGrace, _, ok := u.f.Pods[0].Coord.Lookup(p.id)
+		return ok && inGrace && o.Holder == u.f.Pods[1].Name
+	})
+	v.sess.CloseWithError(0, "bye")
+
+	popsrv.WaitFor(t, "the lease is a dormant reservation again", func() bool {
+		o, _, _, ok := u.f.Pods[0].Coord.Lookup(p.id)
+		return ok && o.Holder == "" && o.Pop == upPop && o.Generation == gen0
+	})
+	popsrv.WaitFor(t, "the lingered hub leaves home-1", func() bool {
+		_, _, known := u.f.Pods[1].Registry.BroadcastState(p.id)
+		return !known
+	})
+}
+
 // TestFourthStreamIsRefusedWith4012: the PoP's default budget forwards
 // three streams; the fourth outside broadcast's viewer is told 4012
 // PopUplinkFull, in-band first (docs/76 item 28).

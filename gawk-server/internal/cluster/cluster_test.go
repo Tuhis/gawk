@@ -1034,6 +1034,50 @@ func TestReleaseReturnsALeaseToAReservationThatDeleteKeeps(t *testing.T) {
 	leaseOf(t, cs, "AAA234")
 }
 
+// ReleaseGeneration is the linger's fenced hand-back: it releases only the
+// claim it names. A newer claim of the same Lease on this pod (the PoP's
+// redial racing the linger) keeps its holdership and its renew loop; a
+// graced claim (EnterGrace stopped renewing) is still released.
+func TestReleaseGenerationReleasesOnlyThatClaim(t *testing.T) {
+	cs := fake.NewClientset()
+	a := newTestCoordinator(t, cs, "pod-a", newFakeClock(), nil)
+	ctx := context.Background()
+	if err := a.Reserve(ctx, "K7XQ2M", "lan-party"); err != nil {
+		t.Fatal(err)
+	}
+	g1, err := a.ClaimForPop(ctx, "K7XQ2M", "lan-party", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2, err := a.ClaimForPop(ctx, "K7XQ2M", "lan-party", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := a.ReleaseGeneration(ctx, "K7XQ2M", g1); err != nil || ok {
+		t.Fatalf("ReleaseGeneration(stale %d) = %v, %v; want not released", g1, ok, err)
+	}
+	if o := parseOrigin(leaseOf(t, cs, "K7XQ2M")); o.Holder != "pod-a" || o.Generation != g2 {
+		t.Fatalf("after a stale release: %+v, want held at %d", o, g2)
+	}
+	if gen, held := a.OriginGeneration("K7XQ2M"); !held || gen != g2 {
+		t.Fatalf("the newer claim's renew loop stopped: %d %v", gen, held)
+	}
+
+	if err := a.EnterGrace(ctx, "K7XQ2M"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := a.ReleaseGeneration(ctx, "K7XQ2M", g2); err != nil || !ok {
+		t.Fatalf("ReleaseGeneration(graced %d) = %v, %v; want released", g2, ok, err)
+	}
+	l := leaseOf(t, cs, "K7XQ2M")
+	if o := parseOrigin(l); o.Holder != "" || o.Pop != "lan-party" || o.Generation != g2 {
+		t.Fatalf("released = %+v, want a dormant reservation at %d", o, g2)
+	}
+	if _, ok := l.Annotations[annotationGraceDeadline]; ok {
+		t.Error("the release kept the grace deadline")
+	}
+}
+
 // The janitor keeps a renewed dormant reservation however old it is, and
 // reaps one whose renewals stopped past grace+duration (the orphan sweep:
 // a link-home pod that died with nobody taking the link over). Only the

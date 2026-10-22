@@ -327,10 +327,8 @@ func (s *Server) watchLegLinger(c *popLegClaim) {
 			return
 		case <-t.C:
 		}
-		if coord := s.clusterCoord(); coord != nil {
-			if gen, held := coord.OriginGeneration(c.id); !held || gen != c.gen {
-				return // another pod's leg took it (docs/22 re-home)
-			}
+		if !s.legClaimStands(c) {
+			return
 		}
 		_, g, known := s.registry.BroadcastState(c.id)
 		if !known {
@@ -352,6 +350,30 @@ func (s *Server) watchLegLinger(c *popLegClaim) {
 	}
 }
 
+// legClaimStands reports whether c is still this pod's claim of its Lease
+// (always, single-pod). The coordinator's held set covers a renewed claim;
+// a leg that ended graced the Lease, which stops renewing and drops it from
+// that set while the Lease still names this pod at c.gen, so the cached
+// Lease decides then. A newer claim here, another pod's force-take or a
+// deleted Lease ends the watch.
+func (s *Server) legClaimStands(c *popLegClaim) bool {
+	coord := s.clusterCoord()
+	if coord == nil {
+		return true
+	}
+	if gen, held := coord.OriginGeneration(c.id); held {
+		return gen == c.gen
+	}
+	o, _, _, ok := coord.Lookup(c.id)
+	edges := s.edgeManager()
+	return ok && edges != nil && o.Holder == edges.podName && o.Generation == c.gen
+}
+
+// legReleaser is the coordinator's fenced Release (cluster.Coordinator).
+type legReleaser interface {
+	ReleaseGeneration(ctx context.Context, broadcastID string, generation int64) (bool, error)
+}
+
 // handBack is the linger's end: 4013 to the leg first, then the Lease back
 // to a reservation, then the hub. The close goes first because the Lease's
 // release is a lease loss on this pod (HandleLeaseLost), which closes the
@@ -368,14 +390,20 @@ func (s *Server) handBack(c *popLegClaim) {
 		}
 	}
 	if coord := s.clusterCoord(); coord != nil {
-		if rel, ok := coord.(interface {
-			Release(ctx context.Context, broadcastID string) error
-		}); ok {
+		if rel, ok := coord.(legReleaser); ok {
+			// Fenced on this leg's generation: a newer leg that claimed the
+			// Lease here while the close above ran keeps it, its renew
+			// loop and its hub.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := rel.Release(ctx, c.id); err != nil {
-				s.log.Warn("pop uplink linger: lease hand-back failed", "broadcast_key", s.broadcastKey(c.id), "err", err)
-			}
+			released, err := rel.ReleaseGeneration(ctx, c.id, c.gen)
 			cancel()
+			if err != nil {
+				s.log.Warn("pop uplink linger: lease hand-back failed", "broadcast_key", s.broadcastKey(c.id), "err", err)
+			} else if !released {
+				s.log.Info("pop uplink linger: a newer claim holds the lease; nothing handed back",
+					"pop", c.pop, "broadcast_key", s.broadcastKey(c.id))
+				return
+			}
 		}
 	}
 	s.registry.EndBroadcast(c.id)

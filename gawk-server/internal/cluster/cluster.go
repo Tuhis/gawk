@@ -594,6 +594,12 @@ func (c *Coordinator) Release(ctx context.Context, broadcastID string) error {
 	if parseOrigin(lease).Holder != c.opts.PodName {
 		return nil
 	}
+	_, err = c.leases().Update(ctx, c.released(lease), metav1.UpdateOptions{})
+	return err
+}
+
+// released is lease with this pod's holdership cleared.
+func (c *Coordinator) released(lease *coordv1.Lease) *coordv1.Lease {
 	empty := ""
 	updated := lease.DeepCopy()
 	updated.Spec.HolderIdentity = &empty
@@ -606,8 +612,62 @@ func (c *Coordinator) Release(ctx context.Context, broadcastID string) error {
 		now := metav1.NewMicroTime(c.opts.Now())
 		updated.Spec.RenewTime = &now
 	}
-	_, err = c.leases().Update(ctx, updated, metav1.UpdateOptions{})
-	return err
+	return updated
+}
+
+// ReleaseGeneration is Release fenced on one claim: it clears this pod's
+// holdership only while the Lease is still held here at generation, renewed
+// or graced (EnterGrace stops renewing but keeps holdership), and stops
+// only that claim's renew loop. A newer claim of the same Lease — the PoP's
+// leg redialling onto this pod while the linger hands the old one back —
+// keeps both. released reports whether this call cleared the holder.
+func (c *Coordinator) ReleaseGeneration(ctx context.Context, broadcastID string, generation int64) (released bool, err error) {
+	var lastErr error
+	for range claimRetries {
+		if h := c.heldAt(broadcastID); h != nil && h.generation != generation {
+			return false, nil // a newer claim here
+		}
+		lease, err := c.leases().Get(ctx, leaseName(broadcastID), metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if o := parseOrigin(lease); o.Holder != c.opts.PodName || o.Generation != generation {
+			return false, nil
+		}
+		c.stopRenewAt(broadcastID, generation)
+		if _, err := c.leases().Update(ctx, c.released(lease), metav1.UpdateOptions{}); err != nil {
+			if apierrors.IsConflict(err) {
+				lastErr = err
+				continue // a renewal or a newer claim moved it; re-check
+			}
+			return false, err
+		}
+		return true, nil
+	}
+	return false, fmt.Errorf("cluster: release retries exhausted for %s: %w", broadcastID, lastErr)
+}
+
+func (c *Coordinator) heldAt(broadcastID string) *heldLease {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.held[broadcastID]
+}
+
+// stopRenewAt is stopRenew for the claim at generation only.
+func (c *Coordinator) stopRenewAt(broadcastID string, generation int64) {
+	c.mu.Lock()
+	h := c.held[broadcastID]
+	if h == nil || h.generation != generation {
+		c.mu.Unlock()
+		return
+	}
+	delete(c.held, broadcastID)
+	c.mu.Unlock()
+	h.cancel()
+	<-h.done
 }
 
 // Reserve creates the broadcast's Lease as a dormant reservation for an R74

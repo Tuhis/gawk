@@ -318,10 +318,28 @@ func (f *HomeFleet) startPod(t testing.TB, parent context.Context, name string, 
 	if err != nil {
 		t.Fatalf("cluster.New: %v", err)
 	}
+	// The cluster-mode lease hooks serve.Run installs: a publisher that
+	// leaves graces its Lease, an expired hub deletes it.
+	leaseOp := func(fn func(ctx context.Context) error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := fn(ctx); err != nil {
+			log.Warn("harness lease hook failed", "err", err)
+		}
+	}
 	r := hub.NewRegistry(log, hub.Options{
 		MaxSubscribers: cfg.MaxSubscribers,
 		MaxBroadcasts:  cfg.MaxBroadcasts,
 		BroadcastGrace: cfg.BroadcastGrace,
+		OnPublisherClosed: func(id string) {
+			leaseOp(func(ctx context.Context) error { return coord.EnterGrace(ctx, id) })
+		},
+		OnBroadcastExpired: func(id string) {
+			leaseOp(func(ctx context.Context) error { return coord.Delete(ctx, id) })
+		},
+		OnPublisherStalled: func(id string, stalled bool) {
+			leaseOp(func(ctx context.Context) error { return coord.SetStalled(ctx, id, stalled) })
+		},
 	})
 	sm := metrics.NewServerMetrics(prometheus.NewRegistry())
 	cert := f.Cert
