@@ -62,7 +62,8 @@ func (es *edgeSession) acceptStreams(ctx context.Context, up edgeUpstream, pub *
 	}
 }
 
-// classifyUniStream runs one upstream uni stream to its end, holding one of
+// classifyUniStream runs one uni stream to its end (an edge pump's, or a
+// publisher's with -uplink-carriers on), holding one of
 // sem's slots (acquired by the caller) and resetting the stream through
 // cancel when its ingest fails. It reads the stream kind from the prologue
 // (docs/75 D2): Version‖TypeReliableCarrier is an R73 carrier, which the
@@ -85,16 +86,16 @@ func classifyUniStream(r io.Reader, cancel func(), sem chan struct{}, pub *hub.P
 		cancel()
 		switch {
 		case errors.Is(err, hub.ErrUplinkCarrierLimit):
-			log.Warn("edge carrier rejected: too many concurrent", "max", hub.MaxUplinkCarriers)
+			log.Warn("carrier rejected: too many concurrent", "max", hub.MaxUplinkCarriers)
 		case errors.Is(err, hub.ErrBadUplinkRecord):
-			log.Warn("edge carrier ended: malformed record", "err", err)
+			log.Warn("carrier ended: malformed record", "err", err)
 		default:
-			log.Debug("edge carrier ended", "err", err)
+			log.Debug("carrier ended", "err", err)
 		}
 		return
 	}
 	if err := pub.IngestKeyframeStream(io.MultiReader(bytes.NewReader(head[:n]), r)); err != nil {
 		cancel()
-		log.Debug("edge keyframe ingest failed", "err", err)
+		log.Debug("keyframe stream ingest failed", "err", err)
 	}
 }

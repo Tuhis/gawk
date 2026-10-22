@@ -178,6 +178,27 @@ type EdgeManager struct {
 	// reservationPoll is edgeReservationPoll; a field for the tests.
 	reservationPoll time.Duration
 
+	// The R74 PoP downlink (pop_downlink.go) runs a second manager on a PoP
+	// relay whose one upstream is home's public endpoint. These fields are
+	// nil/false on a fleet pod, whose pulls behave as they always did.
+	//
+	// upstreamPath builds the upstream route for a pull (nil: the fleet's
+	// /internal/subscribe with its generation fence).
+	upstreamPath func(id string, o cluster.Origin) string
+	// dialRefusal classifies a failed upstream dial. final ends the pull
+	// instead of retrying (home's 404: the broadcast is not there; 401, 403,
+	// 426, 429): a first attach returns viewerErr to the waiting viewer, and
+	// an attached hub's viewers get 4000.
+	dialRefusal func(err error) (viewerErr error, final bool)
+	// admit is asked, under mu, before a new pull starts; active is the
+	// number of pulls running. An error refuses the pull and is the viewer's
+	// answer (the PoP's downlink budget).
+	admit func(id string, active int) error
+	// standalone: no Lease watch ends a pull here, so a pull that has
+	// nobody to serve while it cannot attach (its first attach failed, or
+	// its last viewer left during a re-attach) ends by itself.
+	standalone bool
+
 	baseCtx    context.Context
 	cancelBase context.CancelFunc
 
@@ -238,6 +259,12 @@ func (m *EdgeManager) EnsureEdge(ctx context.Context, broadcastID string) error 
 	m.mu.Lock()
 	es := m.edges[broadcastID]
 	if es == nil || es.done() {
+		if m.admit != nil {
+			if err := m.admit(broadcastID, m.activeLocked()); err != nil {
+				m.mu.Unlock()
+				return err
+			}
+		}
 		es = newEdgeSession(m, broadcastID)
 		m.edges[broadcastID] = es
 		go es.run()
@@ -245,6 +272,24 @@ func (m *EdgeManager) EnsureEdge(ctx context.Context, broadcastID string) error 
 	m.mu.Unlock()
 
 	return es.awaitAttached(ctx)
+}
+
+// activeLocked counts the pulls running. Caller holds m.mu.
+func (m *EdgeManager) activeLocked() int {
+	n := 0
+	for _, es := range m.edges {
+		if !es.done() {
+			n++
+		}
+	}
+	return n
+}
+
+// Active is the number of pulls running (the PoP's downlink stream count).
+func (m *EdgeManager) Active() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activeLocked()
 }
 
 // ensureReservationWait answers a subscribe miss on a PoP reservation
@@ -443,7 +488,7 @@ func (es *edgeSession) awaitReservation(viewerlessSince *time.Time) bool {
 	lingerTick := time.NewTicker(time.Second)
 	defer lingerTick.Stop()
 	for {
-		if es.m.registry.ExternalSubscribers(es.id) > 0 {
+		if serving, _ := es.m.registry.EdgeDemand(es.id); serving > 0 {
 			*viewerlessSince = time.Time{}
 		} else if viewerlessSince.IsZero() {
 			*viewerlessSince = time.Now()
@@ -509,6 +554,9 @@ func (es *edgeSession) run() {
 	}()
 
 	leaseGone := false
+	// endHub: a refusal from a standalone upstream ended the pull; the hub's
+	// viewers get 4000 (home said the broadcast is not there).
+	endHub := false
 	// The linger clock of a reservation wait (awaitReservation).
 	var waitViewerless time.Time
 	for attempt := 0; ; attempt++ {
@@ -538,17 +586,29 @@ func (es *edgeSession) run() {
 		waitViewerless = time.Time{}
 		if err != nil || origin.Holder == "" || origin.Addr == "" {
 			es.signalAttached(hub.ErrNotFound)
-			if !es.backoff(attempt) {
+			if es.nobodyToServe() || !es.backoff(attempt) {
 				break
 			}
 			continue
 		}
 
-		up, err := es.m.dial(es.ctx, origin.Addr, internalSubscribePath(es.id, origin.Generation))
+		path := internalSubscribePath(es.id, origin.Generation)
+		if es.m.upstreamPath != nil {
+			path = es.m.upstreamPath(es.id, origin)
+		}
+		up, err := es.m.dial(es.ctx, origin.Addr, path)
 		if err != nil {
+			if es.m.dialRefusal != nil {
+				if viewerErr, final := es.m.dialRefusal(err); final {
+					es.m.log.Info("edge upstream refused the pull", "broadcast_id", es.id, "origin", origin.Addr, "err", err)
+					es.signalAttached(viewerErr)
+					endHub = true
+					break
+				}
+			}
 			es.m.log.Warn("edge upstream dial failed", "broadcast_id", es.id, "origin", origin.Addr, "err", err)
 			es.signalAttached(hub.ErrNotFound)
-			if !es.backoff(attempt) {
+			if es.nobodyToServe() || !es.backoff(attempt) {
 				break
 			}
 			continue
@@ -626,11 +686,25 @@ func (es *edgeSession) run() {
 	// A reservation wait's claim goes with the pull (StopEdge for a come-home
 	// keeps the hub and its viewers, as for any pull).
 	es.releaseHeld()
-	if leaseGone {
+	if leaseGone || endHub {
 		// Lease deletion means "broadcast ended": close local viewers with
 		// 4000 (EndBroadcast skips live hubs; ours is publisher-less now).
 		es.m.registry.EndBroadcast(es.id)
 	}
+}
+
+// nobodyToServe ends a standalone pull (EdgeManager.standalone) that cannot
+// attach and serves no one, deleting its hub if it has one so a later viewer
+// starts a fresh pull rather than joining a hub with no pull behind it.
+// Always false on a fleet pod, whose Lease watch ends its pulls.
+func (es *edgeSession) nobodyToServe() bool {
+	if !es.m.standalone {
+		return false
+	}
+	if serving, _ := es.m.registry.EdgeDemand(es.id); serving > 0 {
+		return false
+	}
+	return es.m.registry.ExpireEdgeIfViewerless(es.id)
 }
 
 // upstreamEndIsFinal decides whether the origin's terminal close ends this
@@ -778,13 +852,15 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool,
 			case <-ping.C:
 				_ = up.SendDatagram(wire.AppendTimeSync(nil, relayNowUs(), 0))
 			case <-lingerTick.C:
-				// Two counts on purpose: linger counts every external session (an
-				// edge serving only stripe legs still serves media); the upstream
-				// report counts watching humans, excluding legs.
-				n := es.m.registry.ExternalSubscribers(es.id)
+				// Two counts on purpose: linger counts every session the hub
+				// serves (an edge serving only stripe legs, or only an R74 PoP's
+				// downlink leg, still serves media); the upstream report counts
+				// watching humans, excluding stripe legs, here and below — a
+				// PoP leg's reported party viewers are part of G (docs/76 item 25).
+				n, below := es.m.registry.EdgeDemand(es.id)
 				// Change-driven plus keepalive, so a lost report heals on re-send.
 				// The count is bounded by the subscriber caps, far below uint32.
-				count := uint32(es.m.registry.ViewerSubscribers(es.id))
+				count := uint32(below)
 				if !reported || count != lastReport || time.Since(lastReportAt) >= hub.ViewerCountKeepalive {
 					if up.SendDatagram(wire.AppendViewerCount(nil, count)) == nil {
 						reported = true
