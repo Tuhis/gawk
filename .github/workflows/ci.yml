@@ -2036,7 +2036,9 @@ jobs:
           if grep -qE 'certificaterequests|dnsendpoints' <<<"$aoff"; then
             echo "::error::the admin chart grants certificate or DNS access with pops.enabled unset"; exit 1
           fi
-          aon=$(helm template "$admin" $ADMIN_PG --set pops.enabled=true)
+          # pops.enabled requires the endpoint a pairing string names.
+          aon=$(helm template "$admin" $ADMIN_PG --set pops.enabled=true \
+                  --set pops.homeEndpoint=relay.invalid:4433)
           for res in certificaterequests dnsendpoints; do
             grep -q "$res" <<<"$aon" || {
               echo "::error::the admin chart with pops.enabled renders no $res RBAC"; exit 1; }
