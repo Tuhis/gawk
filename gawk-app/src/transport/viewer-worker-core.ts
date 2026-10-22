@@ -16,6 +16,7 @@ import type { AudioMuxCodec, AudioTapEvent, Fmp4Track } from './fmp4-muxer';
 import type { PlayoutMode } from './playout';
 import type { RenderSink } from './render-sink';
 import type { TelemetryHelloMessage } from './wire';
+import type { LocalRelayEvent } from './local-relay';
 import type { ReleasedFrame } from './reorder-buffer';
 import { ViewerPipeline } from './viewer';
 import type { ViewerStats } from './viewer';
@@ -102,7 +103,9 @@ export type ViewerWorkerEvent =
   // the token is a bearer credential and ViewerStats is what Copy diagnostics
   // serializes for pasting into a chat.
   | { type: 'telemetryHello'; hello: TelemetryHelloMessage }
-  | { type: 'telemetryEndpoint'; url: string };
+  | { type: 'telemetryEndpoint'; url: string }
+  // R74: 0x18 / 0x19 for features/pop on the main thread.
+  | { type: 'localRelay'; ev: LocalRelayEvent };
 
 // The muxer's output events (see ViewerWorkerEvent above). `track` routes the
 // segment to its own SourceBuffer on the main thread — video and audio are
@@ -258,6 +261,9 @@ export class ViewerWorkerCore {
       },
       onTelemetryEndpoint: (url) => {
         if (current()) this.host.post({ type: 'telemetryEndpoint', url });
+      },
+      onLocalRelay: (ev) => {
+        if (current()) this.host.post({ type: 'localRelay', ev });
       },
       // The encoded-frame fork for the shell's muxer. Generation-guarded
       // so a superseded session's late releases can't interleave a stale

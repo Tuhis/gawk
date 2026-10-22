@@ -178,6 +178,9 @@ export class WorkerBroadcastSession implements BroadcastSessionLike {
       case 'resumeToken':
         this.cb.onResumeToken?.(msg.token);
         return;
+      case 'localRelay':
+        this.cb.onLocalRelay?.(msg.ev);
+        return;
       case 'reconnecting':
         this.cb.onReconnecting?.({
           attempt: msg.attempt,

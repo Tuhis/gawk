@@ -10,6 +10,7 @@
 
 import { log } from '../lib/logger';
 import type { ConnectOptions } from './connection';
+import type { LocalRelayEvent } from './local-relay';
 import { ViewerPipeline, type ViewerCallbacks, type ViewerStats } from './viewer';
 import type { DecodedAudioChunk } from './audio-decode';
 import type { ReleasedFrame } from './reorder-buffer';
@@ -86,6 +87,8 @@ export interface ViewerSessionCallbacks {
   // first.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   onTelemetryEndpoint?: (url: string) => void;
+  // R74: 0x18 / 0x19 from every pipeline attempt.
+  onLocalRelay?: (ev: LocalRelayEvent) => void;
 }
 
 // The subset of ViewerPipeline the session drives; injectable for tests.
@@ -210,6 +213,7 @@ export class ViewerSession {
       ...(this.cb.onReleasedFrame ? { onReleasedFrame: (f) => this.cb.onReleasedFrame?.(f) } : {}),
       ...(this.cb.onTelemetryHello ? { onTelemetryHello: (h) => this.cb.onTelemetryHello?.(h) } : {}),
       ...(this.cb.onTelemetryEndpoint ? { onTelemetryEndpoint: (u: string) => this.cb.onTelemetryEndpoint?.(u) } : {}),
+      ...(this.cb.onLocalRelay ? { onLocalRelay: (ev: LocalRelayEvent) => this.cb.onLocalRelay?.(ev) } : {}),
     };
     // A reconnect means a fresh pipeline on a possibly-restarted timeline —
     // reset the sink before its first packets land.

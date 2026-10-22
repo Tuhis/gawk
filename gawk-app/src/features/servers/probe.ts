@@ -14,7 +14,14 @@
 // "origin not allowed" are indistinguishable from JS. The UI copy names all
 // causes once rather than pretending to diagnose.
 
-import { TYPE_RELAY_IDENTITY, parseRelayIdentity, type RelayIdentityMessage } from '../../transport/wire';
+import {
+  TYPE_RELAY_IDENTITY,
+  parseRelayIdentity,
+  type LocalRelayInfoMessage,
+  type LocalRelayOfferMessage,
+  type RelayIdentityMessage,
+} from '../../transport/wire';
+import { isLocalRelayType, parseLocalRelayEvent, readWholeStream } from '../../transport/local-relay';
 import { openDatagramWriter, webTransportInit } from '../../transport/connection';
 
 export const PROBE_SAMPLES = 5;
@@ -32,6 +39,15 @@ export interface ProbeSuccess {
   state: 'ok';
   rttMs: number;
   identity: RelayIdentityMessage | null;
+  // R74: home's LocalRelayOffer (0x19) on this /echo session, if it sent one.
+  offer?: LocalRelayOfferMessage | null;
+  // R74: what a PoP says it is (0x18), if this relay is one.
+  localRelay?: LocalRelayInfoMessage | null;
+}
+
+export interface ProbeOptions {
+  // R74 (docs/76 item 43.7): this client follows offers; `lr=1`.
+  followOffers?: boolean;
 }
 
 export interface ProbeFailure {
@@ -83,31 +99,6 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-// A whole uni stream, or null past `limit` bytes (cancelled: no legitimate
-// session-start message is that large).
-async function readStreamBounded(stream: ReadableStream<Uint8Array>, limit: number): Promise<Uint8Array | null> {
-  const reader = stream.getReader();
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    parts.push(value);
-    total += value.length;
-    if (total > limit) {
-      void reader.cancel().catch(() => {});
-      return null;
-    }
-  }
-  const buf = new Uint8Array(total);
-  let off = 0;
-  for (const p of parts) {
-    buf.set(p, off);
-    off += p.length;
-  }
-  return buf;
-}
-
 // One echo session: connect, round-trip PROBE_SAMPLES datagrams, read the
 // identity stream if one arrives inside the deadline, close, report.
 export async function probeRelay(
@@ -115,10 +106,11 @@ export async function probeRelay(
   certHashHex: string,
   now: () => number = () => performance.now(),
   factory: ProbeTransportFactory = defaultTransportFactory,
+  opts: ProbeOptions = {},
 ): Promise<ProbeResult> {
   let wt: ProbeTransport;
   try {
-    wt = factory(`${url}/echo`, certHashHex);
+    wt = factory(`${url}/echo${opts.followOffers ? '?lr=1' : ''}`, certHashHex);
   } catch {
     return { state: 'failed' };
   }
@@ -137,25 +129,37 @@ export async function probeRelay(
 
   // Identity: the first uni stream whose type byte is RelayIdentity (0x11),
   // read fully, parsed leniently: a malformed message degrades to "no
-  // identity", never to a failed probe. Other streams are read (bounded) and
-  // skipped: R74's PoP sends 0x18 on /echo too, and stream order is not part
-  // of the contract.
+  // identity", never to a failed probe. R74's 0x18 (a PoP) and 0x19 (home's
+  // offer) are collected the same way, by type byte, because stream order is
+  // not part of the contract; anything else is read (bounded) and skipped.
+  let offer: LocalRelayOfferMessage | null = null;
+  let localRelay: LocalRelayInfoMessage | null = null;
   const identityPromise: Promise<RelayIdentityMessage | null> = (async () => {
+    let identity: RelayIdentityMessage | null = null;
     try {
       const streams = wt.incomingUnidirectionalStreams.getReader();
-      for (let n = 0; n < PROBE_MAX_STREAMS; n++) {
+      for (let n = 0; n < PROBE_MAX_STREAMS && identity === null; n++) {
         const { value: stream, done } = await streams.read();
         if (done || !stream) break;
-        const buf = await readStreamBounded(stream, 4096);
-        if (buf === null || buf.length < 2 || buf[1] !== TYPE_RELAY_IDENTITY) continue;
-        streams.releaseLock();
-        return parseRelayIdentity(buf);
+        const buf = await readWholeStream(stream, 4096);
+        if (buf === null || buf.length < 2) continue;
+        try {
+          if (buf[1] === TYPE_RELAY_IDENTITY) {
+            identity = parseRelayIdentity(buf);
+          } else if (isLocalRelayType(buf[1])) {
+            const ev = parseLocalRelayEvent(buf);
+            if (ev.kind === 'offer') offer = ev.offer;
+            else localRelay = ev.info;
+          }
+        } catch {
+          // a malformed message is only a missing one
+        }
       }
       streams.releaseLock();
-      return null;
     } catch {
-      return null;
+      // the session went away
     }
+    return identity;
   })();
 
   // RTT: send stamped pings, read echoes, median of successes.
@@ -209,6 +213,8 @@ export async function probeRelay(
     state: 'ok',
     rttMs: sorted[Math.floor(sorted.length / 2)],
     identity,
+    offer,
+    localRelay,
   };
 }
 

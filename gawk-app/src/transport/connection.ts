@@ -29,6 +29,12 @@ import {
   type TelemetryHelloMessage,
 } from './wire';
 import {
+  LOCAL_RELAY_STREAM_MAX_BYTES,
+  isLocalRelayType,
+  parseLocalRelayEvent,
+  type LocalRelayEvent,
+} from './local-relay';
+import {
   RELAY_CAPABILITIES_SIZE,
   parseRelayCapabilities,
   type RelayCapabilities,
@@ -62,6 +68,12 @@ export interface ConnectOptions {
   // not a new viewer. ViewerSession sets it on every pipeline after the
   // first, and ViewerPipeline sends it as `?rejoin=1`.
   rejoin?: boolean;
+  // R74 (docs/76 item 43.7): this client will follow a LocalRelayOffer, so
+  // it says `lr=1` on the CONNECT and home may hold its demand briefly.
+  followOffers?: boolean;
+  // R74 (docs/76 item 34): a broadcaster's remembered party-wall Hide,
+  // `wall=hidden` on /publish, so it never flashes onto the wall.
+  wallHidden?: boolean;
 }
 
 // The WebTransportOptions every gawk session dials with. Shared with the
@@ -282,6 +294,9 @@ export interface ServerStreamCallbacks {
   // in-band because Chrome never reads a webtransport-go close code. The
   // consumer keeps it for when `closed` settles without one.
   onSessionClosing?: (code: number) => void;
+  // R74: a PoP's LocalRelayInfo (0x18) or home's LocalRelayOffer (0x19).
+  // Optional: without it both are read and dropped, never counted malformed.
+  onLocalRelay?: (ev: LocalRelayEvent) => void;
   // One verbatim datagram record off a reliable carrier stream. The
   // transport feeds it into the same handler as a received datagram — the
   // whole point of the carrier design.
@@ -378,7 +393,8 @@ async function readOneServerStream(
         head1 !== TYPE_TELEMETRY_HELLO &&
         head1 !== TYPE_TELEMETRY_ENDPOINT &&
         head1 !== TYPE_RELAY_CAPABILITIES &&
-        head1 !== TYPE_SESSION_CLOSING)
+        head1 !== TYPE_SESSION_CLOSING &&
+        !isLocalRelayType(head1))
     ) {
       // Unknown stream kind or version: cancel without wedging the accept
       // loop. Counted as malformed so it is visible in stats.
@@ -453,6 +469,27 @@ async function readOneServerStream(
       } catch (e) {
         carrier.malformed++;
         log.warn('session closing notice unreadable:', e);
+      }
+      return;
+    }
+
+    if (isLocalRelayType(head1)) {
+      // Variable length, small; read to EOF (bounded) and parse. An
+      // unreadable one costs only the local relay hint, never media.
+      for (;;) {
+        if (total > LOCAL_RELAY_STREAM_MAX_BYTES) {
+          void reader.cancel().catch(() => {});
+          carrier.malformed++;
+          return;
+        }
+        if (!(await readMore())) break;
+      }
+      try {
+        const ev = parseLocalRelayEvent(concatChunks(chunks, total));
+        cb.onLocalRelay?.(ev);
+      } catch (e) {
+        carrier.malformed++;
+        log.warn('local relay message unreadable:', e);
       }
       return;
     }

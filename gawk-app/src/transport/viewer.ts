@@ -11,6 +11,7 @@ import {
   type DecodedAudioChunk,
 } from './audio-decode';
 import type { ConnectOptions, KeyframeStreamFrame } from './connection';
+import type { LocalRelayEvent } from './local-relay';
 import type { DatagramBufferStats } from './datagram-buffer';
 import type { TransportConnectionStats } from './net-stats';
 import {
@@ -428,6 +429,8 @@ export interface ViewerCallbacks {
   // callback = this consumer does not do telemetry.
   onTelemetryHello?: (hello: TelemetryHelloMessage) => void;
   onTelemetryEndpoint?: (url: string) => void;
+  // R74: 0x18 / 0x19, passed straight through to the main thread.
+  onLocalRelay?: (ev: LocalRelayEvent) => void;
   // The encoded-AUDIO fork for the same muxer. Forked at the demux point, not
   // at a playout gate — the muxed timeline is built from broadcaster
   // timestamps, so arrival order is all this needs, and audio landing ahead of
@@ -704,6 +707,8 @@ export class ViewerPipeline {
     // the URL; the relay never counts a leg, so the copies are harmless.
     appendClientIdentity(url);
     if (this.connectOpts.rejoin) url.searchParams.set('rejoin', '1');
+    // R74: this client follows a PoP offer (docs/76 item 43.7).
+    if (this.connectOpts.followOffers) url.searchParams.set('lr', '1');
     const transport = this.transportFactory(url.toString(), this.connectOpts);
     this.transport = transport;
     try {
@@ -730,6 +735,7 @@ export class ViewerPipeline {
         // keeps it out of Copy diagnostics.
         onTelemetryHello: (hello) => this.cb.onTelemetryHello?.(hello),
         onTelemetryEndpoint: (url) => this.cb.onTelemetryEndpoint?.(url),
+        onLocalRelay: (ev) => this.cb.onLocalRelay?.(ev),
         // The striping gate. A relay without striping never sends the bit, so
         // a viewer against it never dials a leg — and a reliable/DVR viewer
         // never stripes regardless (nothing to win there).
