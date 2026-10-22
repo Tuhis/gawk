@@ -1,0 +1,4 @@
+# The staged gawk-app build (stage.sh). Never committed: the tree carries only
+# the placeholder (placeholder/index.html), so a fresh checkout builds without Node.
+dist/*
+!dist/.gitkeep
