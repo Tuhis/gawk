@@ -190,6 +190,36 @@ type Registry struct {
 	attached map[string]string
 	tokens   Tokens
 	enabled  bool
+	// wallLeave hears a broadcast leaving a party wall by its
+	// broadcaster's choice (OnWallLeave).
+	wallLeave func(code, id string)
+}
+
+// OnWallLeave installs fn to hear a broadcast leave a party wall by its
+// broadcaster's choice: a mint, or an attach to another room (docs/76 item
+// 34). A PoP's popclient owns its local wall and vouches for it home, so
+// it must stop vouching for a broadcast that left. fn runs outside the
+// registry's lock and must not block. nil removes it.
+func (r *Registry) OnWallLeave(fn func(code, id string)) {
+	r.mu.Lock()
+	r.wallLeave = fn
+	r.mu.Unlock()
+}
+
+// leftWallLocked removes id from wall as the broadcaster's own choice and
+// returns what the caller runs after unlocking: the wall's attachment
+// notice and the OnWallLeave hook.
+func (r *Registry) leftWallLocked(wall *room, id string) (after func()) {
+	if a := wall.find(id); a != nil {
+		r.removeAttachmentLocked(wall, a, wire.RoomDetachReasonPublisher)
+	}
+	hook := r.wallLeave
+	return func() {
+		r.notifyAttachments(wall)
+		if hook != nil {
+			hook(wall.code, id)
+		}
+	}
 }
 
 type room struct {
@@ -617,23 +647,11 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 			r.mu.Unlock()
 			continue
 		}
-		if other, taken := r.attached[id]; taken {
-			if wall := r.rooms[other]; wall != nil && wall.pop != "" {
-				// A mint is the broadcaster's explicit choice: it moves the
-				// broadcast off the party wall (docs/76 item 34).
-				if a := wall.find(id); a != nil {
-					r.removeAttachmentLocked(wall, a, wire.RoomDetachReasonPublisher)
-				}
-				r.mu.Unlock()
-				r.notifyAttachments(wall)
-				r.mu.Lock()
-				if _, taken := r.rooms[norm]; taken {
-					r.mu.Unlock()
-					continue
-				}
-			}
-		}
-		if other, taken := r.attached[id]; taken {
+		// A mint is the broadcaster's explicit choice: it moves the
+		// broadcast off a party wall (docs/76 item 34), once the new room
+		// exists, so a refused mint leaves the tile where it was.
+		onWall := r.onWallLocked(id)
+		if other, taken := r.attached[id]; taken && !onWall {
 			if own := r.rooms[other]; own != nil && own.minter == id {
 				res := MintResult{Code: own.code, Display: own.display, CreatorToken: tokens.MintCreator(own.code), Repeated: true}
 				r.mu.Unlock()
@@ -679,6 +697,20 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 				}
 				continue
 			}
+			if _, taken := r.attached[id]; taken && !r.onWallLocked(id) {
+				// Attached elsewhere while the lock was free.
+				r.mu.Unlock()
+				if r.opts.Unreserve != nil {
+					r.opts.Unreserve(ctx, norm)
+				}
+				return MintResult{}, fmt.Errorf("%w: broadcast is in another room", ErrAlreadyAttached)
+			}
+		}
+		after := func() {}
+		if other, taken := r.attached[id]; taken {
+			if wall := r.rooms[other]; wall != nil && wall.pop != "" {
+				after = r.leftWallLocked(wall, id)
+			}
 		}
 		r.rooms[norm] = rm
 		r.attachLocked(rm, id, req.Label, state, 0)
@@ -686,11 +718,22 @@ func (r *Registry) Mint(ctx context.Context, req MintRequest) (MintResult, error
 		rm.openedPublished = true
 		r.busRoomOpenedLocked(rm)
 		r.mu.Unlock()
+		after()
 		r.log.Info("room minted", "room_key", r.opts.Obfuscate(norm), "broadcast_key", r.opts.Obfuscate(id))
 		r.notifyAttachments(rm)
 		return MintResult{Code: norm, Display: raw, CreatorToken: token}, nil
 	}
 	return MintResult{}, errCollision
+}
+
+// onWallLocked reports whether id is attached to a party wall.
+func (r *Registry) onWallLocked(id string) bool {
+	other, taken := r.attached[id]
+	if !taken {
+		return false
+	}
+	wall := r.rooms[other]
+	return wall != nil && wall.pop != ""
 }
 
 func (r *Registry) dynamicCountLocked() int {
@@ -990,10 +1033,7 @@ func (p *Participant) attach(cmd wire.RoomCommand) {
 			p.reject(cmd.Kind, wire.RoomRejectLimit, "room has no free broadcast slot")
 			return
 		}
-		if a := leftWall.find(cmd.BroadcastID); a != nil {
-			r.removeAttachmentLocked(leftWall, a, wire.RoomDetachReasonPublisher)
-		}
-		defer r.notifyAttachments(leftWall)
+		defer r.leftWallLocked(leftWall, cmd.BroadcastID)()
 	}
 	if existing := rm.find(cmd.BroadcastID); existing != nil {
 		// Idempotent re-attach (a reconnected broadcaster): adopt ownership,

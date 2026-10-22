@@ -407,3 +407,28 @@ func TestAConfigResyncsTheWallHome(t *testing.T) {
 		t.Fatal("the resync put a wall=hidden broadcast on the wall")
 	}
 }
+
+// docs/76 item 34 at a linked PoP: a party broadcaster minting a room at
+// the PoP moves its broadcast off the wall everyone sees, home's, not only
+// off the PoP's local copy; and a config resync does not put it back.
+func TestAMintAtThePoPMovesTheBroadcastOffHomesWall(t *testing.T) {
+	w := startWallFleet(t)
+	p := w.publish(t, "")
+	WaitFor(t, "the tile on home's wall", func() bool { return w.onWall(p.id) })
+	q := url.Values{"broadcast": {p.id}, "resume": {p.token}}
+	mint := openRoom(t, w.f, "https://"+w.pop.Addr()+"/room/new?"+q.Encode(), "tuhis")
+	if st := mint.state(t); len(st.Attachments) != 1 || st.Attachments[0].BroadcastID != p.id {
+		t.Fatalf("minted room state = %+v", st)
+	}
+	WaitFor(t, "the tile leaves home's wall", func() bool { return !w.onWall(p.id) })
+	p.waitInfo(t, "0x18 off the wall", func(i wire.LocalRelayInfo) bool { return !i.OnWall })
+	w.f.UpdateSpec(t, popName, func(s *pops.PopSpec) { s.DisplayName = "Assembly resynced" })
+	WaitFor(t, "the resync's config at the PoP", func() bool {
+		c := w.pop.Client.State().Config
+		return c != nil && c.DisplayName == "Assembly resynced"
+	})
+	time.Sleep(500 * time.Millisecond)
+	if w.onWall(p.id) {
+		t.Fatal("the resync put the minted broadcast back on the wall")
+	}
+}

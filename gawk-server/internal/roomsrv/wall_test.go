@@ -1,8 +1,10 @@
 package roomsrv
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/Tuhis/gawk/gawk-server/rooms"
@@ -274,5 +276,53 @@ func TestIsWall(t *testing.T) {
 	}
 	if _, ok := f.reg.WallPop("missing"); ok {
 		t.Error("a missing room reads as a wall")
+	}
+}
+
+// A mint that is refused (here the fleet is at -max-rooms) leaves the
+// broadcast on the wall: the wall tile goes only once the new room exists.
+func TestARefusedMintKeepsTheBroadcastOnTheWall(t *testing.T) {
+	f := newFixture(t, func(o *Options) { o.MaxRooms = 1 })
+	if err := f.reg.UpsertStatic(StaticRoom{Code: "assembly-2026", Pop: wallPop, MaxBroadcasts: 40, MaxParticipants: 500}); err != nil {
+		t.Fatal(err)
+	}
+	f.mint(t, "ZZZZZ2") // the one dynamic room the fleet allows
+	id := "ABCDEF"
+	f.bc.set(id, BroadcastState{Live: true})
+	if err := f.reg.AttachVouched("assembly-2026", wallPop, id, ""); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.reg.Mint(context.Background(), MintRequest{BroadcastID: id, ResumeToken: f.tokens.MintResume(id)})
+	if !errors.Is(err, ErrMaxRooms) {
+		t.Fatalf("Mint = %v, want ErrMaxRooms", err)
+	}
+	if !slices.ContainsFunc(f.reg.Attachments("assembly-2026"), func(a rooms.Attachment) bool { return a.BroadcastID == id }) {
+		t.Fatal("a refused mint took the broadcast off the wall")
+	}
+}
+
+// The wall's owner (the PoP's popclient) hears when a broadcast leaves its
+// wall by its broadcaster's choice, a mint or an attach elsewhere, so it
+// can stop vouching for it home and stop re-attaching it on a resync.
+func TestLeavingTheWallIsReportedToItsOwner(t *testing.T) {
+	f := newWallFixture(t, 40)
+	var left []string
+	f.reg.OnWallLeave(func(code, id string) { left = append(left, code+"/"+id) })
+	if err := f.reg.UpsertStatic(StaticRoom{Code: "lan-team"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"ABCDEF", "ABCDEG"} {
+		f.bc.set(id, BroadcastState{Live: true})
+		if err := f.reg.AttachVouched("assembly-2026", wallPop, id, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mint(t, "ABCDEF")
+	p, c := f.join(t, "lan-team", "tuhis", Grants{AttachOK: true}, nil)
+	c.nextState(t)
+	p.HandleCommand(wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: "ABCDEG", ResumeToken: f.tokens.MintResume("ABCDEG")})
+	c.nextEvent(t, wire.RoomEventAttachmentAdded)
+	if want := []string{"assembly-2026/ABCDEF", "assembly-2026/ABCDEG"}; !slices.Equal(left, want) {
+		t.Fatalf("wall leaves = %v, want %v", left, want)
 	}
 }
