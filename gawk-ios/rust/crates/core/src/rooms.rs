@@ -32,6 +32,14 @@ pub enum GawkLink {
         nick: Option<String>,
         relay: Option<String>,
     },
+    /// R74 (docs/76 §6.1 item 5): a server to save and select. `relay` is
+    /// never the default fleet; `cert_hashes` (lowercase hex, at most two)
+    /// is non-empty only for a relay on a private IP literal, and pins it.
+    Server {
+        relay: String,
+        cert_hashes: Vec<String>,
+        label: Option<String>,
+    },
 }
 
 /// A parsed link and the parameters it dropped (by name only: a dropped
@@ -59,6 +67,15 @@ pub fn parse_gawk_link(raw: String) -> Result<ParsedLink, LinkError> {
         Link::Watch { id, relay } => GawkLink::Watch { id, relay },
         Link::Room { code, nick, relay } => GawkLink::Room { code, nick, relay },
         Link::Broadcast { room, nick, relay } => GawkLink::Broadcast { room, nick, relay },
+        Link::Server {
+            relay,
+            cert_hashes,
+            label,
+        } => GawkLink::Server {
+            relay,
+            cert_hashes,
+            label,
+        },
     };
     Ok(ParsedLink {
         link,
@@ -159,14 +176,18 @@ pub struct RoomWatcher {
 
 #[uniffi::export]
 impl RoomWatcher {
-    #[uniffi::constructor]
+    /// `cert_hashes`: the server's pins (R74; lowercase hex), empty — the
+    /// default — for the system store.
+    #[uniffi::constructor(default(cert_hashes = []))]
     pub fn start(
         relay_url: String,
         code: String,
         nickname: String,
         insecure: bool,
         listener: Arc<dyn RoomListener>,
+        cert_hashes: Vec<String>,
     ) -> Arc<Self> {
+        let pins = gawk_engine::transport::cert_hashes_from_hex(&cert_hashes);
         let (stop_tx, stop_rx) = watch::channel(false);
         let (requests, requests_rx) = mpsc::unbounded_channel();
         let origin = gawk_engine::defaults::origin().to_owned();
@@ -187,7 +208,11 @@ impl RoomWatcher {
                         nickname,
                         ..RoomConfig::default()
                     };
-                    let dialer = Arc::new(WtRoomDialer { origin, insecure });
+                    let dialer = Arc::new(WtRoomDialer {
+                        origin,
+                        insecure,
+                        pins,
+                    });
                     let session = tokio::spawn(room::watch_room_with_requests(
                         cfg,
                         dialer,
@@ -316,6 +341,43 @@ mod tests {
         assert_eq!(p.dropped, ["secret"], "a secret never travels in a link");
         let e = parse_gawk_link("https://gawk.ioio.fi".into()).unwrap_err();
         assert!(matches!(e, LinkError::Invalid { ref code, .. } if code == "not-gawk"));
+    }
+
+    // R74 PP5: `gawk://server` (tests/link-vectors.json's server/ and
+    // certhash/ vectors, restated).
+    #[test]
+    fn server_links_carry_the_relay_its_pins_and_a_label() {
+        let h1 = "a1".repeat(32);
+        let h2 = "b2".repeat(32);
+        let p = parse_gawk_link(format!(
+            "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash={h1},{h2}&label=Assembly%202026"
+        ))
+        .unwrap();
+        assert_eq!(
+            p.link,
+            GawkLink::Server {
+                relay: "https://192.168.1.20:4433".into(),
+                cert_hashes: vec![h1.clone(), h2],
+                label: Some("Assembly 2026".into()),
+            }
+        );
+        assert!(p.dropped.is_empty());
+        // A pin beside a public address is dropped; the server stays.
+        let p = parse_gawk_link(format!(
+            "gawk://server?relay=https%3A%2F%2F203.0.113.7%3A4433&certHash={h1}"
+        ))
+        .unwrap();
+        assert_eq!(
+            p.link,
+            GawkLink::Server {
+                relay: "https://203.0.113.7:4433".into(),
+                cert_hashes: vec![],
+                label: None,
+            }
+        );
+        assert_eq!(p.dropped, ["certHash"]);
+        let e = parse_gawk_link(format!("gawk://server?certHash={h1}")).unwrap_err();
+        assert!(matches!(e, LinkError::Invalid { ref code, .. } if code == "no-relay"));
     }
 
     /// docs/70 D18, D20: the people, who you are, and what you may do, as

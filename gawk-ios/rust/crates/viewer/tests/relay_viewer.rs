@@ -212,6 +212,7 @@ async fn the_viewer_plays_through_datagram_loss_and_a_relay_restart() {
     let dialer = Arc::new(WtSubscribeDialer {
         origin: "gawk://ios".into(),
         insecure: true,
+        pins: Vec::new(),
     });
     let viewer = tokio::spawn(run(cfg, dialer, sink.clone(), ViewerClock::new(), rx));
 

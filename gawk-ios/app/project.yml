@@ -65,6 +65,10 @@ targets:
           - CFBundleURLName: fi.ioio.gawk
             CFBundleURLSchemes:
               - gawk
+        # R74 (docs/76 item 44): a party's local relay is on this network
+        # (a `gawk://server` link, a pinned server, a PoP's offer). TN3179:
+        # the first dial to it prompts; without the key it is denied.
+        NSLocalNetworkUsageDescription: gawk connects to a relay on this network when you join a party that runs one, so streams don't have to cross the internet.
         # The broadcast's Live Activity (docs/70 D15), drawn by the
         # GawkLiveActivity extension.
         NSSupportsLiveActivities: true

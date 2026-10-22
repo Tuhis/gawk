@@ -7,7 +7,28 @@ import Observation
 struct Server: Codable, Hashable, Identifiable {
     var name: String
     var url: String
+    /// R74 (docs/76 §6.1 item 5): the certificate hashes a local relay
+    /// published (lowercase hex SHA-256, at most two). Non-empty, its dials
+    /// accept only a certificate hashing to one of them. Pinning data, not
+    /// a credential, so it lives here rather than in the Keychain. Absent
+    /// from lists saved before R74.
+    var certHashes: [String]
     var id: String { url }
+
+    init(name: String, url: String, certHashes: [String] = []) {
+        self.name = name
+        self.url = url
+        self.certHashes = certHashes
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, url, certHashes }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        url = try c.decode(String.self, forKey: .url)
+        certHashes = try c.decodeIfPresent([String].self, forKey: .certHashes) ?? []
+    }
 }
 
 /// A room in "Your rooms" (docs/70 K12, docs/60 D8): the rooms this app
@@ -101,6 +122,12 @@ final class AppSettings {
     /// The compiled-in fleet's name in the server list.
     static let defaultServerName = "gawk"
 
+    /// The selection's pins (R74): empty for the default fleet and for an
+    /// unpinned server, which the system store decides.
+    var relayCertHashes: [String] {
+        servers.first { $0.url == selectedURL }?.certHashes ?? []
+    }
+
     /// The display name of the selection.
     var relayName: String {
         servers.first { $0.url == selectedURL }?.name ?? Self.defaultServerName
@@ -154,7 +181,8 @@ final class AppSettings {
         rooms.removeAll { $0.id == record.id }
     }
 
-    /// Adds (or renames) a custom server; the URL is the key.
+    /// Adds (or renames) a custom server; the URL is the key. A saved
+    /// server keeps its pins.
     func addServer(name: String, url: String) {
         let u = url.trimmingCharacters(in: .whitespaces)
         guard u.hasPrefix("https://") else { return }
@@ -166,8 +194,24 @@ final class AppSettings {
         }
     }
 
+    /// A `gawk://server` link, accepted (R74): adds the server or, when it
+    /// is saved, replaces its pins (an empty list keeps the ones it has, so
+    /// a link without hashes never unpins), then selects it. The caller
+    /// asks first: a link is untrusted input.
+    func adoptServer(name: String, url: String, certHashes: [String]) {
+        let u = url.trimmingCharacters(in: .whitespaces)
+        guard u.hasPrefix("https://") else { return }
+        addServer(name: name, url: u)
+        if !certHashes.isEmpty, let i = servers.firstIndex(where: { $0.url == u }) {
+            servers[i].certHashes = certHashes
+        }
+        selectedURL = u
+    }
+
     /// Edit changed a saved server's relay: the server keeps its place and
     /// its selection under the new URL. Its secret is the caller's to move.
+    /// Its pins are not moved: they belong to the address that published
+    /// them (R74), as on the desktop.
     func moveServer(from old: String, to new: String, name: String) {
         guard new.hasPrefix("https://"), let i = servers.firstIndex(where: { $0.url == old }) else { return }
         servers.removeAll { $0.url == new && $0.url != old }
