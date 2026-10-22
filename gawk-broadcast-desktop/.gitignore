@@ -1,2 +1,6 @@
 /target
 /dist
+# Running the vendored quinn-proto's own tests (vendor/quinn-proto/GAWK-PATCH.md)
+# resolves a lockfile and a target dir beside it; gawk-derive.sh removes both.
+/vendor/quinn-proto/Cargo.lock
+/vendor/quinn-proto/target

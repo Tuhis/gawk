@@ -1330,6 +1330,21 @@ exists for. The library is now **vendored with five small patches**
   capture left one more stale registration. Fix: the registration is
   a `gawk_audio::registration::Registration`, which unregisters on drop
   before releasing the callback, on every exit path of the pump.
+- **F-14 (2026-10-23, review of quinn-proto 0.11.19)**: quinn's BBR
+  bandwidth estimate could never fall. `BandwidthEstimation::on_ack` fed
+  its 10-round max filter only samples above the current maximum, and the
+  filter ages old samples out only when fed new ones. Batched sends share
+  one `now`, so a sample is the ack rate, and two acks microseconds apart
+  make one of hundreds of MB/s. A unit test took one such pair from
+  1.2 MB/s to 120 MB/s; 200 rounds later it was still 120 MB/s, and a path
+  that genuinely slowed was never seen at all. BBR then paces and sizes its
+  window for that rate for the rest of the connection. Fix: the engine
+  builds against a vendored quinn-proto with a one-line patch (every
+  non-zero sample goes to the filter) and its regression tests
+  (`vendor/quinn-proto/GAWK-PATCH.md`, which also covers bumping it).
+  A marker constant in the patch is named by `gawk-engine`, so a workspace
+  that resolves stock quinn-proto fails to compile. docs/75 F17's BBR
+  figures predate it.
 
 ## 12. References
 

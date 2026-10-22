@@ -1616,7 +1616,23 @@ entries still describe code `gawk-pubsim` runs (now
   7–10 % of its own packets where Cubic lost 1 %: 43 % of frames
   undecodable on datagrams. Where the uplink has room it keeps a household's
   TCP upload at 90–102 % of its fair share; on such a link, about half
-  ([docs/75](75-reliable-uplink.md) F17).
+  ([docs/75](75-reliable-uplink.md) F17). Measured before the fix below;
+  not re-measured yet.
+- **Stock quinn-proto's BBR estimate can never fall.** Its max filter is
+  fed only new maxima, so one ack-compression spike (two acks microseconds
+  apart, easy when a send batch shares one `now`) or the rate of a path
+  that has since slowed paces the rest of the connection. The desktop
+  engine builds against a patched copy for this
+  ([docs/38](38-windows-native-broadcaster.md) F-14).
+- **Bumping quinn-proto means re-deriving its vendored copy.** All three
+  Rust workspaces (`gawk-broadcast-desktop`, `gawk-ios/rust`,
+  `tools/uplinklab`) `[patch]` it to
+  `gawk-broadcast-desktop/vendor/quinn-proto`. Cargo skips a `[patch]`
+  whose version no longer matches with only a warning, so `gawk-engine`
+  names a constant only the patched copy has: a quinn bump that drags
+  quinn-proto forward fails to compile there until `gawk-derive.sh` has
+  re-derived the copy (its `GAWK-PATCH.md` has the steps). CI fails if the
+  copy is not upstream plus `gawk.patch`.
 - **Packet loss does not tell a thin uplink from a radio.** An 80 ms
   outage every second or so (AWDL's shape) loses 5–20 % of a second's
   packets on a link with room; BBR on a link the stream nearly fills loses

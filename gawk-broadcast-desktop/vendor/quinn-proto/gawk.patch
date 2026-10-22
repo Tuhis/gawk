@@ -1,0 +1,117 @@
+diff -ruN a/src/congestion/bbr/bw_estimation.rs b/src/congestion/bbr/bw_estimation.rs
+--- a/src/congestion/bbr/bw_estimation.rs
++++ b/src/congestion/bbr/bw_estimation.rs
+@@ -62,7 +62,12 @@
+         };
+ 
+         let bandwidth = send_rate.min(ack_rate);
+-        if !app_limited && self.max_filter.get() < bandwidth {
++        // GAWK PATCH (docs/38 F-14): every sample goes to the windowed max
++        // filter, which is what ages old maxima out. Upstream passed only
++        // new maxima, so the estimate could never fall: one ack-compression
++        // spike was the bandwidth for the rest of the connection. Zero is a
++        // second ack at the same `now`, not a measurement.
++        if !app_limited && bandwidth > 0 {
+             self.max_filter.update_max(round, bandwidth);
+         }
+     }
+@@ -99,3 +104,82 @@
+         )
+     }
+ }
++
++// GAWK PATCH (docs/38 F-14): the max filter must see every sample, or a
++// spike is the estimate forever. See vendor/quinn-proto/GAWK-PATCH.md.
++#[cfg(test)]
++mod gawk_tests {
++    use super::*;
++
++    const PACKET: u64 = 1200;
++
++    /// One round as quinn produces it: a send batch shares one `now`
++    /// (`drive_transmit`), so the estimate is the ack rate; its acks then
++    /// arrive `ack_gap` apart.
++    fn round(est: &mut BandwidthEstimation, t: &mut Instant, round: u64, ack_gap: Duration) {
++        for _ in 0..10 {
++            est.on_sent(*t, PACKET);
++        }
++        for _ in 0..10 {
++            *t += ack_gap;
++            est.on_ack(*t, *t, PACKET, round, false);
++        }
++        est.end_acks(round, false);
++    }
++
++    /// Two acks 10 µs apart: an ack-compression sample of 120 MB/s.
++    fn spike(est: &mut BandwidthEstimation, t: &mut Instant, round: u64) {
++        est.on_sent(*t, PACKET);
++        est.on_sent(*t, PACKET);
++        *t += Duration::from_millis(1);
++        est.on_ack(*t, *t, PACKET, round, false);
++        *t += Duration::from_micros(10);
++        est.on_ack(*t, *t, PACKET, round, false);
++        est.end_acks(round, false);
++    }
++
++    const STEADY: u64 = 1_200_000; // 1200 B per 1 ms
++
++    #[test]
++    fn a_spike_ages_out_of_the_window() {
++        let mut est = BandwidthEstimation::default();
++        let mut t = Instant::now();
++        for r in 0..20 {
++            round(&mut est, &mut t, r, Duration::from_millis(1));
++        }
++        assert_eq!(est.get_estimate(), STEADY);
++        spike(&mut est, &mut t, 20);
++        assert_eq!(est.get_estimate(), 100 * STEADY);
++        for r in 21..41 {
++            round(&mut est, &mut t, r, Duration::from_millis(1));
++        }
++        assert_eq!(est.get_estimate(), STEADY, "20 rounds on, past the 10-round window");
++    }
++
++    #[test]
++    fn a_spike_holds_within_the_window() {
++        let mut est = BandwidthEstimation::default();
++        let mut t = Instant::now();
++        for r in 0..20 {
++            round(&mut est, &mut t, r, Duration::from_millis(1));
++        }
++        spike(&mut est, &mut t, 20);
++        for r in 21..28 {
++            round(&mut est, &mut t, r, Duration::from_millis(1));
++        }
++        assert_eq!(est.get_estimate(), 100 * STEADY, "a max filter, not a mean");
++    }
++
++    #[test]
++    fn a_slower_path_lowers_the_estimate() {
++        let mut est = BandwidthEstimation::default();
++        let mut t = Instant::now();
++        for r in 0..20 {
++            round(&mut est, &mut t, r, Duration::from_millis(1));
++        }
++        for r in 20..40 {
++            round(&mut est, &mut t, r, Duration::from_millis(4));
++        }
++        assert_eq!(est.get_estimate(), STEADY / 4);
++    }
++}
+diff -ruN a/src/congestion.rs b/src/congestion.rs
+--- a/src/congestion.rs
++++ b/src/congestion.rs
+@@ -13,6 +13,13 @@
+ pub use cubic::{Cubic, CubicConfig};
+ pub use new_reno::{NewReno, NewRenoConfig};
+ 
++/// GAWK PATCH (docs/38 F-14): exists only in gawk's patched copy, whose BBR
++/// bandwidth estimate can fall again (vendor/quinn-proto/GAWK-PATCH.md).
++/// gawk-engine names it, so a build that resolves stock quinn-proto fails to
++/// compile instead of silently shipping the unpatched BBR.
++#[doc(hidden)]
++pub const GAWK_BBR_MAX_FILTER_PATCH: () = ();
++
+ /// Common interface for different congestion controllers
+ pub trait Controller: Send + Sync {
+     /// One or more packets were just sent
