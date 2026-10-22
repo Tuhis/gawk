@@ -147,6 +147,14 @@ func (r *Rolling) Hashes() (current, next string) {
 	return CertHashHex(r.cur.Leaf), CertHashHex(r.next.Leaf)
 }
 
+// RotatesAt is when the serving certificate hands over to the next one
+// (the console's "rotates in n days").
+func (r *Rolling) RotatesAt() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mintedAt.Add(r.o.Serve)
+}
+
 // Subscribe registers fn to run after every rotation with the new hashes.
 func (r *Rolling) Subscribe(fn func(current, next string)) (cancel func()) {
 	r.mu.Lock()
