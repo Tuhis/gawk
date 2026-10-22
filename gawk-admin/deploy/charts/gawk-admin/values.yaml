@@ -184,6 +184,31 @@ links:
 rooms:
   enabled: false
 
+# R74 PoP relays (docs/76 §7.2): the PoPs pages — create a PoP, show its
+# pairing string once, edit its budget, re-pair, revoke, delete — through Pop
+# CRs. Requires the RELAY chart's pops.enabled=true (which installs the Pop
+# CRD). A party wall is a static Room, so a PoP with a wall also needs
+# rooms.enabled here and on the relay.
+#
+# DEFAULT OFF. Turning it on widens the Role (templates/rbac.yaml) with Pop
+# CRUD, pops/status patch, cert-manager CertificateRequests and external-dns
+# DNSEndpoints in the namespace. Only the pairing string's SHA-256 is ever
+# stored; the string is shown once.
+pops:
+  enabled: false
+  # The home relay endpoint (host:port) a pairing string names, e.g.
+  # api.gawk.ioio.fi:4433 — what a PoP dials. Required with pops.enabled.
+  homeEndpoint: ""
+  # How long an unused pairing string can be redeemed. Never limits a
+  # credential that was paired in time.
+  pairingTtl: "72h"
+  # The named tier (docs/76 §6.11). Both empty = pinned links only. dnsZone
+  # is the zone PoP hosts get a random p-xxxxxx label in; certIssuer is
+  # cert-manager's issuer as kind/name, e.g. ClusterIssuer/letsencrypt.
+  dnsZone: ""
+  certIssuer: ""
+  dnsTtl: "60s"
+
 # Automatic content flagging (R40, docs/71). The portal half: the routes the
 # gawk-sampler chart's samplers call (role oidc.flaggerRole), the operator's
 # flag list, acknowledge/dismiss and the calibration replay, and the leader's

@@ -72,6 +72,34 @@ rules:
     resources: ["secrets"]
     verbs: ["get", "create", "update", "delete"]
   {{- end }}
+  {{- if .Values.pops.enabled }}
+  # R74 PoP relays (docs/76 §9, §7.2). Pop CRs: the portal creates a PoP (the
+  # CR create is the name reservation), edits its spec, re-pairs it (writes
+  # spec.pairing only), revokes and deletes it. `watch` is not granted, as for
+  # rooms: the portal runs no informer.
+  - apiGroups: ["gawk.ioio.fi"]
+    resources: ["pops"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # The named tier's certificate fields (tls.host, tls.certificate,
+  # tls.issuedForCSR, tls.notAfter). With the CRD's status subresource the API
+  # server ignores status written through the main resource, so this is a
+  # separate grant. The relays own every other status path; the portal never
+  # writes status.credential.
+  - apiGroups: ["gawk.ioio.fi"]
+    resources: ["pops/status"]
+    verbs: ["get", "patch"]
+  # The named tier (docs/76 §6.11): one cert-manager CertificateRequest per
+  # PoP CSR, and one external-dns DNSEndpoint per PoP (deleted on revoke).
+  # Both CRDs belong to their operators; with pops.dnsZone or pops.certIssuer
+  # empty the portal creates neither, but the grant rides pops.enabled so
+  # turning the named tier on is a values change, not an RBAC review.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificaterequests"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["externaldns.k8s.io"]
+    resources: ["dnsendpoints"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

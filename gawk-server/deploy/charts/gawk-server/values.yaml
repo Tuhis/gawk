@@ -182,6 +182,29 @@ rooms:
   # clusterMode. Without clusterMode a rooms-enabled relay uses no
   # Kubernetes client at all.
 
+# R74 PoP relays (docs/76): accept links from paired LAN relays
+# (`gawk-relay`) that federate with this fleet — a party's local relay
+# forwards its broadcasts here on demand and pulls home broadcasts down for
+# its guests. OFF BY DEFAULT: no /pop/ routes, no CRD, no RBAC.
+#
+# Requires config.clusterMode: the Pop CRs this chart installs are the PoP
+# source, written by gawk-admin's PoPs pages (or kubectl), and a PoP's
+# reservations are broadcast Leases. rbac.yaml grants pops get/list/watch
+# and pops/status get/patch — the relay never creates, deletes or edits the
+# spec of a Pop. A file source (-pops-file) exists for non-Kubernetes
+# deployments and is not exposed here, the rooms posture.
+pops:
+  enabled: false
+  # How long a forwarded PoP broadcast keeps its uplink leg after its last
+  # outside viewer leaves.
+  uplinkLinger: "30s"
+  # How long a guest's session on home waits for the switch offer to a
+  # matching PoP before home pulls the broadcast up anyway (lr=1 sessions).
+  offerDefer: "2s"
+  # How long an outside viewer's subscribe waits for a PoP to start
+  # forwarding a reserved broadcast before it reads as "broadcaster away".
+  demandTimeout: "5s"
+
 # R40 (docs/71): automatic content screening. Both halves are OFF by default
 # and the relay is byte-identical to one predating R40 until one is set.
 screening:

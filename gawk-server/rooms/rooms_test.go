@@ -292,3 +292,35 @@ func TestScreeningFieldRoundTrips(t *testing.T) {
 		t.Fatalf("an unscreened spec marshals the field: %s", out)
 	}
 }
+
+// R74 (docs/76 item 33): a party wall is a static room with spec.pop and,
+// optionally, its own participant cap. Both round-trip under the CRD's
+// property names and are omitted when empty, so a pre-R74 spec marshals
+// byte-identically.
+func TestPopAndMaxParticipantsRoundTrip(t *testing.T) {
+	var r Room
+	if err := json.Unmarshal([]byte(`{"spec":{"kind":"static","pop":"assembly-2026","maxBroadcasts":40,"maxParticipants":200}}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Spec.Pop != "assembly-2026" || r.Spec.MaxParticipants != 200 || r.Spec.MaxBroadcasts != 40 {
+		t.Fatalf("spec = %+v", r.Spec)
+	}
+	cp := r.DeepCopy()
+	if cp.Spec.Pop != r.Spec.Pop || cp.Spec.MaxParticipants != r.Spec.MaxParticipants {
+		t.Errorf("deepcopy lost the fields: %+v", cp.Spec)
+	}
+	out, err := json.Marshal(RoomSpec{Kind: KindStatic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "pop") || strings.Contains(string(out), "maxParticipants") {
+		t.Fatalf("an ordinary spec marshals the fields: %s", out)
+	}
+	var fr FileRoom
+	if err := json.Unmarshal([]byte(`{"code":"lan-wall","maxParticipants":120}`), &fr); err != nil {
+		t.Fatal(err)
+	}
+	if fr.MaxParticipants != 120 {
+		t.Errorf("FileRoom.MaxParticipants = %d", fr.MaxParticipants)
+	}
+}

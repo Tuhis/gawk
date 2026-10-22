@@ -199,8 +199,13 @@ type room struct {
 	kind          string // rooms.KindStatic / KindDynamic
 	attachSecret  string
 	maxBroadcasts int
-	creatorFP     string
-	createdAt     time.Time
+	// maxParticipants overrides Options.MaxParticipants when > 0 (R74).
+	maxParticipants int
+	// pop is the R74 PoP whose party wall this static room is (spec.pop);
+	// carried for the vouched-attach rule (docs/76 item 33).
+	pop       string
+	creatorFP string
+	createdAt time.Time
 	// minter is the broadcast a dynamic room was minted from, so a repeat
 	// of that mint can be answered with this room (Mint). Not in the CR: an
 	// adopted room has none, and a repeat there is refused as before.
@@ -348,6 +353,10 @@ type StaticRoom struct {
 	DisplayName   string
 	AttachSecret  string
 	MaxBroadcasts int
+	// MaxParticipants overrides the fleet participant cap; 0 keeps it.
+	MaxParticipants int
+	// Pop is the R74 PoP a party-wall room belongs to (spec.pop).
+	Pop string
 	// Attachments seeds a static room being ADOPTED from its CR
 	// (status.attachments, docs/44 §4.3 "rebuilt by the home pod on
 	// adoption"); ignored on an update of a room this pod already holds.
@@ -379,11 +388,14 @@ func (r *Registry) UpsertStatic(def StaticRoom) error {
 		rm.name = def.DisplayName
 		rm.attachSecret = def.AttachSecret
 		rm.maxBroadcasts = def.MaxBroadcasts
+		rm.maxParticipants = def.MaxParticipants
+		rm.pop = def.Pop
 		return nil
 	}
 	rm = &room{
 		code: norm, display: display, name: def.DisplayName, kind: rooms.KindStatic,
 		attachSecret: def.AttachSecret, maxBroadcasts: def.MaxBroadcasts,
+		maxParticipants: def.MaxParticipants, pop: def.Pop,
 		createdAt: r.opts.Now(), nextPID: 1, participants: make(map[uint16]*Participant),
 	}
 	r.rooms[norm] = rm
@@ -425,7 +437,7 @@ func (r *Registry) prefetchStates(list []rooms.Attachment) []prefetched {
 func (r *Registry) ReplaceStatic(defs []rooms.FileRoom) {
 	keep := make(map[string]bool, len(defs))
 	for _, d := range defs {
-		def := StaticRoom{Code: d.Code, DisplayName: d.DisplayName, AttachSecret: d.AttachSecret, MaxBroadcasts: d.MaxBroadcasts}
+		def := StaticRoom{Code: d.Code, DisplayName: d.DisplayName, AttachSecret: d.AttachSecret, MaxBroadcasts: d.MaxBroadcasts, MaxParticipants: d.MaxParticipants}
 		if err := r.UpsertStatic(def); err != nil {
 			r.log.Warn("static room skipped", "code_len", len(d.Code), "err", err)
 			continue
@@ -507,10 +519,19 @@ func (r *Registry) CheckJoin(code, creatorToken string, attachSecret string, hav
 		}
 		g.AttachOK = true
 	}
-	if len(rm.participants) >= r.opts.MaxParticipants {
+	if len(rm.participants) >= r.participantLimit(rm) {
 		return Grants{}, ErrFull
 	}
 	return g, nil
+}
+
+// participantLimit is the room's own cap when it has one, else the
+// fleet's (R74: a party wall's spec.maxParticipants). Call under r.mu.
+func (r *Registry) participantLimit(rm *room) int {
+	if rm.maxParticipants > 0 {
+		return rm.maxParticipants
+	}
+	return r.opts.MaxParticipants
 }
 
 // MintRequest is a /room/new request after the transport's own gates.
@@ -714,7 +735,7 @@ func (r *Registry) Join(code string, hello wire.RoomHello, grants Grants, creato
 		r.mu.Unlock()
 		return nil, ErrNotFound
 	}
-	if len(rm.participants) >= r.opts.MaxParticipants {
+	if len(rm.participants) >= r.participantLimit(rm) {
 		r.mu.Unlock()
 		return nil, ErrFull
 	}

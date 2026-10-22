@@ -127,6 +127,25 @@ spec:
             # its ServiceAccount cannot act on.
             - name: GAWK_ADMIN_ROOMS
               value: {{ .Values.rooms.enabled | quote }}
+            {{- if .Values.pops.enabled }}
+            {{- if not .Values.pops.homeEndpoint }}
+            {{- fail "pops.enabled requires pops.homeEndpoint (host:port of the home relay a pairing string names, e.g. api.gawk.ioio.fi:4433; see docs/76-pop-relays.md §6.2)" }}
+            {{- end }}
+            # R74 PoP relays: the SAME value that gates the Role's Pop verbs
+            # (templates/rbac.yaml).
+            - name: GAWK_ADMIN_POPS
+              value: "true"
+            - name: GAWK_ADMIN_POP_HOME_ENDPOINT
+              value: {{ .Values.pops.homeEndpoint | quote }}
+            - name: GAWK_ADMIN_POP_PAIRING_TTL
+              value: {{ .Values.pops.pairingTtl | quote }}
+            - name: GAWK_ADMIN_POP_DNS_ZONE
+              value: {{ .Values.pops.dnsZone | quote }}
+            - name: GAWK_ADMIN_POP_CERT_ISSUER
+              value: {{ .Values.pops.certIssuer | quote }}
+            - name: GAWK_ADMIN_POP_DNS_TTL
+              value: {{ .Values.pops.dnsTtl | quote }}
+            {{- end }}
             # R40 content flagging (docs/71 §9.4). The knobs render whether or
             # not screening is on, so a bad value fails the rollout that
             # introduced it rather than the day screening is switched on.
