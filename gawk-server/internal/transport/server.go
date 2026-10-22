@@ -188,6 +188,10 @@ type Server struct {
 	// this pod (pop_subscribe.go), under popLegsMu.
 	popLegsMu sync.Mutex
 	popLegs   map[string]map[string]int
+	// popSlots is the fleet-wide leg cap's count on a PoP's link-home pod
+	// (pop_legcap.go), per PoP, under popSlotsMu.
+	popSlotsMu sync.Mutex
+	popSlots   map[string]*popLegCount
 	// testHookPopLegTransport adjusts the downlink's leg dialer before each
 	// dial (a test's packet tap and tracer). Atomic, as above.
 	testHookPopLegTransport atomic.Pointer[func(*webtransport.Transport)]

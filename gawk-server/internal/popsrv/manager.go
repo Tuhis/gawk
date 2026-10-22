@@ -184,6 +184,15 @@ func (m *Manager) LinkHolder(pop string) (addr string, gen int64, ok bool) {
 	return p.Status.Lease.Addr, p.Status.Lease.Generation, true
 }
 
+// HoldsLink reports this pod's own link for pop and its generation
+// (transport's fleet-wide downlink leg cap counts on the link-home pod).
+func (m *Manager) HoldsLink(pop string) (gen int64, ok bool) {
+	if l := m.local(pop); l != nil {
+		return l.gen, true
+	}
+	return 0, false
+}
+
 // Linked lists the PoPs linked anywhere in the fleet: this pod's links from
 // memory, the others from status.link as the source last saw it.
 func (m *Manager) Linked() []LinkedPop {

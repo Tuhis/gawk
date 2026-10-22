@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -91,23 +92,58 @@ func (s *Server) handlePopSubscribe(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	release, ok := s.acquirePopLeg(pop.Name, id, pop.EffectiveLimits().MaxDownlinkStreams)
+	// The cap is fleet-wide in cluster mode, counted on the PoP's link-home
+	// pod (pop_legcap.go); this pod's own count (PopLegs) is then only
+	// counted, never enforced. A single-pod home enforces it here.
+	limit := pop.EffectiveLimits().MaxDownlinkStreams
+	coord := s.clusterCoord()
+	localLimit := limit
+	if coord != nil {
+		localLimit = 0
+	}
+	release, ok := s.acquirePopLeg(pop.Name, id, localLimit)
 	if !ok {
 		s.metrics.Connection(route, metrics.OutcomeLimitRejected)
-		log.Info("pop subscribe refused: the PoP's downlink leg cap", "max", pop.EffectiveLimits().MaxDownlinkStreams)
+		log.Info("pop subscribe refused: the PoP's downlink leg cap", "max", limit)
 		popRefuse(w, http.StatusTooManyRequests, popReasonLegLimit)
 		return
 	}
 	defer release()
+	var slot *popLegSlot
+	if coord != nil {
+		slot, err = s.acquireFleetPopLeg(r.Context(), pop.Name, id, limit)
+		if err != nil {
+			// Fail closed: a leg the count cannot see is refused as over it.
+			s.metrics.Connection(route, metrics.OutcomeLimitRejected)
+			log.Info("pop subscribe refused: the PoP's fleet-wide downlink leg cap", "max", limit, "err", err)
+			popRefuse(w, http.StatusTooManyRequests, popReasonLegLimit)
+			return
+		}
+	}
 
 	sess, err := s.wt.Upgrade(w, r)
 	if err != nil {
+		if slot != nil {
+			slot.release()
+		}
 		s.metrics.Connection(route, metrics.OutcomeUpgradeFailed)
 		log.Warn("pop subscribe upgrade failed", "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	defer s.trackSession(sess)()
+	if slot != nil {
+		kctx, kcancel := context.WithCancel(r.Context())
+		kept := make(chan struct{})
+		slotLog := log // log is re-bound below; the goroutine keeps its own
+		go func() {
+			defer close(kept)
+			s.keepPopLegSlot(kctx, slot, pop.Name, id, limit, func() {
+				_ = sess.CloseWithError(webtransport.SessionErrorCode(wire.CloseCodeOriginMoved), "downlink leg slot lost")
+			}, slotLog)
+		}()
+		defer func() { kcancel(); <-kept }()
+	}
 
 	// No close notice and no session notices: the PoP's pump reads every uni
 	// stream as media (by prologue), and it reads close codes itself.
@@ -154,7 +190,9 @@ func (s *Server) handlePopSubscribe(w http.ResponseWriter, r *http.Request) {
 // spec.limits.maxDownlinkStreams (docs/76 item 24: a compromised PoP cannot
 // drain the fleet's egress). The cap counts distinct broadcasts, so a
 // second leg for one broadcast (a re-attach racing its predecessor's end)
-// always fits. Counted per pod: see PopLegs.
+// always fits. This is the pod's own count (PopLegs); limit 0 counts
+// without enforcing, as cluster mode does: there the cap is the link-home
+// pod's fleet-wide count (acquireFleetPopLeg).
 func (s *Server) acquirePopLeg(pop, id string, limit int) (release func(), ok bool) {
 	s.popLegsMu.Lock()
 	defer s.popLegsMu.Unlock()

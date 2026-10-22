@@ -145,12 +145,7 @@ func (u *Uplink) key(id string) string {
 func (u *Uplink) LinkHolder(pop string) (string, int64, bool) { return u.m.LinkHolder(pop) }
 
 // HoldsLink implements transport.PopDemandHome.
-func (u *Uplink) HoldsLink(pop string) (int64, bool) {
-	if l := u.m.local(pop); l != nil {
-		return l.gen, true
-	}
-	return 0, false
-}
+func (u *Uplink) HoldsLink(pop string) (int64, bool) { return u.m.HoldsLink(pop) }
 
 // ReservedFor implements transport.PopDemandHome.
 func (u *Uplink) ReservedFor(id string) (string, bool) {
