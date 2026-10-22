@@ -382,6 +382,10 @@ func TestConsoleLANOverride(t *testing.T) {
 // With no PoP link in this build, pairing says so instead of failing
 // silently.
 func TestConsolePairWithoutALink(t *testing.T) {
+	// An earlier in-process run leaves its named part's link installed;
+	// without clearing it this Pair went through a real link and failed
+	// for a different reason.
+	noLink(t)
 	c := testConsole(t)
 	if err := c.Pair(context.Background(), "gawk-pair:api.gawk.ioio.fi:4433/ABC"); err == nil {
 		t.Fatal("Pair succeeded with no link")
