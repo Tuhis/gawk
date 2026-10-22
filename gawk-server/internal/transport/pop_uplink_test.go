@@ -568,6 +568,9 @@ func TestATransientLegClaimFailureKeepsTheWaitingViewers(t *testing.T) {
 	u.pair(t)
 	u.f.Route(1)
 	var failed atomic.Bool
+	// The pods' coordinators already call the fake; PrependReactor does not
+	// take its lock (Invokes does), so take it here.
+	u.f.Leases.Lock()
 	u.f.Leases.PrependReactor("update", "leases", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		l, ok := a.(k8stesting.UpdateAction).GetObject().(*coordv1.Lease)
 		if ok && l.Spec.HolderIdentity != nil && *l.Spec.HolderIdentity == u.f.Pods[1].Name &&
@@ -576,6 +579,7 @@ func TestATransientLegClaimFailureKeepsTheWaitingViewers(t *testing.T) {
 		}
 		return false, nil, nil
 	})
+	u.f.Leases.Unlock()
 	p := publishOnPoP(t, u)
 	u.reserved(t, p.id)
 	kf := keyframeMsg(t, 1)
