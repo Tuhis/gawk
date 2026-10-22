@@ -196,6 +196,18 @@ func TestDownlinkTenPartyViewersShareOneLegAndCountInG(t *testing.T) {
 	if got := pop.Client.DownlinkUse(); got.Streams != 1 {
 		t.Fatalf("Client.DownlinkUse = %+v", got)
 	}
+	// The stats record carries the downlink's streams to the link holder's
+	// /internal/admin/pops row (docs/76 PP7: PP9 adds its counts).
+	WaitFor(t, "the PoP row reports one downlink stream", func() bool {
+		for _, p := range f.Pods {
+			for _, row := range p.Manager.AdminPops() {
+				if row.Name == popName && row.Linked && row.DownlinkStreams == 1 {
+					return true
+				}
+			}
+		}
+		return false
+	})
 
 	obf := f.Pods[0].Registry.ObfuscateID(id)
 	WaitFor(t, "home's G counts the ten party viewers", func() bool {

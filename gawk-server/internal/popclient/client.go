@@ -580,6 +580,8 @@ func (c *Client) stats() poplink.Stats {
 	return poplink.Stats{
 		Uplink:   pops.Budget{MaxMbps: rc.UplinkBudget.Mbps, MaxStreams: rc.UplinkBudget.Streams},
 		Downlink: pops.Budget{MaxMbps: rc.DownlinkBudget.Mbps, MaxStreams: rc.DownlinkBudget.Streams},
+		// The home broadcasts pulled over the downlink now (downlink.go).
+		DownlinkStreams: c.DownlinkUse().Streams,
 		// Health is reported on its own record; nothing to add yet.
 	}
 }
