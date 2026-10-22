@@ -1561,6 +1561,11 @@ type subscribeOpts struct {
 	// together: required on legs, optional on primaries (empty bars
 	// striping). Validated at the transport layer.
 	owner string
+	// A PoP leg (docs/76 item 18, SubscribeLeg). legCarrier selects the
+	// leg writer, with legOpts its clock and reset delay.
+	leg        bool
+	legCarrier bool
+	legOpts    LegOptions
 }
 
 // SubscribeParity subscribes a datagram-delivery viewer served parityK
@@ -1613,14 +1618,18 @@ func (r *Registry) subscribeOpts(id string, conn Conn, so subscribeOpts) (*Subsc
 		stripeN:         so.stripeN,
 		stripeMember:    so.stripeMember,
 		owner:           so.owner,
+		leg:             so.leg,
+		legCarrier:      so.legCarrier,
+		legOpts:         so.legOpts,
 		queue:           make(chan []byte, r.opts.QueueDepth),
 		done:            make(chan struct{}),
 		statsKey:        newSubscriberStatsKey(),
 	}
 	// The audio lane: always for reliable delivery, for live-edge viewers
 	// only when opted in. Never for an edge session (the second hop makes its
-	// own delivery choice) or a stripe leg (audio rides the primary).
-	if reliable || (r.opts.LiveEdgeAudioOnReliableStream && !internal && !so.stripeLeg) {
+	// own delivery choice), a stripe leg (audio rides the primary) or a PoP
+	// leg, whose audio stays a datagram (docs/76 item 18).
+	if (reliable && !so.legCarrier) || (r.opts.LiveEdgeAudioOnReliableStream && !internal && !so.stripeLeg) {
 		s.audioQueue = make(chan []byte, AudioSidebandQueueDepth)
 		s.audioDone = make(chan struct{})
 	}
@@ -2853,6 +2862,21 @@ type Subscriber struct {
 	carRotations atomic.Uint64
 	carMu        sync.Mutex
 	carCurrent   KeyframeStream
+
+	// PoP leg (docs/76 item 18, leg.go). leg is set on every SubscribeLeg
+	// subscriber; legCarrier selects the leg writer. Read-only after
+	// subscribe. Under carMu: legFinishing is the superseded carrier still
+	// finishing and legFinishStop its reset timer; legWriting says the drain
+	// is inside a carrier Write, which a rotation abandons. legKfID is the
+	// newest fanned-out keyframe's frameID (legKfValid set), read lock-free
+	// by the drain's stale check.
+	leg           bool
+	legCarrier    bool
+	legOpts       LegOptions
+	legFinishing  KeyframeStream
+	legFinishStop func() bool
+	legWriting    bool
+	legKfID       atomic.Uint64
 	// The rotation whose GOP a queue overflow declared dead, stored as
 	// generation+1 so zero means "none". Used under registry.mu; a rotation
 	// moves past it, so it needs no reset.
@@ -3000,6 +3024,10 @@ func (s *Subscriber) drain() {
 			go s.drainDVRAudio()
 		}
 		s.drainDVR()
+		return
+	}
+	if s.legCarrier {
+		s.drainLeg()
 		return
 	}
 	if s.reliable {
@@ -3280,6 +3308,28 @@ func (s *Subscriber) noteKeyframeOpenSucceeded() {
 	s.kfMu.Unlock()
 }
 
+// noteCarrierOpenFailed advances the consecutive carrier-open-failure streak,
+// evicting the subscriber when it crosses CarrierOpenFailEvictThreshold.
+func (s *Subscriber) noteCarrierOpenFailed() {
+	s.kfMu.Lock()
+	s.carConsecOpenFailed++
+	evict := !s.evicting && s.carConsecOpenFailed >= CarrierOpenFailEvictThreshold
+	if evict {
+		s.evicting = true
+	}
+	s.kfMu.Unlock()
+	if evict {
+		go s.evict()
+	}
+}
+
+// noteCarrierOpenSucceeded clears the carrier-open-failure streak.
+func (s *Subscriber) noteCarrierOpenSucceeded() {
+	s.kfMu.Lock()
+	s.carConsecOpenFailed = 0
+	s.kfMu.Unlock()
+}
+
 func (s *Subscriber) currentCarrier() KeyframeStream {
 	s.carMu.Lock()
 	defer s.carMu.Unlock()
@@ -3297,21 +3347,10 @@ func (s *Subscriber) currentCarrier() KeyframeStream {
 func (s *Subscriber) openCarrier(deadline time.Time) bool {
 	st, err := s.sender.OpenCarrierStream()
 	if err != nil {
-		s.kfMu.Lock()
-		s.carConsecOpenFailed++
-		evict := !s.evicting && s.carConsecOpenFailed >= CarrierOpenFailEvictThreshold
-		if evict {
-			s.evicting = true
-		}
-		s.kfMu.Unlock()
-		if evict {
-			go s.evict()
-		}
+		s.noteCarrierOpenFailed()
 		return false
 	}
-	s.kfMu.Lock()
-	s.carConsecOpenFailed = 0
-	s.kfMu.Unlock()
+	s.noteCarrierOpenSucceeded()
 
 	s.carMu.Lock()
 	if s.closed.Load() {
@@ -3400,7 +3439,11 @@ func (s *Subscriber) sendKeyframe(msg []byte, seq uint64) {
 		return
 	}
 	s.kfLastSeq = seq
-	if s.reliable {
+	if s.legCarrier {
+		// The leg writer's rotation also abandons a write blocked on the
+		// old carrier and records the keyframe for its stale check (F10).
+		s.legNoteKeyframe(msg)
+	} else if s.reliable {
 		// Per-GOP carrier rotation: the keyframe
 		// that starts a GOP also rotates this subscriber's carrier. The drain
 		// goroutine picks the new value up before its next record. Keyed on
@@ -3466,12 +3509,20 @@ func (s *Subscriber) writeKeyframe(stream KeyframeStream, msg []byte) {
 		s.kfConsecSlow = 0
 	case !superseded:
 		s.kfConsecSlow++
-		evict = !s.evicting && s.kfConsecSlow >= KeyframeSlowEvictThreshold
+		// A PoP leg crosses a WAN, where a congested line stalls keyframes
+		// for a while: logged and counted, never evicted (docs/76 item 18).
+		// The PoP redials a leg that is really dead.
+		evict = !s.leg && !s.evicting && s.kfConsecSlow >= KeyframeSlowEvictThreshold
 		if evict {
 			s.evicting = true
 		}
 	}
+	legSlow := s.leg && err != nil && !superseded && s.kfConsecSlow == KeyframeSlowEvictThreshold
 	s.kfMu.Unlock()
+	if legSlow {
+		s.hub.log.Warn("PoP leg keyframe stream writes stalling persistently (not evicted)",
+			"subscriber", s.statsKey, "consecutive_slow_keyframes", KeyframeSlowEvictThreshold)
+	}
 
 	if err != nil {
 		stream.CancelWrite()
@@ -3578,6 +3629,7 @@ func (s *Subscriber) Close() {
 		s.carCurrent.CancelWrite()
 		s.carCurrent = nil
 	}
+	s.legCancelFinishingLocked()
 	s.carMu.Unlock()
 
 	<-s.done
