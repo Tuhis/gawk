@@ -296,8 +296,8 @@ script for what counts as a dependency here and why.
 | `pulldown-cmark-escape` | 0.11.0 | `MIT` | Copyright 2015 Google Inc. All rights reserved |
 | `pxfm` | 0.1.30 | `BSD-3-Clause OR Apache-2.0` | Copyright 2024 Radzivon Bartoshyk<br>Copyright (c) Radzivon Bartoshyk. All rights reserved |
 | `quick-error` | 2.0.1 | `MIT/Apache-2.0` | Copyright (c) 2015 The quick-error Developers |
-| `quinn` | 0.11.11 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
-| `quinn-proto` | 0.11.16 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
+| `quinn` | 0.11.12 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
+| `quinn-proto` | 0.11.19 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
 | `quinn-udp` | 0.5.15 | `MIT OR Apache-2.0` | Copyright (c) 2018 The quinn Developers |
 | `quote` | 1.0.47 | `MIT OR Apache-2.0` | — |
 | `rand` | 0.10.2 | `MIT OR Apache-2.0` | Copyright 2018 Developers of the Rand project<br>Copyright (c) 2014 The Rust Project Developers |

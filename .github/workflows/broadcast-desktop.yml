@@ -453,6 +453,22 @@ jobs:
       - name: Test
         run: cargo llvm-cov --workspace --no-report
 
+      # docs/38 F-14: BBR runs on a vendored quinn-proto carrying one patch.
+      # Re-deriving it from the version Cargo.lock lists must change nothing,
+      # so the copy is never hand-edited and a version bump cannot leave the
+      # old copy behind. Its regression tests live in the patch, outside the
+      # workspace, so they run here.
+      - name: The vendored quinn-proto is upstream plus gawk.patch
+        run: |
+          vendor/quinn-proto/gawk-derive.sh
+          if [ -n "$(git status --porcelain -- vendor/quinn-proto)" ]; then
+            git status --short -- vendor/quinn-proto
+            echo "::error::vendor/quinn-proto is not upstream quinn-proto plus gawk.patch at the version Cargo.lock lists; see its GAWK-PATCH.md"
+            exit 1
+          fi
+      - name: The quinn-proto patch's regression tests
+        run: cargo test --manifest-path vendor/quinn-proto/Cargo.toml --no-default-features --lib congestion
+
       - name: Collect the relay and devcert
         run: |
           for i in $(seq 300); do [ -s "$RUNNER_TEMP/relay-bin.rc" ] && break; sleep 1; done

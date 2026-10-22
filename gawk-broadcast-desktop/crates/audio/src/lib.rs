@@ -16,6 +16,7 @@ pub mod level;
 pub mod opusenc;
 pub mod pcm;
 pub mod pwgraph;
+pub mod registration;
 
 #[cfg(target_os = "linux")]
 pub mod gstsrc;

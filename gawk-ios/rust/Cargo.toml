@@ -44,3 +44,5 @@ strip = true
 [patch.crates-io]
 wtransport = { path = "../../gawk-broadcast-desktop/vendor/wtransport" }
 wtransport-proto = { path = "../../gawk-broadcast-desktop/vendor/wtransport-proto" }
+# docs/38 F-14: the BBR estimate fix; gawk-engine refuses to build without it.
+quinn-proto = { path = "../../gawk-broadcast-desktop/vendor/quinn-proto" }

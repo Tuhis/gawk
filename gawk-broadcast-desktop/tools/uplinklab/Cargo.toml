@@ -36,3 +36,5 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 [patch.crates-io]
 wtransport = { path = "../../vendor/wtransport" }
 wtransport-proto = { path = "../../vendor/wtransport-proto" }
+# docs/38 F-14: the BBR estimate fix; gawk-engine refuses to build without it.
+quinn-proto = { path = "../../vendor/quinn-proto" }

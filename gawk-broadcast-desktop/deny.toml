@@ -88,6 +88,8 @@ exceptions = [
 # The vendored wtransport crates carry their license in LICENSE-MIT /
 # LICENSE-APACHE next to the source (added when the repo went open source);
 # their Cargo.toml declares `MIT OR Apache-2.0`, which the allowlist covers.
+# The vendored quinn-proto is the published crate, license files included,
+# and declares the same.
 
 [bans]
 # Not what this gate is for — duplicate-version and ban policy is a separate

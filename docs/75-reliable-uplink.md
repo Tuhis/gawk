@@ -369,6 +369,16 @@ it there: the stream alone takes ≈ 11 Mbps on the wire (with Cubic) of the
 14.4 Mbps the upload gets alone, which leaves at most 3.3 Mbps, 46 % of
 the upload's share (D5).
 
+> **2026-10-23: every BBR figure above predates a fix to quinn's BBR.**
+> quinn-proto's bandwidth estimate could never fall: its max filter was only
+> fed new maxima, so one ack-compression spike, or the rate of a path that
+> later slowed, paced the rest of the connection
+> ([docs/38](38-windows-native-broadcaster.md) F-14). The engine now builds
+> against a patched quinn-proto (`gawk-broadcast-desktop/vendor/quinn-proto`).
+> That bug is a plausible cause of BBR's self-inflicted loss on the thin
+> uplink, but this is not measured. Re-run the BBR cells of §11 (tables M
+> and O) with `tools/uplinklab` before relying on them or revisiting OD2.
+
 **F18 — A browser broadcaster gets Chrome's QUIC stack, and three of its
 properties decide what it can do (OD5).** Measured with Chrome for Testing
 151 replaying the same traces through gawk-app's shipping packetizer,

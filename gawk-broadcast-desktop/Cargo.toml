@@ -5,8 +5,9 @@
 # everything below the shells is shared.
 [workspace]
 resolver = "2"
-# vendor/ holds the patched wtransport (see vendor/wtransport/GAWK-PATCH.md);
-# it is a [patch.crates-io] path dependency, not a workspace member.
+# vendor/ holds the patched wtransport and quinn-proto (see each one's
+# GAWK-PATCH.md); they are [patch.crates-io] path dependencies, not
+# workspace members.
 exclude = ["vendor"]
 members = [
     "crates/wire",
@@ -49,3 +50,8 @@ lto = false
 [patch.crates-io]
 wtransport = { path = "vendor/wtransport" }
 wtransport-proto = { path = "vendor/wtransport-proto" }
+# docs/38 F-14: quinn's BBR bandwidth estimate could never fall, so one
+# ack-compression spike paced the rest of the connection. Upstream plus
+# vendor/quinn-proto/gawk.patch, re-derived by gawk-derive.sh beside it;
+# bumping quinn-proto means re-deriving it (GAWK-PATCH.md there).
+quinn-proto = { path = "vendor/quinn-proto" }

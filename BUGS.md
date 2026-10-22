@@ -850,6 +850,31 @@ anything durable they taught us into the relevant `docs/NN-*.md` gotchas).
   (docs/75 D7, F16: deeper only adds delay on a busy relay), upstream or as
   a pinned quic-go fork.
 
+## Desktop broadcaster: every stream reset mid-`finish()` leaks a quinn waiter
+
+- **Found**: 2026-10-23, reviewing a report of memory growth on the Windows
+  broadcaster after R73. Found by reading the code, not by measuring it.
+- **Mechanism**: wtransport's `SendStream::finish()` is quinn's `finish()`
+  followed by `stopped()`, and `stopped()` inserts a
+  `(StreamId, Arc<Notify>)` into the connection's `stopped` map. Only a
+  `Finished` or `Stopped` stream event removes it. When the engine drops the
+  `finish()` future and resets the stream instead, quinn-proto frees the
+  stream on the RESET_STREAM ack without raising either event, and neither
+  `reset()` nor `Drop` touches the map. So the entry stays until the
+  connection closes. Two paths reach this: a carrier that misses
+  `CARRIER_RETIRE_DEADLINE` (`carrier.rs` `retire`, counted as
+  `uplinkCarriersExpired`), and a keyframe write cancelled while finishing
+  (`transport.rs` `WtKeyframeWriter`). Still present in quinn 0.11.12.
+- **Impact**: small. Each entry is about 100 bytes and there are at most
+  about two per second (one per GOP), which caps it at roughly 0.7 MB per
+  hour of a broadcast whose carriers all expire. A clean uplink rarely
+  expires one. It does not explain growth of tens of MB.
+- **Fix would start**: upstream in quinn, where `SendStream::reset`/`Drop`
+  (or the reset-acked path) would clear the stream's `stopped` entry. The
+  engine cannot reach that map. Waiting on acknowledgement some other way is
+  not possible either, because `stopped()` is quinn's only ack signal
+  (`docs/gotchas.md`, "quinn cannot tell you which bytes …").
+
 (The "Telemetry SQL console: the `rollups` view rots after boot, and any
 unpruned `sessions` query OOMs" entry was resolved 2026-09-22: views
 re-register on drift, and the engine runs inside a stated memory, thread

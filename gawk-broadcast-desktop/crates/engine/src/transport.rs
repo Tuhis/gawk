@@ -19,6 +19,13 @@ use wtransport::error::{ConnectingError, ConnectionError};
 use wtransport::quinn::congestion::{BbrConfig, ControllerFactory};
 use wtransport::{ClientConfig, Endpoint, VarInt};
 
+// BBR is only sound on gawk's patched quinn-proto (docs/38 F-14,
+// vendor/quinn-proto/GAWK-PATCH.md). Cargo skips a `[patch]` whose version
+// no longer matches with nothing but a warning, and every workspace that
+// builds this crate needs its own `[patch]`; naming the patch's marker turns
+// either slip into a compile error.
+const _: () = wtransport::quinn::congestion::GAWK_BBR_MAX_FILTER_PATCH;
+
 /// QUIC keepalive. Browsers advertise ~30 s idle timeouts and the effective
 /// timeout is the min of both endpoints — the keepalive is what holds a
 /// session open while nothing is being sent (CLAUDE.md relay invariant;
