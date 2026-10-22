@@ -20,6 +20,7 @@ export type ViewName =
   | 'relays'
   | 'webhooks'
   | 'rooms'
+  | 'pops'
   | 'calibration'
   | 'api'
   | 'not-found';
@@ -38,7 +39,8 @@ export interface Route {
   key: string;
   /**
    * The path's second segment: `#/broadcasts/<broadcastKey>` is one
-   * broadcast's moderation timeline (R70, docs/72 D9). Empty otherwise.
+   * broadcast's moderation timeline (R70, docs/72 D9), and `#/pops/<name>`
+   * one PoP's detail page (R74). Empty otherwise.
    */
   detail: string;
 }
@@ -54,6 +56,7 @@ const VIEWS: readonly ViewName[] = [
   'relays',
   'webhooks',
   'rooms',
+  'pops',
   'calibration',
   'api',
 ];
@@ -97,6 +100,11 @@ export function href(view: ViewName): string {
 /** One broadcast's moderation timeline, by its HMAC'd key — never a raw ID. */
 export function timelineHref(broadcastKey: string): string {
   return `#/broadcasts/${encodeURIComponent(broadcastKey)}`;
+}
+
+/** One PoP's detail page (R74, docs/76 §7.2), by its CR name. */
+export function popHref(name: string): string {
+  return `#/pops/${encodeURIComponent(name)}`;
 }
 
 const listeners = new Set<() => void>();

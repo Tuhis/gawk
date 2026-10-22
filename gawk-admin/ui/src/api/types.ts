@@ -38,6 +38,10 @@ export interface Me {
      * calibration view and the fleet view polls no flags.
      */
     screening?: boolean;
+    /** R74 PoP relays (docs/76 §7.2), default-off: the PoPs view and routes. */
+    pops?: boolean;
+    /** The named tier is configured, so a PoP can get a named address. */
+    popNamedAddress?: boolean;
   };
 }
 
@@ -135,6 +139,120 @@ export interface CreateRoomRequest {
 export interface RoomWithSecret {
   room: Room;
   attachSecret?: string;
+}
+
+/**
+ * A PoP's card state (docs/76 §7.2). `waiting-for-pairing` holds until the
+ * PoP pairs with its CURRENT string, so it is also the state right after a
+ * re-pair.
+ */
+export type PopState = 'waiting-for-pairing' | 'linked' | 'offline' | 'revoked' | 'ended' | 'invalid';
+
+export interface PopBudget {
+  maxMbps: number;
+  maxStreams: number;
+}
+
+export interface PopBroadcast {
+  /** Raw and joinable (docs/42 D8). */
+  id: string;
+  label?: string;
+  publisherLanAddr?: string;
+  localViewers: number;
+  outsideViewers: number;
+  /** Home is carrying it now; otherwise it is party-only. */
+  forwarded: boolean;
+  wall?: 'on' | 'hidden';
+  links?: { watch: string };
+}
+
+export interface PopHealthLine {
+  key: string;
+  ok: boolean;
+  detail?: string;
+}
+
+/**
+ * `GET /api/v1/pops` rows (R74): the Pop CR merged with the link-home pod's
+ * live view. `link` and `broadcasts` carry the PoP's and its publishers'
+ * addresses, which this portal may show and events never carry (docs/76 §8).
+ * `broadcasts` and `health` are only on `GET /api/v1/pops/{name}`.
+ */
+export interface Pop {
+  name: string;
+  displayName?: string;
+  state: PopState;
+  stateSince?: string;
+  notAfter?: string;
+  createdAt?: string;
+  managed: boolean;
+  revoked: boolean;
+  pairing: { issuedAt?: string; expiresAt?: string; paired: boolean; pairedAt?: string };
+  uplink: PopBudget;
+  downlink: PopBudget;
+  limits: { maxBroadcasts: number; maxDownlinkStreams: number };
+  guests: { autoSwitch: boolean };
+  wall?: { roomCode: string };
+  namedAddress: { enabled: boolean; host?: string; certificateNotAfter?: string };
+  link?: {
+    connected: boolean;
+    since?: string;
+    version?: string;
+    proto?: number;
+    publicAddrs?: string[];
+    lanAddr?: string;
+    pod?: string;
+  };
+  live?: {
+    pod: string;
+    live: number;
+    forwarded: number;
+    outsideViewers: number;
+    uplinkMbps: number;
+    uplinkStreams: number;
+    uplink: PopBudget;
+    downlink: PopBudget;
+    downlinkStreams: number;
+    guestsConnected: number;
+    offersSent: number;
+  };
+  broadcasts?: PopBroadcast[];
+  health?: PopHealthLine[];
+}
+
+/** The only shape that carries a pairing string; shown once, never again. */
+export interface PopWithPairing {
+  pop: Pop;
+  pairingString: string;
+  expiresAt: string;
+}
+
+export interface PopBudgetRequest {
+  maxMbps?: number;
+  maxStreams?: number;
+}
+
+export interface CreatePopRequest {
+  name: string;
+  displayName?: string;
+  notAfter?: string;
+  uplink?: PopBudgetRequest;
+  downlink?: PopBudgetRequest;
+  limits?: { maxBroadcasts?: number; maxDownlinkStreams?: number };
+  guests?: { autoSwitch?: boolean };
+  wall?: { roomCode?: string; maxParticipants?: number };
+  namedAddress?: boolean;
+}
+
+/** An absent field is left alone; `notAfter: ''` clears the end date. */
+export interface PopPatchRequest {
+  displayName?: string;
+  notAfter?: string;
+  uplink?: PopBudgetRequest;
+  downlink?: PopBudgetRequest;
+  limits?: { maxBroadcasts?: number; maxDownlinkStreams?: number };
+  guests?: { autoSwitch?: boolean };
+  namedAddress?: boolean;
 }
 
 export type BanTargetType = 'broadcastId' | 'ip';
@@ -653,6 +771,9 @@ export type ApiErrorCode =
   | 'room_not_owned'
   | 'screening_not_allowed'
   | 'no_flag_route'
+  | 'pop_exists'
+  | 'pop_revoked'
+  | 'wall_code_taken'
   | 'unavailable'
   | 'internal';
 
