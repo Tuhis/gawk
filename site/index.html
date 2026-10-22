@@ -280,6 +280,31 @@
         <p>Unzip it and open <code>gawk-broadcast-macos</code>; drag it to Applications first if you like. It's signed and notarized, so it opens without a warning, and it picks what to share through macOS's own picker. Needs macOS 14 or newer on Apple silicon.</p>
         <p class="dl-sum" data-dl-sum hidden><span>sha256</span><code data-dl-sha></code></p>
       </div>
+      <!-- R74 (docs/76 §6.1): the standalone LAN relay, released with
+           gawk-server as the gawk-relay distribution. Hidden until its first
+           manifest exists (site.js), like the Mac card. The button is the
+           Windows binary; the other platforms are alternates, each shown
+           only once the manifest lists it. Copy is provisional until the
+           PP1 design pass. -->
+      <div class="card dl" data-dl="gawk-relay" data-dl-until-released hidden>
+        <div class="dl-hd">
+          <h3>Party relay</h3>
+          <span class="dl-tag">Windows · macOS · Linux</span>
+        </div>
+        <p class="dl-ver" data-dl-version>Latest release</p>
+        <a class="btn btn-primary dl-btn" data-dl-link href="https://github.com/Tuhis/gawk/releases?q=gawk-server%2F" target="_blank" rel="noopener">Download for Windows <span aria-hidden="true">↓</span></a>
+        <div data-dl-alt="gawk-relay-macos-universal.zip" hidden>
+          <a class="btn btn-outline dl-btn" data-dl-alt-link href="https://github.com/Tuhis/gawk/releases?q=gawk-server%2F" download>Download for Mac <span aria-hidden="true">↓</span></a>
+        </div>
+        <div data-dl-alt="gawk-relay-linux-amd64.tar.gz" hidden>
+          <a class="btn btn-outline dl-btn" data-dl-alt-link href="https://github.com/Tuhis/gawk/releases?q=gawk-server%2F" download>Linux x86-64 <span aria-hidden="true">↓</span></a>
+        </div>
+        <div data-dl-alt="gawk-relay-linux-arm64.tar.gz" hidden>
+          <a class="btn btn-outline dl-btn" data-dl-alt-link href="https://github.com/Tuhis/gawk/releases?q=gawk-server%2F" download>Linux ARM64 <span aria-hidden="true">↓</span></a>
+        </div>
+        <p>A relay for a LAN party, run on one machine on the venue's network. Start it with no options and everyone on the network can broadcast and watch through it, with or without an internet connection. Its page at <code>http://127.0.0.1:4480</code> on that machine shows the join link. Also an image: <code>docker run --network host -v gawk-relay:/data ghcr.io/tuhis/gawk-relay</code>.</p>
+        <p class="dl-sum" data-dl-sum hidden><span>sha256</span><code data-dl-sha></code></p>
+      </div>
     </div>
     <p class="section-note">The Linux and Windows binaries aren't signed, so for them the checksum is the only integrity check you get; the Mac app is signed and notarized by Apple. Each release also ships a <code>SHA256SUMS</code> file: <code>sha256sum -c SHA256SUMS</code> on Linux, <code>Get-FileHash</code> on Windows, <code>shasum -a 256 -c SHA256SUMS</code> on a Mac. Older versions and release notes are on the <a href="https://github.com/Tuhis/gawk/releases" target="_blank" rel="noopener">releases page</a>.</p>
   </section>

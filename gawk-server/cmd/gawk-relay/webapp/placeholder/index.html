@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="gawk-relay-webapp" content="placeholder">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>gawk-relay (development build)</title>
+  </head>
+  <body>
+    <h1>No web app in this build</h1>
+    <p>This gawk-relay was built from a tree without a staged gawk-app build,
+      so it has no broadcaster or viewer page to serve. The relay itself works:
+      browsers and the native apps can still use it.</p>
+    <p>Release binaries and the container image include the app. To include it
+      in a local build, run <code>gawk-server/cmd/gawk-relay/webapp/stage.sh</code>
+      before <code>go build ./cmd/gawk-relay</code>.</p>
+  </body>
+</html>

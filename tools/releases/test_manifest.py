@@ -70,6 +70,18 @@ class Build(unittest.TestCase):
                          tag="gawk-broadcast-desktop/v2.0.0")
         self.assertEqual(out["component"], "gawk-broadcast-linux")
 
+    def test_relay_releases_under_the_server_tag(self):
+        # R74 PP4 (docs/76 §6.1 item 1): the standalone relay is the
+        # `gawk-relay` distribution of the gawk-server component.
+        out = self.build(component="gawk-relay", version="1.40.0",
+                         tag="gawk-server/v1.40.0")
+        self.assertEqual(out["component"], "gawk-relay")
+        self.assertEqual(out["tag"], "gawk-server/v1.40.0")
+        # It never had a tag of its own, and it is no desktop distribution.
+        for tag in ("gawk-relay/v1.40.0", "gawk-broadcast-desktop/v1.40.0"):
+            with self.assertRaisesRegex(m.ManifestError, "does not match"):
+                self.build(component="gawk-relay", version="1.40.0", tag=tag)
+
     def test_pre_rename_windows_tags_still_validate(self):
         # Releases cut before the rename are tagged by the distribution's old
         # component name, and a backfill of one writes exactly that tag.

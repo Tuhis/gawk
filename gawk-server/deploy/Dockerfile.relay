@@ -1,0 +1,78 @@
+# gawk-relay image: the standalone LAN relay (R74, docs/76 §6.1), as
+# ghcr.io/tuhis/gawk-relay for linux/amd64 and linux/arm64. Build context is
+# the REPOSITORY ROOT, not gawk-server/, because the relay embeds the gawk-app
+# build it serves to the host's own machine (cmd/gawk-relay/webapp):
+#
+#   docker buildx build -f gawk-server/deploy/Dockerfile.relay -t gawk-relay:dev .
+#
+# Zero flags is the supported start: the relay profile picks LAN defaults,
+# and everything it generates (keys, the rolling pinned certificate, the PoP
+# credential) lives in the state directory, here the /data volume. Mount
+# one, or a restart mints new keys and new certificate hashes and every
+# printed join link stops working.
+#
+#   docker run -d --network host -v gawk-relay:/data ghcr.io/tuhis/gawk-relay
+#
+# Host networking is how this is meant to run. The relay advertises its LAN
+# address (it detects the default-route interface, so inside a bridge network
+# it would find the container's), and the console binds loopback only
+# (127.0.0.1:4480 — never routed; a bridge network cannot reach it at all).
+# Pass -lan-address to name the address yourself when the detection is wrong.
+
+# Both build stages run on the BUILD platform and cross-compile: the app is
+# platform-independent bytes and the Go binary is cgo-free, so a multi-arch
+# build never emulates a compiler. Only the arm64 smoke run (ci.yml) uses
+# QEMU, and only to start the finished binary.
+#
+# The app stage is gawk-app's own Dockerfile's build, with a relative base
+# so the bundle works under /app/ (stage.sh explains).
+FROM --platform=$BUILDPLATFORM node:26-alpine AS app
+WORKDIR /src/gawk-app
+COPY gawk-app/package.json gawk-app/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY gawk-app/ ./
+RUN npx tsc -b && npx vite build --base=./ --outDir /out/app --emptyOutDir
+
+# `-trixie` for the reason written in deploy/Dockerfile.
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS build
+WORKDIR /src/gawk-server
+COPY gawk-server/go.mod gawk-server/go.sum ./
+# go.mod replaces quic-go with the vendored, patched copy (docs/75 D7): the
+# relay needs its 512-deep datagram queue as much as gawk-server does, and
+# `go mod download` needs the copy's manifest to resolve the graph.
+COPY gawk-server/third_party/quic-go/go.mod gawk-server/third_party/quic-go/go.sum ./third_party/quic-go/
+RUN go mod download
+COPY gawk-server/ ./
+COPY --from=app /out/app /tmp/app
+RUN cmd/gawk-relay/webapp/stage.sh --from /tmp/app
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+# GAWK_RELAY_REQUIRE_APP: the webapp package's own test refuses a build that
+# would embed the placeholder, so an image never ships without its app.
+RUN GAWK_RELAY_REQUIRE_APP=1 go test ./cmd/gawk-relay/webapp/ \
+ && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION}" -o /out/gawk-relay ./cmd/gawk-relay \
+ && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+      -ldflags "-s -w" -o /out/gawk-echo ./cmd/gawk-echo \
+ && mkdir -p /out/data
+
+# :nonroot is uid 65532 and the image has no shell, so the state directory is
+# created in the build stage and copied in already owned by that uid — a
+# fresh named volume takes its ownership from the image's directory.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/gawk-relay /gawk-relay
+COPY --from=build /out/gawk-echo /gawk-echo
+COPY --from=build --chown=65532:65532 /out/data /data
+# Attribution travels with the distributed binary: the relay's own module
+# graph, and the app bundle it embeds.
+COPY LICENSE /LICENSE
+COPY gawk-server/THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES.md
+COPY gawk-app/THIRD-PARTY-NOTICES.md /THIRD-PARTY-NOTICES-app.md
+ENV GAWK_STATE_DIR=/data
+VOLUME /data
+# UDP 4433 is the relay. TCP 4433 is the named tier's HTTPS page (-ui-addr,
+# docs/76 §6.11 item 39), served only once a PoP holds a named certificate.
+EXPOSE 4433/udp
+EXPOSE 4433/tcp
+ENTRYPOINT ["/gawk-relay"]
