@@ -66,6 +66,23 @@ type BanForwarder struct {
 	mu    sync.Mutex
 	known map[string]map[string]struct{} // pop -> IDs it named on the link
 	sent  map[string]map[string]string   // pop -> ID -> until key last forwarded
+	// sentGen is the link generation sent[pop] describes. A new link (a
+	// relink, or a restarted PoP that lost its local bans) has a new
+	// generation, which starts sent[pop] afresh so every ban goes out on it
+	// again. Keying on the generation rather than clearing on the hello
+	// matters: a sweep may forward on the new link before its hello is
+	// read, and clearing then would send that ban twice.
+	sentGen map[string]int64
+}
+
+// sentOn is pop's sent set for the link of generation gen, reset when the
+// link changed. f.mu must be held.
+func (f *BanForwarder) sentOn(pop string, gen int64) map[string]string {
+	if f.sentGen[pop] != gen || f.sent[pop] == nil {
+		f.sent[pop] = map[string]string{}
+		f.sentGen[pop] = gen
+	}
+	return f.sent[pop]
 }
 
 // EnableModeration installs the moderation reach: it learns each linked
@@ -77,18 +94,17 @@ func (m *Manager) EnableModeration(ctx context.Context, o ModerationOptions) *Ba
 		o.Sweep = poplink.LeaseRenew
 	}
 	f := &BanForwarder{
-		m:     m,
-		o:     o,
-		log:   m.log.With("subsystem", "moderation"),
-		known: map[string]map[string]struct{}{},
-		sent:  map[string]map[string]string{},
+		m:       m,
+		o:       o,
+		log:     m.log.With("subsystem", "moderation"),
+		known:   map[string]map[string]struct{}{},
+		sent:    map[string]map[string]string{},
+		sentGen: map[string]int64{},
 	}
 	m.OnLinkRecord(poplink.THello, func(pop string, _ any) {
 		// A new link (a relink, or a restarted PoP that lost its local
-		// bans): forget what went out on the old one and re-send.
-		f.mu.Lock()
-		delete(f.sent, pop)
-		f.mu.Unlock()
+		// bans): re-send. sentOn already forgot what went out on the old
+		// link, by its generation.
 		go f.sweepPop(pop)
 	})
 	m.OnLinkRecord(poplink.TReserve, func(pop string, rec any) {
@@ -185,27 +201,26 @@ func (f *BanForwarder) owners(id string) []string {
 // reads the ban set; an ID that is not banned (any more) is cleared so a
 // later ban goes out again.
 func (f *BanForwarder) forward(pop, id string, rec *moderation.Record) {
-	if f.m.local(pop) == nil {
+	l := f.m.local(pop)
+	if l == nil {
 		return // another pod holds the link, or none does
 	}
 	if rec == nil {
 		r, banned := f.o.Bans.BannedID(id, f.m.now())
 		if !banned {
-			f.lift(pop, id)
+			f.lift(pop, id, l.gen)
 			return
 		}
 		rec = &r
 	}
 	key := untilKey(rec.ExpiresAt)
 	f.mu.Lock()
-	if prev, ok := f.sent[pop][id]; ok && prev == key {
+	sent := f.sentOn(pop, l.gen)
+	if prev, ok := sent[id]; ok && prev == key {
 		f.mu.Unlock()
 		return
 	}
-	if f.sent[pop] == nil {
-		f.sent[pop] = map[string]string{}
-	}
-	f.sent[pop][id] = key
+	sent[id] = key
 	f.mu.Unlock()
 
 	var until *time.Time
@@ -215,7 +230,7 @@ func (f *BanForwarder) forward(pop, id string, rec *moderation.Record) {
 	}
 	if err := f.m.SendToLink(pop, poplink.Ban{ID: id, Until: until}); err != nil {
 		f.mu.Lock()
-		if f.sent[pop][id] == key {
+		if f.sentGen[pop] == l.gen && f.sent[pop][id] == key {
 			delete(f.sent[pop], id)
 		}
 		f.mu.Unlock()
@@ -228,10 +243,11 @@ func (f *BanForwarder) forward(pop, id string, rec *moderation.Record) {
 // lift tells pop that a ban forwarded on this link no longer holds (an
 // operator removed it, or a cooldown ended early or ran out), so the PoP
 // stops refusing the ID; a ban never forwarded here sends nothing.
-func (f *BanForwarder) lift(pop, id string) {
+func (f *BanForwarder) lift(pop, id string, gen int64) {
 	f.mu.Lock()
-	_, sent := f.sent[pop][id]
-	delete(f.sent[pop], id)
+	on := f.sentOn(pop, gen)
+	_, sent := on[id]
+	delete(on, id)
 	f.mu.Unlock()
 	if !sent {
 		return
@@ -329,6 +345,7 @@ func (f *BanForwarder) checkRevoked(ctx context.Context, name string, event bool
 	f.mu.Lock()
 	delete(f.known, name)
 	delete(f.sent, name)
+	delete(f.sentGen, name)
 	f.mu.Unlock()
 	f.log.Info("pop reservations released", "pop", name, "deleted", !found)
 }
