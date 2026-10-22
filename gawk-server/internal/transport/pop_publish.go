@@ -122,8 +122,15 @@ func (s *Server) handlePopPublish(w http.ResponseWriter, r *http.Request) {
 	if pub != nil {
 		if gen, status = s.claimForPop(r.Context(), id, pop.Name); status != 0 {
 			pub.Close()
-			s.registry.EndBroadcast(id)
 			s.metrics.Connection(route, metrics.OutcomeConflict)
+			if status == http.StatusServiceUnavailable {
+				// Undecided (an API blip), not a refusal: the broadcast is
+				// still the PoP's, so the hub and its viewers stay, the pull
+				// stopped above resumes, and the PoP's redial decides.
+				s.resumePull(id)
+			} else {
+				s.registry.EndBroadcast(id)
+			}
 			w.WriteHeader(status)
 			return
 		}
@@ -202,6 +209,23 @@ func (s *Server) handlePopPublish(w http.ResponseWriter, r *http.Request) {
 		}
 		pub.HandleDatagram(dgram)
 	}
+}
+
+// resumePull puts back the pull handlePopPublish stopped for a leg whose
+// claim could not be decided, when anyone is still downstream of the hub
+// (HandleLeaseLost's self-demote, for a hub this pod never held).
+func (s *Server) resumePull(id string) {
+	edges := s.edgeManager()
+	if edges == nil || s.registry.DownstreamSessions(id) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), edgeAttachTimeout)
+		defer cancel()
+		if err := edges.EnsureEdge(ctx, id); err != nil {
+			s.log.Warn("pop uplink leg: pull not resumed", "broadcast_key", s.broadcastKey(id), "err", err)
+		}
+	}()
 }
 
 // popOwnership checks id is reserved for pop before anything is touched:

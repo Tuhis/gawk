@@ -20,7 +20,12 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/webtransport-go"
+	coordv1 "k8s.io/api/coordination/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/popclient"
 	"github.com/Tuhis/gawk/gawk-server/internal/popsrv"
@@ -551,6 +556,45 @@ func TestAnEndedLegsLingerHandsTheLeaseBack(t *testing.T) {
 		_, _, known := u.f.Pods[1].Registry.BroadcastState(p.id)
 		return !known
 	})
+}
+
+// TestATransientLegClaimFailureKeepsTheWaitingViewers: the leg's Lease
+// claim failing for a reason other than ownership (an API blip) refuses the
+// leg with 503 and nothing more. The outside viewers waiting on the pod's
+// reservation hub stay, the pull resumes, and the PoP's redial serves them.
+func TestATransientLegClaimFailureKeepsTheWaitingViewers(t *testing.T) {
+	u := startUplinkFleet(t, 2, fleetOpts{})
+	u.f.Route(0)
+	u.pair(t)
+	u.f.Route(1)
+	var failed atomic.Bool
+	u.f.Leases.PrependReactor("update", "leases", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		l, ok := a.(k8stesting.UpdateAction).GetObject().(*coordv1.Lease)
+		if ok && l.Spec.HolderIdentity != nil && *l.Spec.HolderIdentity == u.f.Pods[1].Name &&
+			l.Labels[cluster.PopLabelKey] != "" && l.Spec.AcquireTime != nil && failed.CompareAndSwap(false, true) {
+			return true, nil, apierrors.NewInternalError(errors.New("etcd blip"))
+		}
+		return false, nil, nil
+	})
+	p := publishOnPoP(t, u)
+	u.reserved(t, p.id)
+	kf := keyframeMsg(t, 1)
+	p.sendKeyframe(t, kf)
+
+	v, err := subscribe(t, u.f.ClientTLS, u.f.Pods[1].Addr(), p.id)
+	if err != nil {
+		t.Fatalf("outside viewer refused: %v", err)
+	}
+	got := v.nextKeyframe(t, 20*time.Second)
+	if !bytes.Equal(got, kf) {
+		t.Fatalf("prime differs: %d bytes, want %d", len(got), len(kf))
+	}
+	if !failed.Load() {
+		t.Fatal("the leg's claim never failed; the test did not exercise the path")
+	}
+	if v.sess.Context().Err() != nil {
+		t.Fatal("the viewer's session ended")
+	}
 }
 
 // TestFourthStreamIsRefusedWith4012: the PoP's default budget forwards
