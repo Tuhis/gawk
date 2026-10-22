@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.13.0](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.12.1...gawk-telemetry/v1.13.0) (2026-10-22)
+
+
+### Features
+
+* **broadcast-desktop:** reliable uplink delivery and BBR behind settings (R73 RU3–RU5) ([#541](https://github.com/Tuhis/gawk/issues/541)) ([e3b7208](https://github.com/Tuhis/gawk/commit/e3b720842b971d4bdcab19fddce26e61a0ab7e73))
+
+
+### Bug Fixes
+
+* **app:** drop stale frames instead of queueing a slow uplink without bound (R73 RU9) ([#537](https://github.com/Tuhis/gawk/issues/537)) ([d4073de](https://github.com/Tuhis/gawk/commit/d4073decc86726d8c13747aa0bd3885b4514bbaf))
+* **telemetry:** see leg-A loss in frames and stop blaming leg B for it (R73 RU0) ([#539](https://github.com/Tuhis/gawk/issues/539)) ([d32a506](https://github.com/Tuhis/gawk/commit/d32a506a75b4e8b7732653618e46206a8b28629e))
+
 ## [1.12.1](https://github.com/Tuhis/gawk/compare/gawk-telemetry/v1.12.0...gawk-telemetry/v1.12.1) (2026-10-12)
 
 

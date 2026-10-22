@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.54.0](https://github.com/Tuhis/gawk/compare/gawk-app/v0.53.1...gawk-app/v0.54.0) (2026-10-22)
+
+
+### Features
+
+* **relay:** accept the broadcaster's uplink carriers (R73 RU1) ([#538](https://github.com/Tuhis/gawk/issues/538)) ([9b25269](https://github.com/Tuhis/gawk/commit/9b25269d8798c32028efe4ab84d336ca02e7926b))
+
+
+### Bug Fixes
+
+* **app:** drop stale frames instead of queueing a slow uplink without bound (R73 RU9) ([#537](https://github.com/Tuhis/gawk/issues/537)) ([d4073de](https://github.com/Tuhis/gawk/commit/d4073decc86726d8c13747aa0bd3885b4514bbaf))
+* **app:** retry WebTransport handshakes the relay never answers ([#546](https://github.com/Tuhis/gawk/issues/546)) ([22670b8](https://github.com/Tuhis/gawk/commit/22670b811d2639eca485602473e11bede4b1d1d8))
+* **relay:** serve parity to Smoother and Most stable viewers (R73 RU8) ([#535](https://github.com/Tuhis/gawk/issues/535)) ([e34ce64](https://github.com/Tuhis/gawk/commit/e34ce64ba8361dba6faf79b3a1bba2e77a2be344))
+
 ## [0.53.1](https://github.com/Tuhis/gawk/compare/gawk-app/v0.53.0...gawk-app/v0.53.1) (2026-10-20)
 
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.10.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.9.0...gawk-broadcast-desktop/v2.10.0) (2026-10-22)
+
+
+### Features
+
+* **broadcast-desktop:** reliable uplink delivery and BBR behind settings (R73 RU3–RU5) ([#541](https://github.com/Tuhis/gawk/issues/541)) ([e3b7208](https://github.com/Tuhis/gawk/commit/e3b720842b971d4bdcab19fddce26e61a0ab7e73))
+* **relay:** accept the broadcaster's uplink carriers (R73 RU1) ([#538](https://github.com/Tuhis/gawk/issues/538)) ([9b25269](https://github.com/Tuhis/gawk/commit/9b25269d8798c32028efe4ab84d336ca02e7926b))
+
+
+### Bug Fixes
+
+* **telemetry:** see leg-A loss in frames and stop blaming leg B for it (R73 RU0) ([#539](https://github.com/Tuhis/gawk/issues/539)) ([d32a506](https://github.com/Tuhis/gawk/commit/d32a506a75b4e8b7732653618e46206a8b28629e))
+
 ## [2.9.0](https://github.com/Tuhis/gawk/compare/gawk-broadcast-desktop/v2.8.0...gawk-broadcast-desktop/v2.9.0) (2026-10-20)
 
 
