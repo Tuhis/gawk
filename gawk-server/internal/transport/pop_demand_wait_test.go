@@ -95,11 +95,18 @@ func TestAnEndedLegsWaitingViewersAskThePoPAgain(t *testing.T) {
 	srv.popLegEnded("K7XQ2M", testPop)
 	waitFor(t, 5*time.Second, func() bool { return home.count() >= 2 }, "the want, then a second one")
 
+	// Another pod's leg claims the Lease: the running loop stops asking
+	// and goes (it must not outlive the test, reading the coordinator).
+	coord.setLease("K7XQ2M", fakeLease{origin: cluster.Origin{Holder: "pod-other", Generation: 2, Pop: testPop}})
 	l := &demandLoop{s: srv, id: "K7XQ2M", pop: testPop}
-	coord.leases["K7XQ2M"] = fakeLease{origin: cluster.Origin{Holder: "pod-other", Generation: 2, Pop: testPop}}
 	if l.stillWaiting(false) {
 		t.Error("still waiting once another pod's leg holds the Lease")
 	}
+	waitFor(t, 5*time.Second, func() bool {
+		srv.uplink.mu.Lock()
+		defer srv.uplink.mu.Unlock()
+		return srv.uplink.loops["K7XQ2M"] == nil
+	}, "the demand loop to end once another pod's leg holds the Lease")
 }
 
 // The single-pod waiting hub is no broadcast home ever had: making it and
