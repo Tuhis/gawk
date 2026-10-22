@@ -161,6 +161,7 @@ func (m *Manager) ServeLink(ctx context.Context, p *pops.Pop, sess LinkSession, 
 	l.ready.Store(true)
 
 	go l.renewLoop(ctx)
+	go l.acceptStreams(ctx) // room joins on extra streams (wall.go)
 	m.dispatch(p.Name, poplink.THello, hello)
 	for {
 		rec, err := poplink.Read(ctrl)

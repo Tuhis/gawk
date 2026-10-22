@@ -250,7 +250,11 @@ func (c *console) State() relayconsole.State {
 			if b.Role != "origin" || !b.PublisherActive && b.GraceRemainingSeconds == 0 {
 				continue
 			}
-			s.Live = append(s.Live, relayconsole.LiveRow{Code: b.ID, LocalViewers: b.ViewersLocal})
+			row := relayconsole.LiveRow{Code: b.ID, LocalViewers: b.ViewersLocal}
+			if popLink != nil {
+				row.Wall, row.Label = popLink.WallRow(b.ID)
+			}
+			s.Live = append(s.Live, row)
 		}
 	}
 	s.Health = c.health(s, fwOK)

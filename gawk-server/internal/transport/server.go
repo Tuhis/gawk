@@ -193,6 +193,8 @@ type Server struct {
 	testHookPopLegTransport atomic.Pointer[func(*webtransport.Transport)]
 	// popMod is the R74 moderation reach (pop_moderation.go, telemetry.go).
 	popMod popModeration
+	// roomForwarder sends a linked PoP's room joins home (room_link.go).
+	roomForwarder atomic.Pointer[roomForwarderBox]
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun,

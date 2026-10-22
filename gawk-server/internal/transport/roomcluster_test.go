@@ -252,6 +252,9 @@ func (f *roomFleet) startRoomPod(t *testing.T, ctx context.Context, podName stri
 		StatsKey:           []byte(strings.Repeat("s", 32)),
 		Rooms:              true,
 		ClusterMode:        true,
+		// -pops registers the wall's POST /internal/roomvouch (R74); with no
+		// PoP manager installed every /pop/* route stays a 404.
+		Pops: true,
 	}
 	// The hooks close over the late-bound coordinator and registry, as in
 	// main: cluster mode's lease stamp/delete first, then the room hook.

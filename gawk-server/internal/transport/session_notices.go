@@ -150,6 +150,7 @@ func (s *Server) sendLocalRelayInfo(sess *webtransport.Session, p LocalRelayProv
 	if err := sendUniMessage(sess, msg); err != nil {
 		log.Debug("local relay info not sent", "err", err)
 	}
+	s.watchLocalRelayInfo(sess, p, publishID, msg, log) // R74: the on-wall state follows Hide/Show
 }
 
 // sendLocalRelayOffer asks the Offerer and, on a match, sends one

@@ -64,6 +64,8 @@ func (s *Server) registerPopRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("CONNECT /pop/publish/{id}", s.handlePopPublish)
 	mux.HandleFunc("CONNECT /pop/subscribe/{id}", s.handlePopSubscribe)
 	mux.HandleFunc("CONNECT /internal/pop/{name}", s.handleInternalPop)
+	// The party wall's vouched attaches, pod to pod (R74 PP11, room_link.go).
+	mux.HandleFunc("POST /internal/roomvouch/{code}", s.handleInternalRoomVouch)
 }
 
 // popRefuse writes a /pop/* refusal: the status, and the reason header the
@@ -82,5 +84,9 @@ func popRefuse(w http.ResponseWriter, status int, reason string) {
 func (s *Server) SetInternalRootCAs(pool *x509.CertPool) {
 	if em := s.edgeManager(); em != nil {
 		em.dial = newEdgeDialer(s.cfg.InternalServerName, s.cfg.InternalPSK, pool, s.log)
+	}
+	if rc := s.roomClusterWiring(); rc != nil {
+		rc.dial = newRoomProxyDialer(s.cfg.InternalServerName, s.cfg.InternalPSK, pool)
+		rc.vouch = newRoomVoucher(s.cfg.InternalServerName, s.cfg.InternalPSK, pool)
 	}
 }

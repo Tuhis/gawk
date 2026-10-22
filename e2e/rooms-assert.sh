@@ -30,10 +30,19 @@
 #      re-dialled joiner lands in the room with the attachment list whole
 #      within the deadline: the CR's lease moves to a surviving pod at a
 #      higher generation, and the new home's /statusz carries the room.
+#   3b. R74 PP11 (docs/76 item 33): a PARTY WALL — a static Room CR with
+#      spec.pop — refuses an ordinary attach. A participant gets no attach
+#      grant, an attach secret is refused at the gate, and gawk-pubsim's
+#      ordinary Attach of a home broadcast leaves the wall empty (CR
+#      status.attachments and the joiner's RoomState both).
 #
 # NOT asserted here, and why: that a browser participant's own reconnect
 # gets it back in (that is RM4's E2E), and the janitor (its windows are
-# minutes long by design; the store's unit test drives its clock).
+# minutes long by design; the store's unit test drives its clock). The
+# party wall's PoP-side rows (vouched attaches of party broadcasts, a fifth
+# and later included; Hide/Show; wall=hidden; the local wall unlinked; the
+# 0x18 wall fields) need a linked gawk-relay, which this tier does not run
+# yet: internal/popsrv's wall_test.go runs them in-process.
 #
 # Usage: rooms-assert.sh <namespace> [deadline-seconds]
 set -euo pipefail
@@ -263,6 +272,70 @@ done
 grep -q '"kind":32' "$STATIC_LOG" || fail "no RoomEnding event preceded the 4007"
 wait "$FIRST_PID" 2>/dev/null || true
 echo "PASS: deleting the static CR sent RoomEnding then close 4007 to its participant"
+
+# ------------------------- 3b. a party wall refuses an ordinary attach
+WALL=e2ewall
+kubectl -n "$NS" apply -f - <<EOF
+apiVersion: gawk.ioio.fi/v1alpha1
+kind: Room
+metadata:
+  name: $WALL
+spec:
+  kind: static
+  displayCode: E2EWall
+  displayName: "e2e party wall"
+  pop: e2e-pop
+  maxBroadcasts: 40
+  maxParticipants: 200
+EOF
+WALL_LOG="$OUT/roomsim-wall.out"
+end=$((SECONDS + DEADLINE))
+WALL_PID=""
+while true; do
+  "$ROOMSIM" -url "$RELAY_URL" -insecure -code E2EWall -nick outsider -duration "$((DEADLINE + 30))s" \
+    > "$WALL_LOG" 2> "$WALL_LOG.err" &
+  WALL_PID=$!
+  for _ in $(seq 50); do
+    [ -n "$(first_state "$WALL_LOG")" ] && break
+    kill -0 "$WALL_PID" 2>/dev/null || break
+    sleep 0.2
+  done
+  [ -n "$(first_state "$WALL_LOG")" ] && break
+  wait "$WALL_PID" 2>/dev/null || true
+  [ "$SECONDS" -ge "$end" ] && fail "no join of the party wall $WALL produced a RoomState within ${DEADLINE}s ($(cat "$WALL_LOG.err"))"
+  sleep 2
+done
+WSTATE=$(first_state "$WALL_LOG")
+# RoomStateFlagAttachOK = 0x04: a wall grants it to nobody.
+[ $(( $(jq -r '.flags' <<<"$WSTATE") & 4 )) -eq 0 ] || fail "the party wall granted an attach to a plain joiner: $WSTATE"
+# An attach secret is refused at the gate (403), whoever sends it.
+"$ROOMSIM" -url "$RELAY_URL" -insecure -code E2EWall -attach guess -nick secret -duration 3s \
+  > "$OUT/roomsim-wall-secret.out" 2> "$OUT/roomsim-wall-secret.err" && \
+  fail "a join of the party wall with an attach secret was accepted"
+grep -q "GAWK_ROOMSIM_DIAL_STATUS=403" "$OUT/roomsim-wall-secret.err" \
+  || fail "the party wall's refusal of an attach secret was not a 403 ($(cat "$OUT/roomsim-wall-secret.err"))"
+# An outsider's home broadcast tries an ordinary Attach; the wall stays empty.
+"$PUBSIM" -url "$RELAY_URL" -insecure -duration 15s -room E2EWall -nick outsider-pc \
+  > "$OUT/pubsim-wall.out" 2> "$OUT/pubsim-wall.err" &
+WALL_PUB=$!
+for _ in $(seq 100); do
+  grep -q 'GAWK_PUBSIM_ID=' "$OUT/pubsim-wall.out" 2>/dev/null && break
+  sleep 0.2
+done
+WALL_BID=$(grep -m1 -o 'GAWK_PUBSIM_ID=[A-Z0-9]*' "$OUT/pubsim-wall.out" | cut -d= -f2)
+[ -n "$WALL_BID" ] || fail "gawk-pubsim never published for the wall step: $(tail -n 5 "$OUT/pubsim-wall.err")"
+sleep 5
+att=$(room_field "$WALL" '[.status.attachments[]?.broadcastID] | join(" ")')
+[ -z "$att" ] || fail "an ordinary attach landed on the party wall (status.attachments='$att', outsider broadcast $WALL_BID)"
+# RoomEventAttachmentAdded = 0x10 (16).
+if jq -e --arg b "$WALL_BID" 'select(.type == "event" and .kind == 16 and .attachment.broadcastID == $b)' "$WALL_LOG" >/dev/null 2>&1; then
+  fail "the wall's joiner saw the outsider's broadcast attached"
+fi
+wait "$WALL_PUB" 2>/dev/null || true
+kill "$WALL_PID" 2>/dev/null || true
+wait "$WALL_PID" 2>/dev/null || true
+kubectl delete --raw "$ROOMS_API/$WALL" >/dev/null
+echo "PASS: party wall $WALL (spec.pop) — no attach grant, an attach secret is 403, an outsider's ordinary attach left it empty"
 
 # -------------------------------------- 4. a dynamic room minted by pubsim
 "$PUBSIM" -url "$RELAY_URL" -insecure -duration "$((3 * DEADLINE + 120))s" -room-new -label pc -nick pubsim \

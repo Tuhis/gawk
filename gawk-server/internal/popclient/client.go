@@ -138,6 +138,8 @@ type Client struct {
 
 	// up is the uplink (uplink.go): reservations, wants and legs.
 	up *uplink
+	// wall is the party wall (wall.go).
+	wall *wall
 }
 
 // New builds a Client from the state directory's stored credential.
@@ -177,6 +179,7 @@ func New(o Options) *Client {
 		c.state.Endpoint = st.Endpoint
 	}
 	c.up = newUplink(c)
+	c.wall = newWall(c)
 	return c
 }
 
@@ -273,6 +276,7 @@ func (c *Client) Run(ctx context.Context) error {
 		go c.pairAtStart(ctx, c.opts.Pair)
 	}
 	go c.up.run(ctx)
+	go c.wall.run(ctx)
 	failures := 0
 	for {
 		if ctx.Err() != nil {

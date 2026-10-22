@@ -34,6 +34,7 @@ func (c *Client) LocalRelayInfo(publishID string) wire.LocalRelayInfo {
 		}
 	}
 	info.Name = truncateUTF8(info.Name, wire.MaxRelayIdentityNameLen)
+	c.wall.fill(&info, publishID)
 	// A home origin the wire refuses (a misconfigured home) must not cost
 	// the whole notice: send it without the origin.
 	if _, err := wire.AppendLocalRelayInfo(nil, info); err != nil {
