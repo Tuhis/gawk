@@ -109,28 +109,32 @@ func (s *Server) acquireFleetPopLeg(ctx context.Context, pop, id string, limit i
 		if gen, ok := loc.HoldsLink(pop); ok {
 			return s.acquireLocalPopLegSlot(loc, pop, gen, id, limit)
 		}
-		addr, gen, ok := loc.LinkHolder(pop)
-		if !ok || addr == "" {
-			return nil, errPopUnlinked
+		// A link moving between pods is briefly invisible here (its holder
+		// drained, the new holder's status.lease not yet in this pod's
+		// cache): that is retried like a stale holder, inside the same
+		// window, and only refuses the leg once the window ends.
+		if addr, gen, ok := loc.LinkHolder(pop); !ok || addr == "" {
+			last = errPopUnlinked
+		} else {
+			// Dialled under the server's lifetime, not the request's: the
+			// slot session outlives the CONNECT that asked for it.
+			dctx, dcancel := context.WithTimeout(context.WithoutCancel(ctx), popLegSlotTimeout)
+			up, err := em.dial(dctx, addr, internalPopLegPath(pop, id, gen, limit))
+			dcancel()
+			if err == nil {
+				return remotePopLegSlot(em.baseCtx, up), nil
+			}
+			var se *internalStatusError
+			if errors.As(err, &se) && se.status == http.StatusTooManyRequests {
+				return nil, errPopLegCap
+			}
+			last = fmt.Errorf("transport: no leg slot from %s: %w", addr, err)
 		}
-		// Dialled under the server's lifetime, not the request's: the slot
-		// session outlives the CONNECT that asked for it.
-		dctx, dcancel := context.WithTimeout(context.WithoutCancel(ctx), popLegSlotTimeout)
-		up, err := em.dial(dctx, addr, internalPopLegPath(pop, id, gen, limit))
-		dcancel()
-		if err == nil {
-			return remotePopLegSlot(em.baseCtx, up), nil
-		}
-		var se *internalStatusError
-		if errors.As(err, &se) && se.status == http.StatusTooManyRequests {
-			return nil, errPopLegCap
-		}
-		last = err
 		t := time.NewTimer(popLegSlotRetry)
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return nil, fmt.Errorf("transport: no leg slot from %s: %w", addr, last)
+			return nil, last
 		case <-t.C:
 		}
 	}

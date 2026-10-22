@@ -259,9 +259,11 @@ jobs:
           relay_pack=$(decide   relay_pack   '^gawk-server/(cmd/gawk-relay/|deploy/Dockerfile\.relay$)|^tools/releases/')
           # R74 PP2 (docs/76 §11): the code gawk-relay ships for Windows and
           # macOS, which `relay-windows` and `relay-darwin` run (not only vet).
-          # Held to the relay's command and its portable packages, since the
-          # macOS job is a hosted runner.
-          relay_portable=$(decide relay_portable '^gawk-server/(cmd/gawk-relay/|internal/(relaystate|lanaddr|relayconsole|popclient|poplink|tlsutil)/|go\.(mod|sum)$)')
+          # Held to the relay's command, its own wiring (config, serve) and
+          # its portable packages, since the macOS job is a hosted runner.
+          # The shared relay core it also imports (transport, hub, roomsrv)
+          # changes in most server PRs and is tested on Linux by `server`.
+          relay_portable=$(decide relay_portable '^gawk-server/(cmd/gawk-relay/|internal/(config|serve|relaystate|lanaddr|relayconsole|popclient|poplink|tlsutil)/|go\.(mod|sum)$)')
           # R44 (docs/53 D2): the icon's generated derivatives are committed
           # and drift-checked against the SVG. The check runs on any edit to
           # either side, because the failure it catches is "edited the SVG
