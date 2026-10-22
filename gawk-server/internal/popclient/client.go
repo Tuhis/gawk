@@ -402,6 +402,14 @@ func (c *Client) linkOnce(ctx context.Context, endpoint string, req *pairRequest
 		rec, err := poplink.Read(ctrl)
 		if err != nil {
 			_ = sess.CloseWithError(0, "link ended")
+			// Forget the session before linkEnded reports the end: a caller
+			// that sees the link down (OpenRoom, the wall) must not still
+			// find it and open a stream on a dead session.
+			c.mu.Lock()
+			if c.ctrl == sess {
+				c.ctrl, c.stream = nil, nil
+			}
+			c.mu.Unlock()
 			return c.linkEnded(req, sess, err, bye, res)
 		}
 		switch r := rec.(type) {
