@@ -165,7 +165,7 @@ func (s *Server) onReservedMiss(ctx context.Context, id string, o cluster.Origin
 
 // popWaitSinglePod is the single-pod home's miss on a PoP reservation (no
 // edge pulls, no Lease): it makes the broadcast's hub in the state a
-// broadcast is in while its publisher is away — known, nothing primed — so
+// waiting edge hub is in — known, nothing primed, no publisher — so
 // the viewer upgrades and waits, and starts the demand. The PoP's leg then
 // claims that very hub (ResumePublish). False leaves the miss a 404.
 func (s *Server) popWaitSinglePod(ctx context.Context, id string) bool {
@@ -180,7 +180,11 @@ func (s *Server) popWaitSinglePod(ctx context.Context, id string) bool {
 	if !ok {
 		return false
 	}
-	switch _, pub, err := s.registry.ResumePublish(id); {
+	// Made as an edge hub, as cluster mode's waiting hub is: home never had
+	// this broadcast, so making and removing the hub must not look like one
+	// starting and ending (no broadcast.started/ended, no publisher-away
+	// hook, no usage sample). The leg's ResumePublish makes it an origin.
+	switch _, pub, err := s.registry.EdgePublish(id); {
 	case err == nil:
 		pub.Close()
 	case !errors.Is(err, hub.ErrPublisherActive):
