@@ -325,7 +325,10 @@ pub fn create_item(target: CaptureTarget) -> Result<GraphicsCaptureItem> {
 pub struct Capture {
     session: GraphicsCaptureSession,
     pool: Direct3D11CaptureFramePool,
-    /// Kept so `Closed`/`FrameArrived` tokens die with us.
+    /// The `FrameArrived` registration, revoked on drop: the handler owns
+    /// the frame callback (the converter, the encoder), and nothing else
+    /// guarantees the pool lets it go when we do.
+    frame_arrived: i64,
     _item: GraphicsCaptureItem,
 }
 
@@ -354,7 +357,7 @@ impl Capture {
         // TypedEventHandler wants Fn; the pool thread is single, so the
         // mutex is uncontended bookkeeping, not a lock in anger.
         let state = std::sync::Mutex::new((on_frame, size));
-        pool.FrameArrived(&TypedEventHandler::new(
+        let frame_arrived = pool.FrameArrived(&TypedEventHandler::new(
             move |pool: windows::core::Ref<'_, Direct3D11CaptureFramePool>, _| {
                 let Some(pool) = pool.as_ref() else {
                     return Ok(());
@@ -390,7 +393,22 @@ impl Capture {
             },
         ))?;
 
-        let session = pool.CreateCaptureSession(&item)?;
+        let session = match pool.CreateCaptureSession(&item) {
+            Ok(session) => session,
+            Err(e) => {
+                let _ = pool.RemoveFrameArrived(frame_arrived);
+                let _ = pool.Close();
+                return Err(e);
+            }
+        };
+        // From here every exit, success or `?`, tears down through Drop.
+        let capture = Self {
+            session,
+            pool,
+            frame_arrived,
+            _item: item,
+        };
+        let session = &capture.session;
         // Cursor embedded (R14 invariant); border removed where the API
         // exists (build 20348+) — on plain Windows 10 the yellow border
         // stays, documented not fought (docs/38 D6).
@@ -425,17 +443,15 @@ impl Capture {
             log::debug!("IsBorderRequired not on this Windows build; the yellow border stays");
         }
         session.StartCapture()?;
-
-        Ok(Self {
-            session,
-            pool,
-            _item: item,
-        })
+        Ok(capture)
     }
 }
 
 impl Drop for Capture {
     fn drop(&mut self) {
+        // First, so the handler (and what it captured) is released here and
+        // now; a callback already running finishes on the pool thread.
+        let _ = self.pool.RemoveFrameArrived(self.frame_arrived);
         let _ = self.session.Close();
         let _ = self.pool.Close();
     }

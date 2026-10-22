@@ -557,6 +557,16 @@ impl Pump {
         let mut buffers = [MFT_OUTPUT_DATA_BUFFER::default()];
         let mut status = 0u32;
         let result = unsafe { self.transform.ProcessOutput(0, &mut buffers, &mut status) };
+        // Own whatever the MFT handed back before anything can return: the
+        // struct's fields are ManuallyDrop, so an early `?` below used to
+        // leak the sample and the event collection.
+        let [buffer] = &mut buffers;
+        let (sample, _events) = unsafe {
+            (
+                std::mem::ManuallyDrop::take(&mut buffer.pSample),
+                std::mem::ManuallyDrop::take(&mut buffer.pEvents),
+            )
+        };
         if let Err(e) = &result {
             // Mid-stream format change: renegotiate and continue; the next
             // HaveOutput carries the data.
@@ -569,8 +579,7 @@ impl Pump {
             }
             return result;
         }
-        let buffer = &mut buffers[0];
-        if let Some(sample) = std::mem::ManuallyDrop::into_inner(buffer.pSample.clone()) {
+        if let Some(sample) = sample {
             // One output = one input consumed (no B-frames, verified by the
             // trial gate): release the caller's in-flight slot.
             let _ = self
@@ -594,11 +603,6 @@ impl Pump {
                 time_us,
                 keyframe,
             });
-        }
-        // Balance the ManuallyDrop clone and release any events.
-        unsafe {
-            std::mem::ManuallyDrop::drop(&mut buffer.pSample);
-            std::mem::ManuallyDrop::drop(&mut buffer.pEvents);
         }
         Ok(())
     }
