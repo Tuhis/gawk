@@ -3,8 +3,8 @@
 > **Modification notice**: the files in this directory are a copy of
 > upstream `github.com/quic-go/quic-go` v0.62.0 (MIT, © the quic-go
 > authors & Google, Inc — `LICENSE` alongside this file) **modified by the
-> gawk authors**. The one changed file is `http3/state_tracking_stream.go`;
-> the changed site carries a `GAWK PATCH` marker.
+> gawk authors**. The changed files are `http3/state_tracking_stream.go`
+> and `datagram_queue.go`; each changed site carries a `GAWK PATCH` marker.
 
 `gawk-server/go.mod` points at this directory with
 `replace github.com/quic-go/quic-go => ./third_party/quic-go`. The
@@ -32,6 +32,18 @@ It matters on two sessions: the origin's publisher sessions and the edge's
 `/internal/subscribe` pull sessions, which read origin → edge datagrams
 through the same queue. Viewers' sessions send almost nothing, so they
 never fill it. Worst case ≈ 0.6 MB per publisher session.
+
+The second site, `maxDatagramRcvQueueLen` in `datagram_queue.go`, goes
+from 128 to **512** to match. It is the per-connection queue in front of
+the session queue: received datagrams wait there until http3's one
+dispatching goroutine (`rawConn.receiveDatagrams`) moves them to their
+session. On the lab's network-paced path raising it alone changed nothing
+(`docs/75` table G, R-only128), but a burst that arrives faster than that
+goroutine is scheduled overflows it before the session's 512 can hold
+anything: under CPU contention the burst tests below lost the tail of
+their loopback burst there (PR #547's `server-coverage` run; 8 failures
+in 300 runs under load at 128, none attributable to it at 512). Its
+worst case is the same ≈ 0.6 MB, per connection.
 
 `internal/transport/datagram_burst_test.go` is what keeps it honest: it
 fails (33 of 200 datagrams arrive) whenever the relay builds against a
