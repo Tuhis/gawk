@@ -5,9 +5,11 @@
 //	gawk-uplinklab recv  -addr 127.0.0.1:4500 -out recv.csv
 //	gawk-uplinklab proxy -listen 127.0.0.1:4600 -upstream 127.0.0.1:4500 -rtt 10ms -loss 0.01
 //	gawk-uplinklab sub   -url https://127.0.0.1:4433 -id-file id.txt -out sub.csv
+//	gawk-uplinklab legsend --url https://127.0.0.1:4600/lab --out send.csv --mode carrier
 //
 // The sender is the Rust tool in gawk-broadcast-desktop/tools/uplinklab,
-// which dials with the engine's quinn configuration. Every timestamp is the
+// which dials with the engine's quinn configuration. legsend is the R74 PoP's own sender:
+// the hub's leg writer (docs/76 item 18), driven by a synthetic publisher. Every timestamp is the
 // host's wall clock in nanoseconds, so sender and receiver logs on one host
 // share a clock.
 package main
@@ -29,6 +31,8 @@ func main() {
 		err = runProxy(os.Args[2:])
 	case "sub":
 		err = runSub(os.Args[2:])
+	case "legsend":
+		err = runLegSend(os.Args[2:])
 	default:
 		usage()
 	}
@@ -39,6 +43,6 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: gawk-uplinklab recv|proxy|sub [flags]")
+	fmt.Fprintln(os.Stderr, "usage: gawk-uplinklab recv|proxy|sub|legsend [flags]")
 	os.Exit(2)
 }
