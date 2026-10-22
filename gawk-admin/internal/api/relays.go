@@ -37,6 +37,10 @@ func (a *API) handleListRelays(w http.ResponseWriter, r *http.Request) {
 			// rooms off nothing depends on the route, so nothing is said.
 			row.Error = p.RoomsErr
 		}
+		if row.Error == "" && p.PopsErr != "" && a.opts.Pops != nil {
+			// Its PoPs read as offline because of this (R74).
+			row.Error = p.PopsErr
+		}
 		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, relaysPageJSON{Relays: out, Bus: a.busHealth(r)})

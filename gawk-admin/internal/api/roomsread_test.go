@@ -183,7 +183,7 @@ func TestRoomLinksAreOmittedWithoutAnAppBaseURL(t *testing.T) {
 // makes this a loop, so a route added later is covered the day it lands.
 func TestRoomsReaderReachesExactlyTheRoomReads(t *testing.T) {
 	f := newFakeRooms()
-	h := newHarnessWithoutPostgres(t, withRooms(f, &memoryRecorder{}), withScreening())
+	h := newHarnessWithoutPostgres(t, withRooms(f, &memoryRecorder{}), withScreening(), withPopsEnabled())
 	// concretePath fills every {placeholder} with "placeholder".
 	if _, err := f.CreateStatic(t.Context(), kube.StaticRoom{Code: "placeholder"}); err != nil {
 		t.Fatal(err)

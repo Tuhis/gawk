@@ -631,6 +631,29 @@ func wirings() map[string]opWiring {
 			success: map[string]func() any{"200": func() any { return &roomJSON{} }},
 		},
 
+		// R74 PoPs (docs/76 §7.2).
+		"GET /api/v1/pops": {success: map[string]func() any{
+			"200": func() any { return &popsPageJSON{} },
+		}},
+		"POST /api/v1/pops": {
+			request: func() any { return &createPopRequest{} },
+			success: map[string]func() any{"201": func() any { return &popWithPairingJSON{} }},
+		},
+		"GET /api/v1/pops/{name}": {success: map[string]func() any{
+			"200": func() any { return &popJSON{} },
+		}},
+		"PATCH /api/v1/pops/{name}": {
+			request: func() any { return &popPatchRequest{} },
+			success: map[string]func() any{"200": func() any { return &popJSON{} }},
+		},
+		"DELETE /api/v1/pops/{name}": {},
+		"POST /api/v1/pops/{name}/repair": {success: map[string]func() any{
+			"200": func() any { return &popWithPairingJSON{} },
+		}},
+		"POST /api/v1/pops/{name}/revoke": {success: map[string]func() any{
+			"200": func() any { return &popJSON{} },
+		}},
+
 		// R40 (docs/71 §9.4). The flagger routes speak the shared
 		// gawk-server/screening types, so the document is held to the very
 		// structs the sampler compiles.
@@ -874,10 +897,10 @@ func schemaFixtures() map[string]any {
 	busPod := busPodJSON{Pod: "gawk-server-0", LastSeen: "2026-09-18T09:30:00Z", LastSeq: 1051, Gaps: 0}
 	bus := busJSON{Stream: "GAWK_EVENTS", Connected: true, Messages: 4210, Bytes: 918273,
 		Pods: []busPodJSON{busPod}, Error: "stream info timed out"}
-	return map[string]any{
+	out := map[string]any{
 		"Error":             errorEnvelope{Error: errorBody{Code: CodeBadRequest, Message: "reason is required"}},
 		"ErrorBody":         errorBody{Code: CodeBadRequest, Message: "reason is required"},
-		"Me":                meJSON{Email: "op@example.org", Subject: "sub-1", Roles: []string{RoleOperator}, Defaults: meDefaultsJSON{KillCooldownSeconds: 600}, Features: meFeaturesJSON{Rooms: true, Screening: true}},
+		"Me":                meJSON{Email: "op@example.org", Subject: "sub-1", Roles: []string{RoleOperator}, Defaults: meDefaultsJSON{KillCooldownSeconds: 600}, Features: meFeaturesJSON{Rooms: true, Screening: true, Pops: true, PopNamedAddress: true}},
 		"BanTarget":         banTargetJSON{Type: moderation.TargetBroadcastID, Value: "ABC234"},
 		"Enforcement":       enforcementJSON{InSync: false, Detail: DetailUnbanPending},
 		"Ban":               ban,
@@ -942,6 +965,10 @@ func schemaFixtures() map[string]any {
 		"ReplayTrip":                trip,
 		"ReplayResult":              screening.ReplayResponse{Schema: screening.SchemaReplay, Request: replayReq, Floor: 0.3, Sessions: 1, SamplesTaken: 2, SamplesStored: 1, BroadcastHours: 1.5, WouldTrips: 1, WouldTripsPer100h: 66.7, Trips: []screening.ReplayTrip{trip}, Truncated: false},
 	}
+	for k, v := range popFixtures() {
+		out[k] = v
+	}
+	return out
 }
 
 func marshalFixtures(t *testing.T, in map[string]any) map[string]json.RawMessage {

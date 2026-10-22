@@ -22,7 +22,7 @@ const harnessSubject = "sub-1"
 // later is covered the day it lands.
 func TestRoomsManagerReachesExactlyCreateDeleteAndMe(t *testing.T) {
 	f := newFakeRooms()
-	h := newHarnessWithoutPostgres(t, withRooms(f, &memoryRecorder{}), withScreening())
+	h := newHarnessWithoutPostgres(t, withRooms(f, &memoryRecorder{}), withScreening(), withPopsEnabled())
 	// concretePath fills every {placeholder} with "placeholder"; make that the
 	// manager's own room, so the delete is admitted by ownership too.
 	if _, err := f.CreateStatic(t.Context(), kube.StaticRoom{Code: "placeholder", CreatedBy: harnessSubject}); err != nil {
