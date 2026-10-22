@@ -276,6 +276,7 @@ func roomJoinStatus(err error) (int, string) {
 func (s *Server) serveRoomSession(r *http.Request, sess *webtransport.Session, reg *roomsrv.Registry, code string, grants roomsrv.Grants, creatorToken []byte) {
 	const route = "room"
 	defer s.trackSession(sess)()
+	s.sendSessionNotices(sess, r, kindRoom)
 	if norm, err := rooms.NormalizeCode(code); err == nil {
 		defer s.trackRoomSession(norm, sess)()
 	}

@@ -60,6 +60,9 @@ var (
 		"EventBusTLSCert", "EventBusTLSKey", "EventBusCAFile",
 		// R40: whether broadcasters are told they are screened.
 		"ScreeningNotice",
+		// R74: whether this home accepts PoPs, the file it reads them from
+		// and its timings; none of them is a credential.
+		"Pops", "PopsFile", "PopUplinkLinger", "PopOfferDefer", "PopDemandTimeout",
 	}
 )
 

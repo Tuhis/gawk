@@ -791,3 +791,37 @@ func TestSetStalledRetriesThroughAConflict(t *testing.T) {
 		t.Fatal("recovery stamp lost to a CAS conflict")
 	}
 }
+
+// R74 (docs/76): a PoP reservation is a broadcast Lease carrying the gawk/pop
+// label, and the Origin view surfaces which PoP holds it so EnsureEdge can
+// tell a reservation from a vanished origin. A Lease without the label reads
+// Pop "".
+func TestResolveSurfacesPopLabel(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	c := newTestCoordinator(t, cs, "pod-a", newFakeClock(), nil)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		id, pop string
+	}{{"AAAAAA", "lan-party"}, {"BBBBBB", ""}} {
+		labels := map[string]string{LeaseLabelKey: LeaseLabelValue}
+		if tc.pop != "" {
+			labels[PopLabelKey] = tc.pop
+		}
+		_, err := cs.CoordinationV1().Leases("gawk").Create(ctx, &coordv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{Name: leaseName(tc.id), Namespace: "gawk", Labels: labels},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("create %s: %v", tc.id, err)
+		}
+		o, err := c.Resolve(ctx, tc.id)
+		if err != nil {
+			t.Fatalf("Resolve %s: %v", tc.id, err)
+		}
+		if o.Pop != tc.pop || o.Holder != "" {
+			t.Errorf("Resolve %s = %+v, want Pop %q and no holder", tc.id, o, tc.pop)
+		}
+	}
+	if PopLabelKey != "gawk/pop" {
+		t.Errorf("PopLabelKey = %q, want gawk/pop", PopLabelKey)
+	}
+}

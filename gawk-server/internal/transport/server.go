@@ -164,6 +164,13 @@ type Server struct {
 	// with the bypass, an internal-route origin rejection is invisible to
 	// every test. Atomic, as above.
 	testHookOriginCheckLoopback atomic.Bool
+
+	// R74 PoP seams (docs/76). mintGate is consulted on the mint path
+	// (mint_gate.go); publishObservers are told of every accepted publisher
+	// (publish_observer.go), copy-on-write under publishObserversMu.
+	mintGate           atomic.Pointer[mintGateBox]
+	publishObserversMu sync.Mutex
+	publishObservers   atomic.Pointer[[]PublishObserver]
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun,
@@ -332,6 +339,10 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 		// installed the room store.
 		mux.HandleFunc("CONNECT /internal/room/{code}", s.handleInternalRoom)
 	}
+	// R74 PoP relays (docs/76): the /pop/* routes exist only with -pops on.
+	if cfg.Pops {
+		s.registerPopRoutes(mux)
+	}
 
 	s.wt = &webtransport.Server{
 		// WebTransport flow-control SETTINGS: the three WT_INITIAL_MAX_* are
@@ -391,6 +402,11 @@ func New(cfg config.Config, r *hub.Registry, getCert func(*tls.ClientHelloInfo) 
 			// Edge pulls announce a fixed origin, honored only on the PSK-gated
 			// internal route; the allowlist still governs client-facing paths.
 			if origin == internalEdgeOrigin && strings.HasPrefix(r.URL.Path, "/internal/") {
+				return true
+			}
+			// R74 PoP relays (docs/76) announce a fixed origin too, honored
+			// only on the credential-gated /pop/* routes.
+			if origin == popOrigin && strings.HasPrefix(r.URL.Path, "/pop/") {
 				return true
 			}
 			if slices.Contains(allowed, origin) {
@@ -875,19 +891,11 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		// Cluster mode: create the fresh ID's origin Lease — where the
 		// cluster-wide MaxBroadcasts binds (the registry limit is per-pod). On
 		// rejection the hub goes into grace and is GC'd; nobody knows the ID.
-		if coord := s.clusterCoord(); coord != nil {
-			if _, cerr := coord.Claim(r.Context(), id, false); cerr != nil {
-				pub.Close()
-				s.log.Warn("origin lease create failed for minted broadcast", "id", id, "err", cerr)
-				if errors.Is(cerr, cluster.ErrMaxBroadcasts) {
-					s.metrics.Connection("publish", metrics.OutcomeLimitRejected)
-					sess.CloseWithError(429, "max concurrent broadcasts reached")
-				} else {
-					s.metrics.Connection("publish", metrics.OutcomeError)
-					sess.CloseWithError(500, "failed to claim origin lease")
-				}
-				return
-			}
+		if !s.claimMint(r.Context(), sess, id, pub, s.log) {
+			return
+		}
+		if !s.gateMint(r.Context(), sess, id, pub, s.log) {
+			return
 		}
 	}
 	defer pub.Close()
@@ -911,6 +919,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		closeWithNotice(sess, wire.CloseCodeTerminatedByOperator, terminationReason)
 		return
 	}
+	s.publisherLive(r, id, pub)
 
 	// Bind the session so a later token-bearing claim can depose it. False
 	// means a takeover already won since the pre-upgrade claim.
@@ -970,6 +979,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	// whether it may open uplink carriers. Best-effort: without it the
 	// producer emits no parity and sends its deltas as datagrams.
 	s.sendRelayCapabilities(sess, log, true)
+	s.sendSessionNotices(sess, r, kindPublish)
 
 	// Telemetry identity, also recorded on the hub so /statusz's
 	// publisherSessionId joins the broadcaster's reports. Sent last: a
@@ -1398,6 +1408,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	sub.SetTelemetrySession(s.sendTelemetryHello(sess, id, wire.TelemetryRoleViewer, log))
 	// Same endpoint advertisement as the publish route.
 	s.sendTelemetryEndpoint(sess, log)
+	s.sendSessionNotices(sess, r, kindSubscribe)
 
 	log.Info("subscriber session started")
 	tsLimiter := newTimeSyncLimiter()
@@ -1596,6 +1607,7 @@ func (s *Server) handleEcho(w http.ResponseWriter, r *http.Request) {
 	// path — a client that grants no uni credit or never reads must not
 	// be able to wedge this handler.
 	go s.sendRelayIdentity(sess, log)
+	s.sendSessionNotices(sess, r, kindEcho)
 	if !quiet {
 		log.Info("session started")
 	}

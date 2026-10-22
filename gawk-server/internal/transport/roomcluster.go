@@ -213,6 +213,7 @@ func (s *Server) proxyRoom(w http.ResponseWriter, r *http.Request, rc *roomClust
 		return
 	}
 	defer s.trackSession(sess)()
+	s.sendSessionNotices(sess, r, kindRoom)
 	defer s.trackProxied(code, home.Kind)()
 	s.metrics.Connection(route, metrics.OutcomeAccepted)
 	log = log.With("remote", sess.RemoteAddr())

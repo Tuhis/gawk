@@ -39,6 +39,12 @@ import (
 // rolling update, old pods dial new pods with it.
 const internalEdgeOrigin = "gawk-server://native-internal-edge"
 
+// popOrigin is the Origin header an R74 PoP relay sends on its link and leg
+// dials to the home fleet (docs/76). CheckOrigin honors it only on the
+// credential-gated /pop/* routes. Keep it stable across versions: a PoP and
+// its home upgrade independently.
+const popOrigin = "gawk-relay://pop"
+
 // Internal-session QUIC timing: in-cluster keepalives are cheap, and a dead
 // origin must be detected fast even without the lease watch.
 const (
@@ -159,6 +165,11 @@ type EdgeManager struct {
 	// 4006 (they never pass through Server.terminate). Set by SetCluster;
 	// nil in the unit harness.
 	terminated func()
+	// onReserved handles a subscribe miss on a lease that is reserved for an
+	// R74 PoP relay but not yet held (docs/76): instead of the 404 an
+	// empty-holder lease gets, it waits for the PoP to start forwarding.
+	// Nil until the PoP subsystem installs it.
+	onReserved func(ctx context.Context, id string, o cluster.Origin) error
 
 	baseCtx    context.Context
 	cancelBase context.CancelFunc
@@ -205,6 +216,9 @@ func (m *EdgeManager) EnsureEdge(ctx context.Context, broadcastID string) error 
 			return hub.ErrNotFound
 		}
 		return err
+	}
+	if origin.Holder == "" && origin.Pop != "" && m.onReserved != nil {
+		return m.onReserved(ctx, broadcastID, origin)
 	}
 	if origin.Holder == m.podName || origin.Holder == "" {
 		return hub.ErrNotFound
@@ -556,28 +570,7 @@ func (es *edgeSession) pump(up edgeUpstream, pub *hub.Publisher) (lingered bool,
 	go func() {
 		defer wg.Done()
 		defer cancel()
-		sem := make(chan struct{}, maxConcurrentKeyframeStreams)
-		for {
-			stream, err := up.AcceptUniStream(ctx)
-			if err != nil {
-				recordEnd(err)
-				return
-			}
-			select {
-			case sem <- struct{}{}:
-			default:
-				es.m.log.Warn("edge keyframe stream rejected: too many concurrent", "broadcast_id", es.id)
-				continue
-			}
-			wg.Add(1)
-			go func(st io.Reader) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				if err := pub.IngestKeyframeStream(st); err != nil {
-					es.m.log.Debug("edge keyframe ingest failed", "broadcast_id", es.id, "err", err)
-				}
-			}(stream)
-		}
+		recordEnd(es.acceptStreams(ctx, up, pub))
 	}()
 
 	// TimeSync pings (2 s, as the TS client) + linger check + viewer-count report.

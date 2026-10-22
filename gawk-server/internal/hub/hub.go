@@ -283,6 +283,11 @@ type Options struct {
 	// -rooms-off shape) reserves nothing.
 	IDReserved func(id string) bool
 
+	// PopOf names the R74 PoP relay a broadcast is published through
+	// (docs/76), for the event bus. Nil, or "", means none. It MUST NOT
+	// block: like OnEvent it is read under the registry lock.
+	PopOf func(id string) string
+
 	// StatsKey keys ObfuscateID (docs/22): 32 bytes, shared across the fleet
 	// so one broadcast keeps ONE obfuscated identity in every pod's /statusz
 	// and gawk_broadcast_* series. Empty falls back to a fresh per-process key.

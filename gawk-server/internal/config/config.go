@@ -317,6 +317,23 @@ type Config struct {
 	// with the terminal 4000 and its slot freed. Default off — the relay
 	// only reports the stall unless the operator opts in.
 	PublisherStallEnds bool
+
+	// Pops turns on the home side of R74 PoP relays (docs/76): the /pop/*
+	// routes a paired LAN relay links and pulls through. Needs a Pop source:
+	// the Pop CRs (ClusterMode) or PopsFile.
+	Pops bool
+	// PopsFile is a list of Pop definitions (pops.FilePop) for deployments
+	// without a Kubernetes API, the -rooms-file shape.
+	PopsFile string
+	// PopUplinkLinger: how long a PoP's forwarded broadcast keeps its uplink
+	// leg after the last outside viewer leaves.
+	PopUplinkLinger time.Duration
+	// PopOfferDefer: how long the home waits before offering a guest the
+	// switch to a PoP.
+	PopOfferDefer time.Duration
+	// PopDemandTimeout: how long an outside viewer's subscribe waits for a
+	// PoP to start forwarding a reserved broadcast.
+	PopDemandTimeout time.Duration
 }
 
 // ParseFlags parses args (without the program name) into a Config.
@@ -416,6 +433,16 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 		"pre-shared key gating the pod-to-pod /internal/subscribe route; required with -cluster-mode")
 	internalServerName := fs.String("internal-server-name", env("GAWK_INTERNAL_SERVER_NAME", ""),
 		"TLS server name edge pods verify when dialing an origin's pod IP (the public cert hostname); required with -cluster-mode")
+	popsFlag := fs.Bool("pops", envBool("GAWK_POPS", false),
+		"accept R74 PoP relays (docs/76): serve the /pop/* link and leg routes; requires -cluster-mode or -pops-file")
+	popsFile := fs.String("pops-file", env("GAWK_POPS_FILE", ""),
+		"Pop definitions for non-Kubernetes deployments (the -rooms-file shape); reloaded on change")
+	popUplinkLinger := fs.String("pop-uplink-linger", env("GAWK_POP_UPLINK_LINGER", "30s"),
+		"how long a PoP broadcast's uplink leg lingers after its last outside viewer leaves")
+	popOfferDefer := fs.String("pop-offer-defer", env("GAWK_POP_OFFER_DEFER", "2s"),
+		"how long the home waits before offering a guest the switch to a PoP")
+	popDemandTimeout := fs.String("pop-demand-timeout", env("GAWK_POP_DEMAND_TIMEOUT", "5s"),
+		"how long an outside viewer's subscribe waits for a PoP to start forwarding a reserved broadcast")
 	trustedCIDRs := fs.String("trusted-cidrs", env("GAWK_TRUSTED_CIDRS", ""),
 		"comma-separated CIDRs that bypass the per-IP connection rate limiter (node/pod CIDRs under SNAT)")
 	statsKey := fs.String("stats-key", env("GAWK_STATS_KEY", ""),
@@ -607,6 +634,29 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 	if *clusterMode && (*internalPSK == "" || *internalServerName == "") {
 		return Config{}, fmt.Errorf("cluster-mode requires -internal-psk and -internal-server-name")
 	}
+	popsFileV := strings.TrimSpace(*popsFile)
+	if *popsFlag && !*clusterMode && popsFileV == "" {
+		return Config{}, fmt.Errorf("pops requires -cluster-mode or -pops-file")
+	}
+	positive := func(name, v string) (time.Duration, error) {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return 0, fmt.Errorf("invalid %s %q: want a positive duration", name, v)
+		}
+		return d, nil
+	}
+	popLinger, err := positive("pop-uplink-linger", *popUplinkLinger)
+	if err != nil {
+		return Config{}, err
+	}
+	popDefer, err := positive("pop-offer-defer", *popOfferDefer)
+	if err != nil {
+		return Config{}, err
+	}
+	popDemand, err := positive("pop-demand-timeout", *popDemandTimeout)
+	if err != nil {
+		return Config{}, err
+	}
 	cidrs, err := parseCIDRs(*trustedCIDRs)
 	if err != nil {
 		return Config{}, err
@@ -770,6 +820,12 @@ func ParseFlags(args []string, getenv func(string) string) (Config, error) {
 
 		PublisherStallTimeout: stallDuration,
 		PublisherStallEnds:    *publisherStallEnds,
+
+		Pops:             *popsFlag,
+		PopsFile:         popsFileV,
+		PopUplinkLinger:  popLinger,
+		PopOfferDefer:    popDefer,
+		PopDemandTimeout: popDemand,
 	}, nil
 }
 

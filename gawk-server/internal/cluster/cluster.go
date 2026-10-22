@@ -40,6 +40,10 @@ const (
 	leasePrefix     = "gawk-bc-"
 	LeaseLabelKey   = "gawk/lease"
 	LeaseLabelValue = "broadcast"
+	// PopLabelKey marks a broadcast Lease reserved for, or held through, an
+	// R74 PoP relay (docs/76); its value is the Pop name. Equal to
+	// pops.LabelKey.
+	PopLabelKey = "gawk/pop"
 
 	annotationAddr          = "gawk/origin-addr"
 	annotationGeneration    = "gawk/origin-generation"
@@ -81,6 +85,7 @@ type Origin struct {
 	Holder     string // pod name
 	Addr       string // dialable pod address, "<podIP>:<port>" — never the Service VIP
 	Generation int64  // bumped on every claim; fences stale edges (W4)
+	Pop        string // R74: the PoP the lease is reserved for (gawk/pop label); "" = none
 }
 
 // Options configures a Coordinator.
@@ -192,7 +197,7 @@ func labelSelector() string { return LeaseLabelKey + "=" + LeaseLabelValue }
 
 // parseOrigin extracts the Origin view of a lease.
 func parseOrigin(l *coordv1.Lease) Origin {
-	o := Origin{Addr: l.Annotations[annotationAddr]}
+	o := Origin{Addr: l.Annotations[annotationAddr], Pop: l.Labels[PopLabelKey]}
 	if l.Spec.HolderIdentity != nil {
 		o.Holder = *l.Spec.HolderIdentity
 	}
