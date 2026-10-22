@@ -99,18 +99,18 @@ type fakeHome struct {
 
 	mu    sync.Mutex
 	dials []dialRecord
-	// refuse, when set, answers a dial instead of the default: a non-nil
-	// response or error refuses it.
-	refuse func(d dialRecord) (Session, *http.Response, error)
+	// override, when set, answers a dial instead of the default: a non-nil
+	// session, response or error is the answer.
+	override func(d dialRecord) (Session, *http.Response, error)
 }
 
 func newFakeHome(t *testing.T) *fakeHome {
 	return &fakeHome{t: t, links: make(chan *homeLink, 8)}
 }
 
-func (f *fakeHome) setRefuse(fn func(d dialRecord) (Session, *http.Response, error)) {
+func (f *fakeHome) route(fn func(d dialRecord) (Session, *http.Response, error)) {
 	f.mu.Lock()
-	f.refuse = fn
+	f.override = fn
 	f.mu.Unlock()
 }
 
@@ -135,10 +135,10 @@ func (f *fakeHome) dial(ctx context.Context, network, target string, h http.Head
 	d := dialRecord{network: network, url: u, hdr: h.Clone()}
 	f.mu.Lock()
 	f.dials = append(f.dials, d)
-	refuse := f.refuse
+	override := f.override
 	f.mu.Unlock()
-	if refuse != nil {
-		if s, rsp, err := refuse(d); s != nil || rsp != nil || err != nil {
+	if override != nil {
+		if s, rsp, err := override(d); s != nil || rsp != nil || err != nil {
 			return s, rsp, err
 		}
 	}

@@ -127,7 +127,7 @@ func TestPairingLinksAndStoresTheCredential(t *testing.T) {
 // credential the relay stays standalone and does not redial.
 func TestPairingRefused(t *testing.T) {
 	f := newFakeHome(t)
-	f.setRefuse(func(d dialRecord) (Session, *http.Response, error) {
+	f.route(func(d dialRecord) (Session, *http.Response, error) {
 		rsp := &http.Response{StatusCode: http.StatusGone, Header: http.Header{}}
 		rsp.Header.Set(poplink.ReasonHeader, "used")
 		return nil, rsp, errors.New("refused")
@@ -153,7 +153,7 @@ func TestPairingRefused(t *testing.T) {
 	}
 
 	// A dial error without a response is returned as is.
-	f.setRefuse(func(dialRecord) (Session, *http.Response, error) { return nil, nil, errors.New("no route") })
+	f.route(func(dialRecord) (Session, *http.Response, error) { return nil, nil, errors.New("no route") })
 	if err := c.Pair(t.Context(), pops.FormatPairing("home.example:4433", tok)); err == nil || errors.As(err, &pe) {
 		t.Fatalf("Pair over a dead network = %v", err)
 	}
@@ -252,7 +252,7 @@ func TestByeReadsIntoTheState(t *testing.T) {
 		t.Run(tc.reason, func(t *testing.T) {
 			f := newFakeHome(t)
 			c, l := linkUp(t, f, testOptions(t, f), poplink.Config{PopName: "p"})
-			f.setRefuse(func(dialRecord) (Session, *http.Response, error) { return nil, nil, errors.New("down") })
+			f.route(func(dialRecord) (Session, *http.Response, error) { return nil, nil, errors.New("down") })
 			l.send(poplink.Bye{Reason: tc.reason})
 			st := waitState(t, c, headerIs(tc.header))
 			if st.ByeReason != tc.reason {
@@ -279,7 +279,7 @@ func TestLinkLossGoesOfflineAndRedials(t *testing.T) {
 		t.Fatalf("health = %+v", h)
 	}
 	// A session that is already closed: OpenStream fails.
-	f.setRefuse(func(d dialRecord) (Session, *http.Response, error) {
+	f.route(func(d dialRecord) (Session, *http.Response, error) {
 		pop, _ := poplink.Pipe(popAddr, homeAddr)
 		_ = pop.CloseWithError(0, "gone")
 		return pop, nil, nil
@@ -296,7 +296,7 @@ func TestLinkLossGoesOfflineAndRedials(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	f.setRefuse(nil)
+	f.route(nil)
 	l2 := f.nextLink(t)
 	l2.send(poplink.Config{PopName: "p"})
 	waitState(t, c, headerIs(HeaderLinked))
@@ -307,7 +307,7 @@ func TestLinkLossGoesOfflineAndRedials(t *testing.T) {
 func TestCleanEndRelinksAndUnauthorizedIsRepair(t *testing.T) {
 	f := newFakeHome(t)
 	c, l := linkUp(t, f, testOptions(t, f), poplink.Config{PopName: "p"})
-	f.setRefuse(func(dialRecord) (Session, *http.Response, error) {
+	f.route(func(dialRecord) (Session, *http.Response, error) {
 		return nil, &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}}, errors.New("401")
 	})
 	l.close(0, "superseded")
