@@ -213,6 +213,58 @@ func TestConsoleBudgets(t *testing.T) {
 	}
 }
 
+// budgetLink is a consoleLink that records what the console pushes.
+type budgetLink struct {
+	ceiling  config.Budget
+	up, down config.Budget
+	calls    int
+}
+
+func (*budgetLink) Header() string                     { return relayconsole.HeaderLinked }
+func (*budgetLink) HomeOrigin() string                 { return "" }
+func (*budgetLink) NamedHost() string                  { return "" }
+func (*budgetLink) Notice() string                     { return "" }
+func (*budgetLink) Pair(context.Context, string) error { return nil }
+func (l *budgetLink) UplinkCeiling() config.Budget     { return l.ceiling }
+func (l *budgetLink) LowerBudgets(up, down config.Budget) {
+	l.up, l.down, l.calls = up, down, l.calls+1
+}
+
+// docs/76 §7.1: a budget the host lowers in the console reaches the PoP
+// link, which is what the legs' admission reads (popclient budget.go); a
+// refused lower pushes nothing, and a reset pushes the zero (configured).
+func TestConsoleLoweredBudgetsReachTheLink(t *testing.T) {
+	prev := linkForConsole.Load()
+	t.Cleanup(func() { linkForConsole.Store(prev) })
+	l := &budgetLink{ceiling: config.Budget{Mbps: 25, Streams: 3}}
+	var cl consoleLink = l
+	linkForConsole.Store(&cl)
+
+	c := testConsole(t)
+	if err := c.LowerDownlink(config.Budget{Mbps: 40, Streams: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if l.down != (config.Budget{Mbps: 40, Streams: 2}) || l.up != (config.Budget{}) {
+		t.Fatalf("after LowerDownlink the link holds up %+v down %+v", l.up, l.down)
+	}
+	if err := c.LowerUplink(config.Budget{Streams: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if l.up != (config.Budget{Streams: 1}) || l.down != (config.Budget{Mbps: 40, Streams: 2}) {
+		t.Fatalf("after LowerUplink the link holds up %+v down %+v", l.up, l.down)
+	}
+	calls := l.calls
+	if err := c.LowerUplink(config.Budget{Streams: 4}); err == nil {
+		t.Fatal("raising the uplink past home's 3 streams was accepted")
+	}
+	if l.calls != calls {
+		t.Fatal("a refused lower was pushed to the link")
+	}
+	if err := c.LowerDownlink(config.Budget{}); err != nil || l.down != (config.Budget{}) {
+		t.Fatalf("reset: %v, the link holds down %+v", err, l.down)
+	}
+}
+
 func TestConsoleLANOverride(t *testing.T) {
 	c := testConsole(t)
 	if err := c.SetLANOverride(netip.MustParseAddr("10.1.2.3")); err != nil {

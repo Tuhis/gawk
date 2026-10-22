@@ -115,6 +115,9 @@ func (p popConsoleLink) Health() []adminapi.HealthLine {
 
 func (p popConsoleLink) Pair(ctx context.Context, s string) error { return p.c.Pair(ctx, s) }
 
+// LowerBudgets reaches the uplink's and the downlink's admission.
+func (p popConsoleLink) LowerBudgets(up, down config.Budget) { p.c.LowerBudgets(up, down) }
+
 func (p popConsoleLink) UplinkCeiling() config.Budget {
 	if cfg := p.c.State().Config; cfg != nil {
 		return config.Budget{Mbps: cfg.Uplink.MaxMbps, Streams: cfg.Uplink.MaxStreams}

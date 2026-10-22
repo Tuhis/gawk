@@ -55,6 +55,9 @@ type consoleLink interface {
 	Pair(ctx context.Context, s string) error
 	// UplinkCeiling is the home fleet's uplink budget (zero: none known).
 	UplinkCeiling() config.Budget
+	// LowerBudgets hands the host's lowered budgets (zero fields: the
+	// configured ones) to the legs' admission.
+	LowerBudgets(up, down config.Budget)
 }
 
 // linkForConsole is set by the PoP link's part (Wave 3 wiring).
@@ -362,7 +365,11 @@ func (c *console) lower(dst *config.Budget, ceiling, b config.Budget, what strin
 	}
 	c.mu.Lock()
 	*dst = b
+	up, down := c.uplink, c.downlink
 	c.mu.Unlock()
+	if l := c.link(); l != nil {
+		l.LowerBudgets(up, down)
+	}
 	return nil
 }
 

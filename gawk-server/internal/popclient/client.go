@@ -131,6 +131,8 @@ type Client struct {
 	stream  interface{ Write([]byte) (int, error) }
 	subs    map[int]func(LinkState)
 	nextSub int
+	// lowerUp and lowerDown are the console's lowered budgets (budget.go).
+	lowerUp, lowerDown config.Budget
 
 	wmu sync.Mutex
 
@@ -591,13 +593,13 @@ func (c *Client) statsLoop(stop <-chan struct{}) {
 }
 
 func (c *Client) stats() poplink.Stats {
-	rc := c.opts.Relay
+	hu, hd := c.hostUplink(), c.hostDownlink()
 	up := c.up.stats()
 	return poplink.Stats{
 		UplinkMbps:    up.Mbps,
 		UplinkStreams: up.Streams,
-		Uplink:        pops.Budget{MaxMbps: rc.UplinkBudget.Mbps, MaxStreams: rc.UplinkBudget.Streams},
-		Downlink:      pops.Budget{MaxMbps: rc.DownlinkBudget.Mbps, MaxStreams: rc.DownlinkBudget.Streams},
+		Uplink:        pops.Budget{MaxMbps: hu.Mbps, MaxStreams: hu.Streams},
+		Downlink:      pops.Budget{MaxMbps: hd.Mbps, MaxStreams: hd.Streams},
 		// The home broadcasts pulled over the downlink now (downlink.go).
 		DownlinkStreams: c.DownlinkUse().Streams,
 		// Health is reported on its own record; nothing to add yet.

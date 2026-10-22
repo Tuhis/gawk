@@ -367,7 +367,7 @@ func (u *uplink) budget() pops.Budget {
 			b.MaxStreams = cfg.Uplink.MaxStreams
 		}
 	}
-	host := u.c.opts.Relay.UplinkBudget
+	host := u.c.hostUplink()
 	if host.Mbps > 0 && host.Mbps < b.MaxMbps {
 		b.MaxMbps = host.Mbps
 	}
