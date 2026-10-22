@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.35.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.34.0...gawk-server/v0.35.0) (2026-10-22)
+
+
+### Features
+
+* **relay:** accept the broadcaster's uplink carriers (R73 RU1) ([#538](https://github.com/Tuhis/gawk/issues/538)) ([9b25269](https://github.com/Tuhis/gawk/commit/9b25269d8798c32028efe4ab84d336ca02e7926b))
+
+
+### Bug Fixes
+
+* **relay:** hold a datagram burst in quic-go's connection queue too (R73 RU2) ([#550](https://github.com/Tuhis/gawk/issues/550)) ([f4b5de2](https://github.com/Tuhis/gawk/commit/f4b5de2feb784235e7d9784289fcfa9a466a17b4))
+* **relay:** serve parity to Smoother and Most stable viewers (R73 RU8) ([#535](https://github.com/Tuhis/gawk/issues/535)) ([e34ce64](https://github.com/Tuhis/gawk/commit/e34ce64ba8361dba6faf79b3a1bba2e77a2be344))
+* **relay:** stop dropping publisher datagram bursts in quic-go's 32-deep queue (R73 RU2) ([#536](https://github.com/Tuhis/gawk/issues/536)) ([67ede08](https://github.com/Tuhis/gawk/commit/67ede0886663edc6a5c5500808f68a8640550f65))
+* **telemetry:** see leg-A loss in frames and stop blaming leg B for it (R73 RU0) ([#539](https://github.com/Tuhis/gawk/issues/539)) ([d32a506](https://github.com/Tuhis/gawk/commit/d32a506a75b4e8b7732653618e46206a8b28629e))
+
 ## [0.34.0](https://github.com/Tuhis/gawk/compare/gawk-server/v0.33.0...gawk-server/v0.34.0) (2026-10-15)
 
 
