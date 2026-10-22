@@ -56,6 +56,10 @@ func startModerated(t *testing.T, n int, opts ...HarnessOption) *moderated {
 		pod.Server.SetModeration(set)
 		res := NewClusterReservations(pod.Coord)
 		fw := pod.Manager.EnableModeration(ctx, ModerationOptions{Bans: set, Reservations: res, Sweep: 100 * time.Millisecond})
+		// The home answers the PoP's reserve records, as serve wires it in
+		// production: the PoP's mint gate waits on that answer before a
+		// party broadcaster's identity is sent.
+		pod.Manager.StartUplink(UplinkOptions{Reservations: res})
 		pod.Server.AddBanObserver(fw.HandleBan)
 		h.sets = append(h.sets, set)
 		h.res = append(h.res, res)
@@ -148,9 +152,7 @@ func TestAKillAtHomeEndsThePartyBroadcastWith4006(t *testing.T) {
 
 	holder := h.f.LinkHolder(popName)
 	idx := podIndex(h.f, holder)
-	if r, err := h.res[idx].Reserve(pairCtx(t), id, popName, 0); err != nil || r != ReserveOK {
-		t.Fatalf("Reserve: %q %v", r, err)
-	}
+	// The PoP's mint reserved the ID through the home's uplink subsystem.
 	WaitFor(t, "the reservation in the link-home pod's cache", func() bool {
 		p, ok := h.res[idx].Owner(id)
 		return ok && p == popName
