@@ -82,7 +82,7 @@ func Handler(r *hub.Registry, rooms RoomStatsSource, g prometheus.Gatherer, log 
 	mux.Handle("GET /metrics", promhttp.HandlerFor(g, promhttp.HandlerOpts{}))
 	if registerAdmin(mux, admin) {
 		log.Info("relay admin API enabled on the ops listener",
-			"routes", "/internal/admin/broadcasts,/internal/admin/config,/internal/admin/rooms",
+			"routes", "/internal/admin/broadcasts,/internal/admin/config,/internal/admin/rooms,/internal/admin/pops",
 			"static_token", admin.Auth.token != nil,
 			"oidc_issuer", admin.Config.AdminOIDCIssuer)
 	}

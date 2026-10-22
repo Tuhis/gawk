@@ -283,7 +283,8 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 	}
 	// R74 (docs/76): the home side of PoP relays, after the cluster and ban
 	// wiring it builds on.
-	if err := wirePops(runCtx, w, log); err != nil {
+	popMgr, err := wirePops(runCtx, w, log)
+	if err != nil {
 		return err
 	}
 	// Installed after the cluster wiring (SetRooms hands the registry the
@@ -340,6 +341,9 @@ func Run(ctx context.Context, cfg config.Config, getCert CertFunc, log *slog.Log
 	}
 	if roomReg != nil {
 		adminOpts.Rooms = roomReg.AdminRooms
+	}
+	if popMgr != nil {
+		adminOpts.Pops = popMgr.AdminPops
 	}
 	// R40's keyframe route (docs/71 D1), under its own token and nothing
 	// else; an empty -screening-token leaves it unregistered (404).

@@ -175,6 +175,8 @@ type Server struct {
 	// notices (session_notices.go).
 	localRelay atomic.Pointer[localRelayBox]
 	offerer    atomic.Pointer[offererBox]
+	// popHome serves the /pop/* routes on a home with -pops (pop_routes.go).
+	popHome atomic.Pointer[popHomeBox]
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun,
