@@ -41,6 +41,22 @@ const CloseCodeLinkEnd = 4006
 // on /pop/* (transport's popOrigin, pinned equal by a test there).
 const Origin = "gawk-relay://pop"
 
+// ReasonHeader names a /pop/* refusal in the HTTP response, beside its
+// status, so the console can tell refusals that share one apart (a used
+// and an expired pairing string are both 410). Values: the Reason*
+// constants and the Bye reasons.
+const ReasonHeader = "Gawk-Pop-Reason"
+
+// Refusal reasons a home sends in ReasonHeader (besides ByeRepair,
+// ByeRevoked and ByeExpired for a link credential).
+const (
+	ReasonUnknown        = "unknown"
+	ReasonUsed           = "used"
+	ReasonPairingExpired = "pairing-expired"
+	ReasonLimited        = "limited"
+	ReasonProto          = "proto"
+)
+
 var (
 	// ErrProtoMajor: a /pop/* dial without ?proto= or with another major.
 	ErrProtoMajor = errors.New("poplink: unsupported protocol major")

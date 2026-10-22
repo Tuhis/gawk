@@ -88,7 +88,7 @@ func TestAdminRoutesAreDarkWithoutACredential(t *testing.T) {
 			} else {
 				h, _ = adminHandler(t, config.Config{}, tc.auth, nil)
 			}
-			for _, path := range []string{"/internal/admin/broadcasts", "/internal/admin/config", "/internal/admin/rooms"} {
+			for _, path := range []string{"/internal/admin/broadcasts", "/internal/admin/config", "/internal/admin/rooms", "/internal/admin/pops"} {
 				// Unauthenticated AND with a plausible credential: both 404.
 				for _, bearer := range []string{"", adminToken} {
 					if w := get(h, path, bearer); w.Code != http.StatusNotFound {
@@ -311,6 +311,56 @@ func TestAdminRoomsRoute(t *testing.T) {
 	})
 }
 
+// GET /internal/admin/pops (R74, docs/76 §9): the PoPs whose link this pod
+// holds, behind the same gate as the other admin routes. Without -pops (a
+// nil Pops) it is an empty list, as rooms are without -rooms.
+func TestAdminPopsRoute(t *testing.T) {
+	t.Run("pops off", func(t *testing.T) {
+		h, _ := adminHandler(t, config.Config{AdminAPIToken: adminToken}, staticAuth(t, adminToken), nil)
+		w := get(h, "/internal/admin/pops", adminToken)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		want := `{"schema":"gawk.admin.pops.v1","pod":"gawk-server-abc123","pops":[]}` + "\n"
+		if got := w.Body.String(); got != want {
+			t.Errorf("body = %q, want %q", got, want)
+		}
+	})
+	t.Run("pops on", func(t *testing.T) {
+		r := hub.NewRegistry(discardLog, hub.Options{})
+		since := time.Date(2026, 10, 22, 18, 4, 11, 0, time.UTC)
+		h := Handler(r, nil, metrics.NewBaseRegistry("v"), discardLog, nil, &AdminOptions{
+			Registry: r, Pod: "gawk-server-abc123", Auth: staticAuth(t, adminToken), Log: discardLog,
+			Pops: func() []adminapi.PopState {
+				return []adminapi.PopState{{
+					Name: "assembly-2026", UID: "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab", Linked: true, Since: &since,
+					PublicAddrs: []string{"203.0.113.7"}, LanAddr: "192.168.1.20",
+				}}
+			},
+		}, nil)
+		for _, bearer := range []string{"", "wrong"} {
+			if w := get(h, "/internal/admin/pops", bearer); w.Code != http.StatusUnauthorized {
+				t.Errorf("bearer %q: status = %d, want 401", bearer, w.Code)
+			}
+		}
+		w := get(h, "/internal/admin/pops", adminToken)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+		if w.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store: the body carries addresses", w.Header().Get("Cache-Control"))
+		}
+		var got adminapi.PopsResponse
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Schema != adminapi.SchemaPops || got.Pod != "gawk-server-abc123" || len(got.Pops) != 1 ||
+			got.Pops[0].Name != "assembly-2026" || !got.Pops[0].Linked || got.Pops[0].LanAddr != "192.168.1.20" {
+			t.Fatalf("response = %+v", got)
+		}
+	})
+}
+
 // The config route serves the redacted view and nothing else. The
 // leak-proofing itself is config's own acceptance gate
 // (config.TestSanitizedLeaksNoSecretValue); this checks the wiring.
@@ -362,6 +412,7 @@ func TestAdminAPIExposesNoWriteVerbs(t *testing.T) {
 			"/internal/admin/broadcasts", "/internal/admin/config",
 			"/internal/admin/broadcasts/ABC23Z/kill", "/internal/admin/bans",
 			"/internal/admin/rooms", "/internal/admin/rooms/tuhisroom",
+			"/internal/admin/pops", "/internal/admin/pops/assembly-2026",
 		} {
 			w := httptest.NewRecorder()
 			req := httptest.NewRequest(method, path, nil)

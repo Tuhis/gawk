@@ -2,7 +2,7 @@ package ops
 
 // The R39 relay admin API (docs/42 §4.5): READ-ONLY routes on the ops
 // listener, live only when a credential is configured — broadcasts and
-// config since R39, rooms since R49 (docs/50 D2).
+// config since R39, rooms since R49 (docs/50 D2), pops since R74 (docs/76 §9).
 //
 // KILL AND BAN VERBS ARE DELIBERATELY ABSENT, and must stay absent. The Ban
 // CR is the single write path into enforcement (docs/42 D2): relays act on
@@ -33,6 +33,7 @@ const (
 	SchemaAdminBroadcasts = adminapi.SchemaBroadcasts
 	SchemaAdminConfig     = adminapi.SchemaConfig
 	SchemaAdminRooms      = adminapi.SchemaRooms
+	SchemaAdminPops       = adminapi.SchemaPops
 )
 
 // AdminOptions wires the admin routes. A nil *AdminOptions — or one whose
@@ -57,6 +58,10 @@ type AdminOptions struct {
 	// empty list: a relay without rooms has nothing to say, and the
 	// credential gate is the only gate the route needs (D11).
 	Rooms func() []adminapi.Room
+	// Pops snapshots the PoPs whose link this pod holds (R74, docs/76 §9),
+	// with their public and LAN addresses. Nil — -pops off — serves an
+	// empty list.
+	Pops func() []adminapi.PopState
 	// Auth gates every route.
 	Auth *AdminAuth
 	Log  *slog.Logger
@@ -103,6 +108,19 @@ func registerAdmin(mux *http.ServeMux, opts *AdminOptions) bool {
 			// are: the Room CR is the write path.
 			writeAdminJSON(w, log, adminapi.RoomsResponse{
 				Schema: SchemaAdminRooms, Pod: opts.Pod, Rooms: rows,
+			})
+		})))
+	mux.Handle("GET /internal/admin/pops",
+		opts.guard(log, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			rows := []adminapi.PopState{}
+			if opts.Pops != nil {
+				if got := opts.Pops(); got != nil {
+					rows = got
+				}
+			}
+			// Revoke and Re-pair are absent too: the Pop CR is the write path.
+			writeAdminJSON(w, log, adminapi.PopsResponse{
+				Schema: SchemaAdminPops, Pod: opts.Pod, Pops: rows,
 			})
 		})))
 	mux.Handle("GET /internal/admin/config",
