@@ -463,6 +463,48 @@ func TestRoomClientSetScreening(t *testing.T) {
 	}
 }
 
+// R74 (docs/76 item 33): SetWall keeps a PoP's wall room in step with the
+// PoP: its broadcast cap and title, and nothing else. It writes only a room
+// whose spec.pop names that PoP.
+func TestRoomClientSetWall(t *testing.T) {
+	c, _ := newFakeRoomClient(t)
+	ctx := context.Background()
+	if _, err := c.CreateStatic(ctx, kube.StaticRoom{Code: "Party-Wall", DisplayName: "Assembly 2026", MaxBroadcasts: 40,
+		MaxParticipants: 300, Pop: "assembly-2026"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := c.SetWall(ctx, "party-wall", "assembly-2026", 64, "Assembly")
+	if err != nil {
+		t.Fatalf("SetWall: %v", err)
+	}
+	got, _ := c.Get(ctx, "party-wall")
+	for _, s := range []rooms.RoomSpec{after.Room.Spec, got.Room.Spec} {
+		if s.MaxBroadcasts != 64 || s.DisplayName != "Assembly" || s.MaxParticipants != 300 || s.Pop != "assembly-2026" ||
+			s.DisplayCode != "Party-Wall" || s.Kind != rooms.KindStatic {
+			t.Fatalf("spec after SetWall = %+v: the cap and title change, the rest stays", s)
+		}
+	}
+	if _, err := c.SetWall(ctx, "party-wall", "assembly-2026", 64, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := c.Get(ctx, "party-wall"); got.Room.Spec.DisplayName != "" {
+		t.Fatalf("an empty title kept %q", got.Room.Spec.DisplayName)
+	}
+
+	// Another PoP's wall, or a room that is no wall, is not written.
+	if _, err := c.CreateStatic(ctx, kube.StaticRoom{Code: "crew"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ room, pop string }{{"party-wall", "lanparty"}, {"crew", "assembly-2026"}, {"nosuchroom", "assembly-2026"}} {
+		if _, err := c.SetWall(ctx, tc.room, tc.pop, 10, "x"); !errors.Is(err, kube.ErrRoomNotFound) {
+			t.Errorf("SetWall(%s, %s) = %v, want ErrRoomNotFound", tc.room, tc.pop, err)
+		}
+	}
+	if got, _ := c.Get(ctx, "crew"); got.Room.Spec.MaxBroadcasts != 0 || got.Room.Spec.DisplayName != "" {
+		t.Fatalf("a refused SetWall wrote the room: %+v", got.Room.Spec)
+	}
+}
+
 // The patch is bound to the object the check saw: it carries that UID, which
 // the API server holds as a precondition.
 func TestRoomClientSetScreeningIsBoundToTheCheckedObjectsUID(t *testing.T) {

@@ -39,6 +39,9 @@ type Rooms interface {
 	// D11) when check admits the object as read, bound to that object, and
 	// returns the room before and after.
 	SetScreening(ctx context.Context, name, value string, check func(kube.RoomObject) error) (before, after kube.RoomObject, err error)
+	// SetWall sets a PoP's wall room's broadcast cap and title (R74); it
+	// writes only a room whose spec.pop is pop, else ErrRoomNotFound.
+	SetWall(ctx context.Context, name, pop string, maxBroadcasts int, displayName string) (kube.RoomObject, error)
 }
 
 // Room error codes, in the {"error":{"code","message"}} envelope.

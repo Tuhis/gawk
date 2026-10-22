@@ -47,8 +47,9 @@ type popEnv struct {
 // test can see the wall's spec.pop, caps and ownerReference.
 type wallRooms struct {
 	*fakeRooms
-	mu   sync.Mutex
-	reqs []kube.StaticRoom
+	mu    sync.Mutex
+	reqs  []kube.StaticRoom
+	walls int
 }
 
 func (w *wallRooms) CreateStatic(ctx context.Context, req kube.StaticRoom) (string, error) {
@@ -56,6 +57,25 @@ func (w *wallRooms) CreateStatic(ctx context.Context, req kube.StaticRoom) (stri
 	w.reqs = append(w.reqs, req)
 	w.mu.Unlock()
 	return w.fakeRooms.CreateStatic(ctx, req)
+}
+
+func (w *wallRooms) SetWall(ctx context.Context, name, pop string, maxBroadcasts int, displayName string) (kube.RoomObject, error) {
+	w.mu.Lock()
+	w.walls++
+	w.mu.Unlock()
+	return w.fakeRooms.SetWall(ctx, name, pop, maxBroadcasts, displayName)
+}
+
+func (w *wallRooms) wallCalls() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.walls
+}
+
+func (w *wallRooms) room(name string) kube.RoomObject {
+	w.fakeRooms.mu.Lock()
+	defer w.fakeRooms.mu.Unlock()
+	return w.fakeRooms.rooms[name]
 }
 
 func newPopDynamic(t *testing.T, objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
@@ -365,6 +385,34 @@ func TestCreatePopWithAWallCreatesItsRoomOwnedByThePop(t *testing.T) {
 	e.decode(http.MethodPost, "/api/v1/pops", map[string]any{"name": "lanparty", "wall": map[string]any{"roomCode": "LAN-Wall"}}, http.StatusCreated, nil)
 	if got := e.rooms.reqs[1]; got.MaxBroadcasts != pops.DefaultMaxBroadcasts || got.Code != "LAN-Wall" {
 		t.Fatalf("second wall = %+v", got)
+	}
+}
+
+// docs/76 item 33: the wall's cap is the PoP's limits.maxBroadcasts and its
+// title the PoP's display name, so an edit of either reaches the wall room;
+// a PoP without a wall touches no room.
+func TestEditingAPopKeepsItsWallInStep(t *testing.T) {
+	e := newPopEnv(t)
+	e.decode(http.MethodPost, "/api/v1/pops", map[string]any{
+		"name": "assembly-2026", "displayName": "Assembly 2026", "wall": map[string]any{"roomCode": "Party-Wall"},
+	}, http.StatusCreated, nil)
+	e.decode(http.MethodPatch, "/api/v1/pops/assembly-2026", map[string]any{
+		"displayName": "Assembly", "limits": map[string]any{"maxBroadcasts": 12},
+	}, http.StatusOK, nil)
+	wall := e.rooms.room("party-wall")
+	if wall.Room.Spec.MaxBroadcasts != 12 || wall.Room.Spec.DisplayName != "Assembly" {
+		t.Fatalf("wall spec after the edit = %+v, want 12 broadcasts titled Assembly", wall.Room.Spec)
+	}
+	e.decode(http.MethodPatch, "/api/v1/pops/assembly-2026", map[string]any{"limits": map[string]any{"maxBroadcasts": 500}}, http.StatusOK, nil)
+	if got := e.rooms.room("party-wall").Room.Spec.MaxBroadcasts; got != 64 {
+		t.Fatalf("wall cap = %d, want the room cap 64", got)
+	}
+
+	e.decode(http.MethodPost, "/api/v1/pops", map[string]any{"name": "lanparty"}, http.StatusCreated, nil)
+	calls := e.rooms.wallCalls()
+	e.decode(http.MethodPatch, "/api/v1/pops/lanparty", map[string]any{"displayName": "LAN"}, http.StatusOK, nil)
+	if e.rooms.wallCalls() != calls {
+		t.Fatal("editing a PoP without a wall wrote a room")
 	}
 }
 

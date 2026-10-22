@@ -450,6 +450,44 @@ func (c *RoomClient) SetScreening(ctx context.Context, name, value string, check
 	return before, decodeRoom(u), nil
 }
 
+// SetWall keeps a PoP's wall room in step with its Pop (R74, docs/76 item
+// 33): spec.maxBroadcasts and spec.displayName, nothing else. It writes only
+// a room whose spec.pop is pop, so it can never retarget another room; any
+// other room is ErrRoomNotFound. Like SetScreening, the merge patch carries
+// the UID read as a precondition and is not bound by resourceVersion.
+func (c *RoomClient) SetWall(ctx context.Context, name, pop string, maxBroadcasts int, displayName string) (RoomObject, error) {
+	before, err := c.Get(ctx, name)
+	if err != nil {
+		return RoomObject{}, err
+	}
+	if pop == "" || before.Room.Spec.Pop != pop {
+		return RoomObject{}, ErrRoomNotFound
+	}
+	spec := map[string]any{"maxBroadcasts": nil, "displayName": nil} // null removes the key
+	if maxBroadcasts > 0 {
+		spec["maxBroadcasts"] = maxBroadcasts
+	}
+	if v := strings.TrimSpace(displayName); v != "" {
+		spec["displayName"] = v
+	}
+	body := map[string]any{"spec": spec}
+	if uid := before.Room.UID; uid != "" {
+		body["metadata"] = map[string]any{"uid": string(uid)}
+	}
+	patch, err := json.Marshal(body)
+	if err != nil {
+		return RoomObject{}, fmt.Errorf("kube: encode wall room patch: %w", err)
+	}
+	u, err := c.ri.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+			return RoomObject{}, ErrRoomNotFound
+		}
+		return RoomObject{}, fmt.Errorf("kube: update wall room %s: %w", name, err)
+	}
+	return decodeRoom(u), nil
+}
+
 // writeSecret creates or replaces the portal-named Secret with one key.
 func (c *RoomClient) writeSecret(ctx context.Context, name, value string) error {
 	return c.writeSecretKey(ctx, name, RoomSecretKey, value)

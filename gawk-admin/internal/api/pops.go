@@ -668,6 +668,29 @@ func (a *API) createWall(ctx context.Context, obj kube.PopObject, wall *popWallR
 	return err
 }
 
+// syncWall writes the PoP's cap and title onto its wall room (docs/76 item
+// 33). It writes on every edit rather than on a change, so an edit after a
+// failed write repairs the wall. A wall room that is gone (or no longer
+// this PoP's) is left alone: deleting the PoP is what removes it.
+func (a *API) syncWall(ctx context.Context, obj kube.PopObject) error {
+	wall := obj.Pop.Spec.Wall
+	if wall == nil || a.opts.Rooms == nil {
+		return nil
+	}
+	code, err := rooms.NormalizeCode(wall.RoomCode)
+	if err != nil {
+		return nil // validated at create; nothing to write
+	}
+	if _, err := a.opts.Rooms.SetWall(ctx, code, obj.Name, wallBroadcasts(&obj.Pop), obj.Pop.Spec.DisplayName); err != nil {
+		if errors.Is(err, kube.ErrRoomNotFound) {
+			a.log.Warn("a PoP's wall room is gone; not updated", "pop", obj.Name)
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func (a *API) handlePatchPop(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.caller(w, r)
 	if !ok {
@@ -709,6 +732,11 @@ func (a *API) handlePatchPop(w http.ResponseWriter, r *http.Request) {
 	}
 	a.kick()
 	a.recordPop(r.Context(), store.EventPopUpdated, id.Actor(), after)
+	if err := a.syncWall(r.Context(), after); err != nil {
+		// The PoP is edited; the next edit writes the wall again.
+		a.fail(w, r, "update the PoP's wall room (the PoP itself was edited)", err)
+		return
+	}
 	a.log.Info("PoP edited", "actor", id.Actor(), "pop", name)
 	writeJSON(w, http.StatusOK, a.renderPop(after, a.livePop(r.Context(), name), false))
 }
