@@ -493,6 +493,12 @@ func (r *Registry) ReplaceStatic(defs []rooms.FileRoom) {
 type Grants struct {
 	Creator  bool
 	AttachOK bool
+	// VouchedBy, when set, is a second attach proof besides the broadcast's
+	// resume token: the session came over an R74 PoP's authenticated link,
+	// and the PoP vouches for a broadcast reserved for it (docs/76 item
+	// 34). The PoP's own resume token never travels home, and home could
+	// not check it. Set by the transport only, never from a request.
+	VouchedBy func(broadcastID string) bool
 }
 
 // CheckJoin is the pre-upgrade gate for CONNECT /room/{code}: it resolves
@@ -985,6 +991,7 @@ func (p *Participant) attach(cmd wire.RoomCommand) {
 	r.mu.Lock()
 	tokens := r.tokens
 	attachOK := p.grants.AttachOK
+	vouched := p.grants.VouchedBy
 	r.mu.Unlock()
 	if rm.pop != "" {
 		// rm.pop is set at creation and on UpsertStatic under r.mu; a wall
@@ -997,12 +1004,22 @@ func (p *Participant) attach(cmd wire.RoomCommand) {
 		p.reject(cmd.Kind, wire.RoomRejectForbidden, "attach key required")
 		return
 	}
-	if tokens == nil || !tokens.VerifyResume(cmd.BroadcastID, cmd.ResumeToken) {
+	proven := tokens != nil && tokens.VerifyResume(cmd.BroadcastID, cmd.ResumeToken)
+	byVouch := false
+	if !proven && vouched != nil {
+		if id, err := broadcastid.Normalize(cmd.BroadcastID); err == nil && vouched(id) {
+			cmd.BroadcastID, proven, byVouch = id, true, true
+		}
+	}
+	if !proven {
 		p.reject(cmd.Kind, wire.RoomRejectBadProof, "resume token does not match")
 		return
 	}
 	state, known := r.opts.Broadcasts.BroadcastState(cmd.BroadcastID)
-	if !known {
+	// A vouched reservation home has not pulled yet may be unknown here:
+	// its tile shows away until an outsider's pull makes it live, as on the
+	// wall (AttachVouched).
+	if !known && !byVouch {
 		p.reject(cmd.Kind, wire.RoomRejectNotFound, "broadcast not found")
 		return
 	}

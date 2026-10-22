@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -292,6 +293,10 @@ func (s *Server) proxyRoomOverLink(w http.ResponseWriter, r *http.Request, fwd R
 	}
 	log.Info("room link session started")
 
+	// vouching: the broadcasts this session attached at home vouched
+	// (vouchForHome), until home confirms the attach.
+	var vmu sync.Mutex
+	vouching := map[string]bool{}
 	fromGuest := make(chan error, 1)
 	go func() {
 		for {
@@ -302,6 +307,12 @@ func (s *Server) proxyRoomOverLink(w http.ResponseWriter, r *http.Request, fwd R
 			}
 			if s.interceptWallCommand(fwd, code, rec[wire.RoomRecordHeaderSize:], proven) {
 				continue
+			}
+			if out, id := vouchForHome(rec, proven); id != "" {
+				rec = out
+				vmu.Lock()
+				vouching[id] = true
+				vmu.Unlock()
 			}
 			if _, err := up.Write(rec); err != nil {
 				fromGuest <- err
@@ -316,6 +327,16 @@ func (s *Server) proxyRoomOverLink(w http.ResponseWriter, r *http.Request, fwd R
 			if err != nil {
 				fromHome <- err
 				return
+			}
+			if id := attachedEventID(rec); id != "" {
+				vmu.Lock()
+				confirmed := vouching[id]
+				delete(vouching, id)
+				vmu.Unlock()
+				if l, ok := fwd.(wallLeaver); ok && confirmed {
+					// The broadcaster's own choice: off the party wall.
+					l.LeftWall(id)
+				}
 			}
 			_ = client.SetWriteDeadline(time.Now().Add(roomWriteTimeout))
 			if _, err := client.Write(rec); err != nil {
@@ -359,6 +380,51 @@ func (s *Server) interceptWallCommand(fwd RoomForwarder, code string, msg []byte
 		return false
 	}
 	return fwd.WallCommand(code, cmd)
+}
+
+// wallLeaver is a RoomForwarder that also hears a broadcast leave the
+// party wall for a home room (popclient's wall).
+type wallLeaver interface {
+	LeftWall(id string)
+}
+
+// vouchForHome rewrites a proven Attach going home (one WallCommand did
+// not take: a room at home, not the wall) so this relay's resume token
+// does not travel: home could not check it, and has no business holding
+// it. The token is zeroed and home takes the link's vouch instead
+// (popVouch). id is the broadcast, "" when rec is left as it is.
+func vouchForHome(rec []byte, proven map[string]bool) (out []byte, id string) {
+	msg := rec[wire.RoomRecordHeaderSize:]
+	if len(msg) < 2 || msg[1] != wire.TypeRoomCommand {
+		return rec, ""
+	}
+	cmd, err := wire.ParseRoomCommand(msg)
+	if err != nil || cmd.Kind != wire.RoomCommandAttach || !proven[cmd.BroadcastID] {
+		return rec, ""
+	}
+	cmd.ResumeToken = make([]byte, wire.ResumeTokenSize)
+	m, err := wire.AppendRoomCommand(nil, cmd)
+	if err != nil {
+		return rec, ""
+	}
+	if out, err = wire.AppendRoomRecord(nil, m); err != nil {
+		return rec, ""
+	}
+	return out, cmd.BroadcastID
+}
+
+// attachedEventID is the broadcast an AttachmentAdded or AttachmentUpdated
+// room event names ("" for any other record).
+func attachedEventID(rec []byte) string {
+	msg := rec[wire.RoomRecordHeaderSize:]
+	if len(msg) < 2 || msg[1] != wire.TypeRoomEvent {
+		return ""
+	}
+	ev, err := wire.ParseRoomEvent(msg)
+	if err != nil || (ev.Kind != wire.RoomEventAttachmentAdded && ev.Kind != wire.RoomEventAttachmentUpdated) {
+		return ""
+	}
+	return ev.Attachment.BroadcastID
 }
 
 // --- the home side ------------------------------------------------------
@@ -411,7 +477,7 @@ func (s *Server) ServeRoomStream(ctx context.Context, pop, path, rawQuery string
 				}
 			}
 			if found {
-				s.pipeRoomStreamHome(ctx, st, rc, norm, home, q, log)
+				s.pipeRoomStreamHome(ctx, st, rc, norm, pop, home, q, log)
 				return
 			}
 		}
@@ -429,6 +495,7 @@ func (s *Server) ServeRoomStream(ctx context.Context, pop, path, rawQuery string
 		return
 	}
 	s.metrics.Connection(route, metrics.OutcomeAccepted)
+	grants.VouchedBy = s.popVouch(pop)
 	conn := &roomConn{stream: st, inBand: true, closeFn: func(code uint32, reason string) {
 		_ = st.SetWriteDeadline(time.Now().Add(roomWriteTimeout))
 		_, _ = st.Write(appendRoomLinkClose(nil, code, reason))
@@ -441,10 +508,11 @@ func (s *Server) ServeRoomStream(ctx context.Context, pop, path, rawQuery string
 // pipeRoomStreamHome is proxyRoom for a link stream: the join goes to the
 // room's home pod over /internal/room, and the home's close code comes back
 // as the close record.
-func (s *Server) pipeRoomStreamHome(ctx context.Context, st linkStream, rc *roomClusterWiring, code string,
+func (s *Server) pipeRoomStreamHome(ctx context.Context, st linkStream, rc *roomClusterWiring, code, pop string,
 	home roomcluster.Home, q url.Values, log *slog.Logger) {
 	dialCtx, cancel := context.WithTimeout(ctx, edgeAttachTimeout)
-	status, up, err := rc.dial(dialCtx, home.Addr, roomProxyPath(code, home.Generation, q))
+	path := roomProxyPath(code, home.Generation, q) + "&" + popVouchParam + "=" + url.QueryEscape(pop)
+	status, up, err := rc.dial(dialCtx, home.Addr, path)
 	cancel()
 	if err != nil {
 		if status == 0 {
@@ -487,6 +555,31 @@ func (s *Server) pipeRoomStreamHome(ctx context.Context, st linkStream, rc *room
 		_ = st.SetWriteDeadline(time.Now().Add(roomWriteTimeout))
 		_, _ = st.Write(appendRoomLinkClose(nil, code, reason))
 		up.close(0, "")
+	}
+}
+
+// popVouchParam names, on /internal/room, the PoP whose link a piped room
+// stream came over (pipeRoomStreamHome), so the room's home pod accepts
+// that PoP's vouched attaches as the link-side pod would.
+const popVouchParam = "vouch"
+
+// popVouch is a room session's vouched-attach proof for a stream over
+// pop's link (docs/76 item 34): the PoP verified the broadcaster's resume
+// token against its own key, which home cannot do, so home accepts the
+// Attach of a broadcast reserved for that PoP, as it accepts the wall's
+// vouched records. A broadcast reserved for nobody, or for another PoP,
+// still needs home's own token.
+func (s *Server) popVouch(pop string) func(id string) bool {
+	return func(id string) bool {
+		if coord := s.clusterCoord(); coord != nil {
+			o, _, _, ok := coord.Lookup(id)
+			return ok && o.Pop == pop
+		}
+		if h := s.popDemand(); h != nil {
+			owner, ok := h.ReservedFor(id)
+			return ok && owner == pop
+		}
+		return false
 	}
 }
 

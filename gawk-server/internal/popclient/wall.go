@@ -309,6 +309,16 @@ func (w *wall) left(code, id string) {
 	w.leave(code, id)
 }
 
+// LeftWall is transport's wallLeaver: a broadcaster at this PoP attached
+// its broadcast to a room at home through the link, which home confirmed.
+// Like a mint here, that moves it off the wall (docs/76 item 34).
+func (w *wall) LeftWall(id string) {
+	w.mu.Lock()
+	code := w.code
+	w.mu.Unlock()
+	w.leave(code, id)
+}
+
 // leave marks id hidden on the wall named code and syncs it (home's tile
 // goes, and the 0x18 follows).
 func (w *wall) leave(code, id string) {

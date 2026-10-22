@@ -177,7 +177,9 @@ func (s *Server) roomHomedElsewhere(w http.ResponseWriter, r *http.Request, code
 func roomProxyPath(code string, gen int64, q url.Values) string {
 	fwd := url.Values{}
 	for k, v := range q {
-		if k == "psk" || k == "gen" {
+		// vouch is set only by a link stream's pipe (popVouchPath), never
+		// carried over from a public request.
+		if k == "psk" || k == "gen" || k == popVouchParam {
 			continue
 		}
 		fwd[k] = v
@@ -346,6 +348,10 @@ func (s *Server) handleInternalRoom(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("internal room upgrade failed", "err", err)
 		w.WriteHeader(http.StatusForbidden)
 		return
+	}
+	if pop := q.Get(popVouchParam); pop != "" {
+		// PSK-gated: the pipe from the pod a PoP's link stream reached.
+		grants.VouchedBy = s.popVouch(pop)
 	}
 	s.serveRoomSession(r, sess, reg, norm, grants, nil)
 }

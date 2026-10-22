@@ -432,3 +432,41 @@ func TestAMintAtThePoPMovesTheBroadcastOffHomesWall(t *testing.T) {
 		t.Fatal("the resync put the minted broadcast back on the wall")
 	}
 }
+
+// docs/76 item 34 the other way: a party broadcaster at the PoP attaching
+// to a friend's room at home. The PoP's resume token never travels home
+// (home could not check it); the PoP vouches for its own broadcast, as it
+// does for the wall, and the broadcast moves off the wall.
+func TestAPartyBroadcasterAttachesToAHomeRoomThroughThePoP(t *testing.T) {
+	w := startWallFleet(t)
+	if err := w.reg.UpsertStatic(roomsrv.StaticRoom{Code: "lan-team", DisplayCode: "lan-team"}); err != nil {
+		t.Fatal(err)
+	}
+	p := w.publish(t, "")
+	WaitFor(t, "the tile on home's wall", func() bool { return w.onWall(p.id) })
+	friend := openRoom(t, w.f, "https://"+w.home.Addr()+"/room/lan-team", "friend")
+	friend.state(t)
+
+	q := url.Values{"broadcast": {p.id}, "resume": {p.token}}
+	bc := openRoom(t, w.f, "https://"+w.pop.Addr()+"/room/lan-team?"+q.Encode(), "tuhis")
+	if st := bc.state(t); st.Flags&wire.RoomStateFlagAttachOK == 0 {
+		t.Fatalf("the broadcaster may not attach: %+v", st)
+	}
+	tok, _ := hex.DecodeString(p.token)
+	bc.command(t, wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: p.id, ResumeToken: tok, Label: "tuhis"})
+	if ev := friend.event(t, wire.RoomEventAttachmentAdded); ev.Attachment.BroadcastID != p.id {
+		t.Fatalf("the friend's room got %+v", ev)
+	}
+	WaitFor(t, "the tile leaves home's wall", func() bool { return !w.onWall(p.id) })
+	p.waitInfo(t, "0x18 off the wall", func(i wire.LocalRelayInfo) bool { return !i.OnWall })
+
+	// A home broadcast the PoP did not reserve is not the PoP's to vouch
+	// for: an Attach of it over the link still needs home's own token.
+	homePub := clientDial(t, w.f, "https://"+w.home.Addr()+"/publish")
+	defer homePub.CloseWithError(0, "")
+	hid, _ := publisherHandshake(t, pairCtx(t), homePub)
+	bc.command(t, wire.RoomCommand{Kind: wire.RoomCommandAttach, BroadcastID: hid, ResumeToken: tok})
+	if ev := bc.event(t, wire.RoomEventCommandRejected); ev.Reason != wire.RoomRejectBadProof {
+		t.Fatalf("attach of an unreserved broadcast rejected with %d, want bad proof", ev.Reason)
+	}
+}
