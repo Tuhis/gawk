@@ -306,9 +306,14 @@ func (r *PopReconciler) ensureDNS(ctx context.Context, p *pops.Pop, host string)
 	if p.Status.Link == nil {
 		return nil
 	}
+	// An IP literal, or ip:port from a relay off the default port.
 	lan, err := netip.ParseAddr(p.Status.Link.LanAddr)
 	if err != nil {
-		return nil
+		ap, perr := netip.ParseAddrPort(p.Status.Link.LanAddr)
+		if perr != nil {
+			return nil
+		}
+		lan = ap.Addr()
 	}
 	lan = lan.Unmap()
 	name := dnsEndpointName(p.Name)

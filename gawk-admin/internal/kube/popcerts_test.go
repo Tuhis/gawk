@@ -397,6 +397,21 @@ func TestPopReconcilerPublishesOnlyAPrivateLanAddress(t *testing.T) {
 	}
 }
 
+// A relay on a port other than 4433 reports ip:port; the record names
+// the address.
+func TestPopReconcilerPublishesALanAddressThatCarriesAPort(t *testing.T) {
+	c, dc := newNamedFake(t, namedPop("lan-a", "uid-a", "192.168.1.20:4434"))
+	reconcile(t, newNamedReconciler(c, dc))
+	u, ok := dnsEndpoint(t, dc, "lan-a")
+	if !ok {
+		t.Fatal("no DNSEndpoint")
+	}
+	eps, _, _ := unstructured.NestedSlice(u.Object, "spec", "endpoints")
+	if ts, _ := eps[0].(map[string]any)["targets"].([]any); len(ts) != 1 || ts[0] != "192.168.1.20" {
+		t.Fatalf("targets = %v, want [192.168.1.20]", ts)
+	}
+}
+
 // A PoP named "p" (a valid name) still gets a host: only the random part
 // of the label is kept free of the name, not the fixed "p-" prefix.
 func TestPopReconcilerAssignsAHostToAPopNamedP(t *testing.T) {
