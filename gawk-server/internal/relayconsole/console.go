@@ -317,15 +317,26 @@ func sameOrigin(r *http.Request) bool {
 	default:
 		return false
 	}
-	o := r.Header.Get("Origin")
-	if o == "" {
-		return true
+	if o := r.Header.Get("Origin"); o != "" {
+		u, err := url.Parse(o)
+		if err != nil || u.Scheme != "http" || u.Path != "" && u.Path != "/" {
+			return false
+		}
+		return sameConsoleHost(u.Host, r)
 	}
-	u, err := url.Parse(o)
-	if err != nil || u.Scheme != "http" || u.Path != "" && u.Path != "/" {
-		return false
+	// No Origin (some embedded WebViews omit it): a Referer, when there is
+	// one, must name this console too.
+	if ref := r.Header.Get("Referer"); ref != "" {
+		u, err := url.Parse(ref)
+		return err == nil && u.Scheme == "http" && sameConsoleHost(u.Host, r)
 	}
-	return strings.EqualFold(u.Host, r.Host) && loopbackHostHeader(u.Host)
+	return true
+}
+
+// sameConsoleHost: host (from an Origin or Referer) is this console's own
+// Host, and names this machine.
+func sameConsoleHost(host string, r *http.Request) bool {
+	return strings.EqualFold(host, r.Host) && loopbackHostHeader(host)
 }
 
 // loopbackPeer: the TCP peer is this machine.

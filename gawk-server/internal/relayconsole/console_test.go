@@ -249,6 +249,14 @@ func TestStateChangesNeedSameOriginJSON(t *testing.T) {
 		"no content type":       func(r *http.Request) { r.Header.Del("Content-Type") },
 		"other loopback port":   func(r *http.Request) { r.Header.Set("Origin", "http://127.0.0.1:5173") },
 		"https loopback origin": func(r *http.Request) { r.Header.Set("Origin", "https://127.0.0.1:4480") },
+		"no Origin, cross-site Referer": func(r *http.Request) {
+			r.Header.Del("Origin")
+			r.Header.Set("Referer", "https://evil.example/page")
+		},
+		"no Origin, other-port Referer": func(r *http.Request) {
+			r.Header.Del("Origin")
+			r.Header.Set("Referer", "http://127.0.0.1:5173/")
+		},
 		"rebound Host and Origin": func(r *http.Request) {
 			r.Host = "evil.example:4480"
 			r.Header.Set("Origin", "http://evil.example:4480")
@@ -271,12 +279,16 @@ func TestStateChangesNeedSameOriginJSON(t *testing.T) {
 		"localhost origin":        func(r *http.Request) { r.Host = "localhost:4480"; r.Header.Set("Origin", "http://localhost:4480") },
 		"no Origin (same-origin)": func(r *http.Request) { r.Header.Del("Origin"); r.Header.Set("Sec-Fetch-Site", "same-origin") },
 		"json with charset":       func(r *http.Request) { r.Header.Set("Content-Type", "application/json; charset=utf-8") },
+		"no Origin, own Referer": func(r *http.Request) {
+			r.Header.Del("Origin")
+			r.Header.Set("Referer", "http://127.0.0.1:4480/#live")
+		},
 	} {
 		if rec := do(t, h, http.MethodPost, "/api/pair", body, mod); rec.Code != http.StatusOK {
 			t.Errorf("%s: status %d (%s), want 200", name, rec.Code, rec.Body)
 		}
 	}
-	if len(p.paired) != 4 || p.paired[0] != "gawk-pair:api.gawk.ioio.fi:4433/ABC" {
+	if len(p.paired) != 5 || p.paired[0] != "gawk-pair:api.gawk.ioio.fi:4433/ABC" {
 		t.Fatalf("paired = %q", p.paired)
 	}
 	if !p.pairCtxOK {
