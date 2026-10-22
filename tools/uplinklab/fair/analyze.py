@@ -122,7 +122,9 @@ MODES = [("datagram", "cubic", "datagram · Cubic (today)"), ("datagram", "bbr",
          ("datagram", "chrome", "Chrome datagrams (today's browser)"), ("carrier", "chrome", "Chrome carrier (prototype)"),
          # RU6: the shipped engine (FAIR_CCS="engine-cubic engine-bbr").
          ("datagram", "engine-cubic", "engine: datagram · Cubic"), ("datagram", "engine-bbr", "engine: datagram · BBR"),
-         ("carrier", "engine-cubic", "engine: carrier · Cubic"), ("carrier", "engine-bbr", "engine: carrier · BBR")]
+         ("carrier", "engine-cubic", "engine: carrier · Cubic"), ("carrier", "engine-bbr", "engine: carrier · BBR"),
+         # R74 PP8: the PoP's leg writer (FAIR_CCS=pop); its quic-go runs Cubic.
+         ("datagram", "pop", "PoP leg: datagram · Cubic"), ("carrier", "pop", "PoP leg: carrier · Cubic")]
 
 print("#### Table O — a shared uplink: the broadcast beside a household's TCP upload (F17, D5)\n")
 print("`tools/uplinklab/fair` (§4): one uplink at 30, 15 or 80 Mbps with a 50 ms\n"

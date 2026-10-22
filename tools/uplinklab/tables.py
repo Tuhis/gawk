@@ -847,3 +847,37 @@ if eng_cells:
             dps = "–" if dp is None else f"{dp:+.0f}"
             print(f"| {label} | {d} | {sp(cu)} | {sp(bb)} | {ds:+.1f} · {dps} | {proto} | {eng_mark(ok)} | "
                   f"{wn(cu)} · {wn(bb)} | {eng_mark(wok)} | {eng_steal(name, m, m + '-bbr')} |")
+
+# R74 PP8 (docs/76 item 18, §11): the PoP's leg writer (matrix.py pop) on
+# table B's cells, three runs a cell. The verdict is PP8's rule: datagrams
+# become the default only if they show the Balanced viewer more frames than
+# the carrier by more than the cell's run-to-run spread (the larger of the
+# two modes' max - min across its runs). Table O's PoP rows are
+# fair/analyze.py's (fair/matrix.sh with FAIR_CCS=pop).
+POP_SC = {"ge1pct": "bursts (GE, ≈1 %)", "out20drop": "radio away 20 ms/1.07 s",
+          "out80drop": "radio away 80 ms/1.07 s"}
+
+
+def pop_shown(s):
+    return min(100, s["view"]["adaptive"]["shownPct"])
+
+
+if any(n.startswith("pop-") for n in R):
+    print("\n#### PP8 — the PoP's leg writer on table B's cells (Cubic, three runs a cell)\n")
+    print("| RTT | Path | Delivery | Runs | Undecodable | Balanced: shown % (range) | Datagrams ahead by more than the spread? |")
+    print("|---|---|---|---|---|---|---|")
+    for rtt in (10, 40, 100):
+        for sc, label in POP_SC.items():
+            by = {m: [s for s in (get(f"pop-rtt{rtt}-{sc}-s{seed}", m) for seed in (7, 8, 9)) if s]
+                  for m in ("pop-dgram", "pop-carrier")}
+            if not by["pop-dgram"] or not by["pop-carrier"]:
+                continue
+            sh = {m: [pop_shown(s) for s in rs] for m, rs in by.items()}
+            spread = max(max(v) - min(v) for v in sh.values())
+            ahead = sum(sh["pop-dgram"]) / len(sh["pop-dgram"]) - sum(sh["pop-carrier"]) / len(sh["pop-carrier"])
+            for m, d in (("pop-dgram", "datagram"), ("pop-carrier", "carrier")):
+                rs, v = by[m], sh[m]
+                und = sum(s["transport"]["undecodable_pct"] for s in rs) / len(rs)
+                verdict = ("yes" if ahead > spread else "no") if m == "pop-carrier" else ""
+                print(f"| {rtt} ms | {label} | {d} | {len(rs)} | {f(und, 1)} % | "
+                      f"{f(sum(v) / len(v), 1)} ({f(min(v), 1)}–{f(max(v), 1)}) | {verdict} |")
