@@ -23,20 +23,9 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
 
-// freeUDPPort returns a loopback UDP port that was free a moment ago.
-func freeUDPPort(t *testing.T) int {
-	t.Helper()
-	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	return c.LocalAddr().(*net.UDPAddr).Port
-}
-
-// boundUDP binds a loopback UDP socket for an in-test server to Serve on.
-// Unlike freeUDPPort it keeps the socket, so a busy runner cannot hand the
-// port to another process between the probe and the bind.
+// boundUDP binds a loopback UDP socket for an in-test server to Serve on,
+// and keeps it: a port probed, closed and bound again can go to another
+// process in between on a busy runner.
 func boundUDP(t *testing.T) (net.PacketConn, int) {
 	t.Helper()
 	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -47,88 +36,35 @@ func boundUDP(t *testing.T) (net.PacketConn, int) {
 	return c, c.LocalAddr().(*net.UDPAddr).Port
 }
 
-// waitBound waits until something holds the UDP port, so a dial does not
-// race the listener.
-func waitBound(t *testing.T, port int) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
-		if err != nil {
-			return
-		}
-		c.Close()
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("nothing bound UDP port %d", port)
-}
-
 // startRecv runs `recv` on a fresh port and returns its address and the
 // channel its result arrives on (it returns once its one session ends).
 func startRecv(t *testing.T, out string, extra ...string) (string, <-chan error) {
 	t.Helper()
-	return startOnFreePort(t, func(addr string) error {
-		return runRecv(append([]string{"-addr", addr, "-out", out}, extra...))
+	return startOnPortZero(t, func(addrFile string) error {
+		return runRecv(append([]string{"-addr", "127.0.0.1:0", "-addr-file", addrFile, "-out", out}, extra...))
 	})
 }
 
-// startOnFreePort runs a command that binds the -addr it is given. The port
-// comes from freeUDPPort, so on a busy runner another process can take it
-// between the probe and the command's own bind: a command that fails to
-// bind is started again on a fresh port. It watches the command's result
-// while it waits for the bind, because the other process may let the port
-// go again at once, and a port that merely looks free says nothing.
-func startOnFreePort(t *testing.T, run func(addr string) error) (string, <-chan error) {
+// startOnPortZero runs a command that binds port 0 and writes the address
+// it got to addrFile, and returns that address once it is there. Nothing
+// probes a port, so nothing can lose one to another process in between.
+func startOnPortZero(t *testing.T, run func(addrFile string) error) (string, <-chan error) {
 	t.Helper()
-	for attempt := 0; attempt < 5; attempt++ {
-		port := freeUDPPort(t)
-		addr := fmt.Sprintf("127.0.0.1:%d", port)
-		done := make(chan error, 1)
-		go func() { done <- run(addr) }()
-		if err, ended := waitBoundOrEnd(port, done); ended {
-			if err != nil && strings.Contains(err.Error(), "address already in use") {
-				continue
-			}
-			ch := make(chan error, 1)
-			ch <- err
-			return addr, ch
+	addrFile := filepath.Join(t.TempDir(), "addr")
+	done := make(chan error, 1)
+	go func() { done <- run(addrFile) }()
+	deadline := time.After(10 * time.Second)
+	for {
+		if b, err := os.ReadFile(addrFile); err == nil && len(b) > 0 {
+			return string(b), done
 		}
-		return addr, done
-	}
-	t.Fatal("could not bind a UDP port in 5 attempts")
-	return "", nil
-}
-
-// waitBoundOrEnd waits until something holds port or done delivers. A
-// result that arrives is returned with ended set; a held port returns with
-// the command still running.
-func waitBoundOrEnd(port int, done <-chan error) (error, bool) {
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
 		select {
 		case err := <-done:
-			return err, true
-		default:
+			t.Fatalf("the command ended before it was listening: %v", err)
+		case <-deadline:
+			t.Fatal("the command never wrote its address")
+		case <-time.After(10 * time.Millisecond):
 		}
-		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
-		if err != nil {
-			// Held, by the command or by someone else: give a failed bind a
-			// moment to surface before trusting it.
-			select {
-			case err := <-done:
-				return err, true
-			case <-time.After(50 * time.Millisecond):
-				return nil, false
-			}
-		}
-		c.Close()
-		time.Sleep(10 * time.Millisecond)
-	}
-	select {
-	case err := <-done:
-		return err, true
-	default:
-		return nil, false
 	}
 }
 
@@ -426,8 +362,8 @@ func TestProxyForwardsAndReports(t *testing.T) {
 	dir := t.TempDir()
 	recvOut, sendOut, stats := filepath.Join(dir, "recv.csv"), filepath.Join(dir, "send.csv"), filepath.Join(dir, "stats.txt")
 	addr, recvDone := startRecv(t, recvOut)
-	paddr, proxyDone := startOnFreePort(t, func(paddr string) error {
-		return runProxy([]string{"-listen", paddr, "-upstream", addr, "-rtt", "2ms", "-jitter", "1ms",
+	paddr, proxyDone := startOnPortZero(t, func(listenFile string) error {
+		return runProxy([]string{"-listen", "127.0.0.1:0", "-listen-file", listenFile, "-upstream", addr, "-rtt", "2ms", "-jitter", "1ms",
 			"-rate", "100000000", "-arm-after", "0s", "-stats", stats})
 	})
 

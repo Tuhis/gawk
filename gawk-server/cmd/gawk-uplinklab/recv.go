@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -65,6 +66,7 @@ func runRecv(args []string) error {
 	streamWin := fs.Uint64("stream-window", 0, "InitialStreamReceiveWindow (0 = quic-go default, as the relay)")
 	connWin := fs.Uint64("conn-window", 0, "InitialConnectionReceiveWindow (0 = quic-go default, as the relay)")
 	hashFile := fs.String("cert-hash-file", "", "write the certificate's SHA-256 here (hex), for a browser's serverCertificateHashes")
+	addrFile := fs.String("addr-file", "", "write the bound address here once listening (for -addr with port 0)")
 	_ = fs.Parse(args)
 
 	f, err := os.Create(*out)
@@ -133,8 +135,18 @@ func runRecv(args []string) error {
 		once.Do(func() { close(done) })
 	})
 
+	// Bound here rather than in ListenAndServe, so a failed bind is this
+	// command's error and -addr-file names the port actually held.
+	conn, err := net.ListenPacket("udp", *addr)
+	if err != nil {
+		return err
+	}
+	if err := writeAddrFile(*addrFile, conn.LocalAddr()); err != nil {
+		_ = conn.Close()
+		return err
+	}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(conn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintln(os.Stderr, "serve:", err)
 		}
 	}()
@@ -266,4 +278,18 @@ func selfSigned() (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
+}
+
+// writeAddrFile records a listener's bound address for whoever started this
+// command with port 0 (the tests). Written to a temporary name and renamed,
+// so a reader never sees half an address. No path, nothing written.
+func writeAddrFile(path string, a net.Addr) error {
+	if path == "" {
+		return nil
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(a.String()), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
