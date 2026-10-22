@@ -508,13 +508,21 @@ func (f *HomeFleet) GetPop(t testing.TB, name string) *pops.Pop {
 // waits until every pod's informer has it.
 func (f *HomeFleet) UpdateSpec(t testing.TB, name string, fn func(*pops.PopSpec)) {
 	t.Helper()
-	p := f.GetPop(t, name)
-	fn(&p.Spec)
 	var want pops.PopSpec
-	p.Spec.DeepCopyInto(&want)
-	if _, err := f.Pops.Resource(pops.GroupVersionResource).Namespace(HarnessNamespace).Update(
-		context.Background(), PopObject(p), metav1.UpdateOptions{}); err != nil {
-		t.Fatalf("update pop %s: %v", name, err)
+	for attempt := 0; ; attempt++ {
+		// The link-home pod writes status on the same object; a lost CAS
+		// is re-read and re-applied, as a real client would.
+		p := f.GetPop(t, name)
+		fn(&p.Spec)
+		p.Spec.DeepCopyInto(&want)
+		_, err := f.Pops.Resource(pops.GroupVersionResource).Namespace(HarnessNamespace).Update(
+			context.Background(), PopObject(p), metav1.UpdateOptions{})
+		if err == nil {
+			break
+		}
+		if !apierrors.IsConflict(err) || attempt >= 10 {
+			t.Fatalf("update pop %s: %v", name, err)
+		}
 	}
 	f.waitAllSee(t, name, func(p *pops.Pop) bool {
 		return p.Spec.Revoked == want.Revoked && p.Spec.Pairing.TokenSHA256 == want.Pairing.TokenSHA256 &&
