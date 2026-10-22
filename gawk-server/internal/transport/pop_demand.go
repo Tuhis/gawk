@@ -300,7 +300,8 @@ func (l *demandLoop) run() {
 }
 
 // stillWaiting: the reservation still has no leg, and (after the first
-// want, which goes before the viewer has upgraded) somebody here waits.
+// want, which goes before the viewer has upgraded) somebody here waits: a
+// viewer, or another PoP's downlink leg.
 func (l *demandLoop) stillWaiting(first bool) bool {
 	if coord := l.s.clusterCoord(); coord != nil {
 		origin, _, _, ok := coord.Lookup(l.id)
@@ -320,7 +321,9 @@ func (l *demandLoop) stillWaiting(first bool) bool {
 			return false
 		}
 	}
-	return first || l.s.registry.ExternalSubscribers(l.id) > 0
+	// Every session on the hub, PoP downlink legs included: a leg is
+	// internal, and another PoP's party viewers wait behind it.
+	return first || l.s.registry.DownstreamSessions(l.id) > 0
 }
 
 // popUplinkFull ends this pod's waiting viewers of id with 4012 (the PoP
