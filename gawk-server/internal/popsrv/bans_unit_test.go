@@ -169,3 +169,72 @@ func TestLearnIsBounded(t *testing.T) {
 		t.Fatal("learn went past maxKnownPerPop")
 	}
 }
+
+// A sweep can forward a ban on a new link before its hello is read (the
+// link is registered, and its control stream accepted, first). The hello
+// must not then forget that the ban already went out on this very link:
+// the PoP would get the same ban twice (the flake in
+// TestForwardedBansAreIdempotentAcrossResyncs, which counts exactly 2).
+func TestABanSweptBeforeTheHelloIsNotSentTwice(t *testing.T) {
+	h := newUnitHome(t, nil)
+	set := moderation.NewSet()
+	res := NewMemReservations()
+	if _, err := res.Reserve(context.Background(), "K7XQ2M", "lan", 0); err != nil {
+		t.Fatal(err)
+	}
+	_ = set.Upsert(idBan("K7XQ2M", nil))
+	f := h.m.EnableModeration(context.Background(), ModerationOptions{Bans: set, Reservations: res, Sweep: time.Hour})
+	t.Cleanup(f.Stop)
+
+	pop, _ := h.serve(t, "")
+	c := ctrlStream(t, pop)
+	WaitFor(t, "control stream accepted", func() bool {
+		l := h.m.local("lan")
+		if l == nil {
+			return false
+		}
+		l.wmu.Lock()
+		defer l.wmu.Unlock()
+		return l.ctrl != nil
+	})
+	// The sweep tick lands in that window.
+	go f.sweepPop("lan")
+	if b := nextBan(t, c); b.ID != "K7XQ2M" {
+		t.Fatalf("swept ban %+v", b)
+	}
+	mustWrite(t, c, poplink.Hello{})
+	if _, ok := next(t, c).(*poplink.Config); !ok {
+		t.Fatal("no config after the hello")
+	}
+	got := make(chan any, 1)
+	go func() {
+		if rec, err := poplink.Read(c); err == nil {
+			got <- rec
+		}
+	}()
+	select {
+	case rec := <-got:
+		t.Fatalf("a second record on the link: %+v; the ban went out twice", rec)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// A relink (to this pod or another) is a new link: what went out on the
+// old one is sent again, because a restarted PoP may have lost it.
+func TestABanIsResentOnANewLinkToTheSamePod(t *testing.T) {
+	h := newUnitHome(t, nil)
+	set := moderation.NewSet()
+	res := NewMemReservations()
+	_, _ = res.Reserve(context.Background(), "K7XQ2M", "lan", 0)
+	_ = set.Upsert(idBan("K7XQ2M", nil))
+	f := h.m.EnableModeration(context.Background(), ModerationOptions{Bans: set, Reservations: res, Sweep: time.Hour})
+	t.Cleanup(f.Stop)
+	_, c1, _ := h.up(t, poplink.Hello{})
+	if b := nextBan(t, c1); b.ID != "K7XQ2M" {
+		t.Fatalf("first link's ban %+v", b)
+	}
+	_, c2, _ := h.up(t, poplink.Hello{})
+	if b := nextBan(t, c2); b.ID != "K7XQ2M" {
+		t.Fatalf("second link's ban %+v", b)
+	}
+}
