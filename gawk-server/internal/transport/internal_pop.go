@@ -20,7 +20,9 @@ import (
 const refusalReadGrace = 2 * time.Second
 
 // handleInternalPop is CONNECT /internal/pop/{name}?want={id}&gen=…&psk=…,
-// pod to link-home pod (docs/76 item 17): forward want{id} on the PoP's link
+// pod to link-home pod (docs/76 item 17), and with ?leg={id} instead the
+// downlink leg cap's slot (handleInternalPopLeg, docs/76 item 24). A want
+// forwards want{id} on the PoP's link
 // this pod holds and answer with the PoP's refusal, if any, on one uni
 // stream (a poplink.Refuse record). No answer is a clean close.
 //
@@ -33,13 +35,16 @@ func (s *Server) handleInternalPop(w http.ResponseWriter, r *http.Request) {
 	if s.rejectedDraining(w, route) {
 		return
 	}
+	q := r.URL.Query()
+	// ?leg= is the fleet-wide downlink leg cap's slot (pop_legcap.go),
+	// which needs the link manager only, not the uplink subsystem.
+	isLeg := q.Has("leg")
 	h := s.popDemand()
-	if h == nil || s.clusterCoord() == nil {
+	if (h == nil && !isLeg) || s.clusterCoord() == nil {
 		s.metrics.Connection(route, metrics.OutcomeNotFound)
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	q := r.URL.Query()
 	if subtle.ConstantTimeCompare([]byte(q.Get("psk")), []byte(s.cfg.InternalPSK)) != 1 {
 		s.metrics.Connection(route, metrics.OutcomeUnauthorized)
 		s.log.Warn("internal pop unauthorized: bad PSK", "remote", r.RemoteAddr)
@@ -52,6 +57,10 @@ func (s *Server) handleInternalPop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pop := r.PathValue("name")
+	if isLeg {
+		s.handleInternalPopLeg(w, r, pop, q)
+		return
+	}
 	id, err := broadcastid.Normalize(q.Get("want"))
 	if err != nil || pop == "" {
 		s.metrics.Connection(route, metrics.OutcomeNotFound)

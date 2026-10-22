@@ -968,6 +968,21 @@ func (u *webtransportUpstream) Close() error {
 	return err
 }
 
+// internalStatusError is a pod-to-pod dial the peer refused with an HTTP
+// status, typed so a caller can branch on it (the fleet-wide leg cap reads
+// 429 apart from 404 / 409, pop_legcap.go).
+type internalStatusError struct {
+	addr   string
+	status int
+	err    error
+}
+
+func (e *internalStatusError) Error() string {
+	return fmt.Sprintf("internal subscribe to %s: status %d: %v", e.addr, e.status, e.err)
+}
+
+func (e *internalStatusError) Unwrap() error { return e.err }
+
 // newEdgeDialer builds the production dialer: TLS against the public cert
 // hostname (the lease addr is a raw pod IP — no per-pod certs, no
 // InsecureSkipVerify), tight in-cluster QUIC timers, PSK appended here.
@@ -995,7 +1010,7 @@ func newEdgeDialer(serverName, psk string, rootCAs *x509.CertPool, log *slog.Log
 			// Unlike a browser, Go can read the HTTP status: surface it (404
 			// not-origin / 409 stale generation / 401 bad PSK / 426 version skew).
 			if rsp != nil {
-				return nil, fmt.Errorf("internal subscribe to %s: status %d: %w", addr, rsp.StatusCode, err)
+				return nil, &internalStatusError{addr: addr, status: rsp.StatusCode, err: err}
 			}
 			return nil, err
 		}
