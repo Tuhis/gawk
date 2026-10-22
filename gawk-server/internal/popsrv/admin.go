@@ -27,7 +27,11 @@ func (m *Manager) AdminPops() []adminapi.PopState {
 		default:
 		}
 		p, _ := m.pop(l.name)
-		out = append(out, l.adminState(p))
+		row := l.adminState(p)
+		if of := m.offers.Load(); of != nil {
+			row.OffersSent = of.Sent(l.name)
+		}
+		out = append(out, row)
 	}
 	slices.SortFunc(out, func(a, b adminapi.PopState) int {
 		switch {
