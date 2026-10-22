@@ -4,12 +4,10 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -180,6 +178,19 @@ type Server struct {
 	// uplink is the R74 uplink's state: the demand hooks and loops on a
 	// home, the legs' linger watchers (pop_demand.go, pop_publish.go).
 	uplink popUplinkState
+	// popDown is a PoP relay's downlink (pop_downlink.go), built on the
+	// first local miss once a link source exists; popDownSrc an explicit
+	// source (SetPopDownlink). popDownMu serialises the build.
+	popDown    atomic.Pointer[popDownlink]
+	popDownSrc atomic.Pointer[popDownlinkBox]
+	popDownMu  sync.Mutex
+	// popLegs counts home's /pop/subscribe legs per PoP and broadcast on
+	// this pod (pop_subscribe.go), under popLegsMu.
+	popLegsMu sync.Mutex
+	popLegs   map[string]map[string]int
+	// testHookPopLegTransport adjusts the downlink's leg dialer before each
+	// dial (a test's packet tap and tracer). Atomic, as above.
+	testHookPopLegTransport atomic.Pointer[func(*webtransport.Transport)]
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun,
@@ -488,6 +499,7 @@ func (s *Server) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		s.drain()
+		s.stopPopDownlink()
 		closeAll()
 		<-errCh // wait for the accept loop to return
 		return nil
@@ -1170,7 +1182,9 @@ const maxConcurrentKeyframeStreams = 4
 // acceptKeyframeStreams reads the publisher's uni streams and hands each to
 // the hub: keyframe streams for ingestion + fan-out and, with
 // -uplink-carriers on, R73 uplink carriers to the carrier reader. It returns
-// when the session's context is cancelled (AcceptUniStream errors).
+// when the session's context is cancelled (AcceptUniStream errors). Any
+// stream whose ingest fails is reset; records a carrier delivered before
+// its error were forwarded.
 func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.Session, pub *hub.Publisher, log *slog.Logger) {
 	sem := make(chan struct{}, maxConcurrentKeyframeStreams)
 	for {
@@ -1188,50 +1202,23 @@ func (s *Server) acceptKeyframeStreams(ctx context.Context, sess *webtransport.S
 			continue
 		}
 		go func(st *webtransport.ReceiveStream) {
-			release := sync.OnceFunc(func() { <-sem })
-			defer release()
-			var rd io.Reader = st
+			reset := func() { st.CancelRead(0) }
 			if s.cfg.UplinkCarriers {
-				// Peek the stream kind (docs/75 D2): a carrier's first two
-				// bytes are Version‖TypeReliableCarrier, a keyframe stream's
-				// Version‖TypeStreamFrame. The peeked bytes are replayed to
-				// the keyframe reader, so its behaviour is unchanged.
-				var head [wire.CarrierPrologueSize]byte
-				n, _ := io.ReadFull(st, head[:])
-				if n == len(head) && wire.ParseCarrierPrologue(head[:]) == nil {
-					// A carrier lives for a GOP: it must not hold one of the
-					// keyframe slots it was classified in. The hub bounds
-					// carriers per publisher (hub.MaxUplinkCarriers).
-					release()
-					s.ingestUplinkCarrier(st, head[:], pub, log)
-					return
-				}
-				rd = io.MultiReader(bytes.NewReader(head[:n]), st)
+				// The edge pump's classification (edge_streams.go), so a
+				// publisher and a PoP's downlink read streams one way: the
+				// prologue (docs/75 D2) tells a carrier, which gives its slot
+				// back, from a keyframe stream, replayed byte for byte.
+				classifyUniStream(st, reset, sem, pub, log)
+				return
 			}
-			if err := pub.IngestKeyframeStream(rd); err != nil {
-				st.CancelRead(0)
+			// Carriers off: nothing is peeked, every stream is a keyframe
+			// stream (a carrier fails the keyframe reader and is reset).
+			defer func() { <-sem }()
+			if err := pub.IngestKeyframeStream(st); err != nil {
+				reset()
 				log.Debug("keyframe stream ingest failed", "err", err)
 			}
 		}(stream)
-	}
-}
-
-// ingestUplinkCarrier runs one publisher uplink carrier to its end. Any
-// error — over the per-publisher limit, a malformed record, a reset by the
-// broadcaster — resets the stream; records already read were forwarded.
-func (s *Server) ingestUplinkCarrier(st *webtransport.ReceiveStream, prologue []byte, pub *hub.Publisher, log *slog.Logger) {
-	err := pub.IngestUplinkCarrier(io.MultiReader(bytes.NewReader(prologue), st))
-	if err == nil {
-		return
-	}
-	st.CancelRead(0)
-	switch {
-	case errors.Is(err, hub.ErrUplinkCarrierLimit):
-		log.Warn("uplink carrier rejected: too many concurrent", "max", hub.MaxUplinkCarriers)
-	case errors.Is(err, hub.ErrBadUplinkRecord):
-		log.Warn("uplink carrier ended: malformed record", "err", err)
-	default:
-		log.Debug("uplink carrier ended", "err", err)
 	}
 }
 
@@ -1284,6 +1271,14 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 	} else if errors.Is(err, hub.ErrNotFound) && s.popWaitSinglePod(withDemandRequest(r), id) {
 		// A single-pod home's PoP reservation (docs/76 item 17).
 		err = s.registry.CheckSubscribe(id)
+	} else if errors.Is(err, hub.ErrNotFound) {
+		// A linked R74 PoP relay: a local miss may be a home broadcast,
+		// pulled over the downlink (docs/76 item 23). Home's 404 is ours.
+		if popErr := s.ensurePopDownlink(r.Context(), id); popErr == nil {
+			err = s.registry.CheckSubscribe(id)
+		} else if errors.Is(popErr, ErrPopDownlinkFull) {
+			err = popErr
+		}
 	}
 	if err != nil {
 		s.log.Warn("subscribe rejected pre-upgrade",
@@ -1293,7 +1288,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		if errors.Is(err, hub.ErrFull) || errors.Is(err, hub.ErrTotalSubscribers) {
+		if errors.Is(err, hub.ErrFull) || errors.Is(err, hub.ErrTotalSubscribers) || errors.Is(err, ErrPopDownlinkFull) {
 			s.metrics.Connection("subscribe", metrics.OutcomeLimitRejected)
 			w.WriteHeader(http.StatusTooManyRequests)
 			return

@@ -202,12 +202,14 @@ func TestPopRoutesAreAbsentWithoutPopsAndAdminIsNeverPublic(t *testing.T) {
 	if err == nil || rsp == nil || rsp.StatusCode != http.StatusNotFound {
 		t.Fatalf("no manager: %v %+v", err, rsp)
 	}
-	// The uplink routes (W3-uplink) answer 404 with no manager, as the link
-	// does; /pop/subscribe stays 501 until the downlink lands.
+	// /pop/subscribe (W3-downlink) is filled: like /pop/link, 404 without a manager.
+	if _, rsp, err := popDial(t, port, clientTLS, "/pop/subscribe/ABC234?proto=1", nil); err == nil || rsp == nil || rsp.StatusCode != http.StatusNotFound {
+		t.Fatalf("/pop/subscribe, no manager: %v %+v", err, rsp)
+	}
+	// The uplink routes (W3-uplink) answer 404 with no manager, as the link does.
 	for path, want := range map[string]int{
 		"/pop/publish/ABC234":         http.StatusNotFound,
 		"/internal/pop/assembly-2026": http.StatusNotFound,
-		"/pop/subscribe/ABC234":       http.StatusNotImplemented,
 	} {
 		w := httptest.NewRecorder()
 		srv.wt.H3.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodConnect, path, nil))
