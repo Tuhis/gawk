@@ -236,6 +236,53 @@ func TestForwardedBansAreIdempotentAcrossResyncs(t *testing.T) {
 	}
 }
 
+// An operator lifting a forwarded ban at home lifts it at the PoP too: a
+// permanent ban banned by mistake, or a cooldown ended early, must not
+// keep refusing the ID's reclaims there until the relay restarts. A ban
+// the host set itself stays.
+func TestLiftingAForwardedBanAtHomeLiftsItAtThePoP(t *testing.T) {
+	h := startModerated(t, 1)
+	pairLinked(t, h.f, h.pop)
+	const id, own = "ABC234", "ABC235"
+	for _, x := range []string{id, own} {
+		if _, err := h.res[0].Reserve(pairCtx(t), x, popName, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	WaitFor(t, "reservations cached", func() bool {
+		_, a := h.res[0].Owner(id)
+		_, b := h.res[0].Owner(own)
+		return a && b
+	})
+	target := func(x string) moderation.Target {
+		return moderation.Target{Type: moderation.TargetBroadcastID, Value: x}
+	}
+	h.ban(moderation.Record{Target: target(id)})
+	h.ban(moderation.Record{Target: target(own)})
+	// The host's own ban on the second ID, set at the PoP.
+	if err := h.popBan.Upsert(moderation.Record{Target: target(own), CreatedBy: "host"}); err != nil {
+		t.Fatal(err)
+	}
+	WaitFor(t, "the bans reach the PoP", func() bool { return len(h.popMod.Active()) == 2 })
+
+	for _, x := range []string{id, own} {
+		if err := h.sets[0].Remove(target(x)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	WaitFor(t, "the PoP lifts the forwarded ban", func() bool {
+		_, banned := h.popBan.BannedID(id, time.Now())
+		return !banned && len(h.popMod.Active()) == 0
+	})
+	time.Sleep(3 * time.Second) // past a reassert
+	if _, banned := h.popBan.BannedID(id, time.Now()); banned {
+		t.Fatal("the reassert put the lifted ban back")
+	}
+	if r, banned := h.popBan.BannedID(own, time.Now()); !banned || r.CreatedBy != "host" {
+		t.Fatalf("the host's own ban = %+v, %v; want it kept", r, banned)
+	}
+}
+
 // After a revoke the PoP's reservations are gone: an outside viewer
 // waiting on one gets 4000 and a new dial 404; the PoP is no longer in
 // Linked (so no offer names it), and it keeps serving its LAN standalone.

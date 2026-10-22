@@ -874,6 +874,12 @@ PP8 measured the PoP's own carrier sender in R73's lab on 2026-10-22
     Broadcasts view from their reservations, forwarded or not, with the PoP
     badge (§7.2), so they can be killed before anyone outside watches.
 
+    *Built:* lifting a forwarded ban at home (an unban, or a cooldown ended
+    early) reaches the PoP on the next sweep as a `ban` whose `until` is
+    already past; the PoP drops its copy, and keeps a ban the host set
+    itself. A ban lifted while the link was down stays at the PoP until it
+    ends or the relay restarts: the new link re-sends only what still holds.
+
 30. **PoP traffic is exempt from IP bans and the per-IP limiter.** The
     credential is the PoP's identity. An IP ban on a venue's public address,
     whether placed against a guest who reached home directly or by accident,

@@ -191,9 +191,7 @@ func (f *BanForwarder) forward(pop, id string, rec *moderation.Record) {
 	if rec == nil {
 		r, banned := f.o.Bans.BannedID(id, f.m.now())
 		if !banned {
-			f.mu.Lock()
-			delete(f.sent[pop], id)
-			f.mu.Unlock()
+			f.lift(pop, id)
 			return
 		}
 		rec = &r
@@ -225,6 +223,25 @@ func (f *BanForwarder) forward(pop, id string, rec *moderation.Record) {
 		return
 	}
 	f.log.Info("ban forwarded to pop", "pop", pop, "permanent", until == nil)
+}
+
+// lift tells pop that a ban forwarded on this link no longer holds (an
+// operator removed it, or a cooldown ended early or ran out), so the PoP
+// stops refusing the ID; a ban never forwarded here sends nothing.
+func (f *BanForwarder) lift(pop, id string) {
+	f.mu.Lock()
+	_, sent := f.sent[pop][id]
+	delete(f.sent[pop], id)
+	f.mu.Unlock()
+	if !sent {
+		return
+	}
+	until := poplink.BanLifted
+	if err := f.m.SendToLink(pop, poplink.Ban{ID: id, Until: &until}); err != nil {
+		f.log.Debug("pop ban lift not sent", "pop", pop, "err", err)
+		return
+	}
+	f.log.Info("ban lifted at pop", "pop", pop)
 }
 
 // sweepPop forwards every active ban on one PoP's IDs.

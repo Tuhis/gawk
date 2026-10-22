@@ -161,11 +161,16 @@ type Want struct {
 }
 
 // Ban forwards an ID ban for a broadcast the PoP owns. Until nil is
-// permanent.
+// permanent. An Until already past lifts a ban forwarded earlier on the
+// link (an operator removed it, or ended a cooldown early): home sends
+// BanLifted, which a PoP that predates lifting ignores as an expired ban.
 type Ban struct {
 	ID    string     `json:"id,omitempty"`
 	Until *time.Time `json:"until,omitempty"`
 }
+
+// BanLifted is the Until of a lift record: any time in the past would do.
+var BanLifted = time.Unix(1, 0).UTC()
 
 // Certificate delivers the named tier's chain for one CSR.
 type Certificate struct {

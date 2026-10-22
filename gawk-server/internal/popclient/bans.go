@@ -7,7 +7,8 @@ package popclient
 // so a reclaim of the ID is refused here as it would be at home, and ends
 // the broadcast with 4006 through the relay's ordinary kill (the publisher
 // and every viewer get docs/59's moderator copy). A forwarded ban outlives
-// the link: a PoP that goes offline or is revoked keeps enforcing it.
+// the link: a PoP that goes offline or is revoked keeps enforcing it. Home
+// lifting the ban while linked lifts it here (a Ban already ended).
 //
 // Item 32: while linked, the PoP's RelayIdentity (0x11) carries the R40
 // screening notice whenever home's config says home's does.
@@ -77,6 +78,10 @@ func (m *Moderation) apply(b poplink.Ban) {
 		return
 	}
 	if !norm.Active(m.now()) {
+		// An ended ban is home's lift (poplink.BanLifted): drop the
+		// forwarded one, and remove it from the set unless the host's own
+		// ban has replaced it there.
+		m.lift(norm.Target)
 		return
 	}
 	m.mu.Lock()
@@ -92,6 +97,24 @@ func (m *Moderation) apply(b poplink.Ban) {
 	if srv := m.c.opts.Server; srv != nil {
 		go srv.HandleBanAdded(norm)
 	}
+}
+
+// lift ends the forwarded ban on t, if there is one.
+func (m *Moderation) lift(t moderation.Target) {
+	m.mu.Lock()
+	_, had := m.forwarded[t.Value]
+	delete(m.forwarded, t.Value)
+	m.mu.Unlock()
+	if !had {
+		return
+	}
+	if cur, banned := m.bans.BannedID(t.Value, m.now()); banned && cur.CreatedBy == forwardedBanCreator {
+		if err := m.bans.Remove(t); err != nil {
+			m.c.log.Warn("lifted ban not removed", "err", err)
+			return
+		}
+	}
+	m.c.log.Info("home lifted a ban on a party broadcast")
 }
 
 // Active lists the forwarded bans still in force (the console and tests).
