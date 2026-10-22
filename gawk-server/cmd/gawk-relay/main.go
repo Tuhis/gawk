@@ -113,6 +113,7 @@ func run(ctx context.Context, args []string, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+	getCert = withNamedCert(getCert) // pop_named.go
 
 	serve.LogStartup(log, cfg, version, "relay", rc.Sanitized(), "lan_address", lan.Current().String())
 	if r.Rolling != nil {
