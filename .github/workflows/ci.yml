@@ -96,6 +96,7 @@ jobs:
       coverage_tool: ${{ steps.filter.outputs.coverage_tool }}
       release_tool: ${{ steps.filter.outputs.release_tool }}
       relay_pack: ${{ steps.filter.outputs.relay_pack }}
+      relay_portable: ${{ steps.filter.outputs.relay_portable }}
       icon: ${{ steps.filter.outputs.icon }}
       common_ts: ${{ steps.filter.outputs.common_ts }}
       commonlock_tool: ${{ steps.filter.outputs.commonlock_tool }}
@@ -256,6 +257,11 @@ jobs:
           # and its packaging — rather than to every relay change; on a push
           # to main it always runs, because that is the run that attaches.
           relay_pack=$(decide   relay_pack   '^gawk-server/(cmd/gawk-relay/|deploy/Dockerfile\.relay$)|^tools/releases/')
+          # R74 PP2 (docs/76 §11): the code gawk-relay ships for Windows and
+          # macOS, which `relay-windows` and `relay-darwin` run (not only vet).
+          # Held to the relay's command and its portable packages, since the
+          # macOS job is a hosted runner.
+          relay_portable=$(decide relay_portable '^gawk-server/(cmd/gawk-relay/|internal/(relaystate|lanaddr|relayconsole|popclient|poplink|tlsutil)/|go\.(mod|sum)$)')
           # R44 (docs/53 D2): the icon's generated derivatives are committed
           # and drift-checked against the SVG. The check runs on any edit to
           # either side, because the failure it catches is "edited the SVG
@@ -3716,6 +3722,77 @@ jobs:
           path: out/
           retention-days: 7
           if-no-files-found: error
+
+  # R74 PP2 (docs/76 §11, "Windows and macOS builds and unit tests"): the
+  # relay's Windows code RUNS, not only vets. The self-hosted Linux pool,
+  # as for every Windows job here (docs/38 D18): the unit tests are
+  # cross-compiled for windows/amd64 and run under Wine, which executes
+  # what only Windows had (DPAPI in relaystate/secret_windows.go, the
+  # per-OS state directory, LAN detection's Windows names).
+  #
+  # Wine has no SIO_UDP_CONNRESET (Go's UDP listener sets it on Windows,
+  # and Wine answers WSAEOPNOTSUPP), so the tests that open the relay's
+  # QUIC listener are skipped here; they run on Linux in `server` and on
+  # macOS in `relay-darwin`. A Wine run is not a Windows host: the
+  # firewall elevation and a real TerminateProcess stay on the owner's
+  # on-hardware list (docs/76 §11.1).
+  relay-windows:
+    needs: changes
+    if: needs.changes.outputs.relay_portable == 'true'
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    container: ubuntu:24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install Wine
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git wine wine64
+          wine --version
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+      - name: Unit tests for windows/amd64, under Wine
+        working-directory: gawk-server
+        env:
+          WINEDEBUG: -all
+          WINEPREFIX: /tmp/wine-prefix
+        run: |
+          set -euo pipefail
+          skip='^(TestRelayServesTheConsole|TestRelayRefusesANonLoopbackConsole|TestRelayStartsWithNoConfiguration|TestRelayRestartResumesABroadcast|TestRelayServesItsNamedAddress|TestStandaloneRelaySendsLocalRelayInfo)$'
+          for pkg in internal/relaystate internal/lanaddr internal/tlsutil internal/relayconsole internal/poplink internal/popclient cmd/gawk-relay; do
+            exe="$RUNNER_TEMP/$(tr / _ <<<"$pkg").test.exe"
+            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o "$exe" "./$pkg"
+            echo "::group::$pkg"
+            (cd "$pkg" && wine "$exe" -test.v -test.timeout=10m -test.skip "$skip")
+            echo "::endgroup::"
+          done
+
+  # The same acceptance row's macOS half: the relay's unit tests on a
+  # hosted macOS runner (the one deliberate hosted exception, as in
+  # broadcast-desktop.yml's `macos`), so the darwin builds of the state
+  # directory, LAN detection and the relay itself run before they ship.
+  relay-darwin:
+    needs: changes
+    if: needs.changes.outputs.relay_portable == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: gawk-server/go.mod
+          cache-dependency-path: gawk-server/go.sum
+      - name: Unit tests on macOS
+        working-directory: gawk-server
+        run: |
+          go test -count=1 ./internal/relaystate/ ./internal/lanaddr/ ./internal/tlsutil/ \
+            ./internal/relayconsole/ ./internal/poplink/ ./internal/popclient/ ./cmd/gawk-relay/
 
   # Puts the relay on the gawk-server release page and publishes
   # releases/gawk-relay/latest.json (the site card and the console's
