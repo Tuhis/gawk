@@ -61,8 +61,7 @@ func TestTheNamedTierOverTheLink(t *testing.T) {
 		Log:      slog.New(slog.DiscardHandler),
 	})
 	pairLinked(t, f, pop)
-	f.UpdateSpec(t, popName, func(s *pops.PopSpec) { s.NamedAddress.Enabled = true })
-	f.waitAllSee(t, popName, func(p *pops.Pop) bool { return p.Spec.NamedAddress.Enabled })
+	enableNamed(t, f)
 	adminTLS(t, f, popName, map[string]any{"host": namedHost}, func(x *pops.TLS) bool { return x.Host == namedHost })
 
 	// docs/76 §11 PP12: the PoP's CSR names the host it got in config.

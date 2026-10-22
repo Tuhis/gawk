@@ -36,6 +36,25 @@ func adminTLS(t *testing.T, f *HomeFleet, name string, tls map[string]any, seen 
 	f.waitAllSee(t, name, func(p *pops.Pop) bool { return p.Status.TLS != nil && seen(p.Status.TLS) })
 }
 
+// mergeSpec merge-patches the Pop's spec as gawk-admin's PatchSpec does
+// (no resourceVersion precondition, so it cannot lose a race with the
+// link's own status writes) and waits until every pod sees it.
+func mergeSpec(t *testing.T, f *HomeFleet, spec map[string]any, seen func(*pops.Pop) bool) {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"spec": spec})
+	if _, err := f.Pops.Resource(pops.GroupVersionResource).Namespace(HarnessNamespace).Patch(
+		context.Background(), popName, types.MergePatchType, b, metav1.PatchOptions{}); err != nil {
+		t.Fatalf("patch spec: %v", err)
+	}
+	f.waitAllSee(t, popName, seen)
+}
+
+func enableNamed(t *testing.T, f *HomeFleet) {
+	t.Helper()
+	mergeSpec(t, f, map[string]any{"namedAddress": map[string]any{"enabled": true}},
+		func(p *pops.Pop) bool { return p.Spec.NamedAddress.Enabled })
+}
+
 func testCSR(t *testing.T, names ...string) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -60,8 +79,7 @@ func namedFleet(t *testing.T) (*HomeFleet, *PoP, chan poplink.Certificate) {
 	certs := make(chan poplink.Certificate, 8)
 	pop.Client.OnRecord(poplink.TCertificate, func(rec any) { certs <- *rec.(*poplink.Certificate) })
 	pairLinked(t, f, pop)
-	f.UpdateSpec(t, popName, func(s *pops.PopSpec) { s.NamedAddress.Enabled = true })
-	f.waitAllSee(t, popName, func(p *pops.Pop) bool { return p.Spec.NamedAddress.Enabled })
+	enableNamed(t, f)
 	adminTLS(t, f, popName, map[string]any{"host": namedHost}, func(x *pops.TLS) bool { return x.Host == namedHost })
 	WaitFor(t, "config carries the named host", func() bool {
 		c := pop.Client.State().Config
@@ -117,7 +135,8 @@ func TestTheLinkDeliversAChainOnlyForTheCSRItAnswers(t *testing.T) {
 		t.Fatalf("certificate = %+v, want CHAIN-1 for csr 1", c)
 	}
 	// Another Pop update does not send it again.
-	f.UpdateSpec(t, popName, func(s *pops.PopSpec) { s.DisplayName = "Assembly 2026 (day 2)" })
+	mergeSpec(t, f, map[string]any{"displayName": "Assembly 2026 (day 2)"},
+		func(p *pops.Pop) bool { return p.Spec.DisplayName == "Assembly 2026 (day 2)" })
 	noCertificate(t, certs, 300*time.Millisecond)
 
 	// Renewal at half-life: the PoP sends CSR 2. Until gawk-admin issues
@@ -128,7 +147,8 @@ func TestTheLinkDeliversAChainOnlyForTheCSRItAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	WaitFor(t, "csr 2 stored", func() bool { return storedCSR(f, t) == csr2 })
-	f.UpdateSpec(t, popName, func(s *pops.PopSpec) { s.DisplayName = "Assembly 2026 (day 3)" })
+	mergeSpec(t, f, map[string]any{"displayName": "Assembly 2026 (day 3)"},
+		func(p *pops.Pop) bool { return p.Spec.DisplayName == "Assembly 2026 (day 3)" })
 	noCertificate(t, certs, 300*time.Millisecond)
 
 	sha2 := pops.CSRSHA256(csr2)
