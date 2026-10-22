@@ -378,3 +378,32 @@ func rawDialPublic(t *testing.T, f *HomeFleet, pod *HomePod, path string) (*webt
 	t.Helper()
 	return rawDial(t, f, pod, path, nil)
 }
+
+// Every config the PoP gets, the first after a relink included, resyncs
+// its party broadcasts home: a tile home lost (a wall's home pod restarted,
+// a record dropped in an outage) comes back without the broadcaster doing
+// anything, and a hidden broadcast stays off.
+func TestAConfigResyncsTheWallHome(t *testing.T) {
+	w := startWallFleet(t)
+	p := w.publish(t, url.Values{"name": {"tuhis"}}.Encode())
+	hidden := w.publish(t, "wall=hidden")
+	WaitFor(t, "the tile on the wall", func() bool { return w.onWall(p.id) })
+
+	// Home loses the tile behind the PoP's back.
+	if err := w.reg.DetachVouched(wallCode, popName, p.id); err != nil {
+		t.Fatal(err)
+	}
+	if w.onWall(p.id) {
+		t.Fatal("the tile is still on the wall")
+	}
+	w.f.UpdateSpec(t, popName, func(s *pops.PopSpec) { s.DisplayName = "Assembly resynced" })
+	WaitFor(t, "the resync to put the tile back", func() bool { return w.onWall(p.id) })
+	for _, a := range w.reg.Attachments(wallCode) {
+		if a.BroadcastID == p.id && a.Label != "tuhis" {
+			t.Errorf("resynced tile label = %q", a.Label)
+		}
+	}
+	if w.onWall(hidden.id) {
+		t.Fatal("the resync put a wall=hidden broadcast on the wall")
+	}
+}
