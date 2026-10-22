@@ -88,6 +88,11 @@ type BroadcastUplink struct {
 	Forwarded   bool
 	// Carrier is the delivery of the live leg.
 	Carrier bool
+	// Mbps is the forwarded leg's ingress rate; zero when not forwarded.
+	Mbps float64
+	// BudgetFull: home's last want for it was refused for the uplink
+	// budget, and the budget is still full (the console's "Party-only").
+	BudgetFull bool
 }
 
 type uplink struct {
@@ -111,6 +116,8 @@ type upBroadcast struct {
 	live    bool
 	sent    bool // a state record for the current live value went out
 	carrier bool
+	// refused: the last want was refused for the budget.
+	refused bool
 
 	leg     context.CancelFunc
 	legDone chan struct{}
@@ -310,6 +317,7 @@ func (u *uplink) onWant(rec any) {
 	}
 	if live {
 		if reason := u.admitLocked(b); reason != "" {
+			b.refused = reason == poplink.RefuseBudget
 			u.mu.Unlock()
 			u.refuse(w.ID, reason)
 			return
@@ -317,7 +325,7 @@ func (u *uplink) onWant(rec any) {
 	}
 	// Admitted; or not live, in which case the want is kept and the leg
 	// dials when the broadcaster is back (item 19).
-	b.wanted = true
+	b.wanted, b.refused = true, false
 	start := live && b.leg == nil
 	if start {
 		u.startLegLocked(b)
@@ -609,7 +617,14 @@ func (u *uplink) broadcasts() []BroadcastUplink {
 	defer u.mu.Unlock()
 	out := make([]BroadcastUplink, 0, len(u.bcasts))
 	for id, b := range u.bcasts {
-		out = append(out, BroadcastUplink{ID: id, Reservation: b.res, Wanted: b.wanted, Forwarded: b.legUp, Carrier: b.carrier})
+		row := BroadcastUplink{ID: id, Reservation: b.res, Wanted: b.wanted, Forwarded: b.legUp, Carrier: b.carrier}
+		if b.legUp {
+			row.Mbps = b.rate.bytesPerSec() * 8 / 1e6
+		}
+		// "Still full": a stream ending or the host raising the budget
+		// back clears it, since home sends no word when the viewer leaves.
+		row.BudgetFull = b.refused && b.leg == nil && u.admitLocked(b) != ""
+		out = append(out, row)
 	}
 	slices.SortFunc(out, func(a, b BroadcastUplink) int {
 		switch {

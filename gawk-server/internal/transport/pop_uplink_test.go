@@ -545,6 +545,13 @@ func TestFourthStreamIsRefusedWith4012(t *testing.T) {
 	if s := u.pop.Client.UplinkStats(); s.Legs != 3 {
 		t.Fatalf("legs = %d after the refusal, want 3", s.Legs)
 	}
+	// The console's "Party-only (budget full)" reads this (docs/76 §7.1):
+	// the refused broadcast only, while the budget stays full.
+	for _, b := range u.pop.Client.UplinkBroadcasts() {
+		if want := b.ID == pubs[3].id; b.BudgetFull != want {
+			t.Errorf("broadcast %s (forwarded %v): BudgetFull = %v, want %v", b.ID, b.Forwarded, b.BudgetFull, want)
+		}
+	}
 }
 
 // TestMintPastTheLimitStaysPartyOnly: a mint past spec.limits.maxBroadcasts
