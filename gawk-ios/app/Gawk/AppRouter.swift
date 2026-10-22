@@ -43,6 +43,17 @@ final class AppRouter {
         var relay: String?
     }
 
+    /// A `gawk://server` link (R74, docs/76 §6.1 item 5) waiting for the
+    /// user to add it: a server to save and select, named by its label or
+    /// its URL, pinned to `certHashes` when it carries any. Nothing is
+    /// saved until Settings asks and the user agrees
+    /// (`AppSettings.adoptServer`).
+    struct ServerOffer: Equatable {
+        var name: String
+        var url: String
+        var certHashes: [String]
+    }
+
     var tab: Tab = .watch
     var screen: Screen?
     /// The code the Watch box is looking up (D4), shown on Join.
@@ -58,6 +69,8 @@ final class AppRouter {
     /// The quiet line after a link, naming what it left out (docs/68 D1).
     var linkNotice: String?
     var broadcastPrefill: BroadcastPrefill?
+    /// The latest `gawk://server` link's server, for Settings to offer.
+    var serverOffer: ServerOffer?
 
     /// Whether a broadcast is up; set by the root view from the session.
     var isBroadcasting = false
@@ -117,7 +130,8 @@ final class AppRouter {
     }
 
     /// A `gawk://` link (K8): `watch` opens the player, `room` the room
-    /// player, `broadcast` fills Broadcast in and starts nothing. A link
+    /// player, `broadcast` fills Broadcast in and starts nothing, `server`
+    /// (R74) opens Settings with the server to add. A link
     /// names its server completely: no `relay=` is the default fleet, never
     /// the server picked in Settings (docs/68 D1).
     func open(url: URL) {
@@ -139,6 +153,14 @@ final class AppRouter {
         case .broadcast(let room, let nick, let relay):
             tab = .broadcast
             broadcastPrefill = BroadcastPrefill(room: room, nick: nick, relay: Self.chip(for: relay))
+        case .server(let relay, let certHashes, let label):
+            // Never under a live broadcast: its server doesn't change.
+            if isBroadcasting {
+                linkNotice = "This link is for \(relay). End the broadcast to switch server."
+                return
+            }
+            tab = .settings
+            serverOffer = ServerOffer(name: label ?? relay, url: relay, certHashes: certHashes)
         }
     }
 

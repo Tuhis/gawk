@@ -4,7 +4,14 @@
 //! gawk://broadcast[/][?room=<code>][&nick=<nickname>][&relay=<https-origin>]
 //! gawk://watch/<BROADCAST-ID>[?relay=<https-origin>]
 //! gawk://room/<code>[?nick=<nickname>][&relay=<https-origin>]
+//! gawk://server?relay=<https-origin>[&certHash=<hex>[,<hex>]][&label=<name>]
 //! ```
+//!
+//! `server` (R74, docs/76 §6.1 item 5) adds a saved server and selects it.
+//! Its `relay` is required, and `certHash` — one or two lowercase SHA-256
+//! hashes the server's certificate is pinned to — is kept only beside a
+//! relay whose host is a private IP literal (RFC 1918, `fc00::/7`), the
+//! same rule gawk-app applies to its `?certHash=`.
 //!
 //! A link is untrusted input from any web page (D13), so this module only
 //! reads it: what the app does with it is the shell's business, and nothing
@@ -22,6 +29,14 @@ pub const MAX_LINK_LEN: usize = 2048;
 
 /// Shortest static room slug, as gawk-app's `MIN_ROOM_SLUG_LEN`.
 pub const MIN_ROOM_SLUG_LEN: usize = 3;
+
+/// The longest `label` a server link keeps, in bytes: a PoP's name is at
+/// most 63 characters (docs/76 §6.2 item 7).
+pub const MAX_SERVER_LABEL_LEN: usize = 63;
+
+/// How many hashes a `certHash` may carry: the one a relay serves and the
+/// next (docs/76 §6.1 item 3).
+pub const MAX_CERT_HASHES: usize = 2;
 
 /// What a link asks for. `relay` is the normalized origin of a server
 /// other than the default fleet; `None` means the default fleet, never
@@ -42,6 +57,15 @@ pub enum Link {
         code: String,
         nick: Option<String>,
         relay: Option<String>,
+    },
+    /// R74: a server to save and select. `relay` is never the default
+    /// fleet; `cert_hashes` is empty or one or two lowercase 64-hex
+    /// SHA-256 hashes, and non-empty only for a private-literal relay.
+    Server {
+        relay: String,
+        #[serde(rename = "certHashes")]
+        cert_hashes: Vec<String>,
+        label: Option<String>,
     },
 }
 
@@ -85,6 +109,8 @@ pub enum LinkError {
     BadId,
     /// `room/` without a valid room code.
     BadCode,
+    /// `server` without a usable relay other than the default fleet.
+    NoRelay,
 }
 
 impl LinkError {
@@ -96,6 +122,7 @@ impl LinkError {
             LinkError::UnknownPath => "unknown-path",
             LinkError::BadId => "bad-id",
             LinkError::BadCode => "bad-code",
+            LinkError::NoRelay => "no-relay",
         }
     }
 }
@@ -108,6 +135,7 @@ impl std::fmt::Display for LinkError {
             LinkError::UnknownPath => "this app doesn't know what it asks for",
             LinkError::BadId => "its broadcast code isn't valid",
             LinkError::BadCode => "its room code isn't valid",
+            LinkError::NoRelay => "it doesn't name a server",
         })
     }
 }
@@ -139,6 +167,7 @@ pub fn parse(raw: &str) -> Result<Parsed, LinkError> {
         ("broadcast", None) => &["room", "nick", "relay"],
         ("watch", Some(_)) => &["relay"],
         ("room", Some(_)) => &["nick", "relay"],
+        ("server", None) => &["relay", "certHash", "label"],
         ("watch", None) => return Err(LinkError::BadId),
         ("room", None) => return Err(LinkError::BadCode),
         _ => return Err(LinkError::UnknownPath),
@@ -148,6 +177,19 @@ pub fn parse(raw: &str) -> Result<Parsed, LinkError> {
     let params = read_query(query, allowed, &mut dropped);
     let relay = params.relay;
     let nick = params.nick;
+    // A hash beside anything but a private literal is dropped, whichever
+    // order the parameters came in (docs/76 §6.1 item 5).
+    let cert_hashes = match (params.cert_hashes, &relay) {
+        (Some(h), Some(r)) if is_private_literal(r) => h,
+        (Some(_), _) => {
+            dropped.push(Dropped {
+                param: "certHash".to_owned(),
+                why: DropReason::Invalid,
+            });
+            Vec::new()
+        }
+        (None, _) => Vec::new(),
+    };
     let link = match kind.as_str() {
         "broadcast" => Link::Broadcast {
             room: params.room,
@@ -160,6 +202,11 @@ pub fn parse(raw: &str) -> Result<Parsed, LinkError> {
                 .ok_or(LinkError::BadId)?;
             Link::Watch { id, relay }
         }
+        "server" => Link::Server {
+            relay: relay.ok_or(LinkError::NoRelay)?,
+            cert_hashes,
+            label: params.label,
+        },
         _ => {
             let code = arg
                 .filter(|a| is_valid_room_code(a))
@@ -180,6 +227,8 @@ struct Params {
     room: Option<String>,
     nick: Option<String>,
     relay: Option<String>,
+    cert_hashes: Option<Vec<String>>,
+    label: Option<String>,
 }
 
 fn read_query(query: &str, allowed: &[&str], dropped: &mut Vec<Dropped>) -> Params {
@@ -225,6 +274,11 @@ fn read_query(query: &str, allowed: &[&str], dropped: &mut Vec<Dropped>) -> Para
                 let clean = sanitize_nickname(&value);
                 (!clean.is_empty()).then(|| out.nick = Some(clean))
             }
+            "certHash" => parse_cert_hashes(&value).map(|h| out.cert_hashes = Some(h)),
+            "label" => {
+                let clean = sanitize_label(&value);
+                (!clean.is_empty()).then(|| out.label = Some(clean))
+            }
             _ => config::relay_origin(&value).map(|origin| {
                 // The default fleet is no `relay=` at all: canonical either way.
                 if Some(&origin) != default_origin().as_ref() {
@@ -237,6 +291,35 @@ fn read_query(query: &str, allowed: &[&str], dropped: &mut Vec<Dropped>) -> Para
         }
     }
     out
+}
+
+/// A `certHash` value: one or two lowercase 64-hex SHA-256 hashes,
+/// comma-separated. `None` for anything else — upper case included, as in
+/// gawk-app, so one link has one spelling.
+pub fn parse_cert_hashes(value: &str) -> Option<Vec<String>> {
+    let hashes: Vec<String> = value.split(',').map(str::to_owned).collect();
+    let ok = hashes.len() <= MAX_CERT_HASHES && hashes.iter().all(|h| is_cert_hash(h));
+    ok.then_some(hashes)
+}
+
+/// One lowercase 64-hex SHA-256 hash.
+pub fn is_cert_hash(h: &str) -> bool {
+    h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// True when `origin`'s host is an IP literal in a private range: IPv4
+/// 10/8, 172.16/12 or 192.168/16, or IPv6 `fc00::/7`. Loopback, link-local
+/// and every hostname are not: a pin is kept only for an address that can
+/// only be on the guest's own network (docs/76 §6.1 item 5, §13).
+pub fn is_private_literal(origin: &str) -> bool {
+    let Ok(u) = url::Url::parse(origin) else {
+        return false;
+    };
+    match u.host() {
+        Some(url::Host::Ipv4(a)) => a.is_private(),
+        Some(url::Host::Ipv6(a)) => (a.segments()[0] & 0xfe00) == 0xfc00,
+        _ => false,
+    }
 }
 
 fn default_origin() -> Option<String> {
@@ -294,6 +377,10 @@ fn is_js_space(c: char) -> bool {
 /// trimmed, cut to `MAX_ROOM_NICKNAME_LEN` bytes on a character boundary,
 /// trimmed again.
 pub fn sanitize_nickname(raw: &str) -> String {
+    collapse_and_cut(raw, gawk_wire::MAX_ROOM_NICKNAME_LEN)
+}
+
+fn collapse_and_cut(raw: &str, max: usize) -> String {
     let mut collapsed = String::with_capacity(raw.len());
     let mut in_space = false;
     for c in raw.trim_matches(is_js_space).chars() {
@@ -307,9 +394,15 @@ pub fn sanitize_nickname(raw: &str) -> String {
             in_space = false;
         }
     }
-    truncate_utf8(&collapsed, gawk_wire::MAX_ROOM_NICKNAME_LEN)
+    truncate_utf8(&collapsed, max)
         .trim_matches(is_js_space)
         .to_owned()
+}
+
+/// A server link's `label`: [`sanitize_nickname`]'s rules, cut to
+/// [`MAX_SERVER_LABEL_LEN`] bytes.
+pub fn sanitize_label(raw: &str) -> String {
+    collapse_and_cut(raw, MAX_SERVER_LABEL_LEN)
 }
 
 fn strip_prefix_ignore_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
@@ -346,6 +439,22 @@ fn query(pairs: &[(&str, &Option<String>)]) -> String {
     }
 }
 
+/// `?relay=…[&certHash=a,b][&label=…]`: the relay and label encoded like
+/// `encodeURIComponent`, the hashes written as they are (hex and a comma
+/// need no escape, and a printed link stays readable).
+fn server_query(relay: &str, cert_hashes: &[String], label: &Option<String>) -> String {
+    let mut q = format!("?relay={}", encode_component(relay));
+    if !cert_hashes.is_empty() {
+        q.push_str("&certHash=");
+        q.push_str(&cert_hashes.join(","));
+    }
+    if let Some(l) = label {
+        q.push_str("&label=");
+        q.push_str(&encode_component(l));
+    }
+    q
+}
+
 impl Link {
     /// The canonical `gawk://` form: lowercase path, parameters in the
     /// grammar's order, `relay` only for a server other than the default.
@@ -361,6 +470,11 @@ impl Link {
             Link::Watch { id, relay } => {
                 format!("{base}/#/view/{id}{}", query(&[("relay", relay)]))
             }
+            // The web's standalone-relay link: the landing page with the
+            // relay and its pins (docs/76 §6.1 item 5). The web has no label.
+            Link::Server {
+                relay, cert_hashes, ..
+            } => format!("{base}/#/{}", server_query(relay, cert_hashes, &None)),
             _ => format!("{base}/#/{}", self.path_and_query()),
         }
     }
@@ -375,6 +489,11 @@ impl Link {
             Link::Room { code, nick, relay } => {
                 format!("room/{code}{}", query(&[("nick", nick), ("relay", relay)]))
             }
+            Link::Server {
+                relay,
+                cert_hashes,
+                label,
+            } => format!("server{}", server_query(relay, cert_hashes, label)),
         }
     }
 
@@ -385,6 +504,7 @@ impl Link {
             Link::Broadcast { .. } => "broadcast",
             Link::Watch { .. } => "watch",
             Link::Room { .. } => "room",
+            Link::Server { .. } => "server",
         }
     }
 }
@@ -477,6 +597,8 @@ mod tests {
         // carry the rule so a rule losing either side is a visible gap.
         for rule in [
             "case", "alphabet", "slug", "nick", "relay", "secret", "unknown", "length",
+            // R74 (docs/76 §6.1 item 5): the gawk://server form.
+            "server", "certhash", "label",
         ] {
             for side in ["accept", "reject"] {
                 let tag = format!("{rule}/{side}");

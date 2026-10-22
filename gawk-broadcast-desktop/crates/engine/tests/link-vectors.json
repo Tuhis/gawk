@@ -1,5 +1,5 @@
 {
-  "comment": "R66 gawk:// link vectors (docs/68 D1, D2). Each vector is an input and either the parsed link, the dropped parameters and both canonical forms, or the error. Restated, never imported, by gawk-app (R67 HO1) and the iOS app (R65).",
+  "comment": "R66 gawk:// link vectors (docs/68 D1, D2). Each vector is an input and either the parsed link, the dropped parameters and both canonical forms, or the error. Restated, never imported, by gawk-app (R67 HO1) and the iOS app (R65). The server/, certhash/ and label/ vectors are R74's gawk://server form (docs/76 §6.1 item 5).",
   "appUrl": "https://gawk.ioio.fi",
   "vectors": [
     {
@@ -681,6 +681,375 @@
       "name": "length/reject: 2,049 bytes",
       "input": "gawk://broadcast?pad=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
       "error": "too-long"
+    },
+    {
+      "name": "server/accept: a LAN relay with both hashes and a label",
+      "input": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1,b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2&label=Assembly%202026",
+      "link": {
+        "kind": "server",
+        "relay": "https://192.168.1.20:4433",
+        "certHashes": [
+          "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        ],
+        "label": "Assembly 2026"
+      },
+      "dropped": [],
+      "gawk": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1,b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2&label=Assembly%202026",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1,b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+    },
+    {
+      "name": "server/accept: any order, an escaped comma and a trailing slash",
+      "input": "gawk://server/?label=Party&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1%2Cb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2&relay=https://10.0.0.5:4433",
+      "link": {
+        "kind": "server",
+        "relay": "https://10.0.0.5:4433",
+        "certHashes": [
+          "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        ],
+        "label": "Party"
+      },
+      "dropped": [],
+      "gawk": "gawk://server?relay=https%3A%2F%2F10.0.0.5%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1,b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2&label=Party",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F10.0.0.5%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1,b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+    },
+    {
+      "name": "server/accept: a named relay needs no hash",
+      "input": "gawk://server?relay=https%3A%2F%2Fp-7k2m9x.pop.gawk.ioio.fi%3A4433",
+      "link": {
+        "kind": "server",
+        "relay": "https://p-7k2m9x.pop.gawk.ioio.fi:4433",
+        "certHashes": [],
+        "label": null
+      },
+      "dropped": [],
+      "gawk": "gawk://server?relay=https%3A%2F%2Fp-7k2m9x.pop.gawk.ioio.fi%3A4433",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2Fp-7k2m9x.pop.gawk.ioio.fi%3A4433"
+    },
+    {
+      "name": "server/accept: credential-shaped parameters are still dropped",
+      "input": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&publishSecret=x&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "link": {
+        "kind": "server",
+        "relay": "https://192.168.1.20:4433",
+        "certHashes": [
+          "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        ],
+        "label": null
+      },
+      "dropped": [
+        {
+          "param": "publishSecret",
+          "why": "secret"
+        }
+      ],
+      "gawk": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "name": "server/reject: no relay",
+      "input": "gawk://server?certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "error": "no-relay"
+    },
+    {
+      "name": "server/reject: an unusable relay",
+      "input": "gawk://server?relay=http%3A%2F%2F192.168.1.20",
+      "error": "no-relay"
+    },
+    {
+      "name": "server/reject: the default fleet is not a server to add",
+      "input": "gawk://server?relay=https%3A%2F%2Fapi.gawk.ioio.fi%3A4433",
+      "error": "no-relay"
+    },
+    {
+      "name": "server/reject: server takes no segment",
+      "input": "gawk://server/abc?relay=https%3A%2F%2F192.168.1.20%3A4433",
+      "error": "unknown-path"
+    },
+    {
+      "name": "certhash/accept: one hash",
+      "input": "gawk://server?relay=https%3A%2F%2F10.1.2.3&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "link": {
+        "kind": "server",
+        "relay": "https://10.1.2.3",
+        "certHashes": [
+          "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        ],
+        "label": null
+      },
+      "dropped": [],
+      "gawk": "gawk://server?relay=https%3A%2F%2F10.1.2.3&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F10.1.2.3&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "name": "certhash/accept: the top of 172.16/12",
+      "input": "gawk://server?relay=https%3A%2F%2F172.31.255.1%3A4433&certHash=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "link": {
+        "kind": "server",
+        "relay": "https://172.31.255.1:4433",
+        "certHashes": [
+          "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+        ],
+        "label": null
+      },
+      "dropped": [],
+      "gawk": "gawk://server?relay=https%3A%2F%2F172.31.255.1%3A4433&certHash=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F172.31.255.1%3A4433&certHash=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+    },
+    {
+      "name": "certhash/accept: an IPv6 unique local literal",
+      "input": "gawk://server?relay=https%3A%2F%2F%5Bfd12%3A3456%3A%3A1%5D%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "link": {
+        "kind": "server",
+        "relay": "https://[fd12:3456::1]:4433",
+        "certHashes": [
+          "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        ],
+        "label": null
+      },
+      "dropped": [],
+      "gawk": "gawk://server?relay=https%3A%2F%2F%5Bfd12%3A3456%3A%3A1%5D%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F%5Bfd12%3A3456%3A%3A1%5D%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "name": "certhash/reject: beside a public address",
+      "input": "gawk://server?relay=https%3A%2F%2F203.0.113.7%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "link": {
+        "kind": "server",
+        "relay": "https://203.0.113.7:4433",
+        "certHashes": [],
+        "label": null
+      },
+      "dropped": [
+        {
+          "param": "certHash",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://server?relay=https%3A%2F%2F203.0.113.7%3A4433",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F203.0.113.7%3A4433"
+    },
+    {
+      "name": "certhash/reject: beside a hostname, whatever it resolves to",
+      "input": "gawk://server?certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1&relay=https%3A%2F%2Frelay.friend.example",
+      "link": {
+        "kind": "server",
+        "relay": "https://relay.friend.example",
+        "certHashes": [],
+        "label": null
+      },
+      "dropped": [
+        {
+          "param": "certHash",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://server?relay=https%3A%2F%2Frelay.friend.example",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2Frelay.friend.example"
+    },
+    {
+      "name": "certhash/reject: 172.32/16 is not private",
+      "input": "gawk://server?relay=https%3A%2F%2F172.32.0.1&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "link": {
+        "kind": "server",
+        "relay": "https://172.32.0.1",
+        "certHashes": [],
+        "label": null
+      },
+      "dropped": [
+        {
+          "param": "certHash",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://server?relay=https%3A%2F%2F172.32.0.1",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F172.32.0.1"
+    },
+    {
+      "name": "certhash/reject: loopback is not a LAN address",
+      "input": "gawk://server?relay=https%3A%2F%2F127.0.0.1%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "link": {
+        "kind": "server",
+        "relay": "https://127.0.0.1:4433",
+        "certHashes": [],
+        "label": null
+      },
+      "dropped": [
+        {
+          "param": "certHash",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://server?relay=https%3A%2F%2F127.0.0.1%3A4433",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F127.0.0.1%3A4433"
+    },
+    {
+      "name": "certhash/reject: upper-case hex",
+      "input": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1",
+      "link": {
+        "kind": "server",
+        "relay": "https://192.168.1.20:4433",
+        "certHashes": [],
+        "label": null
+      },
+      "dropped": [
+        {
+          "param": "certHash",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433"
+    },
+    {
+      "name": "certhash/reject: three hashes",
+      "input": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1,b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2,a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "link": {
+        "kind": "server",
+        "relay": "https://192.168.1.20:4433",
+        "certHashes": [],
+        "label": null
+      },
+      "dropped": [
+        {
+          "param": "certHash",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433"
+    },
+    {
+      "name": "certhash/reject: 63 hex digits",
+      "input": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "link": {
+        "kind": "server",
+        "relay": "https://192.168.1.20:4433",
+        "certHashes": [],
+        "label": null
+      },
+      "dropped": [
+        {
+          "param": "certHash",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433"
+    },
+    {
+      "name": "certhash/reject: an empty item",
+      "input": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1,",
+      "link": {
+        "kind": "server",
+        "relay": "https://192.168.1.20:4433",
+        "certHashes": [],
+        "label": null
+      },
+      "dropped": [
+        {
+          "param": "certHash",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433"
+    },
+    {
+      "name": "certhash/reject: a repeat keeps the first",
+      "input": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1&certHash=b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "link": {
+        "kind": "server",
+        "relay": "https://192.168.1.20:4433",
+        "certHashes": [
+          "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+        ],
+        "label": null
+      },
+      "dropped": [
+        {
+          "param": "certHash",
+          "why": "invalid"
+        }
+      ],
+      "gawk": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    },
+    {
+      "name": "certhash/reject: not on a broadcast link",
+      "input": "gawk://broadcast?room=abc&certHash=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "link": {
+        "kind": "broadcast",
+        "room": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "certHash",
+          "why": "unknown"
+        }
+      ],
+      "gawk": "gawk://broadcast?room=abc",
+      "https": "https://gawk.ioio.fi/#/broadcast?room=abc"
+    },
+    {
+      "name": "label/accept: whitespace collapsed and trimmed",
+      "input": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&label=%20%20Assembly%20%20%092026%20",
+      "link": {
+        "kind": "server",
+        "relay": "https://192.168.1.20:4433",
+        "certHashes": [],
+        "label": "Assembly 2026"
+      },
+      "dropped": [],
+      "gawk": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&label=Assembly%202026",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433"
+    },
+    {
+      "name": "label/accept: cut to 63 bytes on a character boundary",
+      "input": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&label=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx%C3%A9",
+      "link": {
+        "kind": "server",
+        "relay": "https://192.168.1.20:4433",
+        "certHashes": [],
+        "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "dropped": [],
+      "gawk": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&label=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433"
+    },
+    {
+      "name": "label/reject: blank counts as absent",
+      "input": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433&label=%20",
+      "link": {
+        "kind": "server",
+        "relay": "https://192.168.1.20:4433",
+        "certHashes": [],
+        "label": null
+      },
+      "dropped": [],
+      "gawk": "gawk://server?relay=https%3A%2F%2F192.168.1.20%3A4433",
+      "https": "https://gawk.ioio.fi/#/?relay=https%3A%2F%2F192.168.1.20%3A4433"
+    },
+    {
+      "name": "label/reject: not on a room link",
+      "input": "gawk://room/abc?label=x",
+      "link": {
+        "kind": "room",
+        "code": "abc",
+        "nick": null,
+        "relay": null
+      },
+      "dropped": [
+        {
+          "param": "label",
+          "why": "unknown"
+        }
+      ],
+      "gawk": "gawk://room/abc",
+      "https": "https://gawk.ioio.fi/#/room/abc"
     },
     {
       "name": "path/reject: an unknown path",

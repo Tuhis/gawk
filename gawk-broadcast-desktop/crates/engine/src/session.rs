@@ -36,6 +36,11 @@ pub struct SessionConfig {
     pub origin: String,
     /// Skip TLS verification — dev certs only.
     pub insecure: bool,
+    /// R74 (docs/76 §6.1 item 5): the server's pinned certificate hashes.
+    /// Non-empty, the relay's certificate must hash to one of them and the
+    /// system store is not consulted — on the first leg, every reclaim and
+    /// the room control session alike. Empty is the system store.
+    pub cert_hashes: Vec<transport::CertHash>,
     /// R42 rooms (docs/44 §4.8): join this code (or static slug) and attach
     /// the broadcast on publish, re-attaching on every resume. Ignored when
     /// `room_new` is set.
@@ -217,7 +222,14 @@ impl Session {
         })?;
 
         let relay: Arc<dyn RelaySession> = Arc::new(
-            transport::dial_publish(&url, &cfg.origin, cfg.insecure, cfg.congestion).await?,
+            transport::dial_publish_pinned(
+                &url,
+                &cfg.origin,
+                cfg.insecure,
+                &cfg.cert_hashes,
+                cfg.congestion,
+            )
+            .await?,
         );
 
         Ok(Self::start_with_session(cfg, relay, clock))
@@ -236,6 +248,7 @@ impl Session {
         let dialer: Arc<dyn RoomDialer> = Arc::new(transport::WtRoomDialer {
             origin: cfg.origin.clone(),
             insecure: cfg.insecure,
+            pins: cfg.cert_hashes.clone(),
         });
         Self::start_with_session_and_room_dialer(cfg, relay, clock, dialer)
     }
@@ -251,6 +264,7 @@ impl Session {
         let publish_dialer: Arc<dyn PublishDialer> = Arc::new(transport::WtPublishDialer {
             origin: cfg.origin.clone(),
             insecure: cfg.insecure,
+            pins: cfg.cert_hashes.clone(),
             congestion: cfg.congestion,
         });
         Self::start_with_seams(cfg, relay, clock, room_dialer, publish_dialer)

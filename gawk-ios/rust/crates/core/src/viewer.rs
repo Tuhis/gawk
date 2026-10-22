@@ -63,6 +63,11 @@ pub struct ViewerOptions {
     pub preset: Preset,
     /// Skip certificate verification: a local dev relay only.
     pub insecure: bool,
+    /// R74 (docs/76 §6.1 item 5): the server's pinned certificate hashes,
+    /// lowercase hex. Empty — the default, so Swift may leave it out — is
+    /// the system store.
+    #[uniffi(default)]
+    pub cert_hashes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
@@ -393,6 +398,7 @@ impl Viewer {
         let dialer = Arc::new(WtSubscribeDialer {
             origin: gawk_engine::defaults::origin().to_owned(),
             insecure: options.insecure,
+            pins: gawk_engine::transport::cert_hashes_from_hex(&options.cert_hashes),
         });
         // One thread, one current-thread runtime per viewer (D12's shape).
         std::thread::Builder::new()

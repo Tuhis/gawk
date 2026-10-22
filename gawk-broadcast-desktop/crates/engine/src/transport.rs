@@ -41,6 +41,33 @@ pub const DIAL_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 /// before attempts were cut short.
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// A SHA-256 hash of a relay's DER certificate: what a pinned dial accepts
+/// in place of the system trust store (R74, docs/76 §6.1 items 3 and 5).
+/// A `gawk-relay` publishes two — the one it serves and the next — and a
+/// client pinning both connects across a rotation.
+pub type CertHash = [u8; 32];
+
+/// Reads one lowercase 64-hex hash (the form links and `broadcast.json`
+/// carry). `None` for anything else.
+pub fn cert_hash_from_hex(hex: &str) -> Option<CertHash> {
+    if !crate::link::is_cert_hash(hex) {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// The hashes among `hexes` that parse; the rest are left out.
+pub fn cert_hashes_from_hex<S: AsRef<str>>(hexes: &[S]) -> Vec<CertHash> {
+    hexes
+        .iter()
+        .filter_map(|h| cert_hash_from_hex(h.as_ref()))
+        .collect()
+}
+
 /// The publish connection's QUIC congestion controller (R73 RU4, docs/75
 /// D5): `congestion` in `broadcast.json`, reported as `uplinkCongestion`.
 /// A support lever, not a Quality-page setting.
@@ -133,7 +160,19 @@ impl WtSession {
 /// status (401/403/404/409/429); a dial that never got an HTTP answer
 /// carries status 0.
 pub async fn dial(url: &str, origin: &str, insecure: bool) -> Result<WtSession, StartError> {
-    dial_publish(url, origin, insecure, Congestion::default()).await
+    dial_pinned(url, origin, insecure, &[]).await
+}
+
+/// [`dial`] pinned to `pins` when it is non-empty: the relay's certificate
+/// must hash to one of them, and the system store is not consulted
+/// (docs/76 §6.1 item 5). `insecure` still wins over both.
+pub async fn dial_pinned(
+    url: &str,
+    origin: &str,
+    insecure: bool,
+    pins: &[CertHash],
+) -> Result<WtSession, StartError> {
+    dial_publish_pinned(url, origin, insecure, pins, Congestion::default()).await
 }
 
 /// [`dial`] with the congestion controller chosen (docs/75 D5): what every
@@ -144,7 +183,19 @@ pub async fn dial_publish(
     insecure: bool,
     congestion: Congestion,
 ) -> Result<WtSession, StartError> {
-    let (endpoint, conn) = connect(url, origin, insecure, "publish", congestion).await?;
+    dial_publish_pinned(url, origin, insecure, &[], congestion).await
+}
+
+/// [`dial_publish`] with pins ([`dial_pinned`]).
+pub async fn dial_publish_pinned(
+    url: &str,
+    origin: &str,
+    insecure: bool,
+    pins: &[CertHash],
+    congestion: Congestion,
+) -> Result<WtSession, StartError> {
+    let trust = Trust::new(insecure, pins);
+    let (endpoint, conn) = connect(url, origin, trust, "publish", congestion).await?;
     Ok(WtSession {
         _endpoint: endpoint,
         conn,
@@ -161,12 +212,46 @@ pub async fn dial_subscribe(
     origin: &str,
     insecure: bool,
 ) -> Result<WtSession, StartError> {
-    let (endpoint, conn) = connect(url, origin, insecure, "subscribe", Congestion::Cubic).await?;
+    dial_subscribe_pinned(url, origin, insecure, &[]).await
+}
+
+/// [`dial_subscribe`] with pins ([`dial_pinned`]).
+pub async fn dial_subscribe_pinned(
+    url: &str,
+    origin: &str,
+    insecure: bool,
+    pins: &[CertHash],
+) -> Result<WtSession, StartError> {
+    let trust = Trust::new(insecure, pins);
+    let (endpoint, conn) = connect(url, origin, trust, "subscribe", Congestion::Cubic).await?;
     Ok(WtSession {
         _endpoint: endpoint,
         conn,
         datagrams_offered: AtomicU64::new(0),
     })
+}
+
+/// How a dial checks the relay's certificate.
+#[derive(Debug, Clone, Copy)]
+enum Trust<'a> {
+    /// No check at all: dev certificates only.
+    Insecure,
+    /// The certificate must hash to one of these; no CA is consulted.
+    Pinned(&'a [CertHash]),
+    /// The platform's trust store.
+    System,
+}
+
+impl<'a> Trust<'a> {
+    fn new(insecure: bool, pins: &'a [CertHash]) -> Self {
+        if insecure {
+            Trust::Insecure
+        } else if pins.is_empty() {
+            Trust::System
+        } else {
+            Trust::Pinned(pins)
+        }
+    }
 }
 
 fn connect_err(status: u16, message: String) -> StartError {
@@ -184,7 +269,7 @@ fn connect_err(status: u16, message: String) -> StartError {
 async fn connect(
     url: &str,
     origin: &str,
-    insecure: bool,
+    trust: Trust<'_>,
     what: &str,
     congestion: Congestion,
 ) -> Result<(Endpoint<Client>, wtransport::Connection), StartError> {
@@ -200,7 +285,7 @@ async fn connect(
                 ),
             ));
         }
-        let attempt = connect_once(url, origin, insecure, what, congestion);
+        let attempt = connect_once(url, origin, trust, what, congestion);
         if let Ok(done) = tokio::time::timeout(left.min(DIAL_ATTEMPT_TIMEOUT), attempt).await {
             return done;
         }
@@ -213,21 +298,28 @@ async fn connect(
 async fn connect_once(
     url: &str,
     origin: &str,
-    insecure: bool,
+    trust: Trust<'_>,
     what: &str,
     congestion: Congestion,
 ) -> Result<(Endpoint<Client>, wtransport::Connection), StartError> {
     let builder = ClientConfig::builder().with_bind_default();
-    let builder = if insecure {
-        builder.with_no_cert_validation()
-    } else {
-        #[cfg(target_os = "ios")]
-        {
-            builder.with_custom_tls(ios_tls().map_err(|e| connect_err(0, e))?)
-        }
-        #[cfg(not(target_os = "ios"))]
-        {
-            builder.with_native_certs()
+    let builder = match trust {
+        Trust::Insecure => builder.with_no_cert_validation(),
+        // wtransport's hash verifier: an empty root store, the SHA-256 of
+        // the DER, validity of at most two weeks and an ECDSA P-256 key —
+        // the browsers' serverCertificateHashes rules. The same on iOS.
+        Trust::Pinned(pins) => builder.with_server_certificate_hashes(
+            pins.iter().map(|h| wtransport::tls::Sha256Digest::new(*h)),
+        ),
+        Trust::System => {
+            #[cfg(target_os = "ios")]
+            {
+                builder.with_custom_tls(ios_tls().map_err(|e| connect_err(0, e))?)
+            }
+            #[cfg(not(target_os = "ios"))]
+            {
+                builder.with_native_certs()
+            }
         }
     };
     let mut config = builder.keep_alive_interval(Some(KEEP_ALIVE_PERIOD)).build();
@@ -292,7 +384,18 @@ pub struct WtRoomConn {
 /// Dials a room route (`/room/new` or `/room/{code}`) and opens the control
 /// stream. Statuses surface exactly as for [`dial`].
 pub async fn dial_room(url: &str, origin: &str, insecure: bool) -> Result<WtRoomConn, StartError> {
-    let (endpoint, conn) = connect(url, origin, insecure, "room", Congestion::Cubic).await?;
+    dial_room_pinned(url, origin, insecure, &[]).await
+}
+
+/// [`dial_room`] with pins ([`dial_pinned`]).
+pub async fn dial_room_pinned(
+    url: &str,
+    origin: &str,
+    insecure: bool,
+    pins: &[CertHash],
+) -> Result<WtRoomConn, StartError> {
+    let trust = Trust::new(insecure, pins);
+    let (endpoint, conn) = connect(url, origin, trust, "room", Congestion::Cubic).await?;
     let stream_err = |e: String| StartError {
         phase: StartPhase::Connect,
         status: 0,
@@ -347,13 +450,16 @@ impl RoomConn for WtRoomConn {
 pub struct WtRoomDialer {
     pub origin: String,
     pub insecure: bool,
+    /// The server's pinned certificate hashes; empty trusts the system
+    /// store ([`dial_pinned`]).
+    pub pins: Vec<CertHash>,
 }
 
 impl RoomDialer for WtRoomDialer {
     fn dial(&self, url: &str) -> BoxFuture<'_, Result<Arc<dyn RoomConn>, StartError>> {
         let url = url.to_owned();
         Box::pin(async move {
-            let conn = dial_room(&url, &self.origin, self.insecure).await?;
+            let conn = dial_room_pinned(&url, &self.origin, self.insecure, &self.pins).await?;
             Ok(Arc::new(conn) as Arc<dyn RoomConn>)
         })
     }
@@ -364,6 +470,8 @@ impl RoomDialer for WtRoomDialer {
 pub struct WtPublishDialer {
     pub origin: String,
     pub insecure: bool,
+    /// Every reclaim is pinned as the first leg was ([`dial_pinned`]).
+    pub pins: Vec<CertHash>,
     /// Every reclaim runs the controller the first leg did.
     pub congestion: Congestion,
 }
@@ -372,7 +480,14 @@ impl PublishDialer for WtPublishDialer {
     fn dial(&self, url: &str) -> BoxFuture<'_, Result<Arc<dyn RelaySession>, StartError>> {
         let url = url.to_owned();
         Box::pin(async move {
-            let session = dial_publish(&url, &self.origin, self.insecure, self.congestion).await?;
+            let session = dial_publish_pinned(
+                &url,
+                &self.origin,
+                self.insecure,
+                &self.pins,
+                self.congestion,
+            )
+            .await?;
             Ok(Arc::new(session) as Arc<dyn RelaySession>)
         })
     }

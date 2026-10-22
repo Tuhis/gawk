@@ -117,6 +117,13 @@ pub struct BroadcastOptions {
     /// room link's `?rt=` grant or an earlier mint (docs/60 D8). Empty for
     /// none.
     pub room_creator_token_hex: String,
+    /// R74 (docs/76 §6.1 item 5): the server's pinned certificate hashes,
+    /// lowercase hex. Non-empty, every dial of this broadcast (publish,
+    /// reclaims, the room) accepts only a certificate hashing to one of
+    /// them. Empty — the default, so Swift may leave it out — is the
+    /// system store.
+    #[uniffi(default)]
+    pub cert_hashes: Vec<String>,
 }
 
 /// One audio buffer's `AudioStreamBasicDescription` fields (D11).
@@ -595,6 +602,7 @@ async fn run<C, F>(
         publish_secret: options.publish_secret.clone(),
         origin: gawk_engine::defaults::origin().to_owned(),
         insecure: options.insecure,
+        cert_hashes: gawk_engine::transport::cert_hashes_from_hex(&options.cert_hashes),
         room_code: if creator_rejoin.is_some() {
             String::new()
         } else {
@@ -1364,6 +1372,7 @@ mod stop_tests {
             capture_source: String::new(),
             room_new: false,
             room_creator_token_hex: String::new(),
+            cert_hashes: Vec::new(),
         }
     }
 

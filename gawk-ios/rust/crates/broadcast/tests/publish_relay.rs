@@ -156,6 +156,7 @@ async fn the_ios_pipeline_rotates_and_resumes_on_the_same_code() {
         Arc::new(WtSubscribeDialer {
             origin: "gawk://ios".into(),
             insecure: true,
+            pins: Vec::new(),
         }),
         sink.clone(),
         ViewerClock::new(),
@@ -249,6 +250,7 @@ async fn an_invalidated_encoder_session_is_rebuilt_not_fatal() {
         Arc::new(WtSubscribeDialer {
             origin: "gawk://ios".into(),
             insecure: true,
+            pins: Vec::new(),
         }),
         sink.clone(),
         ViewerClock::new(),

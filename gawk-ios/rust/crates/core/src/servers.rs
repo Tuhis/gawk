@@ -19,9 +19,11 @@ pub enum ServerProbe {
 }
 
 /// Probes `relay_url` (blocking, a few seconds at most: call it off the
-/// main thread).
-#[uniffi::export]
-pub fn probe_server(relay_url: String, insecure: bool) -> ServerProbe {
+/// main thread). `cert_hashes`: the server's pins (R74, docs/76 §6.1 item
+/// 5; lowercase hex), empty — the default — for the system store.
+#[uniffi::export(default(cert_hashes = []))]
+pub fn probe_server(relay_url: String, insecure: bool, cert_hashes: Vec<String>) -> ServerProbe {
+    let pins = gawk_engine::transport::cert_hashes_from_hex(&cert_hashes);
     let Ok(rt) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -29,7 +31,7 @@ pub fn probe_server(relay_url: String, insecure: bool) -> ServerProbe {
         return ServerProbe::Unreachable;
     };
     let origin = gawk_engine::defaults::origin().to_owned();
-    match rt.block_on(probe::probe(&relay_url, &origin, insecure)) {
+    match rt.block_on(probe::probe_pinned(&relay_url, &origin, insecure, &pins)) {
         ProbeResult::Ok {
             rtt_ms,
             name,
@@ -64,7 +66,16 @@ mod tests {
     #[test]
     fn a_malformed_server_is_unreachable_not_a_panic() {
         assert_eq!(
-            probe_server("not a url".into(), false),
+            probe_server("not a url".into(), false, vec![]),
+            ServerProbe::Unreachable
+        );
+    }
+
+    // R74: a stored value that isn't a hash is left out, never a panic.
+    #[test]
+    fn a_pinned_probe_of_a_malformed_server_is_unreachable() {
+        assert_eq!(
+            probe_server("not a url".into(), false, vec!["nope".into()]),
             ServerProbe::Unreachable
         );
     }
