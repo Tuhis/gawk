@@ -6,26 +6,33 @@ package transport
 // test PacketConn that delays and can black out the PoP's packets.
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/qlog"
 	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/quic-go/webtransport-go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/hub"
+	"github.com/Tuhis/gawk/gawk-server/internal/metrics"
 	"github.com/Tuhis/gawk/gawk-server/internal/poplink"
+	"github.com/Tuhis/gawk/gawk-server/internal/tlsutil"
 	"github.com/Tuhis/gawk/gawk-server/pops"
 	"github.com/Tuhis/gawk/gawk-server/wire"
 )
@@ -441,3 +448,89 @@ func (relayOnly) LocalRelayInfo(string) wire.LocalRelayInfo { return wire.LocalR
 type relayWithDownlink struct{ relayOnly }
 
 func (relayWithDownlink) PopDownlink() (PopDownlinkTarget, bool) { return PopDownlinkTarget{}, false }
+
+// garbageHome is a "home" whose /pop/subscribe opens one uni stream that is
+// neither a keyframe stream nor a carrier and keeps writing to it, never
+// finishing it. reset receives the error its write ends with.
+func garbageHome(t *testing.T, ctx context.Context) (port int, clientTLS *tls.Config, reset <-chan error) {
+	t.Helper()
+	cert, err := tlsutil.GenerateDevCert([]string{"localhost", "127.0.0.1"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port = pc.LocalAddr().(*net.UDPAddr).Port
+	pc.Close()
+	cfg := uplinkTestConfig(true)
+	cfg.Addr = fmt.Sprintf("127.0.0.1:%d", port)
+	srv := New(cfg, hub.NewRegistry(discardLog, hub.Options{}), func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return &cert, nil },
+		discardLog, metrics.NewServerMetrics(prometheus.NewRegistry()))
+	resetCh := make(chan error, 1)
+	inner := srv.wt.H3.Handler
+	srv.wt.H3.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/pop/subscribe/") {
+			inner.ServeHTTP(w, r)
+			return
+		}
+		sess, err := srv.wt.Upgrade(w, r)
+		if err != nil {
+			return
+		}
+		st, err := sess.OpenUniStream()
+		if err != nil {
+			return
+		}
+		junk := bytes.Repeat([]byte{0xEE}, 512)
+		for {
+			if _, err := st.Write(junk); err != nil {
+				resetCh <- err
+				<-sess.Context().Done()
+				return
+			}
+			select {
+			case <-sess.Context().Done():
+				resetCh <- sess.Context().Err()
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	})
+	go func() { _ = srv.Run(ctx) }()
+	pool := x509.NewCertPool()
+	pool.AddCert(cert.Leaf)
+	return port, &tls.Config{RootCAs: pool, ServerName: "localhost", NextProtos: []string{http3.NextProtoH3}}, resetCh
+}
+
+// docs/76 item 23, PP9: a uni stream on the leg that is neither a keyframe
+// stream nor a carrier is refused by the PoP's pump and reset (CancelRead:
+// home's write ends with the PoP's stream error), never left unread
+// holding home's flow-control credit.
+func TestPopDownlinkResetsARefusedStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rig := startPopRig(t, ctx, 0, 0, true)
+	homePort, homeTLS, reset := garbageHome(t, ctx)
+	rig.src.mu.Lock()
+	rig.src.t.Endpoint = fmt.Sprintf("127.0.0.1:%d", homePort)
+	rig.src.t.RootCAs = homeTLS.RootCAs
+	rig.src.mu.Unlock()
+
+	pullCtx, stop := context.WithTimeout(ctx, 3*time.Second)
+	defer stop()
+	go func() { _ = rig.popSrv.ensurePopDownlink(pullCtx, "K7XQ2M") }()
+	select {
+	case err := <-reset:
+		var se *webtransport.StreamError
+		if !errors.As(err, &se) || !se.Remote {
+			t.Fatalf("home's write ended with %v, want the PoP's stream reset", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the PoP never reset the refused stream")
+	}
+	if got := rig.popSrv.PopDownlinkUse().LegsOpened; got != 1 {
+		t.Fatalf("legs opened = %d, want 1", got)
+	}
+}
