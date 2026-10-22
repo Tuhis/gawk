@@ -171,6 +171,10 @@ type Server struct {
 	mintGate           atomic.Pointer[mintGateBox]
 	publishObserversMu sync.Mutex
 	publishObservers   atomic.Pointer[[]PublishObserver]
+	// localRelay (a PoP) and offerer (a home) feed the per-session R74
+	// notices (session_notices.go).
+	localRelay atomic.Pointer[localRelayBox]
+	offerer    atomic.Pointer[offererBox]
 }
 
 // rejectedDraining rejects a new CONNECT with 503 once the drain has begun,
@@ -979,7 +983,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	// whether it may open uplink carriers. Best-effort: without it the
 	// producer emits no parity and sends its deltas as datagrams.
 	s.sendRelayCapabilities(sess, log, true)
-	s.sendSessionNotices(sess, r, kindPublish)
+	s.sendPublishSessionNotices(sess, r, id)
 
 	// Telemetry identity, also recorded on the hub so /statusz's
 	// publisherSessionId joins the broadcaster's reports. Sent last: a
