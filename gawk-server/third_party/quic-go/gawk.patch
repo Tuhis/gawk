@@ -1,3 +1,22 @@
+diff --git a/datagram_queue.go b/datagram_queue.go
+--- a/datagram_queue.go
++++ b/datagram_queue.go
+@@ -9,9 +9,14 @@ import (
+ 	"github.com/quic-go/quic-go/internal/wire"
+ )
+ 
++// GAWK PATCH (docs/75 D7): the receive queue goes from 128 to 512, the depth
++// of http3's per-session queue behind it. Datagrams wait here until http3's
++// one dispatching goroutine moves them to their session; a scheduling gap in
++// that goroutine during a burst dropped the tail before the session's 512
++// could hold it. See third_party/quic-go/GAWK-PATCH.md.
+ const (
+ 	maxDatagramSendQueueLen = 32
+-	maxDatagramRcvQueueLen  = 128
++	maxDatagramRcvQueueLen  = 512
+ )
+ 
+ type datagramQueue struct {
 --- a/http3/state_tracking_stream.go
 +++ b/http3/state_tracking_stream.go
 @@ -9,7 +9,11 @@
