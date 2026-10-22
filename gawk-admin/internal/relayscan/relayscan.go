@@ -3,7 +3,8 @@
 //
 // It resolves the relay's headless metrics Service to pod IPs and scrapes each
 // pod's credential-gated /internal/admin/broadcasts, /internal/admin/config
-// and, since R49, /internal/admin/rooms (docs/50 D3).
+// and, since R49, /internal/admin/rooms (docs/50 D3) and, since R74,
+// /internal/admin/pops (docs/76 §9).
 // This is the same discovery shape gawk-telemetry's relayscrape already
 // proves in production (an injectable resolver plus an injectable HTTP client,
 // so tests need neither DNS nor a network), and it was chosen over listing
@@ -51,6 +52,7 @@ const (
 	SchemaBroadcasts = adminapi.SchemaBroadcasts
 	SchemaConfig     = adminapi.SchemaConfig
 	SchemaRooms      = adminapi.SchemaRooms
+	SchemaPops       = adminapi.SchemaPops
 )
 
 // DefaultCacheTTL is the aggregate cache window (§4.7: "≤2 s cache").
@@ -89,6 +91,19 @@ type (
 // RoomsResponse is GET /internal/admin/rooms — the relay's own type.
 type RoomsResponse = adminapi.RoomsResponse
 
+// PopState is one PoP as its link-home pod sees it — the relay's own type
+// (R74, docs/76 §9). It may carry the PoP's public and LAN addresses.
+type PopState = adminapi.PopState
+
+// PopBroadcast and HealthLine are a PoP's rows — the relay's types.
+type (
+	PopBroadcast = adminapi.PopBroadcast
+	HealthLine   = adminapi.HealthLine
+)
+
+// PopsResponse is GET /internal/admin/pops — the relay's own type.
+type PopsResponse = adminapi.PopsResponse
+
 // ConfigResponse is GET /internal/admin/config. Config is decoded
 // structurally: the relay's sanitized config is a map of knob names to values
 // and the portal renders it as a table, so knowing the field set would buy
@@ -123,6 +138,11 @@ type Pod struct {
 	// says why in RoomsErr.
 	Rooms    []Room
 	RoomsErr string
+	// Pops are the PoPs whose link this pod holds (R74), scraped
+	// independently the same way; PopsErr says why there are none when the
+	// route failed.
+	Pops    []PopState
+	PopsErr string
 }
 
 // Placement is one pod's view of a broadcast in the aggregate.
@@ -161,6 +181,13 @@ type RoomAggregate struct {
 	Pod string
 }
 
+// PopAggregate is one PoP with the pod that holds its link.
+type PopAggregate struct {
+	PopState
+	// Pod names the link-home pod, the only pod with the PoP's counts.
+	Pod string
+}
+
 // Snapshot is one whole-fleet view.
 type Snapshot struct {
 	At   time.Time
@@ -172,6 +199,10 @@ type Snapshot struct {
 	// (R49, docs/50 D3). A room whose home pod did not answer is simply
 	// absent: the portal renders it from its CR as not live.
 	Rooms []RoomAggregate
+	// Pops are every PoP some reachable pod holds the link of, sorted by
+	// name (R74). A PoP whose link-home pod did not answer — or that is not
+	// linked anywhere — is absent; the portal renders it from its CR.
+	Pops []PopAggregate
 	// PodsResolved / PodsAnswered make partial coverage visible rather than
 	// letting an empty answer look like an empty fleet.
 	PodsResolved int
@@ -186,6 +217,16 @@ func (s Snapshot) Broadcast(id string) (Aggregate, bool) {
 		}
 	}
 	return Aggregate{}, false
+}
+
+// Pop finds one PoP by name.
+func (s Snapshot) Pop(name string) (PopAggregate, bool) {
+	for _, p := range s.Pops {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return PopAggregate{}, false
 }
 
 // Room finds one live room by normalized code.
@@ -351,6 +392,7 @@ func (s *Scanner) scan(ctx context.Context, now time.Time) (Snapshot, error) {
 	}
 	snap.Broadcasts = aggregate(pods)
 	snap.Rooms = aggregateRooms(pods)
+	snap.Pops = aggregatePops(pods)
 	return snap, nil
 }
 
@@ -365,8 +407,10 @@ func (s *Scanner) scrapePod(ctx context.Context, addr string) Pod {
 		cErr  error
 		rooms RoomsResponse
 		rErr  error
+		pops  PopsResponse
+		pErr  error
 	)
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		bErr = s.get(ctx, addr, "/internal/admin/broadcasts", &bcast)
@@ -386,6 +430,13 @@ func (s *Scanner) scrapePod(ctx context.Context, addr string) Pod {
 		rErr = s.get(ctx, addr, "/internal/admin/rooms", &rooms)
 		if rErr == nil && rooms.Schema != SchemaRooms {
 			rErr = fmt.Errorf("unexpected schema %q (want %q)", rooms.Schema, SchemaRooms)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		pErr = s.get(ctx, addr, "/internal/admin/pops", &pops)
+		if pErr == nil && pops.Schema != SchemaPops {
+			pErr = fmt.Errorf("unexpected schema %q (want %q)", pops.Schema, SchemaPops)
 		}
 	}()
 	wg.Wait()
@@ -426,6 +477,18 @@ func (s *Scanner) scrapePod(ctx context.Context, addr string) Pod {
 		}
 	default:
 		p.Rooms = rooms.Rooms
+	}
+	switch {
+	case !p.Reachable:
+	case pErr != nil:
+		s.opts.Log.Debug("relayscan: pod pops scrape failed", "addr", addr, "err", pErr)
+		p.PopsErr = pErr.Error()
+		var nf *notFoundError
+		if errors.As(pErr, &nf) {
+			p.PopsErr = "/internal/admin/pops returned 404: the relay predates R74"
+		}
+	default:
+		p.Pops = pops.Pops
 	}
 	return p
 }
@@ -525,6 +588,30 @@ func aggregateRooms(pods []Pod) []RoomAggregate {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	return out
+}
+
+// aggregatePops lists every PoP some reachable pod reports. One pod holds a
+// PoP's link; across a force-take (docs/76 item 11) two can briefly report
+// it, and the one that says it is linked stands, then the first in scrape
+// order, so the answer is stable.
+func aggregatePops(pods []Pod) []PopAggregate {
+	idx := map[string]int{}
+	var out []PopAggregate
+	for _, p := range pods {
+		for _, st := range p.Pops {
+			i, seen := idx[st.Name]
+			if !seen {
+				idx[st.Name] = len(out)
+				out = append(out, PopAggregate{PopState: st, Pod: p.Name})
+				continue
+			}
+			if st.Linked && !out[i].Linked {
+				out[i] = PopAggregate{PopState: st, Pod: p.Name}
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
