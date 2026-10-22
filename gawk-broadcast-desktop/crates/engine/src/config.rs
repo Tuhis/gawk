@@ -38,8 +38,9 @@ pub const DEFAULT_SERVER_NAME: &str = "default";
 
 /// One saved relay server (R37 SP9, docs/40 §4.8): the same shape and JSON
 /// keys as the Linux broadcaster's `config.ServerProfile` (docs/38 D14 —
-/// shared vocabulary keeps docs and diagnostics legible cross-OS). No
-/// cert-hash field: the native broadcasters trust the system store.
+/// shared vocabulary keeps docs and diagnostics legible cross-OS). The
+/// system store decides, except for a server pinned to its certificate
+/// hashes (R74, `cert_hashes`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ServerProfile {
@@ -54,6 +55,14 @@ pub struct ServerProfile {
     /// Per-server credential (DPAPI-wrapped on Windows, like the flat field;
     /// docs/40 D4: the secret stored for server A is never presented to B).
     pub publish_secret: String,
+    /// R74 (docs/76 §6.1 item 5): lowercase hex SHA-256 hashes of the
+    /// certificates this server may present — a `gawk-relay` on a LAN
+    /// address publishes the one it serves and the next. Non-empty, every
+    /// dial to it is pinned to them and the system store is not consulted.
+    /// Pinning data, not a credential. Absent from files written before
+    /// R74, and left out of the file when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cert_hashes: Vec<String>,
 }
 
 /// One room in "Your rooms" (docs/60 D8): the rooms this app joined, most
@@ -381,6 +390,7 @@ impl Config {
                 name: DEFAULT_SERVER_NAME.to_owned(),
                 url: normalize_relay_url(defaults::RELAY_URL),
                 publish_secret: secret.to_owned(),
+                cert_hashes: Vec::new(),
             });
         }
     }
@@ -398,6 +408,7 @@ impl Config {
             name: name.clone(),
             url: String::new(),
             publish_secret: String::new(),
+            cert_hashes: Vec::new(),
         });
         name
     }
@@ -407,6 +418,17 @@ impl Config {
     /// names an unknown server (docs/68 D5). Returns the name it got; it
     /// does not select it.
     pub fn add_server(&mut self, name: &str, url: &str) -> String {
+        self.add_server_pinned::<&str>(name, url, &[])
+    }
+
+    /// [`Config::add_server`] for a server pinned to `cert_hashes`
+    /// (lowercase hex; a `gawk://server` link's, R74). Does not select it.
+    pub fn add_server_pinned<S: AsRef<str>>(
+        &mut self,
+        name: &str,
+        url: &str,
+        cert_hashes: &[S],
+    ) -> String {
         let base = if name.trim().is_empty() {
             "Server"
         } else {
@@ -422,8 +444,41 @@ impl Config {
             name: unique.clone(),
             url: url.to_owned(),
             publish_secret: String::new(),
+            cert_hashes: cert_hashes.iter().map(|h| h.as_ref().to_owned()).collect(),
         });
         unique
+    }
+
+    /// Replaces the pins of the profile `name` names (an empty list
+    /// unpins it). False when no profile has that name.
+    pub fn set_server_cert_hashes<S: AsRef<str>>(&mut self, name: &str, cert_hashes: &[S]) -> bool {
+        match self.servers.iter_mut().find(|p| p.name == name) {
+            Some(p) => {
+                p.cert_hashes = cert_hashes.iter().map(|h| h.as_ref().to_owned()).collect();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The stored pins of the custom server with this origin, or `None`
+    /// when no saved server has it.
+    pub fn cert_hashes_for_origin(&self, origin: &str) -> Option<Vec<String>> {
+        self.servers
+            .iter()
+            .find(|p| {
+                p.name != DEFAULT_SERVER_NAME && relay_origin(&p.url).as_deref() == Some(origin)
+            })
+            .map(|p| p.cert_hashes.clone())
+    }
+
+    /// The pins to dial the selected server with (R74): the selected
+    /// custom profile's hashes that parse, empty — the system store — on
+    /// the default fleet or an unpinned server.
+    pub fn resolve_cert_hashes(&self) -> Vec<crate::transport::CertHash> {
+        self.selected_profile()
+            .map(|p| crate::transport::cert_hashes_from_hex(&p.cert_hashes))
+            .unwrap_or_default()
     }
 
     /// True when a profile (the default's record included) claims `name` —
@@ -811,6 +866,7 @@ fn migrate_profiles(cfg: &mut Config) -> bool {
                 name: DEFAULT_SERVER_NAME.to_owned(),
                 url: default_key,
                 publish_secret: flat_secret,
+                cert_hashes: Vec::new(),
             });
         }
         cfg.selected_server = DEFAULT_SERVER_NAME.to_owned();
@@ -819,6 +875,7 @@ fn migrate_profiles(cfg: &mut Config) -> bool {
             name: "Migrated server".to_owned(),
             url: flat_url,
             publish_secret: flat_secret,
+            cert_hashes: Vec::new(),
         });
         cfg.selected_server = "Migrated server".to_owned();
     }
@@ -966,6 +1023,7 @@ mod tests {
                 name: "Friend".into(),
                 url: "https://relay.friend.example".into(),
                 publish_secret: String::new(),
+                cert_hashes: Vec::new(),
             }],
             ..Default::default()
         };
@@ -1075,6 +1133,7 @@ mod tests {
                 name: "Friend".into(),
                 url: "https://relay.friend.example".into(),
                 publish_secret: String::new(),
+                cert_hashes: Vec::new(),
             }],
             ..Default::default()
         }
@@ -1097,6 +1156,7 @@ mod tests {
             name: "Friend".into(),
             url: "https://Relay.Friend.example:4433/".into(),
             publish_secret: "s".into(),
+            cert_hashes: Vec::new(),
         });
         // The default's credentials-only record is never a match.
         cfg.set_default_secret("d");
@@ -1124,6 +1184,80 @@ mod tests {
         assert_eq!(cfg.servers[1].url, "https://relay.friend.example:4433");
         assert!(cfg.servers.iter().all(|p| p.publish_secret.is_empty()));
         assert!(cfg.selected_server.is_empty());
+    }
+
+    // --- R74 PP5: per-server certificate pins --------------------------------
+
+    const H1: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+    const H2: &str = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+
+    #[test]
+    fn a_profile_from_before_r74_loads_with_no_pins() {
+        let old = r#"{"name":"Friend","url":"https://relay.friend.example","publishSecret":"s"}"#;
+        let p: ServerProfile = serde_json::from_str(old).unwrap();
+        assert_eq!(p.name, "Friend");
+        assert!(p.cert_hashes.is_empty());
+        // A profile with no pins saves exactly as it did: no new key.
+        let saved = serde_json::to_string(&p).unwrap();
+        assert!(!saved.contains("certHashes"), "{saved}");
+        assert_eq!(saved, old);
+    }
+
+    #[test]
+    fn pins_round_trip_as_cert_hashes() {
+        let mut p = profile("LAN", "https://192.168.1.20:4433", "");
+        p.cert_hashes = vec![H1.into(), H2.into()];
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(
+            json.contains(&format!(r#""certHashes":["{H1}","{H2}"]"#)),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<ServerProfile>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn the_selected_profiles_pins_are_what_it_dials_with() {
+        let mut cfg = Config::default();
+        // The default fleet is never pinned.
+        assert!(cfg.resolve_cert_hashes().is_empty());
+        let name = cfg.add_server_pinned("Assembly", "https://192.168.1.20:4433", &[H1, H2]);
+        assert_eq!(name, "Assembly");
+        assert!(cfg.resolve_cert_hashes().is_empty(), "not selected yet");
+        cfg.selected_server = name.clone();
+        assert_eq!(cfg.resolve_cert_hashes(), vec![[0xa1; 32], [0xb2; 32]]);
+        // A stored value that isn't a hash is left out, never guessed at.
+        cfg.servers[0].cert_hashes = vec!["nope".into(), H2.into()];
+        assert_eq!(cfg.resolve_cert_hashes(), vec![[0xb2; 32]]);
+        // Re-pinning replaces both; an empty list unpins.
+        assert!(cfg.set_server_cert_hashes(&name, &[H1]));
+        assert_eq!(cfg.servers[0].cert_hashes, vec![H1.to_string()]);
+        assert!(cfg.set_server_cert_hashes::<&str>(&name, &[]));
+        assert!(cfg.resolve_cert_hashes().is_empty());
+        assert!(!cfg.set_server_cert_hashes("missing", &[H1]));
+        // add_server stays unpinned.
+        let plain = cfg.add_server("Friend", "https://relay.friend.example");
+        assert!(
+            cfg.servers
+                .iter()
+                .find(|p| p.name == plain)
+                .unwrap()
+                .cert_hashes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_pins_of_an_origin_are_found_by_origin() {
+        let mut cfg = Config::default();
+        cfg.add_server_pinned("LAN", "https://192.168.1.20:4433", &[H1]);
+        assert_eq!(
+            cfg.cert_hashes_for_origin("https://192.168.1.20:4433"),
+            Some(vec![H1.to_string()])
+        );
+        assert_eq!(
+            cfg.cert_hashes_for_origin("https://192.168.1.21:4433"),
+            None
+        );
     }
 
     /// docs/54 D12 (the Linux rule, unchanged): on Unix the credentials sit
@@ -1599,6 +1733,7 @@ mod tests {
             name: name.into(),
             url: url.into(),
             publish_secret: secret.into(),
+            cert_hashes: Vec::new(),
         }
     }
 

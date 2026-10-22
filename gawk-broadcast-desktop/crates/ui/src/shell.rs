@@ -1133,7 +1133,13 @@ fn read_settings(ui: &MainWindow, cfg: &mut Config, edit: &str) -> String {
         if rename {
             p.name = new_name.clone();
         }
-        p.url = ui.get_set_relay().trim().to_string();
+        let url = ui.get_set_relay().trim().to_string();
+        // R74: pins belong to the address they were published for; a
+        // profile moved to another origin trusts the system store again.
+        if config::relay_origin(&url) != config::relay_origin(&p.url) {
+            p.cert_hashes.clear();
+        }
+        p.url = url;
         p.publish_secret = secret;
         if rename {
             if cfg.selected_server == edit {
@@ -2394,6 +2400,7 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
             if let Some(ui) = ui_weak.upgrade() {
                 let sh = shell.borrow();
                 let url = edit_relay_url(&sh.cfg, &sh.edit_server);
+                let pins = edit_cert_hashes(&sh.cfg, &sh.edit_server);
                 if url.is_empty() {
                     ui.set_test_state(3);
                     ui.set_test_result("Add the relay address first.".into());
@@ -2404,7 +2411,8 @@ fn wire_callbacks(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 let origin = sh.cfg.resolve_origin();
                 let tx = sh.msg_tx.clone();
                 sh.rt.spawn(async move {
-                    let result = gawk_engine::probe::probe(&url, &origin, false).await;
+                    let result =
+                        gawk_engine::probe::probe_pinned(&url, &origin, false, &pins).await;
                     let _ = tx.send(ShellMsg::Tested { url, result });
                 });
             }
@@ -3021,6 +3029,7 @@ fn start_broadcast(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, resume: bool) {
         publish_secret: sh.cfg.resolve_publish_secret(),
         origin: sh.cfg.resolve_origin(),
         insecure: false,
+        cert_hashes: sh.cfg.resolve_cert_hashes(),
         room_code: if late_join.is_some() {
             String::new()
         } else {
@@ -3187,8 +3196,19 @@ enum LinkCard {
         room: Option<String>,
         nick: Option<String>,
     },
-    /// Idle: a server no profile has. "Add and switch".
-    AddServer { origin: String },
+    /// Idle: a server no profile has. "Add and switch". A `gawk://server`
+    /// link (R74) carries its pins and a label to name it by.
+    AddServer {
+        origin: String,
+        cert_hashes: Vec<String>,
+        label: Option<String>,
+    },
+    /// Idle: a `gawk://server` link with new pins for a saved server.
+    /// "Trust and switch".
+    RepinServer {
+        name: String,
+        cert_hashes: Vec<String>,
+    },
 }
 
 /// A link reached the window (D3): a later launch's, with its activation
@@ -3237,11 +3257,92 @@ fn open_link(
                 },
             );
         }
+        Link::Server {
+            relay,
+            cert_hashes,
+            label,
+        } => {
+            raise_window(raise);
+            ui.set_page(0);
+            apply_server_link(
+                ui,
+                shell,
+                ServerLink {
+                    relay,
+                    cert_hashes,
+                    label,
+                    dropped: parsed.dropped,
+                },
+            );
+        }
         viewer @ (Link::Watch { .. } | Link::Room { .. }) => {
             let app_url = shell.borrow().cfg.resolve_app_url();
             open_in_browser(&viewer.to_https(&app_url));
         }
     }
+}
+
+/// A `gawk://server` link (R74, docs/76 §6.1 item 5), already parsed: its
+/// hashes are present only for a private-literal relay.
+struct ServerLink {
+    relay: String,
+    cert_hashes: Vec<String>,
+    label: Option<String>,
+    dropped: Vec<Dropped>,
+}
+
+/// Saves and selects the link's server, only while idle and only after a
+/// click for anything new: an unknown server, or new pins for a saved one.
+/// A saved server with the same pins (or a link with none) is selected at
+/// once, as a broadcast link's saved server is (D5).
+fn apply_server_link(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, link: ServerLink) {
+    let idle = shell.borrow().state == UiState::Idle && !ui.get_crash_resume();
+    if !idle {
+        ui.set_link_notice(
+            format!(
+                "This link is for {}. End the broadcast to switch server.",
+                host_of(&link.relay)
+            )
+            .into(),
+        );
+        return;
+    }
+    let mut filled = Vec::new();
+    let found = shell.borrow().cfg.server_for_origin(Some(&link.relay));
+    match found {
+        Some(Ok(name)) => {
+            let stored = shell
+                .borrow()
+                .cfg
+                .cert_hashes_for_origin(&link.relay)
+                .unwrap_or_default();
+            if !link.cert_hashes.is_empty() && link.cert_hashes != stored {
+                show_link_card(
+                    ui,
+                    &mut shell.borrow_mut(),
+                    LinkCard::RepinServer {
+                        name,
+                        cert_hashes: link.cert_hashes,
+                    },
+                );
+            } else {
+                filled.push(format!("server {name}"));
+                select_server(ui, &mut shell.borrow_mut(), &name);
+            }
+        }
+        // The parser never lets the default fleet through; nothing to add.
+        None => {}
+        Some(Err(())) => show_link_card(
+            ui,
+            &mut shell.borrow_mut(),
+            LinkCard::AddServer {
+                origin: link.relay,
+                cert_hashes: link.cert_hashes,
+                label: link.label,
+            },
+        ),
+    }
+    ui.set_link_notice(link_notice(&filled, &link.dropped).into());
 }
 
 /// The page a cold start's viewer link opens (docs/68 D3): such a launch
@@ -3252,7 +3353,7 @@ fn cold_viewer_url(request: &Request, cfg: &Config) -> Option<String> {
         return None;
     };
     match link::parse(raw).ok()?.link {
-        Link::Broadcast { .. } => None,
+        Link::Broadcast { .. } | Link::Server { .. } => None,
         viewer => Some(viewer.to_https(&cfg.resolve_app_url())),
     }
 }
@@ -3299,7 +3400,15 @@ fn apply_link_idle(ui: &MainWindow, shell: &Rc<RefCell<Shell>>, link: BroadcastL
             // Until the click, the room and nickname apply on the current
             // server (D5).
             let origin = link.relay.clone().unwrap_or_default();
-            show_link_card(ui, &mut shell.borrow_mut(), LinkCard::AddServer { origin });
+            show_link_card(
+                ui,
+                &mut shell.borrow_mut(),
+                LinkCard::AddServer {
+                    origin,
+                    cert_hashes: Vec::new(),
+                    label: None,
+                },
+            );
         }
     }
     if let Some(code) = &link.room {
@@ -3373,16 +3482,40 @@ fn show_link_card(ui: &MainWindow, sh: &mut Shell, card: LinkCard) {
             "Use it".to_string(),
             "Not now".to_string(),
         ),
-        LinkCard::AddServer { origin } => (
+        LinkCard::AddServer {
+            origin,
+            cert_hashes,
+            label,
+        } if label.is_some() || !cert_hashes.is_empty() => (
+            format!(
+                "This link adds the server {}",
+                label.clone().unwrap_or_else(|| host_of(origin))
+            ),
+            if cert_hashes.is_empty() {
+                format!(
+                    "Add {} and switch to it? It's saved with no publish secret; you're asked for one if it needs it.",
+                    host_of(origin)
+                )
+            } else {
+                format!(
+                    "Add {} and switch to it? It's a local relay, trusted by its certificate's fingerprint rather than a certificate authority. It's saved with no publish secret; you're asked for one if it needs it.",
+                    host_of(origin)
+                )
+            },
+            "Add and switch".to_string(),
+            keep_current(sh),
+        ),
+        LinkCard::AddServer { origin, .. } => (
             format!("This link uses the server {}", host_of(origin)),
             "Add it and switch to it? It's saved with no publish secret; you're asked for one if it needs it.".to_string(),
             "Add and switch".to_string(),
-            format!(
-                "Keep {}",
-                sh.cfg
-                    .selected_profile()
-                    .map_or("the default server".to_string(), |p| p.name.clone())
-            ),
+            keep_current(sh),
+        ),
+        LinkCard::RepinServer { name, .. } => (
+            format!("This link has new certificate fingerprints for {name}"),
+            "Trust them and switch to it? A local relay's fingerprints change every few days; only accept this from whoever runs it.".to_string(),
+            "Trust and switch".to_string(),
+            keep_current(sh),
         ),
     };
     ui.set_link_card_title(title.into());
@@ -3390,6 +3523,16 @@ fn show_link_card(ui: &MainWindow, sh: &mut Shell, card: LinkCard) {
     ui.set_link_card_accept(accept.into());
     ui.set_link_card_decline(decline.into());
     sh.link_card = Some(card);
+}
+
+/// The card's second button: keep the server selected now.
+fn keep_current(sh: &Shell) -> String {
+    format!(
+        "Keep {}",
+        sh.cfg
+            .selected_profile()
+            .map_or("the default server".to_string(), |p| p.name.clone())
+    )
 }
 
 fn clear_link_card(ui: &MainWindow, sh: &mut Shell) -> Option<LinkCard> {
@@ -3413,15 +3556,33 @@ fn link_card_accepted(ui: &MainWindow, shell: &Rc<RefCell<Shell>>) {
                 choose_room(ui, shell, RoomInput { code, grant: None });
             }
         }
-        Some(LinkCard::AddServer { origin }) => {
+        Some(LinkCard::AddServer {
+            origin,
+            cert_hashes,
+            label,
+        }) => {
             let mut sh = shell.borrow_mut();
             // Only while idle: a broadcast's server never changes under it.
             if sh.state != UiState::Idle {
                 return;
             }
-            let name = sh.cfg.add_server(&host_of(&origin), &origin);
-            log::info!("added a server from a link");
+            let name = label.unwrap_or_else(|| host_of(&origin));
+            let name = sh.cfg.add_server_pinned(&name, &origin, &cert_hashes);
+            log::info!(
+                "added a server from a link ({} pinned hashes)",
+                cert_hashes.len()
+            );
             select_server(ui, &mut sh, &name);
+        }
+        Some(LinkCard::RepinServer { name, cert_hashes }) => {
+            let mut sh = shell.borrow_mut();
+            if sh.state != UiState::Idle {
+                return;
+            }
+            if sh.cfg.set_server_cert_hashes(&name, &cert_hashes) {
+                log::info!("re-pinned a saved server from a link");
+                select_server(ui, &mut sh, &name);
+            }
         }
         None => {}
     }
@@ -4549,9 +4710,10 @@ fn run_probe(ui: &MainWindow, sh: &mut Shell) {
     }
     sh.probe.in_flight = true;
     let origin = sh.cfg.resolve_origin();
+    let pins = sh.cfg.resolve_cert_hashes();
     let tx = sh.msg_tx.clone();
     sh.rt.spawn(async move {
-        let result = gawk_engine::probe::probe(&url, &origin, false).await;
+        let result = gawk_engine::probe::probe_pinned(&url, &origin, false, &pins).await;
         let _ = tx.send(ShellMsg::Probed { url, result });
     });
 }
@@ -4598,6 +4760,16 @@ fn render_screening(ui: &MainWindow, sh: &Shell) {
 
 /// The relay the Edit server page's Test connection dials: the edited
 /// profile's (empty until it has an address), or the pinned default's.
+/// The pins Test connection dials the edited server with (R74): the
+/// profile's own, none for the default fleet.
+fn edit_cert_hashes(cfg: &Config, edit: &str) -> Vec<gawk_engine::transport::CertHash> {
+    custom_profiles(cfg)
+        .into_iter()
+        .find(|p| p.name == edit)
+        .map(|p| gawk_engine::transport::cert_hashes_from_hex(&p.cert_hashes))
+        .unwrap_or_default()
+}
+
 fn edit_relay_url(cfg: &Config, edit: &str) -> String {
     match custom_profiles(cfg).into_iter().find(|p| p.name == edit) {
         Some(p) if p.url.trim().is_empty() => String::new(),
@@ -5219,6 +5391,7 @@ mod tests {
                 name: "Friend".into(),
                 url: "https://relay.friend.example".into(),
                 publish_secret: "s".into(),
+                cert_hashes: Vec::new(),
             }],
             ..Default::default()
         }
@@ -5783,6 +5956,192 @@ mod tests {
         );
     }
 
+    // --- R74 PP5: gawk://server and pinned servers (docs/76 §6.1 item 5) ----
+
+    const H1: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+    const H2: &str = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+    const LAN: &str = "https%3A%2F%2F192.168.1.20%3A4433";
+
+    // A server link asks first, then saves the server under its label with
+    // its pins and selects it; nothing else on the form changes.
+    #[test]
+    fn a_server_link_adds_a_pinned_server_after_a_click() {
+        let ui = window();
+        let (shell, calls) = shell_with(friend_cfg());
+        warm(
+            &ui,
+            &shell,
+            &format!("gawk://server?relay={LAN}&certHash={H1},{H2}&label=Assembly%202026"),
+        );
+        assert_eq!(*calls.borrow(), ["raise(tok)"]);
+        assert_eq!(ui.get_page(), 0);
+        assert_eq!(
+            ui.get_link_card_title(),
+            "This link adds the server Assembly 2026"
+        );
+        assert!(
+            ui.get_link_card_body().contains("certificate"),
+            "{}",
+            ui.get_link_card_body()
+        );
+        assert_eq!(ui.get_link_card_accept(), "Add and switch");
+        assert_eq!(
+            shell.borrow().cfg.servers.len(),
+            1,
+            "nothing without a click"
+        );
+
+        link_card_accepted(&ui, &shell);
+        let sh = shell.borrow();
+        let added = sh.cfg.selected_profile().expect("switched");
+        assert_eq!(added.name, "Assembly 2026");
+        assert_eq!(added.url, "https://192.168.1.20:4433");
+        assert_eq!(added.cert_hashes, vec![H1.to_string(), H2.to_string()]);
+        assert_eq!(added.publish_secret, "");
+        assert_eq!(sh.cfg.resolve_cert_hashes(), vec![[0xa1; 32], [0xb2; 32]]);
+    }
+
+    // No label: the host names it. A hash beside a public address was
+    // dropped by the parser, and the notice says so.
+    #[test]
+    fn a_server_link_without_a_label_is_named_by_its_host() {
+        let ui = window();
+        let (shell, _) = shell_with(Config::default());
+        warm(
+            &ui,
+            &shell,
+            &format!("gawk://server?relay=https%3A%2F%2F203.0.113.7%3A4433&certHash={H1}"),
+        );
+        // With nothing but the address, the card is a broadcast link's.
+        assert_eq!(
+            ui.get_link_card_title(),
+            "This link uses the server 203.0.113.7:4433"
+        );
+        assert!(ui.get_link_notice().contains("certHash (not valid)"));
+        link_card_accepted(&ui, &shell);
+        let sh = shell.borrow();
+        let added = sh.cfg.selected_profile().expect("switched");
+        assert_eq!(added.name, "203.0.113.7:4433");
+        assert!(added.cert_hashes.is_empty());
+    }
+
+    // A saved server with the same pins is selected at once; new pins for
+    // it ask first, and a link with none never unpins it.
+    #[test]
+    fn a_server_link_for_a_saved_server_selects_it_and_asks_before_repinning() {
+        let ui = window();
+        let mut cfg = friend_cfg();
+        cfg.add_server_pinned("LAN", "https://192.168.1.20:4433", &[H1]);
+        let (shell, _) = shell_with(cfg);
+
+        warm(
+            &ui,
+            &shell,
+            &format!("gawk://server?relay={LAN}&certHash={H1}"),
+        );
+        assert_eq!(ui.get_link_card_title(), "");
+        assert_eq!(shell.borrow().cfg.selected_server, "LAN");
+        assert!(ui.get_link_notice().contains("server LAN"));
+
+        warm(&ui, &shell, &format!("gawk://server?relay={LAN}"));
+        assert_eq!(ui.get_link_card_title(), "");
+        assert_eq!(
+            shell.borrow().cfg.servers[1].cert_hashes,
+            vec![H1.to_string()]
+        );
+
+        select_server(&ui, &mut shell.borrow_mut(), "Friend");
+        warm(
+            &ui,
+            &shell,
+            &format!("gawk://server?relay={LAN}&certHash={H2},{H1}"),
+        );
+        assert_eq!(
+            ui.get_link_card_title(),
+            "This link has new certificate fingerprints for LAN"
+        );
+        assert_eq!(shell.borrow().cfg.selected_server, "Friend");
+        assert_eq!(
+            shell.borrow().cfg.servers[1].cert_hashes,
+            vec![H1.to_string()]
+        );
+        link_card_accepted(&ui, &shell);
+        let sh = shell.borrow();
+        assert_eq!(sh.cfg.selected_server, "LAN");
+        assert_eq!(
+            sh.cfg.servers[1].cert_hashes,
+            vec![H2.to_string(), H1.to_string()]
+        );
+        assert_eq!(sh.cfg.servers.len(), 2, "nothing added");
+    }
+
+    // A broadcast's server never changes under it (D4).
+    #[test]
+    fn a_server_link_while_live_only_says_so() {
+        let ui = window();
+        for state in [UiState::Live, UiState::Paused, UiState::Starting] {
+            let (shell, _) = shell_with(Config::default());
+            shell.borrow_mut().state = state;
+            warm(
+                &ui,
+                &shell,
+                &format!("gawk://server?relay={LAN}&certHash={H1}"),
+            );
+            assert_eq!(ui.get_link_card_title(), "");
+            assert!(
+                ui.get_link_notice()
+                    .contains("End the broadcast to switch server"),
+                "{}",
+                ui.get_link_notice()
+            );
+            assert!(shell.borrow().cfg.servers.is_empty());
+        }
+    }
+
+    // It is not a viewer link: a cold start with one shows the window.
+    #[test]
+    fn a_server_link_is_never_a_cold_viewer_start() {
+        let request = Request::Open(Ok(format!("gawk://server?relay={LAN}")));
+        assert_eq!(cold_viewer_url(&request, &Config::default()), None);
+    }
+
+    // Test connection probes the edited server with its own pins; the
+    // default and an unpinned server have none.
+    #[test]
+    fn the_edited_servers_pins_are_what_test_connection_uses() {
+        let mut cfg = friend_cfg();
+        cfg.add_server_pinned("LAN", "https://192.168.1.20:4433", &[H1]);
+        assert_eq!(edit_cert_hashes(&cfg, "LAN"), vec![[0xa1; 32]]);
+        assert!(edit_cert_hashes(&cfg, "Friend").is_empty());
+        assert!(edit_cert_hashes(&cfg, DEFAULT_SERVER_NAME).is_empty());
+    }
+
+    // Pins belong to the address they were published for: moving a
+    // profile to another origin drops them, a rename keeps them.
+    #[test]
+    fn editing_a_pinned_servers_address_drops_its_pins() {
+        let ui = window();
+        let mut cfg = Config::default();
+        cfg.add_server_pinned("LAN", "https://192.168.1.20:4433", &[H1]);
+        seed_edit_fields(&ui, &cfg, "LAN");
+        ui.set_set_server_name("Party".into());
+        let edited = read_settings(&ui, &mut cfg, "LAN");
+        assert_eq!(edited, "Party");
+        assert_eq!(cfg.servers[0].cert_hashes, vec![H1.to_string()]);
+
+        ui.set_set_relay("https://192.168.1.20:4433/".into());
+        read_settings(&ui, &mut cfg, "Party");
+        assert_eq!(
+            cfg.servers[0].cert_hashes,
+            vec![H1.to_string()],
+            "same origin"
+        );
+
+        ui.set_set_relay("https://192.168.1.21:4433".into());
+        read_settings(&ui, &mut cfg, "Party");
+        assert!(cfg.servers[0].cert_hashes.is_empty());
+    }
+
     // D5a: the two-link sequence. A first link adds and switches to a
     // hostile server; a second names the user's static room there. The key
     // stored for the room on the default fleet is never presented.
@@ -6209,16 +6568,19 @@ mod tests {
                     name: DEFAULT_SERVER_NAME.into(),
                     url: gawk_engine::defaults::RELAY_URL.into(),
                     publish_secret: "default-secret".into(),
+                    cert_hashes: Vec::new(),
                 },
                 ServerProfile {
                     name: "Juho's homelab".into(),
                     url: "https://relay.example:4433".into(),
                     publish_secret: "s1".into(),
+                    cert_hashes: Vec::new(),
                 },
                 ServerProfile {
                     name: "  ".into(), // hand-edited file; the GUI never writes this
                     url: "https://other.example:4433".into(),
                     publish_secret: String::new(),
+                    cert_hashes: Vec::new(),
                 },
             ],
             ..Default::default()

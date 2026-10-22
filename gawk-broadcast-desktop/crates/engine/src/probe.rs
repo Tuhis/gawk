@@ -68,12 +68,24 @@ pub fn echo_url(relay_url: &str) -> Result<String, String> {
 
 /// Probes the relay at `relay_url`: dial `/echo`, then [`probe_session`].
 pub async fn probe(relay_url: &str, origin: &str, insecure: bool) -> ProbeResult {
+    probe_pinned(relay_url, origin, insecure, &[]).await
+}
+
+/// [`probe`] of a server pinned to `pins` (R74, docs/76 §6.1 item 5): the
+/// dial accepts only a certificate hashing to one of them, and an empty
+/// list is the system store ([`crate::transport::dial_pinned`]).
+pub async fn probe_pinned(
+    relay_url: &str,
+    origin: &str,
+    insecure: bool,
+    pins: &[crate::transport::CertHash],
+) -> ProbeResult {
     let Ok(url) = echo_url(relay_url) else {
         return ProbeResult::Failed;
     };
     let dialed = tokio::time::timeout(
         PROBE_CONNECT_TIMEOUT,
-        crate::transport::dial(&url, origin, insecure),
+        crate::transport::dial_pinned(&url, origin, insecure, pins),
     )
     .await;
     match dialed {
