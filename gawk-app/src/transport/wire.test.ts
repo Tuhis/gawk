@@ -144,6 +144,24 @@ import {
   type StreamFrameHeader,
   type TimeSyncMessage,
   type VideoChunkHeader,
+  TYPE_LOCAL_RELAY_INFO,
+  TYPE_LOCAL_RELAY_OFFER,
+  CLOSE_CODE_POP_UPLINK_FULL,
+  CLOSE_CODE_POP_NO_DEMAND,
+  LOCAL_RELAY_LINKED,
+  LOCAL_RELAY_ON_WALL,
+  LOCAL_RELAY_INFO_MIN_SIZE,
+  MAX_LOCAL_RELAY_ORIGIN_LEN,
+  MAX_LOCAL_RELAY_HANDLE_LEN,
+  MAX_LOCAL_RELAY_URL_LEN,
+  MAX_LOCAL_RELAY_CANDIDATES,
+  MAX_LOCAL_RELAY_HASHES,
+  encodeLocalRelayInfo,
+  parseLocalRelayInfo,
+  encodeLocalRelayOffer,
+  parseLocalRelayOffer,
+  type LocalRelayInfoMessage,
+  type LocalRelayOfferMessage,
 } from './wire';
 
 // Golden vectors copied verbatim from gawk-server/wire/wire_test.go
@@ -776,9 +794,21 @@ describe('SessionClosing (R57)', () => {
   });
 
   it('round-trips every noticed code', () => {
-    for (const c of [CLOSE_CODE_BROADCAST_ENDED, CLOSE_CODE_PUBLISHER_SUPERSEDED, CLOSE_CODE_TERMINATED_BY_OPERATOR]) {
+    for (const c of [
+      CLOSE_CODE_BROADCAST_ENDED,
+      CLOSE_CODE_PUBLISHER_SUPERSEDED,
+      CLOSE_CODE_TERMINATED_BY_OPERATOR,
+      CLOSE_CODE_POP_UPLINK_FULL,
+    ]) {
       expect(parseSessionClosing(encodeSessionClosing(c))).toBe(c);
     }
+  });
+
+  // R74: 4012 PopUplinkFull is noticed too. closing_test.go
+  // goldenSessionClosingPopUplinkFullHex.
+  it('encodes the golden 4012 notice byte-for-byte', () => {
+    expect(toHex(encodeSessionClosing(CLOSE_CODE_POP_UPLINK_FULL))).toBe('011700000fac');
+    expect(parseSessionClosing(fromHex('011700000fac'))).toBe(4012);
   });
 
   it('is strict: exact size, version, type, and the gawk code range', () => {
@@ -1499,5 +1529,334 @@ describe('room record reader (R42)', () => {
     );
     expect(parseRoomHello(hello)).toEqual(goldenRoomHello);
     expect(parseRoomEvent(ev)).toEqual({ seq: 11, kind: ROOM_EVENT_ROOM_ENDING, reason: ROOM_END_REASON_CREATOR });
+  });
+});
+
+// R74 PoP relays (docs/76 §9). Golden vectors byte-identical to
+// gawk-server/wire/localrelay_test.go — restated here, never imported.
+const GOLDEN_LOCAL_RELAY_INFO_LINKED_HEX =
+  '01180003' +
+  '0d417373656d626c792032303236' +
+  '1468747470733a2f2f6761776b2e696f696f2e6669' +
+  '0d617373656d626c792d32303236';
+const GOLDEN_LOCAL_RELAY_INFO_STANDALONE_HEX = '011800000d417373656d626c7920323032360000';
+const GOLDEN_LOCAL_RELAY_OFFER_HEX =
+  '011900' +
+  '2436663163326433652d346135622d346336642d386537662d303132333435363738396162' +
+  '0d417373656d626c792032303236' +
+  '00000e10' +
+  '02' +
+  '002668747470733a2f2f702d376b326d39782e706f702e6761776b2e696f696f2e66693a34343333' +
+  '00' +
+  '001968747470733a2f2f3139322e3136382e312e32303a34343333' +
+  '02' +
+  '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f' +
+  '202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f';
+
+const goldenLocalRelayInfoLinked: LocalRelayInfoMessage = {
+  linked: true,
+  onWall: true,
+  name: 'Assembly 2026',
+  homeOrigin: 'https://gawk.ioio.fi',
+  wallCode: 'assembly-2026',
+};
+const goldenLocalRelayInfoStandalone: LocalRelayInfoMessage = {
+  linked: false,
+  onWall: false,
+  name: 'Assembly 2026',
+  homeOrigin: '',
+  wallCode: '',
+};
+
+function goldenLocalRelayOffer(): LocalRelayOfferMessage {
+  const h1 = new Uint8Array(32);
+  const h2 = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    h1[i] = i;
+    h2[i] = 0x20 + i;
+  }
+  return {
+    handle: '6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab',
+    name: 'Assembly 2026',
+    validity: 3600,
+    candidates: [
+      { url: 'https://p-7k2m9x.pop.gawk.ioio.fi:4433', hashes: [] },
+      { url: 'https://192.168.1.20:4433', hashes: [h1, h2] },
+    ],
+  };
+}
+
+function withByte(hex: string, at: number, v: number): Uint8Array {
+  const b = fromHex(hex);
+  b[at] = v;
+  return b;
+}
+
+function concatBytes(...parts: (Uint8Array | number[])[]): Uint8Array {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
+}
+
+describe('R74 constants', () => {
+  it('match the Go package', () => {
+    expect(TYPE_LOCAL_RELAY_INFO).toBe(0x18);
+    expect(TYPE_LOCAL_RELAY_OFFER).toBe(0x19);
+    expect(CLOSE_CODE_POP_UPLINK_FULL).toBe(4012);
+    expect(CLOSE_CODE_POP_NO_DEMAND).toBe(4013);
+    expect(LOCAL_RELAY_LINKED).toBe(0x01);
+    expect(LOCAL_RELAY_ON_WALL).toBe(0x02);
+    expect(LOCAL_RELAY_INFO_MIN_SIZE).toBe(7);
+    expect(MAX_LOCAL_RELAY_ORIGIN_LEN).toBe(128);
+    expect(MAX_LOCAL_RELAY_HANDLE_LEN).toBe(64);
+    expect(MAX_LOCAL_RELAY_URL_LEN).toBe(256);
+    expect(MAX_LOCAL_RELAY_CANDIDATES).toBe(4);
+    expect(MAX_LOCAL_RELAY_HASHES).toBe(2);
+  });
+});
+
+describe('local relay info (0x18)', () => {
+  it('encodes and parses the golden vectors', () => {
+    expect(toHex(encodeLocalRelayInfo(goldenLocalRelayInfoLinked))).toBe(GOLDEN_LOCAL_RELAY_INFO_LINKED_HEX);
+    expect(parseLocalRelayInfo(fromHex(GOLDEN_LOCAL_RELAY_INFO_LINKED_HEX))).toEqual(goldenLocalRelayInfoLinked);
+    expect(toHex(encodeLocalRelayInfo(goldenLocalRelayInfoStandalone))).toBe(GOLDEN_LOCAL_RELAY_INFO_STANDALONE_HEX);
+    expect(parseLocalRelayInfo(fromHex(GOLDEN_LOCAL_RELAY_INFO_STANDALONE_HEX))).toEqual(
+      goldenLocalRelayInfoStandalone,
+    );
+  });
+
+  it('tolerates trailing bytes and unknown state bits', () => {
+    expect(parseLocalRelayInfo(fromHex(GOLDEN_LOCAL_RELAY_INFO_LINKED_HEX + 'a1b2c3'))).toEqual(
+      goldenLocalRelayInfoLinked,
+    );
+    const info = parseLocalRelayInfo(withByte(GOLDEN_LOCAL_RELAY_INFO_STANDALONE_HEX, 3, 0xfd));
+    expect(info.linked).toBe(true);
+    expect(info.onWall).toBe(false);
+  });
+
+  it('applies the home-origin rule on both sides', () => {
+    const ok = [
+      '',
+      'https://gawk.ioio.fi',
+      'https://gawk.ioio.fi:8443',
+      'https://192.168.1.20:4433',
+      'https://[fd00::1]:4433',
+      'https://a',
+      'https://a:65535',
+      'http://localhost',
+      'http://localhost:5173',
+      'http://127.0.0.1',
+      'http://127.0.0.1:4480',
+    ];
+    for (const o of ok) {
+      const msg = encodeLocalRelayInfo({ linked: o !== '', onWall: false, name: 'x', homeOrigin: o, wallCode: '' });
+      expect(parseLocalRelayInfo(msg).homeOrigin).toBe(o);
+    }
+    const bad = [
+      'https://gawk.ioio.fi/',
+      'https://gawk.ioio.fi/app',
+      'https://gawk.ioio.fi?x=1',
+      'https://gawk.ioio.fi#f',
+      'https://user@gawk.ioio.fi',
+      'https://',
+      'http://gawk.ioio.fi',
+      'http://localhost.evil.example',
+      'http://192.168.1.20',
+      'ws://gawk.ioio.fi',
+      'gawk.ioio.fi',
+      'https://gawk.ioio.fi:notaport',
+      'https://gawk ioio.fi',
+      'https://gawk.ioio.fi\x7f',
+      'https://a:0',
+      'https://a:65536',
+      'https://a:',
+      'https://a:123456',
+      'https://a::1',
+      'https://[]',
+      'https://[::1',
+      'https://[::1]x',
+      'https://[[::1]',
+      'https://a]',
+      'HTTPS://gawk.ioio.fi',
+      'https://' + 'a'.repeat(MAX_LOCAL_RELAY_ORIGIN_LEN),
+    ];
+    for (const o of bad) {
+      expect(
+        () => encodeLocalRelayInfo({ linked: true, onWall: false, name: 'x', homeOrigin: o, wallCode: '' }),
+        o,
+      ).toThrow(WireError);
+      const ob = new TextEncoder().encode(o);
+      if (ob.length > 255) continue;
+      const msg = concatBytes([0x01, 0x18, 0, 0, 0, ob.length], ob, [0]);
+      expect(() => parseLocalRelayInfo(msg), o).toThrow(WireError);
+    }
+  });
+
+  it('rejects bad messages', () => {
+    const golden = fromHex(GOLDEN_LOCAL_RELAY_INFO_STANDALONE_HEX);
+    const base: LocalRelayInfoMessage = { linked: false, onWall: false, name: '', homeOrigin: '', wallCode: '' };
+    expect(() => encodeLocalRelayInfo({ ...base, name: 'a'.repeat(65) })).toThrow(WireError);
+    expect(() => encodeLocalRelayInfo({ ...base, name: '\ud800' })).toThrow(WireError);
+    expect(() => encodeLocalRelayInfo({ ...base, wallCode: 'a'.repeat(33) })).toThrow(WireError);
+    const cases: Uint8Array[] = [
+      new Uint8Array(0),
+      golden.subarray(0, 6),
+      withByte(GOLDEN_LOCAL_RELAY_INFO_STANDALONE_HEX, 0, 2),
+      withByte(GOLDEN_LOCAL_RELAY_INFO_STANDALONE_HEX, 1, 0x11),
+      withByte(GOLDEN_LOCAL_RELAY_INFO_STANDALONE_HEX, 2, 0x01),
+      withByte(GOLDEN_LOCAL_RELAY_INFO_STANDALONE_HEX, 4, 0x30),
+      concatBytes([1, 0x18, 0, 0, 65], new Uint8Array(65).fill(0x61), [0, 0]),
+      new Uint8Array([1, 0x18, 0, 0, 1, 0xff, 0, 0]),
+      golden.subarray(0, golden.length - 2),
+      golden.subarray(0, golden.length - 1),
+      withByte(GOLDEN_LOCAL_RELAY_INFO_STANDALONE_HEX, golden.length - 1, 5),
+      concatBytes(golden.subarray(0, golden.length - 1), [33], new Uint8Array(33).fill(0x61)),
+      concatBytes(golden.subarray(0, golden.length - 1), [1, 0xc3]),
+    ];
+    for (const c of cases) {
+      expect(() => parseLocalRelayInfo(c), toHex(c)).toThrow(WireError);
+    }
+  });
+});
+
+describe('local relay offer (0x19)', () => {
+  // Offsets into the golden vector.
+  const handleLenAt = 3;
+  const nameLenAt = handleLenAt + 1 + 36;
+  const validityAt = nameLenAt + 1 + 13;
+  const candCountAt = validityAt + 4;
+  const url1LenAt = candCountAt + 1;
+  const hash1At = url1LenAt + 2 + 38;
+  const url2LenAt = hash1At + 1;
+  const hash2At = url2LenAt + 2 + 25;
+
+  it('encodes and parses the golden vector, tolerating trailing bytes', () => {
+    expect(toHex(encodeLocalRelayOffer(goldenLocalRelayOffer()))).toBe(GOLDEN_LOCAL_RELAY_OFFER_HEX);
+    expect(parseLocalRelayOffer(fromHex(GOLDEN_LOCAL_RELAY_OFFER_HEX))).toEqual(goldenLocalRelayOffer());
+    expect(parseLocalRelayOffer(fromHex(GOLDEN_LOCAL_RELAY_OFFER_HEX + 'a1b2c3'))).toEqual(goldenLocalRelayOffer());
+  });
+
+  it('applies the candidate-URL rule', () => {
+    const ok = [
+      'https://a',
+      'https://p-7k2m9x.pop.gawk.ioio.fi:4433',
+      'https://192.168.1.20:4433',
+      'https://[fd00::1]:4433',
+      'https://a.example/some/path',
+      'https://a.example/',
+    ];
+    const bad = [
+      '',
+      'https://',
+      'https:///path',
+      'http://a.example',
+      'HTTPS://a.example',
+      '//a.example',
+      'https://a.example?q',
+      'https://a.example/p?q=1',
+      'https://a.example/#f',
+      'https://u@a.example',
+      'https://a.example:0',
+      'https://a.example:65536',
+      'https://a.example:/p',
+      'https://a.example:44x3',
+      'https://[fd00::1',
+      'https://[fd00::1]:',
+      'https://a b',
+      'https://a\x00',
+      'https://é.example',
+      'https://a.example/' + 'a'.repeat(MAX_LOCAL_RELAY_URL_LEN),
+    ];
+    const offerWith = (url: string): LocalRelayOfferMessage => ({
+      ...goldenLocalRelayOffer(),
+      candidates: [{ url, hashes: [] }],
+    });
+    for (const u of ok) {
+      expect(parseLocalRelayOffer(encodeLocalRelayOffer(offerWith(u))).candidates[0].url).toBe(u);
+    }
+    for (const u of bad) {
+      expect(() => encodeLocalRelayOffer(offerWith(u)), u).toThrow(WireError);
+    }
+  });
+
+  it('rejects bad offers on encode', () => {
+    const g = goldenLocalRelayOffer;
+    const h = new Uint8Array(32);
+    const bad: LocalRelayOfferMessage[] = [
+      { ...g(), handle: '' },
+      { ...g(), handle: 'a'.repeat(65) },
+      { ...g(), handle: 'a\x01b' },
+      { ...g(), name: 'a'.repeat(65) },
+      { ...g(), validity: 0 },
+      { ...g(), validity: 2 ** 32 },
+      { ...g(), candidates: [] },
+      { ...g(), candidates: Array.from({ length: 5 }, () => ({ url: 'https://a.example', hashes: [] })) },
+      { ...g(), candidates: [{ url: 'https://a.example', hashes: [h, h, h] }] },
+      { ...g(), candidates: [{ url: 'https://a.example', hashes: [new Uint8Array(31)] }] },
+    ];
+    for (const o of bad) {
+      expect(() => encodeLocalRelayOffer(o)).toThrow(WireError);
+    }
+  });
+
+  it('rejects bad offers on parse', () => {
+    const golden = fromHex(GOLDEN_LOCAL_RELAY_OFFER_HEX);
+    const edit = (f: (b: Uint8Array) => Uint8Array): Uint8Array => f(fromHex(GOLDEN_LOCAL_RELAY_OFFER_HEX));
+    const set = (at: number, ...v: number[]) => (b: Uint8Array): Uint8Array => {
+      b.set(v, at);
+      return b;
+    };
+    const replaceUrl1 = (u: string): Uint8Array => {
+      const ub = new TextEncoder().encode(u);
+      return concatBytes(golden.subarray(0, url1LenAt), [ub.length >> 8, ub.length & 0xff], ub, golden.subarray(hash1At));
+    };
+    const cases: Uint8Array[] = [
+      new Uint8Array(0),
+      golden.subarray(0, 3),
+      edit(set(0, 2)),
+      edit(set(1, TYPE_LOCAL_RELAY_INFO)),
+      edit(set(2, 0x80)),
+      concatBytes([1, 0x19, 0, 0], golden.subarray(nameLenAt)),
+      concatBytes([1, 0x19, 0, 65], new Uint8Array(65).fill(0x61), golden.subarray(nameLenAt)),
+      edit(set(handleLenAt + 1, 0x01)),
+      edit(set(nameLenAt + 1, 0xff)),
+      edit(set(validityAt, 0, 0, 0, 0)),
+      edit(set(candCountAt, 0)).subarray(0, candCountAt + 1),
+      edit(set(candCountAt, 5)),
+      edit(set(candCountAt, 3)),
+      edit(set(url1LenAt, 0, 0)),
+      edit(set(url1LenAt, 1, 1)),
+      golden.subarray(0, url1LenAt + 10),
+      replaceUrl1('http://p-7k2m9x.pop.gawk.ioio.fi:4433'),
+      replaceUrl1('https://p-7k2m9x.pop.gawk.ioio.fi:4433?q'),
+      replaceUrl1('https://u@p-7k2m9x.pop.gawk.ioio.fi:4433'),
+      concatBytes(edit(set(hash2At, 3)), new Uint8Array(32)),
+      golden.subarray(0, golden.length - 1),
+      golden.subarray(0, hash2At),
+      golden.subarray(0, validityAt + 2),
+    ];
+    for (const c of cases) {
+      expect(() => parseLocalRelayOffer(c), toHex(c)).toThrow(WireError);
+    }
+  });
+
+  it('round-trips the largest offer', () => {
+    const h = new Uint8Array(32).fill(7);
+    const prefix = 'https://a.example/';
+    const o: LocalRelayOfferMessage = {
+      handle: 'h'.repeat(MAX_LOCAL_RELAY_HANDLE_LEN),
+      name: 'n'.repeat(64),
+      validity: 0xffffffff,
+      candidates: Array.from({ length: MAX_LOCAL_RELAY_CANDIDATES }, () => ({
+        url: prefix + 'p'.repeat(MAX_LOCAL_RELAY_URL_LEN - prefix.length),
+        hashes: [h, h],
+      })),
+    };
+    expect(parseLocalRelayOffer(encodeLocalRelayOffer(o))).toEqual(o);
   });
 });

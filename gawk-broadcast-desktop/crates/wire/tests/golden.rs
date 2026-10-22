@@ -1167,3 +1167,547 @@ fn wire_constants_are_pinned() {
     assert_eq!(BROADCAST_ID_ALPHABET, "23456789ABCDEFGHJKMNPQRSTUVWXYZ");
     assert_eq!(BROADCAST_ID_ALPHABET.len(), 31);
 }
+
+// --- R74 PoP relays (docs/76 §9) ---------------------------------------------
+// LocalRelayInfo (0x18) and LocalRelayOffer (0x19), byte-identical to
+// gawk-server/wire/localrelay_test.go — restated, never imported.
+
+// A: a linked PoP whose broadcaster is on the party wall.
+const GOLDEN_LOCAL_RELAY_INFO_LINKED: &str = concat!(
+    "01180003",
+    "0d417373656d626c792032303236",
+    "1468747470733a2f2f6761776b2e696f696f2e6669",
+    "0d617373656d626c792d32303236"
+);
+// B: a standalone PoP (state 0, no origin, no wall).
+const GOLDEN_LOCAL_RELAY_INFO_STANDALONE: &str = "011800000d417373656d626c7920323032360000";
+// The offer: handle 6f1c2d3e-…, "Assembly 2026", 3600 s, two candidates.
+const GOLDEN_LOCAL_RELAY_OFFER: &str = concat!(
+    "011900",
+    "2436663163326433652d346135622d346336642d386537662d303132333435363738396162",
+    "0d417373656d626c792032303236",
+    "00000e10",
+    "02",
+    "002668747470733a2f2f702d376b326d39782e706f702e6761776b2e696f696f2e66693a34343333",
+    "00",
+    "001968747470733a2f2f3139322e3136382e312e32303a34343333",
+    "02",
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+);
+// R74: SessionClosing for 4012 PopUplinkFull (closing_test.go
+// goldenSessionClosingPopUplinkFullHex).
+const GOLDEN_SESSION_CLOSING_POP_UPLINK_FULL: &str = "011700000fac";
+
+const LOCAL_RELAY_H1: [u8; 32] = {
+    let mut h = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        h[i] = i as u8;
+        i += 1;
+    }
+    h
+};
+const LOCAL_RELAY_H2: [u8; 32] = {
+    let mut h = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        h[i] = 0x20 + i as u8;
+        i += 1;
+    }
+    h
+};
+
+fn golden_local_relay_info_linked() -> LocalRelayInfo<'static> {
+    LocalRelayInfo {
+        linked: true,
+        on_wall: true,
+        name: "Assembly 2026",
+        home_origin: "https://gawk.ioio.fi",
+        wall_code: "assembly-2026",
+    }
+}
+
+fn golden_offer() -> LocalRelayOffer<'static> {
+    LocalRelayOffer {
+        handle: "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab",
+        name: "Assembly 2026",
+        validity: 3600,
+        candidates: vec![
+            LocalRelayCandidate {
+                url: "https://p-7k2m9x.pop.gawk.ioio.fi:4433",
+                hashes: vec![],
+            },
+            LocalRelayCandidate {
+                url: "https://192.168.1.20:4433",
+                hashes: vec![&LOCAL_RELAY_H1, &LOCAL_RELAY_H2],
+            },
+        ],
+    }
+}
+
+#[test]
+fn golden_local_relay_info() {
+    let standalone = LocalRelayInfo {
+        name: "Assembly 2026",
+        ..Default::default()
+    };
+    for (hex, msg) in [
+        (
+            GOLDEN_LOCAL_RELAY_INFO_LINKED,
+            golden_local_relay_info_linked(),
+        ),
+        (GOLDEN_LOCAL_RELAY_INFO_STANDALONE, standalone),
+    ] {
+        let mut got = Vec::new();
+        msg.encode(&mut got).unwrap();
+        assert_eq!(to_hex(&got), hex);
+        let bytes = from_hex(hex);
+        assert_eq!(LocalRelayInfo::parse(&bytes).unwrap(), msg);
+        // The free-function spelling is the same code.
+        assert_eq!(parse_local_relay_info(&bytes).unwrap(), msg);
+    }
+}
+
+#[test]
+fn local_relay_info_tolerates_trailing_bytes_and_unknown_state() {
+    let bytes = from_hex(&format!("{GOLDEN_LOCAL_RELAY_INFO_LINKED}a1b2c3"));
+    assert_eq!(
+        LocalRelayInfo::parse(&bytes).unwrap(),
+        golden_local_relay_info_linked()
+    );
+    let mut b = from_hex(GOLDEN_LOCAL_RELAY_INFO_STANDALONE);
+    b[3] = 0xfd;
+    let info = LocalRelayInfo::parse(&b).unwrap();
+    assert!(info.linked && !info.on_wall);
+}
+
+#[test]
+fn local_relay_info_origin_rule() {
+    let ok = [
+        "",
+        "https://gawk.ioio.fi",
+        "https://gawk.ioio.fi:8443",
+        "https://192.168.1.20:4433",
+        "https://[fd00::1]:4433",
+        "https://a",
+        "https://a:65535",
+        "http://localhost",
+        "http://localhost:5173",
+        "http://127.0.0.1",
+        "http://127.0.0.1:4480",
+    ];
+    for o in ok {
+        let msg = LocalRelayInfo {
+            linked: !o.is_empty(),
+            name: "x",
+            home_origin: o,
+            ..Default::default()
+        };
+        let mut b = Vec::new();
+        msg.encode(&mut b).unwrap_or_else(|e| panic!("{o:?}: {e}"));
+        assert_eq!(LocalRelayInfo::parse(&b).unwrap().home_origin, o);
+    }
+    let long = format!("https://{}", "a".repeat(MAX_LOCAL_RELAY_ORIGIN_LEN));
+    let bad = [
+        "https://gawk.ioio.fi/",
+        "https://gawk.ioio.fi/app",
+        "https://gawk.ioio.fi?x=1",
+        "https://gawk.ioio.fi#f",
+        "https://user@gawk.ioio.fi",
+        "https://",
+        "http://gawk.ioio.fi",
+        "http://localhost.evil.example",
+        "http://192.168.1.20",
+        "ws://gawk.ioio.fi",
+        "gawk.ioio.fi",
+        "https://gawk.ioio.fi:notaport",
+        "https://gawk ioio.fi",
+        "https://gawk.ioio.fi\x7f",
+        "https://a:0",
+        "https://a:65536",
+        "https://a:",
+        "https://a:123456",
+        "https://a::1",
+        "https://[]",
+        "https://[::1",
+        "https://[::1]x",
+        "https://[[::1]",
+        "https://a]",
+        "HTTPS://gawk.ioio.fi",
+        long.as_str(),
+    ];
+    for o in bad {
+        let msg = LocalRelayInfo {
+            linked: true,
+            name: "x",
+            home_origin: o,
+            ..Default::default()
+        };
+        assert_eq!(
+            msg.encode(&mut Vec::new()),
+            Err(WireError::BadLocalRelayInfo),
+            "{o:?}"
+        );
+        if o.len() > 255 {
+            continue;
+        }
+        let mut b = vec![0x01, 0x18, 0, 0, 0, o.len() as u8];
+        b.extend_from_slice(o.as_bytes());
+        b.push(0);
+        assert_eq!(
+            LocalRelayInfo::parse(&b),
+            Err(WireError::BadLocalRelayInfo),
+            "{o:?}"
+        );
+    }
+}
+
+#[test]
+fn local_relay_info_rejects() {
+    let long_name = "a".repeat(MAX_RELAY_IDENTITY_NAME_LEN + 1);
+    let long_wall = "a".repeat(MAX_ROOM_CODE_LEN + 1);
+    for msg in [
+        LocalRelayInfo {
+            name: &long_name,
+            ..Default::default()
+        },
+        LocalRelayInfo {
+            wall_code: &long_wall,
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            msg.encode(&mut Vec::new()),
+            Err(WireError::BadLocalRelayInfo)
+        );
+    }
+
+    let golden = from_hex(GOLDEN_LOCAL_RELAY_INFO_STANDALONE);
+    let n = golden.len();
+    let with = |at: usize, v: u8| {
+        let mut b = golden.clone();
+        b[at] = v;
+        b
+    };
+    let cat = |a: &[u8], b: &[u8]| [a, b].concat();
+    let mut name65 = vec![1, 0x18, 0, 0, 65];
+    name65.extend(std::iter::repeat_n(b'a', 65));
+    name65.extend([0, 0]);
+    let mut wall33 = vec![33u8];
+    wall33.extend(std::iter::repeat_n(b'a', 33));
+    let cases: Vec<(Vec<u8>, WireError)> = vec![
+        (vec![], WireError::ShortDatagram { len: 0, need: 7 }),
+        (
+            golden[..6].to_vec(),
+            WireError::ShortDatagram { len: 6, need: 7 },
+        ),
+        (with(0, 2), WireError::BadVersion(2)),
+        (
+            with(1, TYPE_RELAY_IDENTITY),
+            WireError::BadType {
+                got: TYPE_RELAY_IDENTITY,
+                want: TYPE_LOCAL_RELAY_INFO,
+            },
+        ),
+        (with(2, 0x01), WireError::BadLocalRelayInfo),
+        (with(4, 0x30), WireError::BadLocalRelayInfo),
+        (name65, WireError::BadLocalRelayInfo),
+        (
+            vec![1, 0x18, 0, 0, 1, 0xff, 0, 0],
+            WireError::BadLocalRelayInfo,
+        ),
+        (golden[..n - 2].to_vec(), WireError::BadLocalRelayInfo),
+        (golden[..n - 1].to_vec(), WireError::BadLocalRelayInfo),
+        (with(n - 1, 5), WireError::BadLocalRelayInfo),
+        (cat(&golden[..n - 1], &wall33), WireError::BadLocalRelayInfo),
+        (
+            cat(&golden[..n - 1], &[1, 0xc3]),
+            WireError::BadLocalRelayInfo,
+        ),
+    ];
+    for (b, want) in cases {
+        assert_eq!(LocalRelayInfo::parse(&b), Err(want), "{}", to_hex(&b));
+    }
+}
+
+#[test]
+fn golden_local_relay_offer() {
+    let mut got = Vec::new();
+    golden_offer().encode(&mut got).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_LOCAL_RELAY_OFFER);
+    let bytes = from_hex(GOLDEN_LOCAL_RELAY_OFFER);
+    assert_eq!(LocalRelayOffer::parse(&bytes).unwrap(), golden_offer());
+    assert_eq!(parse_local_relay_offer(&bytes).unwrap(), golden_offer());
+    let trailing = from_hex(&format!("{GOLDEN_LOCAL_RELAY_OFFER}a1b2c3"));
+    assert_eq!(LocalRelayOffer::parse(&trailing).unwrap(), golden_offer());
+}
+
+#[test]
+fn local_relay_url_rule() {
+    let ok = [
+        "https://a",
+        "https://p-7k2m9x.pop.gawk.ioio.fi:4433",
+        "https://192.168.1.20:4433",
+        "https://[fd00::1]:4433",
+        "https://a.example/some/path",
+        "https://a.example/",
+    ];
+    let long = format!("https://a.example/{}", "a".repeat(MAX_LOCAL_RELAY_URL_LEN));
+    let bad = [
+        "",
+        "https://",
+        "https:///path",
+        "http://a.example",
+        "HTTPS://a.example",
+        "//a.example",
+        "https://a.example?q",
+        "https://a.example/p?q=1",
+        "https://a.example/#f",
+        "https://u@a.example",
+        "https://a.example:0",
+        "https://a.example:65536",
+        "https://a.example:/p",
+        "https://a.example:44x3",
+        "https://[fd00::1",
+        "https://[fd00::1]:",
+        "https://a b",
+        "https://a\x00",
+        "https://\u{e9}.example",
+        long.as_str(),
+    ];
+    let offer_with = |url| LocalRelayOffer {
+        candidates: vec![LocalRelayCandidate {
+            url,
+            hashes: vec![],
+        }],
+        ..golden_offer()
+    };
+    for u in ok {
+        let mut b = Vec::new();
+        offer_with(u)
+            .encode(&mut b)
+            .unwrap_or_else(|e| panic!("{u:?}: {e}"));
+        assert_eq!(LocalRelayOffer::parse(&b).unwrap().candidates[0].url, u);
+    }
+    for u in bad {
+        assert_eq!(
+            offer_with(u).encode(&mut Vec::new()),
+            Err(WireError::BadLocalRelayOffer),
+            "{u:?}"
+        );
+    }
+}
+
+#[test]
+fn local_relay_offer_rejects_on_encode() {
+    let g = golden_offer;
+    let h = [0u8; 32];
+    let long_handle = "a".repeat(MAX_LOCAL_RELAY_HANDLE_LEN + 1);
+    let long_name = "a".repeat(MAX_RELAY_IDENTITY_NAME_LEN + 1);
+    let bad = [
+        LocalRelayOffer { handle: "", ..g() },
+        LocalRelayOffer {
+            handle: &long_handle,
+            ..g()
+        },
+        LocalRelayOffer {
+            handle: "a\x01b",
+            ..g()
+        },
+        LocalRelayOffer {
+            name: &long_name,
+            ..g()
+        },
+        LocalRelayOffer { validity: 0, ..g() },
+        LocalRelayOffer {
+            candidates: vec![],
+            ..g()
+        },
+        LocalRelayOffer {
+            candidates: (0..5)
+                .map(|_| LocalRelayCandidate {
+                    url: "https://a.example",
+                    hashes: vec![],
+                })
+                .collect(),
+            ..g()
+        },
+        LocalRelayOffer {
+            candidates: vec![LocalRelayCandidate {
+                url: "https://a.example",
+                hashes: vec![&h, &h, &h],
+            }],
+            ..g()
+        },
+    ];
+    for o in bad {
+        assert_eq!(
+            o.encode(&mut Vec::new()),
+            Err(WireError::BadLocalRelayOffer),
+            "{o:?}"
+        );
+    }
+}
+
+#[test]
+fn local_relay_offer_rejects_on_parse() {
+    let golden = from_hex(GOLDEN_LOCAL_RELAY_OFFER);
+    let handle_len_at = 3;
+    let name_len_at = handle_len_at + 1 + 36;
+    let validity_at = name_len_at + 1 + 13;
+    let cand_count_at = validity_at + 4;
+    let url1_len_at = cand_count_at + 1;
+    let hash1_at = url1_len_at + 2 + 38;
+    let url2_len_at = hash1_at + 1;
+    let hash2_at = url2_len_at + 2 + 25;
+    let set = |at: usize, v: &[u8]| {
+        let mut b = golden.clone();
+        b[at..at + v.len()].copy_from_slice(v);
+        b
+    };
+    let replace_url1 = |u: &str| {
+        let mut b = golden[..url1_len_at].to_vec();
+        b.extend((u.len() as u16).to_be_bytes());
+        b.extend_from_slice(u.as_bytes());
+        b.extend_from_slice(&golden[hash1_at..]);
+        b
+    };
+    let bad = WireError::BadLocalRelayOffer;
+    let mut handle65 = vec![1, 0x19, 0, 65];
+    handle65.extend(std::iter::repeat_n(b'a', 65));
+    handle65.extend_from_slice(&golden[name_len_at..]);
+    let mut hash3 = set(hash2_at, &[3]);
+    hash3.extend([0u8; 32]);
+    let cases: Vec<(Vec<u8>, WireError)> = vec![
+        (vec![], WireError::ShortDatagram { len: 0, need: 11 }),
+        (
+            golden[..3].to_vec(),
+            WireError::ShortDatagram { len: 3, need: 11 },
+        ),
+        (set(0, &[2]), WireError::BadVersion(2)),
+        (
+            set(1, &[TYPE_LOCAL_RELAY_INFO]),
+            WireError::BadType {
+                got: TYPE_LOCAL_RELAY_INFO,
+                want: TYPE_LOCAL_RELAY_OFFER,
+            },
+        ),
+        (set(2, &[0x80]), bad.clone()),
+        (
+            [&[1, 0x19, 0, 0][..], &golden[name_len_at..]].concat(),
+            bad.clone(),
+        ),
+        (handle65, bad.clone()),
+        (set(handle_len_at + 1, &[0x01]), bad.clone()),
+        (set(name_len_at + 1, &[0xff]), bad.clone()),
+        (set(validity_at, &[0, 0, 0, 0]), bad.clone()),
+        (
+            set(cand_count_at, &[0])[..cand_count_at + 1].to_vec(),
+            bad.clone(),
+        ),
+        (set(cand_count_at, &[5]), bad.clone()),
+        (set(cand_count_at, &[3]), bad.clone()),
+        (set(url1_len_at, &[0, 0]), bad.clone()),
+        (set(url1_len_at, &[1, 1]), bad.clone()),
+        (golden[..url1_len_at + 10].to_vec(), bad.clone()),
+        (
+            replace_url1("http://p-7k2m9x.pop.gawk.ioio.fi:4433"),
+            bad.clone(),
+        ),
+        (
+            replace_url1("https://p-7k2m9x.pop.gawk.ioio.fi:4433?q"),
+            bad.clone(),
+        ),
+        (
+            replace_url1("https://u@p-7k2m9x.pop.gawk.ioio.fi:4433"),
+            bad.clone(),
+        ),
+        (hash3, bad.clone()),
+        (golden[..golden.len() - 1].to_vec(), bad.clone()),
+        (golden[..hash2_at].to_vec(), bad.clone()),
+        (golden[..validity_at + 2].to_vec(), bad.clone()),
+    ];
+    for (b, want) in cases {
+        assert_eq!(LocalRelayOffer::parse(&b), Err(want), "{}", to_hex(&b));
+    }
+}
+
+#[test]
+fn local_relay_offer_maximal_round_trips() {
+    let h = [7u8; 32];
+    let handle = "h".repeat(MAX_LOCAL_RELAY_HANDLE_LEN);
+    let name = "n".repeat(MAX_RELAY_IDENTITY_NAME_LEN);
+    let prefix = "https://a.example/";
+    let url = format!(
+        "{prefix}{}",
+        "p".repeat(MAX_LOCAL_RELAY_URL_LEN - prefix.len())
+    );
+    let o = LocalRelayOffer {
+        handle: &handle,
+        name: &name,
+        validity: u32::MAX,
+        candidates: (0..MAX_LOCAL_RELAY_CANDIDATES)
+            .map(|_| LocalRelayCandidate {
+                url: &url,
+                hashes: vec![&h, &h],
+            })
+            .collect(),
+    };
+    let mut b = Vec::new();
+    o.encode(&mut b).unwrap();
+    assert_eq!(LocalRelayOffer::parse(&b).unwrap(), o);
+}
+
+#[test]
+fn local_relay_parsers_never_panic() {
+    for seed in [
+        GOLDEN_LOCAL_RELAY_INFO_LINKED,
+        GOLDEN_LOCAL_RELAY_INFO_STANDALONE,
+        GOLDEN_LOCAL_RELAY_OFFER,
+    ] {
+        let seed = from_hex(seed);
+        for n in 0..=seed.len() {
+            let _ = LocalRelayInfo::parse(&seed[..n]);
+            let _ = LocalRelayOffer::parse(&seed[..n]);
+        }
+        for i in 0..seed.len() {
+            for v in [0x00, 0x01, 0x7f, 0x80, 0xff] {
+                let mut b = seed.clone();
+                b[i] = v;
+                let _ = LocalRelayInfo::parse(&b);
+                let _ = LocalRelayOffer::parse(&b);
+            }
+        }
+    }
+}
+
+#[test]
+fn golden_session_closing_pop_uplink_full() {
+    let mut got = Vec::new();
+    append_session_closing(&mut got, CLOSE_CODE_POP_UPLINK_FULL).unwrap();
+    assert_eq!(to_hex(&got), GOLDEN_SESSION_CLOSING_POP_UPLINK_FULL);
+    assert_eq!(
+        parse_session_closing(&from_hex(GOLDEN_SESSION_CLOSING_POP_UPLINK_FULL)).unwrap(),
+        4012
+    );
+}
+
+#[test]
+fn r74_constants_are_pinned() {
+    assert_eq!(TYPE_LOCAL_RELAY_INFO, 0x18);
+    assert_eq!(TYPE_LOCAL_RELAY_OFFER, 0x19);
+    assert_eq!(LOCAL_RELAY_LINKED, 0x01);
+    assert_eq!(LOCAL_RELAY_ON_WALL, 0x02);
+    assert_eq!(LOCAL_RELAY_INFO_MIN_SIZE, 7);
+    assert_eq!(MAX_LOCAL_RELAY_ORIGIN_LEN, 128);
+    assert_eq!(MAX_LOCAL_RELAY_HANDLE_LEN, 64);
+    assert_eq!(MAX_LOCAL_RELAY_URL_LEN, 256);
+    assert_eq!(MAX_LOCAL_RELAY_CANDIDATES, 4);
+    assert_eq!(MAX_LOCAL_RELAY_HASHES, 2);
+    assert_eq!(CLOSE_CODE_POP_UPLINK_FULL, 4012);
+    assert_eq!(CLOSE_CODE_POP_NO_DEMAND, 4013);
+    // 4012 is NOT terminal for a viewer: it retries every 20 s.
+    assert!(!terminal_for_viewer(CLOSE_CODE_POP_UPLINK_FULL));
+    assert!(!terminal_for_viewer(CLOSE_CODE_POP_NO_DEMAND));
+}

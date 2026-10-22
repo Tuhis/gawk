@@ -57,6 +57,16 @@ pub enum WireError {
     /// overrunning URL length, or a URL that is not absolute https ASCII
     /// (trailing bytes are NOT this error — parsers ignore them).
     BadTelemetryEndpoint,
+    /// A LocalRelayInfo (0x18, R74) with a set reserved flag bit, an
+    /// out-of-range or overrunning field, text that is not UTF-8, or a home
+    /// origin that breaks the origin rule (trailing bytes and unknown state
+    /// bits are NOT this error).
+    BadLocalRelayInfo,
+    /// A LocalRelayOffer (0x19, R74) with a set reserved flag bit, an
+    /// out-of-range or overrunning field, a zero validity, or a candidate
+    /// URL that breaks the candidate-URL rule (trailing bytes are NOT this
+    /// error).
+    BadLocalRelayOffer,
     /// A frame shape parity cannot cover (k, n, or width out of range).
     ParityUnsupported,
     /// More data erasures than the surviving parity symbols can repair. An
@@ -139,6 +149,8 @@ impl fmt::Display for WireError {
             Self::UnknownStripeFlags(b) => write!(f, "wire: unknown stripe flags 0x{b:02x}"),
             Self::BadRelayIdentity => write!(f, "wire: invalid relay identity"),
             Self::BadTelemetryEndpoint => write!(f, "wire: invalid telemetry endpoint"),
+            Self::BadLocalRelayInfo => write!(f, "wire: invalid local relay info"),
+            Self::BadLocalRelayOffer => write!(f, "wire: invalid local relay offer"),
             Self::ParityUnsupported => write!(f, "wire: parity unsupported for this frame"),
             Self::ParityUnrecoverable => write!(f, "wire: too many erasures to recover"),
             Self::BadRoomRecord => write!(f, "wire: invalid room record"),
