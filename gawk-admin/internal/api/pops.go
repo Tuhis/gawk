@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/kube"
 	"github.com/Tuhis/gawk/gawk-admin/internal/relayscan"
+	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-server/pops"
 	"github.com/Tuhis/gawk/gawk-server/rooms"
 )
@@ -643,6 +645,7 @@ func (a *API) handleCreatePop(w http.ResponseWriter, r *http.Request) {
 	a.kick()
 	// The pairing string is a credential until redeemed: it is in the
 	// response and nowhere else, never in a log line or an event.
+	a.recordPop(r.Context(), store.EventPopCreated, id.Actor(), obj)
 	a.log.Info("PoP created", "actor", id.Actor(), "pop", name, "wall", wall != nil)
 	writeJSON(w, http.StatusCreated, popWithPairingJSON{
 		Pop: a.renderPop(obj, nil, false), PairingString: pairing, ExpiresAt: rfc3339(record.ExpiresAt)})
@@ -663,6 +666,29 @@ func (a *API) createWall(ctx context.Context, obj kube.PopObject, wall *popWallR
 	}
 	_, err := a.opts.Rooms.CreateStatic(ctx, req)
 	return err
+}
+
+// syncWall writes the PoP's cap and title onto its wall room (docs/76 item
+// 33). It writes on every edit rather than on a change, so an edit after a
+// failed write repairs the wall. A wall room that is gone (or no longer
+// this PoP's) is left alone: deleting the PoP is what removes it.
+func (a *API) syncWall(ctx context.Context, obj kube.PopObject) error {
+	wall := obj.Pop.Spec.Wall
+	if wall == nil || a.opts.Rooms == nil {
+		return nil
+	}
+	code, err := rooms.NormalizeCode(wall.RoomCode)
+	if err != nil {
+		return nil // validated at create; nothing to write
+	}
+	if _, err := a.opts.Rooms.SetWall(ctx, code, obj.Name, wallBroadcasts(&obj.Pop), obj.Pop.Spec.DisplayName); err != nil {
+		if errors.Is(err, kube.ErrRoomNotFound) {
+			a.log.Warn("a PoP's wall room is gone; not updated", "pop", obj.Name)
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (a *API) handlePatchPop(w http.ResponseWriter, r *http.Request) {
@@ -705,6 +731,12 @@ func (a *API) handlePatchPop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.kick()
+	a.recordPop(r.Context(), store.EventPopUpdated, id.Actor(), after)
+	if err := a.syncWall(r.Context(), after); err != nil {
+		// The PoP is edited; the next edit writes the wall again.
+		a.fail(w, r, "update the PoP's wall room (the PoP itself was edited)", err)
+		return
+	}
 	a.log.Info("PoP edited", "actor", id.Actor(), "pop", name)
 	writeJSON(w, http.StatusOK, a.renderPop(after, a.livePop(r.Context(), name), false))
 }
@@ -732,6 +764,7 @@ func (a *API) handleRepairPop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.kick()
+	a.recordPop(r.Context(), store.EventPopRepaired, id.Actor(), obj)
 	a.log.Info("PoP re-paired", "actor", id.Actor(), "pop", name)
 	writeJSON(w, http.StatusOK, popWithPairingJSON{
 		Pop: a.renderPop(obj, nil, false), PairingString: pairing, ExpiresAt: rfc3339(record.ExpiresAt)})
@@ -752,6 +785,7 @@ func (a *API) handleRevokePop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.kick()
+	a.recordPop(r.Context(), store.EventPopRevoked, id.Actor(), obj)
 	a.log.Info("PoP revoked", "actor", id.Actor(), "pop", name)
 	writeJSON(w, http.StatusOK, a.renderPop(obj, nil, false))
 }
@@ -767,13 +801,31 @@ func (a *API) handleDeletePop(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := a.opts.Pops.Delete(r.Context(), name, nil); err != nil {
+	obj, err := a.opts.Pops.Delete(r.Context(), name, nil)
+	if err != nil {
 		a.failPop(w, r, "delete the PoP", err)
 		return
 	}
 	a.kick()
+	a.recordPop(r.Context(), store.EventPopDeleted, id.Actor(), obj)
 	a.log.Info("PoP deleted", "actor", id.Actor(), "pop", name)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// recordPop persists a pop.* audit event (R74, docs/76 §7.2): the PoP's name
+// and display name, the summary and the actor, and nothing else. Its spec
+// holds the pairing record and its status the link's addresses and the
+// credential; none of it is read here.
+func (a *API) recordPop(ctx context.Context, eventType, actor string, obj kube.PopObject) {
+	raw, err := json.Marshal(map[string]any{
+		store.PayloadSummary:        store.SummarizePop(eventType, obj.Name, actor),
+		store.PayloadPop:            obj.Name,
+		store.PayloadPopDisplayName: obj.Pop.Spec.DisplayName,
+	})
+	if err != nil {
+		raw = []byte(`{}`)
+	}
+	a.record(ctx, store.Event{Type: eventType, OccurredAt: a.now(), Actor: actor, Payload: raw})
 }
 
 // popName reads the path's PoP name; a malformed one is a 404, since no such

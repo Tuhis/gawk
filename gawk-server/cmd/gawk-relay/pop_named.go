@@ -14,6 +14,8 @@ import (
 	"github.com/Tuhis/gawk/gawk-server/cmd/gawk-relay/webapp"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/popclient"
+	"github.com/Tuhis/gawk/gawk-server/internal/poplink"
+	"github.com/Tuhis/gawk/gawk-server/internal/relayconsole"
 	"github.com/Tuhis/gawk/gawk-server/internal/serve"
 )
 
@@ -114,6 +116,42 @@ func (p popConsoleLink) Health() []adminapi.HealthLine {
 }
 
 func (p popConsoleLink) Pair(ctx context.Context, s string) error { return p.c.Pair(ctx, s) }
+
+// LowerBudgets reaches the uplink's and the downlink's admission.
+func (p popConsoleLink) LowerBudgets(up, down config.Budget) { p.c.LowerBudgets(up, down) }
+
+func (p popConsoleLink) DisplayName() string {
+	if cfg := p.c.State().Config; cfg != nil {
+		return cfg.DisplayName
+	}
+	return ""
+}
+
+// Usage is the legs' use; the outside column only while linked.
+func (p popConsoleLink) Usage() consoleUsage {
+	up, down := p.c.UplinkStats(), p.c.DownlinkUse()
+	u := consoleUsage{UplinkMbps: up.Mbps, UplinkStreams: up.Streams, DownlinkStreams: down.Streams}
+	if p.c.State().Header != popclient.HeaderLinked {
+		return u
+	}
+	u.Outside = map[string]consoleOutside{}
+	for _, b := range p.c.UplinkBroadcasts() {
+		u.Outside[b.ID] = outsideOf(b)
+	}
+	return u
+}
+
+// outsideOf is one broadcast's outside state (docs/76 §7.1, item 15: past
+// the PoP's limit or in conflict a broadcast stays local-only).
+func outsideOf(b popclient.BroadcastUplink) consoleOutside {
+	switch {
+	case b.Forwarded:
+		return consoleOutside{State: relayconsole.OutsideForwarded, Mbps: b.Mbps}
+	case b.BudgetFull, b.Reservation == poplink.ReservedLimit, b.Reservation == poplink.ReservedConflict:
+		return consoleOutside{State: relayconsole.OutsidePartyOnly}
+	}
+	return consoleOutside{State: relayconsole.OutsideNotRequested}
+}
 
 func (p popConsoleLink) UplinkCeiling() config.Budget {
 	if cfg := p.c.State().Config; cfg != nil {

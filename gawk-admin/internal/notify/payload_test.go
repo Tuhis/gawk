@@ -46,6 +46,10 @@ const (
 	poisonRoomSlug = "tuhisroom"
 	// The one-time attach secret — never in any payload, ever (docs/44 §5).
 	poisonAttachSecret = "AttachSecretValue12345678"
+	// poisonPopName is an R74 PoP's name: not a secret, but the identity a
+	// pop.* event is about, so it belongs only in subject, `pop` and the
+	// summary.
+	poisonPopName = "assembly-2026"
 )
 
 // neverPoisons may appear nowhere in a delivery.
@@ -54,7 +58,7 @@ var neverPoisons = []string{poisonRawIPv4, poisonCIDR, poisonRawIPv6, poisonIPv6
 
 // identityPoisons are the joinable identifiers D9 delivers: allowed in
 // `subject` and in their own `data` property, nowhere else.
-var identityPoisons = []string{poisonRawID, poisonRoomCode, poisonRoomSlug}
+var identityPoisons = []string{poisonRawID, poisonRoomCode, poisonRoomSlug, poisonPopName}
 
 // poisonedEvent is one event of the given type carrying a raw broadcast ID in
 // every place an event can hold one, and addresses in every place a ban can
@@ -68,6 +72,9 @@ func poisonedEvent(eventType string) store.Event {
 		"juho@example.com", store.EnforcementInSync)
 	if strings.HasPrefix(eventType, "room.") {
 		summary = store.SummarizeRoom(eventType, "dynamic", poisonRoomSlug, "juho@example.com")
+	}
+	if strings.HasPrefix(eventType, "pop.") {
+		summary = store.SummarizePop(eventType, poisonPopName, "juho@example.com")
 	}
 	payload := map[string]any{
 		store.PayloadReason:  "terms violation", // operator text: deliberately NOT poisoned
@@ -104,6 +111,11 @@ func poisonedEvent(eventType string) store.Event {
 		store.PayloadRaisedAt:   "2026-08-20T15:00:00Z",
 		store.PayloadLabels:     []string{"FEMALE_GENITALIA_EXPOSED"},
 		store.PayloadScreening:  "exempt",
+		// R74's PoP keys: the name and the display name. A PoP's link
+		// addresses live in its CR status and never in a row; the planted
+		// publisherIp and peer above stand for them.
+		store.PayloadPop:            poisonPopName,
+		store.PayloadPopDisplayName: "Assembly 2026",
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -148,8 +160,13 @@ func withoutIdentity(t *testing.T, body []byte) string {
 	}
 	delete(m, "subject")
 	if data, _ := m["data"].(map[string]any); data != nil {
-		for _, k := range []string{"broadcastId", "roomCode", "displayCode", "summary"} {
+		for _, k := range []string{"broadcastId", "roomCode", "displayCode", "pop", "summary"} {
 			delete(data, k)
+		}
+		// A PoP's page is keyed by its name, so a pop.* deep link names it;
+		// the caller checks that link exactly.
+		if typ, _ := m["type"].(string); events.Scope(typ) == "pop" {
+			delete(data, "portalUrl")
 		}
 	}
 	rest, err := json.Marshal(m)
@@ -167,7 +184,7 @@ func summaryNamesOnlyItsOwnEvent(t *testing.T, envelope, data map[string]any) {
 	t.Helper()
 	summary, _ := data["summary"].(string)
 	own := map[string]bool{}
-	for _, v := range []any{envelope["subject"], data["broadcastId"], data["roomCode"], data["displayCode"]} {
+	for _, v := range []any{envelope["subject"], data["broadcastId"], data["roomCode"], data["displayCode"], data["pop"]} {
 		if s, _ := v.(string); s != "" {
 			own[s] = true
 		}
@@ -248,6 +265,13 @@ func TestNoIPOrStraySecretInAnyDelivery(t *testing.T) {
 				if data["roomCode"] != poisonRoomCode {
 					t.Errorf("roomCode = %v, want the raw code %q (D9)", data["roomCode"], poisonRoomCode)
 				}
+			} else if strings.HasPrefix(eventType, "pop.") {
+				// A PoP event (R74) is about its PoP, and links to its page.
+				wantURL = "https://admin.example.com/#/pops/" + poisonPopName
+				wantSubject = poisonPopName
+				if data["pop"] != poisonPopName || data["displayName"] != "Assembly 2026" {
+					t.Errorf("pop = %v, displayName = %v, want the PoP's name and display name", data["pop"], data["displayName"])
+				}
 			} else if data["broadcastId"] != poisonRawID {
 				t.Errorf("broadcastId = %v, want the raw ID %q (D9)", data["broadcastId"], poisonRawID)
 			}
@@ -319,6 +343,11 @@ func TestSummaryPresentWithoutOneInThePayload(t *testing.T) {
 			ev := poisonedEvent(eventType)
 			ev.BroadcastID = column
 			ev.Payload = json.RawMessage(`{"sourceBroadcastId":"` + poisonRawID + `"}`)
+			pop := strings.HasPrefix(eventType, "pop.")
+			if pop {
+				// A PoP row needs its name (TestAPopEventWithoutADNSLabelIsRefused).
+				ev.Payload = json.RawMessage(`{"sourceBroadcastId":"` + poisonRawID + `","pop":"` + poisonPopName + `"}`)
+			}
 			_, data := decode(t, render(t, ev, "https://admin.example.com"))
 			summary, _ := data["summary"].(string)
 			if strings.TrimSpace(summary) == "" {
@@ -329,6 +358,9 @@ func TestSummaryPresentWithoutOneInThePayload(t *testing.T) {
 			}
 			if eventType == store.EventBroadcastKilled && !strings.Contains(summary, column) {
 				t.Fatalf("the fallback kill summary does not name the broadcast: %q", summary)
+			}
+			if pop && (strings.Contains(summary, column) || !strings.Contains(summary, poisonPopName)) {
+				t.Fatalf("the fallback PoP summary %q should name the PoP and no broadcast", summary)
 			}
 		})
 	}
@@ -557,6 +589,25 @@ func TestRoomEventsCarryTheCodeAndLinkToTheRoomsView(t *testing.T) {
 				t.Errorf("an unkeyed room event lost the room's identity: %s", unkeyed)
 			}
 		})
+	}
+}
+
+// TestAPopEventWithoutADNSLabelIsRefused (R74): the PoP's name is read
+// through the store's closed accessor, so an address written under the key
+// by mistake is never delivered as the event's subject; and since `pop` is
+// required and has no safe default, the event is refused rather than sent
+// naming nothing.
+func TestAPopEventWithoutADNSLabelIsRefused(t *testing.T) {
+	for _, v := range []any{poisonRawIPv4, "", nil} {
+		raw, _ := json.Marshal(map[string]any{
+			store.PayloadPop:     v,
+			store.PayloadSummary: "PoP was revoked by juho@example.com",
+		})
+		ev := store.Event{ID: 3, Type: store.EventPopRevoked, Actor: "juho@example.com",
+			OccurredAt: time.Date(2026, 10, 21, 18, 0, 0, 0, time.UTC), Payload: raw}
+		if got, err := buildEvent(ev, "https://admin.example.com"); err == nil {
+			t.Errorf("pop %v: built %+v, want a refusal", v, got)
+		}
 	}
 }
 

@@ -55,6 +55,31 @@ type consoleLink interface {
 	Pair(ctx context.Context, s string) error
 	// UplinkCeiling is the home fleet's uplink budget (zero: none known).
 	UplinkCeiling() config.Budget
+	// LowerBudgets hands the host's lowered budgets (zero fields: the
+	// configured ones) to the legs' admission.
+	LowerBudgets(up, down config.Budget)
+	// DisplayName is the name home gave this PoP, "" while unlinked.
+	DisplayName() string
+	// Usage is the legs' use now.
+	Usage() consoleUsage
+}
+
+// consoleUsage is the console's "Party internet" and the Live rows'
+// outside column (docs/76 §7.1).
+type consoleUsage struct {
+	UplinkMbps      float64
+	UplinkStreams   int
+	DownlinkStreams int
+	// Outside is each local broadcast's outside state by raw ID; nil while
+	// unlinked, when no row has one. A live broadcast it lacks is not
+	// requested.
+	Outside map[string]consoleOutside
+}
+
+type consoleOutside struct {
+	// State is a relayconsole.Outside* value.
+	State string
+	Mbps  float64
 }
 
 // linkForConsole is set by the PoP link's part (Wave 3 wiring).
@@ -222,12 +247,16 @@ func (c *console) State() relayconsole.State {
 	if standalone {
 		s.Header = relayconsole.HeaderStandalone
 	}
+	var usage consoleUsage
 	if link != nil {
 		if h := link.Header(); h != "" {
 			s.Header = h
 		}
 		s.HomeOrigin, s.NamedHost, s.Notice = link.HomeOrigin(), link.NamedHost(), link.Notice()
 		s.UplinkCeiling = link.UplinkCeiling()
+		s.DisplayName = link.DisplayName()
+		usage = link.Usage()
+		s.UplinkMbps, s.UplinkStreams, s.DownlinkStreams = usage.UplinkMbps, usage.UplinkStreams, usage.DownlinkStreams
 	}
 	s.Uplink = effective(minBudget(c.r.Relay.UplinkBudget, s.UplinkCeiling), upLowered)
 	s.Downlink = effective(c.r.Relay.DownlinkBudget, downLowered)
@@ -253,6 +282,13 @@ func (c *console) State() relayconsole.State {
 			row := relayconsole.LiveRow{Code: b.ID, LocalViewers: b.ViewersLocal}
 			if popLink != nil {
 				row.Wall, row.Label = popLink.WallRow(b.ID)
+			}
+			if usage.Outside != nil {
+				o, ok := usage.Outside[b.ID]
+				if !ok {
+					o.State = relayconsole.OutsideNotRequested
+				}
+				row.Outside, row.OutsideMbps = o.State, o.Mbps
 			}
 			s.Live = append(s.Live, row)
 		}
@@ -362,7 +398,11 @@ func (c *console) lower(dst *config.Budget, ceiling, b config.Budget, what strin
 	}
 	c.mu.Lock()
 	*dst = b
+	up, down := c.uplink, c.downlink
 	c.mu.Unlock()
+	if l := c.link(); l != nil {
+		l.LowerBudgets(up, down)
+	}
 	return nil
 }
 

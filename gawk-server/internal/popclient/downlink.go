@@ -40,7 +40,7 @@ func (c *Client) PopDownlink() (transport.PopDownlinkTarget, bool) {
 		Credential: stored.Credential,
 		Pop:        st.Config.PopName,
 		Carrier:    c.opts.Relay.PopLegDelivery != config.PopLegDatagram,
-		Budget:     downlinkBudget(st.Config.Downlink, c.opts.Relay.DownlinkBudget),
+		Budget:     downlinkBudget(st.Config.Downlink, c.hostDownlink()),
 		RootCAs:    c.opts.RootCAs,
 	}
 	if c.opts.Dial != nil {

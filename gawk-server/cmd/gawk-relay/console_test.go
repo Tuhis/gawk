@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -15,8 +16,12 @@ import (
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
+	"github.com/Tuhis/gawk/gawk-server/internal/hub"
 	"github.com/Tuhis/gawk/gawk-server/internal/lanaddr"
+	"github.com/Tuhis/gawk/gawk-server/internal/popclient"
+	"github.com/Tuhis/gawk/gawk-server/internal/poplink"
 	"github.com/Tuhis/gawk/gawk-server/internal/relayconsole"
+	"github.com/Tuhis/gawk/gawk-server/internal/serve"
 )
 
 func freeTCPAddr(t *testing.T) string {
@@ -210,6 +215,148 @@ func TestConsoleBudgets(t *testing.T) {
 	}
 	if err := c.LowerDownlink(config.Budget{Mbps: 40}); err != nil || c.State().Downlink != (config.Budget{Mbps: 40}) {
 		t.Errorf("downlink: %v %+v", err, c.State().Downlink)
+	}
+}
+
+// budgetLink is a consoleLink that records what the console pushes.
+type budgetLink struct {
+	ceiling  config.Budget
+	up, down config.Budget
+	calls    int
+}
+
+func (*budgetLink) Header() string                     { return relayconsole.HeaderLinked }
+func (*budgetLink) HomeOrigin() string                 { return "" }
+func (*budgetLink) NamedHost() string                  { return "" }
+func (*budgetLink) Notice() string                     { return "" }
+func (*budgetLink) Pair(context.Context, string) error { return nil }
+func (l *budgetLink) UplinkCeiling() config.Budget     { return l.ceiling }
+func (l *budgetLink) LowerBudgets(up, down config.Budget) {
+	l.up, l.down, l.calls = up, down, l.calls+1
+}
+func (*budgetLink) DisplayName() string { return "" }
+func (*budgetLink) Usage() consoleUsage { return consoleUsage{} }
+
+// usageLink is a linked consoleLink reporting the legs' use.
+type usageLink struct {
+	budgetLink
+	name  string
+	usage consoleUsage
+}
+
+func (l *usageLink) DisplayName() string { return l.name }
+func (l *usageLink) Usage() consoleUsage { return l.usage }
+
+// The link adapter's outside state per broadcast: past the PoP's limit or
+// in conflict it is local-only, refused for the budget it is party-only,
+// forwarded it carries its rate, and anything else is not requested.
+func TestOutsideStateOfAnUplinkBroadcast(t *testing.T) {
+	for _, tc := range []struct {
+		in   popclient.BroadcastUplink
+		want consoleOutside
+	}{
+		{popclient.BroadcastUplink{Reservation: poplink.ReservedOK, Forwarded: true, Wanted: true, Mbps: 6.1}, consoleOutside{relayconsole.OutsideForwarded, 6.1}},
+		{popclient.BroadcastUplink{Reservation: poplink.ReservedOK}, consoleOutside{State: relayconsole.OutsideNotRequested}},
+		{popclient.BroadcastUplink{}, consoleOutside{State: relayconsole.OutsideNotRequested}},
+		{popclient.BroadcastUplink{Reservation: poplink.ReservedOK, BudgetFull: true}, consoleOutside{State: relayconsole.OutsidePartyOnly}},
+		{popclient.BroadcastUplink{Reservation: poplink.ReservedLimit}, consoleOutside{State: relayconsole.OutsidePartyOnly}},
+		{popclient.BroadcastUplink{Reservation: poplink.ReservedConflict}, consoleOutside{State: relayconsole.OutsidePartyOnly}},
+	} {
+		if got := outsideOf(tc.in); got != tc.want {
+			t.Errorf("outsideOf(%+v) = %+v, want %+v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// docs/76 §7.1: "Party internet" reads the legs' use ("Up 14 / 25 Mbps ·
+// 2 of 3 streams", "1 stream" down), the header the home's display name,
+// and each Live row its outside state: Forwarded with its rate, Not
+// requested, or Party-only.
+func TestConsoleShowsTheLinksUse(t *testing.T) {
+	prev := linkForConsole.Load()
+	t.Cleanup(func() { linkForConsole.Store(prev) })
+
+	reg := hub.NewRegistry(slog.New(slog.NewTextHandler(io.Discard, nil)), hub.Options{})
+	var ids []string
+	for range 3 {
+		id, pub, err := reg.StartPublish("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(pub.Close)
+		ids = append(ids, id)
+	}
+	l := &usageLink{name: "Assembly 2026", usage: consoleUsage{
+		UplinkMbps: 6.1, UplinkStreams: 1, DownlinkStreams: 2,
+		Outside: map[string]consoleOutside{
+			ids[0]: {State: relayconsole.OutsideForwarded, Mbps: 6.1},
+			ids[1]: {State: relayconsole.OutsidePartyOnly},
+		},
+	}}
+	var cl consoleLink = l
+	linkForConsole.Store(&cl)
+
+	c := testConsole(t)
+	c.wired.Store(&serve.Wired{Registry: reg})
+	s := c.State()
+	if s.DisplayName != "Assembly 2026" || s.UplinkMbps != 6.1 || s.UplinkStreams != 1 || s.DownlinkStreams != 2 {
+		t.Fatalf("state: name %q up %v Mbps %d streams, down %d streams", s.DisplayName, s.UplinkMbps, s.UplinkStreams, s.DownlinkStreams)
+	}
+	want := map[string]relayconsole.LiveRow{
+		ids[0]: {Code: ids[0], Outside: relayconsole.OutsideForwarded, OutsideMbps: 6.1},
+		ids[1]: {Code: ids[1], Outside: relayconsole.OutsidePartyOnly},
+		ids[2]: {Code: ids[2], Outside: relayconsole.OutsideNotRequested},
+	}
+	if len(s.Live) != len(want) {
+		t.Fatalf("live = %+v", s.Live)
+	}
+	for _, row := range s.Live {
+		if row != want[row.Code] {
+			t.Errorf("row %+v, want %+v", row, want[row.Code])
+		}
+	}
+
+	// Unlinked (nil Outside): no outside state at all.
+	l.usage = consoleUsage{}
+	for _, row := range c.State().Live {
+		if row.Outside != "" {
+			t.Errorf("unlinked row %+v has an outside state", row)
+		}
+	}
+}
+
+// docs/76 §7.1: a budget the host lowers in the console reaches the PoP
+// link, which is what the legs' admission reads (popclient budget.go); a
+// refused lower pushes nothing, and a reset pushes the zero (configured).
+func TestConsoleLoweredBudgetsReachTheLink(t *testing.T) {
+	prev := linkForConsole.Load()
+	t.Cleanup(func() { linkForConsole.Store(prev) })
+	l := &budgetLink{ceiling: config.Budget{Mbps: 25, Streams: 3}}
+	var cl consoleLink = l
+	linkForConsole.Store(&cl)
+
+	c := testConsole(t)
+	if err := c.LowerDownlink(config.Budget{Mbps: 40, Streams: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if l.down != (config.Budget{Mbps: 40, Streams: 2}) || l.up != (config.Budget{}) {
+		t.Fatalf("after LowerDownlink the link holds up %+v down %+v", l.up, l.down)
+	}
+	if err := c.LowerUplink(config.Budget{Streams: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if l.up != (config.Budget{Streams: 1}) || l.down != (config.Budget{Mbps: 40, Streams: 2}) {
+		t.Fatalf("after LowerUplink the link holds up %+v down %+v", l.up, l.down)
+	}
+	calls := l.calls
+	if err := c.LowerUplink(config.Budget{Streams: 4}); err == nil {
+		t.Fatal("raising the uplink past home's 3 streams was accepted")
+	}
+	if l.calls != calls {
+		t.Fatal("a refused lower was pushed to the link")
+	}
+	if err := c.LowerDownlink(config.Budget{}); err != nil || l.down != (config.Budget{}) {
+		t.Fatalf("reset: %v, the link holds down %+v", err, l.down)
 	}
 }
 

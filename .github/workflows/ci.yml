@@ -2821,15 +2821,40 @@ jobs:
       # The script finds this runner's own non-loopback address; the relay
       # is the zero-flag binary, built here. Keyed on the script so the hook
       # lands before it does (it is gawk-app's R74 test, e2e/pop-pinned.mjs).
-      - name: Build gawk-relay for the pinned E2E (R74)
-        if: hashFiles('e2e/pop-pinned.mjs') != ''
-        run: (cd gawk-server && go build -o ../e2e/bin/gawk-relay ./cmd/gawk-relay)
+      # gawk-devcert is pop-uplink-full.mjs's: it mints home's certificate,
+      # which the PoP trusts through SSL_CERT_FILE.
+      - name: Build gawk-relay and gawk-devcert for the PoP E2Es (R74)
+        if: hashFiles('e2e/pop-*.mjs') != ''
+        run: (cd gawk-server && go build -o ../e2e/bin/ ./cmd/gawk-relay ./cmd/gawk-devcert)
       - name: Run the pinned-relay E2E (R74)
         if: hashFiles('e2e/pop-pinned.mjs') != ''
         run: node pop-pinned.mjs
         working-directory: e2e
         env:
           GAWK_E2E_OUT_DIR: out-pop-pinned
+          GAWK_RELAY_BIN: ${{ github.workspace }}/e2e/bin/gawk-relay
+      # R74 PP8 (docs/76 items 27-28): a PoP linked to a single-pod home
+      # with a static credential forwards three outside streams (the
+      # default uplink budget) and refuses the fourth; Chrome, dialling
+      # home pinned, reads 4012 in-band. All on loopback: no LAN address.
+      - name: Run the PoP uplink-full E2E (R74)
+        if: hashFiles('e2e/pop-uplink-full.mjs') != ''
+        run: node pop-uplink-full.mjs
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-pop-uplink-full
+          GAWK_E2E_RELAY_BIN: ${{ github.workspace }}/e2e/bin/gawk-relay
+      # R74 PP14 (docs/76 item 43): a viewer on home follows its
+      # LocalRelayOffer to the linked PoP — the built app under vite
+      # preview, Local Network Access granted then denied over CDP. Like
+      # pop-pinned it needs this runner's private non-loopback IPv4, and
+      # :4433 free (the port an offer names).
+      - name: Run the local-relay switch E2E (R74)
+        if: hashFiles('e2e/pop-switch.mjs') != ''
+        run: node pop-switch.mjs
+        working-directory: e2e
+        env:
+          GAWK_E2E_OUT_DIR: out-pop-switch
           GAWK_RELAY_BIN: ${{ github.workspace }}/e2e/bin/gawk-relay
       - uses: actions/upload-artifact@v7
         if: failure()
@@ -2844,6 +2869,8 @@ jobs:
             e2e/out-rooms-gated/
             e2e/out-screening-notice/
             e2e/out-pop-pinned/
+            e2e/out-pop-uplink-full/
+            e2e/out-pop-switch/
           retention-days: 7
 
   # R20 tier 2 (docs/25 Decision 7): cluster-mode E2E — the real chart with

@@ -1,11 +1,13 @@
 # Build context exclusions for the images that build from the REPOSITORY ROOT:
 # gawk-admin and gawk-telemetry (both `replace` gawk-server, so their context
-# has to span two modules — docs/42 D13), plus the dev stack's fakeidp and
-# pubsim images. `gawk-app` builds from its own directory and has its own
-# .dockerignore; `gawk-server` needs none.
+# has to span two modules — docs/42 D13), gawk-relay (it embeds the gawk-app
+# build it serves, gawk-server/deploy/Dockerfile.relay — docs/76 §6.1), plus
+# the dev stack's fakeidp and pubsim images. `gawk-app` builds from its own
+# directory and has its own .dockerignore; `gawk-server` needs none.
 #
 # node_modules is here because leaving it out is a real, reproducible break,
-# not tidiness. Both root-context UI stages do:
+# not tidiness. Both root-context UI stages do (and gawk-relay's app stage
+# does the same with gawk-app/):
 #
 #     COPY <component>/ui/package.json <component>/ui/package-lock.json ./
 #     RUN npm ci
@@ -22,9 +24,12 @@
 #
 # Deliberately NOT excluded here, unlike gawk-app's:
 #
-#   *.md     — the admin and telemetry images COPY their THIRD-PARTY-NOTICES.md
-#              into the final stage. Attribution ships with the binary.
+#   *.md     — the admin, telemetry and relay images COPY their
+#              THIRD-PARTY-NOTICES.md into the final stage. Attribution
+#              ships with the binary.
 #   dist     — each Dockerfile's `COPY --from=ui` lands after the source copy
 #              and overwrites a locally-built bundle, so a stale one cannot
-#              reach the image.
+#              reach the image. gawk-relay's stage.sh empties
+#              cmd/gawk-relay/webapp/dist before it stages the app stage's
+#              build, to the same effect.
 **/node_modules

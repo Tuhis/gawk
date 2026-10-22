@@ -97,6 +97,52 @@ func isRoomEvent(rowType string) bool {
 	return strings.HasPrefix(rowType, "room.")
 }
 
+// popsPortalPath is the PoPs view; a pop.* event links to its PoP's page
+// (R74), the same route the portal's own detail link uses.
+const popsPortalPath = "/#/pops"
+
+// isPopEvent reports whether a row type is one of R74's store.EventPop*.
+func isPopEvent(rowType string) bool {
+	return strings.HasPrefix(rowType, "pop.")
+}
+
+// popEvent builds a pop.* event's subject, delivery and data from the named
+// payload keys only. The name is read through the store's closed accessor
+// and is required, with no safe default: a row without a DNS-label name is
+// refused rather than sent naming nothing.
+func popEvent(ev store.Event, typ, summary, externalURL string) (string, events.Delivery, any, error) {
+	name := ev.PopName()
+	if name == "" {
+		return "", events.Delivery{}, nil, fmt.Errorf("notify: %s row %d names no PoP", ev.Type, ev.ID)
+	}
+	if ev.PayloadString(store.PayloadSummary) == "" {
+		// The shared fallback cannot name the PoP; this one can.
+		summary = store.SummarizePop(ev.Type, name, ev.Actor)
+	}
+	link := ""
+	if externalURL != "" {
+		link = externalURL + popsPortalPath + "/" + url.PathEscape(name)
+	}
+	delivery := events.Delivery{Summary: summary, PortalURL: link}
+	display := ev.PayloadString(store.PayloadPopDisplayName)
+	var data any
+	switch typ {
+	case events.TypePopCreated:
+		data = events.PopCreatedData{Actor: ev.Actor, Pop: name, DisplayName: display}
+	case events.TypePopUpdated:
+		data = events.PopUpdatedData{Actor: ev.Actor, Pop: name, DisplayName: display}
+	case events.TypePopRepaired:
+		data = events.PopRepairedData{Actor: ev.Actor, Pop: name, DisplayName: display}
+	case events.TypePopRevoked:
+		data = events.PopRevokedData{Actor: ev.Actor, Pop: name, DisplayName: display}
+	case events.TypePopDeleted:
+		data = events.PopDeletedData{Actor: ev.Actor, Pop: name, DisplayName: display}
+	default:
+		return "", events.Delivery{}, nil, fmt.Errorf("notify: no data shape for %s", typ)
+	}
+	return name, delivery, data, nil
+}
+
 // buildEvent renders a persisted moderation event as the CloudEvent a
 // webhook receives: the envelope of docs/52 D1 around the D4 projection of
 // the type's data.
@@ -148,7 +194,12 @@ func buildEvent(ev store.Event, externalURL string) (events.Event, error) {
 		subject  string
 		delivery events.Delivery
 	)
-	if isRoomEvent(ev.Type) {
+	if isPopEvent(ev.Type) {
+		var err error
+		if subject, delivery, data, err = popEvent(ev, typ, summary, externalURL); err != nil {
+			return events.Event{}, err
+		}
+	} else if isRoomEvent(ev.Type) {
 		// Through the accessor, never as a raw string: it is what closes the
 		// vocabulary to a hex digest, so a room CODE written under the key by
 		// mistake does not end up in the portal link.

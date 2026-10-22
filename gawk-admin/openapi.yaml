@@ -2401,8 +2401,9 @@ components:
         The type of a recorded event. The enum only grows; treat unknown
         values as unknown.
 
-        The first eleven are moderation events — what an operator, or the
-        content-flag lifecycle (R40), did. `content_flag.observed` is a
+        The first sixteen are moderation events — what an operator, or the
+        content-flag lifecycle (R40), did; the `pop.*` five (R74) audit an
+        operator's changes to a PoP relay. `content_flag.observed` is a
         screening row: what a sampler in observe mode would have flagged. The
         rest are activity events ingested from the relay event bus (R50),
         present only on a deployment with the bus configured; filter with
@@ -2419,6 +2420,11 @@ components:
         - room.ended
         - room.secret_rotated
         - room.screening_changed
+        - pop.created
+        - pop.updated
+        - pop.repaired
+        - pop.revoked
+        - pop.deleted
         - content_flag.observed
         - broadcast.started
         - broadcast.publisher_away
@@ -2950,6 +2956,11 @@ components:
         - room.ended
         - room.secret_rotated
         - room.screening_changed
+        - pop.created
+        - pop.updated
+        - pop.repaired
+        - pop.revoked
+        - pop.deleted
         - room.attached
         - room.detached
         - room.participant_joined

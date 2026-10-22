@@ -136,8 +136,8 @@ channels:
       window and gawk-admin deduplicates on forever.
 
       Moderation events (`broadcast.killed`, `ban.*`, `room.created`,
-      `room.ended`, `room.secret_rotated`) are portal-originated and do not
-      travel here; the bus carries what the relay observes.
+      `room.ended`, `room.secret_rotated`, `pop.*`) are portal-originated
+      and do not travel here; the bus carries what the relay observes.
 
       The bus is produced from R50 on; this catalogue fixes its types first
       so the producer and its consumers are written against one contract.
@@ -264,6 +264,16 @@ channels:
         $ref: '#/components/messages/roomSecretRotated'
       roomScreeningChanged:
         $ref: '#/components/messages/roomScreeningChanged'
+      popCreated:
+        $ref: '#/components/messages/popCreated'
+      popUpdated:
+        $ref: '#/components/messages/popUpdated'
+      popRepaired:
+        $ref: '#/components/messages/popRepaired'
+      popRevoked:
+        $ref: '#/components/messages/popRevoked'
+      popDeleted:
+        $ref: '#/components/messages/popDeleted'
       roomAttached:
         $ref: '#/components/messages/roomAttached'
       roomDetached:
@@ -321,6 +331,11 @@ operations:
       - $ref: '#/channels/webhook/messages/roomEnded'
       - $ref: '#/channels/webhook/messages/roomSecretRotated'
       - $ref: '#/channels/webhook/messages/roomScreeningChanged'
+      - $ref: '#/channels/webhook/messages/popCreated'
+      - $ref: '#/channels/webhook/messages/popUpdated'
+      - $ref: '#/channels/webhook/messages/popRepaired'
+      - $ref: '#/channels/webhook/messages/popRevoked'
+      - $ref: '#/channels/webhook/messages/popDeleted'
       - $ref: '#/channels/webhook/messages/roomAttached'
       - $ref: '#/channels/webhook/messages/roomDetached'
       - $ref: '#/channels/webhook/messages/roomParticipantJoined'
@@ -566,6 +581,81 @@ components:
                 const: fi.ioio.gawk.room.screening_changed
               data:
                 $ref: './schema/fi.ioio.gawk.room.screening_changed.json'
+    popCreated:
+      name: fi.ioio.gawk.pop.created
+      title: PoP created
+      summary: An operator created a PoP relay.
+      x-gawk-since: R74
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.pop.created
+              data:
+                $ref: './schema/fi.ioio.gawk.pop.created.json'
+    popUpdated:
+      name: fi.ioio.gawk.pop.updated
+      title: PoP updated
+      summary: An operator edited a PoP relay.
+      x-gawk-since: R74
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.pop.updated
+              data:
+                $ref: './schema/fi.ioio.gawk.pop.updated.json'
+    popRepaired:
+      name: fi.ioio.gawk.pop.repaired
+      title: PoP re-paired
+      summary: An operator minted a new pairing string for a PoP relay.
+      x-gawk-since: R74
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.pop.repaired
+              data:
+                $ref: './schema/fi.ioio.gawk.pop.repaired.json'
+    popRevoked:
+      name: fi.ioio.gawk.pop.revoked
+      title: PoP revoked
+      summary: An operator revoked a PoP relay.
+      x-gawk-since: R74
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.pop.revoked
+              data:
+                $ref: './schema/fi.ioio.gawk.pop.revoked.json'
+    popDeleted:
+      name: fi.ioio.gawk.pop.deleted
+      title: PoP deleted
+      summary: An operator deleted a PoP relay.
+      x-gawk-since: R74
+      x-gawk-status: stable
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/cloudEvent'
+          - type: object
+            properties:
+              type:
+                const: fi.ioio.gawk.pop.deleted
+              data:
+                $ref: './schema/fi.ioio.gawk.pop.deleted.json'
 
     # ---- bus (relay-published, from R50) -----------------------------------
     broadcastStarted:
