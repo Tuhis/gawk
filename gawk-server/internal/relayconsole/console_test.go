@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -141,12 +142,20 @@ func TestListenRefusesNonLoopback(t *testing.T) {
 		}
 		l.Close()
 	}
-	// ::1 only where the host has IPv6 loopback.
-	if l, err := Listen("[::1]:0"); err == nil {
-		l.Close()
-	} else if !strings.Contains(err.Error(), "assign") && !strings.Contains(err.Error(), "not available") {
-		t.Errorf("Listen([::1]:0): %v", err)
+	// ::1 only where the host has IPv6 loopback: ask the host directly
+	// rather than matching error text, which differs per OS (Windows says
+	// "winapi error #10049" for WSAEADDRNOTAVAIL).
+	probe, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Logf("no IPv6 loopback on this host (%v); skipping [::1]", err)
+		return
 	}
+	probe.Close()
+	l, err := Listen("[::1]:0")
+	if err != nil {
+		t.Fatalf("Listen([::1]:0): %v", err)
+	}
+	l.Close()
 }
 
 // docs/76 PP3: every request is checked, so a listener that somehow faces
