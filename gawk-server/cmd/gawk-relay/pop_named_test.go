@@ -22,6 +22,7 @@ import (
 
 	"github.com/quic-go/quic-go/http3"
 
+	"github.com/Tuhis/gawk/gawk-server/adminapi"
 	"github.com/Tuhis/gawk/gawk-server/internal/popclient"
 	"github.com/Tuhis/gawk/gawk-server/internal/relayconsole"
 	"github.com/Tuhis/gawk/gawk-server/internal/relaystate"
@@ -110,6 +111,15 @@ func TestConsoleJoinQRFollowsTheNamedTier(t *testing.T) {
 			}
 			if s.Notice != tc.notice {
 				t.Fatalf("notice = %q, want %q", s.Notice, tc.notice)
+			}
+			var dnsLine *adminapi.HealthLine
+			for i, h := range s.Health {
+				if h.Key == "dns" {
+					dnsLine = &s.Health[i]
+				}
+			}
+			if dnsLine == nil || dnsLine.OK != (tc.notice == "") {
+				t.Fatalf("console health has no right DNS self-check line: %+v", s.Health)
 			}
 		})
 	}

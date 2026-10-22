@@ -10,6 +10,7 @@ import (
 	"errors"
 	"sync/atomic"
 
+	"github.com/Tuhis/gawk/gawk-server/adminapi"
 	"github.com/Tuhis/gawk/gawk-server/cmd/gawk-relay/webapp"
 	"github.com/Tuhis/gawk/gawk-server/internal/config"
 	"github.com/Tuhis/gawk/gawk-server/internal/popclient"
@@ -101,6 +102,15 @@ func (p popConsoleLink) Notice() string {
 		return ""
 	}
 	return p.n.Notice()
+}
+
+// Health is the named tier's certificate and DNS self-check lines for the
+// console's Health section (docs/76 §7.1).
+func (p popConsoleLink) Health() []adminapi.HealthLine {
+	if p.n == nil {
+		return nil
+	}
+	return p.n.Health()
 }
 
 func (p popConsoleLink) Pair(ctx context.Context, s string) error { return p.c.Pair(ctx, s) }
