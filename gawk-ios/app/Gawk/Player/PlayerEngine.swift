@@ -168,6 +168,12 @@ final class PlayerEngine: ViewerListener, @unchecked Sendable {
         }
     }
 
+    /// R74 (docs/76 item 43.3): a fresh local-relay offer home sent on this
+    /// session, taken once.
+    func takeLocalRelayOffer() -> LocalRelayOffer? {
+        queue.sync { viewer?.takeLocalRelayOffer() }
+    }
+
     /// A consistent snapshot, for the stats sheet and the smoke test.
     func snapshot() -> Counters {
         queue.sync { counters }

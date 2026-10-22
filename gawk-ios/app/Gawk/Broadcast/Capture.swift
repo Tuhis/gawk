@@ -71,7 +71,7 @@ final class Capture {
         identity.secret(relay: settings.relayURL)
     }
 
-    func start(session: BroadcastSession, settings: AppSettings) {
+    func start(session: BroadcastSession, settings: AppSettings, switcher: LocalRelaySwitcher? = nil) {
         // A source left from an earlier broadcast must not feed this one, or
         // end it from its own stop callback.
         stopSources()
@@ -79,15 +79,28 @@ final class Capture {
         CaptureDiagnostics.shared.reset()
         #endif
         let test = usesTestSource
+        // R74 (docs/76 item 43.3): a party's local relay that answered a
+        // fresh offer takes the broadcast, decided now, before going live,
+        // and never moved after. Home's publish secret never goes there.
+        let target = switcher?.target(home: settings.relayURL, homeCertHashes: settings.relayCertHashes)
+            ?? LocalRelaySwitcher.Target(
+                url: settings.relayURL, certHashes: settings.relayCertHashes,
+                followOffers: true, wallHidden: false, pop: nil)
+        switcher?.broadcastStarted()
         session.start(
-            relayURL: settings.relayURL,
-            secret: publishSecret(settings),
+            relayURL: target.url,
+            secret: target.pop == nil ? publishSecret(settings) : "",
             quality: resolve(settings.quality),
             nickname: settings.nickname,
             telemetry: settings.telemetry,
-            insecure: settings.insecure,
-            captureSource: test ? "test-source" : "screencapturekit"
+            insecure: target.pop == nil ? settings.insecure : false,
+            captureSource: test ? "test-source" : "screencapturekit",
+            certHashes: target.certHashes,
+            followOffers: target.followOffers,
+            wallHidden: target.wallHidden
         )
+        session.localRelay = target.pop
+        session.onLocalRelayFailed = { [weak switcher] in switcher?.refused() }
         live = session
         // The core can end the broadcast itself (a refusal, an operator, an
         // error); capture goes with it.

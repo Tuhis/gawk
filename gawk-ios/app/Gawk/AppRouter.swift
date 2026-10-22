@@ -32,7 +32,7 @@ final class AppRouter {
     /// What D21 is asking about: a screen, or a typed code still to look up.
     enum Pending: Equatable {
         case screen(Screen)
-        case join(code: String, relay: String, insecure: Bool)
+        case join(code: String, relay: String, insecure: Bool, certHashes: [String] = [])
     }
 
     /// What a `gawk://broadcast` link fills in on Broadcast (docs/68 D4):
@@ -95,12 +95,12 @@ final class AppRouter {
 
     /// The Watch box's Join: a typed code is a room or a broadcast (D4).
     /// While live, D21 asks before anything is dialed.
-    func join(code: String, relay: String, insecure: Bool) {
+    func join(code: String, relay: String, insecure: Bool, certHashes: [String] = []) {
         guard BroadcastCode.isValid(code), resolving == nil else { return }
         if isBroadcasting {
-            confirmWhileLive = .join(code: code, relay: relay, insecure: insecure)
+            confirmWhileLive = .join(code: code, relay: relay, insecure: insecure, certHashes: certHashes)
         } else {
-            resolve(code: code, relay: relay, insecure: insecure)
+            resolve(code: code, relay: relay, insecure: insecure, certHashes: certHashes)
         }
     }
 
@@ -110,14 +110,15 @@ final class AppRouter {
         confirmWhileLive = nil
         switch pending {
         case .screen(let s): screen = s
-        case .join(let code, let relay, let insecure): resolve(code: code, relay: relay, insecure: insecure)
+        case .join(let code, let relay, let insecure, let certHashes):
+            resolve(code: code, relay: relay, insecure: insecure, certHashes: certHashes)
         case nil: break
         }
     }
 
-    private func resolve(code: String, relay: String, insecure: Bool) {
+    private func resolve(code: String, relay: String, insecure: Bool, certHashes: [String] = []) {
         resolving = code
-        let start = CoreRoomProbe.starter(relay: relay, insecure: insecure)
+        let start = CoreRoomProbe.starter(relay: relay, insecure: insecure, certHashes: certHashes)
         Task { [weak self] in
             let target = await JoinResolver.resolve(code: code, start: start)
             guard let self, self.resolving == code else { return }

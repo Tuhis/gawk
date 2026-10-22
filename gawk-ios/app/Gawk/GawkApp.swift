@@ -6,7 +6,8 @@ struct GawkApp: App {
     @State private var broadcast: BroadcastSession
     @State private var capture: Capture
     @State private var router = AppRouter()
-    @State private var probes = ServerProbes()
+    @State private var probes: ServerProbes
+    @State private var switcher: LocalRelaySwitcher
     private let identity: IdentityStore
 
     init() {
@@ -34,6 +35,21 @@ struct GawkApp: App {
         }
         _broadcast = State(initialValue: broadcast)
         _capture = State(initialValue: capture)
+        // R74 (docs/76 §6.12): home's probe brings its local-relay offer;
+        // only the selected server's counts, and a live broadcast is never
+        // moved (the offer is for the next one).
+        let probes = ServerProbes()
+        let switcher = LocalRelaySwitcher()
+        probes.onOffer = { [settings, broadcast, switcher] url, offer in
+            guard url == settings.relayURL else { return }
+            switcher.consider(offer, live: broadcast.isActive, home: url)
+        }
+        broadcast.onLiveOffer = { [switcher, broadcast] offer in
+            guard let home = broadcast.relay else { return }
+            switcher.consider(offer, live: true, home: home)
+        }
+        _probes = State(initialValue: probes)
+        _switcher = State(initialValue: switcher)
     }
 
     var body: some Scene {
@@ -44,6 +60,7 @@ struct GawkApp: App {
                 .environment(capture)
                 .environment(router)
                 .environment(probes)
+                .environment(switcher)
                 // docs/70 D2: dark only, on the gawk tokens.
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
@@ -57,6 +74,8 @@ struct RootView: View {
     let identity: IdentityStore
     @Environment(AppRouter.self) private var router
     @Environment(BroadcastSession.self) private var broadcast
+    @Environment(LocalRelaySwitcher.self) private var switcher
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         @Bindable var router = router
@@ -96,6 +115,11 @@ struct RootView: View {
         }
         .onChange(of: broadcast.isActive, initial: true) { _, active in
             router.isBroadcasting = active
+        }
+        // TN3179 (docs/76 item 44): a switch never dials while the app is
+        // not active, and coming back after the prompt is its one retry.
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            switcher.setActive(phase == .active)
         }
     }
 }

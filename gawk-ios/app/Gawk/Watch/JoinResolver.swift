@@ -67,10 +67,13 @@ enum JoinResolver {
 final class CoreRoomProbe: RoomProbe {
     private var watcher: RoomWatcher?
 
-    init(relay: String, code: String, insecure: Bool, answer: @escaping @MainActor (Bool) -> Void) {
+    init(
+        relay: String, code: String, insecure: Bool, certHashes: [String] = [],
+        answer: @escaping @MainActor (Bool) -> Void
+    ) {
         watcher = RoomWatcher.start(
             relayUrl: relay, code: code, nickname: "", insecure: insecure,
-            listener: ProbeListener(answer: answer))
+            listener: ProbeListener(answer: answer), certHashes: certHashes)
     }
 
     func stop() {
@@ -78,8 +81,10 @@ final class CoreRoomProbe: RoomProbe {
         watcher = nil
     }
 
-    static func starter(relay: String, insecure: Bool) -> RoomProbeStarter {
-        { code, answer in CoreRoomProbe(relay: relay, code: code, insecure: insecure, answer: answer) }
+    static func starter(relay: String, insecure: Bool, certHashes: [String] = []) -> RoomProbeStarter {
+        { code, answer in
+            CoreRoomProbe(relay: relay, code: code, insecure: insecure, certHashes: certHashes, answer: answer)
+        }
     }
 }
 
