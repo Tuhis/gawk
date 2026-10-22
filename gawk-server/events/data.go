@@ -288,6 +288,54 @@ type RoomScreeningChangedData struct {
 	Delivery
 }
 
+// PopCreatedData is `fi.ioio.gawk.pop.created`: an operator created a PoP
+// relay (R74, docs/76 §7.2). Like every pop.* type it names the PoP and
+// nothing else about it: no address, pairing string or credential.
+type PopCreatedData struct {
+	Actor string `json:"actor"`
+	// Pop is the Pop resource's name, a DNS label.
+	Pop string `json:"pop"`
+	// DisplayName is the PoP's name as shown to people.
+	DisplayName string `json:"displayName,omitempty"`
+	Delivery
+}
+
+// PopUpdatedData is `fi.ioio.gawk.pop.updated`: an operator edited a PoP's
+// name, expiry, budgets, limits or guest settings.
+type PopUpdatedData struct {
+	Actor       string `json:"actor"`
+	Pop         string `json:"pop"`
+	DisplayName string `json:"displayName,omitempty"`
+	Delivery
+}
+
+// PopRepairedData is `fi.ioio.gawk.pop.repaired`: an operator minted a new
+// pairing string, which refuses the credential paired under the old one.
+type PopRepairedData struct {
+	Actor       string `json:"actor"`
+	Pop         string `json:"pop"`
+	DisplayName string `json:"displayName,omitempty"`
+	Delivery
+}
+
+// PopRevokedData is `fi.ioio.gawk.pop.revoked`: an operator revoked a PoP,
+// which ends its link and its outside copies.
+type PopRevokedData struct {
+	Actor       string `json:"actor"`
+	Pop         string `json:"pop"`
+	DisplayName string `json:"displayName,omitempty"`
+	Delivery
+}
+
+// PopDeletedData is `fi.ioio.gawk.pop.deleted`: an operator deleted a PoP
+// and, with it, its party wall.
+type PopDeletedData struct {
+	Actor       string `json:"actor"`
+	Pop         string `json:"pop"`
+	DisplayName string `json:"displayName,omitempty"`
+	Delivery
+}
+
 // ---------------------------------------------------------------------------
 // Bus events (relay-published; docs/51 D3)
 // ---------------------------------------------------------------------------

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.pop.repaired.json",
+  "title": "PoP re-paired",
+  "description": "An operator minted a new pairing string for a PoP relay, which refuses the credential paired under the old one (R74, docs/76). The pairing string itself is never in any event, and neither is an address or a credential. The `data` of a `fi.ioio.gawk.pop.repaired` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "common.json#/$defs/actor"
+    },
+    "pop": {
+      "$ref": "common.json#/$defs/popName",
+      "description": "The PoP the operator acted on: the Pop resource's name."
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The PoP's name as shown to people."
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "actor",
+    "pop"
+  ]
+}

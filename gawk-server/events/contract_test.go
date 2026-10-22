@@ -819,16 +819,22 @@ func TestSubjectIsTheCleartextIdentity(t *testing.T) {
 					BroadcastKey string `json:"broadcastKey"`
 					RoomCode     string `json:"roomCode"`
 					RoomKey      string `json:"roomKey"`
+					Pop          string `json:"pop"`
 				} `json:"data"`
 			}
 			if err := json.Unmarshal(raw, &ev); err != nil {
 				t.Fatal(err)
 			}
 			// A room event is about its room even when it also names a
-			// broadcast; a broadcast event is about the broadcast.
+			// broadcast; a broadcast event is about the broadcast, even when
+			// it names the PoP it came through; a PoP event (R74) is about
+			// its PoP.
 			want := ev.Data.RoomCode
 			if want == "" {
 				want = ev.Data.BroadcastID
+			}
+			if Scope(typ) == "pop" {
+				want = ev.Data.Pop
 			}
 			if ev.Subject != want {
 				t.Errorf("subject = %q, want the cleartext %q (D9)", ev.Subject, want)

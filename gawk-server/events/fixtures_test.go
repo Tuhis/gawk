@@ -35,7 +35,9 @@ const (
 	fixtureSampler = "service-account-gawk-sampler"
 	// fixturePop names the R74 PoP relay a broadcast is published through
 	// (docs/76): a DNS label, never an address.
-	fixturePop = "assembly-2026"
+	fixturePop        = "assembly-2026"
+	fixturePopDisplay = "Assembly 2026"
+	fixturePortalP    = "https://admin.example.com/#/pops/" + fixturePop
 )
 
 var fixtureTime = time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
@@ -150,6 +152,26 @@ func fixtures() map[string]Event {
 				Summary:   "static room TuhisRoom was exempted from content screening by juho@example.com",
 				PortalURL: fixturePortalR,
 			},
+		}),
+		TypePopCreated: admin(TypePopCreated, fixturePop, PopCreatedData{
+			Actor: "juho@example.com", Pop: fixturePop, DisplayName: fixturePopDisplay,
+			Delivery: Delivery{Summary: "PoP assembly-2026 was created by juho@example.com", PortalURL: fixturePortalP},
+		}),
+		TypePopUpdated: admin(TypePopUpdated, fixturePop, PopUpdatedData{
+			Actor: "juho@example.com", Pop: fixturePop, DisplayName: fixturePopDisplay,
+			Delivery: Delivery{Summary: "PoP assembly-2026 was edited by juho@example.com", PortalURL: fixturePortalP},
+		}),
+		TypePopRepaired: admin(TypePopRepaired, fixturePop, PopRepairedData{
+			Actor: "juho@example.com", Pop: fixturePop, DisplayName: fixturePopDisplay,
+			Delivery: Delivery{Summary: "PoP assembly-2026 was given a new pairing string by juho@example.com", PortalURL: fixturePortalP},
+		}),
+		TypePopRevoked: admin(TypePopRevoked, fixturePop, PopRevokedData{
+			Actor: "juho@example.com", Pop: fixturePop, DisplayName: fixturePopDisplay,
+			Delivery: Delivery{Summary: "PoP assembly-2026 was revoked by juho@example.com", PortalURL: fixturePortalP},
+		}),
+		TypePopDeleted: admin(TypePopDeleted, fixturePop, PopDeletedData{
+			Actor: "juho@example.com", Pop: fixturePop, DisplayName: fixturePopDisplay,
+			Delivery: Delivery{Summary: "PoP assembly-2026 was deleted by juho@example.com", PortalURL: fixturePortalP},
 		}),
 
 		TypeBroadcastStarted: bus(TypeBroadcastStarted, fixtureBroadcastID, BroadcastStartedData{

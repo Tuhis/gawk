@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gawk.ioio.fi/schemas/events/fi.ioio.gawk.pop.deleted.json",
+  "title": "PoP deleted",
+  "description": "An operator deleted a PoP relay and, with it, its party wall (R74, docs/76). The event names the PoP and nothing else about it: never an address, a pairing string or a credential. The `data` of a `fi.ioio.gawk.pop.deleted` CloudEvent.",
+  "type": "object",
+  "properties": {
+    "actor": {
+      "$ref": "common.json#/$defs/actor"
+    },
+    "pop": {
+      "$ref": "common.json#/$defs/popName",
+      "description": "The PoP the operator acted on: the Pop resource's name."
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The PoP's name as shown to people, as it was before the deletion."
+    },
+    "summary": {
+      "$ref": "common.json#/$defs/summary"
+    },
+    "portalUrl": {
+      "$ref": "common.json#/$defs/portalUrl"
+    }
+  },
+  "required": [
+    "actor",
+    "pop"
+  ]
+}
