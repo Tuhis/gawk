@@ -13,6 +13,7 @@ import (
 
 	coordv1 "k8s.io/api/coordination/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -123,10 +124,12 @@ func reserve(t *testing.T, r Reservations, id, pop string, limit int, want strin
 func TestReservationsReserveConflictAndLimit(t *testing.T) {
 	eachReservations(t, func(t *testing.T, f reservationsFixture) {
 		reserve(t, f.res, "K7XQ2M", "lan-party", 2, ReserveOK)
-		// The same ID again — this PoP's or another's — collides.
-		reserve(t, f.res, "K7XQ2M", "lan-party", 2, ReserveConflict)
+		// The same ID again is ok for this PoP (a relink re-reserves what
+		// it holds, at its limit too) and a collision for another.
+		reserve(t, f.res, "K7XQ2M", "lan-party", 2, ReserveOK)
 		reserve(t, f.res, "K7XQ2M", "attic", 2, ReserveConflict)
 		reserve(t, f.res, "ABC234", "lan-party", 2, ReserveOK)
+		reserve(t, f.res, "K7XQ2M", "lan-party", 2, ReserveOK)
 		// The PoP's own limit binds on its count, not on anyone else's.
 		reserve(t, f.res, "DEF567", "lan-party", 2, ReserveLimit)
 		reserve(t, f.res, "DEF567", "attic", 2, ReserveOK)
@@ -202,5 +205,77 @@ func TestClusterReservationsRenewAll(t *testing.T) {
 	}
 	if err := NewMemReservations().RenewAll(ctx, "lan-party"); err != nil {
 		t.Errorf("in-memory RenewAll = %v, want nil", err)
+	}
+}
+
+// unsyncedClusterReservations is the cluster set on a coordinator whose
+// lease informer has not synced (a pod that just started), so Owner misses
+// for everything.
+func unsyncedClusterReservations(t *testing.T, cs *fake.Clientset) Reservations {
+	t.Helper()
+	coord, err := cluster.New(cluster.Options{
+		Client: cs, Namespace: "gawk", PodName: "pod-b", AdvertiseAddr: "pod-b:4433",
+		BroadcastGrace: 5 * time.Minute, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("cluster.New: %v", err)
+	}
+	return NewClusterReservations(coord)
+}
+
+// A PoP relinking onto a pod whose lease cache has not synced re-reserves
+// what it holds: that is still ok, at its limit too, never a conflict that
+// would strand the reservation.
+func TestClusterReReserveOfAPoPsOwnIDIsOKWithoutTheCache(t *testing.T) {
+	cs := fake.NewClientset()
+	res := unsyncedClusterReservations(t, cs)
+	ctx := context.Background()
+	for _, id := range []string{"K7XQ2M", "M3PQ7R"} {
+		if got, err := res.Reserve(ctx, id, "lan-party", 2); err != nil || got != ReserveOK {
+			t.Fatalf("Reserve(%s) = %q, %v", id, got, err)
+		}
+	}
+	if _, ok := res.Owner("K7XQ2M"); ok {
+		t.Fatal("the fixture's cache is synced; the test needs a miss")
+	}
+	if got, err := res.Reserve(ctx, "K7XQ2M", "lan-party", 2); err != nil || got != ReserveOK {
+		t.Fatalf("re-Reserve of its own ID at the limit = %q, %v; want ok", got, err)
+	}
+	if got, err := res.Reserve(ctx, "K7XQ2M", "other-pop", 2); err != nil || got != ReserveConflict {
+		t.Fatalf("another PoP's Reserve of it = %q, %v; want conflict", got, err)
+	}
+}
+
+// spec.limits.maxBroadcasts holds under concurrent reserve records (each
+// is its own goroutine on the link-home pod): the count and the create
+// are one step.
+func TestClusterReserveHoldsTheLimitUnderConcurrentMints(t *testing.T) {
+	cs := fake.NewClientset()
+	// Widen the window between the count and the create.
+	cs.PrependReactor("list", "leases", func(k8stesting.Action) (bool, runtime.Object, error) {
+		time.Sleep(20 * time.Millisecond)
+		return false, nil, nil
+	})
+	res := unsyncedClusterReservations(t, cs)
+	ids := []string{"AAAA22", "BBBB33", "CCCC44", "DDDD55", "EEEE66", "FFFF77"}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ok := 0
+	for _, id := range ids {
+		wg.Go(func() {
+			got, err := res.Reserve(context.Background(), id, "lan-party", 3)
+			if err != nil {
+				t.Errorf("Reserve(%s): %v", id, err)
+			}
+			if got == ReserveOK {
+				mu.Lock()
+				ok++
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	if ok != 3 {
+		t.Fatalf("%d reservations answered ok, want the limit of 3", ok)
 	}
 }

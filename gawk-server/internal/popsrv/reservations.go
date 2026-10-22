@@ -30,7 +30,9 @@ const (
 type Reservations interface {
 	// Reserve makes id pop's reservation unless it is taken (ReserveConflict)
 	// or pop already holds limit reservations (ReserveLimit; limit <= 0 is
-	// unlimited). err is only for a failure to decide.
+	// unlimited). An ID that already is pop's reservation is ReserveOK, at
+	// the limit too: a relink re-reserves what the PoP holds. err is only
+	// for a failure to decide.
 	Reserve(ctx context.Context, id, pop string, limit int) (result string, err error)
 	// Release ends one reservation (the PoP ended the broadcast). Missing is
 	// a no-op; another PoP's is cluster.ErrReserved and is kept.
@@ -56,12 +58,28 @@ func NewClusterReservations(c *cluster.Coordinator) Reservations {
 	return &clusterReservations{c: c}
 }
 
-type clusterReservations struct{ c *cluster.Coordinator }
+type clusterReservations struct {
+	c *cluster.Coordinator
+	// mu makes a reserve's count and create one step: every reserve record
+	// is its own goroutine on the link-home pod, and two mints at
+	// limit-1 would otherwise both count limit-1 and both create.
+	mu sync.Mutex
+}
 
 func (r *clusterReservations) Reserve(ctx context.Context, id, pop string, limit int) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// The PoP's own reservation first, from the API: a relink re-reserves
+	// what it holds, and a pod whose lease cache has not synced (or lags)
+	// must answer that ok, not conflict or limit, or the PoP keeps the
+	// broadcast local-only and never releases the Lease.
+	if result, decided, err := r.existing(ctx, id, pop); err != nil || decided {
+		return result, err
+	}
 	if limit > 0 {
 		// Counted from the API, not the cache: only the link-home pod
-		// reserves for a PoP, so the count it just wrote is the count.
+		// reserves for a PoP and it does so under mu, so the count it just
+		// wrote is the count.
 		n, err := r.c.CountReservations(ctx, pop)
 		if err != nil {
 			return "", err
@@ -74,10 +92,30 @@ func (r *clusterReservations) Reserve(ctx context.Context, id, pop string, limit
 	case err == nil:
 		return ReserveOK, nil
 	case errors.Is(err, cluster.ErrConflict):
+		// Created in between: ok only if it is this PoP's.
+		if result, decided, err := r.existing(ctx, id, pop); err != nil || decided {
+			return result, err
+		}
 		return ReserveConflict, nil
 	default:
 		return "", err
 	}
+}
+
+// existing decides a reserve from the Lease id already has: ok when it is
+// pop's reservation, conflict when it is anything else, undecided when
+// there is none.
+func (r *clusterReservations) existing(ctx context.Context, id, pop string) (result string, decided bool, err error) {
+	o, err := r.c.Resolve(ctx, id)
+	switch {
+	case errors.Is(err, cluster.ErrNotFound):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	case o.Pop == pop:
+		return ReserveOK, true, nil
+	}
+	return ReserveConflict, true, nil
 }
 
 func (r *clusterReservations) Release(ctx context.Context, id, pop string) error {
@@ -132,7 +170,10 @@ func (r *memReservations) Reserve(_ context.Context, id, pop string, limit int) 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, taken := r.owner[id]; taken {
+	if owner, taken := r.owner[id]; taken {
+		if owner == pop {
+			return ReserveOK, nil
+		}
 		return ReserveConflict, nil
 	}
 	if limit > 0 && r.countLocked(pop) >= limit {
