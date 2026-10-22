@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Tuhis/gawk/gawk-server/internal/cluster"
@@ -83,6 +84,8 @@ type Manager struct {
 
 	hmu      sync.RWMutex
 	handlers map[string][]func(pop string, rec any)
+	// streams serves a link's extra bidi streams (wall.go: room joins).
+	streams atomic.Pointer[linkStreamHandler]
 
 	unsubscribe func()
 }

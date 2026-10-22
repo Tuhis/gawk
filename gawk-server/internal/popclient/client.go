@@ -135,6 +135,9 @@ type Client struct {
 
 	hmu      sync.RWMutex
 	handlers map[string][]func(rec any)
+
+	// wall is the party wall (wall.go).
+	wall *wall
 }
 
 // New builds a Client from the state directory's stored credential.
@@ -173,6 +176,7 @@ func New(o Options) *Client {
 		c.state.Header = HeaderWaiting
 		c.state.Endpoint = st.Endpoint
 	}
+	c.wall = newWall(c)
 	return c
 }
 
@@ -268,6 +272,7 @@ func (c *Client) Run(ctx context.Context) error {
 	if c.opts.Pair != "" {
 		go c.pairAtStart(ctx, c.opts.Pair)
 	}
+	go c.wall.run(ctx)
 	failures := 0
 	for {
 		if ctx.Err() != nil {
