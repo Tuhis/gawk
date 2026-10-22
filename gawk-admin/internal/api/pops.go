@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Tuhis/gawk/gawk-admin/internal/kube"
 	"github.com/Tuhis/gawk/gawk-admin/internal/relayscan"
+	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-server/pops"
 	"github.com/Tuhis/gawk/gawk-server/rooms"
 )
@@ -643,6 +645,7 @@ func (a *API) handleCreatePop(w http.ResponseWriter, r *http.Request) {
 	a.kick()
 	// The pairing string is a credential until redeemed: it is in the
 	// response and nowhere else, never in a log line or an event.
+	a.recordPop(r.Context(), store.EventPopCreated, id.Actor(), obj)
 	a.log.Info("PoP created", "actor", id.Actor(), "pop", name, "wall", wall != nil)
 	writeJSON(w, http.StatusCreated, popWithPairingJSON{
 		Pop: a.renderPop(obj, nil, false), PairingString: pairing, ExpiresAt: rfc3339(record.ExpiresAt)})
@@ -705,6 +708,7 @@ func (a *API) handlePatchPop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.kick()
+	a.recordPop(r.Context(), store.EventPopUpdated, id.Actor(), after)
 	a.log.Info("PoP edited", "actor", id.Actor(), "pop", name)
 	writeJSON(w, http.StatusOK, a.renderPop(after, a.livePop(r.Context(), name), false))
 }
@@ -732,6 +736,7 @@ func (a *API) handleRepairPop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.kick()
+	a.recordPop(r.Context(), store.EventPopRepaired, id.Actor(), obj)
 	a.log.Info("PoP re-paired", "actor", id.Actor(), "pop", name)
 	writeJSON(w, http.StatusOK, popWithPairingJSON{
 		Pop: a.renderPop(obj, nil, false), PairingString: pairing, ExpiresAt: rfc3339(record.ExpiresAt)})
@@ -752,6 +757,7 @@ func (a *API) handleRevokePop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.kick()
+	a.recordPop(r.Context(), store.EventPopRevoked, id.Actor(), obj)
 	a.log.Info("PoP revoked", "actor", id.Actor(), "pop", name)
 	writeJSON(w, http.StatusOK, a.renderPop(obj, nil, false))
 }
@@ -767,13 +773,31 @@ func (a *API) handleDeletePop(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := a.opts.Pops.Delete(r.Context(), name, nil); err != nil {
+	obj, err := a.opts.Pops.Delete(r.Context(), name, nil)
+	if err != nil {
 		a.failPop(w, r, "delete the PoP", err)
 		return
 	}
 	a.kick()
+	a.recordPop(r.Context(), store.EventPopDeleted, id.Actor(), obj)
 	a.log.Info("PoP deleted", "actor", id.Actor(), "pop", name)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// recordPop persists a pop.* audit event (R74, docs/76 §7.2): the PoP's name
+// and display name, the summary and the actor, and nothing else. Its spec
+// holds the pairing record and its status the link's addresses and the
+// credential; none of it is read here.
+func (a *API) recordPop(ctx context.Context, eventType, actor string, obj kube.PopObject) {
+	raw, err := json.Marshal(map[string]any{
+		store.PayloadSummary:        store.SummarizePop(eventType, obj.Name, actor),
+		store.PayloadPop:            obj.Name,
+		store.PayloadPopDisplayName: obj.Pop.Spec.DisplayName,
+	})
+	if err != nil {
+		raw = []byte(`{}`)
+	}
+	a.record(ctx, store.Event{Type: eventType, OccurredAt: a.now(), Actor: actor, Payload: raw})
 }
 
 // popName reads the path's PoP name; a malformed one is a 404, since no such

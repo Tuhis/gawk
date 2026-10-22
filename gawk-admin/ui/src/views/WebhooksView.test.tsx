@@ -313,7 +313,8 @@ describe('the event filter (R49, docs/50 D8)', () => {
     // so a bot unticks what it does not want.
     for (const e of ['broadcast.killed', 'ban.created', 'ban.expired', 'ban.removed',
       'content_flag.raised', 'content_flag.reminded', 'content_flag.resolved',
-      'room.created', 'room.ended', 'room.secret_rotated', 'room.screening_changed']) {
+      'room.created', 'room.ended', 'room.secret_rotated', 'room.screening_changed',
+      'pop.created', 'pop.updated', 'pop.repaired', 'pop.revoked', 'pop.deleted']) {
       fireEvent.click(screen.getByLabelText(e));
     }
     fireEvent.click(screen.getByLabelText('room.participant_joined'));

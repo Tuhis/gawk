@@ -269,6 +269,11 @@ const MODERATION_EVENTS: WebhookEventName[] = [
   'room.ended',
   'room.secret_rotated',
   'room.screening_changed',
+  'pop.created',
+  'pop.updated',
+  'pop.repaired',
+  'pop.revoked',
+  'pop.deleted',
 ];
 
 /**

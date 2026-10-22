@@ -722,7 +722,8 @@ export type WebhookSource = 'config' | 'ui';
  * an event but opts into the reconnect pair a room's move to another relay pod
  * produces. R40 (docs/71 D16) adds three moderation types and the opt-in
  * `content_flag.observed`, which a webhook receives only when its filter
- * names it — calibration data must never page an existing pager.
+ * names it — calibration data must never page an existing pager. R74 adds the
+ * five `pop.*` moderation types, an operator's changes to a PoP relay.
  */
 export type WebhookEventName =
   | 'broadcast.killed'
@@ -737,6 +738,11 @@ export type WebhookEventName =
   | 'room.ended'
   | 'room.secret_rotated'
   | 'room.screening_changed'
+  | 'pop.created'
+  | 'pop.updated'
+  | 'pop.repaired'
+  | 'pop.revoked'
+  | 'pop.deleted'
   | 'room.attached'
   | 'room.detached'
   | 'room.participant_joined'

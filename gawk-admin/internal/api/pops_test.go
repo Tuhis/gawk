@@ -24,6 +24,7 @@ import (
 	"github.com/Tuhis/gawk/gawk-admin/internal/config"
 	"github.com/Tuhis/gawk/gawk-admin/internal/kube"
 	"github.com/Tuhis/gawk/gawk-admin/internal/relayscan"
+	"github.com/Tuhis/gawk/gawk-admin/internal/store"
 	"github.com/Tuhis/gawk/gawk-server/pops"
 )
 
@@ -38,6 +39,7 @@ type popEnv struct {
 	dc    *dynamicfake.FakeDynamicClient
 	pops  *kube.PopClient
 	rooms *wallRooms
+	rec   *memoryRecorder
 	now   time.Time
 }
 
@@ -96,10 +98,10 @@ func withPopsEnabled() harnessOption {
 func newPopEnv(t *testing.T, opts ...harnessOption) *popEnv {
 	t.Helper()
 	dc := newPopDynamic(t)
-	e := &popEnv{dc: dc, pops: kube.NewPopClientFor(dc, popNS), rooms: &wallRooms{fakeRooms: newFakeRooms()}, now: popNow}
+	e := &popEnv{dc: dc, pops: kube.NewPopClientFor(dc, popNS), rooms: &wallRooms{fakeRooms: newFakeRooms()}, rec: &memoryRecorder{}, now: popNow}
 	all := append([]harnessOption{
 		withPops(e.pops),
-		withRooms(e.rooms.fakeRooms, &memoryRecorder{}),
+		withRooms(e.rooms.fakeRooms, e.rec),
 		func(o *api.Options, _ *harness) {
 			o.Rooms = e.rooms
 			o.Clock = func() time.Time { return e.now }
@@ -496,6 +498,58 @@ func TestRevokeAndDelete(t *testing.T) {
 	e.decode(http.MethodDelete, "/api/v1/pops/p1", nil, http.StatusNoContent, nil)
 	if code := e.errorCode(http.MethodDelete, "/api/v1/pops/p1", nil, http.StatusNotFound); code != api.CodeNotFound {
 		t.Fatalf("second delete = %q", code)
+	}
+}
+
+// R74 (docs/76 §7.2): each operator change to a PoP is an audit row, named
+// by the PoP and its actor. No row ever carries the pairing string, a
+// credential or an address; a refused change records nothing.
+func TestPopChangesAreAudited(t *testing.T) {
+	e := newPopEnv(t)
+	var created, repaired wirePopWithPairing
+	e.decode(http.MethodPost, "/api/v1/pops", map[string]any{"name": "assembly-2026", "displayName": "Assembly 2026"}, http.StatusCreated, &created)
+	e.paired("assembly-2026", &pops.Link{Connected: true, LanAddr: "192.168.1.20:4433", PublicAddrs: []string{"203.0.113.7"}})
+	e.decode(http.MethodPatch, "/api/v1/pops/assembly-2026", map[string]any{"displayName": "Assembly"}, http.StatusOK, nil)
+	e.errorCode(http.MethodPatch, "/api/v1/pops/assembly-2026", map[string]any{"uplink": map[string]any{"maxMbps": -5}}, http.StatusBadRequest)
+	e.decode(http.MethodPost, "/api/v1/pops/assembly-2026/repair", nil, http.StatusOK, &repaired)
+	e.decode(http.MethodPost, "/api/v1/pops/assembly-2026/revoke", nil, http.StatusOK, nil)
+	e.decode(http.MethodDelete, "/api/v1/pops/assembly-2026", nil, http.StatusNoContent, nil)
+	e.errorCode(http.MethodDelete, "/api/v1/pops/assembly-2026", nil, http.StatusNotFound)
+
+	got := e.rec.all()
+	want := []struct{ typ, display string }{
+		{store.EventPopCreated, "Assembly 2026"},
+		{store.EventPopUpdated, "Assembly"},
+		{store.EventPopRepaired, "Assembly"},
+		{store.EventPopRevoked, "Assembly"},
+		{store.EventPopDeleted, "Assembly"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("recorded %d events, want %d: %+v", len(got), len(want), got)
+	}
+	secrets := []string{"203.0.113.7", "192.168.1.20", strings.Repeat("c", 64)}
+	for _, ps := range []string{created.PairingString, repaired.PairingString} {
+		_, tok, _ := pops.ParsePairing(ps)
+		secrets = append(secrets, ps, tok, strings.ReplaceAll(tok, "-", ""))
+	}
+	for i, ev := range got {
+		if ev.Type != want[i].typ || ev.Actor == "" || ev.BroadcastID != "" || ev.BroadcastKey != "" {
+			t.Errorf("event %d = %+v, want %s by the caller", i, ev, want[i].typ)
+		}
+		if p := ev.PayloadString(store.PayloadPop); p != "assembly-2026" {
+			t.Errorf("event %d names PoP %q", i, p)
+		}
+		if d := ev.PayloadString(store.PayloadPopDisplayName); d != want[i].display {
+			t.Errorf("event %d display name %q, want %q", i, d, want[i].display)
+		}
+		if ev.PayloadString(store.PayloadSummary) == "" {
+			t.Errorf("event %d has no summary", i)
+		}
+		for _, s := range secrets {
+			if s != "" && strings.Contains(string(ev.Payload), s) {
+				t.Errorf("event %d (%s) carries %q: %s", i, ev.Type, s, ev.Payload)
+			}
+		}
 	}
 }
 

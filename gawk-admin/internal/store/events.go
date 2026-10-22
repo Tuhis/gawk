@@ -323,6 +323,9 @@ func SummarizeWithEnforcement(eventType string, targetType moderation.TargetType
 		// Rooms have no enforcement grade: a CR write either landed or the
 		// mutation failed outright, there is no row ahead of it.
 		return SummarizeRoom(eventType, "", "", actor)
+	case EventPopCreated, EventPopUpdated, EventPopRepaired, EventPopRevoked, EventPopDeleted:
+		// A PoP row names no broadcast; the broadcast column is not read.
+		return SummarizePop(eventType, "", actor)
 	case EventContentFlag, EventContentFlagObserved, EventContentFlagReminded, EventContentFlagResolved:
 		// The flag sentences need the flag; every R40 producer writes one, so
 		// this is the no-payload fallback a delivery must still be able to
@@ -366,6 +369,31 @@ func banPhrase(targetType moderation.TargetType, broadcastID string) string {
 		return "a ban on broadcast " + broadcastID
 	}
 	return "a broadcast ban"
+}
+
+// SummarizePop is the one sentence for a pop.* event (R74, docs/76 §7.2): the
+// PoP by its name ("" when unknown) and the operator. It never names an
+// address, the pairing string or the credential.
+func SummarizePop(eventType, name, actor string) string {
+	what := "a PoP"
+	if name != "" {
+		what = "PoP " + name
+	}
+	who := actorOrOperator(actor)
+	switch eventType {
+	case EventPopCreated:
+		return what + " was created by " + who
+	case EventPopUpdated:
+		return what + " was edited by " + who
+	case EventPopRepaired:
+		return what + " was given a new pairing string by " + who
+	case EventPopRevoked:
+		return what + " was revoked by " + who
+	case EventPopDeleted:
+		return what + " was deleted by " + who
+	default:
+		return eventType
+	}
 }
 
 // SummarizeRoom is the one sentence for a room event (R42, docs/44 D20). It
