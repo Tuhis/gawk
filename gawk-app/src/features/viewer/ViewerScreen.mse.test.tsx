@@ -32,6 +32,7 @@ vi.mock('./useViewerConnection', () => ({
     errorKind: null,
     errorFatal: false,
     retryNote: null,
+    popFull: false,
     presentation: {
       probe: conn.state.probe,
       audioProbe: conn.state.audioProbe,

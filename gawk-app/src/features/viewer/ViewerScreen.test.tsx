@@ -172,6 +172,32 @@ describe('ViewerScreen states', () => {
 
   // The live audience badge beside the status. The
   // wire carries the honest total, so a lone viewer reads "1 watching".
+  // docs/76 item 28: a broadcast at a LAN party whose internet is full. The
+  // copy says so, holds across the 20 s retries (a retry connects before the
+  // relay refuses it again, and must not flash "live"), and clears only when
+  // frames arrive.
+  it('shows the 4012 party-full copy until frames arrive', async () => {
+    render(<ViewerScreen broadcastId="AB2CD3" />);
+    await waitFor(() => expect(sessions).toHaveLength(1));
+    act(() => sessions[0].cbs.onConnected());
+    const copy = /Outside viewing is full right now; we’ll keep trying\./;
+    act(() =>
+      (sessions[0].cbs.onReconnecting as (i: unknown) => void)({
+        attempt: 1,
+        reason: 'uplink full',
+        closeCode: 4012,
+        delayMs: 20_000,
+      }),
+    );
+    expect(screen.getByText(copy)).toBeTruthy();
+    act(() => sessions[0].cbs.onConnected());
+    expect(screen.getByText(copy)).toBeTruthy();
+    act(() => sessions[0].cbs.onStats({ viewerCount: 1, framesCompleted: 0 }));
+    expect(screen.getByText(copy)).toBeTruthy();
+    act(() => sessions[0].cbs.onStats({ viewerCount: 1, framesCompleted: 3 }));
+    expect(screen.queryByText(copy)).toBeNull();
+  });
+
   it('renders the watching badge from the pushed viewer count', async () => {
     render(<ViewerScreen broadcastId="AB2CD3" />);
     await waitFor(() => expect(sessions).toHaveLength(1));

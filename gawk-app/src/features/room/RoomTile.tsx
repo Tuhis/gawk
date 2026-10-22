@@ -180,7 +180,7 @@ export function RoomTile({
   const { broadcastId } = attachment;
   // Read once per mount: the tile's level is its own persisted preference.
   const [initialVolume] = useState(() => loadTileVolume(broadcastId));
-  const { status, stats, audio } = useViewerConnection(
+  const { status, stats, audio, popFull } = useViewerConnection(
     broadcastId,
     canvasRef,
     config.playout,
@@ -229,6 +229,11 @@ export function RoomTile({
     );
   } else if (offline) {
     state = <span>{small ? 'Offline' : 'This stream is offline right now.'}</span>;
+  } else if (popFull) {
+    // docs/76 item 35: past the party's internet budget. The session keeps
+    // retrying every 20 s and the tile joins when a slot frees; the label is
+    // on the tile's own bar.
+    state = <span>Party-only right now</span>;
   } else if (status === 'reconnecting') {
     state = <span>Reconnecting…</span>;
   }

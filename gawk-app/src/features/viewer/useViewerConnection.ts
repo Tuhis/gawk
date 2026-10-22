@@ -12,7 +12,7 @@ import {
   type ViewerEndReason,
   type ViewerErrorKind,
 } from '../../transport/viewer-session';
-import { CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
+import { CLOSE_CODE_POP_UPLINK_FULL, CLOSE_CODE_SERVER_DRAINING } from '../../transport/wire';
 import { setInterpolationEnabled as setLocalInterpolation } from '../../transport/interpolation';
 import { setStripeMode as setLocalStripeMode, type StripeMode } from '../../transport/stripe';
 import {
@@ -44,6 +44,10 @@ import { useTelemetryCollector } from '../../lib/useTelemetry';
 import { readVisibility } from '../../lib/visibility';
 import { log } from '../../lib/logger';
 import { readStored, writeStored } from '../../lib/storage';
+
+// The 4012 copy (docs/76 item 28), word for word.
+export const POP_UPLINK_FULL_NOTE =
+  'This stream is at a LAN party with limited internet. Outside viewing is full right now; we’ll keep trying.';
 
 export type ViewerStatus = 'connecting' | 'watching' | 'reconnecting' | 'ended' | 'error';
 
@@ -116,6 +120,11 @@ export interface ViewerConnectionState {
   // while `status` is 'ended'.
   endReason: ViewerEndReason;
   retryNote: string | null;
+  // R74 (docs/76 item 28): the relay refused this viewer with 4012, because
+  // the broadcast is at a LAN party whose internet is full. It stays true
+  // across the 20 s retries until frames arrive; a room tile reads it as
+  // "Party-only right now".
+  popFull: boolean;
   // The id this viewer reports under, once a hello has enabled collection —
   // the join key between what the operator sees on the telemetry dashboard
   // and the person on the other end of the call. Null on a fleet that collects
@@ -198,6 +207,8 @@ export function useViewerConnection(
   // "a moderator ended this" instead of the generic "the stream is over".
   const [endReason, setEndReason] = useState<ViewerEndReason>('normal');
   const [retryNote, setRetryNote] = useState<string | null>(null);
+  const [popFull, setPopFull] = useState(false);
+  const popFullRef = useRef(false);
   // The MSE capability verdict, computed on the main thread from the
   // negotiated codec (the codec event re-computes it, so a mid-view codec
   // change — a broadcaster restart with a different encoder — updates the
@@ -388,6 +399,8 @@ export function useViewerConnection(
     setErrorKind(null);
     setErrorFatal(false);
     setRetryNote(null);
+    popFullRef.current = false;
+    setPopFull(false);
   }, []);
 
   // Telemetry rides the SAME event funnel both paths
@@ -414,11 +427,16 @@ export function useViewerConnection(
   const applyEvent = useCallback((ev: ViewerWorkerEvent) => {
     switch (ev.type) {
       case 'connected':
+        // A retry after 4012 connects before the relay refuses it again: the
+        // party-full state holds until frames prove the slot is ours.
+        if (popFullRef.current) break;
         setRetryNote(null);
         setStatus('watching');
         break;
       case 'reconnecting':
         setStatus('reconnecting');
+        popFullRef.current = ev.closeCode === CLOSE_CODE_POP_UPLINK_FULL;
+        setPopFull(popFullRef.current);
         // An event, not a sample: a 2 s grid cannot represent a reconnect, and
         // the close code is exactly what a human narrates about what went
         // wrong.
@@ -429,9 +447,11 @@ export function useViewerConnection(
         // A 4002 drain is a planned relay rollout with an instant retry —
         // show calmer copy than the generic attempt counter.
         setRetryNote(
-          ev.closeCode === CLOSE_CODE_SERVER_DRAINING
-            ? 'Stream server is updating — reconnecting…'
-            : `Reconnecting — attempt ${ev.attempt}/${RECONNECT_MAX_ATTEMPTS}`,
+          ev.closeCode === CLOSE_CODE_POP_UPLINK_FULL
+            ? POP_UPLINK_FULL_NOTE
+            : ev.closeCode === CLOSE_CODE_SERVER_DRAINING
+              ? 'Stream server is updating — reconnecting…'
+              : `Reconnecting — attempt ${ev.attempt}/${RECONNECT_MAX_ATTEMPTS}`,
         );
         log.info('viewer reconnecting:', ev.reason);
         break;
@@ -445,6 +465,12 @@ export function useViewerConnection(
         }
         break;
       case 'stats': {
+        if (popFullRef.current && (ev.stats.framesCompleted ?? 0) > 0) {
+          popFullRef.current = false;
+          setPopFull(false);
+          setRetryNote(null);
+          setStatus('watching');
+        }
         // The audio jitter-buffer target rides
         // the same windowed arrival-jitter estimate the video playout
         // controller uses — one measurement, two consumers.
@@ -530,6 +556,8 @@ export function useViewerConnection(
         setStatus('error');
         break;
       case 'ended':
+        popFullRef.current = false;
+        setPopFull(false);
         setRetryNote(null);
         setEndReason(ev.reason);
         // A clean end is the one moment the service can finalize this session
@@ -791,6 +819,7 @@ export function useViewerConnection(
     errorFatal,
     endReason,
     retryNote,
+    popFull,
     telemetrySessionId,
     presentation: {
       probe: mseProbe,

@@ -60,6 +60,7 @@ const { roomSessions, roomState, FakeRoomSession, viewerSessions, FakeViewerSess
 
   interface ViewerCbs {
     onConnected: () => void;
+    onReconnecting: (i: { attempt: number; delayMs: number; reason: string; closeCode?: number | null }) => void;
     onStats: (s: unknown) => void;
     onEnded: (reason: 'normal' | 'moderated') => void;
   }
@@ -246,6 +247,21 @@ describe('RoomScreen modes', () => {
     for (const t of tiles) expect(t.textContent).not.toMatch(/watching/);
     // The room key (never the code) is what tile telemetry is grouped by.
     expect(screen.getByTitle('Room code').textContent).toBe('AB2CD3');
+  });
+
+  // docs/76 item 35: a wall tile past the PoP's budget is refused with 4012
+  // and draws "Party-only right now" with its label, retrying every 20 s
+  // (ViewerSession), and joins when frames arrive.
+  it('a tile refused with 4012 reads "Party-only right now" with its label until frames arrive', async () => {
+    await joinAs();
+    await waitFor(() => expect(activeViewerIds()).toEqual(['AAAAAA', 'BBBBBB', 'CCCCCC']));
+    const alpha = viewerSessions.find((v) => v.id === 'AAAAAA')!;
+    act(() => alpha.cbs.onReconnecting({ attempt: 1, delayMs: 20_000, reason: 'full', closeCode: 4012 }));
+    const tile = screen.getAllByTestId('room-tile')[0];
+    expect(within(tile).getByText('Party-only right now')).toBeTruthy();
+    expect(tile.textContent).toContain('alpha');
+    act(() => alpha.cbs.onStats({ viewerCount: 2, framesCompleted: 4 }));
+    expect(within(tile).queryByText('Party-only right now')).toBeNull();
   });
 
   it('a number key focuses that POV; 0 returns to grid; neither fires while typing', async () => {

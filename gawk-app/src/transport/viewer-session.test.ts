@@ -14,9 +14,10 @@ import {
   type ViewerEndReason,
   type ViewerSessionCallbacks,
 } from './viewer-session';
-import { isTerminalPublisherClose, isTerminalViewerClose } from './reconnect';
+import { POP_UPLINK_FULL_RETRY_MS, isTerminalPublisherClose, isTerminalViewerClose } from './reconnect';
 import {
   CLOSE_CODE_BROADCAST_ENDED,
+  CLOSE_CODE_POP_UPLINK_FULL,
   CLOSE_CODE_PUBLISHER_SUPERSEDED,
   CLOSE_CODE_SERVER_DRAINING,
   CLOSE_CODE_TERMINATED_BY_OPERATOR,
@@ -137,6 +138,12 @@ describe('reconnectDelayMs', () => {
   });
 
   // The close-code-aware first-retry table.
+  it('waits 20 s after 4012 on every attempt', () => {
+    for (const attempt of [1, 2, 5, 10]) {
+      expect(reconnectDelayMs(attempt, CLOSE_CODE_POP_UPLINK_FULL)).toBe(20_000);
+    }
+  });
+
   it('applies the fast first-retry policy per close code', () => {
     // 4002 planned drain ⇒ reconnect now.
     expect(reconnectDelayMs(1, CLOSE_CODE_SERVER_DRAINING)).toBe(0);
@@ -224,6 +231,24 @@ describe('ViewerSession', () => {
     expect(pipelines).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(pipelines).toHaveLength(2);
+  });
+
+  // docs/76 item 28: 4012 PopUplinkFull is temporary. The viewer retries
+  // every 20 s for as long as it is refused, and the refusals never spend
+  // the reconnect budget: the slot frees when another outside viewer leaves.
+  it('retries every 20 s after 4012, without spending the reconnect budget', async () => {
+    const { session, pipelines, events } = makeHarness();
+    await session.start();
+    for (let i = 0; i < RECONNECT_MAX_ATTEMPTS + 2; i++) {
+      pipelines[i].crash('uplink full', CLOSE_CODE_POP_UPLINK_FULL);
+      expect(events.at(-1)).toBe(`reconnecting:1:${POP_UPLINK_FULL_RETRY_MS}`);
+      await vi.advanceTimersByTimeAsync(POP_UPLINK_FULL_RETRY_MS - 1);
+      expect(pipelines).toHaveLength(i + 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(pipelines).toHaveLength(i + 2);
+    }
+    expect(events.some((e) => e.startsWith('error:'))).toBe(false);
+    await session.stop();
   });
 
   it('resets the attempt counter after a successful reconnect', async () => {
@@ -391,7 +416,8 @@ describe('terminal close-code sets', () => {
     expect(isTerminalViewerClose(CLOSE_CODE_TERMINATED_BY_OPERATOR)).toBe(true);
     // 4001 eviction, 4002 drain, 4003 origin-moved, 4005 leg-orphaned are all
     // explicitly retryable; an abrupt drop (no code) is the reconnect case.
-    for (const code of [4001, 4002, 4003, 4004, 4005, 429, 0]) {
+    // 4012 PopUplinkFull is temporary by design (docs/76 item 28).
+    for (const code of [4001, 4002, 4003, 4004, 4005, 4012, 429, 0]) {
       expect(isTerminalViewerClose(code)).toBe(false);
     }
     expect(isTerminalViewerClose(null)).toBe(false);

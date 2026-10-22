@@ -21,6 +21,7 @@ import {
 import type { DecodedFrame } from '../media/decoder';
 import {
   RECONNECT_MAX_ATTEMPTS,
+  isPopUplinkFull,
   isTerminalViewerClose,
   reconnectDelayMs,
   type ReconnectInfo,
@@ -248,7 +249,9 @@ export class ViewerSession {
   }
 
   private scheduleReconnect(): void {
-    this.attempt += 1;
+    // A 4012 refusal is the relay answering, not failing: it never spends the
+    // budget (docs/76 item 28), so the 20 s retries go on until a slot frees.
+    this.attempt = isPopUplinkFull(this.lastCloseCode) ? 1 : this.attempt + 1;
     if (this.attempt > RECONNECT_MAX_ATTEMPTS) {
       this.cb.onError(
         new Error(`reconnect failed after ${RECONNECT_MAX_ATTEMPTS} attempts: ${this.lastReason}`),
