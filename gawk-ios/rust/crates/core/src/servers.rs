@@ -36,6 +36,7 @@ pub fn probe_server(relay_url: String, insecure: bool, cert_hashes: Vec<String>)
             rtt_ms,
             name,
             screens,
+            ..
         } => ServerProbe::Reachable {
             rtt_ms,
             name,

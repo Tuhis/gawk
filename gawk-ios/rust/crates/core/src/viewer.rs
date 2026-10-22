@@ -68,6 +68,11 @@ pub struct ViewerOptions {
     /// the system store.
     #[uniffi(default)]
     pub cert_hashes: Vec<String>,
+    /// R74 (docs/76 item 43.7): this viewer follows a home relay's
+    /// local-relay offer, so every subscribe carries `lr=1`. Set it when
+    /// watching on home; leave it off on the PoP the viewer switched to.
+    #[uniffi(default)]
+    pub follow_offers: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
@@ -90,6 +95,10 @@ pub enum ViewerStatus {
         delay_ms: u64,
         /// 4002: the relay is draining for a planned restart.
         draining: bool,
+        /// R74 4012 (docs/76 item 28): the stream is at a LAN party whose
+        /// outside viewing is full; the viewer retries every 20 s. Show
+        /// [`pop_uplink_full_message`].
+        party_full: bool,
     },
     Ended {
         reason: ViewerEnd,
@@ -109,6 +118,7 @@ impl From<ViewerState> for ViewerStatus {
                 attempt,
                 delay_ms,
                 draining: close_code == Some(gawk_wire::CLOSE_CODE_SERVER_DRAINING),
+                party_full: close_code == Some(gawk_wire::CLOSE_CODE_POP_UPLINK_FULL),
             },
             ViewerState::Ended(r) => Self::Ended {
                 reason: match r {
@@ -227,6 +237,16 @@ struct Bridge {
     listener: Arc<dyn ViewerListener>,
     commands: mpsc::UnboundedSender<Command>,
     state: Mutex<(Video, AudioDecoder)>,
+    local: Arc<Mutex<LocalSeen>>,
+}
+
+/// R74: what the subscribe sessions said about a party's local relay, for
+/// Swift to read (the listener is Swift's; these ride beside it).
+#[derive(Debug, Default)]
+struct LocalSeen {
+    /// The latest fresh offer, until Swift takes it.
+    offer: Option<crate::localrelay::LocalRelayOffer>,
+    info: Option<crate::localrelay::LocalRelayInfo>,
 }
 
 impl Bridge {
@@ -336,6 +356,12 @@ impl ViewerSink for Bridge {
             }
             ViewerEvent::Flush => self.listener.on_flush(),
             ViewerEvent::Stats(s) => self.listener.on_stats(s.into()),
+            ViewerEvent::LocalRelayOffer(o) => {
+                self.local.lock().unwrap().offer = Some((&o).into());
+            }
+            ViewerEvent::LocalRelay(i) => {
+                self.local.lock().unwrap().info = Some((&i).into());
+            }
             ViewerEvent::ViewerCount(_)
             | ViewerEvent::TelemetryHello { .. }
             | ViewerEvent::TelemetryEndpoint(_) => {}
@@ -377,6 +403,7 @@ fn nv12(f: &I420Frame, timestamp_us: u64, present_at_ms: f64) -> Nv12Frame {
 #[derive(uniffi::Object)]
 pub struct Viewer {
     commands: mpsc::UnboundedSender<Command>,
+    local: Arc<Mutex<LocalSeen>>,
 }
 
 #[uniffi::export]
@@ -385,15 +412,18 @@ impl Viewer {
     #[uniffi::constructor]
     pub fn start(options: ViewerOptions, listener: Arc<dyn ViewerListener>) -> Arc<Self> {
         let (tx, rx) = mpsc::unbounded_channel();
+        let local: Arc<Mutex<LocalSeen>> = Arc::default();
         let bridge = Arc::new(Bridge {
             listener,
             commands: tx.clone(),
             state: Mutex::new((Video::None, AudioDecoder::new())),
+            local: local.clone(),
         });
         let cfg = ViewerConfig {
             relay_url: options.relay_url,
             broadcast_id: options.broadcast_id,
             preset: options.preset.into(),
+            follow_offers: options.follow_offers,
         };
         let dialer = Arc::new(WtSubscribeDialer {
             origin: gawk_engine::defaults::origin().to_owned(),
@@ -411,7 +441,10 @@ impl Viewer {
                 rt.block_on(session::run(cfg, dialer, bridge, clock(), rx));
             })
             .expect("spawn the viewer thread");
-        Arc::new(Self { commands: tx })
+        Arc::new(Self {
+            commands: tx,
+            local,
+        })
     }
 
     /// The renderer put this frame on screen (D15's drop-to-live input).
@@ -430,6 +463,21 @@ impl Viewer {
 
     pub fn stop(&self) {
         let _ = self.commands.send(Command::Stop);
+    }
+
+    /// R74 (docs/76 item 43.3): a fresh local-relay offer home sent on this
+    /// viewer's session, taken once: the app probes it
+    /// ([`crate::localrelay::probe_local_relay`]) and, when a candidate
+    /// answers, watches the same code there — one reconnect. `None` when
+    /// there is none new.
+    pub fn take_local_relay_offer(&self) -> Option<crate::localrelay::LocalRelayOffer> {
+        self.local.lock().unwrap().offer.take()
+    }
+
+    /// R74 (docs/76 item 45): what the PoP this viewer watches on says
+    /// about itself (`0x18`), if it is one.
+    pub fn local_relay(&self) -> Option<crate::localrelay::LocalRelayInfo> {
+        self.local.lock().unwrap().info.clone()
     }
 }
 
@@ -487,7 +535,27 @@ mod tests {
         .into();
         assert!(matches!(
             s,
-            ViewerStatus::Reconnecting { draining: true, .. }
+            ViewerStatus::Reconnecting {
+                draining: true,
+                party_full: false,
+                ..
+            }
         ));
+        // R74 (docs/76 item 28): 4012 waits with its own copy, 20 s apart.
+        let s: ViewerStatus = ViewerState::Reconnecting {
+            attempt: 1,
+            delay_ms: 20_000,
+            close_code: Some(gawk_wire::CLOSE_CODE_POP_UPLINK_FULL),
+        }
+        .into();
+        assert_eq!(
+            s,
+            ViewerStatus::Reconnecting {
+                attempt: 1,
+                delay_ms: 20_000,
+                draining: false,
+                party_full: true,
+            }
+        );
     }
 }

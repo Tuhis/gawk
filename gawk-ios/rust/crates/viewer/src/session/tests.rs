@@ -120,6 +120,7 @@ fn cfg() -> ViewerConfig {
         relay_url: "https://relay.example:4433".into(),
         broadcast_id: "K7XQ2M".into(),
         preset: PlayoutPreset::Balanced,
+        follow_offers: false,
     }
 }
 
@@ -208,6 +209,57 @@ async fn failed_dials_climb_the_ladder_and_give_up_after_ten() {
             250, 2000, 4000, 8000, 15_000, 15_000, 15_000, 15_000, 15_000, 15_000
         ]
     );
+}
+
+// R74 (docs/76 item 28): a PoP whose uplink is full closes with 4012; the
+// viewer keeps trying every 20 s, well past the ladder's ten attempts.
+#[tokio::test(start_paused = true)]
+async fn a_full_party_uplink_retries_every_20s_without_giving_up() {
+    let full = Some(gawk_wire::CLOSE_CODE_POP_UPLINK_FULL);
+    let mut script: Vec<_> = (0..12).map(|_| closes_with(full, 0)).collect();
+    script.push(closes_with(Some(gawk_wire::CLOSE_CODE_BROADCAST_ENDED), 0));
+    let dialer = FakeDialer::new(script);
+    let (reason, sink, _tx) = run_with(dialer.clone()).await;
+    assert_eq!(
+        reason,
+        EndReason::Closed(gawk_wire::CLOSE_CODE_BROADCAST_ENDED)
+    );
+    assert_eq!(dialer.gaps_ms(), vec![20_000; 12]);
+    assert!(sink.states.lock().unwrap().iter().any(|s| matches!(
+        s,
+        ViewerState::Reconnecting {
+            close_code: Some(gawk_wire::CLOSE_CODE_POP_UPLINK_FULL),
+            delay_ms: 20_000,
+            ..
+        }
+    )));
+}
+
+// R74 (docs/76 item 43.7): a viewer that follows offers says so on every
+// subscribe to home; one that does not, never.
+#[tokio::test(start_paused = true)]
+async fn a_viewer_that_follows_offers_sends_lr_on_every_subscribe() {
+    let dialer = FakeDialer::new(vec![
+        closes_with(None, 0),
+        closes_with(Some(gawk_wire::CLOSE_CODE_BROADCAST_ENDED), 0),
+    ]);
+    let sink = Arc::new(Sink::default());
+    let (_tx, rx) = mpsc::unbounded_channel();
+    let cfg = ViewerConfig {
+        follow_offers: true,
+        ..cfg()
+    };
+    run(cfg, dialer.clone(), sink, ViewerClock::new(), rx).await;
+    let dials = dialer.dials.lock().unwrap().clone();
+    assert_eq!(dials.len(), 2);
+    assert!(dials.iter().all(|(u, _)| u.ends_with("&lr=1")), "{dials:?}");
+
+    let dialer = FakeDialer::new(vec![closes_with(
+        Some(gawk_wire::CLOSE_CODE_BROADCAST_ENDED),
+        0,
+    )]);
+    run_with(dialer.clone()).await;
+    assert!(!dialer.dials.lock().unwrap()[0].0.contains("lr="));
 }
 
 #[tokio::test(start_paused = true)]

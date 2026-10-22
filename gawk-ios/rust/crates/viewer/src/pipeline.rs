@@ -78,6 +78,12 @@ pub enum ViewerEvent {
         broadcast_key: Vec<u8>,
     },
     TelemetryEndpoint(String),
+    /// R74 (docs/76 item 45): the relay is a party's local relay (0x18).
+    LocalRelay(gawk_engine::localrelay::LocalRelay),
+    /// R74 (docs/76 item 42): the home relay suggests a party's local relay
+    /// to this viewer (0x19). The app probes it and, when it answers,
+    /// reconnects there with the same code (item 43.3).
+    LocalRelayOffer(gawk_engine::localrelay::Offer),
     /// The session's diagnostics, every 500 ms.
     Stats(PipelineStats),
 }
@@ -303,6 +309,16 @@ impl Pipeline {
             TYPE_SESSION_CLOSING => {
                 if let Ok(code) = gawk_wire::parse_session_closing(msg) {
                     self.session_closing = Some(code);
+                }
+            }
+            gawk_wire::TYPE_LOCAL_RELAY_INFO => {
+                if let Some(info) = gawk_engine::localrelay::LocalRelay::parse(msg) {
+                    out.push(ViewerEvent::LocalRelay(info));
+                }
+            }
+            gawk_wire::TYPE_LOCAL_RELAY_OFFER => {
+                if let Some(offer) = gawk_engine::localrelay::Offer::parse(msg) {
+                    out.push(ViewerEvent::LocalRelayOffer(offer));
                 }
             }
             // Parity needs no negotiation on the viewer (the fleet default

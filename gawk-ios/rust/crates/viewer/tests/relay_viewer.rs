@@ -208,6 +208,7 @@ async fn the_viewer_plays_through_datagram_loss_and_a_relay_restart() {
         relay_url: format!("https://{}", link.addr),
         broadcast_id: pubsim.id.clone(),
         preset: PlayoutPreset::Balanced,
+        follow_offers: false,
     };
     let dialer = Arc::new(WtSubscribeDialer {
         origin: "gawk://ios".into(),
